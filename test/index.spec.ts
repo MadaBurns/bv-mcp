@@ -162,7 +162,7 @@ describe('DNS Security MCP Server', () => {
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					jsonrpc: '2.0', id: 7, method: 'tools/call',
-					params: { name: 'explain_finding', arguments: { category: 'spf', title: 'No SPF record found' } },
+					params: { name: 'explain_finding', arguments: { checkType: 'SPF', status: 'fail' } },
 				}),
 			});
 			const ctx = createExecutionContext();
