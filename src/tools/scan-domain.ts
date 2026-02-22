@@ -23,6 +23,8 @@ import { checkDkim } from "./check-dkim";
 import { checkDnssec } from "./check-dnssec";
 import { checkSsl } from "./check-ssl";
 import { checkMtaSts } from "./check-mta-sts";
+import { checkNs } from "./check-ns";
+import { checkCaa } from "./check-caa";
 
 /** Cache key prefix for scan results */
 const CACHE_PREFIX = "scan:";
@@ -67,6 +69,8 @@ export async function scanDomain(domain: string): Promise<ScanDomainResult> {
     safeCheck("dnssec", () => checkDnssec(cleanDomain)),
     safeCheck("ssl", () => checkSsl(cleanDomain)),
     safeCheck("mta_sts", () => checkMtaSts(cleanDomain)),
+    safeCheck("ns", () => checkNs(cleanDomain)),
+    safeCheck("caa", () => checkCaa(cleanDomain)),
   ]);
 
   // Compute overall score from all check results
