@@ -1,14 +1,10 @@
 {
-  "name": "<WORKER_NAME>",
+  "name": "bv-dns-security-mcp",
   "main": "src/index.ts",
-  "compatibility_date": "<COMPATIBILITY_DATE>",
+  "compatibility_date": "2025-04-01",
   "compatibility_flags": [
     "global_fetch_strictly_public"
   ],
-  "assets": {
-    // The path to the directory containing the `index.html` file to be served at `/`
-    "directory": "./public"
-  },
   "observability": {
     "enabled": true
   }
