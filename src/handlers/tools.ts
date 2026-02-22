@@ -117,24 +117,25 @@ const TOOLS: McpTool[] = [
   },
   {
     name: "explain_finding",
-    description: "Get a detailed explanation of a DNS security finding. Provides remediation steps and context for a specific finding category and title.",
+    description: "Get a plain-language explanation of a DNS security finding and recommended remediation steps.",
     inputSchema: {
       type: "object" as const,
       properties: {
-        category: {
+        checkType: {
           type: "string",
-          description: "The finding category (e.g., 'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa')",
+          description: "The check type (e.g. 'SPF', 'DMARC', 'DKIM', 'DNSSEC', 'SSL', 'MTA_STS')",
         },
-        title: {
+        status: {
           type: "string",
-          description: "The finding title to explain (e.g., 'No SPF record found')",
+          enum: ["pass", "fail", "warning"],
+          description: "The check status",
         },
-        severity: {
+        details: {
           type: "string",
-          description: "Optional: the finding severity ('critical', 'high', 'medium', 'low', 'info'). Defaults to 'info'.",
+          description: "Optional details from the check result",
         },
       },
-      required: ["category", "title"],
+      required: ["checkType", "status"],
     },
   },
 ];
@@ -216,7 +217,18 @@ export async function handleToolsCall(params: {
 
       case "check_dkim": {
         const domain = extractAndValidateDomain(args);
-        const selector = typeof args.selector === "string" ? args.selector : undefined;
+        let selector: string | undefined;
+        if (typeof args.selector === "string" && args.selector.trim().length > 0) {
+          const sel = args.selector.trim().toLowerCase();
+          // Validate selector as a DNS label: alphanumeric + hyphens, max 63 chars
+          if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(sel) || sel.length > 63) {
+            return {
+              content: [mcpError("Invalid DKIM selector: must be a valid DNS label (alphanumeric and hyphens, max 63 chars)")],
+              isError: true,
+            };
+          }
+          selector = sel;
+        }
         const result = await checkDkim(domain, selector);
         return { content: [mcpText(formatCheckResult(result))] };
       }
@@ -258,13 +270,13 @@ export async function handleToolsCall(params: {
       }
 
       case "explain_finding": {
-        const category = args.category;
-        const title = args.title;
-        if (typeof category !== "string" || typeof title !== "string") {
-          return { content: [mcpError("Missing required parameters: category and title")], isError: true };
+        const checkType = args.checkType;
+        const status = args.status;
+        if (typeof checkType !== "string" || typeof status !== "string") {
+          return { content: [mcpError("Missing required parameters: checkType and status")], isError: true };
         }
-        const severity = typeof args.severity === "string" ? args.severity as Severity : "info" as Severity;
-        const result = explainFinding(title, category as CheckCategory, severity);
+        const details = typeof args.details === "string" ? args.details : undefined;
+        const result = explainFinding(checkType, status, details);
         return { content: [mcpText(formatExplanation(result))] };
       }
 
@@ -275,7 +287,13 @@ export async function handleToolsCall(params: {
         };
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : "An unexpected error occurred";
+    // Only pass through known validation errors; sanitize unexpected errors
+    const isValidationError = err instanceof Error && (
+      err.message.startsWith("Missing required") ||
+      err.message.startsWith("Invalid") ||
+      err.message.startsWith("Domain validation failed")
+    );
+    const message = isValidationError ? err.message : "An unexpected error occurred";
     return { content: [mcpError(message)], isError: true };
   }
 }

@@ -75,8 +75,9 @@ app.get("/health", (c) => {
 
 // MCP JSON-RPC 2.0 endpoint
 app.post("/mcp", async (c) => {
-  // Rate limiting by IP
-  const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? "unknown";
+  // Rate limiting by IP — only trust cf-connecting-ip (set by Cloudflare edge)
+  // Do NOT fall back to x-forwarded-for as it is client-controlled and spoofable
+  const ip = c.req.header("cf-connecting-ip") ?? "unknown";
   const rateResult = checkRateLimit(ip);
 
   if (!rateResult.allowed) {
@@ -87,6 +88,15 @@ app.post("/mcp", async (c) => {
         `Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
       ),
       429,
+    );
+  }
+
+  // Reject oversized request bodies (max 10KB — tool arguments are small)
+  const contentLength = c.req.header("content-length");
+  if (contentLength && parseInt(contentLength, 10) > 10_240) {
+    return c.json(
+      jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, "Request body too large"),
+      413,
     );
   }
 
@@ -108,6 +118,23 @@ app.post("/mcp", async (c) => {
         body.id,
         JSON_RPC_ERRORS.INVALID_REQUEST,
         "Invalid JSON-RPC 2.0 request",
+      ),
+      400,
+    );
+  }
+
+  // Validate JSON-RPC id field type (must be string, number, or null per spec)
+  if (
+    body.id !== undefined &&
+    body.id !== null &&
+    typeof body.id !== "string" &&
+    typeof body.id !== "number"
+  ) {
+    return c.json(
+      jsonRpcError(
+        null,
+        JSON_RPC_ERRORS.INVALID_REQUEST,
+        "Invalid JSON-RPC id: must be string, number, or null",
       ),
       400,
     );
@@ -171,7 +198,14 @@ app.post("/mcp", async (c) => {
         );
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Internal server error";
+    // Sanitize error messages — only pass through known validation errors,
+    // use generic message for unexpected errors to prevent info leaks
+    const isValidationError = err instanceof Error && (
+      err.message.startsWith("Missing required") ||
+      err.message.startsWith("Invalid") ||
+      err.message.startsWith("Resource not found")
+    );
+    const message = isValidationError ? err.message : "Internal server error";
     return c.json(
       jsonRpcError(id, JSON_RPC_ERRORS.INTERNAL_ERROR, message),
       500,
