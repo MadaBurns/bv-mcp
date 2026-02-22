@@ -28,11 +28,20 @@ const BLOCKED_IP_PATTERNS = [
   /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
   /^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/,
   /^192\.168\.\d{1,3}\.\d{1,3}$/,
+  /^169\.254\.\d{1,3}\.\d{1,3}$/,
   /^0\.0\.0\.0$/,
   /^::1$/,
   /^fc00:/i,
   /^fd[0-9a-f]{2}:/i,
   /^fe80:/i,
+];
+
+/** DNS rebinding service suffixes to block */
+const BLOCKED_DNS_REBINDING = [
+  ".nip.io",
+  ".sslip.io",
+  ".xip.io",
+  ".nip.direct",
 ];
 
 /** Maximum allowed domain length per RFC 1035 */
@@ -88,6 +97,13 @@ export function validateDomain(input: string): ValidationResult {
   for (const pattern of BLOCKED_IP_PATTERNS) {
     if (pattern.test(normalized)) {
       return { valid: false, error: `IP addresses are not allowed: "${normalized}"` };
+    }
+  }
+
+  // Check for DNS rebinding services
+  for (const suffix of BLOCKED_DNS_REBINDING) {
+    if (normalized === suffix.slice(1) || normalized.endsWith(suffix)) {
+      return { valid: false, error: "Domain uses a DNS rebinding service and is not allowed" };
     }
   }
 
