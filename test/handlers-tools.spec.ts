@@ -1,0 +1,335 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { setupFetchMock, createDohResponse, mockTxtRecords } from './helpers/dns-mock';
+
+const { restore } = setupFetchMock();
+
+afterEach(() => {
+	restore();
+});
+
+// ── handleToolsList ─────────────────────────────────────────────────────────
+
+describe('handleToolsList', () => {
+	async function getToolsList() {
+		const { handleToolsList } = await import('../src/handlers/tools');
+		return handleToolsList();
+	}
+
+	it('returns object with tools array of exactly 10 items', async () => {
+		const result = await getToolsList();
+		expect(result).toHaveProperty('tools');
+		expect(Array.isArray(result.tools)).toBe(true);
+		expect(result.tools).toHaveLength(10);
+	});
+
+	it('each tool has name, description, inputSchema properties', async () => {
+		const { tools } = await getToolsList();
+		for (const tool of tools) {
+			expect(tool).toHaveProperty('name');
+			expect(tool).toHaveProperty('description');
+			expect(tool).toHaveProperty('inputSchema');
+			expect(typeof tool.name).toBe('string');
+			expect(typeof tool.description).toBe('string');
+			expect(tool.inputSchema).toHaveProperty('type', 'object');
+			expect(tool.inputSchema).toHaveProperty('properties');
+			expect(tool.inputSchema).toHaveProperty('required');
+		}
+	});
+
+	it('all expected tool names are present', async () => {
+		const { tools } = await getToolsList();
+		const names = tools.map((t) => t.name);
+		const expected = [
+			'check_spf',
+			'check_dmarc',
+			'check_dkim',
+			'check_dnssec',
+			'check_ssl',
+			'check_mta_sts',
+			'check_ns',
+			'check_caa',
+			'scan_domain',
+			'explain_finding',
+		];
+		for (const name of expected) {
+			expect(names).toContain(name);
+		}
+	});
+});
+
+// ── handleToolsCall — dispatch routing ──────────────────────────────────────
+
+/**
+ * Multi-dispatch fetch mock that returns reasonable defaults for all check types.
+ * Borrowed from scan-domain.spec.ts pattern.
+ */
+function mockAllChecks() {
+	function txtResponse(domain: string, records: string[]) {
+		return createDohResponse(
+			[{ name: domain, type: 16 }],
+			records.map((data) => ({ name: domain, type: 16, TTL: 300, data: `"${data}"` })),
+		);
+	}
+	function nsResponse(domain: string, nameservers: string[]) {
+		return createDohResponse(
+			[{ name: domain, type: 2 }],
+			nameservers.map((data) => ({ name: domain, type: 2, TTL: 300, data })),
+		);
+	}
+	function caaResponse(domain: string, records: string[]) {
+		return createDohResponse(
+			[{ name: domain, type: 257 }],
+			records.map((data) => ({ name: domain, type: 257, TTL: 300, data })),
+		);
+	}
+	function dnssecResponse(domain: string, ad: boolean) {
+		return createDohResponse([{ name: domain, type: 1 }], [{ name: domain, type: 1, TTL: 300, data: '1.2.3.4' }], {
+			ad,
+		});
+	}
+	function httpResponse(body: string, status = 200) {
+		return {
+			ok: status >= 200 && status < 300,
+			status,
+			text: () => Promise.resolve(body),
+			json: () => Promise.resolve({}),
+		} as unknown as Response;
+	}
+
+	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+		if (url.includes('cloudflare-dns.com')) {
+			if (url.includes('type=TXT') || url.includes('type=16')) {
+				if (url.includes('_dmarc.')) {
+					return Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=reject']));
+				}
+				if (url.includes('_domainkey.')) {
+					return Promise.resolve(
+						txtResponse('default._domainkey.example.com', ['v=DKIM1; k=rsa; p=MIGf']),
+					);
+				}
+				if (url.includes('_mta-sts.')) {
+					return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
+				}
+				if (url.includes('_smtp._tls.')) {
+					return Promise.resolve(
+						txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+					);
+				}
+				return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
+			}
+			if (url.includes('type=NS') || url.includes('type=2')) {
+				return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+			}
+			if (url.includes('type=CAA') || url.includes('type=257')) {
+				return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
+			}
+			if (url.includes('type=A') || url.includes('type=1')) {
+				return Promise.resolve(dnssecResponse('example.com', true));
+			}
+			return Promise.resolve(createDohResponse([], []));
+		}
+
+		if (url.includes('mta-sts.') && url.includes('.well-known')) {
+			return Promise.resolve(
+				httpResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'),
+			);
+		}
+
+		if (url.startsWith('https://')) {
+			return Promise.resolve(httpResponse('OK'));
+		}
+
+		return Promise.resolve(httpResponse('OK'));
+	});
+}
+
+describe('handleToolsCall — dispatch routing', () => {
+	async function call(name: string, args: Record<string, unknown> = {}) {
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		return handleToolsCall({ name, arguments: args });
+	}
+
+	it('check_spf with valid domain returns content with SPF', async () => {
+		mockTxtRecords(['v=spf1 -all']);
+		const result = await call('check_spf', { domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toHaveLength(1);
+		expect(result.content[0].text).toContain('SPF');
+	});
+
+	it('check_dmarc with valid domain returns content', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject'], '_dmarc.example.com');
+		const result = await call('check_dmarc', { domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toHaveLength(1);
+		expect(result.content[0].type).toBe('text');
+		expect(result.content[0].text.length).toBeGreaterThan(0);
+	});
+
+	it('check_caa with valid domain returns content', async () => {
+		const caaAnswers = [
+			{ name: 'example.com', type: 257, TTL: 300, data: '0 issue "letsencrypt.org"' },
+		];
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			createDohResponse([{ name: 'example.com', type: 257 }], caaAnswers),
+		);
+		const result = await call('check_caa', { domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toHaveLength(1);
+		expect(result.content[0].text).toContain('CAA');
+	});
+
+	it('scan_domain with valid domain returns scan report', async () => {
+		mockAllChecks();
+		const result = await call('scan_domain', { domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toHaveLength(1);
+		expect(result.content[0].text).toContain('DNS Security Scan');
+	});
+});
+
+// ── handleToolsCall — check_dkim selector validation ────────────────────────
+
+describe('handleToolsCall — check_dkim selector validation', () => {
+	async function call(name: string, args: Record<string, unknown> = {}) {
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		return handleToolsCall({ name, arguments: args });
+	}
+
+	it('check_dkim with valid selector does not error', async () => {
+		mockAllChecks();
+		const result = await call('check_dkim', { domain: 'example.com', selector: 'google' });
+		expect(result.isError).toBeUndefined();
+	});
+
+	it('check_dkim with invalid selector (special chars) returns isError', async () => {
+		mockAllChecks();
+		const result = await call('check_dkim', { domain: 'example.com', selector: 'sel@ctor!' });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain('Invalid DKIM selector');
+	});
+
+	it('check_dkim with selector > 63 chars returns isError', async () => {
+		mockAllChecks();
+		const longSelector = 'a'.repeat(64);
+		const result = await call('check_dkim', { domain: 'example.com', selector: longSelector });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain('Invalid DKIM selector');
+	});
+});
+
+// ── handleToolsCall — explain_finding ───────────────────────────────────────
+
+describe('handleToolsCall — explain_finding', () => {
+	async function call(name: string, args: Record<string, unknown> = {}) {
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		return handleToolsCall({ name, arguments: args });
+	}
+
+	it('valid checkType + status returns content (not isError)', async () => {
+		const result = await call('explain_finding', { checkType: 'SPF', status: 'pass' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toHaveLength(1);
+		expect(result.content[0].text.length).toBeGreaterThan(0);
+	});
+
+	it('missing checkType returns isError with "Missing required parameters"', async () => {
+		const result = await call('explain_finding', { status: 'pass' });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain('Missing required parameters');
+	});
+
+	it('missing status returns isError with "Missing required parameters"', async () => {
+		const result = await call('explain_finding', { checkType: 'SPF' });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain('Missing required parameters');
+	});
+});
+
+// ── handleToolsCall — input validation & errors ─────────────────────────────
+
+describe('handleToolsCall — input validation & errors', () => {
+	async function call(name: string, args: Record<string, unknown> = {}) {
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		return handleToolsCall({ name, arguments: args });
+	}
+
+	it('missing domain argument returns isError with "Missing required parameter: domain"', async () => {
+		const result = await call('check_spf', {});
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain('Missing required parameter: domain');
+	});
+
+	it('invalid domain (localhost) returns isError with validation message', async () => {
+		const result = await call('check_spf', { domain: 'localhost' });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text.length).toBeGreaterThan(0);
+	});
+
+	it('empty domain string returns isError', async () => {
+		const result = await call('check_spf', { domain: '' });
+		expect(result.isError).toBe(true);
+	});
+
+	it('unknown tool name returns isError with "Unknown tool"', async () => {
+		const result = await call('nonexistent_tool', { domain: 'example.com' });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain('Unknown tool');
+	});
+});
+
+// ── handleToolsCall — error categorization ──────────────────────────────────
+
+describe('handleToolsCall — error categorization', () => {
+	async function call(name: string, args: Record<string, unknown> = {}) {
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		return handleToolsCall({ name, arguments: args });
+	}
+
+	it('validation errors pass through the error message', async () => {
+		// Missing domain triggers "Missing required parameter: domain"
+		const result = await call('check_spf', {});
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain('Missing required parameter: domain');
+	});
+
+	it('unexpected errors return generic "An unexpected error occurred"', async () => {
+		// Force an unexpected error by making fetch throw a non-validation error
+		globalThis.fetch = vi.fn().mockImplementation(() => {
+			throw new Error('ECONNREFUSED');
+		});
+		const result = await call('check_spf', { domain: 'example.com' });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain('An unexpected error occurred');
+	});
+});
+
+// ── formatCheckResult (tested indirectly through handleToolsCall) ───────────
+
+describe('formatCheckResult — via handleToolsCall', () => {
+	async function call(name: string, args: Record<string, unknown> = {}) {
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		return handleToolsCall({ name, arguments: args });
+	}
+
+	it('passing check result contains "Passed" and score', async () => {
+		mockTxtRecords(['v=spf1 include:_spf.google.com -all']);
+		const result = await call('check_spf', { domain: 'example.com' });
+		expect(result.content[0].text).toContain('✅ Passed');
+		expect(result.content[0].text).toContain('/100');
+	});
+
+	it('failing check result contains findings with severity indicators', async () => {
+		// +all (critical) + multiple SPF records (high) → score 35 → Failed
+		mockTxtRecords(['v=spf1 +all', 'v=spf1 ~all']);
+		const result = await call('check_spf', { domain: 'example.com' });
+		expect(result.content[0].text).toContain('❌ Failed');
+		expect(result.content[0].text).toContain('Findings');
+		// Should contain at least one severity icon
+		const text = result.content[0].text;
+		const hasSeverityIcon = text.includes('ℹ️') || text.includes('⚠️') || text.includes('🔶') || text.includes('🔴') || text.includes('🚨');
+		expect(hasSeverityIcon).toBe(true);
+	});
+});
