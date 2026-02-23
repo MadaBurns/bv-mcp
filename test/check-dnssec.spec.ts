@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { RecordType } from '../src/lib/dns';
+import { setupFetchMock, createDohResponse, mockFetchError } from './helpers/dns-mock';
 
-const originalFetch = globalThis.fetch;
+const { restore } = setupFetchMock();
 
 /**
  * Helper: mock DoH responses for DNSSEC checks.
@@ -20,67 +21,42 @@ function mockDnssecResponses(adFlag: boolean, hasDnskey = true, hasDs = true) {
 		const type = typeMatch ? typeMatch[1] : '';
 
 		if (type === 'A') {
-			// AD flag check
-			return Promise.resolve({
-				ok: true,
-				status: 200,
-				json: () =>
-					Promise.resolve({
-						Status: 0, TC: false, RD: true, RA: true, AD: adFlag, CD: false,
-						Question: [{ name: 'example.com', type: 1 }],
-						Answer: [{ name: 'example.com', type: RecordType.A, TTL: 300, data: '93.184.216.34' }],
-					}),
-			} as unknown as Response);
+			return Promise.resolve(
+				createDohResponse(
+					[{ name: 'example.com', type: 1 }],
+					[{ name: 'example.com', type: RecordType.A, TTL: 300, data: '93.184.216.34' }],
+					{ ad: adFlag },
+				),
+			);
 		}
 
 		if (type === 'DNSKEY') {
 			const answers = hasDnskey
 				? [{ name: 'example.com', type: RecordType.DNSKEY, TTL: 300, data: '257 3 13 mdsswUyr3DPW...' }]
 				: [];
-			return Promise.resolve({
-				ok: true,
-				status: 200,
-				json: () =>
-					Promise.resolve({
-						Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
-						Question: [{ name: 'example.com', type: 48 }],
-						Answer: answers,
-					}),
-			} as unknown as Response);
+			return Promise.resolve(
+				createDohResponse([{ name: 'example.com', type: 48 }], answers),
+			);
 		}
 
 		if (type === 'DS') {
 			const answers = hasDs
 				? [{ name: 'example.com', type: RecordType.DS, TTL: 300, data: '12345 13 2 abc123...' }]
 				: [];
-			return Promise.resolve({
-				ok: true,
-				status: 200,
-				json: () =>
-					Promise.resolve({
-						Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
-						Question: [{ name: 'example.com', type: 43 }],
-						Answer: answers,
-					}),
-			} as unknown as Response);
+			return Promise.resolve(
+				createDohResponse([{ name: 'example.com', type: 43 }], answers),
+			);
 		}
 
 		// Fallback
-		return Promise.resolve({
-			ok: true,
-			status: 200,
-			json: () => Promise.resolve({ Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false, Question: [], Answer: [] }),
-		} as unknown as Response);
+		return Promise.resolve(
+			createDohResponse([], []),
+		);
 	});
 }
 
-/** Mock fetch to throw an error (network failure) */
-function mockFetchError() {
-	globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
-}
-
 afterEach(() => {
-	globalThis.fetch = originalFetch;
+	restore();
 });
 
 describe('checkDnssec', () => {

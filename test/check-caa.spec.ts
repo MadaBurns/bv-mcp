@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { RecordType } from '../src/lib/dns';
+import { setupFetchMock, createDohResponse, mockFetchResponse } from './helpers/dns-mock';
 
-const originalFetch = globalThis.fetch;
+const { restore } = setupFetchMock();
 
 function mockCaaRecords(records: string[]) {
 	const answers = records.map((data) => ({
@@ -10,26 +11,17 @@ function mockCaaRecords(records: string[]) {
 		TTL: 300,
 		data,
 	}));
-	globalThis.fetch = vi.fn().mockResolvedValue({
-		ok: true,
-		status: 200,
-		json: () => Promise.resolve({
-			Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
-			Question: [{ name: 'example.com', type: 257 }],
-			Answer: answers,
-		}),
-	} as unknown as Response);
+	globalThis.fetch = vi.fn().mockResolvedValue(
+		createDohResponse([{ name: 'example.com', type: 257 }], answers),
+	);
 }
 
 function mockCaaFailure() {
-	globalThis.fetch = vi.fn().mockResolvedValue({
-		ok: false,
-		status: 500,
-	} as unknown as Response);
+	mockFetchResponse({}, false, 500);
 }
 
 afterEach(() => {
-	globalThis.fetch = originalFetch;
+	restore();
 });
 
 describe('checkCaa', () => {

@@ -1,30 +1,10 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { RecordType } from '../src/lib/dns';
+import { describe, it, expect, afterEach } from 'vitest';
+import { setupFetchMock, mockTxtRecords } from './helpers/dns-mock';
 
-const originalFetch = globalThis.fetch;
-
-/** Helper: mock DoH to return TXT records for _dmarc.domain */
-function mockTxtRecords(records: string[]) {
-	const answers = records.map((data) => ({
-		name: '_dmarc.example.com',
-		type: RecordType.TXT,
-		TTL: 300,
-		data: `"${data}"`,
-	}));
-	globalThis.fetch = vi.fn().mockResolvedValue({
-		ok: true,
-		status: 200,
-		json: () =>
-			Promise.resolve({
-				Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
-				Question: [{ name: '_dmarc.example.com', type: 16 }],
-				Answer: answers,
-			}),
-	} as unknown as Response);
-}
+const { restore } = setupFetchMock();
 
 afterEach(() => {
-	globalThis.fetch = originalFetch;
+	restore();
 });
 
 describe('checkDmarc', () => {

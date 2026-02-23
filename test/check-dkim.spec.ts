@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { RecordType } from '../src/lib/dns';
+import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
 
-const originalFetch = globalThis.fetch;
+const { restore } = setupFetchMock();
 
 /**
  * Helper: mock DoH to return TXT records for DKIM selector queries.
@@ -10,11 +11,9 @@ const originalFetch = globalThis.fetch;
  */
 function mockDkimRecords(selectorRecords: Record<string, string[]>) {
 	globalThis.fetch = vi.fn().mockImplementation((url: string) => {
-		// Extract the queried name from the URL
 		const nameMatch = url.match(/name=([^&]+)/);
 		const queriedName = nameMatch ? decodeURIComponent(nameMatch[1]) : '';
 
-		// Find matching selector
 		let answers: Array<{ name: string; type: number; TTL: number; data: string }> = [];
 		for (const [selector, records] of Object.entries(selectorRecords)) {
 			const expectedName = `${selector}._domainkey.example.com`;
@@ -29,21 +28,14 @@ function mockDkimRecords(selectorRecords: Record<string, string[]>) {
 			}
 		}
 
-		return Promise.resolve({
-			ok: true,
-			status: 200,
-			json: () =>
-				Promise.resolve({
-					Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
-					Question: [{ name: queriedName, type: 16 }],
-					Answer: answers,
-				}),
-		} as unknown as Response);
+		return Promise.resolve(
+			createDohResponse([{ name: queriedName, type: 16 }], answers),
+		);
 	});
 }
 
 afterEach(() => {
-	globalThis.fetch = originalFetch;
+	restore();
 });
 
 describe('checkDkim', () => {

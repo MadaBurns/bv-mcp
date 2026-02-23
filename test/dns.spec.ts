@@ -1,23 +1,11 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { queryDns, queryDnsRecords, queryTxtRecords, checkDnssec, queryMxRecords, DnsQueryError, RecordType } from '../src/lib/dns';
+import { setupFetchMock, mockFetchResponse, mockFetchError } from './helpers/dns-mock';
 
-// We need to mock global fetch for DNS queries
-const originalFetch = globalThis.fetch;
-
-function mockFetch(response: object, ok = true, status = 200) {
-	globalThis.fetch = vi.fn().mockResolvedValue({
-		ok,
-		status,
-		json: () => Promise.resolve(response),
-	} as unknown as Response);
-}
-
-function mockFetchError(error: Error) {
-	globalThis.fetch = vi.fn().mockRejectedValue(error);
-}
+const { restore } = setupFetchMock();
 
 afterEach(() => {
-	globalThis.fetch = originalFetch;
+	restore();
 });
 
 describe('DNS library', () => {
@@ -28,7 +16,7 @@ describe('DNS library', () => {
 				Question: [{ name: 'example.com', type: 1 }],
 				Answer: [{ name: 'example.com', type: 1, TTL: 300, data: '93.184.216.34' }],
 			};
-			mockFetch(dohResponse);
+			mockFetchResponse(dohResponse);
 
 			const result = await queryDns('example.com', 'A');
 			expect(result).toEqual(dohResponse);
@@ -41,7 +29,7 @@ describe('DNS library', () => {
 		});
 
 		it('includes cd=0 param when dnssecCheck is true', async () => {
-			mockFetch({ Status: 0, TC: false, RD: true, RA: true, AD: true, CD: false, Question: [], Answer: [] });
+			mockFetchResponse({ Status: 0, TC: false, RD: true, RA: true, AD: true, CD: false, Question: [], Answer: [] });
 			await queryDns('example.com', 'A', true);
 
 			const url = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
@@ -49,7 +37,7 @@ describe('DNS library', () => {
 		});
 
 		it('throws DnsQueryError on HTTP error', async () => {
-			mockFetch({}, false, 503);
+			mockFetchResponse({}, false, 503);
 			await expect(queryDns('example.com', 'A')).rejects.toThrow(DnsQueryError);
 		});
 
@@ -61,7 +49,7 @@ describe('DNS library', () => {
 
 	describe('queryDnsRecords', () => {
 		it('returns data strings filtered by record type', async () => {
-			mockFetch({
+			mockFetchResponse({
 				Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
 				Question: [{ name: 'example.com', type: 16 }],
 				Answer: [
@@ -75,7 +63,7 @@ describe('DNS library', () => {
 		});
 
 		it('returns empty array when no answers', async () => {
-			mockFetch({
+			mockFetchResponse({
 				Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
 				Question: [{ name: 'example.com', type: 16 }],
 			});
@@ -87,7 +75,7 @@ describe('DNS library', () => {
 
 	describe('queryTxtRecords', () => {
 		it('strips surrounding quotes from TXT data', async () => {
-			mockFetch({
+			mockFetchResponse({
 				Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
 				Question: [{ name: 'example.com', type: 16 }],
 				Answer: [
@@ -102,19 +90,19 @@ describe('DNS library', () => {
 
 	describe('checkDnssec', () => {
 		it('returns true when AD flag is set', async () => {
-			mockFetch({ Status: 0, TC: false, RD: true, RA: true, AD: true, CD: false, Question: [], Answer: [] });
+			mockFetchResponse({ Status: 0, TC: false, RD: true, RA: true, AD: true, CD: false, Question: [], Answer: [] });
 			expect(await checkDnssec('example.com')).toBe(true);
 		});
 
 		it('returns false when AD flag is not set', async () => {
-			mockFetch({ Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false, Question: [], Answer: [] });
+			mockFetchResponse({ Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false, Question: [], Answer: [] });
 			expect(await checkDnssec('example.com')).toBe(false);
 		});
 	});
 
 	describe('queryMxRecords', () => {
 		it('parses MX records into priority and exchange', async () => {
-			mockFetch({
+			mockFetchResponse({
 				Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
 				Question: [{ name: 'example.com', type: 15 }],
 				Answer: [
