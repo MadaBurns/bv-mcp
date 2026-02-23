@@ -150,6 +150,9 @@ describe('scanDomain', () => {
 		expect(result).toHaveProperty('checks');
 		expect(result).toHaveProperty('cached', false);
 		expect(result).toHaveProperty('timestamp');
+		expect(result).toHaveProperty('upgrade_cta');
+		expect(typeof result.upgrade_cta).toBe('string');
+		expect(result.upgrade_cta).toContain('blackveil.co.nz');
 
 		// Score structure
 		expect(result.score).toHaveProperty('overall');
@@ -266,6 +269,7 @@ describe('formatScanReport', () => {
 			checks: [],
 			cached: false,
 			timestamp: '2026-02-23T12:00:00.000Z',
+			upgrade_cta: 'This tool finds problems. BLACKVEIL fixes them automatically \u2192 https://blackveil.co.nz',
 		};
 
 		const report = formatScanReport(mockResult);
@@ -284,6 +288,9 @@ describe('formatScanReport', () => {
 		expect(report).toContain('RSA key too short');
 		// Contains timestamp
 		expect(report).toContain('2026-02-23T12:00:00.000Z');
+		// Contains upgrade CTA
+		expect(report).toContain('BLACKVEIL');
+		expect(report).toContain('blackveil.co.nz');
 	});
 
 	it('includes cache notice when result is cached', async () => {
@@ -310,10 +317,170 @@ describe('formatScanReport', () => {
 			checks: [],
 			cached: true,
 			timestamp: '2026-02-23T12:00:00.000Z',
+			upgrade_cta: 'This tool finds problems. BLACKVEIL fixes them automatically \u2192 https://blackveil.co.nz',
 		};
 
 		const report = formatScanReport(mockResult);
 		expect(report).toContain('Results served from cache');
 		expect(report).toContain('No security issues found');
+	});
+});
+
+/**
+ * Integration tests: full scanDomain() with mocked DoH responses
+ * that simulate specific DMARC/DKIM/DNSSEC/CAA failure and pass scenarios.
+ */
+describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () => {
+	async function run(domain = 'example.com') {
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		return scanDomain(domain);
+	}
+
+	function findCheck(result: ScanDomainResult, category: string) {
+		return result.checks.find((c) => c.category === category);
+	}
+
+	/**
+	 * Creates a fetch mock that overrides specific URL patterns while
+	 * keeping all other checks on healthy defaults via mockAllChecks dispatch.
+	 */
+	function mockWithOverrides(overrides: Record<string, () => Promise<Response>>) {
+		const baseFetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			// Check overrides first
+			for (const [pattern, handler] of Object.entries(overrides)) {
+				if (url.includes(pattern)) {
+					return handler();
+				}
+			}
+
+			// Default healthy responses for all check types
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=reject']));
+					if (url.includes('_domainkey.')) return Promise.resolve(txtResponse('default._domainkey.example.com', ['v=DKIM1; k=rsa; p=MIGf']));
+					if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
+					if (url.includes('_smtp._tls.')) return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
+					return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
+				}
+				if (url.includes('type=NS') || url.includes('type=2')) return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+				if (url.includes('type=CAA') || url.includes('type=257')) return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse('example.com', true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known')) {
+				return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'));
+			}
+			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+		globalThis.fetch = baseFetch;
+	}
+
+	// ── DMARC ──
+
+	it('detects missing DMARC record and penalises score', async () => {
+		mockWithOverrides({
+			'_dmarc.': () => Promise.resolve(createDohResponse(
+				[{ name: '_dmarc.example.com', type: 16 }],
+				[], // no records
+			)),
+		});
+		const result = await run();
+		const dmarc = findCheck(result, 'dmarc');
+		expect(dmarc).toBeDefined();
+		expect(dmarc!.score).toBeLessThan(100);
+		const finding = dmarc!.findings.find((f) => f.severity === 'critical' || f.severity === 'high');
+		expect(finding).toBeDefined();
+		expect(finding!.title.toLowerCase()).toContain('dmarc');
+	});
+
+	it('detects DMARC p=none policy as medium severity', async () => {
+		mockWithOverrides({
+			'_dmarc.': () => Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=none'])),
+		});
+		const result = await run();
+		const dmarc = findCheck(result, 'dmarc');
+		expect(dmarc).toBeDefined();
+		const finding = dmarc!.findings.find((f) => f.severity === 'medium' || f.severity === 'high');
+		expect(finding).toBeDefined();
+	});
+
+	// ── DKIM ──
+
+	it('detects missing DKIM records as high severity', async () => {
+		mockWithOverrides({
+			'_domainkey.': () => Promise.resolve(createDohResponse(
+				[{ name: 'default._domainkey.example.com', type: 16 }],
+				[], // no records
+			)),
+		});
+		const result = await run();
+		const dkim = findCheck(result, 'dkim');
+		expect(dkim).toBeDefined();
+		expect(dkim!.score).toBeLessThan(100);
+		const finding = dkim!.findings.find((f) => f.severity === 'high' || f.severity === 'critical');
+		expect(finding).toBeDefined();
+	});
+
+	it('passes DKIM when valid key record exists', async () => {
+		mockWithOverrides({}); // all defaults are healthy
+		const result = await run();
+		const dkim = findCheck(result, 'dkim');
+		expect(dkim).toBeDefined();
+		expect(dkim!.passed).toBe(true);
+	});
+
+	// ── DNSSEC ──
+
+	it('detects DNSSEC not enabled (AD=false)', async () => {
+		mockWithOverrides({
+			'type=A': () => Promise.resolve(dnssecResponse('example.com', false)),
+			'type=1': () => Promise.resolve(dnssecResponse('example.com', false)),
+		});
+		const result = await run();
+		const dnssec = findCheck(result, 'dnssec');
+		expect(dnssec).toBeDefined();
+		expect(dnssec!.passed).toBe(false);
+		const finding = dnssec!.findings.find((f) => f.severity !== 'info');
+		expect(finding).toBeDefined();
+	});
+
+	it('passes DNSSEC when AD flag is set', async () => {
+		mockWithOverrides({}); // defaults have AD=true
+		const result = await run();
+		const dnssec = findCheck(result, 'dnssec');
+		expect(dnssec).toBeDefined();
+		expect(dnssec!.passed).toBe(true);
+	});
+
+	// ── CAA ──
+
+	it('detects missing CAA records', async () => {
+		mockWithOverrides({
+			'type=CAA': () => Promise.resolve(createDohResponse(
+				[{ name: 'example.com', type: 257 }],
+				[], // no records
+			)),
+			'type=257': () => Promise.resolve(createDohResponse(
+				[{ name: 'example.com', type: 257 }],
+				[], // no records
+			)),
+		});
+		const result = await run();
+		const caa = findCheck(result, 'caa');
+		expect(caa).toBeDefined();
+		expect(caa!.score).toBeLessThan(100);
+		const finding = caa!.findings.find((f) => f.severity !== 'info');
+		expect(finding).toBeDefined();
+	});
+
+	it('passes CAA when issue tag exists', async () => {
+		mockWithOverrides({}); // defaults have CAA issue letsencrypt.org
+		const result = await run();
+		const caa = findCheck(result, 'caa');
+		expect(caa).toBeDefined();
+		expect(caa!.passed).toBe(true);
 	});
 });

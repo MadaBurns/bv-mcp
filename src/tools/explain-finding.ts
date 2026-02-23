@@ -154,9 +154,6 @@ const CHECK_TYPE_MAPPING: Record<string, string> = {
   DNSSEC: "DNSSEC",
   SSL: "SSL",
   MTA_STS: "MTA_STS",
-  MX: "MX",
-  SECURITY_TXT: "SECURITY_TXT",
-  TLSRPT: "TLSRPT",
   NS: "NS",
   CAA: "CAA",
 };

@@ -1,68 +1,195 @@
-# BLACKVEIL DNS Security MCP Server
+# dns-security-mcp
 
-MCP server providing DNS security analysis tools for LLM integrations.
+**The open source MCP server for DNS and email security. Scan any domain from inside Claude, Cursor, or any MCP-compatible AI.**
 
-This Cloudflare Worker exposes DNS security checks over MCP Streamable HTTP and routes all DNS queries through Cloudflare DNS-over-HTTPS.
+[![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Cloudflare Workers](https://img.shields.io/badge/Runs%20on-Cloudflare%20Workers-F38020?logo=cloudflare)](https://workers.cloudflare.com/)
+[![MCP 2025-03-26](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript)](https://www.typescriptlang.org/)
 
-Full platform: https://blackveilsecurity.com
-
-## Features
-
-- 10 MCP tools: 8 individual checks, `scan_domain`, and `explain_finding`
-- 50-check scoring model alignment across 8 security categories
-- Streamable HTTP transport (MCP 2025-03-26) with SSE support
-- Optional bearer token auth for `/mcp` via `BV_API_KEY`
-- KV-backed distributed rate limiting per IP: 10/minute and 50/hour
-- KV-backed 5-minute response caching for scans and individual checks
-- Cloudflare Workers compatible runtime with strict TypeScript
-
-## Tools
-
-| Tool | Purpose |
-|---|---|
-| `check_spf` | SPF policy and sender authorization checks |
-| `check_dmarc` | DMARC enforcement and reporting checks |
-| `check_dkim` | DKIM selector/key checks |
-| `check_dnssec` | DNSSEC validation checks |
-| `check_ssl` | SSL/TLS certificate baseline checks |
-| `check_mta_sts` | MTA-STS policy checks |
-| `check_ns` | Name server resilience and delegation checks |
-| `check_caa` | Certificate authority authorization checks |
-| `scan_domain` | Full 8-category scan with overall score and grade |
-| `explain_finding` | Plain-language remediation guidance for findings |
+---
 
 ## Quick Start
+
+```bash
+# Option 1: Deploy to Cloudflare Workers (recommended)
+git clone https://github.com/MadaBurns/bv-mcp.git
+cd bv-mcp
+npm install && npx wrangler deploy
+
+# Option 2: Run locally for development
+npm install && npm run dev
+
+# Option 3: Use the hosted version (no setup required)
+# MCP endpoint: https://dns-mcp.blackveilsecurity.com/mcp
+```
+
+### Connect to Claude Desktop
+
+Add this to your Claude Desktop config (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "dns-security": {
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+That's it. Open Claude and ask: *"Scan blackveil.co.nz for security issues"*.
+
+---
+
+## What It Does
+
+Ten tools that check every layer of a domain's security posture — from email spoofing to certificate hygiene.
+
+| Tool | What it checks |
+|------|---------------|
+| `scan_domain` | Full sweep — runs all checks in parallel, returns an overall score and letter grade |
+| `check_spf` | Can anyone impersonate your email? Validates SPF records and authorised senders |
+| `check_dmarc` | What happens to spoofed email? Checks DMARC policy enforcement |
+| `check_dkim` | Are emails cryptographically signed? Probes DKIM selectors for key records |
+| `check_ssl` | Is the connection secure? Validates certificate, expiry, and TLS configuration |
+| `check_dnssec` | Can DNS responses be tampered with? Verifies DNSSEC chain of trust |
+| `check_mta_sts` | Is email transport encrypted? Checks MTA-STS policy enforcement |
+| `check_ns` | Is DNS infrastructure resilient? Analyses nameserver redundancy and diversity |
+| `check_caa` | Who can issue certificates? Checks CAA records restricting certificate authorities |
+| `explain_finding` | Don't understand a result? Get a plain-English explanation with remediation steps |
+
+Every domain input is validated against RFC 1035, blocks private/reserved TLDs, IP addresses, and DNS rebinding services.
+
+---
+
+## Example Conversations
+
+**"Is my startup's domain safe?"**
+```
+You:    Scan example.com for security issues
+Claude: [calls scan_domain("example.com")]
+        → Overall Score: 62/100 (C)
+        → SPF: Warning — soft fail (~all) allows spoofed email through
+        → DMARC: Fail — no DMARC record found
+        → DKIM: Pass — valid key found on selector 'google'
+        → DNSSEC: Fail — not enabled
+        → SSL: Pass — valid certificate, expires in 287 days
+```
+
+**"Why are our emails going to spam?"**
+```
+You:    Check SPF and DMARC for ourdomain.com
+Claude: [calls check_spf("ourdomain.com"), check_dmarc("ourdomain.com")]
+        → SPF has 12 lookups (max 10) — exceeding the limit causes hard failures
+        → DMARC is set to p=none — ISPs aren't enforcing any policy on spoofed mail
+```
+
+**"Explain this DNSSEC finding"**
+```
+You:    Explain why DNSSEC failing is a problem
+Claude: [calls explain_finding({ checkType: "DNSSEC", status: "FAIL" })]
+        → Without DNSSEC, attackers can poison DNS responses and redirect your
+          users to malicious servers. Enable DNSSEC through your domain registrar.
+```
+
+---
+
+## Architecture
+
+```
+MCP Client ──► Cloudflare Worker (Hono) ──► Cloudflare DoH API
+                  │                            (dns-over-HTTPS)
+                  ├─ KV-backed rate limiter (10/min, 50/hr per IP)
+                  ├─ KV-backed scan cache (5 min TTL)
+                  ├─ Optional bearer token auth
+                  └─ Weighted scoring engine
+```
+
+| Component | Role |
+|-----------|------|
+| **Hono** | HTTP framework — routes, CORS, middleware |
+| **Cloudflare DoH** | All DNS queries via `https://cloudflare-dns.com/dns-query` (JSON wire format) |
+| **Cloudflare KV** | Distributed rate limiting and response caching |
+| **MCP Streamable HTTP** | JSON-RPC 2.0 transport with optional SSE streaming (spec 2025-03-26) |
+| **Scoring Engine** | Weighted category scores (0–100) with severity-based penalties, mapped to A+ through F |
+
+---
+
+## Setup & Deployment
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org/) v18+
+- A free [Cloudflare account](https://dash.cloudflare.com/sign-up)
+
+### Deploy
 
 ```bash
 git clone https://github.com/MadaBurns/bv-mcp.git
 cd bv-mcp
 npm install
-npx wrangler dev
+npx wrangler deploy
 ```
 
-Local endpoint:
-- `http://localhost:8787/mcp`
-- `http://localhost:8787/health`
+Your MCP endpoint is live at `https://bv-dns-security-mcp.<your-subdomain>.workers.dev/mcp`.
 
-## MCP Transport
+### Create KV Namespaces
 
-This server supports MCP Streamable HTTP (spec `2025-03-26`):
+```bash
+npx wrangler kv namespace create RATE_LIMIT
+npx wrangler kv namespace create SCAN_CACHE
+```
 
-- `POST /mcp` JSON-RPC 2.0 requests (backward compatible)
-- `POST /mcp` + `Accept: text/event-stream` for SSE response streaming
-- `GET /mcp` for SSE stream/session initiation
-- `DELETE /mcp` for session termination
+Update the KV namespace IDs in `wrangler.jsonc` after creation.
 
-Session IDs are passed in `Mcp-Session-Id` headers.
+### Local Development
 
-## Claude Client Configuration
+```bash
+npm run dev
+```
 
-Claude Desktop / Claude.ai MCP configuration example:
+Worker starts at `http://localhost:8787`. The `/mcp` endpoint works unauthenticated locally by default.
+
+---
+
+## Authentication
+
+Auth is optional by design:
+
+- If `BV_API_KEY` is set, all `/mcp` requests require `Authorization: Bearer <token>`.
+- If `BV_API_KEY` is unset or empty, `/mcp` runs unauthenticated (open-source / local dev mode).
+- Missing or invalid tokens return a JSON-RPC error with HTTP `401`.
+- `/health` remains unauthenticated.
+
+Set the API key secret (optional, production):
+
+```bash
+npx wrangler secret put BV_API_KEY
+```
+
+---
+
+## Connecting MCP Clients
+
+### Claude Desktop
 
 ```json
 {
   "mcpServers": {
-    "blackveil-dns-security": {
+    "dns-security": {
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+### Cursor / VS Code Copilot
+
+```json
+{
+  "mcpServers": {
+    "dns-security": {
       "transport": {
         "type": "streamable-http",
         "url": "https://dns-mcp.blackveilsecurity.com/mcp"
@@ -72,119 +199,80 @@ Claude Desktop / Claude.ai MCP configuration example:
 }
 ```
 
-If auth is enabled, clients must send:
+### Supported Endpoints
 
-```http
-Authorization: Bearer <BV_API_KEY>
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/mcp` | MCP JSON-RPC 2.0 requests (SSE streaming via `Accept: text/event-stream`) |
+| `GET` | `/mcp` | SSE stream for server-to-client notifications |
+| `DELETE` | `/mcp` | Session termination |
+| `GET` | `/health` | Health check |
 
-## Configuration
-
-`wrangler.jsonc` includes:
-
-- `kv_namespaces`:
-  - `RATE_LIMIT` for distributed rate limit counters
-  - `SCAN_CACHE` for response caching
-- `vars.BV_API_KEY` placeholder for local/open mode behavior
-
-Create KV namespaces:
-
-```bash
-npx wrangler kv namespace create RATE_LIMIT
-npx wrangler kv namespace create SCAN_CACHE
-```
-
-Set API key secret (optional, production):
-
-```bash
-npx wrangler secret put BV_API_KEY
-```
-
-## Authentication
-
-Auth is optional by design:
-
-- If `BV_API_KEY` is set, all `/mcp` requests require `Authorization: Bearer <token>`.
-- If `BV_API_KEY` is unset or empty, `/mcp` runs unauthenticated (open-source/local dev mode).
-- Missing/invalid tokens return JSON-RPC error with HTTP `401`.
-
-`/health` remains unauthenticated.
+---
 
 ## Scoring Methodology
 
-The scan model uses 8 categories and scanner-aligned importance weighting:
+The scan model uses 8 categories with importance weighting aligned to real-world impact:
 
-- SPF: 19
-- DMARC: 22
-- DKIM: 10
-- DNSSEC: 3
-- SSL/TLS: 8
-- MTA-STS: 3
-- NS: 0 (informational)
-- CAA: 0 (informational)
-- Email bonus: up to +5
+| Category | Weight |
+|----------|--------|
+| DMARC | 22 |
+| SPF | 19 |
+| DKIM | 10 |
+| SSL/TLS | 8 |
+| DNSSEC | 3 |
+| MTA-STS | 3 |
+| NS | 0 (informational) |
+| CAA | 0 (informational) |
 
-Per-check severity penalties:
+Plus up to +5 email configuration bonus.
 
-- Critical: -40
-- High: -25
-- Medium: -15
-- Low: -5
-- Info: 0
+**Per-finding severity penalties:** Critical −40, High −25, Medium −15, Low −5, Info 0.
 
-Grades:
+**Grades:** A+ (90+), A (85–89), B+ (80–84), B (75–79), C+ (70–74), C (65–69), D+ (60–64), D (55–59), E (50–54), F (<50).
 
-- A+ (90+)
-- A (85-89)
-- B+ (80-84)
-- B (75-79)
-- C+ (70-74)
-- C (65-69)
-- D+ (60-64)
-- D (55-59)
-- E (50-54)
-- F (<50)
+---
 
-## Architecture
+## Running Tests
 
-```text
-MCP Client
-  -> Hono Router (Cloudflare Worker)
-  -> Tool Handlers
-  -> Cloudflare DoH (dns-query)
-  -> Scoring Engine + KV cache/rate-limit state
-```
-
-Stack:
-
-- Hono
-- Cloudflare Workers
-- Cloudflare KV
-- Cloudflare DoH
-- Vitest + workers pool
-
-## Development
-
-Run tests:
+270+ tests with >94% code coverage:
 
 ```bash
 npm test
 ```
 
-Type-check:
+Tests use [Vitest](https://vitest.dev/) with the Cloudflare Workers pool. All DNS responses are mocked — no network calls during testing.
 
-```bash
-npx tsc --noEmit
-```
+---
 
-## Contributing
+## Why We Built This
 
-Issues and pull requests are welcome.
+We've scanned 760,000 domains. The same mistakes show up everywhere — missing DMARC policies, broken SPF records, no DNSSEC, expired certificates nobody noticed. These aren't exotic attacks. They're the basics, and most organisations get them wrong.
 
-- Keep Cloudflare Worker compatibility (no Node-only APIs).
-- Preserve JSON-RPC backward compatibility for MCP clients.
-- Add or update tests with behavior changes.
+MCP means your AI assistant can now run these checks in the conversation where you're already working. No dashboard to context-switch to. No CLI to remember. Just ask.
 
-## License
+### Why It's Open Source
 
-MIT
+You're connecting an MCP tool to your AI client that sends domain queries over the wire. The first question any good security person asks is *"what is this thing actually doing with my queries?"*
+
+If the code is closed, the answer is "trust us" — and that's a hard sell from a brand you've never heard of.
+
+Open source means you can:
+- **Audit** exactly what DNS queries are being made
+- **Confirm** there's no query logging or data exfiltration
+- **Self-host** if your security policy requires it
+- **Contribute** improvements back
+
+The code isn't our moat. Anyone could write a DNS security MCP in a weekend. What you can't replicate is 760,000 scans worth of industry baselines, continuous monitoring infrastructure, and the platform that fixes what this tool finds.
+
+The repo stays open. The dataset stays private. That's the line.
+
+— Adam Burns, [BLACKVEIL](https://blackveil.co.nz)
+
+---
+
+## Want Autonomous Remediation?
+
+This tool finds problems. [BLACKVEIL](https://blackveil.co.nz) fixes them automatically.
+
+---

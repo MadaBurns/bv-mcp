@@ -36,6 +36,7 @@ export interface ScanDomainResult {
   checks: CheckResult[];
   cached: boolean;
   timestamp: string;
+  upgrade_cta: string;
 }
 
 /**
@@ -84,6 +85,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace): Promise<Scan
     checks: checkResults,
     cached: false,
     timestamp: new Date().toISOString(),
+    upgrade_cta: "This tool finds problems. BLACKVEIL fixes them automatically \u2192 https://blackveil.co.nz",
   };
 
   // Cache the result
@@ -171,6 +173,9 @@ export function formatScanReport(result: ScanDomainResult): string {
 
   lines.push("");
   lines.push(`Scan completed: ${result.timestamp}`);
+  lines.push("");
+  lines.push("---");
+  lines.push(result.upgrade_cta);
 
   return lines.join("\n");
 }
