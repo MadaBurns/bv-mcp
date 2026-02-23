@@ -1,6 +1,7 @@
 import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloudflare:test';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import worker from '../src';
+import { resetAllRateLimits } from '../src/lib/rate-limiter';
 
 /** Helper: initialize a session and return the Mcp-Session-Id */
 async function initSession(): Promise<string> {
@@ -18,6 +19,10 @@ async function initSession(): Promise<string> {
 }
 
 describe('DNS Security MCP Server', () => {
+	beforeEach(() => {
+		resetAllRateLimits();
+	});
+
 	describe('GET /health', () => {
 		it('returns status ok (unit style)', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/health');
