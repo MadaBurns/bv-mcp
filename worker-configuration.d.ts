@@ -2,4 +2,6 @@
 
 interface Env {
 	SECRET: string;
+	RATE_LIMIT: KVNamespace;
+	SCAN_CACHE: KVNamespace;
 }

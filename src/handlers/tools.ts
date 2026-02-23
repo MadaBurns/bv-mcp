@@ -192,11 +192,14 @@ function formatCheckResult(result: CheckResult): string {
 /**
  * Handle the MCP tools/call method.
  * Dispatches to the appropriate tool function based on the tool name.
+ *
+ * @param params - Tool call parameters (name and arguments)
+ * @param scanCacheKV - Optional KV namespace for scan result caching
  */
 export async function handleToolsCall(params: {
   name: string;
   arguments?: Record<string, unknown>;
-}): Promise<McpToolResult> {
+}, scanCacheKV?: KVNamespace): Promise<McpToolResult> {
   const { name } = params;
   const args = params.arguments ?? {};
 
@@ -265,7 +268,7 @@ export async function handleToolsCall(params: {
 
       case "scan_domain": {
         const domain = extractAndValidateDomain(args);
-        const result = await scanDomain(domain);
+        const result = await scanDomain(domain, scanCacheKV);
         return { content: [mcpText(formatScanReport(result))] };
       }
 

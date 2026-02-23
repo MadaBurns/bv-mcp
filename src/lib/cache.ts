@@ -1,5 +1,9 @@
 /**
- * In-memory TTL cache for DNS scan results.
+ * TTL cache for DNS scan results.
+ *
+ * Uses Cloudflare KV for persistent caching when available,
+ * with in-memory fallback when KV is not configured.
+ *
  * Cloudflare Workers compatible - no Node.js APIs.
  */
 
@@ -16,6 +20,7 @@ export interface CacheOptions {
 }
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const DEFAULT_TTL_SECONDS = 300; // 5 minutes in seconds (for KV expirationTtl)
 const DEFAULT_MAX_ENTRIES = 1000;
 
 export class TTLCache<T = unknown> {
@@ -108,9 +113,58 @@ export class TTLCache<T = unknown> {
 	}
 }
 
-/** Shared cache instance for DNS scan results (5-minute TTL) */
-export const scanCache = new TTLCache<unknown>({
+/** In-memory cache instance used as fallback when KV is unavailable */
+const inMemoryCache = new TTLCache<unknown>({
 	ttlMs: DEFAULT_TTL_MS,
 	maxEntries: DEFAULT_MAX_ENTRIES,
 });
+
+// ---------------------------------------------------------------------------
+// KV-backed cache functions
+// ---------------------------------------------------------------------------
+
+/**
+ * Get a cached value by key.
+ * Uses KV when available, falls back to in-memory.
+ *
+ * @param key - Cache key
+ * @param kv - Optional KV namespace for persistent caching
+ */
+export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | undefined> {
+	if (kv) {
+		try {
+			const val = await kv.get(key, "json");
+			return val as T | undefined;
+		} catch {
+			// KV error — fall through to in-memory
+		}
+	}
+	return inMemoryCache.get(key) as T | undefined;
+}
+
+/**
+ * Set a cached value with 5-minute TTL.
+ * Uses KV when available, falls back to in-memory.
+ *
+ * @param key - Cache key
+ * @param value - Value to cache (must be JSON-serializable for KV)
+ * @param kv - Optional KV namespace for persistent caching
+ */
+export async function cacheSet(key: string, value: unknown, kv?: KVNamespace): Promise<void> {
+	if (kv) {
+		try {
+			await kv.put(key, JSON.stringify(value), { expirationTtl: DEFAULT_TTL_SECONDS });
+			return;
+		} catch {
+			// KV error — fall through to in-memory
+		}
+	}
+	inMemoryCache.set(key, value);
+}
+
+/**
+ * @deprecated Use cacheGet/cacheSet with KV namespace instead.
+ * Kept for backward compatibility during migration.
+ */
+export const scanCache = inMemoryCache;
 

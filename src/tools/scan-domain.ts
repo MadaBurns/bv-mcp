@@ -3,7 +3,8 @@
  * Runs all DNS security checks in parallel via Promise.all
  * and computes an overall security score.
  *
- * Uses in-memory cache with 5-minute TTL for scan results.
+ * Uses KV-backed cache with 5-minute TTL for scan results when available,
+ * with in-memory fallback when KV is not configured.
  * Compatible with Cloudflare Workers runtime (no Node.js APIs).
  */
 
@@ -15,7 +16,7 @@ import {
   computeScanScore,
   createFinding,
 } from "../lib/scoring";
-import { scanCache } from "../lib/cache";
+import { cacheGet, cacheSet } from "../lib/cache";
 import { validateDomain, sanitizeDomain } from "../lib/sanitize";
 import { checkSpf } from "./check-spf";
 import { checkDmarc } from "./check-dmarc";
@@ -42,10 +43,11 @@ export interface ScanDomainResult {
  * Executes all checks in parallel and computes an overall score.
  *
  * @param domain - The domain to scan (will be validated and sanitized)
+ * @param kv - Optional KV namespace for persistent scan result caching
  * @returns Full scan result with score, individual check results, and metadata
  * @throws Error if domain validation fails
  */
-export async function scanDomain(domain: string): Promise<ScanDomainResult> {
+export async function scanDomain(domain: string, kv?: KVNamespace): Promise<ScanDomainResult> {
   // Validate domain
   const validation = validateDomain(domain);
   if (!validation.valid) {
@@ -56,7 +58,7 @@ export async function scanDomain(domain: string): Promise<ScanDomainResult> {
   const cacheKey = `${CACHE_PREFIX}${cleanDomain}`;
 
   // Check cache first
-  const cached = scanCache.get(cacheKey) as ScanDomainResult | undefined;
+  const cached = await cacheGet<ScanDomainResult>(cacheKey, kv);
   if (cached) {
     return { ...cached, cached: true };
   }
@@ -85,7 +87,7 @@ export async function scanDomain(domain: string): Promise<ScanDomainResult> {
   };
 
   // Cache the result
-  scanCache.set(cacheKey, result);
+  await cacheSet(cacheKey, result, kv);
 
   return result;
 }

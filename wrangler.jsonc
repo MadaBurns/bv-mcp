@@ -12,5 +12,12 @@
   // Set via `wrangler secret put SECRET` for production — do NOT commit real values.
   "vars": {
     "SECRET": "CHANGE-ME"
-  }
+  },
+  // KV namespace bindings for rate limiting and scan result caching.
+  // Create with: wrangler kv namespace create RATE_LIMIT
+  //              wrangler kv namespace create SCAN_CACHE
+  "kv_namespaces": [
+    { "binding": "RATE_LIMIT", "id": "RATE_LIMIT_KV_ID" },
+    { "binding": "SCAN_CACHE", "id": "SCAN_CACHE_KV_ID" }
+  ]
 }

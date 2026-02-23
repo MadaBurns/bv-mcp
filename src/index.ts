@@ -158,7 +158,7 @@ app.post("/mcp", async (c) => {
   // Rate limiting by IP — only trust cf-connecting-ip (set by Cloudflare edge)
   // Do NOT fall back to x-forwarded-for as it is client-controlled and spoofable
   const ip = c.req.header("cf-connecting-ip") ?? "unknown";
-  const rateResult = checkRateLimit(ip);
+  const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT);
 
   if (!rateResult.allowed) {
     return c.json(
@@ -275,7 +275,7 @@ app.post("/mcp", async (c) => {
 
       case "tools/call": {
         const toolParams = params as { name: string; arguments?: Record<string, unknown> };
-        const result = await handleToolsCall(toolParams);
+        const result = await handleToolsCall(toolParams, c.env.SCAN_CACHE);
         responsePayload = jsonRpcSuccess(id, result);
         break;
       }
