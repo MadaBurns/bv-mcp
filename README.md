@@ -11,22 +11,13 @@
 
 ## Quick Start
 
-```bash
-# Option 1: Deploy to Cloudflare Workers (recommended)
-git clone https://github.com/MadaBurns/bv-mcp.git
-cd bv-mcp
-npm install && npx wrangler deploy
+This is a **remote MCP server** — it runs on Cloudflare Workers, not on your local machine. You can use the hosted instance or deploy your own.
 
-# Option 2: Run locally for development
-npm install && npm run dev
+### Option A: Hosted Remote (no setup)
 
-# Option 3: Use the hosted version (no setup required)
-# MCP endpoint: https://dns-mcp.blackveilsecurity.com/mcp
-```
+Connect directly to the BLACKVEIL-hosted endpoint. No cloning, no deploying.
 
-### Connect to Claude Desktop
-
-Add this to your Claude Desktop config (`claude_desktop_config.json`):
+**Claude Desktop** — add to `claude_desktop_config.json`:
 
 ```json
 {
@@ -38,7 +29,55 @@ Add this to your Claude Desktop config (`claude_desktop_config.json`):
 }
 ```
 
-That's it. Open Claude and ask: *"Scan blackveil.co.nz for security issues"*.
+**VS Code / GitHub Copilot** — add to `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "dns-security": {
+      "type": "http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+**Cursor** — add to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "dns-security": {
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+Open your AI client and ask: *"Scan blackveil.co.nz for security issues"*.
+
+### Option B: Self-Hosted Remote (your own Cloudflare Workers)
+
+Deploy to your own Cloudflare account for full control:
+
+```bash
+git clone https://github.com/MadaBurns/bv-mcp.git
+cd bv-mcp
+npm install
+npx wrangler deploy
+```
+
+Your endpoint is live at `https://bv-dns-security-mcp.<your-subdomain>.workers.dev/mcp`. Use that URL in the client configs above.
+
+### Option C: Local Development
+
+```bash
+git clone https://github.com/MadaBurns/bv-mcp.git
+cd bv-mcp
+npm install && npm run dev
+```
+
+Worker starts at `http://localhost:8787/mcp`. Use `http://localhost:8787/mcp` as the URL in your client config.
 
 ---
 
@@ -116,40 +155,21 @@ MCP Client ──► Cloudflare Worker (Hono) ──► Cloudflare DoH API
 
 ---
 
-## Setup & Deployment
+## Self-Hosting Details
 
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) v18+
 - A free [Cloudflare account](https://dash.cloudflare.com/sign-up)
 
-### Deploy
-
-```bash
-git clone https://github.com/MadaBurns/bv-mcp.git
-cd bv-mcp
-npm install
-npx wrangler deploy
-```
-
-Your MCP endpoint is live at `https://bv-dns-security-mcp.<your-subdomain>.workers.dev/mcp`.
-
 ### Create KV Namespaces
+
+After your first deploy, create the KV stores and update the IDs in `wrangler.jsonc`:
 
 ```bash
 npx wrangler kv namespace create RATE_LIMIT
 npx wrangler kv namespace create SCAN_CACHE
 ```
-
-Update the KV namespace IDs in `wrangler.jsonc` after creation.
-
-### Local Development
-
-```bash
-npm run dev
-```
-
-Worker starts at `http://localhost:8787`. The `/mcp` endpoint works unauthenticated locally by default.
 
 ---
 
@@ -172,7 +192,11 @@ npx wrangler secret put BV_API_KEY
 
 ## Connecting MCP Clients
 
+> Replace the URL below with your own endpoint if self-hosting (Option B) or running locally (Option C).
+
 ### Claude Desktop
+
+Add to `claude_desktop_config.json`:
 
 ```json
 {
@@ -184,16 +208,30 @@ npx wrangler secret put BV_API_KEY
 }
 ```
 
-### Cursor / VS Code Copilot
+### VS Code / GitHub Copilot
+
+Add to `.vscode/mcp.json` in your workspace (or user settings):
+
+```json
+{
+  "servers": {
+    "dns-security": {
+      "type": "http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+### Cursor
+
+Add to `.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "dns-security": {
-      "transport": {
-        "type": "streamable-http",
-        "url": "https://dns-mcp.blackveilsecurity.com/mcp"
-      }
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
   }
 }

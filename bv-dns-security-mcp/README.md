@@ -7,29 +7,17 @@
 [![MCP 2025-03-26](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript)](https://www.typescriptlang.org/)
 
-<!-- TODO: Replace with a real screenshot of Claude Desktop running scan_domain -->
-<!-- ![Screenshot](docs/screenshot.png) -->
-
 ---
 
 ## Quick Start
 
-```bash
-# Option 1: Deploy to Cloudflare Workers (recommended)
-git clone https://github.com/blackveil/dns-security-mcp.git
-cd dns-security-mcp
-npm install && npx wrangler deploy
+This is a **remote MCP server** — it runs on Cloudflare Workers, not on your local machine. You can use the hosted instance or deploy your own.
 
-# Option 2: Run locally for development
-npm install && npm run dev
+### Option A: Hosted Remote (no setup)
 
-# Option 3: Use the hosted version (no setup required)
-# MCP endpoint: https://dns-mcp.blackveilsecurity.com/mcp
-```
+Connect directly to the BLACKVEIL-hosted endpoint. No cloning, no deploying.
 
-### Connect to Claude Desktop
-
-Add this to your Claude Desktop config (`claude_desktop_config.json`):
+**Claude Desktop** — add to `claude_desktop_config.json`:
 
 ```json
 {
@@ -41,7 +29,55 @@ Add this to your Claude Desktop config (`claude_desktop_config.json`):
 }
 ```
 
-That's it. Open Claude and ask: *"Scan blackveil.co.nz for security issues"*.
+**VS Code / GitHub Copilot** — add to `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "dns-security": {
+      "type": "http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+**Cursor** — add to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "dns-security": {
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+Open your AI client and ask: *"Scan blackveil.co.nz for security issues"*.
+
+### Option B: Self-Hosted Remote (your own Cloudflare Workers)
+
+Deploy to your own Cloudflare account for full control:
+
+```bash
+git clone https://github.com/MadaBurns/bv-mcp.git
+cd bv-mcp
+npm install
+npx wrangler deploy
+```
+
+Your endpoint is live at `https://bv-dns-security-mcp.<your-subdomain>.workers.dev/mcp`. Use that URL in the client configs above.
+
+### Option C: Local Development
+
+```bash
+git clone https://github.com/MadaBurns/bv-mcp.git
+cd bv-mcp
+npm install && npm run dev
+```
+
+Worker starts at `http://localhost:8787/mcp`. Use `http://localhost:8787/mcp` as the URL in your client config.
 
 ---
 
@@ -103,54 +139,64 @@ Claude: [calls explain_finding({ checkType: "DNSSEC", status: "FAIL" })]
 ```
 MCP Client ──► Cloudflare Worker (Hono) ──► Cloudflare DoH API
                   │                            (dns-over-HTTPS)
-                  ├─ In-memory rate limiter
-                  ├─ In-memory scan cache (5 min TTL)
+                  ├─ KV-backed rate limiter (10/min, 50/hr per IP)
+                  ├─ KV-backed scan cache (5 min TTL)
+                  ├─ Optional bearer token auth
                   └─ Weighted scoring engine
 ```
-
-No private bindings. No KV. No secrets. No authentication required.
-The whole point is it runs standalone with `npx wrangler deploy`.
 
 | Component | Role |
 |-----------|------|
 | **Hono** | HTTP framework — routes, CORS, middleware |
 | **Cloudflare DoH** | All DNS queries via `https://cloudflare-dns.com/dns-query` (JSON wire format) |
+| **Cloudflare KV** | Distributed rate limiting and response caching |
 | **MCP Streamable HTTP** | JSON-RPC 2.0 transport with optional SSE streaming (spec 2025-03-26) |
 | **Scoring Engine** | Weighted category scores (0–100) with severity-based penalties, mapped to A+ through F |
 
 ---
 
-## Setup & Deployment
+## Self-Hosting Details
 
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) v18+
 - A free [Cloudflare account](https://dash.cloudflare.com/sign-up)
 
-### Deploy
+### Create KV Namespaces
+
+After your first deploy, create the KV stores and update the IDs in `wrangler.jsonc`:
 
 ```bash
-git clone https://github.com/blackveil/dns-security-mcp.git
-cd dns-security-mcp
-npm install
-npx wrangler deploy
+npx wrangler kv namespace create RATE_LIMIT
+npx wrangler kv namespace create SCAN_CACHE
 ```
 
-Your MCP endpoint is live at `https://dns-security-mcp.<your-subdomain>.workers.dev/mcp`.
+---
 
-### Local Development
+## Authentication
+
+Auth is optional by design:
+
+- If `BV_API_KEY` is set, all `/mcp` requests require `Authorization: Bearer <token>`.
+- If `BV_API_KEY` is unset or empty, `/mcp` runs unauthenticated (open-source / local dev mode).
+- Missing or invalid tokens return a JSON-RPC error with HTTP `401`.
+- `/health` remains unauthenticated.
+
+Set the API key secret (optional, production):
 
 ```bash
-npm run dev
+npx wrangler secret put BV_API_KEY
 ```
-
-Worker starts at `http://localhost:8787`. The `/mcp` endpoint is open — no tokens, no setup.
 
 ---
 
 ## Connecting MCP Clients
 
+> Replace the URL below with your own endpoint if self-hosting (Option B) or running locally (Option C).
+
 ### Claude Desktop
+
+Add to `claude_desktop_config.json`:
 
 ```json
 {
@@ -162,18 +208,30 @@ Worker starts at `http://localhost:8787`. The `/mcp` endpoint is open — no tok
 }
 ```
 
-### Cursor / VS Code Copilot
+### VS Code / GitHub Copilot
 
-Point your MCP client at the `/mcp` endpoint using Streamable HTTP transport:
+Add to `.vscode/mcp.json` in your workspace (or user settings):
+
+```json
+{
+  "servers": {
+    "dns-security": {
+      "type": "http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+### Cursor
+
+Add to `.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "dns-security": {
-      "transport": {
-        "type": "streamable-http",
-        "url": "https://dns-mcp.blackveilsecurity.com/mcp"
-      }
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
   }
 }
@@ -190,9 +248,32 @@ Point your MCP client at the `/mcp` endpoint using Streamable HTTP transport:
 
 ---
 
+## Scoring Methodology
+
+The scan model uses 8 categories with importance weighting aligned to real-world impact:
+
+| Category | Weight |
+|----------|--------|
+| DMARC | 22 |
+| SPF | 19 |
+| DKIM | 10 |
+| SSL/TLS | 8 |
+| DNSSEC | 3 |
+| MTA-STS | 3 |
+| NS | 0 (informational) |
+| CAA | 0 (informational) |
+
+Plus up to +5 email configuration bonus.
+
+**Per-finding severity penalties:** Critical −40, High −25, Medium −15, Low −5, Info 0.
+
+**Grades:** A+ (90+), A (85–89), B+ (80–84), B (75–79), C+ (70–74), C (65–69), D+ (60–64), D (55–59), E (50–54), F (<50).
+
+---
+
 ## Running Tests
 
-218 tests with >94% code coverage:
+270+ tests with >94% code coverage:
 
 ```bash
 npm test
@@ -233,7 +314,3 @@ The repo stays open. The dataset stays private. That's the line.
 This tool finds problems. [BLACKVEIL](https://blackveil.co.nz) fixes them automatically.
 
 ---
-
-## License
-
-[MIT](LICENSE)
