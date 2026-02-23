@@ -31,6 +31,11 @@ export interface ScanScore {
 	summary: string;
 }
 
+interface ImportanceProfile {
+	importance: number;
+	countsAsCritical: boolean;
+}
+
 /** Weights for each check category (must sum to 1.0) */
 export const CATEGORY_WEIGHTS: Record<CheckCategory, number> = {
 	spf: 0.15,
@@ -52,20 +57,47 @@ export const SEVERITY_PENALTIES: Record<Severity, number> = {
 	info: 0,
 };
 
+/**
+ * Scanner-aligned importance weighting for the checks currently supported by this MCP server.
+ * Values are sourced from blackveilsecurity.com score engine for overlapping checks.
+ */
+const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
+	spf: { importance: 19, countsAsCritical: true },
+	dmarc: { importance: 22, countsAsCritical: true },
+	dkim: { importance: 10, countsAsCritical: true },
+	dnssec: { importance: 3, countsAsCritical: true },
+	ssl: { importance: 8, countsAsCritical: true },
+	mta_sts: { importance: 3, countsAsCritical: false },
+	ns: { importance: 0, countsAsCritical: false },
+	caa: { importance: 0, countsAsCritical: false },
+};
+
+const EMAIL_BONUS_IMPORTANCE = 5;
+const SPF_STRONG_THRESHOLD = 57;
+
+function scoreIndicatesMissingControl(findings: Finding[]): boolean {
+	return findings.some((f) => {
+		if (f.severity !== 'critical' && f.severity !== 'high') return false;
+		const text = `${f.title} ${f.detail}`.toLowerCase();
+		return /(no\s+.+\s+record|missing|required|not\s+found)/.test(text);
+	});
+}
+
+function clampPercent(score: number): number {
+	return Math.max(0, Math.min(100, score));
+}
+
 /** Map numeric score to letter grade */
 export function scoreToGrade(score: number): string {
-	if (score >= 95) return 'A+';
-	if (score >= 90) return 'A';
-	if (score >= 85) return 'A-';
+	if (score >= 90) return 'A+';
+	if (score >= 85) return 'A';
 	if (score >= 80) return 'B+';
 	if (score >= 75) return 'B';
-	if (score >= 70) return 'B-';
-	if (score >= 65) return 'C+';
-	if (score >= 60) return 'C';
-	if (score >= 55) return 'C-';
-	if (score >= 50) return 'D+';
-	if (score >= 45) return 'D';
-	if (score >= 40) return 'D-';
+	if (score >= 70) return 'C+';
+	if (score >= 65) return 'C';
+	if (score >= 60) return 'D+';
+	if (score >= 55) return 'D';
+	if (score >= 50) return 'E';
 	return 'F';
 }
 
@@ -109,6 +141,19 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 	const categoryScores = {} as Record<CheckCategory, number>;
 	const allFindings: Finding[] = [];
 
+	if (results.length === 0) {
+		for (const cat of Object.keys(CATEGORY_WEIGHTS) as CheckCategory[]) {
+			categoryScores[cat] = 100;
+		}
+		return {
+			overall: 100,
+			grade: scoreToGrade(100),
+			categoryScores,
+			findings: [],
+			summary: `Excellent! No security issues found. Grade: ${scoreToGrade(100)}`,
+		};
+	}
+
 	// Initialize all categories to 100 (perfect) by default
 	for (const cat of Object.keys(CATEGORY_WEIGHTS) as CheckCategory[]) {
 		categoryScores[cat] = 100;
@@ -120,12 +165,42 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 		allFindings.push(...result.findings);
 	}
 
-	// Weighted average
-	let overall = 0;
-	for (const cat of Object.keys(CATEGORY_WEIGHTS) as CheckCategory[]) {
-		overall += categoryScores[cat] * CATEGORY_WEIGHTS[cat];
+	let earnedPoints = 0;
+	let maxPoints = 0;
+
+	for (const cat of Object.keys(IMPORTANCE_WEIGHTS) as CheckCategory[]) {
+		const { importance } = IMPORTANCE_WEIGHTS[cat];
+		maxPoints += importance;
+		if (importance === 0) continue;
+
+		const result = results.find((r) => r.category === cat);
+		const rawScore = result ? clampPercent(result.score) : 100;
+		const effectiveScore = result && scoreIndicatesMissingControl(result.findings) ? 0 : rawScore;
+		earnedPoints += (effectiveScore / 100) * importance;
 	}
-	overall = Math.round(Math.max(0, Math.min(100, overall)));
+
+	const spfResult = results.find((r) => r.category === 'spf');
+	const dkimResult = results.find((r) => r.category === 'dkim');
+	const dmarcResult = results.find((r) => r.category === 'dmarc');
+	const spfStrong = !!spfResult && !scoreIndicatesMissingControl(spfResult.findings) && spfResult.score >= SPF_STRONG_THRESHOLD;
+	const dkimPresent = !!dkimResult && !scoreIndicatesMissingControl(dkimResult.findings);
+	const dmarcPresent = !!dmarcResult && !scoreIndicatesMissingControl(dmarcResult.findings);
+
+	let emailBonus = 0;
+	if (spfStrong && dkimPresent && dmarcPresent && dmarcResult) {
+		if (dmarcResult.score >= 90) {
+			emailBonus = EMAIL_BONUS_IMPORTANCE;
+		} else if (dmarcResult.score >= 70) {
+			emailBonus = Math.ceil(EMAIL_BONUS_IMPORTANCE * 0.6);
+		} else {
+			emailBonus = Math.ceil(EMAIL_BONUS_IMPORTANCE * 0.4);
+		}
+	}
+
+	earnedPoints += emailBonus;
+	maxPoints += EMAIL_BONUS_IMPORTANCE;
+
+	const overall = Math.round(maxPoints > 0 ? clampPercent((earnedPoints / maxPoints) * 100) : 0);
 
 	const grade = scoreToGrade(overall);
 

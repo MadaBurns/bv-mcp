@@ -51,51 +51,87 @@ const RESOURCES: McpResource[] = [
 const RESOURCE_CONTENT: Record<string, string> = {
   "dns-security://guides/security-checks": `# DNS Security Checks
 
-This server performs 8 categories of DNS security checks:
+The BLACKVEIL DNS scanner evaluates **50 checks** grouped into 8 security categories.
+
+This MCP server exposes tools that cover the core checks in each category and returns findings compatible with BLACKVEIL scoring.
+
+## Coverage by Tier
+
+| Category | Total Scanner Checks | Free Tier (MCP/Core) | Premium Platform |
+|---|---:|---|---|
+| SPF | 8 | Core SPF policy and syntax checks | Advanced include-chain and sender-path analytics |
+| DMARC | 8 | Core policy, pct, and reporting checks | Alignment depth, subdomain inheritance, reporting quality analytics |
+| DKIM | 7 | Selector discovery and key-quality baseline checks | Selector entropy, rotation heuristics, key-age and drift analytics |
+| DNSSEC | 6 | AD validation and signed-zone baseline | Chain-of-trust and rollover posture analytics |
+| SSL/TLS | 8 | Certificate availability and baseline validity checks | Protocol/cipher depth, PKI posture, renewal-risk analytics |
+| MTA-STS | 5 | TXT policy presence and basic policy retrieval checks | Policy hardening and reporting-depth analytics |
+| NS | 4 | Delegation, diversity, and resiliency baseline checks | Infrastructure concentration and availability analytics |
+| CAA | 4 | CAA presence and issuer-allowlist baseline checks | Issuance surface modeling and mis-issuance risk analytics |
+
+> Total checks: **50** across all categories.
+
+## Categories and Tool Mapping
 
 ## SPF (Sender Policy Framework)
-Validates SPF TXT records to prevent email spoofing. Checks for valid syntax, appropriate mechanisms, and proper use of \`~all\` or \`-all\`.
+Tool: \`check_spf\`  
+Validates SPF TXT records to reduce spoofing risk. Includes presence, mechanism quality, lookup pressure, and policy strictness checks.
 
 ## DMARC (Domain-based Message Authentication)
-Checks \`_dmarc\` TXT records for proper DMARC policy configuration. Validates the \`p=\` tag (none/quarantine/reject) and reporting addresses.
+Tool: \`check_dmarc\`  
+Checks \`_dmarc\` policy posture including enforcement mode, reporting, and rollout safety indicators.
 
 ## DKIM (DomainKeys Identified Mail)
-Queries common DKIM selectors under \`_domainkey\` to verify DKIM signing is configured. Checks for valid key records.
+Tool: \`check_dkim\`  
+Probes common selectors under \`_domainkey\` and validates key records for baseline signing health.
 
 ## DNSSEC (DNS Security Extensions)
-Verifies DNSSEC validation by checking the AD (Authenticated Data) flag in DNS responses. Ensures DNS responses are cryptographically signed.
+Tool: \`check_dnssec\`  
+Verifies DNSSEC validation state and signed-response posture for the queried domain.
 
 ## SSL/TLS Certificate
-Checks SSL/TLS certificate validity and configuration for the domain.
+Tool: \`check_ssl\`  
+Checks HTTPS certificate presence and baseline certificate health.
 
 ## MTA-STS (Mail Transfer Agent Strict Transport Security)
-Validates \`_mta-sts\` TXT records to ensure email transport security policies are in place.
+Tool: \`check_mta_sts\`  
+Validates \`_mta-sts\` policy publication and retrieval for secure SMTP transport.
 
 ## NS (Name Server) Configuration
-Analyzes name server configuration for redundancy, diversity, and proper delegation.
+Tool: \`check_ns\`  
+Analyzes delegation resilience and provider diversity indicators.
 
 ## CAA (Certificate Authority Authorization)
-Checks CAA DNS records that restrict which certificate authorities can issue certificates for the domain.
+Tool: \`check_caa\`  
+Checks CA authorization posture and issuance restriction baseline.
+
+## Composite Tools
+
+- \`scan_domain\`: Runs all 8 category checks and produces an overall score + grade.
+- \`explain_finding\`: Provides plain-language context and remediation guidance for individual findings.
 `,
 
   "dns-security://guides/scoring": `# Scoring Methodology
 
-## Category Weights
-Each security check category contributes to the overall score with the following weights:
+This server uses scanner-aligned scoring for the overlapping controls currently implemented by MCP tools.
 
-| Category | Weight |
-|----------|--------|
-| SPF      | 15%    |
-| DMARC    | 15%    |
-| DKIM     | 15%    |
-| DNSSEC   | 15%    |
-| SSL/TLS  | 15%    |
-| MTA-STS  | 5%     |
-| NS       | 10%    |
-| CAA      | 10%    |
+## Importance Weights (Scanner-Aligned)
+Overall score is based on importance points per category, not a flat average:
 
-## Severity Penalties
-Findings reduce the category score based on severity:
+| Category | Importance Points |
+|---|---:|
+| SPF | 19 |
+| DMARC | 22 |
+| DKIM | 10 |
+| DNSSEC | 3 |
+| SSL/TLS | 8 |
+| MTA-STS | 3 |
+| NS | 0 (informational) |
+| CAA | 0 (informational) |
+
+Additional bonus: up to **+5** points for strong combined email-auth posture.
+
+## Per-Category Penalties
+Each category starts at 100 and penalties are applied per finding severity:
 
 | Severity | Penalty |
 |----------|---------|
@@ -105,15 +141,21 @@ Findings reduce the category score based on severity:
 | Low      | -5 pts  |
 | Info     | 0 pts   |
 
+## Missing-Control Handling
+For categories where a required control is missing (for example, "No DMARC record found"), effective contribution can be treated as zeroed in overall scoring.
+
 ## Grading Scale
 The overall weighted score maps to a letter grade:
-- **A+**: 95-100 | **A**: 90-94 | **A-**: 85-89
-- **B+**: 80-84 | **B**: 75-79 | **B-**: 70-74
-- **C+**: 65-69 | **C**: 60-64 | **C-**: 55-59
-- **D+**: 50-54 | **D**: 45-49 | **D-**: 40-44
-- **F**: Below 40
-
-Each category starts at 100 points and deductions are applied per finding.
+- **A+**: 90+
+- **A**: 85-89
+- **B+**: 80-84
+- **B**: 75-79
+- **C+**: 70-74
+- **C**: 65-69
+- **D+**: 60-64
+- **D**: 55-59
+- **E**: 50-54
+- **F**: <50
 `,
 
   "dns-security://guides/record-types": `# Supported DNS Record Types

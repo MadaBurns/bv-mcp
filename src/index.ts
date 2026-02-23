@@ -32,6 +32,7 @@ const JSON_RPC_ERRORS = {
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,
   INTERNAL_ERROR: -32603,
+  UNAUTHORIZED: -32001,
 } as const;
 
 function jsonRpcError(
@@ -52,6 +53,21 @@ function jsonRpcSuccess(id: string | number | null | undefined, result: unknown)
     id: id ?? null,
     result,
   };
+}
+
+function isAuthorizedRequest(authHeader: string | undefined, expectedToken: string): boolean {
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return false;
+  }
+  const token = authHeader.slice("Bearer ".length).trim();
+  return token.length > 0 && token === expectedToken;
+}
+
+function unauthorizedResponse() {
+  return Response.json(
+    jsonRpcError(null, JSON_RPC_ERRORS.UNAUTHORIZED, "Unauthorized: missing or invalid bearer token"),
+    { status: 401 },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -92,10 +108,25 @@ app.use(
   cors({
     origin: "*",
     allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Accept", "Mcp-Session-Id"],
+    allowHeaders: ["Content-Type", "Accept", "Mcp-Session-Id", "Authorization"],
     exposeHeaders: ["Mcp-Session-Id"],
   }),
 );
+
+// Optional bearer auth for /mcp; open mode when BV_API_KEY is unset/empty
+app.use("/mcp", async (c, next) => {
+  const apiKey = c.env.BV_API_KEY?.trim();
+  if (!apiKey) {
+    return next();
+  }
+
+  const authHeader = c.req.header("authorization");
+  if (!isAuthorizedRequest(authHeader, apiKey)) {
+    return unauthorizedResponse();
+  }
+
+  return next();
+});
 
 // Health endpoint
 app.get("/health", (c) => {
@@ -306,18 +337,23 @@ app.post("/mcp", async (c) => {
 // MCP Streamable HTTP transport — GET /mcp (SSE stream for notifications)
 // ---------------------------------------------------------------------------
 app.get("/mcp", (c) => {
-  // Require valid session
-  const sessionId = c.req.header("mcp-session-id");
-  if (!sessionId || !activeSessions.has(sessionId)) {
-    return c.json(
-      jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, "Bad Request: invalid or missing session"),
-      400,
-    );
-  }
-
   // Must accept SSE
   if (!acceptsSSE(c.req.header("accept"))) {
     return new Response("Not Acceptable: Accept must include text/event-stream", { status: 406 });
+  }
+
+  // Session initiation or resume
+  const sessionId = c.req.header("mcp-session-id");
+  let effectiveSessionId = sessionId;
+
+  if (!effectiveSessionId) {
+    effectiveSessionId = generateSessionId();
+    activeSessions.set(effectiveSessionId, { createdAt: Date.now() });
+  } else if (!activeSessions.has(effectiveSessionId)) {
+    return c.json(
+      jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, "Bad Request: invalid session"),
+      400,
+    );
   }
 
   // Open an SSE stream. For this stateless server we keep the stream open
@@ -340,7 +376,7 @@ app.get("/mcp", (c) => {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
-      "Mcp-Session-Id": sessionId,
+      "Mcp-Session-Id": effectiveSessionId,
     },
   });
 });

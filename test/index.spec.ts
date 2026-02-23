@@ -3,15 +3,23 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import worker from '../src';
 import { resetAllRateLimits } from '../src/lib/rate-limiter';
 
+const TEST_API_KEY = 'test-api-key';
+
 /** Helper: initialize a session and return the Mcp-Session-Id */
-async function initSession(): Promise<string> {
+async function initSession(options?: {
+  authToken?: string;
+  targetEnv?: Env;
+}): Promise<string> {
 	const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers: {
+      'Content-Type': 'application/json',
+      ...(options?.authToken ? { Authorization: `Bearer ${options.authToken}` } : {}),
+    },
 		body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: {} }),
 	});
 	const ctx = createExecutionContext();
-	const response = await worker.fetch(request, env, ctx);
+	const response = await worker.fetch(request, options?.targetEnv ?? env, ctx);
 	await waitOnExecutionContext(ctx);
 	const sessionId = response.headers.get('mcp-session-id');
 	if (!sessionId) throw new Error('initSession: no Mcp-Session-Id returned');
@@ -21,6 +29,60 @@ async function initSession(): Promise<string> {
 describe('DNS Security MCP Server', () => {
 	beforeEach(() => {
 		resetAllRateLimits();
+	});
+
+	describe('POST /mcp - optional bearer auth', () => {
+		it('runs unauthenticated when BV_API_KEY is unset/empty', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+		});
+
+		it('returns 401 JSON-RPC error when auth is required and token is missing', async () => {
+			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, authEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(401);
+			const body = await response.json() as { error: { code: number; message: string } };
+			expect(body.error.code).toBe(-32001);
+			expect(body.error.message).toContain('Unauthorized');
+		});
+
+		it('returns 401 JSON-RPC error when auth token is invalid', async () => {
+			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: 'Bearer wrong-token',
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, authEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(401);
+			const body = await response.json() as { error: { code: number } };
+			expect(body.error.code).toBe(-32001);
+		});
+
+		it('accepts valid bearer token when auth is required', async () => {
+			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+			const sessionId = await initSession({ authToken: TEST_API_KEY, targetEnv: authEnv });
+			expect(sessionId).toBeTruthy();
+		});
 	});
 
 	describe('GET /health', () => {
@@ -197,6 +259,33 @@ describe('DNS Security MCP Server', () => {
 			const body = await response.json() as { result: { content: Array<{ text: string }>; isError: boolean } };
 			expect(body.result.isError).toBe(true);
 		});
+
+		it('rejects domains longer than 253 characters', async () => {
+			const sessionId = await initSession();
+			const domain254 = [
+				'a'.repeat(63),
+				'b'.repeat(63),
+				'c'.repeat(63),
+				'd'.repeat(62),
+			].join('.');
+			expect(domain254.length).toBe(254);
+
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
+				body: JSON.stringify({
+					jsonrpc: '2.0', id: 11, method: 'tools/call',
+					params: { name: 'check_spf', arguments: { domain: domain254 } },
+				}),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const body = await response.json() as { result: { content: Array<{ text: string }>; isError: boolean } };
+			expect(body.result.isError).toBe(true);
+			expect(body.result.content[0].text).toContain('Error');
+		});
 	});
 
 	describe('POST /mcp - explain_finding', () => {
@@ -256,7 +345,7 @@ describe('DNS Security MCP Server', () => {
 			expect(response.headers.get('content-type')).toBe('text/event-stream');
 		});
 
-		it('GET /mcp rejects without session', async () => {
+		it('GET /mcp initiates SSE session when no session header is provided', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'GET',
 				headers: {
@@ -266,7 +355,9 @@ describe('DNS Security MCP Server', () => {
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(400);
+			expect(response.status).toBe(200);
+			expect(response.headers.get('content-type')).toBe('text/event-stream');
+			expect(response.headers.get('mcp-session-id')).toBeTruthy();
 		});
 	});
 

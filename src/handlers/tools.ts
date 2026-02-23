@@ -9,6 +9,7 @@
 
 import { validateDomain, sanitizeDomain, mcpError, mcpText } from "../lib/sanitize";
 import type { CheckCategory, CheckResult, Severity } from "../lib/scoring";
+import { cacheGet, cacheSet } from "../lib/cache";
 import { checkSpf } from "../tools/check-spf";
 import { checkDmarc } from "../tools/check-dmarc";
 import { checkDkim } from "../tools/check-dkim";
@@ -189,6 +190,23 @@ function formatCheckResult(result: CheckResult): string {
   return lines.join("\n");
 }
 
+async function runCachedToolCheck(
+  domain: string,
+  checkName: string,
+  run: () => Promise<CheckResult>,
+  cacheKV?: KVNamespace,
+): Promise<CheckResult> {
+  const cacheKey = `cache:${domain}:check:${checkName}`;
+  const cached = await cacheGet<CheckResult>(cacheKey, cacheKV);
+  if (cached) {
+    return cached;
+  }
+
+  const result = await run();
+  await cacheSet(cacheKey, result, cacheKV);
+  return result;
+}
+
 /**
  * Handle the MCP tools/call method.
  * Dispatches to the appropriate tool function based on the tool name.
@@ -208,13 +226,13 @@ export async function handleToolsCall(params: {
     switch (name) {
       case "check_spf": {
         const domain = extractAndValidateDomain(args);
-        const result = await checkSpf(domain);
+        const result = await runCachedToolCheck(domain, "spf", () => checkSpf(domain), scanCacheKV);
         return { content: [mcpText(formatCheckResult(result))] };
       }
 
       case "check_dmarc": {
         const domain = extractAndValidateDomain(args);
-        const result = await checkDmarc(domain);
+        const result = await runCachedToolCheck(domain, "dmarc", () => checkDmarc(domain), scanCacheKV);
         return { content: [mcpText(formatCheckResult(result))] };
       }
 
@@ -232,37 +250,42 @@ export async function handleToolsCall(params: {
           }
           selector = sel;
         }
-        const result = await checkDkim(domain, selector);
+        const result = await runCachedToolCheck(
+          domain,
+          selector ? `dkim:${selector}` : "dkim",
+          () => checkDkim(domain, selector),
+          scanCacheKV,
+        );
         return { content: [mcpText(formatCheckResult(result))] };
       }
 
       case "check_dnssec": {
         const domain = extractAndValidateDomain(args);
-        const result = await checkDnssec(domain);
+        const result = await runCachedToolCheck(domain, "dnssec", () => checkDnssec(domain), scanCacheKV);
         return { content: [mcpText(formatCheckResult(result))] };
       }
 
       case "check_ssl": {
         const domain = extractAndValidateDomain(args);
-        const result = await checkSsl(domain);
+        const result = await runCachedToolCheck(domain, "ssl", () => checkSsl(domain), scanCacheKV);
         return { content: [mcpText(formatCheckResult(result))] };
       }
 
       case "check_mta_sts": {
         const domain = extractAndValidateDomain(args);
-        const result = await checkMtaSts(domain);
+        const result = await runCachedToolCheck(domain, "mta_sts", () => checkMtaSts(domain), scanCacheKV);
         return { content: [mcpText(formatCheckResult(result))] };
       }
 
       case "check_ns": {
         const domain = extractAndValidateDomain(args);
-        const result = await checkNs(domain);
+        const result = await runCachedToolCheck(domain, "ns", () => checkNs(domain), scanCacheKV);
         return { content: [mcpText(formatCheckResult(result))] };
       }
 
       case "check_caa": {
         const domain = extractAndValidateDomain(args);
-        const result = await checkCaa(domain);
+        const result = await runCachedToolCheck(domain, "caa", () => checkCaa(domain), scanCacheKV);
         return { content: [mcpText(formatCheckResult(result))] };
       }
 

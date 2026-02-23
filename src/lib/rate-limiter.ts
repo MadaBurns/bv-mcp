@@ -6,7 +6,7 @@
  * with in-memory fallback when KV is not configured.
  *
  * KV strategy: fixed-window counters with expirationTtl for automatic cleanup.
- * Key format: rl:{ip}:m:{windowId} (minute), rl:{ip}:h:{windowId} (hour)
+ * Key format: rl:min:{ip}:{windowId} (minute), rl:hr:{ip}:{windowId} (hour)
  *
  * Compatible with Cloudflare Workers runtime (no Node.js APIs).
  */
@@ -128,8 +128,8 @@ async function checkRateLimitKV(ip: string, kv: KVNamespace): Promise<RateLimitR
   const minuteWindow = Math.floor(now / MINUTE_MS);
   const hourWindow = Math.floor(now / HOUR_MS);
 
-  const minuteKey = `rl:${ip}:m:${minuteWindow}`;
-  const hourKey = `rl:${ip}:h:${hourWindow}`;
+  const minuteKey = `rl:min:${ip}:${minuteWindow}`;
+  const hourKey = `rl:hr:${ip}:${hourWindow}`;
 
   // Read both counters in parallel
   const [minuteVal, hourVal] = await Promise.all([
@@ -166,8 +166,8 @@ async function checkRateLimitKV(ip: string, kv: KVNamespace): Promise<RateLimitR
   const newMinute = minuteCount + 1;
   const newHour = hourCount + 1;
   await Promise.all([
-    kv.put(minuteKey, String(newMinute), { expirationTtl: 120 }),
-    kv.put(hourKey, String(newHour), { expirationTtl: 7200 }),
+    kv.put(minuteKey, String(newMinute), { expirationTtl: 60 }),
+    kv.put(hourKey, String(newHour), { expirationTtl: 3600 }),
   ]);
 
   return {

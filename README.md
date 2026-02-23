@@ -1,143 +1,68 @@
-# bv-dns-security-mcp
+# BLACKVEIL DNS Security MCP Server
 
-A Model Context Protocol (MCP) server for DNS security analysis, deployed as a Cloudflare Worker.
+MCP server providing DNS security analysis tools for LLM integrations.
 
-## What It Does
+This Cloudflare Worker exposes DNS security checks over MCP Streamable HTTP and routes all DNS queries through Cloudflare DNS-over-HTTPS.
 
-**bv-dns-security-mcp** analyzes the DNS security posture of any domain. It checks email authentication (SPF, DMARC, DKIM), transport security (SSL/TLS, MTA-STS), DNS infrastructure (DNSSEC, NS, CAA), and produces a weighted overall security score with a letter grade.
+Full platform: https://blackveilsecurity.com
 
-MCP clients (Claude Desktop, Cursor, custom agents) connect over Streamable HTTP and invoke tools to scan domains, inspect individual record types, or get plain-language explanations of findings.
+## Features
 
-## Architecture
+- 10 MCP tools: 8 individual checks, `scan_domain`, and `explain_finding`
+- 50-check scoring model alignment across 8 security categories
+- Streamable HTTP transport (MCP 2025-03-26) with SSE support
+- Optional bearer token auth for `/mcp` via `BV_API_KEY`
+- KV-backed distributed rate limiting per IP: 10/minute and 50/hour
+- KV-backed 5-minute response caching for scans and individual checks
+- Cloudflare Workers compatible runtime with strict TypeScript
 
-```
-MCP Client ──► Cloudflare Worker (Hono) ──► Cloudflare DoH API
-                  │                            (dns-over-HTTPS)
-                  ├─ Rate limiter (KV-backed)
-                  ├─ Scan cache (KV-backed)
-                  └─ Weighted scoring engine
-```
+## Tools
 
-| Component | Role |
-|-----------|------|
-| **Hono** | HTTP framework — routes, CORS, middleware |
-| **Cloudflare DoH** | All DNS queries via `https://cloudflare-dns.com/dns-query` (JSON wire format) |
-| **MCP Streamable HTTP** | JSON-RPC 2.0 transport with optional SSE streaming (spec 2025-03-26) |
-| **KV Namespaces** | `RATE_LIMIT` for per-IP rate limiting; `SCAN_CACHE` for 5-minute result caching |
-| **Scoring Engine** | Weighted category scores (0–100) with severity-based penalties, mapped to letter grades |
+| Tool | Purpose |
+|---|---|
+| `check_spf` | SPF policy and sender authorization checks |
+| `check_dmarc` | DMARC enforcement and reporting checks |
+| `check_dkim` | DKIM selector/key checks |
+| `check_dnssec` | DNSSEC validation checks |
+| `check_ssl` | SSL/TLS certificate baseline checks |
+| `check_mta_sts` | MTA-STS policy checks |
+| `check_ns` | Name server resilience and delegation checks |
+| `check_caa` | Certificate authority authorization checks |
+| `scan_domain` | Full 8-category scan with overall score and grade |
+| `explain_finding` | Plain-language remediation guidance for findings |
 
-## MCP Tools
-
-The server exposes **10 tools** via `tools/list`:
-
-| Tool | Description | Parameters |
-|------|-------------|------------|
-| `check_spf` | Validate SPF TXT records for syntax, mechanisms, and policy | `domain` |
-| `check_dmarc` | Validate `_dmarc` TXT records for DMARC policy configuration | `domain` |
-| `check_dkim` | Probe common DKIM selectors under `_domainkey` for key records | `domain`, `selector?` |
-| `check_dnssec` | Verify DNSSEC validation via the AD (Authenticated Data) flag | `domain` |
-| `check_ssl` | Check SSL/TLS certificate validity and configuration | `domain` |
-| `check_mta_sts` | Validate `_mta-sts` TXT records for email transport security | `domain` |
-| `check_ns` | Analyze NS records for redundancy, diversity, and delegation | `domain` |
-| `check_caa` | Check CAA records restricting certificate authority issuance | `domain` |
-| `scan_domain` | Run all 8 checks in parallel; return overall score and grade | `domain` |
-| `explain_finding` | Get a plain-language explanation and remediation for a finding | `checkType`, `status`, `details?` |
-
-All domain-accepting tools validate input against RFC 1035, block private/reserved TLDs, IP addresses, and DNS rebinding services.
-
-## MCP Resources
-
-Three static documentation resources are available via `resources/list`:
-
-| URI | Name | Description |
-|-----|------|-------------|
-| `dns-security://guides/security-checks` | DNS Security Checks Guide | Overview of all 8 check categories |
-| `dns-security://guides/scoring` | Scoring Methodology | Category weights, severity penalties, grading scale |
-| `dns-security://guides/record-types` | Supported DNS Record Types | All DNS record types queried and their purpose |
-
-## Scoring Methodology
-
-Each domain scan produces a **0–100 score** mapped to a **letter grade** (A+ through F).
-
-**Category Weights:**
-
-| Category | Weight |
-|----------|--------|
-| SPF | 15% |
-| DMARC | 15% |
-| DKIM | 15% |
-| DNSSEC | 15% |
-| SSL/TLS | 15% |
-| MTA-STS | 5% |
-| NS | 10% |
-| CAA | 10% |
-
-**Severity Penalties** (deducted from each category's base score of 100):
-
-| Severity | Penalty |
-|----------|---------|
-| Critical | −40 pts |
-| High | −25 pts |
-| Medium | −15 pts |
-| Low | −5 pts |
-| Info | 0 pts |
-
-**Grading Scale:** A+ (95–100), A (90–94), A- (85–89), B+ (80–84), B (75–79), B- (70–74), C+ (65–69), C (60–64), C- (55–59), D+ (50–54), D (45–49), D- (40–44), F (< 40)
-
-## Setup & Deployment
-
-### Prerequisites
-
-- [Node.js](https://nodejs.org/) (v18+)
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (`npm i -g wrangler`)
-- A Cloudflare account
-
-### Install Dependencies
+## Quick Start
 
 ```bash
+git clone https://github.com/MadaBurns/bv-mcp.git
+cd bv-mcp
 npm install
+npx wrangler dev
 ```
 
-### Create KV Namespaces
+Local endpoint:
+- `http://localhost:8787/mcp`
+- `http://localhost:8787/health`
 
-```bash
-wrangler kv namespace create RATE_LIMIT
-wrangler kv namespace create SCAN_CACHE
-```
+## MCP Transport
 
-Copy the output namespace IDs into `wrangler.jsonc`:
+This server supports MCP Streamable HTTP (spec `2025-03-26`):
 
-```jsonc
-"kv_namespaces": [
-  { "binding": "RATE_LIMIT", "id": "<your-rate-limit-kv-id>" },
-  { "binding": "SCAN_CACHE", "id": "<your-scan-cache-kv-id>" }
-]
-```
+- `POST /mcp` JSON-RPC 2.0 requests (backward compatible)
+- `POST /mcp` + `Accept: text/event-stream` for SSE response streaming
+- `GET /mcp` for SSE stream/session initiation
+- `DELETE /mcp` for session termination
 
-### Deploy
+Session IDs are passed in `Mcp-Session-Id` headers.
 
-```bash
-npm run deploy
-# or: wrangler deploy
-```
+## Claude Client Configuration
 
-## Local Development
-
-```bash
-npm run dev
-# or: wrangler dev
-```
-
-The worker starts at `http://localhost:8787`. The `/mcp` endpoint is public (no tokens required).
-
-## Connecting an MCP Client
-
-Point your MCP client at the deployed (or local) `/mcp` endpoint using Streamable HTTP transport:
+Claude Desktop / Claude.ai MCP configuration example:
 
 ```json
 {
   "mcpServers": {
-    "dns-security": {
+    "blackveil-dns-security": {
       "transport": {
         "type": "streamable-http",
         "url": "https://dns-mcp.blackveilsecurity.com/mcp"
@@ -147,35 +72,119 @@ Point your MCP client at the deployed (or local) `/mcp` endpoint using Streamabl
 }
 ```
 
-The server supports:
-- **POST /mcp** — JSON-RPC 2.0 requests (with optional SSE streaming via `Accept: text/event-stream`)
-- **GET /mcp** — SSE stream for server-to-client notifications
-- **DELETE /mcp** — Session termination
-- **GET /health** — Health check (no auth required)
+If auth is enabled, clients must send:
 
-## Environment Variables & Bindings
+```http
+Authorization: Bearer <BV_API_KEY>
+```
 
-| Name | Type | Description |
-|------|------|-------------|
-| `RATE_LIMIT` | KV Namespace | Stores per-IP rate limit counters (10 req/min, 50 req/hr) |
-| `SCAN_CACHE` | KV Namespace | Caches scan results with 5-minute TTL |
+## Configuration
 
-## Running Tests
+`wrangler.jsonc` includes:
 
-Tests use [Vitest](https://vitest.dev/) with the Cloudflare Workers pool:
+- `kv_namespaces`:
+  - `RATE_LIMIT` for distributed rate limit counters
+  - `SCAN_CACHE` for response caching
+- `vars.BV_API_KEY` placeholder for local/open mode behavior
+
+Create KV namespaces:
+
+```bash
+npx wrangler kv namespace create RATE_LIMIT
+npx wrangler kv namespace create SCAN_CACHE
+```
+
+Set API key secret (optional, production):
+
+```bash
+npx wrangler secret put BV_API_KEY
+```
+
+## Authentication
+
+Auth is optional by design:
+
+- If `BV_API_KEY` is set, all `/mcp` requests require `Authorization: Bearer <token>`.
+- If `BV_API_KEY` is unset or empty, `/mcp` runs unauthenticated (open-source/local dev mode).
+- Missing/invalid tokens return JSON-RPC error with HTTP `401`.
+
+`/health` remains unauthenticated.
+
+## Scoring Methodology
+
+The scan model uses 8 categories and scanner-aligned importance weighting:
+
+- SPF: 19
+- DMARC: 22
+- DKIM: 10
+- DNSSEC: 3
+- SSL/TLS: 8
+- MTA-STS: 3
+- NS: 0 (informational)
+- CAA: 0 (informational)
+- Email bonus: up to +5
+
+Per-check severity penalties:
+
+- Critical: -40
+- High: -25
+- Medium: -15
+- Low: -5
+- Info: 0
+
+Grades:
+
+- A+ (90+)
+- A (85-89)
+- B+ (80-84)
+- B (75-79)
+- C+ (70-74)
+- C (65-69)
+- D+ (60-64)
+- D (55-59)
+- E (50-54)
+- F (<50)
+
+## Architecture
+
+```text
+MCP Client
+  -> Hono Router (Cloudflare Worker)
+  -> Tool Handlers
+  -> Cloudflare DoH (dns-query)
+  -> Scoring Engine + KV cache/rate-limit state
+```
+
+Stack:
+
+- Hono
+- Cloudflare Workers
+- Cloudflare KV
+- Cloudflare DoH
+- Vitest + workers pool
+
+## Development
+
+Run tests:
 
 ```bash
 npm test
 ```
 
-Current suite: **230 tests** passing with **95%+** statement coverage.
+Type-check:
 
-Test files are in the `test/` directory:
-- `test/index.spec.ts` — Integration tests for the MCP endpoint
-- `test/dns.spec.ts` — DNS query library tests
-- `test/scoring.spec.ts` — Scoring engine tests
-- `test/spf.spec.ts` — SPF check tests
+```bash
+npx tsc --noEmit
+```
+
+## Contributing
+
+Issues and pull requests are welcome.
+
+- Keep Cloudflare Worker compatibility (no Node-only APIs).
+- Preserve JSON-RPC backward compatibility for MCP clients.
+- Add or update tests with behavior changes.
 
 ## License
 
-[MIT](LICENSE)
+MIT

@@ -20,5 +20,10 @@
   "kv_namespaces": [
     { "binding": "RATE_LIMIT", "id": "YOUR_RATE_LIMIT_KV_NAMESPACE_ID" },
     { "binding": "SCAN_CACHE", "id": "YOUR_SCAN_CACHE_KV_NAMESPACE_ID" }
-  ]
+  ],
+  // Optional auth: leave empty for open-source/local mode.
+  // For production auth, set with: wrangler secret put BV_API_KEY
+  "vars": {
+    "BV_API_KEY": ""
+  }
 }

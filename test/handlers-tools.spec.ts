@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { setupFetchMock, createDohResponse, mockTxtRecords } from './helpers/dns-mock';
+import { scanCache } from '../src/lib/cache';
 
 const { restore } = setupFetchMock();
 
 afterEach(() => {
 	restore();
+	scanCache.clear();
 });
 
 // ── handleToolsList ─────────────────────────────────────────────────────────

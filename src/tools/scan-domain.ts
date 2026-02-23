@@ -27,8 +27,8 @@ import { checkMtaSts } from "./check-mta-sts";
 import { checkNs } from "./check-ns";
 import { checkCaa } from "./check-caa";
 
-/** Cache key prefix for scan results */
-const CACHE_PREFIX = "scan:";
+/** Cache key prefix for scan and per-check results */
+const CACHE_PREFIX = "cache:";
 
 export interface ScanDomainResult {
   domain: string;
@@ -63,16 +63,16 @@ export async function scanDomain(domain: string, kv?: KVNamespace): Promise<Scan
     return { ...cached, cached: true };
   }
 
-  // Run all checks in parallel with individual error handling
+  // Run all checks in parallel with individual-check caching
   const checkResults = await Promise.all([
-    safeCheck("spf", () => checkSpf(cleanDomain)),
-    safeCheck("dmarc", () => checkDmarc(cleanDomain)),
-    safeCheck("dkim", () => checkDkim(cleanDomain)),
-    safeCheck("dnssec", () => checkDnssec(cleanDomain)),
-    safeCheck("ssl", () => checkSsl(cleanDomain)),
-    safeCheck("mta_sts", () => checkMtaSts(cleanDomain)),
-    safeCheck("ns", () => checkNs(cleanDomain)),
-    safeCheck("caa", () => checkCaa(cleanDomain)),
+    runCachedCheck(cleanDomain, "spf", () => safeCheck("spf", () => checkSpf(cleanDomain)), kv),
+    runCachedCheck(cleanDomain, "dmarc", () => safeCheck("dmarc", () => checkDmarc(cleanDomain)), kv),
+    runCachedCheck(cleanDomain, "dkim", () => safeCheck("dkim", () => checkDkim(cleanDomain)), kv),
+    runCachedCheck(cleanDomain, "dnssec", () => safeCheck("dnssec", () => checkDnssec(cleanDomain)), kv),
+    runCachedCheck(cleanDomain, "ssl", () => safeCheck("ssl", () => checkSsl(cleanDomain)), kv),
+    runCachedCheck(cleanDomain, "mta_sts", () => safeCheck("mta_sts", () => checkMtaSts(cleanDomain)), kv),
+    runCachedCheck(cleanDomain, "ns", () => safeCheck("ns", () => checkNs(cleanDomain)), kv),
+    runCachedCheck(cleanDomain, "caa", () => safeCheck("caa", () => checkCaa(cleanDomain)), kv),
   ]);
 
   // Compute overall score from all check results
@@ -89,6 +89,23 @@ export async function scanDomain(domain: string, kv?: KVNamespace): Promise<Scan
   // Cache the result
   await cacheSet(cacheKey, result, kv);
 
+  return result;
+}
+
+async function runCachedCheck(
+  domain: string,
+  category: CheckCategory,
+  run: () => Promise<CheckResult>,
+  kv?: KVNamespace,
+): Promise<CheckResult> {
+  const checkKey = `${CACHE_PREFIX}${domain}:check:${category}`;
+  const cached = await cacheGet<CheckResult>(checkKey, kv);
+  if (cached) {
+    return cached;
+  }
+
+  const result = await run();
+  await cacheSet(checkKey, result, kv);
   return result;
 }
 

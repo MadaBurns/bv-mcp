@@ -169,23 +169,23 @@ describe('rate-limiter', () => {
 			expect(result.retryAfterMs).toBeGreaterThan(0);
 		});
 
-		it('increments and writes counters with correct expirationTtl', async () => {
+		it('increments and writes counters with required key format and expirationTtl', async () => {
 			const kv = createMockKV('3', '20');
 			await checkRateLimit('1.2.3.4', kv);
 
 			expect(kv.put).toHaveBeenCalledTimes(2);
 
-			// Minute counter: value should be "4" (3+1), TTL 120s
+			// Minute counter: value should be "4" (3+1), TTL 60s
 			const minutePutCall = (kv.put as ReturnType<typeof vi.fn>).mock.calls[0];
-			expect(minutePutCall[0]).toContain(':m:');
+			expect(minutePutCall[0]).toContain('rl:min:1.2.3.4:');
 			expect(minutePutCall[1]).toBe('4');
-			expect(minutePutCall[2]).toEqual({ expirationTtl: 120 });
+			expect(minutePutCall[2]).toEqual({ expirationTtl: 60 });
 
-			// Hour counter: value should be "21" (20+1), TTL 7200s
+			// Hour counter: value should be "21" (20+1), TTL 3600s
 			const hourPutCall = (kv.put as ReturnType<typeof vi.fn>).mock.calls[1];
-			expect(hourPutCall[0]).toContain(':h:');
+			expect(hourPutCall[0]).toContain('rl:hr:1.2.3.4:');
 			expect(hourPutCall[1]).toBe('21');
-			expect(hourPutCall[2]).toEqual({ expirationTtl: 7200 });
+			expect(hourPutCall[2]).toEqual({ expirationTtl: 3600 });
 		});
 
 		it('falls back to in-memory on KV error', async () => {

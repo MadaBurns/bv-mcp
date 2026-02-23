@@ -13,32 +13,29 @@ import {
 
 describe('scoring library', () => {
 	describe('scoreToGrade', () => {
-		it('returns A+ for scores >= 95', () => {
-			expect(scoreToGrade(95)).toBe('A+');
+		it('returns A+ for scores >= 90', () => {
+			expect(scoreToGrade(90)).toBe('A+');
 			expect(scoreToGrade(100)).toBe('A+');
 		});
 
-		it('returns A for scores 90-94', () => {
-			expect(scoreToGrade(90)).toBe('A');
-			expect(scoreToGrade(94)).toBe('A');
+		it('returns A for scores 85-89', () => {
+			expect(scoreToGrade(85)).toBe('A');
+			expect(scoreToGrade(89)).toBe('A');
 		});
 
-		it('returns F for scores below 40', () => {
-			expect(scoreToGrade(39)).toBe('F');
+		it('returns F for scores below 50', () => {
+			expect(scoreToGrade(49)).toBe('F');
 			expect(scoreToGrade(0)).toBe('F');
 		});
 
 		it('returns correct grades across the full range', () => {
-			expect(scoreToGrade(85)).toBe('A-');
 			expect(scoreToGrade(80)).toBe('B+');
 			expect(scoreToGrade(75)).toBe('B');
-			expect(scoreToGrade(70)).toBe('B-');
-			expect(scoreToGrade(65)).toBe('C+');
-			expect(scoreToGrade(60)).toBe('C');
-			expect(scoreToGrade(55)).toBe('C-');
-			expect(scoreToGrade(50)).toBe('D+');
-			expect(scoreToGrade(45)).toBe('D');
-			expect(scoreToGrade(40)).toBe('D-');
+			expect(scoreToGrade(70)).toBe('C+');
+			expect(scoreToGrade(65)).toBe('C');
+			expect(scoreToGrade(60)).toBe('D+');
+			expect(scoreToGrade(55)).toBe('D');
+			expect(scoreToGrade(50)).toBe('E');
 		});
 	});
 
@@ -129,10 +126,27 @@ describe('scoring library', () => {
 				buildCheckResult('spf', [createFinding('spf', 'x', 'critical', 'd')]),
 			];
 			const scan = computeScanScore(results);
-			// SPF weight is 0.15, score is 60. All others default to 100.
-			// overall = 60*0.15 + 100*(1-0.15) = 9 + 85 = 94
-			expect(scan.overall).toBe(94);
+			// Scanner-aligned importance model: SPF(19) out of total 70 (including email bonus).
+			// One SPF critical => SPF score 60. Other controls remain perfect by default.
+			expect(scan.overall).toBe(82);
 			expect(scan.categoryScores.spf).toBe(60);
+		});
+
+		it('heavily penalizes missing DMARC like the scanner model', () => {
+			const results: CheckResult[] = [
+				buildCheckResult('spf', [createFinding('spf', 'SPF properly configured', 'info', 'ok')]),
+				buildCheckResult('dmarc', [createFinding('dmarc', 'No DMARC record found', 'critical', 'missing')]),
+				buildCheckResult('dkim', [createFinding('dkim', 'DKIM configured', 'info', 'ok')]),
+				{ category: 'dnssec', passed: false, score: 35, findings: [createFinding('dnssec', 'DNSSEC not validated', 'high', 'ad flag missing')] },
+				{ category: 'ssl', passed: true, score: 100, findings: [createFinding('ssl', 'SSL configured', 'info', 'ok')] },
+				{ category: 'mta_sts', passed: true, score: 80, findings: [createFinding('mta_sts', 'MTA-STS testing mode', 'low', 'testing')] },
+				{ category: 'ns', passed: true, score: 100, findings: [createFinding('ns', 'NS configured', 'info', 'ok')] },
+				{ category: 'caa', passed: true, score: 85, findings: [createFinding('caa', 'No CAA records', 'medium', 'optional hardening')] },
+			];
+
+			const scan = computeScanScore(results);
+			expect(scan.overall).toBe(56);
+			expect(scan.grade).toBe('D');
 		});
 
 		it('includes critical count in summary', () => {
