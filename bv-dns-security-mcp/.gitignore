@@ -28,9 +28,3 @@ coverage/
 # Logs
 *.log
 npm-debug.log*
-
-# Cloudflare
-.wrangler/
-
-# Workspace
-.workspace/

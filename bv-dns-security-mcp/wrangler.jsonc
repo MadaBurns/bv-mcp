@@ -1,0 +1,17 @@
+{
+  "name": "dns-security-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": [
+    "global_fetch_strictly_public"
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "MCP_PROTOCOL_VERSION": "2025-03-26",
+    "WORKER_VERSION": "1.0.0"
+  }
+  // No private bindings. No KV. No service bindings. No secrets.
+  // Runs standalone with `npx wrangler deploy`. Public MCP endpoint.
+}
