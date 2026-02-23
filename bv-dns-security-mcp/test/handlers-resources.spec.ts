@@ -1,8 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-	handleResourcesList,
-	handleResourcesRead,
-} from '../src/handlers/resources';
+import { handleResourcesList, handleResourcesRead } from '../src/handlers/resources';
 
 describe('handleResourcesList', () => {
 	it('returns an object with a resources array of exactly 3 items', () => {
@@ -55,9 +52,9 @@ describe('handleResourcesRead', () => {
 		expect(contents[0].text).toContain('DKIM');
 	});
 
-	it('scoring content mentions Category Weights', () => {
+	it('scoring content mentions importance weights', () => {
 		const { contents } = handleResourcesRead({ uri: 'dns-security://guides/scoring' });
-		expect(contents[0].text).toContain('Category Weights');
+		expect(contents[0].text).toContain('Importance Weights');
 	});
 
 	it('record-types content mentions DNS record types', () => {
@@ -74,20 +71,14 @@ describe('handleResourcesRead', () => {
 	});
 
 	it('throws for an unknown URI', () => {
-		expect(() => handleResourcesRead({ uri: 'dns-security://guides/nonexistent' })).toThrow(
-			'Resource not found'
-		);
+		expect(() => handleResourcesRead({ uri: 'dns-security://guides/nonexistent' })).toThrow('Resource not found');
 	});
 
 	it('throws when uri is a number', () => {
-		expect(() => handleResourcesRead({ uri: 42 as unknown as string })).toThrow(
-			'Missing required parameter: uri'
-		);
+		expect(() => handleResourcesRead({ uri: 42 as unknown as string })).toThrow('Missing required parameter: uri');
 	});
 
 	it('throws when uri is null', () => {
-		expect(() => handleResourcesRead({ uri: null as unknown as string })).toThrow(
-			'Missing required parameter: uri'
-		);
+		expect(() => handleResourcesRead({ uri: null as unknown as string })).toThrow('Missing required parameter: uri');
 	});
 });

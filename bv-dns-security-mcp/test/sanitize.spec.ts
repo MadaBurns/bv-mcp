@@ -1,12 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-	validateDomain,
-	sanitizeDomain,
-	sanitizeInput,
-	mcpError,
-	mcpText,
-	withErrorHandling,
-} from '../src/lib/sanitize';
+import { validateDomain, sanitizeDomain, sanitizeInput, mcpError, mcpText, withErrorHandling } from '../src/lib/sanitize';
 
 describe('sanitize library', () => {
 	describe('validateDomain', () => {
@@ -50,8 +43,17 @@ describe('sanitize library', () => {
 
 		it('rejects reserved TLDs', () => {
 			const reservedTLDs = [
-				'.local', '.localhost', '.internal', '.example', '.invalid',
-				'.test', '.onion', '.lan', '.home', '.corp', '.intranet',
+				'.local',
+				'.localhost',
+				'.internal',
+				'.example',
+				'.invalid',
+				'.test',
+				'.onion',
+				'.lan',
+				'.home',
+				'.corp',
+				'.intranet',
 			];
 			for (const tld of reservedTLDs) {
 				const domain = `host${tld}`;
@@ -215,10 +217,7 @@ describe('sanitize library', () => {
 		});
 
 		it('uses fallback message for non-Error throw', async () => {
-			const result = await withErrorHandling(
-				() => Promise.reject('string error'),
-				'custom fallback',
-			);
+			const result = await withErrorHandling(() => Promise.reject('string error'), 'custom fallback');
 			expect(result).toEqual({ type: 'text', text: 'Error: custom fallback' });
 		});
 

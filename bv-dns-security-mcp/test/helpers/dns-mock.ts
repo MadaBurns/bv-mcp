@@ -56,9 +56,7 @@ export function mockTxtRecords(records: string[], domain = 'example.com') {
 		TTL: 300,
 		data: `"${data}"`,
 	}));
-	globalThis.fetch = vi.fn().mockResolvedValue(
-		createDohResponse([{ name: domain, type: 16 }], answers),
-	);
+	globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([{ name: domain, type: 16 }], answers));
 }
 
 /**

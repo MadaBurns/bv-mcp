@@ -12,7 +12,12 @@ describe('DNS library', () => {
 	describe('queryDns', () => {
 		it('sends correct DoH request', async () => {
 			const dohResponse = {
-				Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
+				Status: 0,
+				TC: false,
+				RD: true,
+				RA: true,
+				AD: false,
+				CD: false,
 				Question: [{ name: 'example.com', type: 1 }],
 				Answer: [{ name: 'example.com', type: 1, TTL: 300, data: '93.184.216.34' }],
 			};
@@ -50,7 +55,12 @@ describe('DNS library', () => {
 	describe('queryDnsRecords', () => {
 		it('returns data strings filtered by record type', async () => {
 			mockFetchResponse({
-				Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
+				Status: 0,
+				TC: false,
+				RD: true,
+				RA: true,
+				AD: false,
+				CD: false,
 				Question: [{ name: 'example.com', type: 16 }],
 				Answer: [
 					{ name: 'example.com', type: RecordType.TXT, TTL: 300, data: '"v=spf1 -all"' },
@@ -64,7 +74,12 @@ describe('DNS library', () => {
 
 		it('returns empty array when no answers', async () => {
 			mockFetchResponse({
-				Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
+				Status: 0,
+				TC: false,
+				RD: true,
+				RA: true,
+				AD: false,
+				CD: false,
 				Question: [{ name: 'example.com', type: 16 }],
 			});
 
@@ -76,11 +91,14 @@ describe('DNS library', () => {
 	describe('queryTxtRecords', () => {
 		it('strips surrounding quotes from TXT data', async () => {
 			mockFetchResponse({
-				Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
+				Status: 0,
+				TC: false,
+				RD: true,
+				RA: true,
+				AD: false,
+				CD: false,
 				Question: [{ name: 'example.com', type: 16 }],
-				Answer: [
-					{ name: 'example.com', type: RecordType.TXT, TTL: 300, data: '"v=spf1 include:_spf.google.com -all"' },
-				],
+				Answer: [{ name: 'example.com', type: RecordType.TXT, TTL: 300, data: '"v=spf1 include:_spf.google.com -all"' }],
 			});
 
 			const records = await queryTxtRecords('example.com');
@@ -103,7 +121,12 @@ describe('DNS library', () => {
 	describe('queryMxRecords', () => {
 		it('parses MX records into priority and exchange', async () => {
 			mockFetchResponse({
-				Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
+				Status: 0,
+				TC: false,
+				RD: true,
+				RA: true,
+				AD: false,
+				CD: false,
 				Question: [{ name: 'example.com', type: 15 }],
 				Answer: [
 					{ name: 'example.com', type: RecordType.MX, TTL: 300, data: '10 mail.example.com.' },
@@ -119,4 +142,3 @@ describe('DNS library', () => {
 		});
 	});
 });
-

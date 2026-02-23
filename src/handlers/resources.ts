@@ -9,47 +9,45 @@
 
 /** MCP Resource descriptor */
 interface McpResource {
-  uri: string;
-  name: string;
-  description: string;
-  mimeType: string;
+	uri: string;
+	name: string;
+	description: string;
+	mimeType: string;
 }
 
 /** MCP Resource content */
 interface McpResourceContent {
-  uri: string;
-  mimeType: string;
-  text: string;
+	uri: string;
+	mimeType: string;
+	text: string;
 }
 
 /** Static resource definitions */
 const RESOURCES: McpResource[] = [
-  {
-    uri: "dns-security://guides/security-checks",
-    name: "DNS Security Checks Guide",
-    description:
-      "Overview of all DNS security checks performed by this server, including SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, and CAA.",
-    mimeType: "text/markdown",
-  },
-  {
-    uri: "dns-security://guides/scoring",
-    name: "Scoring Methodology",
-    description:
-      "How DNS security scores and grades are calculated, including category weights and severity penalties.",
-    mimeType: "text/markdown",
-  },
-  {
-    uri: "dns-security://guides/record-types",
-    name: "Supported DNS Record Types",
-    description:
-      "List of DNS record types queried by this server and their purpose in security analysis.",
-    mimeType: "text/markdown",
-  },
+	{
+		uri: 'dns-security://guides/security-checks',
+		name: 'DNS Security Checks Guide',
+		description:
+			'Overview of all DNS security checks performed by this server, including SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, and CAA.',
+		mimeType: 'text/markdown',
+	},
+	{
+		uri: 'dns-security://guides/scoring',
+		name: 'Scoring Methodology',
+		description: 'How DNS security scores and grades are calculated, including category weights and severity penalties.',
+		mimeType: 'text/markdown',
+	},
+	{
+		uri: 'dns-security://guides/record-types',
+		name: 'Supported DNS Record Types',
+		description: 'List of DNS record types queried by this server and their purpose in security analysis.',
+		mimeType: 'text/markdown',
+	},
 ];
 
 /** Resource content keyed by URI */
 const RESOURCE_CONTENT: Record<string, string> = {
-  "dns-security://guides/security-checks": `# DNS Security Checks
+	'dns-security://guides/security-checks': `# DNS Security Checks
 
 The BLACKVEIL DNS scanner evaluates **50 checks** grouped into 8 security categories.
 
@@ -110,7 +108,7 @@ Checks CA authorization posture and issuance restriction baseline.
 - \`explain_finding\`: Provides plain-language context and remediation guidance for individual findings.
 `,
 
-  "dns-security://guides/scoring": `# Scoring Methodology
+	'dns-security://guides/scoring': `# Scoring Methodology
 
 This server uses scanner-aligned scoring for the overlapping controls currently implemented by MCP tools.
 
@@ -158,7 +156,7 @@ The overall weighted score maps to a letter grade:
 - **F**: <50
 `,
 
-  "dns-security://guides/record-types": `# Supported DNS Record Types
+	'dns-security://guides/record-types': `# Supported DNS Record Types
 
 This server queries the following DNS record types via Cloudflare DNS-over-HTTPS:
 
@@ -186,7 +184,7 @@ All queries use the JSON wire format (\`application/dns-json\`) via \`https://cl
  * Returns all available resource descriptors.
  */
 export function handleResourcesList(): { resources: McpResource[] } {
-  return { resources: RESOURCES };
+	return { resources: RESOURCES };
 }
 
 /**
@@ -194,25 +192,24 @@ export function handleResourcesList(): { resources: McpResource[] } {
  * Returns the content of a specific resource by URI.
  */
 export function handleResourcesRead(params: Record<string, unknown>): {
-  contents: McpResourceContent[];
+	contents: McpResourceContent[];
 } {
-  const uri = params.uri;
-  if (typeof uri !== "string") {
-    throw new Error("Missing required parameter: uri");
-  }
-  const content = RESOURCE_CONTENT[uri];
-  if (!content) {
-    throw new Error(`Resource not found: ${uri}`);
-  }
-  const resource = RESOURCES.find((r) => r.uri === uri);
-  return {
-    contents: [
-      {
-        uri,
-        mimeType: resource?.mimeType ?? "text/plain",
-        text: content,
-      },
-    ],
-  };
+	const uri = params.uri;
+	if (typeof uri !== 'string') {
+		throw new Error('Missing required parameter: uri');
+	}
+	const content = RESOURCE_CONTENT[uri];
+	if (!content) {
+		throw new Error(`Resource not found: ${uri}`);
+	}
+	const resource = RESOURCES.find((r) => r.uri === uri);
+	return {
+		contents: [
+			{
+				uri,
+				mimeType: resource?.mimeType ?? 'text/plain',
+				text: content,
+			},
+		],
+	};
 }
-

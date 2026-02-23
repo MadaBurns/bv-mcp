@@ -1,7 +1,9 @@
 /**
  * TTL cache for DNS scan results.
  *
- * Uses in-memory cache with configurable TTL.
+ * Uses Cloudflare KV for persistent caching when available,
+ * with in-memory fallback when KV is not configured.
+ *
  * Cloudflare Workers compatible - no Node.js APIs.
  */
 
@@ -18,6 +20,7 @@ export interface CacheOptions {
 }
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const DEFAULT_TTL_SECONDS = 300; // 5 minutes in seconds (for KV expirationTtl)
 const DEFAULT_MAX_ENTRIES = 1000;
 
 export class TTLCache<T = unknown> {
@@ -110,36 +113,57 @@ export class TTLCache<T = unknown> {
 	}
 }
 
-/** In-memory cache instance */
+/** In-memory cache instance used as fallback when KV is unavailable */
 const inMemoryCache = new TTLCache<unknown>({
 	ttlMs: DEFAULT_TTL_MS,
 	maxEntries: DEFAULT_MAX_ENTRIES,
 });
 
+// ---------------------------------------------------------------------------
+// KV-backed cache functions
+// ---------------------------------------------------------------------------
+
 /**
  * Get a cached value by key.
+ * Uses KV when available, falls back to in-memory.
  *
  * @param key - Cache key
+ * @param kv - Optional KV namespace for persistent caching
  */
-export async function cacheGet<T>(key: string): Promise<T | undefined> {
+export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | undefined> {
+	if (kv) {
+		try {
+			const val = await kv.get(key, 'json');
+			return val as T | undefined;
+		} catch {
+			// KV error — fall through to in-memory
+		}
+	}
 	return inMemoryCache.get(key) as T | undefined;
 }
 
 /**
  * Set a cached value with 5-minute TTL.
+ * Uses KV when available, falls back to in-memory.
  *
  * @param key - Cache key
- * @param value - Value to cache
+ * @param value - Value to cache (must be JSON-serializable for KV)
+ * @param kv - Optional KV namespace for persistent caching
  */
-export async function cacheSet(key: string, value: unknown): Promise<void> {
+export async function cacheSet(key: string, value: unknown, kv?: KVNamespace): Promise<void> {
+	if (kv) {
+		try {
+			await kv.put(key, JSON.stringify(value), { expirationTtl: DEFAULT_TTL_SECONDS });
+			return;
+		} catch {
+			// KV error — fall through to in-memory
+		}
+	}
 	inMemoryCache.set(key, value);
 }
 
 /**
- * Clear all entries from the in-memory cache.
- * Useful for testing.
+ * @deprecated Use cacheGet/cacheSet with KV namespace instead.
+ * Kept for backward compatibility during migration.
  */
-export function cacheClear(): void {
-	inMemoryCache.clear();
-}
-
+export const scanCache = inMemoryCache;

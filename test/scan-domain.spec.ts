@@ -91,9 +91,7 @@ function mockAllChecks(overrides?: { throwForUrl?: string }) {
 					return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
 				}
 				if (url.includes('_smtp._tls.')) {
-					return Promise.resolve(
-						txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
-					);
+					return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
 				}
 				// Default TXT (SPF)
 				return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
@@ -120,9 +118,7 @@ function mockAllChecks(overrides?: { throwForUrl?: string }) {
 
 		// HTTPS requests for SSL check or MTA-STS policy
 		if (url.includes('mta-sts.') && url.includes('.well-known')) {
-			return Promise.resolve(
-				httpResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'),
-			);
+			return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'));
 		}
 
 		// SSL check hits the domain via HTTPS
@@ -359,13 +355,17 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 			if (url.includes('cloudflare-dns.com')) {
 				if (url.includes('type=TXT') || url.includes('type=16')) {
 					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=reject']));
-					if (url.includes('_domainkey.')) return Promise.resolve(txtResponse('default._domainkey.example.com', ['v=DKIM1; k=rsa; p=MIGf']));
+					if (url.includes('_domainkey.'))
+						return Promise.resolve(txtResponse('default._domainkey.example.com', ['v=DKIM1; k=rsa; p=MIGf']));
 					if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
-					if (url.includes('_smtp._tls.')) return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
+					if (url.includes('_smtp._tls.'))
+						return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
 					return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
 				}
-				if (url.includes('type=NS') || url.includes('type=2')) return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
-				if (url.includes('type=CAA') || url.includes('type=257')) return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
 				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse('example.com', true));
 				return Promise.resolve(createDohResponse([], []));
 			}
@@ -382,10 +382,13 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 
 	it('detects missing DMARC record and penalises score', async () => {
 		mockWithOverrides({
-			'_dmarc.': () => Promise.resolve(createDohResponse(
-				[{ name: '_dmarc.example.com', type: 16 }],
-				[], // no records
-			)),
+			'_dmarc.': () =>
+				Promise.resolve(
+					createDohResponse(
+						[{ name: '_dmarc.example.com', type: 16 }],
+						[], // no records
+					),
+				),
 		});
 		const result = await run();
 		const dmarc = findCheck(result, 'dmarc');
@@ -411,10 +414,13 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 
 	it('detects missing DKIM records as high severity', async () => {
 		mockWithOverrides({
-			'_domainkey.': () => Promise.resolve(createDohResponse(
-				[{ name: 'default._domainkey.example.com', type: 16 }],
-				[], // no records
-			)),
+			'_domainkey.': () =>
+				Promise.resolve(
+					createDohResponse(
+						[{ name: 'default._domainkey.example.com', type: 16 }],
+						[], // no records
+					),
+				),
 		});
 		const result = await run();
 		const dkim = findCheck(result, 'dkim');
@@ -459,14 +465,20 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 
 	it('detects missing CAA records', async () => {
 		mockWithOverrides({
-			'type=CAA': () => Promise.resolve(createDohResponse(
-				[{ name: 'example.com', type: 257 }],
-				[], // no records
-			)),
-			'type=257': () => Promise.resolve(createDohResponse(
-				[{ name: 'example.com', type: 257 }],
-				[], // no records
-			)),
+			'type=CAA': () =>
+				Promise.resolve(
+					createDohResponse(
+						[{ name: 'example.com', type: 257 }],
+						[], // no records
+					),
+				),
+			'type=257': () =>
+				Promise.resolve(
+					createDohResponse(
+						[{ name: 'example.com', type: 257 }],
+						[], // no records
+					),
+				),
 		});
 		const result = await run();
 		const caa = findCheck(result, 'caa');

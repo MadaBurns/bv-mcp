@@ -31,27 +31,17 @@ function mockDnssecResponses(adFlag: boolean, hasDnskey = true, hasDs = true) {
 		}
 
 		if (type === 'DNSKEY') {
-			const answers = hasDnskey
-				? [{ name: 'example.com', type: RecordType.DNSKEY, TTL: 300, data: '257 3 13 mdsswUyr3DPW...' }]
-				: [];
-			return Promise.resolve(
-				createDohResponse([{ name: 'example.com', type: 48 }], answers),
-			);
+			const answers = hasDnskey ? [{ name: 'example.com', type: RecordType.DNSKEY, TTL: 300, data: '257 3 13 mdsswUyr3DPW...' }] : [];
+			return Promise.resolve(createDohResponse([{ name: 'example.com', type: 48 }], answers));
 		}
 
 		if (type === 'DS') {
-			const answers = hasDs
-				? [{ name: 'example.com', type: RecordType.DS, TTL: 300, data: '12345 13 2 abc123...' }]
-				: [];
-			return Promise.resolve(
-				createDohResponse([{ name: 'example.com', type: 43 }], answers),
-			);
+			const answers = hasDs ? [{ name: 'example.com', type: RecordType.DS, TTL: 300, data: '12345 13 2 abc123...' }] : [];
+			return Promise.resolve(createDohResponse([{ name: 'example.com', type: 43 }], answers));
 		}
 
 		// Fallback
-		return Promise.resolve(
-			createDohResponse([], []),
-		);
+		return Promise.resolve(createDohResponse([], []));
 	});
 }
 
@@ -124,4 +114,3 @@ describe('checkDnssec', () => {
 		expect(r.findings[0].severity).toBe('info');
 	});
 });
-

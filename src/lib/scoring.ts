@@ -44,8 +44,8 @@ export const CATEGORY_WEIGHTS: Record<CheckCategory, number> = {
 	dnssec: 0.15,
 	ssl: 0.15,
 	mta_sts: 0.05,
-	ns: 0.10,
-	caa: 0.10,
+	ns: 0.1,
+	caa: 0.1,
 };
 
 /** Severity penalty multipliers applied to the category score */
@@ -227,4 +227,3 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 		summary,
 	};
 }
-

@@ -62,10 +62,7 @@ describe('scoring library', () => {
 		});
 
 		it('accumulates penalties from multiple findings', () => {
-			const findings: Finding[] = [
-				createFinding('spf', 'a', 'high', 'd'),
-				createFinding('spf', 'b', 'medium', 'd'),
-			];
+			const findings: Finding[] = [createFinding('spf', 'a', 'high', 'd'), createFinding('spf', 'b', 'medium', 'd')];
 			expect(computeCategoryScore(findings)).toBe(100 - 25 - 15);
 		});
 
@@ -90,10 +87,7 @@ describe('scoring library', () => {
 		});
 
 		it('builds a failing result when score < 50', () => {
-			const findings = [
-				createFinding('dmarc', 'a', 'critical', 'd'),
-				createFinding('dmarc', 'b', 'critical', 'd'),
-			];
+			const findings = [createFinding('dmarc', 'a', 'critical', 'd'), createFinding('dmarc', 'b', 'critical', 'd')];
 			const result = buildCheckResult('dmarc', findings);
 			expect(result.passed).toBe(false);
 			expect(result.score).toBe(20);
@@ -122,9 +116,7 @@ describe('scoring library', () => {
 		});
 
 		it('computes weighted average from check results', () => {
-			const results: CheckResult[] = [
-				buildCheckResult('spf', [createFinding('spf', 'x', 'critical', 'd')]),
-			];
+			const results: CheckResult[] = [buildCheckResult('spf', [createFinding('spf', 'x', 'critical', 'd')])];
 			const scan = computeScanScore(results);
 			// Scanner-aligned importance model: SPF(19) out of total 70 (including email bonus).
 			// One SPF critical => SPF score 60. Other controls remain perfect by default.
@@ -137,7 +129,12 @@ describe('scoring library', () => {
 				buildCheckResult('spf', [createFinding('spf', 'SPF properly configured', 'info', 'ok')]),
 				buildCheckResult('dmarc', [createFinding('dmarc', 'No DMARC record found', 'critical', 'missing')]),
 				buildCheckResult('dkim', [createFinding('dkim', 'DKIM configured', 'info', 'ok')]),
-				{ category: 'dnssec', passed: false, score: 35, findings: [createFinding('dnssec', 'DNSSEC not validated', 'high', 'ad flag missing')] },
+				{
+					category: 'dnssec',
+					passed: false,
+					score: 35,
+					findings: [createFinding('dnssec', 'DNSSEC not validated', 'high', 'ad flag missing')],
+				},
 				{ category: 'ssl', passed: true, score: 100, findings: [createFinding('ssl', 'SSL configured', 'info', 'ok')] },
 				{ category: 'mta_sts', passed: true, score: 80, findings: [createFinding('mta_sts', 'MTA-STS testing mode', 'low', 'testing')] },
 				{ category: 'ns', passed: true, score: 100, findings: [createFinding('ns', 'NS configured', 'info', 'ok')] },
@@ -150,17 +147,13 @@ describe('scoring library', () => {
 		});
 
 		it('includes critical count in summary', () => {
-			const results: CheckResult[] = [
-				buildCheckResult('spf', [createFinding('spf', 'x', 'critical', 'd')]),
-			];
+			const results: CheckResult[] = [buildCheckResult('spf', [createFinding('spf', 'x', 'critical', 'd')])];
 			const scan = computeScanScore(results);
 			expect(scan.summary).toContain('critical');
 		});
 
 		it('includes high count in summary when no criticals', () => {
-			const results: CheckResult[] = [
-				buildCheckResult('spf', [createFinding('spf', 'x', 'high', 'd')]),
-			];
+			const results: CheckResult[] = [buildCheckResult('spf', [createFinding('spf', 'x', 'high', 'd')])];
 			const scan = computeScanScore(results);
 			expect(scan.summary).toContain('high-severity');
 		});
@@ -171,4 +164,3 @@ describe('scoring library', () => {
 		});
 	});
 });
-

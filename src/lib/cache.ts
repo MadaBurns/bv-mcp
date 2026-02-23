@@ -133,7 +133,7 @@ const inMemoryCache = new TTLCache<unknown>({
 export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | undefined> {
 	if (kv) {
 		try {
-			const val = await kv.get(key, "json");
+			const val = await kv.get(key, 'json');
 			return val as T | undefined;
 		} catch {
 			// KV error — fall through to in-memory
@@ -167,4 +167,3 @@ export async function cacheSet(key: string, value: unknown, kv?: KVNamespace): P
  * Kept for backward compatibility during migration.
  */
 export const scanCache = inMemoryCache;
-

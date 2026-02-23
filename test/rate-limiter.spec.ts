@@ -1,11 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import {
-	checkRateLimit,
-	getRateLimitStatus,
-	resetRateLimit,
-	resetAllRateLimits,
-	type RateLimitResult,
-} from '../src/lib/rate-limiter';
+import { checkRateLimit, getRateLimitStatus, resetRateLimit, resetAllRateLimits, type RateLimitResult } from '../src/lib/rate-limiter';
 
 afterEach(() => {
 	resetAllRateLimits();
@@ -138,9 +132,7 @@ describe('rate-limiter', () => {
 	describe('KV-backed rate limiting', () => {
 		function createMockKV(minuteVal: string | null = null, hourVal: string | null = null) {
 			return {
-				get: vi.fn()
-					.mockResolvedValueOnce(minuteVal)
-					.mockResolvedValueOnce(hourVal),
+				get: vi.fn().mockResolvedValueOnce(minuteVal).mockResolvedValueOnce(hourVal),
 				put: vi.fn().mockResolvedValue(undefined),
 			} as unknown as KVNamespace;
 		}

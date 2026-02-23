@@ -113,4 +113,3 @@ describe('checkDmarc', () => {
 		expect(f).toBeUndefined();
 	});
 });
-

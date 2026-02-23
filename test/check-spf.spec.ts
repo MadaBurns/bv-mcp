@@ -110,11 +110,11 @@ describe('checkSpf', () => {
 	});
 
 	it('counts mixed lookup mechanisms (include, a, mx, redirect)', async () => {
-		const mechs = 'include:a.com include:b.com include:c.com include:d.com include:e.com a:f.com mx:g.com redirect=h.com include:i.com include:j.com include:k.com';
+		const mechs =
+			'include:a.com include:b.com include:c.com include:d.com include:e.com a:f.com mx:g.com redirect=h.com include:i.com include:j.com include:k.com';
 		mockTxtRecords([`v=spf1 ${mechs} -all`]);
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('Too many DNS'));
 		expect(f).toBeDefined();
 	});
 });
-

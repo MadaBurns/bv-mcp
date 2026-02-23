@@ -13,11 +13,7 @@ const { restore } = setupFetchMock();
  *
  * URL-dispatching mock routes on the `type=` query parameter.
  */
-function mockNsResponses(
-	nsRecords: string[],
-	soaData?: string,
-	aRecords?: string[],
-) {
+function mockNsResponses(nsRecords: string[], soaData?: string, aRecords?: string[]) {
 	const nsAnswers = nsRecords.map((data) => ({
 		name: 'example.com',
 		type: RecordType.NS,
@@ -25,9 +21,7 @@ function mockNsResponses(
 		data,
 	}));
 
-	const soaAnswers = soaData
-		? [{ name: 'example.com', type: RecordType.SOA, TTL: 3600, data: soaData }]
-		: [];
+	const soaAnswers = soaData ? [{ name: 'example.com', type: RecordType.SOA, TTL: 3600, data: soaData }] : [];
 
 	const aAnswers = (aRecords ?? []).map((data) => ({
 		name: 'example.com',
@@ -41,21 +35,15 @@ function mockNsResponses(
 		const type = typeMatch ? typeMatch[1] : '';
 
 		if (type === 'NS') {
-			return Promise.resolve(
-				createDohResponse([{ name: 'example.com', type: RecordType.NS }], nsAnswers),
-			);
+			return Promise.resolve(createDohResponse([{ name: 'example.com', type: RecordType.NS }], nsAnswers));
 		}
 
 		if (type === 'A') {
-			return Promise.resolve(
-				createDohResponse([{ name: 'example.com', type: RecordType.A }], aAnswers),
-			);
+			return Promise.resolve(createDohResponse([{ name: 'example.com', type: RecordType.A }], aAnswers));
 		}
 
 		if (type === 'SOA') {
-			return Promise.resolve(
-				createDohResponse([{ name: 'example.com', type: RecordType.SOA }], soaAnswers),
-			);
+			return Promise.resolve(createDohResponse([{ name: 'example.com', type: RecordType.SOA }], soaAnswers));
 		}
 
 		return Promise.resolve(createDohResponse([], []));
@@ -86,10 +74,7 @@ describe('checkNs', () => {
 	});
 
 	it('returns high severity finding for single nameserver', async () => {
-		mockNsResponses(
-			['ns1.example.com.'],
-			'ns1.example.com. admin.example.com. 2024010101 3600 900 604800 86400',
-		);
+		mockNsResponses(['ns1.example.com.'], 'ns1.example.com. admin.example.com. 2024010101 3600 900 604800 86400');
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('Single nameserver'));
 		expect(f).toBeDefined();
@@ -166,10 +151,7 @@ describe('checkNs', () => {
 	});
 
 	it('passes with two nameservers (minimum acceptable)', async () => {
-		mockNsResponses(
-			['ns1.dns-a.org.', 'ns2.dns-b.com.'],
-			'ns1.dns-a.org. admin.example.com. 2024010101 3600 900 604800 86400',
-		);
+		mockNsResponses(['ns1.dns-a.org.', 'ns2.dns-b.com.'], 'ns1.dns-a.org. admin.example.com. 2024010101 3600 900 604800 86400');
 		const r = await run();
 		expect(r.findings).toHaveLength(1);
 		expect(r.findings[0].severity).toBe('info');

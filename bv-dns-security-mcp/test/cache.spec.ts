@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { TTLCache, cacheGet, cacheSet } from '../src/lib/cache';
+import { TTLCache, cacheGet, cacheSet, scanCache } from '../src/lib/cache';
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	scanCache.clear();
 });
 
 describe('TTLCache', () => {
@@ -125,21 +126,59 @@ describe('TTLCache', () => {
 	});
 });
 
-describe('cacheGet / cacheSet', () => {
-	it('cacheGet returns value from in-memory cache', async () => {
-		await cacheSet('key1', 'memval');
+describe('cacheGet / cacheSet (KV-backed)', () => {
+	it('without KV: cacheGet returns value from in-memory cache', async () => {
+		scanCache.set('key1', 'memval');
 		const result = await cacheGet<string>('key1');
 		expect(result).toBe('memval');
 	});
 
-	it('cacheSet writes to in-memory cache', async () => {
+	it('without KV: cacheSet writes to in-memory cache', async () => {
 		await cacheSet('key2', 'written');
-		const result = await cacheGet<string>('key2');
-		expect(result).toBe('written');
+		expect(scanCache.get('key2')).toBe('written');
 	});
 
-	it('cacheGet returns undefined for missing keys', async () => {
-		const result = await cacheGet<string>('nonexistent');
-		expect(result).toBeUndefined();
+	it('with KV: cacheGet returns value from KV', async () => {
+		const mockKV = {
+			get: vi.fn().mockResolvedValue({ data: 'from-kv' }),
+			put: vi.fn(),
+		};
+		const result = await cacheGet<{ data: string }>('key', mockKV as unknown as KVNamespace);
+		expect(result).toEqual({ data: 'from-kv' });
+		expect(mockKV.get).toHaveBeenCalledWith('key', 'json');
+	});
+
+	it('with KV: cacheSet writes to KV with correct expirationTtl', async () => {
+		const mockKV = {
+			get: vi.fn(),
+			put: vi.fn().mockResolvedValue(undefined),
+		};
+		await cacheSet('key', { val: 1 }, mockKV as unknown as KVNamespace);
+		expect(mockKV.put).toHaveBeenCalledWith('key', JSON.stringify({ val: 1 }), { expirationTtl: 300 });
+	});
+
+	it('KV error on get: silently falls back to in-memory', async () => {
+		scanCache.set('fallback', 'inmem');
+		const mockKV = {
+			get: vi.fn().mockRejectedValue(new Error('KV failure')),
+			put: vi.fn(),
+		};
+		const result = await cacheGet<string>('fallback', mockKV as unknown as KVNamespace);
+		expect(result).toBe('inmem');
+	});
+
+	it('KV error on set: silently falls back to in-memory', async () => {
+		const mockKV = {
+			get: vi.fn(),
+			put: vi.fn().mockRejectedValue(new Error('KV failure')),
+		};
+		await cacheSet('errkey', 'errval', mockKV as unknown as KVNamespace);
+		expect(scanCache.get('errkey')).toBe('errval');
+	});
+
+	it('scanCache is the global in-memory TTLCache instance', () => {
+		expect(scanCache).toBeInstanceOf(TTLCache);
+		scanCache.set('test', 'val');
+		expect(scanCache.get('test')).toBe('val');
 	});
 });

@@ -28,9 +28,7 @@ function mockDkimRecords(selectorRecords: Record<string, string[]>) {
 			}
 		}
 
-		return Promise.resolve(
-			createDohResponse([{ name: queriedName, type: 16 }], answers),
-		);
+		return Promise.resolve(createDohResponse([{ name: queriedName, type: 16 }], answers));
 	});
 }
 
@@ -164,4 +162,3 @@ describe('checkDkim', () => {
 		expect(revoked!.severity).toBe('medium');
 	});
 });
-

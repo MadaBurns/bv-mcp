@@ -107,17 +107,13 @@ function mockAllChecks() {
 					return Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=reject']));
 				}
 				if (url.includes('_domainkey.')) {
-					return Promise.resolve(
-						txtResponse('default._domainkey.example.com', ['v=DKIM1; k=rsa; p=MIGf']),
-					);
+					return Promise.resolve(txtResponse('default._domainkey.example.com', ['v=DKIM1; k=rsa; p=MIGf']));
 				}
 				if (url.includes('_mta-sts.')) {
 					return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
 				}
 				if (url.includes('_smtp._tls.')) {
-					return Promise.resolve(
-						txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
-					);
+					return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
 				}
 				return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
 			}
@@ -134,9 +130,7 @@ function mockAllChecks() {
 		}
 
 		if (url.includes('mta-sts.') && url.includes('.well-known')) {
-			return Promise.resolve(
-				httpResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'),
-			);
+			return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'));
 		}
 
 		if (url.startsWith('https://')) {
@@ -171,12 +165,8 @@ describe('handleToolsCall — dispatch routing', () => {
 	});
 
 	it('check_caa with valid domain returns content', async () => {
-		const caaAnswers = [
-			{ name: 'example.com', type: 257, TTL: 300, data: '0 issue "letsencrypt.org"' },
-		];
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			createDohResponse([{ name: 'example.com', type: 257 }], caaAnswers),
-		);
+		const caaAnswers = [{ name: 'example.com', type: 257, TTL: 300, data: '0 issue "letsencrypt.org"' }];
+		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([{ name: 'example.com', type: 257 }], caaAnswers));
 		const result = await call('check_caa', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toHaveLength(1);

@@ -11,9 +11,7 @@ function mockCaaRecords(records: string[]) {
 		TTL: 300,
 		data,
 	}));
-	globalThis.fetch = vi.fn().mockResolvedValue(
-		createDohResponse([{ name: 'example.com', type: 257 }], answers),
-	);
+	globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([{ name: 'example.com', type: 257 }], answers));
 }
 
 function mockCaaFailure() {
@@ -72,11 +70,7 @@ describe('checkCaa', () => {
 	});
 
 	it('reports info finding when all CAA tags are present', async () => {
-		mockCaaRecords([
-			'0 issue "letsencrypt.org"',
-			'0 issuewild "letsencrypt.org"',
-			'0 iodef "mailto:admin@example.com"',
-		]);
+		mockCaaRecords(['0 issue "letsencrypt.org"', '0 issuewild "letsencrypt.org"', '0 iodef "mailto:admin@example.com"']);
 		const result = await runCheckCaa('example.com');
 		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0].severity).toBe('info');
@@ -92,11 +86,7 @@ describe('checkCaa', () => {
 	});
 
 	it('handles multiple CAA records with mixed tags', async () => {
-		mockCaaRecords([
-			'0 issue "digicert.com"',
-			'0 issue "letsencrypt.org"',
-			'0 iodef "mailto:security@example.com"',
-		]);
+		mockCaaRecords(['0 issue "digicert.com"', '0 issue "letsencrypt.org"', '0 iodef "mailto:security@example.com"']);
 		const result = await runCheckCaa('example.com');
 		const issuewildFinding = result.findings.find((f) => f.title.includes('issuewild'));
 		expect(issuewildFinding).toBeDefined();
@@ -126,9 +116,7 @@ describe('checkCaa', () => {
 
 	it('parses hex wire format with missing issuewild tag', async () => {
 		// Only issue tag in hex wire format
-		mockCaaRecords([
-			'\\# 16 00 05 69 73 73 75 65 6c 65 74 73 65 6e 63 72 79 70 74 2e 6f 72 67',
-		]);
+		mockCaaRecords(['\\# 16 00 05 69 73 73 75 65 6c 65 74 73 65 6e 63 72 79 70 74 2e 6f 72 67']);
 		const result = await runCheckCaa('example.com');
 		const issuewildFinding = result.findings.find((f) => f.title.includes('issuewild'));
 		expect(issuewildFinding).toBeDefined();
