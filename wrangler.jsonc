@@ -7,5 +7,10 @@
   ],
   "observability": {
     "enabled": true
+  },
+  // Authentication secret for Bearer token auth on /mcp endpoint.
+  // Set via `wrangler secret put SECRET` for production — do NOT commit real values.
+  "vars": {
+    "SECRET": "CHANGE-ME"
   }
 }
