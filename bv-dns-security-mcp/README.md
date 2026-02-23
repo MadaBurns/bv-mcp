@@ -63,8 +63,9 @@ Deploy to your own Cloudflare account for full control:
 ```bash
 git clone https://github.com/MadaBurns/bv-mcp.git
 cd bv-mcp
-npm install
-npx wrangler deploy
+npm run setup        # install dependencies
+npm run setup:kv     # create KV namespaces (first time only)
+npm run deploy       # deploy to Cloudflare Workers
 ```
 
 Your endpoint is live at `https://bv-dns-security-mcp.<your-subdomain>.workers.dev/mcp`. Use that URL in the client configs above.
@@ -74,10 +75,12 @@ Your endpoint is live at `https://bv-dns-security-mcp.<your-subdomain>.workers.d
 ```bash
 git clone https://github.com/MadaBurns/bv-mcp.git
 cd bv-mcp
-npm install && npm run dev
+npm run setup && npm run dev
 ```
 
 Worker starts at `http://localhost:8787/mcp`. Use `http://localhost:8787/mcp` as the URL in your client config.
+
+> **Why not npx / uvx?** This is a *remote* MCP server (Streamable HTTP transport), not a local stdio server. It runs on Cloudflare Workers, not on your machine. Tools like `npx` and `uvx` are designed for local stdio-based MCP servers. For remote servers, you just point your client at the URL — no local process needed.
 
 ---
 
@@ -134,6 +137,14 @@ Claude: [calls explain_finding({ checkType: "DNSSEC", status: "FAIL" })]
 
 ---
 
+## How It Works
+
+This server is **open source but queries an external service** for DNS resolution. All DNS lookups are performed via [Cloudflare's public DNS-over-HTTPS API](https://developers.cloudflare.com/1.1.1.1/encryption/dns-over-https/) (`cloudflare-dns.com/dns-query`). No queries are logged or stored by this server — but Cloudflare's standard [privacy policy](https://developers.cloudflare.com/1.1.1.1/privacy/public-dns-resolver/) applies to the DNS resolution itself.
+
+The server does not phone home, collect telemetry, or send data anywhere other than Cloudflare DoH. You can verify this by auditing the source — every outbound request originates from [src/lib/dns.ts](src/lib/dns.ts).
+
+---
+
 ## Architecture
 
 ```
@@ -162,14 +173,15 @@ MCP Client ──► Cloudflare Worker (Hono) ──► Cloudflare DoH API
 - [Node.js](https://nodejs.org/) v18+
 - A free [Cloudflare account](https://dash.cloudflare.com/sign-up)
 
-### Create KV Namespaces
-
-After your first deploy, create the KV stores and update the IDs in `wrangler.jsonc`:
+### Setup
 
 ```bash
-npx wrangler kv namespace create RATE_LIMIT
-npx wrangler kv namespace create SCAN_CACHE
+npm run setup        # install dependencies
+npm run setup:kv     # create RATE_LIMIT and SCAN_CACHE KV namespaces
+npm run deploy       # deploy to Cloudflare Workers
 ```
+
+After `setup:kv`, update the KV namespace IDs in `wrangler.jsonc` with the values printed by the command.
 
 ---
 
