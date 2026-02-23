@@ -148,6 +148,69 @@ export async function checkDnssec(domain: string): Promise<boolean> {
   return resp.AD === true;
 }
 
+/** Parsed CAA record with flags, tag, and value */
+export interface CaaRecord {
+  flags: number;
+  tag: string;
+  value: string;
+}
+
+/**
+ * Parse a single CAA record data string.
+ * Handles both human-readable format (e.g. `0 issue "letsencrypt.org"`)
+ * and Cloudflare DoH hex wire format (e.g. `\# 19 00 05 69 73 73 75 65...`).
+ *
+ * Wire format bytes: flags(1) + tag_length(1) + tag(tag_length) + value(rest)
+ */
+export function parseCaaRecord(data: string): CaaRecord | null {
+  // Hex wire format: \# NN HH HH HH ...
+  if (data.startsWith("\\#") || data.startsWith("#")) {
+    const parts = data.trim().split(/\s+/);
+    // parts[0] = "\#", parts[1] = byte count, parts[2..] = hex bytes
+    const hexStart = parts[0] === "\\#" || parts[0] === "#" ? 2 : 1;
+    const hexBytes = parts.slice(hexStart);
+    if (hexBytes.length < 3) return null;
+
+    const flags = parseInt(hexBytes[0], 16);
+    const tagLen = parseInt(hexBytes[1], 16);
+    if (isNaN(flags) || isNaN(tagLen) || hexBytes.length < 2 + tagLen) return null;
+
+    const tag = hexBytes
+      .slice(2, 2 + tagLen)
+      .map((h) => String.fromCharCode(parseInt(h, 16)))
+      .join("");
+    const value = hexBytes
+      .slice(2 + tagLen)
+      .map((h) => String.fromCharCode(parseInt(h, 16)))
+      .join("");
+
+    return { flags, tag: tag.toLowerCase(), value };
+  }
+
+  // Human-readable format: flags tag "value" or flags tag value
+  const match = data.match(/^(\d+)\s+(\S+)\s+"?([^"]*)"?\s*$/);
+  if (match) {
+    return {
+      flags: parseInt(match[1], 10),
+      tag: match[2].toLowerCase(),
+      value: match[3],
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Query CAA records and parse them into structured objects.
+ * Handles both human-readable and hex wire format from DoH.
+ */
+export async function queryCaaRecords(domain: string): Promise<CaaRecord[]> {
+  const records = await queryDnsRecords(domain, "CAA");
+  return records
+    .map(parseCaaRecord)
+    .filter((r): r is CaaRecord => r !== null);
+}
+
 /**
  * Query MX records and parse them into priority + exchange pairs.
  */

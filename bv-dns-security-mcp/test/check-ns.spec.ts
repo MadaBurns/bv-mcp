@@ -6,15 +6,17 @@ const { restore } = setupFetchMock();
 
 /**
  * Helper: mock DoH responses for NS checks.
- * checkNs makes two fetch calls:
+ * checkNs may make up to three fetch calls:
  *   1. NS record query (type=NS)
- *   2. SOA record query (type=SOA)
+ *   2. A record fallback query (type=A) — when NS is empty
+ *   3. SOA record query (type=SOA)
  *
  * URL-dispatching mock routes on the `type=` query parameter.
  */
 function mockNsResponses(
 	nsRecords: string[],
 	soaData?: string,
+	aRecords?: string[],
 ) {
 	const nsAnswers = nsRecords.map((data) => ({
 		name: 'example.com',
@@ -27,6 +29,13 @@ function mockNsResponses(
 		? [{ name: 'example.com', type: RecordType.SOA, TTL: 3600, data: soaData }]
 		: [];
 
+	const aAnswers = (aRecords ?? []).map((data) => ({
+		name: 'example.com',
+		type: RecordType.A,
+		TTL: 300,
+		data,
+	}));
+
 	globalThis.fetch = vi.fn().mockImplementation((url: string) => {
 		const typeMatch = url.match(/type=([^&]+)/);
 		const type = typeMatch ? typeMatch[1] : '';
@@ -34,6 +43,12 @@ function mockNsResponses(
 		if (type === 'NS') {
 			return Promise.resolve(
 				createDohResponse([{ name: 'example.com', type: RecordType.NS }], nsAnswers),
+			);
+		}
+
+		if (type === 'A') {
+			return Promise.resolve(
+				createDohResponse([{ name: 'example.com', type: RecordType.A }], aAnswers),
 			);
 		}
 
@@ -93,15 +108,29 @@ describe('checkNs', () => {
 		expect(f!.detail).toContain('cloudflare.com');
 	});
 
-	it('returns critical finding when no NS records found', async () => {
+	it('returns critical finding when no NS records and domain does not resolve', async () => {
 		mockNsResponses(
 			[],
 			'ns1.example.com. admin.example.com. 2024010101 3600 900 604800 86400',
+			[], // no A records either
 		);
 		const r = await run();
 		expect(r.findings).toHaveLength(1);
 		expect(r.findings[0].severity).toBe('critical');
 		expect(r.findings[0].title).toContain('No NS records');
+	});
+
+	it('returns low finding for delegation-only domains that still resolve', async () => {
+		mockNsResponses(
+			[], // no NS records
+			undefined,
+			['192.0.2.1'], // but domain resolves via A record
+		);
+		const r = await run();
+		expect(r.findings).toHaveLength(1);
+		expect(r.findings[0].severity).toBe('low');
+		expect(r.findings[0].title).toContain('not directly visible');
+		expect(r.findings[0].detail).toContain('parent zone');
 	});
 
 	it('returns critical finding when NS query fails', async () => {

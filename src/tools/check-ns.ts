@@ -36,14 +36,34 @@ export async function checkNs(domain: string): Promise<CheckResult> {
   }
 
   if (nsRecords.length === 0) {
-    findings.push(
-      createFinding(
-        "ns",
-        "No NS records found",
-        "critical",
-        `No nameserver records found for ${domain}. Without NS records, the domain cannot resolve.`,
-      ),
-    );
+    // Check if domain still resolves (e.g. delegation-only zones like govt.nz)
+    let domainResolves = false;
+    try {
+      const aResp = await queryDns(domain, "A");
+      domainResolves = (aResp.Answer ?? []).length > 0;
+    } catch {
+      /* ignore */
+    }
+
+    if (domainResolves) {
+      findings.push(
+        createFinding(
+          "ns",
+          "NS records not directly visible",
+          "low",
+          `No NS records returned for ${domain} directly, but the domain resolves. NS records may be managed at a parent zone.`,
+        ),
+      );
+    } else {
+      findings.push(
+        createFinding(
+          "ns",
+          "No NS records found",
+          "critical",
+          `No nameserver records found for ${domain}. Without NS records, the domain cannot resolve.`,
+        ),
+      );
+    }
     return buildCheckResult("ns", findings);
   }
 

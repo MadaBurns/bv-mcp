@@ -3,7 +3,7 @@
  * Validates CAA DNS records that restrict which CAs can issue certificates.
  */
 
-import { queryDnsRecords } from "../lib/dns";
+import { queryCaaRecords, type CaaRecord } from "../lib/dns";
 import {
   type CheckResult,
   type Finding,
@@ -18,9 +18,9 @@ import {
 export async function checkCaa(domain: string): Promise<CheckResult> {
   const findings: Finding[] = [];
 
-  let caaRecords: string[] = [];
+  let caaRecords: CaaRecord[] = [];
   try {
-    caaRecords = await queryDnsRecords(domain, "CAA");
+    caaRecords = await queryCaaRecords(domain);
   } catch {
     findings.push(
       createFinding(
@@ -51,14 +51,13 @@ export async function checkCaa(domain: string): Promise<CheckResult> {
   let hasIodef = false;
 
   for (const record of caaRecords) {
-    const lower = record.toLowerCase();
-    if (lower.includes("issue ") || lower.includes("issue\t")) {
+    if (record.tag === "issue") {
       hasIssue = true;
     }
-    if (lower.includes("issuewild")) {
+    if (record.tag === "issuewild") {
       hasIssuewild = true;
     }
-    if (lower.includes("iodef")) {
+    if (record.tag === "iodef") {
       hasIodef = true;
     }
   }

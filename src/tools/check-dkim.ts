@@ -37,6 +37,7 @@ export async function checkDkim(
   const findings: Finding[] = [];
   const selectorsToCheck = selector ? [selector] : COMMON_SELECTORS;
   const foundSelectors: string[] = [];
+  let hasValidKey = false;
 
   // Check each selector in parallel
   const results = await Promise.all(
@@ -59,8 +60,11 @@ export async function checkDkim(
 
       // Validate each DKIM record
       for (const record of result.records) {
+        const isRevoked =
+          /p=\s*;/i.test(record) || /p=\s*$/i.test(record);
+
         // Check for empty public key (revoked)
-        if (/p=\s*;/i.test(record) || /p=\s*$/i.test(record)) {
+        if (isRevoked) {
           findings.push(
             createFinding(
               "dkim",
@@ -69,6 +73,8 @@ export async function checkDkim(
               `DKIM selector "${result.selector}" has an empty public key (p=), indicating the key has been revoked.`,
             ),
           );
+        } else {
+          hasValidKey = true;
         }
 
         // Check key type (should be rsa or ed25519)
@@ -97,6 +103,28 @@ export async function checkDkim(
         }
       }
     }
+  }
+
+  // If multiple found selectors are ALL revoked and none have valid keys,
+  // this is a non-sending domain posture — downgrade to info
+  if (foundSelectors.length > 1 && !hasValidKey) {
+    const revokedCount = findings.filter((f) =>
+      f.title.startsWith("Revoked DKIM key:"),
+    ).length;
+    // Remove individual revoked findings
+    for (let i = findings.length - 1; i >= 0; i--) {
+      if (findings[i].title.startsWith("Revoked DKIM key:")) {
+        findings.splice(i, 1);
+      }
+    }
+    findings.push(
+      createFinding(
+        "dkim",
+        "DKIM keys revoked (non-sending)",
+        "info",
+        `All ${revokedCount} DKIM selector(s) have revoked keys (empty p= tag). This is expected for domains that do not send email.`,
+      ),
+    );
   }
 
   if (foundSelectors.length === 0) {

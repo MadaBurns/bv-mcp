@@ -138,5 +138,30 @@ describe('checkDkim', () => {
 		expect(testingFinding).toBeDefined();
 		expect(keyTypeFinding).toBeDefined();
 	});
+
+	it('treats all-revoked selectors as non-sending domain posture', async () => {
+		mockDkimRecords({
+			google: ['v=DKIM1; k=rsa; p='],
+			selector1: ['v=DKIM1; k=rsa; p=;'],
+			default: ['v=DKIM1; p='],
+		});
+		const r = await run();
+		// Should produce a single info finding instead of 3 medium findings
+		expect(r.findings).toHaveLength(1);
+		expect(r.findings[0].severity).toBe('info');
+		expect(r.findings[0].title).toContain('non-sending');
+		expect(r.findings[0].detail).toContain('3 DKIM selector(s)');
+	});
+
+	it('keeps revoked findings when mixed with valid keys', async () => {
+		mockDkimRecords({
+			google: ['v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4G'],
+			selector1: ['v=DKIM1; k=rsa; p=;'],
+		});
+		const r = await run();
+		const revoked = r.findings.find((f) => f.title.includes('Revoked'));
+		expect(revoked).toBeDefined();
+		expect(revoked!.severity).toBe('medium');
+	});
 });
 
