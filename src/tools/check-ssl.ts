@@ -1,10 +1,9 @@
 /**
  * SSL/TLS certificate check tool.
- * Validates SSL certificate by attempting HTTPS connection and checking CAA records.
+ * Validates SSL certificate by attempting HTTPS connection.
  * Workers-compatible: uses fetch API only.
  */
 
-import { queryTxtRecords, queryDnsRecords } from "../lib/dns";
 import {
   type CheckResult,
   type Finding,
@@ -14,7 +13,7 @@ import {
 
 /**
  * Check SSL/TLS configuration for a domain.
- * Attempts HTTPS connection and checks CAA DNS records.
+ * Attempts HTTPS connection to verify certificate validity.
  */
 export async function checkSsl(domain: string): Promise<CheckResult> {
   const findings: Finding[] = [];
@@ -23,10 +22,6 @@ export async function checkSsl(domain: string): Promise<CheckResult> {
   const httpsResult = await checkHttps(domain);
   findings.push(...httpsResult);
 
-  // Check CAA records
-  const caaResult = await checkCaa(domain);
-  findings.push(...caaResult);
-
   // If no issues found, add info
   if (findings.length === 0) {
     findings.push(
@@ -34,7 +29,7 @@ export async function checkSsl(domain: string): Promise<CheckResult> {
         "ssl",
         "SSL/TLS properly configured",
         "info",
-        `HTTPS is accessible and CAA records are configured for ${domain}.`,
+        `HTTPS is accessible for ${domain}.`,
       ),
     );
   }
@@ -91,50 +86,4 @@ async function checkHttps(domain: string): Promise<Finding[]> {
   return findings;
 }
 
-/** Check CAA (Certificate Authority Authorization) DNS records */
-async function checkCaa(domain: string): Promise<Finding[]> {
-  const findings: Finding[] = [];
-
-  try {
-    const caaRecords = await queryDnsRecords(domain, "CAA");
-
-    if (caaRecords.length === 0) {
-      findings.push(
-        createFinding(
-          "ssl",
-          "No CAA records",
-          "medium",
-          `No CAA records found for ${domain}. CAA records restrict which Certificate Authorities can issue certificates for your domain, preventing unauthorized issuance.`,
-        ),
-      );
-    } else {
-      // Check if any "issue" or "issuewild" tags exist
-      const hasIssue = caaRecords.some((r) => r.includes("issue"));
-      const hasIssuewild = caaRecords.some((r) => r.includes("issuewild"));
-
-      if (!hasIssue && !hasIssuewild) {
-        findings.push(
-          createFinding(
-            "ssl",
-            "CAA records missing issue tags",
-            "medium",
-            `CAA records exist but no "issue" or "issuewild" tags found. These tags are needed to restrict certificate issuance.`,
-          ),
-        );
-      }
-    }
-  } catch {
-    // CAA query failure is not critical
-    findings.push(
-      createFinding(
-        "ssl",
-        "CAA check failed",
-        "low",
-        `Could not query CAA records for ${domain}. This is non-critical but CAA records are recommended.`,
-      ),
-    );
-  }
-
-  return findings;
-}
 
