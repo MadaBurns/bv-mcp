@@ -7,7 +7,7 @@ import { resetAllRateLimits } from '../src/lib/rate-limiter';
 async function initSession(): Promise<string> {
 	const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.SECRET}` },
+		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: {} }),
 	});
 	const ctx = createExecutionContext();
@@ -44,57 +44,11 @@ describe('DNS Security MCP Server', () => {
 		});
 	});
 
-	describe('POST /mcp - authentication', () => {
-		it('rejects requests without Authorization header', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-			});
-			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
-			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(401);
-			const body = await response.json() as { error: { code: number; message: string } };
-			expect(body.error.code).toBe(-32001);
-			expect(body.error.message).toContain('Unauthorized');
-		});
-
-		it('rejects requests with invalid token', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer wrong-token' },
-				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-			});
-			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
-			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(401);
-			const body = await response.json() as { error: { code: number; message: string } };
-			expect(body.error.code).toBe(-32001);
-			expect(body.error.message).toContain('invalid token');
-		});
-
-		it('rejects requests with malformed Authorization header', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic abc123' },
-				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-			});
-			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
-			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(401);
-			const body = await response.json() as { error: { code: number; message: string } };
-			expect(body.error.code).toBe(-32001);
-		});
-	});
-
 	describe('POST /mcp - initialize', () => {
 		it('returns server info, capabilities, and Mcp-Session-Id header', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.SECRET}` },
+				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
 			});
 			const ctx = createExecutionContext();
@@ -118,7 +72,7 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = await initSession();
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.SECRET}`, 'Mcp-Session-Id': sessionId },
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
 			});
 			const ctx = createExecutionContext();
@@ -139,7 +93,7 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = await initSession();
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.SECRET}`, 'Mcp-Session-Id': sessionId },
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'resources/list', params: {} }),
 			});
 			const ctx = createExecutionContext();
@@ -154,7 +108,7 @@ describe('DNS Security MCP Server', () => {
 		it('rejects invalid JSON', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.SECRET}` },
+				headers: { 'Content-Type': 'application/json' },
 				body: 'not json',
 			});
 			const ctx = createExecutionContext();
@@ -168,7 +122,7 @@ describe('DNS Security MCP Server', () => {
 		it('rejects invalid JSON-RPC', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.SECRET}` },
+				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ method: 'test' }),
 			});
 			const ctx = createExecutionContext();
@@ -183,7 +137,7 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = await initSession();
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.SECRET}`, 'Mcp-Session-Id': sessionId },
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'unknown/method', params: {} }),
 			});
 			const ctx = createExecutionContext();
@@ -196,7 +150,7 @@ describe('DNS Security MCP Server', () => {
 		it('rejects non-initialize requests without session ID', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.SECRET}` },
+				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/list', params: {} }),
 			});
 			const ctx = createExecutionContext();
@@ -213,7 +167,7 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = await initSession();
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.SECRET}`, 'Mcp-Session-Id': sessionId },
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({
 					jsonrpc: '2.0', id: 5, method: 'tools/call',
 					params: { name: 'check_spf', arguments: { domain: 'localhost' } },
@@ -231,7 +185,7 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = await initSession();
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.SECRET}`, 'Mcp-Session-Id': sessionId },
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({
 					jsonrpc: '2.0', id: 6, method: 'tools/call',
 					params: { name: 'check_spf', arguments: { domain: 'test.local' } },
@@ -250,7 +204,7 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = await initSession();
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.SECRET}`, 'Mcp-Session-Id': sessionId },
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({
 					jsonrpc: '2.0', id: 7, method: 'tools/call',
 					params: { name: 'explain_finding', arguments: { checkType: 'SPF', status: 'fail' } },
@@ -271,7 +225,6 @@ describe('DNS Security MCP Server', () => {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
-					'Authorization': `Bearer ${env.SECRET}`,
 					'Accept': 'text/event-stream, application/json',
 				},
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
@@ -292,7 +245,6 @@ describe('DNS Security MCP Server', () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'GET',
 				headers: {
-					'Authorization': `Bearer ${env.SECRET}`,
 					'Accept': 'text/event-stream',
 					'Mcp-Session-Id': sessionId,
 				},
@@ -308,7 +260,6 @@ describe('DNS Security MCP Server', () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'GET',
 				headers: {
-					'Authorization': `Bearer ${env.SECRET}`,
 					'Accept': 'text/event-stream',
 				},
 			});
@@ -325,7 +276,7 @@ describe('DNS Security MCP Server', () => {
 			// Delete the session
 			const delReq = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'DELETE',
-				headers: { 'Authorization': `Bearer ${env.SECRET}`, 'Mcp-Session-Id': sessionId },
+				headers: { 'Mcp-Session-Id': sessionId },
 			});
 			const ctx1 = createExecutionContext();
 			const delRes = await worker.fetch(delReq, env, ctx1);
@@ -335,7 +286,7 @@ describe('DNS Security MCP Server', () => {
 			// Subsequent request with deleted session should fail
 			const postReq = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.SECRET}`, 'Mcp-Session-Id': sessionId },
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
 			});
 			const ctx2 = createExecutionContext();
@@ -347,7 +298,7 @@ describe('DNS Security MCP Server', () => {
 		it('DELETE /mcp rejects invalid session', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'DELETE',
-				headers: { 'Authorization': `Bearer ${env.SECRET}`, 'Mcp-Session-Id': 'nonexistent' },
+				headers: { 'Mcp-Session-Id': 'nonexistent' },
 			});
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, env, ctx);

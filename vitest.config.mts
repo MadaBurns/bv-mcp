@@ -7,6 +7,7 @@ export default defineWorkersConfig({
 				wrangler: { configPath: './wrangler.jsonc' },
 			},
 		},
+		exclude: ['bv-dns-security-mcp/**', 'node_modules/**'],
 		coverage: {
 			provider: 'istanbul',
 			reporter: ['text', 'json-summary'],

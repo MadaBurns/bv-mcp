@@ -8,16 +8,17 @@
   "observability": {
     "enabled": true
   },
-  // Authentication secret for Bearer token auth on /mcp endpoint.
-  // Set via `wrangler secret put SECRET` for production — do NOT commit real values.
-  "vars": {
-    "SECRET": "CHANGE-ME"
-  },
+  // Custom domain — Cloudflare will provision DNS + SSL automatically.
+  // Requires the zone blackveilsecurity.com to exist in your CF account.
+  "routes": [
+    { "pattern": "dns-mcp.blackveilsecurity.com", "custom_domain": true }
+  ],
+  // Public MCP endpoint: no authentication bindings required.
   // KV namespace bindings for rate limiting and scan result caching.
   // Create with: wrangler kv namespace create RATE_LIMIT
   //              wrangler kv namespace create SCAN_CACHE
   "kv_namespaces": [
-    { "binding": "RATE_LIMIT", "id": "RATE_LIMIT_KV_ID" },
-    { "binding": "SCAN_CACHE", "id": "SCAN_CACHE_KV_ID" }
+    { "binding": "RATE_LIMIT", "id": "YOUR_RATE_LIMIT_KV_NAMESPACE_ID" },
+    { "binding": "SCAN_CACHE", "id": "YOUR_SCAN_CACHE_KV_NAMESPACE_ID" }
   ]
 }

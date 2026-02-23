@@ -24,7 +24,7 @@ npm install && npx wrangler deploy
 npm install && npm run dev
 
 # Option 3: Use the hosted version (no setup required)
-# MCP endpoint: https://dns-mcp.blackveil.co.nz/mcp
+# MCP endpoint: https://dns-mcp.blackveilsecurity.com/mcp
 ```
 
 ### Connect to Claude Desktop
@@ -35,7 +35,7 @@ Add this to your Claude Desktop config (`claude_desktop_config.json`):
 {
   "mcpServers": {
     "dns-security": {
-      "url": "https://dns-mcp.blackveil.co.nz/mcp"
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
   }
 }
@@ -156,7 +156,7 @@ Worker starts at `http://localhost:8787`. The `/mcp` endpoint is open — no tok
 {
   "mcpServers": {
     "dns-security": {
-      "url": "https://dns-mcp.blackveil.co.nz/mcp"
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
   }
 }
@@ -172,7 +172,7 @@ Point your MCP client at the `/mcp` endpoint using Streamable HTTP transport:
     "dns-security": {
       "transport": {
         "type": "streamable-http",
-        "url": "https://dns-mcp.blackveil.co.nz/mcp"
+        "url": "https://dns-mcp.blackveilsecurity.com/mcp"
       }
     }
   }

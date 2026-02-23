@@ -13,7 +13,6 @@ MCP clients (Claude Desktop, Cursor, custom agents) connect over Streamable HTTP
 ```
 MCP Client ──► Cloudflare Worker (Hono) ──► Cloudflare DoH API
                   │                            (dns-over-HTTPS)
-                  ├─ Bearer token auth
                   ├─ Rate limiter (KV-backed)
                   ├─ Scan cache (KV-backed)
                   └─ Weighted scoring engine
@@ -115,14 +114,6 @@ Copy the output namespace IDs into `wrangler.jsonc`:
 ]
 ```
 
-### Set the Authentication Secret
-
-```bash
-wrangler secret put SECRET
-```
-
-Enter a strong random token when prompted. This is the Bearer token clients must send to authenticate.
-
 ### Deploy
 
 ```bash
@@ -137,7 +128,7 @@ npm run dev
 # or: wrangler dev
 ```
 
-The worker starts at `http://localhost:8787`. The `/mcp` endpoint requires a Bearer token matching the `SECRET` variable in `wrangler.jsonc` (default: `CHANGE-ME` for local dev).
+The worker starts at `http://localhost:8787`. The `/mcp` endpoint is public (no tokens required).
 
 ## Connecting an MCP Client
 
@@ -149,10 +140,7 @@ Point your MCP client at the deployed (or local) `/mcp` endpoint using Streamabl
     "dns-security": {
       "transport": {
         "type": "streamable-http",
-        "url": "https://<your-worker>.workers.dev/mcp"
-      },
-      "headers": {
-        "Authorization": "Bearer <your-secret-token>"
+        "url": "https://dns-mcp.blackveilsecurity.com/mcp"
       }
     }
   }
@@ -169,7 +157,6 @@ The server supports:
 
 | Name | Type | Description |
 |------|------|-------------|
-| `SECRET` | Secret | Bearer token for authenticating MCP clients. Set via `wrangler secret put SECRET` for production. |
 | `RATE_LIMIT` | KV Namespace | Stores per-IP rate limit counters (10 req/min, 50 req/hr) |
 | `SCAN_CACHE` | KV Namespace | Caches scan results with 5-minute TTL |
 
@@ -181,6 +168,8 @@ Tests use [Vitest](https://vitest.dev/) with the Cloudflare Workers pool:
 npm test
 ```
 
+Current suite: **230 tests** passing with **95%+** statement coverage.
+
 Test files are in the `test/` directory:
 - `test/index.spec.ts` — Integration tests for the MCP endpoint
 - `test/dns.spec.ts` — DNS query library tests
@@ -189,4 +178,4 @@ Test files are in the `test/` directory:
 
 ## License
 
-TBD
+[MIT](LICENSE)

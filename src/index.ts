@@ -54,32 +54,6 @@ function jsonRpcSuccess(id: string | number | null | undefined, result: unknown)
   };
 }
 
-/**
- * Constant-time string comparison to prevent timing attacks.
- * Uses XOR accumulation so runtime is always proportional to the
- * longer string, regardless of where a mismatch occurs.
- */
-function timingSafeEqual(a: string, b: string): boolean {
-  const encoder = new TextEncoder();
-  const bufA = encoder.encode(a);
-  const bufB = encoder.encode(b);
-  if (bufA.byteLength !== bufB.byteLength) {
-    // Still compare full length of shorter to avoid early-exit leak
-    const minLen = Math.min(bufA.byteLength, bufB.byteLength);
-    let mismatch = 1; // already different lengths
-    for (let i = 0; i < minLen; i++) {
-      mismatch |= bufA[i] ^ bufB[i];
-    }
-    // Use mismatch to prevent dead-code elimination
-    return mismatch === 0;
-  }
-  let result = 0;
-  for (let i = 0; i < bufA.byteLength; i++) {
-    result |= bufA[i] ^ bufB[i];
-  }
-  return result === 0;
-}
-
 // ---------------------------------------------------------------------------
 // Session management (in-memory, per-isolate)
 // ---------------------------------------------------------------------------
@@ -118,29 +92,10 @@ app.use(
   cors({
     origin: "*",
     allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization", "Accept", "Mcp-Session-Id"],
+    allowHeaders: ["Content-Type", "Accept", "Mcp-Session-Id"],
     exposeHeaders: ["Mcp-Session-Id"],
   }),
 );
-
-// Bearer token authentication for /mcp
-app.use("/mcp", async (c, next) => {
-  const authHeader = c.req.header("authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return c.json(
-      jsonRpcError(null, -32001, "Unauthorized: missing or malformed Authorization header"),
-      401,
-    );
-  }
-  const token = authHeader.slice("Bearer ".length);
-  if (!timingSafeEqual(token, c.env.SECRET)) {
-    return c.json(
-      jsonRpcError(null, -32001, "Unauthorized: invalid token"),
-      401,
-    );
-  }
-  await next();
-});
 
 // Health endpoint
 app.get("/health", (c) => {
