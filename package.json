@@ -1,6 +1,25 @@
 {
 	"name": "bv-dns-security-mcp",
-	"version": "0.0.0",
+	"version": "1.0.0",
+	"description": "Open-source MCP server for DNS and email security analysis — SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA",
+	"license": "MIT",
+	"author": "BLACKVEIL Security",
+	"homepage": "https://dns-mcp.blackveilsecurity.com",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/MadaBurns/bv-mcp.git"
+	},
+	"keywords": [
+		"mcp",
+		"dns",
+		"security",
+		"dmarc",
+		"spf",
+		"dkim",
+		"dnssec",
+		"cloudflare-workers",
+		"model-context-protocol"
+	],
 	"private": true,
 	"scripts": {
 		"setup": "npm install && echo '✓ Dependencies installed. Run: npm run deploy'",

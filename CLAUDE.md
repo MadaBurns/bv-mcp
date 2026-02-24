@@ -5,6 +5,8 @@
 Open-source MCP server for DNS security analysis, deployed as a Cloudflare Worker.
 Exposes 10 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 
+**Version**: 1.0.0 — keep `SERVER_VERSION` in `src/index.ts` and `version` in `package.json` in sync.
+
 ## Monorepo Layout
 
 - `/` (root) — **Primary**: actively developed and deployed
@@ -58,7 +60,7 @@ test/                     — One spec per source file + helpers/dns-mock.ts
 ## Security
 
 - SSRF protection: `sanitize.ts` blocks private IPs, reserved TLDs, DNS rebinding services
-- Auth: optional bearer token (`BV_API_KEY`), constant-time comparison
+- Auth: optional bearer token (`BV_API_KEY`), constant-time XOR comparison
 - Rate limiting: 10 req/min, 50 req/hr per IP via KV (in-memory fallback)
 - Request body max: 10 KB on `/mcp`
 - IP sourcing: only `cf-connecting-ip` — never `x-forwarded-for`
