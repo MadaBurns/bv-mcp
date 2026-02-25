@@ -184,14 +184,15 @@ async function checkRateLimitKV(ip: string, kv: KVNamespace): Promise<RateLimitR
  *             Falls back to in-memory when not provided or on KV errors.
  */
 export async function checkRateLimit(ip: string, kv?: KVNamespace): Promise<RateLimitResult> {
-	if (kv) {
-		try {
-			return await checkRateLimitKV(ip, kv);
-		} catch {
-			// KV error — fall back to in-memory
-		}
-	}
-	return checkRateLimitInMemory(ip);
+       if (kv) {
+	       try {
+		       return await checkRateLimitKV(ip, kv);
+	       } catch (err) {
+		       // KV error — log warning and fall back to in-memory
+		       console.warn('[rate-limiter] KV error, falling back to in-memory:', (err instanceof Error ? err.message : err));
+	       }
+       }
+       return checkRateLimitInMemory(ip);
 }
 
 /**

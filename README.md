@@ -56,6 +56,21 @@ Connect directly to the BLACKVEIL-hosted endpoint. No cloning, no deploying.
 
 Open your AI client and ask: *"Scan blackveilsecurity.com for security issues"*.
 
+## Security & Robustness
+
+This MCP server is designed for maximum security and reliability:
+
+- **Strict input validation:** All domain inputs are normalized, sanitized, and validated against RFC 1035. Unicode, IDN, emoji, and invisible characters are handled using punycode and explicit cleaning.
+- **SSRF protection:** Blocks private/reserved TLDs, IP addresses, and DNS rebinding services. No queries to internal or unsafe networks.
+- **Header normalization:** All incoming HTTP headers are normalized to lowercase and strictly ASCII, preventing header spoofing and Unicode edge cases.
+- **Error handling:** Centralized error middleware ensures only known validation errors are returned to clients. Unexpected errors are sanitized and logged.
+- **Rate limiting:** Per-IP limits (10/min, 50/hr) enforced via Cloudflare KV with in-memory fallback. Standard rate limit headers exposed.
+- **Secrets:** Optional bearer token (`BV_API_KEY`) for production auth, constant-time comparison, never stored in logs.
+- **No Node.js APIs:** Fully Cloudflare Workers compatible, using only fetch, crypto, and Web APIs.
+- **Testing:** 270+ tests, >94% coverage, including edge cases for Unicode, malformed requests, KV failures, and error branches.
+
+See [CLAUDE.md](CLAUDE.md) and [.github/copilot-instructions.md](.github/copilot-instructions.md) for implementation details and best practices.
+
 ### Option B: Self-Hosted Remote (your own Cloudflare Workers)
 
 Deploy to your own Cloudflare account for full control:

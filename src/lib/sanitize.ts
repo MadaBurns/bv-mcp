@@ -1,3 +1,5 @@
+// For IDN/Unicode normalization
+import punycode from 'punycode/';
 /**
  * Input sanitization and validation utilities for the DNS Security MCP Server.
  * Handles domain validation, input cleaning, and MCP error response helpers.
@@ -57,79 +59,93 @@ export interface ValidationResult {
  * Validate and sanitize a domain name for DNS queries.
  * Rejects localhost, private/reserved TLDs, IP addresses, and malformed domains.
  */
-export function validateDomain(input: string): ValidationResult {
-	if (!input || typeof input !== 'string') {
-		return { valid: false, error: 'Domain name is required' };
-	}
+       if (!input || typeof input !== 'string') {
+	       return { valid: false, error: 'Domain name is required' };
+       }
 
-	// Trim whitespace and convert to lowercase
-	const domain = input.trim().toLowerCase();
+       // Remove invisible/non-printable Unicode (except space, dot, hyphen)
+       const cleaned = input.replace(/[\p{C}\p{Zl}\p{Zp}\u200B-\u200D\uFEFF]/gu, '').trim();
+       if (cleaned.length === 0) {
+	       return { valid: false, error: 'Domain name is required' };
+       }
 
-	if (domain.length === 0) {
-		return { valid: false, error: 'Domain name is required' };
-	}
+       // Normalize Unicode to NFC, lowercase, remove trailing dot
+       let domain = cleaned.normalize('NFC').toLowerCase();
+       if (domain.endsWith('.')) domain = domain.slice(0, -1);
 
-	// Remove trailing dot (FQDN notation)
-	const normalized = domain.endsWith('.') ? domain.slice(0, -1) : domain;
+       // Convert Unicode/emoji/IDN to punycode for validation
+       let asciiDomain: string;
+       try {
+	       asciiDomain = punycode.toASCII(domain);
+       } catch {
+	       return { valid: false, error: 'Domain contains invalid Unicode or cannot be converted to ASCII' };
+       }
 
-	if (normalized.length > MAX_DOMAIN_LENGTH) {
-		return { valid: false, error: `Domain exceeds maximum length of ${MAX_DOMAIN_LENGTH} characters` };
-	}
+       if (asciiDomain.length > MAX_DOMAIN_LENGTH) {
+	       return { valid: false, error: `Domain exceeds maximum length of ${MAX_DOMAIN_LENGTH} characters` };
+       }
 
-	// Check blocked exact hostnames
-	if (BLOCKED_HOSTS.includes(normalized)) {
-		return { valid: false, error: `Domain "${normalized}" is not allowed: reserved hostname` };
-	}
+       // Check blocked exact hostnames
+       if (BLOCKED_HOSTS.includes(asciiDomain)) {
+	       return { valid: false, error: `Domain "${asciiDomain}" is not allowed: reserved hostname` };
+       }
 
-	// Check blocked suffixes
-	for (const suffix of BLOCKED_SUFFIXES) {
-		if (normalized === suffix.slice(1) || normalized.endsWith(suffix)) {
-			return { valid: false, error: `Domain "${normalized}" is not allowed: reserved TLD "${suffix}"` };
-		}
-	}
+       // Check blocked suffixes
+       for (const suffix of BLOCKED_SUFFIXES) {
+	       if (asciiDomain === suffix.slice(1) || asciiDomain.endsWith(suffix)) {
+		       return { valid: false, error: `Domain "${asciiDomain}" is not allowed: reserved TLD "${suffix}"` };
+	       }
+       }
 
-	// Check if it looks like an IP address (blocked)
-	for (const pattern of BLOCKED_IP_PATTERNS) {
-		if (pattern.test(normalized)) {
-			return { valid: false, error: `IP addresses are not allowed: "${normalized}"` };
-		}
-	}
+       // Check if it looks like an IP address (blocked)
+       for (const pattern of BLOCKED_IP_PATTERNS) {
+	       if (pattern.test(asciiDomain)) {
+		       return { valid: false, error: `IP addresses are not allowed: "${asciiDomain}"` };
+	       }
+       }
 
-	// Check for DNS rebinding services
-	for (const suffix of BLOCKED_DNS_REBINDING) {
-		if (normalized === suffix.slice(1) || normalized.endsWith(suffix)) {
-			return { valid: false, error: 'Domain uses a DNS rebinding service and is not allowed' };
-		}
-	}
+       // Check for DNS rebinding services
+       for (const suffix of BLOCKED_DNS_REBINDING) {
+	       if (asciiDomain === suffix.slice(1) || asciiDomain.endsWith(suffix)) {
+		       return { valid: false, error: 'Domain uses a DNS rebinding service and is not allowed' };
+	       }
+       }
 
-	// Validate domain label structure
-	const labels = normalized.split('.');
-	if (labels.length < 2) {
-		return { valid: false, error: 'Domain must have at least two labels (e.g., example.com)' };
-	}
-
-	for (const label of labels) {
-		if (label.length === 0) {
-			return { valid: false, error: 'Domain contains empty label (consecutive dots)' };
-		}
-		if (label.length > MAX_LABEL_LENGTH) {
-			return { valid: false, error: `Label "${label}" exceeds maximum length of ${MAX_LABEL_LENGTH} characters` };
-		}
-		if (!LABEL_REGEX.test(label)) {
-			return { valid: false, error: `Label "${label}" contains invalid characters` };
-		}
-	}
+       // Validate domain label structure (punycode labels)
+       const labels = asciiDomain.split('.');
+       if (labels.length < 2) {
+	       return { valid: false, error: 'Domain must have at least two labels (e.g., example.com)' };
+       }
+       for (const label of labels) {
+	       if (label.length === 0) {
+		       return { valid: false, error: 'Domain contains empty label (consecutive dots)' };
+	       }
+	       if (label.length > MAX_LABEL_LENGTH) {
+		       return { valid: false, error: `Label "${label}" exceeds maximum length of ${MAX_LABEL_LENGTH} characters` };
+	       }
+	       if (!LABEL_REGEX.test(label)) {
+		       return { valid: false, error: `Label "${label}" contains invalid characters` };
+	       }
+       }
 
 	return { valid: true };
-}
 
 /**
  * Sanitize a domain string: trim, lowercase, remove trailing dot.
  * Call validateDomain first to ensure the domain is valid.
  */
 export function sanitizeDomain(input: string): string {
-	const domain = input.trim().toLowerCase();
-	return domain.endsWith('.') ? domain.slice(0, -1) : domain;
+       // Remove invisible/non-printable Unicode (except space, dot, hyphen)
+       const cleaned = input.replace(/[\p{C}\p{Zl}\p{Zp}\u200B-\u200D\uFEFF]/gu, '').trim();
+       if (cleaned.length === 0) return '';
+       let domain = cleaned.normalize('NFC').toLowerCase();
+       if (domain.endsWith('.')) domain = domain.slice(0, -1);
+       // Convert Unicode/emoji/IDN to punycode for DNS queries
+       try {
+	       return punycode.toASCII(domain);
+       } catch {
+	       return '';
+       }
 }
 
 /**

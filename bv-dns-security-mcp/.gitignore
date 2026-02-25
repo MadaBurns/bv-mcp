@@ -22,9 +22,6 @@ Thumbs.db
 .env.local
 .env.*.local
 
-# Coverage
-coverage/
-
 # Logs
 *.log
 npm-debug.log*

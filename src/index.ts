@@ -108,32 +108,63 @@ function acceptsSSE(accept: string | undefined): boolean {
 // ---------------------------------------------------------------------------
 // Hono app
 // ---------------------------------------------------------------------------
-const app = new Hono<{ Bindings: Env }>();
+// Explicitly type env bindings for clarity and safety
+type BvMcpEnv = {
+	RATE_LIMIT?: KVNamespace;
+	SCAN_CACHE?: KVNamespace;
+	BV_API_KEY?: string;
+};
+
+const app = new Hono<{ Bindings: BvMcpEnv }>();
+
 
 // CORS for MCP clients — allow Streamable HTTP methods and headers
 app.use(
-	'/mcp',
-	cors({
-		origin: '*',
-		allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-		allowHeaders: ['Content-Type', 'Accept', 'Mcp-Session-Id', 'Authorization'],
-		exposeHeaders: ['Mcp-Session-Id'],
-	}),
+       '/mcp',
+       cors({
+	       origin: '*',
+	       allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+	       allowHeaders: ['Content-Type', 'Accept', 'Mcp-Session-Id', 'Authorization'],
+	       exposeHeaders: ['Mcp-Session-Id'],
+       }),
 );
+
+// Centralized error handling middleware
+app.use('*', async (c, next) => {
+       try {
+	       await next();
+       } catch (err) {
+	       // Log unexpected errors with request context (no secrets)
+	       const reqInfo = {
+		       method: c.req.method,
+		       url: c.req.url,
+		       headers: Object.fromEntries(Array.from(c.req.raw.headers.entries()).filter(([k]) => k !== 'authorization')),
+	       };
+	       // Use console.error for error logging
+	       console.error('[error]', {
+		       error: err instanceof Error ? err.message : String(err),
+		       stack: err instanceof Error ? err.stack : undefined,
+		       request: reqInfo,
+	       });
+	       // Sanitize error response
+	       return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INTERNAL_ERROR, 'Internal server error'), 500);
+       }
+});
 
 // Optional bearer auth for /mcp; open mode when BV_API_KEY is unset/empty
 app.use('/mcp', async (c, next) => {
-	const apiKey = c.env.BV_API_KEY?.trim();
-	if (!apiKey) {
-		return next();
-	}
+       const { BV_API_KEY } = c.env;
+       const apiKey = BV_API_KEY?.trim();
+       if (!apiKey) {
+	       return next();
+       }
 
-	const authHeader = c.req.header('authorization');
-	if (!isAuthorizedRequest(authHeader, apiKey)) {
-		return unauthorizedResponse();
-	}
+       const authHeader = c.req.header('authorization');
+       if (!isAuthorizedRequest(authHeader, apiKey)) {
+	       return unauthorizedResponse();
+       }
 
-	return next();
+       return next();
 });
 
 // Health endpoint
@@ -149,52 +180,66 @@ app.get('/health', (c) => {
 // MCP Streamable HTTP transport — POST /mcp
 // ---------------------------------------------------------------------------
 app.post('/mcp', async (c) => {
-		// Rate limiting by IP — only trust cf-connecting-ip (set by Cloudflare edge)
-		// Do NOT fall back to x-forwarded-for as it is client-controlled and spoofable
-		const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
-		const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT);
+	// Defensive: normalize all incoming header keys to lowercase
+	const rawHeaders = Object.fromEntries(Array.from(c.req.raw.headers.entries()));
+	const headersLc: Record<string, string> = {};
+	for (const [k, v] of Object.entries(rawHeaders)) headersLc[k.toLowerCase()] = v;
 
-		if (!rateResult.allowed) {
-			return c.json(
-				jsonRpcError(
-					null,
-					JSON_RPC_ERRORS.INTERNAL_ERROR,
-					`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
-				),
-				429,
-			);
+	// Rate limiting by IP — only trust cf-connecting-ip (set by Cloudflare edge)
+	// Do NOT fall back to x-forwarded-for as it is client-controlled and spoofable
+	const ip = headersLc['cf-connecting-ip'] ?? 'unknown';
+	const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT);
+
+	// Standard rate limit headers (always ASCII, consistent case)
+	const rateHeaders: Record<string, string> = {
+		'x-ratelimit-limit': '10',
+		'x-ratelimit-remaining': String(rateResult.minuteRemaining),
+	};
+	if (!rateResult.allowed) {
+		if (rateResult.retryAfterMs !== undefined) {
+			rateHeaders['retry-after'] = String(Math.ceil(rateResult.retryAfterMs / 1000));
 		}
+		return c.json(
+			jsonRpcError(
+				null,
+				JSON_RPC_ERRORS.INTERNAL_ERROR,
+				`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
+			),
+			429,
+			{ headers: rateHeaders },
+		);
+	}
 
-		// Enforce hard 10KB body size limit (even if content-length is missing or wrong)
-		const MAX_BODY = 10_240;
-		let rawBody = '';
-		const reader = c.req.raw.body?.getReader();
-		if (reader) {
-			let total = 0;
-			while (true) {
-				const { value, done } = await reader.read();
-				if (done) break;
-				total += value.length;
-				if (total > MAX_BODY) {
-					return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Request body too large'), 413);
-				}
-				rawBody += new TextDecoder().decode(value);
-			}
-		} else {
-			// Fallback for environments without .body (should not occur in Workers)
-			rawBody = await c.req.text();
-			if (rawBody.length > MAX_BODY) {
+	// Enforce hard 10KB body size limit (even if content-length is missing or wrong)
+	const MAX_BODY = 10_240;
+	let rawBody = '';
+	const reader = c.req.raw.body?.getReader();
+	if (reader) {
+		let total = 0;
+		while (true) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			total += value.length;
+			if (total > MAX_BODY) {
 				return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Request body too large'), 413);
 			}
+			rawBody += new TextDecoder().decode(value);
 		}
+	} else {
+		// Fallback for environments without .body (should not occur in Workers)
+		rawBody = await c.req.text();
+		if (rawBody.length > MAX_BODY) {
+			return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Request body too large'), 413);
+		}
+	}
 
-		// Parse JSON-RPC request
-		let body: JsonRpcRequest;
-		try {
-			body = JSON.parse(rawBody);
-		} catch {
-			return c.json(jsonRpcError(null, JSON_RPC_ERRORS.PARSE_ERROR, 'Parse error: invalid JSON'), 400);
-		}
+	// Parse JSON-RPC request
+	let body: JsonRpcRequest;
+	try {
+		body = JSON.parse(rawBody);
+	} catch {
+		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.PARSE_ERROR, 'Parse error: invalid JSON'), 400);
+	}
 
 	// Validate JSON-RPC 2.0 structure
 	if (body.jsonrpc !== '2.0' || typeof body.method !== 'string') {
@@ -207,7 +252,7 @@ app.post('/mcp', async (c) => {
 	}
 
 	// Session validation — non-initialize requests must carry a valid session ID
-	const sessionId = c.req.header('mcp-session-id');
+	const sessionId = headersLc['mcp-session-id'];
 	const { id, method, params } = body;
 
 	if (method !== 'initialize') {
@@ -288,11 +333,13 @@ app.post('/mcp', async (c) => {
 		// Build response headers
 		const headers: Record<string, string> = {};
 		if (newSessionId) {
-			headers['Mcp-Session-Id'] = newSessionId;
+			headers['mcp-session-id'] = newSessionId;
 		}
+		// Always include normalized rate limit headers if present
+		Object.assign(headers, rateHeaders);
 
 		// If client accepts SSE, stream the response as an SSE event
-		const accept = c.req.header('accept');
+		const accept = headersLc['accept'];
 		if (acceptsSSE(accept)) {
 			const body = new ReadableStream({
 				start(controller) {

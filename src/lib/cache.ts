@@ -131,15 +131,16 @@ const inMemoryCache = new TTLCache<unknown>({
  * @param kv - Optional KV namespace for persistent caching
  */
 export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | undefined> {
-	if (kv) {
-		try {
-			const val = await kv.get(key, 'json');
-			return val as T | undefined;
-		} catch {
-			// KV error — fall through to in-memory
-		}
-	}
-	return inMemoryCache.get(key) as T | undefined;
+       if (kv) {
+	       try {
+		       const val = await kv.get(key, 'json');
+		       return val as T | undefined;
+	       } catch (err) {
+		       // KV error — log warning and fall through to in-memory
+		       console.warn('[cache] KV get failed, falling back to in-memory:', (err instanceof Error ? err.message : err));
+	       }
+       }
+       return inMemoryCache.get(key) as T | undefined;
 }
 
 /**
@@ -151,15 +152,16 @@ export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | un
  * @param kv - Optional KV namespace for persistent caching
  */
 export async function cacheSet(key: string, value: unknown, kv?: KVNamespace): Promise<void> {
-	if (kv) {
-		try {
-			await kv.put(key, JSON.stringify(value), { expirationTtl: DEFAULT_TTL_SECONDS });
-			return;
-		} catch {
-			// KV error — fall through to in-memory
-		}
-	}
-	inMemoryCache.set(key, value);
+       if (kv) {
+	       try {
+		       await kv.put(key, JSON.stringify(value), { expirationTtl: DEFAULT_TTL_SECONDS });
+		       return;
+	       } catch (err) {
+		       // KV error — log warning and fall through to in-memory
+		       console.warn('[cache] KV put failed, falling back to in-memory:', (err instanceof Error ? err.message : err));
+	       }
+       }
+       inMemoryCache.set(key, value);
 }
 
 /**

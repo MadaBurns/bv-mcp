@@ -76,31 +76,49 @@ export class DnsQueryError extends Error {
  * @param dnssecCheck - If true, sets the CD=0 flag to request DNSSEC validation
  * @returns The full DoH JSON response
  */
-export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck = false): Promise<DohResponse> {
-	const params = new URLSearchParams({
-		name: domain,
-		type,
-		...(dnssecCheck ? { cd: '0' } : {}),
-	});
+export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck = false, opts?: { timeoutMs?: number; retries?: number }): Promise<DohResponse> {
+       const params = new URLSearchParams({
+	       name: domain,
+	       type,
+	       ...(dnssecCheck ? { cd: '0' } : {}),
+       });
 
-	const url = `${DOH_ENDPOINT}?${params.toString()}`;
+       const url = `${DOH_ENDPOINT}?${params.toString()}`;
+       const timeoutMs = opts?.timeoutMs ?? 4000;
+       const retries = opts?.retries ?? 1;
 
-	let response: Response;
-	try {
-		response = await fetch(url, {
-			method: 'GET',
-			headers: { Accept: 'application/dns-json' },
-		});
-	} catch (err) {
-		throw new DnsQueryError(`DNS query failed: ${err instanceof Error ? err.message : String(err)}`, domain, type);
-	}
+       for (let attempt = 0; attempt <= retries; attempt++) {
+	       const controller = new AbortController();
+	       const timeout = setTimeout(() => controller.abort(), timeoutMs);
+	       let response: Response;
+	       try {
+		       response = await fetch(url, {
+			       method: 'GET',
+			       headers: { Accept: 'application/dns-json' },
+			       // cf: { cacheEverything: true }, // Uncomment to customize Cloudflare fetch
+			       signal: controller.signal,
+		       });
+	       } catch (err) {
+		       clearTimeout(timeout);
+		       if (err instanceof DOMException && err.name === 'AbortError') {
+			       if (attempt < retries) continue;
+			       throw new DnsQueryError(`DNS query timed out after ${timeoutMs}ms`, domain, type);
+		       }
+		       if (attempt < retries) continue;
+		       throw new DnsQueryError(`DNS query failed: ${err instanceof Error ? err.message : String(err)}`, domain, type);
+	       }
+	       clearTimeout(timeout);
 
-	if (!response.ok) {
-		throw new DnsQueryError(`DoH returned HTTP ${response.status}`, domain, type, response.status);
-	}
+	       if (!response.ok) {
+		       if (attempt < retries && response.status >= 500) continue;
+		       throw new DnsQueryError(`DoH returned HTTP ${response.status}`, domain, type, response.status);
+	       }
 
-	const data: DohResponse = await response.json();
-	return data;
+	       const data: DohResponse = await response.json();
+	       return data;
+       }
+       // Should never reach here
+       throw new DnsQueryError('DNS query failed after retries', domain, type);
 }
 
 /**
