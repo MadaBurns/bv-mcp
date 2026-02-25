@@ -149,35 +149,52 @@ app.get('/health', (c) => {
 // MCP Streamable HTTP transport — POST /mcp
 // ---------------------------------------------------------------------------
 app.post('/mcp', async (c) => {
-	// Rate limiting by IP — only trust cf-connecting-ip (set by Cloudflare edge)
-	// Do NOT fall back to x-forwarded-for as it is client-controlled and spoofable
-	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
-	const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT);
+		// Rate limiting by IP — only trust cf-connecting-ip (set by Cloudflare edge)
+		// Do NOT fall back to x-forwarded-for as it is client-controlled and spoofable
+		const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+		const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT);
 
-	if (!rateResult.allowed) {
-		return c.json(
-			jsonRpcError(
-				null,
-				JSON_RPC_ERRORS.INTERNAL_ERROR,
-				`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
-			),
-			429,
-		);
-	}
+		if (!rateResult.allowed) {
+			return c.json(
+				jsonRpcError(
+					null,
+					JSON_RPC_ERRORS.INTERNAL_ERROR,
+					`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
+				),
+				429,
+			);
+		}
 
-	// Reject oversized request bodies (max 10KB — tool arguments are small)
-	const contentLength = c.req.header('content-length');
-	if (contentLength && parseInt(contentLength, 10) > 10_240) {
-		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Request body too large'), 413);
-	}
+		// Enforce hard 10KB body size limit (even if content-length is missing or wrong)
+		const MAX_BODY = 10_240;
+		let rawBody = '';
+		const reader = c.req.raw.body?.getReader();
+		if (reader) {
+			let total = 0;
+			while (true) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				total += value.length;
+				if (total > MAX_BODY) {
+					return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Request body too large'), 413);
+				}
+				rawBody += new TextDecoder().decode(value);
+			}
+		} else {
+			// Fallback for environments without .body (should not occur in Workers)
+			rawBody = await c.req.text();
+			if (rawBody.length > MAX_BODY) {
+				return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Request body too large'), 413);
+			}
+		}
 
-	// Parse JSON-RPC request
-	let body: JsonRpcRequest;
-	try {
-		body = await c.req.json<JsonRpcRequest>();
-	} catch {
-		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.PARSE_ERROR, 'Parse error: invalid JSON'), 400);
-	}
+		// Parse JSON-RPC request
+		let body: JsonRpcRequest;
+		try {
+			body = JSON.parse(rawBody);
+		} catch {
+			return c.json(jsonRpcError(null, JSON_RPC_ERRORS.PARSE_ERROR, 'Parse error: invalid JSON'), 400);
+		}
 
 	// Validate JSON-RPC 2.0 structure
 	if (body.jsonrpc !== '2.0' || typeof body.method !== 'string') {

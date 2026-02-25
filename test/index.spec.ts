@@ -24,6 +24,25 @@ async function initSession(options?: { authToken?: string; targetEnv?: Env }): P
 }
 
 describe('DNS Security MCP Server', () => {
+		describe('POST /mcp - body size limit', () => {
+			it('returns 413 Payload Too Large for requests over 10KB', async () => {
+				// Create a JSON-RPC payload just over 10KB
+				const bigString = 'a'.repeat(10 * 1024); // 10KB
+				const payload = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { big: bigString } });
+				expect(Buffer.byteLength(payload)).toBeGreaterThan(10 * 1024);
+				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: payload,
+				});
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(request, env, ctx);
+				await waitOnExecutionContext(ctx);
+				expect(response.status).toBe(413);
+				const body = await response.text();
+				expect(body).toMatch(/too large|payload/i);
+			});
+		});
 	beforeEach(() => {
 		resetAllRateLimits();
 	});
