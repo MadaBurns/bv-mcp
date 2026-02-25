@@ -363,6 +363,45 @@ You can run all development, testing, and deployment commands inside the contain
 
 ---
 
+
+## Client Integration: VS Code, Claude, Gemini
+
+This MCP server exposes a Model Context Protocol endpoint for DNS security analysis at:
+
+**Endpoint:** `https://dns-mcp.blackveilsecurity.com/mcp`
+
+### VS Code (Copilot MCP, Claude, Gemini)
+- Install an MCP-compatible extension (e.g., Copilot MCP, Claude, or Gemini plugin for VS Code).
+- In the extension settings, set the MCP endpoint URL to:
+  
+  `https://dns-mcp.blackveilsecurity.com/mcp`
+- If authentication is required, set the Bearer token to your `BV_API_KEY` (leave blank for open mode).
+- Ensure the extension supports JSON-RPC 2.0 over HTTP (streamable preferred).
+
+### Claude (Anthropic)
+- Use the "Add MCP Tool" or "Connect External Tool" feature in your Claude workspace.
+- Set the endpoint to:
+  
+  `https://dns-mcp.blackveilsecurity.com/mcp`
+- If prompted, provide the Bearer token (`BV_API_KEY`) or leave blank for open access.
+- Claude will auto-discover available tools and schemas.
+
+### Gemini (Google)
+- In Gemini's tool/plugin settings, add a new MCP endpoint:
+  
+  `https://dns-mcp.blackveilsecurity.com/mcp`
+- Provide the Bearer token if required.
+- Gemini will list available DNS security tools after connecting.
+
+#### Notes
+- All clients must support JSON-RPC 2.0 over HTTP POST.
+- Max request body: 10KB.
+- Rate limits: 10 req/min, 50 req/hr per IP (see server docs).
+- For custom deployments, update the endpoint URL accordingly.
+
+For more details, see the [CLAUDE.md](CLAUDE.md) and [.github/copilot-instructions.md](.github/copilot-instructions.md).
+
+---
 ## Manual Testing & Troubleshooting
 
 ### Test MCP Endpoint with curl
