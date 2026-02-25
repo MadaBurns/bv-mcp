@@ -360,3 +360,45 @@ npm run deploy     # Deploys to Cloudflare Workers
 ```
 
 You can run all development, testing, and deployment commands inside the container. No local setup required.
+
+---
+
+## Manual Testing & Troubleshooting
+
+### Test MCP Endpoint with curl
+
+To manually test the MCP server, send a JSON-RPC request using curl:
+
+```bash
+curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","method":"scan_domain","params":{"domain":"example.com"},"id":1}'
+```
+
+If authentication is enabled (`BV_API_KEY` is set), add the Authorization header:
+
+```bash
+curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <your-api-key>' \
+  --data '{"jsonrpc":"2.0","method":"scan_domain","params":{"domain":"example.com"},"id":1}'
+```
+
+### Session Handling
+- Most MCP clients (Claude, Cursor, Copilot) handle session automatically.
+- Manual requests do **not** require a session unless your client expects it or the server is configured to require one.
+- If you see `"invalid or missing session"`, try using a supported MCP client or check server configuration.
+
+### Health Check
+Verify the server is running:
+
+```bash
+curl https://dns-mcp.blackveilsecurity.com/health
+```
+
+### Troubleshooting
+- **401 Unauthorized:** Ensure you are sending the correct `Authorization: Bearer <token>` header if `BV_API_KEY` is set.
+- **Invalid or missing session:** Use a supported MCP client, or check if your request needs a session parameter.
+- **Other errors:** Review server logs or MCP client documentation.
+
+---
