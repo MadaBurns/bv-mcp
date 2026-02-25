@@ -54,7 +54,7 @@ Connect directly to the BLACKVEIL-hosted endpoint. No cloning, no deploying.
 }
 ```
 
-Open your AI client and ask: *"Scan blackveil.co.nz for security issues"*.
+Open your AI client and ask: *"Scan blackveilsecurity.com for security issues"*.
 
 ### Option B: Self-Hosted Remote (your own Cloudflare Workers)
 
@@ -68,7 +68,7 @@ npm run setup:kv     # create KV namespaces (first time only)
 npm run deploy       # deploy to Cloudflare Workers
 ```
 
-Your endpoint is live at `https://bv-dns-security-mcp.<your-subdomain>.workers.dev/mcp`. Use that URL in the client configs above.
+Your endpoint is live at `https://dns-mcp.blackveilsecurity.com/mcp`. Use that URL in the client configs above.
 
 ### Option C: Local Development
 
@@ -109,8 +109,8 @@ Every domain input is validated against RFC 1035, blocks private/reserved TLDs, 
 
 **"Is my startup's domain safe?"**
 ```
-You:    Scan example.com for security issues
-Claude: [calls scan_domain("example.com")]
+You:    Scan blackveilsecurity.com for security issues
+Claude: [calls scan_domain("blackveilsecurity.com")]
         → Overall Score: 62/100 (C)
         → SPF: Warning — soft fail (~all) allows spoofed email through
         → DMARC: Fail — no DMARC record found
@@ -121,8 +121,8 @@ Claude: [calls scan_domain("example.com")]
 
 **"Why are our emails going to spam?"**
 ```
-You:    Check SPF and DMARC for ourdomain.com
-Claude: [calls check_spf("ourdomain.com"), check_dmarc("ourdomain.com")]
+You:    Check SPF and DMARC for blackveilsecurity.com
+Claude: [calls check_spf("blackveilsecurity.com"), check_dmarc("blackveilsecurity.com")]
         → SPF has 12 lookups (max 10) — exceeding the limit causes hard failures
         → DMARC is set to p=none — ISPs aren't enforcing any policy on spoofed mail
 ```
@@ -317,13 +317,13 @@ The code isn't our moat. Anyone could write a DNS security MCP in a weekend. Wha
 
 The repo stays open. The dataset stays private. That's the line.
 
-— Adam Burns, [BLACKVEIL](https://blackveil.co.nz)
+— Adam Burns, [BLACKVEIL](https://blackveilsecurity.com)
 
 ---
 
 ## Want Autonomous Remediation?
 
-This tool finds problems. [BLACKVEIL](https://blackveil.co.nz) fixes them automatically.
+This tool finds problems. [BLACKVEIL](https://blackveilsecurity.com) fixes them automatically.
 
 ---
 
