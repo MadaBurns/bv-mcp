@@ -326,3 +326,37 @@ The repo stays open. The dataset stays private. That's the line.
 This tool finds problems. [BLACKVEIL](https://blackveil.co.nz) fixes them automatically.
 
 ---
+
+## Development Container (DevContainer)
+
+This repository supports [VS Code DevContainers](https://containers.dev/) and GitHub Codespaces for safe, reproducible development in an isolated environment.
+
+### Quick Start
+
+1. **Open in VS Code**
+   - Install the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
+   - Open the repo in VS Code and select "Reopen in Container" when prompted.
+
+2. **Open in GitHub Codespaces**
+   - Click the "Code" dropdown in GitHub and select "Open with Codespaces".
+
+### Features
+- Pre-configured Node.js, TypeScript, Wrangler CLI, Vitest, and Cloudflare tools
+- Port 8787 forwarded for local dev server
+- Recommended extensions: Prettier, ESLint, Cloudflare, TypeScript Next
+- Sample `.env.example` for secrets
+
+### Container Details
+- `.devcontainer/devcontainer.json` — DevContainer config
+- `.devcontainer/Dockerfile` — Custom image (Node, Wrangler CLI, Vitest)
+- `.devcontainer/.env.example` — Sample environment variables
+
+### Usage
+```bash
+npm install        # Installs dependencies
+npm run dev        # Starts local dev server at http://localhost:8787
+npm test           # Runs tests in Cloudflare Workers pool
+npm run deploy     # Deploys to Cloudflare Workers
+```
+
+You can run all development, testing, and deployment commands inside the container. No local setup required.
