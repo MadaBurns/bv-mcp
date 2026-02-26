@@ -101,7 +101,7 @@ Worker starts at `http://localhost:8787/mcp`. Use `http://localhost:8787/mcp` as
 
 ## What It Does
 
-Ten tools that check every layer of a domain's security posture — from email spoofing to certificate hygiene.
+Eleven tools that check every layer of a domain's security posture — from email spoofing to certificate hygiene and subdomain takeover.
 
 | Tool | What it checks |
 |------|---------------|
@@ -115,6 +115,7 @@ Ten tools that check every layer of a domain's security posture — from email s
 | `check_mta_sts` | Is email transport encrypted? Checks MTA-STS policy enforcement |
 | `check_ns` | Is DNS infrastructure resilient? Analyses nameserver redundancy and diversity |
 | `check_caa` | Who can issue certificates? Checks CAA records restricting certificate authorities |
+| `check_subdomain_takeover` | Are subdomains vulnerable to takeover? Detects dangling CNAMEs and orphaned records pointing to third-party services |
 | `explain_finding` | Don't understand a result? Get a plain-English explanation with remediation steps |
 
 Every domain input is validated against RFC 1035, blocks private/reserved TLDs, IP addresses, and DNS rebinding services.
@@ -278,7 +279,7 @@ Add to `.cursor/mcp.json`:
 
 ## Scoring Methodology
 
-The scan model uses 8 categories with importance weighting aligned to real-world impact:
+The scan model uses 9 categories with importance weighting aligned to real-world impact:
 
 | Category | Weight |
 |----------|--------|
@@ -290,6 +291,7 @@ The scan model uses 8 categories with importance weighting aligned to real-world
 | MTA-STS | 3 |
 | NS | 0 (informational) |
 | CAA | 0 (informational) |
+| Subdomain Takeover | 0 (critical, informational) |
 
 Plus up to +5 email configuration bonus.
 
