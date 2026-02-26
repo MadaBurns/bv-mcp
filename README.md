@@ -109,6 +109,7 @@ Ten tools that check every layer of a domain's security posture — from email s
 | `check_spf` | Can anyone impersonate your email? Validates SPF records and authorised senders |
 | `check_dmarc` | What happens to spoofed email? Checks DMARC policy enforcement |
 | `check_dkim` | Are emails cryptographically signed? Probes DKIM selectors for key records |
+| `check_mx` | Does the domain accept email? Checks MX records and flags likely outbound email usage |
 | `check_ssl` | Is the connection secure? Validates certificate, expiry, and TLS configuration |
 | `check_dnssec` | Can DNS responses be tampered with? Verifies DNSSEC chain of trust |
 | `check_mta_sts` | Is email transport encrypted? Checks MTA-STS policy enforcement |

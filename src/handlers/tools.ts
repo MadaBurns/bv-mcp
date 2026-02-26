@@ -59,6 +59,11 @@ const DOMAIN_INPUT_SCHEMA = {
 /** All MCP tool definitions */
 const TOOLS: McpTool[] = [
 	{
+		name: 'check_mx',
+		description: 'Check MX (Mail Exchange) records for a domain. Validates presence and quality of MX records, assesses outbound email usage.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
 		name: 'check_spf',
 		description:
 			'Check SPF (Sender Policy Framework) records for a domain. Validates SPF TXT records for proper syntax, mechanisms, and policy.',
@@ -238,6 +243,12 @@ export async function handleToolsCall(
 	try {
 		// Dispatch to the appropriate tool
 		switch (name) {
+						case 'check_mx': {
+							const domain = extractAndValidateDomain(args);
+							const { checkMx } = await import('../tools/check-mx');
+							const result = await runCachedToolCheck(domain, 'mx', () => checkMx(domain), scanCacheKV);
+							return { content: [mcpText(formatCheckResult(result))] };
+						}
 			case 'check_spf': {
 				const domain = extractAndValidateDomain(args);
 				const result = await runCachedToolCheck(domain, 'spf', () => checkSpf(domain), scanCacheKV);
