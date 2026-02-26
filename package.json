@@ -34,6 +34,7 @@
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.12.17",
 		"@cloudflare/workers-types": "^4.20260304.0",
+		"@types/punycode": "^2.1.4",
 		"@vitest/coverage-istanbul": "^3.2.4",
 		"hono": "^4.12.2",
 		"typescript": "^5.5.2",
