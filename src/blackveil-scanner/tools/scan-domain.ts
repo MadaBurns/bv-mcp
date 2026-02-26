@@ -30,6 +30,56 @@ export async function scanDomain(domain: string): Promise<{ results: Record<stri
 		checkMX,
 	];
 
+	// Check if domain exists via NS query
+	try {
+		const nsResult = await checkNS(domain);
+		if (
+			nsResult.findings.some(
+				(f) => f.title?.toLowerCase().includes('no nameserver records found') || f.detail?.toLowerCase().includes('nxdomain')
+			)
+		) {
+			// NXDOMAIN detected
+			return {
+				results: {
+					NXDOMAIN: {
+						category: 'ns',
+						passed: false,
+						score: 0,
+						findings: [
+							{
+								category: 'ns',
+								title: 'Domain does not exist (NXDOMAIN)',
+								severity: 'critical',
+								detail: `The domain ${domain} does not exist in DNS (NXDOMAIN). No further checks performed.`,
+							},
+						],
+					},
+				},
+				score: 0,
+			};
+		}
+	} catch (e) {
+		// If NS check throws, treat as NXDOMAIN
+		return {
+			results: {
+				NXDOMAIN: {
+					category: 'ns',
+					passed: false,
+					score: 0,
+					findings: [
+						{
+							category: 'ns',
+							title: 'Domain does not exist (NXDOMAIN)',
+							severity: 'critical',
+							detail: `The domain ${domain} does not exist in DNS (NXDOMAIN). No further checks performed.`,
+						},
+					],
+				},
+			},
+			score: 0,
+		};
+	}
+
 	const results: Record<string, CheckResult> = {};
 	await Promise.all(
 		checks.map(async (fn) => {
