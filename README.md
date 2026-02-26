@@ -56,14 +56,53 @@ Connect directly to the BLACKVEIL-hosted endpoint. No cloning, no deploying.
 
 Open your AI client and ask: *"Scan blackveilsecurity.com for security issues"*.
 
-## Security & Robustness
+## Security, Observability & Analytics
 
-This MCP server is designed for maximum security and reliability:
+This MCP server is designed for maximum security, observability, and reliability:
 
 - **Strict input validation:** All domain inputs are normalized, sanitized, and validated against RFC 1035. Unicode, IDN, emoji, and invisible characters are handled using punycode and explicit cleaning.
 - **SSRF protection:** Blocks private/reserved TLDs, IP addresses, and DNS rebinding services. No queries to internal or unsafe networks.
 - **Header normalization:** All incoming HTTP headers are normalized to lowercase and strictly ASCII, preventing header spoofing and Unicode edge cases.
 - **Error handling:** Centralized error middleware ensures only known validation errors are returned to clients. Unexpected errors are sanitized and logged.
+- **Structured logging:** All requests, tool executions, and errors are logged as structured JSON events. Logs include domain, tool, result, severity, timing, and request metadata. Ready for integration with external analytics and observability platforms.
+## Observability & Analytics
+
+Every MCP request, tool call, and error is logged as a structured JSON event. Logs include:
+- Timestamp
+- Request ID
+- IP address (from `cf-connecting-ip`)
+- Tool name
+- Domain
+- Result (pass/fail/grade)
+- Severity
+- Details (check result, error, etc.)
+- Duration (ms)
+- User agent
+
+These logs are emitted via `console.log` in the Cloudflare Worker and can be tailed, exported, or integrated with external analytics platforms (e.g., Logflare, Datadog, Sentry, Cloudflare Analytics).
+
+**Privacy:** No domain queries, results, or logs are sent to third parties except Cloudflare DoH for DNS resolution. All logs are local to the Worker unless you configure external log forwarding.
+
+**Integration:** To forward logs to an external analytics platform, use Cloudflare's log streaming or a custom integration. See [CLAUDE.md](CLAUDE.md) for architectural details.
+
+**Example log event:**
+
+```json
+{
+  "timestamp": "2026-02-26T18:00:00.000Z",
+  "requestId": "1",
+  "ip": "203.0.113.42",
+  "tool": "scan_domain",
+  "domain": "example.com",
+  "result": "B",
+  "severity": "info",
+  "details": { "score": 75, "findings": [...] },
+  "durationMs": 120,
+  "userAgent": "MCP-Client/1.0"
+}
+```
+
+Logs are designed for easy parsing, monitoring, and alerting. You can build dashboards, alerts, and analytics on top of these events.
 - **Rate limiting:** Per-IP limits (10/min, 50/hr) enforced via Cloudflare KV with in-memory fallback. Standard rate limit headers exposed.
 - **Secrets:** Optional bearer token (`BV_API_KEY`) for production auth, constant-time comparison, never stored in logs.
 - **No Node.js APIs:** Fully Cloudflare Workers compatible, using only fetch, crypto, and Web APIs.

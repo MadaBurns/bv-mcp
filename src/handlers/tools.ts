@@ -20,6 +20,7 @@ import { checkNs } from '../tools/check-ns';
 import { checkCaa } from '../tools/check-caa';
 import { scanDomain, formatScanReport } from '../tools/scan-domain';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
+import { logEvent, logError } from '../lib/log';
 
 /** MCP Tool definition */
 interface McpTool {
@@ -231,120 +232,253 @@ async function runCachedToolCheck(
  * @param scanCacheKV - Optional KV namespace for scan result caching
  */
 export async function handleToolsCall(
-	params: {
-		name: string;
-		arguments?: Record<string, unknown>;
-	},
-	scanCacheKV?: KVNamespace,
+       params: {
+	       name: string;
+	       arguments?: Record<string, unknown>;
+       },
+       scanCacheKV?: KVNamespace,
 ): Promise<McpToolResult> {
-	const { name } = params;
-	const args = params.arguments ?? {};
-
-	try {
-		// Dispatch to the appropriate tool
-		switch (name) {
-						case 'check_mx': {
-							const domain = extractAndValidateDomain(args);
-							const { checkMx } = await import('../tools/check-mx');
-							const result = await runCachedToolCheck(domain, 'mx', () => checkMx(domain), scanCacheKV);
-							return { content: [mcpText(formatCheckResult(result))] };
-						}
-			case 'check_spf': {
-				const domain = extractAndValidateDomain(args);
-				const result = await runCachedToolCheck(domain, 'spf', () => checkSpf(domain), scanCacheKV);
-				return { content: [mcpText(formatCheckResult(result))] };
-			}
-
-			case 'check_dmarc': {
-				const domain = extractAndValidateDomain(args);
-				const result = await runCachedToolCheck(domain, 'dmarc', () => checkDmarc(domain), scanCacheKV);
-				return { content: [mcpText(formatCheckResult(result))] };
-			}
-
-			case 'check_dkim': {
-				const domain = extractAndValidateDomain(args);
-				let selector: string | undefined;
-				if (typeof args.selector === 'string' && args.selector.trim().length > 0) {
-					const sel = args.selector.trim().toLowerCase();
-					// Validate selector as a DNS label: alphanumeric + hyphens, max 63 chars
-					if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(sel) || sel.length > 63) {
-						return {
-							content: [mcpError('Invalid DKIM selector: must be a valid DNS label (alphanumeric and hyphens, max 63 chars)')],
-							isError: true,
-						};
-					}
-					selector = sel;
-				}
-				const result = await runCachedToolCheck(
-					domain,
-					selector ? `dkim:${selector}` : 'dkim',
-					() => checkDkim(domain, selector),
-					scanCacheKV,
-				);
-				return { content: [mcpText(formatCheckResult(result))] };
-			}
-
-			case 'check_dnssec': {
-				const domain = extractAndValidateDomain(args);
-				const result = await runCachedToolCheck(domain, 'dnssec', () => checkDnssec(domain), scanCacheKV);
-				return { content: [mcpText(formatCheckResult(result))] };
-			}
-
-			case 'check_ssl': {
-				const domain = extractAndValidateDomain(args);
-				const result = await runCachedToolCheck(domain, 'ssl', () => checkSsl(domain), scanCacheKV);
-				return { content: [mcpText(formatCheckResult(result))] };
-			}
-
-			case 'check_mta_sts': {
-				const domain = extractAndValidateDomain(args);
-				const result = await runCachedToolCheck(domain, 'mta_sts', () => checkMtaSts(domain), scanCacheKV);
-				return { content: [mcpText(formatCheckResult(result))] };
-			}
-
-			case 'check_ns': {
-				const domain = extractAndValidateDomain(args);
-				const result = await runCachedToolCheck(domain, 'ns', () => checkNs(domain), scanCacheKV);
-				return { content: [mcpText(formatCheckResult(result))] };
-			}
-
-			case 'check_caa': {
-				const domain = extractAndValidateDomain(args);
-				const result = await runCachedToolCheck(domain, 'caa', () => checkCaa(domain), scanCacheKV);
-				return { content: [mcpText(formatCheckResult(result))] };
-			}
-
-			case 'scan_domain': {
-				const domain = extractAndValidateDomain(args);
-				const result = await scanDomain(domain, scanCacheKV);
-				return { content: [mcpText(formatScanReport(result))] };
-			}
-
-			case 'explain_finding': {
-				const checkType = args.checkType;
-				const status = args.status;
-				if (typeof checkType !== 'string' || typeof status !== 'string') {
-					return { content: [mcpError('Missing required parameters: checkType and status')], isError: true };
-				}
-				const details = typeof args.details === 'string' ? args.details : undefined;
-				const result = explainFinding(checkType, status, details);
-				return { content: [mcpText(formatExplanation(result))] };
-			}
-
-			default:
-				return {
-					content: [mcpError(`Unknown tool: ${name}`)],
-					isError: true,
-				};
-		}
-	} catch (err) {
-		// Only pass through known validation errors; sanitize unexpected errors
-		const isValidationError =
-			err instanceof Error &&
-			(err.message.startsWith('Missing required') ||
-				err.message.startsWith('Invalid') ||
-				err.message.startsWith('Domain validation failed'));
-		const message = isValidationError ? err.message : 'An unexpected error occurred';
-		return { content: [mcpError(message)], isError: true };
-	}
+       const { name } = params;
+       const args = params.arguments ?? {};
+       const startTime = Date.now();
+       let domain: string | undefined;
+       let logResult: string | undefined;
+       let logDetails: unknown;
+       try {
+	       // Dispatch to the appropriate tool
+	       switch (name) {
+		       case 'check_mx': {
+			       domain = extractAndValidateDomain(args);
+			       const { checkMx } = await import('../tools/check-mx');
+			       const result = await runCachedToolCheck(domain, 'mx', () => checkMx(domain), scanCacheKV);
+			       logResult = result.passed ? 'pass' : 'fail';
+			       logDetails = result;
+			       logEvent({
+				       timestamp: new Date().toISOString(),
+				       tool: name,
+				       domain,
+				       result: logResult,
+				       details: logDetails,
+				       durationMs: Date.now() - startTime,
+				       severity: result.passed ? 'info' : 'warn',
+			       });
+			       return { content: [mcpText(formatCheckResult(result))] };
+		       }
+		       case 'check_spf': {
+			       domain = extractAndValidateDomain(args);
+			       const result = await runCachedToolCheck(domain, 'spf', () => checkSpf(domain), scanCacheKV);
+			       logResult = result.passed ? 'pass' : 'fail';
+			       logDetails = result;
+			       logEvent({
+				       timestamp: new Date().toISOString(),
+				       tool: name,
+				       domain,
+				       result: logResult,
+				       details: logDetails,
+				       durationMs: Date.now() - startTime,
+				       severity: result.passed ? 'info' : 'warn',
+			       });
+			       return { content: [mcpText(formatCheckResult(result))] };
+		       }
+		       case 'check_dmarc': {
+			       domain = extractAndValidateDomain(args);
+			       const result = await runCachedToolCheck(domain, 'dmarc', () => checkDmarc(domain), scanCacheKV);
+			       logResult = result.passed ? 'pass' : 'fail';
+			       logDetails = result;
+			       logEvent({
+				       timestamp: new Date().toISOString(),
+				       tool: name,
+				       domain,
+				       result: logResult,
+				       details: logDetails,
+				       durationMs: Date.now() - startTime,
+				       severity: result.passed ? 'info' : 'warn',
+			       });
+			       return { content: [mcpText(formatCheckResult(result))] };
+		       }
+		       case 'check_dkim': {
+			       domain = extractAndValidateDomain(args);
+			       let selector: string | undefined;
+			       if (typeof args.selector === 'string' && args.selector.trim().length > 0) {
+				       const sel = args.selector.trim().toLowerCase();
+				       // Validate selector as a DNS label: alphanumeric + hyphens, max 63 chars
+				       if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(sel) || sel.length > 63) {
+					       logError('Invalid DKIM selector', {
+						       tool: name,
+						       domain,
+						       details: { selector: sel },
+						       severity: 'warn',
+					       });
+					       return {
+						       content: [mcpError('Invalid DKIM selector: must be a valid DNS label (alphanumeric and hyphens, max 63 chars)')],
+						       isError: true,
+					       };
+				       }
+				       selector = sel;
+			       }
+			       const result = await runCachedToolCheck(
+				       domain,
+				       selector ? `dkim:${selector}` : 'dkim',
+				       () => checkDkim(domain, selector),
+				       scanCacheKV,
+			       );
+			       logResult = result.passed ? 'pass' : 'fail';
+			       logDetails = result;
+			       logEvent({
+				       timestamp: new Date().toISOString(),
+				       tool: name,
+				       domain,
+				       result: logResult,
+				       details: logDetails,
+				       durationMs: Date.now() - startTime,
+				       severity: result.passed ? 'info' : 'warn',
+			       });
+			       return { content: [mcpText(formatCheckResult(result))] };
+		       }
+		       case 'check_dnssec': {
+			       domain = extractAndValidateDomain(args);
+			       const result = await runCachedToolCheck(domain, 'dnssec', () => checkDnssec(domain), scanCacheKV);
+			       logResult = result.passed ? 'pass' : 'fail';
+			       logDetails = result;
+			       logEvent({
+				       timestamp: new Date().toISOString(),
+				       tool: name,
+				       domain,
+				       result: logResult,
+				       details: logDetails,
+				       durationMs: Date.now() - startTime,
+				       severity: result.passed ? 'info' : 'warn',
+			       });
+			       return { content: [mcpText(formatCheckResult(result))] };
+		       }
+		       case 'check_ssl': {
+			       domain = extractAndValidateDomain(args);
+			       const result = await runCachedToolCheck(domain, 'ssl', () => checkSsl(domain), scanCacheKV);
+			       logResult = result.passed ? 'pass' : 'fail';
+			       logDetails = result;
+			       logEvent({
+				       timestamp: new Date().toISOString(),
+				       tool: name,
+				       domain,
+				       result: logResult,
+				       details: logDetails,
+				       durationMs: Date.now() - startTime,
+				       severity: result.passed ? 'info' : 'warn',
+			       });
+			       return { content: [mcpText(formatCheckResult(result))] };
+		       }
+		       case 'check_mta_sts': {
+			       domain = extractAndValidateDomain(args);
+			       const result = await runCachedToolCheck(domain, 'mta_sts', () => checkMtaSts(domain), scanCacheKV);
+			       logResult = result.passed ? 'pass' : 'fail';
+			       logDetails = result;
+			       logEvent({
+				       timestamp: new Date().toISOString(),
+				       tool: name,
+				       domain,
+				       result: logResult,
+				       details: logDetails,
+				       durationMs: Date.now() - startTime,
+				       severity: result.passed ? 'info' : 'warn',
+			       });
+			       return { content: [mcpText(formatCheckResult(result))] };
+		       }
+		       case 'check_ns': {
+			       domain = extractAndValidateDomain(args);
+			       const result = await runCachedToolCheck(domain, 'ns', () => checkNs(domain), scanCacheKV);
+			       logResult = result.passed ? 'pass' : 'fail';
+			       logDetails = result;
+			       logEvent({
+				       timestamp: new Date().toISOString(),
+				       tool: name,
+				       domain,
+				       result: logResult,
+				       details: logDetails,
+				       durationMs: Date.now() - startTime,
+				       severity: result.passed ? 'info' : 'warn',
+			       });
+			       return { content: [mcpText(formatCheckResult(result))] };
+		       }
+		       case 'check_caa': {
+			       domain = extractAndValidateDomain(args);
+			       const result = await runCachedToolCheck(domain, 'caa', () => checkCaa(domain), scanCacheKV);
+			       logResult = result.passed ? 'pass' : 'fail';
+			       logDetails = result;
+			       logEvent({
+				       timestamp: new Date().toISOString(),
+				       tool: name,
+				       domain,
+				       result: logResult,
+				       details: logDetails,
+				       durationMs: Date.now() - startTime,
+				       severity: result.passed ? 'info' : 'warn',
+			       });
+			       return { content: [mcpText(formatCheckResult(result))] };
+		       }
+		       case 'scan_domain': {
+			       domain = extractAndValidateDomain(args);
+			       const result = await scanDomain(domain, scanCacheKV);
+			       logResult = result.grade;
+			       logDetails = result;
+			       logEvent({
+				       timestamp: new Date().toISOString(),
+				       tool: name,
+				       domain,
+				       result: logResult,
+				       details: logDetails,
+				       durationMs: Date.now() - startTime,
+				       severity: 'info',
+			       });
+			       return { content: [mcpText(formatScanReport(result))] };
+		       }
+		       case 'explain_finding': {
+			       const checkType = args.checkType;
+			       const status = args.status;
+			       if (typeof checkType !== 'string' || typeof status !== 'string') {
+				       logError('Missing required parameters: checkType and status', {
+					       tool: name,
+					       details: args,
+					       severity: 'warn',
+				       });
+				       return { content: [mcpError('Missing required parameters: checkType and status')], isError: true };
+			       }
+			       const details = typeof args.details === 'string' ? args.details : undefined;
+			       const result = explainFinding(checkType, status, details);
+			       logEvent({
+				       timestamp: new Date().toISOString(),
+				       tool: name,
+				       result: status,
+				       details: { checkType, details },
+				       durationMs: Date.now() - startTime,
+				       severity: 'info',
+			       });
+			       return { content: [mcpText(formatExplanation(result))] };
+		       }
+		       default:
+			       logError(`Unknown tool: ${name}`, {
+				       tool: name,
+				       details: args,
+				       severity: 'error',
+			       });
+			       return {
+				       content: [mcpError(`Unknown tool: ${name}`)],
+				       isError: true,
+			       };
+	       }
+       } catch (err) {
+	       // Only pass through known validation errors; sanitize unexpected errors
+	       const isValidationError =
+		       err instanceof Error &&
+		       (err.message.startsWith('Missing required') ||
+			       err.message.startsWith('Invalid') ||
+			       err.message.startsWith('Domain validation failed'));
+	       const message = isValidationError ? err.message : 'An unexpected error occurred';
+	       logError(err instanceof Error ? err : String(err), {
+		       tool: name,
+		       domain,
+		       details: args,
+		       severity: 'error',
+	       });
+	       return { content: [mcpError(message)], isError: true };
+       }
 }

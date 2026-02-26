@@ -16,6 +16,7 @@ import { cors } from 'hono/cors';
 import { checkRateLimit } from './lib/rate-limiter';
 import { handleToolsList, handleToolsCall } from './handlers/tools';
 import { handleResourcesList, handleResourcesRead } from './handlers/resources';
+import { logEvent, logError } from './lib/log';
 
 /** Server version — keep in sync with package.json */
 const SERVER_VERSION = '1.0.0';
@@ -134,17 +135,15 @@ app.use('*', async (c, next) => {
        try {
 	       await next();
        } catch (err) {
-	       // Log unexpected errors with request context (no secrets)
+	       // Structured error logging
 	       const reqInfo = {
 		       method: c.req.method,
 		       url: c.req.url,
 		       headers: Object.fromEntries(Array.from(c.req.raw.headers.entries()).filter(([k]) => k !== 'authorization')),
 	       };
-	       // Use console.error for error logging
-	       console.error('[error]', {
-		       error: err instanceof Error ? err.message : String(err),
-		       stack: err instanceof Error ? err.stack : undefined,
-		       request: reqInfo,
+	       logError(err instanceof Error ? err : String(err), {
+		       severity: 'error',
+		       details: reqInfo,
 	       });
 	       // Sanitize error response
 	       return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INTERNAL_ERROR, 'Internal server error'), 500);
@@ -180,6 +179,7 @@ app.get('/health', (c) => {
 // MCP Streamable HTTP transport — POST /mcp
 // ---------------------------------------------------------------------------
 app.post('/mcp', async (c) => {
+	const startTime = Date.now();
 	// Defensive: normalize all incoming header keys to lowercase
 	const rawHeaders = Object.fromEntries(Array.from(c.req.raw.headers.entries()));
 	const headersLc: Record<string, string> = {};
@@ -233,13 +233,18 @@ app.post('/mcp', async (c) => {
 		}
 	}
 
-	// Parse JSON-RPC request
-	let body: JsonRpcRequest;
-	try {
-		body = JSON.parse(rawBody);
-	} catch {
-		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.PARSE_ERROR, 'Parse error: invalid JSON'), 400);
-	}
+	       // Parse JSON-RPC request
+	       let body: JsonRpcRequest;
+	       try {
+		       body = JSON.parse(rawBody);
+	       } catch (err) {
+		       logError(err instanceof Error ? err : String(err), {
+			       severity: 'error',
+			       ip,
+			       details: { rawBody },
+		       });
+		       return c.json(jsonRpcError(null, JSON_RPC_ERRORS.PARSE_ERROR, 'Parse error: invalid JSON'), 400);
+	       }
 
 	// Validate JSON-RPC 2.0 structure
 	if (body.jsonrpc !== '2.0' || typeof body.method !== 'string') {
@@ -271,106 +276,151 @@ app.post('/mcp', async (c) => {
 		return new Response(null, { status: 202 });
 	}
 
-	try {
-		// Dispatch MCP methods and build the JSON-RPC response payload
-		let responsePayload: ReturnType<typeof jsonRpcSuccess> | ReturnType<typeof jsonRpcError>;
-		let newSessionId: string | undefined;
+	       try {
+		       // Dispatch MCP methods and build the JSON-RPC response payload
+		       let responsePayload: ReturnType<typeof jsonRpcSuccess> | ReturnType<typeof jsonRpcError>;
+		       let newSessionId: string | undefined;
+		       let logCategory = 'generic';
+		       let logTool: string | undefined;
+		       let logResult: string | undefined;
+		       let logDetails: unknown;
 
-		switch (method) {
-			case 'initialize': {
-				newSessionId = generateSessionId();
-				activeSessions.set(newSessionId, { createdAt: Date.now() });
-				const result = {
-					protocolVersion: '2025-03-26',
-					capabilities: {
-						tools: { listChanged: false },
-						resources: { subscribe: false, listChanged: false },
-					},
-					serverInfo: {
-						name: 'bv-dns-security-mcp',
-						version: SERVER_VERSION,
-					},
-				};
-				responsePayload = jsonRpcSuccess(id, result);
-				break;
-			}
+		       switch (method) {
+			       case 'initialize': {
+				       newSessionId = generateSessionId();
+				       activeSessions.set(newSessionId, { createdAt: Date.now() });
+				       const result = {
+					       protocolVersion: '2025-03-26',
+					       capabilities: {
+						       tools: { listChanged: false },
+						       resources: { subscribe: false, listChanged: false },
+					       },
+					       serverInfo: {
+						       name: 'bv-dns-security-mcp',
+						       version: SERVER_VERSION,
+					       },
+				       };
+				       responsePayload = jsonRpcSuccess(id, result);
+				       logCategory = 'session';
+				       logResult = 'initialized';
+				       break;
+			       }
 
-			case 'tools/list': {
-				const result = handleToolsList();
-				responsePayload = jsonRpcSuccess(id, result);
-				break;
-			}
+			       case 'tools/list': {
+				       const result = handleToolsList();
+				       responsePayload = jsonRpcSuccess(id, result);
+				       logCategory = 'tools';
+				       logResult = 'list';
+				       break;
+			       }
 
-			case 'tools/call': {
-				const toolParams = params as { name: string; arguments?: Record<string, unknown> };
-				const result = await handleToolsCall(toolParams, c.env.SCAN_CACHE);
-				responsePayload = jsonRpcSuccess(id, result);
-				break;
-			}
+			       case 'tools/call': {
+				       const toolParams = params as { name: string; arguments?: Record<string, unknown> };
+				       const result = await handleToolsCall(toolParams, c.env.SCAN_CACHE);
+				       responsePayload = jsonRpcSuccess(id, result);
+				       logCategory = 'tools';
+				       logTool = toolParams.name;
+				       logResult = typeof result === 'object' && result && 'status' in result ? String(result.status) : undefined;
+				       logDetails = result;
+				       break;
+			       }
 
-			case 'resources/list': {
-				const result = handleResourcesList();
-				responsePayload = jsonRpcSuccess(id, result);
-				break;
-			}
+			       case 'resources/list': {
+				       const result = handleResourcesList();
+				       responsePayload = jsonRpcSuccess(id, result);
+				       logCategory = 'resources';
+				       logResult = 'list';
+				       break;
+			       }
 
-			case 'resources/read': {
-				const resourceParams = params as { uri: string };
-				const result = handleResourcesRead(resourceParams);
-				responsePayload = jsonRpcSuccess(id, result);
-				break;
-			}
+			       case 'resources/read': {
+				       const resourceParams = params as { uri: string };
+				       const result = handleResourcesRead(resourceParams);
+				       responsePayload = jsonRpcSuccess(id, result);
+				       logCategory = 'resources';
+				       logResult = 'read';
+				       logDetails = resourceParams;
+				       break;
+			       }
 
-			case 'ping': {
-				responsePayload = jsonRpcSuccess(id, {});
-				break;
-			}
+			       case 'ping': {
+				       responsePayload = jsonRpcSuccess(id, {});
+				       logCategory = 'session';
+				       logResult = 'ping';
+				       break;
+			       }
 
-			default:
-				responsePayload = jsonRpcError(id, JSON_RPC_ERRORS.METHOD_NOT_FOUND, `Method not found: ${method}`);
-		}
+			       default:
+				       responsePayload = jsonRpcError(id, JSON_RPC_ERRORS.METHOD_NOT_FOUND, `Method not found: ${method}`);
+				       logCategory = 'error';
+				       logResult = 'method_not_found';
+		       }
 
-		// Build response headers
-		const headers: Record<string, string> = {};
-		if (newSessionId) {
-			headers['mcp-session-id'] = newSessionId;
-		}
-		// Always include normalized rate limit headers if present
-		Object.assign(headers, rateHeaders);
+		       // Structured logging for request
+		       logEvent({
+			       timestamp: new Date().toISOString(),
+			       requestId: typeof id === 'string' ? id : undefined,
+			       ip,
+			       tool: logTool,
+			       category: logCategory,
+			       result: logResult,
+			       details: logDetails,
+			       durationMs: Date.now() - startTime,
+			       userAgent: headersLc['user-agent'],
+			       severity: logCategory === 'error' ? 'error' : 'info',
+			       domain: typeof params === 'object' && params && 'domain' in params ? String(params.domain) : undefined,
+		       });
 
-		// If client accepts SSE, stream the response as an SSE event
-		const accept = headersLc['accept'];
-		if (acceptsSSE(accept)) {
-			const body = new ReadableStream({
-				start(controller) {
-					const encoder = new TextEncoder();
-					controller.enqueue(encoder.encode(sseEvent(responsePayload)));
-					controller.close();
-				},
-			});
-			return new Response(body, {
-				status: 200,
-				headers: {
-					'Content-Type': 'text/event-stream',
-					'Cache-Control': 'no-cache',
-					Connection: 'keep-alive',
-					...headers,
-				},
-			});
-		}
+		       // Build response headers
+		       const headers: Record<string, string> = {};
+		       if (newSessionId) {
+			       headers['mcp-session-id'] = newSessionId;
+		       }
+		       // Always include normalized rate limit headers if present
+		       Object.assign(headers, rateHeaders);
 
-		// Default: plain JSON response (backward compatible)
-		return c.json(responsePayload, { status: 200, headers });
-	} catch (err) {
-		// Sanitize error messages — only pass through known validation errors,
-		// use generic message for unexpected errors to prevent info leaks
-		const isValidationError =
-			err instanceof Error &&
-			(err.message.startsWith('Missing required') || err.message.startsWith('Invalid') || err.message.startsWith('Resource not found'));
-		const message = isValidationError ? err.message : 'Internal server error';
-		return c.json(jsonRpcError(id, JSON_RPC_ERRORS.INTERNAL_ERROR, message), 500);
-	}
-});
+		       // If client accepts SSE, stream the response as an SSE event
+		       const accept = headersLc['accept'];
+		       if (acceptsSSE(accept)) {
+			       const body = new ReadableStream({
+				       start(controller) {
+					       const encoder = new TextEncoder();
+					       controller.enqueue(encoder.encode(sseEvent(responsePayload)));
+					       controller.close();
+				       },
+			       });
+			       return new Response(body, {
+				       status: 200,
+				       headers: {
+					       'Content-Type': 'text/event-stream',
+					       'Cache-Control': 'no-cache',
+					       Connection: 'keep-alive',
+					       ...headers,
+				       },
+			       });
+		       }
+
+		       // Default: plain JSON response (backward compatible)
+		       return c.json(responsePayload, { status: 200, headers });
+	       } catch (err) {
+		       logError(err instanceof Error ? err : String(err), {
+			       severity: 'error',
+			       ip,
+			       requestId: typeof body?.id === 'string' ? body.id : undefined,
+			       tool: typeof body?.method === 'string' ? body.method : undefined,
+			       details: { params: body?.params },
+			       durationMs: Date.now() - startTime,
+			       userAgent: headersLc['user-agent'],
+		       });
+		       // Sanitize error messages — only pass through known validation errors,
+		       // use generic message for unexpected errors to prevent info leaks
+		       const isValidationError =
+			       err instanceof Error &&
+			       (err.message.startsWith('Missing required') || err.message.startsWith('Invalid') || err.message.startsWith('Resource not found'));
+		       const message = isValidationError ? err.message : 'Internal server error';
+		       return c.json(jsonRpcError(id, JSON_RPC_ERRORS.INTERNAL_ERROR, message), 500);
+	       }
+	});
 
 // ---------------------------------------------------------------------------
 // MCP Streamable HTTP transport — GET /mcp (SSE stream for notifications)
