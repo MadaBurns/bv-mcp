@@ -18,6 +18,27 @@ export interface ExplanationResult {
 type ExplanationEntry = Omit<ExplanationResult, 'checkType' | 'status' | 'details'>;
 
 const EXPLANATIONS: Record<string, ExplanationEntry> = {
+	   SUBDOMAIN_TAKEOVER_CRITICAL: {
+		   title: 'Dangling CNAME — Subdomain Takeover Risk',
+		   severity: 'critical',
+		   explanation: 'A subdomain points to a third-party service (e.g., CloudFront, Heroku) that does not resolve. This is a potential subdomain takeover vector, allowing attackers to claim the orphaned resource and control the subdomain.',
+		   recommendation: 'Remove or update the CNAME record to point to a valid, owned resource. Regularly audit DNS for orphaned records.',
+		   references: ['https://github.com/EdOverflow/can-i-take-over-xyz', 'https://www.hackerone.com/blog/Guide-Subdomain-Takeover', 'https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/CNAMEs.html'],
+	   },
+	   SUBDOMAIN_TAKEOVER_HIGH: {
+		   title: 'CNAME Resolution Failed — Manual Review Needed',
+		   severity: 'high',
+		   explanation: 'A subdomain CNAME points to a third-party service but the target could not be resolved. This may indicate a takeover risk or DNS misconfiguration.',
+		   recommendation: 'Manually review the CNAME target and remove or update if orphaned. Use DNS monitoring tools for ongoing checks.',
+		   references: ['https://github.com/EdOverflow/can-i-take-over-xyz', 'https://www.hackerone.com/blog/Guide-Subdomain-Takeover'],
+	   },
+	   SUBDOMAIN_TAKEOVER_INFO: {
+		   title: 'No Dangling CNAME Records Found',
+		   severity: 'info',
+		   explanation: 'No subdomain takeover vectors detected among known/active subdomains. DNS configuration is secure for this check.',
+		   recommendation: 'Continue regular DNS audits and monitoring for new subdomains or changes.',
+		   references: ['https://github.com/EdOverflow/can-i-take-over-xyz'],
+	   },
 	SPF_PASS: {
 		title: 'SPF Validated',
 		severity: 'pass',

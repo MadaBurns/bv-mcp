@@ -19,6 +19,7 @@ import { checkSsl } from './check-ssl';
 import { checkMtaSts } from './check-mta-sts';
 import { checkNs } from './check-ns';
 import { checkCaa } from './check-caa';
+import { checkSubdomainTakeover } from './check-subdomain-takeover';
 
 /** Cache key prefix for scan and per-check results */
 const CACHE_PREFIX = 'cache:';
@@ -58,16 +59,17 @@ export async function scanDomain(domain: string, kv?: KVNamespace): Promise<Scan
 	}
 
 	// Run all checks in parallel with individual-check caching
-	const checkResults = await Promise.all([
-		runCachedCheck(cleanDomain, 'spf', () => safeCheck('spf', () => checkSpf(cleanDomain)), kv),
-		runCachedCheck(cleanDomain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(cleanDomain)), kv),
-		runCachedCheck(cleanDomain, 'dkim', () => safeCheck('dkim', () => checkDkim(cleanDomain)), kv),
-		runCachedCheck(cleanDomain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(cleanDomain)), kv),
-		runCachedCheck(cleanDomain, 'ssl', () => safeCheck('ssl', () => checkSsl(cleanDomain)), kv),
-		runCachedCheck(cleanDomain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(cleanDomain)), kv),
-		runCachedCheck(cleanDomain, 'ns', () => safeCheck('ns', () => checkNs(cleanDomain)), kv),
-		runCachedCheck(cleanDomain, 'caa', () => safeCheck('caa', () => checkCaa(cleanDomain)), kv),
-	]);
+	   const checkResults = await Promise.all([
+		   runCachedCheck(cleanDomain, 'spf', () => safeCheck('spf', () => checkSpf(cleanDomain)), kv),
+		   runCachedCheck(cleanDomain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(cleanDomain)), kv),
+		   runCachedCheck(cleanDomain, 'dkim', () => safeCheck('dkim', () => checkDkim(cleanDomain)), kv),
+		   runCachedCheck(cleanDomain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(cleanDomain)), kv),
+		   runCachedCheck(cleanDomain, 'ssl', () => safeCheck('ssl', () => checkSsl(cleanDomain)), kv),
+		   runCachedCheck(cleanDomain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(cleanDomain)), kv),
+		   runCachedCheck(cleanDomain, 'ns', () => safeCheck('ns', () => checkNs(cleanDomain)), kv),
+		   runCachedCheck(cleanDomain, 'caa', () => safeCheck('caa', () => checkCaa(cleanDomain)), kv),
+		   runCachedCheck(cleanDomain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(cleanDomain)), kv),
+	   ]);
 
 	// Compute overall score from all check results
 	const score = computeScanScore(checkResults);
