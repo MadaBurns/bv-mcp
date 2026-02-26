@@ -31,6 +31,10 @@ npm-debug.log*
 
 # Cloudflare
 .wrangler/
+wrangler.local.jsonc
 
 # Workspace
 .workspace/
+
+# Agent config
+.agent.md
