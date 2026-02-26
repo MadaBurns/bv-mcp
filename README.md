@@ -1,6 +1,6 @@
-# dns-security-mcp
+# BLACKVEIL Scanner
 
-**The open source MCP server for DNS and email security. Scan any domain from inside Claude, Cursor, or any MCP-compatible AI.**
+**The open source BLACKVEIL Scanner MCP server for DNS and email security. Scan any domain from inside Claude, Cursor, or any MCP-compatible AI.**
 
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Cloudflare Workers](https://img.shields.io/badge/Runs%20on-Cloudflare%20Workers-F38020?logo=cloudflare)](https://workers.cloudflare.com/)
@@ -423,7 +423,7 @@ You can run all development, testing, and deployment commands inside the contain
 
 ## Client Integration: VS Code, Claude, Gemini
 
-This MCP server exposes a Model Context Protocol endpoint for DNS security analysis at:
+This MCP server exposes a Model Context Protocol endpoint branded as **BLACKVEIL Scanner** for DNS security analysis at:
 
 **Endpoint:** `https://dns-mcp.blackveilsecurity.com/mcp`
 
@@ -432,6 +432,7 @@ This MCP server exposes a Model Context Protocol endpoint for DNS security analy
 - In the extension settings, set the MCP endpoint URL to:
   
   `https://dns-mcp.blackveilsecurity.com/mcp`
+- The tool will appear as **BLACKVEIL Scanner** in your client.
 - If authentication is required, set the Bearer token to your `BV_API_KEY` (leave blank for open mode).
 - Ensure the extension supports JSON-RPC 2.0 over HTTP (streamable preferred).
 
@@ -440,6 +441,7 @@ This MCP server exposes a Model Context Protocol endpoint for DNS security analy
 - Set the endpoint to:
   
   `https://dns-mcp.blackveilsecurity.com/mcp`
+- The tool will appear as **BLACKVEIL Scanner** in Claude.
 - If prompted, provide the Bearer token (`BV_API_KEY`) or leave blank for open access.
 - Claude will auto-discover available tools and schemas.
 
@@ -447,6 +449,7 @@ This MCP server exposes a Model Context Protocol endpoint for DNS security analy
 - In Gemini's tool/plugin settings, add a new MCP endpoint:
   
   `https://dns-mcp.blackveilsecurity.com/mcp`
+- The tool will appear as **BLACKVEIL Scanner** in Gemini.
 - Provide the Bearer token if required.
 - Gemini will list available DNS security tools after connecting.
 

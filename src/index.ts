@@ -296,7 +296,7 @@ app.post('/mcp', async (c) => {
 						       resources: { subscribe: false, listChanged: false },
 					       },
 					       serverInfo: {
-						       name: 'bv-dns-security-mcp',
+						       name: 'BLACKVEIL Scanner',
 						       version: SERVER_VERSION,
 					       },
 				       };
