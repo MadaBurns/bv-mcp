@@ -30,6 +30,13 @@ function caaResponse(domain: string, records: string[]) {
 	);
 }
 
+function mxResponse(domain: string, records: string[]) {
+	return createDohResponse(
+		[{ name: domain, type: 15 }],
+		records.map((data) => ({ name: domain, type: 15, TTL: 300, data })),
+	);
+}
+
 function dnssecResponse(domain: string, ad: boolean) {
 	return createDohResponse([{ name: domain, type: 1 }], [{ name: domain, type: 1, TTL: 300, data: '1.2.3.4' }], {
 		ad,
@@ -85,6 +92,11 @@ function mockAllChecks(overrides?: { throwForUrl?: string }) {
 			// CAA records
 			if (url.includes('type=CAA') || url.includes('type=257')) {
 				return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
+			}
+
+			// MX records
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				return Promise.resolve(mxResponse('example.com', ['10 mail.example.com.']));
 			}
 
 			// DNSSEC: A record with AD flag
@@ -144,7 +156,7 @@ describe('scanDomain', () => {
 		expect(() => new Date(result.timestamp).toISOString()).not.toThrow();
 	});
 
-	it('includes all 9 check categories', async () => {
+	it('includes all 10 check categories', async () => {
 		mockAllChecks();
 		const result = await run();
 
@@ -158,7 +170,8 @@ describe('scanDomain', () => {
 		expect(categories).toContain('ns');
 		expect(categories).toContain('caa');
 		expect(categories).toContain('subdomain_takeover');
-		expect(result.checks).toHaveLength(9);
+		expect(categories).toContain('mx');
+		expect(result.checks).toHaveLength(10);
 
 		// Each check result has expected shape
 		for (const check of result.checks) {
@@ -174,8 +187,8 @@ describe('scanDomain', () => {
 		mockAllChecks({ throwForUrl: '_domainkey.' });
 		const result = await run();
 
-		// All 9 checks should still be present
-		expect(result.checks).toHaveLength(9);
+		// All 10 checks should still be present
+		expect(result.checks).toHaveLength(10);
 
 		// The DKIM check should have a degraded finding since DNS failed
 		const dkimCheck = result.checks.find((c) => c.category === 'dkim');
@@ -343,6 +356,8 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 						return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
 					return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
 				}
+				if (url.includes('type=MX') || url.includes('type=15'))
+					return Promise.resolve(mxResponse('example.com', ['10 mail.example.com.']));
 				if (url.includes('type=NS') || url.includes('type=2'))
 					return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
 				if (url.includes('type=CAA') || url.includes('type=257'))
@@ -475,5 +490,129 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		const caa = findCheck(result, 'caa');
 		expect(caa).toBeDefined();
 		expect(caa!.passed).toBe(true);
+	});
+});
+
+/**
+ * Non-mail domain detection: scan_domain should downgrade email auth
+ * findings when a domain has no MX records (not a mail domain).
+ */
+describe('scanDomain - non-mail domain handling', () => {
+	async function run(domain = 'example.com') {
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		return scanDomain(domain);
+	}
+
+	function findCheck(result: ScanDomainResult, category: string) {
+		return result.checks.find((c) => c.category === category);
+	}
+
+	/**
+	 * Mock for a subdomain with no MX and no email auth records.
+	 * The apex _dmarc query can be controlled via the apexDmarc parameter.
+	 */
+	function mockNonMailSubdomain(opts: { apexDmarc?: string; hasMx?: boolean } = {}) {
+		const baseFetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					// Apex DMARC lookup for sub.example.com → _dmarc.example.com
+					if (url.includes('_dmarc.example.com')) {
+						if (opts.apexDmarc) {
+							return Promise.resolve(txtResponse('_dmarc.example.com', [opts.apexDmarc]));
+						}
+						return Promise.resolve(createDohResponse([{ name: '_dmarc.example.com', type: 16 }], []));
+					}
+					// Subdomain's own _dmarc → empty
+					if (url.includes('_dmarc.')) {
+						return Promise.resolve(createDohResponse([{ name: '_dmarc.sub.example.com', type: 16 }], []));
+					}
+					if (url.includes('_domainkey.')) {
+						return Promise.resolve(createDohResponse([{ name: 'default._domainkey.sub.example.com', type: 16 }], []));
+					}
+					if (url.includes('_mta-sts.')) {
+						return Promise.resolve(createDohResponse([{ name: '_mta-sts.sub.example.com', type: 16 }], []));
+					}
+					if (url.includes('_smtp._tls.')) {
+						return Promise.resolve(createDohResponse([{ name: '_smtp._tls.sub.example.com', type: 16 }], []));
+					}
+					// No SPF record
+					return Promise.resolve(createDohResponse([{ name: 'sub.example.com', type: 16 }], []));
+				}
+				if (url.includes('type=MX') || url.includes('type=15')) {
+					if (opts.hasMx) {
+						return Promise.resolve(mxResponse('sub.example.com', ['10 mail.example.com.']));
+					}
+					return Promise.resolve(createDohResponse([{ name: 'sub.example.com', type: 15 }], []));
+				}
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse('sub.example.com', ['ns1.example.com.', 'ns2.example.com.']));
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('sub.example.com', ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1'))
+					return Promise.resolve(dnssecResponse('sub.example.com', true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known')) {
+				return Promise.resolve(httpResponse('', 404));
+			}
+			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+		globalThis.fetch = baseFetch;
+	}
+
+	it('includes MX check in scan results', async () => {
+		mockNonMailSubdomain({ hasMx: true });
+		const result = await run('sub.example.com');
+		const mx = findCheck(result, 'mx');
+		expect(mx).toBeDefined();
+		expect(mx!.findings.some((f) => f.title === 'MX records found')).toBe(true);
+	});
+
+	it('downgrades email auth findings for non-mail subdomain with apex DMARC', async () => {
+		mockNonMailSubdomain({ apexDmarc: 'v=DMARC1; p=reject' });
+		const result = await run('sub.example.com');
+
+		// SPF, DMARC, DKIM findings should all be info severity
+		for (const cat of ['spf', 'dmarc', 'dkim'] as const) {
+			const check = findCheck(result, cat);
+			expect(check).toBeDefined();
+			const nonInfoFindings = check!.findings.filter((f) => f.severity !== 'info');
+			expect(nonInfoFindings).toHaveLength(0);
+			// Should contain the explanatory reason
+			const adjusted = check!.findings.find((f) => f.detail.includes('parent domain DMARC policy covers subdomains'));
+			expect(adjusted).toBeDefined();
+		}
+
+		// Score should be high since email findings are downgraded
+		expect(result.score.overall).toBeGreaterThanOrEqual(80);
+	});
+
+	it('keeps full penalties for domains with MX records', async () => {
+		// Domain has MX records AND missing email auth → should keep penalties
+		mockNonMailSubdomain({ hasMx: true });
+		const result = await run('sub.example.com');
+
+		// SPF should still have high/critical severity (not downgraded)
+		const spf = findCheck(result, 'spf');
+		expect(spf).toBeDefined();
+		const highFinding = spf!.findings.find((f) => f.severity === 'critical' || f.severity === 'high');
+		expect(highFinding).toBeDefined();
+	});
+
+	it('downgrades findings for non-mail domain even without apex DMARC', async () => {
+		// No MX and no apex DMARC → still downgrade (MX alone is sufficient signal)
+		mockNonMailSubdomain({ apexDmarc: undefined });
+		const result = await run('sub.example.com');
+
+		const spf = findCheck(result, 'spf');
+		expect(spf).toBeDefined();
+		const nonInfoFindings = spf!.findings.filter((f) => f.severity !== 'info');
+		expect(nonInfoFindings).toHaveLength(0);
+		// Should contain the simpler reason (no apex DMARC)
+		const adjusted = spf!.findings.find((f) => f.detail.includes('domain has no MX records'));
+		expect(adjusted).toBeDefined();
 	});
 });
