@@ -1,5 +1,15 @@
 // For IDN/Unicode normalization
 import punycode from 'punycode/';
+// Centralized normalization config
+import {
+    BLOCKED_SUFFIXES,
+    BLOCKED_HOSTS,
+    BLOCKED_IP_PATTERNS,
+    BLOCKED_DNS_REBINDING,
+    MAX_DOMAIN_LENGTH,
+    MAX_LABEL_LENGTH,
+    LABEL_REGEX,
+} from './config';
 /**
  * Input sanitization and validation utilities for the DNS Security MCP Server.
  * Handles domain validation, input cleaning, and MCP error response helpers.
@@ -7,48 +17,18 @@ import punycode from 'punycode/';
  */
 
 /** Blocked TLDs and suffixes that should never be queried */
-const BLOCKED_SUFFIXES = [
-	'.local',
-	'.localhost',
-	'.internal',
-	'.example',
-	'.invalid',
-	'.test',
-	'.onion',
-	'.lan',
-	'.home',
-	'.corp',
-	'.intranet',
-];
 
 /** Blocked exact hostnames */
-const BLOCKED_HOSTS = ['localhost', 'localhost.localdomain'];
 
 /** RFC 1918 / loopback patterns to reject in domain names */
-const BLOCKED_IP_PATTERNS = [
-	/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
-	/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
-	/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/,
-	/^192\.168\.\d{1,3}\.\d{1,3}$/,
-	/^169\.254\.\d{1,3}\.\d{1,3}$/,
-	/^0\.0\.0\.0$/,
-	/^::1$/,
-	/^fc00:/i,
-	/^fd[0-9a-f]{2}:/i,
-	/^fe80:/i,
-];
 
 /** DNS rebinding service suffixes to block */
-const BLOCKED_DNS_REBINDING = ['.nip.io', '.sslip.io', '.xip.io', '.nip.direct'];
 
 /** Maximum allowed domain length per RFC 1035 */
-const MAX_DOMAIN_LENGTH = 253;
 
 /** Maximum label length per RFC 1035 */
-const MAX_LABEL_LENGTH = 63;
 
 /** Valid domain label pattern: alphanumeric and hyphens, no leading/trailing hyphens */
-const LABEL_REGEX = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/i;
 
 export interface ValidationResult {
 	valid: boolean;
