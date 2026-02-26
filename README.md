@@ -106,7 +106,7 @@ Logs are designed for easy parsing, monitoring, and alerting. You can build dash
 - **Rate limiting:** Per-IP limits (10/min, 50/hr) enforced via Cloudflare KV with in-memory fallback. Standard rate limit headers exposed.
 - **Secrets:** Optional bearer token (`BV_API_KEY`) for production auth, constant-time comparison, never stored in logs.
 - **No Node.js APIs:** Fully Cloudflare Workers compatible, using only fetch, crypto, and Web APIs.
-- **Testing:** 270+ tests, >94% coverage, including edge cases for Unicode, malformed requests, KV failures, and error branches.
+- **Testing:** 245+ tests, ~95% coverage, including edge cases for Unicode, malformed requests, KV failures, and error branches.
 
 See [CLAUDE.md](CLAUDE.md) and [.github/copilot-instructions.md](.github/copilot-instructions.md) for implementation details and best practices.
 
@@ -122,7 +122,7 @@ npm run setup:kv     # create KV namespaces (first time only)
 npm run deploy       # deploy to Cloudflare Workers
 ```
 
-Your endpoint is live at `https://dns-mcp.blackveilsecurity.com/mcp`. Use that URL in the client configs above.
+Your endpoint is live at `https://<your-worker>.workers.dev/mcp`. Use that URL in the client configs above.
 
 ### Option C: Local Development
 
@@ -140,7 +140,7 @@ Worker starts at `http://localhost:8787/mcp`. Use `http://localhost:8787/mcp` as
 
 ## What It Does
 
-Eleven tools that check every layer of a domain's security posture — from email spoofing to certificate hygiene and subdomain takeover.
+Twelve tools that check every layer of a domain's security posture — from email spoofing to certificate hygiene and subdomain takeover.
 
 | Tool | What it checks |
 |------|---------------|
@@ -342,7 +342,7 @@ Plus up to +5 email configuration bonus.
 
 ## Running Tests
 
-270+ tests with >94% code coverage:
+245+ tests with ~95% code coverage:
 
 ```bash
 npm test

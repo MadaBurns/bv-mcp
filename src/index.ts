@@ -139,7 +139,7 @@ app.use('*', async (c, next) => {
 	       const reqInfo = {
 		       method: c.req.method,
 		       url: c.req.url,
-		       headers: Object.fromEntries(Array.from(c.req.raw.headers.entries()).filter(([k]) => k !== 'authorization')),
+		       headers: Object.fromEntries(Array.from(c.req.raw.headers as unknown as Iterable<[string, string]>).filter(([k]) => k !== 'authorization')),
 	       };
 	       logError(err instanceof Error ? err : String(err), {
 		       severity: 'error',
@@ -181,7 +181,7 @@ app.get('/health', (c) => {
 app.post('/mcp', async (c) => {
 	const startTime = Date.now();
 	// Defensive: normalize all incoming header keys to lowercase
-	const rawHeaders = Object.fromEntries(Array.from(c.req.raw.headers.entries()));
+	const rawHeaders = Object.fromEntries(Array.from(c.req.raw.headers as unknown as Iterable<[string, string]>));
 	const headersLc: Record<string, string> = {};
 	for (const [k, v] of Object.entries(rawHeaders)) headersLc[k.toLowerCase()] = v;
 
@@ -206,7 +206,7 @@ app.post('/mcp', async (c) => {
 				`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
 			),
 			429,
-			{ headers: rateHeaders },
+			rateHeaders,
 		);
 	}
 

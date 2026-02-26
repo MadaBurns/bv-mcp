@@ -35,6 +35,7 @@ export function logEvent(event: LogEvent): void {
  */
 export function logError(error: Error | string, context?: Partial<LogEvent>): void {
 	logEvent({
+		timestamp: new Date().toISOString(),
 		severity: 'error',
 		error: typeof error === 'string' ? error : error.message,
 		...context,

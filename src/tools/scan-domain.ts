@@ -80,7 +80,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace): Promise<Scan
 		checks: checkResults,
 		cached: false,
 		timestamp: new Date().toISOString(),
-		upgrade_cta: 'This tool finds problems. BLACKVEIL fixes them automatically \u2192 https://blackveil.co.nz',
+		upgrade_cta: 'This tool finds problems. BLACKVEIL fixes them automatically \u2192 https://blackveilsecurity.com',
 	};
 
 	// Cache the result

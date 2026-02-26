@@ -8,7 +8,7 @@ Thanks for your interest in contributing! BLACKVEIL Scanner is an open-source DN
 git clone https://github.com/MadaBurns/bv-mcp.git
 cd bv-mcp
 npm install
-npm test           # Run tests (253 specs, ~95% coverage)
+npm test           # Run tests (245+ tests, ~95% coverage)
 npm run dev        # Local dev server at localhost:8787
 npm run typecheck  # Type-check without emitting
 ```

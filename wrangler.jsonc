@@ -9,14 +9,13 @@
     "enabled": true
   },
   // Custom domain — Cloudflare will provision DNS + SSL automatically.
-  // Requires the zone blackveilsecurity.com to exist in your CF account.
+  // Replace with your own domain, or remove for *.workers.dev default.
   "routes": [
-    { "pattern": "dns-mcp.blackveilsecurity.com", "custom_domain": true }
+    { "pattern": "dns-mcp.your-domain.com", "custom_domain": true }
   ],
-  // Public MCP endpoint: no authentication bindings required.
   // KV namespace bindings for rate limiting and scan result caching.
-  // Create with: wrangler kv namespace create RATE_LIMIT
-  //              wrangler kv namespace create SCAN_CACHE
+  // Create with:  npm run setup:kv
+  // Then paste the IDs printed by the command below.
   "kv_namespaces": [
     { "binding": "RATE_LIMIT", "id": "YOUR_RATE_LIMIT_KV_NAMESPACE_ID" },
     { "binding": "SCAN_CACHE", "id": "YOUR_SCAN_CACHE_KV_NAMESPACE_ID" }

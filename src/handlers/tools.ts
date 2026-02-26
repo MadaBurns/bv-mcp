@@ -245,12 +245,18 @@ export async function handleToolsCall(
        let logResult: string | undefined;
        let logDetails: unknown;
        try {
+	       // Extract and validate domain for tools that need it (all except explain_finding)
+	       if (name !== 'explain_finding') {
+		       domain = extractAndValidateDomain(args);
+	       }
+	       // `validDomain` is guaranteed to be a string for all branches that use it
+	       const validDomain: string = domain ?? '';
+
 	       // Dispatch to the appropriate tool
 	       switch (name) {
 		       case 'check_mx': {
-			       domain = extractAndValidateDomain(args);
 			       const { checkMx } = await import('../tools/check-mx');
-			       const result = await runCachedToolCheck(domain, 'mx', () => checkMx(domain), scanCacheKV);
+			       const result = await runCachedToolCheck(validDomain, 'mx', () => checkMx(validDomain), scanCacheKV);
 			       logResult = result.passed ? 'pass' : 'fail';
 			       logDetails = result;
 			       logEvent({
@@ -265,8 +271,7 @@ export async function handleToolsCall(
 			       return { content: [mcpText(formatCheckResult(result))] };
 		       }
 		       case 'check_spf': {
-			       domain = extractAndValidateDomain(args);
-			       const result = await runCachedToolCheck(domain, 'spf', () => checkSpf(domain), scanCacheKV);
+			       const result = await runCachedToolCheck(validDomain, 'spf', () => checkSpf(validDomain), scanCacheKV);
 			       logResult = result.passed ? 'pass' : 'fail';
 			       logDetails = result;
 			       logEvent({
@@ -281,8 +286,7 @@ export async function handleToolsCall(
 			       return { content: [mcpText(formatCheckResult(result))] };
 		       }
 		       case 'check_dmarc': {
-			       domain = extractAndValidateDomain(args);
-			       const result = await runCachedToolCheck(domain, 'dmarc', () => checkDmarc(domain), scanCacheKV);
+			       const result = await runCachedToolCheck(validDomain, 'dmarc', () => checkDmarc(validDomain), scanCacheKV);
 			       logResult = result.passed ? 'pass' : 'fail';
 			       logDetails = result;
 			       logEvent({
@@ -297,7 +301,6 @@ export async function handleToolsCall(
 			       return { content: [mcpText(formatCheckResult(result))] };
 		       }
 		       case 'check_dkim': {
-			       domain = extractAndValidateDomain(args);
 			       let selector: string | undefined;
 			       if (typeof args.selector === 'string' && args.selector.trim().length > 0) {
 				       const sel = args.selector.trim().toLowerCase();
@@ -317,9 +320,9 @@ export async function handleToolsCall(
 				       selector = sel;
 			       }
 			       const result = await runCachedToolCheck(
-				       domain,
+				       validDomain,
 				       selector ? `dkim:${selector}` : 'dkim',
-				       () => checkDkim(domain, selector),
+				       () => checkDkim(validDomain, selector),
 				       scanCacheKV,
 			       );
 			       logResult = result.passed ? 'pass' : 'fail';
@@ -336,8 +339,7 @@ export async function handleToolsCall(
 			       return { content: [mcpText(formatCheckResult(result))] };
 		       }
 		       case 'check_dnssec': {
-			       domain = extractAndValidateDomain(args);
-			       const result = await runCachedToolCheck(domain, 'dnssec', () => checkDnssec(domain), scanCacheKV);
+			       const result = await runCachedToolCheck(validDomain, 'dnssec', () => checkDnssec(validDomain), scanCacheKV);
 			       logResult = result.passed ? 'pass' : 'fail';
 			       logDetails = result;
 			       logEvent({
@@ -352,8 +354,7 @@ export async function handleToolsCall(
 			       return { content: [mcpText(formatCheckResult(result))] };
 		       }
 		       case 'check_ssl': {
-			       domain = extractAndValidateDomain(args);
-			       const result = await runCachedToolCheck(domain, 'ssl', () => checkSsl(domain), scanCacheKV);
+			       const result = await runCachedToolCheck(validDomain, 'ssl', () => checkSsl(validDomain), scanCacheKV);
 			       logResult = result.passed ? 'pass' : 'fail';
 			       logDetails = result;
 			       logEvent({
@@ -368,8 +369,7 @@ export async function handleToolsCall(
 			       return { content: [mcpText(formatCheckResult(result))] };
 		       }
 		       case 'check_mta_sts': {
-			       domain = extractAndValidateDomain(args);
-			       const result = await runCachedToolCheck(domain, 'mta_sts', () => checkMtaSts(domain), scanCacheKV);
+			       const result = await runCachedToolCheck(validDomain, 'mta_sts', () => checkMtaSts(validDomain), scanCacheKV);
 			       logResult = result.passed ? 'pass' : 'fail';
 			       logDetails = result;
 			       logEvent({
@@ -384,8 +384,7 @@ export async function handleToolsCall(
 			       return { content: [mcpText(formatCheckResult(result))] };
 		       }
 		       case 'check_ns': {
-			       domain = extractAndValidateDomain(args);
-			       const result = await runCachedToolCheck(domain, 'ns', () => checkNs(domain), scanCacheKV);
+			       const result = await runCachedToolCheck(validDomain, 'ns', () => checkNs(validDomain), scanCacheKV);
 			       logResult = result.passed ? 'pass' : 'fail';
 			       logDetails = result;
 			       logEvent({
@@ -400,8 +399,7 @@ export async function handleToolsCall(
 			       return { content: [mcpText(formatCheckResult(result))] };
 		       }
 		       case 'check_caa': {
-			       domain = extractAndValidateDomain(args);
-			       const result = await runCachedToolCheck(domain, 'caa', () => checkCaa(domain), scanCacheKV);
+			       const result = await runCachedToolCheck(validDomain, 'caa', () => checkCaa(validDomain), scanCacheKV);
 			       logResult = result.passed ? 'pass' : 'fail';
 			       logDetails = result;
 			       logEvent({
@@ -416,9 +414,8 @@ export async function handleToolsCall(
 			       return { content: [mcpText(formatCheckResult(result))] };
 		       }
 		       case 'scan_domain': {
-			       domain = extractAndValidateDomain(args);
-			       const result = await scanDomain(domain, scanCacheKV);
-			       logResult = result.grade;
+			       const result = await scanDomain(validDomain, scanCacheKV);
+			       logResult = result.score.grade;
 			       logDetails = result;
 			       logEvent({
 				       timestamp: new Date().toISOString(),

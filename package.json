@@ -4,7 +4,7 @@
 	"description": "BLACKVEIL Scanner — DNS/email security analysis and remediation platform.",
 	"license": "MIT",
 	"author": "BLACKVEIL Security",
-	"homepage": "https://blackveil.co.nz",
+	"homepage": "https://blackveilsecurity.com",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/MadaBurns/bv-mcp.git"

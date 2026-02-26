@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
-- 10 MCP tools: `scan_domain`, `check_spf`, `check_dmarc`, `check_dkim`, `check_dnssec`, `check_ssl`, `check_mta_sts`, `check_ns`, `check_caa`, `explain_finding`
+- 12 MCP tools: `scan_domain`, `check_spf`, `check_dmarc`, `check_dkim`, `check_mx`, `check_ssl`, `check_dnssec`, `check_mta_sts`, `check_ns`, `check_caa`, `check_subdomain_takeover`, `explain_finding`
 - 3 static MCP resources: security checks guide, scoring methodology, DNS record types
 - MCP Streamable HTTP transport (JSON-RPC 2.0) with SSE support
 - Weighted scoring engine aligned with BLACKVEIL scanner (50 checks, 8 categories)
@@ -26,7 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Session management with cryptographic session IDs
 - Health endpoint at `/health`
 - Landing page at `/`
-- 253 tests with ~95% line coverage
+- 245+ tests with ~95% line coverage
 - CI/CD via GitHub Actions (test on PR, auto-deploy on push to main)
 - Standalone subpackage at `bv-dns-security-mcp/` for separate distribution
 - Smithery marketplace manifest

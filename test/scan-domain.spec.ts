@@ -128,7 +128,7 @@ describe('scanDomain', () => {
 		expect(result).toHaveProperty('timestamp');
 		expect(result).toHaveProperty('upgrade_cta');
 		expect(typeof result.upgrade_cta).toBe('string');
-		expect(result.upgrade_cta).toContain('blackveil.co.nz');
+		expect(result.upgrade_cta).toContain('blackveilsecurity.com');
 
 		// Score structure
 		expect(result.score).toHaveProperty('overall');
