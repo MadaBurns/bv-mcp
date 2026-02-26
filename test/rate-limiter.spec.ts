@@ -1,24 +1,18 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { checkRateLimit, getRateLimitStatus, resetRateLimit, resetAllRateLimits, type RateLimitResult } from '../src/lib/rate-limiter';
-
 afterEach(() => {
 	resetAllRateLimits();
 	vi.restoreAllMocks();
 });
 
 describe('rate-limiter', () => {
-	// -----------------------------------------------------------------------
-	// In-memory rate limiting
-	// -----------------------------------------------------------------------
 	describe('in-memory rate limiting', () => {
-		it('allows first request with correct remaining counts', async () => {
+		it('should allow first request with correct remaining counts', async () => {
 			const result = await checkRateLimit('1.2.3.4');
 			expect(result.allowed).toBe(true);
 			expect(result.minuteRemaining).toBe(9);
 			expect(result.hourRemaining).toBe(49);
 		});
 
-		it('decrements remaining counts on multiple requests', async () => {
+		it('should decrement remaining counts on multiple requests', async () => {
 			await checkRateLimit('1.2.3.4');
 			await checkRateLimit('1.2.3.4');
 			const result = await checkRateLimit('1.2.3.4');
@@ -27,7 +21,7 @@ describe('rate-limiter', () => {
 			expect(result.hourRemaining).toBe(47);
 		});
 
-		it('blocks 11th request within a minute', async () => {
+		it('should block 11th request within a minute', async () => {
 			for (let i = 0; i < 10; i++) {
 				const r = await checkRateLimit('1.2.3.4');
 				expect(r.allowed).toBe(true);
@@ -38,26 +32,25 @@ describe('rate-limiter', () => {
 			expect(blocked.retryAfterMs).toBeGreaterThan(0);
 		});
 
-		it('blocks at hour limit after minute windows rotate', async () => {
+		it('should block at hour limit after minute windows rotate', async () => {
 			const baseTime = 1000000000000;
 			let currentTime = baseTime;
 			vi.spyOn(Date, 'now').mockImplementation(() => currentTime);
-
-			// Send 10 requests per minute window across 5 windows = 50 total
 			for (let window = 0; window < 5; window++) {
-				currentTime = baseTime + window * 61_000; // advance past minute boundary
+				currentTime = baseTime + window * 61_000;
 				for (let i = 0; i < 10; i++) {
 					const r = await checkRateLimit('1.2.3.4');
 					expect(r.allowed).toBe(true);
 				}
 			}
-
-			// 51st request in a new minute window should be blocked by hour limit
 			currentTime = baseTime + 5 * 61_000;
 			const blocked = await checkRateLimit('1.2.3.4');
 			expect(blocked.allowed).toBe(false);
 			expect(blocked.hourRemaining).toBe(0);
 			expect(blocked.retryAfterMs).toBeGreaterThan(0);
+		});
+	});
+});
 		});
 
 		it('tracks different IPs independently', async () => {

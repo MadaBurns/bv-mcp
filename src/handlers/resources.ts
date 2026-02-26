@@ -25,17 +25,17 @@ interface McpResourceContent {
 /** Static resource definitions */
 const RESOURCES: McpResource[] = [
  {
-	 uri: 'blackveil://guides/security-checks',
-	 name: 'BLACKVEIL Scanner Security Checks Guide',
-	 description:
-		 'Overview of all DNS/email security checks performed by BLACKVEIL Scanner, including SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, and CAA.',
-	 mimeType: 'text/markdown',
+   uri: 'dns-security://guides/security-checks',
+   name: 'DNS Security Checks Guide',
+   description:
+     'Overview of all DNS/email security checks performed by BLACKVEIL Scanner, including SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, and CAA.',
+   mimeType: 'text/markdown',
  },
  {
-	 uri: 'blackveil://guides/scoring',
-	 name: 'BLACKVEIL Scoring Methodology',
-	 description: 'How BLACKVEIL Scanner scores and grades are calculated, including category weights and severity penalties.',
-	 mimeType: 'text/markdown',
+   uri: 'dns-security://guides/scoring',
+   name: 'Scoring Methodology',
+   description: 'How DNS/email security scores and grades are calculated, including category weights and severity penalties.',
+   mimeType: 'text/markdown',
  },
 	{
 		uri: 'dns-security://guides/record-types',

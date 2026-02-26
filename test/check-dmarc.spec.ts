@@ -3,9 +3,7 @@ import { setupFetchMock, mockTxtRecords } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
-afterEach(() => {
-	restore();
-});
+afterEach(() => restore());
 
 describe('checkDmarc', () => {
 	async function run(domain = 'example.com') {
@@ -13,53 +11,53 @@ describe('checkDmarc', () => {
 		return checkDmarc(domain);
 	}
 
-	it('returns critical finding when no DMARC record exists', async () => {
+	it('should return critical finding when no DMARC record exists', async () => {
 		mockTxtRecords([]);
-		const r = await run();
-		expect(r.category).toBe('dmarc');
-		expect(r.findings).toHaveLength(1);
-		expect(r.findings[0].severity).toBe('critical');
-		expect(r.findings[0].title).toContain('No DMARC');
+		const result = await run();
+		expect(result.category).toBe('dmarc');
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].severity).toBe('critical');
+		expect(result.findings[0].title).toMatch(/No DMARC/i);
 	});
 
-	it('returns high finding for multiple DMARC records', async () => {
+	it('should return high finding for multiple DMARC records', async () => {
 		mockTxtRecords(['v=DMARC1; p=reject', 'v=DMARC1; p=none']);
-		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('Multiple DMARC'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('high');
+		const result = await run();
+		const finding = result.findings.find(f => /Multiple DMARC/i.test(f.title));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('high');
 	});
 
-	it('returns critical finding when p= tag is missing', async () => {
+	it('should return critical finding when p= tag is missing', async () => {
 		mockTxtRecords(['v=DMARC1; rua=mailto:dmarc@example.com']);
-		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('Missing DMARC policy'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('critical');
+		const result = await run();
+		const finding = result.findings.find(f => /Missing DMARC policy/i.test(f.title));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('critical');
 	});
 
-	it('returns high finding for p=none', async () => {
+	it('should return high finding for p=none', async () => {
 		mockTxtRecords(['v=DMARC1; p=none; rua=mailto:dmarc@example.com']);
-		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('policy set to none'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('high');
+		const result = await run();
+		const finding = result.findings.find(f => /policy set to none/i.test(f.title));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('high');
 	});
 
-	it('returns low finding for p=quarantine', async () => {
+	it('should return low finding for p=quarantine', async () => {
 		mockTxtRecords(['v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com']);
-		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('quarantine'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('low');
+		const result = await run();
+		const finding = result.findings.find(f => /quarantine/i.test(f.title));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('low');
 	});
 
-	it('returns info finding for p=reject with rua and sp', async () => {
+	it('should return info finding for p=reject with rua and sp', async () => {
 		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:dmarc@example.com']);
-		const r = await run();
-		expect(r.findings).toHaveLength(1);
-		expect(r.findings[0].severity).toBe('info');
-		expect(r.findings[0].title).toContain('properly configured');
+		const result = await run();
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].severity).toBe('info');
+		expect(result.findings[0].title).toMatch(/DMARC policy is reject/i);
 	});
 
 	it('returns low finding for missing sp= when p=reject', async () => {
@@ -112,4 +110,4 @@ describe('checkDmarc', () => {
 		const f = r.findings.find((f) => f.title.includes('not applied'));
 		expect(f).toBeUndefined();
 	});
-});
+// ...existing code...

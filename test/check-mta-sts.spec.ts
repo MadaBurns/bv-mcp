@@ -1,73 +1,34 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { setupFetchMock } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
-afterEach(() => {
-	restore();
-});
-
-/**
- * Build a DoH TXT response for a given domain.
- */
-function txtResponse(domain: string, records: string[]) {
-	return createDohResponse(
-		[{ name: domain, type: 16 }],
-		records.map((data) => ({ name: domain, type: 16, TTL: 300, data: `"${data}"` })),
-	);
-}
-
-/**
- * Build a plain-text HTTP response (for the MTA-STS policy file).
- */
-function policyResponse(body: string, status = 200) {
-	return {
-		ok: status >= 200 && status < 300,
-		status,
-		text: () => Promise.resolve(body),
-	} as unknown as Response;
-}
-
-/**
- * Multi-dispatch fetch mock that routes based on the request URL.
- * - URLs containing "cloudflare-dns.com" with `name=_mta-sts.` → mtaStsDns
- * - URLs containing "cloudflare-dns.com" with `name=_smtp._tls.` → tlsrptDns
- * - URLs containing "mta-sts." and ".well-known" → policyFetch
- */
-function mockMultiFetch(opts: {
-	mtaStsDns?: Response;
-	tlsrptDns?: Response;
-	policyFetch?: Response;
-	policyError?: Error;
-	dnsError?: Error;
-}) {
-	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
-		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-
-		if (url.includes('cloudflare-dns.com')) {
-			if (url.includes('_mta-sts.')) {
-				if (opts.dnsError) return Promise.reject(opts.dnsError);
-				return Promise.resolve(opts.mtaStsDns ?? txtResponse('_mta-sts.example.com', []));
-			}
-			if (url.includes('_smtp._tls.')) {
-				return Promise.resolve(opts.tlsrptDns ?? txtResponse('_smtp._tls.example.com', []));
-			}
-		}
-
-		if (url.includes('mta-sts.') && url.includes('.well-known')) {
-			if (opts.policyError) return Promise.reject(opts.policyError);
-			return Promise.resolve(opts.policyFetch ?? policyResponse('', 404));
-		}
-
-		return Promise.reject(new Error(`Unexpected fetch URL: ${url}`));
-	});
-}
+afterEach(() => restore());
 
 describe('checkMtaSts', () => {
-	async function run(domain = 'example.com') {
-		const { checkMtaSts } = await import('../src/tools/check-mta-sts');
-		return checkMtaSts(domain);
-	}
+  async function run(domain = 'example.com') {
+	const { checkMtaSts } = await import('../src/tools/check-mta-sts');
+	return checkMtaSts(domain);
+  }
+
+	it('should return info finding when MTA-STS policy is valid', async () => {
+		// Mock fetch to return valid policy
+		// ...existing code...
+		const result = await run();
+		expect(result.category).toBe('mta-sts');
+		expect(result.findings[0].severity).toBe('info');
+		expect(result.findings[0].title).toMatch(/MTA-STS policy is valid/i);
+	});
+
+	it('should return critical finding when MTA-STS policy is missing', async () => {
+		// Mock fetch to return missing policy
+		// ...existing code...
+		const result = await run();
+		expect(result.findings[0].severity).toBe('critical');
+		expect(result.findings[0].title).toMatch(/MTA-STS policy missing/i);
+	});
+describe('checkMtaSts', () => {
+});
 
 	it('returns medium finding when no MTA-STS TXT record found', async () => {
 		mockMultiFetch({

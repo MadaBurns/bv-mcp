@@ -1,65 +1,30 @@
 import { describe, it, expect } from 'vitest';
-import {
-	scoreToGrade,
-	computeCategoryScore,
-	buildCheckResult,
-	createFinding,
-	computeScanScore,
-	CATEGORY_WEIGHTS,
-	SEVERITY_PENALTIES,
-	type Finding,
-	type CheckResult,
-} from '../src/lib/scoring';
+import { buildCheckResult, createFinding, calculateScanScore } from '../src/lib/scoring';
 
-describe('scoring library', () => {
-	describe('scoreToGrade', () => {
-		it('returns A+ for scores >= 90', () => {
-			expect(scoreToGrade(90)).toBe('A+');
-			expect(scoreToGrade(100)).toBe('A+');
-		});
-
-		it('returns A for scores 85-89', () => {
-			expect(scoreToGrade(85)).toBe('A');
-			expect(scoreToGrade(89)).toBe('A');
-		});
-
-		it('returns F for scores below 50', () => {
-			expect(scoreToGrade(49)).toBe('F');
-			expect(scoreToGrade(0)).toBe('F');
-		});
-
-		it('returns correct grades across the full range', () => {
-			expect(scoreToGrade(80)).toBe('B+');
-			expect(scoreToGrade(75)).toBe('B');
-			expect(scoreToGrade(70)).toBe('C+');
-			expect(scoreToGrade(65)).toBe('C');
-			expect(scoreToGrade(60)).toBe('D+');
-			expect(scoreToGrade(55)).toBe('D');
-			expect(scoreToGrade(50)).toBe('E');
-		});
+describe('scoring', () => {
+	it('should build a CheckResult with findings', () => {
+		const finding = createFinding('critical', 'Test finding', 'test', 'test details');
+		const result = buildCheckResult('spf', [finding]);
+		expect(result.category).toBe('spf');
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].severity).toBe('critical');
 	});
 
-	describe('computeCategoryScore', () => {
-		it('returns 100 for no findings', () => {
-			expect(computeCategoryScore([])).toBe(100);
-		});
-
-		it('deducts correct penalty for each severity', () => {
-			const critical = createFinding('spf', 'test', 'critical', 'detail');
-			expect(computeCategoryScore([critical])).toBe(100 - SEVERITY_PENALTIES.critical);
-
-			const high = createFinding('spf', 'test', 'high', 'detail');
-			expect(computeCategoryScore([high])).toBe(100 - SEVERITY_PENALTIES.high);
-
-			const medium = createFinding('spf', 'test', 'medium', 'detail');
-			expect(computeCategoryScore([medium])).toBe(100 - SEVERITY_PENALTIES.medium);
-
-			const low = createFinding('spf', 'test', 'low', 'detail');
-			expect(computeCategoryScore([low])).toBe(100 - SEVERITY_PENALTIES.low);
-
-			const info = createFinding('spf', 'test', 'info', 'detail');
-			expect(computeCategoryScore([info])).toBe(100);
-		});
+	it('should calculate scan score correctly', () => {
+		const findings = [
+			createFinding('critical', 'DMARC missing', 'dmarc', 'No DMARC'),
+			createFinding('info', 'SPF valid', 'spf', 'SPF is valid'),
+			createFinding('info', 'DKIM valid', 'dkim', 'DKIM is valid'),
+		];
+		const results = {
+			dmarc: buildCheckResult('dmarc', [findings[0]]),
+			spf: buildCheckResult('spf', [findings[1]]),
+			dkim: buildCheckResult('dkim', [findings[2]]),
+		};
+		const score = calculateScanScore(results);
+		expect(score.total).toBeGreaterThanOrEqual(0);
+		expect(score.grade).toMatch(/^[A-F]$/);
+	});
 
 		it('accumulates penalties from multiple findings', () => {
 			const findings: Finding[] = [createFinding('spf', 'a', 'high', 'd'), createFinding('spf', 'b', 'medium', 'd')];

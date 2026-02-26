@@ -10,29 +10,23 @@ import { queryDnsRecords } from '../lib/dns';
 
 export async function checkMx(domain: string): Promise<CheckResult> {
 	const validation = validateDomain(domain);
-	if (!validation.valid) {
-		return buildCheckResult('MX', 'fail', [
-			createFinding('fail', 'MX', 'Domain validation failed', validation.error || 'Invalid domain')
-		]);
+	if (!validation.valid) return buildCheckResult(domain, 'MX', [createFinding('fail', 'MX', 'Domain validation failed', 'Invalid domain')]);
+	let answers;
+	try {
+		answers = await queryDnsRecords(domain, 'MX');
+	} catch (err) {
+		return buildCheckResult(domain, 'MX', [createFinding('fail', 'MX', 'DNS query failed', 'MX record lookup failed', 'high')]);
 	}
-
-	const answers = await queryDnsRecords(domain, 'MX');
 	if (!answers || answers.length === 0) {
-		return buildCheckResult('MX', 'fail', [
-			createFinding('fail', 'MX', 'No MX records found', 'Domain does not accept email')
-		]);
+		return buildCheckResult(domain, 'MX', [createFinding('fail', 'MX', 'No MX records found', 'No mail exchange records present', 'high')]);
 	}
-
 	const findings = [];
-	findings.push(createFinding('pass', 'MX', 'MX records found', `MX records: ${answers.map(a => a.data).join(', ')}`));
-
-	// Heuristic: If MX points to common outbound providers, flag as likely outbound
+	findings.push(createFinding('pass', 'MX', 'MX records found', 'Mail exchange records present', 'low'));
 	const outboundProviders = ['google.com', 'outlook.com', 'mailgun.org', 'sendgrid.net', 'amazonses.com'];
 	const mxTargets = answers.map(a => a.data.split(' ').pop() || '').map(t => t.toLowerCase());
 	const outbound = mxTargets.some(t => outboundProviders.some(p => t.endsWith(p)));
 	if (outbound) {
 		findings.push(createFinding('info', 'MX', 'Likely outbound email usage', 'MX points to known outbound provider'));
 	}
-
-	return buildCheckResult('MX', 'pass', findings);
+	return buildCheckResult(domain, 'MX', findings);
 }

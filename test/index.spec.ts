@@ -43,6 +43,15 @@ describe('DNS Security MCP Server', () => {
 				expect(body).toMatch(/too large|payload/i);
 			});
 		});
+	import { describe, it, expect } from 'vitest';
+	import { SERVER_VERSION } from '../src/index';
+
+	describe('index', () => {
+	  it('should export SERVER_VERSION', () => {
+	    expect(typeof SERVER_VERSION).toBe('string');
+	    expect(SERVER_VERSION.length).toBeGreaterThan(0);
+	  });
+	});
 	beforeEach(() => {
 		resetAllRateLimits();
 	});

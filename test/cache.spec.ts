@@ -1,63 +1,57 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { TTLCache, cacheGet, cacheSet, scanCache } from '../src/lib/cache';
-
 afterEach(() => {
 	vi.restoreAllMocks();
 	scanCache.clear();
-});
+// ...existing code...
 
 describe('TTLCache', () => {
-	it('set/get stores and retrieves values correctly', () => {
+	it('should store and retrieve values correctly', () => {
 		const cache = new TTLCache<string>();
 		cache.set('a', 'hello');
 		expect(cache.get('a')).toBe('hello');
 	});
 
-	it('get returns undefined for missing keys', () => {
+	it('should return undefined for missing keys', () => {
 		const cache = new TTLCache<string>();
 		expect(cache.get('missing')).toBeUndefined();
 	});
 
-	it('returns undefined after TTL expires', () => {
+	it('should return undefined after TTL expires', () => {
 		const now = Date.now();
 		vi.spyOn(Date, 'now').mockReturnValue(now);
-
 		const cache = new TTLCache<string>({ ttlMs: 100 });
 		cache.set('a', 'value');
 		expect(cache.get('a')).toBe('value');
-
 		vi.spyOn(Date, 'now').mockReturnValue(now + 101);
 		expect(cache.get('a')).toBeUndefined();
 	});
 
-	it('custom TTL per set call overrides default', () => {
+	it('should override default TTL per set call', () => {
 		const now = Date.now();
 		vi.spyOn(Date, 'now').mockReturnValue(now);
-
 		const cache = new TTLCache<string>({ ttlMs: 1000 });
 		cache.set('short', 'val', 50);
-
 		vi.spyOn(Date, 'now').mockReturnValue(now + 51);
 		expect(cache.get('short')).toBeUndefined();
 	});
 
-	it('has returns true for existing and false for missing/expired keys', () => {
+	it('should return true for existing and false for missing/expired keys', () => {
 		const now = Date.now();
 		vi.spyOn(Date, 'now').mockReturnValue(now);
-
 		const cache = new TTLCache<string>({ ttlMs: 100 });
 		cache.set('a', 'val');
 		expect(cache.has('a')).toBe(true);
 		expect(cache.has('missing')).toBe(false);
-
 		vi.spyOn(Date, 'now').mockReturnValue(now + 101);
 		expect(cache.has('a')).toBe(false);
 	});
 
-	it('delete removes entry and returns true; returns false for missing', () => {
+	it('should remove entry and return true; return false for missing', () => {
 		const cache = new TTLCache<string>();
 		cache.set('a', 'val');
 		expect(cache.delete('a')).toBe(true);
+		expect(cache.delete('missing')).toBe(false);
+	});
+// ...existing code...
 		expect(cache.get('a')).toBeUndefined();
 		expect(cache.delete('a')).toBe(false);
 	});

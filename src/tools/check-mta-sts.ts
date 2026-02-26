@@ -15,49 +15,50 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 
 	// Check for _mta-sts TXT record
 	let hasTxtRecord = false;
-	try {
-		const txtRecords = await queryTxtRecords(`_mta-sts.${domain}`);
-		const mtaStsRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=stsv1'));
+	   try {
+		   const txtRecords = await queryTxtRecords(`_mta-sts.${domain}`);
+		   const mtaStsRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=stsv1'));
 
-		   if (mtaStsRecords.length === 0) {
-			   findings.push(
-				   createFinding(
-					   'mta_sts',
-					   'No MTA-STS record found',
-					   'medium',
-					   `No MTA-STS TXT record found at _mta-sts.${domain}. MTA-STS enforces TLS for incoming email, preventing downgrade attacks.`,
-				   ),
-			   );
-		   } else {
-			hasTxtRecord = true;
+			  if (mtaStsRecords.length === 0) {
+				  findings.push(
+					  createFinding(
+						  'mta_sts',
+						  'No MTA-STS record found',
+						  'medium',
+						  `No MTA-STS TXT record found at _mta-sts.${domain}. MTA-STS enforces TLS for incoming email, preventing downgrade attacks.`,
+					  ),
+				  );
+			  } else {
+			   hasTxtRecord = true;
 
-			if (mtaStsRecords.length > 1) {
-				findings.push(
-					createFinding(
-						'mta_sts',
-						'Multiple MTA-STS records',
-						'medium',
-						`Found ${mtaStsRecords.length} MTA-STS records. Only one should exist.`,
-					),
-				);
-			}
+			   if (mtaStsRecords.length > 1) {
+				   findings.push(
+					   createFinding(
+						   'mta_sts',
+						   'Multiple MTA-STS records',
+						   'medium',
+						   `Found ${mtaStsRecords.length} MTA-STS records. Only one should exist.`,
+					   ),
+				   );
+			   }
 
-			// Check for id= tag
-			const record = mtaStsRecords[0];
-			if (!record.includes('id=')) {
-				findings.push(
-					createFinding(
-						'mta_sts',
-						'MTA-STS missing id tag',
-						'medium',
-						`MTA-STS record is missing the "id=" tag. This tag is required for policy versioning.`,
-					),
-				);
-			}
-		}
-	} catch {
-		findings.push(createFinding('mta_sts', 'MTA-STS DNS query failed', 'low', `Could not query MTA-STS TXT record for ${domain}.`));
-	}
+			   // Check for id= tag
+			   const record = mtaStsRecords[0];
+			   if (!record.includes('id=')) {
+				   findings.push(
+					   createFinding(
+						   'mta_sts',
+						   'MTA-STS missing id tag',
+						   'medium',
+						   `MTA-STS record is missing the "id=" tag. This tag is required for policy versioning.`,
+					   ),
+				   );
+			   }
+		   }
+	   } catch (err) {
+		   findings.length = 0;
+		   findings.push(createFinding('mta_sts', 'MTA-STS DNS query failed', 'low', `Could not query MTA-STS TXT record for ${domain}. Error: ${err && err.message ? err.message : 'Unknown error'}`));
+	   }
 
 	// Try to fetch the MTA-STS policy file
 	if (hasTxtRecord) {
@@ -135,44 +136,61 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 		}
 	}
 
-	   // Check for TLSRPT record
-	   let hasTlsRptRecord = false;
-	   try {
-		   const tlsrptRecords = await queryTxtRecords(`_smtp._tls.${domain}`);
-		   const validRecords = tlsrptRecords.filter((r) => r.toLowerCase().startsWith('v=tlsrptv1'));
-		   if (validRecords.length === 0) {
-			   // Don't push yet, see below for summary
-		   } else {
-			   hasTlsRptRecord = true;
-		   }
-	   } catch {
-		   // Non-critical
-	   }
+		// Check for TLSRPT record
+		let hasTlsRptRecord = false;
+		let tlsRptChecked = false;
+		try {
+			const tlsrptRecords = await queryTxtRecords(`_smtp._tls.${domain}`);
+			tlsRptChecked = true;
+			const validRecords = tlsrptRecords.filter((r) => r.toLowerCase().startsWith('v=tlsrptv1'));
+			if (validRecords.length === 0) {
+				findings.push(
+					createFinding(
+						'mta_sts',
+						'TLS-RPT record missing',
+						'low',
+						`No TLS-RPT record found at _smtp._tls.${domain}. Consider adding a TLS-RPT record for reporting SMTP TLS issues.`,
+					),
+				);
+			} else {
+				hasTlsRptRecord = true;
+			}
+		} catch {
+			tlsRptChecked = true;
+			findings.push(
+				createFinding(
+					'mta_sts',
+					'TLS-RPT DNS query failed',
+					'low',
+					`Could not query TLS-RPT TXT record for ${domain}.`,
+				),
+			);
+		}
 
-	   // If no issues found
-	   if (findings.length === 0) {
-		   findings.push(
-			   createFinding(
-				   'mta_sts',
-				   'MTA-STS properly configured',
-				   'info',
-				   `MTA-STS is properly configured for ${domain} with an accessible policy file.`,
-			   ),
-		   );
-	   }
+		// If no issues found
+		if (findings.length === 0) {
+			findings.push(
+				createFinding(
+					'mta_sts',
+					'MTA-STS properly configured',
+					'info',
+					`MTA-STS is properly configured for ${domain} with an accessible policy file.`,
+				),
+			);
+		}
 
-	   // If both records are missing, add a clear summary and suppress duplicate findings
-	   if (!hasTxtRecord && !hasTlsRptRecord) {
-		   findings.length = 0; // Remove any prior findings
-		   findings.push(
-			   createFinding(
-				   'mta_sts',
-				   'No MTA-STS or TLS-RPT records found',
-				   'medium',
-				   `Neither MTA-STS nor TLS-RPT records are present for ${domain}. This is normal for domains that do not accept inbound email, but consider adding these records if you operate a mail server.`,
-			   ),
-		   );
-	   }
+		// If both records are missing, add a clear summary and suppress duplicate findings
+		if (!hasTxtRecord && tlsRptChecked && !hasTlsRptRecord) {
+			findings.length = 0; // Remove any prior findings
+			findings.push(
+				createFinding(
+					'mta_sts',
+					'No MTA-STS or TLS-RPT records found',
+					'medium',
+					`Neither MTA-STS nor TLS-RPT records are present for ${domain}. This is normal for domains that do not accept inbound email, but consider adding these records if you operate a mail server.`,
+				),
+			);
+		}
 
 	return buildCheckResult('mta_sts', findings);
 }

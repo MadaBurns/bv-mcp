@@ -1,24 +1,18 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { RecordType } from '../src/lib/dns';
 import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
-/**
- * Helper: mock DoH to return TXT records for DKIM selector queries.
- * selectorRecords maps selector names to their TXT record strings.
- * Selectors not in the map return empty answers.
- */
 function mockDkimRecords(selectorRecords: Record<string, string[]>) {
 	globalThis.fetch = vi.fn().mockImplementation((url: string) => {
 		const nameMatch = url.match(/name=([^&]+)/);
 		const queriedName = nameMatch ? decodeURIComponent(nameMatch[1]) : '';
-
 		let answers: Array<{ name: string; type: number; TTL: number; data: string }> = [];
 		for (const [selector, records] of Object.entries(selectorRecords)) {
 			const expectedName = `${selector}._domainkey.example.com`;
 			if (queriedName === expectedName) {
-				answers = records.map((data) => ({
+				answers = records.map(data => ({
 					name: expectedName,
 					type: RecordType.TXT,
 					TTL: 300,
@@ -27,14 +21,11 @@ function mockDkimRecords(selectorRecords: Record<string, string[]>) {
 				break;
 			}
 		}
-
 		return Promise.resolve(createDohResponse([{ name: queriedName, type: 16 }], answers));
 	});
 }
 
-afterEach(() => {
-	restore();
-});
+afterEach(() => restore());
 
 describe('checkDkim', () => {
 	async function run(domain = 'example.com', selector?: string) {
@@ -42,22 +33,24 @@ describe('checkDkim', () => {
 		return checkDkim(domain, selector);
 	}
 
-	it('returns high finding when no DKIM records found across common selectors', async () => {
+	it('should return high finding when no DKIM records found across common selectors', async () => {
 		mockDkimRecords({});
-		const r = await run();
-		expect(r.category).toBe('dkim');
-		expect(r.findings).toHaveLength(1);
-		expect(r.findings[0].severity).toBe('high');
-		expect(r.findings[0].title).toContain('No DKIM');
+		const result = await run();
+		expect(result.category).toBe('dkim');
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].severity).toBe('high');
+		expect(result.findings[0].title).toMatch(/No DKIM/i);
 	});
 
-	it('returns info finding when valid DKIM record found', async () => {
+	it('should return info finding when valid DKIM record found', async () => {
 		mockDkimRecords({ google: ['v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4G'] });
-		const r = await run();
-		const f = r.findings.find((f) => f.severity === 'info');
-		expect(f).toBeDefined();
-		expect(f!.title).toContain('DKIM configured');
+		const result = await run();
+		const finding = result.findings.find(f => f.severity === 'info');
+		expect(finding).toBeDefined();
+		expect(finding!.title).toMatch(/DKIM configured/i);
 	});
+// ...existing code...
+});
 
 	it('returns medium finding for revoked key (empty p=)', async () => {
 		mockDkimRecords({ google: ['v=DKIM1; k=rsa; p=;'] });
@@ -161,4 +154,4 @@ describe('checkDkim', () => {
 		expect(revoked).toBeDefined();
 		expect(revoked!.severity).toBe('medium');
 	});
-});
+// ...existing code...

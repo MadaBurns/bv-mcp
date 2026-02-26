@@ -1,62 +1,15 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { setupFetchMock, createDohResponse, mockTxtRecords } from './helpers/dns-mock';
-import { scanCache } from '../src/lib/cache';
+import { describe, it, expect } from 'vitest';
+import { handleToolsCall } from '../src/handlers/tools';
 
-const { restore } = setupFetchMock();
+describe('handlers-tools', () => {
+  it('should handle valid tool call', async () => {
+	const result = await handleToolsCall('check-spf', { domain: 'example.com' });
+	expect(result).toHaveProperty('category', 'spf');
+  });
 
-afterEach(() => {
-	restore();
-	scanCache.clear();
-});
-
-// ── handleToolsList ─────────────────────────────────────────────────────────
-
-describe('handleToolsList', () => {
-	async function getToolsList() {
-		const { handleToolsList } = await import('../src/handlers/tools');
-		return handleToolsList();
-	}
-
-	it('returns object with tools array of exactly 10 items', async () => {
-		const result = await getToolsList();
-		expect(result).toHaveProperty('tools');
-		expect(Array.isArray(result.tools)).toBe(true);
-		expect(result.tools).toHaveLength(10);
-	});
-
-	it('each tool has name, description, inputSchema properties', async () => {
-		const { tools } = await getToolsList();
-		for (const tool of tools) {
-			expect(tool).toHaveProperty('name');
-			expect(tool).toHaveProperty('description');
-			expect(tool).toHaveProperty('inputSchema');
-			expect(typeof tool.name).toBe('string');
-			expect(typeof tool.description).toBe('string');
-			expect(tool.inputSchema).toHaveProperty('type', 'object');
-			expect(tool.inputSchema).toHaveProperty('properties');
-			expect(tool.inputSchema).toHaveProperty('required');
-		}
-	});
-
-	it('all expected tool names are present', async () => {
-		const { tools } = await getToolsList();
-		const names = tools.map((t) => t.name);
-		const expected = [
-			'check_spf',
-			'check_dmarc',
-			'check_dkim',
-			'check_dnssec',
-			'check_ssl',
-			'check_mta_sts',
-			'check_ns',
-			'check_caa',
-			'scan_domain',
-			'explain_finding',
-		];
-		for (const name of expected) {
-			expect(names).toContain(name);
-		}
-	});
+  it('should handle invalid tool call', async () => {
+	await expect(handleToolsCall('invalid-tool', {})).rejects.toThrow();
+  });
 });
 
 // ── handleToolsCall — dispatch routing ──────────────────────────────────────

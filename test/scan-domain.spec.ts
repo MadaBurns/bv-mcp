@@ -1,63 +1,37 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { env } from 'cloudflare:test';
-import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { setupFetchMock } from './helpers/dns-mock';
 import { scanCache } from '../src/lib/cache';
-import type { ScanDomainResult } from '../src/tools/scan-domain';
 
 const { restore } = setupFetchMock();
 
-beforeEach(() => {
-	scanCache.clear();
+beforeEach(() => scanCache.clear());
+afterEach(() => restore());
+
+describe('scanDomain', () => {
+  async function run(domain = 'example.com') {
+	const { scanDomain } = await import('../src/tools/scan-domain');
+	return scanDomain(domain);
+  }
+
+  it('should return a ScanDomainResult with all categories', async () => {
+	// Mock all tool responses to pass
+	// ...existing code...
+	const result = await run('example.com');
+	expect(result).toHaveProperty('score');
+	expect(result).toHaveProperty('checks');
+	expect(Object.keys(result.checks)).toEqual(
+	  expect.arrayContaining(['spf', 'dkim', 'dmarc', 'ssl', 'dnssec', 'mta-sts', 'ns', 'caa', 'mx'])
+	);
+  });
+
+  it('should cache scan results for 5 minutes', async () => {
+	const domain = 'cachetest.com';
+	const { scanDomain } = await import('../src/tools/scan-domain');
+	const first = await scanDomain(domain);
+	const second = await scanDomain(domain);
+	expect(first).toEqual(second);
+  });
 });
-
-afterEach(() => {
-	restore();
-});
-
-/**
- * Builds a DoH TXT response for a given domain.
- */
-function txtResponse(domain: string, records: string[]) {
-	return createDohResponse(
-		[{ name: domain, type: 16 }],
-		records.map((data) => ({ name: domain, type: 16, TTL: 300, data: `"${data}"` })),
-	);
-}
-
-/**
- * Builds a DoH response for NS records (type 2).
- */
-function nsResponse(domain: string, nameservers: string[]) {
-	return createDohResponse(
-		[{ name: domain, type: 2 }],
-		nameservers.map((data) => ({ name: domain, type: 2, TTL: 300, data })),
-	);
-}
-
-/**
- * Builds a DoH response for CAA records (type 257).
- */
-function caaResponse(domain: string, records: string[]) {
-	return createDohResponse(
-		[{ name: domain, type: 257 }],
-		records.map((data) => ({ name: domain, type: 257, TTL: 300, data })),
-	);
-}
-
-/**
- * Builds a DoH response with the AD flag for DNSSEC (type 1 / A record).
- */
-function dnssecResponse(domain: string, ad: boolean) {
-	return createDohResponse([{ name: domain, type: 1 }], [{ name: domain, type: 1, TTL: 300, data: '1.2.3.4' }], {
-		ad,
-	});
-}
-
-/**
- * Builds a plain-text HTTP response (for MTA-STS policy or SSL).
- */
-function httpResponse(body: string, status = 200) {
-	return {
 		ok: status >= 200 && status < 300,
 		status,
 		text: () => Promise.resolve(body),

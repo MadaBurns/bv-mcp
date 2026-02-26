@@ -1,6 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { handleResourcesList, handleResourcesRead } from '../src/handlers/resources';
-
+describe('handleResourcesList', () => {
+describe('handlers-resources', () => {
 describe('handleResourcesList', () => {
 	it('returns an object with a resources array of exactly 3 items', () => {
 		const result = handleResourcesList();
@@ -21,6 +20,32 @@ describe('handleResourcesList', () => {
 	it('includes all expected URIs', () => {
 		const { resources } = handleResourcesList();
 		const uris = resources.map((r) => r.uri);
+		expect(uris).toContain('dns-security://guides/security-checks');
+		expect(uris).toContain('dns-security://guides/scoring');
+		expect(uris).toContain('dns-security://guides/record-types');
+	});
+
+	it('all mimeTypes are text/markdown', () => {
+		const { resources } = handleResourcesList();
+		for (const resource of resources) {
+			expect(resource.mimeType).toBe('text/markdown');
+		}
+	});
+});
+
+describe('handlers-resources', () => {
+	it('should list resources', async () => {
+		const result = await handleResourcesList();
+		expect(result).toHaveProperty('resources');
+		expect(Array.isArray(result.resources)).toBe(true);
+	});
+
+	it('should read a resource', async () => {
+		const result = await handleResourcesRead('README');
+		expect(result).toHaveProperty('content');
+		expect(typeof result.content).toBe('string');
+	});
+});
 		expect(uris).toContain('dns-security://guides/security-checks');
 		expect(uris).toContain('dns-security://guides/scoring');
 		expect(uris).toContain('dns-security://guides/record-types');

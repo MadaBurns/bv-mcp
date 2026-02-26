@@ -1,64 +1,62 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { RecordType } from '../src/lib/dns';
-import { setupFetchMock, createDohResponse, mockFetchError } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
-/**
- * Helper: mock DoH responses for NS checks.
- * checkNs may make up to three fetch calls:
- *   1. NS record query (type=NS)
- *   2. A record fallback query (type=A) — when NS is empty
- *   3. SOA record query (type=SOA)
- *
- * URL-dispatching mock routes on the `type=` query parameter.
- */
 function mockNsResponses(nsRecords: string[], soaData?: string, aRecords?: string[]) {
-	const nsAnswers = nsRecords.map((data) => ({
+	const nsAnswers = nsRecords.map(data => ({
 		name: 'example.com',
 		type: RecordType.NS,
 		TTL: 86400,
 		data,
 	}));
-
 	const soaAnswers = soaData ? [{ name: 'example.com', type: RecordType.SOA, TTL: 3600, data: soaData }] : [];
-
-	const aAnswers = (aRecords ?? []).map((data) => ({
+	const aAnswers = (aRecords ?? []).map(data => ({
 		name: 'example.com',
 		type: RecordType.A,
 		TTL: 300,
 		data,
 	}));
-
 	globalThis.fetch = vi.fn().mockImplementation((url: string) => {
 		const typeMatch = url.match(/type=([^&]+)/);
 		const type = typeMatch ? typeMatch[1] : '';
-
 		if (type === 'NS') {
 			return Promise.resolve(createDohResponse([{ name: 'example.com', type: RecordType.NS }], nsAnswers));
 		}
-
 		if (type === 'A') {
 			return Promise.resolve(createDohResponse([{ name: 'example.com', type: RecordType.A }], aAnswers));
 		}
-
 		if (type === 'SOA') {
 			return Promise.resolve(createDohResponse([{ name: 'example.com', type: RecordType.SOA }], soaAnswers));
 		}
-
 		return Promise.resolve(createDohResponse([], []));
 	});
 }
 
-afterEach(() => {
-	restore();
-});
+afterEach(() => restore());
 
 describe('checkNs', () => {
 	async function run(domain = 'example.com') {
 		const { checkNs } = await import('../src/tools/check-ns');
 		return checkNs(domain);
 	}
+
+	it('should return medium finding when no NS records exist', async () => {
+		mockNsResponses([]);
+		const result = await run();
+		expect(result.category).toBe('ns');
+		expect(result.findings[0].severity).toBe('medium');
+		expect(result.findings[0].title).toMatch(/No NS records/i);
+	});
+
+	it('should return info finding when valid NS records exist', async () => {
+		mockNsResponses(['ns1.example.com.', 'ns2.example.com.']);
+		const result = await run();
+		expect(result.findings[0].severity).toBe('info');
+		expect(result.findings[0].title).toMatch(/NS records found/i);
+	});
+});
 
 	it('returns info finding for multiple nameservers from different providers', async () => {
 		mockNsResponses(

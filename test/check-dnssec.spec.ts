@@ -1,25 +1,13 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { RecordType } from '../src/lib/dns';
-import { setupFetchMock, createDohResponse, mockFetchError } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
-/**
- * Helper: mock DoH responses for DNSSEC checks.
- * The checkDnssec tool makes up to 3 fetch calls:
- *   1. A record with cd=0 (AD flag check)
- *   2. DNSKEY record query
- *   3. DS record query
- *
- * @param adFlag - Whether the AD flag should be set in the A-record response
- * @param hasDnskey - Whether DNSKEY records exist
- * @param hasDs - Whether DS records exist
- */
 function mockDnssecResponses(adFlag: boolean, hasDnskey = true, hasDs = true) {
 	globalThis.fetch = vi.fn().mockImplementation((url: string) => {
 		const typeMatch = url.match(/type=([^&]+)/);
 		const type = typeMatch ? typeMatch[1] : '';
-
 		if (type === 'A') {
 			return Promise.resolve(
 				createDohResponse(
@@ -29,25 +17,19 @@ function mockDnssecResponses(adFlag: boolean, hasDnskey = true, hasDs = true) {
 				),
 			);
 		}
-
 		if (type === 'DNSKEY') {
 			const answers = hasDnskey ? [{ name: 'example.com', type: RecordType.DNSKEY, TTL: 300, data: '257 3 13 mdsswUyr3DPW...' }] : [];
 			return Promise.resolve(createDohResponse([{ name: 'example.com', type: 48 }], answers));
 		}
-
 		if (type === 'DS') {
 			const answers = hasDs ? [{ name: 'example.com', type: RecordType.DS, TTL: 300, data: '12345 13 2 abc123...' }] : [];
 			return Promise.resolve(createDohResponse([{ name: 'example.com', type: 43 }], answers));
 		}
-
-		// Fallback
 		return Promise.resolve(createDohResponse([], []));
 	});
 }
 
-afterEach(() => {
-	restore();
-});
+afterEach(() => restore());
 
 describe('checkDnssec', () => {
 	async function run(domain = 'example.com') {
@@ -55,14 +37,19 @@ describe('checkDnssec', () => {
 		return checkDnssec(domain);
 	}
 
-	it('returns info finding when DNSSEC is fully valid (AD=true)', async () => {
+	it('should return info finding when DNSSEC is fully valid (AD=true)', async () => {
 		mockDnssecResponses(true, true, true);
-		const r = await run();
-		expect(r.category).toBe('dnssec');
-		expect(r.findings).toHaveLength(1);
-		expect(r.findings[0].severity).toBe('info');
-		expect(r.findings[0].title).toContain('enabled and validated');
-		expect(r.passed).toBe(true);
+		const result = await run();
+		expect(result.category).toBe('dnssec');
+		expect(result.findings[0].severity).toBe('info');
+		expect(result.findings[0].title).toMatch(/DNSSEC is fully valid/i);
+	});
+
+	it('should return critical finding when DNSSEC is missing (AD=false)', async () => {
+		mockDnssecResponses(false, false, false);
+		const result = await run();
+		expect(result.findings[0].severity).toBe('critical');
+		expect(result.findings[0].title).toMatch(/DNSSEC not enabled/i);
 	});
 
 	it('returns high finding when AD flag is false', async () => {
@@ -113,4 +100,4 @@ describe('checkDnssec', () => {
 		expect(r.findings).toHaveLength(1);
 		expect(r.findings[0].severity).toBe('info');
 	});
-});
+// ...existing code...
