@@ -1,18 +1,21 @@
 {
-	"name": "bv-dns-security-mcp",
+	"name": "blackveil-scanner",
 	"version": "1.0.0",
-	"description": "Open-source MCP server for DNS and email security analysis — SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA",
+	"description": "BLACKVEIL Scanner — DNS/email security analysis and remediation platform.",
 	"license": "MIT",
 	"author": "BLACKVEIL Security",
-	"homepage": "https://dns-mcp.blackveilsecurity.com",
+	"homepage": "https://blackveil.co.nz",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/MadaBurns/bv-mcp.git"
 	},
 	"keywords": [
-		"mcp",
+		"blackveil",
+		"scanner",
 		"dns",
 		"security",
+		"cloudflare",
+		"email",
 		"dmarc",
 		"spf",
 		"dkim",

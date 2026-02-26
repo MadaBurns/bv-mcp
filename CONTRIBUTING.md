@@ -1,6 +1,6 @@
-# Contributing to dns-security-mcp
+# Contributing to BLACKVEIL Scanner
 
-Thanks for your interest in contributing! This is an open-source MCP server for DNS security analysis.
+Thanks for your interest in contributing! BLACKVEIL Scanner is an open-source DNS/email security analysis and remediation platform.
 
 ## Getting Started
 

@@ -2,7 +2,7 @@
 
 ## What is this?
 
-Open-source MCP server for DNS security analysis, deployed as a Cloudflare Worker.
+BLACKVEIL Scanner — open-source DNS/email security analysis and remediation platform, deployed as a Cloudflare Worker.
 Exposes 10 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 
 **Version**: 1.0.0 — keep `SERVER_VERSION` in `src/index.ts` and `version` in `package.json` in sync.

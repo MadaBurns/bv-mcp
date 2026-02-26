@@ -1,7 +1,7 @@
 /**
- * MCP Tools handler for the DNS Security MCP Server.
+ * MCP Tools handler for the BLACKVEIL Scanner.
  * Defines all tool schemas and dispatches tools/call requests
- * to the appropriate check functions.
+ * to the appropriate BLACKVEIL Scanner check functions.
  *
  * Handles JSON-RPC methods: tools/list, tools/call
  * Compatible with Cloudflare Workers runtime (no Node.js APIs).

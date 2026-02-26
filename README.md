@@ -1,6 +1,6 @@
 # BLACKVEIL Scanner
 
-**The open source BLACKVEIL Scanner MCP server for DNS and email security. Scan any domain from inside Claude, Cursor, or any MCP-compatible AI.**
+**BLACKVEIL Scanner — DNS/email security analysis and remediation platform. Scan any domain from inside Claude, Cursor, or any MCP-compatible AI.**
 
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Cloudflare Workers](https://img.shields.io/badge/Runs%20on-Cloudflare%20Workers-F38020?logo=cloudflare)](https://workers.cloudflare.com/)

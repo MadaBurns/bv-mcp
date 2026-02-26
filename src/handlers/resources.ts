@@ -1,6 +1,6 @@
 /**
- * MCP Resources handler for the DNS Security MCP Server.
- * Exposes static documentation resources about security checks,
+ * MCP Resources handler for the BLACKVEIL Scanner.
+ * Exposes static documentation resources about DNS/email security checks,
  * scoring methodology, and supported DNS record types.
  *
  * Handles JSON-RPC methods: resources/list, resources/read
@@ -24,19 +24,19 @@ interface McpResourceContent {
 
 /** Static resource definitions */
 const RESOURCES: McpResource[] = [
-	{
-		uri: 'dns-security://guides/security-checks',
-		name: 'DNS Security Checks Guide',
-		description:
-			'Overview of all DNS security checks performed by this server, including SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, and CAA.',
-		mimeType: 'text/markdown',
-	},
-	{
-		uri: 'dns-security://guides/scoring',
-		name: 'Scoring Methodology',
-		description: 'How DNS security scores and grades are calculated, including category weights and severity penalties.',
-		mimeType: 'text/markdown',
-	},
+ {
+	 uri: 'blackveil://guides/security-checks',
+	 name: 'BLACKVEIL Scanner Security Checks Guide',
+	 description:
+		 'Overview of all DNS/email security checks performed by BLACKVEIL Scanner, including SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, and CAA.',
+	 mimeType: 'text/markdown',
+ },
+ {
+	 uri: 'blackveil://guides/scoring',
+	 name: 'BLACKVEIL Scoring Methodology',
+	 description: 'How BLACKVEIL Scanner scores and grades are calculated, including category weights and severity penalties.',
+	 mimeType: 'text/markdown',
+ },
 	{
 		uri: 'dns-security://guides/record-types',
 		name: 'Supported DNS Record Types',
