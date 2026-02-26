@@ -23,7 +23,7 @@ describe('checkDmarc', () => {
 	it('should return high finding for multiple DMARC records', async () => {
 		mockTxtRecords(['v=DMARC1; p=reject', 'v=DMARC1; p=none']);
 		const result = await run();
-		const finding = result.findings.find(f => /Multiple DMARC/i.test(f.title));
+		const finding = result.findings.find((f) => /Multiple DMARC/i.test(f.title));
 		expect(finding).toBeDefined();
 		expect(finding!.severity).toBe('high');
 	});
@@ -31,7 +31,7 @@ describe('checkDmarc', () => {
 	it('should return critical finding when p= tag is missing', async () => {
 		mockTxtRecords(['v=DMARC1; rua=mailto:dmarc@example.com']);
 		const result = await run();
-		const finding = result.findings.find(f => /Missing DMARC policy/i.test(f.title));
+		const finding = result.findings.find((f) => /Missing DMARC policy/i.test(f.title));
 		expect(finding).toBeDefined();
 		expect(finding!.severity).toBe('critical');
 	});
@@ -39,7 +39,7 @@ describe('checkDmarc', () => {
 	it('should return high finding for p=none', async () => {
 		mockTxtRecords(['v=DMARC1; p=none; rua=mailto:dmarc@example.com']);
 		const result = await run();
-		const finding = result.findings.find(f => /policy set to none/i.test(f.title));
+		const finding = result.findings.find((f) => /policy set to none/i.test(f.title));
 		expect(finding).toBeDefined();
 		expect(finding!.severity).toBe('high');
 	});
@@ -47,7 +47,7 @@ describe('checkDmarc', () => {
 	it('should return low finding for p=quarantine', async () => {
 		mockTxtRecords(['v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com']);
 		const result = await run();
-		const finding = result.findings.find(f => /quarantine/i.test(f.title));
+		const finding = result.findings.find((f) => /quarantine/i.test(f.title));
 		expect(finding).toBeDefined();
 		expect(finding!.severity).toBe('low');
 	});
@@ -57,7 +57,7 @@ describe('checkDmarc', () => {
 		const result = await run();
 		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0].severity).toBe('info');
-		expect(result.findings[0].title).toMatch(/DMARC policy is reject/i);
+		expect(result.findings[0].title).toMatch(/DMARC properly configured/i);
 	});
 
 	it('returns low finding for missing sp= when p=reject', async () => {
@@ -110,4 +110,4 @@ describe('checkDmarc', () => {
 		const f = r.findings.find((f) => f.title.includes('not applied'));
 		expect(f).toBeUndefined();
 	});
-// ...existing code...
+});

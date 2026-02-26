@@ -1,34 +1,55 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { setupFetchMock } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
 afterEach(() => restore());
 
-describe('checkMtaSts', () => {
-  async function run(domain = 'example.com') {
-	const { checkMtaSts } = await import('../src/tools/check-mta-sts');
-	return checkMtaSts(domain);
-  }
+function txtResponse(domain: string, records: string[]) {
+	return createDohResponse(
+		[{ name: domain, type: 16 }],
+		records.map((data) => ({ name: domain, type: 16, TTL: 300, data: `"${data}"` })),
+	);
+}
 
-	it('should return info finding when MTA-STS policy is valid', async () => {
-		// Mock fetch to return valid policy
-		// ...existing code...
-		const result = await run();
-		expect(result.category).toBe('mta-sts');
-		expect(result.findings[0].severity).toBe('info');
-		expect(result.findings[0].title).toMatch(/MTA-STS policy is valid/i);
-	});
+function policyResponse(body: string, status = 200) {
+	return {
+		ok: status >= 200 && status < 300,
+		status,
+		text: () => Promise.resolve(body),
+	} as unknown as Response;
+}
 
-	it('should return critical finding when MTA-STS policy is missing', async () => {
-		// Mock fetch to return missing policy
-		// ...existing code...
-		const result = await run();
-		expect(result.findings[0].severity).toBe('critical');
-		expect(result.findings[0].title).toMatch(/MTA-STS policy missing/i);
+function mockMultiFetch(opts: {
+	mtaStsDns?: Response;
+	policyFetch?: Response;
+	policyError?: Error;
+	tlsrptDns?: Response;
+	dnsError?: Error;
+}) {
+	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+		if (opts.dnsError && url.includes('cloudflare-dns.com') && url.includes('_mta-sts.')) {
+			return Promise.reject(opts.dnsError);
+		}
+		if (url.includes('cloudflare-dns.com')) {
+			if (url.includes('_mta-sts.') && opts.mtaStsDns) return Promise.resolve(opts.mtaStsDns);
+			if (url.includes('_smtp._tls.') && opts.tlsrptDns) return Promise.resolve(opts.tlsrptDns);
+			return Promise.resolve(createDohResponse([], []));
+		}
+		if (url.includes('mta-sts.') && url.includes('.well-known')) {
+			if (opts.policyError) return Promise.reject(opts.policyError);
+			if (opts.policyFetch) return Promise.resolve(opts.policyFetch);
+		}
+		return Promise.resolve(policyResponse('', 404));
 	});
+}
+
 describe('checkMtaSts', () => {
-});
+	async function run(domain = 'example.com') {
+		const { checkMtaSts } = await import('../src/tools/check-mta-sts');
+		return checkMtaSts(domain);
+	}
 
 	it('returns medium finding when no MTA-STS TXT record found', async () => {
 		mockMultiFetch({
@@ -141,7 +162,7 @@ describe('checkMtaSts', () => {
 	it('returns low finding on DNS query failure', async () => {
 		mockMultiFetch({
 			dnsError: new Error('DNS timeout'),
-			tlsrptDns: txtResponse('_smtp._tls.example.com', []),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
 		});
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('DNS query failed'));

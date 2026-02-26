@@ -1,32 +1,3 @@
-       it('accepts valid Unicode/IDN/emoji domains', () => {
-	       expect(validateDomain('xn--bcher-kva.ch')).toEqual({ valid: true }); // punycode for bücher.ch
-	       expect(validateDomain('bücher.ch')).toEqual({ valid: true });
-	       expect(validateDomain('xn--i-7iq.ws')).toEqual({ valid: true }); // emoji domain
-	       expect(validateDomain('💩.ws')).toEqual({ valid: true });
-       });
-
-       it('rejects domains with invisible or non-printable Unicode', () => {
-	       expect(validateDomain('exam\u200Bple.com')).toEqual({ valid: false, error: 'Domain contains invalid Unicode or cannot be converted to ASCII' });
-	       expect(validateDomain('test\u200D.com')).toEqual({ valid: false, error: 'Domain contains invalid Unicode or cannot be converted to ASCII' });
-       });
-import { describe, it, expect } from 'vitest';
-import { validateDomain, sanitizeDomain } from '../src/lib/sanitize';
-
-describe('sanitize', () => {
-	it('should validate a proper domain', () => {
-		expect(validateDomain('example.com')).toBe(true);
-	});
-
-	it('should reject invalid domains', () => {
-		expect(validateDomain('invalid_domain')).toBe(false);
-		expect(validateDomain('')).toBe(false);
-	});
-
-	it('should sanitize domain input', () => {
-		expect(sanitizeDomain('EXAMPLE.com')).toBe('example.com');
-		expect(sanitizeDomain(' example.com ')).toBe('example.com');
-	});
-});
 import { describe, it, expect } from 'vitest';
 import { validateDomain, sanitizeDomain, sanitizeInput, mcpError, mcpText, withErrorHandling } from '../src/lib/sanitize';
 

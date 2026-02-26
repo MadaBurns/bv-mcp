@@ -9,27 +9,31 @@ afterEach(() => {
 });
 
 describe('DNS library', () => {
-		it('should parse DNS response correctly', () => {
-			const response = {
-				Answer: [
-					{ name: 'example.com', type: 1, TTL: 300, data: '93.184.216.34' },
-				],
-			};
-			// Simulate parseDnsResponse
-			// ...existing code...
-			expect(response.Answer[0].name).toBe('example.com');
-			expect(response.Answer[0].data).toBe('93.184.216.34');
-		});
+	it('should parse DNS response correctly', () => {
+		const response = {
+			Answer: [{ name: 'example.com', type: 1, TTL: 300, data: '93.184.216.34' }],
+		};
+		expect(response.Answer[0].name).toBe('example.com');
+		expect(response.Answer[0].data).toBe('93.184.216.34');
+	});
 
-		it('should handle empty DNS response', () => {
-			const response = { Answer: [] };
-			// Simulate parseDnsResponse
-			// ...existing code...
-			expect(response.Answer).toEqual([]);
-		});
-	// Removed orphaned lines that caused syntax errors
-		});
+	it('should handle empty DNS response', () => {
+		const response = { Answer: [] as Array<{ name: string; type: number; TTL: number; data: string }> };
+		expect(response.Answer).toEqual([]);
+	});
 
+	describe('queryTxtRecords', () => {
+		it('returns parsed TXT records', async () => {
+			mockFetchResponse({
+				Status: 0,
+				TC: false,
+				RD: true,
+				RA: true,
+				AD: false,
+				CD: false,
+				Question: [{ name: 'example.com', type: 16 }],
+				Answer: [{ name: 'example.com', type: RecordType.TXT, TTL: 300, data: '"v=spf1 include:_spf.google.com -all"' }],
+			});
 			const records = await queryTxtRecords('example.com');
 			expect(records).toEqual(['v=spf1 include:_spf.google.com -all']);
 		});

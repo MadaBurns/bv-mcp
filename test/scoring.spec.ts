@@ -1,31 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { buildCheckResult, createFinding, calculateScanScore } from '../src/lib/scoring';
+import { buildCheckResult, createFinding, computeCategoryScore, computeScanScore, CATEGORY_WEIGHTS } from '../src/lib/scoring';
+import type { Finding, CheckResult } from '../src/lib/scoring';
 
 describe('scoring', () => {
-	it('should build a CheckResult with findings', () => {
-		const finding = createFinding('critical', 'Test finding', 'test', 'test details');
-		const result = buildCheckResult('spf', [finding]);
-		expect(result.category).toBe('spf');
-		expect(result.findings).toHaveLength(1);
-		expect(result.findings[0].severity).toBe('critical');
-	});
-
-	it('should calculate scan score correctly', () => {
-		const findings = [
-			createFinding('critical', 'DMARC missing', 'dmarc', 'No DMARC'),
-			createFinding('info', 'SPF valid', 'spf', 'SPF is valid'),
-			createFinding('info', 'DKIM valid', 'dkim', 'DKIM is valid'),
-		];
-		const results = {
-			dmarc: buildCheckResult('dmarc', [findings[0]]),
-			spf: buildCheckResult('spf', [findings[1]]),
-			dkim: buildCheckResult('dkim', [findings[2]]),
-		};
-		const score = calculateScanScore(results);
-		expect(score.total).toBeGreaterThanOrEqual(0);
-		expect(score.grade).toMatch(/^[A-F]$/);
-	});
-
+	describe('computeCategoryScore', () => {
 		it('accumulates penalties from multiple findings', () => {
 			const findings: Finding[] = [createFinding('spf', 'a', 'high', 'd'), createFinding('spf', 'b', 'medium', 'd')];
 			expect(computeCategoryScore(findings)).toBe(100 - 25 - 15);

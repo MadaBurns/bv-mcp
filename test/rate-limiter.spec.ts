@@ -1,3 +1,6 @@
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { checkRateLimit, resetRateLimit, resetAllRateLimits, getRateLimitStatus } from '../src/lib/rate-limiter';
+
 afterEach(() => {
 	resetAllRateLimits();
 	vi.restoreAllMocks();
@@ -49,19 +52,14 @@ describe('rate-limiter', () => {
 			expect(blocked.hourRemaining).toBe(0);
 			expect(blocked.retryAfterMs).toBeGreaterThan(0);
 		});
-	});
-});
-		});
 
 		it('tracks different IPs independently', async () => {
-			// Exhaust limit for IP A
 			for (let i = 0; i < 10; i++) {
 				await checkRateLimit('10.0.0.1');
 			}
 			const blockedA = await checkRateLimit('10.0.0.1');
 			expect(blockedA.allowed).toBe(false);
 
-			// IP B should still be allowed
 			const resultB = await checkRateLimit('10.0.0.2');
 			expect(resultB.allowed).toBe(true);
 			expect(resultB.minuteRemaining).toBe(9);
@@ -160,13 +158,11 @@ describe('rate-limiter', () => {
 
 			expect(kv.put).toHaveBeenCalledTimes(2);
 
-			// Minute counter: value should be "4" (3+1), TTL 60s
 			const minutePutCall = (kv.put as ReturnType<typeof vi.fn>).mock.calls[0];
 			expect(minutePutCall[0]).toContain('rl:min:1.2.3.4:');
 			expect(minutePutCall[1]).toBe('4');
 			expect(minutePutCall[2]).toEqual({ expirationTtl: 60 });
 
-			// Hour counter: value should be "21" (20+1), TTL 3600s
 			const hourPutCall = (kv.put as ReturnType<typeof vi.fn>).mock.calls[1];
 			expect(hourPutCall[0]).toContain('rl:hr:1.2.3.4:');
 			expect(hourPutCall[1]).toBe('21');
@@ -180,7 +176,6 @@ describe('rate-limiter', () => {
 			} as unknown as KVNamespace;
 
 			const result = await checkRateLimit('1.2.3.4', kv);
-			// Should fall back to in-memory and allow
 			expect(result.allowed).toBe(true);
 			expect(result.minuteRemaining).toBe(9);
 		});
@@ -192,7 +187,6 @@ describe('rate-limiter', () => {
 			expect(result.minuteRemaining).toBe(9); // 10 - 1
 			expect(result.hourRemaining).toBe(49); // 50 - 1
 
-			// Should write "1" for both counters
 			const minutePutCall = (kv.put as ReturnType<typeof vi.fn>).mock.calls[0];
 			expect(minutePutCall[1]).toBe('1');
 			const hourPutCall = (kv.put as ReturnType<typeof vi.fn>).mock.calls[1];
@@ -218,7 +212,6 @@ describe('rate-limiter', () => {
 
 			await checkRateLimit('1.2.3.4', kv);
 
-			// Verify KV.get was called (proves KV path was taken)
 			expect(kv.get).toHaveBeenCalled();
 		});
 	});

@@ -1,7 +1,10 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { TTLCache, cacheGet, cacheSet, scanCache } from '../src/lib/cache';
+
 afterEach(() => {
 	vi.restoreAllMocks();
 	scanCache.clear();
-// ...existing code...
+});
 
 describe('TTLCache', () => {
 	it('should store and retrieve values correctly', () => {
@@ -51,7 +54,11 @@ describe('TTLCache', () => {
 		expect(cache.delete('a')).toBe(true);
 		expect(cache.delete('missing')).toBe(false);
 	});
-// ...existing code...
+
+	it('delete removes entry so get returns undefined', () => {
+		const cache = new TTLCache<string>();
+		cache.set('a', 'val');
+		cache.delete('a');
 		expect(cache.get('a')).toBeUndefined();
 		expect(cache.delete('a')).toBe(false);
 	});

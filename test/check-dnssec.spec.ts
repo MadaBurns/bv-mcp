@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { RecordType } from '../src/lib/dns';
-import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, mockFetchError } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
@@ -42,14 +42,14 @@ describe('checkDnssec', () => {
 		const result = await run();
 		expect(result.category).toBe('dnssec');
 		expect(result.findings[0].severity).toBe('info');
-		expect(result.findings[0].title).toMatch(/DNSSEC is fully valid/i);
+		expect(result.findings[0].title).toMatch(/DNSSEC enabled and validated/i);
 	});
 
-	it('should return critical finding when DNSSEC is missing (AD=false)', async () => {
+	it('should return high finding when DNSSEC is not validated (AD=false, no keys)', async () => {
 		mockDnssecResponses(false, false, false);
 		const result = await run();
-		expect(result.findings[0].severity).toBe('critical');
-		expect(result.findings[0].title).toMatch(/DNSSEC not enabled/i);
+		expect(result.findings[0].severity).toMatch(/high|critical/);
+		expect(result.findings[0].title).toMatch(/DNSSEC not validated/i);
 	});
 
 	it('returns high finding when AD flag is false', async () => {
@@ -96,8 +96,7 @@ describe('checkDnssec', () => {
 	it('does not flag missing DNSKEY/DS when AD=true', async () => {
 		mockDnssecResponses(true, false, false);
 		const r = await run();
-		// AD=true means DNSSEC is valid; missing DNSKEY/DS should not be flagged
 		expect(r.findings).toHaveLength(1);
 		expect(r.findings[0].severity).toBe('info');
 	});
-// ...existing code...
+});

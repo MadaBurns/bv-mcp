@@ -7,7 +7,7 @@
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
-export type CheckCategory = 'spf' | 'dmarc' | 'dkim' | 'dnssec' | 'ssl' | 'mta_sts' | 'ns' | 'caa' | 'subdomain_takeover';
+export type CheckCategory = 'spf' | 'dmarc' | 'dkim' | 'dnssec' | 'ssl' | 'mta_sts' | 'ns' | 'caa' | 'subdomain_takeover' | 'mx';
 
 export interface Finding {
 	category: CheckCategory;
@@ -47,6 +47,7 @@ export const CATEGORY_WEIGHTS: Record<CheckCategory, number> = {
 	ns: 0.05,
 	caa: 0.05,
 	subdomain_takeover: 0.1,
+	mx: 0,
 };
 
 /** Severity penalty multipliers applied to the category score */
@@ -72,6 +73,7 @@ const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	ns: { importance: 0, countsAsCritical: false },
 	caa: { importance: 0, countsAsCritical: false },
 	subdomain_takeover: { importance: 0, countsAsCritical: true },
+	mx: { importance: 0, countsAsCritical: false },
 };
 
 const EMAIL_BONUS_IMPORTANCE = 5;

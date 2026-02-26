@@ -24,34 +24,25 @@ async function initSession(options?: { authToken?: string; targetEnv?: Env }): P
 }
 
 describe('DNS Security MCP Server', () => {
-		describe('POST /mcp - body size limit', () => {
-			it('returns 413 Payload Too Large for requests over 10KB', async () => {
-				// Create a JSON-RPC payload just over 10KB
-				const bigString = 'a'.repeat(10 * 1024); // 10KB
-				const payload = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { big: bigString } });
-				expect(Buffer.byteLength(payload)).toBeGreaterThan(10 * 1024);
-				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: payload,
-				});
-				const ctx = createExecutionContext();
-				const response = await worker.fetch(request, env, ctx);
-				await waitOnExecutionContext(ctx);
-				expect(response.status).toBe(413);
-				const body = await response.text();
-				expect(body).toMatch(/too large|payload/i);
+	describe('POST /mcp - body size limit', () => {
+		it('returns 413 Payload Too Large for requests over 10KB', async () => {
+			const bigString = 'a'.repeat(10 * 1024);
+			const payload = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { big: bigString } });
+			expect(Buffer.byteLength(payload)).toBeGreaterThan(10 * 1024);
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: payload,
 			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(413);
+			const body = await response.text();
+			expect(body).toMatch(/too large|payload/i);
 		});
-	import { describe, it, expect } from 'vitest';
-	import { SERVER_VERSION } from '../src/index';
-
-	describe('index', () => {
-	  it('should export SERVER_VERSION', () => {
-	    expect(typeof SERVER_VERSION).toBe('string');
-	    expect(SERVER_VERSION.length).toBeGreaterThan(0);
-	  });
 	});
+
 	beforeEach(() => {
 		resetAllRateLimits();
 	});
@@ -149,9 +140,8 @@ describe('DNS Security MCP Server', () => {
 			};
 			expect(body.jsonrpc).toBe('2.0');
 			expect(body.id).toBe(1);
-			expect(body.result.serverInfo.name).toBe('bv-dns-security-mcp');
+			expect(body.result.serverInfo.name).toBe('BLACKVEIL Scanner');
 			expect(body.result.protocolVersion).toBe('2025-03-26');
-			// Session ID must be returned
 			const sessionId = response.headers.get('mcp-session-id');
 			expect(sessionId).toBeTruthy();
 			expect(sessionId!.length).toBeGreaterThanOrEqual(32);
@@ -159,7 +149,7 @@ describe('DNS Security MCP Server', () => {
 	});
 
 	describe('POST /mcp - tools/list', () => {
-		it('returns all 10 tools', async () => {
+		it('returns all 11 tools', async () => {
 			const sessionId = await initSession();
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
@@ -170,7 +160,7 @@ describe('DNS Security MCP Server', () => {
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
 			const body = (await response.json()) as { result: { tools: Array<{ name: string }> } };
-			expect(body.result.tools).toHaveLength(10);
+			expect(body.result.tools).toHaveLength(11);
 			const toolNames = body.result.tools.map((t) => t.name);
 			expect(toolNames).toContain('check_spf');
 			expect(toolNames).toContain('check_dmarc');
@@ -396,7 +386,6 @@ describe('DNS Security MCP Server', () => {
 	describe('Streamable HTTP transport - DELETE session', () => {
 		it('DELETE /mcp terminates session', async () => {
 			const sessionId = await initSession();
-			// Delete the session
 			const delReq = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'DELETE',
 				headers: { 'Mcp-Session-Id': sessionId },
@@ -406,7 +395,6 @@ describe('DNS Security MCP Server', () => {
 			await waitOnExecutionContext(ctx1);
 			expect(delRes.status).toBe(204);
 
-			// Subsequent request with deleted session should fail
 			const postReq = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },

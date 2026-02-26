@@ -3,30 +3,37 @@
  * Validates presence and quality of MX records for a domain.
  * Returns CheckResult with findings and outbound email usage assessment.
  */
-import type { CheckResult } from '../lib/scoring';
+import type { CheckResult, Finding } from '../lib/scoring';
 import { createFinding, buildCheckResult } from '../lib/scoring';
 import { validateDomain } from '../lib/sanitize';
 import { queryDnsRecords } from '../lib/dns';
 
 export async function checkMx(domain: string): Promise<CheckResult> {
 	const validation = validateDomain(domain);
-	if (!validation.valid) return buildCheckResult(domain, 'MX', [createFinding('fail', 'MX', 'Domain validation failed', 'Invalid domain')]);
+	if (!validation.valid) {
+		return buildCheckResult('mx', [createFinding('mx', 'Domain validation failed', 'high', 'Invalid domain')]);
+	}
+
 	let answers;
 	try {
 		answers = await queryDnsRecords(domain, 'MX');
-	} catch (err) {
-		return buildCheckResult(domain, 'MX', [createFinding('fail', 'MX', 'DNS query failed', 'MX record lookup failed', 'high')]);
+	} catch {
+		return buildCheckResult('mx', [createFinding('mx', 'DNS query failed', 'high', 'MX record lookup failed')]);
 	}
+
 	if (!answers || answers.length === 0) {
-		return buildCheckResult(domain, 'MX', [createFinding('fail', 'MX', 'No MX records found', 'No mail exchange records present', 'high')]);
+		return buildCheckResult('mx', [createFinding('mx', 'No MX records found', 'high', 'No mail exchange records present')]);
 	}
-	const findings = [];
-	findings.push(createFinding('pass', 'MX', 'MX records found', 'Mail exchange records present', 'low'));
+
+	const findings: Finding[] = [];
+	findings.push(createFinding('mx', 'MX records found', 'info', 'Mail exchange records present'));
+
 	const outboundProviders = ['google.com', 'outlook.com', 'mailgun.org', 'sendgrid.net', 'amazonses.com'];
-	const mxTargets = answers.map(a => a.data.split(' ').pop() || '').map(t => t.toLowerCase());
-	const outbound = mxTargets.some(t => outboundProviders.some(p => t.endsWith(p)));
+	const mxTargets = answers.map((a) => a.split(' ').pop() || '').map((t) => t.replace(/\.$/, '').toLowerCase());
+	const outbound = mxTargets.some((t) => outboundProviders.some((p) => t.endsWith(p)));
 	if (outbound) {
-		findings.push(createFinding('info', 'MX', 'Likely outbound email usage', 'MX points to known outbound provider'));
+		findings.push(createFinding('mx', 'Likely outbound email usage', 'info', 'MX points to known outbound provider'));
 	}
-	return buildCheckResult(domain, 'MX', findings);
+
+	return buildCheckResult('mx', findings);
 }

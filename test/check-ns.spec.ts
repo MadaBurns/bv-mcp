@@ -1,18 +1,18 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { RecordType } from '../src/lib/dns';
-import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, mockFetchError } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
 function mockNsResponses(nsRecords: string[], soaData?: string, aRecords?: string[]) {
-	const nsAnswers = nsRecords.map(data => ({
+	const nsAnswers = nsRecords.map((data) => ({
 		name: 'example.com',
 		type: RecordType.NS,
 		TTL: 86400,
 		data,
 	}));
 	const soaAnswers = soaData ? [{ name: 'example.com', type: RecordType.SOA, TTL: 3600, data: soaData }] : [];
-	const aAnswers = (aRecords ?? []).map(data => ({
+	const aAnswers = (aRecords ?? []).map((data) => ({
 		name: 'example.com',
 		type: RecordType.A,
 		TTL: 300,
@@ -42,21 +42,23 @@ describe('checkNs', () => {
 		return checkNs(domain);
 	}
 
-	it('should return medium finding when no NS records exist', async () => {
+	it('should return critical finding when no NS records exist and domain does not resolve', async () => {
 		mockNsResponses([]);
 		const result = await run();
 		expect(result.category).toBe('ns');
-		expect(result.findings[0].severity).toBe('medium');
+		expect(result.findings[0].severity).toBe('critical');
 		expect(result.findings[0].title).toMatch(/No NS records/i);
 	});
 
 	it('should return info finding when valid NS records exist', async () => {
-		mockNsResponses(['ns1.example.com.', 'ns2.example.com.']);
+		mockNsResponses(
+			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
+			'ns1.provider-a.com. admin.example.com. 2024010101 3600 900 604800 86400',
+		);
 		const result = await run();
 		expect(result.findings[0].severity).toBe('info');
-		expect(result.findings[0].title).toMatch(/NS records found/i);
+		expect(result.findings[0].title).toMatch(/properly configured/i);
 	});
-});
 
 	it('returns info finding for multiple nameservers from different providers', async () => {
 		mockNsResponses(
@@ -143,7 +145,6 @@ describe('checkNs', () => {
 		const r = await run();
 		expect(r.findings).toHaveLength(1);
 		expect(r.findings[0].severity).toBe('info');
-		// The detail should show cleaned names without trailing dots
 		expect(r.findings[0].detail).toContain('ns1.provider-a.com');
 		expect(r.findings[0].detail).not.toContain('ns1.provider-a.com.');
 	});

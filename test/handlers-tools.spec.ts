@@ -1,56 +1,49 @@
-import { describe, it, expect } from 'vitest';
-import { handleToolsCall } from '../src/handlers/tools';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { setupFetchMock, createDohResponse, mockTxtRecords } from './helpers/dns-mock';
 
-describe('handlers-tools', () => {
-  it('should handle valid tool call', async () => {
-	const result = await handleToolsCall('check-spf', { domain: 'example.com' });
-	expect(result).toHaveProperty('category', 'spf');
-  });
+const { restore } = setupFetchMock();
 
-  it('should handle invalid tool call', async () => {
-	await expect(handleToolsCall('invalid-tool', {})).rejects.toThrow();
-  });
-});
+afterEach(() => restore());
 
-// ── handleToolsCall — dispatch routing ──────────────────────────────────────
+// -- Helper functions for mocking --
 
-/**
- * Multi-dispatch fetch mock that returns reasonable defaults for all check types.
- * Borrowed from scan-domain.spec.ts pattern.
- */
+function txtResponse(domain: string, records: string[]) {
+	return createDohResponse(
+		[{ name: domain, type: 16 }],
+		records.map((data) => ({ name: domain, type: 16, TTL: 300, data: `"${data}"` })),
+	);
+}
+
+function nsResponse(domain: string, nameservers: string[]) {
+	return createDohResponse(
+		[{ name: domain, type: 2 }],
+		nameservers.map((data) => ({ name: domain, type: 2, TTL: 300, data })),
+	);
+}
+
+function caaResponse(domain: string, records: string[]) {
+	return createDohResponse(
+		[{ name: domain, type: 257 }],
+		records.map((data) => ({ name: domain, type: 257, TTL: 300, data })),
+	);
+}
+
+function dnssecResponse(domain: string, ad: boolean) {
+	return createDohResponse([{ name: domain, type: 1 }], [{ name: domain, type: 1, TTL: 300, data: '1.2.3.4' }], {
+		ad,
+	});
+}
+
+function httpResponse(body: string, status = 200) {
+	return {
+		ok: status >= 200 && status < 300,
+		status,
+		text: () => Promise.resolve(body),
+		json: () => Promise.resolve({}),
+	} as unknown as Response;
+}
+
 function mockAllChecks() {
-	function txtResponse(domain: string, records: string[]) {
-		return createDohResponse(
-			[{ name: domain, type: 16 }],
-			records.map((data) => ({ name: domain, type: 16, TTL: 300, data: `"${data}"` })),
-		);
-	}
-	function nsResponse(domain: string, nameservers: string[]) {
-		return createDohResponse(
-			[{ name: domain, type: 2 }],
-			nameservers.map((data) => ({ name: domain, type: 2, TTL: 300, data })),
-		);
-	}
-	function caaResponse(domain: string, records: string[]) {
-		return createDohResponse(
-			[{ name: domain, type: 257 }],
-			records.map((data) => ({ name: domain, type: 257, TTL: 300, data })),
-		);
-	}
-	function dnssecResponse(domain: string, ad: boolean) {
-		return createDohResponse([{ name: domain, type: 1 }], [{ name: domain, type: 1, TTL: 300, data: '1.2.3.4' }], {
-			ad,
-		});
-	}
-	function httpResponse(body: string, status = 200) {
-		return {
-			ok: status >= 200 && status < 300,
-			status,
-			text: () => Promise.resolve(body),
-			json: () => Promise.resolve({}),
-		} as unknown as Response;
-	}
-
 	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
@@ -94,7 +87,9 @@ function mockAllChecks() {
 	});
 }
 
-describe('handleToolsCall — dispatch routing', () => {
+// -- handleToolsCall dispatch routing --
+
+describe('handleToolsCall - dispatch routing', () => {
 	async function call(name: string, args: Record<string, unknown> = {}) {
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		return handleToolsCall({ name, arguments: args });
@@ -135,9 +130,9 @@ describe('handleToolsCall — dispatch routing', () => {
 	});
 });
 
-// ── handleToolsCall — check_dkim selector validation ────────────────────────
+// -- handleToolsCall check_dkim selector validation --
 
-describe('handleToolsCall — check_dkim selector validation', () => {
+describe('handleToolsCall - check_dkim selector validation', () => {
 	async function call(name: string, args: Record<string, unknown> = {}) {
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		return handleToolsCall({ name, arguments: args });
@@ -165,9 +160,9 @@ describe('handleToolsCall — check_dkim selector validation', () => {
 	});
 });
 
-// ── handleToolsCall — explain_finding ───────────────────────────────────────
+// -- handleToolsCall explain_finding --
 
-describe('handleToolsCall — explain_finding', () => {
+describe('handleToolsCall - explain_finding', () => {
 	async function call(name: string, args: Record<string, unknown> = {}) {
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		return handleToolsCall({ name, arguments: args });
@@ -193,9 +188,9 @@ describe('handleToolsCall — explain_finding', () => {
 	});
 });
 
-// ── handleToolsCall — input validation & errors ─────────────────────────────
+// -- handleToolsCall input validation & errors --
 
-describe('handleToolsCall — input validation & errors', () => {
+describe('handleToolsCall - input validation & errors', () => {
 	async function call(name: string, args: Record<string, unknown> = {}) {
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		return handleToolsCall({ name, arguments: args });
@@ -225,35 +220,33 @@ describe('handleToolsCall — input validation & errors', () => {
 	});
 });
 
-// ── handleToolsCall — error categorization ──────────────────────────────────
+// -- handleToolsCall error categorization --
 
-describe('handleToolsCall — error categorization', () => {
+describe('handleToolsCall - error categorization', () => {
 	async function call(name: string, args: Record<string, unknown> = {}) {
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		return handleToolsCall({ name, arguments: args });
 	}
 
 	it('validation errors pass through the error message', async () => {
-		// Missing domain triggers "Missing required parameter: domain"
 		const result = await call('check_spf', {});
 		expect(result.isError).toBe(true);
 		expect(result.content[0].text).toContain('Missing required parameter: domain');
 	});
 
 	it('unexpected errors return generic "An unexpected error occurred"', async () => {
-		// Force an unexpected error by making fetch throw a non-validation error
 		globalThis.fetch = vi.fn().mockImplementation(() => {
 			throw new Error('ECONNREFUSED');
 		});
-		const result = await call('check_spf', { domain: 'example.com' });
+		const result = await call('check_spf', { domain: 'error-test.example.com' });
 		expect(result.isError).toBe(true);
 		expect(result.content[0].text).toContain('An unexpected error occurred');
 	});
 });
 
-// ── formatCheckResult (tested indirectly through handleToolsCall) ───────────
+// -- formatCheckResult (tested indirectly through handleToolsCall) --
 
-describe('formatCheckResult — via handleToolsCall', () => {
+describe('formatCheckResult - via handleToolsCall', () => {
 	async function call(name: string, args: Record<string, unknown> = {}) {
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		return handleToolsCall({ name, arguments: args });
@@ -262,19 +255,22 @@ describe('formatCheckResult — via handleToolsCall', () => {
 	it('passing check result contains "Passed" and score', async () => {
 		mockTxtRecords(['v=spf1 include:_spf.google.com -all']);
 		const result = await call('check_spf', { domain: 'example.com' });
-		expect(result.content[0].text).toContain('✅ Passed');
+		expect(result.content[0].text).toContain('\u2705 Passed');
 		expect(result.content[0].text).toContain('/100');
 	});
 
 	it('failing check result contains findings with severity indicators', async () => {
-		// +all (critical) + multiple SPF records (high) → score 35 → Failed
 		mockTxtRecords(['v=spf1 +all', 'v=spf1 ~all']);
-		const result = await call('check_spf', { domain: 'example.com' });
-		expect(result.content[0].text).toContain('❌ Failed');
+		const result = await call('check_spf', { domain: 'failing-spf.example.com' });
+		expect(result.content[0].text).toContain('\u274C Failed');
 		expect(result.content[0].text).toContain('Findings');
-		// Should contain at least one severity icon
 		const text = result.content[0].text;
-		const hasSeverityIcon = text.includes('ℹ️') || text.includes('⚠️') || text.includes('🔶') || text.includes('🔴') || text.includes('🚨');
+		const hasSeverityIcon =
+			text.includes('\u2139\uFE0F') ||
+			text.includes('\u26A0\uFE0F') ||
+			text.includes('\uD83D\uDD36') ||
+			text.includes('\uD83D\uDD34') ||
+			text.includes('\uD83D\uDEA8');
 		expect(hasSeverityIcon).toBe(true);
 	});
 });

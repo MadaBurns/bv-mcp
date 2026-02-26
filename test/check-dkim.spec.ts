@@ -49,8 +49,6 @@ describe('checkDkim', () => {
 		expect(finding).toBeDefined();
 		expect(finding!.title).toMatch(/DKIM configured/i);
 	});
-// ...existing code...
-});
 
 	it('returns medium finding for revoked key (empty p=)', async () => {
 		mockDkimRecords({ google: ['v=DKIM1; k=rsa; p=;'] });
@@ -154,4 +152,4 @@ describe('checkDkim', () => {
 		expect(revoked).toBeDefined();
 		expect(revoked!.severity).toBe('medium');
 	});
-// ...existing code...
+});

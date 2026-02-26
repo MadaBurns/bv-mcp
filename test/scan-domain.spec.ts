@@ -1,37 +1,43 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { setupFetchMock } from './helpers/dns-mock';
+import { env } from 'cloudflare:test';
+import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
 import { scanCache } from '../src/lib/cache';
+import type { ScanDomainResult } from '../src/tools/scan-domain';
 
 const { restore } = setupFetchMock();
 
 beforeEach(() => scanCache.clear());
 afterEach(() => restore());
 
-describe('scanDomain', () => {
-  async function run(domain = 'example.com') {
-	const { scanDomain } = await import('../src/tools/scan-domain');
-	return scanDomain(domain);
-  }
-
-  it('should return a ScanDomainResult with all categories', async () => {
-	// Mock all tool responses to pass
-	// ...existing code...
-	const result = await run('example.com');
-	expect(result).toHaveProperty('score');
-	expect(result).toHaveProperty('checks');
-	expect(Object.keys(result.checks)).toEqual(
-	  expect.arrayContaining(['spf', 'dkim', 'dmarc', 'ssl', 'dnssec', 'mta-sts', 'ns', 'caa', 'mx'])
+function txtResponse(domain: string, records: string[]) {
+	return createDohResponse(
+		[{ name: domain, type: 16 }],
+		records.map((data) => ({ name: domain, type: 16, TTL: 300, data: `"${data}"` })),
 	);
-  });
+}
 
-  it('should cache scan results for 5 minutes', async () => {
-	const domain = 'cachetest.com';
-	const { scanDomain } = await import('../src/tools/scan-domain');
-	const first = await scanDomain(domain);
-	const second = await scanDomain(domain);
-	expect(first).toEqual(second);
-  });
-});
+function nsResponse(domain: string, nameservers: string[]) {
+	return createDohResponse(
+		[{ name: domain, type: 2 }],
+		nameservers.map((data) => ({ name: domain, type: 2, TTL: 300, data })),
+	);
+}
+
+function caaResponse(domain: string, records: string[]) {
+	return createDohResponse(
+		[{ name: domain, type: 257 }],
+		records.map((data) => ({ name: domain, type: 257, TTL: 300, data })),
+	);
+}
+
+function dnssecResponse(domain: string, ad: boolean) {
+	return createDohResponse([{ name: domain, type: 1 }], [{ name: domain, type: 1, TTL: 300, data: '1.2.3.4' }], {
+		ad,
+	});
+}
+
+function httpResponse(body: string, status = 200) {
+	return {
 		ok: status >= 200 && status < 300,
 		status,
 		text: () => Promise.resolve(body),
@@ -40,7 +46,7 @@ describe('scanDomain', () => {
 }
 
 /**
- * Multi-dispatch fetch mock that returns reasonable defaults for all 8 check types.
+ * Multi-dispatch fetch mock that returns reasonable defaults for all check types.
  * Routes based on URL patterns used by each check function.
  */
 function mockAllChecks(overrides?: { throwForUrl?: string }) {
@@ -138,7 +144,7 @@ describe('scanDomain', () => {
 		expect(() => new Date(result.timestamp).toISOString()).not.toThrow();
 	});
 
-	it('includes all 8 check categories', async () => {
+	it('includes all 9 check categories', async () => {
 		mockAllChecks();
 		const result = await run();
 
@@ -151,7 +157,8 @@ describe('scanDomain', () => {
 		expect(categories).toContain('mta_sts');
 		expect(categories).toContain('ns');
 		expect(categories).toContain('caa');
-		expect(result.checks).toHaveLength(8);
+		expect(categories).toContain('subdomain_takeover');
+		expect(result.checks).toHaveLength(9);
 
 		// Each check result has expected shape
 		for (const check of result.checks) {
@@ -164,20 +171,16 @@ describe('scanDomain', () => {
 	});
 
 	it('isolates individual check failure via safeCheck - other checks still complete', async () => {
-		// Make DKIM check's DNS queries fail by throwing on _domainkey URLs.
-		// checkDkim catches errors internally and returns "No DKIM records found" (high severity),
-		// demonstrating that the scan completes even when individual checks degrade.
 		mockAllChecks({ throwForUrl: '_domainkey.' });
 		const result = await run();
 
-		// All 8 checks should still be present
-		expect(result.checks).toHaveLength(8);
+		// All 9 checks should still be present
+		expect(result.checks).toHaveLength(9);
 
 		// The DKIM check should have a degraded finding since DNS failed
 		const dkimCheck = result.checks.find((c) => c.category === 'dkim');
 		expect(dkimCheck).toBeDefined();
 		expect(dkimCheck!.findings.length).toBeGreaterThan(0);
-		// checkDkim catches DNS errors and reports "No DKIM records found"
 		const degradedFinding = dkimCheck!.findings.find((f) => f.severity !== 'info');
 		expect(degradedFinding).toBeDefined();
 
@@ -229,6 +232,8 @@ describe('formatScanReport', () => {
 					mta_sts: 60,
 					ns: 90,
 					caa: 70,
+					subdomain_takeover: 100,
+					mx: 100,
 				},
 				findings: [
 					{ category: 'dkim', title: 'Weak key', severity: 'high', detail: 'RSA key too short' },
@@ -280,6 +285,8 @@ describe('formatScanReport', () => {
 					mta_sts: 100,
 					ns: 100,
 					caa: 100,
+					subdomain_takeover: 100,
+					mx: 100,
 				},
 				findings: [],
 				summary: 'Excellent! No security issues found. Grade: A+',
@@ -352,7 +359,7 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		globalThis.fetch = baseFetch;
 	}
 
-	// ── DMARC ──
+	// -- DMARC --
 
 	it('detects missing DMARC record and penalises score', async () => {
 		mockWithOverrides({
@@ -384,7 +391,7 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		expect(finding).toBeDefined();
 	});
 
-	// ── DKIM ──
+	// -- DKIM --
 
 	it('detects missing DKIM records as high severity', async () => {
 		mockWithOverrides({
@@ -412,7 +419,7 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		expect(dkim!.passed).toBe(true);
 	});
 
-	// ── DNSSEC ──
+	// -- DNSSEC --
 
 	it('detects DNSSEC not enabled (AD=false)', async () => {
 		mockWithOverrides({
@@ -435,7 +442,7 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		expect(dnssec!.passed).toBe(true);
 	});
 
-	// ── CAA ──
+	// -- CAA --
 
 	it('detects missing CAA records', async () => {
 		mockWithOverrides({

@@ -23,7 +23,7 @@ describe('checkSpf', () => {
 	it('should return high finding for multiple SPF records', async () => {
 		mockTxtRecords(['v=spf1 -all', 'v=spf1 ~all']);
 		const result = await run();
-		const finding = result.findings.find(f => /Multiple SPF/i.test(f.title));
+		const finding = result.findings.find((f) => /Multiple SPF/i.test(f.title));
 		expect(finding).toBeDefined();
 		expect(finding!.severity).toBe('high');
 	});
@@ -31,7 +31,7 @@ describe('checkSpf', () => {
 	it('should return critical finding for +all', async () => {
 		mockTxtRecords(['v=spf1 +all']);
 		const result = await run();
-		const finding = result.findings.find(f => /Permissive/i.test(f.title));
+		const finding = result.findings.find((f) => /Permissive/i.test(f.title));
 		expect(finding).toBeDefined();
 		expect(finding!.severity).toBe('critical');
 	});
@@ -39,7 +39,7 @@ describe('checkSpf', () => {
 	it('should return critical finding for ?all', async () => {
 		mockTxtRecords(['v=spf1 ?all']);
 		const result = await run();
-		const finding = result.findings.find(f => /Permissive/i.test(f.title));
+		const finding = result.findings.find((f) => /Permissive/i.test(f.title));
 		expect(finding).toBeDefined();
 		expect(finding!.severity).toBe('critical');
 	});
@@ -47,7 +47,7 @@ describe('checkSpf', () => {
 	it('should return low finding for ~all (soft fail)', async () => {
 		mockTxtRecords(['v=spf1 include:_spf.google.com ~all']);
 		const result = await run();
-		const finding = result.findings.find(f => /soft fail/i.test(f.title));
+		const finding = result.findings.find((f) => /soft fail/i.test(f.title));
 		expect(finding).toBeDefined();
 		expect(finding!.severity).toBe('low');
 	});
@@ -57,9 +57,8 @@ describe('checkSpf', () => {
 		const result = await run();
 		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0].severity).toBe('info');
-		expect(result.findings[0].title).toMatch(/SPF policy is hard fail/i);
+		expect(result.findings[0].title).toMatch(/SPF record configured/i);
 	});
-});
 
 	it('handles case-insensitive SPF prefix', async () => {
 		mockTxtRecords(['V=spf1 -all']);

@@ -55,9 +55,10 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 				   );
 			   }
 		   }
-	   } catch (err) {
+	   } catch (err: unknown) {
 		   findings.length = 0;
-		   findings.push(createFinding('mta_sts', 'MTA-STS DNS query failed', 'low', `Could not query MTA-STS TXT record for ${domain}. Error: ${err && err.message ? err.message : 'Unknown error'}`));
+		   const message = err instanceof Error ? err.message : 'Unknown error';
+		   findings.push(createFinding('mta_sts', 'MTA-STS DNS query failed', 'low', `Could not query MTA-STS TXT record for ${domain}. Error: ${message}`));
 	   }
 
 	// Try to fetch the MTA-STS policy file
