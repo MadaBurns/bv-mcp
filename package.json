@@ -1,6 +1,6 @@
 {
 	"name": "blackveil-scanner",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "BLACKVEIL Scanner — DNS/email security analysis and remediation platform.",
 	"license": "MIT",
 	"author": "BLACKVEIL Security",

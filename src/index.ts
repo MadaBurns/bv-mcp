@@ -19,7 +19,7 @@ import { handleResourcesList, handleResourcesRead } from './handlers/resources';
 import { logEvent, logError } from './lib/log';
 
 /** Server version — keep in sync with package.json */
-const SERVER_VERSION = '1.0.0';
+const SERVER_VERSION = '1.0.1';
 
 /** JSON-RPC 2.0 request shape */
 interface JsonRpcRequest {

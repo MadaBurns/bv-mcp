@@ -8,7 +8,7 @@ BLACKVEIL Scanner — open-source DNS/email security analysis and remediation pl
 Exposes 11 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 A 12th check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 1.0.0 — keep `SERVER_VERSION` in `src/index.ts` and `version` in `package.json` in sync.
+**Version**: 1.0.1 — keep `SERVER_VERSION` in `src/index.ts` and `version` in `package.json` in sync.
 
 ## Monorepo Layout
 
