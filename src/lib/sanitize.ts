@@ -159,19 +159,3 @@ export function mcpError(message: string): { type: 'text'; text: string } {
 export function mcpText(text: string): { type: 'text'; text: string } {
 	return { type: 'text' as const, text };
 }
-
-/**
- * Wrap an async tool handler with standard error handling.
- * Catches errors and returns MCP-formatted error responses.
- */
-export async function withErrorHandling<T>(
-	fn: () => Promise<T>,
-	fallbackMessage = 'An unexpected error occurred',
-): Promise<T | { type: 'text'; text: string }> {
-	try {
-		return await fn();
-	} catch (err) {
-		const message = err instanceof Error ? err.message : fallbackMessage;
-		return mcpError(message);
-	}
-}

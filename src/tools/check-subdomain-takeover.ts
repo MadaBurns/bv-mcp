@@ -4,7 +4,7 @@
  */
 
 import { queryDnsRecords } from '../lib/dns';
-import { type CheckResult, type Finding, buildCheckResult, createFinding, type CheckCategory } from '../lib/scoring';
+import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
 
 // List of known/active subdomains to check (can be expanded or made configurable)
 const KNOWN_SUBDOMAINS = [
@@ -45,9 +45,9 @@ export async function checkSubdomainTakeover(domain: string): Promise<CheckResul
 		   const fqdn = `${sub}.${domain}`;
 		   try {
 			   const cnameRecords = await queryDnsRecords(fqdn, 'CNAME');
-			   for (const cname of cnameRecords) {
-				   const lowerCname = cname.toLowerCase();
-				   const isThirdParty = TAKEOVER_SERVICES.some((svc) => lowerCname.includes(svc));
+			   for (const rawCname of cnameRecords) {
+				   const cname = rawCname.replace(/\.$/, '').toLowerCase();
+				   const isThirdParty = TAKEOVER_SERVICES.some((svc) => cname.includes(svc));
 				   if (isThirdParty) {
 					   // Check if the CNAME target resolves
 					   try {
@@ -55,7 +55,7 @@ export async function checkSubdomainTakeover(domain: string): Promise<CheckResul
 						   if (targetA.length === 0) {
 							   findings.push(
 								   createFinding(
-									   'subdomain_takeover' as CheckCategory,
+									   'subdomain_takeover',
 									   `Dangling CNAME: ${fqdn} → ${cname}`,
 									   'critical',
 									   `Subdomain ${fqdn} points to ${cname}, which does not resolve. This is a potential subdomain takeover vector.`,
@@ -65,7 +65,7 @@ export async function checkSubdomainTakeover(domain: string): Promise<CheckResul
 					   } catch {
 						   findings.push(
 							   createFinding(
-								   'subdomain_takeover' as CheckCategory,
+								   'subdomain_takeover',
 								   `CNAME resolution failed: ${fqdn} → ${cname}`,
 								   'high',
 								   `Could not resolve CNAME target ${cname} for ${fqdn}. Manual review recommended.`,
@@ -82,7 +82,7 @@ export async function checkSubdomainTakeover(domain: string): Promise<CheckResul
 	   if (findings.length === 0) {
 		   findings.push(
 			   createFinding(
-				   'subdomain_takeover' as CheckCategory,
+				   'subdomain_takeover',
 				   'No dangling CNAME records found',
 				   'info',
 				   `No subdomain takeover vectors detected for ${domain} among known/active subdomains.`,
@@ -90,5 +90,5 @@ export async function checkSubdomainTakeover(domain: string): Promise<CheckResul
 		   );
 	   }
 
-	   return buildCheckResult('subdomain_takeover' as CheckCategory, findings);
+	   return buildCheckResult('subdomain_takeover', findings);
 }

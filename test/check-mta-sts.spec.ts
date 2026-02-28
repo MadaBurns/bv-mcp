@@ -113,7 +113,7 @@ describe('checkMtaSts', () => {
 
 	it('returns medium finding when id tag is missing', async () => {
 		mockMultiFetch({
-			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1']),
+			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; bogus=value']),
 			policyFetch: policyResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'),
 			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
 		});

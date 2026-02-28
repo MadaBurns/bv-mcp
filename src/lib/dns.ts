@@ -136,7 +136,11 @@ export async function queryDnsRecords(domain: string, type: RecordTypeName): Pro
  */
 export async function queryTxtRecords(domain: string): Promise<string[]> {
 	const records = await queryDnsRecords(domain, 'TXT');
-	return records.map((r) => r.replace(/^"|"$/g, ''));
+	return records.map((r) =>
+		r
+			.replace(/" "/g, ' ')
+			.replace(/^"|"$/g, ''),
+	);
 }
 
 /**
