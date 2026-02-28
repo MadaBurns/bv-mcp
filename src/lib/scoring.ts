@@ -33,7 +33,6 @@ export interface ScanScore {
 
 interface ImportanceProfile {
 	importance: number;
-	countsAsCritical: boolean;
 }
 
 /** Weights for each check category (must sum to 1.0) */
@@ -64,16 +63,16 @@ export const SEVERITY_PENALTIES: Record<Severity, number> = {
  * Values are sourced from blackveilsecurity.com score engine for overlapping checks.
  */
 const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
-	spf: { importance: 19, countsAsCritical: true },
-	dmarc: { importance: 22, countsAsCritical: true },
-	dkim: { importance: 10, countsAsCritical: true },
-	dnssec: { importance: 3, countsAsCritical: true },
-	ssl: { importance: 8, countsAsCritical: true },
-	mta_sts: { importance: 3, countsAsCritical: false },
-	ns: { importance: 0, countsAsCritical: false },
-	caa: { importance: 0, countsAsCritical: false },
-	subdomain_takeover: { importance: 0, countsAsCritical: true },
-	mx: { importance: 0, countsAsCritical: false },
+	spf: { importance: 19 },
+	dmarc: { importance: 22 },
+	dkim: { importance: 10 },
+	dnssec: { importance: 3 },
+	ssl: { importance: 8 },
+	mta_sts: { importance: 3 },
+	ns: { importance: 0 },
+	caa: { importance: 0 },
+	subdomain_takeover: { importance: 0 },
+	mx: { importance: 0 },
 };
 
 const EMAIL_BONUS_IMPORTANCE = 5;
@@ -202,7 +201,9 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 	}
 
 	earnedPoints += emailBonus;
-	maxPoints += EMAIL_BONUS_IMPORTANCE;
+	if (emailBonus > 0) {
+		maxPoints += EMAIL_BONUS_IMPORTANCE;
+	}
 
 	const overall = Math.round(maxPoints > 0 ? clampPercent((earnedPoints / maxPoints) * 100) : 0);
 

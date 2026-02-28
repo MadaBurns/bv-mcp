@@ -124,7 +124,7 @@ const TOOLS: McpTool[] = [
 	{
 		name: 'scan_domain',
 		description:
-			'Run a comprehensive DNS security scan on a domain. Executes all checks (SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA) in parallel and returns an overall security score and grade.',
+			'Run a comprehensive DNS security scan on a domain. Executes all checks (SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, MX, Subdomain Takeover) in parallel and returns an overall security score and grade.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
@@ -468,7 +468,7 @@ export async function handleToolsCall(
 		       err instanceof Error &&
 		       (err.message.startsWith('Missing required') ||
 			       err.message.startsWith('Invalid') ||
-			       err.message.startsWith('Domain validation failed'));
+			       err.message.startsWith('Domain '));
 	       const message = isValidationError ? err.message : 'An unexpected error occurred';
 	       logError(err instanceof Error ? err : String(err), {
 		       tool: name,

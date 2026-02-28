@@ -17,7 +17,7 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 	let hasTxtRecord = false;
 	   try {
 		   const txtRecords = await queryTxtRecords(`_mta-sts.${domain}`);
-		   const mtaStsRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=stsv1'));
+		   const mtaStsRecords = txtRecords.filter((r) => /^v=stsv1[;\s]/i.test(r));
 
 			  if (mtaStsRecords.length === 0) {
 				  findings.push(
@@ -181,7 +181,9 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 		}
 
 		// If both records are missing, add a clear summary and suppress duplicate findings
-		if (!hasTxtRecord && tlsRptChecked && !hasTlsRptRecord) {
+		// But preserve DNS error findings so they are not masked
+		const hasDnsErrorFindings = findings.some((f) => f.title.includes('DNS query failed'));
+		if (!hasTxtRecord && tlsRptChecked && !hasTlsRptRecord && !hasDnsErrorFindings) {
 			findings.length = 0; // Remove any prior findings
 			findings.push(
 				createFinding(

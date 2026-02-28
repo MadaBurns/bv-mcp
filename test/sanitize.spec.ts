@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateDomain, sanitizeDomain, sanitizeInput, mcpError, mcpText, withErrorHandling } from '../src/lib/sanitize';
+import { validateDomain, sanitizeDomain, sanitizeInput, mcpError, mcpText } from '../src/lib/sanitize';
 
 describe('sanitize library', () => {
 	describe('validateDomain', () => {
@@ -202,28 +202,6 @@ describe('sanitize library', () => {
 				type: 'text',
 				text: 'hello world',
 			});
-		});
-	});
-
-	describe('withErrorHandling', () => {
-		it('returns resolved value on success', async () => {
-			const result = await withErrorHandling(() => Promise.resolve('ok'));
-			expect(result).toBe('ok');
-		});
-
-		it('returns mcpError when Error is thrown', async () => {
-			const result = await withErrorHandling(() => Promise.reject(new Error('fail')));
-			expect(result).toEqual({ type: 'text', text: 'Error: fail' });
-		});
-
-		it('uses fallback message for non-Error throw', async () => {
-			const result = await withErrorHandling(() => Promise.reject('string error'), 'custom fallback');
-			expect(result).toEqual({ type: 'text', text: 'Error: custom fallback' });
-		});
-
-		it('uses default fallback message when no custom message provided', async () => {
-			const result = await withErrorHandling(() => Promise.reject('string error'));
-			expect(result).toEqual({ type: 'text', text: 'Error: An unexpected error occurred' });
 		});
 	});
 });

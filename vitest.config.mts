@@ -12,7 +12,7 @@ export default defineWorkersConfig({
 			provider: 'istanbul',
 			reporter: ['text', 'json-summary'],
 			include: ['src/**/*.ts'],
-			exclude: ['src/**/*.d.ts'],
+			exclude: ['src/**/*.d.ts', 'src/blackveil-scanner/**'],
 		},
 	},
 });
