@@ -128,6 +128,87 @@ describe('handleToolsCall - dispatch routing', () => {
 		expect(result.content).toHaveLength(1);
 		expect(result.content[0].text).toContain('DNS Security Scan');
 	});
+
+	it('check_mx with valid domain returns content with MX', async () => {
+		const mxAnswers = [{ name: 'example.com', type: 15, TTL: 300, data: '10 mail.example.com.' }];
+		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([{ name: 'example.com', type: 15 }], mxAnswers));
+		const result = await call('check_mx', { domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toHaveLength(1);
+		expect(result.content[0].text).toContain('MX');
+	});
+
+	it('check_dnssec with valid domain returns content', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			createDohResponse(
+				[{ name: 'example.com', type: 1 }],
+				[{ name: 'example.com', type: 1, TTL: 300, data: '1.2.3.4' }],
+				{ ad: true },
+			),
+		);
+		const result = await call('check_dnssec', { domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toHaveLength(1);
+		expect(result.content[0].text).toContain('DNSSEC');
+	});
+
+	it('check_ssl with valid domain returns content', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			text: () => Promise.resolve('OK'),
+			json: () => Promise.resolve({}),
+		} as unknown as Response);
+		const result = await call('check_ssl', { domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toHaveLength(1);
+		expect(result.content[0].text).toContain('SSL');
+	});
+
+	it('check_mta_sts with valid domain returns content', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('_mta-sts.')) {
+					return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
+				}
+				if (url.includes('_smtp._tls.')) {
+					return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
+				}
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					text: () => Promise.resolve('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'),
+					json: () => Promise.resolve({}),
+				} as unknown as Response);
+			}
+			return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('OK'), json: () => Promise.resolve({}) } as unknown as Response);
+		});
+		const result = await call('check_mta_sts', { domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toHaveLength(1);
+		expect(result.content[0].text).toContain('MTA_STS');
+	});
+
+	it('check_ns with valid domain returns content', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('type=NS') || url.includes('type=2')) {
+				return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+			}
+			if (url.includes('type=SOA') || url.includes('type=6')) {
+				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 6 }], [{ name: 'example.com', type: 6, TTL: 300, data: 'ns1.example.com. admin.example.com. 2024010101 3600 600 604800 300' }]));
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const result = await call('check_ns', { domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toHaveLength(1);
+		expect(result.content[0].text).toContain('NS');
+	});
 });
 
 // -- handleToolsCall check_dkim selector validation --
@@ -185,6 +266,13 @@ describe('handleToolsCall - explain_finding', () => {
 		const result = await call('explain_finding', { checkType: 'SPF' });
 		expect(result.isError).toBe(true);
 		expect(result.content[0].text).toContain('Missing required parameters');
+	});
+
+	it('explain_finding with details includes details in output', async () => {
+		const result = await call('explain_finding', { checkType: 'SPF', status: 'fail', details: 'SPF record uses +all' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0].text).toContain('Details:');
+		expect(result.content[0].text).toContain('SPF record uses +all');
 	});
 });
 

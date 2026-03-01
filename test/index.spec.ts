@@ -185,6 +185,121 @@ describe('DNS Security MCP Server', () => {
 		});
 	});
 
+	describe('POST /mcp - resources/read', () => {
+		it('returns resource content for valid URI', async () => {
+			const sessionId = await initSession();
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 20,
+					method: 'resources/read',
+					params: { uri: 'dns-security://guides/security-checks' },
+				}),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { result: { contents: Array<{ uri: string; text: string }> } };
+			expect(body.result.contents).toBeDefined();
+			expect(body.result.contents.length).toBeGreaterThan(0);
+			expect(body.result.contents[0].uri).toBe('dns-security://guides/security-checks');
+		});
+	});
+
+	describe('POST /mcp - ping', () => {
+		it('returns empty result for ping method', async () => {
+			const sessionId = await initSession();
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
+				body: JSON.stringify({ jsonrpc: '2.0', id: 21, method: 'ping', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { jsonrpc: string; id: number; result: Record<string, never> };
+			expect(body.jsonrpc).toBe('2.0');
+			expect(body.id).toBe(21);
+			expect(body.result).toEqual({});
+		});
+	});
+
+	describe('POST /mcp - notifications', () => {
+		it('returns 202 for notifications/initialized (no id)', async () => {
+			const sessionId = await initSession();
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
+				body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(202);
+		});
+
+		it('returns 202 for other notifications (no id)', async () => {
+			const sessionId = await initSession();
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
+				body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/some_event' }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(202);
+		});
+
+		it('returns 202 for notification with null id', async () => {
+			const sessionId = await initSession();
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
+				body: JSON.stringify({ jsonrpc: '2.0', id: null, method: 'notifications/initialized' }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(202);
+		});
+	});
+
+	describe('POST /mcp - JSON-RPC id validation', () => {
+		it('rejects non-string/number/null id (object)', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: { invalid: true }, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(400);
+			const body = (await response.json()) as { error: { code: number; message: string } };
+			expect(body.error.code).toBe(-32600);
+			expect(body.error.message).toContain('Invalid JSON-RPC id');
+		});
+
+		it('rejects boolean id', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: true, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(400);
+			const body = (await response.json()) as { error: { code: number; message: string } };
+			expect(body.error.code).toBe(-32600);
+		});
+	});
+
 	describe('POST /mcp - invalid requests', () => {
 		it('rejects invalid JSON', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
@@ -365,6 +480,35 @@ describe('DNS Security MCP Server', () => {
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(200);
 			expect(response.headers.get('content-type')).toBe('text/event-stream');
+		});
+
+		it('GET /mcp rejects invalid session ID', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'GET',
+				headers: {
+					Accept: 'text/event-stream',
+					'Mcp-Session-Id': 'nonexistent-session-id',
+				},
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(400);
+			const body = (await response.json()) as { error: { message: string } };
+			expect(body.error.message).toContain('invalid session');
+		});
+
+		it('GET /mcp returns 406 when Accept does not include text/event-stream', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'GET',
+				headers: {
+					Accept: 'application/json',
+				},
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(406);
 		});
 
 		it('GET /mcp initiates SSE session when no session header is provided', async () => {

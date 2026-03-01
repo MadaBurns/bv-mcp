@@ -602,6 +602,65 @@ describe('scanDomain - non-mail domain handling', () => {
 		expect(highFinding).toBeDefined();
 	});
 
+	it('handles DNS error in apex DMARC lookup gracefully (catch block)', async () => {
+		// Mock where the _dmarc.example.com query throws an error
+		const baseFetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					// Apex DMARC lookup throws
+					if (url.includes('_dmarc.example.com')) {
+						return Promise.reject(new Error('DNS timeout for apex DMARC'));
+					}
+					// Subdomain's own _dmarc → empty
+					if (url.includes('_dmarc.')) {
+						return Promise.resolve(createDohResponse([{ name: '_dmarc.sub.example.com', type: 16 }], []));
+					}
+					if (url.includes('_domainkey.')) {
+						return Promise.resolve(createDohResponse([{ name: 'default._domainkey.sub.example.com', type: 16 }], []));
+					}
+					if (url.includes('_mta-sts.')) {
+						return Promise.resolve(createDohResponse([{ name: '_mta-sts.sub.example.com', type: 16 }], []));
+					}
+					if (url.includes('_smtp._tls.')) {
+						return Promise.resolve(createDohResponse([{ name: '_smtp._tls.sub.example.com', type: 16 }], []));
+					}
+					return Promise.resolve(createDohResponse([{ name: 'sub.example.com', type: 16 }], []));
+				}
+				if (url.includes('type=MX') || url.includes('type=15')) {
+					// No MX records → non-mail domain
+					return Promise.resolve(createDohResponse([{ name: 'sub.example.com', type: 15 }], []));
+				}
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse('sub.example.com', ['ns1.example.com.', 'ns2.example.com.']));
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('sub.example.com', ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1'))
+					return Promise.resolve(dnssecResponse('sub.example.com', true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known')) {
+				return Promise.resolve(httpResponse('', 404));
+			}
+			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+		globalThis.fetch = baseFetch;
+
+		const result = await run('sub.example.com');
+
+		// Should still complete successfully — checkApexDmarcPolicy returns false on error
+		expect(result.domain).toBe('sub.example.com');
+		expect(result.checks).toHaveLength(10);
+
+		// Email findings should be downgraded (without apex DMARC coverage reason)
+		const spf = findCheck(result, 'spf');
+		expect(spf).toBeDefined();
+		const adjusted = spf!.findings.find((f) => f.detail.includes('domain has no MX records'));
+		expect(adjusted).toBeDefined();
+	});
+
 	it('downgrades findings for non-mail domain even without apex DMARC', async () => {
 		// No MX and no apex DMARC → still downgrade (MX alone is sufficient signal)
 		mockNonMailSubdomain({ apexDmarc: undefined });
