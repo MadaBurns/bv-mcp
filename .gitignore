@@ -31,7 +31,9 @@ npm-debug.log*
 
 # Cloudflare
 .wrangler/
-wrangler.local.jsonc
+
+# Local dev config (KV IDs, custom domains, API keys)
+.dev/
 
 # Workspace
 .workspace/

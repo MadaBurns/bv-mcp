@@ -29,7 +29,7 @@
 		"setup:kv": "wrangler kv namespace create RATE_LIMIT && wrangler kv namespace create SCAN_CACHE",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
-		"deploy": "wrangler deploy -c wrangler.local.jsonc",
+		"deploy": "wrangler deploy -c .dev/wrangler.local.jsonc",
 		"test": "vitest run --coverage",
 		"typecheck": "tsc --noEmit",
 		"cf-typegen": "wrangler types"

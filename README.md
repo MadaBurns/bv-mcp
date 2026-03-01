@@ -237,7 +237,7 @@ npm run setup:kv     # create RATE_LIMIT and SCAN_CACHE KV namespaces
 npm run deploy       # deploy to Cloudflare Workers
 ```
 
-After `setup:kv`, update the KV namespace IDs in `wrangler.jsonc` with the values printed by the command.
+After `setup:kv`, copy `wrangler.jsonc` to `.dev/wrangler.local.jsonc` and paste the printed namespace IDs there. The `.dev/` directory is gitignored — your KV IDs and custom domain stay out of version control.
 
 ---
 

@@ -14,6 +14,8 @@ A 12th check (`check_subdomain_takeover`) runs only inside `scan_domain` and is 
 
 - `/` (root) — **Primary**: actively developed and deployed
 - `/bv-dns-security-mcp/` — **Frozen snapshot**: separate distribution, own CI. Do not modify during development; only updated intentionally for releases.
+- `/.dev/` — **Gitignored**: local dev config (KV namespace IDs, custom domains, deploy overrides). Contains `wrangler.local.jsonc` used by `npm run deploy`.
+- `/scripts/` — Utility scripts (benchmark, etc.)
 
 ## Commands
 
@@ -158,4 +160,4 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_WEIGHTS` ma
 | `RATE_LIMIT` | KV Namespace | Per-IP rate counters (optional, in-memory fallback) |
 | `SCAN_CACHE` | KV Namespace | 5-min TTL result cache (optional, in-memory fallback) |
 
-After `npm run setup:kv`, paste the printed namespace IDs into `wrangler.jsonc`.
+After `npm run setup:kv`, copy `wrangler.jsonc` to `.dev/wrangler.local.jsonc` and paste the printed namespace IDs there. The `.dev/` directory is gitignored.
