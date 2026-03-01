@@ -562,6 +562,51 @@ describe('DNS Security MCP Server', () => {
 		});
 	});
 
+	describe('Rate limiting - authenticated bypass', () => {
+		it('authenticated requests bypass rate limiting', async () => {
+			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+			// Send 15 requests with valid auth — all should succeed (limit is 10/min for unauthenticated)
+			for (let i = 0; i < 15; i++) {
+				const sessionId = await initSession({ authToken: TEST_API_KEY, targetEnv: authEnv });
+				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						Authorization: `Bearer ${TEST_API_KEY}`,
+						'Mcp-Session-Id': sessionId,
+					},
+					body: JSON.stringify({ jsonrpc: '2.0', id: i + 1, method: 'tools/list', params: {} }),
+				});
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(request, authEnv, ctx);
+				await waitOnExecutionContext(ctx);
+				expect(response.status).toBe(200);
+				// Authenticated requests should not have rate limit headers
+				expect(response.headers.has('x-ratelimit-limit')).toBe(false);
+			}
+		});
+
+		it('unauthenticated requests are still rate-limited', async () => {
+			// Exhaust rate limit with 11 unauthenticated requests
+			let rateLimited = false;
+			for (let i = 0; i < 15; i++) {
+				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ jsonrpc: '2.0', id: i + 1, method: 'initialize', params: {} }),
+				});
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(request, env, ctx);
+				await waitOnExecutionContext(ctx);
+				if (response.status === 429) {
+					rateLimited = true;
+					break;
+				}
+			}
+			expect(rateLimited).toBe(true);
+		});
+	});
+
 	describe('404 fallback', () => {
 		it('returns 404 for unknown routes', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/unknown');

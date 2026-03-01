@@ -188,26 +188,34 @@ app.post('/mcp', async (c) => {
 	// Rate limiting by IP — only trust cf-connecting-ip (set by Cloudflare edge)
 	// Do NOT fall back to x-forwarded-for as it is client-controlled and spoofable
 	const ip = headersLc['cf-connecting-ip'] ?? 'unknown';
-	const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT);
 
-	// Standard rate limit headers (always ASCII, consistent case)
-	const rateHeaders: Record<string, string> = {
-		'x-ratelimit-limit': '10',
-		'x-ratelimit-remaining': String(rateResult.minuteRemaining),
-	};
-	if (!rateResult.allowed) {
-		if (rateResult.retryAfterMs !== undefined) {
-			rateHeaders['retry-after'] = String(Math.ceil(rateResult.retryAfterMs / 1000));
+	// Authenticated requests bypass rate limiting — the auth middleware already
+	// validated the token before we reach this handler, so if BV_API_KEY is set
+	// and the bearer token matches, the caller is trusted.
+	const apiKey = c.env.BV_API_KEY?.trim();
+	const isAuthenticated = !!apiKey && isAuthorizedRequest(headersLc['authorization'], apiKey);
+
+	let rateHeaders: Record<string, string> = {};
+	if (!isAuthenticated) {
+		const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT);
+		rateHeaders = {
+			'x-ratelimit-limit': '10',
+			'x-ratelimit-remaining': String(rateResult.minuteRemaining),
+		};
+		if (!rateResult.allowed) {
+			if (rateResult.retryAfterMs !== undefined) {
+				rateHeaders['retry-after'] = String(Math.ceil(rateResult.retryAfterMs / 1000));
+			}
+			return c.json(
+				jsonRpcError(
+					null,
+					JSON_RPC_ERRORS.INTERNAL_ERROR,
+					`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
+				),
+				429,
+				rateHeaders,
+			);
 		}
-		return c.json(
-			jsonRpcError(
-				null,
-				JSON_RPC_ERRORS.INTERNAL_ERROR,
-				`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
-			),
-			429,
-			rateHeaders,
-		);
 	}
 
 	// Enforce hard 10KB body size limit (even if content-length is missing or wrong)
