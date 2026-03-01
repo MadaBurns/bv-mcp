@@ -41,12 +41,16 @@ npm run setup:kv                       # Create KV namespaces (first time only)
 ## Architecture
 
 ```
-src/index.ts              — Hono app, auth middleware, JSON-RPC dispatch, SSE transport
-src/handlers/tools.ts     — tools/list + tools/call dispatch (TOOLS array + switch)
+src/index.ts              — Hono app, middleware wiring, JSON-RPC dispatch, SSE transport
+src/handlers/tools.ts     — tools/list + tools/call dispatch (TOOLS array + TOOL_REGISTRY)
 src/handlers/resources.ts — resources/list + resources/read (static docs)
 src/tools/check-*.ts      — Individual DNS checks (SPF, DMARC, DKIM, MX, SSL, etc.)
 src/tools/scan-domain.ts  — Parallel orchestrator for all checks → ScanScore
 src/tools/explain-finding.ts — Static explanation generator
+src/lib/json-rpc.ts       — JSON-RPC 2.0 types, error codes, response builders
+src/lib/session.ts        — In-memory session management (create, validate, delete)
+src/lib/auth.ts           — Bearer token validation (constant-time XOR comparison)
+src/lib/sse.ts            — SSE event formatting and Accept header checking
 src/lib/dns.ts            — DNS-over-HTTPS via Cloudflare DoH (cloudflare-dns.com/dns-query)
 src/lib/scoring.ts        — Weighted scoring engine (Finding, CheckResult, ScanScore types)
 src/lib/sanitize.ts       — Domain validation, SSRF protection, MCP response helpers
@@ -121,7 +125,7 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_WEIGHTS` ma
 ## Security
 
 - **SSRF protection**: `config.ts` defines blocked IPs/TLDs/rebinding services; `sanitize.ts` enforces them. Wrangler uses `global_fetch_strictly_public` compatibility flag.
-- **Auth**: optional bearer token (`BV_API_KEY`), constant-time XOR comparison in `index.ts`
+- **Auth**: optional bearer token (`BV_API_KEY`), constant-time XOR comparison in `lib/auth.ts`
 - **Rate limiting**: 10 req/min, 50 req/hr per IP via KV (in-memory fallback). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `ping`, `notifications/*`) are exempt. Authenticated requests (valid `BV_API_KEY` bearer token) bypass rate limiting entirely.
 - **Request body max**: 10 KB on `/mcp`
 - **IP sourcing**: only `cf-connecting-ip` — never `x-forwarded-for`
@@ -132,7 +136,7 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_WEIGHTS` ma
 
 1. Create `src/tools/check-<name>.ts` → export async fn returning `CheckResult`
 2. Add the `CheckCategory` value to the union type in `src/lib/scoring.ts`
-3. Register in `src/handlers/tools.ts`: add to `TOOLS` array (schema) + `handleToolsCall` switch (dispatch)
+3. Register in `src/handlers/tools.ts`: add to `TOOLS` array (schema) + `TOOL_REGISTRY` map (dispatch)
 4. If the new check is part of `scan_domain`, add it to the parallel orchestration in `src/tools/scan-domain.ts` (use static import there, not dynamic)
 5. Add `test/check-<name>.spec.ts` using the `dns-mock` helper pattern
 6. Update README tools table

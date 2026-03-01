@@ -17,94 +17,14 @@ import { checkRateLimit } from './lib/rate-limiter';
 import { handleToolsList, handleToolsCall } from './handlers/tools';
 import { handleResourcesList, handleResourcesRead } from './handlers/resources';
 import { logEvent, logError } from './lib/log';
+import { jsonRpcError, jsonRpcSuccess, JSON_RPC_ERRORS } from './lib/json-rpc';
+import { createSession, validateSession, deleteSession } from './lib/session';
+import { isAuthorizedRequest, unauthorizedResponse } from './lib/auth';
+import { sseEvent, acceptsSSE } from './lib/sse';
+import type { JsonRpcRequest } from './lib/json-rpc';
 
 /** Server version — keep in sync with package.json */
 const SERVER_VERSION = '1.0.1';
-
-/** JSON-RPC 2.0 request shape */
-interface JsonRpcRequest {
-	jsonrpc: string;
-	id?: string | number | null;
-	method: string;
-	params?: Record<string, unknown>;
-}
-
-/** JSON-RPC 2.0 error codes */
-const JSON_RPC_ERRORS = {
-	PARSE_ERROR: -32700,
-	INVALID_REQUEST: -32600,
-	METHOD_NOT_FOUND: -32601,
-	INVALID_PARAMS: -32602,
-	INTERNAL_ERROR: -32603,
-	UNAUTHORIZED: -32001,
-} as const;
-
-function jsonRpcError(id: string | number | null | undefined, code: number, message: string) {
-	return {
-		jsonrpc: '2.0' as const,
-		id: id ?? null,
-		error: { code, message },
-	};
-}
-
-function jsonRpcSuccess(id: string | number | null | undefined, result: unknown) {
-	return {
-		jsonrpc: '2.0' as const,
-		id: id ?? null,
-		result,
-	};
-}
-
-function isAuthorizedRequest(authHeader: string | undefined, expectedToken: string): boolean {
-	if (!authHeader || !authHeader.startsWith('Bearer ')) {
-		return false;
-	}
-	const token = authHeader.slice('Bearer '.length).trim();
-	if (token.length === 0 || token.length !== expectedToken.length) {
-		return false;
-	}
-	// Constant-time comparison to prevent timing side-channel attacks.
-	// XOR each byte and accumulate — always processes all bytes regardless of mismatch position.
-	const encoder = new TextEncoder();
-	const a = encoder.encode(token);
-	const b = encoder.encode(expectedToken);
-	let mismatch = a.byteLength ^ b.byteLength;
-	for (let i = 0; i < a.byteLength; i++) {
-		mismatch |= a[i] ^ b[i];
-	}
-	return mismatch === 0;
-}
-
-function unauthorizedResponse() {
-	return Response.json(jsonRpcError(null, JSON_RPC_ERRORS.UNAUTHORIZED, 'Unauthorized: missing or invalid bearer token'), { status: 401 });
-}
-
-// ---------------------------------------------------------------------------
-// Session management (in-memory, per-isolate)
-// ---------------------------------------------------------------------------
-const activeSessions = new Map<string, { createdAt: number }>();
-
-/** Generate a cryptographically secure session ID (hex, visible ASCII) */
-function generateSessionId(): string {
-	const bytes = new Uint8Array(32);
-	crypto.getRandomValues(bytes);
-	return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-/** Format a JSON-RPC message as an SSE `message` event */
-function sseEvent(data: unknown, eventId?: string): string {
-	let event = '';
-	if (eventId) {
-		event += `id: ${eventId}\n`;
-	}
-	event += `event: message\ndata: ${JSON.stringify(data)}\n\n`;
-	return event;
-}
-
-/** Check whether the Accept header includes text/event-stream */
-function acceptsSSE(accept: string | undefined): boolean {
-	return !!accept && accept.includes('text/event-stream');
-}
 
 // ---------------------------------------------------------------------------
 // Hono app
@@ -273,18 +193,19 @@ app.post('/mcp', async (c) => {
 	const sessionId = headersLc['mcp-session-id'];
 
 	if (method !== 'initialize') {
-		if (!sessionId || !activeSessions.has(sessionId)) {
+		if (!sessionId || !validateSession(sessionId)) {
 			return c.json(jsonRpcError(id, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: invalid or missing session'), 400);
 		}
 	}
 
-	// Notifications (no id) and ping don't need SSE — return 202 or JSON
+	// Notifications (no id) don't execute tools, but still count against rate
+	// limits to prevent abuse of the notification path as a rate-limit bypass.
 	const isNotification = body.id === undefined || body.id === null;
 	if (isNotification && method !== 'initialize') {
-		// Per spec: notifications/responses → 202 Accepted
-		if (method === 'notifications/initialized') {
-			return new Response(null, { status: 202 });
+		if (!isAuthenticated && method === 'tools/call') {
+			await checkRateLimit(ip, c.env.RATE_LIMIT);
 		}
+		// Per spec: notifications/responses → 202 Accepted
 		return new Response(null, { status: 202 });
 	}
 
@@ -299,8 +220,7 @@ app.post('/mcp', async (c) => {
 
 		       switch (method) {
 			       case 'initialize': {
-				       newSessionId = generateSessionId();
-				       activeSessions.set(newSessionId, { createdAt: Date.now() });
+				       newSessionId = createSession();
 				       const result = {
 					       protocolVersion: '2025-03-26',
 					       capabilities: {
@@ -448,9 +368,8 @@ app.get('/mcp', (c) => {
 	let effectiveSessionId = sessionId;
 
 	if (!effectiveSessionId) {
-		effectiveSessionId = generateSessionId();
-		activeSessions.set(effectiveSessionId, { createdAt: Date.now() });
-	} else if (!activeSessions.has(effectiveSessionId)) {
+		effectiveSessionId = createSession();
+	} else if (!validateSession(effectiveSessionId)) {
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: invalid session'), 400);
 	}
 
@@ -484,11 +403,11 @@ app.get('/mcp', (c) => {
 // ---------------------------------------------------------------------------
 app.delete('/mcp', (c) => {
 	const sessionId = c.req.header('mcp-session-id');
-	if (!sessionId || !activeSessions.has(sessionId)) {
+	if (!sessionId || !validateSession(sessionId)) {
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: invalid or missing session'), 400);
 	}
 
-	activeSessions.delete(sessionId);
+	deleteSession(sessionId);
 	return new Response(null, { status: 204 });
 });
 
