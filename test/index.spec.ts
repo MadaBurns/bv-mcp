@@ -562,12 +562,12 @@ describe('DNS Security MCP Server', () => {
 		});
 	});
 
-	describe('Rate limiting - authenticated bypass', () => {
-		it('authenticated requests bypass rate limiting', async () => {
+	describe('Rate limiting', () => {
+		it('authenticated tools/call requests bypass rate limiting', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
-			// Send 15 requests with valid auth — all should succeed (limit is 10/min for unauthenticated)
+			const sessionId = await initSession({ authToken: TEST_API_KEY, targetEnv: authEnv });
+			// Send 15 tools/call requests with valid auth — all should succeed
 			for (let i = 0; i < 15; i++) {
-				const sessionId = await initSession({ authToken: TEST_API_KEY, targetEnv: authEnv });
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
@@ -575,25 +575,37 @@ describe('DNS Security MCP Server', () => {
 						Authorization: `Bearer ${TEST_API_KEY}`,
 						'Mcp-Session-Id': sessionId,
 					},
-					body: JSON.stringify({ jsonrpc: '2.0', id: i + 1, method: 'tools/list', params: {} }),
+					body: JSON.stringify({
+						jsonrpc: '2.0',
+						id: i + 1,
+						method: 'tools/call',
+						params: { name: 'explain_finding', arguments: { checkType: 'SPF', status: 'fail' } },
+					}),
 				});
 				const ctx = createExecutionContext();
 				const response = await worker.fetch(request, authEnv, ctx);
 				await waitOnExecutionContext(ctx);
 				expect(response.status).toBe(200);
-				// Authenticated requests should not have rate limit headers
 				expect(response.headers.has('x-ratelimit-limit')).toBe(false);
 			}
 		});
 
-		it('unauthenticated requests are still rate-limited', async () => {
-			// Exhaust rate limit with 11 unauthenticated requests
+		it('unauthenticated tools/call requests are rate-limited', async () => {
+			const sessionId = await initSession();
 			let rateLimited = false;
 			for (let i = 0; i < 15; i++) {
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ jsonrpc: '2.0', id: i + 1, method: 'initialize', params: {} }),
+					headers: {
+						'Content-Type': 'application/json',
+						'Mcp-Session-Id': sessionId,
+					},
+					body: JSON.stringify({
+						jsonrpc: '2.0',
+						id: i + 1,
+						method: 'tools/call',
+						params: { name: 'explain_finding', arguments: { checkType: 'SPF', status: 'fail' } },
+					}),
 				});
 				const ctx = createExecutionContext();
 				const response = await worker.fetch(request, env, ctx);
@@ -604,6 +616,50 @@ describe('DNS Security MCP Server', () => {
 				}
 			}
 			expect(rateLimited).toBe(true);
+		});
+
+		it('protocol methods (initialize, tools/list, ping) are exempt from rate limiting', async () => {
+			// Exhaust the rate limit with tools/call requests first
+			const sessionId = await initSession();
+			for (let i = 0; i < 15; i++) {
+				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Mcp-Session-Id': sessionId,
+					},
+					body: JSON.stringify({
+						jsonrpc: '2.0',
+						id: i + 100,
+						method: 'tools/call',
+						params: { name: 'explain_finding', arguments: { checkType: 'SPF', status: 'fail' } },
+					}),
+				});
+				const ctx = createExecutionContext();
+				await worker.fetch(request, env, ctx);
+				await waitOnExecutionContext(ctx);
+			}
+
+			// Protocol methods should still work despite exhausted rate limit
+			const protocolMethods = [
+				{ method: 'initialize', params: {} },
+				{ method: 'tools/list', params: {} },
+				{ method: 'ping', params: {} },
+				{ method: 'resources/list', params: {} },
+			];
+			for (const { method, params } of protocolMethods) {
+				const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+				if (method !== 'initialize') headers['Mcp-Session-Id'] = sessionId;
+				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+					method: 'POST',
+					headers,
+					body: JSON.stringify({ jsonrpc: '2.0', id: 50, method, params }),
+				});
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(request, env, ctx);
+				await waitOnExecutionContext(ctx);
+				expect(response.status, `${method} should not be rate-limited`).toBe(200);
+			}
 		});
 	});
 

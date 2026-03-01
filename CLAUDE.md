@@ -120,7 +120,7 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_WEIGHTS` ma
 
 - **SSRF protection**: `config.ts` defines blocked IPs/TLDs/rebinding services; `sanitize.ts` enforces them. Wrangler uses `global_fetch_strictly_public` compatibility flag.
 - **Auth**: optional bearer token (`BV_API_KEY`), constant-time XOR comparison in `index.ts`
-- **Rate limiting**: 10 req/min, 50 req/hr per IP via KV (in-memory fallback)
+- **Rate limiting**: 10 req/min, 50 req/hr per IP via KV (in-memory fallback). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `ping`, `notifications/*`) are exempt. Authenticated requests (valid `BV_API_KEY` bearer token) bypass rate limiting entirely.
 - **Request body max**: 10 KB on `/mcp`
 - **IP sourcing**: only `cf-connecting-ip` — never `x-forwarded-for`
 - **Error sanitization**: only known validation errors surface; unexpected → generic message

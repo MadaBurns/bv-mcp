@@ -195,29 +195,6 @@ app.post('/mcp', async (c) => {
 	const apiKey = c.env.BV_API_KEY?.trim();
 	const isAuthenticated = !!apiKey && isAuthorizedRequest(headersLc['authorization'], apiKey);
 
-	let rateHeaders: Record<string, string> = {};
-	if (!isAuthenticated) {
-		const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT);
-		rateHeaders = {
-			'x-ratelimit-limit': '10',
-			'x-ratelimit-remaining': String(rateResult.minuteRemaining),
-		};
-		if (!rateResult.allowed) {
-			if (rateResult.retryAfterMs !== undefined) {
-				rateHeaders['retry-after'] = String(Math.ceil(rateResult.retryAfterMs / 1000));
-			}
-			return c.json(
-				jsonRpcError(
-					null,
-					JSON_RPC_ERRORS.INTERNAL_ERROR,
-					`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
-				),
-				429,
-				rateHeaders,
-			);
-		}
-	}
-
 	// Enforce hard 10KB body size limit (even if content-length is missing or wrong)
 	const MAX_BODY = 10_240;
 	let rawBody = '';
@@ -264,9 +241,36 @@ app.post('/mcp', async (c) => {
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Invalid JSON-RPC id: must be string, number, or null'), 400);
 	}
 
+	const { id, method, params } = body;
+
+	// Rate limiting — only applied to tools/call (the expensive DNS-lookup operations).
+	// Protocol methods (initialize, tools/list, resources/*, ping, notifications/*) are
+	// exempt so MCP handshake flows are never blocked. Authenticated requests bypass entirely.
+	let rateHeaders: Record<string, string> = {};
+	if (!isAuthenticated && method === 'tools/call') {
+		const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT);
+		rateHeaders = {
+			'x-ratelimit-limit': '10',
+			'x-ratelimit-remaining': String(rateResult.minuteRemaining),
+		};
+		if (!rateResult.allowed) {
+			if (rateResult.retryAfterMs !== undefined) {
+				rateHeaders['retry-after'] = String(Math.ceil(rateResult.retryAfterMs / 1000));
+			}
+			return c.json(
+				jsonRpcError(
+					id,
+					JSON_RPC_ERRORS.INTERNAL_ERROR,
+					`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
+				),
+				429,
+				rateHeaders,
+			);
+		}
+	}
+
 	// Session validation — non-initialize requests must carry a valid session ID
 	const sessionId = headersLc['mcp-session-id'];
-	const { id, method, params } = body;
 
 	if (method !== 'initialize') {
 		if (!sessionId || !activeSessions.has(sessionId)) {

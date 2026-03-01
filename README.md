@@ -103,7 +103,7 @@ These logs are emitted via `console.log` in the Cloudflare Worker and can be tai
 ```
 
 Logs are designed for easy parsing, monitoring, and alerting. You can build dashboards, alerts, and analytics on top of these events.
-- **Rate limiting:** Per-IP limits (10/min, 50/hr) enforced via Cloudflare KV with in-memory fallback. Standard rate limit headers exposed.
+- **Rate limiting:** Per-IP limits (10/min, 50/hr) enforced via Cloudflare KV with in-memory fallback. Only `tools/call` requests count against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `ping`) are exempt. Authenticated requests bypass rate limiting entirely. Standard rate limit headers exposed.
 - **Secrets:** Optional bearer token (`BV_API_KEY`) for production auth, constant-time comparison, never stored in logs.
 - **No Node.js APIs:** Fully Cloudflare Workers compatible, using only fetch, crypto, and Web APIs.
 - **Testing:** 245+ tests, ~95% coverage, including edge cases for Unicode, malformed requests, KV failures, and error branches.
@@ -206,7 +206,7 @@ The server does not phone home, collect telemetry, or send data anywhere other t
 ```
 MCP Client ──► Cloudflare Worker (Hono) ──► Cloudflare DoH API
                   │                            (dns-over-HTTPS)
-                  ├─ KV-backed rate limiter (10/min, 50/hr per IP)
+                  ├─ KV-backed rate limiter (10/min, 50/hr per IP, tools/call only)
                   ├─ KV-backed scan cache (5 min TTL)
                   ├─ Optional bearer token auth
                   └─ Weighted scoring engine
@@ -456,7 +456,7 @@ This MCP server exposes a Model Context Protocol endpoint branded as **BLACKVEIL
 #### Notes
 - All clients must support JSON-RPC 2.0 over HTTP POST.
 - Max request body: 10KB.
-- Rate limits: 10 req/min, 50 req/hr per IP (see server docs).
+- Rate limits: 10 req/min, 50 req/hr per IP for `tools/call` only; protocol methods are exempt. Authenticated requests bypass rate limits.
 - For custom deployments, update the endpoint URL accordingly.
 
 For more details, see the [CLAUDE.md](CLAUDE.md) and [.github/copilot-instructions.md](.github/copilot-instructions.md).
