@@ -2,18 +2,18 @@
 
 ## Project Overview
 
-Open-source MCP (Model Context Protocol) server for DNS security analysis, deployed as a **Cloudflare Worker** using **Hono** for routing. Exposes 10 tools over MCP Streamable HTTP transport (JSON-RPC 2.0) that analyze domain DNS security posture.
+Open-source MCP (Model Context Protocol) server for DNS security analysis, deployed as a **Cloudflare Worker** using **Hono** for routing. Exposes 11 tools (plus 1 internal check) over MCP Streamable HTTP transport (JSON-RPC 2.0) that analyze domain DNS security posture.
 
 **Live endpoint:** `https://dns-mcp.blackveilsecurity.com/mcp`
 
 ## Repository Layout
 
-This is a monorepo with two packages sharing the same codebase:
-
 | Path | Purpose |
 |------|---------|
 | `/` (root) | **Primary** — actively developed and deployed worker |
 | `/bv-dns-security-mcp/` | **Frozen snapshot** — standalone copy for separate distribution; has its own CI |
+| `/.dev/` | **Gitignored** — local dev config (KV namespace IDs, custom domains, deploy overrides) |
+| `/scripts/` | Utility scripts (benchmark, etc.) |
 
 Changes go into the root package. The `bv-dns-security-mcp/` directory is only updated intentionally for releases.
 
@@ -31,9 +31,9 @@ Changes go into the root package. The `bv-dns-security-mcp/` directory is only u
 
 ```
 src/
-  index.ts            — Hono app, auth middleware, JSON-RPC dispatch, SSE transport
+  index.ts            — Hono app, middleware wiring, JSON-RPC dispatch, SSE transport
   handlers/
-    tools.ts          — MCP tools/list + tools/call dispatch
+    tools.ts          — MCP tools/list + tools/call dispatch (TOOLS array + TOOL_REGISTRY)
     resources.ts      — MCP resources/list + resources/read (static docs)
   tools/
     check-caa.ts      — CAA record check
@@ -41,20 +41,30 @@ src/
     check-dmarc.ts    — DMARC policy validation
     check-dnssec.ts   — DNSSEC (AD flag) validation
     check-mta-sts.ts  — MTA-STS TXT + policy retrieval
+    check-mx.ts       — MX record and mail domain detection
     check-ns.ts       — NS delegation, diversity, resiliency
     check-spf.ts      — SPF syntax, mechanism, policy checks
     check-ssl.ts      — SSL/TLS certificate validation
+    check-subdomain-takeover.ts — Dangling CNAME / orphaned record detection
     scan-domain.ts    — Orchestrates all checks in parallel
     explain-finding.ts — Plain-language explanation generator (static knowledge base)
   lib/
+    json-rpc.ts       — JSON-RPC 2.0 types, error codes, response builders
+    session.ts        — In-memory session management (create, validate, delete)
+    auth.ts           — Bearer token validation (constant-time XOR comparison)
+    sse.ts            — SSE event formatting and Accept header checking
     dns.ts            — DNS-over-HTTPS queries via Cloudflare DoH
     scoring.ts        — Weighted scoring engine (Finding, CheckResult, ScanScore)
     sanitize.ts       — Domain validation, input cleaning, SSRF protection, MCP helpers
+    config.ts         — Centralized SSRF constants (blocked TLDs, IPs, rebinding services)
     cache.ts          — KV-backed + in-memory TTL scan result caching
     rate-limiter.ts   — KV-backed + in-memory per-IP rate limiting
+    log.ts            — Structured JSON logging (logEvent, logError)
 test/
   *.spec.ts           — Vitest specs (one per source file)
   helpers/dns-mock.ts — Shared fetch mock for DNS-over-HTTPS queries
+scripts/
+  benchmark.sh        — Multi-domain benchmark script for the deployed endpoint
 ```
 
 ## Environment Bindings
@@ -81,8 +91,8 @@ test/
 
 - **No Node.js APIs** — Workers runtime only
 - **SSRF protection**: All domains pass through `sanitize.ts` (blocks private IPs, reserved TLDs, DNS rebinding)
-- **Auth**: Optional bearer token with constant-time XOR comparison (see `isAuthorizedRequest` in `index.ts`)
-- **Rate limiting**: Per-IP via KV (10 req/min, 100 req/hr) — only `tools/call` counts; protocol methods exempt; authenticated requests bypass entirely
+- **Auth**: Optional bearer token with constant-time XOR comparison (see `isAuthorizedRequest` in `lib/auth.ts`)
+- **Rate limiting**: Per-IP via KV (10 req/min, 100 req/hr) — only `tools/call` counts; protocol methods (`initialize`, `tools/list`, `resources/*`, `ping`, `notifications/*`) exempt; authenticated requests bypass entirely
 - **Request size**: Max 10KB body on `/mcp`
 - **IP sourcing**: Only `cf-connecting-ip` header — never fall back to `x-forwarded-for`
 - **Error sanitization**: Only known validation errors surface to clients; unexpected errors return generic message
@@ -90,9 +100,11 @@ test/
 ### Adding a New Tool
 
 1. Create `src/tools/check-<name>.ts` exporting an async function returning `CheckResult`
-2. Register the tool schema in `src/handlers/tools.ts` (add to `TOOLS` array and `handleToolsCall` switch)
-3. Add tests in `test/check-<name>.spec.ts` using the `dns-mock` helper
-4. Update the README tools table
+2. Add the `CheckCategory` value to the union type in `src/lib/scoring.ts`
+3. Register in `src/handlers/tools.ts`: add to `TOOLS` array (schema) + `TOOL_REGISTRY` map (dispatch)
+4. If part of `scan_domain`, add to the parallel orchestration in `src/tools/scan-domain.ts`
+5. Add tests in `test/check-<name>.spec.ts` using the `dns-mock` helper
+6. Update the README tools table
 
 ### Testing
 

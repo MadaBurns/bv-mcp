@@ -106,7 +106,7 @@ Logs are designed for easy parsing, monitoring, and alerting. You can build dash
 - **Rate limiting:** Per-IP limits (10/min, 100/hr) enforced via Cloudflare KV with in-memory fallback. Only `tools/call` requests count against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `ping`) are exempt. Authenticated requests bypass rate limiting entirely. Standard rate limit headers exposed.
 - **Secrets:** Optional bearer token (`BV_API_KEY`) for production auth, constant-time comparison, never stored in logs.
 - **No Node.js APIs:** Fully Cloudflare Workers compatible, using only fetch, crypto, and Web APIs.
-- **Testing:** 245+ tests, ~95% coverage, including edge cases for Unicode, malformed requests, KV failures, and error branches.
+- **Testing:** 280+ tests, ~96% coverage, including edge cases for Unicode, malformed requests, KV failures, and error branches.
 
 See [CLAUDE.md](CLAUDE.md) and [.github/copilot-instructions.md](.github/copilot-instructions.md) for implementation details and best practices.
 
@@ -204,10 +204,14 @@ The server does not phone home, collect telemetry, or send data anywhere other t
 ## Architecture
 
 ```
-MCP Client ──► Cloudflare Worker (Hono) ──► Cloudflare DoH API
-                  │                            (dns-over-HTTPS)
+MCP Client ──► POST /mcp ──► Auth (lib/auth) ──► Rate Limiter (lib/rate-limiter)
+                  │              ──► JSON-RPC Dispatch (lib/json-rpc)
+                  │                 ──► tools/call ──► handlers/tools ──► check-*.ts ──► Cloudflare DoH
+                  │
                   ├─ KV-backed rate limiter (10/min, 100/hr per IP, tools/call only)
                   ├─ KV-backed scan cache (5 min TTL)
+                  ├─ Session management (lib/session)
+                  ├─ SSE streaming (lib/sse)
                   ├─ Optional bearer token auth
                   └─ Weighted scoring engine
 ```
@@ -342,13 +346,33 @@ Plus up to +5 email configuration bonus.
 
 ## Running Tests
 
-245+ tests with ~95% code coverage:
+280+ tests with ~96% code coverage:
 
 ```bash
 npm test
 ```
 
 Tests use [Vitest](https://vitest.dev/) with the Cloudflare Workers pool. All DNS responses are mocked — no network calls during testing.
+
+---
+
+## Benchmark
+
+Run the benchmark script against the deployed endpoint to verify all 10 tools work correctly:
+
+```bash
+# Single domain
+./scripts/benchmark.sh cloudflare.com
+
+# Multiple domains (auto 75s cooldown between each for rate limits)
+./scripts/benchmark.sh cloudflare.com google.com microsoft.com
+
+# Authenticated (bypasses rate limits, no cooldown needed)
+BV_API_KEY=your-key ./scripts/benchmark.sh cloudflare.com google.com
+
+# Custom endpoint
+BV_ENDPOINT=http://localhost:8787/mcp ./scripts/benchmark.sh example.com
+```
 
 ---
 
