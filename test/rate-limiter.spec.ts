@@ -12,7 +12,7 @@ describe('rate-limiter', () => {
 			const result = await checkRateLimit('1.2.3.4');
 			expect(result.allowed).toBe(true);
 			expect(result.minuteRemaining).toBe(9);
-			expect(result.hourRemaining).toBe(49);
+			expect(result.hourRemaining).toBe(99);
 		});
 
 		it('should decrement remaining counts on multiple requests', async () => {
@@ -21,7 +21,7 @@ describe('rate-limiter', () => {
 			const result = await checkRateLimit('1.2.3.4');
 			expect(result.allowed).toBe(true);
 			expect(result.minuteRemaining).toBe(7);
-			expect(result.hourRemaining).toBe(47);
+			expect(result.hourRemaining).toBe(97);
 		});
 
 		it('should block 11th request within a minute', async () => {
@@ -39,14 +39,14 @@ describe('rate-limiter', () => {
 			const baseTime = 1000000000000;
 			let currentTime = baseTime;
 			vi.spyOn(Date, 'now').mockImplementation(() => currentTime);
-			for (let window = 0; window < 5; window++) {
+			for (let window = 0; window < 10; window++) {
 				currentTime = baseTime + window * 61_000;
 				for (let i = 0; i < 10; i++) {
 					const r = await checkRateLimit('1.2.3.4');
 					expect(r.allowed).toBe(true);
 				}
 			}
-			currentTime = baseTime + 5 * 61_000;
+			currentTime = baseTime + 10 * 61_000;
 			const blocked = await checkRateLimit('1.2.3.4');
 			expect(blocked.allowed).toBe(false);
 			expect(blocked.hourRemaining).toBe(0);
@@ -113,7 +113,7 @@ describe('rate-limiter', () => {
 			const status = getRateLimitStatus('unknown-ip');
 			expect(status.allowed).toBe(true);
 			expect(status.minuteRemaining).toBe(10);
-			expect(status.hourRemaining).toBe(50);
+			expect(status.hourRemaining).toBe(100);
 		});
 	});
 
@@ -133,7 +133,7 @@ describe('rate-limiter', () => {
 			const result = await checkRateLimit('1.2.3.4', kv);
 			expect(result.allowed).toBe(true);
 			expect(result.minuteRemaining).toBe(6); // 10 - (3+1)
-			expect(result.hourRemaining).toBe(29); // 50 - (20+1)
+			expect(result.hourRemaining).toBe(79); // 100 - (20+1)
 		});
 
 		it('blocks at minute limit', async () => {
@@ -145,7 +145,7 @@ describe('rate-limiter', () => {
 		});
 
 		it('blocks at hour limit', async () => {
-			const kv = createMockKV('5', '50');
+			const kv = createMockKV('5', '100');
 			const result = await checkRateLimit('1.2.3.4', kv);
 			expect(result.allowed).toBe(false);
 			expect(result.hourRemaining).toBe(0);
@@ -185,7 +185,7 @@ describe('rate-limiter', () => {
 			const result = await checkRateLimit('1.2.3.4', kv);
 			expect(result.allowed).toBe(true);
 			expect(result.minuteRemaining).toBe(9); // 10 - 1
-			expect(result.hourRemaining).toBe(49); // 50 - 1
+			expect(result.hourRemaining).toBe(99); // 100 - 1
 
 			const minutePutCall = (kv.put as ReturnType<typeof vi.fn>).mock.calls[0];
 			expect(minutePutCall[1]).toBe('1');

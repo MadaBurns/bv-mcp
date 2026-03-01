@@ -82,7 +82,7 @@ test/
 - **No Node.js APIs** — Workers runtime only
 - **SSRF protection**: All domains pass through `sanitize.ts` (blocks private IPs, reserved TLDs, DNS rebinding)
 - **Auth**: Optional bearer token with constant-time XOR comparison (see `isAuthorizedRequest` in `index.ts`)
-- **Rate limiting**: Per-IP via KV (10 req/min, 50 req/hr) — only `tools/call` counts; protocol methods exempt; authenticated requests bypass entirely
+- **Rate limiting**: Per-IP via KV (10 req/min, 100 req/hr) — only `tools/call` counts; protocol methods exempt; authenticated requests bypass entirely
 - **Request size**: Max 10KB body on `/mcp`
 - **IP sourcing**: Only `cf-connecting-ip` header — never fall back to `x-forwarded-for`
 - **Error sanitization**: Only known validation errors surface to clients; unexpected errors return generic message
