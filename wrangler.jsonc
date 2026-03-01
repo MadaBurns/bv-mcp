@@ -15,7 +15,8 @@
   ],
   // KV namespace bindings for rate limiting and scan result caching.
   // Create with:  npm run setup:kv
-  // Then paste the IDs printed by the command below.
+  // Then copy this file to .dev/wrangler.local.jsonc, update "main" to
+  // "../src/index.ts", and paste the IDs printed by the command below.
   "kv_namespaces": [
     { "binding": "RATE_LIMIT", "id": "YOUR_RATE_LIMIT_KV_NAMESPACE_ID" },
     { "binding": "SCAN_CACHE", "id": "YOUR_SCAN_CACHE_KV_NAMESPACE_ID" }
