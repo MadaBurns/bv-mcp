@@ -99,12 +99,20 @@ Tool: \`check_ns\`
 Analyzes delegation resilience and provider diversity indicators.
 
 ## CAA (Certificate Authority Authorization)
-Tool: \`check_caa\`  
+Tool: \`check_caa\`
 Checks CA authorization posture and issuance restriction baseline.
+
+## MX (Mail Exchange)
+Tool: \`check_mx\`
+Validates presence and quality of MX records for a domain, including outbound email provider detection.
+
+## Subdomain Takeover Detection
+Tool: internal to \`scan_domain\` (not directly callable)
+Scans known subdomains for dangling CNAME records pointing to unresolved third-party services.
 
 ## Composite Tools
 
-- \`scan_domain\`: Runs all 8 category checks and produces an overall score + grade.
+- \`scan_domain\`: Runs all 10 checks (8 category checks + MX + Subdomain Takeover) and produces an overall score + grade.
 - \`explain_finding\`: Provides plain-language context and remediation guidance for individual findings.
 `,
 
@@ -125,6 +133,8 @@ Overall score is based on importance points per category, not a flat average:
 | MTA-STS | 3 |
 | NS | 0 (informational) |
 | CAA | 0 (informational) |
+| Subdomain Takeover | 0 (informational) |
+| MX | 0 (informational) |
 
 Additional bonus: up to **+5** points for strong combined email-auth posture.
 
