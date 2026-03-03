@@ -9,11 +9,10 @@
  */
 
 import { type CheckCategory, type CheckResult, type Severity, type ScanScore, buildCheckResult, computeScanScore, createFinding } from '../lib/scoring';
-import { cacheGet, cacheSet } from '../lib/cache';
-import { validateDomain, sanitizeDomain } from '../lib/sanitize';
+import { cacheGet, cacheSet, runWithCache } from '../lib/cache';
 import { queryTxtRecords } from '../lib/dns';
 import { checkSpf } from './check-spf';
-import { checkDmarc } from './check-dmarc';
+import { checkDmarc, parseDmarcTags } from './check-dmarc';
 import { checkDkim } from './check-dkim';
 import { checkDnssec } from './check-dnssec';
 import { checkSsl } from './check-ssl';
@@ -39,20 +38,12 @@ export interface ScanDomainResult {
  * Run a full DNS security scan on a domain.
  * Executes all checks in parallel and computes an overall score.
  *
- * @param domain - The domain to scan (will be validated and sanitized)
+ * @param domain - The domain to scan (must already be validated and sanitized by the caller)
  * @param kv - Optional KV namespace for persistent scan result caching
  * @returns Full scan result with score, individual check results, and metadata
- * @throws Error if domain validation fails
  */
 export async function scanDomain(domain: string, kv?: KVNamespace): Promise<ScanDomainResult> {
-	// Validate domain
-	const validation = validateDomain(domain);
-	if (!validation.valid) {
-		throw new Error(validation.error ?? 'Invalid domain');
-	}
-
-	const cleanDomain = sanitizeDomain(domain);
-	const cacheKey = `${CACHE_PREFIX}${cleanDomain}`;
+	const cacheKey = `${CACHE_PREFIX}${domain}`;
 
 	// Check cache first
 	const cached = await cacheGet<ScanDomainResult>(cacheKey, kv);
@@ -62,16 +53,16 @@ export async function scanDomain(domain: string, kv?: KVNamespace): Promise<Scan
 
 	// Run all checks in parallel with individual-check caching
 	   let checkResults: CheckResult[] = await Promise.all([
-		   runCachedCheck(cleanDomain, 'spf', () => safeCheck('spf', () => checkSpf(cleanDomain)), kv),
-		   runCachedCheck(cleanDomain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(cleanDomain)), kv),
-		   runCachedCheck(cleanDomain, 'dkim', () => safeCheck('dkim', () => checkDkim(cleanDomain)), kv),
-		   runCachedCheck(cleanDomain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(cleanDomain)), kv),
-		   runCachedCheck(cleanDomain, 'ssl', () => safeCheck('ssl', () => checkSsl(cleanDomain)), kv),
-		   runCachedCheck(cleanDomain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(cleanDomain)), kv),
-		   runCachedCheck(cleanDomain, 'ns', () => safeCheck('ns', () => checkNs(cleanDomain)), kv),
-		   runCachedCheck(cleanDomain, 'caa', () => safeCheck('caa', () => checkCaa(cleanDomain)), kv),
-		   runCachedCheck(cleanDomain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(cleanDomain)), kv),
-		   runCachedCheck(cleanDomain, 'mx', () => safeCheck('mx', () => checkMx(cleanDomain)), kv),
+		   runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain)), kv),
+		   runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain)), kv),
+		   runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain)), kv),
+		   runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain)), kv),
+		   runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain)), kv),
+		   runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain)), kv),
+		   runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain)), kv),
+		   runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain)), kv),
+		   runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain)), kv),
+		   runCachedCheck(domain, 'mx', () => safeCheck('mx', () => checkMx(domain)), kv),
 	   ]);
 
 	// Adjust findings for non-mail domains: if no MX records, email auth
@@ -80,7 +71,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace): Promise<Scan
 	const hasNoMx = mxResult ? mxResult.findings.some((f) => f.title === 'No MX records found') : false;
 
 	if (hasNoMx) {
-		const apexCovers = await checkApexDmarcPolicy(cleanDomain);
+		const apexCovers = await checkApexDmarcPolicy(domain);
 		checkResults = adjustForNonMailDomain(checkResults, apexCovers);
 	}
 
@@ -88,7 +79,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace): Promise<Scan
 	const score = computeScanScore(checkResults);
 
 	const result: ScanDomainResult = {
-		domain: cleanDomain,
+		domain: domain,
 		score,
 		checks: checkResults,
 		cached: false,
@@ -123,15 +114,10 @@ async function checkApexDmarcPolicy(domain: string): Promise<boolean> {
 		const dmarcRecord = records.find((r) => r.startsWith('v=DMARC1'));
 		if (!dmarcRecord) return false;
 
-		const tags = Object.fromEntries(
-			dmarcRecord.split(';').map((t) => {
-				const [k, ...v] = t.trim().split('=');
-				return [k.trim(), v.join('=').trim()];
-			}),
-		);
+		const tags = parseDmarcTags(dmarcRecord);
 
 		// sp= takes precedence; fall back to p= per RFC 7489
-		const effectivePolicy = (tags['sp'] || tags['p'] || '').toLowerCase();
+		const effectivePolicy = tags.get('sp') || tags.get('p') || '';
 		return effectivePolicy === 'quarantine' || effectivePolicy === 'reject';
 	} catch {
 		return false;
@@ -171,15 +157,7 @@ async function runCachedCheck(
 	run: () => Promise<CheckResult>,
 	kv?: KVNamespace,
 ): Promise<CheckResult> {
-	const checkKey = `${CACHE_PREFIX}${domain}:check:${category}`;
-	const cached = await cacheGet<CheckResult>(checkKey, kv);
-	if (cached) {
-		return cached;
-	}
-
-	const result = await run();
-	await cacheSet(checkKey, result, kv);
-	return result;
+	return runWithCache(`${CACHE_PREFIX}${domain}:check:${category}`, run, kv);
 }
 
 /**

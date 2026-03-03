@@ -145,17 +145,3 @@ export function sanitizeInput(input: string, maxLength = 500): string {
 	return input.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').slice(0, maxLength);
 }
 
-/**
- * Create an MCP-compatible error content response.
- * Returns the standard { type: "text", text } format used in MCP tool results.
- */
-export function mcpError(message: string): { type: 'text'; text: string } {
-	return { type: 'text' as const, text: `Error: ${message}` };
-}
-
-/**
- * Create an MCP-compatible success content response.
- */
-export function mcpText(text: string): { type: 'text'; text: string } {
-	return { type: 'text' as const, text };
-}

@@ -19,3 +19,13 @@ export function sseEvent(data: unknown, eventId?: string): string {
 export function acceptsSSE(accept: string | undefined): boolean {
 	return !!accept && accept.includes('text/event-stream');
 }
+
+/** Create a ReadableStream that emits pre-formatted SSE text and then closes */
+export function createSseStream(events: string): ReadableStream<Uint8Array> {
+	return new ReadableStream({
+		start(controller) {
+			controller.enqueue(new TextEncoder().encode(events));
+			controller.close();
+		},
+	});
+}

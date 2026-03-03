@@ -17,10 +17,10 @@ import { checkRateLimit } from './lib/rate-limiter';
 import { handleToolsList, handleToolsCall } from './handlers/tools';
 import { handleResourcesList, handleResourcesRead } from './handlers/resources';
 import { logEvent, logError } from './lib/log';
-import { jsonRpcError, jsonRpcSuccess, JSON_RPC_ERRORS } from './lib/json-rpc';
+import { jsonRpcError, jsonRpcSuccess, JSON_RPC_ERRORS, sanitizeErrorMessage } from './lib/json-rpc';
 import { createSession, validateSession, deleteSession } from './lib/session';
 import { isAuthorizedRequest, unauthorizedResponse } from './lib/auth';
-import { sseEvent, acceptsSSE } from './lib/sse';
+import { sseEvent, acceptsSSE, createSseStream } from './lib/sse';
 import type { JsonRpcRequest } from './lib/json-rpc';
 
 /** Server version — keep in sync with package.json */
@@ -36,7 +36,7 @@ type BvMcpEnv = {
 	BV_API_KEY?: string;
 };
 
-const app = new Hono<{ Bindings: BvMcpEnv }>();
+const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean } }>();
 
 
 // CORS for MCP clients — allow Streamable HTTP methods and headers
@@ -70,11 +70,14 @@ app.use('*', async (c, next) => {
        }
 });
 
-// Optional bearer auth for /mcp; open mode when BV_API_KEY is unset/empty
+// Optional bearer auth for /mcp; open mode when BV_API_KEY is unset/empty.
+// Sets `isAuthenticated` on the Hono context so downstream handlers can check
+// auth status without re-deriving it.
 app.use('/mcp', async (c, next) => {
        const { BV_API_KEY } = c.env;
        const apiKey = BV_API_KEY?.trim();
        if (!apiKey) {
+	       c.set('isAuthenticated', false);
 	       return next();
        }
 
@@ -83,6 +86,7 @@ app.use('/mcp', async (c, next) => {
 	       return unauthorizedResponse();
        }
 
+       c.set('isAuthenticated', true);
        return next();
 });
 
@@ -110,10 +114,8 @@ app.post('/mcp', async (c) => {
 	const ip = headersLc['cf-connecting-ip'] ?? 'unknown';
 
 	// Authenticated requests bypass rate limiting — the auth middleware already
-	// validated the token before we reach this handler, so if BV_API_KEY is set
-	// and the bearer token matches, the caller is trusted.
-	const apiKey = c.env.BV_API_KEY?.trim();
-	const isAuthenticated = !!apiKey && isAuthorizedRequest(headersLc['authorization'], apiKey);
+	// validated the token and stored the result on the Hono context.
+	const isAuthenticated = c.get('isAuthenticated');
 
 	// Enforce hard 10KB body size limit (even if content-length is missing or wrong)
 	const MAX_BODY = 10_240;
@@ -314,14 +316,7 @@ app.post('/mcp', async (c) => {
 		       // If client accepts SSE, stream the response as an SSE event
 		       const accept = headersLc['accept'];
 		       if (acceptsSSE(accept)) {
-			       const body = new ReadableStream({
-				       start(controller) {
-					       const encoder = new TextEncoder();
-					       controller.enqueue(encoder.encode(sseEvent(responsePayload)));
-					       controller.close();
-				       },
-			       });
-			       return new Response(body, {
+			       return new Response(createSseStream(sseEvent(responsePayload)), {
 				       status: 200,
 				       headers: {
 					       'Content-Type': 'text/event-stream',
@@ -344,12 +339,7 @@ app.post('/mcp', async (c) => {
 			       durationMs: Date.now() - startTime,
 			       userAgent: headersLc['user-agent'],
 		       });
-		       // Sanitize error messages — only pass through known validation errors,
-		       // use generic message for unexpected errors to prevent info leaks
-		       const isValidationError =
-			       err instanceof Error &&
-			       (err.message.startsWith('Missing required') || err.message.startsWith('Invalid') || err.message.startsWith('Resource not found'));
-		       const message = isValidationError ? err.message : 'Internal server error';
+		       const message = sanitizeErrorMessage(err, 'Internal server error');
 		       return c.json(jsonRpcError(id, JSON_RPC_ERRORS.INTERNAL_ERROR, message), 500);
 	       }
 	});
@@ -376,18 +366,7 @@ app.get('/mcp', (c) => {
 	// Open an SSE stream. For this stateless server we keep the stream open
 	// briefly then close — a full implementation would push server-initiated
 	// notifications here.
-	const body = new ReadableStream({
-		start(controller) {
-			const encoder = new TextEncoder();
-			// Send an initial comment to establish the connection
-			controller.enqueue(encoder.encode(': stream opened\n\n'));
-			// In a stateless Cloudflare Worker we close after the keep-alive.
-			// A stateful server would hold this open and push notifications.
-			controller.close();
-		},
-	});
-
-	return new Response(body, {
+	return new Response(createSseStream(': stream opened\n\n'), {
 		status: 200,
 		headers: {
 			'Content-Type': 'text/event-stream',

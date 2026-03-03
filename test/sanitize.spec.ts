@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateDomain, sanitizeDomain, sanitizeInput, mcpError, mcpText } from '../src/lib/sanitize';
+import { validateDomain, sanitizeDomain, sanitizeInput } from '../src/lib/sanitize';
 
 describe('sanitize library', () => {
 	describe('validateDomain', () => {
@@ -187,21 +187,4 @@ describe('sanitize library', () => {
 		});
 	});
 
-	describe('mcpError', () => {
-		it('returns error content with correct structure', () => {
-			expect(mcpError('something failed')).toEqual({
-				type: 'text',
-				text: 'Error: something failed',
-			});
-		});
-	});
-
-	describe('mcpText', () => {
-		it('returns text content with correct structure', () => {
-			expect(mcpText('hello world')).toEqual({
-				type: 'text',
-				text: 'hello world',
-			});
-		});
-	});
 });

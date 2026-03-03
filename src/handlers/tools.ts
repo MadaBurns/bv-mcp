@@ -1,15 +1,15 @@
 /**
  * MCP Tools handler for the BLACKVEIL Scanner.
- * Defines all tool schemas and dispatches tools/call requests
- * to the appropriate BLACKVEIL Scanner check functions.
+ * Dispatches tools/call requests to the appropriate check functions.
  *
  * Handles JSON-RPC methods: tools/list, tools/call
  * Compatible with Cloudflare Workers runtime (no Node.js APIs).
  */
 
-import { validateDomain, sanitizeDomain, mcpError, mcpText } from '../lib/sanitize';
+import { validateDomain, sanitizeDomain } from '../lib/sanitize';
 import type { CheckResult } from '../lib/scoring';
-import { cacheGet, cacheSet } from '../lib/cache';
+import { runWithCache } from '../lib/cache';
+import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { checkSpf } from '../tools/check-spf';
 import { checkDmarc } from '../tools/check-dmarc';
 import { checkDkim } from '../tools/check-dkim';
@@ -21,16 +21,17 @@ import { checkCaa } from '../tools/check-caa';
 import { scanDomain, formatScanReport } from '../tools/scan-domain';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { logEvent, logError } from '../lib/log';
+import { TOOLS } from './tool-schemas';
+import type { McpTool } from './tool-schemas';
 
-/** MCP Tool definition */
-interface McpTool {
-	name: string;
-	description: string;
-	inputSchema: {
-		type: 'object';
-		properties: Record<string, unknown>;
-		required: string[];
-	};
+/** Create an MCP-compatible error content response. */
+function mcpError(message: string): { type: 'text'; text: string } {
+	return { type: 'text' as const, text: `Error: ${message}` };
+}
+
+/** Create an MCP-compatible success content response. */
+function mcpText(text: string): { type: 'text'; text: string } {
+	return { type: 'text' as const, text };
 }
 
 /** MCP content item */
@@ -44,114 +45,6 @@ interface McpToolResult {
 	content: McpContent[];
 	isError?: boolean;
 }
-
-/** Domain-only input schema shared by most tools */
-const DOMAIN_INPUT_SCHEMA = {
-	type: 'object' as const,
-	properties: {
-		domain: {
-			type: 'string',
-			description: 'The domain name to check (e.g., example.com)',
-		},
-	},
-	required: ['domain'],
-};
-
-/** All MCP tool definitions */
-const TOOLS: McpTool[] = [
-	{
-		name: 'check_mx',
-		description:
-			'Check MX (Mail Exchange) records for a domain. Validates presence and quality of MX records, assesses outbound email usage.',
-		inputSchema: DOMAIN_INPUT_SCHEMA,
-	},
-	{
-		name: 'check_spf',
-		description:
-			'Check SPF (Sender Policy Framework) records for a domain. Validates SPF TXT records for proper syntax, mechanisms, and policy.',
-		inputSchema: DOMAIN_INPUT_SCHEMA,
-	},
-	{
-		name: 'check_dmarc',
-		description:
-			'Check DMARC (Domain-based Message Authentication) records for a domain. Validates _dmarc TXT records for policy configuration.',
-		inputSchema: DOMAIN_INPUT_SCHEMA,
-	},
-	{
-		name: 'check_dkim',
-		description: 'Check DKIM (DomainKeys Identified Mail) records for a domain. Probes common selectors for DKIM key records.',
-		inputSchema: {
-			type: 'object' as const,
-			properties: {
-				domain: {
-					type: 'string',
-					description: 'The domain name to check (e.g., example.com)',
-				},
-				selector: {
-					type: 'string',
-					description: "Optional: specific DKIM selector to check (e.g., 'google', 'selector1'). If omitted, common selectors are probed.",
-				},
-			},
-			required: ['domain'],
-		},
-	},
-	{
-		name: 'check_dnssec',
-		description:
-			'Check DNSSEC (DNS Security Extensions) status for a domain. Verifies if DNS responses are cryptographically signed and validated.',
-		inputSchema: DOMAIN_INPUT_SCHEMA,
-	},
-	{
-		name: 'check_ssl',
-		description: 'Check SSL/TLS certificate configuration for a domain. Validates certificate status and configuration.',
-		inputSchema: DOMAIN_INPUT_SCHEMA,
-	},
-	{
-		name: 'check_mta_sts',
-		description: 'Check MTA-STS (Mail Transfer Agent Strict Transport Security) for a domain. Validates _mta-sts TXT records and policy.',
-		inputSchema: DOMAIN_INPUT_SCHEMA,
-	},
-	{
-		name: 'check_ns',
-		description: 'Check name server (NS) configuration for a domain. Analyzes NS records for redundancy, diversity, and proper delegation.',
-		inputSchema: DOMAIN_INPUT_SCHEMA,
-	},
-	{
-		name: 'check_caa',
-		description:
-			'Check CAA (Certificate Authority Authorization) records for a domain. Validates which CAs are authorized to issue certificates.',
-		inputSchema: DOMAIN_INPUT_SCHEMA,
-	},
-	{
-		name: 'scan_domain',
-		description:
-			'Run a comprehensive DNS security scan on a domain. Executes all checks (SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, MX, Subdomain Takeover) in parallel and returns an overall security score and grade.',
-		inputSchema: DOMAIN_INPUT_SCHEMA,
-	},
-	{
-		name: 'explain_finding',
-		description: 'Get a plain-language explanation of a DNS security finding and recommended remediation steps.',
-		inputSchema: {
-			type: 'object' as const,
-			properties: {
-				checkType: {
-					type: 'string',
-					description: "The check type (e.g. 'SPF', 'DMARC', 'DKIM', 'DNSSEC', 'SSL', 'MTA_STS')",
-				},
-				status: {
-					type: 'string',
-					enum: ['pass', 'fail', 'warning'],
-					description: 'The check status',
-				},
-				details: {
-					type: 'string',
-					description: 'Optional details from the check result',
-				},
-			},
-			required: ['checkType', 'status'],
-		},
-	},
-];
 
 /**
  * Handle the MCP tools/list method.
@@ -259,23 +152,6 @@ function formatCheckResult(result: CheckResult): string {
 	return lines.join('\n');
 }
 
-async function runCachedToolCheck(
-	domain: string,
-	checkName: string,
-	run: () => Promise<CheckResult>,
-	cacheKV?: KVNamespace,
-): Promise<CheckResult> {
-	const cacheKey = `cache:${domain}:check:${checkName}`;
-	const cached = await cacheGet<CheckResult>(cacheKey, cacheKV);
-	if (cached) {
-		return cached;
-	}
-
-	const result = await run();
-	await cacheSet(cacheKey, result, cacheKV);
-	return result;
-}
-
 /**
  * Handle the MCP tools/call method.
  * Dispatches to the appropriate tool function based on the tool name.
@@ -307,8 +183,9 @@ export async function handleToolsCall(
 		// Dispatch to the appropriate tool — check registry first, then special cases
 		const registeredTool = TOOL_REGISTRY[name];
 		if (registeredTool) {
-			const cacheKey = registeredTool.cacheKey(args);
-			const result = await runCachedToolCheck(validDomain, cacheKey, () => registeredTool.execute(validDomain, args), scanCacheKV);
+			const checkName = registeredTool.cacheKey(args);
+			const cacheKey = `cache:${validDomain}:check:${checkName}`;
+			const result = await runWithCache(cacheKey, () => registeredTool.execute(validDomain, args), scanCacheKV);
 			logResult = result.passed ? 'pass' : 'fail';
 			logDetails = result;
 			logEvent({
@@ -374,11 +251,7 @@ export async function handleToolsCall(
 				};
 		}
 	} catch (err) {
-		// Only pass through known validation errors; sanitize unexpected errors
-		const isValidationError =
-			err instanceof Error &&
-			(err.message.startsWith('Missing required') || err.message.startsWith('Invalid') || err.message.startsWith('Domain '));
-		const message = isValidationError ? err.message : 'An unexpected error occurred';
+		const message = sanitizeErrorMessage(err, 'An unexpected error occurred');
 		logError(err instanceof Error ? err : String(err), {
 			tool: name,
 			domain,

@@ -5,15 +5,9 @@
  */
 import type { CheckResult, Finding } from '../lib/scoring';
 import { createFinding, buildCheckResult } from '../lib/scoring';
-import { validateDomain } from '../lib/sanitize';
 import { queryDnsRecords } from '../lib/dns';
 
 export async function checkMx(domain: string): Promise<CheckResult> {
-	const validation = validateDomain(domain);
-	if (!validation.valid) {
-		return buildCheckResult('mx', [createFinding('mx', 'Domain validation failed', 'high', 'Invalid domain')]);
-	}
-
 	let answers;
 	try {
 		answers = await queryDnsRecords(domain, 'MX');

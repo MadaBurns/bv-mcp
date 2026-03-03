@@ -45,7 +45,7 @@ describe('explainFinding', () => {
 		expect(result.details).toBeUndefined();
 	});
 
-	it('normalizes checkType via CHECK_TYPE_MAPPING (case insensitive)', async () => {
+	it('normalizes checkType via toUpperCase (case insensitive)', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('spf', 'pass');
 		expect(result.checkType).toBe('SPF');
@@ -61,7 +61,7 @@ describe('explainFinding', () => {
 
 	it('handles SUBDOMAIN_TAKEOVER checkType with critical status', async () => {
 		const { explainFinding } = await getModule();
-		// SUBDOMAIN_TAKEOVER is not in CHECK_TYPE_MAPPING, so it stays as-is
+		// SUBDOMAIN_TAKEOVER is already uppercase, so toUpperCase() keeps it as-is
 		const result = explainFinding('SUBDOMAIN_TAKEOVER', 'critical');
 		expect(result.title).toBe('Dangling CNAME — Subdomain Takeover Risk');
 		expect(result.severity).toBe('critical');

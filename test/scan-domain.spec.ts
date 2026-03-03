@@ -203,13 +203,6 @@ describe('scanDomain', () => {
 		expect(spfCheck!.score).toBeGreaterThan(0);
 	});
 
-	it('throws on invalid domain input', async () => {
-		const { scanDomain } = await import('../src/tools/scan-domain');
-		await expect(scanDomain('localhost')).rejects.toThrow();
-		await expect(scanDomain('')).rejects.toThrow();
-		await expect(scanDomain('test.local')).rejects.toThrow();
-	});
-
 	it('caches results with KV and returns cached:true on hit', async () => {
 		mockAllChecks();
 		const kv = env.SCAN_CACHE as KVNamespace;

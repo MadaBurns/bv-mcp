@@ -134,7 +134,7 @@ export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | un
        if (kv) {
 	       try {
 		       const val = await kv.get(key, 'json');
-		       return val as T | undefined;
+		       return (val ?? undefined) as T | undefined;
 	       } catch (err) {
 		       // KV error — log warning and fall through to in-memory
 		       console.warn('[cache] KV get failed, falling back to in-memory:', (err instanceof Error ? err.message : err));
@@ -162,6 +162,26 @@ export async function cacheSet(key: string, value: unknown, kv?: KVNamespace): P
 	       }
        }
        inMemoryCache.set(key, value);
+}
+
+/**
+ * Run a function with cache-aside logic: returns cached value if available,
+ * otherwise executes the function and caches the result.
+ *
+ * @param key - Cache key
+ * @param run - Async function to execute on cache miss
+ * @param kv - Optional KV namespace for persistent caching
+ * @returns The cached or freshly computed result
+ */
+export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: KVNamespace): Promise<T> {
+	const cached = await cacheGet<T>(key, kv);
+	if (cached !== undefined) {
+		return cached;
+	}
+
+	const result = await run();
+	await cacheSet(key, result, kv);
+	return result;
 }
 
 /**

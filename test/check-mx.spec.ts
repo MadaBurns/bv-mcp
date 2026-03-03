@@ -21,12 +21,6 @@ describe('checkMx', () => {
 		return checkMx(domain);
 	}
 
-	it('should return high finding if domain is invalid', async () => {
-		const result = await run('');
-		expect(result.findings[0].severity).toBe('high');
-		expect(result.findings[0].title).toMatch(/Domain validation failed/i);
-	});
-
 	it('should return high finding if no MX records found', async () => {
 		mockMxRecords('nomx.com', []);
 		const result = await run('nomx.com');

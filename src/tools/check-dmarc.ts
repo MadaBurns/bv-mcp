@@ -130,7 +130,7 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 }
 
 /** Parse DMARC tag-value pairs from a DMARC record string */
-function parseDmarcTags(record: string): Map<string, string> {
+export function parseDmarcTags(record: string): Map<string, string> {
 	const tags = new Map<string, string>();
 	const parts = record.split(';');
 	for (const part of parts) {

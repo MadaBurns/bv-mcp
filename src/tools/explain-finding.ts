@@ -171,6 +171,69 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		recommendation: 'After verifying all mail servers can successfully deliver over TLS, upgrade to mode=enforce.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc8461'],
 	},
+	NS_PASS: {
+		title: 'Nameservers Validated',
+		severity: 'pass',
+		explanation: 'The domain has properly configured nameservers that are responding to queries.',
+		recommendation: 'Maintain your current nameserver configuration. Use at least two geographically distributed nameservers for redundancy.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc1035'],
+	},
+	NS_FAIL: {
+		title: 'Nameserver Issues Detected',
+		severity: 'fail',
+		explanation: 'One or more nameservers for this domain are not responding or are misconfigured, which can cause DNS resolution failures.',
+		recommendation: 'Verify all listed nameservers are operational and properly configured. Ensure NS records match those at the registrar.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc1035', 'https://www.cloudflare.com/learning/dns/dns-records/dns-ns-record/'],
+	},
+	NS_WARNING: {
+		title: 'Nameserver Configuration Suboptimal',
+		severity: 'warning',
+		explanation: 'Nameservers are functional but the configuration could be improved for better reliability or security.',
+		recommendation: 'Consider adding additional nameservers for redundancy and ensuring they are geographically distributed.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc1035'],
+	},
+	CAA_PASS: {
+		title: 'CAA Records Configured',
+		severity: 'pass',
+		explanation: 'CAA (Certificate Authority Authorization) records are properly configured, restricting which CAs can issue certificates for this domain.',
+		recommendation: 'Maintain your CAA records. Review periodically to ensure they reflect your current certificate issuance needs.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc8659'],
+	},
+	CAA_FAIL: {
+		title: 'No CAA Records Found',
+		severity: 'fail',
+		explanation: 'No CAA records are present for this domain. Without CAA, any certificate authority can issue certificates for your domain.',
+		recommendation: 'Add CAA DNS records to restrict certificate issuance to your authorized CAs (e.g., "0 issue letsencrypt.org").',
+		references: ['https://datatracker.ietf.org/doc/html/rfc8659', 'https://www.cloudflare.com/learning/dns/dns-records/dns-caa-record/'],
+	},
+	CAA_WARNING: {
+		title: 'CAA Configuration Incomplete',
+		severity: 'warning',
+		explanation: 'CAA records exist but may not fully restrict certificate issuance. Consider adding iodef or wildcard policies.',
+		recommendation: 'Review your CAA records and add an iodef tag for incident reporting. Consider restricting wildcard certificate issuance separately.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc8659'],
+	},
+	MX_PASS: {
+		title: 'MX Records Validated',
+		severity: 'pass',
+		explanation: 'MX (Mail Exchange) records are properly configured, directing email to the correct mail servers.',
+		recommendation: 'Maintain your MX records. Ensure backup MX entries exist for redundancy.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc5321'],
+	},
+	MX_FAIL: {
+		title: 'No MX Records Found',
+		severity: 'fail',
+		explanation: 'No MX records are present for this domain. Without MX records, email delivery to this domain will fail or fall back to A record delivery.',
+		recommendation: 'Add MX records pointing to your mail server. If this domain does not handle email, consider adding a null MX record (0 .).',
+		references: ['https://datatracker.ietf.org/doc/html/rfc5321', 'https://datatracker.ietf.org/doc/html/rfc7505'],
+	},
+	MX_WARNING: {
+		title: 'MX Configuration Suboptimal',
+		severity: 'warning',
+		explanation: 'MX records exist but the configuration could be improved, such as missing backup MX or unusual priority values.',
+		recommendation: 'Review MX priorities and add at least one backup MX record for redundancy.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc5321'],
+	},
 };
 
 const DEFAULT_EXPLANATION: ExplanationEntry = {
@@ -181,19 +244,8 @@ const DEFAULT_EXPLANATION: ExplanationEntry = {
 	references: ['https://www.cloudflare.com/learning/dns/what-is-dns/'],
 };
 
-const CHECK_TYPE_MAPPING: Record<string, string> = {
-	SPF: 'SPF',
-	DMARC: 'DMARC',
-	DKIM: 'DKIM',
-	DNSSEC: 'DNSSEC',
-	SSL: 'SSL',
-	MTA_STS: 'MTA_STS',
-	NS: 'NS',
-	CAA: 'CAA',
-};
-
 export function explainFinding(checkType: string, status: string, details?: string): ExplanationResult {
-	const normalizedType = CHECK_TYPE_MAPPING[checkType.toUpperCase()] || checkType.toUpperCase();
+	const normalizedType = checkType.toUpperCase();
 	const key = `${normalizedType}_${status.toUpperCase()}`;
 
 	const entry = EXPLANATIONS[key] ?? DEFAULT_EXPLANATION;
