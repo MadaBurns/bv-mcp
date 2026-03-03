@@ -21,10 +21,10 @@ describe('checkMx', () => {
 		return checkMx(domain);
 	}
 
-	it('should return high finding if no MX records found', async () => {
+	it('should return medium finding if no MX records found', async () => {
 		mockMxRecords('nomx.com', []);
 		const result = await run('nomx.com');
-		expect(result.findings[0].severity).toBe('high');
+		expect(result.findings[0].severity).toBe('medium');
 		expect(result.findings[0].title).toMatch(/No MX records found/i);
 	});
 
@@ -35,18 +35,50 @@ describe('checkMx', () => {
 		expect(result.findings[0].title).toMatch(/MX records found/i);
 	});
 
-	it('should flag outbound provider if MX matches', async () => {
+	it('should detect managed email provider', async () => {
 		mockMxRecords('outbound.com', ['10 aspmx.l.google.com.']);
 		const result = await run('outbound.com');
 		expect(result.passed).toBe(true);
-		const infoFinding = result.findings.find((f) => f.severity === 'info' && f.title.includes('outbound'));
+		const infoFinding = result.findings.find((f) => f.severity === 'info' && f.title.includes('provider'));
 		expect(infoFinding).toBeTruthy();
-		expect(infoFinding!.title).toMatch(/Likely outbound email usage/i);
+		expect(infoFinding!.title).toMatch(/Managed email provider detected/i);
 	});
 
 	it('returns correct category', async () => {
 		mockMxRecords('example.com', ['10 mx.example.com.']);
 		const result = await run('example.com');
 		expect(result.category).toBe('mx');
+	});
+
+	it('should detect null MX record (RFC 7505)', async () => {
+		mockMxRecords('nullmx.com', ['0 .']);
+		const result = await run('nullmx.com');
+		const finding = result.findings.find((f) => f.title === 'Null MX record (RFC 7505)');
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('info');
+	});
+
+	it('should flag MX pointing to IP address as high severity', async () => {
+		mockMxRecords('ipmx.com', ['10 192.168.1.1']);
+		const result = await run('ipmx.com');
+		const finding = result.findings.find((f) => f.title === 'MX points to IP address');
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('high');
+	});
+
+	it('should flag single MX record as low severity', async () => {
+		mockMxRecords('single.com', ['10 mx.single.com.']);
+		const result = await run('single.com');
+		const finding = result.findings.find((f) => f.title === 'Single MX record');
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('low');
+	});
+
+	it('should flag duplicate MX priorities as low severity', async () => {
+		mockMxRecords('dupes.com', ['10 mx1.dupes.com.', '10 mx2.dupes.com.']);
+		const result = await run('dupes.com');
+		const finding = result.findings.find((f) => f.title === 'Duplicate MX priorities');
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('low');
 	});
 });
