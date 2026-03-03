@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildCheckResult, createFinding, computeCategoryScore, computeScanScore, CATEGORY_DEFAULTS } from '../src/lib/scoring';
+import { buildCheckResult, createFinding, computeCategoryScore, computeScanScore, CATEGORY_DISPLAY_WEIGHTS } from '../src/lib/scoring';
 import type { Finding, CheckResult } from '../src/lib/scoring';
 
 describe('scoring', () => {
@@ -104,7 +104,7 @@ describe('scoring', () => {
 		});
 
 		it('category weights sum to 1.0', () => {
-			const sum = Object.values(CATEGORY_DEFAULTS).reduce((a, b) => a + b, 0);
+			const sum = Object.values(CATEGORY_DISPLAY_WEIGHTS).reduce((a, b) => a + b, 0);
 			expect(sum).toBeCloseTo(1.0);
 		});
 	});

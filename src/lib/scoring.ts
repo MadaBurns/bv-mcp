@@ -35,8 +35,8 @@ interface ImportanceProfile {
 	importance: number;
 }
 
-/** Default category score initialization values (all categories start at 0). The actual scoring weights are in IMPORTANCE_WEIGHTS. */
-export const CATEGORY_DEFAULTS: Record<CheckCategory, number> = {
+/** Display/UI weight distribution for categories. NOT used in scoring — see IMPORTANCE_WEIGHTS for actual scoring weights. Exists for category registry and display purposes only. */
+export const CATEGORY_DISPLAY_WEIGHTS: Record<CheckCategory, number> = {
 	spf: 0.15,
 	dmarc: 0.15,
 	dkim: 0.15,
@@ -145,7 +145,7 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 	const allFindings: Finding[] = [];
 
 	if (results.length === 0) {
-		for (const cat of Object.keys(CATEGORY_DEFAULTS) as CheckCategory[]) {
+		for (const cat of Object.keys(CATEGORY_DISPLAY_WEIGHTS) as CheckCategory[]) {
 			categoryScores[cat] = 100;
 		}
 		return {
@@ -158,7 +158,7 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 	}
 
 	// Initialize all categories to 100 (perfect) by default
-	for (const cat of Object.keys(CATEGORY_DEFAULTS) as CheckCategory[]) {
+	for (const cat of Object.keys(CATEGORY_DISPLAY_WEIGHTS) as CheckCategory[]) {
 		categoryScores[cat] = 100;
 	}
 
