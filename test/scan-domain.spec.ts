@@ -138,10 +138,6 @@ describe('scanDomain', () => {
 		expect(result).toHaveProperty('checks');
 		expect(result).toHaveProperty('cached', false);
 		expect(result).toHaveProperty('timestamp');
-		expect(result).toHaveProperty('upgrade_cta');
-		expect(typeof result.upgrade_cta).toBe('string');
-		expect(result.upgrade_cta).toContain('blackveilsecurity.com');
-
 		// Score structure
 		expect(result.score).toHaveProperty('overall');
 		expect(result.score).toHaveProperty('grade');
@@ -250,7 +246,6 @@ describe('formatScanReport', () => {
 			checks: [],
 			cached: false,
 			timestamp: '2026-02-23T12:00:00.000Z',
-			upgrade_cta: 'This tool finds problems. BLACKVEIL fixes them automatically \u2192 https://blackveil.co.nz',
 		};
 
 		const report = formatScanReport(mockResult);
@@ -269,9 +264,6 @@ describe('formatScanReport', () => {
 		expect(report).toContain('RSA key too short');
 		// Contains timestamp
 		expect(report).toContain('2026-02-23T12:00:00.000Z');
-		// Contains upgrade CTA
-		expect(report).toContain('BLACKVEIL');
-		expect(report).toContain('blackveil.co.nz');
 	});
 
 	it('includes cache notice when result is cached', async () => {
@@ -300,7 +292,6 @@ describe('formatScanReport', () => {
 			checks: [],
 			cached: true,
 			timestamp: '2026-02-23T12:00:00.000Z',
-			upgrade_cta: 'This tool finds problems. BLACKVEIL fixes them automatically \u2192 https://blackveil.co.nz',
 		};
 
 		const report = formatScanReport(mockResult);
