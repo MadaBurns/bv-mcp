@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Weighted scoring engine aligned with BLACKVEIL scanner (50 checks, 8 categories)
 - Email authentication bonus (up to 5 points) when SPF + DKIM + DMARC all pass
 - DNS-over-HTTPS via Cloudflare DoH — no direct DNS resolution
-- KV-backed per-IP rate limiting (10 req/min, 50 req/hr) with in-memory fallback
+- KV-backed per-IP rate limiting (10 req/min, 100 req/hr) with in-memory fallback
 - KV-backed scan result cache (5-min TTL) with in-memory fallback
 - Per-check caching in `tools/call` handler
 - Optional bearer token authentication (open mode when `BV_API_KEY` is empty)
