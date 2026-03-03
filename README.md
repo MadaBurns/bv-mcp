@@ -2,6 +2,8 @@
 
 The open source MCP server for DNS and email security. Scan any domain from inside Claude, Cursor, or any MCP-compatible AI.
 
+[![CI](https://github.com/MadaBurns/bv-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/MadaBurns/bv-mcp/actions/workflows/ci.yml)
+[![Release](https://github.com/MadaBurns/bv-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/MadaBurns/bv-mcp/actions/workflows/release.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Cloudflare Workers](https://img.shields.io/badge/runtime-Cloudflare%20Workers-F38020.svg)](https://workers.cloudflare.com)
 [![MCP 2024-11-05](https://img.shields.io/badge/MCP-2024--11--05-green.svg)](https://modelcontextprotocol.io)
