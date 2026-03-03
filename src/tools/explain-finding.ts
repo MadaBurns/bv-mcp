@@ -148,6 +148,27 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		recommendation: 'Ensure all resources load over HTTPS and implement proper redirects from HTTP to HTTPS.',
 		references: ['https://www.cloudflare.com/ssl/'],
 	},
+	SSL_MEDIUM: {
+		title: 'HSTS or Redirect Issues',
+		severity: 'medium',
+		explanation:
+			'HTTPS is available but the domain is missing HSTS (Strict-Transport-Security) headers or does not redirect HTTP to HTTPS. Without HSTS, browsers may still attempt insecure connections.',
+		recommendation:
+			'Add a Strict-Transport-Security header with max-age of at least 1 year (31536000). Configure your web server to redirect all HTTP requests to HTTPS.',
+		references: ['https://https.cio.gov/hsts/', 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security'],
+	},
+	SSL_LOW: {
+		title: 'HSTS Configuration Suboptimal',
+		severity: 'low',
+		explanation:
+			'HSTS is configured but could be improved. Common issues include a short max-age value or missing includeSubDomains directive.',
+		recommendation:
+			'Set max-age to at least 31536000 (1 year) and include the includeSubDomains directive. Consider adding your domain to the HSTS preload list.',
+		references: [
+			'https://hstspreload.org/',
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security',
+		],
+	},
 	MTA_STS_PASS: {
 		title: 'MTA-STS Enabled',
 		severity: 'pass',
@@ -233,6 +254,39 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		explanation: 'MX records exist but the configuration could be improved, such as missing backup MX or unusual priority values.',
 		recommendation: 'Review MX priorities and add at least one backup MX record for redundancy.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc5321'],
+	},
+	MX_INFO: {
+		title: 'MX Records Present',
+		severity: 'info',
+		explanation: 'Mail exchange records are properly configured for this domain.',
+		recommendation: 'No action required. Ensure backup MX records exist for redundancy.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc5321'],
+	},
+	MX_LOW: {
+		title: 'MX Configuration Could Be Improved',
+		severity: 'low',
+		explanation:
+			'MX records are present but the configuration has minor issues such as missing backup MX records or duplicate priorities.',
+		recommendation: 'Add at least one backup MX record with a different priority for redundancy.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc5321'],
+	},
+	MX_HIGH: {
+		title: 'MX Configuration Error',
+		severity: 'high',
+		explanation:
+			'MX records have a configuration error such as pointing to an IP address instead of a hostname, which violates RFC 5321.',
+		recommendation:
+			'Update MX records to point to valid hostnames, not IP addresses. Ensure all MX targets resolve to valid A/AAAA records.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc5321'],
+	},
+	MX_MEDIUM: {
+		title: 'No MX Records Found',
+		severity: 'medium',
+		explanation:
+			'No MX records are present for this domain. Email delivery will fall back to A record delivery or fail entirely.',
+		recommendation:
+			'If this domain should receive email, add MX records. If not, publish a null MX record per RFC 7505 to explicitly declare that.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc5321', 'https://datatracker.ietf.org/doc/html/rfc7505'],
 	},
 };
 
