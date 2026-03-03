@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.2] - 2026-03-04
+
+### Removed
+
+- `upgrade_cta` from scan output — conversion hook belongs in README, not tool output
+
+### Added
+
+- HSTS header validation and HTTP→HTTPS redirect check in `check_ssl`
+- Null MX (RFC 7505), IP address detection, redundancy check in `check_mx`
+- SSL and MX explanation entries for `explain_finding`
+
+### Changed
+
+- `explain_finding` status enum expanded to include all severity levels (critical, high, medium, low, info)
+- "No MX records found" severity from `high` to `medium`
+- `CATEGORY_DEFAULTS` renamed to `CATEGORY_DISPLAY_WEIGHTS` for clarity
+
+### Fixed
+
+- CHANGELOG rate limit typo (50 → 100 req/hr)
+- Static resources updated to reflect 10 checks (was "8 category checks")
+
 ## [1.0.0] - 2026-02-24
 
 ### Added

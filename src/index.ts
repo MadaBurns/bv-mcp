@@ -24,7 +24,7 @@ import { sseEvent, acceptsSSE, createSseStream } from './lib/sse';
 import type { JsonRpcRequest } from './lib/json-rpc';
 
 /** Server version — keep in sync with package.json */
-const SERVER_VERSION = '1.0.1';
+const SERVER_VERSION = '1.0.2';
 
 // ---------------------------------------------------------------------------
 // Hono app
