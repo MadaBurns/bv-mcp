@@ -28,9 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Landing page at `/`
 - 245+ tests with ~95% line coverage
 - CI/CD via GitHub Actions (test on PR, auto-deploy on push to main)
-- Standalone subpackage at `bv-dns-security-mcp/` for separate distribution
 - Smithery marketplace manifest
-- Copilot instructions and CLAUDE.md agent documentation
+- CLAUDE.md agent documentation
 
 ### Security
 

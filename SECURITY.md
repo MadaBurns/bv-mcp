@@ -44,7 +44,7 @@ Include the following in your report:
 - Third-party dependencies with their own security policies (report upstream)
 - Social engineering or phishing attacks
 - Denial of service via normal rate-limited usage
-- Issues in the frozen `/bv-dns-security-mcp/` distribution (report separately if applicable)
+
 
 ## Disclosure Policy
 

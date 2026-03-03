@@ -10,10 +10,8 @@ A 12th check (`check_subdomain_takeover`) runs only inside `scan_domain` and is 
 
 **Version**: 1.0.1 — keep `SERVER_VERSION` in `src/index.ts` and `version` in `package.json` in sync.
 
-## Monorepo Layout
+## Repository Layout
 
-- `/` (root) — **Primary**: actively developed and deployed
-- `/bv-dns-security-mcp/` — **Frozen snapshot**: separate distribution, own CI. Do not modify during development; only updated intentionally for releases.
 - `/.dev/` — **Gitignored**: local dev config (KV namespace IDs, custom domains, deploy overrides). Contains `wrangler.local.jsonc` used by `npm run deploy`.
 - `/scripts/` — Utility scripts (benchmark, etc.)
 

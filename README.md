@@ -31,15 +31,44 @@ No setup required — point your MCP client at:
 https://dns-mcp.blackveilsecurity.com/mcp
 ```
 
-#### Claude Desktop config
+#### Claude Desktop
 
-Add this to your `claude_desktop_config.json`:
+Add to `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "dns-security": {
       "type": "streamable-http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+#### VS Code / GitHub Copilot
+
+Add to `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "dns-security": {
+      "type": "http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+#### Cursor
+
+Add to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "dns-security": {
       "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
   }
