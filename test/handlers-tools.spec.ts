@@ -34,10 +34,11 @@ function dnssecResponse(domain: string, ad: boolean) {
 	});
 }
 
-function httpResponse(body: string, status = 200) {
+function httpResponse(body: string, status = 200, headers?: Headers) {
 	return {
 		ok: status >= 200 && status < 300,
 		status,
+		headers: headers ?? new Headers({ 'strict-transport-security': 'max-age=31536000; includeSubDomains' }),
 		text: () => Promise.resolve(body),
 		json: () => Promise.resolve({}),
 	} as unknown as Response;
@@ -80,7 +81,7 @@ function mockAllChecks() {
 		}
 
 		if (url.startsWith('https://')) {
-			return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve({ ...httpResponse('OK'), url });
 		}
 
 		return Promise.resolve(httpResponse('OK'));
@@ -153,12 +154,27 @@ describe('handleToolsCall - dispatch routing', () => {
 	});
 
 	it('check_ssl with valid domain returns content', async () => {
-		globalThis.fetch = vi.fn().mockResolvedValue({
-			ok: true,
-			status: 200,
-			text: () => Promise.resolve('OK'),
-			json: () => Promise.resolve({}),
-		} as unknown as Response);
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.startsWith('https://')) {
+				return Promise.resolve({
+					url,
+					ok: true,
+					status: 200,
+					headers: new Headers({ 'strict-transport-security': 'max-age=31536000; includeSubDomains' }),
+					text: () => Promise.resolve('OK'),
+					json: () => Promise.resolve({}),
+				} as unknown as Response);
+			}
+			// HTTP redirect check
+			return Promise.resolve({
+				ok: false,
+				status: 301,
+				headers: new Headers({ location: `https://${new URL(url).hostname}/` }),
+				text: () => Promise.resolve(''),
+				json: () => Promise.resolve({}),
+			} as unknown as Response);
+		});
 		const result = await call('check_ssl', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toHaveLength(1);

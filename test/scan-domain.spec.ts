@@ -43,10 +43,11 @@ function dnssecResponse(domain: string, ad: boolean) {
 	});
 }
 
-function httpResponse(body: string, status = 200) {
+function httpResponse(body: string, status = 200, headers?: Headers) {
 	return {
 		ok: status >= 200 && status < 300,
 		status,
+		headers: headers ?? new Headers({ 'strict-transport-security': 'max-age=31536000; includeSubDomains' }),
 		text: () => Promise.resolve(body),
 		json: () => Promise.resolve({}),
 	} as unknown as Response;
@@ -115,7 +116,7 @@ function mockAllChecks(overrides?: { throwForUrl?: string }) {
 
 		// SSL check hits the domain via HTTPS
 		if (url.startsWith('https://')) {
-			return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve({ ...httpResponse('OK'), url });
 		}
 
 		// Default fallback
@@ -352,7 +353,7 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 			if (url.includes('mta-sts.') && url.includes('.well-known')) {
 				return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'));
 			}
-			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			if (url.startsWith('https://')) return Promise.resolve({ ...httpResponse('OK'), url });
 			return Promise.resolve(httpResponse('OK'));
 		});
 		globalThis.fetch = baseFetch;
@@ -541,7 +542,7 @@ describe('scanDomain - non-mail domain handling', () => {
 			if (url.includes('mta-sts.') && url.includes('.well-known')) {
 				return Promise.resolve(httpResponse('', 404));
 			}
-			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			if (url.startsWith('https://')) return Promise.resolve({ ...httpResponse('OK'), url });
 			return Promise.resolve(httpResponse('OK'));
 		});
 		globalThis.fetch = baseFetch;
@@ -627,7 +628,7 @@ describe('scanDomain - non-mail domain handling', () => {
 			if (url.includes('mta-sts.') && url.includes('.well-known')) {
 				return Promise.resolve(httpResponse('', 404));
 			}
-			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			if (url.startsWith('https://')) return Promise.resolve({ ...httpResponse('OK'), url });
 			return Promise.resolve(httpResponse('OK'));
 		});
 		globalThis.fetch = baseFetch;
