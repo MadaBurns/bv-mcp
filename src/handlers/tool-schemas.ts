@@ -112,8 +112,8 @@ export const TOOLS: McpTool[] = [
 				},
 				status: {
 					type: 'string',
-					enum: ['pass', 'fail', 'warning'],
-					description: 'The check status',
+					enum: ['pass', 'fail', 'warning', 'critical', 'high', 'medium', 'low', 'info'],
+					description: 'The check status or finding severity (e.g., pass, fail, warning, critical, high, medium, low, info)',
 				},
 				details: {
 					type: 'string',
