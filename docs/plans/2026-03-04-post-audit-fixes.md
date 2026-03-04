@@ -91,7 +91,7 @@ In `src/tools/scan-domain.ts`, remove lines 221-222 (the CTA output at end of re
 
 ```typescript
 // REMOVE from the mockResult object:
-			upgrade_cta: 'This tool finds problems. BLACKVEIL fixes them automatically → https://blackveil.co.nz',
+			upgrade_cta: 'This tool finds problems. BLACKVEIL fixes them automatically → https://blackveilsecurity.com',
 ```
 
 Also remove the assertion lines 273-274:
@@ -99,14 +99,14 @@ Also remove the assertion lines 273-274:
 ```typescript
 // REMOVE:
 		expect(report).toContain('BLACKVEIL');
-		expect(report).toContain('blackveil.co.nz');
+		expect(report).toContain('blackveilsecurity.com');
 ```
 
 4c. In the second `formatScanReport` mock result ("includes cache notice" test, line 280), remove `upgrade_cta` property (line 303):
 
 ```typescript
 // REMOVE from the mockResult object:
-			upgrade_cta: 'This tool finds problems. BLACKVEIL fixes them automatically → https://blackveil.co.nz',
+			upgrade_cta: 'This tool finds problems. BLACKVEIL fixes them automatically → https://blackveilsecurity.com',
 ```
 
 **Step 5: Run tests**
