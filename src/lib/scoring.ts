@@ -78,6 +78,7 @@ const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 
 const EMAIL_BONUS_IMPORTANCE = 5;
 const SPF_STRONG_THRESHOLD = 57;
+const CRITICAL_OVERALL_PENALTY = 15;
 
 function scoreIndicatesMissingControl(findings: Finding[]): boolean {
 	return findings.some((f) => {
@@ -231,11 +232,12 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 
 	const baseOverall = Math.round(maxPoints > 0 ? clampPercent((earnedPoints / maxPoints) * 100) : 0);
 	const providerModifier = computeProviderConfidenceModifier(allFindings);
-	const overall = clampPercent(baseOverall + providerModifier);
+	const criticalCount = allFindings.filter((f) => f.severity === 'critical').length;
+	const criticalPenalty = criticalCount > 0 ? CRITICAL_OVERALL_PENALTY : 0;
+	const overall = clampPercent(baseOverall + providerModifier - criticalPenalty);
 
 	const grade = scoreToGrade(overall);
 
-	const criticalCount = allFindings.filter((f) => f.severity === 'critical').length;
 	const highCount = allFindings.filter((f) => f.severity === 'high').length;
 	const totalIssues = allFindings.filter((f) => f.severity !== 'info').length;
 

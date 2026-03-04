@@ -42,6 +42,20 @@ describe('checkDkim', () => {
 		expect(result.findings[0].title).toMatch(/No DKIM/i);
 	});
 
+	it('detects DKIM on date-based Google selectors', async () => {
+		const strongKey =
+			'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA2a2rwplBCXGHDzhtSF5cz+DfOpZB3Q9nDy0NxQyL8iB4xQoT0Q5Ka0K9KpV4LK3+KZvP5U9ZvL1yR5pZmqZLa5N4H1s7cQ7YQ0+C1jKSRQG7jP8QF1dPLqVfE1pZe7cQ8Kxc6c4PfD8QK9pC7Z1W0K8M3K7N2R4L9Y5L8B3P4N7U5Q6K0O5M5Y6W8P1R7T9A8K6S4P8b0tVm7dC1wYzV6+C2T3U4V5W6X7Y8Z9A0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q6R7S8T9U0V1W2X3Y4z9zzAA';
+		mockDkimRecords({
+			'20230601': [`v=DKIM1; k=rsa; p=${strongKey}`],
+		});
+		const result = await run();
+		const noDkim = result.findings.find((f) => /No DKIM records found/i.test(f.title));
+		const configured = result.findings.find((f) => /DKIM configured/i.test(f.title));
+		expect(noDkim).toBeUndefined();
+		expect(configured).toBeDefined();
+		expect(configured?.metadata?.selectorsFound).toContain('20230601');
+	});
+
 	it('should return info finding when valid DKIM record found', async () => {
 		// Use a genuinely strong RSA key (>330 chars = 4096-bit) to avoid key-strength findings
 		const strongKey =

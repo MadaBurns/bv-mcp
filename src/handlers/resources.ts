@@ -152,6 +152,10 @@ Each category starts at 100 and penalties are applied per finding severity:
 ## Missing-Control Handling
 For categories where a required control is missing (for example, "No DMARC record found"), effective contribution can be treated as zeroed in overall scoring.
 
+## Critical-Finding Adjustment
+If any **critical** finding exists in the scan, an additional **-15 overall points** adjustment is applied.
+This ensures critical risks materially impact final grades even when they occur in low-importance categories.
+
 ## Grading Scale
 The overall weighted score maps to a letter grade:
 - **A+**: 90+

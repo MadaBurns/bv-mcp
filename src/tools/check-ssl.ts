@@ -1,7 +1,7 @@
 /**
  * SSL/TLS certificate check tool.
  * Validates SSL certificate by attempting HTTPS connection,
- * checks certificate transparency (SCT headers), HSTS configuration,
+ * checks HSTS configuration,
  * and verifies HTTP→HTTPS redirect.
  * Workers-compatible: uses fetch API only (cert expiry/chain require external APIs).
  */
@@ -10,7 +10,7 @@ import { type CheckResult, type Finding, buildCheckResult, createFinding } from 
 
 /**
  * Check SSL/TLS configuration for a domain.
- * Validates HTTPS connectivity, certificate transparency, HSTS headers, and HTTP→HTTPS redirect.
+ * Validates HTTPS connectivity, HSTS headers, and HTTP→HTTPS redirect.
  */
 export async function checkSsl(domain: string): Promise<CheckResult> {
 	const findings: Finding[] = [];
@@ -96,18 +96,6 @@ async function checkHttps(domain: string): Promise<Finding[]> {
 			}
 		}
 
-		// Check for certificate transparency (SCT header)
-		const expectCtHeader = response.headers.get('expect-ct');
-		if (!expectCtHeader) {
-			findings.push(
-				createFinding(
-					'ssl',
-					'No Expect-CT header',
-					'low',
-					`${domain} does not set an Expect-CT header. This header enforces certificate transparency requirements.`,
-				),
-			);
-		}
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 
