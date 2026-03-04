@@ -26,7 +26,7 @@
 	"private": true,
 	"scripts": {
 		"setup": "npm install && echo '✓ Dependencies installed. Run: npm run deploy'",
-		"setup:kv": "wrangler kv namespace create RATE_LIMIT && wrangler kv namespace create SCAN_CACHE",
+		"setup:kv": "wrangler kv namespace create RATE_LIMIT && wrangler kv namespace create SCAN_CACHE && wrangler kv namespace create SESSION_STORE",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"deploy": "wrangler deploy -c .dev/wrangler.local.jsonc",

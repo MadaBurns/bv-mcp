@@ -2,6 +2,7 @@ import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloud
 import { describe, it, expect, beforeEach } from 'vitest';
 import worker from '../src';
 import { resetAllRateLimits } from '../src/lib/rate-limiter';
+import { resetSessions } from '../src/lib/session';
 
 const TEST_API_KEY = 'test-api-key';
 
@@ -45,6 +46,7 @@ describe('DNS Security MCP Server', () => {
 
 	beforeEach(() => {
 		resetAllRateLimits();
+		resetSessions();
 	});
 
 	describe('POST /mcp - optional bearer auth', () => {
@@ -616,6 +618,46 @@ describe('DNS Security MCP Server', () => {
 				}
 			}
 			expect(rateLimited).toBe(true);
+		});
+
+		it('tools/call notifications consume exactly one rate-limit unit per request', async () => {
+			const sessionId = await initSession();
+
+			for (let i = 0; i < 10; i++) {
+				const notificationRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Mcp-Session-Id': sessionId,
+					},
+					body: JSON.stringify({
+						jsonrpc: '2.0',
+						method: 'tools/call',
+						params: { name: 'explain_finding', arguments: { checkType: 'SPF', status: 'fail' } },
+					}),
+				});
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(notificationRequest, env, ctx);
+				await waitOnExecutionContext(ctx);
+				expect(response.status).toBe(202);
+			}
+
+			const eleventhRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Mcp-Session-Id': sessionId,
+				},
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					method: 'tools/call',
+					params: { name: 'explain_finding', arguments: { checkType: 'SPF', status: 'fail' } },
+				}),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(eleventhRequest, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(429);
 		});
 
 		it('protocol methods (initialize, tools/list, ping) are exempt from rate limiting', async () => {

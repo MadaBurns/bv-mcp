@@ -33,6 +33,7 @@ const SERVER_VERSION = '1.0.2';
 type BvMcpEnv = {
 	RATE_LIMIT?: KVNamespace;
 	SCAN_CACHE?: KVNamespace;
+	SESSION_STORE?: KVNamespace;
 	BV_API_KEY?: string;
 };
 
@@ -195,18 +196,15 @@ app.post('/mcp', async (c) => {
 	const sessionId = headersLc['mcp-session-id'];
 
 	if (method !== 'initialize') {
-		if (!sessionId || !validateSession(sessionId)) {
+		if (!sessionId || !(await validateSession(sessionId, c.env.SESSION_STORE))) {
 			return c.json(jsonRpcError(id, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: invalid or missing session'), 400);
 		}
 	}
 
-	// Notifications (no id) don't execute tools, but still count against rate
-	// limits to prevent abuse of the notification path as a rate-limit bypass.
+	// Notifications (no id) don't execute tools.
+	// tools/call notifications are already rate-limited above once per request.
 	const isNotification = body.id === undefined || body.id === null;
 	if (isNotification && method !== 'initialize') {
-		if (!isAuthenticated && method === 'tools/call') {
-			await checkRateLimit(ip, c.env.RATE_LIMIT);
-		}
 		// Per spec: notifications/responses → 202 Accepted
 		return new Response(null, { status: 202 });
 	}
@@ -222,7 +220,7 @@ app.post('/mcp', async (c) => {
 
 		       switch (method) {
 			       case 'initialize': {
-				       newSessionId = createSession();
+				       newSessionId = await createSession(c.env.SESSION_STORE);
 				       const result = {
 					       protocolVersion: '2025-03-26',
 					       capabilities: {
@@ -347,7 +345,7 @@ app.post('/mcp', async (c) => {
 // ---------------------------------------------------------------------------
 // MCP Streamable HTTP transport — GET /mcp (SSE stream for notifications)
 // ---------------------------------------------------------------------------
-app.get('/mcp', (c) => {
+app.get('/mcp', async (c) => {
 	// Must accept SSE
 	if (!acceptsSSE(c.req.header('accept'))) {
 		return new Response('Not Acceptable: Accept must include text/event-stream', { status: 406 });
@@ -358,8 +356,8 @@ app.get('/mcp', (c) => {
 	let effectiveSessionId = sessionId;
 
 	if (!effectiveSessionId) {
-		effectiveSessionId = createSession();
-	} else if (!validateSession(effectiveSessionId)) {
+		effectiveSessionId = await createSession(c.env.SESSION_STORE);
+	} else if (!(await validateSession(effectiveSessionId, c.env.SESSION_STORE))) {
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: invalid session'), 400);
 	}
 
@@ -380,13 +378,13 @@ app.get('/mcp', (c) => {
 // ---------------------------------------------------------------------------
 // MCP Streamable HTTP transport — DELETE /mcp (session termination)
 // ---------------------------------------------------------------------------
-app.delete('/mcp', (c) => {
+app.delete('/mcp', async (c) => {
 	const sessionId = c.req.header('mcp-session-id');
-	if (!sessionId || !validateSession(sessionId)) {
+	if (!sessionId || !(await validateSession(sessionId, c.env.SESSION_STORE))) {
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: invalid or missing session'), 400);
 	}
 
-	deleteSession(sessionId);
+	await deleteSession(sessionId, c.env.SESSION_STORE);
 	return new Response(null, { status: 204 });
 });
 

@@ -8,7 +8,7 @@ BLACKVEIL Scanner — open-source DNS/email security analysis and remediation pl
 Exposes 11 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 A 12th check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 1.0.1 — keep `SERVER_VERSION` in `src/index.ts` and `version` in `package.json` in sync.
+**Version**: 1.0.2 — keep `SERVER_VERSION` in `src/index.ts` and `version` in `package.json` in sync.
 
 ## Repository Layout
 
@@ -46,7 +46,7 @@ src/tools/check-*.ts      — Individual DNS checks (SPF, DMARC, DKIM, MX, SSL, 
 src/tools/scan-domain.ts  — Parallel orchestrator for all checks → ScanScore
 src/tools/explain-finding.ts — Static explanation generator
 src/lib/json-rpc.ts       — JSON-RPC 2.0 types, error codes, response builders
-src/lib/session.ts        — In-memory session management (create, validate, delete)
+src/lib/session.ts        — KV-backed (optional) + in-memory fallback session management
 src/lib/auth.ts           — Bearer token validation (constant-time XOR comparison)
 src/lib/sse.ts            — SSE event formatting and Accept header checking
 src/lib/dns.ts            — DNS-over-HTTPS via Cloudflare DoH (cloudflare-dns.com/dns-query)
@@ -128,7 +128,7 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_WEIGHTS` ma
 - **Request body max**: 10 KB on `/mcp`
 - **IP sourcing**: only `cf-connecting-ip` — never `x-forwarded-for`
 - **Error sanitization**: only known validation errors surface; unexpected → generic message
-- **Sessions**: in-memory `Map` per Worker isolate, no TTL/expiry — sessions only removed on `DELETE /mcp`
+- **Sessions**: idle TTL (30 min), sliding refresh on validate, optional KV-backed storage via `SESSION_STORE` with in-memory fallback
 
 ## Adding a New Tool
 
@@ -161,5 +161,6 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_WEIGHTS` ma
 | `BV_API_KEY` | Secret/var | Optional bearer auth (open when empty) |
 | `RATE_LIMIT` | KV Namespace | Per-IP rate counters (optional, in-memory fallback) |
 | `SCAN_CACHE` | KV Namespace | 5-min TTL result cache (optional, in-memory fallback) |
+| `SESSION_STORE` | KV Namespace | Session state for cross-isolate continuity (optional, in-memory fallback) |
 
 After `npm run setup:kv`, copy `wrangler.jsonc` to `.dev/wrangler.local.jsonc` and paste the printed namespace IDs there. The `.dev/` directory is gitignored.

@@ -13,13 +13,14 @@
   "routes": [
     { "pattern": "dns-mcp.your-domain.com", "custom_domain": true }
   ],
-  // KV namespace bindings for rate limiting and scan result caching.
+  // KV namespace bindings for rate limiting, scan result caching, and sessions.
   // Create with:  npm run setup:kv
   // Then copy this file to .dev/wrangler.local.jsonc, update "main" to
   // "../src/index.ts", and paste the IDs printed by the command below.
   "kv_namespaces": [
     { "binding": "RATE_LIMIT", "id": "YOUR_RATE_LIMIT_KV_NAMESPACE_ID" },
-    { "binding": "SCAN_CACHE", "id": "YOUR_SCAN_CACHE_KV_NAMESPACE_ID" }
+    { "binding": "SCAN_CACHE", "id": "YOUR_SCAN_CACHE_KV_NAMESPACE_ID" },
+    { "binding": "SESSION_STORE", "id": "YOUR_SESSION_STORE_KV_NAMESPACE_ID" }
   ],
   // Optional auth: leave empty for open-source/local mode.
   // For production auth, set with: wrangler secret put BV_API_KEY
