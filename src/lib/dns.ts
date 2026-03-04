@@ -84,8 +84,8 @@ export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck
        });
 
        const url = `${DOH_ENDPOINT}?${params.toString()}`;
-       const timeoutMs = opts?.timeoutMs ?? 4000;
-       const retries = opts?.retries ?? 1;
+	const timeoutMs = opts?.timeoutMs ?? 5000;
+	const retries = opts?.retries ?? 2;
 
        for (let attempt = 0; attempt <= retries; attempt++) {
 	       const controller = new AbortController();

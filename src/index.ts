@@ -22,6 +22,7 @@ import { createSession, validateSession, deleteSession } from './lib/session';
 import { isAuthorizedRequest, unauthorizedResponse } from './lib/auth';
 import { sseEvent, acceptsSSE, createSseStream } from './lib/sse';
 import type { JsonRpcRequest } from './lib/json-rpc';
+import { auditSessionCreated } from './lib/audit';
 
 /** Server version — keep in sync with package.json */
 const SERVER_VERSION = '1.0.2';
@@ -70,6 +71,25 @@ app.use('*', async (c, next) => {
 	       // Sanitize error response
 	       return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INTERNAL_ERROR, 'Internal server error'), 500);
        }
+});
+
+// Security headers middleware — apply to all responses
+app.use('*', async (c, next) => {
+	await next();
+	// Prevent MIME type sniffing
+	c.header('X-Content-Type-Options', 'nosniff');
+	// Prevent frame embedding (clickjacking)
+	c.header('X-Frame-Options', 'DENY');
+	// Enable built-in XSS protection
+	c.header('X-XSS-Protection', '1; mode=block');
+	// Restrict referrer disclosure
+	c.header('Referrer-Policy', 'no-referrer');
+	// Disable unnecessary APIs
+	c.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+	// Content Security Policy: no inline scripts, no third-party content
+	c.header('Content-Security-Policy', "default-src 'self'; script-src 'none'; object-src 'none'; frame-ancestors 'none'");
+	// HTTP Strict Transport Security: 1 year, include subdomains
+	c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
 });
 
 // Optional bearer auth for /mcp; open mode when BV_API_KEY is unset/empty.
@@ -236,6 +256,10 @@ app.post('/mcp', async (c) => {
 				       responsePayload = jsonRpcSuccess(id, result);
 				       logCategory = 'session';
 				       logResult = 'initialized';
+								       // Audit log session creation with IP tracking
+								       if (newSessionId) {
+								       	auditSessionCreated(ip, newSessionId);
+								       }
 				       break;
 			       }
 
