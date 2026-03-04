@@ -110,4 +110,36 @@ describe('checkDmarc', () => {
 		const f = r.findings.find((f) => f.title.includes('not applied'));
 		expect(f).toBeUndefined();
 	});
+
+	it('flags invalid pct values', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; pct=200; sp=reject; rua=mailto:d@example.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Invalid DMARC percentage/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('medium');
+	});
+
+	it('flags sp=none as weaker than parent reject policy', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=none; rua=mailto:d@example.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Subdomain policy weaker/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('high');
+	});
+
+	it('flags invalid fo values', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; fo=x; rua=mailto:d@example.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Invalid DMARC failure reporting/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('medium');
+	});
+
+	it('warns when fo=0 limits forensic visibility', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; fo=0; rua=mailto:d@example.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Limited DMARC failure reporting coverage/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
+	});
 });

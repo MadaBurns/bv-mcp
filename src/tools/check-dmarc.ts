@@ -42,6 +42,7 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 
 	const dmarc = dmarcRecords[0];
 	const tags = parseDmarcTags(dmarc);
+	const validPolicies = new Set(['none', 'quarantine', 'reject']);
 
 	// Check policy (p= tag)
 	const policy = tags.get('p');
@@ -52,6 +53,15 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 				'Missing DMARC policy',
 				'critical',
 				`DMARC record is missing the required "p=" tag. Without a policy, DMARC provides no protection.`,
+			),
+		);
+	} else if (!validPolicies.has(policy)) {
+		findings.push(
+			createFinding(
+				'dmarc',
+				'Invalid DMARC policy value',
+				'high',
+				`DMARC policy value "${policy}" is invalid. Allowed values are none, quarantine, or reject.`,
 			),
 		);
 	} else if (policy === 'none') {
@@ -86,19 +96,91 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 				`No subdomain policy (sp=) specified. Subdomains inherit the main policy ("${policy}"), but explicitly setting sp= is recommended.`,
 			),
 		);
+	} else if (sp) {
+		if (!validPolicies.has(sp)) {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Invalid subdomain policy value',
+					'medium',
+					`DMARC subdomain policy value "${sp}" is invalid. Allowed values are none, quarantine, or reject.`,
+				),
+			);
+		} else if (policy === 'reject' && sp === 'none') {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Subdomain policy weaker than parent policy',
+					'high',
+					'Subdomain policy is set to "none" while parent policy is "reject". This leaves subdomains vulnerable to spoofing.',
+				),
+			);
+		} else if (policy === 'reject' && sp === 'quarantine') {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Subdomain policy weaker than parent policy',
+					'low',
+					'Subdomain policy is "quarantine" while parent policy is "reject". Consider using sp=reject for consistent enforcement.',
+				),
+			);
+		}
 	}
 
 	// Check percentage (pct= tag)
 	const pct = tags.get('pct');
-	if (pct && parseInt(pct, 10) < 100) {
+	if (pct) {
+		const pctValue = Number.parseInt(pct, 10);
+		if (!Number.isFinite(pctValue) || Number.isNaN(pctValue) || pctValue < 0 || pctValue > 100) {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Invalid DMARC percentage value',
+					'medium',
+					`DMARC pct value "${pct}" is invalid. Allowed range is 0-100.`,
+				),
+			);
+		} else if (pctValue < 100) {
 		findings.push(
 			createFinding(
 				'dmarc',
 				'DMARC not applied to all emails',
 				'medium',
-				`DMARC pct=${pct} means the policy only applies to ${pct}% of emails. Set pct=100 for full coverage.`,
+				`DMARC pct=${pctValue} means the policy only applies to ${pctValue}% of emails. Set pct=100 for full coverage.`,
 			),
 		);
+		}
+	}
+
+	// Check forensic failure reporting options (fo=)
+	const fo = tags.get('fo');
+	if (fo) {
+		const allowedFoValues = new Set(['0', '1', 'd', 's']);
+		const foValues = fo
+			.split(':')
+			.map((v) => v.trim())
+			.filter((v) => v.length > 0);
+
+		const invalidFo = foValues.filter((v) => !allowedFoValues.has(v));
+		if (foValues.length === 0 || invalidFo.length > 0) {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Invalid DMARC failure reporting options',
+					'medium',
+					`DMARC fo value "${fo}" contains unsupported option(s): ${invalidFo.join(', ') || 'none'}. Allowed values: 0, 1, d, s.`,
+				),
+			);
+		} else if (foValues.length === 1 && foValues[0] === '0') {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Limited DMARC failure reporting coverage',
+					'low',
+					'DMARC fo=0 only generates forensic reports when both SPF and DKIM fail. Consider fo=1 for broader failure visibility.',
+				),
+			);
+		}
 	}
 
 	// Check for reporting (rua= tag)
