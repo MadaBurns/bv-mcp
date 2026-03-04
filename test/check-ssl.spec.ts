@@ -19,7 +19,10 @@ describe('checkSsl', () => {
 					url: 'https://example.com/',
 					ok: true,
 					status: 200,
-					headers: new Headers({ 'strict-transport-security': 'max-age=31536000; includeSubDomains' }),
+					headers: new Headers({
+						'strict-transport-security': 'max-age=31536000; includeSubDomains',
+						'expect-ct': 'max-age=86400, enforce',
+					}),
 				});
 			}
 			// HTTP redirect check
@@ -185,5 +188,54 @@ describe('checkSsl', () => {
 		const finding = result.findings.find((f) => f.title === 'No HTTP to HTTPS redirect');
 		expect(finding).toBeDefined();
 		expect(finding!.severity).toBe('medium');
+	});
+
+	it('should return low finding when Expect-CT header is missing', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.startsWith('https://')) {
+				return Promise.resolve({
+					url: 'https://example.com/',
+					ok: true,
+					status: 200,
+					headers: new Headers({ 'strict-transport-security': 'max-age=31536000; includeSubDomains' }),
+				});
+			}
+			return Promise.resolve({
+				ok: false,
+				status: 301,
+				headers: new Headers({ location: 'https://example.com/' }),
+			});
+		});
+		const result = await run();
+		const finding = result.findings.find((f) => f.title === 'No Expect-CT header');
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('low');
+	});
+
+	it('should not produce Expect-CT finding when header is present', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.startsWith('https://')) {
+				return Promise.resolve({
+					url: 'https://example.com/',
+					ok: true,
+					status: 200,
+					headers: new Headers({
+						'strict-transport-security': 'max-age=31536000; includeSubDomains',
+						'expect-ct': 'max-age=86400, enforce',
+					}),
+				});
+			}
+			return Promise.resolve({
+				ok: false,
+				status: 301,
+				headers: new Headers({ location: 'https://example.com/' }),
+			});
+		});
+		const result = await run();
+		expect(result.category).toBe('ssl');
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].severity).toBe('info');
 	});
 });
