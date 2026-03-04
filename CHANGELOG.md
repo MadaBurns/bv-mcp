@@ -10,11 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - `check_subdomain_takeover` now runs known subdomain probe flow in parallel to reduce worst-case `scan_domain` latency.
 - Provider signature loading now uses a short-lived in-isolate cache (5 minutes) when `PROVIDER_SIGNATURES_URL` is configured.
+- `check_spf` now performs RFC-aware DNS lookup budget analysis with explicit near-limit signaling at 9/10 lookups.
+- `check_dkim` now probes an expanded set of common provider selectors (`selector`, `s1024`, `s2048`, `amazonses`, `mandrill`, `mailjet`, `zoho`) for better detection depth.
 
 ### Added
 
 - Provider signature cache behavior tests in `test/provider-signatures.spec.ts`.
 - A dedicated `scan_domain` latency troubleshooting section in `docs/troubleshooting.md`.
+- SPF regression test for lookup-budget near-limit warning behavior in `test/check-spf.spec.ts`.
 
 ## [1.0.2] - 2026-03-04
 

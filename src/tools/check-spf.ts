@@ -9,6 +9,31 @@ import { type CheckResult, type Finding, buildCheckResult, createFinding } from 
 /** Known risky SPF mechanisms that allow broad sending */
 const RISKY_MECHANISMS = ['+all', '?all'];
 
+type SpfLookupAnalysis = {
+	count: number;
+	mechanisms: string[];
+};
+
+/**
+ * Count SPF mechanisms that consume DNS lookups.
+ * RFC 7208 limits evaluation to 10 DNS-mechanism lookups.
+ */
+function analyzeSpfLookupBudget(spfRecord: string): SpfLookupAnalysis {
+	const mechanisms: string[] = [];
+	for (const token of spfRecord.split(/\s+/)) {
+		if (!token) continue;
+		const normalized = token.replace(/^[+\-~?]/, '').toLowerCase();
+		if (normalized.startsWith('include:')) mechanisms.push('include');
+		else if (normalized === 'a' || normalized.startsWith('a:') || normalized.startsWith('a/')) mechanisms.push('a');
+		else if (normalized === 'mx' || normalized.startsWith('mx:') || normalized.startsWith('mx/')) mechanisms.push('mx');
+		else if (normalized === 'ptr' || normalized.startsWith('ptr:')) mechanisms.push('ptr');
+		else if (normalized.startsWith('exists:')) mechanisms.push('exists');
+		else if (normalized.startsWith('redirect=')) mechanisms.push('redirect');
+	}
+
+	return { count: mechanisms.length, mechanisms };
+}
+
 function extractSpfSignalDomains(spfRecord: string): { includeDomains: string[]; redirectDomain?: string } {
 	const includeDomains = Array.from(spfRecord.matchAll(/\binclude:([^\s]+)/gi))
 		.map((m) => m[1].trim().toLowerCase())
@@ -103,16 +128,26 @@ export async function checkSpf(domain: string): Promise<CheckResult> {
 		);
 	}
 
-	// Check for too many DNS lookups (max 10 per RFC 7208)
-	const lookupMechanisms = spf.match(/\b(include:|a:|mx:|ptr:|exists:|redirect=)/gi);
-	if (lookupMechanisms && lookupMechanisms.length > 10) {
+	// Check DNS lookup budget (RFC 7208 max: 10)
+	const lookupBudget = analyzeSpfLookupBudget(spf);
+	if (lookupBudget.count > 10) {
 		findings.push(
 			createFinding(
 				'spf',
 				'Too many DNS lookups',
+				'critical',
+				`SPF record requires ${lookupBudget.count} DNS lookups (limit: 10). Receivers may return PermError and reject legitimate mail.`,
+				{ ...spfMetadata, lookupCount: lookupBudget.count, lookupMechanisms: lookupBudget.mechanisms },
+			),
+		);
+	} else if (lookupBudget.count >= 9) {
+		findings.push(
+			createFinding(
+				'spf',
+				'SPF lookup budget near limit',
 				'high',
-				`SPF record contains ${lookupMechanisms.length} DNS lookup mechanisms. RFC 7208 limits SPF to 10 DNS lookups. Exceeding this causes permanent errors.`,
-				spfMetadata,
+				`SPF record requires ${lookupBudget.count}/10 DNS lookups. Any future sender additions may push this domain into permanent SPF failures.`,
+				{ ...spfMetadata, lookupCount: lookupBudget.count, lookupMechanisms: lookupBudget.mechanisms },
 			),
 		);
 	}

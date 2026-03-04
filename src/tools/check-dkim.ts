@@ -12,13 +12,25 @@ const COMMON_SELECTORS = [
 	'google',
 	'selector1', // Microsoft 365
 	'selector2', // Microsoft 365
+	'selector',
 	'k1', // Mailchimp
+	's1024',
+	's2048',
 	's1',
 	's2',
 	'mail',
 	'dkim',
 	'smtp',
+	'amazonses',
+	'mandrill',
+	'mailjet',
+	'zoho',
 ];
+
+function getDkimTagValue(record: string, tag: string): string | undefined {
+	const match = record.match(new RegExp(`(?:^|;)\\s*${tag}=([^;]*)`, 'i'));
+	return match?.[1]?.trim();
+}
 
 /**
  * Check DKIM records for a domain.
@@ -51,6 +63,7 @@ export async function checkDkim(domain: string, selector?: string): Promise<Chec
 			// Validate each DKIM record
 			for (const record of result.records) {
 				const isRevoked = /p=\s*;/i.test(record) || /p=\s*$/i.test(record);
+				const publicKey = getDkimTagValue(record, 'p');
 
 				// Check for empty public key (revoked)
 				if (isRevoked) {
