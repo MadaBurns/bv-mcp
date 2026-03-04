@@ -58,8 +58,8 @@ This MCP server exposes tools that cover the core checks in each category and re
 | Category | Total Scanner Checks | Free Tier (MCP/Core) | Premium Platform |
 |---|---:|---|---|
 | SPF | 8 | Core SPF policy and syntax checks | Advanced include-chain and sender-path analytics |
-| DMARC | 8 | Core policy, pct, and reporting checks | Alignment depth, subdomain inheritance, reporting quality analytics |
-| DKIM | 7 | Selector discovery and key-quality baseline checks | Selector entropy, rotation heuristics, key-age and drift analytics |
+| DMARC | 10 | Core policy, pct, reporting checks, URI validation, alignment modes | Alignment depth, subdomain inheritance, reporting quality analytics |
+| DKIM | 9 | Selector discovery, RSA key strength validation, v= tag checks | Selector entropy, rotation heuristics, key-age and drift analytics |
 | DNSSEC | 6 | AD validation and signed-zone baseline | Chain-of-trust and rollover posture analytics |
 | SSL/TLS | 8 | Certificate availability and baseline validity checks | Protocol/cipher depth, PKI posture, renewal-risk analytics |
 | MTA-STS | 5 | TXT policy presence and basic policy retrieval checks | Policy hardening and reporting-depth analytics |
@@ -76,11 +76,11 @@ Validates SPF TXT records to reduce spoofing risk. Includes presence, mechanism 
 
 ## DMARC (Domain-based Message Authentication)
 Tool: \`check_dmarc\`  
-Checks \`_dmarc\` policy posture including enforcement mode, reporting, and rollout safety indicators.
+Checks \`_dmarc\` policy posture including enforcement mode, reporting URIs (rua=/ruf=), alignment modes (adkim=/aspf=), subdomain policy, and third-party aggregator detection. Validates URI format and identifies known aggregator services.
 
 ## DKIM (DomainKeys Identified Mail)
 Tool: \`check_dkim\`  
-Probes common selectors under \`_domainkey\` and validates key records for baseline signing health.
+Probes common selectors under \`_domainkey\` and validates key records. Includes RSA key strength validation (512/1024/2048/4096-bit detection via base64 length heuristic), v=DKIM1 tag validation, and comprehensive selector discovery across major providers.
 
 ## DNSSEC (DNS Security Extensions)
 Tool: \`check_dnssec\`  
