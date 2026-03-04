@@ -55,9 +55,11 @@ describe('checkDmarc', () => {
 	it('should return info finding for p=reject with rua and sp', async () => {
 		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:dmarc@example.com']);
 		const result = await run();
-		expect(result.findings).toHaveLength(1);
-		expect(result.findings[0].severity).toBe('info');
-		expect(result.findings[0].title).toMatch(/DMARC properly configured/i);
+		// Now includes alignment warnings (low severity) since adkim/aspf default to relaxed
+		expect(result.findings.length).toBeGreaterThanOrEqual(1);
+		const infoFinding = result.findings.find((f) => f.severity === 'info');
+		expect(infoFinding).toBeDefined();
+		expect(infoFinding!.title).toMatch(/DMARC properly configured/i);
 	});
 
 	it('returns low finding for missing sp= when p=reject', async () => {
@@ -93,8 +95,10 @@ describe('checkDmarc', () => {
 	it('handles case-insensitive DMARC prefix', async () => {
 		mockTxtRecords(['V=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com']);
 		const r = await run();
-		expect(r.findings).toHaveLength(1);
-		expect(r.findings[0].severity).toBe('info');
+		// Includes alignment warnings since adkim/aspf default to relaxed
+		expect(r.findings.length).toBeGreaterThanOrEqual(1);
+		const infoFinding = r.findings.find((f) => f.severity === 'info');
+		expect(infoFinding).toBeDefined();
 	});
 
 	it('does not flag sp= missing when p is not reject', async () => {
@@ -141,5 +145,149 @@ describe('checkDmarc', () => {
 		const f = r.findings.find((f) => /Limited DMARC failure reporting coverage/i.test(f.title));
 		expect(f).toBeDefined();
 		expect(f!.severity).toBe('low');
+	});
+
+	// URI Validation Tests
+	it('accepts valid mailto: URI in rua', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:dmarc@example.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Invalid aggregate report URI/i.test(f.title));
+		expect(f).toBeUndefined();
+	});
+
+	it('flags invalid rua= URI (missing mailto:)', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=http://example.com/dmarc']);
+		const r = await run();
+		const f = r.findings.find((f) => /Invalid aggregate report URI/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('medium');
+	});
+
+	it('flags malformed email in rua= URI', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:invalid-email']);
+		const r = await run();
+		const f = r.findings.find((f) => /Invalid aggregate report URI/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('medium');
+	});
+
+	it('validates multiple comma-separated rua= URIs', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:a@example.com, mailto:b@example.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Invalid aggregate report URI/i.test(f.title));
+		expect(f).toBeUndefined();
+	});
+
+	it('flags invalid ruf= URI format', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; ruf=ftp://forensic.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Invalid forensic report URI/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('medium');
+	});
+
+	it('accepts valid ruf= URI', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; ruf=mailto:forensic@example.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Invalid forensic report URI/i.test(f.title));
+		expect(f).toBeUndefined();
+	});
+
+	// Aggregator Detection Tests
+	it('detects dmarcian.com aggregator', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:reports@dmarcian.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Third-party DMARC aggregator/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('info');
+		expect(f!.metadata?.aggregators).toContain('dmarcian.com');
+	});
+
+	it('detects multiple aggregators', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:a@dmarcian.com, mailto:b@valimail.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Third-party DMARC aggregator/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.metadata?.aggregators).toContain('dmarcian.com');
+		expect(f!.metadata?.aggregators).toContain('valimail.com');
+	});
+
+	it('does not flag non-aggregator domains', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:dmarc@internal-company.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Third-party DMARC aggregator/i.test(f.title));
+		expect(f).toBeUndefined();
+	});
+
+	// Alignment Mode Tests
+	it('warns about relaxed DKIM alignment (adkim=r)', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; adkim=r']);
+		const r = await run();
+		const f = r.findings.find((f) => /Relaxed DKIM alignment/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
+	});
+
+	it('warns about relaxed DKIM alignment (adkim unset)', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Relaxed DKIM alignment/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
+	});
+
+	it('does not warn when DKIM alignment is strict (adkim=s)', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; adkim=s; aspf=s']);
+		const r = await run();
+		const f = r.findings.find((f) => /Relaxed DKIM alignment/i.test(f.title));
+		expect(f).toBeUndefined();
+	});
+
+	it('flags invalid adkim value', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; adkim=x']);
+		const r = await run();
+		const f = r.findings.find((f) => /Invalid DKIM alignment mode/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('medium');
+	});
+
+	it('warns about relaxed SPF alignment (aspf=r)', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; aspf=r']);
+		const r = await run();
+		const f = r.findings.find((f) => /Relaxed SPF alignment/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
+	});
+
+	it('warns about relaxed SPF alignment (aspf unset)', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Relaxed SPF alignment/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
+	});
+
+	it('does not warn when SPF alignment is strict (aspf=s)', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; adkim=s; aspf=s']);
+		const r = await run();
+		const f = r.findings.find((f) => /Relaxed SPF alignment/i.test(f.title));
+		expect(f).toBeUndefined();
+	});
+
+	it('flags invalid aspf value', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; aspf=invalid']);
+		const r = await run();
+		const f = r.findings.find((f) => /Invalid SPF alignment mode/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('medium');
+	});
+
+	it('handles fully configured DMARC with strict alignment', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; adkim=s; aspf=s']);
+		const r = await run();
+		// Should only have info finding for proper configuration
+		expect(r.findings).toHaveLength(1);
+		expect(r.findings[0].severity).toBe('info');
+		expect(r.findings[0].title).toMatch(/DMARC properly configured/i);
 	});
 });
