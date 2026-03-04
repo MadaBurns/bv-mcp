@@ -45,6 +45,46 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
+## Claude Code
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "type": "url",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  },
+  "enableAllProjectMcpServers": true
+}
+```
+
+Optional: improve automatic tool routing by adding a DNS security auto-mapping entry in `~/.claude/mcp-mappings.json`:
+
+```json
+{
+  "autoMappings": {
+    "dnsSecurityScan": {
+      "patterns": [
+        "scan domain",
+        "dns scan",
+        "security scan",
+        "check dmarc",
+        "check dkim",
+        "check spf",
+        "check mx"
+      ],
+      "server": "blackveil-dns",
+      "priority": 1
+    }
+  }
+}
+```
+
+After editing Claude Code configuration files, start a new Claude Code session to ensure mappings are reloaded.
+
 ## Cursor
 
 Add to `.cursor/mcp.json`:
@@ -58,6 +98,14 @@ Add to `.cursor/mcp.json`:
   }
 }
 ```
+
+## Prompting Tips
+
+If your client does not auto-route tool calls from short prompts, use explicit phrasing:
+
+- `Use scan_domain to scan blackveilsecurity.com`
+- `Run check_dmarc for blackveilsecurity.com`
+- `Run check_dkim for blackveilsecurity.com`
 
 ## Authentication
 

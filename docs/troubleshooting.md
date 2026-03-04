@@ -70,6 +70,40 @@ Look for MCP connection errors in:
 ~/Library/Logs/Claude/
 ```
 
+### Claude Code Not Auto-Routing Scan Prompts
+
+If Claude Code is connected but prompts like `scan blackveilsecurity.com` do not route to this MCP server automatically:
+
+**1. Verify `mcpServers` entry** in `~/.claude/settings.json`
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "type": "url",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+**2. Add an auto-mapping rule** in `~/.claude/mcp-mappings.json`
+
+Map scan and DNS/security patterns to `blackveil-dns` (for example: `scan domain`, `dns scan`, `check dmarc`, `check dkim`, `check spf`, `check mx`).
+
+**3. Ensure the server is always enabled**
+
+In `~/.claude/mcp-mappings.json`, include `blackveil-dns` in `defaults.alwaysEnabled`.
+
+**4. Start a new Claude Code session**
+
+Claude Code may cache mappings per session. Restarting/reopening a session forces mapping reload.
+
+**5. Use explicit phrasing as fallback**
+
+- `Use scan_domain to scan blackveilsecurity.com`
+- `Run check_dmarc for blackveilsecurity.com`
+
 ### VS Code / GitHub Copilot Configuration
 
 Add to `.vscode/mcp.json` in your workspace root:
