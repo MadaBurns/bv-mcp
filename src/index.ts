@@ -228,7 +228,7 @@ app.post('/mcp', async (c) => {
 						       resources: { subscribe: false, listChanged: false },
 					       },
 					       serverInfo: {
-						       name: 'BLACKVEIL Scanner',
+						       name: 'Blackveil DNS',
 						       version: SERVER_VERSION,
 					       },
 				       };

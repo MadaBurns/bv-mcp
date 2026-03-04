@@ -1,5 +1,5 @@
 /**
- * MCP Tool schema definitions for the BLACKVEIL Scanner.
+ * MCP Tool schema definitions for Blackveil DNS.
  * Contains all tool metadata (names, descriptions, input schemas)
  * used by the tools/list MCP method.
  *

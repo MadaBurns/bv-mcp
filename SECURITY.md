@@ -9,7 +9,7 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in BLACKVEIL Scanner, **do not open a public issue**. Instead, please report it privately:
+If you discover a security vulnerability in Blackveil DNS, **do not open a public issue**. Instead, please report it privately:
 
 **Email:** [security@blackveilsecurity.com](mailto:security@blackveilsecurity.com)
 
@@ -30,7 +30,7 @@ Include the following in your report:
 
 ### In Scope
 
-- Vulnerabilities in the BLACKVEIL Scanner MCP server code (this repository)
+- Vulnerabilities in the Blackveil DNS MCP server code (this repository)
 - SSRF bypasses in domain validation or DNS resolution
 - Authentication or authorization bypasses
 - Input validation flaws (e.g., domain sanitization, JSON-RPC parsing)

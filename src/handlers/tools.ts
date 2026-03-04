@@ -1,5 +1,5 @@
 /**
- * MCP Tools handler for the BLACKVEIL Scanner.
+ * MCP Tools handler for Blackveil DNS.
  * Dispatches tools/call requests to the appropriate check functions.
  *
  * Handles JSON-RPC methods: tools/list, tools/call

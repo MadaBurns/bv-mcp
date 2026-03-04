@@ -142,7 +142,7 @@ describe('DNS Security MCP Server', () => {
 			};
 			expect(body.jsonrpc).toBe('2.0');
 			expect(body.id).toBe(1);
-			expect(body.result.serverInfo.name).toBe('BLACKVEIL Scanner');
+			expect(body.result.serverInfo.name).toBe('Blackveil DNS');
 			expect(body.result.protocolVersion).toBe('2025-03-26');
 			const sessionId = response.headers.get('mcp-session-id');
 			expect(sessionId).toBeTruthy();

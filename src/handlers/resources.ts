@@ -1,5 +1,5 @@
 /**
- * MCP Resources handler for the BLACKVEIL Scanner.
+ * MCP Resources handler for Blackveil DNS.
  * Exposes static documentation resources about DNS/email security checks,
  * scoring methodology, and supported DNS record types.
  *
@@ -28,7 +28,7 @@ const RESOURCES: McpResource[] = [
    uri: 'dns-security://guides/security-checks',
    name: 'DNS Security Checks Guide',
    description:
-     'Overview of all DNS/email security checks performed by BLACKVEIL Scanner, including SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, and CAA.',
+     'Overview of all DNS/email security checks performed by Blackveil DNS, including SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, and CAA.',
    mimeType: 'text/markdown',
  },
  {
@@ -49,9 +49,9 @@ const RESOURCES: McpResource[] = [
 const RESOURCE_CONTENT: Record<string, string> = {
 	'dns-security://guides/security-checks': `# DNS Security Checks
 
-The BLACKVEIL DNS scanner evaluates **50 checks** grouped into 8 security categories.
+The Blackveil DNS scanner evaluates **50 checks** grouped into 8 security categories.
 
-This MCP server exposes tools that cover the core checks in each category and returns findings compatible with BLACKVEIL scoring.
+This MCP server exposes tools that cover the core checks in each category and returns findings compatible with Blackveil DNS scoring.
 
 ## Coverage by Tier
 

@@ -1,6 +1,6 @@
-# dns-security-mcp
+# Blackveil DNS
 
-The open source MCP server for DNS and email security. Scan any domain from inside Claude, Cursor, or any MCP-compatible AI.
+Open-source DNS & email security scanner — MCP server for AI-powered domain analysis.
 
 [![CI](https://github.com/MadaBurns/bv-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/MadaBurns/bv-mcp/actions/workflows/ci.yml)
 [![Release](https://github.com/MadaBurns/bv-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/MadaBurns/bv-mcp/actions/workflows/release.yml)
@@ -38,7 +38,7 @@ Add to `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "dns-security": {
+    "blackveil-dns": {
       "type": "streamable-http",
       "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
@@ -53,7 +53,7 @@ Add to `.vscode/mcp.json`:
 ```json
 {
   "servers": {
-    "dns-security": {
+    "blackveil-dns": {
       "type": "http",
       "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
@@ -68,7 +68,7 @@ Add to `.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "dns-security": {
+    "blackveil-dns": {
       "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
   }

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is this?
 
-BLACKVEIL Scanner — open-source DNS/email security analysis and remediation platform, deployed as a Cloudflare Worker.
+Blackveil DNS — open-source DNS & email security scanner, deployed as a Cloudflare Worker.
 Exposes 11 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 A 12th check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 

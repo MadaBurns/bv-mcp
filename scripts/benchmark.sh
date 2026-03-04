@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Benchmark script for BLACKVEIL Scanner MCP endpoint.
+# Benchmark script for Blackveil DNS MCP endpoint.
 # Usage: ./scripts/benchmark.sh [domain...]
 #        ./scripts/benchmark.sh cloudflare.com google.com microsoft.com
 #        BV_API_KEY=your-key ./scripts/benchmark.sh cloudflare.com
@@ -111,7 +111,7 @@ run_domain() {
 # Main
 # ---------------------------------------------------------------------------
 echo "========================================"
-echo " BLACKVEIL Scanner Benchmark"
+echo " Blackveil DNS Benchmark"
 echo "========================================"
 if $AUTHENTICATED; then
 	echo "Mode: authenticated (rate limiting bypassed)"
