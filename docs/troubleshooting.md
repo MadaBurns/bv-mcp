@@ -2,6 +2,107 @@
 
 Operational runbook for common MCP integration and request failures.
 
+## 0. MCP Client Configuration (Claude Desktop, VS Code, Cursor)
+
+### Claude Desktop Not Discovering Tools
+
+If Claude Desktop doesn't automatically use the MCP server when you make requests like "scan blackveilsecurity.com", check:
+
+**1. Verify config file exists and is valid**
+
+**Mac/Linux:** `~/Library/Application Support/Claude/claude_desktop_config.json`  
+**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+Required config:
+```json
+{
+  "mcpServers": {
+    "dns-security": {
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+**Common mistakes:**
+- ❌ Using `mcpServer` (singular) instead of `mcpServers` (plural)
+- ❌ Adding `"type": "http"` (not needed for Claude Desktop, only VS Code)
+- ❌ Invalid JSON syntax (trailing commas, missing quotes)
+
+**2. Restart Claude Desktop completely**
+
+After adding/editing the config:
+1. Quit Claude Desktop completely (not just close the window)
+2. Relaunch Claude Desktop
+3. The server should connect automatically on startup
+
+**3. Use explicit phrasing**
+
+Instead of: "scan blackveilsecurity.com"
+
+Try more explicit requests:
+- "Use the scan_domain tool to scan blackveilsecurity.com"
+- "Run a DNS security scan on blackveilsecurity.com"
+- "Check DNS security for blackveilsecurity.com using the MCP tools"
+
+**4. Verify server connectivity**
+
+Test that the server is responding:
+```bash
+curl https://dns-mcp.blackveilsecurity.com/health
+```
+
+Should return: `{"status":"ok"}`
+
+Test that tools are available:
+```bash
+curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+Should return JSON with a tools array including `scan_domain`.
+
+**5. Check Claude Desktop logs (Mac)**
+
+Look for MCP connection errors in:
+```bash
+~/Library/Logs/Claude/
+```
+
+### VS Code / GitHub Copilot Configuration
+
+Add to `.vscode/mcp.json` in your workspace root:
+
+```json
+{
+  "servers": {
+    "dns-security": {
+      "type": "http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+**Note:** VS Code requires `"type": "http"` field (unlike Claude Desktop).
+
+### Cursor Configuration
+
+Add to `.cursor/mcp.json` in your workspace root:
+
+```json
+{
+  "mcpServers": {
+    "dns-security": {
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+Restart Cursor after adding the configuration.
+
 ## 1. Health Check
 
 ```bash
