@@ -265,8 +265,7 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 	MX_LOW: {
 		title: 'MX Configuration Could Be Improved',
 		severity: 'low',
-		explanation:
-			'MX records are present but the configuration has minor issues such as missing backup MX records or duplicate priorities.',
+		explanation: 'MX records are present but the configuration has minor issues such as missing backup MX records.',
 		recommendation: 'Add at least one backup MX record with a different priority for redundancy.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc5321'],
 	},

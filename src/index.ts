@@ -35,6 +35,7 @@ type BvMcpEnv = {
 	SCAN_CACHE?: KVNamespace;
 	SESSION_STORE?: KVNamespace;
 	BV_API_KEY?: string;
+	PROVIDER_SIGNATURES_URL?: string;
 };
 
 const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean } }>();
@@ -248,7 +249,9 @@ app.post('/mcp', async (c) => {
 
 			       case 'tools/call': {
 				       const toolParams = params as { name: string; arguments?: Record<string, unknown> };
-				       const result = await handleToolsCall(toolParams, c.env.SCAN_CACHE);
+				       const result = await handleToolsCall(toolParams, c.env.SCAN_CACHE, {
+					       providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
+				       });
 				       responsePayload = jsonRpcSuccess(id, result);
 				       logCategory = 'tools';
 				       logTool = toolParams.name;

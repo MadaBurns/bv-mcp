@@ -136,6 +136,23 @@ High-level summary:
 - DNS resolution is performed through Cloudflare DoH.
 - Rate limiting defaults to `10/min` and `100/hr` per IP for unauthenticated `tools/call` traffic.
 
+## Provider Detection
+
+`check_mx` and `scan_domain` include managed provider detection with structured finding metadata.
+
+- Inbound provider detection uses MX host matching.
+- Outbound provider inference uses SPF include/redirect signals and DKIM selector hints.
+- Findings may include metadata fields such as:
+  - `detectionType` (`inbound` or `outbound`)
+  - `providers` (matched provider names and evidence)
+  - `providerConfidence` (0.0-1.0 confidence used by scoring modifier)
+  - `signatureSource`, `signatureVersion`, `signatureFetchedAt`
+- Signature source fallback order is: runtime source -> stale cache -> built-in signatures.
+
+Self-hosting can optionally configure:
+
+- `PROVIDER_SIGNATURES_URL` (runtime provider-signature JSON source)
+
 ## Documentation
 
 - Client setup: `docs/client-setup.md`
@@ -185,6 +202,14 @@ Configure optional auth secret:
 
 ```bash
 npx wrangler secret put BV_API_KEY
+```
+
+Optional provider signature source (in `wrangler.jsonc` vars):
+
+```json
+{
+  "PROVIDER_SIGNATURES_URL": "https://<your-source>/provider-signatures.json"
+}
 ```
 
 ## Testing

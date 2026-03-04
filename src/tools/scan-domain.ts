@@ -11,6 +11,7 @@
 import { type CheckCategory, type CheckResult, type Severity, type ScanScore, buildCheckResult, computeScanScore, createFinding } from '../lib/scoring';
 import { cacheGet, cacheSet, runWithCache } from '../lib/cache';
 import { queryTxtRecords } from '../lib/dns';
+import { detectProviderMatches, detectProviderMatchesBySelectors, loadProviderSignatures } from '../lib/provider-signatures';
 import { checkSpf } from './check-spf';
 import { checkDmarc, parseDmarcTags } from './check-dmarc';
 import { checkDkim } from './check-dkim';
@@ -33,6 +34,117 @@ export interface ScanDomainResult {
 	timestamp: string;
 }
 
+interface ScanRuntimeOptions {
+	providerSignaturesUrl?: string;
+}
+
+function extractSpfSignalDomains(result: CheckResult | undefined): string[] {
+	if (!result) return [];
+
+	const domains = new Set<string>();
+	for (const finding of result.findings) {
+		const metadata = finding.metadata;
+		if (!metadata || typeof metadata !== 'object') continue;
+
+		const includeDomains = metadata.includeDomains;
+		if (Array.isArray(includeDomains)) {
+			for (const domain of includeDomains) {
+				if (typeof domain === 'string' && domain.trim().length > 0) {
+					domains.add(domain.trim().toLowerCase());
+				}
+			}
+		}
+
+		const redirectDomain = metadata.redirectDomain;
+		if (typeof redirectDomain === 'string' && redirectDomain.trim().length > 0) {
+			domains.add(redirectDomain.trim().toLowerCase());
+		}
+	}
+
+	return Array.from(domains);
+}
+
+function extractDkimSignalSelectors(result: CheckResult | undefined): string[] {
+	if (!result) return [];
+
+	const selectors = new Set<string>();
+	for (const finding of result.findings) {
+		const metadata = finding.metadata;
+		if (!metadata || typeof metadata !== 'object') continue;
+
+		const selectorsFound = metadata.selectorsFound;
+		if (!Array.isArray(selectorsFound)) continue;
+
+		for (const selector of selectorsFound) {
+			if (typeof selector === 'string' && selector.trim().length > 0) {
+				selectors.add(selector.trim().toLowerCase());
+			}
+		}
+	}
+
+	return Array.from(selectors);
+}
+
+function upsertCheckResult(results: CheckResult[], updated: CheckResult): CheckResult[] {
+	return results.map((r) => (r.category === updated.category ? updated : r));
+}
+
+async function addOutboundProviderInference(results: CheckResult[], runtimeOptions?: ScanRuntimeOptions): Promise<CheckResult[]> {
+	const spfResult = results.find((r) => r.category === 'spf');
+	const dkimResult = results.find((r) => r.category === 'dkim');
+
+	const signalDomains = extractSpfSignalDomains(spfResult);
+	const dkimSelectors = extractDkimSignalSelectors(dkimResult);
+	if (signalDomains.length === 0 && dkimSelectors.length === 0) return results;
+
+	const signatures = await loadProviderSignatures({ sourceUrl: runtimeOptions?.providerSignaturesUrl });
+	const signatureSet = signatures.outbound.length > 0 ? signatures.outbound : signatures.inbound;
+	const hostMatches = detectProviderMatches(signalDomains, signatureSet);
+	const selectorMatches = detectProviderMatchesBySelectors(dkimSelectors, signatureSet);
+
+	const mergedMatches = new Map<string, Set<string>>();
+	for (const match of [...hostMatches, ...selectorMatches]) {
+		if (!mergedMatches.has(match.provider)) {
+			mergedMatches.set(match.provider, new Set<string>());
+		}
+		for (const evidence of match.matches) {
+			mergedMatches.get(match.provider)?.add(evidence);
+		}
+	}
+
+	const outboundMatches = Array.from(mergedMatches.entries()).map(([provider, matches]) => ({
+		provider,
+		matches: Array.from(matches),
+	}));
+	if (outboundMatches.length === 0) return results;
+
+	const providerNames = outboundMatches.map((m) => m.provider).join(', ');
+	const evidence = outboundMatches.map((m) => `${m.provider}: ${m.matches.join(', ')}`).join('; ');
+ 	const signalBoost = signalDomains.length > 0 && dkimSelectors.length > 0 ? 0.05 : 0;
+	const baseConfidence = signatures.source === 'runtime' ? 0.85 : signatures.source === 'stale' ? 0.7 : 0.65;
+	const providerConfidence = Math.min(0.95, baseConfidence + signalBoost);
+
+	const spfBaseline = spfResult ?? buildCheckResult('spf', []);
+
+	const updatedSpf = buildCheckResult('spf', [
+		...spfBaseline.findings,
+		createFinding('spf', 'Outbound email provider inferred', 'info', `Outbound provider(s): ${providerNames}. Evidence: ${evidence}.`, {
+			detectionType: 'outbound',
+			providers: outboundMatches.map((m) => ({ name: m.provider, matches: m.matches })),
+			signalsUsed: {
+				spfDomains: signalDomains,
+				dkimSelectors,
+			},
+			providerConfidence,
+			signatureSource: signatures.source,
+			signatureVersion: signatures.version,
+			signatureFetchedAt: signatures.fetchedAt,
+		}),
+	]);
+
+	return upsertCheckResult(results, updatedSpf);
+}
+
 /**
  * Run a full DNS security scan on a domain.
  * Executes all checks in parallel and computes an overall score.
@@ -41,7 +153,7 @@ export interface ScanDomainResult {
  * @param kv - Optional KV namespace for persistent scan result caching
  * @returns Full scan result with score, individual check results, and metadata
  */
-export async function scanDomain(domain: string, kv?: KVNamespace): Promise<ScanDomainResult> {
+export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOptions?: ScanRuntimeOptions): Promise<ScanDomainResult> {
 	const cacheKey = `${CACHE_PREFIX}${domain}`;
 
 	// Check cache first
@@ -51,18 +163,18 @@ export async function scanDomain(domain: string, kv?: KVNamespace): Promise<Scan
 	}
 
 	// Run all checks in parallel with individual-check caching
-	   let checkResults: CheckResult[] = await Promise.all([
-		   runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain)), kv),
-		   runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain)), kv),
-		   runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain)), kv),
-		   runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain)), kv),
-		   runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain)), kv),
-		   runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain)), kv),
-		   runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain)), kv),
-		   runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain)), kv),
-		   runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain)), kv),
-		   runCachedCheck(domain, 'mx', () => safeCheck('mx', () => checkMx(domain)), kv),
-	   ]);
+	let checkResults: CheckResult[] = await Promise.all([
+		runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain)), kv),
+		runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain)), kv),
+		runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain)), kv),
+		runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain)), kv),
+		runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain)), kv),
+		runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain)), kv),
+		runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain)), kv),
+		runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain)), kv),
+		runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain)), kv),
+		runCachedCheck(domain, 'mx', () => safeCheck('mx', () => checkMx(domain, { providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl })), kv),
+	]);
 
 	// Adjust findings for non-mail domains: if no MX records, email auth
 	// findings are expected and should not penalize the score
@@ -73,6 +185,8 @@ export async function scanDomain(domain: string, kv?: KVNamespace): Promise<Scan
 		const apexCovers = await checkApexDmarcPolicy(domain);
 		checkResults = adjustForNonMailDomain(checkResults, apexCovers);
 	}
+
+	checkResults = await addOutboundProviderInference(checkResults, runtimeOptions);
 
 	// Compute overall score from all check results
 	const score = computeScanScore(checkResults);

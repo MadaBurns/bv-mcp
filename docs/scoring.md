@@ -55,6 +55,22 @@ DMARC score determines bonus:
 
 Source: `EMAIL_BONUS_IMPORTANCE`, `SPF_STRONG_THRESHOLD`, and bonus logic in `computeScanScore()`.
 
+## Provider Confidence Modifier
+
+After base weighted scoring and email bonus, `scan_domain` applies a bounded confidence modifier derived from provider detection findings (`metadata.providerConfidence`).
+
+- Confidence values are normalized to `[0, 1]`
+- Average confidence is centered around `0.5`
+- Overall score modifier range is approximately `-5` to `+5`
+- If no provider confidence metadata is present, modifier is `0`
+
+Provider confidence is currently attached by:
+
+- Inbound provider detection in `check_mx`
+- Outbound provider inference in `scan_domain` (from SPF include/redirect signals and DKIM selector hints)
+
+Source: `computeProviderConfidenceModifier()` and `computeScanScore()` in `src/lib/scoring.ts`.
+
 ## Grades
 
 - A+: `90+`

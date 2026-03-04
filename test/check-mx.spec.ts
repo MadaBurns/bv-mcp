@@ -42,6 +42,34 @@ describe('checkMx', () => {
 		const infoFinding = result.findings.find((f) => f.severity === 'info' && f.title.includes('provider'));
 		expect(infoFinding).toBeTruthy();
 		expect(infoFinding!.title).toMatch(/Managed email provider detected/i);
+		expect(infoFinding!.metadata).toBeDefined();
+		expect(infoFinding!.metadata?.detectionType).toBe('inbound');
+		expect(infoFinding!.metadata?.providers).toBeDefined();
+	});
+
+	it('should avoid false positive suffix matches for provider detection', async () => {
+		mockMxRecords('boundary.com', ['10 mail.evilgoogle.com.']);
+		const result = await run('boundary.com');
+		const infoFinding = result.findings.find((f) => f.title === 'Managed email provider detected');
+		expect(infoFinding).toBeUndefined();
+	});
+
+	it('should add degraded-source finding when runtime provider source fails', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				const answers = [{ name: 'fallback.com', type: 15, TTL: 300, data: '10 aspmx.l.google.com.' }];
+				return Promise.resolve(createDohResponse([{ name: 'fallback.com', type: 15 }], answers));
+			}
+			throw new Error('Provider signature source unavailable');
+		});
+
+		const { checkMx } = await import('../src/tools/check-mx');
+		const result = await checkMx('fallback.com', { providerSignaturesUrl: 'https://providers.example/signatures.json' });
+		const degradedFinding = result.findings.find((f) => f.title === 'Provider signature source unavailable');
+		expect(degradedFinding).toBeDefined();
+		expect(degradedFinding!.severity).toBe('info');
+		expect(degradedFinding!.metadata?.signatureSource).toBe('built-in');
 	});
 
 	it('returns correct category', async () => {
@@ -74,11 +102,10 @@ describe('checkMx', () => {
 		expect(finding!.severity).toBe('low');
 	});
 
-	it('should flag duplicate MX priorities as low severity', async () => {
+	it('should not flag duplicate MX priorities as a finding', async () => {
 		mockMxRecords('dupes.com', ['10 mx1.dupes.com.', '10 mx2.dupes.com.']);
 		const result = await run('dupes.com');
 		const finding = result.findings.find((f) => f.title === 'Duplicate MX priorities');
-		expect(finding).toBeDefined();
-		expect(finding!.severity).toBe('low');
+		expect(finding).toBeUndefined();
 	});
 });

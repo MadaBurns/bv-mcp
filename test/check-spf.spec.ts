@@ -58,6 +58,9 @@ describe('checkSpf', () => {
 		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0].severity).toBe('info');
 		expect(result.findings[0].title).toMatch(/SPF record configured/i);
+		expect(result.findings[0].metadata).toBeDefined();
+		expect(result.findings[0].metadata?.signalType).toBe('spf');
+		expect(result.findings[0].metadata?.includeDomains).toContain('_spf.google.com');
 	});
 
 	it('handles case-insensitive SPF prefix', async () => {

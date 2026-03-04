@@ -88,9 +88,13 @@ function extractDkimSelector(args: Record<string, unknown>): string | undefined 
 }
 
 /** Wrapper for dynamic check_mx import (required for test mock isolation) */
-async function dynamicCheckMx(domain: string): Promise<CheckResult> {
+interface ToolRuntimeOptions {
+	providerSignaturesUrl?: string;
+}
+
+async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOptions): Promise<CheckResult> {
 	const { checkMx } = await import('../tools/check-mx');
-	return checkMx(domain);
+	return checkMx(domain, { providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl });
 }
 
 /**
@@ -101,10 +105,10 @@ const TOOL_REGISTRY: Record<
 	string,
 	{
 		cacheKey: (args: Record<string, unknown>) => string;
-		execute: (domain: string, args: Record<string, unknown>) => Promise<CheckResult>;
+		execute: (domain: string, args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => Promise<CheckResult>;
 	}
 > = {
-	check_mx: { cacheKey: () => 'mx', execute: (d) => dynamicCheckMx(d) },
+	check_mx: { cacheKey: () => 'mx', execute: (d, _args, runtimeOptions) => dynamicCheckMx(d, runtimeOptions) },
 	check_spf: { cacheKey: () => 'spf', execute: (d) => checkSpf(d) },
 	check_dmarc: { cacheKey: () => 'dmarc', execute: (d) => checkDmarc(d) },
 	check_dkim: {
@@ -165,6 +169,7 @@ export async function handleToolsCall(
 		arguments?: Record<string, unknown>;
 	},
 	scanCacheKV?: KVNamespace,
+	runtimeOptions?: ToolRuntimeOptions,
 ): Promise<McpToolResult> {
 	const { name } = params;
 	const args = params.arguments ?? {};
@@ -185,7 +190,7 @@ export async function handleToolsCall(
 		if (registeredTool) {
 			const checkName = registeredTool.cacheKey(args);
 			const cacheKey = `cache:${validDomain}:check:${checkName}`;
-			const result = await runWithCache(cacheKey, () => registeredTool.execute(validDomain, args), scanCacheKV);
+			const result = await runWithCache(cacheKey, () => registeredTool.execute(validDomain, args, runtimeOptions), scanCacheKV);
 			logResult = result.passed ? 'pass' : 'fail';
 			logDetails = result;
 			logEvent({
@@ -202,7 +207,7 @@ export async function handleToolsCall(
 
 		switch (name) {
 			case 'scan_domain': {
-				const result = await scanDomain(validDomain, scanCacheKV);
+				const result = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
 				logResult = result.score.grade;
 				logDetails = result;
 				logEvent({

@@ -6,9 +6,14 @@
 import type { CheckResult, Finding } from '../lib/scoring';
 import { createFinding, buildCheckResult } from '../lib/scoring';
 import { queryDnsRecords } from '../lib/dns';
+import { detectProviderMatches, loadProviderSignatures } from '../lib/provider-signatures';
+
+interface CheckMxOptions {
+	providerSignaturesUrl?: string;
+}
 
 /** Check MX record configuration for a domain */
-export async function checkMx(domain: string): Promise<CheckResult> {
+export async function checkMx(domain: string, options?: CheckMxOptions): Promise<CheckResult> {
 	let answers;
 	try {
 		answers = await queryDnsRecords(domain, 'MX');
@@ -68,35 +73,45 @@ export async function checkMx(domain: string): Promise<CheckResult> {
 		findings.push(createFinding('mx', 'Single MX record', 'low', 'Only one MX record found. Consider adding a backup MX for redundancy.'));
 	}
 
-	// Check for duplicate priorities
-	const priorities = mxRecords.map((r) => r.priority);
-	const uniquePriorities = new Set(priorities);
-	if (uniquePriorities.size < priorities.length && mxRecords.length > 1) {
+	// Duplicate MX priorities are valid and commonly used for load balancing.
+
+	const mxTargets = mxRecords.map((r) => r.exchange);
+	const providerSignatures = await loadProviderSignatures({ sourceUrl: options?.providerSignaturesUrl });
+	const inboundMatches = detectProviderMatches(mxTargets, providerSignatures.inbound);
+
+	if (inboundMatches.length > 0) {
+		const providerNames = inboundMatches.map((m) => m.provider).join(', ');
+		const evidence = inboundMatches.map((m) => `${m.provider}: ${m.matches.join(', ')}`).join('; ');
+		const providerConfidence = providerSignatures.source === 'runtime' ? 0.95 : providerSignatures.source === 'stale' ? 0.75 : 0.7;
+
 		findings.push(
-			createFinding(
-				'mx',
-				'Duplicate MX priorities',
-				'low',
-				'Multiple MX records share the same priority. This provides round-robin load balancing but no clear failover order.',
-			),
+			createFinding('mx', 'Managed email provider detected', 'info', `Inbound provider(s): ${providerNames}. Evidence: ${evidence}.`, {
+				detectionType: 'inbound',
+				providers: inboundMatches.map((m) => ({ name: m.provider, matches: m.matches })),
+				providerConfidence,
+				signatureSource: providerSignatures.source,
+				signatureVersion: providerSignatures.version,
+				signatureFetchedAt: providerSignatures.fetchedAt,
+			}),
 		);
 	}
 
-	// Detect known outbound email providers
-	const outboundProviders = [
-		'google.com',
-		'googlemail.com',
-		'outlook.com',
-		'mailgun.org',
-		'sendgrid.net',
-		'amazonses.com',
-		'pphosted.com',
-		'mimecast.com',
-	];
-	const mxTargets = mxRecords.map((r) => r.exchange);
-	const outbound = mxTargets.some((t) => outboundProviders.some((p) => t.endsWith(p)));
-	if (outbound) {
-		findings.push(createFinding('mx', 'Managed email provider detected', 'info', 'MX points to a known managed email provider.'));
+	if (providerSignatures.degraded) {
+		findings.push(
+			createFinding(
+				'mx',
+				'Provider signature source unavailable',
+				'info',
+				`Provider detection used ${providerSignatures.source === 'stale' ? 'stale cached' : 'built-in fallback'} signatures.`,
+				{
+					detectionType: 'inbound',
+					providerConfidence: providerSignatures.source === 'stale' ? 0.55 : 0.45,
+					signatureSource: providerSignatures.source,
+					signatureVersion: providerSignatures.version,
+					signatureFetchedAt: providerSignatures.fetchedAt,
+				},
+			),
+		);
 	}
 
 	return buildCheckResult('mx', findings);

@@ -9,6 +9,20 @@ import { type CheckResult, type Finding, buildCheckResult, createFinding } from 
 /** Known risky SPF mechanisms that allow broad sending */
 const RISKY_MECHANISMS = ['+all', '?all'];
 
+function extractSpfSignalDomains(spfRecord: string): { includeDomains: string[]; redirectDomain?: string } {
+	const includeDomains = Array.from(spfRecord.matchAll(/\binclude:([^\s]+)/gi))
+		.map((m) => m[1].trim().toLowerCase())
+		.filter((d) => d.length > 0);
+
+	const redirectMatch = spfRecord.match(/\bredirect=([^\s]+)/i);
+	const redirectDomain = redirectMatch?.[1]?.trim().toLowerCase();
+
+	return {
+		includeDomains,
+		...(redirectDomain ? { redirectDomain } : {}),
+	};
+}
+
 /**
  * Check SPF records for a domain.
  * Looks for v=spf1 TXT records and validates their configuration.
@@ -44,6 +58,12 @@ export async function checkSpf(domain: string): Promise<CheckResult> {
 	}
 
 	const spf = spfRecords[0];
+	const spfSignals = extractSpfSignalDomains(spf);
+	const spfMetadata = {
+		signalType: 'spf',
+		includeDomains: spfSignals.includeDomains,
+		...(spfSignals.redirectDomain ? { redirectDomain: spfSignals.redirectDomain } : {}),
+	};
 
 	// Check for overly permissive +all or ?all
 	const allMechanism = spf.match(/[+?~-]all/i);
@@ -56,6 +76,7 @@ export async function checkSpf(domain: string): Promise<CheckResult> {
 					`Permissive SPF: ${qualifier}`,
 					'critical',
 					`SPF record uses "${qualifier}" which allows any server to send email as ${domain}. Use "-all" (hard fail) or "~all" (soft fail) instead.`,
+					spfMetadata,
 				),
 			);
 		} else if (qualifier.toLowerCase() === '~all') {
@@ -65,6 +86,7 @@ export async function checkSpf(domain: string): Promise<CheckResult> {
 					'SPF soft fail (~all)',
 					'low',
 					`SPF record uses "~all" (soft fail). Consider upgrading to "-all" (hard fail) for stricter enforcement once you've verified all legitimate senders are included.`,
+					spfMetadata,
 				),
 			);
 		}
@@ -76,6 +98,7 @@ export async function checkSpf(domain: string): Promise<CheckResult> {
 				"No 'all' mechanism",
 				'medium',
 				`SPF record does not end with an "all" mechanism. Without it, the default behavior is neutral, which provides weak protection.`,
+				spfMetadata,
 			),
 		);
 	}
@@ -89,6 +112,7 @@ export async function checkSpf(domain: string): Promise<CheckResult> {
 				'Too many DNS lookups',
 				'high',
 				`SPF record contains ${lookupMechanisms.length} DNS lookup mechanisms. RFC 7208 limits SPF to 10 DNS lookups. Exceeding this causes permanent errors.`,
+				spfMetadata,
 			),
 		);
 	}
@@ -101,6 +125,7 @@ export async function checkSpf(domain: string): Promise<CheckResult> {
 				'Deprecated ptr mechanism',
 				'medium',
 				`SPF record uses the "ptr" mechanism which is deprecated in RFC 7208 due to performance and reliability issues.`,
+				spfMetadata,
 			),
 		);
 	}
@@ -113,6 +138,7 @@ export async function checkSpf(domain: string): Promise<CheckResult> {
 				'SPF record configured',
 				'info',
 				`SPF record found and properly configured: ${spf.substring(0, 100)}${spf.length > 100 ? '...' : ''}`,
+				spfMetadata,
 			),
 		);
 	}

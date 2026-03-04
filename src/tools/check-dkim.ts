@@ -121,10 +121,21 @@ export async function checkDkim(domain: string, selector?: string): Promise<Chec
 				'No DKIM records found',
 				'high',
 				`No DKIM records found for ${domain} across common selectors (${COMMON_SELECTORS.join(', ')}). DKIM helps verify email authenticity and integrity.`,
+				{
+					signalType: 'dkim',
+					selectorsChecked: selectorsToCheck,
+					selectorsFound: [],
+				},
 			),
 		);
 	} else if (findings.length === 0) {
-		findings.push(createFinding('dkim', 'DKIM configured', 'info', `DKIM records found for selectors: ${foundSelectors.join(', ')}`));
+		findings.push(
+			createFinding('dkim', 'DKIM configured', 'info', `DKIM records found for selectors: ${foundSelectors.join(', ')}`, {
+				signalType: 'dkim',
+				selectorsChecked: selectorsToCheck,
+				selectorsFound: foundSelectors,
+			}),
+		);
 	}
 
 	return buildCheckResult('dkim', findings);

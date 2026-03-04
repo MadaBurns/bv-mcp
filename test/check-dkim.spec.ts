@@ -48,6 +48,9 @@ describe('checkDkim', () => {
 		const finding = result.findings.find(f => f.severity === 'info');
 		expect(finding).toBeDefined();
 		expect(finding!.title).toMatch(/DKIM configured/i);
+		expect(finding!.metadata).toBeDefined();
+		expect(finding!.metadata?.signalType).toBe('dkim');
+		expect(finding!.metadata?.selectorsFound).toContain('google');
 	});
 
 	it('returns medium finding for revoked key (empty p=)', async () => {
@@ -102,6 +105,7 @@ describe('checkDkim', () => {
 		const f = r.findings.find((f) => f.severity === 'info');
 		expect(f).toBeDefined();
 		expect(f!.detail).toContain('myselector');
+		expect(f!.metadata?.selectorsFound).toContain('myselector');
 	});
 
 	it('finds records across multiple selectors', async () => {

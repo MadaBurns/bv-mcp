@@ -47,6 +47,13 @@ describe('scoring', () => {
 				detail: 'Missing CAA records',
 			});
 		});
+
+		it('creates a finding with metadata when provided', () => {
+			const f = createFinding('mx', 'Managed email provider detected', 'info', 'Detected provider.', {
+				providerConfidence: 0.9,
+			});
+			expect(f.metadata).toEqual({ providerConfidence: 0.9 });
+		});
 	});
 
 	describe('computeScanScore', () => {
@@ -106,6 +113,30 @@ describe('scoring', () => {
 		it('category weights sum to 1.0', () => {
 			const sum = Object.values(CATEGORY_DISPLAY_WEIGHTS).reduce((a, b) => a + b, 0);
 			expect(sum).toBeCloseTo(1.0);
+		});
+
+		it('applies positive modifier for high provider confidence findings', () => {
+			const results: CheckResult[] = [
+				buildCheckResult('spf', [createFinding('spf', 'SPF record configured', 'info', 'ok')]),
+				buildCheckResult('mx', [
+					createFinding('mx', 'Managed email provider detected', 'info', 'Inbound provider detected.', { providerConfidence: 0.95 }),
+				]),
+			];
+
+			const scan = computeScanScore(results);
+			expect(scan.overall).toBeGreaterThan(95);
+		});
+
+		it('applies negative modifier for low provider confidence findings', () => {
+			const results: CheckResult[] = [
+				buildCheckResult('spf', [createFinding('spf', 'SPF record configured', 'info', 'ok')]),
+				buildCheckResult('mx', [
+					createFinding('mx', 'Provider signature source unavailable', 'info', 'Fallback signatures used.', { providerConfidence: 0.2 }),
+				]),
+			];
+
+			const scan = computeScanScore(results);
+			expect(scan.overall).toBeLessThan(100);
 		});
 	});
 });

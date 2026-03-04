@@ -5,4 +5,5 @@ interface Env {
 	SCAN_CACHE?: KVNamespace;
 	SESSION_STORE?: KVNamespace;
 	BV_API_KEY?: string;
+	PROVIDER_SIGNATURES_URL?: string;
 }

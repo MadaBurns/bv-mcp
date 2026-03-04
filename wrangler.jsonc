@@ -25,6 +25,7 @@
   // Optional auth: leave empty for open-source/local mode.
   // For production auth, set with: wrangler secret put BV_API_KEY
   "vars": {
-    "BV_API_KEY": ""
+    "BV_API_KEY": "",
+    "PROVIDER_SIGNATURES_URL": ""
   }
 }

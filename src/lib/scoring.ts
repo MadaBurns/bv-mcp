@@ -14,6 +14,7 @@ export interface Finding {
 	title: string;
 	severity: Severity;
 	detail: string;
+	metadata?: Record<string, unknown>;
 }
 
 export interface CheckResult {
@@ -90,6 +91,23 @@ function clampPercent(score: number): number {
 	return Math.max(0, Math.min(100, score));
 }
 
+function computeProviderConfidenceModifier(findings: Finding[]): number {
+	const confidences: number[] = [];
+
+	for (const finding of findings) {
+		const confidence = finding.metadata?.providerConfidence;
+		if (typeof confidence === 'number' && Number.isFinite(confidence)) {
+			confidences.push(Math.max(0, Math.min(1, confidence)));
+		}
+	}
+
+	if (confidences.length === 0) return 0;
+
+	const avgConfidence = confidences.reduce((sum, value) => sum + value, 0) / confidences.length;
+	const centered = avgConfidence - 0.5;
+	return Math.round(centered * 10);
+}
+
 /** Map numeric score to letter grade */
 export function scoreToGrade(score: number): string {
 	if (score >= 90) return 'A+';
@@ -132,8 +150,14 @@ export function buildCheckResult(category: CheckCategory, findings: Finding[]): 
 /**
  * Create a finding object with the given parameters.
  */
-export function createFinding(category: CheckCategory, title: string, severity: Severity, detail: string): Finding {
-	return { category, title, severity, detail };
+export function createFinding(
+	category: CheckCategory,
+	title: string,
+	severity: Severity,
+	detail: string,
+	metadata?: Record<string, unknown>,
+): Finding {
+	return { category, title, severity, detail, ...(metadata ? { metadata } : {}) };
 }
 
 /**
@@ -205,7 +229,9 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 		maxPoints += EMAIL_BONUS_IMPORTANCE;
 	}
 
-	const overall = Math.round(maxPoints > 0 ? clampPercent((earnedPoints / maxPoints) * 100) : 0);
+	const baseOverall = Math.round(maxPoints > 0 ? clampPercent((earnedPoints / maxPoints) * 100) : 0);
+	const providerModifier = computeProviderConfidenceModifier(allFindings);
+	const overall = clampPercent(baseOverall + providerModifier);
 
 	const grade = scoreToGrade(overall);
 
