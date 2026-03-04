@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- `check_subdomain_takeover` now runs known subdomain probe flow in parallel to reduce worst-case `scan_domain` latency.
+- Provider signature loading now uses a short-lived in-isolate cache (5 minutes) when `PROVIDER_SIGNATURES_URL` is configured.
+
+### Added
+
+- Provider signature cache behavior tests in `test/provider-signatures.spec.ts`.
+- A dedicated `scan_domain` latency troubleshooting section in `docs/troubleshooting.md`.
+
 ## [1.0.2] - 2026-03-04
 
 ### Removed

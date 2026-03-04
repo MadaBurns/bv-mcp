@@ -1,6 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-import { detectProviderMatches, detectProviderMatchesBySelectors, loadProviderSignatures } from '../src/lib/provider-signatures';
+import { detectProviderMatches, detectProviderMatchesBySelectors, loadProviderSignatures, resetProviderSignatureState } from '../src/lib/provider-signatures';
+
+beforeEach(() => {
+	resetProviderSignatureState();
+	vi.restoreAllMocks();
+});
 
 describe('provider-signatures', () => {
 	it('returns built-in signatures when no source url is provided', async () => {
@@ -37,5 +42,28 @@ describe('provider-signatures', () => {
 		expect(matches).toHaveLength(2);
 		expect(matches.find((m) => m.provider === 'Google Workspace')?.matches).toContain('google');
 		expect(matches.find((m) => m.provider === 'Microsoft 365')?.matches).toContain('selector1');
+	});
+
+	it('reuses runtime signature fetches within the cache window', async () => {
+		const sourceUrl = 'https://example.com/signatures.json';
+		const payload = {
+			version: 'runtime-test-1',
+			inbound: [{ name: 'Test Provider', domains: ['mail.test.example'] }],
+			outbound: [],
+		};
+
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => payload,
+		} as unknown as Response);
+
+		const first = await loadProviderSignatures({ sourceUrl });
+		const second = await loadProviderSignatures({ sourceUrl });
+
+		expect(first.source).toBe('runtime');
+		expect(second.source).toBe('runtime');
+		expect(first.version).toBe('runtime-test-1');
+		expect(second.version).toBe('runtime-test-1');
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 	});
 });

@@ -55,6 +55,7 @@ Common fields include:
 - DNS lookups are performed against Cloudflare DoH (`cloudflare-dns.com/dns-query`).
 - The service does not call arbitrary third-party endpoints for scan logic.
 - Optional provider detection signatures may be loaded from a deployment-configured URL (`PROVIDER_SIGNATURES_URL`) for `check_mx` and `scan_domain` inference.
+- Runtime-loaded provider signatures are cached in-isolate for 5 minutes to reduce repeated fetch latency during active traffic.
 - When configured signature fetch fails, detection falls back to stale cache (if available) and then built-in signatures.
 - External log export is optional and deployment-controlled.
 
