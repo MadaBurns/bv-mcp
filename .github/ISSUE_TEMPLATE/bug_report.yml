@@ -1,0 +1,99 @@
+name: Bug report
+description: Report a reproducible bug in BLACKVEIL Scanner
+title: "[BUG]: "
+labels: []
+assignees: []
+body:
+  - type: textarea
+    id: bug
+    attributes:
+      label: Describe the bug
+      description: Clear and concise summary of the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: precheck
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I searched existing issues for duplicates.
+          required: true
+        - label: I confirmed this on the latest `main` branch or latest release.
+          required: true
+        - label: I redacted any secrets, tokens, and sensitive domains.
+          required: true
+
+  - type: textarea
+    id: request
+    attributes:
+      label: MCP request payload used
+      description: Paste JSON-RPC request body (redacted as needed).
+      render: json
+
+  - type: textarea
+    id: response
+    attributes:
+      label: Error response or logs
+      description: Paste relevant worker logs, stack traces, and error output.
+
+  - type: dropdown
+    id: auth_mode
+    attributes:
+      label: Authentication mode
+      options:
+        - Open mode (no BV_API_KEY)
+        - Bearer auth enabled (BV_API_KEY set)
+    validations:
+      required: true
+
+  - type: input
+    id: endpoint
+    attributes:
+      label: Endpoint type
+      placeholder: hosted / self-hosted / localhost
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: e.g. macOS 26.2
+    validations:
+      required: true
+
+  - type: textarea
+    id: client
+    attributes:
+      label: MCP client details
+      description: Client name/version (Claude, Copilot, Cursor, etc.) and how it was configured.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Any extra details that may help diagnose the issue.

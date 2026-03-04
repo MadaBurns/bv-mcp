@@ -1,59 +1,49 @@
-# Blackveil DNS
+# BLACKVEIL Scanner
 
-Open-source DNS & email security scanner — MCP server for AI-powered domain analysis.
+Open-source DNS and email security MCP server implemented for Cloudflare Workers.
 
-[![CI](https://github.com/MadaBurns/bv-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/MadaBurns/bv-mcp/actions/workflows/ci.yml)
-[![Release](https://github.com/MadaBurns/bv-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/MadaBurns/bv-mcp/actions/workflows/release.yml)
-[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Cloudflare Workers](https://img.shields.io/badge/runtime-Cloudflare%20Workers-F38020.svg)](https://workers.cloudflare.com)
-[![MCP 2024-11-05](https://img.shields.io/badge/MCP-2024--11--05-green.svg)](https://modelcontextprotocol.io)
-[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6.svg)](https://www.typescriptlang.org)
+[![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Cloudflare Workers](https://img.shields.io/badge/Runs%20on-Cloudflare%20Workers-F38020?logo=cloudflare)](https://workers.cloudflare.com/)
+[![MCP 2025-03-26](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript)](https://www.typescriptlang.org/)
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Quick Start](#quick-start)
+- [Tool Surface](#tool-surface)
+- [Protocol Endpoints](#protocol-endpoints)
+- [Architecture Notes](#architecture-notes)
+- [Security Model](#security-model)
+- [Documentation](#documentation)
+- [Self-Hosting](#self-hosting)
+- [Development](#development)
+- [Testing](#testing)
+- [License](#license)
+
+## Overview
+
+`bv-mcp` exposes DNS/email security checks through MCP over Streamable HTTP (JSON-RPC 2.0).
+
+- Runtime: Cloudflare Workers
+- Framework: Hono
+- Language: TypeScript (strict)
+- DNS backend: Cloudflare DoH (`cloudflare-dns.com/dns-query`)
+
+This is a remote MCP server. It is not a local stdio server invoked via `npx`/`uvx`.
 
 ## Quick Start
 
-### Deploy to Cloudflare Workers
+Hosted endpoint:
 
-```bash
-npx wrangler deploy
-```
+`https://dns-mcp.blackveilsecurity.com/mcp`
 
-### Run locally
-
-```bash
-npm install && npm run dev
-```
-
-### Use the hosted version
-
-No setup required — point your MCP client at:
-
-```
-https://dns-mcp.blackveilsecurity.com/mcp
-```
-
-#### Claude Desktop
-
-Add to `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "blackveil-dns": {
-      "type": "streamable-http",
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
-    }
-  }
-}
-```
-
-#### VS Code / GitHub Copilot
-
-Add to `.vscode/mcp.json`:
+**VS Code / Copilot** (`.vscode/mcp.json`):
 
 ```json
 {
   "servers": {
-    "blackveil-dns": {
+    "dns-security": {
       "type": "http",
       "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
@@ -61,90 +51,154 @@ Add to `.vscode/mcp.json`:
 }
 ```
 
-#### Cursor
-
-Add to `.cursor/mcp.json`:
+**Claude Desktop** (`claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
-    "blackveil-dns": {
+    "dns-security": {
       "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
   }
 }
 ```
 
-## What It Does
+**Cursor** (`.cursor/mcp.json`):
 
-| Tool | What it does |
-|------|-------------|
-| `scan_domain` | Run a full security scan and get an overall score and grade |
-| `check_spf` | Check if your domain can be spoofed via email |
-| `check_dmarc` | See if spoofed emails get rejected or just observed |
-| `check_dkim` | Verify your outgoing emails are digitally signed |
-| `check_dnssec` | Check if your DNS is protected from tampering |
-| `check_ssl` | Test if your site uses HTTPS properly |
-| `check_mta_sts` | See if your incoming email connections are encrypted |
-| `check_ns` | Analyze your nameserver setup for reliability |
-| `check_caa` | Check which certificate authorities can issue certs for your domain |
-| `check_mx` | Look at your mail server configuration |
-| `explain_finding` | Get a plain-English explanation of any finding and what to do about it |
-
-## Example Conversations
-
-### "Is my domain secure?"
-
-```
-User: Is example.com secure?
-
-Claude: I'll run a full security scan.
-
-→ scan_domain({ "domain": "example.com" })
-
-Your domain scored 72/100 (C+). Key issues:
-- No DMARC record (critical)
-- DNSSEC not enabled (high)
-- No CAA records (medium)
+```json
+{
+  "mcpServers": {
+    "dns-security": {
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
 ```
 
-### "Why are our emails going to spam?"
+For full client setup and auth details, see `docs/client-setup.md`.
 
+## Tool Surface
+
+Directly callable MCP tools:
+
+- `check_mx`
+- `check_spf`
+- `check_dmarc`
+- `check_dkim`
+- `check_dnssec`
+- `check_ssl`
+- `check_mta_sts`
+- `check_ns`
+- `check_caa`
+- `scan_domain`
+- `explain_finding`
+
+Internal check executed within `scan_domain`:
+
+- `subdomain_takeover`
+
+Scope and limitations are documented in `docs/coverage.md`.
+
+## Protocol Endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/mcp` | JSON-RPC 2.0 tool/protocol requests |
+| `GET` | `/mcp` | SSE stream for server notifications |
+| `DELETE` | `/mcp` | Session termination |
+| `GET` | `/health` | Health probe |
+
+## Architecture Notes
+
+Request flow:
+
+`MCP client -> Worker/Hono -> tool handlers -> DNS DoH`
+
+Core subsystems:
+
+- Input sanitation and domain validation
+- Optional bearer-token authentication
+- Per-IP rate limiting with KV + in-memory fallback
+- Scan/result caching with KV + in-memory fallback
+- Structured JSON logging
+
+For implementation details and conventions, see `CLAUDE.md`.
+
+## Security Model
+
+Security and operational behaviors are documented in `docs/security-and-observability.md`.
+
+High-level summary:
+
+- Domain inputs are validated and sanitized before execution.
+- SSRF protections block unsafe/private targets.
+- Error responses are sanitized.
+- DNS resolution is performed through Cloudflare DoH.
+- Rate limiting defaults to `10/min` and `100/hr` per IP for unauthenticated `tools/call` traffic.
+
+## Documentation
+
+- Client setup: `docs/client-setup.md`
+- Security and observability: `docs/security-and-observability.md`
+- Scoring details: `docs/scoring.md`
+- Coverage and limitations: `docs/coverage.md`
+- Troubleshooting: `docs/troubleshooting.md`
+- Documentation style guide: `docs/style-guide.md`
+
+## Self-Hosting
+
+Prerequisites:
+
+- [Node.js](https://nodejs.org/) 18+
+- Cloudflare account
+
+Deploy to your account:
+
+```bash
+git clone https://github.com/MadaBurns/bv-mcp.git
+cd bv-mcp
+npm run setup
+npm run setup:kv
+npm run deploy
 ```
-User: Our emails from acme.com keep landing in spam. What's wrong?
 
-Claude: Let me check your email authentication setup.
+Worker endpoint pattern:
 
-→ check_spf({ "domain": "acme.com" })
-→ check_dmarc({ "domain": "acme.com" })
+`https://<your-worker>.workers.dev/mcp`
 
-Your SPF record uses ~all (soft fail) instead of -all (hard fail),
-and your DMARC policy is set to "none" — mailbox providers have
-no reason to trust your emails. Here's how to fix both.
+## Development
+
+Run locally:
+
+```bash
+git clone https://github.com/MadaBurns/bv-mcp.git
+cd bv-mcp
+npm run setup
+npm run dev
 ```
 
-### "Explain this finding"
+Local endpoint:
 
-```
-User: What does "DMARC policy set to none" actually mean?
+`http://localhost:8787/mcp`
 
-Claude: Let me explain that finding.
+Configure optional auth secret:
 
-→ explain_finding({ "checkType": "DMARC", "status": "warning" })
-
-DMARC with p=none means you're only monitoring — spoofed emails
-still get delivered normally. Upgrade to p=quarantine or p=reject
-after reviewing your DMARC reports to confirm legitimate senders.
+```bash
+npx wrangler secret put BV_API_KEY
 ```
 
-## Why We Built This
+## Testing
 
-We've run 760,000+ scans and see the same mistakes everywhere — missing DMARC policies, permissive SPF records, no DNSSEC. Most teams don't know these problems exist until something goes wrong. So we decided to give the scanner to the world and let anyone check their domain security right from their AI assistant.
+```bash
+npm test
+```
 
-## Want Autonomous Remediation?
+```bash
+npm run typecheck
+```
 
-This tool finds problems. [BLACKVEIL](https://blackveilsecurity.com) fixes them automatically.
+Manual request examples and common failure modes are in `docs/troubleshooting.md`.
 
 ## License
 
-MIT
+MIT. See `LICENSE`.
