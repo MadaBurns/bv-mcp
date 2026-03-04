@@ -11,17 +11,17 @@
 	},
 	"keywords": [
 		"blackveil",
-		"scanner",
 		"dns",
 		"security",
-		"cloudflare",
+		"mcp",
 		"email",
 		"dmarc",
 		"spf",
 		"dkim",
 		"dnssec",
 		"cloudflare-workers",
-		"model-context-protocol"
+		"model-context-protocol",
+		"ai-tools"
 	],
 	"private": true,
 	"scripts": {
