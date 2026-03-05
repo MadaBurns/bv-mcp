@@ -486,6 +486,48 @@ describe('DNS Security MCP Server', () => {
 			expect(body.result.content[0].text).toContain('Error: An unexpected error occurred');
 		});
 
+		it('rejects public IPv4 literals', async () => {
+			const sessionId = await initSession();
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 6.3,
+					method: 'tools/call',
+					params: { name: 'check_ssl', arguments: { domain: '8.8.8.8' } },
+				}),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { result: { content: Array<{ text: string }>; isError: boolean } };
+			expect(body.result.isError).toBe(true);
+			expect(body.result.content[0].text).toContain('Error: An unexpected error occurred');
+		});
+
+		it('rejects alternate numeric forms of public IPv4 literals', async () => {
+			const sessionId = await initSession();
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 6.4,
+					method: 'tools/call',
+					params: { name: 'check_ssl', arguments: { domain: '0x8.0x8.0x8.0x8' } },
+				}),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { result: { content: Array<{ text: string }>; isError: boolean } };
+			expect(body.result.isError).toBe(true);
+			expect(body.result.content[0].text).toContain('Error: An unexpected error occurred');
+		});
+
 		it('rejects domains longer than 253 characters', async () => {
 			const sessionId = await initSession();
 			const domain254 = ['a'.repeat(63), 'b'.repeat(63), 'c'.repeat(63), 'd'.repeat(62)].join('.');

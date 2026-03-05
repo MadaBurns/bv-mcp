@@ -85,6 +85,14 @@ describe('sanitize library', () => {
 			}
 		});
 
+		it('rejects public IPv4 addresses', () => {
+			for (const ip of ['8.8.8.8', '1.1.1.1']) {
+				const result = validateDomain(ip);
+				expect(result.valid).toBe(false);
+				expect(result.error).toContain('IP addresses');
+			}
+		});
+
 		it('rejects IPv4 link-local and special addresses', () => {
 			for (const ip of ['169.254.1.1', '0.0.0.0']) {
 				const result = validateDomain(ip);
@@ -107,6 +115,20 @@ describe('sanitize library', () => {
 				expect(result.valid).toBe(false);
 				expect(result.error).toContain('IP addresses');
 			}
+		});
+
+		it('rejects alternate numeric IPv4 forms that map to public addresses', () => {
+			for (const ip of ['0x8.0x8.0x8.0x8', '8.8.2056']) {
+				const result = validateDomain(ip);
+				expect(result.valid).toBe(false);
+				expect(result.error).toContain('IP addresses');
+			}
+		});
+
+		it('rejects dotted numeric IPv4-like malformed payloads', () => {
+			const result = validateDomain('999.999.999.999');
+			expect(result.valid).toBe(false);
+			expect(result.error).toContain('IP addresses');
 		});
 
 		it('allows numeric-looking labels in normal FQDNs', () => {

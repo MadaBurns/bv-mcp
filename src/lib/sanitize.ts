@@ -132,14 +132,15 @@ export function validateDomain(input: string): ValidationResult {
 	}
 
 	// Canonicalize non-standard IPv4 literals (e.g. 127.1, 0177.0.0.1)
-	// so reserved/private checks apply consistently to alternate forms.
+	// and reject all IP literal forms (public, private, and special).
 	const canonicalIpv4 = canonicalizeIpv4Literal(asciiDomain);
 	if (canonicalIpv4) {
-		for (const pattern of BLOCKED_IP_PATTERNS) {
-			if (pattern.test(canonicalIpv4)) {
-				return { valid: false, error: `IP addresses are not allowed: "${asciiDomain}"` };
-			}
-		}
+		return { valid: false, error: `IP addresses are not allowed: "${asciiDomain}"` };
+	}
+
+	// Reject dotted numeric host literals that are IPv4-like but malformed/out-of-range.
+	if (/^\d+(?:\.\d+){1,3}$/.test(asciiDomain)) {
+		return { valid: false, error: `IP addresses are not allowed: "${asciiDomain}"` };
 	}
 
 	// Check if it looks like an IP address (blocked)

@@ -17,7 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Reduced in-isolate KV rate limiter race amplification by serializing per-IP `get/check/put` updates.
 - Added unauthenticated session-creation throttling (`30/min` per IP) for `initialize` and new SSE session bootstrap.
 - Bounded in-memory session fallback with LRU eviction (`2000` max active sessions) to reduce memory-pressure abuse risk.
-- Domain validation now canonicalizes alternate IPv4 literals (short-form, octal, hex, dword) before blocked-range checks, preventing loopback/private bypasses such as `127.1` and `0177.0.0.1`.
+- Domain validation now rejects IPv4 literals across standard and alternate numeric forms (short-form, octal, hex, dword), including public-IP and dotted-numeric payloads (for example `8.8.8.8`, `0x8.0x8.0x8.0x8`, and `999.999.999.999`).
 
 ### Changed
 
