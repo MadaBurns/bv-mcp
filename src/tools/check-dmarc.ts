@@ -96,6 +96,15 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 				`No subdomain policy (sp=) specified. Subdomains inherit the main policy ("${policy}"), but explicitly setting sp= is recommended.`,
 			),
 		);
+	} else if (!sp && policy === 'none') {
+		findings.push(
+			createFinding(
+				'dmarc',
+				'Subdomains inherit p=none policy',
+				'info',
+				'No subdomain policy (sp=) specified. Subdomains inherit the "none" policy, which provides no protection against spoofing.',
+			),
+		);
 	} else if (sp) {
 		if (!validPolicies.has(sp)) {
 			findings.push(
@@ -122,6 +131,15 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 					'Subdomain policy weaker than parent policy',
 					'low',
 					'Subdomain policy is "quarantine" while parent policy is "reject". Consider using sp=reject for consistent enforcement.',
+				),
+			);
+		} else if (policy === 'quarantine' && sp === 'none') {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Subdomain policy weaker than domain policy',
+					'medium',
+					'Subdomain policy is set to "none" while domain policy is "quarantine". Subdomains are unprotected against spoofing.',
 				),
 			);
 		}
@@ -222,6 +240,10 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 				),
 			);
 		}
+
+		// Cross-domain RUA authorization check (RFC 7489 §7.1)
+		const ruaAuthFindings = await checkRuaAuthorization(domain, ruaUris);
+		findings.push(...ruaAuthFindings);
 	}
 
 	// Check forensic reporting (ruf= tag)
@@ -239,6 +261,16 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 				),
 			);
 		}
+	} else if (rua) {
+		// rua= is present but ruf= is not
+		findings.push(
+			createFinding(
+				'dmarc',
+				'No forensic reporting configured (ruf= absent)',
+				'low',
+				'Aggregate reporting (rua=) is configured but forensic reporting (ruf=) is not. Forensic reports provide detailed failure information useful for troubleshooting.',
+			),
+		);
 	}
 
 	// Check DKIM alignment mode (adkim= tag)
@@ -302,15 +334,65 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 }
 
 /**
- * Validate DMARC URI format (must be mailto: scheme)
+ * Extract the domain part from a mailto: URI, stripping optional size suffix.
+ */
+function extractDomainFromMailto(uri: string): string | null {
+	const trimmed = uri.trim().toLowerCase();
+	if (!trimmed.startsWith('mailto:')) return null;
+	let email = trimmed.substring(7).trim();
+	email = email.replace(/![0-9]+[kmgt]?$/i, '');
+	const atIndex = email.lastIndexOf('@');
+	if (atIndex < 0) return null;
+	return email.substring(atIndex + 1);
+}
+
+/**
+ * Check cross-domain RUA authorization per RFC 7489 §7.1.
+ * When rua= points to a third-party domain, verify that
+ * <checked-domain>._report._dmarc.<third-party> has a TXT record containing v=DMARC1.
+ */
+async function checkRuaAuthorization(domain: string, ruaUris: string[]): Promise<Finding[]> {
+	const findings: Finding[] = [];
+	const checkedDomains = new Set<string>();
+
+	for (const uri of ruaUris) {
+		const targetDomain = extractDomainFromMailto(uri);
+		if (!targetDomain || targetDomain === domain || checkedDomains.has(targetDomain)) continue;
+		checkedDomains.add(targetDomain);
+
+		try {
+			const authRecords = await queryTxtRecords(`${domain}._report._dmarc.${targetDomain}`);
+			const hasAuth = authRecords.some((r) => r.toLowerCase().startsWith('v=dmarc1'));
+			if (!hasAuth) {
+				findings.push(
+					createFinding(
+						'dmarc',
+						'Third-party aggregate reporting not authorized',
+						'medium',
+						`Aggregate reports sent to ${targetDomain} will be silently discarded. The authorization record ${domain}._report._dmarc.${targetDomain} must contain a TXT record with "v=DMARC1" (RFC 7489 §7.1).`,
+					),
+				);
+			}
+		} catch {
+			// DNS query failed — don't produce a finding for transient errors
+		}
+	}
+
+	return findings;
+}
+
+/**
+ * Validate DMARC URI format (must be mailto: scheme).
+ * Strips the optional RFC 7489 §6.2 size limit suffix (!<number>[kmgt]) before checking.
  */
 function isValidDmarcUri(uri: string): boolean {
 	const trimmed = uri.trim().toLowerCase();
 	if (!trimmed.startsWith('mailto:')) {
 		return false;
 	}
-	// Extract email after mailto:
-	const email = trimmed.substring(7).trim();
+	// Extract email after mailto:, strip optional !<size> suffix (RFC 7489 §6.2)
+	let email = trimmed.substring(7).trim();
+	email = email.replace(/![0-9]+[kmgt]?$/i, '');
 	// Basic email validation
 	return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
@@ -330,6 +412,12 @@ function detectThirdPartyAggregators(uris: string[]): string[] {
 		'proofpoint.com',
 		'250ok.com',
 		'easydmarc.com',
+		'sendmarc.com',
+		'ondmarc.com',
+		'dmarcdigest.com',
+		'dmarcly.com',
+		'powerdmarc.com',
+		'redsift.com',
 	];
 
 	const detected: string[] = [];

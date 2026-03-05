@@ -27,7 +27,7 @@ export async function checkSsl(domain: string): Promise<CheckResult> {
 	}
 
 	if (findings.length === 0) {
-		findings.push(createFinding('ssl', 'SSL/TLS properly configured', 'info', `HTTPS is accessible for ${domain} with HSTS enabled and certificate transparency checks pass.`));
+		findings.push(createFinding('ssl', 'HTTPS and HSTS properly configured', 'info', `HTTPS connection succeeded and HSTS header is properly configured for ${domain}. Note: This check verifies HTTPS reachability and HSTS policy. Certificate expiry, TLS version, and cipher suite analysis require a dedicated TLS scanner.`));
 	}
 
 	return buildCheckResult('ssl', findings);

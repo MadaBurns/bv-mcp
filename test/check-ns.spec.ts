@@ -73,12 +73,14 @@ describe('checkNs', () => {
 		expect(r.passed).toBe(true);
 	});
 
-	it('returns high severity finding for single nameserver', async () => {
+	it('returns high severity finding for single nameserver with RFC 1035 reference', async () => {
 		mockNsResponses(['ns1.example.com.'], 'ns1.example.com. admin.example.com. 2024010101 3600 900 604800 86400');
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('Single nameserver'));
 		expect(f).toBeDefined();
 		expect(f!.severity).toBe('high');
+		expect(f!.title).toContain('RFC 1035');
+		expect(f!.detail).toContain('RFC 1035 §2.2');
 	});
 
 	it('returns low severity finding when all nameservers share same TLD', async () => {
@@ -168,5 +170,87 @@ describe('checkNs', () => {
 		expect(r.findings[0].severity).toBe('info');
 		expect(r.findings[0].detail).toContain('3 nameservers');
 		expect(r.passed).toBe(true);
+	});
+
+	it('flags SOA refresh interval too short (< 300s)', async () => {
+		mockNsResponses(
+			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
+			'ns1.provider-a.com. admin.example.com. 2024010101 60 30 604800 86400',
+		);
+		const r = await run();
+		const f = r.findings.find((f) => f.title.includes('SOA refresh interval too short'));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
+		expect(f!.detail).toContain('60s');
+	});
+
+	it('flags SOA refresh interval too long (> 86400s)', async () => {
+		mockNsResponses(
+			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
+			'ns1.provider-a.com. admin.example.com. 2024010101 172800 900 604800 86400',
+		);
+		const r = await run();
+		const f = r.findings.find((f) => f.title.includes('SOA refresh interval too long'));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
+		expect(f!.detail).toContain('172800s');
+	});
+
+	it('flags SOA retry exceeding refresh interval', async () => {
+		mockNsResponses(
+			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
+			'ns1.provider-a.com. admin.example.com. 2024010101 3600 7200 604800 86400',
+		);
+		const r = await run();
+		const f = r.findings.find((f) => f.title.includes('SOA retry exceeds refresh'));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
+		expect(f!.detail).toContain('7200s');
+		expect(f!.detail).toContain('3600s');
+	});
+
+	it('flags SOA expire too short (< 604800s)', async () => {
+		mockNsResponses(
+			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
+			'ns1.provider-a.com. admin.example.com. 2024010101 3600 900 86400 86400',
+		);
+		const r = await run();
+		const f = r.findings.find((f) => f.title.includes('SOA expire too short'));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('medium');
+		expect(f!.detail).toContain('86400s');
+	});
+
+	it('flags SOA negative cache TTL too long (> 86400s)', async () => {
+		mockNsResponses(
+			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
+			'ns1.provider-a.com. admin.example.com. 2024010101 3600 900 604800 172800',
+		);
+		const r = await run();
+		const f = r.findings.find((f) => f.title.includes('SOA negative cache TTL too long'));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
+		expect(f!.detail).toContain('172800s');
+	});
+
+	it('skips SOA validation silently when data does not parse cleanly', async () => {
+		mockNsResponses(
+			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
+			'ns1.provider-a.com. admin.example.com.',
+		);
+		const r = await run();
+		// Should not crash; should produce no SOA-related findings
+		const soaFindings = r.findings.filter((f) => f.title.includes('SOA'));
+		expect(soaFindings).toHaveLength(0);
+	});
+
+	it('does not flag SOA parameters within normal ranges', async () => {
+		mockNsResponses(
+			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
+			'ns1.provider-a.com. admin.example.com. 2024010101 3600 900 604800 86400',
+		);
+		const r = await run();
+		const soaFindings = r.findings.filter((f) => f.title.includes('SOA'));
+		expect(soaFindings).toHaveLength(0);
 	});
 });

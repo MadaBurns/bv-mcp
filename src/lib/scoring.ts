@@ -70,9 +70,9 @@ const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	dnssec: { importance: 3 },
 	ssl: { importance: 8 },
 	mta_sts: { importance: 3 },
-	ns: { importance: 0 },
-	caa: { importance: 0 },
-	subdomain_takeover: { importance: 0 },
+	ns: { importance: 3 },
+	caa: { importance: 2 },
+	subdomain_takeover: { importance: 2 },
 	mx: { importance: 0 },
 };
 

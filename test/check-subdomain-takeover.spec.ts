@@ -83,27 +83,33 @@ describe('checkSubdomainTakeover', () => {
 		expect(critical!.detail).toContain('subdomain takeover');
 	});
 
-	it('does not flag third-party CNAME that resolves successfully', async () => {
+	it('does not flag third-party CNAME that resolves successfully and has no fingerprint', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
-			if (url.includes('type=CNAME') || url.includes('type=5')) {
-				if (url.includes('app.example.com')) {
-					return Promise.resolve(cnameResponse('app.example.com', 'my-app.herokuapp.com'));
+			// DNS-over-HTTPS queries go to cloudflare-dns.com
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=CNAME') || url.includes('type=5')) {
+					if (url.includes('app.example.com')) {
+						return Promise.resolve(cnameResponse('app.example.com', 'my-app.herokuapp.com'));
+					}
+					const nameMatch = url.match(/name=([^&]+)/);
+					const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
+					return Promise.resolve(emptyResponse(name, 5));
 				}
-				const nameMatch = url.match(/name=([^&]+)/);
-				const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
-				return Promise.resolve(emptyResponse(name, 5));
+
+				// A-record lookup resolves successfully
+				if (url.includes('type=A') || url.includes('type=1')) {
+					if (url.includes('my-app.herokuapp.com')) {
+						return Promise.resolve(aResponse('my-app.herokuapp.com', ['54.243.123.45']));
+					}
+				}
+
+				return Promise.resolve(emptyResponse('unknown', 1));
 			}
 
-			// A-record lookup resolves successfully
-			if (url.includes('type=A') || url.includes('type=1')) {
-				if (url.includes('my-app.herokuapp.com')) {
-					return Promise.resolve(aResponse('my-app.herokuapp.com', ['54.243.123.45']));
-				}
-			}
-
-			return Promise.resolve(emptyResponse('unknown', 1));
+			// HTTP fingerprint probe — return healthy page (no takeover fingerprint)
+			return Promise.resolve(new Response('<html><body>Welcome to my app</body></html>', { status: 200 }));
 		});
 
 		const result = await run('example.com');
@@ -216,5 +222,141 @@ describe('checkSubdomainTakeover', () => {
 		expect(criticals).toHaveLength(2);
 		expect(criticals.some((f) => f.title.includes('staging.example.com'))).toBe(true);
 		expect(criticals.some((f) => f.title.includes('api.example.com'))).toBe(true);
+	});
+
+	it('detects HTTP fingerprint takeover on resolving CNAME (Heroku)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=CNAME') || url.includes('type=5')) {
+					if (url.includes('app.example.com')) {
+						return Promise.resolve(cnameResponse('app.example.com', 'old-app.herokuapp.com'));
+					}
+					const nameMatch = url.match(/name=([^&]+)/);
+					const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
+					return Promise.resolve(emptyResponse(name, 5));
+				}
+
+				if (url.includes('type=A') || url.includes('type=1')) {
+					if (url.includes('old-app.herokuapp.com')) {
+						return Promise.resolve(aResponse('old-app.herokuapp.com', ['75.2.60.5']));
+					}
+				}
+
+				return Promise.resolve(emptyResponse('unknown', 1));
+			}
+
+			// HTTP probe returns Heroku deprovisioned fingerprint
+			return Promise.resolve(
+				new Response('<html><head><title>no-such-app</title></head><body>No such app</body></html>', { status: 404 }),
+			);
+		});
+
+		const result = await run('example.com');
+		const critical = result.findings.find((f) => f.severity === 'critical');
+		expect(critical).toBeDefined();
+		expect(critical!.title).toContain('vulnerable to takeover');
+		expect(critical!.title).toContain('Heroku');
+		expect(critical!.detail).toContain('deprovisioned');
+	});
+
+	it('detects HTTP fingerprint takeover on resolving CNAME (GitHub Pages)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=CNAME') || url.includes('type=5')) {
+					if (url.includes('docs.example.com')) {
+						return Promise.resolve(cnameResponse('docs.example.com', 'example.github.io'));
+					}
+					const nameMatch = url.match(/name=([^&]+)/);
+					const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
+					return Promise.resolve(emptyResponse(name, 5));
+				}
+
+				if (url.includes('type=A') || url.includes('type=1')) {
+					if (url.includes('example.github.io')) {
+						return Promise.resolve(aResponse('example.github.io', ['185.199.108.153']));
+					}
+				}
+
+				return Promise.resolve(emptyResponse('unknown', 1));
+			}
+
+			// HTTP probe returns GitHub Pages 404 fingerprint
+			return Promise.resolve(
+				new Response("<html><body>There isn't a GitHub Pages site here.</body></html>", { status: 404 }),
+			);
+		});
+
+		const result = await run('example.com');
+		const critical = result.findings.find((f) => f.severity === 'critical');
+		expect(critical).toBeDefined();
+		expect(critical!.title).toContain('vulnerable to takeover');
+		expect(critical!.title).toContain('GitHub Pages');
+	});
+
+	it('silently skips HTTP fingerprint probe on timeout/error', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=CNAME') || url.includes('type=5')) {
+					if (url.includes('blog.example.com')) {
+						return Promise.resolve(cnameResponse('blog.example.com', 'example.ghost.io'));
+					}
+					const nameMatch = url.match(/name=([^&]+)/);
+					const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
+					return Promise.resolve(emptyResponse(name, 5));
+				}
+
+				if (url.includes('type=A') || url.includes('type=1')) {
+					if (url.includes('example.ghost.io')) {
+						return Promise.resolve(aResponse('example.ghost.io', ['178.128.1.2']));
+					}
+				}
+
+				return Promise.resolve(emptyResponse('unknown', 1));
+			}
+
+			// HTTP probe fails with network error
+			return Promise.reject(new Error('Connection refused'));
+		});
+
+		const result = await run('example.com');
+		// Should not produce a critical finding since the probe errored out
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].severity).toBe('info');
+		expect(result.findings[0].title).toContain('No dangling CNAME');
+	});
+
+	it('detects dangling CNAME to newly added service (Vercel)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('type=CNAME') || url.includes('type=5')) {
+				if (url.includes('preview.example.com')) {
+					return Promise.resolve(cnameResponse('preview.example.com', 'cname.vercel-dns.com'));
+				}
+				const nameMatch = url.match(/name=([^&]+)/);
+				const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
+				return Promise.resolve(emptyResponse(name, 5));
+			}
+
+			if (url.includes('type=A') || url.includes('type=1')) {
+				if (url.includes('cname.vercel-dns.com')) {
+					return Promise.resolve(emptyResponse('cname.vercel-dns.com', 1));
+				}
+			}
+
+			return Promise.resolve(emptyResponse('unknown', 1));
+		});
+
+		const result = await run('example.com');
+		const critical = result.findings.find((f) => f.severity === 'critical');
+		expect(critical).toBeDefined();
+		expect(critical!.title).toContain('Dangling CNAME');
+		expect(critical!.title).toContain('vercel-dns.com');
 	});
 });

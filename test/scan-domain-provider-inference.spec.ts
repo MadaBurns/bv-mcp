@@ -26,7 +26,11 @@ function mockAllChecksWithDkimGoogle(spfRecord: string) {
 				if (url.includes('_smtp._tls.')) {
 					return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
 				}
-				return Promise.resolve(txtResponse('example.com', [spfRecord]));
+				// Handle recursive SPF include lookups (e.g., _spf.google.com)
+			if (url.includes('name=_spf.')) {
+				return Promise.resolve(txtResponse('_spf.google.com', ['v=spf1 ip4:192.0.2.0/24 -all']));
+			}
+			return Promise.resolve(txtResponse('example.com', [spfRecord]));
 			}
 
 			if (url.includes('type=MX') || url.includes('type=15')) {

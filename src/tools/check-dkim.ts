@@ -35,11 +35,16 @@ function getDkimTagValue(record: string, tag: string): string | undefined {
 }
 
 /**
- * Analyze RSA key strength by estimating bit-length from base64 character count.
- * Conservative heuristic: longer base64 = more bits.
- * Returns estimated bits and severity classification.
+ * Analyze key strength based on key type and base64 character count.
+ * For RSA keys, estimates bit-length from base64 character count.
+ * For Ed25519 keys, always returns info (strong by design).
+ * @param publicKeyBase64 The base64-encoded public key from the p= tag
+ * @param declaredKeyType The key type from the k= tag (defaults to 'rsa' per RFC 6376)
  */
-function analyzeRsaKeyLength(publicKeyBase64: string | undefined): {
+function analyzeKeyStrength(
+	publicKeyBase64: string | undefined,
+	declaredKeyType: string,
+): {
 	bits: number | null;
 	strength: 'critical' | 'high' | 'medium' | 'info';
 	keyType: 'rsa' | 'ed25519' | 'unknown';
@@ -48,14 +53,21 @@ function analyzeRsaKeyLength(publicKeyBase64: string | undefined): {
 		return { bits: null, strength: 'info', keyType: 'unknown' };
 	}
 
-	// Check for ED25519 (always strong)
-	if (publicKeyBase64.includes('[ED25519]') || publicKeyBase64.toLowerCase().includes('ed25519')) {
-		return { bits: null, strength: 'info', keyType: 'ed25519' };
+	// Ed25519 keys are always strong (256-bit elliptic curve)
+	if (declaredKeyType === 'ed25519') {
+		return { bits: 256, strength: 'info', keyType: 'ed25519' };
 	}
 
 	// Estimate RSA bits from base64 character count
 	const cleanKey = publicKeyBase64.replace(/\s/g, '');
 	const charCount = cleanKey.length;
+
+	// If no k= tag was present (defaulting to RSA) and the key is very short,
+	// it could be an Ed25519 key used without the k= tag.
+	// Don't flag as critical — flag as medium with a hint to add k= tag.
+	if (declaredKeyType === 'rsa-default' && charCount < 50) {
+		return { bits: null, strength: 'medium', keyType: 'unknown' };
+	}
 
 	let bits: number;
 	let strength: 'critical' | 'high' | 'medium' | 'info';
@@ -125,14 +137,15 @@ export async function checkDkim(domain: string, selector?: string): Promise<Chec
 				}
 
 				// Check key type (should be rsa or ed25519)
-				const keyType = record.match(/k=([^;\s]+)/i);
-				if (keyType && !['rsa', 'ed25519'].includes(keyType[1].toLowerCase())) {
+				const keyTypeMatch = record.match(/k=([^;\s]+)/i);
+				const parsedKeyType = keyTypeMatch ? keyTypeMatch[1].toLowerCase() : null;
+				if (keyTypeMatch && !['rsa', 'ed25519'].includes(parsedKeyType!)) {
 					findings.push(
 						createFinding(
 							'dkim',
-							`Unknown DKIM key type: ${keyType[1]}`,
+							`Unknown DKIM key type: ${keyTypeMatch[1]}`,
 							'medium',
-							`DKIM selector "${result.selector}" uses unknown key type "${keyType[1]}". Expected "rsa" or "ed25519".`,
+							`DKIM selector "${result.selector}" uses unknown key type "${keyTypeMatch[1]}". Expected "rsa" or "ed25519".`,
 						),
 					);
 				}
@@ -149,10 +162,41 @@ export async function checkDkim(domain: string, selector?: string): Promise<Chec
 					);
 				}
 
-				// Analyze RSA key strength (only if key is valid/not revoked)
+				// Analyze key strength (only if key is valid/not revoked)
+				// Use 'rsa-default' when no k= tag is present (RFC 6376 defaults to rsa)
+				// to distinguish from an explicit k=rsa declaration
 				if (!isRevoked && publicKey) {
-					const keyAnalysis = analyzeRsaKeyLength(publicKey);
-					if (keyAnalysis.keyType === 'rsa') {
+					const declaredKeyType = parsedKeyType ?? 'rsa-default';
+					const keyAnalysis = analyzeKeyStrength(publicKey, declaredKeyType);
+
+					if (keyAnalysis.keyType === 'ed25519') {
+						// Ed25519 is always strong — emit an info finding
+						findings.push(
+							createFinding(
+								'dkim',
+								`Ed25519 key detected: ${result.selector}`,
+								'info',
+								`DKIM selector "${result.selector}" uses Ed25519, a strong elliptic-curve key type.`,
+								{
+									keyType: 'ed25519',
+									selector: result.selector,
+								},
+							),
+						);
+					} else if (keyAnalysis.keyType === 'unknown') {
+						// Short key with no k= tag — could be Ed25519 without the tag
+						findings.push(
+							createFinding(
+								'dkim',
+								`Short key material: ${result.selector}`,
+								'medium',
+								`DKIM selector "${result.selector}" has very short key material without a k= tag. Consider adding "k=ed25519" or "k=rsa" for clarity.`,
+								{
+									selector: result.selector,
+								},
+							),
+						);
+					} else if (keyAnalysis.keyType === 'rsa') {
 						const severityMsg =
 							keyAnalysis.strength === 'critical'
 								? 'weak'
@@ -163,9 +207,9 @@ export async function checkDkim(domain: string, selector?: string): Promise<Chec
 										: 'strong';
 						const descriptions: Record<string, string> = {
 							critical:
-								`DKIM RSA key for "${result.selector}" is ${severityMsg} (~${keyAnalysis.bits} bits). Upgrade to 2048-bit RSA or use ED25519 for better security.`,
-							high: `DKIM RSA key for "${result.selector}" is ${severityMsg} (${keyAnalysis.bits} bits). Consider upgrading to 2048-bit RSA or ED25519.`,
-							medium: `DKIM RSA key for "${result.selector}" is ${severityMsg} (${keyAnalysis.bits} bits). Major providers recommend 4096-bit RSA or ED25519.`,
+								`DKIM RSA key for "${result.selector}" is ${severityMsg} (~${keyAnalysis.bits} bits). Upgrade to 2048-bit RSA or use Ed25519 for better security.`,
+							high: `DKIM RSA key for "${result.selector}" is ${severityMsg} (${keyAnalysis.bits} bits). Consider upgrading to 2048-bit RSA or Ed25519.`,
+							medium: `DKIM RSA key for "${result.selector}" is ${severityMsg} (${keyAnalysis.bits} bits). Major providers recommend 4096-bit RSA or Ed25519.`,
 							info: `DKIM RSA key for "${result.selector}" is strong (${keyAnalysis.bits} bits).`,
 						};
 

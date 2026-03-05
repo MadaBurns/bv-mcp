@@ -107,9 +107,9 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEI
 | SSL | 8 | Yes |
 | DNSSEC | 3 | Yes |
 | MTA-STS | 3 | No |
-| NS | 0 (informational) | No |
-| CAA | 0 (informational) | No |
-| Subdomain Takeover | 0 (informational) | No |
+| NS | 3 | No |
+| CAA | 2 | No |
+| Subdomain Takeover | 2 | No |
 | MX | 0 | No |
 
 **Email bonus** (up to +5 points): Awarded when SPF score >= 57, DKIM present, and DMARC present. DMARC score >= 90 → 5pts, >= 70 → 3pts, otherwise 2pts.

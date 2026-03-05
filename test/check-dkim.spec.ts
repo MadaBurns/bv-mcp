@@ -227,10 +227,48 @@ describe('checkDkim', () => {
 	});
 
 	it('treats ED25519 keys as always strong without key-strength finding', async () => {
-		mockDkimRecords({ google: ['v=DKIM1; k=ed25519; p=[ED25519]AAABBBBCCCCDDDDEEEEFFFFGGGG'] });
+		// Real Ed25519 public key: 44 base64 chars, no literal "ed25519" in key material
+		mockDkimRecords({ google: ['v=DKIM1; k=ed25519; p=11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo='] });
 		const r = await run();
-		const keyStrengthFinding = r.findings.find((f) => /weak|legacy|strong|bits/i.test(f.title));
-		expect(keyStrengthFinding).toBeUndefined();
+		const weakFinding = r.findings.find((f) => /weak|legacy|below recommended/i.test(f.title));
+		expect(weakFinding).toBeUndefined();
+	});
+
+	it('produces info finding for Ed25519 key with k=ed25519', async () => {
+		mockDkimRecords({ google: ['v=DKIM1; k=ed25519; p=11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo='] });
+		const r = await run();
+		const infoFinding = r.findings.find((f) => /ed25519/i.test(f.title) && f.severity === 'info');
+		expect(infoFinding).toBeDefined();
+		expect(infoFinding!.detail).toContain('Ed25519');
+		expect(infoFinding!.metadata?.keyType).toBe('ed25519');
+	});
+
+	it('still flags short RSA key as critical when k=rsa is explicit', async () => {
+		const weakKey = 'MIGfMA0GCSqGSIb3DQEBAQUAA4G';
+		mockDkimRecords({ google: [`v=DKIM1; k=rsa; p=${weakKey}`] });
+		const r = await run();
+		const finding = r.findings.find((f) => /weak/i.test(f.title));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('critical');
+	});
+
+	it('works normally for RSA key with no k= tag and normal length', async () => {
+		const strongKey =
+			'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA2a2rwplBCXGHDzhtSF5cz+DfOpZB3Q9nDy0NxQyL8iB4xQoT0Q5Ka0K9KpV4LK3+KZvP5U9ZvL1yR5pZmqZLa5N4H1s7cQ7YQ0+C1jKSRQG7jP8QF1dPLqVfE1pZe7cQ8Kxc6c4PfD8QK9pC7Z1W0K8M3K7N2R4L9Y5L8B3P4N7U5Q6K0O5M5Y6W8P1R7T9A8K6S4P8b0tVm7dC1wYzV6+C2T3U4V5W6X7Y8Z9A0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q6R7S8T9U0V1W2X3Y4z9zzAA';
+		mockDkimRecords({ google: [`v=DKIM1; p=${strongKey}`] });
+		const r = await run();
+		const weakFinding = r.findings.find((f) => /weak|legacy|below recommended/i.test(f.title));
+		expect(weakFinding).toBeUndefined();
+	});
+
+	it('flags short key without k= tag as medium severity with hint to add k= tag', async () => {
+		// 44-char key with no k= tag — could be Ed25519 without proper declaration
+		mockDkimRecords({ google: ['v=DKIM1; p=11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIa'] });
+		const r = await run();
+		const finding = r.findings.find((f) => /short key material/i.test(f.title));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('medium');
+		expect(finding!.detail).toContain('k=ed25519');
 	});
 
 	it('detects missing v= tag with medium severity', async () => {

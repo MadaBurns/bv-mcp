@@ -68,11 +68,11 @@ describe('scoring', () => {
 		it('computes weighted average from check results', () => {
 			const results: CheckResult[] = [buildCheckResult('spf', [createFinding('spf', 'x', 'critical', 'd')])];
 			const scan = computeScanScore(results);
-			// Scanner-aligned importance model: SPF(19) out of total 65.
+			// Scanner-aligned importance model: SPF(19) out of total 72.
 			// One SPF critical => SPF score 60. Other controls remain perfect by default.
 			// A critical finding also applies a global penalty.
-			// Email bonus not earned (no DKIM/DMARC results), so denominator stays at 65.
-			expect(scan.overall).toBe(73);
+			// Email bonus not earned (no DKIM/DMARC results), so denominator stays at 72.
+			expect(scan.overall).toBe(74);
 			expect(scan.categoryScores.spf).toBe(60);
 		});
 
@@ -94,8 +94,9 @@ describe('scoring', () => {
 			];
 
 			const scan = computeScanScore(results);
-			// Email bonus not earned (DMARC missing), so denominator stays at 65.
-			expect(scan.overall).toBe(46);
+			// Email bonus not earned (DMARC missing), so denominator stays at 72.
+			// NS(3) and CAA(2) and SUBDOMAIN_TAKEOVER(2) now contribute to the total.
+			expect(scan.overall).toBe(49);
 			expect(scan.grade).toBe('F');
 		});
 

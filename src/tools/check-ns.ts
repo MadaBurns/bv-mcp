@@ -55,14 +55,14 @@ export async function checkNs(domain: string): Promise<CheckResult> {
 		return buildCheckResult('ns', findings);
 	}
 
-	// Check for single nameserver (no redundancy)
+	// Check for single nameserver (no redundancy) — RFC 1035 §2.2 mandates at least two
 	if (nsRecords.length === 1) {
 		findings.push(
 			createFinding(
 				'ns',
-				'Single nameserver',
+				'Single nameserver (violates RFC 1035 §2.2)',
 				'high',
-				`Only one nameserver found (${nsRecords[0]}). At least two nameservers are recommended for redundancy.`,
+				`Only one nameserver found (${nsRecords[0]}). RFC 1035 §2.2 mandates at least two nameservers for every zone to ensure redundancy and availability.`,
 			),
 		);
 	}
@@ -86,7 +86,7 @@ export async function checkNs(domain: string): Promise<CheckResult> {
 		);
 	}
 
-	// Check SOA record exists
+	// Check SOA record exists and validate parameters
 	try {
 		const soaResp = await queryDns(domain, 'SOA');
 		const soaRecords = (soaResp.Answer ?? []).filter((a) => a.type === 6);
@@ -99,6 +99,71 @@ export async function checkNs(domain: string): Promise<CheckResult> {
 					`No SOA (Start of Authority) record found for ${domain}. SOA records are required for proper DNS zone configuration.`,
 				),
 			);
+		} else {
+			// Parse SOA data: <mname> <rname> <serial> <refresh> <retry> <expire> <minimum>
+			const soaData = soaRecords[0].data;
+			const soaParts = soaData.trim().split(/\s+/);
+			if (soaParts.length >= 7) {
+				const refresh = parseInt(soaParts[3], 10);
+				const retry = parseInt(soaParts[4], 10);
+				const expire = parseInt(soaParts[5], 10);
+				const minimum = parseInt(soaParts[6], 10);
+
+				if (!isNaN(refresh)) {
+					if (refresh < 300) {
+						findings.push(
+							createFinding(
+								'ns',
+								'SOA refresh interval too short',
+								'low',
+								`SOA refresh interval is ${refresh}s (< 300s / 5 min). Very short refresh intervals increase DNS traffic and load on nameservers.`,
+							),
+						);
+					} else if (refresh > 86400) {
+						findings.push(
+							createFinding(
+								'ns',
+								'SOA refresh interval too long',
+								'low',
+								`SOA refresh interval is ${refresh}s (> 86400s / 1 day). Long refresh intervals delay propagation of zone changes to secondary nameservers.`,
+							),
+						);
+					}
+				}
+
+				if (!isNaN(retry) && !isNaN(refresh) && retry > refresh) {
+					findings.push(
+						createFinding(
+							'ns',
+							'SOA retry exceeds refresh interval',
+							'low',
+							`SOA retry interval (${retry}s) exceeds refresh interval (${refresh}s). Retry should be shorter than refresh to allow timely recovery after failed zone transfers.`,
+						),
+					);
+				}
+
+				if (!isNaN(expire) && expire < 604800) {
+					findings.push(
+						createFinding(
+							'ns',
+							'SOA expire too short',
+							'medium',
+							`SOA expire value is ${expire}s (< 604800s / 1 week). If secondary nameservers cannot reach the primary for this duration, they will stop serving the zone.`,
+						),
+					);
+				}
+
+				if (!isNaN(minimum) && minimum > 86400) {
+					findings.push(
+						createFinding(
+							'ns',
+							'SOA negative cache TTL too long',
+							'low',
+							`SOA minimum (negative cache TTL) is ${minimum}s (> 86400s / 1 day). This means NXDOMAIN responses will be cached for extended periods, delaying visibility of new records.`,
+						),
+					);
+				}
+			}
 		}
 	} catch {
 		// Non-critical

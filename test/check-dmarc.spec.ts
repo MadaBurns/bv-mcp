@@ -1,9 +1,30 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { setupFetchMock, mockTxtRecords } from './helpers/dns-mock';
+import { vi } from 'vitest';
+import { setupFetchMock, mockTxtRecords, createDohResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
 afterEach(() => restore());
+
+/**
+ * Helper: set up fetch mock that returns different TXT responses per queried domain.
+ * Keys are the domain queried (e.g. '_dmarc.example.com'), values are arrays of TXT strings.
+ */
+function mockMultipleTxtRecords(mapping: Record<string, string[]>) {
+	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+		const parsed = new URL(url);
+		const name = parsed.searchParams.get('name') ?? '';
+		const records = mapping[name] ?? [];
+		const answers = records.map((data) => ({
+			name,
+			type: 16,
+			TTL: 300,
+			data: `"${data}"`,
+		}));
+		return Promise.resolve(createDohResponse([{ name, type: 16 }], answers));
+	});
+}
 
 describe('checkDmarc', () => {
 	async function run(domain = 'example.com') {
@@ -53,7 +74,7 @@ describe('checkDmarc', () => {
 	});
 
 	it('should return info finding for p=reject with rua and sp', async () => {
-		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:dmarc@example.com']);
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:dmarc@example.com; ruf=mailto:forensic@example.com']);
 		const result = await run();
 		// Now includes alignment warnings (low severity) since adkim/aspf default to relaxed
 		expect(result.findings.length).toBeGreaterThanOrEqual(1);
@@ -93,7 +114,7 @@ describe('checkDmarc', () => {
 	});
 
 	it('handles case-insensitive DMARC prefix', async () => {
-		mockTxtRecords(['V=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com']);
+		mockTxtRecords(['V=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; ruf=mailto:f@example.com']);
 		const r = await run();
 		// Includes alignment warnings since adkim/aspf default to relaxed
 		expect(r.findings.length).toBeGreaterThanOrEqual(1);
@@ -283,11 +304,74 @@ describe('checkDmarc', () => {
 	});
 
 	it('handles fully configured DMARC with strict alignment', async () => {
-		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; adkim=s; aspf=s']);
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; ruf=mailto:f@example.com; adkim=s; aspf=s']);
 		const r = await run();
 		// Should only have info finding for proper configuration
 		expect(r.findings).toHaveLength(1);
 		expect(r.findings[0].severity).toBe('info');
 		expect(r.findings[0].title).toMatch(/DMARC properly configured/i);
+	});
+
+	// --- RUA cross-domain authorization (RFC 7489 §7.1) ---
+
+	it('does not flag RUA when third-party has authorization record', async () => {
+		mockMultipleTxtRecords({
+			'_dmarc.example.com': ['v=DMARC1; p=reject; sp=reject; rua=mailto:d@thirdparty.com; ruf=mailto:f@example.com; adkim=s; aspf=s'],
+			'example.com._report._dmarc.thirdparty.com': ['v=DMARC1'],
+		});
+		const r = await run();
+		const f = r.findings.find((f) => /Third-party aggregate reporting not authorized/i.test(f.title));
+		expect(f).toBeUndefined();
+	});
+
+	it('flags RUA when third-party lacks authorization record', async () => {
+		mockMultipleTxtRecords({
+			'_dmarc.example.com': ['v=DMARC1; p=reject; sp=reject; rua=mailto:d@thirdparty.com; ruf=mailto:f@example.com; adkim=s; aspf=s'],
+			'example.com._report._dmarc.thirdparty.com': [],
+		});
+		const r = await run();
+		const f = r.findings.find((f) => /Third-party aggregate reporting not authorized/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('medium');
+		expect(f!.detail).toContain('thirdparty.com');
+	});
+
+	// --- Size limit suffix in rua= (RFC 7489 §6.2) ---
+
+	it('accepts rua= with size limit suffix !10m', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:dmarc@example.com!10m; ruf=mailto:f@example.com; adkim=s; aspf=s']);
+		const r = await run();
+		const f = r.findings.find((f) => /Invalid aggregate report URI/i.test(f.title));
+		expect(f).toBeUndefined();
+	});
+
+	// --- sp= inheritance for p=none ---
+
+	it('returns info finding when sp= not set and p=none', async () => {
+		mockTxtRecords(['v=DMARC1; p=none; rua=mailto:d@example.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Subdomains inherit p=none/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('info');
+	});
+
+	// --- sp=none weaker than p=quarantine ---
+
+	it('flags sp=none as weaker than p=quarantine', async () => {
+		mockTxtRecords(['v=DMARC1; p=quarantine; sp=none; rua=mailto:d@example.com']);
+		const r = await run();
+		const f = r.findings.find((f) => /Subdomain policy weaker than domain policy/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('medium');
+	});
+
+	// --- Missing ruf= when rua= is present ---
+
+	it('flags missing ruf= when rua= is present', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; adkim=s; aspf=s']);
+		const r = await run();
+		const f = r.findings.find((f) => /No forensic reporting configured/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
 	});
 });

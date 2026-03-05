@@ -12,6 +12,13 @@ function txtResponse(domain: string, records: string[]) {
 	);
 }
 
+function mxResponse(domain: string, records: string[]) {
+	return createDohResponse(
+		[{ name: domain, type: 15 }],
+		records.map((data) => ({ name: domain, type: 15, TTL: 300, data })),
+	);
+}
+
 function policyResponse(body: string, status = 200) {
 	return {
 		ok: status >= 200 && status < 300,
@@ -25,6 +32,7 @@ function mockMultiFetch(opts: {
 	policyFetch?: Response;
 	policyError?: Error;
 	tlsrptDns?: Response;
+	mxDns?: Response;
 	dnsError?: Error;
 }) {
 	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
@@ -35,6 +43,7 @@ function mockMultiFetch(opts: {
 		if (url.includes('cloudflare-dns.com')) {
 			if (url.includes('_mta-sts.') && opts.mtaStsDns) return Promise.resolve(opts.mtaStsDns);
 			if (url.includes('_smtp._tls.') && opts.tlsrptDns) return Promise.resolve(opts.tlsrptDns);
+			if (url.includes('type=MX') && opts.mxDns) return Promise.resolve(opts.mxDns);
 			return Promise.resolve(createDohResponse([], []));
 		}
 		if (url.includes('mta-sts.') && url.includes('.well-known')) {
@@ -68,6 +77,7 @@ describe('checkMtaSts', () => {
 			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
 			policyFetch: policyResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'),
 			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+			mxDns: mxResponse('example.com', ['10 mail.example.com']),
 		});
 		const r = await run();
 		expect(r.findings).toHaveLength(1);
@@ -80,6 +90,7 @@ describe('checkMtaSts', () => {
 			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
 			policyFetch: policyResponse('version: STSv1\nmode: testing\nmx: *.example.com\nmax_age: 86400'),
 			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+			mxDns: mxResponse('example.com', ['10 mail.example.com']),
 		});
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('testing mode'));
@@ -104,6 +115,7 @@ describe('checkMtaSts', () => {
 			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=abc', 'v=STSv1; id=def']),
 			policyFetch: policyResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'),
 			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+			mxDns: mxResponse('example.com', ['10 mail.example.com']),
 		});
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('Multiple'));
@@ -116,6 +128,7 @@ describe('checkMtaSts', () => {
 			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; bogus=value']),
 			policyFetch: policyResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'),
 			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+			mxDns: mxResponse('example.com', ['10 mail.example.com']),
 		});
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('missing id'));
@@ -187,10 +200,106 @@ describe('checkMtaSts', () => {
 			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
 			policyFetch: policyResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'),
 			tlsrptDns: txtResponse('_smtp._tls.example.com', []),
+			mxDns: mxResponse('example.com', ['10 mail.example.com']),
 		});
 		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('TLS-RPT'));
+		const f = r.findings.find((f) => f.title === 'TLS-RPT record missing');
 		expect(f).toBeDefined();
 		expect(f!.severity).toBe('low');
+	});
+
+	// --- New validation tests ---
+
+	it('returns high finding when policy is missing max_age', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
+			policyFetch: policyResponse('version: STSv1\nmode: enforce\nmx: *.example.com'),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+			mxDns: mxResponse('example.com', ['10 mail.example.com']),
+		});
+		const r = await run();
+		const f = r.findings.find((f) => f.title.includes('missing max_age'));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('high');
+		expect(f!.detail).toContain('RFC 8461');
+	});
+
+	it('returns low finding when policy has very short max_age', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
+			policyFetch: policyResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 3600'),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+			mxDns: mxResponse('example.com', ['10 mail.example.com']),
+		});
+		const r = await run();
+		const f = r.findings.find((f) => f.title.includes('max_age too short'));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
+	});
+
+	it('returns high finding when policy is missing version: STSv1', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
+			policyFetch: policyResponse('mode: enforce\nmx: *.example.com\nmax_age: 86400'),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+			mxDns: mxResponse('example.com', ['10 mail.example.com']),
+		});
+		const r = await run();
+		const f = r.findings.find((f) => f.title.includes('missing or invalid version'));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('high');
+		expect(f!.detail).toContain('RFC 8461');
+	});
+
+	it('returns high finding when policy mx: entries do not cover actual MX records', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
+			policyFetch: policyResponse('version: STSv1\nmode: enforce\nmx: mail1.example.com\nmax_age: 86400'),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+			mxDns: mxResponse('example.com', ['10 mail1.example.com', '20 mail2.other.com']),
+		});
+		const r = await run();
+		const f = r.findings.find((f) => f.title.includes('does not cover MX host'));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('high');
+		expect(f!.title).toContain('mail2.other.com');
+	});
+
+	it('does not flag MX hosts covered by wildcard mx: pattern', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
+			policyFetch: policyResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+			mxDns: mxResponse('example.com', ['10 mail1.example.com', '20 mail2.example.com']),
+		});
+		const r = await run();
+		const f = r.findings.find((f) => f.title.includes('does not cover MX host'));
+		expect(f).toBeUndefined();
+	});
+
+	it('returns low finding when TLS-RPT record is missing rua directive', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
+			policyFetch: policyResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1;']),
+			mxDns: mxResponse('example.com', ['10 mail.example.com']),
+		});
+		const r = await run();
+		const f = r.findings.find((f) => f.title.includes('TLS-RPT missing rua'));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
+	});
+
+	it('returns medium finding when TLS-RPT rua has invalid format', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
+			policyFetch: policyResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=ftp://bad.example.com']),
+			mxDns: mxResponse('example.com', ['10 mail.example.com']),
+		});
+		const r = await run();
+		const f = r.findings.find((f) => f.title.includes('TLS-RPT invalid rua'));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('medium');
 	});
 });

@@ -3,7 +3,7 @@
  * Queries _mta-sts TXT records and validates the MTA-STS policy.
  */
 
-import { queryTxtRecords } from '../lib/dns';
+import { queryTxtRecords, queryMxRecords } from '../lib/dns';
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 
@@ -83,6 +83,19 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 			} else {
 				const body = await response.text();
 
+				// Check version line (RFC 8461 §3.2: must contain version: STSv1)
+				const versionMatch = body.match(/version:\s*(\S+)/i);
+				if (!versionMatch || versionMatch[1] !== 'STSv1') {
+					findings.push(
+						createFinding(
+							'mta_sts',
+							'MTA-STS policy missing or invalid version',
+							'high',
+							`The MTA-STS policy must contain "version: STSv1" as required by RFC 8461.`,
+						),
+					);
+				}
+
 				// Check policy mode
 				const modeMatch = body.match(/mode:\s*(enforce|testing|none)/i);
 				if (!modeMatch) {
@@ -114,8 +127,43 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 					);
 				}
 
+				// Check max_age (RFC 8461 §3.2: max_age is required)
+				const maxAgeMatch = body.match(/max_age:\s*(\d+)/i);
+				if (!maxAgeMatch) {
+					findings.push(
+						createFinding(
+							'mta_sts',
+							'MTA-STS policy missing max_age',
+							'high',
+							`The max_age directive is required by RFC 8461. Without it, the policy is technically invalid.`,
+						),
+					);
+				} else {
+					const maxAge = parseInt(maxAgeMatch[1], 10);
+					if (maxAge < 86400) {
+						findings.push(
+							createFinding(
+								'mta_sts',
+								'MTA-STS max_age too short',
+								'low',
+								`MTA-STS max_age is ${maxAge} seconds (less than 1 day). A short max_age reduces the effectiveness of MTA-STS protection.`,
+							),
+						);
+					} else if (maxAge > 31557600) {
+						findings.push(
+							createFinding(
+								'mta_sts',
+								'MTA-STS max_age exceeds one year',
+								'info',
+								`MTA-STS max_age is ${maxAge} seconds (more than 1 year). This is acceptable but noted.`,
+							),
+						);
+					}
+				}
+
 				// Check for mx entries
-				if (!body.includes('mx:')) {
+				const policyMxPatterns = [...body.matchAll(/mx:\s*(\S+)/gi)].map((m) => m[1].toLowerCase());
+				if (policyMxPatterns.length === 0) {
 					findings.push(
 						createFinding(
 							'mta_sts',
@@ -124,6 +172,36 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 							`MTA-STS policy file does not contain any "mx:" entries. At least one MX pattern is required.`,
 						),
 					);
+				}
+
+				// Cross-check mx: entries against actual MX records (only for enforce/testing modes)
+				const policyMode = modeMatch ? modeMatch[1].toLowerCase() : '';
+				if (policyMxPatterns.length > 0 && (policyMode === 'enforce' || policyMode === 'testing')) {
+					try {
+						const mxRecords = await queryMxRecords(domain);
+						for (const mx of mxRecords) {
+							const hostname = mx.exchange.toLowerCase();
+							const covered = policyMxPatterns.some((pattern) => {
+								if (pattern.startsWith('*.')) {
+									const suffix = pattern.slice(1); // e.g. ".example.com"
+									return hostname.endsWith(suffix) || hostname === pattern.slice(2);
+								}
+								return hostname === pattern;
+							});
+							if (!covered) {
+								findings.push(
+									createFinding(
+										'mta_sts',
+										`MTA-STS policy does not cover MX host ${mx.exchange}`,
+										'high',
+										`The MX host ${mx.exchange} is not matched by any mx: entry in the MTA-STS policy. Mail delivered to this MX will fail MTA-STS validation.`,
+									),
+								);
+							}
+						}
+					} catch {
+						// MX query failed — skip cross-check silently
+					}
 				}
 			}
 		} catch {
@@ -154,6 +232,34 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 			);
 		} else {
 			hasTlsRptRecord = true;
+
+			// Validate rua= directive in TLS-RPT record
+			const tlsrptRecord = validRecords[0];
+			const ruaMatch = tlsrptRecord.match(/rua\s*=\s*([^;\s]+)/i);
+			if (!ruaMatch) {
+				findings.push(
+					createFinding(
+						'mta_sts',
+						'TLS-RPT missing rua directive',
+						'low',
+						`TLS-RPT record does not contain a "rua=" directive. The rua URI is needed to receive TLS failure reports.`,
+					),
+				);
+			} else {
+				const ruaValue = ruaMatch[1];
+				const isValidMailto = /^mailto:[^@\s]+@[^@\s]+\.[^@\s]+$/.test(ruaValue);
+				const isValidHttps = /^https:\/\/.+/.test(ruaValue);
+				if (!isValidMailto && !isValidHttps) {
+					findings.push(
+						createFinding(
+							'mta_sts',
+							'TLS-RPT invalid rua format',
+							'medium',
+							`TLS-RPT rua value "${ruaValue}" is not a valid mailto: or https: URI.`,
+						),
+					);
+				}
+			}
 		}
 	} catch {
 		findings.push(
