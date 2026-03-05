@@ -144,7 +144,9 @@ High-level summary:
 Natural-language convenience:
 
 - `tools/call` supports `scan` as an alias for `scan_domain`.
+- In chat-style clients, users can typically say `scan <domain>`.
 - For best cross-client reliability, explicit phrasing like `Use scan_domain to scan example.com` is still recommended.
+- Raw JSON-RPC still expects `params.name` to be `scan` or `scan_domain` (not full phrases in the name field).
 
 ## Provider Detection
 

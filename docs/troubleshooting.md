@@ -148,8 +148,19 @@ curl https://dns-mcp.blackveilsecurity.com/health
 ```bash
 curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
   -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","method":"scan_domain","params":{"domain":"example.com"},"id":1}'
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 ```
+
+Then call the scan tool with the returned `mcp-session-id` header:
+
+```bash
+curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Mcp-Session-Id: <session-id>' \
+  --data '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"scan","arguments":{"domain":"example.com"}}}'
+```
+
+`scan` is an alias for `scan_domain`.
 
 If auth is enabled:
 
@@ -157,7 +168,7 @@ If auth is enabled:
 curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <your-api-key>' \
-  --data '{"jsonrpc":"2.0","method":"scan_domain","params":{"domain":"example.com"},"id":1}'
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 ```
 
 ## 3. Common Errors

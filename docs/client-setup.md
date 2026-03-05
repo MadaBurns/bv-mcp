@@ -108,6 +108,8 @@ If your client does not auto-route tool calls from short prompts, use explicit p
 - `Run check_dmarc for blackveilsecurity.com`
 - `Run check_dkim for blackveilsecurity.com`
 
+For chat-style clients, shorthand `scan <domain>` is supported.
+
 ### Alias Support
 
 `tools/call` accepts a narrow alias for convenience:
@@ -115,6 +117,8 @@ If your client does not auto-route tool calls from short prompts, use explicit p
 - `scan` -> `scan_domain`
 
 Canonical tool names from `tools/list` remain unchanged.
+
+Important: raw JSON-RPC `tools/call` still requires `params.name` to be a tool identifier (`scan` or `scan_domain`), not a full phrase such as `scan example.com`.
 
 ## Authentication
 
