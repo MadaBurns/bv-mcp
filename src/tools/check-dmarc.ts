@@ -42,6 +42,7 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 
 	const dmarc = dmarcRecords[0];
 	const tags = parseDmarcTags(dmarc);
+	const validPolicies = new Set(['none', 'quarantine', 'reject']);
 
 	// Check policy (p= tag)
 	const policy = tags.get('p');
@@ -52,6 +53,15 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 				'Missing DMARC policy',
 				'critical',
 				`DMARC record is missing the required "p=" tag. Without a policy, DMARC provides no protection.`,
+			),
+		);
+	} else if (!validPolicies.has(policy)) {
+		findings.push(
+			createFinding(
+				'dmarc',
+				'Invalid DMARC policy value',
+				'high',
+				`DMARC policy value "${policy}" is invalid. Allowed values are none, quarantine, or reject.`,
 			),
 		);
 	} else if (policy === 'none') {
@@ -86,19 +96,91 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 				`No subdomain policy (sp=) specified. Subdomains inherit the main policy ("${policy}"), but explicitly setting sp= is recommended.`,
 			),
 		);
+	} else if (sp) {
+		if (!validPolicies.has(sp)) {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Invalid subdomain policy value',
+					'medium',
+					`DMARC subdomain policy value "${sp}" is invalid. Allowed values are none, quarantine, or reject.`,
+				),
+			);
+		} else if (policy === 'reject' && sp === 'none') {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Subdomain policy weaker than parent policy',
+					'high',
+					'Subdomain policy is set to "none" while parent policy is "reject". This leaves subdomains vulnerable to spoofing.',
+				),
+			);
+		} else if (policy === 'reject' && sp === 'quarantine') {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Subdomain policy weaker than parent policy',
+					'low',
+					'Subdomain policy is "quarantine" while parent policy is "reject". Consider using sp=reject for consistent enforcement.',
+				),
+			);
+		}
 	}
 
 	// Check percentage (pct= tag)
 	const pct = tags.get('pct');
-	if (pct && parseInt(pct, 10) < 100) {
+	if (pct) {
+		const pctValue = Number.parseInt(pct, 10);
+		if (!Number.isFinite(pctValue) || Number.isNaN(pctValue) || pctValue < 0 || pctValue > 100) {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Invalid DMARC percentage value',
+					'medium',
+					`DMARC pct value "${pct}" is invalid. Allowed range is 0-100.`,
+				),
+			);
+		} else if (pctValue < 100) {
 		findings.push(
 			createFinding(
 				'dmarc',
 				'DMARC not applied to all emails',
 				'medium',
-				`DMARC pct=${pct} means the policy only applies to ${pct}% of emails. Set pct=100 for full coverage.`,
+				`DMARC pct=${pctValue} means the policy only applies to ${pctValue}% of emails. Set pct=100 for full coverage.`,
 			),
 		);
+		}
+	}
+
+	// Check forensic failure reporting options (fo=)
+	const fo = tags.get('fo');
+	if (fo) {
+		const allowedFoValues = new Set(['0', '1', 'd', 's']);
+		const foValues = fo
+			.split(':')
+			.map((v) => v.trim())
+			.filter((v) => v.length > 0);
+
+		const invalidFo = foValues.filter((v) => !allowedFoValues.has(v));
+		if (foValues.length === 0 || invalidFo.length > 0) {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Invalid DMARC failure reporting options',
+					'medium',
+					`DMARC fo value "${fo}" contains unsupported option(s): ${invalidFo.join(', ') || 'none'}. Allowed values: 0, 1, d, s.`,
+				),
+			);
+		} else if (foValues.length === 1 && foValues[0] === '0') {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Limited DMARC failure reporting coverage',
+					'low',
+					'DMARC fo=0 only generates forensic reports when both SPF and DKIM fail. Consider fo=1 for broader failure visibility.',
+				),
+			);
+		}
 	}
 
 	// Check for reporting (rua= tag)
@@ -112,10 +194,100 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 				`No aggregate report URI (rua=) specified. Without reporting, you cannot monitor DMARC authentication results.`,
 			),
 		);
+	} else {
+		// Validate rua= URI format
+		const ruaUris = rua.split(',').map((u) => u.trim());
+		const invalidRuaUris = ruaUris.filter((uri) => !isValidDmarcUri(uri));
+		if (invalidRuaUris.length > 0) {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Invalid aggregate report URI format',
+					'medium',
+					`DMARC aggregate report URI(s) invalid: ${invalidRuaUris.join(', ')}. Must use mailto: scheme.`,
+				),
+			);
+		}
+
+		// Check for third-party aggregator services
+		const aggregators = detectThirdPartyAggregators(ruaUris);
+		if (aggregators.length > 0) {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Third-party DMARC aggregator detected',
+					'info',
+					`Using third-party aggregator(s): ${aggregators.join(', ')}. Ensure these services are authorized to receive your DMARC reports.`,
+					{ aggregators },
+				),
+			);
+		}
 	}
 
-	// If no issues found, add info
-	if (findings.length === 0) {
+	// Check forensic reporting (ruf= tag)
+	const ruf = tags.get('ruf');
+	if (ruf) {
+		const rufUris = ruf.split(',').map((u) => u.trim());
+		const invalidRufUris = rufUris.filter((uri) => !isValidDmarcUri(uri));
+		if (invalidRufUris.length > 0) {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Invalid forensic report URI format',
+					'medium',
+					`DMARC forensic report URI(s) invalid: ${invalidRufUris.join(', ')}. Must use mailto: scheme.`,
+				),
+			);
+		}
+	}
+
+	// Check DKIM alignment mode (adkim= tag)
+	const adkim = tags.get('adkim');
+	if (adkim && adkim !== 'r' && adkim !== 's') {
+		findings.push(
+			createFinding(
+				'dmarc',
+				'Invalid DKIM alignment mode',
+				'medium',
+				`DMARC adkim value "${adkim}" is invalid. Allowed values are "r" (relaxed) or "s" (strict).`,
+			),
+		);
+	} else if (!adkim || adkim === 'r') {
+		findings.push(
+			createFinding(
+				'dmarc',
+				'Relaxed DKIM alignment',
+				'low',
+				`DKIM alignment mode is relaxed (adkim=r or unset). Consider adkim=s (strict) for stronger authentication.`,
+			),
+		);
+	}
+
+	// Check SPF alignment mode (aspf= tag)
+	const aspf = tags.get('aspf');
+	if (aspf && aspf !== 'r' && aspf !== 's') {
+		findings.push(
+			createFinding(
+				'dmarc',
+				'Invalid SPF alignment mode',
+				'medium',
+				`DMARC aspf value "${aspf}" is invalid. Allowed values are "r" (relaxed) or "s" (strict).`,
+			),
+		);
+	} else if (!aspf || aspf === 'r') {
+		findings.push(
+			createFinding(
+				'dmarc',
+				'Relaxed SPF alignment',
+				'low',
+				`SPF alignment mode is relaxed (aspf=r or unset). Consider aspf=s (strict) for stronger authentication.`,
+			),
+		);
+	}
+
+	// If no critical, high, or medium issues found, add info
+	const hasSignificantIssues = findings.some((f) => f.severity === 'critical' || f.severity === 'high' || f.severity === 'medium');
+	if (!hasSignificantIssues) {
 		findings.push(
 			createFinding(
 				'dmarc',
@@ -127,6 +299,49 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 	}
 
 	return buildCheckResult('dmarc', findings);
+}
+
+/**
+ * Validate DMARC URI format (must be mailto: scheme)
+ */
+function isValidDmarcUri(uri: string): boolean {
+	const trimmed = uri.trim().toLowerCase();
+	if (!trimmed.startsWith('mailto:')) {
+		return false;
+	}
+	// Extract email after mailto:
+	const email = trimmed.substring(7).trim();
+	// Basic email validation
+	return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+/**
+ * Detect known third-party DMARC aggregator services
+ */
+function detectThirdPartyAggregators(uris: string[]): string[] {
+	const knownAggregators = [
+		'dmarcian.com',
+		'agari.com',
+		'valimail.com',
+		'returnpath.com',
+		'postmarkapp.com',
+		'dmarcanalyzer.com',
+		'mimecast.com',
+		'proofpoint.com',
+		'250ok.com',
+		'easydmarc.com',
+	];
+
+	const detected: string[] = [];
+	for (const uri of uris) {
+		const lower = uri.toLowerCase();
+		for (const aggregator of knownAggregators) {
+			if (lower.includes(aggregator) && !detected.includes(aggregator)) {
+				detected.push(aggregator);
+			}
+		}
+	}
+	return detected;
 }
 
 /** Parse DMARC tag-value pairs from a DMARC record string */

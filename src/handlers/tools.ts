@@ -21,6 +21,7 @@ import { checkCaa } from '../tools/check-caa';
 import { scanDomain, formatScanReport } from '../tools/scan-domain';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { logEvent, logError } from '../lib/log';
+import type { AnalyticsClient } from '../lib/analytics';
 import { TOOLS } from './tool-schemas';
 import type { McpTool } from './tool-schemas';
 
@@ -90,6 +91,7 @@ function extractDkimSelector(args: Record<string, unknown>): string | undefined 
 /** Wrapper for dynamic check_mx import (required for test mock isolation) */
 interface ToolRuntimeOptions {
 	providerSignaturesUrl?: string;
+	analytics?: AnalyticsClient;
 }
 
 async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOptions): Promise<CheckResult> {
@@ -193,6 +195,13 @@ export async function handleToolsCall(
 			const result = await runWithCache(cacheKey, () => registeredTool.execute(validDomain, args, runtimeOptions), scanCacheKV);
 			logResult = result.passed ? 'pass' : 'fail';
 			logDetails = result;
+			runtimeOptions?.analytics?.emitToolEvent({
+				toolName: name,
+				status: result.passed ? 'pass' : 'fail',
+				durationMs: Date.now() - startTime,
+				domain,
+				isError: false,
+			});
 			logEvent({
 				timestamp: new Date().toISOString(),
 				tool: name,
@@ -210,6 +219,13 @@ export async function handleToolsCall(
 				const result = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
 				logResult = result.score.grade;
 				logDetails = result;
+				runtimeOptions?.analytics?.emitToolEvent({
+					toolName: name,
+					status: result.score.overall >= 50 ? 'pass' : 'fail',
+					durationMs: Date.now() - startTime,
+					domain,
+					isError: false,
+				});
 				logEvent({
 					timestamp: new Date().toISOString(),
 					tool: name,
@@ -225,6 +241,12 @@ export async function handleToolsCall(
 				const checkType = args.checkType;
 				const status = args.status;
 				if (typeof checkType !== 'string' || typeof status !== 'string') {
+					runtimeOptions?.analytics?.emitToolEvent({
+						toolName: name,
+						status: 'error',
+						durationMs: Date.now() - startTime,
+						isError: true,
+					});
 					logError('Missing required parameters: checkType and status', {
 						tool: name,
 						details: args,
@@ -234,6 +256,12 @@ export async function handleToolsCall(
 				}
 				const details = typeof args.details === 'string' ? args.details : undefined;
 				const result = explainFinding(checkType, status, details);
+				runtimeOptions?.analytics?.emitToolEvent({
+					toolName: name,
+					status: 'pass',
+					durationMs: Date.now() - startTime,
+					isError: false,
+				});
 				logEvent({
 					timestamp: new Date().toISOString(),
 					tool: name,
@@ -245,6 +273,13 @@ export async function handleToolsCall(
 				return { content: [mcpText(formatExplanation(result))] };
 			}
 			default:
+				runtimeOptions?.analytics?.emitToolEvent({
+					toolName: name,
+					status: 'error',
+					durationMs: Date.now() - startTime,
+					domain,
+					isError: true,
+				});
 				logError(`Unknown tool: ${name}`, {
 					tool: name,
 					details: args,
@@ -257,6 +292,13 @@ export async function handleToolsCall(
 		}
 	} catch (err) {
 		const message = sanitizeErrorMessage(err, 'An unexpected error occurred');
+		runtimeOptions?.analytics?.emitToolEvent({
+			toolName: name,
+			status: 'error',
+			durationMs: Date.now() - startTime,
+			domain,
+			isError: true,
+		});
 		logError(err instanceof Error ? err : String(err), {
 			tool: name,
 			domain,

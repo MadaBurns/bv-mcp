@@ -21,10 +21,29 @@ import { jsonRpcError, jsonRpcSuccess, JSON_RPC_ERRORS, sanitizeErrorMessage } f
 import { createSession, validateSession, deleteSession } from './lib/session';
 import { isAuthorizedRequest, unauthorizedResponse } from './lib/auth';
 import { sseEvent, acceptsSSE, createSseStream } from './lib/sse';
+import { createAnalyticsClient } from './lib/analytics';
 import type { JsonRpcRequest } from './lib/json-rpc';
+import { auditSessionCreated } from './lib/audit';
 
 /** Server version — keep in sync with package.json */
 const SERVER_VERSION = '1.0.2';
+let hasLoggedAnalyticsBindingStatus = false;
+
+function logAnalyticsBindingStatus(enabled: boolean): void {
+	if (hasLoggedAnalyticsBindingStatus) return;
+	hasLoggedAnalyticsBindingStatus = true;
+	logEvent({
+		timestamp: new Date().toISOString(),
+		category: 'analytics',
+		result: enabled ? 'enabled' : 'disabled',
+		severity: enabled ? 'info' : 'warn',
+		details: {
+			message: enabled
+				? 'Analytics Engine binding detected'
+				: 'Analytics Engine binding missing; telemetry emits are no-op',
+		},
+	});
+}
 
 // ---------------------------------------------------------------------------
 // Hono app
@@ -34,6 +53,7 @@ type BvMcpEnv = {
 	RATE_LIMIT?: KVNamespace;
 	SCAN_CACHE?: KVNamespace;
 	SESSION_STORE?: KVNamespace;
+	MCP_ANALYTICS?: AnalyticsEngineDataset;
 	BV_API_KEY?: string;
 	PROVIDER_SIGNATURES_URL?: string;
 };
@@ -72,6 +92,25 @@ app.use('*', async (c, next) => {
        }
 });
 
+// Security headers middleware — apply to all responses
+app.use('*', async (c, next) => {
+	await next();
+	// Prevent MIME type sniffing
+	c.header('X-Content-Type-Options', 'nosniff');
+	// Prevent frame embedding (clickjacking)
+	c.header('X-Frame-Options', 'DENY');
+	// Enable built-in XSS protection
+	c.header('X-XSS-Protection', '1; mode=block');
+	// Restrict referrer disclosure
+	c.header('Referrer-Policy', 'no-referrer');
+	// Disable unnecessary APIs
+	c.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+	// Content Security Policy: no inline scripts, no third-party content
+	c.header('Content-Security-Policy', "default-src 'self'; script-src 'none'; object-src 'none'; frame-ancestors 'none'");
+	// HTTP Strict Transport Security: 1 year, include subdomains
+	c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+});
+
 // Optional bearer auth for /mcp; open mode when BV_API_KEY is unset/empty.
 // Sets `isAuthenticated` on the Hono context so downstream handlers can check
 // auth status without re-deriving it.
@@ -97,6 +136,9 @@ app.get('/health', (c) => {
 	return c.json({
 		status: 'ok',
 		service: 'bv-dns-security-mcp',
+		analytics: {
+			enabled: Boolean(c.env.MCP_ANALYTICS),
+		},
 		timestamp: new Date().toISOString(),
 	});
 });
@@ -106,6 +148,8 @@ app.get('/health', (c) => {
 // ---------------------------------------------------------------------------
 app.post('/mcp', async (c) => {
 	const startTime = Date.now();
+	const analytics = createAnalyticsClient(c.env.MCP_ANALYTICS);
+	logAnalyticsBindingStatus(analytics.enabled);
 	// Defensive: normalize all incoming header keys to lowercase
 	const rawHeaders = Object.fromEntries(Array.from(c.req.raw.headers as unknown as Iterable<[string, string]>));
 	const headersLc: Record<string, string> = {};
@@ -157,11 +201,27 @@ app.post('/mcp', async (c) => {
 
 	// Validate JSON-RPC 2.0 structure
 	if (body.jsonrpc !== '2.0' || typeof body.method !== 'string') {
+		analytics.emitRequestEvent({
+			method: typeof body?.method === 'string' ? body.method : 'invalid',
+			status: 'error',
+			durationMs: Date.now() - startTime,
+			isAuthenticated,
+			hasJsonRpcError: true,
+			transport: 'json',
+		});
 		return c.json(jsonRpcError(body.id, JSON_RPC_ERRORS.INVALID_REQUEST, 'Invalid JSON-RPC 2.0 request'), 400);
 	}
 
 	// Validate JSON-RPC id field type (must be string, number, or null per spec)
 	if (body.id !== undefined && body.id !== null && typeof body.id !== 'string' && typeof body.id !== 'number') {
+		analytics.emitRequestEvent({
+			method: body.method,
+			status: 'error',
+			durationMs: Date.now() - startTime,
+			isAuthenticated,
+			hasJsonRpcError: true,
+			transport: 'json',
+		});
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Invalid JSON-RPC id: must be string, number, or null'), 400);
 	}
 
@@ -181,6 +241,14 @@ app.post('/mcp', async (c) => {
 			if (rateResult.retryAfterMs !== undefined) {
 				rateHeaders['retry-after'] = String(Math.ceil(rateResult.retryAfterMs / 1000));
 			}
+			analytics.emitRequestEvent({
+				method,
+				status: 'error',
+				durationMs: Date.now() - startTime,
+				isAuthenticated,
+				hasJsonRpcError: true,
+				transport: 'json',
+			});
 			return c.json(
 				jsonRpcError(
 					id,
@@ -198,6 +266,14 @@ app.post('/mcp', async (c) => {
 
 	if (method !== 'initialize') {
 		if (!sessionId || !(await validateSession(sessionId, c.env.SESSION_STORE))) {
+			analytics.emitRequestEvent({
+				method,
+				status: 'error',
+				durationMs: Date.now() - startTime,
+				isAuthenticated,
+				hasJsonRpcError: true,
+				transport: 'json',
+			});
 			return c.json(jsonRpcError(id, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: invalid or missing session'), 400);
 		}
 	}
@@ -206,6 +282,14 @@ app.post('/mcp', async (c) => {
 	// tools/call notifications are already rate-limited above once per request.
 	const isNotification = body.id === undefined || body.id === null;
 	if (isNotification && method !== 'initialize') {
+		analytics.emitRequestEvent({
+			method,
+			status: 'ok',
+			durationMs: Date.now() - startTime,
+			isAuthenticated,
+			hasJsonRpcError: false,
+			transport: 'json',
+		});
 		// Per spec: notifications/responses → 202 Accepted
 		return new Response(null, { status: 202 });
 	}
@@ -236,6 +320,10 @@ app.post('/mcp', async (c) => {
 				       responsePayload = jsonRpcSuccess(id, result);
 				       logCategory = 'session';
 				       logResult = 'initialized';
+								       // Audit log session creation with IP tracking
+								       if (newSessionId) {
+								       	auditSessionCreated(ip, newSessionId);
+								       }
 				       break;
 			       }
 
@@ -251,6 +339,7 @@ app.post('/mcp', async (c) => {
 				       const toolParams = params as { name: string; arguments?: Record<string, unknown> };
 				       const result = await handleToolsCall(toolParams, c.env.SCAN_CACHE, {
 					       providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
+						analytics,
 				       });
 				       responsePayload = jsonRpcSuccess(id, result);
 				       logCategory = 'tools';
@@ -316,7 +405,16 @@ app.post('/mcp', async (c) => {
 
 		       // If client accepts SSE, stream the response as an SSE event
 		       const accept = headersLc['accept'];
+			const hasJsonRpcError = typeof responsePayload === 'object' && responsePayload !== null && 'error' in responsePayload;
 		       if (acceptsSSE(accept)) {
+				analytics.emitRequestEvent({
+					method,
+					status: hasJsonRpcError ? 'error' : 'ok',
+					durationMs: Date.now() - startTime,
+					isAuthenticated,
+					hasJsonRpcError,
+					transport: 'sse',
+				});
 			       return new Response(createSseStream(sseEvent(responsePayload)), {
 				       status: 200,
 				       headers: {
@@ -329,8 +427,24 @@ app.post('/mcp', async (c) => {
 		       }
 
 		       // Default: plain JSON response (backward compatible)
+			analytics.emitRequestEvent({
+				method,
+				status: hasJsonRpcError ? 'error' : 'ok',
+				durationMs: Date.now() - startTime,
+				isAuthenticated,
+				hasJsonRpcError,
+				transport: 'json',
+			});
 		       return c.json(responsePayload, { status: 200, headers });
 	       } catch (err) {
+			analytics.emitRequestEvent({
+				method: typeof body?.method === 'string' ? body.method : 'unknown',
+				status: 'error',
+				durationMs: Date.now() - startTime,
+				isAuthenticated,
+				hasJsonRpcError: true,
+				transport: 'json',
+			});
 		       logError(err instanceof Error ? err : String(err), {
 			       severity: 'error',
 			       ip,

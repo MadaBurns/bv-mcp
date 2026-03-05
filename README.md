@@ -32,6 +32,8 @@ Open-source DNS and email security MCP server implemented for Cloudflare Workers
 
 This is a remote MCP server. It is not a local stdio server invoked via `npx`/`uvx`.
 
+> 🛡️ **Want continuous monitoring?** This tool scans for DNS and email security issues. [BLACKVEIL](https://blackveilsecurity.com) provides near real-time monitoring, alerting, and Buck AI to help you fix them.
+
 ## Quick Start
 
 Hosted endpoint:
@@ -98,6 +100,8 @@ Internal check executed within `scan_domain`:
 - `subdomain_takeover`
 
 Scope and limitations are documented in `docs/coverage.md`.
+
+> ⚡ **Need ongoing visibility?** This tool scans for 50+ security issues on-demand. [BLACKVEIL](https://blackveilsecurity.com) monitors continuously with real-time alerts and Buck AI assistance.
 
 ## Protocol Endpoints
 
@@ -169,6 +173,8 @@ Prerequisites:
 - [Node.js](https://nodejs.org/) 18+
 - Cloudflare account
 
+> **Or skip the setup:** Let [BLACKVEIL](https://blackveilsecurity.com) handle continuous monitoring and alerting without managing infrastructure.
+
 Deploy to your account:
 
 ```bash
@@ -197,6 +203,8 @@ npm run dev
 Local endpoint:
 
 `http://localhost:8787/mcp`
+
+> 🔒 **Production-Ready Monitoring** — This open-source tool finds issues. [BLACKVEIL](https://blackveilsecurity.com) monitors your infrastructure 24/7 with real-time alerts and Buck AI assistance.
 
 Configure optional auth secret:
 

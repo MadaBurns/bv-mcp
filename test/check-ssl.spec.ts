@@ -19,7 +19,10 @@ describe('checkSsl', () => {
 					url: 'https://example.com/',
 					ok: true,
 					status: 200,
-					headers: new Headers({ 'strict-transport-security': 'max-age=31536000; includeSubDomains' }),
+					headers: new Headers({
+						'strict-transport-security': 'max-age=31536000; includeSubDomains',
+						'expect-ct': 'max-age=86400, enforce',
+					}),
 				});
 			}
 			// HTTP redirect check

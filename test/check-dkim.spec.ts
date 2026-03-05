@@ -42,10 +42,27 @@ describe('checkDkim', () => {
 		expect(result.findings[0].title).toMatch(/No DKIM/i);
 	});
 
-	it('should return info finding when valid DKIM record found', async () => {
-		mockDkimRecords({ google: ['v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4G'] });
+	it('detects DKIM on date-based Google selectors', async () => {
+		const strongKey =
+			'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA2a2rwplBCXGHDzhtSF5cz+DfOpZB3Q9nDy0NxQyL8iB4xQoT0Q5Ka0K9KpV4LK3+KZvP5U9ZvL1yR5pZmqZLa5N4H1s7cQ7YQ0+C1jKSRQG7jP8QF1dPLqVfE1pZe7cQ8Kxc6c4PfD8QK9pC7Z1W0K8M3K7N2R4L9Y5L8B3P4N7U5Q6K0O5M5Y6W8P1R7T9A8K6S4P8b0tVm7dC1wYzV6+C2T3U4V5W6X7Y8Z9A0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q6R7S8T9U0V1W2X3Y4z9zzAA';
+		mockDkimRecords({
+			'20230601': [`v=DKIM1; k=rsa; p=${strongKey}`],
+		});
 		const result = await run();
-		const finding = result.findings.find(f => f.severity === 'info');
+		const noDkim = result.findings.find((f) => /No DKIM records found/i.test(f.title));
+		const configured = result.findings.find((f) => /DKIM configured/i.test(f.title));
+		expect(noDkim).toBeUndefined();
+		expect(configured).toBeDefined();
+		expect(configured?.metadata?.selectorsFound).toContain('20230601');
+	});
+
+	it('should return info finding when valid DKIM record found', async () => {
+		// Use a genuinely strong RSA key (>330 chars = 4096-bit) to avoid key-strength findings
+		const strongKey =
+			'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA2a2rwplBCXGHDzhtSF5cz+DfOpZB3Q9nDy0NxQyL8iB4xQoT0Q5Ka0K9KpV4LK3+KZvP5U9ZvL1yR5pZmqZLa5N4H1s7cQ7YQ0+C1jKSRQG7jP8QF1dPLqVfE1pZe7cQ8Kxc6c4PfD8QK9pC7Z1W0K8M3K7N2R4L9Y5L8B3P4N7U5Q6K0O5M5Y6W8P1R7T9A8K6S4P8b0tVm7dC1wYzV6+C2T3U4V5W6X7Y8Z9A0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q6R7S8T9U0V1W2X3Y4z9zzAA';
+		mockDkimRecords({ google: [`v=DKIM1; k=rsa; p=${strongKey}`] });
+		const result = await run();
+		const finding = result.findings.find(f => f.severity === 'info' && /configured|found/i.test(f.title));
 		expect(finding).toBeDefined();
 		expect(finding!.title).toMatch(/DKIM configured/i);
 		expect(finding!.metadata).toBeDefined();
@@ -100,21 +117,27 @@ describe('checkDkim', () => {
 	});
 
 	it('checks specific selector when provided', async () => {
-		mockDkimRecords({ myselector: ['v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4G'] });
+		// Use a genuinely strong RSA key (>330 chars) to avoid key-strength findings
+		const strongKey =
+			'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA2a2rwplBCXGHDzhtSF5cz+DfOpZB3Q9nDy0NxQyL8iB4xQoT0Q5Ka0K9KpV4LK3+KZvP5U9ZvL1yR5pZmqZLa5N4H1s7cQ7YQ0+C1jKSRQG7jP8QF1dPLqVfE1pZe7cQ8Kxc6c4PfD8QK9pC7Z1W0K8M3K7N2R4L9Y5L8B3P4N7U5Q6K0O5M5Y6W8P1R7T9A8K6S4P8b0tVm7dC1wYzV6+C2T3U4V5W6X7Y8Z9A0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q6R7S8T9U0V1W2X3Y4z9zzAA';
+		mockDkimRecords({ myselector: [`v=DKIM1; k=rsa; p=${strongKey}`] });
 		const r = await run('example.com', 'myselector');
-		const f = r.findings.find((f) => f.severity === 'info');
+		const f = r.findings.find((f) => f.severity === 'info' && /configured|found/i.test(f.title));
 		expect(f).toBeDefined();
 		expect(f!.detail).toContain('myselector');
 		expect(f!.metadata?.selectorsFound).toContain('myselector');
 	});
 
 	it('finds records across multiple selectors', async () => {
+		// Use genuinely strong RSA keys (>330 chars) to avoid key-strength findings
+		const strongKey =
+			'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA2a2rwplBCXGHDzhtSF5cz+DfOpZB3Q9nDy0NxQyL8iB4xQoT0Q5Ka0K9KpV4LK3+KZvP5U9ZvL1yR5pZmqZLa5N4H1s7cQ7YQ0+C1jKSRQG7jP8QF1dPLqVfE1pZe7cQ8Kxc6c4PfD8QK9pC7Z1W0K8M3K7N2R4L9Y5L8B3P4N7U5Q6K0O5M5Y6W8P1R7T9A8K6S4P8b0tVm7dC1wYzV6+C2T3U4V5W6X7Y8Z9A0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q6R7S8T9U0V1W2X3Y4z9zzAA';
 		mockDkimRecords({
-			google: ['v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4G'],
-			selector1: ['v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4G'],
+			google: [`v=DKIM1; k=rsa; p=${strongKey}`],
+			selector1: [`v=DKIM1; k=rsa; p=${strongKey}`],
 		});
 		const r = await run();
-		const f = r.findings.find((f) => f.severity === 'info');
+		const f = r.findings.find((f) => f.severity === 'info' && /configured|found/i.test(f.title));
 		expect(f).toBeDefined();
 		expect(f!.detail).toContain('google');
 		expect(f!.detail).toContain('selector1');
@@ -155,5 +178,92 @@ describe('checkDkim', () => {
 		const revoked = r.findings.find((f) => f.title.includes('Revoked'));
 		expect(revoked).toBeDefined();
 		expect(revoked!.severity).toBe('medium');
+	});
+
+	it('detects strong RSA 4096-bit key (>330 chars) with info level', async () => {
+		// Simulates a 4096-bit RSA key (>330 base64 chars)
+		const strongKey =
+			'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA2a2rwplBCXGHDzhtSF5cz+DfOpZB3Q9nDy0NxQyL8iB4xQoT0Q5Ka0K9KpV4LK3+KZvP5U9ZvL1yR5pZmqZLa5N4H1s7cQ7YQ0+C1jKSRQG7jP8QF1dPLqVfE1pZe7cQ8Kxc6c4PfD8QK9pC7Z1W0K8M3K7N2R4L9Y5L8B3P4N7U5Q6K0O5M5Y6W8P1R7T9A8K6S4P8b0tVm7dC1wYzV6+C2T3U4V5W6X7Y8Z9A0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q6R7S8T9U0V1W2X3Y4z9zzAA';
+		mockDkimRecords({ google: [`v=DKIM1; k=rsa; p=${strongKey}`] });
+		const r = await run();
+		const keyStrengthFinding = r.findings.find((f) => /strong|4096/i.test(f.title));
+		// Strong keys should not produce a warning finding
+		expect(keyStrengthFinding).toBeUndefined();
+	});
+
+	it('detects weak RSA 512-bit key (<150 chars) with critical severity', async () => {
+		// Simulates a weak 512-bit RSA key (<150 base64 chars)
+		const weakKey = 'MIGfMA0GCSqGSIb3DQEBAQUAA4G';
+		mockDkimRecords({ google: [`v=DKIM1; k=rsa; p=${weakKey}`] });
+		const r = await run();
+		const finding = r.findings.find((f) => /weak|512/i.test(f.title));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('critical');
+		expect(finding!.metadata?.estimatedBits).toBe(512);
+	});
+
+	it('detects legacy RSA 1024-bit key (<230 chars) with high severity', async () => {
+		// Simulates a 1024-bit RSA key (150-230 base64 chars)
+		const legacyKey =
+			'MIGfMA0GCSqGSIb3DQEBAQUFAAOCDg8AMIIBCgKCAQEA1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012';
+		mockDkimRecords({ google: [`v=DKIM1; k=rsa; p=${legacyKey}`] });
+		const r = await run();
+		const finding = r.findings.find((f) => /legacy|1024/i.test(f.title));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('high');
+		expect(finding!.metadata?.estimatedBits).toBe(1024);
+	});
+
+	it('detects RSA 2048-bit key (230-330 chars) with medium severity', async () => {
+		// Simulates a 2048-bit RSA key (230-330 base64 chars)
+		const recommendedKey =
+			'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Z3VS5JJcds3s2m0V5YxFqj7xFqJ1LxlZN8W6WqLkKl1B+dKZgL5X4dQr3+4Tx3Y3Z5Z7M9N0O1P2Q3R4S5T6U7V8W9X0Y1Z2A3B4C5D6E7F8G9H0I1J2K3L4M5N6O7P8Q9R0S1T2U3V4W5X6Y7Z8A9B0C1D2E3F4G5H6I7J8K9L0M1N2O3P4Q5R6S7T8U9';
+		mockDkimRecords({ google: [`v=DKIM1; k=rsa; p=${recommendedKey}`] });
+		const r = await run();
+		const finding = r.findings.find((f) => /recommended|2048|below/i.test(f.title));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('medium');
+		expect(finding!.metadata?.estimatedBits).toBe(2048);
+	});
+
+	it('treats ED25519 keys as always strong without key-strength finding', async () => {
+		mockDkimRecords({ google: ['v=DKIM1; k=ed25519; p=[ED25519]AAABBBBCCCCDDDDEEEEFFFFGGGG'] });
+		const r = await run();
+		const keyStrengthFinding = r.findings.find((f) => /weak|legacy|strong|bits/i.test(f.title));
+		expect(keyStrengthFinding).toBeUndefined();
+	});
+
+	it('detects missing v= tag with medium severity', async () => {
+		mockDkimRecords({ google: ['k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNAAAA'] });
+		const r = await run();
+		const finding = r.findings.find((f) => /version tag|missing.*v=/i.test(f.title));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('medium');
+		expect(finding!.title).toContain('google');
+	});
+
+	it('aggregates findings for multiple selectors with mixed key strengths', async () => {
+		const strongKey =
+			'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA2a2rwplBCXGHDzhtSF5cz+DfOpZB3Q9nDy0NxQyL8iB4xQoT0Q5Ka0K9KpV4LK3+KZvP5U9ZvL1yR5pZmqZLa5N4H1s7cQ7YQ0+C1jKSRQG7jP8QF1dPLqVfE1pZe7cQ8Kxc6c4PfD8QK9pC7Z1W0K8M3K7N2R4L9Y5L8B3P4N7U5Q6K0O5M5Y6W8P1R7T9A8K6S4P8b0tVm7dC1wYzV6+C2T3U4V5W6X7Y8Z9A0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q6R7S8T9U0V1W2X3Y4z9zzAA';
+		const weakKey = 'MIGfMA0GCSqGSIb3DQEBAQUAA4G';
+		mockDkimRecords({
+			google: [`v=DKIM1; k=rsa; p=${strongKey}`],
+			selector1: [`v=DKIM1; k=rsa; p=${weakKey}`],
+		});
+		const r = await run();
+		const weakFinding = r.findings.find((f) => /weak|512|critical/i.test(f.title));
+		expect(weakFinding).toBeDefined();
+		expect(weakFinding!.severity).toBe('critical');
+		// Google has strong key - should not produce a key-strength finding
+		const strongFinding = r.findings.find((f) => f.title.includes('google') && /weak|legacy|recommended/i.test(f.title));
+		expect(strongFinding).toBeUndefined();
+	});
+
+	it('handles malformed base64 in p= value gracefully without crash', async () => {
+		mockDkimRecords({ google: ['v=DKIM1; k=rsa; p=!@#$%^&*()'] });
+		const r = await run();
+		// Should not crash; malformed keys are still processed
+		expect(r.category).toBe('dkim');
+		expect(r.findings.length).toBeGreaterThan(0);
 	});
 });

@@ -39,6 +39,17 @@ For weighted categories, findings that indicate missing required controls (for e
 
 Source: `scoreIndicatesMissingControl()` in `src/lib/scoring.ts`.
 
+## Critical Finding Penalty
+
+If any critical finding exists across the scan, an additional overall penalty is applied after weighted scoring.
+
+- Critical present: `-15` overall points
+- No critical findings: `0` additional penalty
+
+This ensures critical risks (for example takeover or certificate failures) materially impact final grade even when they appear in low-importance categories.
+
+Source: `CRITICAL_OVERALL_PENALTY` and `computeScanScore()` in `src/lib/scoring.ts`.
+
 ## Email Bonus
 
 Up to `+5` points are added when all of the following are true:

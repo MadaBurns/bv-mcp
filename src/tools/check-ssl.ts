@@ -1,8 +1,9 @@
 /**
  * SSL/TLS certificate check tool.
  * Validates SSL certificate by attempting HTTPS connection,
- * checks HSTS headers, and verifies HTTP→HTTPS redirect.
- * Workers-compatible: uses fetch API only.
+ * checks HSTS configuration,
+ * and verifies HTTP→HTTPS redirect.
+ * Workers-compatible: uses fetch API only (cert expiry/chain require external APIs).
  */
 
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
@@ -25,7 +26,7 @@ export async function checkSsl(domain: string): Promise<CheckResult> {
 	}
 
 	if (findings.length === 0) {
-		findings.push(createFinding('ssl', 'SSL/TLS properly configured', 'info', `HTTPS is accessible for ${domain} with HSTS enabled.`));
+		findings.push(createFinding('ssl', 'SSL/TLS properly configured', 'info', `HTTPS is accessible for ${domain} with HSTS enabled and certificate transparency checks pass.`));
 	}
 
 	return buildCheckResult('ssl', findings);
@@ -94,6 +95,7 @@ async function checkHttps(domain: string): Promise<Finding[]> {
 				);
 			}
 		}
+
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 

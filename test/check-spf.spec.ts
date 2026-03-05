@@ -78,6 +78,15 @@ describe('checkSpf', () => {
 		expect(f).toBeUndefined();
 	});
 
+	it('flags 9 DNS lookups as near-limit high risk', async () => {
+		const mechs = Array.from({ length: 9 }, (_, i) => `include:spf${i}.example.com`).join(' ');
+		mockTxtRecords([`v=spf1 ${mechs} -all`]);
+		const r = await run();
+		const f = r.findings.find((f) => /lookup budget near limit/i.test(f.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('high');
+	});
+
 	it('counts mixed lookup mechanisms (include, a, mx, redirect)', async () => {
 		const mechs =
 			'include:a.com include:b.com include:c.com include:d.com include:e.com a:f.com mx:g.com redirect=h.com include:i.com include:j.com include:k.com';
@@ -85,5 +94,6 @@ describe('checkSpf', () => {
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('Too many DNS'));
 		expect(f).toBeDefined();
+		expect(f!.severity).toBe('critical');
 	});
 });

@@ -32,6 +32,7 @@ interface ProviderMatchEvidence {
 
 const DEFAULT_TIMEOUT_MS = 2500;
 const DEFAULT_RETRIES = 1;
+const RUNTIME_SIGNATURE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const BUILT_IN_SIGNATURES: ProviderSignaturePayload = {
 	version: 'built-in-2026-03-04',
@@ -48,6 +49,11 @@ const BUILT_IN_SIGNATURES: ProviderSignaturePayload = {
 };
 
 let lastKnownGood: ProviderSourceResult | null = null;
+let runtimeSignatureCache: {
+	sourceUrl: string;
+	result: ProviderSourceResult;
+	expiresAt: number;
+} | null = null;
 
 function normalizeDomain(value: string): string {
 	return value.trim().toLowerCase().replace(/\.$/, '');
@@ -142,17 +148,45 @@ export async function loadProviderSignatures(options?: LoadProviderSignaturesOpt
 		return buildResult(BUILT_IN_SIGNATURES, 'built-in', false);
 	}
 
+	const now = Date.now();
+	if (runtimeSignatureCache && runtimeSignatureCache.sourceUrl === sourceUrl && runtimeSignatureCache.expiresAt > now) {
+		return runtimeSignatureCache.result;
+	}
+
 	try {
 		const payload = await fetchProviderPayload(sourceUrl, timeoutMs, retries);
 		const result = buildResult(payload, 'runtime', false);
 		lastKnownGood = result;
+		runtimeSignatureCache = {
+			sourceUrl,
+			result,
+			expiresAt: now + RUNTIME_SIGNATURE_CACHE_TTL_MS,
+		};
 		return result;
 	} catch {
 		if (lastKnownGood) {
-			return { ...lastKnownGood, source: 'stale', degraded: true, fetchedAt: new Date().toISOString() };
+			const staleResult = { ...lastKnownGood, source: 'stale' as const, degraded: true, fetchedAt: new Date().toISOString() };
+			runtimeSignatureCache = {
+				sourceUrl,
+				result: staleResult,
+				expiresAt: now + RUNTIME_SIGNATURE_CACHE_TTL_MS,
+			};
+			return staleResult;
 		}
-		return buildResult(BUILT_IN_SIGNATURES, 'built-in', true);
+		const fallbackResult = buildResult(BUILT_IN_SIGNATURES, 'built-in', true);
+		runtimeSignatureCache = {
+			sourceUrl,
+			result: fallbackResult,
+			expiresAt: now + RUNTIME_SIGNATURE_CACHE_TTL_MS,
+		};
+		return fallbackResult;
 	}
+}
+
+/** Test helper to reset provider signature loader state between cases. */
+export function resetProviderSignatureState(): void {
+	lastKnownGood = null;
+	runtimeSignatureCache = null;
 }
 
 export function detectProviderMatches(hosts: string[], signatures: ProviderSignature[]): ProviderMatchEvidence[] {

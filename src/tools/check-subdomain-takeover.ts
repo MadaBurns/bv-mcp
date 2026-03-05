@@ -41,54 +41,64 @@ const TAKEOVER_SERVICES = [
 export async function checkSubdomainTakeover(domain: string): Promise<CheckResult> {
 	const findings: Finding[] = [];
 
-	   for (const sub of KNOWN_SUBDOMAINS) {
-		   const fqdn = `${sub}.${domain}`;
-		   try {
-			   const cnameRecords = await queryDnsRecords(fqdn, 'CNAME');
-			   for (const rawCname of cnameRecords) {
-				   const cname = rawCname.replace(/\.$/, '').toLowerCase();
-				   const isThirdParty = TAKEOVER_SERVICES.some((svc) => cname.includes(svc));
-				   if (isThirdParty) {
-					   // Check if the CNAME target resolves
-					   try {
-						   const targetA = await queryDnsRecords(cname, 'A');
-						   if (targetA.length === 0) {
-							   findings.push(
-								   createFinding(
-									   'subdomain_takeover',
-									   `Dangling CNAME: ${fqdn} → ${cname}`,
-									   'critical',
-									   `Subdomain ${fqdn} points to ${cname}, which does not resolve. This is a potential subdomain takeover vector.`,
-								   ),
-							   );
-						   }
-					   } catch {
-						   findings.push(
-							   createFinding(
-								   'subdomain_takeover',
-								   `CNAME resolution failed: ${fqdn} → ${cname}`,
-								   'high',
-								   `Could not resolve CNAME target ${cname} for ${fqdn}. Manual review recommended.`,
-							   ),
-						   );
-					   }
-				   }
-			   }
-		   } catch {
-			   // No CNAME or query failed; not critical
-		   }
-	   }
+	const findingsPerSubdomain = await Promise.all(
+		KNOWN_SUBDOMAINS.map(async (sub): Promise<Finding[]> => {
+			const fqdn = `${sub}.${domain}`;
+			const subdomainFindings: Finding[] = [];
 
-	   if (findings.length === 0) {
-		   findings.push(
-			   createFinding(
-				   'subdomain_takeover',
-				   'No dangling CNAME records found',
-				   'info',
-				   `No subdomain takeover vectors detected for ${domain} among known/active subdomains.`,
-			   ),
-		   );
-	   }
+			try {
+				const cnameRecords = await queryDnsRecords(fqdn, 'CNAME');
+				for (const rawCname of cnameRecords) {
+					const cname = rawCname.replace(/\.$/, '').toLowerCase();
+					const isThirdParty = TAKEOVER_SERVICES.some((svc) => cname.includes(svc));
+					if (!isThirdParty) continue;
 
-	   return buildCheckResult('subdomain_takeover', findings);
+					// Resolve candidate targets in parallel with other subdomains to avoid serial latency buildup.
+					try {
+						const targetA = await queryDnsRecords(cname, 'A');
+						if (targetA.length === 0) {
+							subdomainFindings.push(
+								createFinding(
+									'subdomain_takeover',
+									`Dangling CNAME: ${fqdn} → ${cname}`,
+									'critical',
+									`Subdomain ${fqdn} points to ${cname}, which does not resolve. This is a potential subdomain takeover vector.`,
+								),
+							);
+						}
+					} catch {
+						subdomainFindings.push(
+							createFinding(
+								'subdomain_takeover',
+								`CNAME resolution failed: ${fqdn} → ${cname}`,
+								'high',
+								`Could not resolve CNAME target ${cname} for ${fqdn}. Manual review recommended.`,
+							),
+						);
+					}
+				}
+			} catch {
+				// No CNAME or query failed; not critical.
+			}
+
+			return subdomainFindings;
+		}),
+	);
+
+	for (const subdomainFindings of findingsPerSubdomain) {
+		findings.push(...subdomainFindings);
+	}
+
+	if (findings.length === 0) {
+		findings.push(
+			createFinding(
+				'subdomain_takeover',
+				'No dangling CNAME records found',
+				'info',
+				`No subdomain takeover vectors detected for ${domain} among known/active subdomains.`,
+			),
+		);
+	}
+
+	return buildCheckResult('subdomain_takeover', findings);
 }

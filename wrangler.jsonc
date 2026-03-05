@@ -1,7 +1,7 @@
 {
   "name": "bv-dns-security-mcp",
   "main": "src/index.ts",
-  "compatibility_date": "2025-04-01",
+  "compatibility_date": "2026-03-05",
   "compatibility_flags": [
     "global_fetch_strictly_public"
   ],
@@ -21,6 +21,11 @@
     { "binding": "RATE_LIMIT", "id": "YOUR_RATE_LIMIT_KV_NAMESPACE_ID" },
     { "binding": "SCAN_CACHE", "id": "YOUR_SCAN_CACHE_KV_NAMESPACE_ID" },
     { "binding": "SESSION_STORE", "id": "YOUR_SESSION_STORE_KV_NAMESPACE_ID" }
+  ],
+  // Optional Analytics Engine dataset for usage reporting.
+  // Create the dataset in Cloudflare and replace the placeholder below.
+  "analytics_engine_datasets": [
+    { "binding": "MCP_ANALYTICS", "dataset": "YOUR_ANALYTICS_ENGINE_DATASET" }
   ],
   // Optional auth: leave empty for open-source/local mode.
   // For production auth, set with: wrangler secret put BV_API_KEY
