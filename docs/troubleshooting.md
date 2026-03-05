@@ -176,13 +176,15 @@ curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
 - `401 Unauthorized`: Missing or invalid bearer token while auth is enabled.
 - `Invalid or missing session`: Session mismatch between client and server. Re-initialize client session and retry.
 - `429 Too Many Requests`: Rate-limited (`10/min`, `100/hr` per IP for unauthenticated `tools/call`).
+- `Error: An unexpected error occurred` on `tools/call` with IP-like domain input: input validation rejected an IP literal form. Use a real DNS domain name (for example `example.com`) instead of values like `127.1`, `0177.0.0.1`, `8.8.8.8`, or `0x8.0x8.0x8.0x8`.
+- `-32601 Method not found: prompts/list`: Expected. This server does not implement prompt methods (`prompts/list`, `prompts/get`). Use `tools/list` / `tools/call` and `resources/list` / `resources/read`.
 
 ## 4. Debugging Checklist
 
 - Confirm endpoint URL is correct.
 - Confirm auth mode (`open` vs bearer) matches deployment configuration.
 - Verify request body is valid JSON-RPC 2.0.
-- Verify `domain` is a valid public domain.
+- Verify `domain` is a valid public DNS domain name (not an IPv4 literal in standard or alternate numeric notation).
 - If self-hosted, inspect Wrangler/Worker logs for request ID and tool error details.
 
 ## 5. Local Development Checks

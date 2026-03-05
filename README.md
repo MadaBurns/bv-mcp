@@ -112,6 +112,10 @@ Scope and limitations are documented in `docs/coverage.md`.
 | `DELETE` | `/mcp` | Session termination |
 | `GET` | `/health` | Health probe |
 
+Supported JSON-RPC protocol methods include `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, and `resources/read`.
+
+This server does not currently implement prompt APIs such as `prompts/list` or `prompts/get`; those calls return `-32601 Method not found`.
+
 ## Architecture Notes
 
 Request flow:
@@ -135,6 +139,7 @@ Security and operational behaviors are documented in `docs/security-and-observab
 High-level summary:
 
 - Domain inputs are validated and sanitized before execution.
+- IP literals are rejected across standard and alternate numeric forms (for example `127.1`, `0177.0.0.1`, `8.8.8.8`, `0x8.0x8.0x8.0x8`).
 - SSRF protections block unsafe/private targets.
 - Error responses are sanitized.
 - DNS resolution is performed through Cloudflare DoH.
