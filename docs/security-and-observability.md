@@ -5,10 +5,13 @@ Canonical reference for runtime security behavior, request handling, and observa
 ## Security Controls
 
 - Input validation: Domain inputs are sanitized and validated before checks run.
+- IP literal blocking: IPv4 literals are rejected across standard and alternate numeric forms (short-form, octal, hex, dword, and dotted-numeric payloads).
 - SSRF protections: Internal/reserved targets and known unsafe patterns are blocked.
 - Authentication: Optional bearer token via `BV_API_KEY`.
 - Error sanitization: Unknown internal errors are not exposed directly to clients.
 - Runtime constraints: Cloudflare Workers only (Web APIs, no Node.js APIs).
+
+Examples rejected by validation include `127.1`, `0177.0.0.1`, `8.8.8.8`, `0x8.0x8.0x8.0x8`, and `999.999.999.999`.
 
 ## Authentication Model
 
