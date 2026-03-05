@@ -32,17 +32,20 @@
 		"deploy": "wrangler deploy -c .dev/wrangler.local.jsonc",
 		"test": "vitest run --coverage",
 		"typecheck": "tsc --noEmit",
-		"cf-typegen": "wrangler types"
+		"cf-typegen": "wrangler types",
+		"lint": "eslint .",
+		"lint:fix": "eslint . --fix"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.12.17",
-		"@cloudflare/workers-types": "^4.20260304.0",
 		"@types/punycode": "^2.1.4",
 		"@vitest/coverage-istanbul": "^3.2.4",
+		"eslint": "^10.0.2",
 		"hono": "^4.12.2",
 		"typescript": "^5.5.2",
+		"typescript-eslint": "^8.56.1",
 		"vitest": "^3.2.4",
-		"wrangler": "^4.68.1"
+		"wrangler": "^4.70.0"
 	},
 	"dependencies": {
 		"punycode": "^2.3.1"

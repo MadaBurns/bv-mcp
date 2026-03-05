@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { queryDns, queryDnsRecords, queryTxtRecords, checkDnssec, queryMxRecords, DnsQueryError, RecordType } from '../src/lib/dns';
-import { setupFetchMock, mockFetchResponse, mockFetchError } from './helpers/dns-mock';
+import { describe, it, expect, afterEach } from 'vitest';
+import { queryTxtRecords, checkDnssec, queryMxRecords, RecordType } from '../src/lib/dns';
+import { setupFetchMock, mockFetchResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
