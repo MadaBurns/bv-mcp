@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Fixed
 
 - Analytics Engine payload schema now uses a single index per data point to match platform limits and prevent `writeDataPoint(): Maximum of 1 indexes supported` warnings.
+- Reduced in-isolate KV rate limiter race amplification by serializing per-IP `get/check/put` updates.
+- Added unauthenticated session-creation throttling (`30/min` per IP) for `initialize` and new SSE session bootstrap.
+- Bounded in-memory session fallback with LRU eviction (`2000` max active sessions) to reduce memory-pressure abuse risk.
 
 ### Changed
 
@@ -40,6 +43,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - DMARC third-party aggregator detection (dmarcian, valimail, agari, returnpath, postmarkapp, dmarcanalyzer, mimecast, proofpoint, 250ok, easydmarc).
 - DMARC alignment mode validation tests for `adkim=` and `aspf=` tags in `test/check-dmarc.spec.ts`.
 - 18 new DMARC test cases and 5 new DKIM test cases.
+- Rate limiter regression test for concurrent KV requests (`test/rate-limiter.spec.ts`).
+- Session creation limiter tests in `test/session.spec.ts`.
+- Initialize throttling integration test in `test/index.spec.ts`.
 
 ## [1.0.2] - 2026-03-04
 

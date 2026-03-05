@@ -192,6 +192,25 @@ describe('rate-limiter', () => {
 			const hourPutCall = (kv.put as ReturnType<typeof vi.fn>).mock.calls[1];
 			expect(hourPutCall[1]).toBe('1');
 		});
+
+		it('serializes concurrent KV checks per IP to reduce local race bypass', async () => {
+			const kvState = new Map<string, string>();
+			const kv = {
+				get: vi.fn(async (key: string) => kvState.get(key) ?? null),
+				put: vi.fn(async (key: string, value: string) => {
+					kvState.set(key, value);
+				}),
+			} as unknown as KVNamespace;
+
+			const attempts = 20;
+			const results = await Promise.all(
+				Array.from({ length: attempts }, () => checkRateLimit('203.0.113.10', kv)),
+			);
+
+			const allowedCount = results.filter((r) => r.allowed).length;
+			expect(allowedCount).toBe(10);
+			expect(results.some((r) => !r.allowed)).toBe(true);
+		});
 	});
 
 	// -----------------------------------------------------------------------

@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSession, validateSession, deleteSession, resetSessions, SESSION_TTL_MS } from '../src/lib/session';
+import {
+	createSession,
+	validateSession,
+	deleteSession,
+	resetSessions,
+	SESSION_TTL_MS,
+	checkSessionCreateRateLimit,
+} from '../src/lib/session';
 
 afterEach(() => {
 	resetSessions();
@@ -65,5 +72,27 @@ describe('session', () => {
 		const id = await createSession();
 		expect(await deleteSession(id)).toBe(true);
 		expect(await validateSession(id)).toBe(false);
+	});
+
+	it('limits repeated session creation attempts per IP window', () => {
+		for (let i = 0; i < 30; i++) {
+			const allowed = checkSessionCreateRateLimit('198.51.100.25');
+			expect(allowed.allowed).toBe(true);
+		}
+
+		const blocked = checkSessionCreateRateLimit('198.51.100.25');
+		expect(blocked.allowed).toBe(false);
+		expect(blocked.retryAfterMs).toBeGreaterThan(0);
+	});
+
+	it('resetSessions clears session creation limiter state', () => {
+		for (let i = 0; i < 30; i++) {
+			checkSessionCreateRateLimit('203.0.113.7');
+		}
+		expect(checkSessionCreateRateLimit('203.0.113.7').allowed).toBe(false);
+
+		resetSessions();
+
+		expect(checkSessionCreateRateLimit('203.0.113.7').allowed).toBe(true);
 	});
 });

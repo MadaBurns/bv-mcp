@@ -150,6 +150,27 @@ describe('DNS Security MCP Server', () => {
 			expect(sessionId).toBeTruthy();
 			expect(sessionId!.length).toBeGreaterThanOrEqual(32);
 		});
+
+		it('throttles excessive initialize calls from one IP', async () => {
+			let lastResponse: Response | undefined;
+			for (let i = 0; i < 31; i++) {
+				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'cf-connecting-ip': '198.51.100.200',
+					},
+					body: JSON.stringify({ jsonrpc: '2.0', id: i + 1000, method: 'initialize', params: {} }),
+				});
+				const ctx = createExecutionContext();
+				lastResponse = await worker.fetch(request, env, ctx);
+				await waitOnExecutionContext(ctx);
+			}
+
+			expect(lastResponse).toBeDefined();
+			expect(lastResponse!.status).toBe(429);
+			expect(lastResponse!.headers.get('retry-after')).toBeTruthy();
+		});
 	});
 
 	describe('POST /mcp - tools/list', () => {

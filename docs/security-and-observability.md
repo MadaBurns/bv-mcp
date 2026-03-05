@@ -23,9 +23,12 @@ Canonical implementation lives in `src/lib/rate-limiter.ts`.
 
 - Per-IP limit: `10` requests/minute and `100` requests/hour.
 - Enforcement backend: KV when bound; in-memory fallback when KV is unavailable.
+- KV-backed checks now serialize per-IP updates within an isolate to reduce local race amplification.
 - Scope: `tools/call` traffic is counted.
 - Protocol methods (`initialize`, `tools/list`, `resources/*`, `ping`, `notifications/*`) are not counted.
 - Authenticated requests (valid bearer token) bypass rate limiting.
+
+Note: KV counters remain fixed-window and are not globally atomic across isolates.
 
 ## Request and Session Safety
 
@@ -33,6 +36,8 @@ Canonical implementation lives in `src/lib/rate-limiter.ts`.
 - Client IP source: `cf-connecting-ip`.
 - Session storage supports KV-backed state with in-memory fallback.
 - Session idle timeout is enforced with sliding refresh.
+- Session creation is best-effort rate-limited per IP (`30` session creations/minute) for unauthenticated traffic.
+- In-memory session fallback is bounded with least-recently-used eviction (`2000` max active sessions).
 
 ## Logging and Observability
 

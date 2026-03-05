@@ -33,6 +33,10 @@ const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 const CLEANUP_INTERVAL_MS = 300_000; // 5 minutes
 
+// Best-effort per-IP serialization for KV updates inside a single isolate.
+// This does not provide cross-isolate atomicity, but it prevents local races.
+const kvIpLockTails = new Map<string, Promise<void>>();
+
 // ---------------------------------------------------------------------------
 // In-memory fallback
 // ---------------------------------------------------------------------------
@@ -121,6 +125,7 @@ function checkRateLimitInMemory(ip: string): RateLimitResult {
 // ---------------------------------------------------------------------------
 
 async function checkRateLimitKV(ip: string, kv: KVNamespace): Promise<RateLimitResult> {
+	return withIpKvLock(ip, async () => {
 	const now = Date.now();
 	const minuteWindow = Math.floor(now / MINUTE_MS);
 	const hourWindow = Math.floor(now / HOUR_MS);
@@ -169,6 +174,27 @@ async function checkRateLimitKV(ip: string, kv: KVNamespace): Promise<RateLimitR
 		minuteRemaining: MINUTE_LIMIT - newMinute,
 		hourRemaining: HOUR_LIMIT - newHour,
 	};
+	});
+}
+
+async function withIpKvLock<T>(ip: string, work: () => Promise<T>): Promise<T> {
+	const prevTail = kvIpLockTails.get(ip) ?? Promise.resolve();
+	let release: (() => void) | undefined;
+	const current = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const tail = prevTail.then(() => current);
+	kvIpLockTails.set(ip, tail);
+
+	await prevTail;
+	try {
+		return await work();
+	} finally {
+		release?.();
+		if (kvIpLockTails.get(ip) === tail) {
+			kvIpLockTails.delete(ip);
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -139,6 +139,7 @@ High-level summary:
 - Error responses are sanitized.
 - DNS resolution is performed through Cloudflare DoH.
 - Rate limiting defaults to `10/min` and `100/hr` per IP for unauthenticated `tools/call` traffic.
+- Session creation is rate-limited (`30/min` per IP) for unauthenticated `initialize` and new SSE session bootstrap.
 
 ## Provider Detection
 

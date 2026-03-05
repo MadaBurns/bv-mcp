@@ -18,7 +18,7 @@ import { handleToolsList, handleToolsCall } from './handlers/tools';
 import { handleResourcesList, handleResourcesRead } from './handlers/resources';
 import { logEvent, logError } from './lib/log';
 import { jsonRpcError, jsonRpcSuccess, JSON_RPC_ERRORS, sanitizeErrorMessage } from './lib/json-rpc';
-import { createSession, validateSession, deleteSession } from './lib/session';
+import { createSession, validateSession, deleteSession, checkSessionCreateRateLimit } from './lib/session';
 import { isAuthorizedRequest, unauthorizedResponse } from './lib/auth';
 import { sseEvent, acceptsSSE, createSseStream } from './lib/sse';
 import { createAnalyticsClient } from './lib/analytics';
@@ -305,6 +305,20 @@ app.post('/mcp', async (c) => {
 
 		       switch (method) {
 			       case 'initialize': {
+				       if (!isAuthenticated) {
+					       const sessionCreateGate = checkSessionCreateRateLimit(ip);
+					       if (!sessionCreateGate.allowed) {
+						       const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
+						       return c.json(
+							       jsonRpcError(id, JSON_RPC_ERRORS.INTERNAL_ERROR, `Rate limit exceeded. Retry after ${retryAfterSeconds}s`),
+							       429,
+							       {
+								       ...rateHeaders,
+								       'retry-after': String(retryAfterSeconds),
+							       },
+						       );
+					       }
+				       }
 				       newSessionId = await createSession(c.env.SESSION_STORE);
 				       const result = {
 					       protocolVersion: '2025-03-26',
@@ -471,8 +485,19 @@ app.get('/mcp', async (c) => {
 	// Session initiation or resume
 	const sessionId = c.req.header('mcp-session-id');
 	let effectiveSessionId = sessionId;
+	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
 
 	if (!effectiveSessionId) {
+		const sessionCreateGate = checkSessionCreateRateLimit(ip);
+		if (!sessionCreateGate.allowed) {
+			const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
+			return new Response(`Rate limit exceeded. Retry after ${retryAfterSeconds}s`, {
+				status: 429,
+				headers: {
+					'retry-after': String(retryAfterSeconds),
+				},
+			});
+		}
 		effectiveSessionId = await createSession(c.env.SESSION_STORE);
 	} else if (!(await validateSession(effectiveSessionId, c.env.SESSION_STORE))) {
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: invalid session'), 400);

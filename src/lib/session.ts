@@ -18,6 +18,9 @@ export const activeSessions = new Map<string, SessionRecord>();
 /** Session idle TTL (30 minutes) */
 export const SESSION_TTL_MS = 30 * 60 * 1000;
 const SESSION_TTL_SECONDS = Math.ceil(SESSION_TTL_MS / 1000);
+const SESSION_CREATE_WINDOW_MS = 60_000;
+const SESSION_CREATE_LIMIT_PER_MINUTE = 30;
+const MAX_IN_MEMORY_SESSIONS = 2000;
 
 const SESSION_KEY_PREFIX = 'session:';
 
@@ -25,6 +28,7 @@ const SESSION_KEY_PREFIX = 'session:';
 const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
 let lastCleanupAt = 0;
+const sessionCreateByIp = new Map<string, number[]>();
 
 function isExpired(lastAccessedAt: number, now: number): boolean {
 	return now - lastAccessedAt > SESSION_TTL_MS;
@@ -43,6 +47,64 @@ function maybeCleanupSessions(now: number): void {
 
 function sessionKey(id: string): string {
 	return `${SESSION_KEY_PREFIX}${id}`;
+}
+
+function pruneRecentTimestamps(timestamps: number[], windowMs: number, now: number): number[] {
+	const cutoff = now - windowMs;
+	let i = 0;
+	while (i < timestamps.length && timestamps[i] <= cutoff) {
+		i++;
+	}
+	return i > 0 ? timestamps.slice(i) : timestamps;
+}
+
+function evictLeastRecentlyUsedSession(): void {
+	let oldestId: string | undefined;
+	let oldestAccess = Number.POSITIVE_INFINITY;
+
+	for (const [id, session] of activeSessions.entries()) {
+		if (session.lastAccessedAt < oldestAccess) {
+			oldestAccess = session.lastAccessedAt;
+			oldestId = id;
+		}
+	}
+
+	if (oldestId) {
+		activeSessions.delete(oldestId);
+	}
+}
+
+export interface SessionCreateRateResult {
+	allowed: boolean;
+	retryAfterMs?: number;
+	remaining: number;
+}
+
+/**
+ * Best-effort per-IP gate for session creation endpoints.
+ * Used to reduce abuse pressure when anonymous clients spam initialize/SSE starts.
+ */
+export function checkSessionCreateRateLimit(ip: string): SessionCreateRateResult {
+	const now = Date.now();
+	const key = ip || 'unknown';
+	const existing = sessionCreateByIp.get(key) ?? [];
+	const recent = pruneRecentTimestamps(existing, SESSION_CREATE_WINDOW_MS, now);
+
+	if (recent.length >= SESSION_CREATE_LIMIT_PER_MINUTE) {
+		const oldest = recent[0];
+		return {
+			allowed: false,
+			retryAfterMs: Math.max(oldest + SESSION_CREATE_WINDOW_MS - now, 0),
+			remaining: 0,
+		};
+	}
+
+	recent.push(now);
+	sessionCreateByIp.set(key, recent);
+	return {
+		allowed: true,
+		remaining: SESSION_CREATE_LIMIT_PER_MINUTE - recent.length,
+	};
 }
 
 async function createSessionKVRecord(id: string, kv: KVNamespace, record: SessionRecord): Promise<void> {
@@ -87,6 +149,10 @@ export async function createSession(kv?: KVNamespace): Promise<string> {
 	}
 
 	activeSessions.set(id, record);
+	maybeCleanupSessions(now);
+	if (activeSessions.size > MAX_IN_MEMORY_SESSIONS) {
+		evictLeastRecentlyUsedSession();
+	}
 	return id;
 }
 
@@ -145,5 +211,6 @@ export async function deleteSession(id: string, kv?: KVNamespace): Promise<boole
 /** Reset all sessions (test helper) */
 export function resetSessions(): void {
 	activeSessions.clear();
+	sessionCreateByIp.clear();
 	lastCleanupAt = 0;
 }
