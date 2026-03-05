@@ -43,7 +43,8 @@ const kvIpLockTails = new Map<string, Promise<void>>();
 const entries = new Map<string, RateLimitEntry>();
 let lastCleanup = Date.now();
 
-function pruneTimestamps(timestamps: number[], windowMs: number, now: number): number[] {
+/** Prune timestamps that fall outside a sliding window. */
+export function pruneTimestamps(timestamps: number[], windowMs: number, now: number): number[] {
 	const cutoff = now - windowMs;
 	let i = 0;
 	while (i < timestamps.length && timestamps[i] <= cutoff) {
@@ -222,31 +223,8 @@ export async function checkRateLimit(ip: string, kv?: KVNamespace): Promise<Rate
 }
 
 /**
- * Get current rate limit status for an IP without consuming a request.
- */
-export function getRateLimitStatus(ip: string): RateLimitResult {
-	const now = Date.now();
-	const entry = entries.get(ip);
-
-	if (!entry) {
-		return { allowed: true, minuteRemaining: MINUTE_LIMIT, hourRemaining: HOUR_LIMIT };
-	}
-
-	const minuteTimestamps = pruneTimestamps(entry.minute.timestamps, MINUTE_MS, now);
-	const hourTimestamps = pruneTimestamps(entry.hour.timestamps, HOUR_MS, now);
-
-	const minuteCount = minuteTimestamps.length;
-	const hourCount = hourTimestamps.length;
-
-	return {
-		allowed: minuteCount < MINUTE_LIMIT && hourCount < HOUR_LIMIT,
-		minuteRemaining: Math.max(MINUTE_LIMIT - minuteCount, 0),
-		hourRemaining: Math.max(HOUR_LIMIT - hourCount, 0),
-	};
-}
-
-/**
  * Reset rate limit state for an IP (useful for testing).
+ * @internal Exported for test use only.
  */
 export function resetRateLimit(ip: string): void {
 	entries.delete(ip);
@@ -254,6 +232,7 @@ export function resetRateLimit(ip: string): void {
 
 /**
  * Reset all rate limit state (useful for testing).
+ * @internal Exported for test use only.
  */
 export function resetAllRateLimits(): void {
 	entries.clear();

@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { TTLCache, cacheGet, cacheSet, scanCache } from '../src/lib/cache';
+import { TTLCache, cacheGet, cacheSet, inMemoryCache, runWithCache } from '../src/lib/cache';
 
 afterEach(() => {
 	vi.restoreAllMocks();
-	scanCache.clear();
+	inMemoryCache.clear();
 });
 
 describe('TTLCache', () => {
@@ -129,14 +129,14 @@ describe('TTLCache', () => {
 
 describe('cacheGet / cacheSet (KV-backed)', () => {
 	it('without KV: cacheGet returns value from in-memory cache', async () => {
-		scanCache.set('key1', 'memval');
+		inMemoryCache.set('key1', 'memval');
 		const result = await cacheGet<string>('key1');
 		expect(result).toBe('memval');
 	});
 
 	it('without KV: cacheSet writes to in-memory cache', async () => {
 		await cacheSet('key2', 'written');
-		expect(scanCache.get('key2')).toBe('written');
+		expect(inMemoryCache.get('key2')).toBe('written');
 	});
 
 	it('with KV: cacheGet returns value from KV', async () => {
@@ -159,7 +159,7 @@ describe('cacheGet / cacheSet (KV-backed)', () => {
 	});
 
 	it('KV error on get: silently falls back to in-memory', async () => {
-		scanCache.set('fallback', 'inmem');
+		inMemoryCache.set('fallback', 'inmem');
 		const mockKV = {
 			get: vi.fn().mockRejectedValue(new Error('KV failure')),
 			put: vi.fn(),
@@ -174,12 +174,82 @@ describe('cacheGet / cacheSet (KV-backed)', () => {
 			put: vi.fn().mockRejectedValue(new Error('KV failure')),
 		};
 		await cacheSet('errkey', 'errval', mockKV as unknown as KVNamespace);
-		expect(scanCache.get('errkey')).toBe('errval');
+		expect(inMemoryCache.get('errkey')).toBe('errval');
 	});
 
-	it('scanCache is the global in-memory TTLCache instance', () => {
-		expect(scanCache).toBeInstanceOf(TTLCache);
-		scanCache.set('test', 'val');
-		expect(scanCache.get('test')).toBe('val');
+	it('inMemoryCache is the global in-memory TTLCache instance', () => {
+		expect(inMemoryCache).toBeInstanceOf(TTLCache);
+		inMemoryCache.set('test', 'val');
+		expect(inMemoryCache.get('test')).toBe('val');
+	});
+});
+
+describe('runWithCache (stampede protection)', () => {
+	it('deduplicates concurrent calls for the same key', async () => {
+		let callCount = 0;
+		const run = () => {
+			callCount++;
+			return new Promise<string>((resolve) => setTimeout(() => resolve('result'), 50));
+		};
+		const [r1, r2, r3] = await Promise.all([
+			runWithCache('dedup-test', run),
+			runWithCache('dedup-test', run),
+			runWithCache('dedup-test', run),
+		]);
+		expect(callCount).toBe(1);
+		expect(r1).toBe('result');
+		expect(r2).toBe('result');
+		expect(r3).toBe('result');
+	});
+
+	it('allows new calls after previous in-flight promise resolves', async () => {
+		let callCount = 0;
+		const run = () => {
+			callCount++;
+			return Promise.resolve('value-' + callCount);
+		};
+		const r1 = await runWithCache('reuse-test', run);
+		expect(r1).toBe('value-1');
+
+		// Clear the cache so the second call actually runs
+		inMemoryCache.clear();
+
+		const r2 = await runWithCache('reuse-test', run);
+		expect(r2).toBe('value-2');
+		expect(callCount).toBe(2);
+	});
+
+	it('cleans up in-flight entry on rejection so retries work', async () => {
+		let attempt = 0;
+		const run = () => {
+			attempt++;
+			if (attempt === 1) return Promise.reject(new Error('fail'));
+			return Promise.resolve('recovered');
+		};
+
+		await expect(runWithCache('fail-test', run)).rejects.toThrow('fail');
+
+		const r2 = await runWithCache('fail-test', run);
+		expect(r2).toBe('recovered');
+		expect(attempt).toBe(2);
+	});
+
+	it('uses different keys independently', async () => {
+		let countA = 0;
+		let countB = 0;
+		const runA = () => {
+			countA++;
+			return new Promise<string>((resolve) => setTimeout(() => resolve('a'), 50));
+		};
+		const runB = () => {
+			countB++;
+			return new Promise<string>((resolve) => setTimeout(() => resolve('b'), 50));
+		};
+
+		const [rA, rB] = await Promise.all([runWithCache('key-a', runA), runWithCache('key-b', runB)]);
+		expect(rA).toBe('a');
+		expect(rB).toBe('b');
+		expect(countA).toBe(1);
+		expect(countB).toBe(1);
 	});
 });

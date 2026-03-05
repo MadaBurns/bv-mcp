@@ -6,6 +6,8 @@
  * Workers-compatible: uses only fetch API, no Node.js APIs.
  */
 
+import { DNS_TIMEOUT_MS, DNS_RETRIES } from './config';
+
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
 
 /** Standard DNS record type codes */
@@ -35,7 +37,7 @@ export interface DnsAnswer {
 }
 
 /** A single DNS authority record */
-export interface DnsAuthority {
+interface DnsAuthority {
 	name: string;
 	type: number;
 	TTL: number;
@@ -43,7 +45,7 @@ export interface DnsAuthority {
 }
 
 /** Cloudflare DoH JSON wire-format response */
-export interface DohResponse {
+interface DohResponse {
 	Status: number;
 	TC: boolean;
 	RD: boolean;
@@ -84,8 +86,8 @@ export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck
        });
 
        const url = `${DOH_ENDPOINT}?${params.toString()}`;
-	const timeoutMs = opts?.timeoutMs ?? 5000;
-	const retries = opts?.retries ?? 2;
+	const timeoutMs = opts?.timeoutMs ?? DNS_TIMEOUT_MS;
+	const retries = opts?.retries ?? DNS_RETRIES;
 
        for (let attempt = 0; attempt <= retries; attempt++) {
 	       const controller = new AbortController();

@@ -166,13 +166,18 @@ export function createFinding(
  * Uses weighted average of category scores.
  */
 export function computeScanScore(results: CheckResult[]): ScanScore {
-	const categoryScores = {} as Record<CheckCategory, number>;
+	const partialScores: Partial<Record<CheckCategory, number>> = {};
 	const allFindings: Finding[] = [];
 
+	// Initialize all categories to 100 (perfect) by default
+	for (const cat of Object.keys(CATEGORY_DISPLAY_WEIGHTS) as CheckCategory[]) {
+		partialScores[cat] = 100;
+	}
+
+	// All CheckCategory keys are now populated — safe to treat as complete
+	const categoryScores = partialScores as Record<CheckCategory, number>;
+
 	if (results.length === 0) {
-		for (const cat of Object.keys(CATEGORY_DISPLAY_WEIGHTS) as CheckCategory[]) {
-			categoryScores[cat] = 100;
-		}
 		return {
 			overall: 100,
 			grade: scoreToGrade(100),
@@ -180,11 +185,6 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 			findings: [],
 			summary: `Excellent! No security issues found. Grade: ${scoreToGrade(100)}`,
 		};
-	}
-
-	// Initialize all categories to 100 (perfect) by default
-	for (const cat of Object.keys(CATEGORY_DISPLAY_WEIGHTS) as CheckCategory[]) {
-		categoryScores[cat] = 100;
 	}
 
 	// Apply actual scores from results

@@ -76,3 +76,49 @@ export function mockFetchResponse(response: object, ok = true, status = 200) {
 export function mockFetchError(error?: Error) {
 	globalThis.fetch = vi.fn().mockRejectedValue(error ?? new Error('Network error'));
 }
+
+// ---------------------------------------------------------------------------
+// Convenience response builders (shared across scan-domain and handler tests)
+// ---------------------------------------------------------------------------
+
+/** Build a DoH response containing TXT records for a domain. */
+export function txtResponse(domain: string, records: string[]) {
+	return createDohResponse(
+		[{ name: domain, type: 16 }],
+		records.map((data) => ({ name: domain, type: 16, TTL: 300, data: `"${data}"` })),
+	);
+}
+
+/** Build a DoH response containing NS records for a domain. */
+export function nsResponse(domain: string, nameservers: string[]) {
+	return createDohResponse(
+		[{ name: domain, type: 2 }],
+		nameservers.map((data) => ({ name: domain, type: 2, TTL: 300, data })),
+	);
+}
+
+/** Build a DoH response containing CAA records for a domain. */
+export function caaResponse(domain: string, records: string[]) {
+	return createDohResponse(
+		[{ name: domain, type: 257 }],
+		records.map((data) => ({ name: domain, type: 257, TTL: 300, data })),
+	);
+}
+
+/** Build a DoH response for a DNSSEC check (A record with AD flag). */
+export function dnssecResponse(domain: string, ad: boolean) {
+	return createDohResponse([{ name: domain, type: 1 }], [{ name: domain, type: 1, TTL: 300, data: '1.2.3.4' }], {
+		ad,
+	});
+}
+
+/** Build a mock HTTP Response with text body, status, and optional headers. */
+export function httpResponse(body: string, status = 200, headers?: Headers) {
+	return {
+		ok: status >= 200 && status < 300,
+		status,
+		headers: headers ?? new Headers({ 'strict-transport-security': 'max-age=31536000; includeSubDomains' }),
+		text: () => Promise.resolve(body),
+		json: () => Promise.resolve({}),
+	} as unknown as Response;
+}

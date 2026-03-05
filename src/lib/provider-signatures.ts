@@ -183,7 +183,10 @@ export async function loadProviderSignatures(options?: LoadProviderSignaturesOpt
 	}
 }
 
-/** Test helper to reset provider signature loader state between cases. */
+/**
+ * Test helper to reset provider signature loader state between cases.
+ * @internal Exported for test use only.
+ */
 export function resetProviderSignatureState(): void {
 	lastKnownGood = null;
 	runtimeSignatureCache = null;

@@ -16,20 +16,6 @@ import {
  * Compatible with Cloudflare Workers runtime (no Node.js APIs).
  */
 
-/** Blocked TLDs and suffixes that should never be queried */
-
-/** Blocked exact hostnames */
-
-/** RFC 1918 / loopback patterns to reject in domain names */
-
-/** DNS rebinding service suffixes to block */
-
-/** Maximum allowed domain length per RFC 1035 */
-
-/** Maximum label length per RFC 1035 */
-
-/** Valid domain label pattern: alphanumeric and hyphens, no leading/trailing hyphens */
-
 export interface ValidationResult {
 	valid: boolean;
 	error?: string;
@@ -135,13 +121,4 @@ export function sanitizeDomain(input: string): string {
        }
 }
 
-/**
- * Sanitize a generic user-provided string for safe inclusion in responses.
- * Strips control characters and limits length.
- */
-export function sanitizeInput(input: string, maxLength = 500): string {
-	if (!input || typeof input !== 'string') return '';
-	// Remove control characters (except newline and tab)
-	return input.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').slice(0, maxLength);
-}
 

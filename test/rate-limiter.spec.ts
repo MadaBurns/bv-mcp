@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { checkRateLimit, resetRateLimit, resetAllRateLimits, getRateLimitStatus } from '../src/lib/rate-limiter';
+import { checkRateLimit, resetRateLimit, resetAllRateLimits } from '../src/lib/rate-limiter';
 
 afterEach(() => {
 	resetAllRateLimits();
@@ -94,26 +94,6 @@ describe('rate-limiter', () => {
 			const resultB = await checkRateLimit('5.6.7.8');
 			expect(resultB.allowed).toBe(true);
 			expect(resultB.minuteRemaining).toBe(9);
-		});
-	});
-
-	// -----------------------------------------------------------------------
-	// getRateLimitStatus (read-only)
-	// -----------------------------------------------------------------------
-	describe('getRateLimitStatus', () => {
-		it('returns status without consuming a request', async () => {
-			await checkRateLimit('1.2.3.4'); // consume 1 request
-			const status1 = getRateLimitStatus('1.2.3.4');
-			const status2 = getRateLimitStatus('1.2.3.4');
-			expect(status1.minuteRemaining).toBe(status2.minuteRemaining);
-			expect(status1.hourRemaining).toBe(status2.hourRemaining);
-		});
-
-		it('returns full remaining for unknown IP', () => {
-			const status = getRateLimitStatus('unknown-ip');
-			expect(status.allowed).toBe(true);
-			expect(status.minuteRemaining).toBe(10);
-			expect(status.hourRemaining).toBe(100);
 		});
 	});
 

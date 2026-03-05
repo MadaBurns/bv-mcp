@@ -7,12 +7,12 @@
  * Cloudflare Workers compatible - no Node.js APIs.
  */
 
-export interface CacheEntry<T> {
+interface CacheEntry<T> {
 	value: T;
 	expiresAt: number;
 }
 
-export interface CacheOptions {
+interface CacheOptions {
 	/** Time-to-live in milliseconds. Default: 5 minutes (300_000ms) */
 	ttlMs?: number;
 	/** Maximum number of entries. Default: 1000 */
@@ -113,8 +113,11 @@ export class TTLCache<T = unknown> {
 	}
 }
 
+/** In-flight promise map for cache stampede (thundering herd) protection */
+const inflight = new Map<string, Promise<unknown>>();
+
 /** In-memory cache instance used as fallback when KV is unavailable */
-const inMemoryCache = new TTLCache<unknown>({
+export const inMemoryCache = new TTLCache<unknown>({
 	ttlMs: DEFAULT_TTL_MS,
 	maxEntries: DEFAULT_MAX_ENTRIES,
 });
@@ -167,6 +170,7 @@ export async function cacheSet(key: string, value: unknown, kv?: KVNamespace): P
 /**
  * Run a function with cache-aside logic: returns cached value if available,
  * otherwise executes the function and caches the result.
+ * Includes in-flight deduplication to prevent cache stampedes.
  *
  * @param key - Cache key
  * @param run - Async function to execute on cache miss
@@ -175,17 +179,20 @@ export async function cacheSet(key: string, value: unknown, kv?: KVNamespace): P
  */
 export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: KVNamespace): Promise<T> {
 	const cached = await cacheGet<T>(key, kv);
-	if (cached !== undefined) {
-		return cached;
-	}
+	if (cached !== undefined) return cached;
 
-	const result = await run();
-	await cacheSet(key, result, kv);
-	return result;
+	const existing = inflight.get(key);
+	if (existing) return existing as Promise<T>;
+
+	const promise = run()
+		.then(async (result) => {
+			await cacheSet(key, result, kv);
+			return result;
+		})
+		.finally(() => {
+			inflight.delete(key);
+		});
+
+	inflight.set(key, promise);
+	return promise;
 }
-
-/**
- * @deprecated Use cacheGet/cacheSet with KV namespace instead.
- * Kept for backward compatibility during migration.
- */
-export const scanCache = inMemoryCache;

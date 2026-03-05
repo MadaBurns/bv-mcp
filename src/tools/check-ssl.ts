@@ -7,6 +7,7 @@
  */
 
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
+import { HTTPS_TIMEOUT_MS } from '../lib/config';
 
 /**
  * Check SSL/TLS configuration for a domain.
@@ -40,7 +41,7 @@ async function checkHttps(domain: string): Promise<Finding[]> {
 		const response = await fetch(`https://${domain}`, {
 			method: 'HEAD',
 			redirect: 'follow',
-			signal: AbortSignal.timeout(10_000),
+			signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
 		});
 
 		// Check if we got redirected to HTTP (downgrade)
@@ -130,7 +131,7 @@ async function checkHttpRedirect(domain: string): Promise<Finding[]> {
 		const response = await fetch(`http://${domain}`, {
 			method: 'HEAD',
 			redirect: 'manual',
-			signal: AbortSignal.timeout(10_000),
+			signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
 		});
 		// 3xx with Location header pointing to HTTPS = good
 		const location = response.headers.get('location');

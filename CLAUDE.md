@@ -77,7 +77,7 @@ MCP Client → POST /mcp → Auth middleware → Rate limiter → JSON-RPC dispa
 
 - `createFinding()` + `buildCheckResult()` from `lib/scoring.ts` — never construct findings manually
 - `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs
-- `mcpError()` / `mcpText()` from `lib/sanitize.ts` for MCP response formatting
+- `mcpError()` / `mcpText()` in `handlers/tools.ts` for MCP response formatting
 - `cacheGet()` / `cacheSet()` from `lib/cache.ts` — supports KV and in-memory
 - JSDoc (`/** */`) on exported functions
 - `import type { ... }` for type-only imports
@@ -97,7 +97,7 @@ All other errors become generic messages. New validation errors that need to rea
 
 ## Scoring
 
-Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_WEIGHTS` map exists but is unused in scoring):
+Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEIGHTS` map exists but only its keys are used to enumerate categories — the numeric weight values are never read in production):
 
 | Category | Importance | Critical? |
 |----------|------------|-----------|

@@ -7,6 +7,8 @@
  * on `DELETE /mcp` or when expired.
  */
 
+import { pruneTimestamps } from './rate-limiter';
+
 interface SessionRecord {
 	createdAt: number;
 	lastAccessedAt: number;
@@ -49,15 +51,6 @@ function sessionKey(id: string): string {
 	return `${SESSION_KEY_PREFIX}${id}`;
 }
 
-function pruneRecentTimestamps(timestamps: number[], windowMs: number, now: number): number[] {
-	const cutoff = now - windowMs;
-	let i = 0;
-	while (i < timestamps.length && timestamps[i] <= cutoff) {
-		i++;
-	}
-	return i > 0 ? timestamps.slice(i) : timestamps;
-}
-
 function evictLeastRecentlyUsedSession(): void {
 	let oldestId: string | undefined;
 	let oldestAccess = Number.POSITIVE_INFINITY;
@@ -88,7 +81,7 @@ export function checkSessionCreateRateLimit(ip: string): SessionCreateRateResult
 	const now = Date.now();
 	const key = ip || 'unknown';
 	const existing = sessionCreateByIp.get(key) ?? [];
-	const recent = pruneRecentTimestamps(existing, SESSION_CREATE_WINDOW_MS, now);
+	const recent = pruneTimestamps(existing, SESSION_CREATE_WINDOW_MS, now);
 
 	if (recent.length >= SESSION_CREATE_LIMIT_PER_MINUTE) {
 		const oldest = recent[0];
@@ -208,7 +201,10 @@ export async function deleteSession(id: string, kv?: KVNamespace): Promise<boole
 	return activeSessions.delete(id);
 }
 
-/** Reset all sessions (test helper) */
+/**
+ * Reset all sessions (test helper).
+ * @internal Exported for test use only.
+ */
 export function resetSessions(): void {
 	activeSessions.clear();
 	sessionCreateByIp.clear();

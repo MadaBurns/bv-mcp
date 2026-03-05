@@ -1,49 +1,13 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { env } from 'cloudflare:test';
-import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
-import { scanCache } from '../src/lib/cache';
+import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
+import { inMemoryCache } from '../src/lib/cache';
 import type { ScanDomainResult } from '../src/tools/scan-domain';
 
 const { restore } = setupFetchMock();
 
-beforeEach(() => scanCache.clear());
+beforeEach(() => inMemoryCache.clear());
 afterEach(() => restore());
-
-function txtResponse(domain: string, records: string[]) {
-	return createDohResponse(
-		[{ name: domain, type: 16 }],
-		records.map((data) => ({ name: domain, type: 16, TTL: 300, data: `"${data}"` })),
-	);
-}
-
-function nsResponse(domain: string, nameservers: string[]) {
-	return createDohResponse(
-		[{ name: domain, type: 2 }],
-		nameservers.map((data) => ({ name: domain, type: 2, TTL: 300, data })),
-	);
-}
-
-function caaResponse(domain: string, records: string[]) {
-	return createDohResponse(
-		[{ name: domain, type: 257 }],
-		records.map((data) => ({ name: domain, type: 257, TTL: 300, data })),
-	);
-}
-
-function dnssecResponse(domain: string, ad: boolean) {
-	return createDohResponse([{ name: domain, type: 1 }], [{ name: domain, type: 1, TTL: 300, data: '1.2.3.4' }], {
-		ad,
-	});
-}
-
-function httpResponse(body: string, status = 200) {
-	return {
-		ok: status >= 200 && status < 300,
-		status,
-		text: () => Promise.resolve(body),
-		json: () => Promise.resolve({}),
-	} as unknown as Response;
-}
 
 /**
  * Multi-dispatch fetch mock that returns reasonable defaults for all check types.

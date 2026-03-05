@@ -1,48 +1,9 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { setupFetchMock, createDohResponse, mockTxtRecords } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, mockTxtRecords, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
 afterEach(() => restore());
-
-// -- Helper functions for mocking --
-
-function txtResponse(domain: string, records: string[]) {
-	return createDohResponse(
-		[{ name: domain, type: 16 }],
-		records.map((data) => ({ name: domain, type: 16, TTL: 300, data: `"${data}"` })),
-	);
-}
-
-function nsResponse(domain: string, nameservers: string[]) {
-	return createDohResponse(
-		[{ name: domain, type: 2 }],
-		nameservers.map((data) => ({ name: domain, type: 2, TTL: 300, data })),
-	);
-}
-
-function caaResponse(domain: string, records: string[]) {
-	return createDohResponse(
-		[{ name: domain, type: 257 }],
-		records.map((data) => ({ name: domain, type: 257, TTL: 300, data })),
-	);
-}
-
-function dnssecResponse(domain: string, ad: boolean) {
-	return createDohResponse([{ name: domain, type: 1 }], [{ name: domain, type: 1, TTL: 300, data: '1.2.3.4' }], {
-		ad,
-	});
-}
-
-function httpResponse(body: string, status = 200, headers?: Headers) {
-	return {
-		ok: status >= 200 && status < 300,
-		status,
-		headers: headers ?? new Headers({ 'strict-transport-security': 'max-age=31536000; includeSubDomains' }),
-		text: () => Promise.resolve(body),
-		json: () => Promise.resolve({}),
-	} as unknown as Response;
-}
 
 function mockAllChecks() {
 	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {

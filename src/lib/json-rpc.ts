@@ -21,6 +21,7 @@ export const JSON_RPC_ERRORS = {
 	INVALID_PARAMS: -32602,
 	INTERNAL_ERROR: -32603,
 	UNAUTHORIZED: -32001,
+	RATE_LIMITED: -32029,
 } as const;
 
 /** Build a JSON-RPC 2.0 error response object */

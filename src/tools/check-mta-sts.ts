@@ -5,6 +5,7 @@
 
 import { queryTxtRecords } from '../lib/dns';
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
+import { HTTPS_TIMEOUT_MS } from '../lib/config';
 
 /**
  * Check MTA-STS configuration for a domain.
@@ -67,7 +68,7 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 			const policyUrl = `https://mta-sts.${domain}/.well-known/mta-sts.txt`;
 			const response = await fetch(policyUrl, {
 				method: 'GET',
-				signal: AbortSignal.timeout(10_000),
+				signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
 			});
 
 			if (!response.ok) {
@@ -139,10 +140,8 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 
 	// Check for TLSRPT record
 	let hasTlsRptRecord = false;
-	let tlsRptChecked = false;
 	try {
 		const tlsrptRecords = await queryTxtRecords(`_smtp._tls.${domain}`);
-		tlsRptChecked = true;
 		const validRecords = tlsrptRecords.filter((r) => r.toLowerCase().startsWith('v=tlsrptv1'));
 		if (validRecords.length === 0) {
 			findings.push(
@@ -157,7 +156,6 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 			hasTlsRptRecord = true;
 		}
 	} catch {
-		tlsRptChecked = true;
 		findings.push(
 			createFinding(
 				'mta_sts',
@@ -183,7 +181,7 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 	// If both records are missing, add a clear summary and suppress duplicate findings
 	// But preserve DNS error findings so they are not masked
 	const hasDnsErrorFindings = findings.some((f) => f.title.includes('DNS query failed'));
-	if (!hasTxtRecord && tlsRptChecked && !hasTlsRptRecord && !hasDnsErrorFindings) {
+	if (!hasTxtRecord && !hasTlsRptRecord && !hasDnsErrorFindings) {
 		findings = [];
 		findings.push(
 			createFinding(

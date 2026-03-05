@@ -8,7 +8,7 @@
  * Compatible with Cloudflare Workers runtime (no Node.js APIs).
  */
 
-import { type CheckCategory, type CheckResult, type Severity, type ScanScore, buildCheckResult, computeScanScore, createFinding } from '../lib/scoring';
+import { type CheckCategory, type CheckResult, type ScanScore, buildCheckResult, computeScanScore, createFinding } from '../lib/scoring';
 import { cacheGet, cacheSet, runWithCache } from '../lib/cache';
 import { queryTxtRecords } from '../lib/dns';
 import { detectProviderMatches, detectProviderMatchesBySelectors, loadProviderSignatures } from '../lib/provider-signatures';
@@ -255,7 +255,7 @@ function adjustForNonMailDomain(results: CheckResult[], apexDmarcCovers: boolean
 				const reason = apexDmarcCovers
 					? 'expected — no MX records and parent domain DMARC policy covers subdomains'
 					: 'expected — domain has no MX records';
-				return { ...f, severity: 'info' as Severity, detail: `${f.detail} (${reason})` };
+				return { ...f, severity: 'info' as const, detail: `${f.detail} (${reason})` };
 			}
 			return f;
 		});

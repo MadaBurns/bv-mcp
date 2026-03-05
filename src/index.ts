@@ -24,6 +24,7 @@ import { sseEvent, acceptsSSE, createSseStream } from './lib/sse';
 import { createAnalyticsClient } from './lib/analytics';
 import type { JsonRpcRequest } from './lib/json-rpc';
 import { auditSessionCreated } from './lib/audit';
+import { MAX_REQUEST_BODY_BYTES } from './lib/config';
 
 /** Server version — keep in sync with package.json */
 const SERVER_VERSION = '1.0.2';
@@ -72,27 +73,8 @@ app.use(
        }),
 );
 
-// Centralized error handling middleware
-app.use('*', async (c, next) => {
-       try {
-	       await next();
-       } catch (err) {
-	       // Structured error logging
-	       const reqInfo = {
-		       method: c.req.method,
-		       url: c.req.url,
-		       headers: Object.fromEntries(Array.from(c.req.raw.headers as unknown as Iterable<[string, string]>).filter(([k]) => k !== 'authorization')),
-	       };
-	       logError(err instanceof Error ? err : String(err), {
-		       severity: 'error',
-		       details: reqInfo,
-	       });
-	       // Sanitize error response
-	       return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INTERNAL_ERROR, 'Internal server error'), 500);
-       }
-});
-
-// Security headers middleware — apply to all responses
+// Security headers middleware — apply to all responses (registered first so it
+// wraps everything including error-handler responses)
 app.use('*', async (c, next) => {
 	await next();
 	// Prevent MIME type sniffing
@@ -111,6 +93,26 @@ app.use('*', async (c, next) => {
 	c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
 });
 
+// Centralized error handling middleware
+app.use('*', async (c, next) => {
+       try {
+	       await next();
+       } catch (err) {
+	       // Structured error logging
+	       const reqInfo = {
+		       method: c.req.method,
+		       url: c.req.url,
+		       headers: (() => { const h: Record<string, string> = {}; c.req.raw.headers.forEach((v, k) => { if (k !== 'authorization') h[k] = v; }); return h; })(),
+	       };
+	       logError(err instanceof Error ? err : String(err), {
+		       severity: 'error',
+		       details: reqInfo,
+	       });
+	       // Sanitize error response
+	       return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INTERNAL_ERROR, 'Internal server error'), 500);
+       }
+});
+
 // Optional bearer auth for /mcp; open mode when BV_API_KEY is unset/empty.
 // Sets `isAuthenticated` on the Hono context so downstream handlers can check
 // auth status without re-deriving it.
@@ -123,7 +125,7 @@ app.use('/mcp', async (c, next) => {
        }
 
        const authHeader = c.req.header('authorization');
-       if (!isAuthorizedRequest(authHeader, apiKey)) {
+       if (!(await isAuthorizedRequest(authHeader, apiKey))) {
 	       return unauthorizedResponse();
        }
 
@@ -151,7 +153,8 @@ app.post('/mcp', async (c) => {
 	const analytics = createAnalyticsClient(c.env.MCP_ANALYTICS);
 	logAnalyticsBindingStatus(analytics.enabled);
 	// Defensive: normalize all incoming header keys to lowercase
-	const rawHeaders = Object.fromEntries(Array.from(c.req.raw.headers as unknown as Iterable<[string, string]>));
+	const rawHeaders: Record<string, string> = {};
+	c.req.raw.headers.forEach((v, k) => { rawHeaders[k] = v; });
 	const headersLc: Record<string, string> = {};
 	for (const [k, v] of Object.entries(rawHeaders)) headersLc[k.toLowerCase()] = v;
 
@@ -164,24 +167,24 @@ app.post('/mcp', async (c) => {
 	const isAuthenticated = c.get('isAuthenticated');
 
 	// Enforce hard 10KB body size limit (even if content-length is missing or wrong)
-	const MAX_BODY = 10_240;
 	let rawBody = '';
 	const reader = c.req.raw.body?.getReader();
 	if (reader) {
 		let total = 0;
+		const decoder = new TextDecoder();
 		while (true) {
 			const { value, done } = await reader.read();
 			if (done) break;
 			total += value.length;
-			if (total > MAX_BODY) {
+			if (total > MAX_REQUEST_BODY_BYTES) {
 				return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Request body too large'), 413);
 			}
-			rawBody += new TextDecoder().decode(value);
+			rawBody += decoder.decode(value);
 		}
 	} else {
 		// Fallback for environments without .body (should not occur in Workers)
 		rawBody = await c.req.text();
-		if (rawBody.length > MAX_BODY) {
+		if (rawBody.length > MAX_REQUEST_BODY_BYTES) {
 			return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Request body too large'), 413);
 		}
 	}
@@ -252,7 +255,7 @@ app.post('/mcp', async (c) => {
 			return c.json(
 				jsonRpcError(
 					id,
-					JSON_RPC_ERRORS.INTERNAL_ERROR,
+					JSON_RPC_ERRORS.RATE_LIMITED,
 					`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
 				),
 				429,
@@ -310,7 +313,7 @@ app.post('/mcp', async (c) => {
 					       if (!sessionCreateGate.allowed) {
 						       const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
 						       return c.json(
-							       jsonRpcError(id, JSON_RPC_ERRORS.INTERNAL_ERROR, `Rate limit exceeded. Retry after ${retryAfterSeconds}s`),
+							       jsonRpcError(id, JSON_RPC_ERRORS.RATE_LIMITED, `Rate limit exceeded. Retry after ${retryAfterSeconds}s`),
 							       429,
 							       {
 								       ...rateHeaders,
@@ -512,7 +515,7 @@ app.get('/mcp', async (c) => {
 			'Content-Type': 'text/event-stream',
 			'Cache-Control': 'no-cache',
 			Connection: 'keep-alive',
-			'Mcp-Session-Id': effectiveSessionId,
+			'mcp-session-id': effectiveSessionId,
 		},
 	});
 });
