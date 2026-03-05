@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateDomain, sanitizeDomain } from '../src/lib/sanitize';
+import { validateDomain, sanitizeDomain, sanitizeInput } from '../src/lib/sanitize';
 
 describe('sanitize library', () => {
 	describe('validateDomain', () => {
@@ -93,6 +93,27 @@ describe('sanitize library', () => {
 			}
 		});
 
+		it('rejects short-form IPv4 literals that map to blocked ranges', () => {
+			for (const ip of ['127.1', '127.0.1']) {
+				const result = validateDomain(ip);
+				expect(result.valid).toBe(false);
+				expect(result.error).toContain('IP addresses');
+			}
+		});
+
+		it('rejects octal and hex IPv4 literals that map to blocked ranges', () => {
+			for (const ip of ['0177.0.0.1', '0x7f.0.0.1', '0x7f000001', '2130706433', '0x0a000001', '167772161']) {
+				const result = validateDomain(ip);
+				expect(result.valid).toBe(false);
+				expect(result.error).toContain('IP addresses');
+			}
+		});
+
+		it('allows numeric-looking labels in normal FQDNs', () => {
+			expect(validateDomain('0177.example.com')).toEqual({ valid: true });
+			expect(validateDomain('0x7f.example.com')).toEqual({ valid: true });
+		});
+
 		it('rejects IPv6 addresses', () => {
 			for (const ip of ['::1', 'fe80::1', 'fc00::1', 'fd00::1']) {
 				const result = validateDomain(ip);
@@ -157,6 +178,33 @@ describe('sanitize library', () => {
 
 		it('handles domain without trailing dot', () => {
 			expect(sanitizeDomain('Example.COM')).toBe('example.com');
+		});
+	});
+
+	describe('sanitizeInput', () => {
+		it('removes control characters but keeps newline and tab', () => {
+			const input = 'hello\x00\x01\x08\x0B\x0C\x0E\x1F\x7Fworld\n\ttab';
+			expect(sanitizeInput(input)).toBe('helloworld\n\ttab');
+		});
+
+		it('truncates to default maxLength of 500', () => {
+			const long = 'a'.repeat(600);
+			expect(sanitizeInput(long)).toHaveLength(500);
+		});
+
+		it('truncates to custom maxLength', () => {
+			const input = 'a'.repeat(100);
+			expect(sanitizeInput(input, 50)).toHaveLength(50);
+		});
+
+		it('returns empty string for non-string input', () => {
+			expect(sanitizeInput(null as unknown as string)).toBe('');
+			expect(sanitizeInput(undefined as unknown as string)).toBe('');
+			expect(sanitizeInput(123 as unknown as string)).toBe('');
+		});
+
+		it('returns the string unchanged when no control chars and under maxLength', () => {
+			expect(sanitizeInput('normal text')).toBe('normal text');
 		});
 	});
 

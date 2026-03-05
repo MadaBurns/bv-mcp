@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Reduced in-isolate KV rate limiter race amplification by serializing per-IP `get/check/put` updates.
 - Added unauthenticated session-creation throttling (`30/min` per IP) for `initialize` and new SSE session bootstrap.
 - Bounded in-memory session fallback with LRU eviction (`2000` max active sessions) to reduce memory-pressure abuse risk.
+- Domain validation now canonicalizes alternate IPv4 literals (short-form, octal, hex, dword) before blocked-range checks, preventing loopback/private bypasses such as `127.1` and `0177.0.0.1`.
 
 ### Changed
 
@@ -48,6 +49,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Initialize throttling integration test in `test/index.spec.ts`.
 - `tools/call` alias support for `scan` -> `scan_domain`.
 - Alias coverage tests in `test/handlers-tools.spec.ts` and `test/index.spec.ts`.
+- Domain-validation regressions for alternate IPv4 host literals in `test/sanitize.spec.ts`.
+- `tools/call` integration coverage for short-form and octal loopback rejection in `test/index.spec.ts`.
 
 ## [1.0.2] - 2026-03-04
 
