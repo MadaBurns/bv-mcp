@@ -104,8 +104,17 @@ Add to `.cursor/mcp.json`:
 If your client does not auto-route tool calls from short prompts, use explicit phrasing:
 
 - `Use scan_domain to scan blackveilsecurity.com`
+- `scan blackveilsecurity.com` (server alias for `scan_domain`)
 - `Run check_dmarc for blackveilsecurity.com`
 - `Run check_dkim for blackveilsecurity.com`
+
+### Alias Support
+
+`tools/call` accepts a narrow alias for convenience:
+
+- `scan` -> `scan_domain`
+
+Canonical tool names from `tools/list` remain unchanged.
 
 ## Authentication
 

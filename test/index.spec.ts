@@ -384,6 +384,27 @@ describe('DNS Security MCP Server', () => {
 	});
 
 	describe('POST /mcp - tools/call domain validation', () => {
+		it('accepts scan alias and runs scan_domain', async () => {
+			const sessionId = await initSession();
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 4.5,
+					method: 'tools/call',
+					params: { name: 'scan', arguments: { domain: 'example.com' } },
+				}),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { result: { content: Array<{ text: string }>; isError?: boolean } };
+			expect(body.result.isError).toBeUndefined();
+			expect(body.result.content[0].text).toContain('DNS Security Scan');
+		});
+
 		it('rejects localhost domains', async () => {
 			const sessionId = await initSession();
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {

@@ -25,6 +25,15 @@ import type { AnalyticsClient } from '../lib/analytics';
 import { TOOLS } from './tool-schemas';
 import type { McpTool } from './tool-schemas';
 
+const TOOL_ALIASES: Record<string, string> = {
+	scan: 'scan_domain',
+};
+
+function normalizeToolName(name: string): string {
+	const normalized = name.trim().toLowerCase();
+	return TOOL_ALIASES[normalized] ?? normalized;
+}
+
 /** Create an MCP-compatible error content response. */
 function mcpError(message: string): { type: 'text'; text: string } {
 	return { type: 'text' as const, text: `Error: ${message}` };
@@ -173,7 +182,7 @@ export async function handleToolsCall(
 	scanCacheKV?: KVNamespace,
 	runtimeOptions?: ToolRuntimeOptions,
 ): Promise<McpToolResult> {
-	const { name } = params;
+	const name = normalizeToolName(params.name);
 	const args = params.arguments ?? {};
 	const startTime = Date.now();
 	let domain: string | undefined;

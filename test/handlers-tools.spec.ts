@@ -130,6 +130,14 @@ describe('handleToolsCall - dispatch routing', () => {
 		expect(result.content[0].text).toContain('DNS Security Scan');
 	});
 
+	it('scan alias routes to scan_domain', async () => {
+		mockAllChecks();
+		const result = await call('scan', { domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toHaveLength(1);
+		expect(result.content[0].text).toContain('DNS Security Scan');
+	});
+
 	it('check_mx with valid domain returns content with MX', async () => {
 		const mxAnswers = [{ name: 'example.com', type: 15, TTL: 300, data: '10 mail.example.com.' }];
 		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([{ name: 'example.com', type: 15 }], mxAnswers));

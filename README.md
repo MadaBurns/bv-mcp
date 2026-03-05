@@ -141,6 +141,11 @@ High-level summary:
 - Rate limiting defaults to `10/min` and `100/hr` per IP for unauthenticated `tools/call` traffic.
 - Session creation is rate-limited (`30/min` per IP) for unauthenticated `initialize` and new SSE session bootstrap.
 
+Natural-language convenience:
+
+- `tools/call` supports `scan` as an alias for `scan_domain`.
+- For best cross-client reliability, explicit phrasing like `Use scan_domain to scan example.com` is still recommended.
+
 ## Provider Detection
 
 `check_mx` and `scan_domain` include managed provider detection with structured finding metadata.

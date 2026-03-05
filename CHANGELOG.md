@@ -46,6 +46,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Rate limiter regression test for concurrent KV requests (`test/rate-limiter.spec.ts`).
 - Session creation limiter tests in `test/session.spec.ts`.
 - Initialize throttling integration test in `test/index.spec.ts`.
+- `tools/call` alias support for `scan` -> `scan_domain`.
+- Alias coverage tests in `test/handlers-tools.spec.ts` and `test/index.spec.ts`.
 
 ## [1.0.2] - 2026-03-04
 
