@@ -77,15 +77,15 @@ Suggested query fields:
 Use these query patterns in Analytics Engine to build usage reporting:
 
 - Request volume by method/transport:
-	- Group `mcp_request` by method/transport blob positions.
+	- Group `mcp_request` by `blobs[0]` (method) and `blobs[1]` (transport).
 - Error rate over time:
-	- Filter `mcp_request` where `blobs[0] = 'error'`, divide by total `mcp_request`.
+	- Filter `mcp_request` where `blobs[2] = 'error'`, divide by total `mcp_request`.
 - Latency tracking (p95):
-	- Compute percentile from `doubles[0]` by `indexes[1]` (method) or tool name.
+	- Compute percentile from `doubles[0]` grouped by `blobs[0]` (method) for `mcp_request` or `blobs[0]` (tool name) for `tool_call`.
 - Tool health ratio:
-	- Group `tool_call` by status blob position (`pass`/`fail`/`error`).
+	- Group `tool_call` by `blobs[1]` (`pass`/`fail`/`error`).
 - Auth split:
-	- Group `mcp_request` by `blobs[1]` (`auth` vs `anon`).
+	- Group `mcp_request` by `blobs[3]` (`auth` vs `anon`).
 
 ### Analytics Runbook
 
