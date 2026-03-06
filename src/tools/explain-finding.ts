@@ -11,6 +11,8 @@ export interface ExplanationResult {
 	title: string;
 	severity: string;
 	explanation: string;
+	impact?: string;
+	adverseConsequences?: string;
 	recommendation: string;
 	references: string[];
 }
@@ -22,6 +24,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		   title: 'Dangling CNAME — Subdomain Takeover Risk',
 		   severity: 'critical',
 		   explanation: 'A subdomain points to a third-party service (e.g., CloudFront, Heroku) that does not resolve. This is a potential subdomain takeover vector, allowing attackers to claim the orphaned resource and control the subdomain.',
+		   impact: 'Attackers may host malicious content or capture traffic on a trusted subdomain, enabling phishing and session abuse.',
+		   adverseConsequences: 'Brand trust can be damaged, users can be redirected to attacker infrastructure, and incident response costs can increase.',
 		   recommendation: 'Remove or update the CNAME record to point to a valid, owned resource. Regularly audit DNS for orphaned records.',
 		   references: ['https://github.com/EdOverflow/can-i-take-over-xyz', 'https://www.hackerone.com/blog/Guide-Subdomain-Takeover', 'https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/CNAMEs.html'],
 	   },
@@ -29,6 +33,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		   title: 'CNAME Resolution Failed — Manual Review Needed',
 		   severity: 'high',
 		   explanation: 'A subdomain CNAME points to a third-party service but the target could not be resolved. This may indicate a takeover risk or DNS misconfiguration.',
+		   impact: 'If the target is orphaned, an attacker may be able to claim it and gain control of the affected subdomain.',
+		   adverseConsequences: 'Users may be exposed to fraudulent pages and the organization may face reputation damage until DNS is remediated.',
 		   recommendation: 'Manually review the CNAME target and remove or update if orphaned. Use DNS monitoring tools for ongoing checks.',
 		   references: ['https://github.com/EdOverflow/can-i-take-over-xyz', 'https://www.hackerone.com/blog/Guide-Subdomain-Takeover'],
 	   },
@@ -51,6 +57,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		title: 'SPF Validation Failed',
 		severity: 'fail',
 		explanation: 'SPF validation failed - emails from this domain are being rejected because the sending server is not authorized.',
+		impact: 'Email authentication becomes unreliable, and spoofed or misrouted messages may evade expected controls.',
+		adverseConsequences: 'Legitimate email delivery can degrade, while impersonation attempts can increase helpdesk and abuse handling load.',
 		recommendation:
 			'Review your SPF record and ensure all legitimate email sources are included. Common issue: using -all but missing include statements.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc7208', 'https://www.cloudflare.com/learning/dns/dns-records/dns-spf-record/'],
@@ -59,6 +67,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		title: 'SPF Soft Fail',
 		severity: 'warning',
 		explanation: 'SPF uses a soft fail (~all) policy. Emails that fail SPF will be accepted but may be flagged as suspicious.',
+		impact: 'Failing SPF messages are often still accepted, so spoofed mail may continue reaching recipients.',
+		adverseConsequences: 'Phishing risk remains elevated and security teams may need to manually triage suspicious mail.',
 		recommendation: 'Upgrade to hard fail (-all) after verifying all legitimate sources are in your SPF record.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc7208#section-8.1'],
 	},
@@ -67,6 +77,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		severity: 'fail',
 		explanation:
 			'SPF (Sender Policy Framework) is a DNS TXT record that specifies which mail servers are authorized to send email on behalf of your domain. Without SPF, any server can send email pretending to be from your domain.',
+		impact: 'Any internet host can attempt to send email as your domain, making sender impersonation significantly easier.',
+		adverseConsequences: 'Spoofing and phishing campaigns can harm brand trust, increase abuse complaints, and impair deliverability.',
 		recommendation: "Add a TXT record to your domain's DNS with a valid SPF policy. Start with: v=spf1 include:<your-email-provider> -all",
 		references: ['https://datatracker.ietf.org/doc/html/rfc7208', 'https://www.cloudflare.com/learning/dns/dns-records/dns-spf-record/'],
 	},
@@ -84,6 +96,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		severity: 'fail',
 		explanation:
 			'DMARC builds on SPF and DKIM to provide email authentication policy. Without DMARC, receivers have no policy guidance for handling authentication failures.',
+		impact: 'Receiving systems cannot consistently quarantine or reject forged messages that fail authentication.',
+		adverseConsequences: 'Domain spoofing can reach inboxes more often, increasing phishing exposure and reputational damage.',
 		recommendation: 'Add a TXT record at _dmarc.<domain> with at minimum: v=DMARC1; p=quarantine; rua=mailto:dmarc@<domain>',
 		references: ['https://datatracker.ietf.org/doc/html/rfc7489', 'https://www.cloudflare.com/learning/dns/dns-records/dns-dmarc-record/'],
 	},
@@ -91,6 +105,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		title: 'DMARC Policy Not Enforcing',
 		severity: 'warning',
 		explanation: "DMARC policy is set to 'none' (monitoring only) or 'quarantine'. This provides limited protection against spoofing.",
+		impact: 'Authentication failures may not be fully blocked, allowing some malicious mail to be delivered.',
+		adverseConsequences: 'Attackers can still impersonate the domain in recipient inboxes, leading to fraud and support overhead.',
 		recommendation: "After reviewing DMARC reports, upgrade the policy to 'reject' to actively protect against email spoofing.",
 		references: ['https://datatracker.ietf.org/doc/html/rfc7489#section-6.3'],
 	},
@@ -107,6 +123,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		severity: 'fail',
 		explanation:
 			"DKIM adds a digital signature to outgoing emails, allowing receivers to verify the email was sent by an authorized server and wasn't modified in transit.",
+		impact: 'Receivers lose a key authenticity signal, which weakens anti-spoofing and anti-tampering protections.',
+		adverseConsequences: 'Legitimate email may be distrusted while fraudulent messages are harder to distinguish, hurting deliverability and trust.',
 		recommendation: 'Configure DKIM signing with your email provider. They will provide the DKIM DNS records to publish.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc6376', 'https://www.cloudflare.com/learning/dns/dns-records/dns-dkim-record/'],
 	},
@@ -123,6 +141,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		severity: 'fail',
 		explanation:
 			"DNSSEC adds cryptographic signatures to DNS records, preventing DNS spoofing and cache poisoning attacks. Without DNSSEC, attackers can redirect your domain's traffic.",
+		impact: 'DNS responses can be forged in transit, enabling redirection to attacker-controlled infrastructure.',
+		adverseConsequences: 'Users may be sent to malicious destinations, causing credential theft, service disruption, and incident response costs.',
 		recommendation: 'Enable DNSSEC through your domain registrar and DNS provider. Most providers offer one-click DNSSEC activation.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc4033', 'https://www.cloudflare.com/dns/dnssec/how-dnssec-works/'],
 	},
@@ -138,6 +158,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		severity: 'fail',
 		explanation:
 			'The domain does not have a valid SSL/TLS certificate or the HTTPS server is not responding. This means traffic to the domain is not encrypted.',
+		impact: 'Network attackers can intercept or tamper with data exchanged between users and the site.',
+		adverseConsequences: 'Credentials and sensitive data may be exposed, and browser trust warnings can reduce conversion and user confidence.',
 		recommendation: "Install a valid SSL/TLS certificate. Free certificates are available from Let's Encrypt or Cloudflare.",
 		references: ['https://letsencrypt.org/', 'https://www.cloudflare.com/ssl/'],
 	},
@@ -145,6 +167,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		title: 'Mixed Content or Redirect Issues',
 		severity: 'warning',
 		explanation: 'HTTPS is available but there may be issues with redirects or mixed content.',
+		impact: 'Some resources may still load insecurely, creating opportunities for content manipulation or privacy leakage.',
+		adverseConsequences: 'User sessions and page integrity can be weakened, and security posture may fail audit expectations.',
 		recommendation: 'Ensure all resources load over HTTPS and implement proper redirects from HTTP to HTTPS.',
 		references: ['https://www.cloudflare.com/ssl/'],
 	},
@@ -153,6 +177,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		severity: 'medium',
 		explanation:
 			'HTTPS is available but the domain is missing HSTS (Strict-Transport-Security) headers or does not redirect HTTP to HTTPS. Without HSTS, browsers may still attempt insecure connections.',
+		impact: 'Clients may be downgraded to insecure HTTP connections, especially on first visit or hostile networks.',
+		adverseConsequences: 'Session data can be exposed in transit and users remain vulnerable to downgrade or interception attacks.',
 		recommendation:
 			'Add a Strict-Transport-Security header with max-age of at least 1 year (31536000). Configure your web server to redirect all HTTP requests to HTTPS.',
 		references: ['https://https.cio.gov/hsts/', 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security'],
@@ -162,6 +188,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		severity: 'low',
 		explanation:
 			'HSTS is configured but could be improved. Common issues include a short max-age value or missing includeSubDomains directive.',
+		impact: 'Partial HSTS coverage leaves windows where transport security guarantees are weaker than expected.',
+		adverseConsequences: 'Subdomains or returning sessions may still face avoidable downgrade exposure and policy non-compliance findings.',
 		recommendation:
 			'Set max-age to at least 31536000 (1 year) and include the includeSubDomains directive. Consider adding your domain to the HSTS preload list.',
 		references: [
@@ -181,6 +209,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		severity: 'fail',
 		explanation:
 			'MTA-STS enforces TLS encryption for incoming email, preventing downgrade attacks where an attacker forces email to be sent unencrypted.',
+		impact: 'Inbound SMTP sessions are more susceptible to TLS downgrade and interception attempts.',
+		adverseConsequences: 'Sensitive email content can be exposed in transit, raising confidentiality and compliance risks.',
 		recommendation:
 			'Publish an MTA-STS TXT record at _mta-sts.<domain> and host a policy file at https://mta-sts.<domain>/.well-known/mta-sts.txt',
 		references: ['https://datatracker.ietf.org/doc/html/rfc8461'],
@@ -189,6 +219,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		title: 'MTA-STS in Testing Mode',
 		severity: 'warning',
 		explanation: 'MTA-STS is configured but in testing mode (mode=testing) rather than enforcement mode.',
+		impact: 'Delivery behavior is monitored but not enforced, so some insecure transport paths may still be accepted.',
+		adverseConsequences: 'Security gaps can persist longer and confidentiality controls for inbound mail remain partially effective.',
 		recommendation: 'After verifying all mail servers can successfully deliver over TLS, upgrade to mode=enforce.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc8461'],
 	},
@@ -203,6 +235,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		title: 'Nameserver Issues Detected',
 		severity: 'fail',
 		explanation: 'One or more nameservers for this domain are not responding or are misconfigured, which can cause DNS resolution failures.',
+		impact: 'Resolvers may fail to resolve the domain, degrading access to web, API, and mail services.',
+		adverseConsequences: 'Users can experience outages, failed transactions, and business continuity disruptions.',
 		recommendation: 'Verify all listed nameservers are operational and properly configured. Ensure NS records match those at the registrar.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc1035', 'https://www.cloudflare.com/learning/dns/dns-records/dns-ns-record/'],
 	},
@@ -210,6 +244,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		title: 'Nameserver Configuration Suboptimal',
 		severity: 'warning',
 		explanation: 'Nameservers are functional but the configuration could be improved for better reliability or security.',
+		impact: 'Single points of failure or weak diversity can reduce DNS resilience during provider or network incidents.',
+		adverseConsequences: 'Availability and latency can degrade under stress, increasing user-facing instability.',
 		recommendation: 'Consider adding additional nameservers for redundancy and ensuring they are geographically distributed.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc1035'],
 	},
@@ -224,6 +260,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		title: 'No CAA Records Found',
 		severity: 'fail',
 		explanation: 'No CAA records are present for this domain. Without CAA, any certificate authority can issue certificates for your domain.',
+		impact: 'Certificate issuance controls are broad, increasing the chance of unauthorized or misissued certificates.',
+		adverseConsequences: 'Attackers may abuse misissuance for impersonation and interception, with trust and compliance implications.',
 		recommendation: 'Add CAA DNS records to restrict certificate issuance to your authorized CAs (e.g., "0 issue letsencrypt.org").',
 		references: ['https://datatracker.ietf.org/doc/html/rfc8659', 'https://www.cloudflare.com/learning/dns/dns-records/dns-caa-record/'],
 	},
@@ -231,6 +269,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		title: 'CAA Configuration Incomplete',
 		severity: 'warning',
 		explanation: 'CAA records exist but may not fully restrict certificate issuance. Consider adding iodef or wildcard policies.',
+		impact: 'Incomplete CAA policy can leave gaps in issuance constraints for wildcard or incident-reporting scenarios.',
+		adverseConsequences: 'Certificate governance may be weaker than intended, increasing operational and audit risk.',
 		recommendation: 'Review your CAA records and add an iodef tag for incident reporting. Consider restricting wildcard certificate issuance separately.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc8659'],
 	},
@@ -245,6 +285,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		title: 'No MX Records Found',
 		severity: 'fail',
 		explanation: 'No MX records are present for this domain. Without MX records, email delivery to this domain will fail or fall back to A record delivery.',
+		impact: 'Mail routing is unreliable or unavailable for intended recipients on this domain.',
+		adverseConsequences: 'Inbound communications may be lost, causing business disruption and missed security notifications.',
 		recommendation: 'Add MX records pointing to your mail server. If this domain does not handle email, consider adding a null MX record (0 .).',
 		references: ['https://datatracker.ietf.org/doc/html/rfc5321', 'https://datatracker.ietf.org/doc/html/rfc7505'],
 	},
@@ -252,6 +294,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		title: 'MX Configuration Suboptimal',
 		severity: 'warning',
 		explanation: 'MX records exist but the configuration could be improved, such as missing backup MX or unusual priority values.',
+		impact: 'Mail delivery reliability is reduced during server failures or routing anomalies.',
+		adverseConsequences: 'Message delays and intermittent delivery failures can affect operations and customer support.',
 		recommendation: 'Review MX priorities and add at least one backup MX record for redundancy.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc5321'],
 	},
@@ -266,6 +310,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		title: 'MX Configuration Could Be Improved',
 		severity: 'low',
 		explanation: 'MX records are present but the configuration has minor issues such as missing backup MX records.',
+		impact: 'Resilience to mail infrastructure outages is lower than recommended.',
+		adverseConsequences: 'Short outages can become user-visible delivery delays and increase operational toil.',
 		recommendation: 'Add at least one backup MX record with a different priority for redundancy.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc5321'],
 	},
@@ -274,6 +320,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		severity: 'high',
 		explanation:
 			'MX records have a configuration error such as pointing to an IP address instead of a hostname, which violates RFC 5321.',
+		impact: 'Standards-incompatible MX targets can cause mail rejection or routing failures across sending systems.',
+		adverseConsequences: 'Business-critical messages may bounce, delaying incident response and external communication.',
 		recommendation:
 			'Update MX records to point to valid hostnames, not IP addresses. Ensure all MX targets resolve to valid A/AAAA records.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc5321'],
@@ -283,6 +331,8 @@ const EXPLANATIONS: Record<string, ExplanationEntry> = {
 		severity: 'medium',
 		explanation:
 			'No MX records are present for this domain. Email delivery will fall back to A record delivery or fail entirely.',
+		impact: 'Email reception may fail or behave inconsistently depending on sender fallback behavior.',
+		adverseConsequences: 'Organizations may miss customer, partner, or security messages, creating operational and reputational risk.',
 		recommendation:
 			'If this domain should receive email, add MX records. If not, publish a null MX record per RFC 7505 to explicitly declare that.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc5321', 'https://datatracker.ietf.org/doc/html/rfc7505'],
@@ -297,17 +347,261 @@ const DEFAULT_EXPLANATION: ExplanationEntry = {
 	references: ['https://www.cloudflare.com/learning/dns/what-is-dns/'],
 };
 
+interface ImpactNarrative {
+	impact?: string;
+	adverseConsequences?: string;
+}
+
+interface SpecificImpactRule extends ImpactNarrative {
+	checkType?: string;
+	titleIncludes?: string[];
+	detailIncludes?: string[];
+}
+
+const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
+	spf: 'SPF',
+	dmarc: 'DMARC',
+	dkim: 'DKIM',
+	dnssec: 'DNSSEC',
+	ssl: 'SSL',
+	mta_sts: 'MTA_STS',
+	ns: 'NS',
+	caa: 'CAA',
+	mx: 'MX',
+	subdomain_takeover: 'SUBDOMAIN_TAKEOVER',
+};
+
+const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
+	SPF: {
+		impact: 'SPF coverage is weak, so unauthorized senders can spoof domain identity more easily.',
+		adverseConsequences: 'Phishing attempts and deliverability disputes increase security and support workload.',
+	},
+	DMARC: {
+		impact: 'DMARC enforcement is reduced or absent at receiving systems.',
+		adverseConsequences: 'Forged messages are more likely to reach users and erode brand trust.',
+	},
+	DKIM: {
+		impact: 'DKIM assurance is weak, reducing message integrity and sender-authenticity confidence.',
+		adverseConsequences: 'Legitimate messages may be distrusted while impersonation attempts become harder to detect.',
+	},
+	DNSSEC: {
+		impact: 'DNS answers are more exposed to spoofing and tampering in transit.',
+		adverseConsequences: 'Users can be redirected to attacker infrastructure, causing security and availability incidents.',
+	},
+	SSL: {
+		impact: 'Transport security guarantees are reduced, increasing interception and tampering risk.',
+		adverseConsequences: 'Sensitive user data may be exposed and browser trust can decline.',
+	},
+	MTA_STS: {
+		impact: 'Inbound SMTP delivery is not consistently protected from downgrade attacks.',
+		adverseConsequences: 'Confidential email content may be exposed in transit, increasing compliance risk.',
+	},
+	NS: {
+		impact: 'DNS resolution reliability is reduced, which weakens service reachability.',
+		adverseConsequences: 'Users may experience outages and business transactions may fail.',
+	},
+	CAA: {
+		impact: 'Certificate issuance controls are weak, raising unauthorized issuance risk.',
+		adverseConsequences: 'Domain impersonation and TLS trust incidents become more likely.',
+	},
+	MX: {
+		impact: 'Mail routing reliability is reduced by MX configuration gaps or errors.',
+		adverseConsequences: 'Important communications can be delayed, bounced, or lost.',
+	},
+	SUBDOMAIN_TAKEOVER: {
+		impact: 'An orphaned delegated subdomain may be claimable by an attacker.',
+		adverseConsequences: 'Users can be redirected to malicious content hosted under a trusted hostname.',
+	},
+};
+
+const SEVERITY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
+	critical: {
+		impact: 'This is a high-likelihood weakness with immediate exploitation potential.',
+		adverseConsequences: 'Compromise, disruption, or abuse can occur without prompt remediation.',
+	},
+	high: {
+		impact: 'This weakness materially increases attack surface and failure risk.',
+		adverseConsequences: 'Business operations, user trust, and response workload can be negatively affected.',
+	},
+	medium: {
+		impact: 'This issue weakens defenses and compounds risk when paired with other gaps.',
+		adverseConsequences: 'Over time it can degrade reliability, security assurance, and compliance posture.',
+	},
+	warning: {
+		impact: 'This configuration is partially protective but leaves avoidable exposure.',
+		adverseConsequences: 'If unresolved, incidents become harder to prevent or contain.',
+	},
+	fail: {
+		impact: 'A required control is missing or not functioning as intended.',
+		adverseConsequences: 'Security and availability incidents become more likely until it is corrected.',
+	},
+	low: {
+		impact: 'This is a minor weakness that still reduces resilience.',
+		adverseConsequences: 'Operational friction and audit findings can increase over time.',
+	},
+};
+
+const SPECIFIC_IMPACT_RULES: SpecificImpactRule[] = [
+	{
+		checkType: 'DKIM',
+		titleIncludes: ['weak rsa key'],
+		impact: 'Weak DKIM keys are easier to forge, reducing message authenticity assurance.',
+		adverseConsequences: 'Attackers can impersonate trusted senders more easily, increasing fraud and phishing risk.',
+	},
+	{
+		checkType: 'SSL',
+		titleIncludes: ['no hsts header', 'no http to https redirect', 'mixed content'],
+		impact: 'Users are exposed to insecure transport paths that permit interception or downgrade attacks.',
+		adverseConsequences: 'Sensitive sessions and data can leak on hostile networks, weakening trust and compliance posture.',
+	},
+	{
+		checkType: 'DMARC',
+		titleIncludes: ['no aggregate reporting'],
+		impact: 'Authentication failures and spoofing activity become harder to observe at scale.',
+		adverseConsequences: 'Threats can persist longer without detection, increasing response time and abuse volume.',
+	},
+	{
+		checkType: 'MX',
+		titleIncludes: ['no mx records found', 'mx configuration error'],
+		impact: 'Inbound email delivery becomes unreliable or fails for recipients on this domain.',
+		adverseConsequences: 'Critical business and security communications may be delayed, bounced, or silently lost.',
+	},
+	{
+		checkType: 'NS',
+		titleIncludes: ['no soa record', 'nameserver', 'low nameserver diversity'],
+		impact: 'DNS resilience and consistency are reduced, increasing partial or full resolution outage risk.',
+		adverseConsequences: 'Availability incidents can affect websites, APIs, and transactional workflows.',
+	},
+	{
+		checkType: 'CAA',
+		titleIncludes: ['no caa records', 'issuewild', 'iodef'],
+		impact: 'Certificate governance controls are weakened, especially for unauthorized or wildcard issuance.',
+		adverseConsequences: 'TLS trust incidents and audit findings become more likely if certificate misuse occurs.',
+	},
+	{
+		checkType: 'SPF',
+		titleIncludes: ['permissive spf: +all', 'multiple spf records'],
+		detailIncludes: ['+all', 'multiple records'],
+		impact: 'SPF policy becomes ineffective or ambiguous, allowing unauthorized senders to appear legitimate.',
+		adverseConsequences: 'Spoofing, phishing, and deliverability failures can increase simultaneously.',
+	},
+	{
+		checkType: 'MTA_STS',
+		titleIncludes: ['no mta-sts', 'testing mode', 'tls-rpt'],
+		impact: 'SMTP transport protections are not consistently enforced for inbound mail delivery.',
+		adverseConsequences: 'Confidential email may traverse weaker paths, increasing confidentiality and regulatory risk.',
+	},
+];
+
+function matchesRule(ruleValues: string[] | undefined, source: string): boolean {
+	if (!ruleValues || ruleValues.length === 0) return true;
+	return ruleValues.some((value) => source.includes(value));
+}
+
+function resolveSpecificNarrative(params: {
+	checkType?: string;
+	title?: string;
+	detail?: string;
+}): ImpactNarrative | undefined {
+	const checkType = params.checkType?.toUpperCase();
+	const title = params.title?.toLowerCase() ?? '';
+	const detail = params.detail?.toLowerCase() ?? '';
+
+	for (const rule of SPECIFIC_IMPACT_RULES) {
+		if (rule.checkType && checkType && rule.checkType !== checkType) continue;
+		if (!matchesRule(rule.titleIncludes, title)) continue;
+		if (!matchesRule(rule.detailIncludes, detail)) continue;
+		return {
+			impact: rule.impact,
+			adverseConsequences: rule.adverseConsequences,
+		};
+	}
+
+	return undefined;
+}
+
+function getNarrativeFromEntry(entry: ExplanationEntry | undefined): ImpactNarrative | undefined {
+	if (!entry) return undefined;
+	if (!entry.impact && !entry.adverseConsequences) return undefined;
+	return {
+		impact: entry.impact,
+		adverseConsequences: entry.adverseConsequences,
+	};
+}
+
+/**
+ * Resolve impact/adverse-consequence narrative for a finding context.
+ * Uses explicit explanation entries first, then category, then severity fallback.
+ */
+export function resolveImpactNarrative(params: {
+	checkType?: string;
+	category?: string;
+	status?: string;
+	severity?: string;
+	title?: string;
+	detail?: string;
+}): ImpactNarrative {
+	const normalizedCheckType = params.checkType?.toUpperCase();
+	const normalizedStatus = params.status?.toUpperCase();
+	const normalizedSeverity = params.severity?.toLowerCase();
+	const derivedCheckType = params.category ? CATEGORY_TO_CHECKTYPE[params.category.toLowerCase()] : undefined;
+
+	if (normalizedCheckType && normalizedStatus) {
+		const narrative = getNarrativeFromEntry(EXPLANATIONS[`${normalizedCheckType}_${normalizedStatus}`]);
+		if (narrative) return narrative;
+	}
+
+	if (normalizedCheckType && normalizedSeverity) {
+		const narrative = getNarrativeFromEntry(EXPLANATIONS[`${normalizedCheckType}_${normalizedSeverity.toUpperCase()}`]);
+		if (narrative) return narrative;
+	}
+
+	if (derivedCheckType && normalizedStatus) {
+		const narrative = getNarrativeFromEntry(EXPLANATIONS[`${derivedCheckType}_${normalizedStatus}`]);
+		if (narrative) return narrative;
+	}
+
+	if (derivedCheckType && normalizedSeverity) {
+		const narrative = getNarrativeFromEntry(EXPLANATIONS[`${derivedCheckType}_${normalizedSeverity.toUpperCase()}`]);
+		if (narrative) return narrative;
+	}
+
+	const specificNarrative = resolveSpecificNarrative({
+		checkType: normalizedCheckType ?? derivedCheckType,
+		title: params.title,
+		detail: params.detail,
+	});
+	if (specificNarrative) return specificNarrative;
+
+	if (normalizedCheckType && CATEGORY_FALLBACK_IMPACT[normalizedCheckType]) {
+		return CATEGORY_FALLBACK_IMPACT[normalizedCheckType];
+	}
+
+	if (derivedCheckType && CATEGORY_FALLBACK_IMPACT[derivedCheckType]) {
+		return CATEGORY_FALLBACK_IMPACT[derivedCheckType];
+	}
+
+	if (normalizedSeverity && SEVERITY_FALLBACK_IMPACT[normalizedSeverity]) {
+		return SEVERITY_FALLBACK_IMPACT[normalizedSeverity];
+	}
+
+	return {};
+}
+
 export function explainFinding(checkType: string, status: string, details?: string): ExplanationResult {
 	const normalizedType = checkType.toUpperCase();
 	const key = `${normalizedType}_${status.toUpperCase()}`;
 
 	const entry = EXPLANATIONS[key] ?? DEFAULT_EXPLANATION;
+	const narrative = resolveImpactNarrative({ checkType: normalizedType, status, detail: details });
 
 	return {
 		checkType: normalizedType,
 		status,
 		details,
 		...entry,
+		impact: entry.impact ?? narrative.impact,
+		adverseConsequences: entry.adverseConsequences ?? narrative.adverseConsequences,
 	};
 }
 
@@ -318,15 +612,16 @@ export function formatExplanation(result: ExplanationResult): string {
 		lines.push(`**Details:** ${result.details}`, '');
 	}
 
-	lines.push(
-		`### What this means`,
-		result.explanation,
-		'',
-		`### Recommendation`,
-		result.recommendation,
-		'',
-		`### References`,
-		...result.references.map((r) => `- ${r}`),
-	);
+	lines.push(`### What this means`, result.explanation, '');
+
+	if (result.impact) {
+		lines.push(`### Potential Impact`, result.impact, '');
+	}
+
+	if (result.adverseConsequences) {
+		lines.push(`### Adverse Consequences`, result.adverseConsequences, '');
+	}
+
+	lines.push(`### Recommendation`, result.recommendation, '', `### References`, ...result.references.map((r) => `- ${r}`));
 	return lines.join('\n');
 }

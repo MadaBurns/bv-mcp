@@ -102,7 +102,7 @@ export const TOOLS: McpTool[] = [
 	},
 	{
 		name: 'explain_finding',
-		description: 'Get a plain-language explanation of a DNS security finding and recommended remediation steps.',
+		description: 'Get a plain-language explanation of a DNS security finding, including potential impact, adverse consequences, and recommended remediation steps.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {

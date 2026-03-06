@@ -22,6 +22,7 @@ import { checkNs } from './check-ns';
 import { checkCaa } from './check-caa';
 import { checkSubdomainTakeover } from './check-subdomain-takeover';
 import { checkMx } from './check-mx';
+import { resolveImpactNarrative } from './explain-finding';
 
 /** Cache key prefix for scan and per-check results */
 const CACHE_PREFIX = 'cache:';
@@ -317,6 +318,18 @@ export function formatScanReport(result: ScanDomainResult): string {
 		for (const finding of nonInfoFindings) {
 			lines.push(`  [${finding.severity.toUpperCase()}] ${finding.title}`);
 			lines.push(`    ${finding.detail}`);
+			const narrative = resolveImpactNarrative({
+				category: finding.category,
+				severity: finding.severity,
+				title: finding.title,
+				detail: finding.detail,
+			});
+			if (narrative.impact) {
+				lines.push(`    Potential Impact: ${narrative.impact}`);
+			}
+			if (narrative.adverseConsequences) {
+				lines.push(`    Adverse Consequences: ${narrative.adverseConsequences}`);
+			}
 		}
 	} else {
 		lines.push('No security issues found.');

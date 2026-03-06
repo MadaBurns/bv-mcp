@@ -259,6 +259,13 @@ describe('handleToolsCall - explain_finding', () => {
 		expect(result.content[0].text).toContain('Details:');
 		expect(result.content[0].text).toContain('SPF record uses +all');
 	});
+
+	it('explain_finding includes impact and adverse consequence sections for failure states', async () => {
+		const result = await call('explain_finding', { checkType: 'DMARC', status: 'fail' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0].text).toContain('### Potential Impact');
+		expect(result.content[0].text).toContain('### Adverse Consequences');
+	});
 });
 
 // -- handleToolsCall input validation & errors --
@@ -337,6 +344,8 @@ describe('formatCheckResult - via handleToolsCall', () => {
 		const result = await call('check_spf', { domain: 'failing-spf.example.com' });
 		expect(result.content[0].text).toContain('\u274C Failed');
 		expect(result.content[0].text).toContain('Findings');
+		expect(result.content[0].text).toContain('Potential Impact:');
+		expect(result.content[0].text).toContain('Adverse Consequences:');
 		const text = result.content[0].text;
 		const hasSeverityIcon =
 			text.includes('\u2139\uFE0F') ||

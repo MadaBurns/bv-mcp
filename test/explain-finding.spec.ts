@@ -39,6 +39,13 @@ describe('explainFinding', () => {
 		expect(result.details).toBe('Record uses +all');
 	});
 
+	it('includes impact and adverseConsequences for key failing statuses', async () => {
+		const { explainFinding } = await getModule();
+		const result = explainFinding('DMARC', 'fail');
+		expect(result.impact).toBeTruthy();
+		expect(result.adverseConsequences).toBeTruthy();
+	});
+
 	it('details is undefined when not provided', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('SPF', 'fail');
@@ -81,6 +88,8 @@ describe('formatExplanation', () => {
 		expect(text).toContain('**Check Type:** SPF');
 		expect(text).toContain('**Status:** fail');
 		expect(text).toContain('### What this means');
+		expect(text).toContain('### Potential Impact');
+		expect(text).toContain('### Adverse Consequences');
 		expect(text).toContain('### Recommendation');
 		expect(text).toContain('### References');
 		expect(text).not.toContain('**Details:**');
@@ -98,5 +107,43 @@ describe('formatExplanation', () => {
 		const result = explainFinding('DMARC', 'pass');
 		const text = formatExplanation(result);
 		expect(text).toContain('- https://');
+	});
+
+	it('omits impact sections when no narrative exists', async () => {
+		const { explainFinding, formatExplanation } = await getModule();
+		const result = explainFinding('UNKNOWN_CHECK', 'unknown_status');
+		const text = formatExplanation(result);
+		expect(text).not.toContain('### Potential Impact');
+		expect(text).not.toContain('### Adverse Consequences');
+	});
+});
+
+describe('resolveImpactNarrative', () => {
+	async function getModule() {
+		return import('../src/tools/explain-finding');
+	}
+
+	it('uses specific rules for weak DKIM key findings when title context is provided', async () => {
+		const { resolveImpactNarrative } = await getModule();
+		const narrative = resolveImpactNarrative({
+			category: 'dkim',
+			severity: 'critical',
+			title: 'Weak RSA key: selector1',
+			detail: 'DKIM RSA key is weak',
+		});
+		expect(narrative.impact).toContain('Weak DKIM keys');
+		expect(narrative.adverseConsequences).toContain('impersonate');
+	});
+
+	it('uses specific rules for DMARC reporting gaps when title context is provided', async () => {
+		const { resolveImpactNarrative } = await getModule();
+		const narrative = resolveImpactNarrative({
+			category: 'dmarc',
+			severity: 'medium',
+			title: 'No aggregate reporting',
+			detail: 'No aggregate report URI (rua=) specified',
+		});
+		expect(narrative.impact).toContain('observe');
+		expect(narrative.adverseConsequences).toContain('detection');
 	});
 });

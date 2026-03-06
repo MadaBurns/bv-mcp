@@ -19,7 +19,7 @@ import { checkMtaSts } from '../tools/check-mta-sts';
 import { checkNs } from '../tools/check-ns';
 import { checkCaa } from '../tools/check-caa';
 import { scanDomain, formatScanReport } from '../tools/scan-domain';
-import { explainFinding, formatExplanation } from '../tools/explain-finding';
+import { explainFinding, formatExplanation, resolveImpactNarrative } from '../tools/explain-finding';
 import { logEvent, logError } from '../lib/log';
 import type { AnalyticsClient } from '../lib/analytics';
 import { TOOLS } from './tool-schemas';
@@ -161,6 +161,21 @@ function formatCheckResult(result: CheckResult): string {
 								: '🚨';
 			lines.push(`- ${icon} **[${finding.severity.toUpperCase()}]** ${finding.title}`);
 			lines.push(`  ${finding.detail}`);
+
+			if (finding.severity !== 'info') {
+				const narrative = resolveImpactNarrative({
+					category: finding.category,
+					severity: finding.severity,
+					title: finding.title,
+					detail: finding.detail,
+				});
+				if (narrative.impact) {
+					lines.push(`  Potential Impact: ${narrative.impact}`);
+				}
+				if (narrative.adverseConsequences) {
+					lines.push(`  Adverse Consequences: ${narrative.adverseConsequences}`);
+				}
+			}
 		}
 	}
 

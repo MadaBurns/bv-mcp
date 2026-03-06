@@ -95,6 +95,8 @@ Directly callable MCP tools:
 - `scan_domain`
 - `explain_finding`
 
+`explain_finding` returns what the issue means, potential impact, adverse consequences, and remediation guidance.
+
 Internal check executed within `scan_domain`:
 
 - `subdomain_takeover`

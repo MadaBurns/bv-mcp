@@ -222,6 +222,8 @@ describe('formatScanReport', () => {
 		expect(report).toContain('Findings:');
 		expect(report).toContain('[HIGH] Weak key');
 		expect(report).toContain('RSA key too short');
+		expect(report).toContain('Potential Impact:');
+		expect(report).toContain('Adverse Consequences:');
 		// Contains timestamp
 		expect(report).toContain('2026-02-23T12:00:00.000Z');
 	});
