@@ -89,9 +89,9 @@ describe('scoring', () => {
 			const scan = computeScanScore(results);
 			// Scanner-aligned importance model: SPF(19) out of total 72.
 			// One SPF critical => SPF score 60. Other controls remain perfect by default.
-			// A critical finding also applies a global penalty.
+			// Critical global penalty now applies only to verified critical findings.
 			// Email bonus not earned (no DKIM/DMARC results), so denominator stays at 72.
-			expect(scan.overall).toBe(74);
+			expect(scan.overall).toBe(89);
 			expect(scan.categoryScores.spf).toBe(60);
 		});
 
@@ -115,8 +115,22 @@ describe('scoring', () => {
 			const scan = computeScanScore(results);
 			// Email bonus not earned (DMARC missing), so denominator stays at 72.
 			// NS(3) and CAA(2) and SUBDOMAIN_TAKEOVER(2) now contribute to the total.
-			expect(scan.overall).toBe(49);
-			expect(scan.grade).toBe('F');
+			expect(scan.overall).toBe(64);
+			expect(scan.grade).toBe('D+');
+		});
+
+		it('applies global critical penalty when critical finding is verified', () => {
+			const results: CheckResult[] = [
+				buildCheckResult('subdomain_takeover', [
+					createFinding('subdomain_takeover', 'Verified takeover', 'critical', 'Provider fingerprint confirms deprovisioned host', {
+						verificationStatus: 'verified',
+					}),
+				]),
+			];
+
+			const scan = computeScanScore(results);
+			// subdomain_takeover score becomes 60. Base weighted overall rounds to 99, then verified critical penalty applies.
+			expect(scan.overall).toBe(84);
 		});
 
 		it('includes critical count in summary', () => {

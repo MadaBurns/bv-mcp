@@ -168,7 +168,7 @@ export async function checkSubdomainTakeover(domain: string): Promise<CheckResul
 							subdomainFindings.push(
 								createTakeoverFinding(
 									`Dangling CNAME: ${fqdn} → ${cname}`,
-									'critical',
+									'high',
 									`Subdomain ${fqdn} points to ${cname}, which does not resolve. This is a potential subdomain takeover vector and should be manually validated with authorized claim testing.`,
 									'potential',
 									['cname_target_unresolved'],

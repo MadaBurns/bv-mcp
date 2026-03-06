@@ -282,7 +282,10 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 	const baseOverall = Math.round(maxPoints > 0 ? clampPercent((earnedPoints / maxPoints) * 100) : 0);
 	const providerModifier = computeProviderConfidenceModifier(allFindings);
 	const criticalCount = allFindings.filter((f) => f.severity === 'critical').length;
-	const criticalPenalty = criticalCount > 0 ? CRITICAL_OVERALL_PENALTY : 0;
+	const verifiedCriticalCount = allFindings.filter(
+		(f) => f.severity === 'critical' && inferFindingConfidence(f) === 'verified',
+	).length;
+	const criticalPenalty = verifiedCriticalCount > 0 ? CRITICAL_OVERALL_PENALTY : 0;
 	const overall = clampPercent(baseOverall + providerModifier - criticalPenalty);
 
 	const grade = scoreToGrade(overall);

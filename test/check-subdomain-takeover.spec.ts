@@ -49,7 +49,7 @@ describe('checkSubdomainTakeover', () => {
 		expect(result.findings[0].metadata?.verificationStatus).toBe('not_exploitable');
 	});
 
-	it('detects dangling CNAME to third-party service (critical finding)', async () => {
+	it('detects dangling CNAME to third-party service (high finding)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
@@ -76,13 +76,13 @@ describe('checkSubdomainTakeover', () => {
 
 		const result = await run('example.com');
 		expect(result.category).toBe('subdomain_takeover');
-		const critical = result.findings.find((f) => f.severity === 'critical');
-		expect(critical).toBeDefined();
-		expect(critical!.title).toContain('Dangling CNAME');
-		expect(critical!.title).toContain('staging.example.com');
-		expect(critical!.title).toContain('herokuapp.com');
-		expect(critical!.detail).toContain('subdomain takeover');
-		expect(critical!.metadata?.verificationStatus).toBe('potential');
+		const high = result.findings.find((f) => f.severity === 'high');
+		expect(high).toBeDefined();
+		expect(high!.title).toContain('Dangling CNAME');
+		expect(high!.title).toContain('staging.example.com');
+		expect(high!.title).toContain('herokuapp.com');
+		expect(high!.detail).toContain('subdomain takeover');
+		expect(high!.metadata?.verificationStatus).toBe('potential');
 	});
 
 	it('does not flag third-party CNAME that resolves successfully and has no fingerprint', async () => {
@@ -221,10 +221,10 @@ describe('checkSubdomainTakeover', () => {
 		});
 
 		const result = await run('example.com');
-		const criticals = result.findings.filter((f) => f.severity === 'critical');
-		expect(criticals).toHaveLength(2);
-		expect(criticals.some((f) => f.title.includes('staging.example.com'))).toBe(true);
-		expect(criticals.some((f) => f.title.includes('api.example.com'))).toBe(true);
+		const highs = result.findings.filter((f) => f.severity === 'high');
+		expect(highs).toHaveLength(2);
+		expect(highs.some((f) => f.title.includes('staging.example.com'))).toBe(true);
+		expect(highs.some((f) => f.title.includes('api.example.com'))).toBe(true);
 	});
 
 	it('detects HTTP fingerprint takeover on resolving CNAME (Heroku)', async () => {
@@ -358,9 +358,9 @@ describe('checkSubdomainTakeover', () => {
 		});
 
 		const result = await run('example.com');
-		const critical = result.findings.find((f) => f.severity === 'critical');
-		expect(critical).toBeDefined();
-		expect(critical!.title).toContain('Dangling CNAME');
-		expect(critical!.title).toContain('vercel-dns.com');
+		const high = result.findings.find((f) => f.severity === 'high');
+		expect(high).toBeDefined();
+		expect(high!.title).toContain('Dangling CNAME');
+		expect(high!.title).toContain('vercel-dns.com');
 	});
 });

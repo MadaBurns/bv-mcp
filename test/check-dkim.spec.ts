@@ -215,6 +215,23 @@ describe('checkDkim', () => {
 		expect(finding!.metadata?.estimatedBits).toBe(1024);
 	});
 
+	it('consolidates duplicate legacy key findings across selector probing', async () => {
+		const legacyKey =
+			'MIGfMA0GCSqGSIb3DQEBAQUFAAOCDg8AMIIBCgKCAQEA1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012';
+		mockDkimRecords({
+			google: [`v=DKIM1; k=rsa; p=${legacyKey}`],
+			selector1: [`v=DKIM1; k=rsa; p=${legacyKey}`],
+		});
+		const r = await run();
+		const legacyFindings = r.findings.filter((f) => /Legacy RSA key/i.test(f.title));
+		expect(legacyFindings).toHaveLength(1);
+		expect(legacyFindings[0].severity).toBe('high');
+
+		const consolidated = r.findings.find((f) => /consolidated/i.test(f.title));
+		expect(consolidated).toBeDefined();
+		expect(consolidated!.severity).toBe('info');
+	});
+
 	it('detects RSA 2048-bit key (230-330 chars) with medium severity', async () => {
 		// Simulates a 2048-bit RSA key (230-330 base64 chars)
 		const recommendedKey =

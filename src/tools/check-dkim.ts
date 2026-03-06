@@ -89,6 +89,40 @@ function analyzeKeyStrength(
 	return { bits, strength, keyType: 'rsa' };
 }
 
+function consolidateSelectorProbeKeyStrengthFindings(findings: Finding[]): void {
+	const seen = new Set<string>();
+	let removed = 0;
+
+	for (let i = findings.length - 1; i >= 0; i--) {
+		const finding = findings[i];
+		if (!/rsa key:/i.test(finding.title)) continue;
+		if (!['critical', 'high', 'medium'].includes(finding.severity)) continue;
+		const estimatedBits = finding.metadata?.estimatedBits;
+		const keyType = finding.metadata?.keyType;
+		if (typeof estimatedBits !== 'number' || keyType !== 'rsa') continue;
+
+		const key = `${finding.severity}:${estimatedBits}:${keyType}`;
+		if (seen.has(key)) {
+			findings.splice(i, 1);
+			removed += 1;
+			continue;
+		}
+
+		seen.add(key);
+	}
+
+	if (removed > 0) {
+		findings.push(
+			createFinding(
+				'dkim',
+				'Similar DKIM key-strength findings consolidated',
+				'info',
+				`Consolidated ${removed} duplicate selector-probe key-strength finding(s) to reduce repeated penalty for identical key profiles across selectors.`,
+			),
+		);
+	}
+}
+
 /**
  * Check DKIM records for a domain.
  * Probes common selectors at <selector>._domainkey.<domain>.
@@ -265,6 +299,12 @@ export async function checkDkim(domain: string, selector?: string): Promise<Chec
 				`All ${revokedCount} DKIM selector(s) have revoked keys (empty p= tag). This is expected for domains that do not send email.`,
 			),
 		);
+	}
+
+	// In selector-probing mode, multiple selectors can expose identical key profiles.
+	// Consolidate duplicate key-strength findings to avoid over-penalizing the same issue pattern.
+	if (!selector && foundSelectors.length > 1) {
+		consolidateSelectorProbeKeyStrengthFindings(findings);
 	}
 
 	if (foundSelectors.length === 0) {
