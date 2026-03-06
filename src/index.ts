@@ -13,7 +13,7 @@
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { checkRateLimit } from './lib/rate-limiter';
+import { checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
 import { handleToolsList, handleToolsCall } from './handlers/tools';
 import { handleResourcesList, handleResourcesRead } from './handlers/resources';
 import { logEvent, logError } from './lib/log';
@@ -24,10 +24,10 @@ import { sseEvent, acceptsSSE, createSseStream } from './lib/sse';
 import { createAnalyticsClient } from './lib/analytics';
 import type { JsonRpcRequest } from './lib/json-rpc';
 import { auditSessionCreated } from './lib/audit';
-import { MAX_REQUEST_BODY_BYTES } from './lib/config';
+import { MAX_REQUEST_BODY_BYTES, FREE_TOOL_DAILY_LIMITS } from './lib/config';
 
 /** Server version — keep in sync with package.json */
-const SERVER_VERSION = '1.0.2';
+const SERVER_VERSION = '1.0.3';
 let hasLoggedAnalyticsBindingStatus = false;
 
 function logAnalyticsBindingStatus(enabled: boolean): void {
@@ -261,6 +261,38 @@ app.post('/mcp', async (c) => {
 				429,
 				rateHeaders,
 			);
+		}
+
+		const toolNameRaw =
+			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
+		const toolName = typeof toolNameRaw === 'string' ? toolNameRaw.trim().toLowerCase() : '';
+		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
+		if (toolDailyLimit !== undefined) {
+			const toolQuotaResult = await checkToolDailyRateLimit(ip, toolName, toolDailyLimit, c.env.RATE_LIMIT);
+			rateHeaders['x-quota-limit'] = String(toolQuotaResult.limit);
+			rateHeaders['x-quota-remaining'] = String(toolQuotaResult.remaining);
+			if (!toolQuotaResult.allowed) {
+				if (toolQuotaResult.retryAfterMs !== undefined) {
+					rateHeaders['retry-after'] = String(Math.ceil(toolQuotaResult.retryAfterMs / 1000));
+				}
+				analytics.emitRequestEvent({
+					method,
+					status: 'error',
+					durationMs: Date.now() - startTime,
+					isAuthenticated,
+					hasJsonRpcError: true,
+					transport: 'json',
+				});
+				return c.json(
+					jsonRpcError(
+						id,
+						JSON_RPC_ERRORS.RATE_LIMITED,
+						`Rate limit exceeded. ${toolName} is limited to ${toolDailyLimit} requests per day for free tier users.`,
+					),
+					429,
+					rateHeaders,
+				);
+			}
 		}
 	}
 

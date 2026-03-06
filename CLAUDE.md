@@ -8,7 +8,7 @@ Blackveil DNS — open-source DNS & email security scanner, deployed as a Cloudf
 Exposes 11 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 A 12th check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 1.0.2 — keep `SERVER_VERSION` in `src/index.ts` and `version` in `package.json` in sync.
+**Version**: 1.0.3 — keep `SERVER_VERSION` in `src/index.ts` and `version` in `package.json` in sync.
 
 ## Repository Layout
 
@@ -77,7 +77,7 @@ MCP Client → POST /mcp → Auth middleware → Rate limiter → JSON-RPC dispa
 
 - `createFinding()` + `buildCheckResult()` from `lib/scoring.ts` — never construct findings manually
 - `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs
-- `mcpError()` / `mcpText()` in `handlers/tools.ts` for MCP response formatting
+- `mcpError()` / `mcpText()` from `lib/sanitize.ts` for MCP response formatting
 - `cacheGet()` / `cacheSet()` from `lib/cache.ts` — supports KV and in-memory
 - JSDoc (`/** */`) on exported functions
 - `import type { ... }` for type-only imports
@@ -97,7 +97,7 @@ All other errors become generic messages. New validation errors that need to rea
 
 ## Scoring
 
-Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEIGHTS` map exists but only its keys are used to enumerate categories — the numeric weight values are never read in production):
+Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_WEIGHTS` map exists but is unused in scoring):
 
 | Category | Importance | Critical? |
 |----------|------------|-----------|
@@ -107,9 +107,9 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEI
 | SSL | 8 | Yes |
 | DNSSEC | 3 | Yes |
 | MTA-STS | 3 | No |
-| NS | 3 | No |
-| CAA | 2 | No |
-| Subdomain Takeover | 2 | No |
+| NS | 0 (informational) | No |
+| CAA | 0 (informational) | No |
+| Subdomain Takeover | 0 (informational) | No |
 | MX | 0 | No |
 
 **Email bonus** (up to +5 points): Awarded when SPF score >= 57, DKIM present, and DMARC present. DMARC score >= 90 → 5pts, >= 70 → 3pts, otherwise 2pts.

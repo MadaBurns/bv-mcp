@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-03-07
+
+### Changed
+
+- `check_subdomain_takeover` now reports unresolved third-party CNAME takeover signals as `high` (potential) instead of `critical`.
+- Global scan critical penalty now applies only when at least one `critical` finding is confidence-qualified as `verified`.
+- `check_dkim` now consolidates duplicate selector-probe key-strength findings across selectors to reduce repeated scoring penalties for identical key profiles.
+
+### Added
+
+- Regression coverage for takeover potential-severity behavior in `test/check-subdomain-takeover.spec.ts`.
+- Regression coverage for verified-critical global penalty behavior in `test/scoring.spec.ts`.
+- Regression coverage for DKIM duplicate key-strength consolidation in `test/check-dkim.spec.ts`.
+
 ### Added
 
 - Cloudflare Analytics Engine dataset binding support (`MCP_ANALYTICS`) for request and tool usage telemetry.
