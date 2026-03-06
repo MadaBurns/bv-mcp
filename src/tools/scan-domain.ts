@@ -325,6 +325,10 @@ export function formatScanReport(result: ScanDomainResult): string {
 			if (verificationStatus) {
 				lines.push(`    Takeover Verification: ${verificationStatus}`);
 			}
+			const confidence = finding.metadata?.confidence ? String(finding.metadata.confidence) : undefined;
+			if (confidence) {
+				lines.push(`    Confidence: ${confidence}`);
+			}
 			const narrative = resolveImpactNarrative({
 				category: finding.category,
 				severity: finding.severity,

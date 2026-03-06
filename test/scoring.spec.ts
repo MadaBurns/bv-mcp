@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildCheckResult, createFinding, computeCategoryScore, computeScanScore, CATEGORY_DISPLAY_WEIGHTS } from '../src/lib/scoring';
+import { buildCheckResult, createFinding, computeCategoryScore, computeScanScore, CATEGORY_DISPLAY_WEIGHTS, inferFindingConfidence } from '../src/lib/scoring';
 import type { Finding, CheckResult } from '../src/lib/scoring';
 
 describe('scoring', () => {
@@ -26,7 +26,7 @@ describe('scoring', () => {
 			expect(result.category).toBe('spf');
 			expect(result.passed).toBe(true);
 			expect(result.score).toBe(95);
-			expect(result.findings).toEqual(findings);
+			expect(result.findings[0].metadata?.confidence).toBe('deterministic');
 		});
 
 		it('builds a failing result when score < 50', () => {
@@ -53,6 +53,25 @@ describe('scoring', () => {
 				providerConfidence: 0.9,
 			});
 			expect(f.metadata).toEqual({ providerConfidence: 0.9 });
+		});
+	});
+
+	describe('inferFindingConfidence', () => {
+		it('returns heuristic for selector-probing DKIM misses', () => {
+			const finding = createFinding(
+				'dkim',
+				'No DKIM records found among tested selectors',
+				'high',
+				'No DKIM records were found among tested selector set.',
+			);
+			expect(inferFindingConfidence(finding)).toBe('heuristic');
+		});
+
+		it('returns verified for takeover findings with verified metadata', () => {
+			const finding = createFinding('subdomain_takeover', 'Dangling CNAME', 'critical', 'Verified takeover signal', {
+				verificationStatus: 'verified',
+			});
+			expect(inferFindingConfidence(finding)).toBe('verified');
 		});
 	});
 

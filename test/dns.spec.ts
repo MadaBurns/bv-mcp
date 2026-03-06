@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { queryTxtRecords, checkDnssec, queryMxRecords, RecordType } from '../src/lib/dns';
 import { setupFetchMock, mockFetchResponse } from './helpers/dns-mock';
 
@@ -36,6 +36,47 @@ describe('DNS library', () => {
 			});
 			const records = await queryTxtRecords('example.com');
 			expect(records).toEqual(['v=spf1 include:_spf.google.com -all']);
+		});
+
+		it('uses secondary DoH confirmation when primary has no answers', async () => {
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce({
+					ok: true,
+					status: 200,
+					json: () =>
+						Promise.resolve({
+							Status: 0,
+							TC: false,
+							RD: true,
+							RA: true,
+							AD: false,
+							CD: false,
+							Question: [{ name: 'example.com', type: RecordType.TXT }],
+							Answer: [],
+						}),
+				} as unknown as Response)
+				.mockResolvedValueOnce({
+					ok: true,
+					status: 200,
+					json: () =>
+						Promise.resolve({
+							Status: 0,
+							TC: false,
+							RD: true,
+							RA: true,
+							AD: false,
+							CD: false,
+							Question: [{ name: 'example.com', type: RecordType.TXT }],
+							Answer: [{ name: 'example.com', type: RecordType.TXT, TTL: 300, data: '"v=spf1 -all"' }],
+						}),
+				} as unknown as Response);
+
+			globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+			const records = await queryTxtRecords('example.com');
+			expect(records).toEqual(['v=spf1 -all']);
+			expect(fetchMock).toHaveBeenCalledTimes(2);
 		});
 	});
 

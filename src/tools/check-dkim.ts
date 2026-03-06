@@ -271,11 +271,12 @@ export async function checkDkim(domain: string, selector?: string): Promise<Chec
 		findings.push(
 			createFinding(
 				'dkim',
-				'No DKIM records found',
+				'No DKIM records found among tested selectors',
 				'high',
-				`No DKIM records found for ${domain} across common selectors (${COMMON_SELECTORS.join(', ')}). DKIM helps verify email authenticity and integrity.`,
+				`No DKIM records were found for ${domain} among the tested selector set (${selectorsToCheck.join(', ')}). This result is based on selector probing and may miss custom selector names. DKIM helps verify email authenticity and integrity.`,
 				{
 					signalType: 'dkim',
+					detectionMethod: 'selector-probing',
 					selectorsChecked: selectorsToCheck,
 					selectorsFound: [],
 				},

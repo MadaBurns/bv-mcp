@@ -6,6 +6,7 @@
  */
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+export type FindingConfidence = 'deterministic' | 'heuristic' | 'verified';
 
 export type CheckCategory = 'spf' | 'dmarc' | 'dkim' | 'dnssec' | 'ssl' | 'mta_sts' | 'ns' | 'caa' | 'subdomain_takeover' | 'mx';
 
@@ -92,6 +93,53 @@ function clampPercent(score: number): number {
 	return Math.max(0, Math.min(100, score));
 }
 
+function isExplicitConfidence(value: unknown): value is FindingConfidence {
+	return value === 'deterministic' || value === 'heuristic' || value === 'verified';
+}
+
+/**
+ * Infer how strongly a finding can be trusted based on available evidence.
+ * - verified: explicit proof (currently only supported on takeover checks)
+ * - heuristic: signal-based or partial-evidence checks
+ * - deterministic: direct record/protocol validation
+ */
+export function inferFindingConfidence(finding: Finding): FindingConfidence {
+	const declared = finding.metadata?.confidence;
+	if (isExplicitConfidence(declared)) return declared;
+
+	if (finding.category === 'subdomain_takeover') {
+		const status = finding.metadata?.verificationStatus;
+		if (status === 'verified') return 'verified';
+		return 'heuristic';
+	}
+
+	const text = `${finding.title} ${finding.detail}`.toLowerCase();
+	if (
+		text.includes('common selectors') ||
+		text.includes('among tested selectors') ||
+		text.includes('inferred') ||
+		text.includes('manual review') ||
+		text.includes('possible') ||
+		text.includes('potential') ||
+		text.includes('could indicate')
+	) {
+		return 'heuristic';
+	}
+
+	return 'deterministic';
+}
+
+function withConfidenceMetadata(finding: Finding): Finding {
+	const confidence = inferFindingConfidence(finding);
+	return {
+		...finding,
+		metadata: {
+			...(finding.metadata ?? {}),
+			confidence,
+		},
+	};
+}
+
 function computeProviderConfidenceModifier(findings: Finding[]): number {
 	const confidences: number[] = [];
 
@@ -139,12 +187,13 @@ export function computeCategoryScore(findings: Finding[]): number {
  * Build a CheckResult from a category and its findings.
  */
 export function buildCheckResult(category: CheckCategory, findings: Finding[]): CheckResult {
-	const score = computeCategoryScore(findings);
+	const normalizedFindings = findings.map(withConfidenceMetadata);
+	const score = computeCategoryScore(normalizedFindings);
 	return {
 		category,
 		passed: score >= 50,
 		score,
-		findings,
+		findings: normalizedFindings,
 	};
 }
 

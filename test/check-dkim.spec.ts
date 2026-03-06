@@ -39,7 +39,8 @@ describe('checkDkim', () => {
 		expect(result.category).toBe('dkim');
 		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0].severity).toBe('high');
-		expect(result.findings[0].title).toMatch(/No DKIM/i);
+		expect(result.findings[0].title).toMatch(/tested selectors/i);
+		expect(result.findings[0].detail).toContain('selector probing');
 	});
 
 	it('detects DKIM on date-based Google selectors', async () => {

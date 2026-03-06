@@ -43,3 +43,9 @@ export const DNS_TIMEOUT_MS = 5000;
 
 /** Default number of retry attempts for DNS-over-HTTPS queries. */
 export const DNS_RETRIES = 2;
+
+/**
+ * When true, empty DoH answers from the primary resolver are optionally
+ * confirmed with a secondary resolver to reduce false negatives.
+ */
+export const DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY = true;

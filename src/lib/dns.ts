@@ -6,9 +6,10 @@
  * Workers-compatible: uses only fetch API, no Node.js APIs.
  */
 
-import { DNS_TIMEOUT_MS, DNS_RETRIES } from './config';
+import { DNS_TIMEOUT_MS, DNS_RETRIES, DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY } from './config';
 
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
+const SECONDARY_DOH_ENDPOINT = 'https://dns.google/resolve';
 
 /** Standard DNS record type codes */
 export const RecordType = {
@@ -57,6 +58,48 @@ interface DohResponse {
 	Authority?: DnsAuthority[];
 }
 
+interface QueryDnsOptions {
+	timeoutMs?: number;
+	retries?: number;
+	confirmWithSecondaryOnEmpty?: boolean;
+}
+
+function hasTypedAnswers(response: DohResponse, type: RecordTypeName): boolean {
+	return (response.Answer ?? []).some((answer) => answer.type === RecordType[type]);
+}
+
+async function queryDnsFromEndpoint(
+	endpoint: string,
+	domain: string,
+	type: RecordTypeName,
+	dnssecCheck: boolean,
+	timeoutMs: number,
+): Promise<DohResponse | null> {
+	const params = new URLSearchParams({
+		name: domain,
+		type,
+		...(dnssecCheck ? { cd: '0' } : {}),
+	});
+	const url = `${endpoint}?${params.toString()}`;
+
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const response = await fetch(url, {
+			method: 'GET',
+			headers: { Accept: 'application/dns-json' },
+			signal: controller.signal,
+		});
+		if (!response.ok) return null;
+		const data: DohResponse = await response.json();
+		return data;
+	} catch {
+		return null;
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
 /** Error thrown when a DNS query fails */
 export class DnsQueryError extends Error {
 	constructor(
@@ -78,7 +121,7 @@ export class DnsQueryError extends Error {
  * @param dnssecCheck - If true, sets the CD=0 flag to request DNSSEC validation
  * @returns The full DoH JSON response
  */
-export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck = false, opts?: { timeoutMs?: number; retries?: number }): Promise<DohResponse> {
+export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck = false, opts?: QueryDnsOptions): Promise<DohResponse> {
        const params = new URLSearchParams({
 	       name: domain,
 	       type,
@@ -88,6 +131,7 @@ export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck
        const url = `${DOH_ENDPOINT}?${params.toString()}`;
 	const timeoutMs = opts?.timeoutMs ?? DNS_TIMEOUT_MS;
 	const retries = opts?.retries ?? DNS_RETRIES;
+	const confirmWithSecondaryOnEmpty = opts?.confirmWithSecondaryOnEmpty ?? DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY;
 
        for (let attempt = 0; attempt <= retries; attempt++) {
 	       const controller = new AbortController();
@@ -117,6 +161,14 @@ export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck
 	       }
 
 	       const data: DohResponse = await response.json();
+
+	       if (confirmWithSecondaryOnEmpty && !hasTypedAnswers(data, type)) {
+		       const secondary = await queryDnsFromEndpoint(SECONDARY_DOH_ENDPOINT, domain, type, dnssecCheck, timeoutMs);
+		       if (secondary && hasTypedAnswers(secondary, type)) {
+			       return secondary;
+		       }
+	       }
+
 	       return data;
        }
        // Should never reach here

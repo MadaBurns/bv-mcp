@@ -345,6 +345,7 @@ describe('formatCheckResult - via handleToolsCall', () => {
 		const result = await call('check_spf', { domain: 'failing-spf.example.com' });
 		expect(result.content[0].text).toContain('\u274C Failed');
 		expect(result.content[0].text).toContain('Findings');
+		expect(result.content[0].text).toContain('Confidence: deterministic');
 		expect(result.content[0].text).toContain('Potential Impact:');
 		expect(result.content[0].text).toContain('Adverse Consequences:');
 		const text = result.content[0].text;
@@ -381,5 +382,6 @@ describe('formatCheckResult - via handleToolsCall', () => {
 
 		const result = await call('scan_domain', { domain: 'example.com' });
 		expect(result.content[0].text).toContain('Takeover Verification: potential');
+		expect(result.content[0].text).toContain('Confidence: heuristic');
 	});
 });

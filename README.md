@@ -28,7 +28,7 @@ Open-source DNS and email security MCP server implemented for Cloudflare Workers
 - Runtime: Cloudflare Workers
 - Framework: Hono
 - Language: TypeScript (strict)
-- DNS backend: Cloudflare DoH (`cloudflare-dns.com/dns-query`)
+- DNS backend: Cloudflare DoH (`cloudflare-dns.com/dns-query`) with optional secondary confirmation via Google DoH (`dns.google/resolve`) on empty-answer responses
 
 This is a remote MCP server. It is not a local stdio server invoked via `npx`/`uvx`.
 
@@ -97,6 +97,11 @@ Directly callable MCP tools:
 
 `explain_finding` returns what the issue means, potential impact, adverse consequences, and remediation guidance.
 
+Findings now include a confidence label in metadata and rendered reports:
+- `deterministic`: direct protocol/record validation with clear evidence.
+- `heuristic`: signal-based inference (for example selector probing or takeover indicators) and may require manual validation.
+- `verified`: explicit high-confidence validation signal.
+
 Subdomain takeover findings now include a verification label in finding metadata and reports:
 - `potential`: DNS/signal indicates possible takeover; requires authorized proof-of-control validation.
 - `verified`: service deprovisioning fingerprint detected; high-confidence signal pending authorized proof-of-control.
@@ -149,7 +154,7 @@ High-level summary:
 - IP literals are rejected across standard and alternate numeric forms (for example `127.1`, `0177.0.0.1`, `8.8.8.8`, `0x8.0x8.0x8.0x8`).
 - SSRF protections block unsafe/private targets.
 - Error responses are sanitized.
-- DNS resolution is performed through Cloudflare DoH.
+- DNS resolution is performed through Cloudflare DoH, with optional secondary confirmation on empty-answer responses to reduce false negatives.
 - Rate limiting defaults to `10/min` and `100/hr` per IP for unauthenticated `tools/call` traffic.
 - Session creation is rate-limited (`30/min` per IP) for unauthenticated `initialize` and new SSE session bootstrap.
 

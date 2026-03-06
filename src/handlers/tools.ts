@@ -170,6 +170,11 @@ function formatCheckResult(result: CheckResult): string {
 				lines.push(`  Takeover Verification: ${verificationStatus}`);
 			}
 
+			const confidence = finding.metadata?.confidence ? String(finding.metadata.confidence) : undefined;
+			if (confidence) {
+				lines.push(`  Confidence: ${confidence}`);
+			}
+
 			if (finding.severity !== 'info') {
 				const narrative = resolveImpactNarrative({
 					category: finding.category,
