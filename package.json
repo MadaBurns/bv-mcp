@@ -41,7 +41,7 @@
 		"@types/punycode": "^2.1.4",
 		"@vitest/coverage-istanbul": "^3.2.4",
 		"eslint": "^10.0.2",
-		"hono": "^4.12.2",
+		"hono": "^4.12.5",
 		"typescript": "^5.5.2",
 		"typescript-eslint": "^8.56.1",
 		"vitest": "^3.2.4",
