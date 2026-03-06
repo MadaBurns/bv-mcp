@@ -97,6 +97,11 @@ Directly callable MCP tools:
 
 `explain_finding` returns what the issue means, potential impact, adverse consequences, and remediation guidance.
 
+Subdomain takeover findings now include a verification label in finding metadata and reports:
+- `potential`: DNS/signal indicates possible takeover; requires authorized proof-of-control validation.
+- `verified`: service deprovisioning fingerprint detected; high-confidence signal pending authorized proof-of-control.
+- `not_exploitable`: no takeover signal detected for the checked subdomains.
+
 Internal check executed within `scan_domain`:
 
 - `subdomain_takeover`

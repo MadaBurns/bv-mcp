@@ -318,6 +318,13 @@ export function formatScanReport(result: ScanDomainResult): string {
 		for (const finding of nonInfoFindings) {
 			lines.push(`  [${finding.severity.toUpperCase()}] ${finding.title}`);
 			lines.push(`    ${finding.detail}`);
+			const verificationStatus =
+				finding.category === 'subdomain_takeover' && finding.metadata?.verificationStatus
+					? String(finding.metadata.verificationStatus)
+					: undefined;
+			if (verificationStatus) {
+				lines.push(`    Takeover Verification: ${verificationStatus}`);
+			}
 			const narrative = resolveImpactNarrative({
 				category: finding.category,
 				severity: finding.severity,

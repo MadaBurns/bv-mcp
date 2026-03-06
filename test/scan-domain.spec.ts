@@ -200,6 +200,13 @@ describe('formatScanReport', () => {
 				findings: [
 					{ category: 'dkim', title: 'Weak key', severity: 'high', detail: 'RSA key too short' },
 					{ category: 'mta_sts', title: 'Testing mode', severity: 'low', detail: 'Not enforcing' },
+					{
+						category: 'subdomain_takeover',
+						title: 'Dangling CNAME: media.example.com -> dead.cloudfront.net',
+						severity: 'critical',
+						detail: 'Potential takeover vector',
+						metadata: { verificationStatus: 'potential' },
+					},
 				],
 				summary: '2 issue(s) found. Grade: A-',
 			},
@@ -222,6 +229,7 @@ describe('formatScanReport', () => {
 		expect(report).toContain('Findings:');
 		expect(report).toContain('[HIGH] Weak key');
 		expect(report).toContain('RSA key too short');
+		expect(report).toContain('Takeover Verification: potential');
 		expect(report).toContain('Potential Impact:');
 		expect(report).toContain('Adverse Consequences:');
 		// Contains timestamp

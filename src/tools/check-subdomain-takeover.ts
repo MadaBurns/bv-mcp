@@ -6,6 +6,8 @@
 import { queryDnsRecords } from '../lib/dns';
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
 
+type TakeoverVerificationStatus = 'potential' | 'verified' | 'not_exploitable';
+
 // List of known/active subdomains to check (can be expanded or made configurable)
 const KNOWN_SUBDOMAINS = [
 	'staging',
@@ -135,6 +137,18 @@ async function probeHttpFingerprint(fqdn: string, cname: string): Promise<string
 export async function checkSubdomainTakeover(domain: string): Promise<CheckResult> {
 	const findings: Finding[] = [];
 
+	const createTakeoverFinding = (
+		title: string,
+		severity: 'critical' | 'high' | 'info',
+		detail: string,
+		verificationStatus: TakeoverVerificationStatus,
+		evidence: string[],
+	): Finding =>
+		createFinding('subdomain_takeover', title, severity, detail, {
+			verificationStatus,
+			evidence,
+		});
+
 	const findingsPerSubdomain = await Promise.all(
 		KNOWN_SUBDOMAINS.map(async (sub): Promise<Finding[]> => {
 			const fqdn = `${sub}.${domain}`;
@@ -152,11 +166,12 @@ export async function checkSubdomainTakeover(domain: string): Promise<CheckResul
 						const targetA = await queryDnsRecords(cname, 'A');
 						if (targetA.length === 0) {
 							subdomainFindings.push(
-								createFinding(
-									'subdomain_takeover',
+								createTakeoverFinding(
 									`Dangling CNAME: ${fqdn} → ${cname}`,
 									'critical',
-									`Subdomain ${fqdn} points to ${cname}, which does not resolve. This is a potential subdomain takeover vector.`,
+									`Subdomain ${fqdn} points to ${cname}, which does not resolve. This is a potential subdomain takeover vector and should be manually validated with authorized claim testing.`,
+									'potential',
+									['cname_target_unresolved'],
 								),
 							);
 						} else {
@@ -164,22 +179,24 @@ export async function checkSubdomainTakeover(domain: string): Promise<CheckResul
 							const vulnerableService = await probeHttpFingerprint(fqdn, cname);
 							if (vulnerableService) {
 								subdomainFindings.push(
-									createFinding(
-										'subdomain_takeover',
+									createTakeoverFinding(
 										`Subdomain vulnerable to takeover (${vulnerableService})`,
 										'critical',
-										`Subdomain ${fqdn} points to ${cname}, which resolves but returns a ${vulnerableService} deprovisioned page. This is a confirmed subdomain takeover vector.`,
+										`Subdomain ${fqdn} points to ${cname}, which resolves but returns a ${vulnerableService} deprovisioned fingerprint. This is a verified takeover signal and should be confirmed with authorized proof-of-control testing.`,
+										'verified',
+										['cname_resolves', 'provider_deprovisioned_fingerprint'],
 									),
 								);
 							}
 						}
 					} catch {
 						subdomainFindings.push(
-							createFinding(
-								'subdomain_takeover',
+							createTakeoverFinding(
 								`CNAME resolution failed: ${fqdn} → ${cname}`,
 								'high',
-								`Could not resolve CNAME target ${cname} for ${fqdn}. Manual review recommended.`,
+								`Could not resolve CNAME target ${cname} for ${fqdn}. This is a potential takeover signal and requires manual verification.`,
+								'potential',
+								['cname_target_resolution_error'],
 							),
 						);
 					}
@@ -198,11 +215,12 @@ export async function checkSubdomainTakeover(domain: string): Promise<CheckResul
 
 	if (findings.length === 0) {
 		findings.push(
-			createFinding(
-				'subdomain_takeover',
+			createTakeoverFinding(
 				'No dangling CNAME records found',
 				'info',
 				`No subdomain takeover vectors detected for ${domain} among known/active subdomains.`,
+				'not_exploitable',
+				['no_takeover_signals_detected'],
 			),
 		);
 	}

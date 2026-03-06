@@ -162,6 +162,14 @@ function formatCheckResult(result: CheckResult): string {
 			lines.push(`- ${icon} **[${finding.severity.toUpperCase()}]** ${finding.title}`);
 			lines.push(`  ${finding.detail}`);
 
+			const verificationStatus =
+				finding.category === 'subdomain_takeover' && finding.metadata?.verificationStatus
+					? String(finding.metadata.verificationStatus)
+					: undefined;
+			if (verificationStatus) {
+				lines.push(`  Takeover Verification: ${verificationStatus}`);
+			}
+
 			if (finding.severity !== 'info') {
 				const narrative = resolveImpactNarrative({
 					category: finding.category,

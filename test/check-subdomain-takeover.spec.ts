@@ -46,6 +46,7 @@ describe('checkSubdomainTakeover', () => {
 		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0].severity).toBe('info');
 		expect(result.findings[0].title).toContain('No dangling CNAME');
+		expect(result.findings[0].metadata?.verificationStatus).toBe('not_exploitable');
 	});
 
 	it('detects dangling CNAME to third-party service (critical finding)', async () => {
@@ -81,6 +82,7 @@ describe('checkSubdomainTakeover', () => {
 		expect(critical!.title).toContain('staging.example.com');
 		expect(critical!.title).toContain('herokuapp.com');
 		expect(critical!.detail).toContain('subdomain takeover');
+		expect(critical!.metadata?.verificationStatus).toBe('potential');
 	});
 
 	it('does not flag third-party CNAME that resolves successfully and has no fingerprint', async () => {
@@ -145,7 +147,8 @@ describe('checkSubdomainTakeover', () => {
 		const high = result.findings.find((f) => f.severity === 'high');
 		expect(high).toBeDefined();
 		expect(high!.title).toContain('CNAME resolution failed');
-		expect(high!.detail).toContain('Manual review recommended');
+		expect(high!.detail).toContain('manual verification');
+		expect(high!.metadata?.verificationStatus).toBe('potential');
 	});
 
 	it('ignores non-third-party CNAME records (no finding)', async () => {
@@ -259,6 +262,7 @@ describe('checkSubdomainTakeover', () => {
 		expect(critical!.title).toContain('vulnerable to takeover');
 		expect(critical!.title).toContain('Heroku');
 		expect(critical!.detail).toContain('deprovisioned');
+		expect(critical!.metadata?.verificationStatus).toBe('verified');
 	});
 
 	it('detects HTTP fingerprint takeover on resolving CNAME (GitHub Pages)', async () => {

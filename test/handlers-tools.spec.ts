@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse, mockTxtRecords, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
+import { inMemoryCache } from '../src/lib/cache';
 
 const { restore } = setupFetchMock();
 
@@ -354,5 +355,31 @@ describe('formatCheckResult - via handleToolsCall', () => {
 			text.includes('\uD83D\uDD34') ||
 			text.includes('\uD83D\uDEA8');
 		expect(hasSeverityIcon).toBe(true);
+	});
+
+	it('subdomain takeover output includes takeover verification status when present', async () => {
+		inMemoryCache.clear();
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('type=CNAME') || url.includes('type=5')) {
+				if (url.includes('staging.example.com')) {
+					return Promise.resolve(createDohResponse([{ name: 'staging.example.com', type: 5 }], [{ name: 'staging.example.com', type: 5, TTL: 300, data: 'old-app.herokuapp.com.' }]));
+				}
+				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 5 }], []));
+			}
+
+			if (url.includes('type=A') || url.includes('type=1')) {
+				if (url.includes('old-app.herokuapp.com')) {
+					return Promise.resolve(createDohResponse([{ name: 'old-app.herokuapp.com', type: 1 }], []));
+				}
+			}
+
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const result = await call('scan_domain', { domain: 'example.com' });
+		expect(result.content[0].text).toContain('Takeover Verification: potential');
 	});
 });
