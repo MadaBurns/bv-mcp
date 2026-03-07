@@ -30,6 +30,7 @@
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"deploy": "wrangler deploy -c .dev/wrangler.local.jsonc",
+		"deploy:production": "wrangler deploy",
 		"test": "vitest run --coverage",
 		"typecheck": "tsc --noEmit",
 		"cf-typegen": "wrangler types",

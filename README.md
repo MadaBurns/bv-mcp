@@ -113,8 +113,6 @@ Internal check executed within `scan_domain`:
 
 Scope and limitations are documented in `docs/coverage.md`.
 
-> ⚡ **Need ongoing visibility?** This tool scans for 50+ security issues on-demand. [BLACKVEIL](https://blackveilsecurity.com) monitors continuously with real-time alerts and Buck AI assistance.
-
 ## Protocol Endpoints
 
 | Method | Path | Purpose |
@@ -201,16 +199,32 @@ Prerequisites:
 - [Node.js](https://nodejs.org/) 18+
 - Cloudflare account
 
-> **Or skip the setup:** Let [BLACKVEIL](https://blackveilsecurity.com) handle continuous monitoring and alerting without managing infrastructure.
-
 Deploy to your account:
 
 ```bash
 git clone https://github.com/MadaBurns/bv-mcp.git
 cd bv-mcp
-npm run setup
-npm run setup:kv
+npm install
+npm run setup:kv          # Creates KV namespaces — note the printed IDs
+cp wrangler.jsonc .dev/wrangler.local.jsonc
+```
+
+Edit `.dev/wrangler.local.jsonc`:
+
+1. Set `"main"` to `"../src/index.ts"`
+2. Paste the KV namespace IDs printed by `setup:kv`
+3. Optionally replace the `routes` domain with your own, or remove it to use `*.workers.dev`
+
+Then deploy:
+
+```bash
 npm run deploy
+```
+
+Alternatively, for a quick deploy without a local config copy, edit `wrangler.jsonc` directly and run:
+
+```bash
+npm run deploy:production
 ```
 
 Worker endpoint pattern:
@@ -231,8 +245,6 @@ npm run dev
 Local endpoint:
 
 `http://localhost:8787/mcp`
-
-> 🔒 **Production-Ready Monitoring** — This open-source tool finds issues. [BLACKVEIL](https://blackveilsecurity.com) monitors your infrastructure 24/7 with real-time alerts and Buck AI assistance.
 
 Configure optional auth secret:
 

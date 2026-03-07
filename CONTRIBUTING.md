@@ -8,10 +8,12 @@ Thanks for your interest in contributing! Blackveil DNS is an open-source DNS & 
 git clone https://github.com/MadaBurns/bv-mcp.git
 cd bv-mcp
 npm install
-npm test           # Run tests (245+ tests, ~95% coverage)
+npm test           # Run tests (430+ tests, ~95% coverage)
 npm run dev        # Local dev server at localhost:8787
 npm run typecheck  # Type-check without emitting
 ```
+
+To deploy, see the **Self-Hosting** section in the README — it walks through creating KV namespaces and setting up `.dev/wrangler.local.jsonc`.
 
 ## Development
 
