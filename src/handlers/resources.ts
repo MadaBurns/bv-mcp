@@ -28,7 +28,7 @@ const RESOURCES: McpResource[] = [
    uri: 'dns-security://guides/security-checks',
    name: 'DNS Security Checks Guide',
    description:
-     'Overview of all DNS/email security checks performed by Blackveil DNS, including SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, and CAA.',
+		 'Overview of all DNS/email security checks performed by Blackveil DNS, including SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, and Subdomain Takeover.',
    mimeType: 'text/markdown',
  },
  {
@@ -49,7 +49,7 @@ const RESOURCES: McpResource[] = [
 const RESOURCE_CONTENT: Record<string, string> = {
 	'dns-security://guides/security-checks': `# DNS Security Checks
 
-The Blackveil DNS scanner evaluates **50 checks** grouped into 8 security categories.
+The Blackveil DNS scanner evaluates **50 checks** grouped into 10 tool-exposed categories.
 
 This MCP server exposes tools that cover the core checks in each category and returns findings compatible with Blackveil DNS scoring.
 
@@ -65,6 +65,8 @@ This MCP server exposes tools that cover the core checks in each category and re
 | MTA-STS | 5 | TXT policy presence and basic policy retrieval checks | Policy hardening and reporting-depth analytics |
 | NS | 4 | Delegation, diversity, and resiliency baseline checks | Infrastructure concentration and availability analytics |
 | CAA | 4 | CAA presence and issuer-allowlist baseline checks | Issuance surface modeling and mis-issuance risk analytics |
+| MX | 4 | MX presence, routing quality, and outbound provider inference | Mail routing posture and provider analytics |
+| Subdomain Takeover | 2 | Dangling CNAME detection across known subdomains | Expanded asset discovery and takeover surface analytics |
 
 > Total checks: **50** across all categories.
 
@@ -112,7 +114,7 @@ Scans known subdomains for dangling CNAME records pointing to unresolved third-p
 
 ## Composite Tools
 
-- \`scan_domain\`: Runs all 10 checks (8 category checks + MX + Subdomain Takeover) and produces an overall score + grade.
+- \`scan_domain\`: Runs all 10 checks and produces an overall score + grade.
 - \`explain_finding\`: Provides plain-language context and remediation guidance for individual findings.
 `,
 

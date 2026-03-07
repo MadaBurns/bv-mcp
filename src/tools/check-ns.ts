@@ -6,6 +6,14 @@
 import { queryDnsRecords, queryDns } from '../lib/dns';
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
 
+const RESILIENT_NS_PROVIDERS: Record<string, string> = {
+	'cloudflare.com':
+		"Cloudflare's anycast network provides built-in geographic redundancy, so this is lower risk than single-provider setups on traditional DNS hosts.",
+	'awsdns.com': "AWS Route 53's anycast network provides built-in geographic redundancy, so this is lower risk than single-provider setups on traditional DNS hosts.",
+	'google.com':
+		"Google Cloud DNS uses globally distributed authoritative infrastructure, so this is lower risk than single-provider setups on traditional DNS hosts.",
+};
+
 /**
  * Check nameserver configuration for a domain.
  * Validates NS records exist, checks for diversity, and verifies responsiveness.
@@ -76,12 +84,15 @@ export async function checkNs(domain: string): Promise<CheckResult> {
 	);
 
 	if (tlds.size === 1 && nsRecords.length > 1) {
+		const providerDomain = [...tlds][0];
+		const providerContext =
+			RESILIENT_NS_PROVIDERS[providerDomain] ?? 'Consider using nameservers from different providers for better resilience.';
 		findings.push(
 			createFinding(
 				'ns',
 				'Low nameserver diversity',
 				'low',
-				`All nameservers are under the same domain (${[...tlds][0]}). Consider using nameservers from different providers for better resilience.`,
+				`All nameservers are under ${providerDomain}. ${providerContext} For maximum independence, a secondary DNS provider can be added.`,
 			),
 		);
 	}

@@ -97,7 +97,7 @@ All other errors become generic messages. New validation errors that need to rea
 
 ## Scoring
 
-Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_WEIGHTS` map exists but is unused in scoring):
+Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEIGHTS` map exists for display/registry purposes and is unused in scoring):
 
 | Category | Importance | Critical? |
 |----------|------------|-----------|
@@ -110,7 +110,7 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_WEIGHTS` ma
 | NS | 0 (informational) | No |
 | CAA | 0 (informational) | No |
 | Subdomain Takeover | 0 (informational) | No |
-| MX | 0 | No |
+| MX | 0 (informational) | No |
 
 **Email bonus** (up to +5 points): Awarded when SPF score >= 57, DKIM present, and DMARC present. DMARC score >= 90 → 5pts, >= 70 → 3pts, otherwise 2pts.
 
