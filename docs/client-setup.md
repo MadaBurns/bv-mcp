@@ -131,8 +131,12 @@ When auth is enabled (`BV_API_KEY` configured), clients must send:
 Optional runtime variable:
 
 - `PROVIDER_SIGNATURES_URL`: HTTPS URL returning provider signature JSON for managed provider detection.
+- `PROVIDER_SIGNATURES_SHA256`: Required pinned SHA-256 digest for the exact JSON payload returned by `PROVIDER_SIGNATURES_URL`.
+- `PROVIDER_SIGNATURES_ALLOWED_HOSTS`: Optional comma-separated hostname allowlist for runtime signature fetches.
 
 If unset or unavailable, the server falls back to stale cache (if present) and then built-in signatures.
+
+If `PROVIDER_SIGNATURES_URL` is set without a matching `PROVIDER_SIGNATURES_SHA256`, runtime signatures are rejected and the server falls back to stale or built-in signatures.
 
 ## Response Metadata Notes
 

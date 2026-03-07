@@ -25,10 +25,10 @@ Examples rejected by validation include `127.1`, `0177.0.0.1`, `8.8.8.8`, `0x8.0
 Canonical implementation lives in `src/lib/rate-limiter.ts`.
 
 - Per-IP limit: `10` requests/minute and `100` requests/hour.
+- Separate unauthenticated control-plane limit: `30` requests/minute and `300` requests/hour.
 - Enforcement backend: KV when bound; in-memory fallback when KV is unavailable.
 - KV-backed checks now serialize per-IP updates within an isolate to reduce local race amplification.
-- Scope: `tools/call` traffic is counted.
-- Protocol methods (`initialize`, `tools/list`, `resources/*`, `ping`, `notifications/*`) are not counted.
+- Scope: `tools/call` traffic uses the stricter budget; protocol/session methods use the control-plane budget.
 - Authenticated requests (valid bearer token) bypass rate limiting.
 
 Note: KV counters remain fixed-window and are not globally atomic across isolates.
@@ -39,7 +39,8 @@ Note: KV counters remain fixed-window and are not globally atomic across isolate
 - Client IP source: `cf-connecting-ip`.
 - Session storage supports KV-backed state with in-memory fallback.
 - Session idle timeout is enforced with sliding refresh.
-- Session creation is best-effort rate-limited per IP (`30` session creations/minute) for unauthenticated traffic.
+- Session refresh writes are coalesced to reduce repeated KV mutation pressure.
+- Session creation is rate-limited per IP (`30` session creations/minute) for unauthenticated traffic, using KV when available.
 - In-memory session fallback is bounded with least-recently-used eviction (`2000` max active sessions).
 
 ## Logging and Observability
@@ -58,6 +59,8 @@ Common fields include:
 - Severity
 - Duration (ms)
 - User agent
+
+Sensitive values such as bearer tokens, session identifiers, cookies, and raw request bodies are redacted before emission.
 
 ### Analytics Engine Usage Events
 
@@ -111,6 +114,8 @@ Use these query patterns in Analytics Engine to build usage reporting:
 - DNS lookups are performed against Cloudflare DoH (`cloudflare-dns.com/dns-query`).
 - The service does not call arbitrary third-party endpoints for scan logic.
 - Optional provider detection signatures may be loaded from a deployment-configured URL (`PROVIDER_SIGNATURES_URL`) for `check_mx` and `scan_domain` inference.
+- Runtime provider-signature sources must use HTTPS and are validated against a pinned SHA-256 digest (`PROVIDER_SIGNATURES_SHA256`).
+- Deployments may further restrict runtime signature fetches to specific hosts with `PROVIDER_SIGNATURES_ALLOWED_HOSTS`.
 - Runtime-loaded provider signatures are cached in-isolate for 5 minutes to reduce repeated fetch latency during active traffic.
 - When configured signature fetch fails, detection falls back to stale cache (if available) and then built-in signatures.
 - External log export is optional and deployment-controlled.

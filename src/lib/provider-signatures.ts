@@ -21,6 +21,8 @@ interface ProviderSourceResult {
 
 interface LoadProviderSignaturesOptions {
 	sourceUrl?: string;
+	allowedHosts?: string[];
+	expectedSha256?: string;
 	timeoutMs?: number;
 	retries?: number;
 }
@@ -33,6 +35,39 @@ interface ProviderMatchEvidence {
 const DEFAULT_TIMEOUT_MS = 2500;
 const DEFAULT_RETRIES = 1;
 const RUNTIME_SIGNATURE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function normalizeSha256(value: string): string {
+	return value.trim().toLowerCase().replace(/^sha256:/, '');
+}
+
+function normalizeAllowedHosts(input: string[] | undefined): string[] {
+	if (!Array.isArray(input)) return [];
+	return input.map((host) => host.trim().toLowerCase()).filter((host) => host.length > 0);
+}
+
+function validateRuntimeSourceUrl(sourceUrl: string, allowedHosts: string[]): URL {
+	let url: URL;
+	try {
+		url = new URL(sourceUrl);
+	} catch {
+		throw new Error('Invalid provider signature source URL');
+	}
+
+	if (url.protocol !== 'https:') {
+		throw new Error('Invalid provider signature source URL: HTTPS is required');
+	}
+
+	if (allowedHosts.length > 0 && !allowedHosts.includes(url.hostname.toLowerCase())) {
+		throw new Error('Invalid provider signature source URL: host is not allowlisted');
+	}
+
+	return url;
+}
+
+async function sha256Hex(input: string): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 const BUILT_IN_SIGNATURES: ProviderSignaturePayload = {
 	version: 'built-in-2026-03-04',
@@ -106,7 +141,12 @@ function isValidSignaturePayload(payload: unknown): payload is ProviderSignature
 	return true;
 }
 
-async function fetchProviderPayload(url: string, timeoutMs: number, retries: number): Promise<ProviderSignaturePayload> {
+async function fetchProviderPayload(
+	url: string,
+	timeoutMs: number,
+	retries: number,
+	expectedSha256?: string,
+): Promise<ProviderSignaturePayload> {
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -120,7 +160,17 @@ async function fetchProviderPayload(url: string, timeoutMs: number, retries: num
 				if (attempt < retries && response.status >= 500) continue;
 				throw new Error(`Provider signature source returned HTTP ${response.status}`);
 			}
-			const payload = await response.json();
+			const rawPayload = await response.text();
+			if (!expectedSha256) {
+				throw new Error('Provider signature source requires a pinned SHA-256 digest');
+			}
+
+			const digest = await sha256Hex(rawPayload);
+			if (digest !== normalizeSha256(expectedSha256)) {
+				throw new Error('Provider signature source failed SHA-256 verification');
+			}
+
+			const payload = JSON.parse(rawPayload) as unknown;
 			if (!isValidSignaturePayload(payload)) {
 				throw new Error('Provider signature source returned an invalid payload shape');
 			}
@@ -143,6 +193,8 @@ export async function loadProviderSignatures(options?: LoadProviderSignaturesOpt
 	const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const retries = options?.retries ?? DEFAULT_RETRIES;
 	const sourceUrl = options?.sourceUrl?.trim();
+	const allowedHosts = normalizeAllowedHosts(options?.allowedHosts);
+	const expectedSha256 = options?.expectedSha256?.trim();
 
 	if (!sourceUrl) {
 		return buildResult(BUILT_IN_SIGNATURES, 'built-in', false);
@@ -154,7 +206,8 @@ export async function loadProviderSignatures(options?: LoadProviderSignaturesOpt
 	}
 
 	try {
-		const payload = await fetchProviderPayload(sourceUrl, timeoutMs, retries);
+		const validatedUrl = validateRuntimeSourceUrl(sourceUrl, allowedHosts);
+		const payload = await fetchProviderPayload(validatedUrl.toString(), timeoutMs, retries, expectedSha256);
 		const result = buildResult(payload, 'runtime', false);
 		lastKnownGood = result;
 		runtimeSignatureCache = {

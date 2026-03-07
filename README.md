@@ -156,6 +156,7 @@ High-level summary:
 - Error responses are sanitized.
 - DNS resolution is performed through Cloudflare DoH, with optional secondary confirmation on empty-answer responses to reduce false negatives.
 - Rate limiting defaults to `10/min` and `100/hr` per IP for unauthenticated `tools/call` traffic.
+- Unauthenticated control-plane traffic (`initialize`, `tools/list`, `resources/*`, `ping`, SSE connect, and session deletion) is separately throttled at `30/min` and `300/hr` per IP.
 - Session creation is rate-limited (`30/min` per IP) for unauthenticated `initialize` and new SSE session bootstrap.
 
 Natural-language convenience:
@@ -181,6 +182,8 @@ Natural-language convenience:
 Self-hosting can optionally configure:
 
 - `PROVIDER_SIGNATURES_URL` (runtime provider-signature JSON source)
+- `PROVIDER_SIGNATURES_SHA256` (required pinned digest for runtime provider-signature JSON)
+- `PROVIDER_SIGNATURES_ALLOWED_HOSTS` (optional comma-separated hostname allowlist)
 
 ## Documentation
 
@@ -241,7 +244,9 @@ Optional provider signature source (in `wrangler.jsonc` vars):
 
 ```json
 {
-  "PROVIDER_SIGNATURES_URL": "https://<your-source>/provider-signatures.json"
+  "PROVIDER_SIGNATURES_URL": "https://<your-source>/provider-signatures.json",
+  "PROVIDER_SIGNATURES_SHA256": "<sha256-hex>",
+  "PROVIDER_SIGNATURES_ALLOWED_HOSTS": "<your-source>"
 }
 ```
 

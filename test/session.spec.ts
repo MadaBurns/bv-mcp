@@ -4,6 +4,7 @@ import {
 	validateSession,
 	deleteSession,
 	resetSessions,
+	SESSION_REFRESH_INTERVAL_MS,
 	SESSION_TTL_MS,
 	checkSessionCreateRateLimit,
 } from '../src/lib/session';
@@ -35,11 +36,40 @@ describe('session', () => {
 
 		expect(await validateSession(id, kv)).toBe(true);
 		expect(kv.get).toHaveBeenCalled();
-		expect(kv.put).toHaveBeenCalledTimes(2);
+		expect(kv.put).toHaveBeenCalledTimes(1);
 
 		expect(await deleteSession(id, kv)).toBe(true);
 		expect(kv.delete).toHaveBeenCalledOnce();
 		expect(await validateSession(id, kv)).toBe(false);
+	});
+
+	it('refreshes KV-backed sessions only after the refresh interval elapses', async () => {
+		const base = 1_700_000_000_000;
+		const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(base);
+		const kvStore = new Map<string, string>();
+		const kv = {
+			get: vi.fn(async (key: string) => {
+				const raw = kvStore.get(key);
+				return raw ? JSON.parse(raw) : null;
+			}),
+			put: vi.fn(async (key: string, value: string) => {
+				kvStore.set(key, value);
+			}),
+			delete: vi.fn(async (key: string) => {
+				kvStore.delete(key);
+			}),
+		} as unknown as KVNamespace;
+
+		const id = await createSession(kv);
+		expect(kv.put).toHaveBeenCalledTimes(1);
+
+		nowSpy.mockReturnValue(base + SESSION_REFRESH_INTERVAL_MS - 1_000);
+		expect(await validateSession(id, kv)).toBe(true);
+		expect(kv.put).toHaveBeenCalledTimes(1);
+
+		nowSpy.mockReturnValue(base + SESSION_REFRESH_INTERVAL_MS + 1_000);
+		expect(await validateSession(id, kv)).toBe(true);
+		expect(kv.put).toHaveBeenCalledTimes(2);
 	});
 
 	it('validates a newly created session', async () => {
@@ -74,25 +104,40 @@ describe('session', () => {
 		expect(await validateSession(id)).toBe(false);
 	});
 
-	it('limits repeated session creation attempts per IP window', () => {
+	it('limits repeated session creation attempts per IP window', async () => {
 		for (let i = 0; i < 30; i++) {
-			const allowed = checkSessionCreateRateLimit('198.51.100.25');
+			const allowed = await checkSessionCreateRateLimit('198.51.100.25');
 			expect(allowed.allowed).toBe(true);
 		}
 
-		const blocked = checkSessionCreateRateLimit('198.51.100.25');
+		const blocked = await checkSessionCreateRateLimit('198.51.100.25');
 		expect(blocked.allowed).toBe(false);
 		expect(blocked.retryAfterMs).toBeGreaterThan(0);
 	});
 
-	it('resetSessions clears session creation limiter state', () => {
+	it('resetSessions clears session creation limiter state', async () => {
 		for (let i = 0; i < 30; i++) {
-			checkSessionCreateRateLimit('203.0.113.7');
+			await checkSessionCreateRateLimit('203.0.113.7');
 		}
-		expect(checkSessionCreateRateLimit('203.0.113.7').allowed).toBe(false);
+		expect((await checkSessionCreateRateLimit('203.0.113.7')).allowed).toBe(false);
 
 		resetSessions();
 
-		expect(checkSessionCreateRateLimit('203.0.113.7').allowed).toBe(true);
+		expect((await checkSessionCreateRateLimit('203.0.113.7')).allowed).toBe(true);
+	});
+
+	it('uses KV-backed limiter when provided', async () => {
+		const kv = {
+			get: vi.fn().mockResolvedValue('29'),
+			put: vi.fn().mockResolvedValue(undefined),
+		} as unknown as KVNamespace;
+
+		const allowed = await checkSessionCreateRateLimit('198.51.100.88', kv);
+		expect(allowed.allowed).toBe(true);
+		expect(kv.put).toHaveBeenCalledTimes(1);
+
+		(kv.get as ReturnType<typeof vi.fn>).mockResolvedValue('30');
+		const blocked = await checkSessionCreateRateLimit('198.51.100.88', kv);
+		expect(blocked.allowed).toBe(false);
 	});
 });

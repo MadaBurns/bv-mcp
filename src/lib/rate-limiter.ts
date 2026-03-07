@@ -20,6 +20,12 @@ interface RateLimitEntry {
 	hour: RateLimitWindow;
 }
 
+interface ToolDailyRateLimitEntry {
+	timestamps: number[];
+}
+
+type RateLimitScope = 'tools' | 'control';
+
 export interface RateLimitResult {
 	allowed: boolean;
 	retryAfterMs?: number;
@@ -27,10 +33,20 @@ export interface RateLimitResult {
 	hourRemaining: number;
 }
 
+export interface ToolDailyRateLimitResult {
+	allowed: boolean;
+	retryAfterMs?: number;
+	remaining: number;
+	limit: number;
+}
+
 const MINUTE_LIMIT = 10;
 const HOUR_LIMIT = 100;
+const CONTROL_PLANE_MINUTE_LIMIT = 30;
+const CONTROL_PLANE_HOUR_LIMIT = 300;
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
+const DAY_MS = 86_400_000;
 const CLEANUP_INTERVAL_MS = 300_000; // 5 minutes
 
 // Best-effort per-IP serialization for KV updates inside a single isolate.
@@ -41,6 +57,7 @@ const kvIpLockTails = new Map<string, Promise<void>>();
 // In-memory fallback
 // ---------------------------------------------------------------------------
 const entries = new Map<string, RateLimitEntry>();
+const toolDailyEntries = new Map<string, ToolDailyRateLimitEntry>();
 let lastCleanup = Date.now();
 
 /** Prune timestamps that fall outside a sliding window. */
@@ -63,6 +80,13 @@ function cleanupExpiredEntries(now: number): void {
 			entries.delete(key);
 		}
 	}
+
+	const dayCutoff = now - DAY_MS;
+	for (const [key, entry] of toolDailyEntries) {
+		if (entry.timestamps.length === 0 || entry.timestamps[entry.timestamps.length - 1] <= dayCutoff) {
+			toolDailyEntries.delete(key);
+		}
+	}
 }
 
 function getOrCreateEntry(key: string): RateLimitEntry {
@@ -77,11 +101,24 @@ function getOrCreateEntry(key: string): RateLimitEntry {
 	return entry;
 }
 
-function checkRateLimitInMemory(ip: string): RateLimitResult {
+function buildScopedEntryKey(ip: string, scope: RateLimitScope): string {
+	return `${scope}:${ip}`;
+}
+
+function getOrCreateToolDailyEntry(key: string): ToolDailyRateLimitEntry {
+	let entry = toolDailyEntries.get(key);
+	if (!entry) {
+		entry = { timestamps: [] };
+		toolDailyEntries.set(key, entry);
+	}
+	return entry;
+}
+
+function checkScopedRateLimitInMemory(ip: string, scope: RateLimitScope, minuteLimit: number, hourLimit: number): RateLimitResult {
 	const now = Date.now();
 	cleanupExpiredEntries(now);
 
-	const entry = getOrCreateEntry(ip);
+	const entry = getOrCreateEntry(buildScopedEntryKey(ip, scope));
 
 	entry.minute.timestamps = pruneTimestamps(entry.minute.timestamps, MINUTE_MS, now);
 	entry.hour.timestamps = pruneTimestamps(entry.hour.timestamps, HOUR_MS, now);
@@ -89,24 +126,24 @@ function checkRateLimitInMemory(ip: string): RateLimitResult {
 	const minuteCount = entry.minute.timestamps.length;
 	const hourCount = entry.hour.timestamps.length;
 
-	if (minuteCount >= MINUTE_LIMIT) {
+	if (minuteCount >= minuteLimit) {
 		const oldestInWindow = entry.minute.timestamps[0];
 		const retryAfterMs = oldestInWindow + MINUTE_MS - now;
 		return {
 			allowed: false,
 			retryAfterMs: Math.max(retryAfterMs, 0),
 			minuteRemaining: 0,
-			hourRemaining: Math.max(HOUR_LIMIT - hourCount, 0),
+			hourRemaining: Math.max(hourLimit - hourCount, 0),
 		};
 	}
 
-	if (hourCount >= HOUR_LIMIT) {
+	if (hourCount >= hourLimit) {
 		const oldestInWindow = entry.hour.timestamps[0];
 		const retryAfterMs = oldestInWindow + HOUR_MS - now;
 		return {
 			allowed: false,
 			retryAfterMs: Math.max(retryAfterMs, 0),
-			minuteRemaining: Math.max(MINUTE_LIMIT - minuteCount, 0),
+			minuteRemaining: Math.max(minuteLimit - minuteCount, 0),
 			hourRemaining: 0,
 		};
 	}
@@ -116,8 +153,48 @@ function checkRateLimitInMemory(ip: string): RateLimitResult {
 
 	return {
 		allowed: true,
-		minuteRemaining: MINUTE_LIMIT - minuteCount - 1,
-		hourRemaining: HOUR_LIMIT - hourCount - 1,
+		minuteRemaining: minuteLimit - minuteCount - 1,
+		hourRemaining: hourLimit - hourCount - 1,
+	};
+}
+
+function checkRateLimitInMemory(ip: string): RateLimitResult {
+	return checkScopedRateLimitInMemory(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT);
+}
+
+function checkControlPlaneRateLimitInMemory(ip: string): RateLimitResult {
+	return checkScopedRateLimitInMemory(ip, 'control', CONTROL_PLANE_MINUTE_LIMIT, CONTROL_PLANE_HOUR_LIMIT);
+}
+
+function buildToolDailyKey(principalId: string, toolName: string): string {
+	return `${principalId}:${toolName.trim().toLowerCase()}`;
+}
+
+function checkToolDailyRateLimitInMemory(principalId: string, toolName: string, limit: number): ToolDailyRateLimitResult {
+	const now = Date.now();
+	cleanupExpiredEntries(now);
+
+	const key = buildToolDailyKey(principalId, toolName);
+	const entry = getOrCreateToolDailyEntry(key);
+	entry.timestamps = pruneTimestamps(entry.timestamps, DAY_MS, now);
+
+	const count = entry.timestamps.length;
+	if (count >= limit) {
+		const oldestInWindow = entry.timestamps[0];
+		const retryAfterMs = oldestInWindow + DAY_MS - now;
+		return {
+			allowed: false,
+			retryAfterMs: Math.max(retryAfterMs, 0),
+			remaining: 0,
+			limit,
+		};
+	}
+
+	entry.timestamps.push(now);
+	return {
+		allowed: true,
+		remaining: Math.max(limit - entry.timestamps.length, 0),
+		limit,
 	};
 }
 
@@ -125,14 +202,20 @@ function checkRateLimitInMemory(ip: string): RateLimitResult {
 // KV-backed rate limiting (fixed-window counters)
 // ---------------------------------------------------------------------------
 
-async function checkRateLimitKV(ip: string, kv: KVNamespace): Promise<RateLimitResult> {
+async function checkScopedRateLimitKV(
+	ip: string,
+	scope: RateLimitScope,
+	minuteLimit: number,
+	hourLimit: number,
+	kv: KVNamespace,
+): Promise<RateLimitResult> {
 	return withIpKvLock(ip, async () => {
 	const now = Date.now();
 	const minuteWindow = Math.floor(now / MINUTE_MS);
 	const hourWindow = Math.floor(now / HOUR_MS);
 
-	const minuteKey = `rl:min:${ip}:${minuteWindow}`;
-	const hourKey = `rl:hr:${ip}:${hourWindow}`;
+	const minuteKey = scope === 'tools' ? `rl:min:${ip}:${minuteWindow}` : `rl:ctl:min:${ip}:${minuteWindow}`;
+	const hourKey = scope === 'tools' ? `rl:hr:${ip}:${hourWindow}` : `rl:ctl:hr:${ip}:${hourWindow}`;
 
 	// Read both counters in parallel
 	const [minuteVal, hourVal] = await Promise.all([kv.get(minuteKey), kv.get(hourKey)]);
@@ -141,23 +224,23 @@ async function checkRateLimitKV(ip: string, kv: KVNamespace): Promise<RateLimitR
 	const hourCount = hourVal ? parseInt(hourVal, 10) : 0;
 
 	// Check minute limit
-	if (minuteCount >= MINUTE_LIMIT) {
+	if (minuteCount >= minuteLimit) {
 		const windowEnd = (minuteWindow + 1) * MINUTE_MS;
 		return {
 			allowed: false,
 			retryAfterMs: Math.max(windowEnd - now, 0),
 			minuteRemaining: 0,
-			hourRemaining: Math.max(HOUR_LIMIT - hourCount, 0),
+			hourRemaining: Math.max(hourLimit - hourCount, 0),
 		};
 	}
 
 	// Check hour limit
-	if (hourCount >= HOUR_LIMIT) {
+	if (hourCount >= hourLimit) {
 		const windowEnd = (hourWindow + 1) * HOUR_MS;
 		return {
 			allowed: false,
 			retryAfterMs: Math.max(windowEnd - now, 0),
-			minuteRemaining: Math.max(MINUTE_LIMIT - minuteCount, 0),
+			minuteRemaining: Math.max(minuteLimit - minuteCount, 0),
 			hourRemaining: 0,
 		};
 	}
@@ -172,10 +255,18 @@ async function checkRateLimitKV(ip: string, kv: KVNamespace): Promise<RateLimitR
 
 	return {
 		allowed: true,
-		minuteRemaining: MINUTE_LIMIT - newMinute,
-		hourRemaining: HOUR_LIMIT - newHour,
+		minuteRemaining: minuteLimit - newMinute,
+		hourRemaining: hourLimit - newHour,
 	};
 	});
+}
+
+async function checkRateLimitKV(ip: string, kv: KVNamespace): Promise<RateLimitResult> {
+	return checkScopedRateLimitKV(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT, kv);
+}
+
+async function checkControlPlaneRateLimitKV(ip: string, kv: KVNamespace): Promise<RateLimitResult> {
+	return checkScopedRateLimitKV(ip, 'control', CONTROL_PLANE_MINUTE_LIMIT, CONTROL_PLANE_HOUR_LIMIT, kv);
 }
 
 async function withIpKvLock<T>(ip: string, work: () => Promise<T>): Promise<T> {
@@ -196,6 +287,42 @@ async function withIpKvLock<T>(ip: string, work: () => Promise<T>): Promise<T> {
 			kvIpLockTails.delete(ip);
 		}
 	}
+}
+
+async function checkToolDailyRateLimitKV(
+	principalId: string,
+	toolName: string,
+	limit: number,
+	kv: KVNamespace,
+): Promise<ToolDailyRateLimitResult> {
+	return withIpKvLock(`tool:${principalId}:${toolName}`, async () => {
+		const now = Date.now();
+		const dayWindow = Math.floor(now / DAY_MS);
+		const toolKey = toolName.trim().toLowerCase();
+		const key = `rl:day:tool:${toolKey}:${principalId}:${dayWindow}`;
+
+		const currentVal = await kv.get(key);
+		const currentCount = currentVal ? parseInt(currentVal, 10) : 0;
+
+		if (currentCount >= limit) {
+			const windowEnd = (dayWindow + 1) * DAY_MS;
+			return {
+				allowed: false,
+				retryAfterMs: Math.max(windowEnd - now, 0),
+				remaining: 0,
+				limit,
+			};
+		}
+
+		const nextCount = currentCount + 1;
+		await kv.put(key, String(nextCount), { expirationTtl: 86_400 });
+
+		return {
+			allowed: true,
+			remaining: Math.max(limit - nextCount, 0),
+			limit,
+		};
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -223,11 +350,47 @@ export async function checkRateLimit(ip: string, kv?: KVNamespace): Promise<Rate
 }
 
 /**
+ * Check if a request from the given IP is allowed under lower-cost control-plane limits.
+ * Uses KV when available, with in-memory fallback on failure.
+ */
+export async function checkControlPlaneRateLimit(ip: string, kv?: KVNamespace): Promise<RateLimitResult> {
+	if (kv) {
+		try {
+			return await checkControlPlaneRateLimitKV(ip, kv);
+		} catch (err) {
+			console.warn('[rate-limiter] KV control-plane error, falling back to in-memory:', err instanceof Error ? err.message : err);
+		}
+	}
+	return checkControlPlaneRateLimitInMemory(ip);
+}
+
+/**
+ * Check a per-principal daily quota for a specific tool.
+ * Uses KV when available, with in-memory fallback on failure.
+ */
+export async function checkToolDailyRateLimit(
+	principalId: string,
+	toolName: string,
+	limit: number,
+	kv?: KVNamespace,
+): Promise<ToolDailyRateLimitResult> {
+	if (kv) {
+		try {
+			return await checkToolDailyRateLimitKV(principalId, toolName, limit, kv);
+		} catch (err) {
+			console.warn('[rate-limiter] KV tool quota error, falling back to in-memory:', err instanceof Error ? err.message : err);
+		}
+	}
+	return checkToolDailyRateLimitInMemory(principalId, toolName, limit);
+}
+
+/**
  * Reset rate limit state for an IP (useful for testing).
  * @internal Exported for test use only.
  */
 export function resetRateLimit(ip: string): void {
-	entries.delete(ip);
+	entries.delete(buildScopedEntryKey(ip, 'tools'));
+	entries.delete(buildScopedEntryKey(ip, 'control'));
 }
 
 /**
@@ -236,5 +399,6 @@ export function resetRateLimit(ip: string): void {
  */
 export function resetAllRateLimits(): void {
 	entries.clear();
+	toolDailyEntries.clear();
 	lastCleanup = Date.now();
 }

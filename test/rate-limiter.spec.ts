@@ -1,5 +1,11 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { checkRateLimit, resetRateLimit, resetAllRateLimits } from '../src/lib/rate-limiter';
+import {
+	checkControlPlaneRateLimit,
+	checkRateLimit,
+	checkToolDailyRateLimit,
+	resetRateLimit,
+	resetAllRateLimits,
+} from '../src/lib/rate-limiter';
 
 afterEach(() => {
 	resetAllRateLimits();
@@ -194,6 +200,62 @@ describe('rate-limiter', () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// Tool daily quotas
+	// -----------------------------------------------------------------------
+	describe('tool daily quotas', () => {
+		it('allows requests until daily tool limit is reached (in-memory)', async () => {
+			for (let i = 0; i < 5; i++) {
+				const result = await checkToolDailyRateLimit('198.51.100.9', 'scan_domain', 5);
+				expect(result.allowed).toBe(true);
+			}
+
+			const blocked = await checkToolDailyRateLimit('198.51.100.9', 'scan_domain', 5);
+			expect(blocked.allowed).toBe(false);
+			expect(blocked.remaining).toBe(0);
+			expect(blocked.retryAfterMs).toBeGreaterThan(0);
+		});
+
+		it('uses separate counters per tool', async () => {
+			for (let i = 0; i < 5; i++) {
+				await checkToolDailyRateLimit('198.51.100.10', 'scan_domain', 5);
+			}
+
+			const scanBlocked = await checkToolDailyRateLimit('198.51.100.10', 'scan_domain', 5);
+			expect(scanBlocked.allowed).toBe(false);
+
+			const otherTool = await checkToolDailyRateLimit('198.51.100.10', 'check_spf', 100);
+			expect(otherTool.allowed).toBe(true);
+		});
+
+		it('persists tool quota in KV when available', async () => {
+			const kv = {
+				get: vi.fn().mockResolvedValue('4'),
+				put: vi.fn().mockResolvedValue(undefined),
+			} as unknown as KVNamespace;
+
+			const result = await checkToolDailyRateLimit('198.51.100.11', 'scan_domain', 5, kv);
+			expect(result.allowed).toBe(true);
+			expect(result.remaining).toBe(0);
+			expect(kv.put).toHaveBeenCalledTimes(1);
+			const putCall = (kv.put as ReturnType<typeof vi.fn>).mock.calls[0];
+			expect(putCall[0]).toContain('rl:day:tool:scan_domain:198.51.100.11:');
+			expect(putCall[1]).toBe('5');
+			expect(putCall[2]).toEqual({ expirationTtl: 86400 });
+		});
+
+		it('falls back to in-memory when KV tool quota check fails', async () => {
+			const kv = {
+				get: vi.fn().mockRejectedValue(new Error('KV unavailable')),
+				put: vi.fn(),
+			} as unknown as KVNamespace;
+
+			const result = await checkToolDailyRateLimit('198.51.100.12', 'scan_domain', 5, kv);
+			expect(result.allowed).toBe(true);
+			expect(result.remaining).toBe(4);
+		});
+	});
+
+	// -----------------------------------------------------------------------
 	// checkRateLimit router
 	// -----------------------------------------------------------------------
 	describe('checkRateLimit routing', () => {
@@ -212,6 +274,16 @@ describe('rate-limiter', () => {
 			await checkRateLimit('1.2.3.4', kv);
 
 			expect(kv.get).toHaveBeenCalled();
+		});
+
+		it('tracks control-plane limits separately from tool limits', async () => {
+			for (let i = 0; i < 10; i++) {
+				await checkRateLimit('198.51.100.40');
+			}
+
+			const controlPlane = await checkControlPlaneRateLimit('198.51.100.40');
+			expect(controlPlane.allowed).toBe(true);
+			expect(controlPlane.minuteRemaining).toBe(29);
 		});
 	});
 });

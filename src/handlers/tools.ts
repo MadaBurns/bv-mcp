@@ -100,12 +100,18 @@ function extractDkimSelector(args: Record<string, unknown>): string | undefined 
 /** Wrapper for dynamic check_mx import (required for test mock isolation) */
 interface ToolRuntimeOptions {
 	providerSignaturesUrl?: string;
+	providerSignaturesAllowedHosts?: string[];
+	providerSignaturesSha256?: string;
 	analytics?: AnalyticsClient;
 }
 
 async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOptions): Promise<CheckResult> {
 	const { checkMx } = await import('../tools/check-mx');
-	return checkMx(domain, { providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl });
+	return checkMx(domain, {
+		providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
+		providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
+		providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
+	});
 }
 
 /**

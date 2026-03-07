@@ -37,6 +37,8 @@ export interface ScanDomainResult {
 
 interface ScanRuntimeOptions {
 	providerSignaturesUrl?: string;
+	providerSignaturesAllowedHosts?: string[];
+	providerSignaturesSha256?: string;
 }
 
 function extractSpfSignalDomains(result: CheckResult | undefined): string[] {
@@ -98,7 +100,11 @@ async function addOutboundProviderInference(results: CheckResult[], runtimeOptio
 	const dkimSelectors = extractDkimSignalSelectors(dkimResult);
 	if (signalDomains.length === 0 && dkimSelectors.length === 0) return results;
 
-	const signatures = await loadProviderSignatures({ sourceUrl: runtimeOptions?.providerSignaturesUrl });
+	const signatures = await loadProviderSignatures({
+		sourceUrl: runtimeOptions?.providerSignaturesUrl,
+		allowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
+		expectedSha256: runtimeOptions?.providerSignaturesSha256,
+	});
 	const signatureSet = signatures.outbound.length > 0 ? signatures.outbound : signatures.inbound;
 	const hostMatches = detectProviderMatches(signalDomains, signatureSet);
 	const selectorMatches = detectProviderMatchesBySelectors(dkimSelectors, signatureSet);
@@ -174,7 +180,21 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain)), kv),
 		runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain)), kv),
 		runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain)), kv),
-		runCachedCheck(domain, 'mx', () => safeCheck('mx', () => checkMx(domain, { providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl })), kv),
+		runCachedCheck(
+			domain,
+			'mx',
+			() =>
+				safeCheck(
+					'mx',
+					() =>
+						checkMx(domain, {
+							providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
+							providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
+							providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
+						}),
+				),
+			kv,
+		),
 	]);
 
 	// Adjust findings for non-mail domains: if no MX records, email auth

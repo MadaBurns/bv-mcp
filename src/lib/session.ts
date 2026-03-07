@@ -22,9 +22,11 @@ export const SESSION_TTL_MS = 30 * 60 * 1000;
 const SESSION_TTL_SECONDS = Math.ceil(SESSION_TTL_MS / 1000);
 const SESSION_CREATE_WINDOW_MS = 60_000;
 const SESSION_CREATE_LIMIT_PER_MINUTE = 30;
+export const SESSION_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_IN_MEMORY_SESSIONS = 2000;
 
 const SESSION_KEY_PREFIX = 'session:';
+const SESSION_CREATE_RATE_KEY_PREFIX = 'rl:session-create';
 
 /** Cleanup cadence for lazy background pruning (5 minutes) */
 const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
@@ -77,7 +79,7 @@ export interface SessionCreateRateResult {
  * Best-effort per-IP gate for session creation endpoints.
  * Used to reduce abuse pressure when anonymous clients spam initialize/SSE starts.
  */
-export function checkSessionCreateRateLimit(ip: string): SessionCreateRateResult {
+function checkSessionCreateRateLimitInMemory(ip: string): SessionCreateRateResult {
 	const now = Date.now();
 	const key = ip || 'unknown';
 	const existing = sessionCreateByIp.get(key) ?? [];
@@ -98,6 +100,39 @@ export function checkSessionCreateRateLimit(ip: string): SessionCreateRateResult
 		allowed: true,
 		remaining: SESSION_CREATE_LIMIT_PER_MINUTE - recent.length,
 	};
+}
+
+export async function checkSessionCreateRateLimit(ip: string, kv?: KVNamespace): Promise<SessionCreateRateResult> {
+	if (kv) {
+		try {
+			const now = Date.now();
+			const keyIp = ip || 'unknown';
+			const minuteWindow = Math.floor(now / SESSION_CREATE_WINDOW_MS);
+			const key = `${SESSION_CREATE_RATE_KEY_PREFIX}:${keyIp}:${minuteWindow}`;
+			const currentVal = await kv.get(key);
+			const currentCount = currentVal ? parseInt(currentVal, 10) : 0;
+
+			if (currentCount >= SESSION_CREATE_LIMIT_PER_MINUTE) {
+				const windowEnd = (minuteWindow + 1) * SESSION_CREATE_WINDOW_MS;
+				return {
+					allowed: false,
+					retryAfterMs: Math.max(windowEnd - now, 0),
+					remaining: 0,
+				};
+			}
+
+			const nextCount = currentCount + 1;
+			await kv.put(key, String(nextCount), { expirationTtl: 60 });
+			return {
+				allowed: true,
+				remaining: SESSION_CREATE_LIMIT_PER_MINUTE - nextCount,
+			};
+		} catch (err) {
+			console.warn('[session] KV create limiter failed, falling back to in-memory:', err instanceof Error ? err.message : String(err));
+		}
+	}
+
+	return checkSessionCreateRateLimitInMemory(ip);
 }
 
 async function createSessionKVRecord(id: string, kv: KVNamespace, record: SessionRecord): Promise<void> {
@@ -163,8 +198,10 @@ export async function validateSession(id: string, kv?: KVNamespace): Promise<boo
 				return false;
 			}
 
-			record.lastAccessedAt = now;
-			await createSessionKVRecord(id, kv, record);
+			if (now - record.lastAccessedAt >= SESSION_REFRESH_INTERVAL_MS) {
+				record.lastAccessedAt = now;
+				await createSessionKVRecord(id, kv, record);
+			}
 			return true;
 		} catch (err) {
 			console.warn('[session] KV validate failed, falling back to in-memory:', err instanceof Error ? err.message : String(err));
@@ -181,7 +218,9 @@ export async function validateSession(id: string, kv?: KVNamespace): Promise<boo
 		return false;
 	}
 
-	session.lastAccessedAt = now;
+	if (now - session.lastAccessedAt >= SESSION_REFRESH_INTERVAL_MS) {
+		session.lastAccessedAt = now;
+	}
 	return true;
 }
 

@@ -10,6 +10,8 @@ import { detectProviderMatches, loadProviderSignatures } from '../lib/provider-s
 
 interface CheckMxOptions {
 	providerSignaturesUrl?: string;
+	providerSignaturesAllowedHosts?: string[];
+	providerSignaturesSha256?: string;
 }
 
 /** Check MX record configuration for a domain */
@@ -76,7 +78,11 @@ export async function checkMx(domain: string, options?: CheckMxOptions): Promise
 	// Duplicate MX priorities are valid and commonly used for load balancing.
 
 	const mxTargets = mxRecords.map((r) => r.exchange);
-	const providerSignatures = await loadProviderSignatures({ sourceUrl: options?.providerSignaturesUrl });
+	const providerSignatures = await loadProviderSignatures({
+		sourceUrl: options?.providerSignaturesUrl,
+		allowedHosts: options?.providerSignaturesAllowedHosts,
+		expectedSha256: options?.providerSignaturesSha256,
+	});
 	const inboundMatches = detectProviderMatches(mxTargets, providerSignatures.inbound);
 
 	if (inboundMatches.length > 0) {

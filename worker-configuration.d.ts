@@ -12,6 +12,8 @@ declare namespace Cloudflare {
         MCP_ANALYTICS?: AnalyticsEngineDataset;
 		BV_API_KEY: "";
 		PROVIDER_SIGNATURES_URL: "";
+        PROVIDER_SIGNATURES_ALLOWED_HOSTS: "";
+        PROVIDER_SIGNATURES_SHA256: "";
 	}
 }
 interface Env extends Cloudflare.Env {}

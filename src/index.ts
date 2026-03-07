@@ -13,10 +13,10 @@
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
+import { checkControlPlaneRateLimit, checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
 import { handleToolsList, handleToolsCall } from './handlers/tools';
 import { handleResourcesList, handleResourcesRead } from './handlers/resources';
-import { logEvent, logError } from './lib/log';
+import { logEvent, logError, sanitizeHeadersForLog } from './lib/log';
 import { jsonRpcError, jsonRpcSuccess, JSON_RPC_ERRORS, sanitizeErrorMessage } from './lib/json-rpc';
 import { createSession, validateSession, deleteSession, checkSessionCreateRateLimit } from './lib/session';
 import { isAuthorizedRequest, unauthorizedResponse } from './lib/auth';
@@ -57,7 +57,55 @@ type BvMcpEnv = {
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
 	BV_API_KEY?: string;
 	PROVIDER_SIGNATURES_URL?: string;
+	PROVIDER_SIGNATURES_ALLOWED_HOSTS?: string;
+	PROVIDER_SIGNATURES_SHA256?: string;
 };
+
+function parseAllowedHosts(raw: string | undefined): string[] | undefined {
+	const trimmed = raw?.trim();
+	if (!trimmed) return undefined;
+	return trimmed
+		.split(',')
+		.map((host) => host.trim().toLowerCase())
+		.filter((host) => host.length > 0);
+}
+
+function summarizeParamsForLog(params: unknown): Record<string, unknown> | undefined {
+	if (!params || typeof params !== 'object' || Array.isArray(params)) return undefined;
+	return {
+		keys: Object.keys(params).sort().slice(0, 25),
+	};
+}
+
+async function buildControlPlaneRateLimitResponse(
+	ip: string,
+	kv: KVNamespace | undefined,
+	method: string,
+	isAuthenticated: boolean,
+	id: string | number | null | undefined,
+): Promise<Response | undefined> {
+	if (isAuthenticated || method === 'tools/call') return undefined;
+
+	const rateResult = await checkControlPlaneRateLimit(ip, kv);
+	if (rateResult.allowed) return undefined;
+
+	const headers: Record<string, string> = {
+		'x-ratelimit-limit': '30',
+		'x-ratelimit-remaining': String(rateResult.minuteRemaining),
+	};
+	if (rateResult.retryAfterMs !== undefined) {
+		headers['retry-after'] = String(Math.ceil(rateResult.retryAfterMs / 1000));
+	}
+
+	return Response.json(
+		jsonRpcError(
+			id,
+			JSON_RPC_ERRORS.RATE_LIMITED,
+			`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
+		),
+		{ status: 429, headers },
+	);
+}
 
 const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean } }>();
 
@@ -102,7 +150,7 @@ app.use('*', async (c, next) => {
 	       const reqInfo = {
 		       method: c.req.method,
 		       url: c.req.url,
-		       headers: (() => { const h: Record<string, string> = {}; c.req.raw.headers.forEach((v, k) => { if (k !== 'authorization') h[k] = v; }); return h; })(),
+		       headers: sanitizeHeadersForLog(c.req.raw.headers),
 	       };
 	       logError(err instanceof Error ? err : String(err), {
 		       severity: 'error',
@@ -197,7 +245,7 @@ app.post('/mcp', async (c) => {
 		       logError(err instanceof Error ? err : String(err), {
 			       severity: 'error',
 			       ip,
-			       details: { rawBody },
+			       details: { bodyLength: rawBody.length, bodyPreviewRedacted: true },
 		       });
 		       return c.json(jsonRpcError(null, JSON_RPC_ERRORS.PARSE_ERROR, 'Parse error: invalid JSON'), 400);
 	       }
@@ -230,9 +278,8 @@ app.post('/mcp', async (c) => {
 
 	const { id, method, params } = body;
 
-	// Rate limiting — only applied to tools/call (the expensive DNS-lookup operations).
-	// Protocol methods (initialize, tools/list, resources/*, ping, notifications/*) are
-	// exempt so MCP handshake flows are never blocked. Authenticated requests bypass entirely.
+	// Rate limiting — tools/call uses stricter quotas, while protocol/session traffic
+	// is still throttled under a lighter control-plane budget. Authenticated requests bypass entirely.
 	let rateHeaders: Record<string, string> = {};
 	if (!isAuthenticated && method === 'tools/call') {
 		const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT);
@@ -296,6 +343,21 @@ app.post('/mcp', async (c) => {
 		}
 	}
 
+	if (method !== 'tools/call') {
+		const controlPlaneLimited = await buildControlPlaneRateLimitResponse(ip, c.env.RATE_LIMIT, method, isAuthenticated, id);
+		if (controlPlaneLimited) {
+			analytics.emitRequestEvent({
+				method,
+				status: 'error',
+				durationMs: Date.now() - startTime,
+				isAuthenticated,
+				hasJsonRpcError: true,
+				transport: 'json',
+			});
+			return controlPlaneLimited;
+		}
+	}
+
 	// Session validation — non-initialize requests must carry a valid session ID
 	const sessionId = headersLc['mcp-session-id'];
 
@@ -341,7 +403,7 @@ app.post('/mcp', async (c) => {
 		       switch (method) {
 			       case 'initialize': {
 				       if (!isAuthenticated) {
-					       const sessionCreateGate = checkSessionCreateRateLimit(ip);
+					       const sessionCreateGate = await checkSessionCreateRateLimit(ip, c.env.RATE_LIMIT);
 					       if (!sessionCreateGate.allowed) {
 						       const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
 						       return c.json(
@@ -388,6 +450,8 @@ app.post('/mcp', async (c) => {
 				       const toolParams = params as { name: string; arguments?: Record<string, unknown> };
 				       const result = await handleToolsCall(toolParams, c.env.SCAN_CACHE, {
 					       providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
+					       providerSignaturesAllowedHosts: parseAllowedHosts(c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS),
+					       providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 						analytics,
 				       });
 				       responsePayload = jsonRpcSuccess(id, result);
@@ -499,7 +563,7 @@ app.post('/mcp', async (c) => {
 			       ip,
 			       requestId: typeof body?.id === 'string' ? body.id : undefined,
 			       tool: typeof body?.method === 'string' ? body.method : undefined,
-			       details: { params: body?.params },
+			       details: { params: summarizeParamsForLog(body?.params) },
 			       durationMs: Date.now() - startTime,
 			       userAgent: headersLc['user-agent'],
 		       });
@@ -521,9 +585,14 @@ app.get('/mcp', async (c) => {
 	const sessionId = c.req.header('mcp-session-id');
 	let effectiveSessionId = sessionId;
 	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+	const isAuthenticated = c.get('isAuthenticated');
+	const controlPlaneLimited = await buildControlPlaneRateLimitResponse(ip, c.env.RATE_LIMIT, 'sse/connect', isAuthenticated, null);
+	if (controlPlaneLimited) {
+		return controlPlaneLimited;
+	}
 
 	if (!effectiveSessionId) {
-		const sessionCreateGate = checkSessionCreateRateLimit(ip);
+		const sessionCreateGate = await checkSessionCreateRateLimit(ip, c.env.RATE_LIMIT);
 		if (!sessionCreateGate.allowed) {
 			const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
 			return new Response(`Rate limit exceeded. Retry after ${retryAfterSeconds}s`, {
@@ -556,6 +625,13 @@ app.get('/mcp', async (c) => {
 // MCP Streamable HTTP transport — DELETE /mcp (session termination)
 // ---------------------------------------------------------------------------
 app.delete('/mcp', async (c) => {
+	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+	const isAuthenticated = c.get('isAuthenticated');
+	const controlPlaneLimited = await buildControlPlaneRateLimitResponse(ip, c.env.RATE_LIMIT, 'session/delete', isAuthenticated, null);
+	if (controlPlaneLimited) {
+		return controlPlaneLimited;
+	}
+
 	const sessionId = c.req.header('mcp-session-id');
 	if (!sessionId || !(await validateSession(sessionId, c.env.SESSION_STORE))) {
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: invalid or missing session'), 400);

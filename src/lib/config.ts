@@ -49,3 +49,12 @@ export const DNS_RETRIES = 2;
  * confirmed with a secondary resolver to reduce false negatives.
  */
 export const DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY = true;
+
+/**
+ * Free-tier daily tool quotas for unauthenticated callers.
+ * Tools omitted from this map are governed only by baseline per-IP rate limits.
+ */
+export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
+	scan_domain: 5,
+	scan: 5,
+};

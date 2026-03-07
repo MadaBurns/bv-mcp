@@ -30,7 +30,7 @@ export function auditLog(event: AuditLogEvent): void {
 		details: {
 			eventType: event.eventType,
 			ip: event.ip,
-			sessionId: event.sessionId,
+			hasSessionId: Boolean(event.sessionId),
 			tool: event.tool,
 			domain: event.domain,
 			message: event.message,

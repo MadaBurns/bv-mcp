@@ -1,5 +1,5 @@
 import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloudflare:test';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import worker from '../src';
 import { resetAllRateLimits } from '../src/lib/rate-limiter';
 import { resetSessions } from '../src/lib/session';
@@ -48,6 +48,10 @@ describe('DNS Security MCP Server', () => {
 		resetAllRateLimits();
 		resetSessions();
 	});
+
+		afterEach(() => {
+			vi.restoreAllMocks();
+		});
 
 	describe('POST /mcp - optional bearer auth', () => {
 		it('runs unauthenticated when BV_API_KEY is unset/empty', async () => {
@@ -327,10 +331,11 @@ describe('DNS Security MCP Server', () => {
 
 	describe('POST /mcp - invalid requests', () => {
 		it('rejects invalid JSON', async () => {
+			const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: 'not json',
+				body: '{"secret":"should-not-appear',
 			});
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, env, ctx);
@@ -338,6 +343,9 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(400);
 			const body = (await response.json()) as { error: { code: number } };
 			expect(body.error.code).toBe(-32700);
+			const logged = consoleSpy.mock.calls.map((call) => String(call[0])).join('\n');
+			expect(logged).not.toContain('should-not-appear');
+			expect(logged).toContain('bodyPreviewRedacted');
 		});
 
 		it('rejects invalid JSON-RPC', async () => {
@@ -788,7 +796,86 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(429);
 		});
 
-		it('protocol methods (initialize, tools/list, ping) are exempt from rate limiting', async () => {
+		it('unauthenticated scan_domain requests are capped at 5/day', async () => {
+			const sessionId = await initSession();
+
+			for (let i = 0; i < 5; i++) {
+				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Mcp-Session-Id': sessionId,
+						'cf-connecting-ip': '203.0.113.77',
+					},
+					body: JSON.stringify({
+						jsonrpc: '2.0',
+						id: i + 200,
+						method: 'tools/call',
+						params: { name: 'scan_domain', arguments: { domain: 'example.com' } },
+					}),
+				});
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(request, env, ctx);
+				await waitOnExecutionContext(ctx);
+				expect(response.status).toBe(200);
+			}
+
+			const blockedRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Mcp-Session-Id': sessionId,
+					'cf-connecting-ip': '203.0.113.77',
+				},
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 206,
+					method: 'tools/call',
+					params: { name: 'scan_domain', arguments: { domain: 'example.com' } },
+				}),
+			});
+			const ctx = createExecutionContext();
+			const blockedResponse = await worker.fetch(blockedRequest, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(blockedResponse.status).toBe(429);
+			expect(blockedResponse.headers.get('x-quota-limit')).toBe('5');
+			expect(blockedResponse.headers.get('x-quota-remaining')).toBe('0');
+
+			const body = (await blockedResponse.json()) as { error: { code: number; message: string } };
+			expect(body.error.code).toBe(-32029);
+			expect(body.error.message).toContain('scan_domain');
+			expect(body.error.message).toContain('5 requests per day');
+		});
+
+		it('authenticated scan_domain requests are not subject to free daily cap', async () => {
+			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+			const sessionId = await initSession({ authToken: TEST_API_KEY, targetEnv: authEnv });
+
+			for (let i = 0; i < 6; i++) {
+				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						Authorization: `Bearer ${TEST_API_KEY}`,
+						'Mcp-Session-Id': sessionId,
+						'cf-connecting-ip': '203.0.113.88',
+					},
+					body: JSON.stringify({
+						jsonrpc: '2.0',
+						id: i + 300,
+						method: 'tools/call',
+						params: { name: 'scan_domain', arguments: { domain: 'example.com' } },
+					}),
+				});
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(request, authEnv, ctx);
+				await waitOnExecutionContext(ctx);
+				expect(response.status).toBe(200);
+				expect(response.headers.has('x-quota-limit')).toBe(false);
+			}
+		});
+
+		it('protocol methods use a separate control-plane budget from tools/call', async () => {
 			// Exhaust the rate limit with tools/call requests first
 			const sessionId = await initSession();
 			for (let i = 0; i < 15; i++) {
@@ -810,7 +897,8 @@ describe('DNS Security MCP Server', () => {
 				await waitOnExecutionContext(ctx);
 			}
 
-			// Protocol methods should still work despite exhausted rate limit
+			// Protocol methods should still work because they no longer share the tools/call budget.
+
 			const protocolMethods = [
 				{ method: 'initialize', params: {} },
 				{ method: 'tools/list', params: {} },
@@ -828,8 +916,43 @@ describe('DNS Security MCP Server', () => {
 				const ctx = createExecutionContext();
 				const response = await worker.fetch(request, env, ctx);
 				await waitOnExecutionContext(ctx);
-				expect(response.status, `${method} should not be rate-limited`).toBe(200);
+				expect(response.status, `${method} should use a separate control-plane budget`).toBe(200);
 			}
+		});
+
+		it('throttles unauthenticated control-plane traffic separately', async () => {
+			const sessionId = await initSession();
+
+			for (let i = 0; i < 30; i++) {
+				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Mcp-Session-Id': sessionId,
+						'cf-connecting-ip': '203.0.113.55',
+					},
+					body: JSON.stringify({ jsonrpc: '2.0', id: i + 500, method: 'ping', params: {} }),
+				});
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(request, env, ctx);
+				await waitOnExecutionContext(ctx);
+				expect(response.status).toBe(200);
+			}
+
+			const blockedRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Mcp-Session-Id': sessionId,
+					'cf-connecting-ip': '203.0.113.55',
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', id: 999, method: 'ping', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const blockedResponse = await worker.fetch(blockedRequest, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(blockedResponse.status).toBe(429);
+			expect(blockedResponse.headers.get('x-ratelimit-limit')).toBe('30');
 		});
 	});
 

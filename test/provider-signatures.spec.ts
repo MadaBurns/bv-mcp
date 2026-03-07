@@ -2,6 +2,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import { detectProviderMatches, detectProviderMatchesBySelectors, loadProviderSignatures, resetProviderSignatureState } from '../src/lib/provider-signatures';
 
+async function sha256Hex(input: string): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 beforeEach(() => {
 	resetProviderSignatureState();
 	vi.restoreAllMocks();
@@ -51,19 +56,57 @@ describe('provider-signatures', () => {
 			inbound: [{ name: 'Test Provider', domains: ['mail.test.example'] }],
 			outbound: [],
 		};
+		const rawPayload = JSON.stringify(payload);
+		const expectedSha256 = await sha256Hex(rawPayload);
 
 		globalThis.fetch = vi.fn().mockResolvedValue({
 			ok: true,
-			json: async () => payload,
+			text: async () => rawPayload,
 		} as unknown as Response);
 
-		const first = await loadProviderSignatures({ sourceUrl });
-		const second = await loadProviderSignatures({ sourceUrl });
+		const first = await loadProviderSignatures({ sourceUrl, expectedSha256 });
+		const second = await loadProviderSignatures({ sourceUrl, expectedSha256 });
 
 		expect(first.source).toBe('runtime');
 		expect(second.source).toBe('runtime');
 		expect(first.version).toBe('runtime-test-1');
 		expect(second.version).toBe('runtime-test-1');
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+	});
+
+	it('falls back to built-in signatures for insecure runtime URLs', async () => {
+		const result = await loadProviderSignatures({
+			sourceUrl: 'http://example.com/signatures.json',
+			expectedSha256: 'deadbeef',
+		});
+
+		expect(result.source).toBe('built-in');
+		expect(result.degraded).toBe(true);
+	});
+
+	it('falls back when the host is not allowlisted', async () => {
+		const result = await loadProviderSignatures({
+			sourceUrl: 'https://example.com/signatures.json',
+			allowedHosts: ['trusted.example'],
+			expectedSha256: 'deadbeef',
+		});
+
+		expect(result.source).toBe('built-in');
+		expect(result.degraded).toBe(true);
+	});
+
+	it('falls back when the runtime payload digest does not match', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			text: async () => JSON.stringify({ version: 'runtime-test-2', inbound: [], outbound: [] }),
+		} as unknown as Response);
+
+		const result = await loadProviderSignatures({
+			sourceUrl: 'https://example.com/signatures.json',
+			expectedSha256: '00',
+		});
+
+		expect(result.source).toBe('built-in');
+		expect(result.degraded).toBe(true);
 	});
 });

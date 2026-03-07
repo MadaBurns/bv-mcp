@@ -34,7 +34,7 @@ export function jsonRpcError(id: string | number | null | undefined, code: numbe
 }
 
 /** Known safe error message prefixes that may be passed through to clients */
-const SAFE_ERROR_PREFIXES = ['Missing required', 'Invalid', 'Domain ', 'Resource not found'];
+const SAFE_ERROR_PREFIXES = ['Missing required', 'Invalid', 'Domain ', 'Resource not found', 'Rate limit exceeded'];
 
 /**
  * Sanitize an error for client-facing responses.
