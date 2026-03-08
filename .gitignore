@@ -1,0 +1,60 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+out/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*
+.env.*.local
+
+# Coverage
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.pid
+
+# TypeScript / lint cache
+*.tsbuildinfo
+.eslintcache
+
+# Cloudflare
+.wrangler/
+
+.claude/
+
+# Workspace
+.workspace/
+
+# Agent config
+.agent.md
+.github/agents/
+.github/prompts/
+
+# Dev output files
+*.out
+out.txt
+mcp-response.txt
+
+# Internal plans and design docs
+docs/plans/
