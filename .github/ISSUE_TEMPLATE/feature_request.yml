@@ -1,0 +1,51 @@
+name: Feature request
+description: Suggest a new feature or improvement
+title: "[FEATURE]: "
+labels: []
+assignees: []
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What behavior should be added or changed?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any alternatives or workarounds you've tried.
+
+  - type: checkboxes
+    id: impact
+    attributes:
+      label: Impact areas
+      options:
+        - label: MCP tool schema/API surface
+        - label: Scoring/reporting behavior
+        - label: Security hardening
+        - label: Performance/cache/rate limiting
+        - label: Documentation/developer experience
+
+  - type: textarea
+    id: examples
+    attributes:
+      label: Example request/response
+      description: If applicable, include sample MCP request/response that illustrates the need.
+      render: json
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links, screenshots, prior art, or implementation notes.
