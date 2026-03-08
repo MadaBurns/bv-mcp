@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "type": "url",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+	"name": "blackveil-dns",
+	"version": "1.0.0",
+	"description": "Blackveil DNS — Open-source DNS & email security scanner.",
+	"license": "MIT",
+	"author": "BLACKVEIL Security",
+	"homepage": "https://blackveilsecurity.com",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/MadaBurns/bv-mcp.git"
+	},
+	"keywords": [
+		"blackveil",
+		"dns",
+		"security",
+		"mcp",
+		"email",
+		"dmarc",
+		"spf",
+		"dkim",
+		"dnssec",
+		"cloudflare-workers",
+		"model-context-protocol",
+		"ai-tools"
+	],
+	"bugs": {
+		"url": "https://github.com/MadaBurns/bv-mcp/issues"
+	},
+	"engines": {
+		"node": ">=18"
+	},
+	"scripts": {
+		"setup": "npm install && echo '✓ Dependencies installed. Run: npm run deploy'",
+		"setup:kv": "wrangler kv namespace create RATE_LIMIT && wrangler kv namespace create SCAN_CACHE && wrangler kv namespace create SESSION_STORE",
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"deploy": "wrangler deploy -c .dev/wrangler.local.jsonc",
+		"deploy:production": "wrangler deploy",
+		"test": "vitest run --coverage",
+		"typecheck": "tsc --noEmit",
+		"cf-typegen": "wrangler types",
+		"lint": "eslint .",
+		"lint:fix": "eslint . --fix"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.12.17",
+		"@types/punycode": "^2.1.4",
+		"@vitest/coverage-istanbul": "^3.2.4",
+		"eslint": "^10.0.2",
+		"hono": "^4.12.2",
+		"typescript": "^5.5.2",
+		"typescript-eslint": "^8.56.1",
+		"vitest": "^3.2.4",
+		"wrangler": "^4.70.0"
+	},
+	"dependencies": {
+		"punycode": "^2.3.1"
+	}
+}

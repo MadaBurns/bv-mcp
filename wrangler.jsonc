@@ -1,0 +1,36 @@
+{
+  "name": "bv-dns-security-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-05",
+  "compatibility_flags": [
+    "global_fetch_strictly_public"
+  ],
+  "observability": {
+    "enabled": true
+  },
+  // Custom domain — Cloudflare will provision DNS + SSL automatically.
+  // Replace with your own domain, or remove for *.workers.dev default.
+  "routes": [
+    { "pattern": "dns-mcp.your-domain.com", "custom_domain": true }
+  ],
+  // KV namespace bindings for rate limiting, scan result caching, and sessions.
+  // Create with:  npm run setup:kv
+  // Then copy this file to .dev/wrangler.local.jsonc, update "main" to
+  // "../src/index.ts", and paste the IDs printed by the command below.
+  "kv_namespaces": [
+    { "binding": "RATE_LIMIT", "id": "YOUR_RATE_LIMIT_KV_NAMESPACE_ID" },
+    { "binding": "SCAN_CACHE", "id": "YOUR_SCAN_CACHE_KV_NAMESPACE_ID" },
+    { "binding": "SESSION_STORE", "id": "YOUR_SESSION_STORE_KV_NAMESPACE_ID" }
+  ],
+  // Optional Analytics Engine dataset for usage reporting.
+  // Create the dataset in Cloudflare and replace the placeholder below.
+  "analytics_engine_datasets": [
+    { "binding": "MCP_ANALYTICS", "dataset": "YOUR_ANALYTICS_ENGINE_DATASET" }
+  ],
+  // Optional auth: leave empty for open-source/local mode.
+  // For production auth, set with: wrangler secret put BV_API_KEY
+  "vars": {
+    "BV_API_KEY": "",
+    "PROVIDER_SIGNATURES_URL": ""
+  }
+}
