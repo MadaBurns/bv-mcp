@@ -1,0 +1,148 @@
+import { handleToolsList, handleToolsCall } from '../handlers/tools';
+import { handleResourcesList, handleResourcesRead } from '../handlers/resources';
+import { parseAllowedHosts } from './request';
+import { createSession, checkSessionCreateRateLimit } from '../lib/session';
+import { auditSessionCreated } from '../lib/audit';
+import { jsonRpcError, jsonRpcSuccess, JSON_RPC_ERRORS } from '../lib/json-rpc';
+import type { AnalyticsClient } from '../lib/analytics';
+
+type JsonRpcPayload = ReturnType<typeof jsonRpcSuccess> | ReturnType<typeof jsonRpcError>;
+
+export interface DispatchMcpMethodOptions {
+	id: string | number | null | undefined;
+	method: string;
+	params: Record<string, unknown> | undefined;
+	ip: string;
+	isAuthenticated: boolean;
+	rateHeaders: Record<string, string>;
+	serverVersion: string;
+	rateLimitKv?: KVNamespace;
+	sessionStore?: KVNamespace;
+	scanCache?: KVNamespace;
+	providerSignaturesUrl?: string;
+	providerSignaturesAllowedHosts?: string;
+	providerSignaturesSha256?: string;
+	analytics?: AnalyticsClient;
+}
+
+export type DispatchMcpMethodResult =
+	| {
+			kind: 'success';
+			payload: JsonRpcPayload;
+			newSessionId?: string;
+			logCategory: string;
+			logTool?: string;
+			logResult?: string;
+			logDetails?: unknown;
+	  }
+	| {
+			kind: 'early-error';
+			payload: ReturnType<typeof jsonRpcError>;
+			status: 429;
+			headers: Record<string, string>;
+	  };
+
+export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Promise<DispatchMcpMethodResult> {
+	switch (options.method) {
+		case 'initialize': {
+			if (!options.isAuthenticated) {
+				const sessionCreateGate = await checkSessionCreateRateLimit(options.ip, options.rateLimitKv);
+				if (!sessionCreateGate.allowed) {
+					const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
+					return {
+						kind: 'early-error',
+						payload: jsonRpcError(options.id, JSON_RPC_ERRORS.RATE_LIMITED, `Rate limit exceeded. Retry after ${retryAfterSeconds}s`),
+						status: 429,
+						headers: {
+							...options.rateHeaders,
+							'retry-after': String(retryAfterSeconds),
+						},
+					};
+				}
+			}
+
+			const newSessionId = await createSession(options.sessionStore);
+			auditSessionCreated(options.ip, newSessionId);
+
+			return {
+				kind: 'success',
+				payload: jsonRpcSuccess(options.id, {
+					protocolVersion: '2025-03-26',
+					capabilities: {
+						tools: { listChanged: false },
+						resources: { subscribe: false, listChanged: false },
+					},
+					serverInfo: {
+						name: 'Blackveil DNS',
+						version: options.serverVersion,
+					},
+				}),
+				newSessionId,
+				logCategory: 'session',
+				logResult: 'initialized',
+			};
+		}
+
+		case 'tools/list':
+			return {
+				kind: 'success',
+				payload: jsonRpcSuccess(options.id, handleToolsList()),
+				logCategory: 'tools',
+				logResult: 'list',
+			};
+
+		case 'tools/call': {
+			const toolParams = options.params as { name: string; arguments?: Record<string, unknown> };
+			const result = await handleToolsCall(toolParams, options.scanCache, {
+				providerSignaturesUrl: options.providerSignaturesUrl,
+				providerSignaturesAllowedHosts: parseAllowedHosts(options.providerSignaturesAllowedHosts),
+				providerSignaturesSha256: options.providerSignaturesSha256,
+				analytics: options.analytics,
+			});
+
+			return {
+				kind: 'success',
+				payload: jsonRpcSuccess(options.id, result),
+				logCategory: 'tools',
+				logTool: toolParams.name,
+				logResult: typeof result === 'object' && result && 'status' in result ? String((result as { status: unknown }).status) : undefined,
+				logDetails: result,
+			};
+		}
+
+		case 'resources/list':
+			return {
+				kind: 'success',
+				payload: jsonRpcSuccess(options.id, handleResourcesList()),
+				logCategory: 'resources',
+				logResult: 'list',
+			};
+
+		case 'resources/read': {
+			const resourceParams = options.params as { uri: string };
+			return {
+				kind: 'success',
+				payload: jsonRpcSuccess(options.id, handleResourcesRead(resourceParams)),
+				logCategory: 'resources',
+				logResult: 'read',
+				logDetails: resourceParams,
+			};
+		}
+
+		case 'ping':
+			return {
+				kind: 'success',
+				payload: jsonRpcSuccess(options.id, {}),
+				logCategory: 'session',
+				logResult: 'ping',
+			};
+
+		default:
+			return {
+				kind: 'success',
+				payload: jsonRpcError(options.id, JSON_RPC_ERRORS.METHOD_NOT_FOUND, `Method not found: ${options.method}`),
+				logCategory: 'error',
+				logResult: 'method_not_found',
+			};
+	}
+}
