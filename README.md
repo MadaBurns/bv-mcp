@@ -301,7 +301,7 @@ Prompt methods (`prompts/list`, `prompts/get`) return `-32601 Method not found`.
 - Input sanitation and domain validation
 - Optional bearer-token authentication
 - Per-IP rate limiting (KV + in-memory fallback)
-- `check_lookalikes` capped at 5/day per IP with 60-min caching
+- `check_lookalikes` capped at 10/day per IP with 60-min caching
 - Scan result caching (KV + in-memory fallback)
 - Structured JSON logging
 
@@ -318,9 +318,10 @@ Full details in `docs/security-and-observability.md`.
 - SSRF protections block unsafe/private targets
 - Error responses sanitized — only known validation errors surface
 - DNS via Cloudflare DoH with optional secondary confirmation
-- Rate limits: `10/min` and `100/hr` per IP for `tools/call`
-- Control-plane traffic: `30/min` and `300/hr` per IP
-- Session creation: `30/min` per IP
+- Rate limits: `30/min` and `200/hr` per IP for `tools/call`
+- Control-plane traffic: `60/min` and `600/hr` per IP
+- Global daily cap: `10,000` unauthenticated tool calls/day (cost ceiling)
+- Session creation: `60/min` per IP
 
 **Natural-language convenience:**
 `tools/call` supports `scan` as an alias for `scan_domain`. In chat clients, say `scan example.com`. Raw JSON-RPC expects `params.name` to be `scan` or `scan_domain`.
