@@ -7,6 +7,7 @@
 import { queryTxtRecords } from '../lib/dns';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
+import { parseDmarcTags } from './dmarc-utils';
 import {
 	RISKY_MECHANISMS,
 	checkBroadIpRanges,
@@ -15,6 +16,48 @@ import {
 	type RecursiveState,
 } from './spf-analysis';
 import { analyzeTrustSurface } from './spf-trust-surface';
+
+interface TrustSurfaceDmarcContext {
+	corroboratedByWeakDmarc: boolean;
+	dmarcPolicy?: string;
+	dmarcAlignmentMode?: string;
+}
+
+async function getTrustSurfaceDmarcContext(domain: string): Promise<TrustSurfaceDmarcContext> {
+	try {
+		const dmarcRecords = await queryTxtRecords(`_dmarc.${domain}`);
+		const dmarcRecord = dmarcRecords.find((record) => record.toLowerCase().startsWith('v=dmarc1'));
+
+		if (!dmarcRecord) {
+			return {
+				corroboratedByWeakDmarc: true,
+				dmarcPolicy: 'missing',
+				dmarcAlignmentMode: 'missing',
+			};
+		}
+
+		const tags = parseDmarcTags(dmarcRecord);
+		const policy = tags.get('p') ?? 'none';
+		const pct = tags.get('pct') ?? '100';
+		const aspf = tags.get('aspf') ?? 'r';
+		const adkim = tags.get('adkim') ?? 'r';
+		const enforcementWeak = policy !== 'reject' || pct !== '100';
+		const alignmentWeak = aspf !== 's' || adkim !== 's';
+		const alignmentMode = aspf === 's' && adkim === 's' ? 'strict' : 'relaxed';
+
+		return {
+			corroboratedByWeakDmarc: enforcementWeak && alignmentWeak,
+			dmarcPolicy: pct === '100' ? policy : `${policy}; pct=${pct}`,
+			dmarcAlignmentMode: alignmentMode,
+		};
+	} catch {
+		return {
+			corroboratedByWeakDmarc: false,
+			dmarcPolicy: 'unknown',
+			dmarcAlignmentMode: 'unknown',
+		};
+	}
+}
 
 /**
  * Check SPF records for a domain.
@@ -153,12 +196,13 @@ export async function checkSpf(domain: string): Promise<CheckResult> {
 	}
 
 	// Trust surface analysis — flag multi-tenant SaaS platform includes
-	const trustSurfaceFindings = analyzeTrustSurface(spf);
+	const trustSurfaceContext = await getTrustSurfaceDmarcContext(domain);
+	const trustSurfaceFindings = analyzeTrustSurface(spf, trustSurfaceContext);
 	findings.push(...trustSurfaceFindings);
 
-	// If no issues found (trust surface findings are informational, don't suppress the configured status)
-	const nonTrustSurfaceFindings = findings.filter((f) => !f.metadata?.trustSurface);
-	if (nonTrustSurfaceFindings.length === 0) {
+	// Informational trust-surface findings should not suppress the clean SPF status.
+	const issueFindings = findings.filter((f) => !(f.metadata?.trustSurface && f.severity === 'info'));
+	if (issueFindings.length === 0) {
 		findings.push(
 			createFinding(
 				'spf',
