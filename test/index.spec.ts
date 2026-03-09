@@ -66,7 +66,7 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(200);
 		});
 
-		it('returns 401 JSON-RPC error when auth is required and token is missing', async () => {
+		it('allows unauthenticated requests when BV_API_KEY is set (rate-limited, not rejected)', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
@@ -76,10 +76,7 @@ describe('DNS Security MCP Server', () => {
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, authEnv, ctx);
 			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(401);
-			const body = (await response.json()) as { error: { code: number; message: string } };
-			expect(body.error.code).toBe(-32001);
-			expect(body.error.message).toContain('Unauthorized');
+			expect(response.status).toBe(200);
 		});
 
 		it('returns 401 JSON-RPC error when auth token is invalid', async () => {
