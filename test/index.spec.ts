@@ -806,7 +806,7 @@ describe('DNS Security MCP Server', () => {
 		it('unauthenticated tools/call requests are rate-limited', async () => {
 			const sessionId = await initSession();
 			let rateLimited = false;
-			for (let i = 0; i < 15; i++) {
+			for (let i = 0; i < 35; i++) {
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
@@ -834,7 +834,7 @@ describe('DNS Security MCP Server', () => {
 		it('tools/call notifications consume exactly one rate-limit unit per request', async () => {
 			const sessionId = await initSession();
 
-			for (let i = 0; i < 10; i++) {
+			for (let i = 0; i < 30; i++) {
 				const notificationRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
@@ -871,14 +871,14 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(429);
 		});
 
-		it('unauthenticated scan_domain requests are capped at 10/day', async () => {
+		it('unauthenticated scan_domain requests are capped at 50/day', async () => {
 			vi.useFakeTimers();
 			vi.setSystemTime(new Date('2026-03-07T00:00:00Z'));
 
 			try {
 			const sessionId = await initSession();
 
-			for (let i = 0; i < 10; i++) {
+			for (let i = 0; i < 50; i++) {
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
@@ -918,26 +918,26 @@ describe('DNS Security MCP Server', () => {
 			const blockedResponse = await worker.fetch(blockedRequest, env, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(blockedResponse.status).toBe(429);
-			expect(blockedResponse.headers.get('x-quota-limit')).toBe('10');
+			expect(blockedResponse.headers.get('x-quota-limit')).toBe('50');
 			expect(blockedResponse.headers.get('x-quota-remaining')).toBe('0');
 
 			const body = (await blockedResponse.json()) as { error: { code: number; message: string } };
 			expect(body.error.code).toBe(-32029);
 			expect(body.error.message).toContain('scan_domain');
-			expect(body.error.message).toContain('10 requests per day');
+			expect(body.error.message).toContain('50 requests per day');
 			} finally {
 				vi.useRealTimers();
 			}
 		});
 
-		it('unauthenticated check_lookalikes requests are capped at 5/day', async () => {
+		it('unauthenticated check_lookalikes requests are capped at 10/day', async () => {
 			vi.useFakeTimers();
 			vi.setSystemTime(new Date('2026-03-07T00:00:00Z'));
 
 			try {
 			const sessionId = await initSession();
 
-			for (let i = 0; i < 5; i++) {
+			for (let i = 0; i < 10; i++) {
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
@@ -977,13 +977,13 @@ describe('DNS Security MCP Server', () => {
 			const blockedResponse = await worker.fetch(blockedRequest, env, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(blockedResponse.status).toBe(429);
-			expect(blockedResponse.headers.get('x-quota-limit')).toBe('5');
+			expect(blockedResponse.headers.get('x-quota-limit')).toBe('10');
 			expect(blockedResponse.headers.get('x-quota-remaining')).toBe('0');
 
 			const body = (await blockedResponse.json()) as { error: { code: number; message: string } };
 			expect(body.error.code).toBe(-32029);
 			expect(body.error.message).toContain('check_lookalikes');
-			expect(body.error.message).toContain('5 requests per day');
+			expect(body.error.message).toContain('10 requests per day');
 			} finally {
 				vi.useRealTimers();
 			}
@@ -1093,7 +1093,7 @@ describe('DNS Security MCP Server', () => {
 		it('throttles unauthenticated control-plane traffic separately', async () => {
 			const sessionId = await initSession();
 
-			for (let i = 0; i < 30; i++) {
+			for (let i = 0; i < 60; i++) {
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
@@ -1122,7 +1122,7 @@ describe('DNS Security MCP Server', () => {
 			const blockedResponse = await worker.fetch(blockedRequest, env, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(blockedResponse.status).toBe(429);
-			expect(blockedResponse.headers.get('x-ratelimit-limit')).toBe('30');
+			expect(blockedResponse.headers.get('x-ratelimit-limit')).toBe('60');
 		});
 	});
 

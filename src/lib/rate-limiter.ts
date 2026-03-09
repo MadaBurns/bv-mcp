@@ -34,10 +34,10 @@ export interface ToolDailyRateLimitResult {
 	limit: number;
 }
 
-const MINUTE_LIMIT = 10;
-const HOUR_LIMIT = 100;
-const CONTROL_PLANE_MINUTE_LIMIT = 30;
-const CONTROL_PLANE_HOUR_LIMIT = 300;
+const MINUTE_LIMIT = 30;
+const HOUR_LIMIT = 200;
+const CONTROL_PLANE_MINUTE_LIMIT = 60;
+const CONTROL_PLANE_HOUR_LIMIT = 600;
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
