@@ -17,6 +17,7 @@ export interface DispatchMcpMethodOptions {
 	rateHeaders: Record<string, string>;
 	serverVersion: string;
 	rateLimitKv?: KVNamespace;
+	quotaCoordinator?: DurableObjectNamespace;
 	sessionStore?: KVNamespace;
 	scanCache?: KVNamespace;
 	providerSignaturesUrl?: string;
@@ -46,7 +47,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 	switch (options.method) {
 		case 'initialize': {
 			if (!options.isAuthenticated) {
-				const sessionCreateGate = await checkSessionCreateRateLimit(options.ip, options.rateLimitKv);
+				const sessionCreateGate = await checkSessionCreateRateLimit(options.ip, options.rateLimitKv, options.quotaCoordinator);
 				if (!sessionCreateGate.allowed) {
 					const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
 					return {

@@ -52,6 +52,7 @@
 	"scripts": {
 		"build": "tsup",
 		"dev": "wrangler dev",
+		"deploy:private": "node scripts/deploy-private.mjs",
 		"start": "wrangler dev",
 		"prepack": "npm run build",
 		"test": "vitest run --coverage",
