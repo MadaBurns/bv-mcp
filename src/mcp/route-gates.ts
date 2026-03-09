@@ -17,7 +17,7 @@ export async function buildControlPlaneRateLimitResponse(
 	if (rateResult.allowed) return undefined;
 
 	const headers: Record<string, string> = {
-		'x-ratelimit-limit': '30',
+		'x-ratelimit-limit': '60',
 		'x-ratelimit-remaining': String(rateResult.minuteRemaining),
 	};
 	if (rateResult.retryAfterMs !== undefined) {
