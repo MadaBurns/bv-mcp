@@ -186,9 +186,13 @@ app.use('*', async (c, next) => {
        }
 });
 
-// Optional bearer auth for /mcp; open mode when BV_API_KEY is unset/empty.
-// Sets `isAuthenticated` on the Hono context so downstream handlers can check
-// auth status without re-deriving it.
+// Optional bearer auth for /mcp — three modes:
+//   1. No BV_API_KEY configured → everyone is unauthenticated (open mode)
+//   2. BV_API_KEY configured + no auth header → unauthenticated, rate-limited
+//   3. BV_API_KEY configured + valid bearer → authenticated, bypasses rate limits
+//   4. BV_API_KEY configured + invalid bearer → 401 rejected
+// This allows public users to use the server with rate limits while
+// authenticated users (e.g. the operator) get unlimited access.
 app.use('/mcp', async (c, next) => {
        const { BV_API_KEY } = c.env;
        const apiKey = BV_API_KEY?.trim();
@@ -198,6 +202,12 @@ app.use('/mcp', async (c, next) => {
        }
 
        const authHeader = c.req.header('authorization');
+       if (!authHeader) {
+	       // No token provided — allow through as unauthenticated (rate-limited)
+	       c.set('isAuthenticated', false);
+	       return next();
+       }
+
        if (!(await isAuthorizedRequest(authHeader, apiKey))) {
 	       return unauthorizedResponse();
        }
