@@ -287,7 +287,7 @@ app.post('/mcp', async (c) => {
 	if (!isAuthenticated && method === 'tools/call') {
 		const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT);
 		rateHeaders = {
-			'x-ratelimit-limit': '10',
+			'x-ratelimit-limit': '30',
 			'x-ratelimit-remaining': String(rateResult.minuteRemaining),
 		};
 		if (!rateResult.allowed) {
