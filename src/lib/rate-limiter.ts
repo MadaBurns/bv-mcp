@@ -20,6 +20,11 @@ import {
 	resetRateLimit,
 	type RateLimitScope,
 } from './rate-limiter-memory';
+import {
+	checkGlobalDailyLimitWithCoordinator,
+	checkScopedRateLimitWithCoordinator,
+	checkToolDailyRateLimitWithCoordinator,
+} from './quota-coordinator';
 
 export interface RateLimitResult {
 	allowed: boolean;
@@ -242,7 +247,15 @@ async function checkGlobalDailyLimitKV(limit: number, kv: KVNamespace): Promise<
  * @param kv - Optional KV namespace for distributed rate limiting.
  *             Falls back to in-memory when not provided or on KV errors.
  */
-export async function checkRateLimit(ip: string, kv?: KVNamespace): Promise<RateLimitResult> {
+export async function checkRateLimit(ip: string, kv?: KVNamespace, quotaCoordinator?: DurableObjectNamespace): Promise<RateLimitResult> {
+	if (quotaCoordinator) {
+		try {
+			const coordinated = await checkScopedRateLimitWithCoordinator(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT, quotaCoordinator);
+			if (coordinated) return coordinated;
+		} catch (err) {
+			console.warn('[rate-limiter] quota coordinator error, falling back to KV/in-memory:', err instanceof Error ? err.message : err);
+		}
+	}
        if (kv) {
 	       try {
 		       return await checkRateLimitKV(ip, kv);
@@ -258,7 +271,19 @@ export async function checkRateLimit(ip: string, kv?: KVNamespace): Promise<Rate
  * Check if a request from the given IP is allowed under lower-cost control-plane limits.
  * Uses KV when available, with in-memory fallback on failure.
  */
-export async function checkControlPlaneRateLimit(ip: string, kv?: KVNamespace): Promise<RateLimitResult> {
+export async function checkControlPlaneRateLimit(
+	ip: string,
+	kv?: KVNamespace,
+	quotaCoordinator?: DurableObjectNamespace,
+): Promise<RateLimitResult> {
+	if (quotaCoordinator) {
+		try {
+			const coordinated = await checkScopedRateLimitWithCoordinator(ip, 'control', CONTROL_PLANE_MINUTE_LIMIT, CONTROL_PLANE_HOUR_LIMIT, quotaCoordinator);
+			if (coordinated) return coordinated;
+		} catch (err) {
+			console.warn('[rate-limiter] quota coordinator control-plane error, falling back to KV/in-memory:', err instanceof Error ? err.message : err);
+		}
+	}
 	if (kv) {
 		try {
 			return await checkControlPlaneRateLimitKV(ip, kv);
@@ -278,7 +303,16 @@ export async function checkToolDailyRateLimit(
 	toolName: string,
 	limit: number,
 	kv?: KVNamespace,
+	quotaCoordinator?: DurableObjectNamespace,
 ): Promise<ToolDailyRateLimitResult> {
+	if (quotaCoordinator) {
+		try {
+			const coordinated = await checkToolDailyRateLimitWithCoordinator(principalId, toolName, limit, quotaCoordinator);
+			if (coordinated) return coordinated;
+		} catch (err) {
+			console.warn('[rate-limiter] quota coordinator tool quota error, falling back to KV/in-memory:', err instanceof Error ? err.message : err);
+		}
+	}
 	if (kv) {
 		try {
 			return await checkToolDailyRateLimitKV(principalId, toolName, limit, kv);
@@ -293,7 +327,19 @@ export async function checkToolDailyRateLimit(
  * Check if the global daily tool call budget has been exhausted.
  * Uses KV when available, with in-memory fallback on failure.
  */
-export async function checkGlobalDailyLimit(limit: number, kv?: KVNamespace): Promise<GlobalRateLimitResult> {
+export async function checkGlobalDailyLimit(
+	limit: number,
+	kv?: KVNamespace,
+	quotaCoordinator?: DurableObjectNamespace,
+): Promise<GlobalRateLimitResult> {
+	if (quotaCoordinator) {
+		try {
+			const coordinated = await checkGlobalDailyLimitWithCoordinator(limit, quotaCoordinator);
+			if (coordinated) return coordinated;
+		} catch (err) {
+			console.warn('[rate-limiter] quota coordinator global cap error, falling back to KV/in-memory:', err instanceof Error ? err.message : err);
+		}
+	}
 	if (kv) {
 		try {
 			return await checkGlobalDailyLimitKV(limit, kv);

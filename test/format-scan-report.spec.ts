@@ -44,4 +44,49 @@ describe('format-scan-report', () => {
 		expect(report).toContain('Confidence: heuristic');
 		expect(report).toContain('Results served from cache');
 	});
+
+	it('sanitizes untrusted finding text in scan output', () => {
+		const result: ScanDomainResult = {
+			domain: 'example.com',
+			score: {
+				overall: 10,
+				grade: 'F',
+				categoryScores: {
+					spf: 10,
+					dmarc: 10,
+					dkim: 10,
+					dnssec: 10,
+					ssl: 10,
+					mta_sts: 10,
+					ns: 10,
+					caa: 10,
+					subdomain_takeover: 10,
+					mx: 10,
+				},
+				findings: [
+					{
+						category: 'subdomain_takeover',
+						title: '# injected title',
+						severity: 'high',
+						detail: '[malicious](https://evil.example) ```payload```',
+					},
+				],
+				summary: '1 finding',
+			},
+			checks: [],
+			maturity: {
+				stage: 0,
+				label: 'Unprotected',
+				description: 'No meaningful protections found.',
+			},
+			cached: false,
+			timestamp: '2026-03-10T00:00:00.000Z',
+		};
+
+		const report = formatScanReport(result);
+		expect(report).not.toContain('[malicious]');
+		expect(report).not.toContain('```');
+		expect(report).not.toContain('# injected title');
+		expect(report).toContain('injected title');
+	});
 });

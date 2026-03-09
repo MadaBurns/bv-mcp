@@ -31,6 +31,7 @@ import type { JsonRpcRequest } from './lib/json-rpc';
 import { dispatchMcpMethod } from './mcp/dispatch';
 import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionRequest } from './mcp/route-gates';
 import { MAX_REQUEST_BODY_BYTES, FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT } from './lib/config';
+export { QuotaCoordinator } from './lib/quota-coordinator';
 
 /** Server version — keep in sync with package.json */
 const SERVER_VERSION = '1.0.0';
@@ -60,6 +61,7 @@ type BvMcpEnv = {
 	RATE_LIMIT?: KVNamespace;
 	SCAN_CACHE?: KVNamespace;
 	SESSION_STORE?: KVNamespace;
+	QUOTA_COORDINATOR?: DurableObjectNamespace;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
 	BV_API_KEY?: string;
 	ALLOWED_ORIGINS?: string;
@@ -252,18 +254,17 @@ app.post('/mcp', async (c) => {
 	}
 	const rawBody = bodyReadResult.rawBody!;
 
-	       // Parse JSON-RPC request
-	       let body: JsonRpcRequest;
+	// Parse JSON-RPC request
 		const parsedRequest = parseJsonRpcRequest(rawBody);
-	       if (!parsedRequest.ok) {
-		       logError('Parse error: invalid JSON', {
-			       severity: 'error',
-			       ip,
-			       details: { bodyLength: rawBody.length, bodyPreviewRedacted: true },
-		       });
-		       return sseErrorResponse(parsedRequest.payload!, parsedRequest.status!, accept);
-	       }
-		body = parsedRequest.body!;
+	if (!parsedRequest.ok) {
+		logError('Parse error: invalid JSON', {
+			severity: 'error',
+			ip,
+			details: { bodyLength: rawBody.length, bodyPreviewRedacted: true },
+		});
+		return sseErrorResponse(parsedRequest.payload!, parsedRequest.status!, accept);
+	}
+	const body: JsonRpcRequest = parsedRequest.body!;
 
 	// Validate JSON-RPC 2.0 structure
 	const validationError = validateJsonRpcRequest(body);
@@ -286,7 +287,7 @@ app.post('/mcp', async (c) => {
 	let rateHeaders: Record<string, string> = {};
 	if (!isAuthenticated && method === 'tools/call') {
 		// Global daily cap — cost ceiling across all unauthenticated IPs
-		const globalResult = await checkGlobalDailyLimit(GLOBAL_DAILY_TOOL_LIMIT, c.env.RATE_LIMIT);
+		const globalResult = await checkGlobalDailyLimit(GLOBAL_DAILY_TOOL_LIMIT, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
 		if (!globalResult.allowed) {
 			const globalHeaders: Record<string, string> = {};
 			if (globalResult.retryAfterMs !== undefined) {
@@ -313,7 +314,7 @@ app.post('/mcp', async (c) => {
 			);
 		}
 
-		const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT);
+		const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
 		rateHeaders = {
 			'x-ratelimit-limit': '30',
 			'x-ratelimit-remaining': String(rateResult.minuteRemaining),
@@ -348,7 +349,7 @@ app.post('/mcp', async (c) => {
 		const toolName = typeof toolNameRaw === 'string' ? toolNameRaw.trim().toLowerCase() : '';
 		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
 		if (toolDailyLimit !== undefined) {
-			const toolQuotaResult = await checkToolDailyRateLimit(ip, toolName, toolDailyLimit, c.env.RATE_LIMIT);
+			const toolQuotaResult = await checkToolDailyRateLimit(ip, toolName, toolDailyLimit, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
 			rateHeaders['x-quota-limit'] = String(toolQuotaResult.limit);
 			rateHeaders['x-quota-remaining'] = String(toolQuotaResult.remaining);
 			if (!toolQuotaResult.allowed) {
@@ -379,7 +380,15 @@ app.post('/mcp', async (c) => {
 	}
 
 	if (method !== 'tools/call') {
-		const controlPlaneLimited = await buildControlPlaneRateLimitResponse(ip, c.env.RATE_LIMIT, method, isAuthenticated, id, accept);
+		const controlPlaneLimited = await buildControlPlaneRateLimitResponse(
+			ip,
+			c.env.RATE_LIMIT,
+			method,
+			isAuthenticated,
+			id,
+			accept,
+			c.env.QUOTA_COORDINATOR,
+		);
 		if (controlPlaneLimited) {
 			analytics.emitRequestEvent({
 				method,
@@ -442,6 +451,7 @@ app.post('/mcp', async (c) => {
 			       rateHeaders,
 			       serverVersion: SERVER_VERSION,
 			       rateLimitKv: c.env.RATE_LIMIT,
+			       quotaCoordinator: c.env.QUOTA_COORDINATOR,
 			       sessionStore: c.env.SESSION_STORE,
 			       scanCache: c.env.SCAN_CACHE,
 			       providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -560,7 +570,15 @@ app.get('/mcp', async (c) => {
 	const sessionId = c.req.header('mcp-session-id');
 	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
 	const isAuthenticated = c.get('isAuthenticated');
-	const controlPlaneLimited = await buildControlPlaneRateLimitResponse(ip, c.env.RATE_LIMIT, 'sse/connect', isAuthenticated, null);
+	const controlPlaneLimited = await buildControlPlaneRateLimitResponse(
+		ip,
+		c.env.RATE_LIMIT,
+		'sse/connect',
+		isAuthenticated,
+		null,
+		undefined,
+		c.env.QUOTA_COORDINATOR,
+	);
 	if (controlPlaneLimited) {
 		return controlPlaneLimited;
 	}
@@ -594,7 +612,15 @@ app.get('/mcp', async (c) => {
 app.delete('/mcp', async (c) => {
 	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
 	const isAuthenticated = c.get('isAuthenticated');
-	const controlPlaneLimited = await buildControlPlaneRateLimitResponse(ip, c.env.RATE_LIMIT, 'session/delete', isAuthenticated, null);
+	const controlPlaneLimited = await buildControlPlaneRateLimitResponse(
+		ip,
+		c.env.RATE_LIMIT,
+		'session/delete',
+		isAuthenticated,
+		null,
+		undefined,
+		c.env.QUOTA_COORDINATOR,
+	);
 	if (controlPlaneLimited) {
 		return controlPlaneLimited;
 	}

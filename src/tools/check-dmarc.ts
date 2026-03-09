@@ -328,7 +328,7 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 				'dmarc',
 				'DMARC properly configured',
 				'info',
-				`DMARC record found with policy "${policy}": ${dmarc.substring(0, 100)}${dmarc.length > 100 ? '...' : ''}`,
+				`DMARC record found with policy "${policy}" and valid core tags.`,
 			),
 		);
 	}

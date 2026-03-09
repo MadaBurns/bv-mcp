@@ -267,13 +267,11 @@ describe('checkSpf', () => {
 	});
 
 	it('handles failed nested DNS queries gracefully', async () => {
-		let callCount = 0;
 		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
 			const u = new URL(typeof url === 'string' ? url : url.toString());
 			const name = u.searchParams.get('name') ?? '';
 
 			if (name === 'example.com') {
-				callCount++;
 				return Promise.resolve(
 					createDohResponse(
 						[{ name, type: 16 }],
@@ -282,11 +280,9 @@ describe('checkSpf', () => {
 				);
 			}
 			if (name === 'failing.com') {
-				callCount++;
 				return Promise.reject(new Error('DNS timeout'));
 			}
 			if (name === 'ok.com') {
-				callCount++;
 				return Promise.resolve(
 					createDohResponse(
 						[{ name, type: 16 }],

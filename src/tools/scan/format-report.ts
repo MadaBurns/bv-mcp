@@ -1,4 +1,5 @@
 import type { ScanDomainResult } from '../scan-domain';
+import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
 
 export function formatScanReport(result: ScanDomainResult): string {
@@ -32,18 +33,18 @@ export function formatScanReport(result: ScanDomainResult): string {
 		lines.push('Findings:');
 		lines.push('-'.repeat(30));
 		for (const finding of nonInfoFindings) {
-			lines.push(`  [${finding.severity.toUpperCase()}] ${finding.title}`);
-			lines.push(`    ${finding.detail}`);
+			lines.push(`  [${finding.severity.toUpperCase()}] ${sanitizeOutputText(finding.title, 120)}`);
+			lines.push(`    ${sanitizeOutputText(finding.detail)}`);
 			const verificationStatus =
 				finding.category === 'subdomain_takeover' && finding.metadata?.verificationStatus
 					? String(finding.metadata.verificationStatus)
 					: undefined;
 			if (verificationStatus) {
-				lines.push(`    Takeover Verification: ${verificationStatus}`);
+				lines.push(`    Takeover Verification: ${sanitizeOutputText(verificationStatus, 80)}`);
 			}
 			const confidence = finding.metadata?.confidence ? String(finding.metadata.confidence) : undefined;
 			if (confidence) {
-				lines.push(`    Confidence: ${confidence}`);
+				lines.push(`    Confidence: ${sanitizeOutputText(confidence, 80)}`);
 			}
 			const narrative = resolveImpactNarrative({
 				category: finding.category,

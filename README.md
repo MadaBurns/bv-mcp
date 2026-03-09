@@ -410,6 +410,16 @@ npm install
 npm run dev       # localhost:8787/mcp
 ```
 
+Private deployment with real Cloudflare bindings:
+
+```bash
+cp wrangler.private.example.jsonc .dev/wrangler.deploy.jsonc
+# replace KV namespace IDs and analytics dataset in .dev/wrangler.deploy.jsonc
+npm run deploy:private
+```
+
+The checked-in [wrangler.jsonc](wrangler.jsonc) stays generic for open source use. Real KV IDs, session storage, and Analytics Engine dataset names should live only in the ignored `.dev/wrangler.deploy.jsonc` file.
+
 ---
 
 ## Testing

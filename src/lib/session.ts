@@ -19,6 +19,7 @@ import {
 	type SessionRecord,
 	validateSessionInMemory,
 } from './session-memory';
+import { checkSessionCreateRateLimitWithCoordinator } from './quota-coordinator';
 
 export { activeSessions, resetSessions, SESSION_REFRESH_INTERVAL_MS, SESSION_TTL_MS };
 
@@ -34,7 +35,24 @@ function sessionKey(id: string): string {
 	return `${SESSION_KEY_PREFIX}${id}`;
 }
 
-export async function checkSessionCreateRateLimit(ip: string, kv?: KVNamespace): Promise<SessionCreateRateResult> {
+export async function checkSessionCreateRateLimit(
+	ip: string,
+	kv?: KVNamespace,
+	quotaCoordinator?: DurableObjectNamespace,
+): Promise<SessionCreateRateResult> {
+	if (quotaCoordinator) {
+		try {
+			const coordinated = await checkSessionCreateRateLimitWithCoordinator(
+				ip,
+				SESSION_CREATE_LIMIT_PER_MINUTE,
+				SESSION_CREATE_WINDOW_MS,
+				quotaCoordinator,
+			);
+			if (coordinated) return coordinated;
+		} catch (err) {
+			console.warn('[session] quota coordinator create limiter failed, falling back to KV/in-memory:', err instanceof Error ? err.message : String(err));
+		}
+	}
 	if (kv) {
 		try {
 			const now = Date.now();

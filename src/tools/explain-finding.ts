@@ -167,10 +167,6 @@ export function explainFinding(checkType: string, status: string, details?: stri
 export function formatExplanation(result: ExplanationResult): string {
 	const lines = [`## ${result.title}`, `**Check Type:** ${result.checkType} | **Status:** ${result.status}`, ''];
 
-	if (result.details) {
-		lines.push(`**Details:** ${result.details}`, '');
-	}
-
 	lines.push(`### What this means`, result.explanation, '');
 
 	if (result.impact) {

@@ -289,8 +289,8 @@ describe('handleToolsCall - explain_finding', () => {
 	it('explain_finding with details includes details in output', async () => {
 		const result = await call('explain_finding', { checkType: 'SPF', status: 'fail', details: 'SPF record uses +all' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content[0].text).toContain('Details:');
-		expect(result.content[0].text).toContain('SPF record uses +all');
+		expect(result.content[0].text).not.toContain('Details:');
+		expect(result.content[0].text).not.toContain('SPF record uses +all');
 	});
 
 	it('explain_finding includes impact and adverse consequence sections for failure states', async () => {

@@ -1,4 +1,5 @@
 import type { CheckResult } from '../lib/scoring';
+import { sanitizeOutputText } from '../lib/output-sanitize';
 import { resolveImpactNarrative } from '../tools/explain-finding';
 
 export interface McpContent {
@@ -34,20 +35,20 @@ export function formatCheckResult(result: CheckResult): string {
 							: finding.severity === 'high'
 								? '🔴'
 								: '🚨';
-			lines.push(`- ${icon} **[${finding.severity.toUpperCase()}]** ${finding.title}`);
-			lines.push(`  ${finding.detail}`);
+					lines.push(`- ${icon} **[${finding.severity.toUpperCase()}]** ${sanitizeOutputText(finding.title, 120)}`);
+					lines.push(`  ${sanitizeOutputText(finding.detail)}`);
 
 			const verificationStatus =
 				finding.category === 'subdomain_takeover' && finding.metadata?.verificationStatus
 					? String(finding.metadata.verificationStatus)
 					: undefined;
 			if (verificationStatus) {
-				lines.push(`  Takeover Verification: ${verificationStatus}`);
+				lines.push(`  Takeover Verification: ${sanitizeOutputText(verificationStatus, 80)}`);
 			}
 
 			const confidence = finding.metadata?.confidence ? String(finding.metadata.confidence) : undefined;
 			if (confidence) {
-				lines.push(`  Confidence: ${confidence}`);
+				lines.push(`  Confidence: ${sanitizeOutputText(confidence, 80)}`);
 			}
 
 			if (finding.severity !== 'info') {

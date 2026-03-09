@@ -5,20 +5,31 @@
   "compatibility_flags": [
     "global_fetch_strictly_public"
   ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "QUOTA_COORDINATOR", "class_name": "QuotaCoordinator" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["QuotaCoordinator"] }
+  ],
   "observability": {
     "enabled": true
   },
-  // KV namespace bindings for rate limiting, scan result caching, and sessions.
-  "kv_namespaces": [
-    { "binding": "RATE_LIMIT", "id": "YOUR_RATE_LIMIT_KV_NAMESPACE_ID" },
-    { "binding": "SCAN_CACHE", "id": "YOUR_SCAN_CACHE_KV_NAMESPACE_ID" },
-    { "binding": "SESSION_STORE", "id": "YOUR_SESSION_STORE_KV_NAMESPACE_ID" }
-  ],
-  // Optional Analytics Engine dataset for usage reporting.
-  // Create the dataset in Cloudflare and replace the placeholder below.
-  "analytics_engine_datasets": [
-    { "binding": "MCP_ANALYTICS", "dataset": "YOUR_ANALYTICS_ENGINE_DATASET" }
-  ],
+  // Public repository config intentionally omits real KV/Analytics bindings.
+  // For private deployments, copy `wrangler.private.example.jsonc` to
+  // `.dev/wrangler.deploy.jsonc`, replace the placeholders with real resource
+  // identifiers, and deploy with `npm run deploy:private`.
+  //
+  // Placeholder example:
+  // "kv_namespaces": [
+  //   { "binding": "RATE_LIMIT", "id": "YOUR_RATE_LIMIT_KV_NAMESPACE_ID" },
+  //   { "binding": "SCAN_CACHE", "id": "YOUR_SCAN_CACHE_KV_NAMESPACE_ID" },
+  //   { "binding": "SESSION_STORE", "id": "YOUR_SESSION_STORE_KV_NAMESPACE_ID" }
+  // ],
+  // "analytics_engine_datasets": [
+  //   { "binding": "MCP_ANALYTICS", "dataset": "your_analytics_dataset" }
+  // ],
   // Optional auth: leave empty for open mode.
   "vars": {
     "BV_API_KEY": "",
