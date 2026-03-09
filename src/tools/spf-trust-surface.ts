@@ -12,6 +12,12 @@ interface PlatformInfo {
 	risk: string;
 }
 
+export interface TrustSurfaceContext {
+	corroboratedByWeakDmarc?: boolean;
+	dmarcPolicy?: string;
+	dmarcAlignmentMode?: string;
+}
+
 /** Known multi-tenant SaaS platforms whose shared SPF includes widen the trust surface. */
 const MULTI_TENANT_PLATFORMS: ReadonlyMap<string, PlatformInfo> = new Map([
 	['_spf.salesforce.com', { name: 'Salesforce', risk: 'Any Salesforce customer can send as your domain' }],
@@ -72,10 +78,16 @@ function extractIncludeAndRedirectDomains(spfRecord: string): string[] {
  * Analyze an SPF record for trust surface exposure from multi-tenant SaaS platform includes.
  * Returns findings for each shared platform detected, plus a summary finding when multiple are found.
  */
-export function analyzeTrustSurface(spfRecord: string): Finding[] {
+export function analyzeTrustSurface(spfRecord: string, context: TrustSurfaceContext = {}): Finding[] {
 	const findings: Finding[] = [];
 	const domains = extractIncludeAndRedirectDomains(spfRecord);
 	const matchedPlatforms: { name: string; includeDomain: string }[] = [];
+	const corroboratedByWeakDmarc = context.corroboratedByWeakDmarc === true;
+	const findingSeverity = corroboratedByWeakDmarc ? 'medium' : 'info';
+	const summarySeverity = corroboratedByWeakDmarc ? 'high' : 'info';
+	const detailSuffix = corroboratedByWeakDmarc
+		? 'Weak DMARC enforcement and relaxed alignment corroborate this exposure, so a provider misconfiguration or abuse case would be more likely to pass policy checks.'
+		: 'This is common and not inherently a misconfiguration, but it expands the sending infrastructure you rely on. The risk becomes more material when DMARC enforcement and alignment are weak.';
 
 	for (const domain of domains) {
 		const result = matchPlatform(domain);
@@ -85,9 +97,16 @@ export function analyzeTrustSurface(spfRecord: string): Finding[] {
 				createFinding(
 					'spf',
 					`SPF delegates to shared platform: ${result.info.name}`,
-					'medium',
-					`SPF include:${domain} authorizes ${result.info.name}. ${result.info.risk}. Without strict DKIM alignment (adkim=s) in DMARC, this widens your spoofing attack surface.`,
-					{ trustSurface: true, platform: result.info.name, includeDomain: domain },
+					findingSeverity,
+					`SPF include:${domain} authorizes ${result.info.name}. ${result.info.risk}. ${detailSuffix}`,
+					{
+						trustSurface: true,
+						platform: result.info.name,
+						includeDomain: domain,
+						dmarcCorroborated: corroboratedByWeakDmarc,
+						...(context.dmarcPolicy ? { dmarcPolicy: context.dmarcPolicy } : {}),
+						...(context.dmarcAlignmentMode ? { dmarcAlignmentMode: context.dmarcAlignmentMode } : {}),
+					},
 				),
 			);
 		}
@@ -99,9 +118,16 @@ export function analyzeTrustSurface(spfRecord: string): Finding[] {
 			createFinding(
 				'spf',
 				`SPF trust surface: ${matchedPlatforms.length} shared platforms`,
-				'high',
-				`SPF record delegates sending authority to ${matchedPlatforms.length} multi-tenant platforms (${platformNames}). Each platform widens your domain's trust surface — any customer of these services could potentially send email as your domain. Audit each include to confirm it is still needed, configure DKIM for each service, and enforce DMARC with p=reject.`,
-				{ trustSurface: true, platformCount: matchedPlatforms.length, platforms: platformNames },
+				summarySeverity,
+				`SPF record delegates sending authority to ${matchedPlatforms.length} multi-tenant platforms (${platformNames}). Audit each include to confirm it is still needed, configure provider-specific DKIM, and keep DMARC enforcement and alignment strong across every authorized sender.`,
+				{
+					trustSurface: true,
+					platformCount: matchedPlatforms.length,
+					platforms: platformNames,
+					dmarcCorroborated: corroboratedByWeakDmarc,
+					...(context.dmarcPolicy ? { dmarcPolicy: context.dmarcPolicy } : {}),
+					...(context.dmarcAlignmentMode ? { dmarcAlignmentMode: context.dmarcAlignmentMode } : {}),
+				},
 			),
 		);
 	}
