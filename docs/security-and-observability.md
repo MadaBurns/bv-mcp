@@ -24,16 +24,17 @@ Examples rejected by validation include `127.1`, `0177.0.0.1`, `8.8.8.8`, `0x8.0
 
 Canonical implementation lives in `src/lib/rate-limiter.ts`.
 
-- Per-IP limit: `10` requests/minute and `100` requests/hour.
-- Separate unauthenticated control-plane limit: `30` requests/minute and `300` requests/hour.
+- Per-IP limit: `30` requests/minute and `200` requests/hour.
+- Separate unauthenticated control-plane limit: `60` requests/minute and `600` requests/hour.
+- Global daily cap: `10,000` unauthenticated `tools/call` requests/day across all IPs (cost ceiling against distributed abuse).
 - Enforcement backend: KV when bound; in-memory fallback when KV is unavailable.
 - KV-backed checks now serialize per-IP updates within an isolate to reduce local race amplification.
 - Scope: `tools/call` traffic uses the stricter budget; protocol/session methods use the control-plane budget.
-- Authenticated requests (valid bearer token) bypass rate limiting.
+- Authenticated requests (valid bearer token) bypass all rate limiting (per-IP and global).
 
 Note: KV counters remain fixed-window and are not globally atomic across isolates.
 
-- `check_lookalikes` has a tighter daily quota (`5` per day per IP for unauthenticated callers) due to high outbound query volume (~100 DoH queries per invocation).
+- `check_lookalikes` has a tighter daily quota (`10` per day per IP for unauthenticated callers) due to high outbound query volume (~100 DoH queries per invocation).
 - `check_lookalikes` results are cached for 60 minutes (versus 5 minutes for other tools) to reduce repeat query volume.
 - `check_lookalikes` uses adaptive batch sizing for outbound DoH queries: starts at 10 concurrent probes, halves on repeated failures, recovers on clean batches, with a floor of 3.
 
@@ -44,7 +45,7 @@ Note: KV counters remain fixed-window and are not globally atomic across isolate
 - Session storage supports KV-backed state with in-memory fallback.
 - Session idle timeout is enforced with sliding refresh.
 - Session refresh writes are coalesced to reduce repeated KV mutation pressure.
-- Session creation is rate-limited per IP (`30` session creations/minute) for unauthenticated traffic, using KV when available.
+- Session creation is rate-limited per IP (`60` session creations/minute) for unauthenticated traffic, using KV when available.
 - In-memory session fallback is bounded with least-recently-used eviction (`2000` max active sessions).
 
 ## Logging and Observability
