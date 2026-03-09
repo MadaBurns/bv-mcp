@@ -6,9 +6,10 @@ declare namespace Cloudflare {
 		mainModule: typeof import("./src/index");
 	}
 	interface Env {
-		RATE_LIMIT: KVNamespace;
-		SCAN_CACHE: KVNamespace;
-		SESSION_STORE: KVNamespace;
+        RATE_LIMIT?: KVNamespace;
+        SCAN_CACHE?: KVNamespace;
+        SESSION_STORE?: KVNamespace;
+        QUOTA_COORDINATOR: DurableObjectNamespace;
         MCP_ANALYTICS?: AnalyticsEngineDataset;
 		BV_API_KEY: "";
 		PROVIDER_SIGNATURES_URL: "";
