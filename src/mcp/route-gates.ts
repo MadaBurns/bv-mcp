@@ -1,6 +1,7 @@
 import { checkControlPlaneRateLimit } from '../lib/rate-limiter';
 import { validateSession } from '../lib/session';
 import { JSON_RPC_ERRORS, jsonRpcError } from '../lib/json-rpc';
+import { sseErrorResponse } from '../lib/sse';
 
 export async function buildControlPlaneRateLimitResponse(
 	ip: string,
@@ -8,6 +9,7 @@ export async function buildControlPlaneRateLimitResponse(
 	method: string,
 	isAuthenticated: boolean,
 	id: string | number | null | undefined,
+	accept?: string,
 ): Promise<Response | undefined> {
 	if (isAuthenticated || method === 'tools/call') return undefined;
 
@@ -22,13 +24,16 @@ export async function buildControlPlaneRateLimitResponse(
 		headers['retry-after'] = String(Math.ceil(rateResult.retryAfterMs / 1000));
 	}
 
-	return Response.json(
+	return sseErrorResponse(
 		jsonRpcError(
 			id,
 			JSON_RPC_ERRORS.RATE_LIMITED,
 			`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
 		),
-		{ status: 429, headers },
+		429,
+		accept,
+		headers,
+		id != null ? String(id) : undefined,
 	);
 }
 
