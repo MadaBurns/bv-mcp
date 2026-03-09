@@ -25,7 +25,7 @@ import {
 } from './mcp/request';
 import { deleteSession } from './lib/session';
 import { isAuthorizedRequest, unauthorizedResponse } from './lib/auth';
-import { sseEvent, acceptsSSE, createSseStream } from './lib/sse';
+import { sseEvent, acceptsSSE, createSseStream, sseErrorResponse } from './lib/sse';
 import { createAnalyticsClient } from './lib/analytics';
 import type { JsonRpcRequest } from './lib/json-rpc';
 import { dispatchMcpMethod } from './mcp/dispatch';
@@ -226,6 +226,7 @@ app.post('/mcp', async (c) => {
 	const analytics = createAnalyticsClient(c.env.MCP_ANALYTICS);
 	logAnalyticsBindingStatus(analytics.enabled);
 	const headersLc = normalizeHeaders(c.req.raw.headers);
+	const accept = headersLc['accept'];
 
 	// Rate limiting by IP — only trust cf-connecting-ip (set by Cloudflare edge)
 	// Do NOT fall back to x-forwarded-for as it is client-controlled and spoofable
@@ -237,7 +238,7 @@ app.post('/mcp', async (c) => {
 
 	const bodyReadResult = await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES);
 	if (!bodyReadResult.ok) {
-		return c.json(bodyReadResult.payload!, { status: bodyReadResult.status! });
+		return sseErrorResponse(bodyReadResult.payload!, bodyReadResult.status!, accept);
 	}
 	const rawBody = bodyReadResult.rawBody!;
 
@@ -250,7 +251,7 @@ app.post('/mcp', async (c) => {
 			       ip,
 			       details: { bodyLength: rawBody.length, bodyPreviewRedacted: true },
 		       });
-		       return c.json(parsedRequest.payload!, { status: parsedRequest.status! });
+		       return sseErrorResponse(parsedRequest.payload!, parsedRequest.status!, accept);
 	       }
 		body = parsedRequest.body!;
 
@@ -265,7 +266,7 @@ app.post('/mcp', async (c) => {
 			hasJsonRpcError: true,
 			transport: 'json',
 		});
-		return c.json(validationError.payload, { status: validationError.status });
+		return sseErrorResponse(validationError.payload, validationError.status, accept);
 	}
 
 	const { id, method, params } = body;
@@ -291,14 +292,16 @@ app.post('/mcp', async (c) => {
 				hasJsonRpcError: true,
 				transport: 'json',
 			});
-			return c.json(
+			return sseErrorResponse(
 				jsonRpcError(
 					id,
 					JSON_RPC_ERRORS.RATE_LIMITED,
 					`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
 				),
 				429,
+				accept,
 				rateHeaders,
+				id != null ? String(id) : undefined,
 			);
 		}
 
@@ -322,21 +325,23 @@ app.post('/mcp', async (c) => {
 					hasJsonRpcError: true,
 					transport: 'json',
 				});
-				return c.json(
+				return sseErrorResponse(
 					jsonRpcError(
 						id,
 						JSON_RPC_ERRORS.RATE_LIMITED,
 						`Rate limit exceeded. ${toolName} is limited to ${toolDailyLimit} requests per day for free tier users.`,
 					),
 					429,
+					accept,
 					rateHeaders,
+					id != null ? String(id) : undefined,
 				);
 			}
 		}
 	}
 
 	if (method !== 'tools/call') {
-		const controlPlaneLimited = await buildControlPlaneRateLimitResponse(ip, c.env.RATE_LIMIT, method, isAuthenticated, id);
+		const controlPlaneLimited = await buildControlPlaneRateLimitResponse(ip, c.env.RATE_LIMIT, method, isAuthenticated, id, accept);
 		if (controlPlaneLimited) {
 			analytics.emitRequestEvent({
 				method,
@@ -369,7 +374,7 @@ app.post('/mcp', async (c) => {
 				hasJsonRpcError: true,
 				transport: 'json',
 			});
-			return c.json(sessionError.payload, sessionError.status);
+			return sseErrorResponse(sessionError.payload, sessionError.status, accept, undefined, id != null ? String(id) : undefined);
 		}
 	}
 
@@ -408,7 +413,7 @@ app.post('/mcp', async (c) => {
 		       });
 
 		       if (dispatchResult.kind === 'early-error') {
-			       return c.json(dispatchResult.payload, dispatchResult.status, dispatchResult.headers);
+			       return sseErrorResponse(dispatchResult.payload, dispatchResult.status, accept, dispatchResult.headers);
 		       }
 
 		       const responsePayload = dispatchResult.payload;
@@ -442,7 +447,6 @@ app.post('/mcp', async (c) => {
 		       Object.assign(headers, rateHeaders);
 
 		       // If client accepts SSE, stream the response as an SSE event
-		       const accept = headersLc['accept'];
 			const hasJsonRpcError = typeof responsePayload === 'object' && responsePayload !== null && 'error' in responsePayload;
 		       if (acceptsSSE(accept)) {
 				analytics.emitRequestEvent({
@@ -495,7 +499,13 @@ app.post('/mcp', async (c) => {
 			       userAgent: headersLc['user-agent'],
 		       });
 		       const message = sanitizeErrorMessage(err, 'Internal server error');
-		       return c.json(jsonRpcError(id, JSON_RPC_ERRORS.INTERNAL_ERROR, message), 500);
+		       return sseErrorResponse(
+			       jsonRpcError(id, JSON_RPC_ERRORS.INTERNAL_ERROR, message),
+			       500,
+			       accept,
+			       undefined,
+			       id != null ? String(id) : undefined,
+		       );
 	       }
 	});
 
