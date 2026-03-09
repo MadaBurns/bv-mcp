@@ -81,17 +81,31 @@ describe('checkSpf', () => {
 	});
 
 	it('should return info finding for -all (hard fail, best practice)', async () => {
-		mockTxtRecords(['v=spf1 include:_spf.google.com -all']);
+		mockMultiDomainTxt({
+			'example.com': ['v=spf1 include:_spf.google.com -all'],
+			'_dmarc.example.com': ['v=DMARC1; p=reject; adkim=s; aspf=s'],
+		});
 		const result = await run();
-		// Trust surface analysis adds a medium finding for Google Workspace
+		// Shared-platform delegation remains informational when strong DMARC is present.
 		const trustFinding = result.findings.find((f) => /SPF delegates to shared platform/i.test(f.title));
 		expect(trustFinding).toBeDefined();
-		expect(trustFinding!.severity).toBe('medium');
-		// SPF record configured info finding is still present (trust surface findings are not counted as issues)
+		expect(trustFinding!.severity).toBe('info');
+		// SPF record configured info finding is still present because only informational trust-surface findings remain.
 		const infoFinding = result.findings.find((f) => /SPF record configured/i.test(f.title));
 		expect(infoFinding).toBeDefined();
 		expect(infoFinding!.severity).toBe('info');
 		expect(infoFinding!.metadata?.includeDomains).toContain('_spf.google.com');
+	});
+
+	it('elevates trust-surface findings when DMARC is missing', async () => {
+		mockTxtRecords(['v=spf1 include:_spf.google.com -all']);
+
+		const result = await run();
+		const trustFinding = result.findings.find((f) => /SPF delegates to shared platform/i.test(f.title));
+		expect(trustFinding).toBeDefined();
+		expect(trustFinding!.severity).toBe('medium');
+		expect(trustFinding!.metadata?.dmarcPolicy).toBe('missing');
+		expect(result.findings.find((f) => /SPF record configured/i.test(f.title))).toBeUndefined();
 	});
 
 	it('handles case-insensitive SPF prefix', async () => {
