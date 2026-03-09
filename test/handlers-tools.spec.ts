@@ -66,6 +66,32 @@ describe('handleToolsCall - dispatch routing', () => {
 		expect(result.content[0].text).toContain('SPF');
 	});
 
+	it('check_spf surfaces shared-platform trust as informational when DMARC is strict', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (!url.includes('cloudflare-dns.com')) {
+				return Promise.resolve(createDohResponse([], []));
+			}
+
+			if (url.includes('_dmarc.strict-spf.example.com')) {
+				return Promise.resolve(txtResponse('_dmarc.strict-spf.example.com', ['v=DMARC1; p=reject; adkim=s; aspf=s']));
+			}
+
+			if (url.includes('_spf.google.com')) {
+				return Promise.resolve(txtResponse('_spf.google.com', ['v=spf1 -all']));
+			}
+
+			return Promise.resolve(txtResponse('strict-spf.example.com', ['v=spf1 include:_spf.google.com -all']));
+		});
+
+		const result = await call('check_spf', { domain: 'strict-spf.example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toHaveLength(1);
+		expect(result.content[0].text).toContain('**Status:** ✅ Passed');
+		expect(result.content[0].text).toContain('**[INFO]** SPF delegates to shared platform: Google Workspace');
+		expect(result.content[0].text).toContain('**[INFO]** SPF record configured');
+	});
+
 	it('check_dmarc with valid domain returns content', async () => {
 		mockTxtRecords(['v=DMARC1; p=reject'], '_dmarc.example.com');
 		const result = await call('check_dmarc', { domain: 'example.com' });
