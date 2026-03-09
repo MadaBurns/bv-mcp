@@ -13,7 +13,7 @@
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
+import { checkRateLimit, checkToolDailyRateLimit, checkGlobalDailyLimit } from './lib/rate-limiter';
 import { logEvent, logError, sanitizeHeadersForLog } from './lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS, sanitizeErrorMessage } from './lib/json-rpc';
 import {
@@ -30,7 +30,7 @@ import { createAnalyticsClient } from './lib/analytics';
 import type { JsonRpcRequest } from './lib/json-rpc';
 import { dispatchMcpMethod } from './mcp/dispatch';
 import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionRequest } from './mcp/route-gates';
-import { MAX_REQUEST_BODY_BYTES, FREE_TOOL_DAILY_LIMITS } from './lib/config';
+import { MAX_REQUEST_BODY_BYTES, FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT } from './lib/config';
 
 /** Server version — keep in sync with package.json */
 const SERVER_VERSION = '1.0.0';
@@ -285,6 +285,34 @@ app.post('/mcp', async (c) => {
 	// is still throttled under a lighter control-plane budget. Authenticated requests bypass entirely.
 	let rateHeaders: Record<string, string> = {};
 	if (!isAuthenticated && method === 'tools/call') {
+		// Global daily cap — cost ceiling across all unauthenticated IPs
+		const globalResult = await checkGlobalDailyLimit(GLOBAL_DAILY_TOOL_LIMIT, c.env.RATE_LIMIT);
+		if (!globalResult.allowed) {
+			const globalHeaders: Record<string, string> = {};
+			if (globalResult.retryAfterMs !== undefined) {
+				globalHeaders['retry-after'] = String(Math.ceil(globalResult.retryAfterMs / 1000));
+			}
+			analytics.emitRequestEvent({
+				method,
+				status: 'error',
+				durationMs: Date.now() - startTime,
+				isAuthenticated,
+				hasJsonRpcError: true,
+				transport: 'json',
+			});
+			return sseErrorResponse(
+				jsonRpcError(
+					id,
+					JSON_RPC_ERRORS.RATE_LIMITED,
+					'Service capacity reached for today. Please try again tomorrow or deploy your own instance.',
+				),
+				429,
+				accept,
+				globalHeaders,
+				id != null ? String(id) : undefined,
+			);
+		}
+
 		const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT);
 		rateHeaders = {
 			'x-ratelimit-limit': '30',

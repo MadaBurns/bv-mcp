@@ -51,6 +51,13 @@ export const DNS_RETRIES = 2;
 export const DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY = true;
 
 /**
+ * Global daily cap on total tools/call requests across all IPs.
+ * Acts as a cost ceiling — even distributed abuse can't exceed this.
+ * Authenticated requests are exempt.
+ */
+export const GLOBAL_DAILY_TOOL_LIMIT = 10_000;
+
+/**
  * Free-tier daily tool quotas for unauthenticated callers.
  * Tools omitted from this map are governed only by baseline per-IP rate limits.
  */

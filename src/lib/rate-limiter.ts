@@ -1,6 +1,7 @@
 /**
  * Rate limiter for the DNS Security MCP Server.
- * Enforces per-IP limits: 100 requests/hour, 10 requests/minute.
+ * Enforces per-IP limits: 30 requests/minute, 200 requests/hour.
+ * Also enforces a global daily cap across all IPs as a cost ceiling.
  *
  * Uses Cloudflare KV for distributed rate limiting when available,
  * with in-memory fallback when KV is not configured.
@@ -28,6 +29,13 @@ export interface RateLimitResult {
 }
 
 export interface ToolDailyRateLimitResult {
+	allowed: boolean;
+	retryAfterMs?: number;
+	remaining: number;
+	limit: number;
+}
+
+export interface GlobalRateLimitResult {
 	allowed: boolean;
 	retryAfterMs?: number;
 	remaining: number;
@@ -182,6 +190,47 @@ async function checkToolDailyRateLimitKV(
 }
 
 // ---------------------------------------------------------------------------
+// Global daily cap (cost ceiling across all IPs)
+// ---------------------------------------------------------------------------
+
+let globalDayWindow = 0;
+let globalDayCount = 0;
+
+function checkGlobalDailyLimitInMemory(limit: number): GlobalRateLimitResult {
+	const now = Date.now();
+	const currentWindow = Math.floor(now / DAY_MS);
+	if (currentWindow !== globalDayWindow) {
+		globalDayWindow = currentWindow;
+		globalDayCount = 0;
+	}
+	if (globalDayCount >= limit) {
+		const windowEnd = (currentWindow + 1) * DAY_MS;
+		return { allowed: false, retryAfterMs: Math.max(windowEnd - now, 0), remaining: 0, limit };
+	}
+	globalDayCount++;
+	return { allowed: true, remaining: Math.max(limit - globalDayCount, 0), limit };
+}
+
+async function checkGlobalDailyLimitKV(limit: number, kv: KVNamespace): Promise<GlobalRateLimitResult> {
+	const now = Date.now();
+	const currentWindow = Math.floor(now / DAY_MS);
+	const key = `rl:global:day:${currentWindow}`;
+
+	const currentVal = await kv.get(key);
+	const currentCount = currentVal ? parseInt(currentVal, 10) : 0;
+
+	if (currentCount >= limit) {
+		const windowEnd = (currentWindow + 1) * DAY_MS;
+		return { allowed: false, retryAfterMs: Math.max(windowEnd - now, 0), remaining: 0, limit };
+	}
+
+	const nextCount = currentCount + 1;
+	await kv.put(key, String(nextCount), { expirationTtl: 86_400 });
+
+	return { allowed: true, remaining: Math.max(limit - nextCount, 0), limit };
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -241,7 +290,28 @@ export async function checkToolDailyRateLimit(
 }
 
 /**
+ * Check if the global daily tool call budget has been exhausted.
+ * Uses KV when available, with in-memory fallback on failure.
+ */
+export async function checkGlobalDailyLimit(limit: number, kv?: KVNamespace): Promise<GlobalRateLimitResult> {
+	if (kv) {
+		try {
+			return await checkGlobalDailyLimitKV(limit, kv);
+		} catch (err) {
+			console.warn('[rate-limiter] KV global cap error, falling back to in-memory:', err instanceof Error ? err.message : err);
+		}
+	}
+	return checkGlobalDailyLimitInMemory(limit);
+}
+
+/**
  * Reset rate limit state for an IP (useful for testing).
  * @internal Exported for test use only.
  */
 export { pruneTimestamps, resetRateLimit, resetAllRateLimits };
+
+/** @internal Reset global daily counter (test use only). */
+export function resetGlobalDailyLimit(): void {
+	globalDayWindow = 0;
+	globalDayCount = 0;
+}
