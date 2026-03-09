@@ -9,7 +9,7 @@ import { queryDnsRecords } from '../lib/dns';
 import { detectProviderMatches, loadProviderSignatures } from '../lib/provider-signatures';
 import { getIpTargetFindings, getNullMxFinding, getPresenceFinding, getSingleMxFinding, isNullMxRecord, parseMxRecords } from './mx-analysis';
 
-interface CheckMxOptions {
+export interface CheckMxOptions {
 	providerSignaturesUrl?: string;
 	providerSignaturesAllowedHosts?: string[];
 	providerSignaturesSha256?: string;

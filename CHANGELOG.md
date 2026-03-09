@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- Publishable ESM npm package metadata, bundled public API entrypoint, and `prepack` build flow for consuming the scanner core as `blackveil-dns`.
+- Public package exports for reusable scanner functions (`scanDomain`, `check*`, `explainFinding`, scoring helpers, validation helpers) without exposing Worker transport internals.
+- Package API regression coverage in `test/package-api.spec.ts`.
+
 - Dangling MX detection: MX hostnames that do not resolve to A or AAAA records are flagged as `medium` severity.
 
 ### Fixed
@@ -109,7 +113,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - 12 MCP tools: `scan_domain`, `check_spf`, `check_dmarc`, `check_dkim`, `check_mx`, `check_ssl`, `check_dnssec`, `check_mta_sts`, `check_ns`, `check_caa`, `check_subdomain_takeover`, `explain_finding`
 - 3 static MCP resources: security checks guide, scoring methodology, DNS record types
 - MCP Streamable HTTP transport (JSON-RPC 2.0) with SSE support
-- Weighted scoring engine aligned with Blackveil DNS scanner (50 checks, 8 categories)
+- Weighted scoring engine aligned with BLACKVEIL scanner (50 checks, 8 categories)
 - Email authentication bonus (up to 5 points) when SPF + DKIM + DMARC all pass
 - DNS-over-HTTPS via Cloudflare DoH — no direct DNS resolution
 - KV-backed per-IP rate limiting (10 req/min, 100 req/hr) with in-memory fallback
@@ -125,7 +129,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Health endpoint at `/health`
 - Landing page at `/`
 - 245+ tests with ~95% line coverage
-- CI via GitHub Actions (test on PR and push to main)
+- CI/CD via GitHub Actions (test on PR, auto-deploy on push to main)
 - Smithery marketplace manifest
 - CLAUDE.md agent documentation
 
