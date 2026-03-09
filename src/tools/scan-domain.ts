@@ -28,6 +28,7 @@ import { computeMaturityStage } from './scan/maturity-staging';
 import type { MaturityStage } from './scan/maturity-staging';
 export { formatScanReport } from './scan/format-report';
 export type { MaturityStage } from './scan/maturity-staging';
+export type { ScanRuntimeOptions } from './scan/post-processing';
 
 /** Cache key prefix for scan and per-check results */
 const CACHE_PREFIX = 'cache:';
