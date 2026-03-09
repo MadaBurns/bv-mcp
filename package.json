@@ -2,6 +2,7 @@
 	"name": "blackveil-dns",
 	"version": "1.0.0",
 	"description": "Blackveil DNS — Open-source DNS & email security scanner.",
+	"type": "module",
 	"license": "MIT",
 	"author": "BLACKVEIL Security",
 	"homepage": "https://blackveilsecurity.com",
@@ -29,9 +30,30 @@
 	"engines": {
 		"node": ">=18"
 	},
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"sideEffects": false,
+	"publishConfig": {
+		"access": "public"
+	},
 	"scripts": {
+		"build": "tsup",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
+		"prepack": "npm run build",
 		"test": "vitest run --coverage",
 		"typecheck": "tsc --noEmit",
 		"cf-typegen": "wrangler types",
@@ -44,6 +66,7 @@
 		"@vitest/coverage-istanbul": "^3.2.4",
 		"eslint": "^10.0.2",
 		"hono": "^4.12.2",
+		"tsup": "^8.5.0",
 		"typescript": "^5.5.2",
 		"typescript-eslint": "^8.56.1",
 		"vitest": "^3.2.4",

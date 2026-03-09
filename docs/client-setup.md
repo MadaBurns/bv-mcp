@@ -2,11 +2,21 @@
 
 This document defines MCP client integration for `bv-mcp`.
 
+Important: you do not need to install an npm package to use the hosted MCP service from an editor. npm installation is only for embedding the scanner API inside your own application.
+
+Library install:
+
+```bash
+npm install blackveil-dns
+```
+
 ## Endpoint
 
 Default hosted endpoint:
 
 `https://dns-mcp.blackveilsecurity.com/mcp`
+
+For MCP clients, configure this endpoint directly.
 
 
 ## Transport Requirements
@@ -16,6 +26,8 @@ Default hosted endpoint:
 - Content type: `application/json` for `POST /mcp`
 
 ## VS Code / GitHub Copilot
+
+No npm install required.
 
 Add to `.vscode/mcp.json`:
 
@@ -32,6 +44,8 @@ Add to `.vscode/mcp.json`:
 
 ## Claude Desktop
 
+No npm install required.
+
 Add to `claude_desktop_config.json`:
 
 ```json
@@ -45,6 +59,8 @@ Add to `claude_desktop_config.json`:
 ```
 
 ## Claude Code
+
+No npm install required.
 
 **Option A — project-level** (`.mcp.json` in repo root):
 
@@ -68,6 +84,8 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 Restart Claude Code after adding the server.
 
 ## Cursor
+
+No npm install required.
 
 Add to `.cursor/mcp.json`:
 
