@@ -1,7 +1,24 @@
-# Blackveil DNS
 
-Open-source DNS & email security scanner for Claude, Cursor, VS Code, and any MCP client.
-Passive, read-only checks via Cloudflare DoH. Runs on Cloudflare Workers.
+<div align="center">
+
+```
+██████╗ ██╗      █████╗  ██████╗██╗  ██╗██╗   ██╗███████╗██╗██╗
+██╔══██╗██║     ██╔══██╗██╔════╝██║ ██╔╝██║   ██║██╔════╝██║██║
+██████╔╝██║     ███████║██║     █████╔╝ ██║   ██║█████╗  ██║██║
+██╔══██╗██║     ██╔══██║██║     ██╔═██╗ ╚██╗ ██╔╝██╔══╝  ██║██║
+██████╔╝███████╗██║  ██║╚██████╗██║  ██╗ ╚████╔╝ ███████╗██║███████╗
+╚═════╝ ╚══════╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝  ╚═══╝  ╚══════╝╚═╝╚══════╝
+██████╗ ███╗   ██╗███████╗
+██╔══██╗████╗  ██║██╔════╝
+██║  ██║██╔██╗ ██║███████╗
+██║  ██║██║╚██╗██║╚════██║
+██████╔╝██║ ╚████║███████║
+╚═════╝ ╚═╝  ╚═══╝╚══════╝
+```
+
+### DNS & Email Security Scanner for AI
+
+**One URL. No install. No API key. Just point your MCP client and scan.**
 
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Cloudflare Workers](https://img.shields.io/badge/Runs%20on-Cloudflare%20Workers-F38020?logo=cloudflare)](https://workers.cloudflare.com/)
@@ -10,9 +27,33 @@ Passive, read-only checks via Cloudflare DoH. Runs on Cloudflare Workers.
 [![Tests](https://img.shields.io/badge/Tests-630%2B-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![Coverage](https://img.shields.io/badge/Coverage-~95%25-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 
-### What can it do?
+</div>
+
+---
+
+## What can it do?
 
 Point it at any domain and get back a full security audit — scored 0–100 with a letter grade.
+
+```
+  ┌─────────────────────────────────────────────────────────────┐
+  │                                                             │
+  │   scan_domain("anthropic.com")                              │
+  │                                                             │
+  │   ██████████████████████████████████████████░░░░░  85/100   │
+  │   Grade: A  ·  Maturity: Intermediate                       │
+  │                                                             │
+  │   SPF ·········· 80   │  MTA-STS ····· 85                   │
+  │   DMARC ········ 90   │  NS ·········· 95                   │
+  │   DKIM ········· 85   │  CAA ········· 85                   │
+  │   DNSSEC ······· 35   │  BIMI ········ 95                   │
+  │   SSL ········· 100   │  TLS-RPT ····· 95                   │
+  │   MX ·········· 100   │                                     │
+  │                                                             │
+  │   ▲ 2 high · 3 medium · 5 low · 2 info                     │
+  │                                                             │
+  └─────────────────────────────────────────────────────────────┘
+```
 
 - **Email authentication:** SPF, DMARC, DKIM — validates policy, syntax, key strength, alignment
 - **SPF trust surface analysis:** Detects multi-tenant SaaS platform includes (Google, M365, SendGrid, etc.) that widen your domain's spoofing attack surface
@@ -26,42 +67,36 @@ Point it at any domain and get back a full security audit — scored 0–100 wit
 
 Each check runs independently or together via `scan_domain`.
 
+---
+
 ## Table of Contents
 
-- [Overview](#overview)
-- [Quick Start](#quick-start)
-- [Example output](#example-output)
-- [Tool Surface](#tool-surface)
-- [Coverage](#coverage)
-- [Protocol Endpoints](#protocol-endpoints)
-- [Architecture Notes](#architecture-notes)
-- [Security Model](#security-model)
-- [Documentation](#documentation)
-- [Development](#development)
-- [Testing](#testing)
-- [Why this exists](#why-this-exists)
-- [License](#license)
+- [Quick Start](#-quick-start)
+- [Live Scan: anthropic.com](#-live-scan-anthropiccom)
+- [Tool Surface](#-tool-surface)
+- [Coverage](#-coverage)
+- [Protocol Endpoints](#-protocol-endpoints)
+- [Architecture](#-architecture)
+- [Security Model](#-security-model)
+- [Provider Detection](#-provider-detection)
+- [Documentation](#-documentation)
+- [Development](#-development)
+- [Testing](#-testing)
+- [Why this exists](#-why-this-exists)
+- [License](#-license)
 
-## Overview
+---
 
-Blackveil DNS exposes DNS/email security checks through MCP over Streamable HTTP (JSON-RPC 2.0).
+## ⚡ Quick Start
 
-- Runtime: Cloudflare Workers
-- Framework: Hono
-- Language: TypeScript (strict)
-- DNS backend: Cloudflare DoH (`cloudflare-dns.com/dns-query`) with optional secondary confirmation via Google DoH (`dns.google/resolve`) on empty-answer responses
+```
+Endpoint:  https://dns-mcp.blackveilsecurity.com/mcp
+Transport: Streamable HTTP (JSON-RPC 2.0)
+Auth:      None required
+```
 
-This is a remote MCP server. It is not a local stdio server invoked via `npx`/`uvx`.
-
-> 🛡️ **Want continuous monitoring?** This tool scans for DNS and email security issues. [BLACKVEIL](https://blackveilsecurity.com) provides near real-time monitoring, alerting, and Buck AI to help you fix them.
-
-## Quick Start
-
-Hosted endpoint:
-
-`https://dns-mcp.blackveilsecurity.com/mcp`
-
-**VS Code / Copilot** (`.vscode/mcp.json`):
+<details>
+<summary><b>VS Code / Copilot</b> — <code>.vscode/mcp.json</code></summary>
 
 ```json
 {
@@ -73,8 +108,10 @@ Hosted endpoint:
   }
 }
 ```
+</details>
 
-**Claude Code** (`.mcp.json` or via CLI):
+<details>
+<summary><b>Claude Code</b> — <code>.mcp.json</code> or CLI</summary>
 
 ```json
 {
@@ -90,20 +127,10 @@ Hosted endpoint:
 ```bash
 claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.com/mcp
 ```
+</details>
 
-**Claude Desktop** (`claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "blackveil-dns": {
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
-    }
-  }
-}
-```
-
-**Cursor** (`.cursor/mcp.json`):
+<details>
+<summary><b>Claude Desktop</b> — <code>claude_desktop_config.json</code></summary>
 
 ```json
 {
@@ -114,100 +141,115 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
   }
 }
 ```
+</details>
+
+<details>
+<summary><b>Cursor</b> — <code>.cursor/mcp.json</code></summary>
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+</details>
 
 For full client setup and auth details, see `docs/client-setup.md`.
 
-## Example output
+---
 
-Run `scan_domain` against any domain to get a scored security report:
+## 🔍 Live Scan: anthropic.com
 
-```json
-{
-  "domain": "example.com",
-  "score": {
-    "overall": 62,
-    "grade": "D+",
-    "categoryScores": {
-      "spf": 85,
-      "dmarc": 60,
-      "dkim": 0,
-      "dnssec": 0,
-      "ssl": 100,
-      "mta_sts": 0,
-      "ns": 100,
-      "caa": 60,
-      "subdomain_takeover": 100,
-      "mx": 100,
-      "bimi": 100,
-      "tlsrpt": 95
-    },
-    "findings": [
-      {
-        "category": "dkim",
-        "title": "No DKIM records found",
-        "severity": "high",
-        "detail": "No DKIM key records were found for any probed selectors."
-      },
-      {
-        "category": "dnssec",
-        "title": "DNSSEC not enabled",
-        "severity": "critical",
-        "detail": "DNS responses are not signed. Zone does not appear to use DNSSEC."
-      },
-      {
-        "category": "dmarc",
-        "title": "DMARC policy is not enforced",
-        "severity": "medium",
-        "detail": "DMARC policy is set to p=none, which monitors but does not enforce."
-      }
-    ],
-    "summary": "Score: 62/100 (D+). 3 critical, 2 high, 1 medium across 12 categories."
-  },
-  "checks": [
-    { "category": "spf", "passed": true, "score": 85, "findings": [] },
-    { "category": "dmarc", "passed": true, "score": 60, "findings": ["..."] },
-    { "category": "dkim", "passed": false, "score": 0, "findings": ["..."] },
-    { "category": "dnssec", "passed": false, "score": 0, "findings": ["..."] },
-    { "category": "ssl", "passed": true, "score": 100, "findings": [] },
-    { "category": "mta_sts", "passed": false, "score": 0, "findings": ["..."] },
-    { "category": "ns", "passed": true, "score": 100, "findings": [] },
-    { "category": "caa", "passed": true, "score": 60, "findings": ["..."] },
-    { "category": "subdomain_takeover", "passed": true, "score": 100, "findings": [] },
-    { "category": "mx", "passed": true, "score": 100, "findings": ["..."] },
-    { "category": "bimi", "passed": true, "score": 100, "findings": ["..."] },
-    { "category": "tlsrpt", "passed": true, "score": 95, "findings": ["..."] }
-  ],
-  "maturity": {
-    "stage": 1,
-    "label": "Basic",
-    "description": "Basic email records exist but are not enforcing or monitoring.",
-    "nextStep": "Add DMARC aggregate reporting (rua=) and monitor for 2-4 weeks before enforcing."
-  },
-  "cached": false,
-  "timestamp": "2026-03-09T12:00:00.000Z"
-}
+> Real `scan_domain` output from Blackveil DNS. No cherry-picking — this is what the scanner returns.
+
+```
+╔══════════════════════════════════════════════════════════════════════════╗
+║                                                                        ║
+║   BLACKVEIL DNS — Security Report                                      ║
+║   Domain: anthropic.com                                                ║
+║                                                                        ║
+╠══════════════════════════════════════════════════════════════════════════╣
+║                                                                        ║
+║   CATEGORY          SCORE   STATUS   KEY FINDINGS                      ║
+║   ─────────────────────────────────────────────────────────────────     ║
+║   SPF                80/100   ✅     Soft fail (~all), Google shared    ║
+║   DMARC              90/100   ✅     p=reject ✓, relaxed alignment     ║
+║   DKIM               85/100   ✅     google selector, 2048-bit RSA     ║
+║   DNSSEC             35/100   ❌     Not enabled — no DNSKEY/DS        ║
+║   SSL/TLS           100/100   ✅     HTTPS + HSTS properly configured  ║
+║   MTA-STS            85/100   ✅     No MTA-STS/TLS-RPT records        ║
+║   NS                 95/100   ✅     Cloudflare anycast, low diversity  ║
+║   CAA                85/100   ✅     No CAA records published          ║
+║   MX                100/100   ✅     5 MX records, Google Workspace    ║
+║   BIMI               95/100   ✅     Eligible but not published        ║
+║   TLS-RPT            95/100   ✅     No TLS-RPT record                 ║
+║                                                                        ║
+╠══════════════════════════════════════════════════════════════════════════╣
+║                                                                        ║
+║   ██████████████████████████████████████████░░░░░░  85/100  Grade: A   ║
+║                                                                        ║
+╚══════════════════════════════════════════════════════════════════════════╝
 ```
 
-Use `explain_finding` on any result to get plain-English remediation guidance.
+### Findings breakdown
 
-## Tool Surface
+```
+ SEVERITY   FINDING                                              CATEGORY
+ ────────   ───────────────────────────────────────────────────   ────────
+ 🔴 HIGH    DNSSEC not validated — AD flag not set                DNSSEC
+ 🔴 HIGH    No DNSKEY records found                               DNSSEC
+ 🔶 MEDIUM  No DS records — chain of trust broken                 DNSSEC
+ 🔶 MEDIUM  SPF delegates to shared platform: Google Workspace    SPF
+ 🔶 MEDIUM  No MTA-STS or TLS-RPT records                        MTA-STS
+ 🔶 MEDIUM  No CAA records — any CA can issue certs               CAA
+ 🔶 MEDIUM  DKIM RSA key below recommended (2048 < 4096)          DKIM
+ ⚠️  LOW    SPF soft fail (~all) — consider -all                  SPF
+ ⚠️  LOW    Relaxed DKIM alignment (adkim=r)                      DMARC
+ ⚠️  LOW    Relaxed SPF alignment (aspf=r)                        DMARC
+ ⚠️  LOW    Low nameserver diversity (all Cloudflare)             NS
+ ⚠️  LOW    No BIMI record — eligible with p=reject               BIMI
+ ⚠️  LOW    No TLS-RPT record                                     TLSRPT
+ ℹ️  INFO   DMARC properly configured (p=reject, sp=reject)       DMARC
+ ℹ️  INFO   MX records found (5 records)                          MX
+ ℹ️  INFO   Inbound provider: Google Workspace                    MX
+ ℹ️  INFO   HTTPS + HSTS properly configured                      SSL
+```
 
-Directly callable MCP tools:
+### What does this mean?
 
-- `check_mx`
-- `check_spf` — includes SPF trust surface analysis (detects multi-tenant SaaS platform includes)
-- `check_dmarc`
-- `check_dkim`
-- `check_dnssec`
-- `check_ssl`
-- `check_mta_sts`
-- `check_ns` — includes wildcard DNS detection
-- `check_caa`
-- `check_bimi` — BIMI (Brand Indicators for Message Identification) record validation
-- `check_tlsrpt` — TLS-RPT (SMTP TLS Reporting) record validation
-- `check_lookalikes` — lookalike/typosquat domain detection (standalone, not in `scan_domain`)
-- `scan_domain` — runs all checks + email security maturity staging (Stage 0-4)
-- `explain_finding`
+Anthropic has **strong email authentication** — DMARC is set to `reject`, SPF and DKIM are present, and Google Workspace handles mail. The main gap is **DNSSEC** (DNS responses aren't cryptographically signed) and some hardening opportunities like CAA records, MTA-STS, and BIMI. A solid **A** grade.
+
+> Use `explain_finding` on any result to get plain-English remediation guidance with everyday analogies.
+
+---
+
+## 🛠 Tool Surface
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                                                              │
+│   14 directly callable MCP tools                             │
+│                                                              │
+│   ┌─ Email Auth ──────────┐  ┌─ Infrastructure ──────────┐  │
+│   │  check_spf            │  │  check_dnssec             │  │
+│   │  check_dmarc          │  │  check_ns                 │  │
+│   │  check_dkim           │  │  check_caa                │  │
+│   │  check_mta_sts        │  │  check_ssl                │  │
+│   └───────────────────────┘  └───────────────────────────┘  │
+│                                                              │
+│   ┌─ Brand & Threats ─────┐  ┌─ Meta ────────────────────┐  │
+│   │  check_bimi           │  │  scan_domain              │  │
+│   │  check_tlsrpt         │  │  explain_finding          │  │
+│   │  check_lookalikes     │  │  check_mx                 │  │
+│   └───────────────────────┘  └───────────────────────────┘  │
+│                                                              │
+│   + check_subdomain_takeover (internal, runs in scan_domain) │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
 
 `explain_finding` accepts a `checkType`, `status`, and optional `details` string, and returns a structured explanation with:
 - **What this means** — plain-English description using everyday analogies (e.g., SPF as a "guest list," DKIM as a "wax seal," DNSSEC as a "notarized signature")
@@ -218,12 +260,12 @@ Directly callable MCP tools:
 
 The `details` parameter enables precise explanations: passing the finding's detail text routes to a specific explanation (e.g., distinguishing "no MTA-STS records" from "MTA-STS in testing mode") instead of a generic fallback.
 
-Findings now include a confidence label in metadata and rendered reports:
+Findings include a confidence label in metadata and rendered reports:
 - `deterministic`: direct protocol/record validation with clear evidence.
 - `heuristic`: signal-based inference (for example selector probing or takeover indicators) and may require manual validation.
 - `verified`: explicit high-confidence validation signal.
 
-Subdomain takeover findings now include a verification label in finding metadata and reports:
+Subdomain takeover findings include a verification label in finding metadata and reports:
 - `potential`: DNS/signal indicates possible takeover; requires authorized proof-of-control validation.
 - `verified`: service deprovisioning fingerprint detected; high-confidence signal pending authorized proof-of-control.
 - `not_exploitable`: no takeover signal detected for the checked subdomains.
@@ -234,7 +276,9 @@ Internal check executed within `scan_domain`:
 
 Scope and limitations are documented in `docs/coverage.md`.
 
-## Coverage
+---
+
+## 📊 Coverage
 
 Blackveil DNS covers the core checks in each security category. The full Blackveil platform extends each category with deeper analytics.
 
@@ -256,7 +300,9 @@ Blackveil DNS covers the core checks in each security category. The full Blackve
 
 > Total checks: **57** across all categories.
 
-## Protocol Endpoints
+---
+
+## 🌐 Protocol Endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -269,11 +315,38 @@ Supported JSON-RPC protocol methods include `initialize`, `ping`, `tools/list`, 
 
 This server does not currently implement prompt APIs such as `prompts/list` or `prompts/get`; those calls return `-32601 Method not found`.
 
-## Architecture Notes
+---
 
-Request flow:
+## 🏗 Architecture
 
-`MCP client -> Worker/Hono -> tool handlers -> DNS DoH`
+```
+                    ┌─────────────────┐
+                    │   MCP Client    │
+                    │  (Claude, etc.) │
+                    └────────┬────────┘
+                             │
+                     POST /mcp (JSON-RPC)
+                             │
+                    ┌────────▼────────┐
+                    │  Cloudflare     │
+                    │  Worker / Hono  │
+                    ├─────────────────┤
+                    │ Origin check    │
+                    │ Auth middleware  │
+                    │ Rate limiting   │
+                    │ Session mgmt    │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  Tool Handlers  │
+                    │  (14 checks)    │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  Cloudflare DoH │
+                    │  DNS-over-HTTPS │
+                    └─────────────────┘
+```
 
 Core subsystems:
 
@@ -286,7 +359,9 @@ Core subsystems:
 
 For implementation details and conventions, see `CLAUDE.md`.
 
-## Security Model
+---
+
+## 🔒 Security Model
 
 Security and operational behaviors are documented in `docs/security-and-observability.md`.
 
@@ -308,7 +383,9 @@ Natural-language convenience:
 - For best cross-client reliability, explicit phrasing like `Use scan_domain to scan example.com` is still recommended.
 - Raw JSON-RPC still expects `params.name` to be `scan` or `scan_domain` (not full phrases in the name field).
 
-## Provider Detection
+---
+
+## 🔎 Provider Detection
 
 `check_mx` and `scan_domain` include managed provider detection with structured finding metadata.
 
@@ -327,7 +404,9 @@ Optional provider signature configuration:
 - `PROVIDER_SIGNATURES_SHA256` (required pinned digest for runtime provider-signature JSON)
 - `PROVIDER_SIGNATURES_ALLOWED_HOSTS` (optional comma-separated hostname allowlist)
 
-## Documentation
+---
+
+## 📖 Documentation
 
 - Client setup: `docs/client-setup.md`
 - Security and observability: `docs/security-and-observability.md`
@@ -336,44 +415,31 @@ Optional provider signature configuration:
 - Troubleshooting: `docs/troubleshooting.md`
 - Documentation style guide: `docs/style-guide.md`
 
-## Development
+---
 
-Run locally:
+## 💻 Development
 
 ```bash
 git clone https://github.com/MadaBurns/bv-mcp.git
 cd bv-mcp
 npm install
-npm run dev
+npm run dev       # localhost:8787/mcp
 ```
 
-Local endpoint:
+---
 
-`http://localhost:8787/mcp`
-
-Optional provider signature source (in `wrangler.jsonc` vars):
-
-```json
-{
-  "PROVIDER_SIGNATURES_URL": "https://<your-source>/provider-signatures.json",
-  "PROVIDER_SIGNATURES_SHA256": "<sha256-hex>",
-  "PROVIDER_SIGNATURES_ALLOWED_HOSTS": "<your-source>"
-}
-```
-
-## Testing
+## 🧪 Testing
 
 ```bash
-npm test
-```
-
-```bash
+npm test          # 630+ tests, ~95% coverage
 npm run typecheck
 ```
 
 Manual request examples and common failure modes are in `docs/troubleshooting.md`.
 
-## Why this exists
+---
+
+## 💡 Why this exists
 
 Most DNS and email security tools are either paywalled SaaS dashboards or CLI scripts that require local installation and configuration. Neither works well inside an AI coding assistant where you want to check a domain's security posture mid-conversation.
 
@@ -383,6 +449,29 @@ Built and maintained by [BLACKVEIL Security](https://blackveilsecurity.com), a N
 
 Featured in [SecurityBrief](https://securitybrief.co.nz/story/exclusive-how-cybersecurity-startup-blackveil-is-targetting-ai-driven-threats), [NZ Herald](https://www.nzherald.co.nz/video/herald-now/ryan-bridge-today/cybersecurity-medimap-hack/OMLGW3OMXOVSSJ3RLFXPMAVGKE/), and the [Modern Cyber](https://www.youtube.com/watch?v=W4aJHpfB5rY) podcast.
 
-## License
+---
+
+<div align="center">
+
+```
+    ╔══════════════════════════════════════════════════╗
+    ║                                                  ║
+    ║   🛡️  Want continuous monitoring?                 ║
+    ║                                                  ║
+    ║   This tool scans for DNS & email security       ║
+    ║   issues. BLACKVEIL provides near real-time      ║
+    ║   monitoring, alerting, and Buck AI to help      ║
+    ║   you fix them.                                  ║
+    ║                                                  ║
+    ║   https://blackveilsecurity.com                  ║
+    ║                                                  ║
+    ╚══════════════════════════════════════════════════╝
+```
+
+</div>
+
+---
+
+## 📄 License
 
 MIT. See `LICENSE`.
