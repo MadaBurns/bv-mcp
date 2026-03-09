@@ -51,7 +51,7 @@ describe('mcp-dispatch', () => {
 			params: {},
 			ip: '203.0.113.12',
 			isAuthenticated: false,
-			rateHeaders: { 'x-ratelimit-limit': '10' },
+			rateHeaders: { 'x-ratelimit-limit': '30' },
 			serverVersion: '1.0.0',
 		});
 
