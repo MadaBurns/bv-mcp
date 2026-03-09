@@ -44,6 +44,7 @@ Every check uses public Cloudflare DNS-over-HTTPS — passive, read-only, no aut
 ## Contents
 
 - [Quick Start](#quick-start)
+- [npm Package](#npm-package)
 - [Scan: anthropic.com](#scan-anthropiccom)
 - [Tools](#tools)
 - [Coverage](#coverage)
@@ -60,6 +61,13 @@ Every check uses public Cloudflare DNS-over-HTTPS — passive, read-only, no aut
 ---
 
 ## Quick Start
+
+Use one of these two installation paths depending on how you want to consume BLACKVEIL DNS.
+
+| Use case | Install path |
+| --- | --- |
+| MCP client integration (VS Code, Claude, Cursor) | No npm install. Point your client at the hosted endpoint. |
+| Application/library usage | `npm install blackveil-dns` |
 
 ```
 Endpoint   https://dns-mcp.blackveilsecurity.com/mcp
@@ -139,7 +147,40 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 ```
 </details>
 
-Full setup and auth details in `docs/client-setup.md`.
+For hosted MCP setup, see `docs/client-setup.md`.
+
+---
+
+## npm Package
+
+Install from npm when you want to call the scanner from your own Node.js app, script, or service.
+
+```bash
+npm install blackveil-dns
+```
+
+If you are connecting from VS Code, Claude, Cursor, or another MCP client, do not install the npm package just to use the hosted service. Use the MCP endpoint configuration shown above instead.
+
+Requirements: Node 18+ or another runtime with global `fetch`, `URL`, `AbortController`, and Web Platform APIs.
+
+```ts
+import { scanDomain, explainFinding, formatScanReport, validateDomain } from 'blackveil-dns';
+
+const candidate = 'example.com';
+const validation = validateDomain(candidate);
+
+if (!validation.valid) {
+  throw new Error(validation.error);
+}
+
+const result = await scanDomain(candidate);
+console.log(formatScanReport(result));
+
+const guidance = explainFinding('SPF', 'fail', 'No SPF record found');
+console.log(guidance.recommendation);
+```
+
+The npm package exports the reusable scanner API only. It does not start the MCP server or Cloudflare Worker entrypoint for you.
 
 ---
 
