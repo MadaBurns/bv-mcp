@@ -10,10 +10,11 @@ export async function buildControlPlaneRateLimitResponse(
 	isAuthenticated: boolean,
 	id: string | number | null | undefined,
 	accept?: string,
+	quotaCoordinator?: DurableObjectNamespace,
 ): Promise<Response | undefined> {
 	if (isAuthenticated || method === 'tools/call') return undefined;
 
-	const rateResult = await checkControlPlaneRateLimit(ip, kv);
+	const rateResult = await checkControlPlaneRateLimit(ip, kv, quotaCoordinator);
 	if (rateResult.allowed) return undefined;
 
 	const headers: Record<string, string> = {

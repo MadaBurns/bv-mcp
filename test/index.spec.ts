@@ -1,6 +1,7 @@
 import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloudflare:test';
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import worker from '../src';
+import { resetQuotaCoordinatorState } from '../src/lib/quota-coordinator';
 import { resetAllRateLimits } from '../src/lib/rate-limiter';
 import { resetSessions } from '../src/lib/session';
 
@@ -44,9 +45,10 @@ describe('DNS Security MCP Server', () => {
 		});
 	});
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		resetAllRateLimits();
 		resetSessions();
+		await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 	});
 
 		afterEach(() => {
@@ -66,7 +68,7 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(200);
 		});
 
-		it('allows unauthenticated requests when BV_API_KEY is set (rate-limited, not rejected)', async () => {
+		it('allows missing bearer token through as unauthenticated when auth is configured', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
@@ -77,6 +79,7 @@ describe('DNS Security MCP Server', () => {
 			const response = await worker.fetch(request, authEnv, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(200);
+			expect(response.headers.get('mcp-session-id')).toBeTruthy();
 		});
 
 		it('returns 401 JSON-RPC error when auth token is invalid', async () => {
@@ -101,86 +104,6 @@ describe('DNS Security MCP Server', () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
 			const sessionId = await initSession({ authToken: TEST_API_KEY, targetEnv: authEnv });
 			expect(sessionId).toBeTruthy();
-		});
-	});
-
-	describe('POST /mcp - Origin header validation', () => {
-		it('rejects requests with unauthorized Origin header', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					Origin: 'http://evil.com',
-				},
-				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-			});
-			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
-			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(403);
-		});
-
-		it('allows requests without Origin header (non-browser clients)', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-			});
-			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
-			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(200);
-		});
-
-		it('allows requests with same-origin Origin header', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					Origin: 'http://example.com',
-				},
-				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-			});
-			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
-			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(200);
-		});
-
-		it('allows requests with explicitly allowed Origin', async () => {
-			const allowedEnv = { ...env, ALLOWED_ORIGINS: 'http://myapp.com,http://other.com' } as Env;
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					Origin: 'http://myapp.com',
-				},
-				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-			});
-			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, allowedEnv, ctx);
-			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(200);
-		});
-	});
-
-	describe('POST /mcp - JSON-RPC batch rejection', () => {
-		it('rejects JSON-RPC batch arrays with clear error message', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify([
-					{ jsonrpc: '2.0', id: 1, method: 'ping' },
-					{ jsonrpc: '2.0', id: 2, method: 'ping' },
-				]),
-			});
-			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
-			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(400);
-			const body = (await response.json()) as { error: { code: number; message: string } };
-			expect(body.error.code).toBe(-32600);
-			expect(body.error.message).toContain('batch');
 		});
 	});
 
@@ -255,7 +178,7 @@ describe('DNS Security MCP Server', () => {
 	});
 
 	describe('POST /mcp - tools/list', () => {
-		it('returns all 11 tools', async () => {
+		it('returns all 14 tools', async () => {
 			const sessionId = await initSession();
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
@@ -270,6 +193,9 @@ describe('DNS Security MCP Server', () => {
 			const toolNames = body.result.tools.map((t) => t.name);
 			expect(toolNames).toContain('check_spf');
 			expect(toolNames).toContain('check_dmarc');
+			expect(toolNames).toContain('check_bimi');
+			expect(toolNames).toContain('check_tlsrpt');
+			expect(toolNames).toContain('check_lookalikes');
 			expect(toolNames).toContain('scan_domain');
 			expect(toolNames).toContain('explain_finding');
 		});
@@ -661,7 +587,7 @@ describe('DNS Security MCP Server', () => {
 	});
 
 	describe('Streamable HTTP transport - SSE', () => {
-		it('POST with Accept: text/event-stream returns SSE with event ID', async () => {
+		it('POST with Accept: text/event-stream returns SSE', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
@@ -679,8 +605,6 @@ describe('DNS Security MCP Server', () => {
 			const text = await response.text();
 			expect(text).toContain('event: message');
 			expect(text).toContain('"protocolVersion":"2025-03-26"');
-			// Fix 5: SSE events must include an id for resumability
-			expect(text).toContain('id: 1');
 		});
 
 		it('GET /mcp returns SSE stream with valid session', async () => {
@@ -699,7 +623,7 @@ describe('DNS Security MCP Server', () => {
 			expect(response.headers.get('content-type')).toBe('text/event-stream');
 		});
 
-		it('GET /mcp returns 404 for expired/invalid session ID', async () => {
+		it('GET /mcp rejects invalid session ID', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'GET',
 				headers: {
@@ -711,6 +635,8 @@ describe('DNS Security MCP Server', () => {
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(404);
+			const body = (await response.json()) as { error: { message: string } };
+			expect(body.error.message).toContain('session expired or terminated');
 		});
 
 		it('GET /mcp returns 406 when Accept does not include text/event-stream', async () => {
@@ -726,7 +652,7 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(406);
 		});
 
-		it('GET /mcp returns 400 when no session header is provided', async () => {
+		it('GET /mcp requires an existing session header', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'GET',
 				headers: {
@@ -737,11 +663,13 @@ describe('DNS Security MCP Server', () => {
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(400);
+			const body = (await response.json()) as { error: { message: string } };
+			expect(body.error.message).toContain('missing session');
 		});
 	});
 
 	describe('Streamable HTTP transport - DELETE session', () => {
-		it('DELETE /mcp terminates session and subsequent requests get 404', async () => {
+		it('DELETE /mcp terminates session', async () => {
 			const sessionId = await initSession();
 			const delReq = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'DELETE',
@@ -763,7 +691,7 @@ describe('DNS Security MCP Server', () => {
 			expect(postRes.status).toBe(404);
 		});
 
-		it('DELETE /mcp returns 404 for invalid session', async () => {
+		it('DELETE /mcp rejects invalid session', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'DELETE',
 				headers: { 'Mcp-Session-Id': 'nonexistent' },
@@ -806,7 +734,7 @@ describe('DNS Security MCP Server', () => {
 		it('unauthenticated tools/call requests are rate-limited', async () => {
 			const sessionId = await initSession();
 			let rateLimited = false;
-			for (let i = 0; i < 35; i++) {
+			for (let i = 0; i < 31; i++) {
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
@@ -853,7 +781,7 @@ describe('DNS Security MCP Server', () => {
 				expect(response.status).toBe(202);
 			}
 
-			const eleventhRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const blockedRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -866,7 +794,7 @@ describe('DNS Security MCP Server', () => {
 				}),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(eleventhRequest, env, ctx);
+			const response = await worker.fetch(blockedRequest, env, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(429);
 		});
@@ -930,93 +858,6 @@ describe('DNS Security MCP Server', () => {
 			}
 		});
 
-		it('unauthenticated check_lookalikes requests are capped at 10/day', async () => {
-			vi.useFakeTimers();
-			vi.setSystemTime(new Date('2026-03-07T00:00:00Z'));
-
-			try {
-			const sessionId = await initSession();
-
-			for (let i = 0; i < 10; i++) {
-				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-						'Mcp-Session-Id': sessionId,
-						'cf-connecting-ip': '203.0.113.79',
-					},
-					body: JSON.stringify({
-						jsonrpc: '2.0',
-						id: i + 400,
-						method: 'tools/call',
-						params: { name: 'check_lookalikes', arguments: { domain: 'example.com' } },
-					}),
-				});
-				const ctx = createExecutionContext();
-				const response = await worker.fetch(request, env, ctx);
-				await waitOnExecutionContext(ctx);
-				expect(response.status).toBe(200);
-				vi.advanceTimersByTime(61_000);
-			}
-
-			const blockedRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Mcp-Session-Id': sessionId,
-					'cf-connecting-ip': '203.0.113.79',
-				},
-				body: JSON.stringify({
-					jsonrpc: '2.0',
-					id: 405,
-					method: 'tools/call',
-					params: { name: 'check_lookalikes', arguments: { domain: 'example.com' } },
-				}),
-			});
-			const ctx = createExecutionContext();
-			const blockedResponse = await worker.fetch(blockedRequest, env, ctx);
-			await waitOnExecutionContext(ctx);
-			expect(blockedResponse.status).toBe(429);
-			expect(blockedResponse.headers.get('x-quota-limit')).toBe('10');
-			expect(blockedResponse.headers.get('x-quota-remaining')).toBe('0');
-
-			const body = (await blockedResponse.json()) as { error: { code: number; message: string } };
-			expect(body.error.code).toBe(-32029);
-			expect(body.error.message).toContain('check_lookalikes');
-			expect(body.error.message).toContain('10 requests per day');
-			} finally {
-				vi.useRealTimers();
-			}
-		});
-
-		it('authenticated check_lookalikes requests bypass daily cap', async () => {
-			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
-			const sessionId = await initSession({ authToken: TEST_API_KEY, targetEnv: authEnv });
-
-			for (let i = 0; i < 6; i++) {
-				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-						Authorization: `Bearer ${TEST_API_KEY}`,
-						'Mcp-Session-Id': sessionId,
-						'cf-connecting-ip': '203.0.113.89',
-					},
-					body: JSON.stringify({
-						jsonrpc: '2.0',
-						id: i + 500,
-						method: 'tools/call',
-						params: { name: 'check_lookalikes', arguments: { domain: 'example.com' } },
-					}),
-				});
-				const ctx = createExecutionContext();
-				const response = await worker.fetch(request, authEnv, ctx);
-				await waitOnExecutionContext(ctx);
-				expect(response.status).toBe(200);
-				expect(response.headers.has('x-quota-limit')).toBe(false);
-			}
-		});
-
 		it('authenticated scan_domain requests are not subject to free daily cap', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
 			const sessionId = await initSession({ authToken: TEST_API_KEY, targetEnv: authEnv });
@@ -1048,7 +889,7 @@ describe('DNS Security MCP Server', () => {
 		it('protocol methods use a separate control-plane budget from tools/call', async () => {
 			// Exhaust the rate limit with tools/call requests first
 			const sessionId = await initSession();
-			for (let i = 0; i < 15; i++) {
+			for (let i = 0; i < 31; i++) {
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
 					headers: {

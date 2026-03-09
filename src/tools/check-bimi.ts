@@ -126,7 +126,7 @@ export async function checkBimi(domain: string): Promise<CheckResult> {
 				'bimi',
 				'BIMI record configured',
 				'info',
-				`BIMI record found and configured at ${bimiDomain}: ${bimi.substring(0, 120)}${bimi.length > 120 ? '...' : ''}`,
+				`BIMI record found and configured at ${bimiDomain} with a valid HTTPS SVG logo reference.`,
 			),
 		);
 	}
