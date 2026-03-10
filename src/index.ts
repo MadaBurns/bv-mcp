@@ -27,7 +27,7 @@ import {
 } from './mcp/request';
 import { deleteSession } from './lib/session';
 import { isAuthorizedRequest, unauthorizedResponse } from './lib/auth';
-import { sseEvent, acceptsSSE, createSseStream, sseErrorResponse } from './lib/sse';
+import { sseEvent, acceptsSSE, createSseStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
 import { createAnalyticsClient } from './lib/analytics';
 import type { JsonRpcRequest } from './lib/json-rpc';
 import { dispatchMcpMethod } from './mcp/dispatch';
@@ -484,6 +484,72 @@ app.post('/mcp', async (c) => {
 		return new Response(null, { status: 202 });
 	}
 
+	       // --- Streaming SSE for tools/call ---
+	       // When the client accepts SSE and invokes a tool, we return a streaming
+	       // response immediately and send heartbeat comments every 5s to keep the
+	       // connection alive. This prevents proxy/client-side idle timeouts
+	       // (e.g. mcp-remote → Claude Desktop) from killing the request before
+	       // the tool finishes executing.
+	       if (method === 'tools/call' && acceptsSSE(accept)) {
+		       const dispatchOptions = {
+			       id,
+			       method,
+			       params,
+			       ip,
+			       isAuthenticated,
+			       rateHeaders,
+			       serverVersion: SERVER_VERSION,
+			       rateLimitKv: c.env.RATE_LIMIT,
+			       quotaCoordinator: c.env.QUOTA_COORDINATOR,
+			       sessionStore: c.env.SESSION_STORE,
+			       scanCache: c.env.SCAN_CACHE,
+			       providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
+			       providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS,
+			       providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
+			       analytics,
+		       };
+
+		       const dispatchPromise = dispatchMcpMethod(dispatchOptions).then((dispatchResult) => {
+			       if (dispatchResult.kind === 'early-error') {
+				       return dispatchResult.payload;
+			       }
+			       const { payload: responsePayload, logCategory, logTool, logResult, logDetails } = dispatchResult;
+			       logEvent({
+				       timestamp: new Date().toISOString(),
+				       requestId: typeof id === 'string' ? id : undefined,
+				       ip,
+				       tool: logTool,
+				       category: logCategory,
+				       result: logResult,
+				       details: logDetails,
+				       durationMs: Date.now() - startTime,
+				       userAgent: headersLc['user-agent'],
+				       severity: logCategory === 'error' ? 'error' : 'info',
+				       domain: typeof params === 'object' && params && 'domain' in params ? String(params.domain) : undefined,
+			       });
+			       const hasJsonRpcError = typeof responsePayload === 'object' && responsePayload !== null && 'error' in responsePayload;
+			       analytics.emitRequestEvent({
+				       method,
+				       status: hasJsonRpcError ? 'error' : 'ok',
+				       durationMs: Date.now() - startTime,
+				       isAuthenticated,
+				       hasJsonRpcError,
+				       transport: 'sse',
+			       });
+			       return responsePayload;
+		       });
+
+		       const eventId = id != null ? String(id) : undefined;
+		       const responseHeaders: Record<string, string> = { ...rateHeaders };
+
+		       return createStreamingSseResponse(
+			       dispatchPromise,
+			       (payload) => sseEvent(payload, eventId),
+			       responseHeaders,
+		       );
+	       }
+
+	       // --- Non-streaming path (non-SSE clients or non-tools/call methods) ---
 	       try {
 		       const dispatchResult = await dispatchMcpMethod({
 			       id,
@@ -534,11 +600,9 @@ app.post('/mcp', async (c) => {
 		       if (newSessionId) {
 			       headers['mcp-session-id'] = newSessionId;
 		       }
-		       // Always include normalized rate limit headers if present
 		       Object.assign(headers, rateHeaders);
 
-		       // If client accepts SSE, stream the response as an SSE event
-			const hasJsonRpcError = typeof responsePayload === 'object' && responsePayload !== null && 'error' in responsePayload;
+		       const hasJsonRpcError = typeof responsePayload === 'object' && responsePayload !== null && 'error' in responsePayload;
 		       if (acceptsSSE(accept)) {
 				analytics.emitRequestEvent({
 					method,
@@ -561,7 +625,7 @@ app.post('/mcp', async (c) => {
 			       });
 		       }
 
-		       // Default: plain JSON response (backward compatible)
+		       // Default: plain JSON response
 			analytics.emitRequestEvent({
 				method,
 				status: hasJsonRpcError ? 'error' : 'ok',
