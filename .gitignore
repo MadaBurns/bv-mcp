@@ -48,6 +48,11 @@ pnpm-debug.log*
 
 # Agent config
 .agent.md
+
+# Planning / working files
+PLAN.md
+*-plan.md
+plan-*.md
 .github/agents/
 .github/prompts/
 

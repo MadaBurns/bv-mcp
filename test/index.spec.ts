@@ -178,7 +178,7 @@ describe('DNS Security MCP Server', () => {
 	});
 
 	describe('POST /mcp - tools/list', () => {
-		it('returns all 14 tools', async () => {
+		it('returns all 15 tools', async () => {
 			const sessionId = await initSession();
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
@@ -189,7 +189,7 @@ describe('DNS Security MCP Server', () => {
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
 			const body = (await response.json()) as { result: { tools: Array<{ name: string }> } };
-			expect(body.result.tools).toHaveLength(14);
+			expect(body.result.tools).toHaveLength(15);
 			const toolNames = body.result.tools.map((t) => t.name);
 			expect(toolNames).toContain('check_spf');
 			expect(toolNames).toContain('check_dmarc');
@@ -197,6 +197,7 @@ describe('DNS Security MCP Server', () => {
 			expect(toolNames).toContain('check_tlsrpt');
 			expect(toolNames).toContain('check_lookalikes');
 			expect(toolNames).toContain('scan_domain');
+			expect(toolNames).toContain('compare_baseline');
 			expect(toolNames).toContain('explain_finding');
 		});
 	});
@@ -799,14 +800,14 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(429);
 		});
 
-		it('unauthenticated scan_domain requests are capped at 50/day', async () => {
+		it('unauthenticated scan_domain requests are capped at 10/day', async () => {
 			vi.useFakeTimers();
 			vi.setSystemTime(new Date('2026-03-07T00:00:00Z'));
 
 			try {
 			const sessionId = await initSession();
 
-			for (let i = 0; i < 50; i++) {
+			for (let i = 0; i < 10; i++) {
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
@@ -846,13 +847,13 @@ describe('DNS Security MCP Server', () => {
 			const blockedResponse = await worker.fetch(blockedRequest, env, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(blockedResponse.status).toBe(429);
-			expect(blockedResponse.headers.get('x-quota-limit')).toBe('50');
+			expect(blockedResponse.headers.get('x-quota-limit')).toBe('10');
 			expect(blockedResponse.headers.get('x-quota-remaining')).toBe('0');
 
 			const body = (await blockedResponse.json()) as { error: { code: number; message: string } };
 			expect(body.error.code).toBe(-32029);
 			expect(body.error.message).toContain('scan_domain');
-			expect(body.error.message).toContain('50 requests per day');
+			expect(body.error.message).toContain('10 requests per day');
 			} finally {
 				vi.useRealTimers();
 			}

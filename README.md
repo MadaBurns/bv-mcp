@@ -88,14 +88,15 @@ Full scope and limitations in [`docs/coverage.md`](docs/coverage.md).
 ## Tools
 
 ```
-  14 MCP tools
+  15 MCP tools
 
   Email Auth           Infrastructure        Brand & Threats       Meta
  ────────────         ────────────────       ─────────────────    ──────────────
   check_spf            check_dnssec           check_bimi           scan_domain
   check_dmarc          check_ns               check_tlsrpt         explain_finding
-  check_dkim           check_caa              check_lookalikes     check_mx
+  check_dkim           check_caa              check_lookalikes     compare_baseline
   check_mta_sts        check_ssl
+                                                          check_mx
 
   + check_subdomain_takeover (internal — runs inside scan_domain)
 ```
@@ -185,6 +186,25 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 </details>
 
 For hosted MCP setup, see `docs/client-setup.md`.
+
+---
+
+## CI/CD
+
+Enforce DNS security grades in your pipeline with the [Blackveil DNS GitHub Action](https://github.com/MadaBurns/blackveil-dns-action):
+
+```yaml
+- uses: MadaBurns/blackveil-dns-action@v1
+  with:
+    domain: example.com
+    minimum-grade: B
+```
+
+The action outputs `score`, `grade`, `maturity`, and `passed` for downstream steps.
+
+## Monitoring
+
+Get weekly DNS security reports in Slack or Discord. See [`examples/slack-discord-webhook/`](examples/slack-discord-webhook/) for a ready-to-deploy Cloudflare Cron Trigger recipe.
 
 ---
 
