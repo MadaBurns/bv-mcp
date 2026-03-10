@@ -114,10 +114,10 @@ export class TTLCache<T = unknown> {
 }
 
 /** In-flight promise map for cache stampede (thundering herd) protection */
-const inflight = new Map<string, Promise<unknown>>();
+const INFLIGHT = new Map<string, Promise<unknown>>();
 
 /** In-memory cache instance used as fallback when KV is unavailable */
-export const inMemoryCache = new TTLCache<unknown>({
+export const IN_MEMORY_CACHE = new TTLCache<unknown>({
 	ttlMs: DEFAULT_TTL_MS,
 	maxEntries: DEFAULT_MAX_ENTRIES,
 });
@@ -137,13 +137,13 @@ export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | un
        if (kv) {
 	       try {
 		       const val = await kv.get(key, 'json');
-		       return (val ?? undefined) as T | undefined;
+		       return (val ?? undefined) as T | undefined; // KV.get('json') returns unknown; generic T is caller-enforced
 	       } catch (err) {
 		       // KV error — log warning and fall through to in-memory
 		       console.warn('[cache] KV get failed, falling back to in-memory:', (err instanceof Error ? err.message : err));
 	       }
        }
-       return inMemoryCache.get(key) as T | undefined;
+       return IN_MEMORY_CACHE.get(key) as T | undefined;
 }
 
 /**
@@ -166,7 +166,7 @@ export async function cacheSet(key: string, value: unknown, kv?: KVNamespace, tt
 		       console.warn('[cache] KV put failed, falling back to in-memory:', (err instanceof Error ? err.message : err));
 	       }
        }
-       inMemoryCache.set(key, value, ttl * 1000);
+       IN_MEMORY_CACHE.set(key, value, ttl * 1000);
 }
 
 /**
@@ -184,8 +184,8 @@ export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: K
 	const cached = await cacheGet<T>(key, kv);
 	if (cached !== undefined) return cached;
 
-	const existing = inflight.get(key);
-	if (existing) return existing as Promise<T>;
+	const existing = INFLIGHT.get(key);
+	if (existing) return existing as Promise<T>; // INFLIGHT map stores Promise<unknown>; keyed by same cache key ensures type match
 
 	const promise = run()
 		.then(async (result) => {
@@ -193,9 +193,9 @@ export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: K
 			return result;
 		})
 		.finally(() => {
-			inflight.delete(key);
+			INFLIGHT.delete(key);
 		});
 
-	inflight.set(key, promise);
+	INFLIGHT.set(key, promise);
 	return promise;
 }

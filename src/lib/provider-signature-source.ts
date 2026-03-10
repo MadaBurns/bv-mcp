@@ -119,7 +119,7 @@ export function buildResult(
 
 export function isValidSignaturePayload(payload: unknown): payload is ProviderSignaturePayload {
 	if (!payload || typeof payload !== 'object') return false;
-	const record = payload as Record<string, unknown>;
+	const record = payload as Record<string, unknown>; // typeof payload === 'object' is checked above
 	if (record.version !== undefined && typeof record.version !== 'string') return false;
 	if (record.inbound !== undefined && !Array.isArray(record.inbound)) return false;
 	if (record.outbound !== undefined && !Array.isArray(record.outbound)) return false;

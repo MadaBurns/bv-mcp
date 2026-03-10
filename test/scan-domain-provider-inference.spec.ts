@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
-import { inMemoryCache } from '../src/lib/cache';
+import { IN_MEMORY_CACHE } from '../src/lib/cache';
 
-beforeEach(() => inMemoryCache.clear());
+beforeEach(() => IN_MEMORY_CACHE.clear());
 afterEach(() => vi.restoreAllMocks());
 
 function mockAllChecksWithDkimGoogle(spfRecord: string) {
