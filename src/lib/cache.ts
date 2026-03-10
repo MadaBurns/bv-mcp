@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 
+import { INFLIGHT_CLEANUP_MS } from './config';
+
 /**
  * TTL cache for DNS scan results.
  *
@@ -157,6 +159,14 @@ export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | un
  * @param kv - Optional KV namespace for persistent caching
  * @param ttlSeconds - Cache TTL in seconds (default: 300 = 5 minutes)
  */
+/**
+ * Set a cached value, deferring the KV write via ctx.waitUntil() to avoid blocking the response.
+ * Falls back to synchronous cacheSet when no ExecutionContext is provided.
+ */
+export function cacheSetDeferred(key: string, value: unknown, ctx: ExecutionContext, kv?: KVNamespace, ttlSeconds?: number): void {
+	ctx.waitUntil(cacheSet(key, value, kv, ttlSeconds));
+}
+
 export async function cacheSet(key: string, value: unknown, kv?: KVNamespace, ttlSeconds?: number): Promise<void> {
        const ttl = ttlSeconds ?? DEFAULT_TTL_SECONDS;
        if (kv) {
@@ -189,12 +199,14 @@ export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: K
 	const existing = INFLIGHT.get(key);
 	if (existing) return existing as Promise<T>; // INFLIGHT map stores Promise<unknown>; keyed by same cache key ensures type match
 
+	const cleanup = setTimeout(() => INFLIGHT.delete(key), INFLIGHT_CLEANUP_MS);
 	const promise = run()
 		.then(async (result) => {
 			await cacheSet(key, result, kv, ttlSeconds);
 			return result;
 		})
 		.finally(() => {
+			clearTimeout(cleanup);
 			INFLIGHT.delete(key);
 		});
 

@@ -68,7 +68,7 @@ src/lib/auth.ts           — Bearer token validation (constant-time XOR compari
 src/lib/sse.ts            — SSE event formatting and Accept header checking
 src/lib/dns.ts            — DNS-over-HTTPS facade (re-exports from dns-transport, dns-records, dns-types)
 src/lib/sanitize.ts       — Domain validation, SSRF protection
-src/lib/config.ts         — Centralized SSRF constants (blocked TLDs, IPs, rebinding services, domain limits)
+src/lib/config.ts         — Centralized SSRF constants, DNS tuning (timeouts, retries, jitter, edge cache TTL), domain limits
 src/lib/cache.ts          — KV-backed + in-memory TTL cache
 src/lib/rate-limiter.ts   — KV-backed + in-memory per-IP rate limiting
 src/lib/log.ts            — Structured JSON logging (logEvent, logError)
@@ -87,7 +87,9 @@ MCP Client → POST /mcp → Origin check → Auth middleware → Body parse →
 
 ### scan_domain orchestration
 
-`scan_domain` runs **12 checks** in parallel via `Promise.all`: SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, BIMI, TLS-RPT, subdomain takeover, and MX. Each has its own cache key (`cache:<domain>:check:<name>`), plus a top-level `cache:<domain>` key for the full scan result. Results are cached for 5 minutes. After scoring, `computeMaturityStage()` classifies the domain into a maturity stage (0-4: Unprotected → Hardened) based on SPF/DMARC/DKIM/MTA-STS/DNSSEC/BIMI presence and enforcement.
+`scan_domain` runs **12 checks** in parallel via `Promise.allSettled`: SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, BIMI, TLS-RPT, subdomain takeover, and MX. Each has its own cache key (`cache:<domain>:check:<name>`), plus a top-level `cache:<domain>` key for the full scan result. Results are cached for 5 minutes. After scoring, `computeMaturityStage()` classifies the domain into a maturity stage (0-4: Unprotected → Hardened) based on SPF/DMARC/DKIM/MTA-STS/DNSSEC/BIMI presence and enforcement.
+
+**Partial results on timeout**: When the 25s scan timeout fires, completed checks are preserved and missing checks receive a timeout finding. This avoids discarding work from checks that finished in 1-2s.
 
 **Non-mail domain adjustment**: After all checks complete, if `check_mx` finds no MX records, `scan_domain` queries the parent domain's DMARC `sp=`/`p=` tag and then calls `adjustForNonMailDomain()` to downgrade critical/high email-auth findings (SPF, DMARC, DKIM, MTA-STS) to `info` severity. This significantly affects scores for non-mail domains.
 
@@ -96,13 +98,13 @@ MCP Client → POST /mcp → Origin check → Auth middleware → Body parse →
 - `createFinding()` + `buildCheckResult()` from `lib/scoring-model.ts` (re-exported via `lib/scoring.ts`) — never construct findings manually
 - `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs
 - `mcpError()` / `mcpText()` from `handlers/tool-formatters.ts` for MCP response formatting
-- `cacheGet()` / `cacheSet()` from `lib/cache.ts` — supports KV and in-memory
+- `cacheGet()` / `cacheSet()` / `cacheSetDeferred()` from `lib/cache.ts` — supports KV and in-memory; `cacheSetDeferred()` wraps writes in `ctx.waitUntil()` to avoid blocking responses
 - JSDoc (`/** */`) on exported functions
 - `import type { ... }` for type-only imports
 - All tool functions return `Promise<CheckResult>` (follow pattern in `check-spf.ts`)
 - `check_mx` is dynamically imported in `handlers/tools.ts` (for test mock isolation — unlike other checks which are statically imported)
 - MCP server key name is `"blackveil-dns"` across all client configs (README, docs, `.mcp.json`) — keep consistent
-- SSRF config constants live in `src/lib/config.ts`, not `sanitize.ts` — edit there when modifying blocked TLDs, IP patterns, etc.
+- SSRF config constants live in `src/lib/config.ts`, not `sanitize.ts` — edit there when modifying blocked TLDs, IP patterns, DNS tuning (`DOH_EDGE_CACHE_TTL`, `DNS_RETRY_BASE_DELAY_MS`, `INFLIGHT_CLEANUP_MS`), etc.
 - `sanitize.ts` imports `punycode/` (trailing slash = npm package, not Node.js built-in) for IDN/Unicode domain support
 
 ### Error surfacing convention

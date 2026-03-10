@@ -46,6 +46,15 @@ export const DNS_TIMEOUT_MS = 5000;
 /** Default number of retry attempts for DNS-over-HTTPS queries. */
 export const DNS_RETRIES = 2;
 
+/** Edge cache TTL (seconds) for outbound DoH fetch requests via Cloudflare's cf API. */
+export const DOH_EDGE_CACHE_TTL = 300;
+
+/** Timeout (ms) after which a stuck INFLIGHT promise is evicted from the dedup map. */
+export const INFLIGHT_CLEANUP_MS = 30_000;
+
+/** Base delay (ms) between DNS retry attempts. Actual delay = base * (attempt+1) + jitter. */
+export const DNS_RETRY_BASE_DELAY_MS = 100;
+
 /**
  * When true, empty DoH answers from the primary resolver are optionally
  * confirmed with a secondary resolver to reduce false negatives.

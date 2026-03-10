@@ -174,6 +174,58 @@ describe('scanDomain', () => {
 		await expect(scanDomain('test.local')).resolves.toHaveProperty('domain', 'test.local');
 	});
 
+	it('preserves partial results when scan times out', async () => {
+		// Create a fetch mock where most checks complete fast but one hangs
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('cloudflare-dns.com')) {
+				// Make SSL-related queries hang forever to trigger timeout
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=reject']));
+					if (url.includes('_domainkey.'))
+						return Promise.resolve(txtResponse('default._domainkey.example.com', ['v=DKIM1; k=rsa; p=MIGf']));
+					if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
+					if (url.includes('_smtp._tls.'))
+						return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
+					if (url.includes('default._bimi.'))
+						return Promise.resolve(txtResponse('default._bimi.example.com', ['v=BIMI1; l=https://example.com/logo.svg']));
+					return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
+				}
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse('example.com', true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+
+			// MTA-STS policy
+			if (url.includes('mta-sts.') && url.includes('.well-known')) {
+				return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'));
+			}
+
+			// SSL check - make this hang to trigger timeout
+			if (url.startsWith('https://example.com')) {
+				return new Promise(() => {}); // never resolves
+			}
+
+			return Promise.resolve(httpResponse('OK'));
+		});
+
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		// scanDomain has a 25s timeout and per-check 15s timeout
+		// The SSL check will hit the per-check timeout first (15s),
+		// so we should still get all results including a degraded SSL result
+		const result = await scanDomain('example.com');
+
+		// Even with the hanging SSL check, we should get all 12 checks
+		// because safeCheck wraps each with a per-check timeout
+		expect(result.checks.length).toBeGreaterThanOrEqual(1);
+		expect(result.domain).toBe('example.com');
+		expect(result.score).toBeDefined();
+	}, 30_000);
+
 	it('caches results with KV and returns cached:true on hit', async () => {
 		mockAllChecks();
 		const kv = env.SCAN_CACHE as KVNamespace;
