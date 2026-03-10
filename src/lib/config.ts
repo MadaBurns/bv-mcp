@@ -51,8 +51,8 @@ export const DNS_RETRIES = 2;
 export const DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY = true;
 
 /**
- * Global daily cap on total tools/call requests across all IPs.
- * Acts as a cost ceiling — even distributed abuse can't exceed this.
+ * Global daily free-tier request ceiling across all unauthenticated IPs.
+ * Protects from abuse by capping free usage at a service-wide level.
  * Authenticated requests are exempt.
  */
 export const GLOBAL_DAILY_TOOL_LIMIT = 10_000;
@@ -62,19 +62,17 @@ export const GLOBAL_DAILY_TOOL_LIMIT = 10_000;
  * Tools omitted from this map are governed only by baseline per-IP rate limits.
  */
 export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
-	scan_domain: 50,
-	scan: 50,
-	check_spf: 100,
-	check_dmarc: 100,
-	check_dkim: 100,
-	check_mx: 100,
-	check_ns: 100,
-	check_ssl: 100,
-	check_dnssec: 100,
-	check_mta_sts: 100,
-	check_caa: 100,
-	check_bimi: 100,
-	check_tlsrpt: 100,
-	check_lookalikes: 10,
-	explain_finding: 200,
+	scan_domain: 10,
+	scan: 10,
+	check_spf: 50,
+	check_dmarc: 50,
+	check_dkim: 50,
+	check_mx: 50,
+	check_ns: 50,
+	check_ssl: 50,
+	check_dnssec: 50,
+	check_mta_sts: 50,
+	check_caa: 50,
+	explain_finding: 50,
+	compare_baseline: 50,
 };
