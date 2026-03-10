@@ -14,6 +14,8 @@ import { checkTlsrpt } from '../tools/check-tlsrpt';
 import { checkLookalikes } from '../tools/check-lookalikes';
 import { scanDomain, formatScanReport } from '../tools/scan-domain';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
+import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
+import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractDkimSelector, extractExplainFindingArgs, normalizeToolName } from './tool-args';
 import { logToolFailure, logToolSuccess } from './tool-execution';
@@ -171,6 +173,24 @@ export async function handleToolsCall(
 					severity: 'info',
 				});
 				return { content: [mcpText(formatScanReport(result))] };
+			}
+			case 'compare_baseline': {
+				const baseline = (args.baseline ?? {}) as PolicyBaseline;
+				const scan = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
+				const result = compareBaseline(scan, baseline);
+				logResult = result.passed ? 'pass' : 'fail';
+				logDetails = result;
+				logToolSuccess({
+					toolName: name,
+					durationMs: Date.now() - startTime,
+					domain,
+					analytics: runtimeOptions?.analytics,
+					status: result.passed ? 'pass' : 'fail',
+					logResult,
+					logDetails,
+					severity: 'info',
+				});
+				return { content: [mcpText(formatBaselineResult(result))] };
 			}
 			case 'explain_finding': {
 				let explainArgs: ReturnType<typeof extractExplainFindingArgs>;
