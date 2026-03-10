@@ -26,6 +26,9 @@ Thumbs.db
 # Coverage
 coverage/
 
+# Docs (internal drafts and plans)
+docs/
+
 # Logs
 *.log
 npm-debug.log*
