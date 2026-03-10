@@ -58,10 +58,11 @@ export async function checkMx(domain: string, options?: CheckMxOptions): Promise
 	const resolutions = await Promise.all(
 		hostnameRecords.map(async (r) => {
 			try {
-				const a = await queryDnsRecords(r.exchange, 'A');
-				if (a.length > 0) return { record: r, resolved: true };
-				const aaaa = await queryDnsRecords(r.exchange, 'AAAA');
-				return { record: r, resolved: aaaa.length > 0 };
+				const [a, aaaa] = await Promise.all([
+					queryDnsRecords(r.exchange, 'A').catch(() => []),
+					queryDnsRecords(r.exchange, 'AAAA').catch(() => []),
+				]);
+				return { record: r, resolved: a.length > 0 || aaaa.length > 0 };
 			} catch {
 				return { record: r, resolved: false };
 			}
