@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-	activeSessions,
+	ACTIVE_SESSIONS,
 	checkSessionCreateRateLimitInMemory,
 	createSessionInMemory,
 	deleteSessionInMemory,
@@ -19,7 +19,7 @@ afterEach(() => {
 describe('session-memory', () => {
 	it('creates and validates in-memory sessions', () => {
 		createSessionInMemory('session-1');
-		expect(activeSessions.has('session-1')).toBe(true);
+		expect(ACTIVE_SESSIONS.has('session-1')).toBe(true);
 		expect(validateSessionInMemory('session-1')).toBe(true);
 	});
 
@@ -39,13 +39,13 @@ describe('session-memory', () => {
 
 		nowSpy.mockReturnValue(base + SESSION_REFRESH_INTERVAL_MS + 1_000);
 		expect(validateSessionInMemory('session-1')).toBe(true);
-		expect(activeSessions.get('session-1')?.lastAccessedAt).toBe(base + SESSION_REFRESH_INTERVAL_MS + 1_000);
+		expect(ACTIVE_SESSIONS.get('session-1')?.lastAccessedAt).toBe(base + SESSION_REFRESH_INTERVAL_MS + 1_000);
 	});
 
 	it('deletes in-memory sessions explicitly', () => {
 		createSessionInMemory('session-1');
 		expect(deleteSessionInMemory('session-1')).toBe(true);
-		expect(activeSessions.has('session-1')).toBe(false);
+		expect(ACTIVE_SESSIONS.has('session-1')).toBe(false);
 	});
 
 	it('limits repeated in-memory session creation attempts per IP window', () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse, mockTxtRecords, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
-import { inMemoryCache } from '../src/lib/cache';
+import { IN_MEMORY_CACHE } from '../src/lib/cache';
 
 const { restore } = setupFetchMock();
 
@@ -417,7 +417,7 @@ describe('formatCheckResult - via handleToolsCall', () => {
 	});
 
 	it('subdomain takeover output includes takeover verification status when present', async () => {
-		inMemoryCache.clear();
+		IN_MEMORY_CACHE.clear();
 
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;

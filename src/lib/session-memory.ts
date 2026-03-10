@@ -12,7 +12,7 @@ export interface SessionCreateRateResult {
 }
 
 /** Active sessions keyed by session ID */
-export const activeSessions = new Map<string, SessionRecord>();
+export const ACTIVE_SESSIONS = new Map<string, SessionRecord>();
 
 /** Session idle TTL (30 minutes) */
 export const SESSION_TTL_MS = 30 * 60 * 1000;
@@ -24,7 +24,7 @@ const MAX_IN_MEMORY_SESSIONS = 2000;
 const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
 let lastCleanupAt = 0;
-const sessionCreateByIp = new Map<string, number[]>();
+const SESSION_CREATE_BY_IP = new Map<string, number[]>();
 
 function isExpired(lastAccessedAt: number, now: number): boolean {
 	return now - lastAccessedAt > SESSION_TTL_MS;
@@ -34,9 +34,9 @@ function maybeCleanupSessions(now: number): void {
 	if (now - lastCleanupAt < SESSION_CLEANUP_INTERVAL_MS) return;
 	lastCleanupAt = now;
 
-	for (const [id, session] of activeSessions.entries()) {
+	for (const [id, session] of ACTIVE_SESSIONS.entries()) {
 		if (isExpired(session.lastAccessedAt, now)) {
-			activeSessions.delete(id);
+			ACTIVE_SESSIONS.delete(id);
 		}
 	}
 }
@@ -45,7 +45,7 @@ function evictLeastRecentlyUsedSession(): void {
 	let oldestId: string | undefined;
 	let oldestAccess = Number.POSITIVE_INFINITY;
 
-	for (const [id, session] of activeSessions.entries()) {
+	for (const [id, session] of ACTIVE_SESSIONS.entries()) {
 		if (session.lastAccessedAt < oldestAccess) {
 			oldestAccess = session.lastAccessedAt;
 			oldestId = id;
@@ -53,14 +53,14 @@ function evictLeastRecentlyUsedSession(): void {
 	}
 
 	if (oldestId) {
-		activeSessions.delete(oldestId);
+		ACTIVE_SESSIONS.delete(oldestId);
 	}
 }
 
 export function checkSessionCreateRateLimitInMemory(ip: string): SessionCreateRateResult {
 	const now = Date.now();
 	const key = ip || 'unknown';
-	const existing = sessionCreateByIp.get(key) ?? [];
+	const existing = SESSION_CREATE_BY_IP.get(key) ?? [];
 	const recent = pruneTimestamps(existing, SESSION_CREATE_WINDOW_MS, now);
 
 	if (recent.length >= SESSION_CREATE_LIMIT_PER_MINUTE) {
@@ -73,7 +73,7 @@ export function checkSessionCreateRateLimitInMemory(ip: string): SessionCreateRa
 	}
 
 	recent.push(now);
-	sessionCreateByIp.set(key, recent);
+	SESSION_CREATE_BY_IP.set(key, recent);
 	return {
 		allowed: true,
 		remaining: SESSION_CREATE_LIMIT_PER_MINUTE - recent.length,
@@ -83,9 +83,9 @@ export function checkSessionCreateRateLimitInMemory(ip: string): SessionCreateRa
 export function createSessionInMemory(id: string): void {
 	const now = Date.now();
 	const record: SessionRecord = { createdAt: now, lastAccessedAt: now };
-	activeSessions.set(id, record);
+	ACTIVE_SESSIONS.set(id, record);
 	maybeCleanupSessions(now);
-	if (activeSessions.size > MAX_IN_MEMORY_SESSIONS) {
+	if (ACTIVE_SESSIONS.size > MAX_IN_MEMORY_SESSIONS) {
 		evictLeastRecentlyUsedSession();
 	}
 }
@@ -94,11 +94,11 @@ export function validateSessionInMemory(id: string): boolean {
 	const now = Date.now();
 	maybeCleanupSessions(now);
 
-	const session = activeSessions.get(id);
+	const session = ACTIVE_SESSIONS.get(id);
 	if (!session) return false;
 
 	if (isExpired(session.lastAccessedAt, now)) {
-		activeSessions.delete(id);
+		ACTIVE_SESSIONS.delete(id);
 		return false;
 	}
 
@@ -109,11 +109,11 @@ export function validateSessionInMemory(id: string): boolean {
 }
 
 export function deleteSessionInMemory(id: string): boolean {
-	return activeSessions.delete(id);
+	return ACTIVE_SESSIONS.delete(id);
 }
 
 export function resetSessions(): void {
-	activeSessions.clear();
-	sessionCreateByIp.clear();
+	ACTIVE_SESSIONS.clear();
+	SESSION_CREATE_BY_IP.clear();
 	lastCleanupAt = 0;
 }
