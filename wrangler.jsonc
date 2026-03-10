@@ -16,20 +16,11 @@
   "observability": {
     "enabled": true
   },
-  // Public repository config intentionally omits real KV/Analytics bindings.
-  // For private deployments, copy `wrangler.private.example.jsonc` to
-  // `.dev/wrangler.deploy.jsonc`, replace the placeholders with real resource
-  // identifiers, and deploy with `npm run deploy:private`.
-  //
-  // Placeholder example:
-  // "kv_namespaces": [
-  //   { "binding": "RATE_LIMIT", "id": "YOUR_RATE_LIMIT_KV_NAMESPACE_ID" },
-  //   { "binding": "SCAN_CACHE", "id": "YOUR_SCAN_CACHE_KV_NAMESPACE_ID" },
-  //   { "binding": "SESSION_STORE", "id": "YOUR_SESSION_STORE_KV_NAMESPACE_ID" }
-  // ],
-  // "analytics_engine_datasets": [
-  //   { "binding": "MCP_ANALYTICS", "dataset": "your_analytics_dataset" }
-  // ],
+  "kv_namespaces": [
+    { "binding": "RATE_LIMIT", "id": "PLACEHOLDER_RATE_LIMIT_KV_ID" },
+    { "binding": "SCAN_CACHE", "id": "PLACEHOLDER_SCAN_CACHE_KV_ID" },
+    { "binding": "SESSION_STORE", "id": "PLACEHOLDER_SESSION_STORE_KV_ID" }
+  ],
   // Optional auth: leave empty for open mode.
   "vars": {
     "BV_API_KEY": "",
