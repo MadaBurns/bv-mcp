@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * DNSSEC (DNS Security Extensions) check tool.
  * Validates DNSSEC by checking the AD flag, querying for DNSKEY/DS records,

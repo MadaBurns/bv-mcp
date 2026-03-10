@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { handleToolsList, handleToolsCall } from '../handlers/tools';
 import { handleResourcesList, handleResourcesRead } from '../handlers/resources';
 import { parseAllowedHosts } from './request';

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { DurableObject } from 'cloudflare:workers';
 
 const COORDINATOR_NAME = 'global-quota-coordinator';

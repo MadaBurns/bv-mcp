@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { checkControlPlaneRateLimit } from '../lib/rate-limiter';
 import { validateSession } from '../lib/session';
 import { JSON_RPC_ERRORS, jsonRpcError } from '../lib/json-rpc';

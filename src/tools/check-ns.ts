@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * NS (Name Server) check tool.
  * Validates nameserver configuration for a domain.

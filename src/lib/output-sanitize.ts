@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { sanitizeInput } from './sanitize';
 
 const MARKDOWN_SYNTAX = /[`*_#[\]()>|]/g;

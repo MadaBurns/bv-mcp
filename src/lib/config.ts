@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * Centralized configuration for domain normalization and validation.
  */

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * SPF Trust Surface Analysis.
  * Identifies when SPF include: or redirect= directives delegate sending

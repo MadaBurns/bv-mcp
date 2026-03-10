@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * BIMI (Brand Indicators for Message Identification) check tool.
  * Queries TXT records at default._bimi.<domain> and validates

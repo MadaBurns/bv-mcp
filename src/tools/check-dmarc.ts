@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * DMARC (Domain-based Message Authentication, Reporting & Conformance) check tool.
  * Queries _dmarc TXT records and validates the policy.
