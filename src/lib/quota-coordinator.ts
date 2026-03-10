@@ -92,7 +92,7 @@ async function callCoordinator<T>(
 		return undefined;
 	}
 
-	return (await response.json()) as T;
+	return (await response.json()) as T; // response shape matches the generic T per handler contract
 }
 
 export async function checkScopedRateLimitWithCoordinator(
@@ -155,7 +155,7 @@ export async function resetQuotaCoordinatorState(namespace?: DurableObjectNamesp
 
 function normalizeRecord(record: unknown, now: number): CounterRecord | undefined {
 	if (!record || typeof record !== 'object') return undefined;
-	const candidate = record as Partial<CounterRecord>;
+	const candidate = record as Partial<CounterRecord>; // typeof record === 'object' checked above; fields validated below
 	if (typeof candidate.count !== 'number' || typeof candidate.expiresAt !== 'number') return undefined;
 	if (candidate.expiresAt <= now) return undefined;
 	return { count: candidate.count, expiresAt: candidate.expiresAt };
@@ -193,6 +193,25 @@ function globalDailyKey(now: number): string {
 
 function sessionCreateKey(ip: string, windowMs: number, now: number): string {
 	return `${KEY_PREFIX}session:create:${ip}:${Math.floor(now / windowMs)}`;
+}
+
+const VALID_KINDS = new Set<string>(['scoped-rate', 'tool-daily', 'global-daily', 'session-create', 'reset']);
+
+/** Validate a raw JSON payload against the QuotaCoordinatorRequest discriminated union */
+export function validateQuotaPayload(
+	raw: unknown,
+): { valid: true; payload: QuotaCoordinatorRequest } | { valid: false; error: string } {
+	if (!raw || typeof raw !== 'object' || !('kind' in raw)) {
+		return { valid: false, error: 'Invalid payload: missing kind' };
+	}
+
+	const { kind } = raw as { kind: unknown }; // safe: 'kind' in raw is checked above
+	if (typeof kind !== 'string' || !VALID_KINDS.has(kind)) {
+		return { valid: false, error: `Invalid payload: unknown kind "${String(kind)}"` };
+	}
+
+	// kind is validated — safe to treat as QuotaCoordinatorRequest
+	return { valid: true, payload: raw as QuotaCoordinatorRequest };
 }
 
 export class QuotaCoordinator extends DurableObject<Env> {
@@ -358,7 +377,13 @@ export class QuotaCoordinator extends DurableObject<Env> {
 			return new Response('Method Not Allowed', { status: 405 });
 		}
 
-		const payload = (await request.json()) as QuotaCoordinatorRequest;
+		const raw: unknown = await request.json();
+		const validation = validateQuotaPayload(raw);
+		if (!validation.valid) {
+			return new Response(validation.error, { status: 400 });
+		}
+
+		const payload = validation.payload;
 		switch (payload.kind) {
 			case 'scoped-rate':
 				return Response.json(await this.handleScopedRateLimit(payload));
@@ -372,6 +397,9 @@ export class QuotaCoordinator extends DurableObject<Env> {
 				await this.ctx.storage.deleteAll();
 				await this.ctx.storage.deleteAlarm();
 				return new Response(null, { status: 204 });
+			default:
+				// Unreachable — validateQuotaPayload ensures kind is valid
+				return new Response('Invalid payload', { status: 400 });
 		}
 	}
 

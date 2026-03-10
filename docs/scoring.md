@@ -1,23 +1,28 @@
 # Scoring Methodology
 
-Canonical scoring reference for `scan_domain` results.
+Canonical scoring reference for `scan_domain` results. Aligned with bv-web AI-Resilience v4.0.
 
 ## Category Importance Weights
 
 Overall score is computed from category scores weighted by importance.
 
-| Category | Importance |
-| --- | ---: |
-| DMARC | 22 |
-| SPF | 19 |
-| DKIM | 10 |
-| SSL | 8 |
-| DNSSEC | 3 |
-| MTA-STS | 3 |
-| NS | 3 |
-| CAA | 2 |
-| Subdomain Takeover | 2 |
-| MX | 0 |
+| Category | Importance | Notes |
+| --- | ---: | --- |
+| DMARC | 22 | |
+| DKIM | 16 | |
+| SPF | 10 | |
+| SSL | 5 | |
+| Subdomain Takeover | 3 | |
+| DNSSEC | 2 | |
+| MTA-STS | 2 | |
+| MX | 2 | |
+| TLS-RPT | 1 | |
+| NS | 0 | Informational |
+| CAA | 0 | Informational |
+| BIMI | 0 | Informational |
+| Lookalikes | 0 | Informational |
+
+Scored total: **63** (+ up to 8 email bonus = 71 max denominator).
 
 Source: `IMPORTANCE_WEIGHTS` in `src/lib/scoring-engine.ts`.
 
@@ -39,6 +44,16 @@ For weighted categories, findings that indicate missing required controls (for e
 
 Source: `scoreIndicatesMissingControl()` in `src/lib/scoring-engine.ts`.
 
+## Critical Gap Ceiling
+
+Domains missing any critical foundational control are capped at a maximum score of **64** (grade D+), regardless of how well other categories score. This prevents a domain with no DMARC (or missing SPF, DKIM, SSL, DNSSEC, or subdomain takeover protection) from receiving a passing grade.
+
+Critical categories: `spf`, `dmarc`, `dkim`, `ssl`, `dnssec`, `subdomain_takeover`.
+
+The ceiling is applied after all other scoring (weighted average, email bonus, provider modifier, critical penalty). If any critical category has a missing-control finding, `overall = min(computed, 64)`.
+
+Source: `CRITICAL_GAP_CEILING` and `computeScanScore()` in `src/lib/scoring-engine.ts`.
+
 ## Critical Finding Penalty
 
 If any **verified**-confidence critical finding exists across the scan, an additional overall penalty is applied after weighted scoring.
@@ -52,17 +67,17 @@ Source: `CRITICAL_OVERALL_PENALTY` and `computeScanScore()` in `src/lib/scoring-
 
 ## Email Bonus
 
-Up to `+5` points are added when all of the following are true:
+Up to `+8` points are added when all of the following are true:
 
 - SPF is present and strong (`score >= 57`)
 - DKIM is present
 - DMARC is present
 
-DMARC score determines bonus:
+DMARC score determines bonus tier:
 
-- DMARC `>= 90`: `+5`
-- DMARC `>= 70`: `+3`
-- Otherwise: `+2`
+- DMARC `>= 90`: `+8`
+- DMARC `>= 70`: `+5`
+- Otherwise: `+4`
 
 Source: `EMAIL_BONUS_IMPORTANCE`, `SPF_STRONG_THRESHOLD`, and bonus logic in `computeScanScore()`.
 
