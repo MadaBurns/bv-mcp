@@ -1,0 +1,32 @@
+name: DNS Security Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # Weekly Monday 6am UTC
+
+jobs:
+  dns-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan blackveilsecurity.com
+        uses: MadaBurns/blackveil-dns-action@v1
+        id: scan
+        with:
+          domain: blackveilsecurity.com
+          minimum-grade: B
+
+      - name: Print results
+        if: always()
+        env:
+          SCORE: ${{ steps.scan.outputs.score }}
+          GRADE: ${{ steps.scan.outputs.grade }}
+          MATURITY: ${{ steps.scan.outputs.maturity }}
+          PASSED: ${{ steps.scan.outputs.passed }}
+        run: |
+          echo "Score: $SCORE"
+          echo "Grade: $GRADE"
+          echo "Maturity: $MATURITY"
+          echo "Passed: $PASSED"
