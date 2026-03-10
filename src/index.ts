@@ -33,6 +33,7 @@ import type { JsonRpcRequest } from './lib/json-rpc';
 import { dispatchMcpMethod } from './mcp/dispatch';
 import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionRequest } from './mcp/route-gates';
 import { MAX_REQUEST_BODY_BYTES, FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT } from './lib/config';
+import { normalizeToolName } from './handlers/tool-args';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { scanDomain } from './tools/scan-domain';
 import { gradeBadge, errorBadge } from './lib/badge';
@@ -389,7 +390,7 @@ app.post('/mcp', async (c) => {
 		const toolNameRaw =
 			// 'in' guard ensures 'name' exists; cast to Record is safe after typeof+null check
 			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
-		const toolName = typeof toolNameRaw === 'string' ? toolNameRaw.trim().toLowerCase() : '';
+		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : '';
 		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
 		if (toolDailyLimit !== undefined) {
 			const toolQuotaResult = await checkToolDailyRateLimit(ip, toolName, toolDailyLimit, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
