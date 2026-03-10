@@ -20,8 +20,8 @@ const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 const CLEANUP_INTERVAL_MS = 300_000;
 
-const entries = new Map<string, RateLimitEntry>();
-const toolDailyEntries = new Map<string, ToolDailyRateLimitEntry>();
+const RATE_LIMIT_ENTRIES = new Map<string, RateLimitEntry>();
+const TOOL_DAILY_ENTRIES = new Map<string, ToolDailyRateLimitEntry>();
 let lastCleanup = Date.now();
 
 /** Prune timestamps that fall outside a sliding window. */
@@ -39,28 +39,28 @@ function cleanupExpiredEntries(now: number): void {
 	lastCleanup = now;
 
 	const hourCutoff = now - HOUR_MS;
-	for (const [key, entry] of entries) {
+	for (const [key, entry] of RATE_LIMIT_ENTRIES) {
 		if (entry.hour.timestamps.length === 0 || entry.hour.timestamps[entry.hour.timestamps.length - 1] <= hourCutoff) {
-			entries.delete(key);
+			RATE_LIMIT_ENTRIES.delete(key);
 		}
 	}
 
 	const dayCutoff = now - DAY_MS;
-	for (const [key, entry] of toolDailyEntries) {
+	for (const [key, entry] of TOOL_DAILY_ENTRIES) {
 		if (entry.timestamps.length === 0 || entry.timestamps[entry.timestamps.length - 1] <= dayCutoff) {
-			toolDailyEntries.delete(key);
+			TOOL_DAILY_ENTRIES.delete(key);
 		}
 	}
 }
 
 function getOrCreateEntry(key: string): RateLimitEntry {
-	let entry = entries.get(key);
+	let entry = RATE_LIMIT_ENTRIES.get(key);
 	if (!entry) {
 		entry = {
 			minute: { timestamps: [] },
 			hour: { timestamps: [] },
 		};
-		entries.set(key, entry);
+		RATE_LIMIT_ENTRIES.set(key, entry);
 	}
 	return entry;
 }
@@ -70,10 +70,10 @@ function buildScopedEntryKey(ip: string, scope: RateLimitScope): string {
 }
 
 function getOrCreateToolDailyEntry(key: string): ToolDailyRateLimitEntry {
-	let entry = toolDailyEntries.get(key);
+	let entry = TOOL_DAILY_ENTRIES.get(key);
 	if (!entry) {
 		entry = { timestamps: [] };
-		toolDailyEntries.set(key, entry);
+		TOOL_DAILY_ENTRIES.set(key, entry);
 	}
 	return entry;
 }
@@ -150,12 +150,12 @@ export function checkToolDailyRateLimitInMemory(principalId: string, toolName: s
 }
 
 export function resetRateLimit(ip: string): void {
-	entries.delete(buildScopedEntryKey(ip, 'tools'));
-	entries.delete(buildScopedEntryKey(ip, 'control'));
+	RATE_LIMIT_ENTRIES.delete(buildScopedEntryKey(ip, 'tools'));
+	RATE_LIMIT_ENTRIES.delete(buildScopedEntryKey(ip, 'control'));
 }
 
 export function resetAllRateLimits(): void {
-	entries.clear();
-	toolDailyEntries.clear();
+	RATE_LIMIT_ENTRIES.clear();
+	TOOL_DAILY_ENTRIES.clear();
 	lastCleanup = Date.now();
 }
