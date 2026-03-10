@@ -31,6 +31,9 @@ import type { JsonRpcRequest } from './lib/json-rpc';
 import { dispatchMcpMethod } from './mcp/dispatch';
 import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionRequest } from './mcp/route-gates';
 import { MAX_REQUEST_BODY_BYTES, FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT } from './lib/config';
+import { validateDomain, sanitizeDomain } from './lib/sanitize';
+import { scanDomain } from './tools/scan-domain';
+import { gradeBadge, errorBadge } from './lib/badge';
 export { QuotaCoordinator } from './lib/quota-coordinator';
 
 /** Server version — keep in sync with package.json */
@@ -229,6 +232,42 @@ app.get('/health', (c) => {
 		},
 		timestamp: new Date().toISOString(),
 	});
+});
+
+// ---------------------------------------------------------------------------
+// Badge endpoint — GET /badge/:domain
+// ---------------------------------------------------------------------------
+app.get('/badge/:domain', async (c) => {
+	const svgHeaders = {
+		'Content-Type': 'image/svg+xml',
+		'Cache-Control': 'public, max-age=300',
+	};
+
+	// Rate limiting by IP (unauthenticated only)
+	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+	const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
+	if (!rateResult.allowed) {
+		return new Response(errorBadge(), { status: 429, headers: svgHeaders });
+	}
+
+	const rawDomain = c.req.param('domain');
+	const validation = validateDomain(rawDomain);
+	if (!validation.valid) {
+		return new Response(errorBadge(), { status: 400, headers: svgHeaders });
+	}
+
+	const domain = sanitizeDomain(rawDomain);
+	if (!domain) {
+		return new Response(errorBadge(), { status: 400, headers: svgHeaders });
+	}
+
+	try {
+		const result = await scanDomain(domain, c.env.SCAN_CACHE);
+		const svg = gradeBadge(result.score.grade);
+		return new Response(svg, { status: 200, headers: svgHeaders });
+	} catch {
+		return new Response(errorBadge(), { status: 500, headers: svgHeaders });
+	}
 });
 
 // ---------------------------------------------------------------------------
