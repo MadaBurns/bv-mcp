@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * DKIM (DomainKeys Identified Mail) check tool.
  * Queries common DKIM selector TXT records and validates configuration.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { type Finding, createFinding } from '../lib/scoring';
 
 /** DNSKEY algorithm number to human-readable name and security status */

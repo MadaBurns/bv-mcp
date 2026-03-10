@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { queryTxtRecords } from '../lib/dns';
 import type { Finding } from '../lib/scoring';
 import { createFinding } from '../lib/scoring';

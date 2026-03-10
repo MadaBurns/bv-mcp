@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { logEvent, logError } from '../lib/log';
 import type { AnalyticsClient } from '../lib/analytics';
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * Explain Finding tool.
  * Provides static explanations for DNS security findings.

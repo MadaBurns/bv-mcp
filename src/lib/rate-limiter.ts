@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * Rate limiter for the DNS Security MCP Server.
  * Enforces per-IP limits: 30 requests/minute, 200 requests/hour.

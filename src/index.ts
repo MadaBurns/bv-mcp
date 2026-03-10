@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * DNS Security MCP Server - Main Entry Point
  *

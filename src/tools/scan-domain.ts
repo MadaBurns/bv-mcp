@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * scan-domain orchestrator tool.
  * Runs all DNS security checks in parallel via Promise.all

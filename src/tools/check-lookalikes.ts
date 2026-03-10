@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * Lookalike domain detection tool.
  * Generates typosquat/lookalike domain permutations and checks for

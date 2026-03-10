@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import type { RateLimitResult, ToolDailyRateLimitResult } from './rate-limiter';
 
 interface RateLimitWindow {

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /** Standard DNS record type codes */
 export const RecordType = {
 	A: 1,

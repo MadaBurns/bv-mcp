@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * Subdomain Takeover / Dangling CNAME Detection Tool
  * Scans known/active subdomains for orphaned CNAME records pointing to deleted/unresolved third-party services.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * MCP Tool schema definitions for Blackveil DNS.
  * Contains all tool metadata (names, descriptions, input schemas)

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * TTL cache for DNS scan results.
  *

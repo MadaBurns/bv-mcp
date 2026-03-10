@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { queryDns } from './dns-transport';
 import { RecordType, type RecordTypeName } from './dns-types';
 

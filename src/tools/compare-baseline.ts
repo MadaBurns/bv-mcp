@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * Baseline comparison tool.
  * Compares a scan result against a policy floor for org-level enforcement.

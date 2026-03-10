@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * Email Security Maturity Staging.
  * Classifies a domain's email security posture into a maturity stage (0-4)

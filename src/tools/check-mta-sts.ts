@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * MTA-STS (Mail Transfer Agent Strict Transport Security) check tool.
  * Queries _mta-sts TXT records and validates the MTA-STS policy.

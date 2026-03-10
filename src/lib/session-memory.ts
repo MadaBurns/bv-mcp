@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { pruneTimestamps } from './rate-limiter';
 
 export interface SessionRecord {

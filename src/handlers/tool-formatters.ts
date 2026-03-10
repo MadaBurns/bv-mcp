@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import type { CheckResult } from '../lib/scoring';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { resolveImpactNarrative } from '../tools/explain-finding';

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * DNS query library using Cloudflare DNS-over-HTTPS (DoH).
  * All queries go through https://cloudflare-dns.com/dns-query
