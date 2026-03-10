@@ -119,6 +119,67 @@ export const TOOLS: McpTool[] = [
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
+		name: 'compare_baseline',
+		description:
+			'Compare a domain scan against a policy baseline. Returns violations where the domain falls below the specified minimums. Useful for MSPs and security teams enforcing org-level standards.',
+		inputSchema: {
+			type: 'object' as const,
+			properties: {
+				domain: {
+					type: 'string',
+					description: 'The domain to scan and compare.',
+				},
+				baseline: {
+					type: 'object',
+					description: 'Policy baseline. Keys are category names or "grade"/"score". Values are minimums.',
+					properties: {
+						grade: {
+							type: 'string',
+							description: 'Minimum acceptable grade (e.g., "B+"). Violation if scan grade is worse.',
+						},
+						score: {
+							type: 'number',
+							description: 'Minimum acceptable overall score (0-100).',
+						},
+						require_dmarc_enforce: {
+							type: 'boolean',
+							description: 'Require DMARC p=quarantine or p=reject (not p=none).',
+						},
+						require_spf: {
+							type: 'boolean',
+							description: 'Require a valid SPF record.',
+						},
+						require_dkim: {
+							type: 'boolean',
+							description: 'Require at least one DKIM key.',
+						},
+						require_dnssec: {
+							type: 'boolean',
+							description: 'Require DNSSEC validation.',
+						},
+						require_mta_sts: {
+							type: 'boolean',
+							description: 'Require MTA-STS policy.',
+						},
+						require_caa: {
+							type: 'boolean',
+							description: 'Require CAA records.',
+						},
+						max_critical_findings: {
+							type: 'number',
+							description: 'Maximum allowed critical-severity findings (default: 0).',
+						},
+						max_high_findings: {
+							type: 'number',
+							description: 'Maximum allowed high-severity findings.',
+						},
+					},
+				},
+			},
+			required: ['domain', 'baseline'],
+		},
+	},
+	{
 		name: 'explain_finding',
 		description: 'Get a plain-language explanation of a DNS security finding, including potential impact, adverse consequences, and recommended remediation steps.',
 		inputSchema: {
