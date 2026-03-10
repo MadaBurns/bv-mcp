@@ -359,7 +359,7 @@ app.post('/mcp', async (c) => {
 
 		const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
 		rateHeaders = {
-			'x-ratelimit-limit': '30',
+			'x-ratelimit-limit': '50',
 			'x-ratelimit-remaining': String(rateResult.minuteRemaining),
 		};
 		if (!rateResult.allowed) {
