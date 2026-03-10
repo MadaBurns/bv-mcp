@@ -28,11 +28,13 @@
 			<div class="config">{
   "mcpServers": {
     "blackveil-dns": {
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+      "command": "npx",
+      "args": ["mcp-remote",
+        "https://dns-mcp.blackveilsecurity.com/mcp"]
     }
   }
 }</div>
-			<p style="color:#666; font-size:0.8rem; margin-top:0.5rem;">If you already have other servers, merge <code>blackveil-dns</code> into your existing <code>mcpServers</code> object.</p>
+			<p style="color:#666; font-size:0.8rem; margin-top:0.5rem;">Requires Node.js. Or use <a href="https://claude.ai">claude.ai</a> → Settings → Connectors → Add custom connector.</p>
 			<div class="links">
 				<a href="https://github.com/MadaBurns/bv-mcp">GitHub</a>
 				<a href="https://blackveilsecurity.com">BLACKVEIL</a>

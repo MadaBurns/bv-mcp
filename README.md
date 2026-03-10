@@ -156,34 +156,22 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 <details>
 <summary><b>Claude Desktop</b></summary>
 
-Open **Settings → Developer → Edit Config** to open `claude_desktop_config.json`.
+**Easiest:** Open [claude.ai](https://claude.ai) → **Settings → Connectors → Add custom connector** → paste `https://dns-mcp.blackveilsecurity.com/mcp`.
 
-If the file is **empty or new**, paste this:
+**Config file:** Open **Settings → Developer → Edit Config** (`claude_desktop_config.json`) and add:
 
 ```json
 {
   "mcpServers": {
     "blackveil-dns": {
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+      "command": "npx",
+      "args": ["mcp-remote", "https://dns-mcp.blackveilsecurity.com/mcp"]
     }
   }
 }
 ```
 
-If you **already have other MCP servers**, add the `"blackveil-dns"` entry inside your existing `"mcpServers"` object:
-
-```json
-{
-  "mcpServers": {
-    "existing-server": { "...": "..." },
-    "blackveil-dns": {
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
-    }
-  }
-}
-```
-
-> **Common error:** Pasting the full JSON block into a file that already has content creates two root objects, which breaks JSON parsing. Always merge into the existing `mcpServers` object.
+> Requires Node.js. If you already have other servers, merge `"blackveil-dns"` into your existing `"mcpServers"` object — don't paste a second `{ }` wrapper.
 
 </details>
 
