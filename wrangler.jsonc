@@ -16,11 +16,23 @@
   "observability": {
     "enabled": true
   },
-  "kv_namespaces": [
-    { "binding": "RATE_LIMIT", "id": "PLACEHOLDER_RATE_LIMIT_KV_ID" },
-    { "binding": "SCAN_CACHE", "id": "PLACEHOLDER_SCAN_CACHE_KV_ID" },
-    { "binding": "SESSION_STORE", "id": "PLACEHOLDER_SESSION_STORE_KV_ID" }
-  ],
+  // KV namespaces — required for production (cross-isolate sessions, caching,
+  // rate limiting). Without these, Workers fall back to in-memory stores which
+  // are per-isolate and will cause session 404s with MCP clients.
+  //
+  // Create namespaces:
+  //   npx wrangler kv namespace create "RATE_LIMIT"
+  //   npx wrangler kv namespace create "SCAN_CACHE"
+  //   npx wrangler kv namespace create "SESSION_STORE"
+  //
+  // Then add real IDs to .dev/wrangler.deploy.jsonc (gitignored) and deploy
+  // with: npx wrangler deploy -c .dev/wrangler.deploy.jsonc
+  //
+  // "kv_namespaces": [
+  //   { "binding": "RATE_LIMIT", "id": "<YOUR_RATE_LIMIT_KV_ID>" },
+  //   { "binding": "SCAN_CACHE", "id": "<YOUR_SCAN_CACHE_KV_ID>" },
+  //   { "binding": "SESSION_STORE", "id": "<YOUR_SESSION_STORE_KV_ID>" }
+  // ],
   // Optional auth: leave empty for open mode.
   "vars": {
     "BV_API_KEY": "",

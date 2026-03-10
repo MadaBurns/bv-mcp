@@ -178,13 +178,28 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEI
 
 - `.github/workflows/ci.yml`: typecheck + test on PRs and pushes to `main`
 
+## Deployment
+
+The public `wrangler.jsonc` has placeholder KV bindings (commented out). Real deployments use a gitignored private config:
+
+```bash
+npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
+```
+
+**First-time setup:**
+1. Create KV namespaces: `npx wrangler kv namespace create "RATE_LIMIT"` (repeat for `SCAN_CACHE`, `SESSION_STORE`)
+2. Copy `wrangler.jsonc` to `.dev/wrangler.deploy.jsonc`, uncomment the `kv_namespaces` block, and replace placeholder IDs with the real ones from step 1
+3. Deploy: `npm run deploy:private`
+
+**Important:** KV bindings are required for production. Without them, sessions are per-Worker-isolate and MCP clients will get intermittent 404 "session expired" errors when requests hit different isolates.
+
 ## Bindings
 
 | Binding | Type | Purpose |
 |---------|------|---------|
 | `BV_API_KEY` | Secret/var | Optional bearer auth (open when empty) |
 | `ALLOWED_ORIGINS` | var | Comma-separated allowed Origin headers (optional; same-origin allowed by default) |
-| `RATE_LIMIT` | KV Namespace | Per-IP rate counters (optional, in-memory fallback) |
-| `SCAN_CACHE` | KV Namespace | 5-min TTL result cache (optional, in-memory fallback) |
-| `SESSION_STORE` | KV Namespace | Session state for cross-isolate continuity (optional, in-memory fallback) |
+| `RATE_LIMIT` | KV Namespace | Per-IP rate counters (**required in production**; in-memory fallback for dev) |
+| `SCAN_CACHE` | KV Namespace | 5-min TTL result cache (**required in production**; in-memory fallback for dev) |
+| `SESSION_STORE` | KV Namespace | Session state for cross-isolate continuity (**required in production**; in-memory fallback for dev) |
 
