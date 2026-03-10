@@ -57,7 +57,7 @@ const DAY_MS = 86_400_000;
 
 // Best-effort per-IP serialization for KV updates inside a single isolate.
 // This does not provide cross-isolate atomicity, but it prevents local races.
-const kvIpLockTails = new Map<string, Promise<void>>();
+const KV_IP_LOCK_TAILS = new Map<string, Promise<void>>();
 
 function checkRateLimitInMemory(ip: string): RateLimitResult {
 	return checkScopedRateLimitInMemory(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT);
@@ -139,21 +139,21 @@ async function checkControlPlaneRateLimitKV(ip: string, kv: KVNamespace): Promis
 }
 
 async function withIpKvLock<T>(ip: string, work: () => Promise<T>): Promise<T> {
-	const prevTail = kvIpLockTails.get(ip) ?? Promise.resolve();
+	const prevTail = KV_IP_LOCK_TAILS.get(ip) ?? Promise.resolve();
 	let release: (() => void) | undefined;
 	const current = new Promise<void>((resolve) => {
 		release = resolve;
 	});
 	const tail = prevTail.then(() => current);
-	kvIpLockTails.set(ip, tail);
+	KV_IP_LOCK_TAILS.set(ip, tail);
 
 	await prevTail;
 	try {
 		return await work();
 	} finally {
 		release?.();
-		if (kvIpLockTails.get(ip) === tail) {
-			kvIpLockTails.delete(ip);
+		if (KV_IP_LOCK_TAILS.get(ip) === tail) {
+			KV_IP_LOCK_TAILS.delete(ip);
 		}
 	}
 }

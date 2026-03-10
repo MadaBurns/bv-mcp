@@ -15,23 +15,23 @@ interface ImportanceProfile {
  * Scanner-aligned importance weighting for the checks currently supported by this MCP server.
  * Values are sourced from blackveilsecurity.com score engine for overlapping checks.
  */
-const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
-	spf: { importance: 19 },
+export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
+	spf: { importance: 10 },
 	dmarc: { importance: 22 },
-	dkim: { importance: 10 },
-	dnssec: { importance: 3 },
-	ssl: { importance: 8 },
-	mta_sts: { importance: 3 },
-	ns: { importance: 3 },
-	caa: { importance: 2 },
-	subdomain_takeover: { importance: 2 },
-	mx: { importance: 0 },
-	bimi: { importance: 1 },
+	dkim: { importance: 16 },
+	dnssec: { importance: 2 },
+	ssl: { importance: 5 },
+	mta_sts: { importance: 2 },
+	ns: { importance: 0 },
+	caa: { importance: 0 },
+	subdomain_takeover: { importance: 3 },
+	mx: { importance: 2 },
+	bimi: { importance: 0 },
 	tlsrpt: { importance: 1 },
 	lookalikes: { importance: 0 },
 };
 
-const EMAIL_BONUS_IMPORTANCE = 5;
+const EMAIL_BONUS_IMPORTANCE = 8;
 const SPF_STRONG_THRESHOLD = 57;
 const CRITICAL_OVERALL_PENALTY = 15;
 
@@ -86,10 +86,12 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 	const partialScores: Partial<Record<CheckCategory, number>> = {};
 	const allFindings: Finding[] = [];
 
+	// CATEGORY_DISPLAY_WEIGHTS is Record<CheckCategory, number> — Object.keys returns string[], cast is safe
 	for (const category of Object.keys(CATEGORY_DISPLAY_WEIGHTS) as CheckCategory[]) {
 		partialScores[category] = 100;
 	}
 
+	// All CheckCategory keys are populated above — safe to widen from Partial
 	const categoryScores = partialScores as Record<CheckCategory, number>;
 
 	if (results.length === 0) {
@@ -110,6 +112,7 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 	let earnedPoints = 0;
 	let maxPoints = 0;
 
+	// IMPORTANCE_WEIGHTS is Record<CheckCategory, ImportanceProfile> — Object.keys returns string[], cast is safe
 	for (const category of Object.keys(IMPORTANCE_WEIGHTS) as CheckCategory[]) {
 		const { importance } = IMPORTANCE_WEIGHTS[category];
 		maxPoints += importance;
@@ -151,7 +154,16 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 		(finding) => finding.severity === 'critical' && inferFindingConfidence(finding) === 'verified',
 	).length;
 	const criticalPenalty = verifiedCriticalCount > 0 ? CRITICAL_OVERALL_PENALTY : 0;
-	const overall = clampPercent(baseOverall + providerModifier - criticalPenalty);
+	const preCeiling = clampPercent(baseOverall + providerModifier - criticalPenalty);
+
+	// Critical gap ceiling: cap score when foundational controls are missing
+	const CRITICAL_GAP_CEILING = 64;
+	const CRITICAL_CATEGORIES: CheckCategory[] = ['spf', 'dmarc', 'dkim', 'ssl', 'dnssec', 'subdomain_takeover'];
+	const hasCriticalGap = CRITICAL_CATEGORIES.some((cat) => {
+		const result = results.find((r) => r.category === cat);
+		return result && scoreIndicatesMissingControl(result.findings);
+	});
+	const overall = hasCriticalGap ? Math.min(preCeiling, CRITICAL_GAP_CEILING) : preCeiling;
 
 	const grade = scoreToGrade(overall);
 

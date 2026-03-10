@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { TTLCache, cacheGet, cacheSet, inMemoryCache, runWithCache } from '../src/lib/cache';
+import { TTLCache, cacheGet, cacheSet, IN_MEMORY_CACHE, runWithCache } from '../src/lib/cache';
 
 afterEach(() => {
 	vi.restoreAllMocks();
-	inMemoryCache.clear();
+	IN_MEMORY_CACHE.clear();
 });
 
 describe('TTLCache', () => {
@@ -129,14 +129,14 @@ describe('TTLCache', () => {
 
 describe('cacheGet / cacheSet (KV-backed)', () => {
 	it('without KV: cacheGet returns value from in-memory cache', async () => {
-		inMemoryCache.set('key1', 'memval');
+		IN_MEMORY_CACHE.set('key1', 'memval');
 		const result = await cacheGet<string>('key1');
 		expect(result).toBe('memval');
 	});
 
 	it('without KV: cacheSet writes to in-memory cache', async () => {
 		await cacheSet('key2', 'written');
-		expect(inMemoryCache.get('key2')).toBe('written');
+		expect(IN_MEMORY_CACHE.get('key2')).toBe('written');
 	});
 
 	it('with KV: cacheGet returns value from KV', async () => {
@@ -171,14 +171,14 @@ describe('cacheGet / cacheSet (KV-backed)', () => {
 		const now = Date.now();
 		vi.spyOn(Date, 'now').mockReturnValue(now);
 		await cacheSet('ttl-key', 'val', undefined, 60);
-		expect(inMemoryCache.get('ttl-key')).toBe('val');
+		expect(IN_MEMORY_CACHE.get('ttl-key')).toBe('val');
 		// Should expire after 60 seconds (60000ms)
 		vi.spyOn(Date, 'now').mockReturnValue(now + 60_001);
-		expect(inMemoryCache.get('ttl-key')).toBeUndefined();
+		expect(IN_MEMORY_CACHE.get('ttl-key')).toBeUndefined();
 	});
 
 	it('KV error on get: silently falls back to in-memory', async () => {
-		inMemoryCache.set('fallback', 'inmem');
+		IN_MEMORY_CACHE.set('fallback', 'inmem');
 		const mockKV = {
 			get: vi.fn().mockRejectedValue(new Error('KV failure')),
 			put: vi.fn(),
@@ -193,13 +193,13 @@ describe('cacheGet / cacheSet (KV-backed)', () => {
 			put: vi.fn().mockRejectedValue(new Error('KV failure')),
 		};
 		await cacheSet('errkey', 'errval', mockKV as unknown as KVNamespace);
-		expect(inMemoryCache.get('errkey')).toBe('errval');
+		expect(IN_MEMORY_CACHE.get('errkey')).toBe('errval');
 	});
 
-	it('inMemoryCache is the global in-memory TTLCache instance', () => {
-		expect(inMemoryCache).toBeInstanceOf(TTLCache);
-		inMemoryCache.set('test', 'val');
-		expect(inMemoryCache.get('test')).toBe('val');
+	it('IN_MEMORY_CACHE is the global in-memory TTLCache instance', () => {
+		expect(IN_MEMORY_CACHE).toBeInstanceOf(TTLCache);
+		IN_MEMORY_CACHE.set('test', 'val');
+		expect(IN_MEMORY_CACHE.get('test')).toBe('val');
 	});
 });
 
@@ -231,7 +231,7 @@ describe('runWithCache (stampede protection)', () => {
 		expect(r1).toBe('value-1');
 
 		// Clear the cache so the second call actually runs
-		inMemoryCache.clear();
+		IN_MEMORY_CACHE.clear();
 
 		const r2 = await runWithCache('reuse-test', run);
 		expect(r2).toBe('value-2');
