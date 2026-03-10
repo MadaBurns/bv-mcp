@@ -57,7 +57,7 @@ export const DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY = true;
  * Protects from abuse by capping free usage at a service-wide level.
  * Authenticated requests are exempt.
  */
-export const GLOBAL_DAILY_TOOL_LIMIT = 10_000;
+export const GLOBAL_DAILY_TOOL_LIMIT = 100_000;
 
 /**
  * Free-tier daily tool quotas for unauthenticated callers.
