@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { validateDomain, sanitizeDomain } from '../lib/sanitize';
 
 const TOOL_ALIASES: Record<string, string> = {

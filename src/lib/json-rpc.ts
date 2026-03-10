@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * JSON-RPC 2.0 Protocol Utilities
  *

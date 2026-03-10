@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { type CheckCategory, type CheckResult, buildCheckResult, createFinding } from '../../lib/scoring';
 import { queryTxtRecords } from '../../lib/dns';
 import { detectProviderMatches, detectProviderMatchesBySelectors, loadProviderSignatures } from '../../lib/provider-signatures';

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import type { CheckResult } from '../lib/scoring';
 import { runWithCache } from '../lib/cache';
 import { sanitizeErrorMessage } from '../lib/json-rpc';

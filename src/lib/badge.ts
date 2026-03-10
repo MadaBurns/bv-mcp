@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * SVG badge generator for DNS security grades.
  * Produces shields.io-style flat badges compatible with Cloudflare Workers runtime.

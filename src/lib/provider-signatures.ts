@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import {
 	BUILT_IN_SIGNATURES,
 	buildResult,

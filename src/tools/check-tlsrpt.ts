@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * TLS-RPT (SMTP TLS Reporting) check tool.
  * Queries TXT records at _smtp._tls.<domain> and validates
