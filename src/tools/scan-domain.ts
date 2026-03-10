@@ -35,6 +35,12 @@ export type { ScanRuntimeOptions } from './scan/post-processing';
 /** Cache key prefix for scan and per-check results */
 const CACHE_PREFIX = 'cache:';
 
+/** Maximum wall-clock time for a single check within scan_domain (ms). */
+const PER_CHECK_TIMEOUT_MS = 15_000;
+
+/** Maximum wall-clock time for the entire scan_domain orchestration (ms). */
+const SCAN_TIMEOUT_MS = 25_000;
+
 export interface ScanDomainResult {
 	domain: string;
 	score: ScanScore;
@@ -61,50 +67,83 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		return { ...cached, cached: true };
 	}
 
-	// Run all checks in parallel with individual-check caching
-	let checkResults: CheckResult[] = await Promise.all([
-		runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain)), kv),
-		runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain)), kv),
-		runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain)), kv),
-		runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain)), kv),
-		runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain)), kv),
-		runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain)), kv),
-		runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain)), kv),
-		runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain)), kv),
-		runCachedCheck(domain, 'bimi', () => safeCheck('bimi', () => checkBimi(domain)), kv),
-		runCachedCheck(domain, 'tlsrpt', () => safeCheck('tlsrpt', () => checkTlsrpt(domain)), kv),
-		runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain)), kv),
-		runCachedCheck(
+	// Run all checks in parallel with per-check timeouts, wrapped in an
+	// overall scan timeout to guarantee a timely response.
+	const runAllChecks = async (): Promise<ScanDomainResult> => {
+		let checkResults: CheckResult[] = await Promise.all([
+			runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain)), kv),
+			runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain)), kv),
+			runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain)), kv),
+			runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain)), kv),
+			runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain)), kv),
+			runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain)), kv),
+			runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain)), kv),
+			runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain)), kv),
+			runCachedCheck(domain, 'bimi', () => safeCheck('bimi', () => checkBimi(domain)), kv),
+			runCachedCheck(domain, 'tlsrpt', () => safeCheck('tlsrpt', () => checkTlsrpt(domain)), kv),
+			runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain)), kv),
+			runCachedCheck(
+				domain,
+				'mx',
+				() =>
+					safeCheck(
+						'mx',
+						() =>
+							checkMx(domain, {
+								providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
+								providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
+								providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
+							}),
+					),
+				kv,
+			),
+		]);
+
+		checkResults = await applyScanPostProcessing(domain, checkResults, runtimeOptions);
+
+		const score = computeScanScore(checkResults);
+		const maturity = computeMaturityStage(checkResults);
+
+		return {
 			domain,
-			'mx',
-			() =>
-				safeCheck(
-					'mx',
-					() =>
-						checkMx(domain, {
-							providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
-							providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
-							providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
-						}),
-				),
-			kv,
-		),
-	]);
-
-	checkResults = await applyScanPostProcessing(domain, checkResults, runtimeOptions);
-
-	// Compute overall score from all check results
-	const score = computeScanScore(checkResults);
-	const maturity = computeMaturityStage(checkResults);
-
-	const result: ScanDomainResult = {
-		domain: domain,
-		score,
-		checks: checkResults,
-		maturity,
-		cached: false,
-		timestamp: new Date().toISOString(),
+			score,
+			checks: checkResults,
+			maturity,
+			cached: false,
+			timestamp: new Date().toISOString(),
+		};
 	};
+
+	let result: ScanDomainResult;
+	try {
+		result = await Promise.race([
+			runAllChecks(),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('__scan_timeout__')), SCAN_TIMEOUT_MS)),
+		]);
+	} catch (err) {
+		if (err instanceof Error && err.message === '__scan_timeout__') {
+			// Overall scan timed out — return a degraded result so the client
+			// still gets useful feedback instead of an opaque error.
+			const timeoutFinding = createFinding(
+				'ns',
+				'Scan timed out',
+				'low',
+				`Full scan of ${domain} exceeded the ${SCAN_TIMEOUT_MS / 1000}s time limit. Some checks may be incomplete. Try running individual checks or retry — results are cached progressively.`,
+			);
+			const fallbackResults = [buildCheckResult('ns', [timeoutFinding])];
+			const score = computeScanScore(fallbackResults);
+			const maturity = computeMaturityStage(fallbackResults);
+			return {
+				domain,
+				score,
+				checks: fallbackResults,
+				maturity,
+				cached: false,
+				timestamp: new Date().toISOString(),
+			};
+		}
+		throw err;
+	}
 
 	// Cache the result
 	await cacheSet(cacheKey, result, kv);
@@ -122,16 +161,22 @@ async function runCachedCheck(
 }
 
 /**
- * Run a single check with error handling.
- * If a check fails, returns a failed CheckResult with an error finding
- * instead of throwing, so other checks can still complete.
+ * Run a single check with error handling and a per-check timeout.
+ * If a check fails or exceeds the timeout, returns a failed CheckResult
+ * with an error/timeout finding instead of throwing, so other checks
+ * can still complete.
  */
 async function safeCheck(category: CheckCategory, fn: () => Promise<CheckResult>): Promise<CheckResult> {
 	try {
-		return await fn();
+		const result = await Promise.race([
+			fn(),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Check timed out')), PER_CHECK_TIMEOUT_MS)),
+		]);
+		return result;
 	} catch (err) {
 		const message = err instanceof Error ? err.message : 'Check failed';
-		const findings = [createFinding(category, `${category.toUpperCase()} check error`, 'high', `Check failed: ${message}`)];
+		const severity = message === 'Check timed out' ? 'low' : 'high';
+		const findings = [createFinding(category, `${category.toUpperCase()} check error`, severity, `Check failed: ${message}`)];
 		return buildCheckResult(category, findings);
 	}
 }
