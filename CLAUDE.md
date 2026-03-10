@@ -121,20 +121,22 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEI
 | Category | Importance | Critical? |
 |----------|------------|-----------|
 | DMARC | 22 | Yes |
-| SPF | 19 | Yes |
-| DKIM | 10 | Yes |
-| SSL | 8 | Yes |
-| DNSSEC | 3 | Yes |
-| MTA-STS | 3 | No |
-| NS | 3 | No |
-| CAA | 2 | No |
-| Subdomain Takeover | 2 | No |
-| BIMI | 1 | No |
+| DKIM | 16 | Yes |
+| SPF | 10 | Yes |
+| SSL | 5 | Yes |
+| Subdomain Takeover | 3 | Yes |
+| DNSSEC | 2 | Yes |
+| MTA-STS | 2 | No |
+| MX | 2 | No |
 | TLS-RPT | 1 | No |
-| MX | 0 (informational) | No |
+| NS | 0 (informational) | No |
+| CAA | 0 (informational) | No |
+| BIMI | 0 (informational) | No |
 | Lookalikes | 0 (informational) | No |
 
-**Email bonus** (up to +5 points): Awarded when SPF score >= 57, DKIM present, and DMARC present. DMARC score >= 90 → 5pts, >= 70 → 3pts, otherwise 2pts.
+**Email bonus** (up to +8 points): Awarded when SPF score >= 57, DKIM present, and DMARC present. DMARC score >= 90 → 8pts, >= 70 → 5pts, otherwise 4pts.
+
+**SPF trust-surface scoring**: Shared-platform SPF findings (e.g., Google Workspace, SendGrid) are informational by default. They are elevated to `medium`/`high` only when weak DMARC enforcement or relaxed alignment corroborates the exposure.
 
 **Per-finding severity penalties**: Critical −40, High −25, Medium −15, Low −5, Info 0.
 
