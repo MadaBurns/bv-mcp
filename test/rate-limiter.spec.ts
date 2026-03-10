@@ -17,8 +17,8 @@ describe('rate-limiter', () => {
 		it('should allow first request with correct remaining counts', async () => {
 			const result = await checkRateLimit('1.2.3.4');
 			expect(result.allowed).toBe(true);
-			expect(result.minuteRemaining).toBe(29);
-			expect(result.hourRemaining).toBe(199);
+			expect(result.minuteRemaining).toBe(49);
+			expect(result.hourRemaining).toBe(299);
 		});
 
 		it('should decrement remaining counts on multiple requests', async () => {
@@ -26,12 +26,12 @@ describe('rate-limiter', () => {
 			await checkRateLimit('1.2.3.4');
 			const result = await checkRateLimit('1.2.3.4');
 			expect(result.allowed).toBe(true);
-			expect(result.minuteRemaining).toBe(27);
-			expect(result.hourRemaining).toBe(197);
+			expect(result.minuteRemaining).toBe(47);
+			expect(result.hourRemaining).toBe(297);
 		});
 
-		it('should block 31st request within a minute', async () => {
-			for (let i = 0; i < 30; i++) {
+		it('should block 51st request within a minute', async () => {
+			for (let i = 0; i < 50; i++) {
 				const r = await checkRateLimit('1.2.3.4');
 				expect(r.allowed).toBe(true);
 			}
@@ -45,10 +45,10 @@ describe('rate-limiter', () => {
 			const baseTime = 1000000000000;
 			let currentTime = baseTime;
 			vi.spyOn(Date, 'now').mockImplementation(() => currentTime);
-			// 30 per minute × ~7 windows = 210 > 200 hour limit
+			// 50 per minute × ~7 windows = 350 > 300 hour limit
 			for (let window = 0; window < 7; window++) {
 				currentTime = baseTime + window * 61_000;
-				for (let i = 0; i < 30; i++) {
+				for (let i = 0; i < 50; i++) {
 					const r = await checkRateLimit('1.2.3.4');
 					if (!r.allowed) break;
 				}
@@ -61,7 +61,7 @@ describe('rate-limiter', () => {
 		});
 
 		it('tracks different IPs independently', async () => {
-			for (let i = 0; i < 30; i++) {
+			for (let i = 0; i < 50; i++) {
 				await checkRateLimit('10.0.0.1');
 			}
 			const blockedA = await checkRateLimit('10.0.0.1');
@@ -69,11 +69,11 @@ describe('rate-limiter', () => {
 
 			const resultB = await checkRateLimit('10.0.0.2');
 			expect(resultB.allowed).toBe(true);
-			expect(resultB.minuteRemaining).toBe(29);
+			expect(resultB.minuteRemaining).toBe(49);
 		});
 
 		it('resetRateLimit clears a single IP', async () => {
-			for (let i = 0; i < 30; i++) {
+			for (let i = 0; i < 50; i++) {
 				await checkRateLimit('1.2.3.4');
 			}
 			const blocked = await checkRateLimit('1.2.3.4');
@@ -83,11 +83,11 @@ describe('rate-limiter', () => {
 
 			const after = await checkRateLimit('1.2.3.4');
 			expect(after.allowed).toBe(true);
-			expect(after.minuteRemaining).toBe(29);
+			expect(after.minuteRemaining).toBe(49);
 		});
 
 		it('resetAllRateLimits clears all state', async () => {
-			for (let i = 0; i < 30; i++) {
+			for (let i = 0; i < 50; i++) {
 				await checkRateLimit('1.2.3.4');
 			}
 			await checkRateLimit('5.6.7.8');
@@ -96,11 +96,11 @@ describe('rate-limiter', () => {
 
 			const resultA = await checkRateLimit('1.2.3.4');
 			expect(resultA.allowed).toBe(true);
-			expect(resultA.minuteRemaining).toBe(29);
+			expect(resultA.minuteRemaining).toBe(49);
 
 			const resultB = await checkRateLimit('5.6.7.8');
 			expect(resultB.allowed).toBe(true);
-			expect(resultB.minuteRemaining).toBe(29);
+			expect(resultB.minuteRemaining).toBe(49);
 		});
 	});
 
@@ -119,12 +119,12 @@ describe('rate-limiter', () => {
 			const kv = createMockKV('3', '20');
 			const result = await checkRateLimit('1.2.3.4', kv);
 			expect(result.allowed).toBe(true);
-			expect(result.minuteRemaining).toBe(26); // 30 - (3+1)
-			expect(result.hourRemaining).toBe(179); // 200 - (20+1)
+			expect(result.minuteRemaining).toBe(46); // 50 - (3+1)
+			expect(result.hourRemaining).toBe(279); // 300 - (20+1)
 		});
 
 		it('blocks at minute limit', async () => {
-			const kv = createMockKV('30', '50');
+			const kv = createMockKV('50', '100');
 			const result = await checkRateLimit('1.2.3.4', kv);
 			expect(result.allowed).toBe(false);
 			expect(result.minuteRemaining).toBe(0);
@@ -132,7 +132,7 @@ describe('rate-limiter', () => {
 		});
 
 		it('blocks at hour limit', async () => {
-			const kv = createMockKV('5', '200');
+			const kv = createMockKV('5', '300');
 			const result = await checkRateLimit('1.2.3.4', kv);
 			expect(result.allowed).toBe(false);
 			expect(result.hourRemaining).toBe(0);
@@ -164,15 +164,15 @@ describe('rate-limiter', () => {
 
 			const result = await checkRateLimit('1.2.3.4', kv);
 			expect(result.allowed).toBe(true);
-			expect(result.minuteRemaining).toBe(29);
+			expect(result.minuteRemaining).toBe(49);
 		});
 
 		it('reads counters as null for new IP and writes initial values', async () => {
 			const kv = createMockKV(null, null);
 			const result = await checkRateLimit('1.2.3.4', kv);
 			expect(result.allowed).toBe(true);
-			expect(result.minuteRemaining).toBe(29); // 30 - 1
-			expect(result.hourRemaining).toBe(199); // 200 - 1
+			expect(result.minuteRemaining).toBe(49); // 50 - 1
+			expect(result.hourRemaining).toBe(299); // 300 - 1
 
 			const minutePutCall = (kv.put as ReturnType<typeof vi.fn>).mock.calls[0];
 			expect(minutePutCall[1]).toBe('1');
@@ -189,13 +189,13 @@ describe('rate-limiter', () => {
 				}),
 			} as unknown as KVNamespace;
 
-			const attempts = 40;
+			const attempts = 60;
 			const results = await Promise.all(
 				Array.from({ length: attempts }, () => checkRateLimit('203.0.113.10', kv)),
 			);
 
 			const allowedCount = results.filter((r) => r.allowed).length;
-			expect(allowedCount).toBe(30);
+			expect(allowedCount).toBe(50);
 			expect(results.some((r) => !r.allowed)).toBe(true);
 		});
 	});
@@ -263,7 +263,7 @@ describe('rate-limiter', () => {
 		it('uses in-memory path without KV arg', async () => {
 			const result = await checkRateLimit('1.2.3.4');
 			expect(result.allowed).toBe(true);
-			expect(result.minuteRemaining).toBe(29);
+			expect(result.minuteRemaining).toBe(49);
 		});
 
 		it('uses KV path when KV arg provided', async () => {
@@ -278,7 +278,7 @@ describe('rate-limiter', () => {
 		});
 
 		it('tracks control-plane limits separately from tool limits', async () => {
-			for (let i = 0; i < 30; i++) {
+			for (let i = 0; i < 50; i++) {
 				await checkRateLimit('198.51.100.40');
 			}
 
