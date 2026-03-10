@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // For IDN/Unicode normalization
 import * as punycode from 'punycode/';
 // Centralized normalization config

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { type Finding, createFinding } from '../lib/scoring';
 
 export function getMtaStsTxtFindings(records: string[]): { findings: Finding[]; hasTxtRecord: boolean } {

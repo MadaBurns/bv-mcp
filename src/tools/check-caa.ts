@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * CAA (Certificate Authority Authorization) check tool.
  * Validates CAA DNS records that restrict which CAs can issue certificates.

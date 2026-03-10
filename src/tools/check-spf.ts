@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * SPF (Sender Policy Framework) check tool.
  * Queries TXT records for SPF and validates the policy.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type FindingConfidence = 'deterministic' | 'heuristic' | 'verified';
 

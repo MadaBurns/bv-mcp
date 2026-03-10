@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { type Finding, createFinding } from '../lib/scoring';
 
 export function getHttpsFindings(domain: string, responseUrl: string | undefined, hstsHeader: string | null): Finding[] {

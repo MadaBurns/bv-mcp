@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * Audit logging for security-related events.
  * Tracks authentication, rate limiting, and suspicious patterns.

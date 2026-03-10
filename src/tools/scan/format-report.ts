@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import type { ScanDomainResult } from '../scan-domain';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { JSON_RPC_ERRORS, jsonRpcError } from '../lib/json-rpc';
 import type { JsonRpcRequest } from '../lib/json-rpc';
 

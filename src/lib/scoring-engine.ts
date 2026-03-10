@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import {
 	CATEGORY_DISPLAY_WEIGHTS,
 	type CheckCategory,
