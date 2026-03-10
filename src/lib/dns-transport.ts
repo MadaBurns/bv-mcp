@@ -29,7 +29,7 @@ async function fetchDohResponse(url: string, timeoutMs: number): Promise<DohResp
 			signal: controller.signal,
 		});
 		if (!response.ok) return null;
-		return (await response.json()) as DohResponse;
+		return (await response.json()) as DohResponse; // DoH JSON API returns a well-defined schema
 	} catch {
 		return null;
 	} finally {
@@ -102,7 +102,7 @@ export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck
 			throw new DnsQueryError(`DoH returned HTTP ${response.status}`, domain, type, response.status);
 		}
 
-		const data = (await response.json()) as DohResponse;
+		const data = (await response.json()) as DohResponse; // DoH JSON API returns a well-defined schema
 
 		if (confirmWithSecondaryOnEmpty && !hasTypedAnswers(data, type)) {
 			const secondary = await queryDnsFromEndpoint(SECONDARY_DOH_ENDPOINT, domain, type, dnssecCheck, timeoutMs);

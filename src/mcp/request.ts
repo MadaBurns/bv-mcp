@@ -89,7 +89,7 @@ export function parseJsonRpcRequest(rawBody: string): ParsedJsonRpcRequestResult
 		}
 		return {
 			ok: true,
-			body: parsed as JsonRpcRequest,
+			body: parsed as JsonRpcRequest, // validated by validateJsonRpcRequest above
 		};
 	} catch {
 		return {
