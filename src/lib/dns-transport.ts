@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-import { DNS_TIMEOUT_MS, DNS_RETRIES, DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY } from './config';
+import { DNS_TIMEOUT_MS, DNS_RETRIES, DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY, DOH_EDGE_CACHE_TTL, DNS_RETRY_BASE_DELAY_MS } from './config';
 import { type DohResponse, type QueryDnsOptions, RecordType, type RecordTypeName } from './dns-types';
 
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
@@ -29,6 +29,7 @@ async function fetchDohResponse(url: string, timeoutMs: number): Promise<DohResp
 			method: 'GET',
 			headers: { Accept: 'application/dns-json' },
 			signal: controller.signal,
+			cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true },
 		});
 		if (!response.ok) return null;
 		return (await response.json()) as DohResponse; // DoH JSON API returns a well-defined schema
@@ -86,21 +87,31 @@ export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck
 				method: 'GET',
 				headers: { Accept: 'application/dns-json' },
 				signal: controller.signal,
+				cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true },
 			});
 		} catch (err) {
 			clearTimeout(timeout);
 			if (err instanceof DOMException && err.name === 'AbortError') {
-				if (attempt < retries) continue;
+				if (attempt < retries) {
+					await new Promise((r) => setTimeout(r, DNS_RETRY_BASE_DELAY_MS * (attempt + 1) + Math.random() * 50));
+					continue;
+				}
 				throw new DnsQueryError(`DNS query timed out after ${timeoutMs}ms`, domain, type);
 			}
-			if (attempt < retries) continue;
+			if (attempt < retries) {
+				await new Promise((r) => setTimeout(r, DNS_RETRY_BASE_DELAY_MS * (attempt + 1) + Math.random() * 50));
+				continue;
+			}
 			throw new DnsQueryError(`DNS query failed: ${err instanceof Error ? err.message : String(err)}`, domain, type);
 		}
 
 		clearTimeout(timeout);
 
 		if (!response.ok) {
-			if (attempt < retries && response.status >= 500) continue;
+			if (attempt < retries && response.status >= 500) {
+				await new Promise((r) => setTimeout(r, DNS_RETRY_BASE_DELAY_MS * (attempt + 1) + Math.random() * 50));
+				continue;
+			}
 			throw new DnsQueryError(`DoH returned HTTP ${response.status}`, domain, type, response.status);
 		}
 

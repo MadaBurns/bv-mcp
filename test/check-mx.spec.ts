@@ -109,6 +109,56 @@ describe('checkMx', () => {
 		expect(finding).toBeUndefined();
 	});
 
+	it('should resolve A and AAAA records in parallel per MX hostname', async () => {
+		const callOrder: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				const answers = [{ name: 'parallel.com', type: 15, TTL: 300, data: '10 mx1.parallel.com.' }];
+				return Promise.resolve(createDohResponse([{ name: 'parallel.com', type: 15 }], answers));
+			}
+			if (url.includes('type=AAAA') || url.includes('type=28')) {
+				callOrder.push('AAAA');
+				return new Promise((resolve) =>
+					setTimeout(
+						() =>
+							resolve(
+								createDohResponse(
+									[{ name: 'mx1.parallel.com', type: 28 }],
+									[{ name: 'mx1.parallel.com', type: 28, TTL: 300, data: '::1' }],
+								),
+							),
+						20,
+					),
+				);
+			}
+			if (url.includes('type=A') || url.includes('type=1')) {
+				callOrder.push('A');
+				return new Promise((resolve) =>
+					setTimeout(
+						() =>
+							resolve(
+								createDohResponse(
+									[{ name: 'mx1.parallel.com', type: 1 }],
+									[{ name: 'mx1.parallel.com', type: 1, TTL: 300, data: '1.2.3.4' }],
+								),
+							),
+						20,
+					),
+				);
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const { checkMx } = await import('../src/tools/check-mx');
+		const result = await checkMx('parallel.com');
+		// Both A and AAAA should have been initiated (parallel)
+		expect(callOrder).toContain('A');
+		expect(callOrder).toContain('AAAA');
+		// No dangling MX finding since both resolve
+		const dangling = result.findings.find((f) => f.title === 'Dangling MX record');
+		expect(dangling).toBeUndefined();
+	});
+
 	it('should flag dangling MX that does not resolve', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
