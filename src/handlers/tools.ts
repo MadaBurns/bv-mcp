@@ -117,6 +117,9 @@ function handleExplainFindingValidationError(
  * @param params - Tool call parameters (name and arguments)
  * @param scanCacheKV - Optional KV namespace for scan result caching
  */
+/** Maximum wall-clock time for any single tool call (ms). */
+const TOOL_CALL_TIMEOUT_MS = 28_000;
+
 export async function handleToolsCall(
 	params: {
 		name: string;
@@ -139,47 +142,13 @@ export async function handleToolsCall(
 		// `validDomain` is guaranteed to be a string for all branches that use it
 		const validDomain: string = domain ?? '';
 
-		// Dispatch to the appropriate tool — check registry first, then special cases
-		const registeredTool = TOOL_REGISTRY[name];
-		if (registeredTool) {
-			const checkName = registeredTool.cacheKey(args);
-			const cacheKey = `cache:${validDomain}:check:${checkName}`;
-			const result = await runWithCache(cacheKey, () => registeredTool.execute(validDomain, args, runtimeOptions), scanCacheKV, registeredTool.cacheTtlSeconds);
-			logResult = result.passed ? 'pass' : 'fail';
-			logDetails = result;
-			logToolSuccess({
-				toolName: name,
-				durationMs: Date.now() - startTime,
-				domain,
-				analytics: runtimeOptions?.analytics,
-				status: result.passed ? 'pass' : 'fail',
-				logResult,
-				logDetails,
-			});
-			return { content: [mcpText(formatCheckResult(result))] };
-		}
-
-		switch (name) {
-			case 'scan_domain': {
-				const result = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
-				logResult = result.score.grade;
-				logDetails = result;
-				logToolSuccess({
-					toolName: name,
-					durationMs: Date.now() - startTime,
-					domain,
-					analytics: runtimeOptions?.analytics,
-					status: result.score.overall >= 50 ? 'pass' : 'fail',
-					logResult,
-					logDetails,
-					severity: 'info',
-				});
-				return { content: [mcpText(formatScanReport(result))] };
-			}
-			case 'compare_baseline': {
-				const baseline = (args.baseline ?? {}) as PolicyBaseline;
-				const scan = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
-				const result = compareBaseline(scan, baseline);
+		const executeDispatch = async (): Promise<McpToolResult> => {
+			// Dispatch to the appropriate tool — check registry first, then special cases
+			const registeredTool = TOOL_REGISTRY[name];
+			if (registeredTool) {
+				const checkName = registeredTool.cacheKey(args);
+				const cacheKey = `cache:${validDomain}:check:${checkName}`;
+				const result = await runWithCache(cacheKey, () => registeredTool.execute(validDomain, args, runtimeOptions), scanCacheKV, registeredTool.cacheTtlSeconds);
 				logResult = result.passed ? 'pass' : 'fail';
 				logDetails = result;
 				logToolSuccess({
@@ -190,42 +159,97 @@ export async function handleToolsCall(
 					status: result.passed ? 'pass' : 'fail',
 					logResult,
 					logDetails,
-					severity: 'info',
 				});
-				return { content: [mcpText(formatBaselineResult(result))] };
+				return { content: [mcpText(formatCheckResult(result))] };
 			}
-			case 'explain_finding': {
-				let explainArgs: ReturnType<typeof extractExplainFindingArgs>;
-				try {
-					explainArgs = extractExplainFindingArgs(args);
-				} catch {
-					return handleExplainFindingValidationError(args, Date.now() - startTime, runtimeOptions);
+
+			switch (name) {
+				case 'scan_domain': {
+					const result = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
+					logResult = result.score.grade;
+					logDetails = result;
+					logToolSuccess({
+						toolName: name,
+						durationMs: Date.now() - startTime,
+						domain,
+						analytics: runtimeOptions?.analytics,
+						status: result.score.overall >= 50 ? 'pass' : 'fail',
+						logResult,
+						logDetails,
+						severity: 'info',
+					});
+					return { content: [mcpText(formatScanReport(result))] };
 				}
-				const { checkType, status, details } = explainArgs;
-				const result = explainFinding(checkType, status, details);
-				logToolSuccess({
-					toolName: name,
-					durationMs: Date.now() - startTime,
-					analytics: runtimeOptions?.analytics,
-					status: 'pass',
-					logResult: status,
-					logDetails: { checkType, details },
-					severity: 'info',
-				});
-				return { content: [mcpText(formatExplanation(result))] };
+				case 'compare_baseline': {
+					const baseline = (args.baseline ?? {}) as PolicyBaseline;
+					const scan = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
+					const result = compareBaseline(scan, baseline);
+					logResult = result.passed ? 'pass' : 'fail';
+					logDetails = result;
+					logToolSuccess({
+						toolName: name,
+						durationMs: Date.now() - startTime,
+						domain,
+						analytics: runtimeOptions?.analytics,
+						status: result.passed ? 'pass' : 'fail',
+						logResult,
+						logDetails,
+						severity: 'info',
+					});
+					return { content: [mcpText(formatBaselineResult(result))] };
+				}
+				case 'explain_finding': {
+					let explainArgs: ReturnType<typeof extractExplainFindingArgs>;
+					try {
+						explainArgs = extractExplainFindingArgs(args);
+					} catch {
+						return handleExplainFindingValidationError(args, Date.now() - startTime, runtimeOptions);
+					}
+					const { checkType, status, details } = explainArgs;
+					const result = explainFinding(checkType, status, details);
+					logToolSuccess({
+						toolName: name,
+						durationMs: Date.now() - startTime,
+						analytics: runtimeOptions?.analytics,
+						status: 'pass',
+						logResult: status,
+						logDetails: { checkType, details },
+						severity: 'info',
+					});
+					return { content: [mcpText(formatExplanation(result))] };
+				}
+				default:
+					logToolFailure({
+						toolName: name,
+						durationMs: Date.now() - startTime,
+						domain,
+						analytics: runtimeOptions?.analytics,
+						error: `Unknown tool: ${name}`,
+						args,
+					});
+					return buildToolErrorResult(`Unknown tool: ${name}`);
 			}
-			default:
-				logToolFailure({
-					toolName: name,
-					durationMs: Date.now() - startTime,
-					domain,
-					analytics: runtimeOptions?.analytics,
-					error: `Unknown tool: ${name}`,
-					args,
-				});
-				return buildToolErrorResult(`Unknown tool: ${name}`);
-		}
+		};
+
+		return await Promise.race([
+			executeDispatch(),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('__tool_timeout__')), TOOL_CALL_TIMEOUT_MS)),
+		]);
 	} catch (err) {
+		if (err instanceof Error && err.message === '__tool_timeout__') {
+			logToolFailure({
+				toolName: name,
+				durationMs: Date.now() - startTime,
+				domain,
+				analytics: runtimeOptions?.analytics,
+				error: 'Tool call timed out',
+				args,
+			});
+			return {
+				content: [mcpError(`${name} timed out after ${TOOL_CALL_TIMEOUT_MS / 1000}s. Try a simpler check or retry — cached partial results make retries faster.`)],
+				isError: true,
+			};
+		}
 		const message = sanitizeErrorMessage(err, 'An unexpected error occurred');
 		logToolFailure({
 			toolName: name,
