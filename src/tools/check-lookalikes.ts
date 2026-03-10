@@ -18,6 +18,9 @@ export const MIN_BATCH_SIZE = 3;
 export const BACKOFF_DELAY_MS = 500;
 export const FAILURE_THRESHOLD = 2;
 
+/** Maximum wall-clock time for the entire lookalike check (ms). */
+const LOOKALIKE_TIMEOUT_MS = 20_000;
+
 /** Canary label used for wildcard detection on parent domains */
 export const WILDCARD_CANARY_LABEL = '_bv-wc-probe';
 
@@ -137,6 +140,23 @@ async function probeWithAdaptiveBatching(
  * Filters out false positives from wildcard DNS on parent domains and null MX records.
  */
 export async function checkLookalikes(domain: string): Promise<CheckResult> {
+	return Promise.race([
+		checkLookalikesCore(domain),
+		new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Lookalike check timed out')), LOOKALIKE_TIMEOUT_MS)),
+	]).catch((err) => {
+		const message = err instanceof Error ? err.message : 'Lookalike check failed';
+		return buildCheckResult('lookalikes', [
+			createFinding(
+				'lookalikes',
+				'Lookalike check incomplete',
+				'info',
+				`${message}. This check generates many DNS queries — try again shortly, as partial results are cached.`,
+			),
+		]);
+	});
+}
+
+async function checkLookalikesCore(domain: string): Promise<CheckResult> {
 	const findings: Finding[] = [];
 	const permutations = generateLookalikes(domain);
 
