@@ -1,12 +1,12 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { env } from 'cloudflare:test';
 import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
-import { inMemoryCache } from '../src/lib/cache';
+import { IN_MEMORY_CACHE } from '../src/lib/cache';
 import type { ScanDomainResult } from '../src/tools/scan-domain';
 
 const { restore } = setupFetchMock();
 
-beforeEach(() => inMemoryCache.clear());
+beforeEach(() => IN_MEMORY_CACHE.clear());
 afterEach(() => restore());
 
 /**

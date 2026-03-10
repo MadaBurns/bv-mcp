@@ -94,6 +94,7 @@ app.use(
 			}
 
 			// Check explicit allowlist from ALLOWED_ORIGINS env var
+			// c.env is already typed as BvMcpEnv via Hono generics; cast is redundant but harmless
 			const allowedOrigins = (c.env as BvMcpEnv).ALLOWED_ORIGINS?.trim();
 			if (allowedOrigins) {
 				const allowed = allowedOrigins
@@ -345,6 +346,7 @@ app.post('/mcp', async (c) => {
 		}
 
 		const toolNameRaw =
+			// 'in' guard ensures 'name' exists; cast to Record is safe after typeof+null check
 			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
 		const toolName = typeof toolNameRaw === 'string' ? toolNameRaw.trim().toLowerCase() : '';
 		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
@@ -646,4 +648,5 @@ app.all('*', (c) => {
 	return c.json({ error: 'Not found' }, 404);
 });
 
+// export default is required by the Cloudflare Workers runtime (fetch handler contract)
 export default app;

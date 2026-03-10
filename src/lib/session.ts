@@ -8,7 +8,7 @@
  */
 
 import {
-	activeSessions,
+	ACTIVE_SESSIONS,
 	checkSessionCreateRateLimitInMemory,
 	createSessionInMemory,
 	deleteSessionInMemory,
@@ -21,7 +21,7 @@ import {
 } from './session-memory';
 import { checkSessionCreateRateLimitWithCoordinator } from './quota-coordinator';
 
-export { activeSessions, resetSessions, SESSION_REFRESH_INTERVAL_MS, SESSION_TTL_MS };
+export { ACTIVE_SESSIONS, resetSessions, SESSION_REFRESH_INTERVAL_MS, SESSION_TTL_MS };
 
 const SESSION_TTL_SECONDS = Math.ceil(SESSION_TTL_MS / 1000);
 const SESSION_CREATE_WINDOW_MS = 60_000;
@@ -93,7 +93,7 @@ async function readSessionKVRecord(id: string, kv: KVNamespace): Promise<Session
 	const record = await kv.get(sessionKey(id), 'json');
 	if (!record || typeof record !== 'object') return undefined;
 
-	const candidate = record as Partial<SessionRecord>;
+	const candidate = record as Partial<SessionRecord>; // KV returns unknown; fields are validated below
 	if (typeof candidate.createdAt !== 'number' || typeof candidate.lastAccessedAt !== 'number') {
 		return undefined;
 	}

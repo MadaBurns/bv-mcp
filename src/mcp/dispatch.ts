@@ -93,6 +93,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 			};
 
 		case 'tools/call': {
+			// params are validated by validateJsonRpcRequest upstream — name is required by MCP spec
 			const toolParams = options.params as { name: string; arguments?: Record<string, unknown> };
 			const result = await handleToolsCall(toolParams, options.scanCache, {
 				providerSignaturesUrl: options.providerSignaturesUrl,
@@ -106,7 +107,8 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				payload: jsonRpcSuccess(options.id, result),
 				logCategory: 'tools',
 				logTool: toolParams.name,
-				logResult: typeof result === 'object' && result && 'status' in result ? String((result as { status: unknown }).status) : undefined,
+				// result shape varies by tool — narrowing via 'in' guard before access
+			logResult: typeof result === 'object' && result && 'status' in result ? String((result as { status: unknown }).status) : undefined,
 				logDetails: result,
 			};
 		}
@@ -120,6 +122,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 			};
 
 		case 'resources/read': {
+			// params are validated by validateJsonRpcRequest upstream — uri is required by MCP spec
 			const resourceParams = options.params as { uri: string };
 			return {
 				kind: 'success',
