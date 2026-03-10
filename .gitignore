@@ -66,3 +66,5 @@ docs/plans/
 
 # Local deploy overrides (real KV IDs, custom domains)
 .dev/
+
+.gemini/
