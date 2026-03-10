@@ -87,11 +87,11 @@ describe('scoring', () => {
 		it('computes weighted average from check results', () => {
 			const results: CheckResult[] = [buildCheckResult('spf', [createFinding('spf', 'x', 'critical', 'd')])];
 			const scan = computeScanScore(results);
-			// Scanner-aligned importance model: SPF(19) out of total 72.
+			// AI-Resilience v4.0 weights: SPF(10) out of total 63.
 			// One SPF critical => SPF score 60. Other controls remain perfect by default.
 			// Critical global penalty now applies only to verified critical findings.
-			// Email bonus not earned (no DKIM/DMARC results), so denominator stays at 74.
-			expect(scan.overall).toBe(90);
+			// Email bonus not earned (no DKIM/DMARC results), so denominator stays at 63.
+			expect(scan.overall).toBe(94);
 			expect(scan.categoryScores.spf).toBe(60);
 		});
 
@@ -113,10 +113,11 @@ describe('scoring', () => {
 			];
 
 			const scan = computeScanScore(results);
-			// Email bonus not earned (DMARC missing), so denominator stays at 74.
-			// NS(3), CAA(2), SUBDOMAIN_TAKEOVER(2), BIMI(1), TLSRPT(1) contribute to total.
-			expect(scan.overall).toBe(65);
-			expect(scan.grade).toBe('C');
+			// AI-Resilience v4.0: Email bonus not earned (DMARC missing), denominator stays at 63.
+			// DMARC missing-control → effectiveScore 0. DNSSEC "missing" text → effectiveScore 0.
+			// Critical gap ceiling applies (DMARC missing) → capped at 64.
+			expect(scan.overall).toBe(61);
+			expect(scan.grade).toBe('D+');
 		});
 
 		it('applies global critical penalty when critical finding is verified', () => {
@@ -129,8 +130,8 @@ describe('scoring', () => {
 			];
 
 			const scan = computeScanScore(results);
-			// subdomain_takeover score becomes 60. Base weighted overall rounds to 99, then verified critical penalty applies.
-			expect(scan.overall).toBe(84);
+			// subdomain_takeover score becomes 60. Base weighted overall rounds to 98, then verified critical penalty applies.
+			expect(scan.overall).toBe(83);
 		});
 
 		it('includes critical count in summary', () => {
