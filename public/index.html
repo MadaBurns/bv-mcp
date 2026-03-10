@@ -24,14 +24,15 @@
 			<h1>BLACKVEIL Scanner</h1>
 			<p class="tagline">BLACKVEIL Scanner — DNS/email security analysis and remediation platform deployed as a Cloudflare Worker.<br>Scan any domain from Claude, Cursor, or any MCP-compatible AI.</p>
 			<div class="endpoint">POST /mcp</div>
-			<p style="color:#888; font-size:0.9rem;">Add to Claude Desktop:</p>
+			<p style="color:#888; font-size:0.9rem;">Add to Claude Desktop (<b>Settings → Developer → Edit Config</b>):</p>
 			<div class="config">{
   "mcpServers": {
-    "dns-security": {
+    "blackveil-dns": {
       "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
   }
 }</div>
+			<p style="color:#666; font-size:0.8rem; margin-top:0.5rem;">If you already have other servers, merge <code>blackveil-dns</code> into your existing <code>mcpServers</code> object.</p>
 			<div class="links">
 				<a href="https://github.com/MadaBurns/bv-mcp">GitHub</a>
 				<a href="https://blackveilsecurity.com">BLACKVEIL</a>
