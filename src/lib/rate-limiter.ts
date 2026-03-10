@@ -2,7 +2,7 @@
 
 /**
  * Rate limiter for the DNS Security MCP Server.
- * Enforces per-IP limits: 30 requests/minute, 200 requests/hour.
+ * Enforces per-IP limits: 50 requests/minute, 300 requests/hour.
  * Also enforces a global daily cap across all IPs as a cost ceiling.
  *
  * Uses Cloudflare KV for distributed rate limiting when available,
@@ -49,8 +49,8 @@ export interface GlobalRateLimitResult {
 	limit: number;
 }
 
-const MINUTE_LIMIT = 30;
-const HOUR_LIMIT = 200;
+const MINUTE_LIMIT = 50;
+const HOUR_LIMIT = 300;
 const CONTROL_PLANE_MINUTE_LIMIT = 60;
 const CONTROL_PLANE_HOUR_LIMIT = 600;
 const MINUTE_MS = 60_000;
