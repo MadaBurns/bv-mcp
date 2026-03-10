@@ -38,7 +38,7 @@ export const LABEL_REGEX = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/i;
 export const MAX_REQUEST_BODY_BYTES = 10_240;
 
 /** Timeout for outbound HTTPS fetches (SSL, MTA-STS policy, etc.). */
-export const HTTPS_TIMEOUT_MS = 10_000;
+export const HTTPS_TIMEOUT_MS = 6_000;
 
 /** Default timeout for DNS-over-HTTPS queries. */
 export const DNS_TIMEOUT_MS = 5000;
