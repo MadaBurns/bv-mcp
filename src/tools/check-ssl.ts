@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * SSL/TLS certificate check tool.
  * Validates SSL certificate by attempting HTTPS connection,

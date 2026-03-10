@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * Structured logging utility for Cloudflare Worker (MCP server)
  * Logs JSON objects with request, tool, result, and error metadata

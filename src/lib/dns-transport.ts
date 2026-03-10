@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import { DNS_TIMEOUT_MS, DNS_RETRIES, DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY } from './config';
 import { type DohResponse, type QueryDnsOptions, RecordType, type RecordTypeName } from './dns-types';
 

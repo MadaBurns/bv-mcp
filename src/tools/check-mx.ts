@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * MX record check tool for MCP server.
  * Validates presence and quality of MX records for a domain.

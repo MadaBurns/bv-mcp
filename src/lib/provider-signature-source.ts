@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 export interface ProviderSignature {
 	name: string;
 	domains: string[];

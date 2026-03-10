@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /**
  * MCP Resources handler for Blackveil DNS.
  * Exposes static documentation resources about DNS/email security checks,
