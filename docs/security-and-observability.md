@@ -34,7 +34,16 @@ Canonical implementation lives in `src/lib/rate-limiter.ts`.
 
 Note: KV counters remain fixed-window and are not globally atomic across isolates.
 
-- `check_lookalikes` has a tighter daily quota (`10` per day per IP for unauthenticated callers) due to high outbound query volume (~100 DoH queries per invocation).
+### Per-Tool Daily Quotas (Unauthenticated)
+
+| Tool | Daily Limit | Notes |
+|------|-------------|-------|
+| `scan_domain` / `scan` | 75/day per IP | Results cached 5 min |
+| `compare_baseline` | 150/day per IP | Internally runs `scan_domain` |
+| Individual checks (SPF, DMARC, etc.) | 200/day per IP | |
+| `explain_finding` | 200/day per IP | |
+| `check_lookalikes` | 20/day per IP | ~100 DoH queries per call; 60-min cache |
+
 - `check_lookalikes` results are cached for 60 minutes (versus 5 minutes for other tools) to reduce repeat query volume.
 - `check_lookalikes` uses adaptive batch sizing for outbound DoH queries: starts at 10 concurrent probes, halves on repeated failures, recovers on clean batches, with a floor of 3.
 
