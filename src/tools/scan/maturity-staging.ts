@@ -22,12 +22,31 @@ export interface MaturityStage {
 export function computeMaturityStage(checks: CheckResult[]): MaturityStage {
 	const byCategory = new Map(checks.map((c) => [c.category, c]));
 
+	const mxCheck = byCategory.get('mx');
 	const spfCheck = byCategory.get('spf');
 	const dmarcCheck = byCategory.get('dmarc');
 	const dkimCheck = byCategory.get('dkim');
 	const mtaStsCheck = byCategory.get('mta_sts');
 	const dnssecCheck = byCategory.get('dnssec');
 	const bimiCheck = byCategory.get('bimi');
+
+	// Non-mail domains should not receive email maturity stages.
+	// The numeric stage values here (0 = "Unprotected", 1 = "DNS-Only") intentionally
+	// reuse the same numbers as the mail-domain scale. This is safe because `stage` is
+	// only ever rendered as a display value alongside `label` — it is never used as a
+	// numeric index or compared against mail-domain stages in any downstream logic.
+	const hasNoMx = mxCheck != null && mxCheck.findings.some((f) => f.title === 'No MX records found');
+	if (hasNoMx) {
+		const hasDnssec = dnssecCheck?.passed ?? false;
+		return {
+			stage: hasDnssec ? 1 : 0,
+			label: hasDnssec ? 'DNS-Only' : 'Unprotected',
+			description: hasDnssec
+				? 'This domain does not accept email. DNS security (DNSSEC) is in place.'
+				: 'This domain does not accept email and has no DNSSEC.',
+			nextStep: hasDnssec ? '' : 'Enable DNSSEC to protect DNS resolution integrity.',
+		};
+	}
 
 	// Determine SPF presence
 	const hasSpf = spfCheck != null && !spfCheck.findings.some((f) => /No SPF record/i.test(f.title));
