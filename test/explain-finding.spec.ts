@@ -525,7 +525,7 @@ describe('resolveImpactNarrative', () => {
 		const narrative = resolveImpactNarrative({
 			category: 'dmarc',
 			severity: 'low',
-			title: 'Forensic reporting (ruf=) is not configured',
+			title: 'No forensic reporting configured (ruf= absent)',
 			detail: 'No ruf= tag present',
 		});
 		expect(narrative.impact).toContain('aggregate summaries');

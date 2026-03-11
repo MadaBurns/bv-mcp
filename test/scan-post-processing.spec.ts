@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { CheckResult } from '../src/lib/scoring';
+import { type CheckResult, buildCheckResult, createFinding } from '../src/lib/scoring';
 
 describe('scan-post-processing helpers', () => {
 	it('downgrades missing email findings for non-mail domains when no MX records exist', async () => {
@@ -9,18 +9,8 @@ describe('scan-post-processing helpers', () => {
 		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 
 		const results: CheckResult[] = [
-			{
-				category: 'spf',
-				passed: false,
-				score: 0,
-				findings: [{ category: 'spf', title: 'No SPF record found', severity: 'critical', detail: 'No SPF record found for example.com.' }],
-			},
-			{
-				category: 'mx',
-				passed: true,
-				score: 100,
-				findings: [{ category: 'mx', title: 'No MX records found', severity: 'info', detail: 'No inbound mail is configured.' }],
-			},
+			buildCheckResult('spf', [createFinding('spf', 'No SPF record found', 'critical', 'No SPF record found for example.com.')]),
+			buildCheckResult('mx', [createFinding('mx', 'No MX records found', 'info', 'No inbound mail is configured.')]),
 		];
 
 		const updated = await applyScanPostProcessing('app.example.com', results);
@@ -33,25 +23,10 @@ describe('scan-post-processing helpers', () => {
 		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 
 		const results: CheckResult[] = [
-			{
-				category: 'mx',
-				passed: true,
-				score: 100,
-				findings: [{ category: 'mx', title: 'MX records found', severity: 'info', detail: '2 MX records configured.' }],
-			},
-			{
-				category: 'mta_sts',
-				passed: false,
-				score: 0,
-				findings: [
-					{
-						category: 'mta_sts',
-						title: 'No MTA-STS or TLS-RPT records found',
-						severity: 'medium',
-						detail: 'Neither MTA-STS nor TLS-RPT DNS records were found.',
-					},
-				],
-			},
+			buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 MX records configured.')]),
+			buildCheckResult('mta_sts', [
+				createFinding('mta_sts', 'No MTA-STS or TLS-RPT records found', 'medium', 'Neither MTA-STS nor TLS-RPT DNS records were found.'),
+			]),
 		];
 
 		const updated = await applyScanPostProcessing('example.com', results);
@@ -67,25 +42,10 @@ describe('scan-post-processing helpers', () => {
 		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 
 		const results: CheckResult[] = [
-			{
-				category: 'mx',
-				passed: true,
-				score: 100,
-				findings: [{ category: 'mx', title: 'No MX records found', severity: 'info', detail: 'No inbound mail.' }],
-			},
-			{
-				category: 'mta_sts',
-				passed: false,
-				score: 0,
-				findings: [
-					{
-						category: 'mta_sts',
-						title: 'No MTA-STS or TLS-RPT records found',
-						severity: 'medium',
-						detail: 'Neither MTA-STS nor TLS-RPT DNS records were found.',
-					},
-				],
-			},
+			buildCheckResult('mx', [createFinding('mx', 'No MX records found', 'info', 'No inbound mail.')]),
+			buildCheckResult('mta_sts', [
+				createFinding('mta_sts', 'No MTA-STS or TLS-RPT records found', 'medium', 'Neither MTA-STS nor TLS-RPT DNS records were found.'),
+			]),
 		];
 
 		const updated = await applyScanPostProcessing('no-mail.example.com', results);
@@ -99,32 +59,9 @@ describe('scan-post-processing helpers', () => {
 		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 
 		const results: CheckResult[] = [
-			{
-				category: 'spf',
-				passed: true,
-				score: 100,
-				findings: [
-					{
-						category: 'spf',
-						title: 'SPF record configured',
-						severity: 'info',
-						detail: 'Healthy SPF',
-						metadata: { includeDomains: ['google.com'] },
-					},
-				],
-			},
-			{
-				category: 'dkim',
-				passed: true,
-				score: 100,
-				findings: [],
-			},
-			{
-				category: 'mx',
-				passed: true,
-				score: 100,
-				findings: [],
-			},
+			buildCheckResult('spf', [createFinding('spf', 'SPF record configured', 'info', 'Healthy SPF', { includeDomains: ['google.com'] })]),
+			buildCheckResult('dkim', []),
+			buildCheckResult('mx', []),
 		];
 
 		const updated = await applyScanPostProcessing('example.com', results);
