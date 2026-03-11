@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What is this?
 
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
-Exposes 14 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
-A 15th check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
+Exposes 15 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
+A 16th check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
 **Version**: 1.0.0 — keep `SERVER_VERSION` in `src/index.ts` and `version` in `package.json` in sync.
 
@@ -68,9 +68,16 @@ src/lib/auth.ts           — Bearer token validation (constant-time XOR compari
 src/lib/sse.ts            — SSE event formatting and Accept header checking
 src/lib/dns.ts            — DNS-over-HTTPS facade (re-exports from dns-transport, dns-records, dns-types)
 src/lib/sanitize.ts       — Domain validation, SSRF protection
-src/lib/config.ts         — Centralized SSRF constants, DNS tuning (timeouts, retries, jitter, edge cache TTL), domain limits
-src/lib/cache.ts          — KV-backed + in-memory TTL cache
-src/lib/rate-limiter.ts   — KV-backed + in-memory per-IP rate limiting
+src/lib/config.ts         — Centralized SSRF constants, DNS tuning, rate limit quotas (FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT)
+src/lib/cache.ts          — KV-backed + in-memory TTL cache, INFLIGHT dedup map, cacheSetDeferred()
+src/lib/rate-limiter.ts   — KV-backed + in-memory per-IP rate limiting (delegates to rate-limiter-memory.ts)
+src/lib/quota-coordinator.ts — Durable Objects-based distributed rate limiting across isolates
+src/lib/analytics.ts      — Cloudflare Analytics Engine integration (fail-open telemetry)
+src/lib/badge.ts          — SVG badge generator for /badge/:domain endpoint
+src/lib/audit.ts          — Audit logging
+src/lib/output-sanitize.ts — Markdown syntax sanitization for text output
+src/lib/provider-signatures.ts — Email provider database and MX pattern matching
+src/lib/provider-signature-source.ts — Runtime provider signature fetching/validation
 src/lib/log.ts            — Structured JSON logging (logEvent, logError)
 
 test/                     — One spec per source file
@@ -151,6 +158,7 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEI
 - **SSRF protection**: `config.ts` defines blocked IPs/TLDs/rebinding services; `sanitize.ts` enforces them. Wrangler uses `global_fetch_strictly_public` compatibility flag.
 - **Auth**: optional bearer token (`BV_API_KEY`), constant-time XOR comparison in `lib/auth.ts`
 - **Rate limiting**: 50 req/min, 300 req/hr per IP via KV (in-memory fallback). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `ping`, `notifications/*`) are exempt. Authenticated requests (valid `BV_API_KEY` bearer token) bypass rate limiting entirely. `check_lookalikes` has a separate daily quota of 10/day per IP (unauthenticated) with 60-minute result caching, due to high outbound query volume (~100 DoH queries per invocation).
+- **Per-tool daily quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts` caps unauthenticated usage per tool (e.g., `scan_domain`: 25/day, individual checks: 200/day). Global daily cap of 500k requests/day across all unauthenticated IPs (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via Durable Objects (`QuotaCoordinator`).
 - **Request body max**: 10 KB on `/mcp`
 - **IP sourcing**: only `cf-connecting-ip` — never `x-forwarded-for`
 - **Error sanitization**: only known validation errors surface; unexpected → generic message
@@ -179,6 +187,7 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEI
 ## CI/CD
 
 - `.github/workflows/ci.yml`: typecheck + test on PRs and pushes to `main`
+- `.github/workflows/dns-security.yml`: weekly DNS security scan of blackveilsecurity.com via blackveil-dns-action
 
 ## Deployment
 
@@ -204,4 +213,7 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 | `RATE_LIMIT` | KV Namespace | Per-IP rate counters (**required in production**; in-memory fallback for dev) |
 | `SCAN_CACHE` | KV Namespace | 5-min TTL result cache (**required in production**; in-memory fallback for dev) |
 | `SESSION_STORE` | KV Namespace | Session state for cross-isolate continuity (**required in production**; in-memory fallback for dev) |
+| `QUOTA_COORDINATOR` | Durable Object | Distributed rate limiting across isolates |
+| `MCP_ANALYTICS` | Analytics Engine | Telemetry dataset (fail-open; optional) |
+| `PROVIDER_SIGNATURES_URL` | var | Optional URL for runtime email provider signatures |
 

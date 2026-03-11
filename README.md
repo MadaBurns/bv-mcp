@@ -392,9 +392,9 @@ Full details in `docs/security-and-observability.md`.
 - SSRF protections block unsafe/private targets
 - Error responses sanitized — only known validation errors surface
 - DNS via Cloudflare DoH with optional secondary confirmation
-- Rate limits: `30/min` and `200/hr` per IP for `tools/call`
+- Rate limits: `50/min` and `300/hr` per IP for `tools/call`
 - Control-plane traffic: `60/min` and `600/hr` per IP
-- Global daily cap: `100,000` unauthenticated tool calls/day (cost ceiling)
+- Global daily cap: `500,000` unauthenticated tool calls/day (cost ceiling)
 - Session creation: `60/min` per IP
 
 **Natural-language convenience:**
