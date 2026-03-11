@@ -4,6 +4,41 @@ import type { ScanDomainResult } from '../scan-domain';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
 
+/** Structured scan result for machine-readable consumption (e.g., CI/CD actions). */
+export interface StructuredScanResult {
+	domain: string;
+	score: number;
+	grade: string;
+	passed: boolean;
+	maturityStage: number | null;
+	maturityLabel: string | null;
+	categoryScores: Record<string, number>;
+	findingCounts: { critical: number; high: number; medium: number; low: number };
+	timestamp: string;
+	cached: boolean;
+}
+
+/** Build a machine-readable structured result from a scan. */
+export function buildStructuredScanResult(result: ScanDomainResult): StructuredScanResult {
+	return {
+		domain: result.domain,
+		score: result.score.overall,
+		grade: result.score.grade,
+		passed: result.score.overall >= 50,
+		maturityStage: result.maturity?.stage ?? null,
+		maturityLabel: result.maturity?.label ?? null,
+		categoryScores: result.score.categoryScores,
+		findingCounts: {
+			critical: result.score.findings.filter((f) => f.severity === 'critical').length,
+			high: result.score.findings.filter((f) => f.severity === 'high').length,
+			medium: result.score.findings.filter((f) => f.severity === 'medium').length,
+			low: result.score.findings.filter((f) => f.severity === 'low').length,
+		},
+		timestamp: result.timestamp,
+		cached: result.cached,
+	};
+}
+
 export function formatScanReport(result: ScanDomainResult): string {
 	const lines: string[] = [];
 
