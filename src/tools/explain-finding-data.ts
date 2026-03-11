@@ -1421,7 +1421,7 @@ export const SPECIFIC_IMPACT_RULES: SpecificImpactRule[] = [
 	},
 	{
 		checkType: 'DMARC',
-		titleIncludes: ['no forensic reporting', 'forensic reporting'],
+		titleIncludes: ['no forensic reporting', 'ruf= absent'],
 		impact: 'You only see aggregate summaries — individual failure details are not reported, making troubleshooting harder.',
 		adverseConsequences: 'Legitimate email delivery issues take longer to diagnose, and targeted spoofing attempts are harder to trace.',
 	},
