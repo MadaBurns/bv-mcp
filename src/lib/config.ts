@@ -73,8 +73,8 @@ export const GLOBAL_DAILY_TOOL_LIMIT = 500_000;
  * Tools omitted from this map are governed only by baseline per-IP rate limits.
  */
 export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
-	scan_domain: 25,
-	scan: 25,
+	scan_domain: 75,
+	scan: 75,
 	check_spf: 200,
 	check_dmarc: 200,
 	check_dkim: 200,
@@ -86,7 +86,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_caa: 200,
 	check_bimi: 200,
 	check_tlsrpt: 200,
-	check_lookalikes: 10,
+	check_lookalikes: 20,
 	explain_finding: 200,
-	compare_baseline: 100,
+	compare_baseline: 150,
 };
