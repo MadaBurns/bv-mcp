@@ -50,4 +50,4 @@ export { checkSsl } from './tools/check-ssl';
 export { checkSubdomainTakeover } from './tools/check-subdomain-takeover';
 export { checkTlsrpt } from './tools/check-tlsrpt';
 export { explainFinding, formatExplanation, resolveImpactNarrative, type ExplanationResult } from './tools/explain-finding';
-export { formatScanReport, scanDomain, type MaturityStage, type ScanDomainResult, type ScanRuntimeOptions } from './tools/scan-domain';
+export { buildStructuredScanResult, formatScanReport, scanDomain, type MaturityStage, type ScanDomainResult, type ScanRuntimeOptions, type StructuredScanResult } from './tools/scan-domain';
