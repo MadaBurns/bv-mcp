@@ -32,6 +32,10 @@ export {
 	type FindingConfidence,
 	type ScanScore,
 	type Severity,
+	detectDomainContext,
+	getProfileWeights,
+	type DomainContext,
+	type DomainProfile,
 } from './lib/scoring';
 
 export { sanitizeDomain, sanitizeInput, validateDomain } from './lib/sanitize';

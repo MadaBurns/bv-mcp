@@ -32,6 +32,7 @@ export interface BaselineResult {
 	passed: boolean;
 	violations: BaselineViolation[];
 	checkedRules: number;
+	scoringProfile?: string;
 	timestamp: string;
 }
 
@@ -159,6 +160,7 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 		passed: violations.length === 0,
 		violations,
 		checkedRules,
+		scoringProfile: scan.context?.profile,
 		timestamp: new Date().toISOString(),
 	};
 }

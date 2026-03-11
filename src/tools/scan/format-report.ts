@@ -14,6 +14,8 @@ export interface StructuredScanResult {
 	maturityLabel: string | null;
 	categoryScores: Record<string, number>;
 	findingCounts: { critical: number; high: number; medium: number; low: number };
+	scoringProfile: string;
+	scoringSignals: string[];
 	timestamp: string;
 	cached: boolean;
 }
@@ -34,6 +36,8 @@ export function buildStructuredScanResult(result: ScanDomainResult): StructuredS
 			medium: result.score.findings.filter((f) => f.severity === 'medium').length,
 			low: result.score.findings.filter((f) => f.severity === 'low').length,
 		},
+		scoringProfile: result.context?.profile ?? 'mail_enabled',
+		scoringSignals: result.context?.signals ?? [],
 		timestamp: result.timestamp,
 		cached: result.cached,
 	};
@@ -54,6 +58,12 @@ export function formatScanReport(result: ScanDomainResult): string {
 		if (result.maturity.nextStep) {
 			lines.push(`Next step: ${result.maturity.nextStep}`);
 		}
+		lines.push('');
+	}
+
+	if (result.context) {
+		const signalSummary = result.context.signals.length > 0 ? result.context.signals.join(', ') : 'default';
+		lines.push(`Scoring Profile: ${result.context.profile} (${signalSummary})`);
 		lines.push('');
 	}
 
