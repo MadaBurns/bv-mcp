@@ -1414,6 +1414,30 @@ export const SPECIFIC_IMPACT_RULES: SpecificImpactRule[] = [
 		adverseConsequences: 'Problems go unnoticed longer, and scammers operate freely because you have no visibility.',
 	},
 	{
+		checkType: 'DMARC',
+		titleIncludes: ['no subdomain policy'],
+		impact: 'Subdomains inherit the parent policy, but without an explicit sp= tag, future changes may unintentionally leave subdomains unprotected.',
+		adverseConsequences: 'Attackers can spoof email from subdomains if the inherited policy is weakened or removed.',
+	},
+	{
+		checkType: 'DMARC',
+		titleIncludes: ['no forensic reporting', 'forensic reporting'],
+		impact: 'You only see aggregate summaries — individual failure details are not reported, making troubleshooting harder.',
+		adverseConsequences: 'Legitimate email delivery issues take longer to diagnose, and targeted spoofing attempts are harder to trace.',
+	},
+	{
+		checkType: 'DMARC',
+		titleIncludes: ['relaxed dkim alignment'],
+		impact: 'Relaxed DKIM alignment allows organizational domain matches, so a compromised subdomain could pass DKIM checks.',
+		adverseConsequences: 'An attacker controlling any subdomain can send DKIM-aligned email that passes DMARC for your main domain.',
+	},
+	{
+		checkType: 'DMARC',
+		titleIncludes: ['relaxed spf alignment'],
+		impact: 'Relaxed SPF alignment allows organizational domain matches, so email from any subdomain can pass SPF checks.',
+		adverseConsequences: 'An attacker using a subdomain SPF record can send SPF-aligned email that passes DMARC for your main domain.',
+	},
+	{
 		checkType: 'MX',
 		titleIncludes: ['no mx records found', 'mx configuration error'],
 		impact: 'Incoming email delivery is broken or unreliable — messages may not arrive at all.',
