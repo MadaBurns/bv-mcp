@@ -507,4 +507,52 @@ describe('resolveImpactNarrative', () => {
 		expect(narrative.impact).toContain('big picture');
 		expect(narrative.adverseConsequences).toContain('unnoticed');
 	});
+
+	it('returns distinct narrative for DMARC no subdomain policy', async () => {
+		const { resolveImpactNarrative } = await getModule();
+		const narrative = resolveImpactNarrative({
+			category: 'dmarc',
+			severity: 'low',
+			title: 'No subdomain policy (sp=) specified',
+			detail: 'Subdomains inherit the parent domain policy',
+		});
+		expect(narrative.impact).toContain('sp=');
+		expect(narrative.adverseConsequences).toContain('subdomain');
+	});
+
+	it('returns distinct narrative for DMARC no forensic reporting', async () => {
+		const { resolveImpactNarrative } = await getModule();
+		const narrative = resolveImpactNarrative({
+			category: 'dmarc',
+			severity: 'low',
+			title: 'Forensic reporting (ruf=) is not configured',
+			detail: 'No ruf= tag present',
+		});
+		expect(narrative.impact).toContain('aggregate summaries');
+		expect(narrative.adverseConsequences).toContain('diagnose');
+	});
+
+	it('returns distinct narrative for DMARC relaxed DKIM alignment', async () => {
+		const { resolveImpactNarrative } = await getModule();
+		const narrative = resolveImpactNarrative({
+			category: 'dmarc',
+			severity: 'low',
+			title: 'Relaxed DKIM alignment (adkim=r)',
+			detail: 'DKIM alignment mode is relaxed',
+		});
+		expect(narrative.impact).toContain('organizational domain');
+		expect(narrative.adverseConsequences).toContain('subdomain');
+	});
+
+	it('returns distinct narrative for DMARC relaxed SPF alignment', async () => {
+		const { resolveImpactNarrative } = await getModule();
+		const narrative = resolveImpactNarrative({
+			category: 'dmarc',
+			severity: 'low',
+			title: 'Relaxed SPF alignment (aspf=r)',
+			detail: 'SPF alignment mode is relaxed',
+		});
+		expect(narrative.impact).toContain('organizational domain');
+		expect(narrative.adverseConsequences).toContain('subdomain');
+	});
 });

@@ -95,4 +95,44 @@ describe('computeMaturityStage', () => {
 		expect(stage.stage).toBe(0);
 		expect(stage.label).toBe('Unprotected');
 	});
+
+	it('returns Unprotected for non-mail domain without DNSSEC', () => {
+		const checks: CheckResult[] = [
+			buildCheckResult('mx', [createFinding('mx', 'No MX records found', 'info', 'Domain has no MX')]),
+			buildCheckResult('spf', [createFinding('spf', 'No SPF record found', 'critical', 'Missing SPF')]),
+			buildCheckResult('dmarc', [createFinding('dmarc', 'No DMARC record found', 'critical', 'Missing DMARC')]),
+			{ category: 'dnssec', passed: false, score: 0, findings: [createFinding('dnssec', 'No DNSKEY records', 'high', 'No DNSSEC')] },
+		];
+		const stage = computeMaturityStage(checks);
+		expect(stage.stage).toBe(0);
+		expect(stage.label).toBe('Unprotected');
+		expect(stage.description).toContain('does not accept email');
+		expect(stage.nextStep).toContain('DNSSEC');
+	});
+
+	it('returns DNS-Only for non-mail domain with DNSSEC', () => {
+		const checks: CheckResult[] = [
+			buildCheckResult('mx', [createFinding('mx', 'No MX records found', 'info', 'Domain has no MX')]),
+			buildCheckResult('spf', [createFinding('spf', 'No SPF record found', 'critical', 'Missing SPF')]),
+			{ category: 'dnssec', passed: true, score: 100, findings: [createFinding('dnssec', 'DNSSEC validated', 'info', 'ok')] },
+		];
+		const stage = computeMaturityStage(checks);
+		expect(stage.stage).toBe(1);
+		expect(stage.label).toBe('DNS-Only');
+		expect(stage.description).toContain('does not accept email');
+		expect(stage.description).toContain('DNSSEC');
+		expect(stage.nextStep).toBe('');
+	});
+
+	it('does not short-circuit to non-mail path when MX records exist', () => {
+		const checks: CheckResult[] = [
+			buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 MX records')]),
+			buildCheckResult('spf', [createFinding('spf', 'SPF record configured', 'info', 'ok')]),
+			buildCheckResult('dkim', [createFinding('dkim', 'DKIM configured', 'info', 'Found selectors')]),
+			buildCheckResult('dmarc', [createFinding('dmarc', 'DMARC record found', 'info', 'p=reject')]),
+		];
+		const stage = computeMaturityStage(checks);
+		expect(stage.stage).toBe(3);
+		expect(stage.label).toBe('Enforcing');
+	});
 });
