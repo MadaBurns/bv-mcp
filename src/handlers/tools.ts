@@ -14,7 +14,7 @@ import { checkCaa } from '../tools/check-caa';
 import { checkBimi } from '../tools/check-bimi';
 import { checkTlsrpt } from '../tools/check-tlsrpt';
 import { checkLookalikes } from '../tools/check-lookalikes';
-import { scanDomain, formatScanReport } from '../tools/scan-domain';
+import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
 import type { PolicyBaseline } from '../tools/compare-baseline';
@@ -178,7 +178,13 @@ export async function handleToolsCall(
 						logDetails,
 						severity: 'info',
 					});
-					return { content: [mcpText(formatScanReport(result))] };
+					const structured = buildStructuredScanResult(result);
+					return {
+						content: [
+							mcpText(formatScanReport(result)),
+							mcpText(`<!-- STRUCTURED_RESULT\n${JSON.stringify(structured)}\nSTRUCTURED_RESULT -->`),
+						],
+					};
 				}
 				case 'compare_baseline': {
 					const baseline = (args.baseline ?? {}) as PolicyBaseline;

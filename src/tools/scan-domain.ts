@@ -28,7 +28,8 @@ import { applyScanPostProcessing } from './scan/post-processing';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import { computeMaturityStage } from './scan/maturity-staging';
 import type { MaturityStage } from './scan/maturity-staging';
-export { formatScanReport } from './scan/format-report';
+export { formatScanReport, buildStructuredScanResult } from './scan/format-report';
+export type { StructuredScanResult } from './scan/format-report';
 export type { MaturityStage } from './scan/maturity-staging';
 export type { ScanRuntimeOptions } from './scan/post-processing';
 
