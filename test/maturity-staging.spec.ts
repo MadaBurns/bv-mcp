@@ -57,8 +57,8 @@ describe('computeMaturityStage', () => {
 			buildCheckResult('spf', [createFinding('spf', 'SPF record configured', 'info', 'ok')]),
 			buildCheckResult('dkim', [createFinding('dkim', 'DKIM configured', 'info', 'Found selectors')]),
 			buildCheckResult('dmarc', [createFinding('dmarc', 'DMARC record found', 'info', 'p=reject')]),
-			{ category: 'mta_sts', passed: true, score: 100, findings: [createFinding('mta_sts', 'MTA-STS configured', 'info', 'ok')] },
-			{ category: 'dnssec', passed: true, score: 100, findings: [createFinding('dnssec', 'DNSSEC validated', 'info', 'ok')] },
+			buildCheckResult('mta_sts', [createFinding('mta_sts', 'MTA-STS configured', 'info', 'ok')]),
+			buildCheckResult('dnssec', [createFinding('dnssec', 'DNSSEC validated', 'info', 'ok')]),
 		];
 		const stage = computeMaturityStage(checks);
 		expect(stage.stage).toBe(4);
@@ -72,7 +72,7 @@ describe('computeMaturityStage', () => {
 			buildCheckResult('dkim', [createFinding('dkim', 'DKIM configured', 'info', 'Found selectors')]),
 			buildCheckResult('dmarc', [createFinding('dmarc', 'DMARC policy set to quarantine', 'low', 'Policy is quarantine')]),
 			buildCheckResult('bimi', [createFinding('bimi', 'BIMI record configured', 'info', 'BIMI valid')]),
-			{ category: 'dnssec', passed: true, score: 100, findings: [createFinding('dnssec', 'DNSSEC validated', 'info', 'ok')] },
+			buildCheckResult('dnssec', [createFinding('dnssec', 'DNSSEC validated', 'info', 'ok')]),
 		];
 		const stage = computeMaturityStage(checks);
 		expect(stage.stage).toBe(4);
@@ -114,7 +114,7 @@ describe('computeMaturityStage', () => {
 		const checks: CheckResult[] = [
 			buildCheckResult('mx', [createFinding('mx', 'No MX records found', 'info', 'Domain has no MX')]),
 			buildCheckResult('spf', [createFinding('spf', 'No SPF record found', 'critical', 'Missing SPF')]),
-			{ category: 'dnssec', passed: true, score: 100, findings: [createFinding('dnssec', 'DNSSEC validated', 'info', 'ok')] },
+			buildCheckResult('dnssec', [createFinding('dnssec', 'DNSSEC validated', 'info', 'ok')]),
 		];
 		const stage = computeMaturityStage(checks);
 		expect(stage.stage).toBe(1);

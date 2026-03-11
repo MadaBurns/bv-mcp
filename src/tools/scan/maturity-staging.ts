@@ -30,8 +30,12 @@ export function computeMaturityStage(checks: CheckResult[]): MaturityStage {
 	const dnssecCheck = byCategory.get('dnssec');
 	const bimiCheck = byCategory.get('bimi');
 
-	// Non-mail domains should not receive email maturity stages
-	const hasNoMx = mxCheck != null && mxCheck.findings.some((f) => /No MX records found/i.test(f.title));
+	// Non-mail domains should not receive email maturity stages.
+	// The numeric stage values here (0 = "Unprotected", 1 = "DNS-Only") intentionally
+	// reuse the same numbers as the mail-domain scale. This is safe because `stage` is
+	// only ever rendered as a display value alongside `label` — it is never used as a
+	// numeric index or compared against mail-domain stages in any downstream logic.
+	const hasNoMx = mxCheck != null && mxCheck.findings.some((f) => f.title === 'No MX records found');
 	if (hasNoMx) {
 		const hasDnssec = dnssecCheck?.passed ?? false;
 		return {
