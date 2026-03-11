@@ -374,7 +374,8 @@ Prompt methods (`prompts/list`, `prompts/get`) return `-32601 Method not found`.
 - Input sanitation and domain validation
 - Optional bearer-token authentication
 - Per-IP rate limiting (KV + in-memory fallback)
-- `check_lookalikes` capped at 10/day per IP with 60-min caching
+- `check_lookalikes` capped at 20/day per IP with 60-min caching
+- `scan_domain` capped at 75/day per IP (results cached 5 min)
 - Scan result caching (KV + in-memory fallback)
 - Structured JSON logging
 
