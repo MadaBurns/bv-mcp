@@ -186,8 +186,12 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEI
 
 ## CI/CD
 
-- `.github/workflows/ci.yml`: typecheck + test on PRs and pushes to `main`
+- `.github/workflows/ci.yml`: typecheck + lint + test on PRs and pushes to `main`
+- `.github/workflows/security.yml`: Gitleaks secret/PII scan + `npm audit` dependency check on PRs and pushes to `main` (**required checks**)
 - `.github/workflows/dns-security.yml`: weekly DNS security scan of blackveilsecurity.com via blackveil-dns-action
+- `.gitleaks.toml`: custom rules for email addresses, real IP addresses, phone numbers, Cloudflare credentials; allowlists for test fixtures (`@example.com`, RFC 5737 IPs, private ranges)
+
+**Branch protection** (configure in GitHub Settings → Branches → `main`): require PR reviews, require `build-and-test`, `Secret & PII scan`, and `Dependency audit` status checks to pass before merge, disable direct pushes to `main`.
 
 ## Deployment
 

@@ -23,6 +23,7 @@ jobs:
 
       - run: npm ci
       - run: npx tsc --noEmit
+      - run: npm run lint
       - run: npm test
 
       - name: Upload coverage
