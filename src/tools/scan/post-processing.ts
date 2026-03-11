@@ -23,6 +23,8 @@ export async function applyScanPostProcessing(
 	if (hasNoMx) {
 		const apexCovers = await checkApexDmarcPolicy(domain);
 		results = adjustForNonMailDomain(results, apexCovers);
+	} else if (mxResult) {
+		results = clarifyMtaStsForMailDomain(domain, results);
 	}
 
 	return addOutboundProviderInference(results, runtimeOptions);
@@ -164,6 +166,22 @@ async function checkApexDmarcPolicy(domain: string): Promise<boolean> {
 function isMissingRecordFinding(finding: { title: string; detail: string }): boolean {
 	const text = `${finding.title} ${finding.detail}`.toLowerCase();
 	return /(no\s+.+\s+record|missing|not\s+found|no\s+mta-sts|no\s+dkim)/.test(text);
+}
+
+function clarifyMtaStsForMailDomain(domain: string, results: CheckResult[]): CheckResult[] {
+	return results.map((result) => {
+		if (result.category !== 'mta_sts') return result;
+		const adjusted = result.findings.map((finding) => {
+			if (finding.title === 'No MTA-STS or TLS-RPT records found') {
+				return {
+					...finding,
+					detail: `Neither MTA-STS nor TLS-RPT records are present for ${domain}. Since this domain has MX records and accepts email, adding MTA-STS and TLS-RPT is recommended to protect inbound email in transit.`,
+				};
+			}
+			return finding;
+		});
+		return buildCheckResult(result.category, adjusted);
+	});
 }
 
 function adjustForNonMailDomain(results: CheckResult[], apexDmarcCovers: boolean): CheckResult[] {
