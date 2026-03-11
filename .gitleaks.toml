@@ -1,0 +1,119 @@
+# Gitleaks configuration for Blackveil DNS MCP
+# Extends built-in rules with PII detection and project-specific patterns.
+
+title = "bv-mcp secret and PII detection"
+
+[extend]
+useDefault = true
+
+# ─── Custom PII Rules ────────────────────────────────────────────────
+
+[[rules]]
+id = "real-email-address"
+description = "Real email address (not example/test domain)"
+regex = '''[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}'''
+keywords = ["@"]
+[rules.allowlist]
+regexTarget = "match"
+regexes = [
+  '''@example\.(com|org|net)''',
+  '''@localhost''',
+  '''@blackveilsecurity\.com''',
+  '''@anthropic\.com''',
+  '''noreply@''',
+  '''@(dmarcian|valimail|agari|dmarcadvisors)\.com''',        # Known DMARC vendor domains in test fixtures
+  '''@(internal-company|thirdparty|yourdomain)\.com''',       # Test/placeholder domains
+  '''mailto:[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]''', # mailto: in DMARC/TLSRPT test records
+]
+
+[[rules]]
+id = "real-ipv4-address"
+description = "Real IPv4 address (not RFC 5737 documentation or private/test ranges)"
+regex = '''\b(?:(?:25[0-5]|2[0-4]\d|1?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|1?\d\d?)\b'''
+keywords = ["."]
+[rules.allowlist]
+regexTarget = "match"
+regexes = [
+  '''192\.0\.2\.\d+''',             # RFC 5737 TEST-NET-1
+  '''198\.51\.100\.\d+''',          # RFC 5737 TEST-NET-2
+  '''203\.0\.113\.\d+''',           # RFC 5737 TEST-NET-3
+  '''127\.\d+\.\d+\.\d+''',        # Loopback
+  '''10\.\d+\.\d+\.\d+''',         # RFC 1918 Class A
+  '''172\.(1[6-9]|2\d|3[01])\.\d+\.\d+''', # RFC 1918 Class B
+  '''192\.168\.\d+\.\d+''',        # RFC 1918 Class C
+  '''169\.254\.\d+\.\d+''',        # Link-local
+  '''0\.0\.0\.0''',                 # Unspecified
+  '''1\.[0-9]\.[0-9]\.[0-9]''',    # Low-range test placeholders (1.2.3.4, 1.1.1.1)
+  '''255\.255\.255\.\d+''',         # Broadcast/mask
+  '''8\.8\.(8\.8|4\.4)''',          # Google Public DNS
+  '''9\.9\.9\.9''',                 # Quad9
+  '''93\.184\.216\.34''',           # example.com canonical IP
+  '''7\.4\.1\.2''',                 # RFC section reference (not real IP)
+  '''123\.45\.67\.89''',            # Placeholder IP in docs/explanations
+]
+# Test fixtures use well-known service IPs (GitHub Pages, AWS, DigitalOcean) intentionally
+paths = [
+  '''test/''',
+]
+
+[[rules]]
+id = "phone-number"
+description = "Phone number"
+regex = '''(?:\+1[\s\-]?)?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{4}'''
+# Require keyword proximity to reduce false positives on hex/numeric constants
+keywords = ["phone", "tel", "mobile", "cell", "fax"]
+# Numeric test data (timestamps, hex strings) triggers false positives
+[rules.allowlist]
+paths = [
+  '''test/''',
+]
+
+[[rules]]
+id = "cloudflare-account-id"
+description = "Cloudflare Account ID (32-char hex)"
+regex = '''(?i)(?:account[_\-]?id|CLOUDFLARE_ACCOUNT)\s*[=:]\s*["']?([0-9a-f]{32})["']?'''
+keywords = ["account"]
+
+[[rules]]
+id = "cloudflare-kv-namespace-id"
+description = "Cloudflare KV Namespace ID (32-char hex in binding context)"
+regex = '''(?i)(?:id|namespace[_\-]?id)\s*[=:]\s*["']?([0-9a-f]{32})["']?'''
+keywords = ["namespace", "kv"]
+[rules.allowlist]
+paths = [
+  '''wrangler\.jsonc?$''',  # Placeholder IDs in public config are fine
+]
+
+[[rules]]
+id = "wrangler-deploy-config"
+description = "Private Wrangler deploy config should not be committed"
+path = '''\.dev/wrangler'''
+
+# ─── Built-in Rule Overrides ─────────────────────────────────────────
+# DKIM test fixtures contain base64-encoded public keys that trigger generic-api-key
+
+[[rules]]
+id = "generic-api-key"
+description = "Generic API Key (built-in override to allowlist test DKIM keys)"
+# Inherit the default generic-api-key pattern — override only adds allowlist
+regex = '''(?i)(?:key|api|token|secret|client|passwd|password|auth|access)(?:[0-9a-z\-_\t .]{0,20})(?:[\s|']|[\s|"]){0,3}(?:=|>|:{1,3}=|\|\|:|<=|=>|:|\?=)(?:'|\"|\s|=|\x60){0,5}([0-9a-z\-_.=]{10,150})(?:['|\"|\n|\r|\s|\x60|;]|$)'''
+keywords = ["key","api","token","secret","client","passwd","password","auth","access"]
+[rules.allowlist]
+paths = [
+  '''test/check-dkim\.spec\.ts$''', # DKIM public keys in test fixtures are not secrets
+]
+
+# ─── Global Allowlists ───────────────────────────────────────────────
+
+[allowlist]
+paths = [
+  '''\.gitleaks\.toml$''',           # This config file itself
+  '''node_modules/''',
+  '''package-lock\.json$''',
+  '''\.wrangler/''',
+  '''coverage/''',
+  '''dist/''',                       # Build artifacts
+  '''worker-configuration\.d\.ts$''', # Generated CF types
+  '''\.dev/''',                      # Local deploy overrides (gitignored)
+  '''docs/plans/''',                 # Internal planning docs (gitignored)
+]
