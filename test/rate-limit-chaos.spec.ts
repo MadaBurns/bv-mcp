@@ -339,21 +339,21 @@ describe('rate-limit chaos tests', () => {
 		});
 
 		it('check_lookalikes has a lower limit than other checks', () => {
-			expect(FREE_TOOL_DAILY_LIMITS['check_lookalikes']).toBe(10);
+			expect(FREE_TOOL_DAILY_LIMITS['check_lookalikes']).toBe(20);
 			expect(FREE_TOOL_DAILY_LIMITS['check_lookalikes']).toBeLessThan(
 				FREE_TOOL_DAILY_LIMITS['check_spf'],
 			);
 		});
 
 		it('compare_baseline has a lower limit than individual checks', () => {
-			expect(FREE_TOOL_DAILY_LIMITS['compare_baseline']).toBe(100);
+			expect(FREE_TOOL_DAILY_LIMITS['compare_baseline']).toBe(150);
 			expect(FREE_TOOL_DAILY_LIMITS['compare_baseline']).toBeLessThan(
 				FREE_TOOL_DAILY_LIMITS['check_spf'],
 			);
 		});
 
 		it('scan_domain limit is lower than individual check limits', () => {
-			expect(FREE_TOOL_DAILY_LIMITS['scan_domain']).toBe(25);
+			expect(FREE_TOOL_DAILY_LIMITS['scan_domain']).toBe(75);
 			expect(FREE_TOOL_DAILY_LIMITS['scan_domain']).toBeLessThan(
 				FREE_TOOL_DAILY_LIMITS['check_spf'],
 			);
