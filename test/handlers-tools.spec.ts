@@ -114,16 +114,27 @@ describe('handleToolsCall - dispatch routing', () => {
 		mockAllChecks();
 		const result = await call('scan_domain', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('DNS Security Scan');
+		// Second content block is structured JSON for machine-readable consumption
+		expect(result.content[1].text).toContain('STRUCTURED_RESULT');
+		const match = result.content[1].text.match(/<!-- STRUCTURED_RESULT\n(.*)\nSTRUCTURED_RESULT -->/s);
+		expect(match).not.toBeNull();
+		const structured = JSON.parse(match![1]);
+		expect(structured.domain).toBe('example.com');
+		expect(typeof structured.score).toBe('number');
+		expect(typeof structured.grade).toBe('string');
+		expect(typeof structured.passed).toBe('boolean');
+		expect(structured.findingCounts).toBeDefined();
 	});
 
 	it('scan alias routes to scan_domain', async () => {
 		mockAllChecks();
 		const result = await call('scan', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('DNS Security Scan');
+		expect(result.content[1].text).toContain('STRUCTURED_RESULT');
 	});
 
 	it('check_mx with valid domain returns content with MX', async () => {
