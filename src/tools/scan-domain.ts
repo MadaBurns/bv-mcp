@@ -22,6 +22,12 @@ import {
 	detectDomainContext,
 	getProfileWeights,
 } from '../lib/scoring';
+import {
+	adaptiveWeightsToContext,
+	generateScoringNote,
+	type AdaptiveWeightsResponse,
+	type ScanTelemetry,
+} from '../lib/adaptive-weights';
 import { cacheGet, cacheSet, runWithCache } from '../lib/cache';
 import { checkSpf } from './check-spf';
 import { checkDmarc } from './check-dmarc';
@@ -53,6 +59,15 @@ const PER_CHECK_TIMEOUT_MS = 15_000;
 /** Maximum wall-clock time for the entire scan_domain orchestration (ms). */
 const SCAN_TIMEOUT_MS = 25_000;
 
+/** In-memory cache for adaptive weight responses from the ProfileAccumulator DO. */
+const adaptiveWeightCache = new Map<string, { weights: AdaptiveWeightsResponse; expires: number }>();
+
+/** TTL for the in-memory adaptive weight cache (ms). */
+const ADAPTIVE_CACHE_TTL_MS = 60_000;
+
+/** Timeout for fetching adaptive weights from the DO (ms). */
+const ADAPTIVE_FETCH_TIMEOUT_MS = 50;
+
 export interface ScanDomainResult {
 	domain: string;
 	score: ScanScore;
@@ -61,6 +76,8 @@ export interface ScanDomainResult {
 	context: DomainContext;
 	cached: boolean;
 	timestamp: string;
+	scoringNote: string | null;
+	adaptiveWeightDeltas: Record<string, number> | null;
 }
 
 /**
@@ -181,7 +198,57 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		// uses the default weights (identical to pre-profile behavior).
 		const scoringContext = isExplicit ? domainContext : undefined;
 
-		const score = computeScanScore(checkResults, scoringContext);
+		// Attempt to fetch adaptive weights from the ProfileAccumulator DO
+		let adaptiveResponse: AdaptiveWeightsResponse | null = null;
+		if (runtimeOptions?.profileAccumulator) {
+			adaptiveResponse = await fetchAdaptiveWeights(
+				runtimeOptions.profileAccumulator,
+				domainContext.profile,
+				domainContext.detectedProvider,
+			);
+		}
+
+		// Add bound hits to signals if present
+		if (adaptiveResponse?.boundHits.length) {
+			domainContext.signals.push(`adaptive bound hits: ${adaptiveResponse.boundHits.join(', ')}`);
+		}
+
+		let score: ScanScore;
+		let scoringNote: string | null = null;
+		let adaptiveWeightDeltas: Record<string, number> | null = null;
+
+		if (adaptiveResponse && adaptiveResponse.sampleCount > 0) {
+			const adaptiveWeights = adaptiveWeightsToContext(adaptiveResponse.weights, domainContext.profile);
+			if (adaptiveWeights) {
+				// Compute adaptive score
+				const adaptiveContext: DomainContext = { ...domainContext, weights: adaptiveWeights };
+				const adaptiveScore = computeScanScore(checkResults, adaptiveContext);
+
+				// Compute static score for comparison
+				const staticContext: DomainContext = {
+					...domainContext,
+					weights: getProfileWeights(domainContext.profile),
+				};
+				const staticScore = computeScanScore(checkResults, scoringContext ?? staticContext);
+
+				// Compute per-category weight deltas
+				const staticWeights = getProfileWeights(domainContext.profile);
+				const deltas: Record<string, number> = {};
+				for (const cat of Object.keys(staticWeights) as CheckCategory[]) {
+					deltas[cat] = adaptiveWeights[cat].importance - staticWeights[cat].importance;
+				}
+
+				const scoreDelta = adaptiveScore.overall - staticScore.overall;
+				scoringNote = generateScoringNote(deltas, scoreDelta, domainContext.detectedProvider);
+				adaptiveWeightDeltas = deltas;
+				score = adaptiveScore;
+			} else {
+				score = computeScanScore(checkResults, scoringContext);
+			}
+		} else {
+			score = computeScanScore(checkResults, scoringContext);
+		}
+
 		const maturity = computeMaturityStage(checkResults);
 
 		result = {
@@ -192,7 +259,36 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			context: domainContext,
 			cached: false,
 			timestamp: new Date().toISOString(),
+			scoringNote,
+			adaptiveWeightDeltas,
 		};
+
+		// POST telemetry to DO (best-effort, non-blocking)
+		if (runtimeOptions?.profileAccumulator) {
+			const telemetry: ScanTelemetry = {
+				profile: domainContext.profile,
+				provider: domainContext.detectedProvider,
+				categoryFindings: checkResults.map((r) => ({ category: r.category, score: r.score, passed: r.passed })),
+				timestamp: Date.now(),
+			};
+			const telemetryPromise = (async () => {
+				try {
+					const stub = runtimeOptions.profileAccumulator!.get(
+						runtimeOptions.profileAccumulator!.idFromName('global'),
+					);
+					await stub.fetch(
+						new Request('https://do/ingest', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify(telemetry),
+						}),
+					);
+				} catch {
+					/* best-effort */
+				}
+			})();
+			if (runtimeOptions.waitUntil) runtimeOptions.waitUntil(telemetryPromise);
+		}
 	} catch {
 		// Post-processing or scoring failed — return whatever we have
 		let fallbackContext = detectDomainContext(checkResults);
@@ -215,6 +311,8 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			context: fallbackContext,
 			cached: false,
 			timestamp: new Date().toISOString(),
+			scoringNote: null,
+			adaptiveWeightDeltas: null,
 		};
 	}
 
@@ -222,6 +320,45 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	await cacheSet(cacheKey, result, kv);
 
 	return result;
+}
+
+/**
+ * Fetch adaptive weights from the ProfileAccumulator DO with in-memory caching.
+ * Returns null on failure or timeout (silently falls back to static weights).
+ */
+async function fetchAdaptiveWeights(
+	accumulator: DurableObjectNamespace,
+	profile: string,
+	provider: string | null,
+): Promise<AdaptiveWeightsResponse | null> {
+	const cacheKey = `${profile}:${provider ?? ''}`;
+	const now = Date.now();
+
+	// Check in-memory cache first
+	const cached = adaptiveWeightCache.get(cacheKey);
+	if (cached && cached.expires > now) {
+		return cached.weights;
+	}
+
+	try {
+		const stub = accumulator.get(accumulator.idFromName('global'));
+		const url = new URL('https://do/weights');
+		url.searchParams.set('profile', profile);
+		if (provider) url.searchParams.set('provider', provider);
+
+		const response = await Promise.race([
+			stub.fetch(new Request(url.toString())),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('adaptive weight fetch timeout')), ADAPTIVE_FETCH_TIMEOUT_MS)),
+		]);
+
+		if (!response.ok) return null;
+
+		const data = (await response.json()) as AdaptiveWeightsResponse;
+		adaptiveWeightCache.set(cacheKey, { weights: data, expires: now + ADAPTIVE_CACHE_TTL_MS });
+		return data;
+	} catch {
+		return null;
+	}
 }
 
 async function runCachedCheck(
