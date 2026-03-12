@@ -26,7 +26,8 @@ async function getWeights(stub: DurableObjectStub, profile: string, provider?: s
 describe('ProfileAccumulator', () => {
 	it('returns empty weights for unknown profile', async () => {
 		const stub = getStub('global');
-		const res = await getWeights(stub, 'test_empty_unknown_profile');
+		// Valid profile name but no data ingested yet — returns empty weights
+		const res = await getWeights(stub, 'web_only');
 		expect(res.status).toBe(200);
 		const body = await res.json();
 		expect(body.sampleCount).toBe(0);
@@ -37,7 +38,7 @@ describe('ProfileAccumulator', () => {
 
 	it('ingests telemetry and updates profile stats', async () => {
 		const stub = getStub('global');
-		const profile = 'test_ingest_single';
+		const profile = 'mail_enabled';
 
 		const telemetry: ScanTelemetry = {
 			profile,
@@ -62,7 +63,7 @@ describe('ProfileAccumulator', () => {
 
 	it('accumulates multiple ingests with EMA', async () => {
 		const stub = getStub('global');
-		const profile = 'test_ema_accumulation';
+		const profile = 'enterprise_mail';
 
 		for (let i = 0; i < 5; i++) {
 			const telemetry: ScanTelemetry = {
@@ -86,7 +87,7 @@ describe('ProfileAccumulator', () => {
 
 	it('applies provider overlay', async () => {
 		const stub = getStub('global');
-		const profile = 'test_provider_overlay';
+		const profile = 'non_mail';
 		const provider = 'test-provider-overlay';
 
 		// 10 profile-level ingests with NO provider: always pass (low failure rate)
@@ -140,21 +141,68 @@ describe('ProfileAccumulator', () => {
 		});
 		expect(res1.status).toBe(400);
 
-		// Missing categoryFindings
+		// Invalid profile (not in whitelist)
 		const res2 = await stub.fetch('https://accumulator.internal/ingest', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ profile: 'test' }),
+			body: JSON.stringify({ profile: 'nonexistent_profile', categoryFindings: [] }),
 		});
 		expect(res2.status).toBe(400);
 
-		// Invalid JSON
+		// Missing categoryFindings
 		const res3 = await stub.fetch('https://accumulator.internal/ingest', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ profile: 'mail_enabled' }),
+		});
+		expect(res3.status).toBe(400);
+
+		// Invalid JSON
+		const res4 = await stub.fetch('https://accumulator.internal/ingest', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: 'not json',
 		});
-		expect(res3.status).toBe(400);
+		expect(res4.status).toBe(400);
+	});
+
+	it('rejects oversized categoryFindings array', async () => {
+		const stub = getStub('global');
+		const findings = Array.from({ length: 51 }, () => ({ category: 'spf', score: 50, passed: true }));
+		const res = await stub.fetch('https://accumulator.internal/ingest', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ profile: 'mail_enabled', categoryFindings: findings }),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it('skips invalid category findings entries gracefully', async () => {
+		const stub = getStub('global');
+		const telemetry = {
+			profile: 'minimal',
+			provider: null,
+			categoryFindings: [
+				{ category: 'dmarc', score: 80, passed: true },
+				{ category: 'fake_category', score: 50, passed: true }, // invalid category — skipped
+				{ category: 'spf', score: -5, passed: false }, // invalid score — skipped
+				{ category: 'ssl', score: 70, passed: 'yes' }, // invalid passed — skipped
+			],
+			timestamp: Date.now(),
+		};
+
+		const ingestRes = await stub.fetch('https://accumulator.internal/ingest', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify(telemetry),
+		});
+		expect(ingestRes.status).toBe(204);
+
+		// Only dmarc should have been ingested
+		const res = await getWeights(stub, 'minimal');
+		const body = await res.json();
+		expect(body.weights).toHaveProperty('dmarc');
+		expect(body.weights).not.toHaveProperty('fake_category');
 	});
 
 	it('returns 404 for unknown routes', async () => {

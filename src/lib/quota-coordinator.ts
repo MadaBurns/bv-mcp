@@ -212,7 +212,18 @@ export function validateQuotaPayload(
 		return { valid: false, error: `Invalid payload: unknown kind "${String(kind)}"` };
 	}
 
-	// kind is validated — safe to treat as QuotaCoordinatorRequest
+	// Validate string field lengths to prevent storage exhaustion
+	const obj = raw as Record<string, unknown>;
+	if ('ip' in obj && (typeof obj.ip !== 'string' || obj.ip.length > 50)) {
+		return { valid: false, error: 'Invalid ip: must be string <= 50 chars' };
+	}
+	if ('principalId' in obj && (typeof obj.principalId !== 'string' || obj.principalId.length > 100)) {
+		return { valid: false, error: 'Invalid principalId: must be string <= 100 chars' };
+	}
+	if ('scope' in obj && (typeof obj.scope !== 'string' || obj.scope.length > 30)) {
+		return { valid: false, error: 'Invalid scope' };
+	}
+
 	return { valid: true, payload: raw as QuotaCoordinatorRequest };
 }
 
