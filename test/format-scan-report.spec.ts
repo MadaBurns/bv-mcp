@@ -127,6 +127,9 @@ describe('format-scan-report', () => {
 		expect(structured.findingCounts).toEqual({ critical: 1, high: 1, medium: 1, low: 1 });
 		expect(structured.timestamp).toBe('2026-03-12T00:00:00.000Z');
 		expect(structured.cached).toBe(false);
+		// New profile fields default gracefully when context is absent
+		expect(structured.scoringProfile).toBe('mail_enabled');
+		expect(structured.scoringSignals).toEqual([]);
 	});
 
 	it('buildStructuredScanResult handles missing maturity', () => {
