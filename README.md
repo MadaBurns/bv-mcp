@@ -9,7 +9,7 @@ Open-source DNS & email security scanner for Claude, Cursor, VS Code, and any MC
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
-[![Tests](https://img.shields.io/badge/Tests-735%2B-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![Tests](https://img.shields.io/badge/Tests-784%2B-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![Coverage](https://img.shields.io/badge/Coverage-~95%25-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
@@ -56,6 +56,7 @@ Auth       None required
 - **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with next steps
 - **Trust surface analysis** — detects shared SaaS platforms (Google, M365, SendGrid) and cross-references DMARC enforcement to determine real exposure
 - **Plain-English remediation** — `explain_finding` turns findings into guidance anyone can understand
+- **Self-tuning scoring** — adaptive weights adjust category importance based on patterns seen across scans, so scores reflect real-world failure distributions rather than static assumptions
 - **Provider intelligence** — inbound/outbound email provider inference from MX, SPF, DKIM
 - **Passive and read-only** — all checks use public Cloudflare DNS-over-HTTPS; no authorization required from the target
 
@@ -377,6 +378,7 @@ Prompt methods (`prompts/list`, `prompts/get`) return `-32601 Method not found`.
 - `check_lookalikes` capped at 20/day per IP with 60-min caching
 - `scan_domain` capped at 75/day per IP (results cached 5 min)
 - Scan result caching (KV + in-memory fallback)
+- Adaptive scoring via Durable Object telemetry (graceful fallback to static weights)
 - Structured JSON logging
 
 Implementation details in `CLAUDE.md`.
@@ -435,7 +437,7 @@ npm run dev       # localhost:8787/mcp
 ```
 
 ```bash
-npm test          # 735+ tests, ~95% coverage
+npm test          # 784+ tests, ~95% coverage
 npm run typecheck
 ```
 
