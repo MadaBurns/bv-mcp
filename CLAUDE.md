@@ -63,6 +63,8 @@ src/lib/scoring.ts        — Re-export facade for scoring subsystem
 src/lib/scoring-model.ts  — Types (Finding, CheckResult, ScanScore, CheckCategory, Severity) + buildCheckResult/createFinding
 src/lib/scoring-engine.ts — IMPORTANCE_WEIGHTS, computeScanScore, scoreToGrade
 src/lib/context-profiles.ts — DomainProfile, DomainContext, PROFILE_WEIGHTS, detectDomainContext
+src/lib/adaptive-weights.ts — EMA-based adaptive weight computation, blending, bounds
+src/lib/profile-accumulator.ts — Durable Object for per-profile telemetry aggregation (SQLite-backed)
 src/lib/json-rpc.ts       — JSON-RPC 2.0 types, error codes, response builders
 src/lib/session.ts        — KV-backed (optional) + in-memory fallback session management
 src/lib/auth.ts           — Bearer token validation (constant-time XOR comparison)
@@ -166,6 +168,19 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEI
 
 **Profile-aware scoring:** When context is provided, `computeScanScore` uses `context.weights` instead of `IMPORTANCE_WEIGHTS`, `PROFILE_CRITICAL_CATEGORIES[profile]` for gap ceiling, and `PROFILE_EMAIL_BONUS_ELIGIBLE[profile]` for email bonus eligibility.
 
+### Adaptive Weights
+
+The adaptive weights system uses telemetry from previous scans to adjust importance weights per profile+provider combination. Implemented across two key files:
+
+- `src/lib/adaptive-weights.ts` — Pure computation: EMA-based weight adjustment, maturity-gated blending, bound clamping, and scoring note generation
+- `src/lib/profile-accumulator.ts` — Durable Object with SQLite storage that collects per-category failure rates and serves adaptive weights
+
+**Pipeline:** After each `scan_domain` completes, telemetry (category scores, profile, provider) is sent to the `ProfileAccumulator` DO via `waitUntil()` (non-blocking). On subsequent scans, the DO returns EMA-smoothed failure rates which `computeAdaptiveWeight()` converts to adjusted weights. `blendWeights()` gates the adjustment behind a maturity threshold (`MATURITY_THRESHOLD = 200` samples) so weights stay close to static until enough data accumulates.
+
+**Fallback chain:** If the `PROFILE_ACCUMULATOR` DO binding is unavailable or the DO request fails, `scan_domain` gracefully falls back to static profile weights (no adaptive adjustment). This is a soft dependency — the server operates identically to pre-adaptive behavior without the binding.
+
+**Binding:** `PROFILE_ACCUMULATOR` (Durable Object) — threaded from `index.ts` → `dispatch.ts` → `handlers/tools.ts` → `scanDomain()` via the `profileAccumulator` field in runtime options. The `waitUntil` callback (`c.executionCtx.waitUntil`) is threaded alongside it for non-blocking telemetry writes.
+
 ## Security
 
 - **SSRF protection**: `config.ts` defines blocked IPs/TLDs/rebinding services; `sanitize.ts` enforces them. Wrangler uses `global_fetch_strictly_public` compatibility flag.
@@ -231,6 +246,7 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 | `SCAN_CACHE` | KV Namespace | 5-min TTL result cache (**required in production**; in-memory fallback for dev) |
 | `SESSION_STORE` | KV Namespace | Session state for cross-isolate continuity (**required in production**; in-memory fallback for dev) |
 | `QUOTA_COORDINATOR` | Durable Object | Distributed rate limiting across isolates |
+| `PROFILE_ACCUMULATOR` | Durable Object | Adaptive weight telemetry collection and EMA computation (optional; static weights fallback) |
 | `MCP_ANALYTICS` | Analytics Engine | Telemetry dataset (fail-open; optional) |
 | `PROVIDER_SIGNATURES_URL` | var | Optional URL for runtime email provider signatures |
 

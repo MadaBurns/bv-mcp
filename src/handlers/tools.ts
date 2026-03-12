@@ -46,6 +46,8 @@ interface ToolRuntimeOptions {
 	providerSignaturesAllowedHosts?: string[];
 	providerSignaturesSha256?: string;
 	analytics?: AnalyticsClient;
+	profileAccumulator?: DurableObjectNamespace;
+	waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOptions): Promise<CheckResult> {
