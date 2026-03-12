@@ -38,13 +38,13 @@ export const LABEL_REGEX = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/i;
 export const MAX_REQUEST_BODY_BYTES = 10_240;
 
 /** Timeout for outbound HTTPS fetches (SSL, MTA-STS policy, etc.). */
-export const HTTPS_TIMEOUT_MS = 6_000;
+export const HTTPS_TIMEOUT_MS = 4_000;
 
-/** Default timeout for DNS-over-HTTPS queries. */
-export const DNS_TIMEOUT_MS = 5000;
+/** Default timeout for DNS-over-HTTPS queries. CF DoH p99 is <500ms. */
+export const DNS_TIMEOUT_MS = 3_000;
 
 /** Default number of retry attempts for DNS-over-HTTPS queries. */
-export const DNS_RETRIES = 2;
+export const DNS_RETRIES = 1;
 
 /** Edge cache TTL (seconds) for outbound DoH fetch requests via Cloudflare's cf API. */
 export const DOH_EDGE_CACHE_TTL = 300;
@@ -53,7 +53,7 @@ export const DOH_EDGE_CACHE_TTL = 300;
 export const INFLIGHT_CLEANUP_MS = 30_000;
 
 /** Base delay (ms) between DNS retry attempts. Actual delay = base * (attempt+1) + jitter. */
-export const DNS_RETRY_BASE_DELAY_MS = 100;
+export const DNS_RETRY_BASE_DELAY_MS = 75;
 
 /**
  * When true, empty DoH answers from the primary resolver are optionally
