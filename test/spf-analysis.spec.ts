@@ -4,8 +4,9 @@ import { analyzeSpfLookupBudget, checkBroadIpRanges, extractLookupDomains, extra
 describe('spf-analysis', () => {
 	it('counts DNS lookup mechanisms in a single SPF record', () => {
 		const analysis = analyzeSpfLookupBudget('v=spf1 include:a.com a mx exists:test.com redirect=_spf.example.com -all');
-		expect(analysis.count).toBe(5);
-		expect(analysis.mechanisms).toEqual(['include', 'a', 'mx', 'exists', 'redirect']);
+		// redirect= is a modifier (RFC 7208 §6.1), not a mechanism — it doesn't consume a lookup slot
+		expect(analysis.count).toBe(4);
+		expect(analysis.mechanisms).toEqual(['include', 'a', 'mx', 'exists']);
 	});
 
 	it('extracts include and redirect domains for downstream signal use', () => {

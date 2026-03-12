@@ -14,7 +14,7 @@ export async function buildControlPlaneRateLimitResponse(
 	accept?: string,
 	quotaCoordinator?: DurableObjectNamespace,
 ): Promise<Response | undefined> {
-	if (isAuthenticated || method === 'tools/call') return undefined;
+	if (isAuthenticated || method === 'tools/call' || method.startsWith('notifications/')) return undefined;
 
 	const rateResult = await checkControlPlaneRateLimit(ip, kv, quotaCoordinator);
 	if (rateResult.allowed) return undefined;

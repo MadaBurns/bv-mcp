@@ -224,6 +224,16 @@ export function validateQuotaPayload(
 		return { valid: false, error: 'Invalid scope' };
 	}
 
+	// Validate numeric fields to prevent NaN/Infinity propagation
+	for (const numField of ['minuteLimit', 'hourLimit', 'limit', 'windowMs'] as const) {
+		if (numField in obj) {
+			const val = obj[numField];
+			if (typeof val !== 'number' || !Number.isFinite(val) || val < 0) {
+				return { valid: false, error: `Invalid ${numField}: must be a non-negative finite number` };
+			}
+		}
+	}
+
 	return { valid: true, payload: raw as QuotaCoordinatorRequest };
 }
 

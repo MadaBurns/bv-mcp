@@ -107,11 +107,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 
 /** Which categories trigger the critical gap ceiling per profile. */
 export const PROFILE_CRITICAL_CATEGORIES: Record<DomainProfile, CheckCategory[]> = {
-	mail_enabled: ['spf', 'dmarc', 'dkim', 'ssl', 'dnssec', 'subdomain_takeover'],
-	enterprise_mail: ['spf', 'dmarc', 'dkim', 'ssl', 'dnssec', 'subdomain_takeover'],
-	non_mail: ['ssl', 'dnssec', 'subdomain_takeover'],
-	web_only: ['ssl', 'dnssec', 'subdomain_takeover'],
-	minimal: ['ssl', 'dnssec', 'subdomain_takeover'],
+	mail_enabled: ['spf', 'dmarc', 'dkim', 'ssl', 'subdomain_takeover'],
+	enterprise_mail: ['spf', 'dmarc', 'dkim', 'ssl', 'subdomain_takeover'],
+	non_mail: ['ssl', 'subdomain_takeover'],
+	web_only: ['ssl', 'subdomain_takeover'],
+	minimal: ['ssl', 'subdomain_takeover'],
 };
 
 /** Whether a profile is eligible for the email bonus. */

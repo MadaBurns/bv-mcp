@@ -189,7 +189,7 @@ describe('context-profiles', () => {
 				expect(cats).not.toContain('dmarc');
 				expect(cats).not.toContain('dkim');
 				expect(cats).toContain('ssl');
-				expect(cats).toContain('dnssec');
+				expect(cats).not.toContain('dnssec');
 			}
 		});
 

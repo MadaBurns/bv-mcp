@@ -225,7 +225,9 @@ export async function checkDkim(domain: string, selector?: string, dnsOptions?: 
 				},
 			),
 		);
-	} else if (findings.length === 0) {
+	} else if (foundSelectors.length > 0 && hasValidKey && findings.every((f) => f.severity === 'info')) {
+		// Emit selectorsFound metadata even when info-level findings exist (e.g., Ed25519 detection)
+		// Skip when all keys are revoked (non-sending) — that case already has its own consolidated finding
 		findings.push(
 			createFinding('dkim', 'DKIM configured', 'info', `DKIM records found for selectors: ${foundSelectors.join(', ')}`, {
 				signalType: 'dkim',

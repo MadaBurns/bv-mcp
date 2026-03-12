@@ -155,7 +155,7 @@ async function checkApexDmarcPolicy(domain: string): Promise<boolean> {
 
 	try {
 		const records = await queryTxtRecords(`_dmarc.${parent}`);
-		const dmarcRecord = records.find((record) => record.startsWith('v=DMARC1'));
+		const dmarcRecord = records.find((record) => record.toLowerCase().startsWith('v=dmarc1'));
 		if (!dmarcRecord) return false;
 
 		const tags = parseDmarcTags(dmarcRecord);

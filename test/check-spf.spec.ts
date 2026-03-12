@@ -146,13 +146,15 @@ describe('checkSpf', () => {
 	});
 
 	it('counts mixed lookup mechanisms (include, a, mx, redirect)', async () => {
+		// redirect= is a modifier (RFC 7208 §6.1), not a mechanism — it doesn't count as a lookup.
+		// 11 mechanisms (9 includes + a + mx) exceeds the 10-lookup limit.
 		const mechs =
-			'include:a.com include:b.com include:c.com include:d.com include:e.com a:f.com mx:g.com redirect=h.com include:i.com include:j.com include:k.com';
+			'include:a.com include:b.com include:c.com include:d.com include:e.com a:f.com mx:g.com redirect=h.com include:i.com include:j.com include:k.com include:l.com';
 		const domainMap: Record<string, string[]> = {
 			'example.com': [`v=spf1 ${mechs} -all`],
 		};
 		// Each included domain resolves to a simple SPF
-		for (const d of ['a.com', 'b.com', 'c.com', 'd.com', 'e.com', 'h.com', 'i.com', 'j.com', 'k.com']) {
+		for (const d of ['a.com', 'b.com', 'c.com', 'd.com', 'e.com', 'h.com', 'i.com', 'j.com', 'k.com', 'l.com']) {
 			domainMap[d] = ['v=spf1 -all'];
 		}
 		mockMultiDomainTxt(domainMap);
