@@ -27,6 +27,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- Profile detection now correctly handles Null MX (RFC 7505) domains as `non_mail`/`web_only` instead of `mail_enabled`.
+- Profile detection now defaults to `mail_enabled` when MX DNS query fails, instead of misclassifying as `non_mail`/`web_only`.
+- `scan_domain` error path now preserves explicit profile override instead of silently dropping it.
+- `scan_domain` tool schema description now lists all 12 checks including BIMI and TLS-RPT.
+- MCP resource documentation corrected: "50+ checks in 13 categories" (was "50 checks in 10 categories").
+- README check counts corrected for BIMI (2→1), TLS-RPT (2→1), Lookalikes (3→1).
 - Scoring documentation (CLAUDE.md, docs/scoring.md, resources.ts) updated to reflect actual importance weights (Subdomain Takeover=3, NS=0, CAA=0) and added scoring profile documentation.
 - Critical penalty documentation updated to reflect verified-confidence-only condition introduced in v1.0.3.
 - Source file references in docs/scoring.md updated from barrel re-export to actual implementation files.

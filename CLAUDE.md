@@ -162,7 +162,7 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEI
 
 **Phase 1 (current):** `scan_domain` auto-detects the profile from check results (MX presence, provider detection, SSL/CAA) and reports it in the structured result (`scoringProfile`, `scoringSignals`), but `auto` mode uses `mail_enabled` weights (identical to pre-profile behavior). Only explicit `profile` parameter values activate different weights and cache keys (`cache:<domain>:profile:<profile>`).
 
-**Detection priority:** `non_mail`/`web_only` (no MX) → `enterprise_mail` (MX + known provider + hardening signal) → `mail_enabled` (MX, default) → `minimal` (>50% checks failed).
+**Detection priority:** `non_mail`/`web_only` (no MX or Null MX) → `mail_enabled` (MX DNS failure — safe fallback) → `enterprise_mail` (MX + known provider + hardening signal) → `mail_enabled` (MX, default) → `minimal` (>50% checks failed override).
 
 **Profile-aware scoring:** When context is provided, `computeScanScore` uses `context.weights` instead of `IMPORTANCE_WEIGHTS`, `PROFILE_CRITICAL_CATEGORIES[profile]` for gap ceiling, and `PROFILE_EMAIL_BONUS_ELIGIBLE[profile]` for email bonus eligibility.
 
