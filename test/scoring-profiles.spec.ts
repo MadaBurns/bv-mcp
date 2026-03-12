@@ -40,6 +40,7 @@ function makeNonMailContext(): DomainContext {
 		profile: 'non_mail',
 		signals: ['No MX records'],
 		weights: getProfileWeights('non_mail'),
+		detectedProvider: null,
 	};
 }
 
@@ -48,6 +49,7 @@ function makeEnterpriseContext(): DomainContext {
 		profile: 'enterprise_mail',
 		signals: ['MX present', 'google workspace provider', 'DKIM present'],
 		weights: getProfileWeights('enterprise_mail'),
+		detectedProvider: 'google workspace',
 	};
 }
 

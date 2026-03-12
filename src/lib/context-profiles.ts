@@ -19,6 +19,7 @@ export interface DomainContext {
 	profile: DomainProfile;
 	signals: string[];
 	weights: Record<CheckCategory, ImportanceProfile>;
+	detectedProvider: string | null;
 }
 
 interface ImportanceProfile {
@@ -163,6 +164,7 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 
 	// Detect enterprise provider from MX findings
 	let hasEnterpriseProvider = false;
+	let detectedProviderName: string | null = null;
 	if (mxResult) {
 		for (const finding of mxResult.findings) {
 			const text = `${finding.title} ${finding.detail}`.toLowerCase();
@@ -171,6 +173,7 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 			for (const provider of ENTERPRISE_PROVIDERS) {
 				if (text.includes(provider) || providerStr.includes(provider)) {
 					hasEnterpriseProvider = true;
+					detectedProviderName = provider;
 					signals.push(`${provider} provider`);
 					break;
 				}
@@ -236,6 +239,7 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 		profile,
 		signals,
 		weights: PROFILE_WEIGHTS[profile],
+		detectedProvider: detectedProviderName,
 	};
 }
 
