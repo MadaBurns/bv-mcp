@@ -110,10 +110,10 @@ MCP Client → POST /mcp → Origin check → Auth middleware → Body parse →
 - `cacheGet()` / `cacheSet()` / `cacheSetDeferred()` from `lib/cache.ts` — supports KV and in-memory; `cacheSetDeferred()` wraps writes in `ctx.waitUntil()` to avoid blocking responses
 - JSDoc (`/** */`) on exported functions
 - `import type { ... }` for type-only imports
-- All tool functions return `Promise<CheckResult>` (follow pattern in `check-spf.ts`)
+- All tool functions return `Promise<CheckResult>` (follow pattern in `check-spf.ts`) and accept an optional `dnsOptions?: QueryDnsOptions` parameter for scan-context optimizations (e.g., `skipSecondaryConfirmation`)
 - `check_mx` is dynamically imported in `handlers/tools.ts` (for test mock isolation — unlike other checks which are statically imported)
 - MCP server key name is `"blackveil-dns"` across all client configs (README, docs, `.mcp.json`) — keep consistent
-- SSRF config constants live in `src/lib/config.ts`, not `sanitize.ts` — edit there when modifying blocked TLDs, IP patterns, DNS tuning (`DOH_EDGE_CACHE_TTL`, `DNS_RETRY_BASE_DELAY_MS`, `INFLIGHT_CLEANUP_MS`), etc.
+- SSRF config constants live in `src/lib/config.ts`, not `sanitize.ts` — edit there when modifying blocked TLDs, IP patterns, DNS tuning (`DNS_TIMEOUT_MS` 3s, `DNS_RETRIES` 1, `DNS_RETRY_BASE_DELAY_MS` 75ms, `HTTPS_TIMEOUT_MS` 4s, `DOH_EDGE_CACHE_TTL`, `INFLIGHT_CLEANUP_MS`), etc.
 - `sanitize.ts` imports `punycode/` (trailing slash = npm package, not Node.js built-in) for IDN/Unicode domain support
 
 ### Error surfacing convention
