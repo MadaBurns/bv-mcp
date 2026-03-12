@@ -50,6 +50,48 @@ export function extractScanProfile(args: Record<string, unknown>): typeof VALID_
 	return normalized as typeof VALID_PROFILES[number];
 }
 
+const VALID_GRADES = new Set(['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'E', 'F']);
+
+/** Extract and validate the optional baseline parameter for compare_baseline. */
+export function extractBaseline(args: Record<string, unknown>): Record<string, unknown> {
+	const raw = args.baseline;
+	if (raw === undefined || raw === null) return {};
+	if (typeof raw !== 'object' || Array.isArray(raw)) {
+		throw new Error('Invalid baseline: must be an object');
+	}
+	const b = raw as Record<string, unknown>;
+	const result: Record<string, unknown> = {};
+	if (b.grade !== undefined) {
+		if (typeof b.grade !== 'string' || !VALID_GRADES.has(b.grade.toUpperCase())) {
+			throw new Error('Invalid baseline grade');
+		}
+		result.grade = b.grade;
+	}
+	if (b.score !== undefined) {
+		if (typeof b.score !== 'number' || b.score < 0 || b.score > 100) {
+			throw new Error('Invalid baseline score: must be 0-100');
+		}
+		result.score = b.score;
+	}
+	for (const key of ['require_dmarc_enforce', 'require_spf', 'require_dkim', 'require_dnssec', 'require_mta_sts', 'require_caa'] as const) {
+		if (b[key] !== undefined) {
+			if (typeof b[key] !== 'boolean') {
+				throw new Error(`Invalid baseline ${key}: must be boolean`);
+			}
+			result[key] = b[key];
+		}
+	}
+	for (const key of ['max_critical_findings', 'max_high_findings'] as const) {
+		if (b[key] !== undefined) {
+			if (typeof b[key] !== 'number' || b[key]! < 0 || !Number.isInteger(b[key])) {
+				throw new Error(`Invalid baseline ${key}: must be a non-negative integer`);
+			}
+			result[key] = b[key];
+		}
+	}
+	return result;
+}
+
 export function extractExplainFindingArgs(args: Record<string, unknown>): {
 	checkType: string;
 	status: string;
