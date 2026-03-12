@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import { queryDns } from './dns-transport';
-import { RecordType, type RecordTypeName } from './dns-types';
+import { RecordType, type QueryDnsOptions, type RecordTypeName } from './dns-types';
 
 /** Parsed CAA record with flags, tag, and value */
 export interface CaaRecord {
@@ -14,8 +14,8 @@ export interface CaaRecord {
  * Query DNS and return just the answer data strings.
  * Returns an empty array if no answers are found.
  */
-export async function queryDnsRecords(domain: string, type: RecordTypeName): Promise<string[]> {
-	const resp = await queryDns(domain, type);
+export async function queryDnsRecords(domain: string, type: RecordTypeName, opts?: QueryDnsOptions): Promise<string[]> {
+	const resp = await queryDns(domain, type, false, opts);
 	return (resp.Answer ?? []).filter((answer) => answer.type === RecordType[type]).map((answer) => answer.data);
 }
 
@@ -23,8 +23,8 @@ export async function queryDnsRecords(domain: string, type: RecordTypeName): Pro
  * Query TXT records and strip surrounding quotes from values.
  * Cloudflare DoH returns TXT data with surrounding quotes.
  */
-export async function queryTxtRecords(domain: string): Promise<string[]> {
-	const records = await queryDnsRecords(domain, 'TXT');
+export async function queryTxtRecords(domain: string, opts?: QueryDnsOptions): Promise<string[]> {
+	const records = await queryDnsRecords(domain, 'TXT', opts);
 	return records.map((record) =>
 		record
 			.replace(/" "/g, ' ')
@@ -36,8 +36,8 @@ export async function queryTxtRecords(domain: string): Promise<string[]> {
  * Check if a domain has valid DNSSEC by examining the AD (Authenticated Data) flag.
  * Returns true if the response was DNSSEC-validated.
  */
-export async function checkDnssec(domain: string): Promise<boolean> {
-	const resp = await queryDns(domain, 'A', true);
+export async function checkDnssec(domain: string, opts?: QueryDnsOptions): Promise<boolean> {
+	const resp = await queryDns(domain, 'A', true, opts);
 	return resp.AD === true;
 }
 
@@ -87,16 +87,16 @@ export function parseCaaRecord(data: string): CaaRecord | null {
  * Query CAA records and parse them into structured objects.
  * Handles both human-readable and hex wire format from DoH.
  */
-export async function queryCaaRecords(domain: string): Promise<CaaRecord[]> {
-	const records = await queryDnsRecords(domain, 'CAA');
+export async function queryCaaRecords(domain: string, opts?: QueryDnsOptions): Promise<CaaRecord[]> {
+	const records = await queryDnsRecords(domain, 'CAA', opts);
 	return records.map(parseCaaRecord).filter((record): record is CaaRecord => record !== null);
 }
 
 /**
  * Query MX records and parse them into priority + exchange pairs.
  */
-export async function queryMxRecords(domain: string): Promise<Array<{ priority: number; exchange: string }>> {
-	const records = await queryDnsRecords(domain, 'MX');
+export async function queryMxRecords(domain: string, opts?: QueryDnsOptions): Promise<Array<{ priority: number; exchange: string }>> {
+	const records = await queryDnsRecords(domain, 'MX', opts);
 	return records.map((record) => {
 		const parts = record.split(' ');
 		return {
