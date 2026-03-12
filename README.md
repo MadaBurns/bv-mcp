@@ -205,9 +205,11 @@ Enforce DNS security grades in your pipeline with the [Blackveil DNS GitHub Acti
   with:
     domain: example.com
     minimum-grade: B
+    profile: auto          # or: mail_enabled, enterprise_mail, non_mail, web_only, minimal
+    api-key: ${{ secrets.BV_API_KEY }}  # optional — bypasses rate limits
 ```
 
-The action outputs `score`, `grade`, `maturity`, and `passed` for downstream steps.
+The action outputs `score`, `grade`, `maturity`, `scoring-profile`, and `passed` for downstream steps.
 
 ## Monitoring
 
