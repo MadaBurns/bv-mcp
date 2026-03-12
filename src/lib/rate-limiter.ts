@@ -69,6 +69,13 @@ function checkControlPlaneRateLimitInMemory(ip: string): RateLimitResult {
 	return checkScopedRateLimitInMemory(ip, 'control', CONTROL_PLANE_MINUTE_LIMIT, CONTROL_PLANE_HOUR_LIMIT);
 }
 
+/** Parse a KV counter value, returning 0 for NaN/corrupt values. */
+function parseKvCounter(val: string | null): number {
+	if (!val) return 0;
+	const n = parseInt(val, 10);
+	return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
 // ---------------------------------------------------------------------------
 // KV-backed rate limiting (fixed-window counters)
 // ---------------------------------------------------------------------------
@@ -91,8 +98,8 @@ async function checkScopedRateLimitKV(
 	// Read both counters in parallel
 	const [minuteVal, hourVal] = await Promise.all([kv.get(minuteKey), kv.get(hourKey)]);
 
-	const minuteCount = minuteVal ? parseInt(minuteVal, 10) : 0;
-	const hourCount = hourVal ? parseInt(hourVal, 10) : 0;
+	const minuteCount = parseKvCounter(minuteVal);
+	const hourCount = parseKvCounter(hourVal);
 
 	// Check minute limit
 	if (minuteCount >= minuteLimit) {
@@ -173,7 +180,7 @@ async function checkToolDailyRateLimitKV(
 		const key = `rl:day:tool:${toolKey}:${principalId}:${dayWindow}`;
 
 		const currentVal = await kv.get(key);
-		const currentCount = currentVal ? parseInt(currentVal, 10) : 0;
+		const currentCount = parseKvCounter(currentVal);
 
 		if (currentCount >= limit) {
 			const windowEnd = (dayWindow + 1) * DAY_MS;
@@ -224,7 +231,7 @@ async function checkGlobalDailyLimitKV(limit: number, kv: KVNamespace): Promise<
 	const key = `rl:global:day:${currentWindow}`;
 
 	const currentVal = await kv.get(key);
-	const currentCount = currentVal ? parseInt(currentVal, 10) : 0;
+	const currentCount = parseKvCounter(currentVal);
 
 	if (currentCount >= limit) {
 		const windowEnd = (currentWindow + 1) * DAY_MS;

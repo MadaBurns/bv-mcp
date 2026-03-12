@@ -62,7 +62,8 @@ export async function checkSessionCreateRateLimit(
 			const minuteWindow = Math.floor(now / SESSION_CREATE_WINDOW_MS);
 			const key = `${SESSION_CREATE_RATE_KEY_PREFIX}:${keyIp}:${minuteWindow}`;
 			const currentVal = await kv.get(key);
-			const currentCount = currentVal ? parseInt(currentVal, 10) : 0;
+			const parsed = currentVal ? parseInt(currentVal, 10) : 0;
+			const currentCount = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 
 			if (currentCount >= SESSION_CREATE_LIMIT_PER_MINUTE) {
 				const windowEnd = (minuteWindow + 1) * SESSION_CREATE_WINDOW_MS;
@@ -147,7 +148,12 @@ export async function validateSession(id: string, kv?: KVNamespace): Promise<boo
 
 			if (now - record.lastAccessedAt >= SESSION_REFRESH_INTERVAL_MS) {
 				record.lastAccessedAt = now;
-				await createSessionKVRecord(id, kv, record);
+				try {
+					await createSessionKVRecord(id, kv, record);
+				} catch (refreshErr) {
+					// Session is valid — refresh write failure is non-fatal
+					console.warn('[session] KV refresh write failed (session still valid):', refreshErr instanceof Error ? refreshErr.message : String(refreshErr));
+				}
 			}
 			return true;
 		} catch (err) {

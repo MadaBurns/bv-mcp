@@ -103,9 +103,10 @@ export function createStreamingSseResponse<T>(
 					if (closed) return;
 					closed = true;
 					clearInterval(heartbeat);
-					// Emit error as SSE event so the client sees it
+					// Emit error as a proper JSON-RPC error SSE event so MCP clients can parse it
 					const message = err instanceof Error ? err.message : 'Internal error';
-					controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify({ error: message })}\n\n`));
+					const jsonRpcErr = { jsonrpc: '2.0', id: null, error: { code: -32603, message } };
+					controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify(jsonRpcErr)}\n\n`));
 					controller.close();
 				});
 		},
