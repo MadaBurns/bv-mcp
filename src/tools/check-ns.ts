@@ -6,6 +6,7 @@
  */
 
 import { queryDnsRecords, queryDns } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
 import {
 	getNameserverDiversityFinding,
@@ -21,12 +22,12 @@ import {
  * Check nameserver configuration for a domain.
  * Validates NS records exist, checks for diversity, and verifies responsiveness.
  */
-export async function checkNs(domain: string): Promise<CheckResult> {
+export async function checkNs(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	const findings: Finding[] = [];
 
 	let nsRecords: string[] = [];
 	try {
-		nsRecords = normalizeNsRecords(await queryDnsRecords(domain, 'NS'));
+		nsRecords = normalizeNsRecords(await queryDnsRecords(domain, 'NS', dnsOptions));
 	} catch {
 		findings.push(createFinding('ns', 'NS query failed', 'critical', `Could not query nameserver records for ${domain}.`));
 		return buildCheckResult('ns', findings);
@@ -36,7 +37,7 @@ export async function checkNs(domain: string): Promise<CheckResult> {
 		// Check if domain still resolves (e.g. delegation-only zones like govt.nz)
 		let domainResolves = false;
 		try {
-			const aResp = await queryDns(domain, 'A');
+			const aResp = await queryDns(domain, 'A', false, dnsOptions);
 			domainResolves = (aResp.Answer ?? []).length > 0;
 		} catch {
 			/* ignore */
@@ -59,7 +60,7 @@ export async function checkNs(domain: string): Promise<CheckResult> {
 
 	// Check SOA record exists and validate parameters
 	try {
-		const soaResp = await queryDns(domain, 'SOA');
+		const soaResp = await queryDns(domain, 'SOA', false, dnsOptions);
 		const soaRecords = (soaResp.Answer ?? []).filter((a) => a.type === 6);
 		if (soaRecords.length === 0) {
 			findings.push(
@@ -83,7 +84,7 @@ export async function checkNs(domain: string): Promise<CheckResult> {
 	// Wildcard DNS detection — probe a random subdomain
 	try {
 		const probeFqdn = `_bv-probe-${crypto.randomUUID().slice(0, 8)}.${domain}`;
-		const probeRecords = await queryDnsRecords(probeFqdn, 'A');
+		const probeRecords = await queryDnsRecords(probeFqdn, 'A', dnsOptions);
 		if (probeRecords.length > 0) {
 			findings.push(
 				createFinding(

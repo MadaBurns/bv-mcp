@@ -7,6 +7,7 @@
  */
 
 import { queryTxtRecords } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 
@@ -15,16 +16,16 @@ import { buildCheckResult, createFinding } from '../lib/scoring';
  * Validates the presence and configuration of BIMI TXT records,
  * including logo URL format and VMC authority evidence.
  */
-export async function checkBimi(domain: string): Promise<CheckResult> {
+export async function checkBimi(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	const findings: Finding[] = [];
 	const bimiDomain = `default._bimi.${domain}`;
-	const txtRecords = await queryTxtRecords(bimiDomain);
+	const txtRecords = await queryTxtRecords(bimiDomain, dnsOptions);
 
 	const bimiRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=bimi1'));
 
 	if (bimiRecords.length === 0) {
 		// Check DMARC enforcement status to provide context
-		const dmarcRecords = await queryTxtRecords(`_dmarc.${domain}`);
+		const dmarcRecords = await queryTxtRecords(`_dmarc.${domain}`, dnsOptions);
 		const dmarcRecord = dmarcRecords.find((r) => r.toLowerCase().startsWith('v=dmarc1'));
 		const isEnforcing =
 			dmarcRecord && (/\bp=reject\b/i.test(dmarcRecord) || /\bp=quarantine\b/i.test(dmarcRecord));

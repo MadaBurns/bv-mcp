@@ -8,6 +8,7 @@
 import type { CheckResult, Finding } from '../lib/scoring';
 import { createFinding, buildCheckResult } from '../lib/scoring';
 import { queryDnsRecords } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import { detectProviderMatches, loadProviderSignatures } from '../lib/provider-signatures';
 import { getIpTargetFindings, getNullMxFinding, getPresenceFinding, getSingleMxFinding, isNullMxRecord, parseMxRecords } from './mx-analysis';
 
@@ -18,10 +19,10 @@ export interface CheckMxOptions {
 }
 
 /** Check MX record configuration for a domain */
-export async function checkMx(domain: string, options?: CheckMxOptions): Promise<CheckResult> {
+export async function checkMx(domain: string, options?: CheckMxOptions, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	let answers;
 	try {
-		answers = await queryDnsRecords(domain, 'MX');
+		answers = await queryDnsRecords(domain, 'MX', dnsOptions);
 	} catch {
 		return buildCheckResult('mx', [createFinding('mx', 'DNS query failed', 'medium', 'MX record lookup failed')]);
 	}
@@ -59,8 +60,8 @@ export async function checkMx(domain: string, options?: CheckMxOptions): Promise
 		hostnameRecords.map(async (r) => {
 			try {
 				const [a, aaaa] = await Promise.all([
-					queryDnsRecords(r.exchange, 'A').catch(() => []),
-					queryDnsRecords(r.exchange, 'AAAA').catch(() => []),
+					queryDnsRecords(r.exchange, 'A', dnsOptions).catch(() => []),
+					queryDnsRecords(r.exchange, 'AAAA', dnsOptions).catch(() => []),
 				]);
 				return { record: r, resolved: a.length > 0 || aaaa.length > 0 };
 			} catch {
