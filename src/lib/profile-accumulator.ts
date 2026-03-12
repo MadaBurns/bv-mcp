@@ -279,7 +279,7 @@ export class ProfileAccumulator extends DurableObject<Env> {
 				if (providerRows.length > 0) {
 					const pRow = providerRows[0];
 					const modifier = (pRow.ema_failure_rate - row.ema_failure_rate) * 0.3 * staticWeight;
-					finalWeight = Math.max(0, finalWeight + modifier);
+					finalWeight = Math.max(bounds.min, finalWeight + modifier);
 				}
 			}
 
