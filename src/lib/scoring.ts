@@ -24,3 +24,13 @@ export {
 export { computeScanScore, scoreToGrade } from './scoring-engine';
 
 export { detectDomainContext, getProfileWeights, type DomainContext, type DomainProfile } from './context-profiles';
+
+export {
+	adaptiveWeightsToContext,
+	generateScoringNote,
+	computeAdaptiveWeight,
+	blendWeights,
+	type AdaptiveWeightsResponse,
+	type ScanTelemetry,
+	type WeightBound,
+} from './adaptive-weights';

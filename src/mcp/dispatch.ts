@@ -26,6 +26,8 @@ export interface DispatchMcpMethodOptions {
 	providerSignaturesAllowedHosts?: string;
 	providerSignaturesSha256?: string;
 	analytics?: AnalyticsClient;
+	profileAccumulator?: DurableObjectNamespace;
+	waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 export type DispatchMcpMethodResult =
@@ -102,6 +104,8 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				providerSignaturesAllowedHosts: parseAllowedHosts(options.providerSignaturesAllowedHosts),
 				providerSignaturesSha256: options.providerSignaturesSha256,
 				analytics: options.analytics,
+				profileAccumulator: options.profileAccumulator,
+				waitUntil: options.waitUntil,
 			});
 
 			return {
