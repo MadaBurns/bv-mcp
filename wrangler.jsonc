@@ -5,6 +5,10 @@
   "compatibility_flags": [
     "global_fetch_strictly_public"
   ],
+  // Durable Objects — auto-provisioned on deploy (no manual setup needed).
+  // QuotaCoordinator: distributed rate limiting across isolates.
+  // ProfileAccumulator: adaptive weight telemetry (EMA-based scoring adjustment).
+  //   Optional — without it, scoring uses static weights identically to pre-adaptive behavior.
   "durable_objects": {
     "bindings": [
       { "name": "QUOTA_COORDINATOR", "class_name": "QuotaCoordinator" },
