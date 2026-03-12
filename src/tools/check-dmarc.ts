@@ -6,6 +6,7 @@
  */
 
 import { queryTxtRecords } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
 import { checkRuaAuthorization, detectThirdPartyAggregators, isValidDmarcUri, parseDmarcTags } from './dmarc-utils';
 
@@ -15,9 +16,9 @@ export { parseDmarcTags } from './dmarc-utils';
  * Check DMARC records for a domain.
  * Queries _dmarc.<domain> TXT records and validates policy configuration.
  */
-export async function checkDmarc(domain: string): Promise<CheckResult> {
+export async function checkDmarc(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	const findings: Finding[] = [];
-	const txtRecords = await queryTxtRecords(`_dmarc.${domain}`);
+	const txtRecords = await queryTxtRecords(`_dmarc.${domain}`, dnsOptions);
 
 	// Filter for DMARC records
 	const dmarcRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=dmarc1'));
@@ -247,7 +248,7 @@ export async function checkDmarc(domain: string): Promise<CheckResult> {
 		}
 
 		// Cross-domain RUA authorization check (RFC 7489 §7.1)
-		const ruaAuthFindings = await checkRuaAuthorization(domain, ruaUris);
+		const ruaAuthFindings = await checkRuaAuthorization(domain, ruaUris, dnsOptions);
 		findings.push(...ruaAuthFindings);
 	}
 

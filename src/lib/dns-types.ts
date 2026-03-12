@@ -51,4 +51,6 @@ export interface QueryDnsOptions {
 	timeoutMs?: number;
 	retries?: number;
 	confirmWithSecondaryOnEmpty?: boolean;
+	/** When true, skip secondary resolver confirmation on empty results. Used in scan context for speed. */
+	skipSecondaryConfirmation?: boolean;
 }

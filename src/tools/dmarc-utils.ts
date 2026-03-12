@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import { queryTxtRecords } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import { createFinding } from '../lib/scoring';
 import type { Finding } from '../lib/scoring';
 
@@ -82,7 +83,7 @@ export function detectThirdPartyAggregators(uris: string[]): string[] {
  * Check cross-domain RUA authorization per RFC 7489 §7.1.
  * When rua= points to a third-party domain, verify authorization TXT records.
  */
-export async function checkRuaAuthorization(domain: string, ruaUris: string[]): Promise<Finding[]> {
+export async function checkRuaAuthorization(domain: string, ruaUris: string[], dnsOptions?: QueryDnsOptions): Promise<Finding[]> {
 	const findings: Finding[] = [];
 	const checkedDomains = new Set<string>();
 
@@ -92,7 +93,7 @@ export async function checkRuaAuthorization(domain: string, ruaUris: string[]): 
 		checkedDomains.add(targetDomain);
 
 		try {
-			const authRecords = await queryTxtRecords(`${domain}._report._dmarc.${targetDomain}`);
+			const authRecords = await queryTxtRecords(`${domain}._report._dmarc.${targetDomain}`, dnsOptions);
 			const hasAuth = authRecords.some((record) => record.toLowerCase().startsWith('v=dmarc1'));
 			if (!hasAuth) {
 				findings.push(

@@ -6,6 +6,7 @@
  */
 
 import { queryCaaRecords, type CaaRecord } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
 import { getCaaConfiguredFinding, getCaaValidationFindings, summarizeCaaTags } from './caa-analysis';
 
@@ -13,12 +14,12 @@ import { getCaaConfiguredFinding, getCaaValidationFindings, summarizeCaaTags } f
  * Check CAA records for a domain.
  * Validates that CAA records exist and are properly configured.
  */
-export async function checkCaa(domain: string): Promise<CheckResult> {
+export async function checkCaa(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	const findings: Finding[] = [];
 
 	let caaRecords: CaaRecord[] = [];
 	try {
-		caaRecords = await queryCaaRecords(domain);
+		caaRecords = await queryCaaRecords(domain, dnsOptions);
 	} catch {
 		findings.push(createFinding('caa', 'CAA query failed', 'medium', `Could not query CAA records for ${domain}.`));
 		return buildCheckResult('caa', findings);

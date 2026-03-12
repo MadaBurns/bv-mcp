@@ -214,8 +214,8 @@ describe('scanDomain', () => {
 		});
 
 		const { scanDomain } = await import('../src/tools/scan-domain');
-		// scanDomain has a 25s timeout and per-check 15s timeout
-		// The SSL check will hit the per-check timeout first (15s),
+		// scanDomain has a 12s timeout and per-check 8s timeout
+		// The SSL check will hit the per-check timeout first (8s),
 		// so we should still get all results including a degraded SSL result
 		const result = await scanDomain('example.com');
 
@@ -224,7 +224,7 @@ describe('scanDomain', () => {
 		expect(result.checks.length).toBeGreaterThanOrEqual(1);
 		expect(result.domain).toBe('example.com');
 		expect(result.score).toBeDefined();
-	}, 30_000);
+	}, 15_000);
 
 	it('caches results with KV and returns cached:true on hit', async () => {
 		mockAllChecks();
