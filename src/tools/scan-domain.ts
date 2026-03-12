@@ -172,6 +172,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				profile: explicitProfile as DomainProfile,
 				signals: [...domainContext.signals, `explicit profile override: ${explicitProfile}`],
 				weights: getProfileWeights(explicitProfile as DomainProfile),
+				detectedProvider: domainContext.detectedProvider,
 			};
 		}
 
@@ -200,6 +201,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				profile: explicitProfile as DomainProfile,
 				signals: [...fallbackContext.signals, `explicit profile override: ${explicitProfile}`],
 				weights: getProfileWeights(explicitProfile as DomainProfile),
+				detectedProvider: fallbackContext.detectedProvider,
 			};
 		}
 		const fallbackScoringContext = isExplicit ? fallbackContext : undefined;
