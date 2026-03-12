@@ -2,39 +2,27 @@
 
 import { queryDnsRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
+import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { type Finding, createFinding } from '../lib/scoring';
 
 export type TakeoverVerificationStatus = 'potential' | 'verified' | 'not_exploitable';
 
 export const KNOWN_SUBDOMAINS = [
-	'staging',
 	'www',
 	'app',
 	'api',
-	'portal',
-	'admin',
-	'login',
-	'auth',
+	'staging',
 	'dev',
-	'test',
-	'beta',
-	'demo',
-	'preview',
-	'status',
-	'docs',
-	'blog',
-	'shop',
-	'store',
-	'support',
+	'admin',
 	'cdn',
 	'static',
-	'assets',
-	'media',
 	'mail',
-	'webmail',
-	'vpn',
-	'ci',
-	'git',
+	'blog',
+	'docs',
+	'status',
+	'portal',
+	'login',
+	'support',
 ];
 
 const TAKEOVER_SERVICES = [
@@ -120,7 +108,7 @@ export async function probeHttpFingerprint(fqdn: string, cname: string): Promise
 	try {
 		const response = await fetch(`https://${fqdn}`, {
 			redirect: 'follow',
-			signal: AbortSignal.timeout(5000),
+			signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
 		});
 		const body = await response.text();
 
