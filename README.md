@@ -266,9 +266,9 @@ The full [BLACKVEIL](https://blackveilsecurity.com) platform extends each with d
 | CAA | 4 | Presence, issuer allowlist | Issuance surface modeling |
 | MX | 4 | Presence, routing, provider inference | Mail routing posture |
 | Subdomain Takeover | 2 | Dangling CNAME detection | Expanded asset discovery |
-| BIMI | 2 | Record presence, logo URL, VMC | Brand indicator compliance |
-| TLS-RPT | 2 | Record presence, reporting URI | Reporting depth |
-| Lookalikes | 3 | Typosquat detection, DNS + MX probing | Expanded permutation strategies |
+| BIMI | 1 | Record presence, logo URL, VMC | Brand indicator compliance |
+| TLS-RPT | 1 | Record presence, reporting URI | Reporting depth |
+| Lookalikes | 1 | Typosquat detection, DNS + MX probing | Expanded permutation strategies |
 
 </details>
 
