@@ -19,7 +19,7 @@ import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
-import { extractAndValidateDomain, extractDkimSelector, extractExplainFindingArgs, normalizeToolName } from './tool-args';
+import { extractAndValidateDomain, extractDkimSelector, extractExplainFindingArgs, extractScanProfile, normalizeToolName } from './tool-args';
 import { logToolFailure, logToolSuccess } from './tool-execution';
 import { formatCheckResult, mcpError, mcpText } from './tool-formatters';
 import type { McpContent } from './tool-formatters';
@@ -165,7 +165,9 @@ export async function handleToolsCall(
 
 			switch (name) {
 				case 'scan_domain': {
-					const result = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
+					const profile = extractScanProfile(args);
+					const scanOptions = profile ? { ...runtimeOptions, profile } : runtimeOptions;
+					const result = await scanDomain(validDomain, scanCacheKV, scanOptions);
 					logResult = result.score.grade;
 					logDetails = result;
 					logToolSuccess({
