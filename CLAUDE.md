@@ -96,7 +96,7 @@ MCP Client → POST /mcp → Origin check → Auth middleware → Body parse →
 
 `scan_domain` runs **12 checks** in parallel via `Promise.allSettled`: SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, BIMI, TLS-RPT, subdomain takeover, and MX. Each has its own cache key (`cache:<domain>:check:<name>`), plus a top-level `cache:<domain>` key for the full scan result. Results are cached for 5 minutes. After scoring, `computeMaturityStage()` classifies the domain into a maturity stage (0-4: Unprotected → Hardened) based on SPF/DMARC/DKIM/MTA-STS/DNSSEC/BIMI presence and enforcement.
 
-**Partial results on timeout**: When the 25s scan timeout fires, completed checks are preserved and missing checks receive a timeout finding. This avoids discarding work from checks that finished in 1-2s.
+**Partial results on timeout**: When the 12s scan timeout fires, completed checks are preserved and missing checks receive a timeout finding. This avoids discarding work from checks that finished in 1-2s. Individual per-check timeouts are 8s. In scan context, secondary DNS confirmation (Google DNS fallback for empty results) is skipped for speed — individual checks retain it for accuracy.
 
 **Non-mail domain adjustment**: After all checks complete, if `check_mx` finds no MX records, `scan_domain` queries the parent domain's DMARC `sp=`/`p=` tag and then calls `adjustForNonMailDomain()` to downgrade critical/high email-auth findings (SPF, DMARC, DKIM, MTA-STS) to `info` severity. This significantly affects scores for non-mail domains.
 
