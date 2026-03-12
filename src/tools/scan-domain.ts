@@ -29,6 +29,7 @@ import {
 	type ScanTelemetry,
 } from '../lib/adaptive-weights';
 import { cacheGet, cacheSet, runWithCache } from '../lib/cache';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import { checkSpf } from './check-spf';
 import { checkDmarc } from './check-dmarc';
 import { checkDkim } from './check-dkim';
@@ -54,10 +55,10 @@ export type { ScanRuntimeOptions } from './scan/post-processing';
 const CACHE_PREFIX = 'cache:';
 
 /** Maximum wall-clock time for a single check within scan_domain (ms). */
-const PER_CHECK_TIMEOUT_MS = 15_000;
+const PER_CHECK_TIMEOUT_MS = 8_000;
 
 /** Maximum wall-clock time for the entire scan_domain orchestration (ms). */
-const SCAN_TIMEOUT_MS = 25_000;
+const SCAN_TIMEOUT_MS = 12_000;
 
 /** In-memory cache for adaptive weight responses from the ProfileAccumulator DO. */
 const adaptiveWeightCache = new Map<string, { weights: AdaptiveWeightsResponse; expires: number }>();
@@ -111,18 +112,22 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'mx',
 	];
 
+	// Skip secondary DNS confirmation in scan context for speed — individual checks
+	// still use secondary confirmation when called directly by users.
+	const scanDns: QueryDnsOptions = { skipSecondaryConfirmation: true };
+
 	const checkPromises = [
-		runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain)), kv),
-		runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain)), kv),
-		runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain)), kv),
-		runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain)), kv),
+		runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain, scanDns)), kv),
+		runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain, scanDns)), kv),
+		runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain, undefined, scanDns)), kv),
+		runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain, scanDns)), kv),
 		runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain)), kv),
-		runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain)), kv),
-		runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain)), kv),
-		runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain)), kv),
-		runCachedCheck(domain, 'bimi', () => safeCheck('bimi', () => checkBimi(domain)), kv),
-		runCachedCheck(domain, 'tlsrpt', () => safeCheck('tlsrpt', () => checkTlsrpt(domain)), kv),
-		runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain)), kv),
+		runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain, scanDns)), kv),
+		runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain, scanDns)), kv),
+		runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain, scanDns)), kv),
+		runCachedCheck(domain, 'bimi', () => safeCheck('bimi', () => checkBimi(domain, scanDns)), kv),
+		runCachedCheck(domain, 'tlsrpt', () => safeCheck('tlsrpt', () => checkTlsrpt(domain, scanDns)), kv),
+		runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain, scanDns)), kv),
 		runCachedCheck(
 			domain,
 			'mx',
@@ -134,7 +139,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 							providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
 							providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
 							providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
-						}),
+						}, scanDns),
 				),
 			kv,
 		),

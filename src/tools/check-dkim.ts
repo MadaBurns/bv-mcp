@@ -6,6 +6,7 @@
  */
 
 import { queryTxtRecords } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
 import { analyzeKeyStrength, consolidateSelectorProbeKeyStrengthFindings, getDkimTagValue } from './dkim-analysis';
 
@@ -14,22 +15,15 @@ const COMMON_SELECTORS = [
 	'default',
 	'google',
 	'20230601', // Google Workspace
-	'20210112', // Google Workspace (legacy)
 	'selector1', // Microsoft 365
 	'selector2', // Microsoft 365
-	'selector',
 	'k1', // Mailchimp
-	's1024',
-	's2048',
 	's1',
 	's2',
 	'mail',
 	'dkim',
-	'smtp',
-	'amazonses',
-	'mandrill',
-	'mailjet',
-	'zoho',
+	'amazonses', // Amazon SES
+	'zoho', // Zoho Mail
 ];
 
 /**
@@ -37,7 +31,7 @@ const COMMON_SELECTORS = [
  * Probes common selectors at <selector>._domainkey.<domain>.
  * Optionally accepts a specific selector to check.
  */
-export async function checkDkim(domain: string, selector?: string): Promise<CheckResult> {
+export async function checkDkim(domain: string, selector?: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	const findings: Finding[] = [];
 	const selectorsToCheck = selector ? [selector] : COMMON_SELECTORS;
 	const foundSelectors: string[] = [];
@@ -47,7 +41,7 @@ export async function checkDkim(domain: string, selector?: string): Promise<Chec
 	const results = await Promise.all(
 		selectorsToCheck.map(async (sel) => {
 			try {
-				const records = await queryTxtRecords(`${sel}._domainkey.${domain}`);
+				const records = await queryTxtRecords(`${sel}._domainkey.${domain}`, dnsOptions);
 				const dkimRecords = records.filter((r) => r.toLowerCase().includes('v=dkim1') || r.includes('p='));
 				return { selector: sel, records: dkimRecords };
 			} catch {

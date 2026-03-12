@@ -7,6 +7,7 @@
  */
 
 import { queryTxtRecords } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { parseDmarcTags } from './dmarc-utils';
@@ -25,9 +26,9 @@ interface TrustSurfaceDmarcContext {
 	dmarcAlignmentMode?: string;
 }
 
-async function getTrustSurfaceDmarcContext(domain: string): Promise<TrustSurfaceDmarcContext> {
+async function getTrustSurfaceDmarcContext(domain: string, dnsOptions?: QueryDnsOptions): Promise<TrustSurfaceDmarcContext> {
 	try {
-		const dmarcRecords = await queryTxtRecords(`_dmarc.${domain}`);
+		const dmarcRecords = await queryTxtRecords(`_dmarc.${domain}`, dnsOptions);
 		const dmarcRecord = dmarcRecords.find((record) => record.toLowerCase().startsWith('v=dmarc1'));
 
 		if (!dmarcRecord) {
@@ -66,9 +67,9 @@ async function getTrustSurfaceDmarcContext(domain: string): Promise<TrustSurface
  * Looks for v=spf1 TXT records and validates their configuration.
  * Recursively expands include chains to compute true DNS lookup count.
  */
-export async function checkSpf(domain: string): Promise<CheckResult> {
+export async function checkSpf(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	const findings: Finding[] = [];
-	const txtRecords = await queryTxtRecords(domain);
+	const txtRecords = await queryTxtRecords(domain, dnsOptions);
 
 	// Filter for SPF records
 	const spfRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=spf1'));
@@ -157,7 +158,7 @@ export async function checkSpf(domain: string): Promise<CheckResult> {
 		findings: [],
 		circularDetected: false,
 	};
-	const recursiveLookupCount = await countRecursiveLookups(spf, 0, state);
+	const recursiveLookupCount = await countRecursiveLookups(spf, 0, state, dnsOptions);
 
 	// Add any circular-include findings from recursive expansion
 	findings.push(...state.findings);
@@ -198,7 +199,7 @@ export async function checkSpf(domain: string): Promise<CheckResult> {
 	}
 
 	// Trust surface analysis — flag multi-tenant SaaS platform includes
-	const trustSurfaceContext = await getTrustSurfaceDmarcContext(domain);
+	const trustSurfaceContext = await getTrustSurfaceDmarcContext(domain, dnsOptions);
 	const trustSurfaceFindings = analyzeTrustSurface(spf, trustSurfaceContext);
 	findings.push(...trustSurfaceFindings);
 
