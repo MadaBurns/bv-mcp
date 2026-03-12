@@ -41,7 +41,7 @@ export { QuotaCoordinator } from './lib/quota-coordinator';
 export { ProfileAccumulator } from './lib/profile-accumulator';
 
 /** Server version — keep in sync with package.json */
-const SERVER_VERSION = '1.0.0';
+const SERVER_VERSION = '1.1.0';
 let hasLoggedAnalyticsBindingStatus = false;
 
 function logAnalyticsBindingStatus(enabled: boolean): void {
