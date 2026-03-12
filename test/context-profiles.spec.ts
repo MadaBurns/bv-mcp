@@ -101,6 +101,54 @@ describe('context-profiles', () => {
 			expect(ctx.profile).toBe('minimal');
 		});
 
+		it('detects non_mail when Null MX (RFC 7505) and no web indicators', () => {
+			const results = fullPassingResults({
+				mx: buildCheckResult('mx', [
+					createFinding('mx', 'Null MX record (RFC 7505)', 'info', 'Domain explicitly declares it does not accept email via null MX record.'),
+				]),
+				caa: buildCheckResult('caa', [
+					createFinding('caa', 'No CAA records', 'critical', 'No CAA records found'),
+					createFinding('caa', 'CAA missing', 'high', 'CAA is required'),
+				]),
+				ssl: buildCheckResult('ssl', [
+					createFinding('ssl', 'SSL check failed', 'critical', 'No valid certificate found'),
+					createFinding('ssl', 'SSL required', 'high', 'Certificate is required'),
+				]),
+			});
+			const ctx = detectDomainContext(results);
+			expect(ctx.profile).toBe('non_mail');
+			expect(ctx.signals).toContain('No MX records');
+		});
+
+		it('detects web_only when Null MX but SSL valid', () => {
+			const results = fullPassingResults({
+				mx: buildCheckResult('mx', [
+					createFinding('mx', 'Null MX record (RFC 7505)', 'info', 'Domain explicitly declares it does not accept email via null MX record.'),
+				]),
+			});
+			const ctx = detectDomainContext(results);
+			expect(ctx.profile).toBe('web_only');
+			expect(ctx.signals).toContain('No MX records');
+			expect(ctx.signals).toContain('SSL valid');
+		});
+
+		it('defaults to mail_enabled when MX DNS query fails', () => {
+			const results = fullPassingResults({
+				mx: buildCheckResult('mx', [
+					createFinding('mx', 'DNS query failed', 'medium', 'MX record lookup failed'),
+				]),
+			});
+			const ctx = detectDomainContext(results);
+			expect(ctx.profile).toBe('mail_enabled');
+			expect(ctx.signals).toContain('MX status unknown');
+		});
+
+		it('defaults to non_mail for empty results', () => {
+			const ctx = detectDomainContext([]);
+			// No MX result at all → !hasMx but also !hasNoMx → hasMxUnknown false → mail_enabled fallback
+			expect(ctx.profile).toBe('mail_enabled');
+		});
+
 		it('explicit profile override replaces detected profile in signals', () => {
 			const results = fullPassingResults({
 				mx: buildCheckResult('mx', [
