@@ -32,7 +32,9 @@ Evolve the static scoring profiles (`mail_enabled`, `enterprise_mail`, `non_mail
 
 ### Storage: ProfileAccumulator Durable Object
 
-A new `ProfileAccumulator` DO class with SQLite storage. Single global instance (routed by name `"global"`). Two RPC-style endpoints via `fetch`:
+A new `ProfileAccumulator` DO class with SQLite storage. Single global instance (routed by name `"global"`). Two RPC-style endpoints via `fetch`.
+
+**Concurrency note:** A single DO processes one request at a time. Under high traffic, `/ingest` writes (fire-and-forget via `ctx.waitUntil()`) queue behind each other, but this never blocks scan responses. `/weights` reads are on the critical path with a 50ms timeout, but the per-isolate in-memory cache (60s TTL, described in Fallback Chain) means most scans never hit the DO at all. At current scale (75 free scans/day + authenticated traffic), contention is negligible. If scale grows significantly, sharding by profile name (5 DO instances) is a straightforward future optimization.
 
 - **`POST /ingest`** — Receives scan telemetry, updates EMA rows. Fire-and-forget via `ctx.waitUntil()`.
 - **`GET /weights?profile=X&provider=Y`** — Returns computed adaptive weights with blend factor applied. Optional `provider` param enables L2 overlay.
@@ -85,7 +87,7 @@ CREATE TABLE provider_stats (
 );
 ```
 
-No raw scan rows stored. EMA approach means bounded storage regardless of scan volume: 65 rows for L1 (5 profiles x 13 categories), plus provider variants for L2.
+No raw scan rows stored. EMA approach means bounded storage regardless of scan volume: currently 65 rows for L1 (5 profiles x 13 categories), plus provider variants for L2. Row count scales linearly with new profiles or categories but remains small.
 
 ### Telemetry Payload
 
@@ -103,6 +105,8 @@ interface ScanTelemetry {
 ```
 
 Sent after each `scan_domain` completes via `ctx.waitUntil()`. Minimal payload — no severity counts, just score and passed.
+
+**Provider extraction:** The `provider` field is sourced from `mxResult.findings[].metadata.provider` (already populated by `check_mx` via provider signature matching in `context-profiles.ts`). If multiple providers are detected, the first match is used. A new `detectedProvider` field will be added to `DomainContext` to make this discrete (currently embedded in the `signals` array as a string).
 
 ---
 
@@ -129,8 +133,8 @@ adaptive_weight = static_weight + raw_adjustment
 clamped_weight = clamp(adaptive_weight, min_bound, max_bound)
 ```
 
-- `baseline_failure_rate` — hardcoded per category from public internet measurement data
-- `sensitivity` — 0.5 (single global constant)
+- `baseline_failure_rate` — hardcoded per category from public internet measurement data. A single global map is used across all profiles. This is safe because the `static_weight` multiplier makes adjustments proportional: for categories irrelevant to a profile (e.g., MTA-STS in `non_mail` where static weight is 0), `raw_adjustment` is 0 regardless of deviation.
+- `sensitivity` — 0.5 (single global constant). Per-profile sensitivity is unnecessary because the `static_weight` multiplier already provides profile-proportional scaling (DMARC at weight 22 responds 11x more than MTA-STS at weight 2).
 - Adjustment is proportional to `static_weight`: high-importance categories respond more strongly
 
 ### Seed Baselines
@@ -209,6 +213,25 @@ interface AdaptiveWeightsResponse {
 }
 ```
 
+### Type Adaptation
+
+The DO returns `Record<string, number>` but `DomainContext.weights` expects `Record<CheckCategory, ImportanceProfile>`. An adapter function `adaptiveWeightsToContext()` in `adaptive-weights.ts` handles this conversion:
+
+1. Iterate over bv-mcp's `CheckCategory` keys
+2. For each key present in the DO response, wrap as `{ importance: weight }`
+3. For missing keys, fall back to the static `PROFILE_WEIGHTS` value
+4. Validate all weights are finite and non-negative; on any invalid value, fall back to static weights entirely
+
+This keeps the DO scanner-agnostic while preserving bv-mcp's type safety.
+
+### Weight Normalization
+
+Adaptive weights do **not** need to sum to the same total as static weights. `computeScanScore` uses ratio-based scoring (`earnedPoints / maxPoints * 100`), so different weight totals produce correct proportional scores. No normalization step is needed.
+
+### Static Scoring Boundaries
+
+`PROFILE_CRITICAL_CATEGORIES` and `PROFILE_EMAIL_BONUS_ELIGIBLE` remain **static and profile-bound** — they are not adapted. Critical gap ceiling and email bonus eligibility are policy decisions, not statistical observations. Changing them requires manual review.
+
 ---
 
 ## Integration with scan_domain
@@ -231,14 +254,21 @@ interface AdaptiveWeightsResponse {
 
 1. DO available + enough samples → adaptive weights (blended)
 2. DO available + few samples → mostly static (blend factor near 0)
-3. DO unavailable (timeout/error) → pure static weights
-4. `PROFILE_ACCUMULATOR` binding absent → pure static weights
+3. DO returns malformed/partial data → pure static weights (validated by `adaptiveWeightsToContext()`)
+4. DO unavailable (timeout/error) → pure static weights
+5. `PROFILE_ACCUMULATOR` binding absent → pure static weights
 
-Step 4 ensures open source users deploying without Durable Objects get today's exact behavior. Zero regression.
+Step 5 ensures open source users deploying without Durable Objects get today's exact behavior. Zero regression.
+
+**DO cold start note:** Durable Object stub `fetch()` is typically ~5-20ms warm but can be 50-200ms on cold start. The 50ms timeout means the first scan after a DO eviction will fall back to static weights. This is expected and acceptable — adaptive weights are a progressive enhancement, not a hard requirement. To reduce cold-start misses, `scan_domain` caches the last-fetched adaptive weights in-memory (per-isolate) with a 60-second TTL, refreshed on each successful DO fetch. Most scans hit the local cache; the DO round-trip only occurs on cache miss.
 
 ### Phase 1 → Phase 2 Transition
 
 Currently `auto` mode uses `mail_enabled` weights and only explicit profiles activate different weights. With this change, `auto` mode activates the detected profile's adaptive weights (blended). At 0 samples the blend factor is 0, so the transition is invisible — behavior changes gradually as data accumulates.
+
+### Profile Stability on Cache Hits
+
+If a domain's detected profile changes between scans (e.g., MX records added/removed), the cached result may have been scored with a different profile's weights. This is acceptable because the 5-minute cache TTL limits the window, and the underlying check results (DNS queries) are the same — only the scoring interpretation differs slightly. Cache keys remain unchanged for `auto` mode.
 
 ### Cache Key Impact
 
@@ -251,6 +281,8 @@ No change. Adaptive weights affect scoring computation, not cache keys. The same
 ### When It Appears
 
 Only when the adaptive-weighted score differs from the static-weighted score by 3+ points. Computed by running `computeScanScore` twice — once with adaptive weights, once with static.
+
+**Scoring notes are only generated on fresh scans (cache misses).** The computed `scoringNote` and `adaptiveWeightDeltas` are stored in `ScanDomainResult` and cached alongside it. Cache hits return the pre-computed note as-is — no recomputation needed.
 
 ### Templates
 
