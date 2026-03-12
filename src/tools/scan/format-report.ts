@@ -16,6 +16,8 @@ export interface StructuredScanResult {
 	findingCounts: { critical: number; high: number; medium: number; low: number };
 	scoringProfile: string;
 	scoringSignals: string[];
+	scoringNote: string | null;
+	adaptiveWeightDeltas: Record<string, number> | null;
 	timestamp: string;
 	cached: boolean;
 }
@@ -38,6 +40,8 @@ export function buildStructuredScanResult(result: ScanDomainResult): StructuredS
 		},
 		scoringProfile: result.context?.profile ?? 'mail_enabled',
 		scoringSignals: result.context?.signals ?? [],
+		scoringNote: result.scoringNote ?? null,
+		adaptiveWeightDeltas: result.adaptiveWeightDeltas ?? null,
 		timestamp: result.timestamp,
 		cached: result.cached,
 	};
@@ -64,6 +68,11 @@ export function formatScanReport(result: ScanDomainResult): string {
 	if (result.context) {
 		const signalSummary = result.context.signals.length > 0 ? result.context.signals.join(', ') : 'default';
 		lines.push(`Scoring Profile: ${result.context.profile} (${signalSummary})`);
+		lines.push('');
+	}
+
+	if (result.scoringNote) {
+		lines.push(result.scoringNote);
 		lines.push('');
 	}
 
