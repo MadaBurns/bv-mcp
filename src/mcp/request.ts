@@ -60,8 +60,9 @@ export async function readRequestBody(request: Request, maxBytes: number): Promi
 					payload: jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Request body too large'),
 				};
 			}
-			rawBody += decoder.decode(value);
+			rawBody += decoder.decode(value, { stream: true });
 		}
+		rawBody += decoder.decode(); // flush any remaining buffered bytes
 	} else {
 		rawBody = await request.text();
 		if (rawBody.length > maxBytes) {
