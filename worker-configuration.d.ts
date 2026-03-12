@@ -10,6 +10,7 @@ declare namespace Cloudflare {
         SCAN_CACHE?: KVNamespace;
         SESSION_STORE?: KVNamespace;
         QUOTA_COORDINATOR: DurableObjectNamespace;
+        PROFILE_ACCUMULATOR: DurableObjectNamespace;
         MCP_ANALYTICS?: AnalyticsEngineDataset;
 		BV_API_KEY: "";
 		PROVIDER_SIGNATURES_URL: "";
