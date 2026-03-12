@@ -194,15 +194,23 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		};
 	} catch {
 		// Post-processing or scoring failed — return whatever we have
-		const domainContext = detectDomainContext(checkResults);
-		const score = computeScanScore(checkResults);
+		let fallbackContext = detectDomainContext(checkResults);
+		if (isExplicit) {
+			fallbackContext = {
+				profile: explicitProfile as DomainProfile,
+				signals: [...fallbackContext.signals, `explicit profile override: ${explicitProfile}`],
+				weights: getProfileWeights(explicitProfile as DomainProfile),
+			};
+		}
+		const fallbackScoringContext = isExplicit ? fallbackContext : undefined;
+		const score = computeScanScore(checkResults, fallbackScoringContext);
 		const maturity = computeMaturityStage(checkResults);
 		result = {
 			domain,
 			score,
 			checks: checkResults,
 			maturity,
-			context: domainContext,
+			context: fallbackContext,
 			cached: false,
 			timestamp: new Date().toISOString(),
 		};
