@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import { queryTxtRecords } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import type { Finding } from '../lib/scoring';
 import { createFinding } from '../lib/scoring';
 
@@ -92,6 +93,7 @@ export async function countRecursiveLookups(
 	spfRecord: string,
 	depth: number,
 	state: RecursiveState,
+	dnsOptions?: QueryDnsOptions,
 ): Promise<number> {
 	const local = analyzeSpfLookupBudget(spfRecord);
 	let totalCount = local.count;
@@ -133,11 +135,11 @@ export async function countRecursiveLookups(
 		state.totalQueries++;
 
 		try {
-			const txtRecords = await queryTxtRecords(targetDomain);
+			const txtRecords = await queryTxtRecords(targetDomain, dnsOptions);
 			const nestedSpf = txtRecords.find((record) => record.toLowerCase().startsWith('v=spf1'));
 
 			if (nestedSpf) {
-				const nestedCount = await countRecursiveLookups(nestedSpf, depth + 1, state);
+				const nestedCount = await countRecursiveLookups(nestedSpf, depth + 1, state, dnsOptions);
 				state.cache.set(targetDomain, { count: nestedCount, mechanisms: [] });
 				totalCount += nestedCount;
 			}

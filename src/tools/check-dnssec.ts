@@ -7,6 +7,7 @@
  */
 
 import { checkDnssec as dnsCheckDnssec, queryDnsRecords } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
 import { auditDnskeyAlgorithms, auditDsDigestTypes, parseDnskeyAlgorithm, parseDsRecord } from './dnssec-analysis';
 
@@ -17,13 +18,13 @@ export { parseDnskeyAlgorithm, parseDsRecord };
  * Verifies the AD (Authenticated Data) flag, checks for DNSKEY/DS records,
  * and audits algorithm and digest type security.
  */
-export async function checkDnssec(domain: string): Promise<CheckResult> {
+export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	const findings: Finding[] = [];
 
 	// Check AD flag via DoH
 	let adFlag = false;
 	try {
-		adFlag = await dnsCheckDnssec(domain);
+		adFlag = await dnsCheckDnssec(domain, dnsOptions);
 	} catch {
 		findings.push(
 			createFinding('dnssec', 'DNSSEC check failed', 'medium', `Could not verify DNSSEC status for ${domain}. The DNS query failed.`),
@@ -44,7 +45,7 @@ export async function checkDnssec(domain: string): Promise<CheckResult> {
 
 	// Check for DNSKEY records and audit algorithms
 	try {
-		const dnskeyRecords = await queryDnsRecords(domain, 'DNSKEY');
+		const dnskeyRecords = await queryDnsRecords(domain, 'DNSKEY', dnsOptions);
 		if (dnskeyRecords.length === 0 && !adFlag) {
 			findings.push(
 				createFinding(
@@ -63,7 +64,7 @@ export async function checkDnssec(domain: string): Promise<CheckResult> {
 
 	// Check for DS records and audit digest types
 	try {
-		const dsRecords = await queryDnsRecords(domain, 'DS');
+		const dsRecords = await queryDnsRecords(domain, 'DS', dnsOptions);
 		if (dsRecords.length === 0 && !adFlag) {
 			findings.push(
 				createFinding(

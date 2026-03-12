@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import { queryDnsRecords } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import { type Finding, createFinding } from '../lib/scoring';
 
 export type TakeoverVerificationStatus = 'potential' | 'verified' | 'not_exploitable';
@@ -139,18 +140,18 @@ export async function probeHttpFingerprint(fqdn: string, cname: string): Promise
 	return null;
 }
 
-export async function scanSubdomainForTakeover(domain: string, subdomain: string): Promise<Finding[]> {
+export async function scanSubdomainForTakeover(domain: string, subdomain: string, dnsOptions?: QueryDnsOptions): Promise<Finding[]> {
 	const fqdn = `${subdomain}.${domain}`;
 	const findings: Finding[] = [];
 
 	try {
-		const cnameRecords = await queryDnsRecords(fqdn, 'CNAME');
+		const cnameRecords = await queryDnsRecords(fqdn, 'CNAME', dnsOptions);
 		for (const rawCname of cnameRecords) {
 			const cname = rawCname.replace(/\.$/, '').toLowerCase();
 			if (!isThirdPartyTakeoverService(cname)) continue;
 
 			try {
-				const targetAddresses = await queryDnsRecords(cname, 'A');
+				const targetAddresses = await queryDnsRecords(cname, 'A', dnsOptions);
 				if (targetAddresses.length === 0) {
 					findings.push(
 						createTakeoverFinding(

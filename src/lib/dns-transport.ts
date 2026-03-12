@@ -117,7 +117,7 @@ export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck
 
 		const data = (await response.json()) as DohResponse; // DoH JSON API returns a well-defined schema
 
-		if (confirmWithSecondaryOnEmpty && !hasTypedAnswers(data, type)) {
+		if (confirmWithSecondaryOnEmpty && !opts?.skipSecondaryConfirmation && !hasTypedAnswers(data, type)) {
 			const secondary = await queryDnsFromEndpoint(SECONDARY_DOH_ENDPOINT, domain, type, dnssecCheck, timeoutMs);
 			if (secondary && hasTypedAnswers(secondary, type)) {
 				return secondary;

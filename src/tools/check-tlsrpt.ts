@@ -7,6 +7,7 @@
  */
 
 import { queryTxtRecords } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 
@@ -14,10 +15,10 @@ import { buildCheckResult, createFinding } from '../lib/scoring';
  * Check TLS-RPT records for a domain.
  * Validates the presence and configuration of SMTP TLS Reporting records.
  */
-export async function checkTlsrpt(domain: string): Promise<CheckResult> {
+export async function checkTlsrpt(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	const findings: Finding[] = [];
 	const tlsrptDomain = `_smtp._tls.${domain}`;
-	const txtRecords = await queryTxtRecords(tlsrptDomain);
+	const txtRecords = await queryTxtRecords(tlsrptDomain, dnsOptions);
 
 	const tlsrptRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=tlsrptv1'));
 
