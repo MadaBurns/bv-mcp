@@ -340,8 +340,8 @@ describe('checkSubdomainTakeover', () => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
 			if (url.includes('type=CNAME') || url.includes('type=5')) {
-				if (url.includes('preview.example.com')) {
-					return Promise.resolve(cnameResponse('preview.example.com', 'cname.vercel-dns.com'));
+				if (url.includes('staging.example.com')) {
+					return Promise.resolve(cnameResponse('staging.example.com', 'cname.vercel-dns.com'));
 				}
 				const nameMatch = url.match(/name=([^&]+)/);
 				const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';

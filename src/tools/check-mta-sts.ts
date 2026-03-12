@@ -7,6 +7,7 @@
 
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { queryMxRecords, queryTxtRecords } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
 import {
 	finalizeMissingMtaStsRecordFinding,
@@ -23,13 +24,13 @@ import {
  * Check MTA-STS configuration for a domain.
  * Queries _mta-sts.<domain> TXT records and optionally fetches the policy file.
  */
-export async function checkMtaSts(domain: string): Promise<CheckResult> {
+export async function checkMtaSts(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	let findings: Finding[] = [];
 
 	// Check for _mta-sts TXT record
 	let hasTxtRecord = false;
 	try {
-		const txtRecords = await queryTxtRecords(`_mta-sts.${domain}`);
+		const txtRecords = await queryTxtRecords(`_mta-sts.${domain}`, dnsOptions);
 		const txtAnalysis = getMtaStsTxtFindings(txtRecords);
 		hasTxtRecord = txtAnalysis.hasTxtRecord;
 		findings.push(...finalizeMissingMtaStsRecordFinding(txtAnalysis.findings, domain));
@@ -66,7 +67,7 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 				const policyMode = modeMatch ? modeMatch[1].toLowerCase() : '';
 				if (policyMxPatterns.length > 0 && (policyMode === 'enforce' || policyMode === 'testing')) {
 					try {
-						const mxRecords = await queryMxRecords(domain);
+						const mxRecords = await queryMxRecords(domain, dnsOptions);
 						findings.push(...getUncoveredMxHostFindings(mxRecords.map((mx) => mx.exchange), policyMxPatterns));
 					} catch {
 						// MX query failed; skip coverage cross-check.
@@ -89,7 +90,7 @@ export async function checkMtaSts(domain: string): Promise<CheckResult> {
 	let hasTlsRptRecord = false;
 	let tlsRptChecked = false;
 	try {
-		const tlsrptRecords = await queryTxtRecords(`_smtp._tls.${domain}`);
+		const tlsrptRecords = await queryTxtRecords(`_smtp._tls.${domain}`, dnsOptions);
 		tlsRptChecked = true;
 		const tlsRptAnalysis = getTlsRptRecordFindings(tlsrptRecords);
 		hasTlsRptRecord = tlsRptAnalysis.hasTlsRptRecord;
