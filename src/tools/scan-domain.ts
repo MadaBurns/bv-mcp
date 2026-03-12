@@ -65,6 +65,9 @@ const adaptiveWeightCache = new Map<string, { weights: AdaptiveWeightsResponse; 
 /** TTL for the in-memory adaptive weight cache (ms). */
 const ADAPTIVE_CACHE_TTL_MS = 60_000;
 
+/** Maximum entries in the adaptive weight cache before eviction. */
+const ADAPTIVE_CACHE_MAX_ENTRIES = 100;
+
 /** Timeout for fetching adaptive weights from the DO (ms). */
 const ADAPTIVE_FETCH_TIMEOUT_MS = 50;
 
@@ -354,6 +357,7 @@ async function fetchAdaptiveWeights(
 		if (!response.ok) return null;
 
 		const data = (await response.json()) as AdaptiveWeightsResponse;
+		if (adaptiveWeightCache.size >= ADAPTIVE_CACHE_MAX_ENTRIES) adaptiveWeightCache.clear();
 		adaptiveWeightCache.set(cacheKey, { weights: data, expires: now + ADAPTIVE_CACHE_TTL_MS });
 		return data;
 	} catch {
