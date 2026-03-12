@@ -18,7 +18,7 @@ import {
 	computeAdaptiveWeight,
 	blendWeights,
 } from './adaptive-weights';
-import type { ScanTelemetry, AdaptiveWeightsResponse } from './adaptive-weights';
+import type { AdaptiveWeightsResponse } from './adaptive-weights';
 import { PROFILE_WEIGHTS } from './context-profiles';
 
 // ─── SQL schema ─────────────────────────────────────────────────────────
@@ -59,6 +59,23 @@ interface ProviderStatsRow {
 	ema_avg_score: number;
 	last_updated: number;
 }
+
+// ─── Validation ────────────────────────────────────────────────────────
+
+/** Known scoring profiles accepted by the accumulator. */
+const VALID_PROFILES = new Set(['mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal']);
+
+/** Known check categories accepted by the accumulator. */
+const VALID_CATEGORIES = new Set([
+	'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts',
+	'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'mx', 'lookalikes',
+]);
+
+/** Maximum number of category findings per ingest request. */
+const MAX_CATEGORY_FINDINGS = 50;
+
+/** Maximum string length for the provider field. */
+const MAX_PROVIDER_LENGTH = 128;
 
 // ─── Durable Object ────────────────────────────────────────────────────
 
@@ -107,22 +124,35 @@ export class ProfileAccumulator extends DurableObject<Env> {
 		if (typeof body.profile !== 'string' || !body.profile) {
 			return new Response('Missing required profile', { status: 400 });
 		}
-		if (!Array.isArray(body.categoryFindings)) {
-			return new Response('Missing required categoryFindings array', { status: 400 });
+		if (!VALID_PROFILES.has(body.profile)) {
+			return new Response('Invalid profile', { status: 400 });
+		}
+		if (!Array.isArray(body.categoryFindings) || body.categoryFindings.length > MAX_CATEGORY_FINDINGS) {
+			return new Response('Missing or oversized categoryFindings array', { status: 400 });
+		}
+		const provider = typeof body.provider === 'string' ? body.provider : null;
+		if (provider && provider.length > MAX_PROVIDER_LENGTH) {
+			return new Response('Invalid provider: too long', { status: 400 });
 		}
 
-		const telemetry = raw as ScanTelemetry;
+		const profile = body.profile;
 		const now = Date.now();
 
-		for (const cf of telemetry.categoryFindings) {
-			const failureValue = cf.passed ? 0.0 : 1.0;
+		for (const cf of body.categoryFindings as Array<unknown>) {
+			if (!cf || typeof cf !== 'object') continue;
+			const entry = cf as Record<string, unknown>;
+			if (typeof entry.category !== 'string' || !VALID_CATEGORIES.has(entry.category)) continue;
+			if (typeof entry.score !== 'number' || !Number.isFinite(entry.score) || entry.score < 0 || entry.score > 100) continue;
+			if (typeof entry.passed !== 'boolean') continue;
+
+			const failureValue = entry.passed ? 0.0 : 1.0;
 
 			// Upsert profile_stats
-			this.upsertProfileStats(telemetry.profile, cf.category, failureValue, cf.score, now);
+			this.upsertProfileStats(profile, entry.category, failureValue, entry.score, now);
 
 			// Upsert provider_stats if provider is present
-			if (telemetry.provider) {
-				this.upsertProviderStats(telemetry.profile, telemetry.provider, cf.category, failureValue, cf.score, now);
+			if (provider) {
+				this.upsertProviderStats(profile, provider, entry.category, failureValue, entry.score, now);
 			}
 		}
 
