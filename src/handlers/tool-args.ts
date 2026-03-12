@@ -34,6 +34,22 @@ export function extractDkimSelector(args: Record<string, unknown>): string | und
 	return selector;
 }
 
+const VALID_PROFILES = ['auto', 'mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal'] as const;
+
+/** Extract and validate the optional scoring profile parameter. */
+export function extractScanProfile(args: Record<string, unknown>): typeof VALID_PROFILES[number] | undefined {
+	const profile = args.profile;
+	if (profile === undefined || profile === null) return undefined;
+	if (typeof profile !== 'string') {
+		throw new Error('Invalid profile: must be a string');
+	}
+	const normalized = profile.trim().toLowerCase();
+	if (!(VALID_PROFILES as readonly string[]).includes(normalized)) {
+		throw new Error(`Invalid profile: must be one of ${VALID_PROFILES.join(', ')}`);
+	}
+	return normalized as typeof VALID_PROFILES[number];
+}
+
 export function extractExplainFindingArgs(args: Record<string, unknown>): {
 	checkType: string;
 	status: string;
