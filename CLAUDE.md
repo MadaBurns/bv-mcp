@@ -10,9 +10,6 @@ A 16th check (`check_subdomain_takeover`) runs only inside `scan_domain` and is 
 
 **Version**: 1.0.0 — keep `SERVER_VERSION` in `src/index.ts` and `version` in `package.json` in sync.
 
-## Repository Layout
-
-
 ## Commands
 
 ```bash
