@@ -55,10 +55,10 @@ export type { ScanRuntimeOptions } from './scan/post-processing';
 const CACHE_PREFIX = 'cache:';
 
 /** Maximum wall-clock time for a single check within scan_domain (ms). */
-const PER_CHECK_TIMEOUT_MS = 15_000;
+const PER_CHECK_TIMEOUT_MS = 8_000;
 
 /** Maximum wall-clock time for the entire scan_domain orchestration (ms). */
-const SCAN_TIMEOUT_MS = 25_000;
+const SCAN_TIMEOUT_MS = 12_000;
 
 /** In-memory cache for adaptive weight responses from the ProfileAccumulator DO. */
 const adaptiveWeightCache = new Map<string, { weights: AdaptiveWeightsResponse; expires: number }>();
