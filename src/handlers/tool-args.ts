@@ -20,7 +20,11 @@ export function extractAndValidateDomain(args: Record<string, unknown>): string 
 	if (!validation.valid) {
 		throw new Error(validation.error ?? 'Invalid domain');
 	}
-	return sanitizeDomain(domain);
+	const sanitized = sanitizeDomain(domain);
+	if (!sanitized) {
+		throw new Error('Domain validation failed: could not normalize domain');
+	}
+	return sanitized;
 }
 
 export function extractDkimSelector(args: Record<string, unknown>): string | undefined {
@@ -102,9 +106,15 @@ export function extractExplainFindingArgs(args: Record<string, unknown>): {
 	if (typeof checkType !== 'string' || typeof status !== 'string') {
 		throw new Error('Missing required parameters: checkType and status');
 	}
-	return {
-		checkType,
-		status,
-		details: typeof args.details === 'string' ? args.details : undefined,
-	};
+	if (checkType.length > 100) {
+		throw new Error('Invalid checkType: must be <= 100 characters');
+	}
+	if (status.length > 500) {
+		throw new Error('Invalid status: must be <= 500 characters');
+	}
+	const details = typeof args.details === 'string' ? args.details : undefined;
+	if (details && details.length > 2000) {
+		throw new Error('Invalid details: must be <= 2000 characters');
+	}
+	return { checkType, status, details };
 }

@@ -82,8 +82,11 @@ export function scoreToGrade(score: number): string {
 	return 'F';
 }
 
-/** Default critical categories used when no context is provided. */
-const DEFAULT_CRITICAL_CATEGORIES: CheckCategory[] = ['spf', 'dmarc', 'dkim', 'ssl', 'dnssec', 'subdomain_takeover'];
+/** Default critical categories used when no context is provided.
+ * DNSSEC is excluded: its importance weight (2) already reflects its proportional
+ * impact, and only ~30% of domains deploy it — capping the entire score at 64
+ * for missing DNSSEC produces misleading results for well-configured domains. */
+const DEFAULT_CRITICAL_CATEGORIES: CheckCategory[] = ['spf', 'dmarc', 'dkim', 'ssl', 'subdomain_takeover'];
 
 /**
  * Compute the overall scan score from individual check results.
