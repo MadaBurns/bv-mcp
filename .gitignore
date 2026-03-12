@@ -28,6 +28,7 @@ coverage/
 
 # Docs (internal drafts and plans)
 docs/
+*troubleshooting*.md
 
 # Logs
 *.log
@@ -71,4 +72,3 @@ docs/plans/
 .dev/
 
 .gemini/
-.worktrees/
