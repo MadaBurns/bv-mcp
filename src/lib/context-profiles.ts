@@ -147,12 +147,19 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 
 	// Detect MX presence
 	const hasNoMx = mxResult
-		? mxResult.findings.some((f) => f.title === 'No MX records found')
+		? mxResult.findings.some((f) => {
+				const title = f.title.toLowerCase();
+				return title.includes('no mx records') || title.includes('null mx');
+			})
 		: false;
-	const hasMx = mxResult && !hasNoMx;
+	const hasMxUnknown = mxResult
+		? mxResult.findings.some((f) => f.title.toLowerCase().includes('dns query failed'))
+		: false;
+	const hasMx = mxResult && !hasNoMx && !hasMxUnknown;
 
 	if (hasMx) signals.push('MX present');
 	if (hasNoMx) signals.push('No MX records');
+	if (hasMxUnknown) signals.push('MX status unknown');
 
 	// Detect enterprise provider from MX findings
 	let hasEnterpriseProvider = false;
@@ -204,12 +211,16 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 	// Detection priority
 	let profile: DomainProfile;
 
-	if (hasNoMx || !hasMx) {
+	if (hasNoMx) {
+		// Explicitly no MX (no records or null MX) → non-mail profiles
 		if (caaPass || sslPass) {
 			profile = 'web_only';
 		} else {
 			profile = 'non_mail';
 		}
+	} else if (hasMxUnknown || !hasMx) {
+		// MX lookup failed or no MX result at all → default to mail_enabled (safe fallback)
+		profile = 'mail_enabled';
 	} else if (hasMx && hasEnterpriseProvider && hasHardeningSignal) {
 		profile = 'enterprise_mail';
 	} else {
