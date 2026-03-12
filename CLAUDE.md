@@ -62,6 +62,7 @@ src/tools/explain-finding.ts — Static explanation generator
 src/lib/scoring.ts        — Re-export facade for scoring subsystem
 src/lib/scoring-model.ts  — Types (Finding, CheckResult, ScanScore, CheckCategory, Severity) + buildCheckResult/createFinding
 src/lib/scoring-engine.ts — IMPORTANCE_WEIGHTS, computeScanScore, scoreToGrade
+src/lib/context-profiles.ts — DomainProfile, DomainContext, PROFILE_WEIGHTS, detectDomainContext
 src/lib/json-rpc.ts       — JSON-RPC 2.0 types, error codes, response builders
 src/lib/session.ts        — KV-backed (optional) + in-memory fallback session management
 src/lib/auth.ts           — Bearer token validation (constant-time XOR comparison)
@@ -154,6 +155,16 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEI
 **`passed` flag**: `score >= 50` in `buildCheckResult`.
 
 **Grades**: A+ (90+), A (85–89), B+ (80–84), B (75–79), C+ (70–74), C (65–69), D+ (60–64), D (55–59), E (50–54), F (<50).
+
+### Scoring Profiles
+
+`computeScanScore()` accepts an optional `DomainContext` that adapts weights based on domain purpose. Five profiles exist: `mail_enabled` (default/today's weights), `enterprise_mail`, `non_mail`, `web_only`, `minimal`. Defined in `src/lib/context-profiles.ts`.
+
+**Phase 1 (current):** `scan_domain` auto-detects the profile from check results (MX presence, provider detection, SSL/CAA) and reports it in the structured result (`scoringProfile`, `scoringSignals`), but `auto` mode uses `mail_enabled` weights (identical to pre-profile behavior). Only explicit `profile` parameter values activate different weights and cache keys (`cache:<domain>:profile:<profile>`).
+
+**Detection priority:** `non_mail`/`web_only` (no MX) → `enterprise_mail` (MX + known provider + hardening signal) → `mail_enabled` (MX, default) → `minimal` (>50% checks failed).
+
+**Profile-aware scoring:** When context is provided, `computeScanScore` uses `context.weights` instead of `IMPORTANCE_WEIGHTS`, `PROFILE_CRITICAL_CATEGORIES[profile]` for gap ceiling, and `PROFILE_EMAIL_BONUS_ELIGIBLE[profile]` for email bonus eligibility.
 
 ## Security
 

@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- Context-aware scoring profiles for `scan_domain`: five named profiles (`mail_enabled`, `enterprise_mail`, `non_mail`, `web_only`, `minimal`) that adapt importance weights based on detected domain purpose. Phase 1: auto-detection runs and is reported in the structured result (`scoringProfile`, `scoringSignals`), but only explicit `profile` parameter values activate different weights. New types `DomainProfile` and `DomainContext` exported from the public package API.
 - `scan_domain` now returns a second content block containing machine-readable structured JSON (`score`, `grade`, `passed`, `maturityStage`, `maturityLabel`, `categoryScores`, `findingCounts`, `timestamp`, `cached`) wrapped in `<!-- STRUCTURED_RESULT -->` delimiters. CI/CD consumers can parse this reliably instead of regex-matching the text report.
 - `buildStructuredScanResult()` and `StructuredScanResult` type exported from `src/tools/scan/format-report.ts` and the public package API.
 - Publishable ESM npm package metadata, bundled public API entrypoint, and `prepack` build flow for consuming the scanner core as `blackveil-dns`.
@@ -22,12 +23,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Package API regression coverage in `test/package-api.spec.ts`.
 - Private deployment override workflow via `wrangler.private.example.jsonc`, ignored `.dev/wrangler.deploy.jsonc`, and `npm run deploy:private` so real Cloudflare KV and Analytics bindings stay out of the public repo.
 - Regression coverage for DMARC-aware SPF trust-surface severity in `test/check-spf.spec.ts`, `test/spf-trust-surface.spec.ts`, and `test/handlers-tools.spec.ts`.
-
 - Dangling MX detection: MX hostnames that do not resolve to A or AAAA records are flagged as `medium` severity.
 
 ### Fixed
 
-- Scoring documentation (CLAUDE.md, docs/scoring.md, resources.ts) now reflects actual importance weights: NS=3, CAA=2, Subdomain Takeover=2 (was incorrectly documented as 0).
+- Scoring documentation (CLAUDE.md, docs/scoring.md, resources.ts) updated to reflect actual importance weights (Subdomain Takeover=3, NS=0, CAA=0) and added scoring profile documentation.
 - Critical penalty documentation updated to reflect verified-confidence-only condition introduced in v1.0.3.
 - Source file references in docs/scoring.md updated from barrel re-export to actual implementation files.
 - Merged duplicate `### Added` section in CHANGELOG v1.0.3 entry.
@@ -120,7 +120,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - 3 static MCP resources: security checks guide, scoring methodology, DNS record types
 - MCP Streamable HTTP transport (JSON-RPC 2.0) with SSE support
 - Weighted scoring engine aligned with BLACKVEIL scanner (50 checks, 8 categories)
-- Email authentication bonus (up to 5 points) when SPF + DKIM + DMARC all pass
+- Email authentication bonus (up to 8 points) when SPF + DKIM + DMARC all pass
 - DNS-over-HTTPS via Cloudflare DoH — no direct DNS resolution
 - KV-backed per-IP rate limiting (10 req/min, 100 req/hr) with in-memory fallback
 - KV-backed scan result cache (5-min TTL) with in-memory fallback

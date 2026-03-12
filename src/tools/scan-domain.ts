@@ -10,7 +10,18 @@
  * Compatible with Cloudflare Workers runtime (no Node.js APIs).
  */
 
-import { type CheckCategory, type CheckResult, type ScanScore, buildCheckResult, computeScanScore, createFinding } from '../lib/scoring';
+import {
+	type CheckCategory,
+	type CheckResult,
+	type DomainContext,
+	type DomainProfile,
+	type ScanScore,
+	buildCheckResult,
+	computeScanScore,
+	createFinding,
+	detectDomainContext,
+	getProfileWeights,
+} from '../lib/scoring';
 import { cacheGet, cacheSet, runWithCache } from '../lib/cache';
 import { checkSpf } from './check-spf';
 import { checkDmarc } from './check-dmarc';
@@ -47,6 +58,7 @@ export interface ScanDomainResult {
 	score: ScanScore;
 	checks: CheckResult[];
 	maturity: MaturityStage;
+	context: DomainContext;
 	cached: boolean;
 	timestamp: string;
 }
@@ -60,7 +72,11 @@ export interface ScanDomainResult {
  * @returns Full scan result with score, individual check results, and metadata
  */
 export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOptions?: ScanRuntimeOptions): Promise<ScanDomainResult> {
-	const cacheKey = `${CACHE_PREFIX}${domain}`;
+	const explicitProfile = runtimeOptions?.profile;
+	const isExplicit = explicitProfile && explicitProfile !== 'auto';
+	const cacheKey = isExplicit
+		? `${CACHE_PREFIX}${domain}:profile:${explicitProfile}`
+		: `${CACHE_PREFIX}${domain}`;
 
 	// Check cache first
 	const cached = await cacheGet<ScanDomainResult>(cacheKey, kv);
@@ -147,7 +163,24 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	try {
 		checkResults = await applyScanPostProcessing(domain, checkResults, runtimeOptions);
 
-		const score = computeScanScore(checkResults);
+		// Detect domain context from check results
+		let domainContext = detectDomainContext(checkResults);
+
+		// If an explicit profile was requested, override detection
+		if (isExplicit) {
+			domainContext = {
+				profile: explicitProfile as DomainProfile,
+				signals: [...domainContext.signals, `explicit profile override: ${explicitProfile}`],
+				weights: getProfileWeights(explicitProfile as DomainProfile),
+			};
+		}
+
+		// Phase 1: only pass context to scoring when an explicit profile is set.
+		// For 'auto' (or unset), detection runs and is reported but scoring
+		// uses the default weights (identical to pre-profile behavior).
+		const scoringContext = isExplicit ? domainContext : undefined;
+
+		const score = computeScanScore(checkResults, scoringContext);
 		const maturity = computeMaturityStage(checkResults);
 
 		result = {
@@ -155,11 +188,13 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			score,
 			checks: checkResults,
 			maturity,
+			context: domainContext,
 			cached: false,
 			timestamp: new Date().toISOString(),
 		};
 	} catch {
 		// Post-processing or scoring failed — return whatever we have
+		const domainContext = detectDomainContext(checkResults);
 		const score = computeScanScore(checkResults);
 		const maturity = computeMaturityStage(checkResults);
 		result = {
@@ -167,6 +202,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			score,
 			checks: checkResults,
 			maturity,
+			context: domainContext,
 			cached: false,
 			timestamp: new Date().toISOString(),
 		};

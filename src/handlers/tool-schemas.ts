@@ -118,7 +118,22 @@ export const TOOLS: McpTool[] = [
 		name: 'scan_domain',
 		description:
 			'Run a comprehensive DNS security scan on a domain. Executes all checks (SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, MX, Subdomain Takeover) in parallel and returns an overall security score and grade.',
-		inputSchema: DOMAIN_INPUT_SCHEMA,
+		inputSchema: {
+			type: 'object' as const,
+			properties: {
+				domain: {
+					type: 'string',
+					description: 'The domain name to check (e.g., example.com)',
+				},
+				profile: {
+					type: 'string',
+					enum: ['auto', 'mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal'],
+					description:
+						'Scoring profile to apply. "auto" (default) detects the profile from scan results. Explicit values override detection and change scoring weights.',
+				},
+			},
+			required: ['domain'],
+		},
 	},
 	{
 		name: 'compare_baseline',

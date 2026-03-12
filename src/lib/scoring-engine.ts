@@ -8,6 +8,8 @@ import {
 	inferFindingConfidence,
 	type ScanScore,
 } from './scoring-model';
+import type { DomainContext } from './context-profiles';
+import { PROFILE_CRITICAL_CATEGORIES, PROFILE_EMAIL_BONUS_ELIGIBLE } from './context-profiles';
 
 interface ImportanceProfile {
 	importance: number;
@@ -80,11 +82,17 @@ export function scoreToGrade(score: number): string {
 	return 'F';
 }
 
+/** Default critical categories used when no context is provided. */
+const DEFAULT_CRITICAL_CATEGORIES: CheckCategory[] = ['spf', 'dmarc', 'dkim', 'ssl', 'dnssec', 'subdomain_takeover'];
+
 /**
  * Compute the overall scan score from individual check results.
  * Uses weighted average of category scores.
+ *
+ * When a `DomainContext` is provided, uses profile-specific weights,
+ * critical gap categories, and email bonus eligibility instead of defaults.
  */
-export function computeScanScore(results: CheckResult[]): ScanScore {
+export function computeScanScore(results: CheckResult[], context?: DomainContext): ScanScore {
 	const partialScores: Partial<Record<CheckCategory, number>> = {};
 	const allFindings: Finding[] = [];
 
@@ -114,9 +122,12 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 	let earnedPoints = 0;
 	let maxPoints = 0;
 
-	// IMPORTANCE_WEIGHTS is Record<CheckCategory, ImportanceProfile> — Object.keys returns string[], cast is safe
-	for (const category of Object.keys(IMPORTANCE_WEIGHTS) as CheckCategory[]) {
-		const { importance } = IMPORTANCE_WEIGHTS[category];
+	// Use context-specific weights when provided, otherwise fall back to static defaults
+	const activeWeights = context ? context.weights : IMPORTANCE_WEIGHTS;
+
+	// activeWeights is Record<CheckCategory, ImportanceProfile> — Object.keys returns string[], cast is safe
+	for (const category of Object.keys(activeWeights) as CheckCategory[]) {
+		const { importance } = activeWeights[category];
 		maxPoints += importance;
 		if (importance === 0) continue;
 
@@ -126,6 +137,9 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 		earnedPoints += (effectiveScore / 100) * importance;
 	}
 
+	// Email bonus: only awarded for profiles that are eligible (or when no context is provided)
+	const emailBonusEligible = context ? PROFILE_EMAIL_BONUS_ELIGIBLE[context.profile] : true;
+
 	const spfResult = results.find((result) => result.category === 'spf');
 	const dkimResult = results.find((result) => result.category === 'dkim');
 	const dmarcResult = results.find((result) => result.category === 'dmarc');
@@ -134,7 +148,7 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 	const dmarcPresent = !!dmarcResult && !scoreIndicatesMissingControl(dmarcResult.findings);
 
 	let emailBonus = 0;
-	if (spfStrong && dkimPresent && dmarcPresent && dmarcResult) {
+	if (emailBonusEligible && spfStrong && dkimPresent && dmarcPresent && dmarcResult) {
 		if (dmarcResult.score >= 90) {
 			emailBonus = EMAIL_BONUS_IMPORTANCE;
 		} else if (dmarcResult.score >= 70) {
@@ -160,8 +174,10 @@ export function computeScanScore(results: CheckResult[]): ScanScore {
 
 	// Critical gap ceiling: cap score when foundational controls are missing
 	const CRITICAL_GAP_CEILING = 64;
-	const CRITICAL_CATEGORIES: CheckCategory[] = ['spf', 'dmarc', 'dkim', 'ssl', 'dnssec', 'subdomain_takeover'];
-	const hasCriticalGap = CRITICAL_CATEGORIES.some((cat) => {
+	const criticalCategories = context
+		? PROFILE_CRITICAL_CATEGORIES[context.profile]
+		: DEFAULT_CRITICAL_CATEGORIES;
+	const hasCriticalGap = criticalCategories.some((cat) => {
 		const result = results.find((r) => r.category === cat);
 		return result && scoreIndicatesMissingControl(result.findings);
 	});

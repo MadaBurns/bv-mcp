@@ -142,23 +142,37 @@ Part of \`check_spf\`. Identifies when SPF \`include:\` directives delegate send
 
 This server uses scanner-aligned scoring for the overlapping controls currently implemented by MCP tools.
 
-## Importance Weights (Scanner-Aligned)
+## Importance Weights (Default: mail_enabled)
 Overall score is based on importance points per category, not a flat average:
 
 | Category | Importance Points |
 |---|---:|
-| SPF | 19 |
 | DMARC | 22 |
-| DKIM | 10 |
-| DNSSEC | 3 |
-| SSL/TLS | 8 |
-| MTA-STS | 3 |
-| NS | 3 |
-| CAA | 2 |
-| Subdomain Takeover | 2 |
-| MX | 0 (informational) |
+| DKIM | 16 |
+| SPF | 10 |
+| SSL/TLS | 5 |
+| Subdomain Takeover | 3 |
+| DNSSEC | 2 |
+| MTA-STS | 2 |
+| MX | 2 |
+| TLS-RPT | 1 |
+| NS | 0 (informational) |
+| CAA | 0 (informational) |
+| BIMI | 0 (informational) |
+| Lookalikes | 0 (informational) |
 
-Additional bonus: up to **+5** points for strong combined email-auth posture.
+Scored total: **63** (+ up to 8 email bonus = 71 max denominator).
+
+## Scoring Profiles
+Weights adapt based on domain purpose. Pass \`profile\` to \`scan_domain\` to override:
+
+- **mail_enabled** (default): Weights above. Email bonus eligible.
+- **enterprise_mail**: Email auth elevated (DMARC:24, DKIM:18, SPF:12), MTA-STS/TLS-RPT/BIMI boosted.
+- **non_mail**: Email auth near-zero, SSL:8, DNSSEC:5, SubdomainTakeover:5, CAA:3. No email bonus.
+- **web_only**: SSL:12, CAA:5, DNSSEC:5, SubdomainTakeover:5. No email bonus.
+- **minimal**: Weights spread evenly. No email bonus.
+
+Auto-detection reports the detected profile but uses default weights (Phase 1).
 
 ## Per-Category Penalties
 Each category starts at 100 and penalties are applied per finding severity:
@@ -173,6 +187,11 @@ Each category starts at 100 and penalties are applied per finding severity:
 
 ## Missing-Control Handling
 For categories where a required control is missing (for example, "No DMARC record found"), effective contribution can be treated as zeroed in overall scoring.
+
+## Critical Gap Ceiling
+Domains missing foundational controls are capped at **64** (D+). Critical categories vary by profile:
+- mail_enabled/enterprise_mail: SPF, DMARC, DKIM, SSL, DNSSEC, Subdomain Takeover
+- non_mail/web_only/minimal: SSL, DNSSEC, Subdomain Takeover
 
 ## Critical-Finding Adjustment
 If any **verified**-confidence **critical** finding exists in the scan, an additional **-15 overall points** adjustment is applied.

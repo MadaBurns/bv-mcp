@@ -9,6 +9,7 @@ export interface ScanRuntimeOptions {
 	providerSignaturesUrl?: string;
 	providerSignaturesAllowedHosts?: string[];
 	providerSignaturesSha256?: string;
+	profile?: 'mail_enabled' | 'enterprise_mail' | 'non_mail' | 'web_only' | 'minimal' | 'auto';
 }
 
 export async function applyScanPostProcessing(

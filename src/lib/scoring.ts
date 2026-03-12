@@ -22,3 +22,5 @@ export {
 } from './scoring-model';
 
 export { computeScanScore, scoreToGrade } from './scoring-engine';
+
+export { detectDomainContext, getProfileWeights, type DomainContext, type DomainProfile } from './context-profiles';
