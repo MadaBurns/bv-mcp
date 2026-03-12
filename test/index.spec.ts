@@ -7,6 +7,14 @@ import { resetSessions } from '../src/lib/session';
 
 const TEST_API_KEY = 'test-api-key';
 
+function parseSseMessage<T>(body: string): T {
+	const dataLine = body
+		.split('\n')
+		.find((line) => line.startsWith('data: '));
+	if (!dataLine) throw new Error(`Expected SSE data line in response: ${body}`);
+	return JSON.parse(dataLine.slice('data: '.length)) as T;
+}
+
 /** Helper: initialize a session and return the Mcp-Session-Id */
 async function initSession(options?: { authToken?: string; targetEnv?: Env }): Promise<string> {
 	const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
@@ -666,6 +674,146 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(400);
 			const body = (await response.json()) as { error: { message: string } };
 			expect(body.error.message).toContain('missing session');
+		});
+	});
+
+	describe('Claude Desktop compatibility', () => {
+		it('supports the Claude Desktop remote connector lifecycle over Streamable HTTP', async () => {
+			const initializeRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+					'User-Agent': 'Claude-Desktop/1.0',
+				},
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 1,
+					method: 'initialize',
+					params: {
+						protocolVersion: '2025-03-26',
+						capabilities: {},
+						clientInfo: {
+							name: 'Claude Desktop',
+							version: '1.0.0',
+						},
+					},
+				}),
+			});
+			const initCtx = createExecutionContext();
+			const initializeResponse = await worker.fetch(initializeRequest, env, initCtx);
+			await waitOnExecutionContext(initCtx);
+
+			expect(initializeResponse.status).toBe(200);
+			expect(initializeResponse.headers.get('content-type')).toBe('text/event-stream');
+			const sessionId = initializeResponse.headers.get('mcp-session-id');
+			expect(sessionId).toBeTruthy();
+
+			const initializeBody = parseSseMessage<{
+				result: { protocolVersion: string; serverInfo: { name: string } };
+			}>(await initializeResponse.text());
+			expect(initializeBody.result.protocolVersion).toBe('2025-03-26');
+			expect(initializeBody.result.serverInfo.name).toBe('Blackveil DNS');
+
+			const initializedNotification = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+					'Mcp-Session-Id': sessionId!,
+					'User-Agent': 'Claude-Desktop/1.0',
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+			});
+			const initializedCtx = createExecutionContext();
+			const initializedResponse = await worker.fetch(initializedNotification, env, initializedCtx);
+			await waitOnExecutionContext(initializedCtx);
+			expect(initializedResponse.status).toBe(202);
+
+			const toolsListRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+					'Mcp-Session-Id': sessionId!,
+					'User-Agent': 'Claude-Desktop/1.0',
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+			});
+			const toolsListCtx = createExecutionContext();
+			const toolsListResponse = await worker.fetch(toolsListRequest, env, toolsListCtx);
+			await waitOnExecutionContext(toolsListCtx);
+
+			expect(toolsListResponse.status).toBe(200);
+			expect(toolsListResponse.headers.get('content-type')).toBe('text/event-stream');
+			const toolsListBody = parseSseMessage<{
+				result: { tools: Array<{ name: string }> };
+			}>(await toolsListResponse.text());
+			expect(toolsListBody.result.tools.some((tool) => tool.name === 'scan_domain')).toBe(true);
+			expect(toolsListBody.result.tools.some((tool) => tool.name === 'explain_finding')).toBe(true);
+
+			const notificationsRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'GET',
+				headers: {
+					Accept: 'text/event-stream',
+					'Mcp-Session-Id': sessionId!,
+					'User-Agent': 'Claude-Desktop/1.0',
+				},
+			});
+			const notificationsCtx = createExecutionContext();
+			const notificationsResponse = await worker.fetch(notificationsRequest, env, notificationsCtx);
+			await waitOnExecutionContext(notificationsCtx);
+			expect(notificationsResponse.status).toBe(200);
+			expect(notificationsResponse.headers.get('content-type')).toBe('text/event-stream');
+		});
+
+		it('streams Claude Desktop style tools/call responses over SSE', async () => {
+			const sessionId = await initSession();
+
+			const initializedNotification = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+					'Mcp-Session-Id': sessionId,
+					'User-Agent': 'Claude-Desktop/1.0',
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+			});
+			const initializedCtx = createExecutionContext();
+			const initializedResponse = await worker.fetch(initializedNotification, env, initializedCtx);
+			await waitOnExecutionContext(initializedCtx);
+			expect(initializedResponse.status).toBe(202);
+
+			const toolCallRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+					'Mcp-Session-Id': sessionId,
+					'User-Agent': 'Claude-Desktop/1.0',
+				},
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 3,
+					method: 'tools/call',
+					params: {
+						name: 'explain_finding',
+						arguments: { checkType: 'SPF', status: 'fail' },
+					},
+				}),
+			});
+			const toolCallCtx = createExecutionContext();
+			const toolCallResponse = await worker.fetch(toolCallRequest, env, toolCallCtx);
+			await waitOnExecutionContext(toolCallCtx);
+
+			expect(toolCallResponse.status).toBe(200);
+			expect(toolCallResponse.headers.get('content-type')).toBe('text/event-stream');
+			const toolCallBody = parseSseMessage<{
+				result: { content: Array<{ text: string }> };
+			}>(await toolCallResponse.text());
+			expect(toolCallBody.result.content[0].text).toContain('SPF');
+			expect(toolCallBody.result.content[0].text).toContain('Recommendation');
 		});
 	});
 
