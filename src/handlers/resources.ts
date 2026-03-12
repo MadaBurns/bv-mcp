@@ -51,7 +51,7 @@ const RESOURCES: McpResource[] = [
 const RESOURCE_CONTENT: Record<string, string> = {
 	'dns-security://guides/security-checks': `# DNS Security Checks
 
-The Blackveil DNS scanner evaluates **50 checks** grouped into 10 tool-exposed categories.
+The Blackveil DNS scanner evaluates **50+ checks** grouped into 13 categories.
 
 This MCP server exposes tools that cover the core checks in each category and returns findings compatible with Blackveil DNS scoring.
 
