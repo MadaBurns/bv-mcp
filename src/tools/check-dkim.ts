@@ -15,22 +15,15 @@ const COMMON_SELECTORS = [
 	'default',
 	'google',
 	'20230601', // Google Workspace
-	'20210112', // Google Workspace (legacy)
 	'selector1', // Microsoft 365
 	'selector2', // Microsoft 365
-	'selector',
 	'k1', // Mailchimp
-	's1024',
-	's2048',
 	's1',
 	's2',
 	'mail',
 	'dkim',
-	'smtp',
-	'amazonses',
-	'mandrill',
-	'mailjet',
-	'zoho',
+	'amazonses', // Amazon SES
+	'zoho', // Zoho Mail
 ];
 
 /**
