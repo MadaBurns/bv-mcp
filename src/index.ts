@@ -38,6 +38,7 @@ import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { scanDomain } from './tools/scan-domain';
 import { gradeBadge, errorBadge } from './lib/badge';
 export { QuotaCoordinator } from './lib/quota-coordinator';
+export { ProfileAccumulator } from './lib/profile-accumulator';
 
 /** Server version — keep in sync with package.json */
 const SERVER_VERSION = '1.0.0';
@@ -68,6 +69,7 @@ type BvMcpEnv = {
 	SCAN_CACHE?: KVNamespace;
 	SESSION_STORE?: KVNamespace;
 	QUOTA_COORDINATOR?: DurableObjectNamespace;
+	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
 	BV_API_KEY?: string;
 	ALLOWED_ORIGINS?: string;
@@ -265,7 +267,10 @@ app.get('/badge/:domain', async (c) => {
 	}
 
 	try {
-		const result = await scanDomain(domain, c.env.SCAN_CACHE);
+		const result = await scanDomain(domain, c.env.SCAN_CACHE, {
+			profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+			waitUntil: (p: Promise<unknown>) => c.executionCtx.waitUntil(p),
+		});
 		const svg = gradeBadge(result.score.grade);
 		return new Response(svg, { status: 200, headers: svgHeaders });
 	} catch {
@@ -508,6 +513,8 @@ app.post('/mcp', async (c) => {
 			       providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS,
 			       providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 			       analytics,
+			       profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+			       waitUntil: (p: Promise<unknown>) => c.executionCtx.waitUntil(p),
 		       };
 
 		       const dispatchPromise = dispatchMcpMethod(dispatchOptions).then((dispatchResult) => {
@@ -568,6 +575,8 @@ app.post('/mcp', async (c) => {
 			       providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS,
 			       providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 			       analytics,
+			       profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+			       waitUntil: (p: Promise<unknown>) => c.executionCtx.waitUntil(p),
 		       });
 
 		       if (dispatchResult.kind === 'early-error') {
