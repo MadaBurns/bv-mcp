@@ -302,32 +302,28 @@ Template selected based on: largest absolute weight delta from static, whether p
 - **Text report** (first MCP content block): appended as a final line after maturity stage
 - **Structured JSON** (second MCP content block): `scoringNote: string | null` plus `adaptiveWeightDeltas: Record<string, number>`
 
-One sentence, rule-based, consistent with bv-web's `getPlainEnglishExplanation()` voice.
+One sentence, rule-based, plain english.
 
 ---
 
-## Cross-Project Consistency
+## Extensibility
 
-### Shared Conventions (not code)
+### Scanner-Agnostic DO
 
-- String-based category keys in the DO (accepts any scanner's categories)
-- Same `ScanTelemetry` payload shape (simple enough to reimplement independently)
-- Same baseline failure rates and weight formulas (documented in bv-mcp source)
-- Same 5 profile names, same static base weights for overlapping checks
+The `ProfileAccumulator` uses string-based category keys, not the narrow `CheckCategory` union. This means external scanners with additional check types can feed telemetry into the same DO without code changes. The DO accumulates whatever categories it receives.
 
-### No Hard Dependencies
+### No External Dependencies
 
-- bv-mcp's `ProfileAccumulator` is self-contained — accumulates from its own scans
-- bv-web is unaffected by this change and requires no modifications
-- If bv-web later wants to feed telemetry into a `ProfileAccumulator`, it can deploy its own instance
-- Operationally, a shared DO instance is possible but never required
+- The `ProfileAccumulator` is fully self-contained — accumulates from its own deployment's scans
+- No external services, APIs, or data feeds required
+- External scanners can optionally deploy their own `ProfileAccumulator` instance and feed telemetry independently — the interface is the same `ScanTelemetry` payload
 
-### Open Source Considerations
+### Open Source Design
 
 - Algorithm is fully transparent and auditable in the repo
 - Seed baselines are hardcoded from public internet measurement data
-- Open source users get the same adaptive system, self-tuning from their traffic
-- Production deployments with higher volume naturally get better-tuned weights (operational advantage, not code advantage)
+- Every deployment gets the same adaptive system, self-tuning from its own traffic
+- Higher-volume deployments naturally develop better-tuned weights
 
 ---
 
