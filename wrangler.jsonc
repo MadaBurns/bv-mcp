@@ -7,11 +7,13 @@
   ],
   "durable_objects": {
     "bindings": [
-      { "name": "QUOTA_COORDINATOR", "class_name": "QuotaCoordinator" }
+      { "name": "QUOTA_COORDINATOR", "class_name": "QuotaCoordinator" },
+      { "name": "PROFILE_ACCUMULATOR", "class_name": "ProfileAccumulator" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["QuotaCoordinator"] }
+    { "tag": "v1", "new_sqlite_classes": ["QuotaCoordinator"] },
+    { "tag": "v2", "new_sqlite_classes": ["ProfileAccumulator"] }
   ],
   "observability": {
     "enabled": true

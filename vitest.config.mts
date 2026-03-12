@@ -5,6 +5,7 @@ export default defineWorkersConfig({
 		testTimeout: 15_000,
 		poolOptions: {
 			workers: {
+				isolatedStorage: false,
 				wrangler: { configPath: './wrangler.jsonc' },
 			},
 		},
