@@ -10,6 +10,8 @@ export interface ScanRuntimeOptions {
 	providerSignaturesAllowedHosts?: string[];
 	providerSignaturesSha256?: string;
 	profile?: 'mail_enabled' | 'enterprise_mail' | 'non_mail' | 'web_only' | 'minimal' | 'auto';
+	profileAccumulator?: DurableObjectNamespace;
+	waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 export async function applyScanPostProcessing(
