@@ -7,7 +7,8 @@ type RequestErrorStatus = 400 | 413;
 
 export interface ParsedJsonRpcRequestResult {
 	ok: boolean;
-	body?: JsonRpcRequest;
+	body?: JsonRpcRequest | unknown[];
+	isBatch?: boolean;
 	status?: RequestErrorStatus;
 	payload?: ReturnType<typeof jsonRpcError>;
 }
@@ -84,15 +85,23 @@ export function parseJsonRpcRequest(rawBody: string): ParsedJsonRpcRequestResult
 	try {
 		const parsed = JSON.parse(rawBody);
 		if (Array.isArray(parsed)) {
+			if (parsed.length === 0) {
+				return {
+					ok: false,
+					status: 400,
+					payload: jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Invalid JSON-RPC batch request: empty array'),
+				};
+			}
 			return {
-				ok: false,
-				status: 400,
-				payload: jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'JSON-RPC batch requests are not supported'),
+				ok: true,
+				body: parsed,
+				isBatch: true,
 			};
 		}
 		return {
 			ok: true,
 			body: parsed as JsonRpcRequest, // validated by validateJsonRpcRequest above
+			isBatch: false,
 		};
 	} catch {
 		return {

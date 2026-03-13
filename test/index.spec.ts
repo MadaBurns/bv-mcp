@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import worker from '../src';
 import { resetQuotaCoordinatorState } from '../src/lib/quota-coordinator';
 import { resetAllRateLimits } from '../src/lib/rate-limiter';
+import { resetLegacySseState } from '../src/lib/legacy-sse';
 import { resetSessions } from '../src/lib/session';
 
 const TEST_API_KEY = 'test-api-key';
@@ -13,6 +14,30 @@ function parseSseMessage<T>(body: string): T {
 		.find((line) => line.startsWith('data: '));
 	if (!dataLine) throw new Error(`Expected SSE data line in response: ${body}`);
 	return JSON.parse(dataLine.slice('data: '.length)) as T;
+}
+
+function parseSseEvent(body: string, eventName: string): string {
+	const lines = body.split('\n');
+	const eventLineIndex = lines.findIndex((line) => line === `event: ${eventName}`);
+	if (eventLineIndex === -1) {
+		throw new Error(`Expected SSE event ${eventName} in response: ${body}`);
+	}
+
+	const dataLine = lines.slice(eventLineIndex + 1).find((line) => line.startsWith('data: '));
+	if (!dataLine) {
+		throw new Error(`Expected SSE data line for event ${eventName}: ${body}`);
+	}
+
+	return dataLine.slice('data: '.length);
+}
+
+async function readSseChunk(response: Response): Promise<string> {
+	const reader = response.body?.getReader();
+	if (!reader) throw new Error('Expected response body stream');
+	const { value, done } = await reader.read();
+	reader.releaseLock();
+	if (done || !value) throw new Error('Expected SSE chunk');
+	return new TextDecoder().decode(value);
 }
 
 /** Helper: initialize a session and return the Mcp-Session-Id */
@@ -56,6 +81,7 @@ describe('DNS Security MCP Server', () => {
 	beforeEach(async () => {
 		resetAllRateLimits();
 		resetSessions();
+		resetLegacySseState();
 		await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 	});
 
@@ -400,6 +426,90 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(400);
 			const body = (await response.json()) as { error: { message: string } };
 			expect(body.error.message).toContain('session');
+		});
+	});
+
+	describe('POST /mcp - batch requests', () => {
+		it('returns a JSON array for mixed request and notification batches', async () => {
+			const sessionId = await initSession();
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
+				body: JSON.stringify([
+					{ jsonrpc: '2.0', id: 41, method: 'ping', params: {} },
+					{ jsonrpc: '2.0', method: 'notifications/initialized' },
+					{ jsonrpc: '2.0', id: 42, method: 'tools/list', params: {} },
+				]),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as Array<{ id: number; result?: unknown }>;
+			expect(body).toHaveLength(2);
+			expect(body.map((entry) => entry.id)).toEqual([41, 42]);
+			expect(body[0]?.result).toEqual({});
+			expect(body[1]?.result).toHaveProperty('tools');
+		});
+
+		it('returns 202 for notification-only batches', async () => {
+			const sessionId = await initSession();
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
+				body: JSON.stringify([
+					{ jsonrpc: '2.0', method: 'notifications/initialized' },
+					{ jsonrpc: '2.0', method: 'notifications/some_event' },
+				]),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(202);
+		});
+
+		it('returns an SSE event for batch responses when the client accepts event-stream', async () => {
+			const sessionId = await initSession();
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+					'Mcp-Session-Id': sessionId,
+				},
+				body: JSON.stringify([
+					{ jsonrpc: '2.0', id: 51, method: 'ping', params: {} },
+					{ jsonrpc: '2.0', id: 52, method: 'tools/list', params: {} },
+				]),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			expect(response.headers.get('content-type')).toBe('text/event-stream');
+			const body = parseSseMessage<Array<{ id: number }>>(await response.text());
+			expect(body.map((entry) => entry.id)).toEqual([51, 52]);
+		});
+
+		it('returns an error payload when initialize is batched with other messages', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify([
+					{ jsonrpc: '2.0', id: 61, method: 'initialize', params: {} },
+					{ jsonrpc: '2.0', id: 62, method: 'ping', params: {} },
+				]),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as Array<{ id: number; error?: { code: number; message: string } }>;
+			expect(body[0]?.id).toBe(61);
+			expect(body[0]?.error?.code).toBe(-32600);
+			expect(body[0]?.error?.message).toContain('initialize cannot be batched');
+			expect(body[1]?.id).toBe(62);
+			expect(body[1]?.error?.message).toContain('session');
 		});
 	});
 
@@ -814,6 +924,73 @@ describe('DNS Security MCP Server', () => {
 			}>(await toolCallResponse.text());
 			expect(toolCallBody.result.content[0].text).toContain('SPF');
 			expect(toolCallBody.result.content[0].text).toContain('Recommendation');
+		});
+	});
+
+	describe('Legacy HTTP+SSE transport', () => {
+		it('opens a legacy SSE stream on /mcp/sse and emits the endpoint event', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+				method: 'GET',
+				headers: {
+					Accept: 'text/event-stream',
+				},
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			expect(response.headers.get('content-type')).toBe('text/event-stream');
+			expect(response.headers.get('mcp-session-id')).toBeTruthy();
+
+			const firstChunk = await readSseChunk(response);
+			const endpoint = parseSseEvent(firstChunk, 'endpoint');
+			expect(endpoint).toContain('/mcp/messages?sessionId=');
+		});
+
+		it('delivers initialize responses over the legacy SSE stream', async () => {
+			const openRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+				method: 'GET',
+				headers: {
+					Accept: 'text/event-stream',
+				},
+			});
+			const openCtx = createExecutionContext();
+			const streamResponse = await worker.fetch(openRequest, env, openCtx);
+			await waitOnExecutionContext(openCtx);
+
+			const endpointChunk = await readSseChunk(streamResponse);
+			const endpoint = parseSseEvent(endpointChunk, 'endpoint');
+			const sessionId = streamResponse.headers.get('mcp-session-id');
+			expect(sessionId).toBeTruthy();
+
+			const initializeRequest = new Request<unknown, IncomingRequestCfProperties>(endpoint, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			const initializeCtx = createExecutionContext();
+			const initializeResponse = await worker.fetch(initializeRequest, env, initializeCtx);
+			await waitOnExecutionContext(initializeCtx);
+
+			expect(initializeResponse.status).toBe(202);
+
+			const messageChunk = await readSseChunk(streamResponse);
+			const payload = parseSseMessage<{
+				result: { protocolVersion: string; serverInfo: { name: string } };
+			}>(messageChunk);
+			expect(payload.result.protocolVersion).toBe('2025-03-26');
+			expect(payload.result.serverInfo.name).toBe('Blackveil DNS');
+
+			const deleteRequest = new Request<unknown, IncomingRequestCfProperties>(`http://example.com/mcp?sessionId=${sessionId!}`, {
+				method: 'DELETE',
+			});
+			const deleteCtx = createExecutionContext();
+			const deleteResponse = await worker.fetch(deleteRequest, env, deleteCtx);
+			await waitOnExecutionContext(deleteCtx);
+			expect(deleteResponse.status).toBe(204);
 		});
 	});
 

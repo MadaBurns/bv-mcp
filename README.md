@@ -4,7 +4,7 @@
 
 **Know where you stand.**
 
-Open-source DNS & email security scanner for Claude, Cursor, VS Code, and any MCP client.
+Open-source DNS & email security scanner for Claude, Cursor, VS Code, and MCP clients across Streamable HTTP, stdio, and legacy HTTP+SSE.
 
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
@@ -38,13 +38,19 @@ Then ask: `scan anthropic.com`
 curl https://dns-mcp.blackveilsecurity.com/health
 ```
 
-No install. No API key. One URL:
+No install. No API key. One URL for hosted HTTP:
 
 ```
 Endpoint   https://dns-mcp.blackveilsecurity.com/mcp
 Transport  Streamable HTTP · JSON-RPC 2.0
 Auth       None required
 ```
+
+Transport support:
+
+- `Streamable HTTP`: `POST /mcp`, `GET /mcp`, `DELETE /mcp`
+- `Native stdio`: `blackveil-dns-mcp` CLI from the `blackveil-dns` npm package
+- `Legacy HTTP+SSE`: `GET /mcp/sse` bootstrap stream plus `POST /mcp/messages?sessionId=...`
 
 <!-- TODO: Add terminal demo GIF here -->
 
@@ -159,7 +165,7 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 
 **Recommended:** Open [claude.ai](https://claude.ai) → **Settings → Connectors → Add custom connector** → paste `https://dns-mcp.blackveilsecurity.com/mcp`.
 
-**Advanced fallback:** If you specifically want a local stdio bridge, open **Settings → Developer → Edit Config** (`claude_desktop_config.json`) and add:
+**Advanced fallback:** If you want first-party local stdio instead of the hosted HTTP connector, open **Settings → Developer → Edit Config** (`claude_desktop_config.json`) and add:
 
 ```json
 {
@@ -167,13 +173,13 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
     "blackveil-dns": {
       "type": "stdio",
       "command": "/opt/homebrew/bin/npx",
-      "args": ["-y", "mcp-remote", "https://dns-mcp.blackveilsecurity.com/mcp"]
+      "args": ["-y", "--package", "blackveil-dns", "blackveil-dns-mcp"]
     }
   }
 }
 ```
 
-> Prefer the direct custom connector above when possible. The `mcp-remote` route adds a local bridge process and depends on Node.js being available to Claude Desktop.
+> Prefer the direct custom connector above when possible. The stdio route runs the server locally and depends on Node.js being available to Claude Desktop.
 >
 > On macOS GUI apps, `npx` may not resolve from `PATH`; if Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path. After editing the config, fully restart Claude Desktop. If you already have other servers, merge `"blackveil-dns"` into your existing `"mcpServers"` object — don't paste a second `{ }` wrapper.
 
@@ -195,7 +201,7 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 ```
 </details>
 
-For hosted MCP setup, see `docs/client-setup.md`.
+For hosted MCP setup, stdio usage, and legacy fallback endpoints, see `docs/client-setup.md`.
 
 ---
 

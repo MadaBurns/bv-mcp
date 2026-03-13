@@ -33,10 +33,17 @@
 	"main": "./dist/index.js",
 	"module": "./dist/index.js",
 	"types": "./dist/index.d.ts",
+	"bin": {
+		"blackveil-dns-mcp": "./dist/stdio.js"
+	},
 	"exports": {
 		".": {
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
+		},
+		"./stdio": {
+			"types": "./dist/stdio.d.ts",
+			"import": "./dist/stdio.js"
 		},
 		"./package.json": "./package.json"
 	},
@@ -53,6 +60,7 @@
 		"build": "tsup",
 		"dev": "wrangler dev",
 		"deploy:private": "node scripts/deploy-private.mjs",
+		"mcp:stdio": "node dist/stdio.js",
 		"start": "wrangler dev",
 		"prepack": "npm run build",
 		"test": "vitest run --coverage",

@@ -6,42 +6,36 @@
  * Cloudflare Worker implementing the Model Context Protocol (MCP)
  * with DNS security analysis tools. Uses Hono framework for routing.
  *
- * Implements MCP Streamable HTTP transport (spec 2025-03-26):
- *   GET  /health      - Worker health check
- *   POST /mcp         - MCP JSON-RPC 2.0 endpoint (supports SSE streaming)
- *   GET  /mcp         - SSE stream for server-to-client notifications
- *   DELETE /mcp       - Session termination
+ * Implements MCP transports:
+ *   GET  /health        - Worker health check
+ *   POST /mcp           - Streamable HTTP JSON-RPC 2.0 endpoint
+ *   GET  /mcp           - Streamable HTTP SSE stream or legacy SSE bootstrap
+ *   DELETE /mcp         - Session termination
+ *   POST /mcp/messages  - Legacy HTTP+SSE client-to-server messages
  */
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { checkRateLimit, checkToolDailyRateLimit, checkGlobalDailyLimit } from './lib/rate-limiter';
+import { checkRateLimit } from './lib/rate-limiter';
 import { logEvent, logError, sanitizeHeadersForLog } from './lib/log';
-import { jsonRpcError, JSON_RPC_ERRORS, sanitizeErrorMessage } from './lib/json-rpc';
-import {
-	normalizeHeaders,
-	parseJsonRpcRequest,
-	readRequestBody,
-	summarizeParamsForLog,
-	validateJsonRpcRequest,
-} from './mcp/request';
-import { deleteSession } from './lib/session';
+import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
+import { normalizeHeaders, parseJsonRpcRequest, readRequestBody } from './mcp/request';
+import { createSession, deleteSession } from './lib/session';
 import { isAuthorizedRequest, unauthorizedResponse } from './lib/auth';
 import { sseEvent, acceptsSSE, createSseStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
 import { createAnalyticsClient } from './lib/analytics';
 import type { JsonRpcRequest } from './lib/json-rpc';
-import { dispatchMcpMethod } from './mcp/dispatch';
 import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionRequest } from './mcp/route-gates';
-import { MAX_REQUEST_BODY_BYTES, FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT } from './lib/config';
-import { normalizeToolName } from './handlers/tool-args';
+import { MAX_REQUEST_BODY_BYTES } from './lib/config';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { scanDomain } from './tools/scan-domain';
 import { gradeBadge, errorBadge } from './lib/badge';
+import { SERVER_VERSION } from './lib/server-version';
+import { executeMcpRequest } from './mcp/execute';
+import { closeLegacyStream, enqueueLegacyMessage, openLegacySseStream } from './lib/legacy-sse';
 export { QuotaCoordinator } from './lib/quota-coordinator';
 export { ProfileAccumulator } from './lib/profile-accumulator';
 
-/** Server version — keep in sync with package.json */
-const SERVER_VERSION = '1.1.0';
 let hasLoggedAnalyticsBindingStatus = false;
 
 function logAnalyticsBindingStatus(enabled: boolean): void {
@@ -60,10 +54,6 @@ function logAnalyticsBindingStatus(enabled: boolean): void {
 	});
 }
 
-// ---------------------------------------------------------------------------
-// Hono app
-// ---------------------------------------------------------------------------
-// Explicitly type env bindings for clarity and safety
 type BvMcpEnv = {
 	RATE_LIMIT?: KVNamespace;
 	SCAN_CACHE?: KVNamespace;
@@ -79,155 +69,113 @@ type BvMcpEnv = {
 };
 
 const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean } }>();
+const mcpPaths = ['/mcp', '/mcp/messages', '/mcp/sse'] as const;
 
+for (const path of mcpPaths) {
+	app.use(
+		path,
+		cors({
+			origin: (origin, c) => {
+				if (!origin) return '*';
 
-// CORS for MCP clients — dynamic origin so we never send Access-Control-Allow-Origin: *
-// when a cross-origin browser request arrives. The origin callback echoes back the
-// validated origin for allowed requests; non-browser requests (no Origin header)
-// get '*' which is safe since they aren't subject to browser CORS enforcement.
-app.use(
-	'/mcp',
-	cors({
-		origin: (origin, c) => {
-			// No Origin header → non-browser client, allow
-			if (!origin) return '*';
+				try {
+					const originHost = new URL(origin).host;
+					const requestHost = new URL(c.req.url).host;
+					if (originHost === requestHost) return origin;
+				} catch {
+					// Malformed Origin falls through to rejection below.
+				}
 
-			// Same-origin check: compare Origin host to request Host
-			try {
-				const originHost = new URL(origin).host;
-				const requestHost = new URL(c.req.url).host;
-				if (originHost === requestHost) return origin;
-			} catch {
-				// Malformed Origin → falls through to return '' below
-			}
+				const allowedOrigins = (c.env as BvMcpEnv).ALLOWED_ORIGINS?.trim();
+				if (allowedOrigins) {
+					const allowed = allowedOrigins
+						.split(',')
+						.map((value) => value.trim().toLowerCase())
+						.filter((value) => value.length > 0);
+					if (allowed.includes(origin.toLowerCase())) return origin;
+				}
 
-			// Check explicit allowlist from ALLOWED_ORIGINS env var
-			// c.env is already typed as BvMcpEnv via Hono generics; cast is redundant but harmless
-			const allowedOrigins = (c.env as BvMcpEnv).ALLOWED_ORIGINS?.trim();
-			if (allowedOrigins) {
-				const allowed = allowedOrigins
-					.split(',')
-					.map((o) => o.trim().toLowerCase())
-					.filter((o) => o.length > 0);
-				if (allowed.includes(origin.toLowerCase())) return origin;
-			}
+				return '';
+			},
+			allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+			allowHeaders: ['Content-Type', 'Accept', 'Mcp-Session-Id', 'Authorization'],
+			exposeHeaders: ['Mcp-Session-Id'],
+		}),
+	);
 
-			// Unauthorized origin — return empty string so the CORS header
-			// is not set to a permissive value; the Origin middleware below
-			// will reject with 403.
-			return '';
-		},
-		allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-		allowHeaders: ['Content-Type', 'Accept', 'Mcp-Session-Id', 'Authorization'],
-		exposeHeaders: ['Mcp-Session-Id'],
-	}),
-);
+	app.use(path, async (c, next) => {
+		const origin = c.req.header('origin');
+		if (!origin) return next();
 
-// Origin header validation — prevents DNS rebinding and unauthorized cross-origin access.
-// Per MCP spec: "Servers MUST validate the Origin header."
-// No Origin header → allow (non-browser / server-to-server clients).
-// Origin present → must match request host or be in ALLOWED_ORIGINS env var.
-// This middleware complements the CORS origin callback above: the CORS layer
-// sets the correct Access-Control-Allow-Origin header, while this middleware
-// explicitly blocks unauthorized cross-origin requests with 403.
-app.use('/mcp', async (c, next) => {
-	const origin = c.req.header('origin');
-	if (!origin) return next();
+		try {
+			const originHost = new URL(origin).host;
+			const requestHost = new URL(c.req.url).host;
+			if (originHost === requestHost) return next();
+		} catch {
+			return new Response('Forbidden: invalid Origin header', { status: 403 });
+		}
 
-	// Same-origin check: compare Origin host to request Host
-	try {
-		const originHost = new URL(origin).host;
-		const requestHost = new URL(c.req.url).host;
-		if (originHost === requestHost) return next();
-	} catch {
-		// Malformed Origin → reject
-		return new Response('Forbidden: invalid Origin header', { status: 403 });
-	}
+		const allowedOrigins = c.env.ALLOWED_ORIGINS?.trim();
+		if (allowedOrigins) {
+			const allowed = allowedOrigins
+				.split(',')
+				.map((value) => value.trim().toLowerCase())
+				.filter((value) => value.length > 0);
+			if (allowed.includes(origin.toLowerCase())) return next();
+		}
 
-	// Check explicit allowlist from ALLOWED_ORIGINS env var
-	const allowedOrigins = c.env.ALLOWED_ORIGINS?.trim();
-	if (allowedOrigins) {
-		const allowed = allowedOrigins
-			.split(',')
-			.map((o) => o.trim().toLowerCase())
-			.filter((o) => o.length > 0);
-		if (allowed.includes(origin.toLowerCase())) return next();
-	}
+		return new Response('Forbidden: unauthorized Origin', { status: 403 });
+	});
 
-	return new Response('Forbidden: unauthorized Origin', { status: 403 });
-});
+	app.use(path, async (c, next) => {
+		const apiKey = c.env.BV_API_KEY?.trim();
+		if (!apiKey) {
+			c.set('isAuthenticated', false);
+			return next();
+		}
 
-// Security headers middleware — apply to all responses (registered first so it
-// wraps everything including error-handler responses)
+		const authHeader = c.req.header('authorization');
+		if (!authHeader) {
+			c.set('isAuthenticated', false);
+			return next();
+		}
+
+		if (!(await isAuthorizedRequest(authHeader, apiKey))) {
+			return unauthorizedResponse();
+		}
+
+		c.set('isAuthenticated', true);
+		return next();
+	});
+}
+
 app.use('*', async (c, next) => {
 	await next();
-	// Prevent MIME type sniffing
 	c.header('X-Content-Type-Options', 'nosniff');
-	// Prevent frame embedding (clickjacking)
 	c.header('X-Frame-Options', 'DENY');
-	// Enable built-in XSS protection
 	c.header('X-XSS-Protection', '1; mode=block');
-	// Restrict referrer disclosure
 	c.header('Referrer-Policy', 'no-referrer');
-	// Disable unnecessary APIs
 	c.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
-	// Content Security Policy: no inline scripts, no third-party content
 	c.header('Content-Security-Policy', "default-src 'self'; script-src 'none'; object-src 'none'; frame-ancestors 'none'");
-	// HTTP Strict Transport Security: 1 year, include subdomains
 	c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
 });
 
-// Centralized error handling middleware
 app.use('*', async (c, next) => {
-       try {
-	       await next();
-       } catch (err) {
-	       // Structured error logging
-	       const reqInfo = {
-		       method: c.req.method,
-		       url: c.req.url,
-		       headers: sanitizeHeadersForLog(c.req.raw.headers),
-	       };
-	       logError(err instanceof Error ? err : String(err), {
-		       severity: 'error',
-		       details: reqInfo,
-	       });
-	       // Sanitize error response
-	       return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INTERNAL_ERROR, 'Internal server error'), 500);
-       }
+	try {
+		await next();
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'error',
+			details: {
+				method: c.req.method,
+				url: c.req.url,
+				headers: sanitizeHeadersForLog(c.req.raw.headers),
+			},
+		});
+		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INTERNAL_ERROR, 'Internal server error'), 500);
+	}
 });
 
-// Optional bearer auth for /mcp — three modes:
-//   1. No BV_API_KEY configured → everyone is unauthenticated (open mode)
-//   2. BV_API_KEY configured + no auth header → unauthenticated, rate-limited
-//   3. BV_API_KEY configured + valid bearer → authenticated, bypasses rate limits
-//   4. BV_API_KEY configured + invalid bearer → 401 rejected
-// This allows public users to use the server with rate limits while
-// authenticated users (e.g. the operator) get unlimited access.
-app.use('/mcp', async (c, next) => {
-       const { BV_API_KEY } = c.env;
-       const apiKey = BV_API_KEY?.trim();
-       if (!apiKey) {
-	       c.set('isAuthenticated', false);
-	       return next();
-       }
-
-       const authHeader = c.req.header('authorization');
-       if (!authHeader) {
-	       // No token provided — allow through as unauthenticated (rate-limited)
-	       c.set('isAuthenticated', false);
-	       return next();
-       }
-
-       if (!(await isAuthorizedRequest(authHeader, apiKey))) {
-	       return unauthorizedResponse();
-       }
-
-       c.set('isAuthenticated', true);
-       return next();
-});
-
-// Health endpoint
 app.get('/health', (c) => {
 	return c.json({
 		status: 'ok',
@@ -239,16 +187,12 @@ app.get('/health', (c) => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// Badge endpoint — GET /badge/:domain
-// ---------------------------------------------------------------------------
 app.get('/badge/:domain', async (c) => {
 	const svgHeaders = {
 		'Content-Type': 'image/svg+xml',
 		'Cache-Control': 'public, max-age=300',
 	};
 
-	// Rate limiting by IP (unauthenticated only)
 	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
 	const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
 	if (!rateResult.allowed) {
@@ -269,421 +213,249 @@ app.get('/badge/:domain', async (c) => {
 	try {
 		const result = await scanDomain(domain, c.env.SCAN_CACHE, {
 			profileAccumulator: c.env.PROFILE_ACCUMULATOR,
-			waitUntil: (p: Promise<unknown>) => c.executionCtx.waitUntil(p),
+			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 		});
-		const svg = gradeBadge(result.score.grade);
-		return new Response(svg, { status: 200, headers: svgHeaders });
+		return new Response(gradeBadge(result.score.grade), { status: 200, headers: svgHeaders });
 	} catch {
 		return new Response(errorBadge(), { status: 500, headers: svgHeaders });
 	}
 });
 
-// ---------------------------------------------------------------------------
-// MCP Streamable HTTP transport — POST /mcp
-// ---------------------------------------------------------------------------
 app.post('/mcp', async (c) => {
 	const startTime = Date.now();
 	const analytics = createAnalyticsClient(c.env.MCP_ANALYTICS);
 	logAnalyticsBindingStatus(analytics.enabled);
 	const headersLc = normalizeHeaders(c.req.raw.headers);
 	const accept = headersLc['accept'];
-
-	// Rate limiting by IP — only trust cf-connecting-ip (set by Cloudflare edge)
-	// Do NOT fall back to x-forwarded-for as it is client-controlled and spoofable
 	const ip = headersLc['cf-connecting-ip'] ?? 'unknown';
-
-	// Authenticated requests bypass rate limiting — the auth middleware already
-	// validated the token and stored the result on the Hono context.
 	const isAuthenticated = c.get('isAuthenticated');
 
 	const bodyReadResult = await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES);
 	if (!bodyReadResult.ok) {
 		return sseErrorResponse(bodyReadResult.payload!, bodyReadResult.status!, accept);
 	}
-	const rawBody = bodyReadResult.rawBody!;
 
-	// Parse JSON-RPC request
-		const parsedRequest = parseJsonRpcRequest(rawBody);
+	const parsedRequest = parseJsonRpcRequest(bodyReadResult.rawBody!);
 	if (!parsedRequest.ok) {
 		logError('Parse error: invalid JSON', {
 			severity: 'error',
 			ip,
-			details: { bodyLength: rawBody.length, bodyPreviewRedacted: true },
+			details: { bodyLength: bodyReadResult.rawBody!.length, bodyPreviewRedacted: true },
 		});
 		return sseErrorResponse(parsedRequest.payload!, parsedRequest.status!, accept);
 	}
-	const body: JsonRpcRequest = parsedRequest.body!;
 
-	// Validate JSON-RPC 2.0 structure
-	const validationError = validateJsonRpcRequest(body);
-	if (validationError) {
-		analytics.emitRequestEvent({
-			method: typeof body?.method === 'string' ? body.method : 'invalid',
-			status: 'error',
-			durationMs: Date.now() - startTime,
-			isAuthenticated,
-			hasJsonRpcError: true,
-			transport: 'json',
-		});
-		return sseErrorResponse(validationError.payload, validationError.status, accept);
-	}
-
-	const { id, method, params } = body;
-
-	// Rate limiting — tools/call uses stricter quotas, while protocol/session traffic
-	// is still throttled under a lighter control-plane budget. Authenticated requests bypass entirely.
-	let rateHeaders: Record<string, string> = {};
-	if (!isAuthenticated && method === 'tools/call') {
-		// Global daily cap — cost ceiling across all unauthenticated IPs
-		const globalResult = await checkGlobalDailyLimit(GLOBAL_DAILY_TOOL_LIMIT, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
-		if (!globalResult.allowed) {
-			const globalHeaders: Record<string, string> = {};
-			if (globalResult.retryAfterMs !== undefined) {
-				globalHeaders['retry-after'] = String(Math.ceil(globalResult.retryAfterMs / 1000));
-			}
-			analytics.emitRequestEvent({
-				method,
-				status: 'error',
-				durationMs: Date.now() - startTime,
-				isAuthenticated,
-				hasJsonRpcError: true,
-				transport: 'json',
-			});
-			return sseErrorResponse(
-				jsonRpcError(
-					id,
-					JSON_RPC_ERRORS.RATE_LIMITED,
-					'Service capacity reached for today. Please try again tomorrow or deploy your own instance.',
-				),
-				429,
-				accept,
-				globalHeaders,
-				id != null ? String(id) : undefined,
-			);
-		}
-
-		const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
-		rateHeaders = {
-			'x-ratelimit-limit': '50',
-			'x-ratelimit-remaining': String(rateResult.minuteRemaining),
-		};
-		if (!rateResult.allowed) {
-			if (rateResult.retryAfterMs !== undefined) {
-				rateHeaders['retry-after'] = String(Math.ceil(rateResult.retryAfterMs / 1000));
-			}
-			analytics.emitRequestEvent({
-				method,
-				status: 'error',
-				durationMs: Date.now() - startTime,
-				isAuthenticated,
-				hasJsonRpcError: true,
-				transport: 'json',
-			});
-			return sseErrorResponse(
-				jsonRpcError(
-					id,
-					JSON_RPC_ERRORS.RATE_LIMITED,
-					`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
-				),
-				429,
-				accept,
-				rateHeaders,
-				id != null ? String(id) : undefined,
-			);
-		}
-
-		const toolNameRaw =
-			// 'in' guard ensures 'name' exists; cast to Record is safe after typeof+null check
-			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
-		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : '';
-		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
-		if (toolDailyLimit !== undefined) {
-			const toolQuotaResult = await checkToolDailyRateLimit(ip, toolName, toolDailyLimit, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
-			rateHeaders['x-quota-limit'] = String(toolQuotaResult.limit);
-			rateHeaders['x-quota-remaining'] = String(toolQuotaResult.remaining);
-			if (!toolQuotaResult.allowed) {
-				if (toolQuotaResult.retryAfterMs !== undefined) {
-					rateHeaders['retry-after'] = String(Math.ceil(toolQuotaResult.retryAfterMs / 1000));
+	const parsedBodies = parsedRequest.isBatch ? (parsedRequest.body as unknown[]) : [parsedRequest.body as JsonRpcRequest];
+	if (parsedRequest.isBatch) {
+		const results = await Promise.all(
+			parsedBodies.map(async (entry) => {
+				if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+					return {
+						kind: 'response' as const,
+						payload: jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Invalid JSON-RPC 2.0 request'),
+						headers: {},
+						httpStatus: 400,
+						useErrorEnvelope: true,
+					};
 				}
-				analytics.emitRequestEvent({
-					method,
-					status: 'error',
-					durationMs: Date.now() - startTime,
-					isAuthenticated,
-					hasJsonRpcError: true,
-					transport: 'json',
-				});
-				return sseErrorResponse(
-					jsonRpcError(
-						id,
-						JSON_RPC_ERRORS.RATE_LIMITED,
-						`Rate limit exceeded. ${toolName} is limited to ${toolDailyLimit} requests per day for free tier users.`,
-					),
-					429,
+
+				return executeMcpRequest({
+					body: entry as JsonRpcRequest,
+					allowStreaming: false,
+					batchMode: true,
+					batchSize: parsedBodies.length,
+					responseTransport: acceptsSSE(accept) ? 'sse' : 'json',
 					accept,
-					rateHeaders,
-					id != null ? String(id) : undefined,
-				);
-			}
-		}
-	}
-
-	if (method !== 'tools/call') {
-		const controlPlaneLimited = await buildControlPlaneRateLimitResponse(
-			ip,
-			c.env.RATE_LIMIT,
-			method,
-			isAuthenticated,
-			id,
-			accept,
-			c.env.QUOTA_COORDINATOR,
+					startTime,
+					ip,
+					isAuthenticated,
+					userAgent: headersLc['user-agent'],
+					sessionId: headersLc['mcp-session-id'],
+					validateSession: true,
+					sessionErrorMessage: 'Bad Request: missing session',
+					createSessionOnInitialize: true,
+					serverVersion: SERVER_VERSION,
+					rateLimitKv: c.env.RATE_LIMIT,
+					quotaCoordinator: c.env.QUOTA_COORDINATOR,
+					sessionStore: c.env.SESSION_STORE,
+					scanCache: c.env.SCAN_CACHE,
+					providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
+					providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS,
+					providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
+					analytics,
+					profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+					waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+				});
+			}),
 		);
-		if (controlPlaneLimited) {
-			analytics.emitRequestEvent({
-				method,
-				status: 'error',
-				durationMs: Date.now() - startTime,
-				isAuthenticated,
-				hasJsonRpcError: true,
-				transport: 'json',
-			});
-			return controlPlaneLimited;
+
+		const responsePayloads = results.flatMap((result) => (result.kind === 'response' ? [result.payload] : []));
+		if (responsePayloads.length === 0) {
+			return new Response(null, { status: 202 });
 		}
+
+		if (acceptsSSE(accept)) {
+			const ssePayload = sseEvent(responsePayloads);
+			return new Response(ssePayload, {
+				status: 200,
+				headers: {
+					'Content-Type': 'text/event-stream',
+					'Cache-Control': 'no-cache',
+					'Content-Length': String(new TextEncoder().encode(ssePayload).byteLength),
+				},
+			});
+		}
+
+		return c.json(responsePayloads, { status: 200 });
 	}
 
-	// Session validation — non-initialize requests must carry a valid session ID
-	const sessionId = headersLc['mcp-session-id'];
+	const singleResult = await executeMcpRequest({
+		body: parsedBodies[0] as JsonRpcRequest,
+		allowStreaming: true,
+		batchMode: false,
+		batchSize: 1,
+		responseTransport: acceptsSSE(accept) ? 'sse' : 'json',
+		accept,
+		startTime,
+		ip,
+		isAuthenticated,
+		userAgent: headersLc['user-agent'],
+		sessionId: headersLc['mcp-session-id'],
+		validateSession: true,
+		sessionErrorMessage: 'Bad Request: missing session',
+		createSessionOnInitialize: true,
+		serverVersion: SERVER_VERSION,
+		rateLimitKv: c.env.RATE_LIMIT,
+		quotaCoordinator: c.env.QUOTA_COORDINATOR,
+		sessionStore: c.env.SESSION_STORE,
+		scanCache: c.env.SCAN_CACHE,
+		providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
+		providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS,
+		providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
+		analytics,
+		profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+		waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+	});
 
-	if (method !== 'initialize') {
-		const sessionError = await validateSessionRequest(
-			sessionId,
-			c.env.SESSION_STORE,
-			id,
-			'Bad Request: missing session',
-		);
-		if (sessionError) {
-			analytics.emitRequestEvent({
-				method,
-				status: 'error',
-				durationMs: Date.now() - startTime,
-				isAuthenticated,
-				hasJsonRpcError: true,
-				transport: 'json',
-			});
-			return sseErrorResponse(sessionError.payload, sessionError.status, accept, undefined, id != null ? String(id) : undefined);
-		}
-	}
-
-	// Notifications (no id) don't execute tools.
-	// tools/call notifications are already rate-limited above once per request.
-	const isNotification = body.id === undefined || body.id === null;
-	if (isNotification && method !== 'initialize') {
-		analytics.emitRequestEvent({
-			method,
-			status: 'ok',
-			durationMs: Date.now() - startTime,
-			isAuthenticated,
-			hasJsonRpcError: false,
-			transport: 'json',
-		});
-		// Per spec: notifications/responses → 202 Accepted
+	if (singleResult.kind === 'notification') {
 		return new Response(null, { status: 202 });
 	}
 
-	       // --- Streaming SSE for tools/call ---
-	       // When the client accepts SSE and invokes a tool, we return a streaming
-	       // response immediately and send heartbeat comments every 5s to keep the
-	       // connection alive. This prevents proxy/client-side idle timeouts
-	       // (e.g. mcp-remote → Claude Desktop) from killing the request before
-	       // the tool finishes executing.
-	       if (method === 'tools/call' && acceptsSSE(accept)) {
-		       const dispatchOptions = {
-			       id,
-			       method,
-			       params,
-			       ip,
-			       isAuthenticated,
-			       rateHeaders,
-			       serverVersion: SERVER_VERSION,
-			       rateLimitKv: c.env.RATE_LIMIT,
-			       quotaCoordinator: c.env.QUOTA_COORDINATOR,
-			       sessionStore: c.env.SESSION_STORE,
-			       scanCache: c.env.SCAN_CACHE,
-			       providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
-			       providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS,
-			       providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
-			       analytics,
-			       profileAccumulator: c.env.PROFILE_ACCUMULATOR,
-			       waitUntil: (p: Promise<unknown>) => c.executionCtx.waitUntil(p),
-		       };
+	if (singleResult.streamOperation) {
+		return createStreamingSseResponse(
+			singleResult.streamOperation,
+			(payload) => sseEvent(payload, singleResult.eventId),
+			singleResult.headers,
+		);
+	}
 
-		       const dispatchPromise = dispatchMcpMethod(dispatchOptions).then((dispatchResult) => {
-			       if (dispatchResult.kind === 'early-error') {
-				       return dispatchResult.payload;
-			       }
-			       const { payload: responsePayload, logCategory, logTool, logResult, logDetails } = dispatchResult;
-			       logEvent({
-				       timestamp: new Date().toISOString(),
-				       requestId: typeof id === 'string' ? id : undefined,
-				       ip,
-				       tool: logTool,
-				       category: logCategory,
-				       result: logResult,
-				       details: logDetails,
-				       durationMs: Date.now() - startTime,
-				       userAgent: headersLc['user-agent'],
-				       severity: logCategory === 'error' ? 'error' : 'info',
-				       domain: typeof params === 'object' && params && 'domain' in params ? String(params.domain) : undefined,
-			       });
-			       const hasJsonRpcError = typeof responsePayload === 'object' && responsePayload !== null && 'error' in responsePayload;
-			       analytics.emitRequestEvent({
-				       method,
-				       status: hasJsonRpcError ? 'error' : 'ok',
-				       durationMs: Date.now() - startTime,
-				       isAuthenticated,
-				       hasJsonRpcError,
-				       transport: 'sse',
-			       });
-			       return responsePayload;
-		       });
+	if (acceptsSSE(accept)) {
+		if (singleResult.useErrorEnvelope) {
+			return sseErrorResponse(singleResult.payload, singleResult.httpStatus, accept, singleResult.headers, singleResult.eventId);
+		}
 
-		       const eventId = id != null ? String(id) : undefined;
-		       const responseHeaders: Record<string, string> = { ...rateHeaders };
+		const ssePayload = sseEvent(singleResult.payload, singleResult.eventId);
+		return new Response(ssePayload, {
+			status: 200,
+			headers: {
+				'Content-Type': 'text/event-stream',
+				'Cache-Control': 'no-cache',
+				'Content-Length': String(new TextEncoder().encode(ssePayload).byteLength),
+				...singleResult.headers,
+			},
+		});
+	}
 
-		       return createStreamingSseResponse(
-			       dispatchPromise,
-			       (payload) => sseEvent(payload, eventId),
-			       responseHeaders,
-		       );
-	       }
-
-	       // --- Non-streaming path (non-SSE clients or non-tools/call methods) ---
-	       try {
-		       const dispatchResult = await dispatchMcpMethod({
-			       id,
-			       method,
-			       params,
-			       ip,
-			       isAuthenticated,
-			       rateHeaders,
-			       serverVersion: SERVER_VERSION,
-			       rateLimitKv: c.env.RATE_LIMIT,
-			       quotaCoordinator: c.env.QUOTA_COORDINATOR,
-			       sessionStore: c.env.SESSION_STORE,
-			       scanCache: c.env.SCAN_CACHE,
-			       providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
-			       providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS,
-			       providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
-			       analytics,
-			       profileAccumulator: c.env.PROFILE_ACCUMULATOR,
-			       waitUntil: (p: Promise<unknown>) => c.executionCtx.waitUntil(p),
-		       });
-
-		       if (dispatchResult.kind === 'early-error') {
-			       return sseErrorResponse(dispatchResult.payload, dispatchResult.status, accept, dispatchResult.headers);
-		       }
-
-		       const responsePayload = dispatchResult.payload;
-		       const newSessionId = dispatchResult.newSessionId;
-		       const logCategory = dispatchResult.logCategory;
-		       const logTool = dispatchResult.logTool;
-		       const logResult = dispatchResult.logResult;
-		       const logDetails = dispatchResult.logDetails;
-
-		       // Structured logging for request
-		       logEvent({
-			       timestamp: new Date().toISOString(),
-			       requestId: typeof id === 'string' ? id : undefined,
-			       ip,
-			       tool: logTool,
-			       category: logCategory,
-			       result: logResult,
-			       details: logDetails,
-			       durationMs: Date.now() - startTime,
-			       userAgent: headersLc['user-agent'],
-			       severity: logCategory === 'error' ? 'error' : 'info',
-			       domain: typeof params === 'object' && params && 'domain' in params ? String(params.domain) : undefined,
-		       });
-
-		       // Build response headers
-		       const headers: Record<string, string> = {};
-		       if (newSessionId) {
-			       headers['mcp-session-id'] = newSessionId;
-		       }
-		       Object.assign(headers, rateHeaders);
-
-		       const hasJsonRpcError = typeof responsePayload === 'object' && responsePayload !== null && 'error' in responsePayload;
-		       if (acceptsSSE(accept)) {
-				analytics.emitRequestEvent({
-					method,
-					status: hasJsonRpcError ? 'error' : 'ok',
-					durationMs: Date.now() - startTime,
-					isAuthenticated,
-					hasJsonRpcError,
-					transport: 'sse',
-				});
-				const eventId = id != null ? String(id) : undefined;
-			       const ssePayload = sseEvent(responsePayload, eventId);
-			       return new Response(ssePayload, {
-				       status: 200,
-				       headers: {
-					       'Content-Type': 'text/event-stream',
-					       'Cache-Control': 'no-cache',
-					       'Content-Length': String(new TextEncoder().encode(ssePayload).byteLength),
-					       ...headers,
-				       },
-			       });
-		       }
-
-		       // Default: plain JSON response
-			analytics.emitRequestEvent({
-				method,
-				status: hasJsonRpcError ? 'error' : 'ok',
-				durationMs: Date.now() - startTime,
-				isAuthenticated,
-				hasJsonRpcError,
-				transport: 'json',
-			});
-		       return c.json(responsePayload, { status: 200, headers });
-	       } catch (err) {
-			analytics.emitRequestEvent({
-				method: typeof body?.method === 'string' ? body.method : 'unknown',
-				status: 'error',
-				durationMs: Date.now() - startTime,
-				isAuthenticated,
-				hasJsonRpcError: true,
-				transport: 'json',
-			});
-		       logError(err instanceof Error ? err : String(err), {
-			       severity: 'error',
-			       ip,
-			       requestId: typeof body?.id === 'string' ? body.id : undefined,
-			       tool: typeof body?.method === 'string' ? body.method : undefined,
-			       details: { params: summarizeParamsForLog(body?.params) },
-			       durationMs: Date.now() - startTime,
-			       userAgent: headersLc['user-agent'],
-		       });
-		       const message = sanitizeErrorMessage(err, 'Internal server error');
-		       return sseErrorResponse(
-			       jsonRpcError(id, JSON_RPC_ERRORS.INTERNAL_ERROR, message),
-			       500,
-			       accept,
-			       undefined,
-			       id != null ? String(id) : undefined,
-		       );
-	       }
+	return Response.json(singleResult.payload, {
+		status: singleResult.useErrorEnvelope ? singleResult.httpStatus : 200,
+		headers: singleResult.headers,
 	});
+});
 
-// ---------------------------------------------------------------------------
-// MCP Streamable HTTP transport — GET /mcp (SSE stream for notifications)
-// ---------------------------------------------------------------------------
+app.post('/mcp/messages', async (c) => {
+	const startTime = Date.now();
+	const analytics = createAnalyticsClient(c.env.MCP_ANALYTICS);
+	logAnalyticsBindingStatus(analytics.enabled);
+	const headersLc = normalizeHeaders(c.req.raw.headers);
+	const ip = headersLc['cf-connecting-ip'] ?? 'unknown';
+	const isAuthenticated = c.get('isAuthenticated');
+	const sessionId = c.req.query('sessionId');
+
+	if (!sessionId) {
+		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: missing session'), 400);
+	}
+
+	const bodyReadResult = await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES);
+	if (!bodyReadResult.ok) {
+		return Response.json(bodyReadResult.payload, { status: bodyReadResult.status });
+	}
+
+	const parsedRequest = parseJsonRpcRequest(bodyReadResult.rawBody!);
+	if (!parsedRequest.ok) {
+		logError('Parse error: invalid JSON', {
+			severity: 'error',
+			ip,
+			details: { bodyLength: bodyReadResult.rawBody!.length, bodyPreviewRedacted: true },
+		});
+		return Response.json(parsedRequest.payload, { status: parsedRequest.status });
+	}
+
+	const parsedBodies = parsedRequest.isBatch ? (parsedRequest.body as unknown[]) : [parsedRequest.body as JsonRpcRequest];
+	const results = await Promise.all(
+		parsedBodies.map(async (entry) => {
+			if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+				return {
+					kind: 'response' as const,
+					payload: jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Invalid JSON-RPC 2.0 request'),
+					headers: {},
+					httpStatus: 400,
+					useErrorEnvelope: true,
+				};
+			}
+
+			return executeMcpRequest({
+				body: entry as JsonRpcRequest,
+				allowStreaming: false,
+				batchMode: parsedRequest.isBatch === true,
+				batchSize: parsedBodies.length,
+				responseTransport: 'sse',
+				startTime,
+				ip,
+				isAuthenticated,
+				userAgent: headersLc['user-agent'],
+				sessionId,
+				validateSession: true,
+				sessionErrorMessage: 'Bad Request: missing session',
+				createSessionOnInitialize: false,
+				existingSessionId: sessionId,
+				serverVersion: SERVER_VERSION,
+				rateLimitKv: c.env.RATE_LIMIT,
+				quotaCoordinator: c.env.QUOTA_COORDINATOR,
+				sessionStore: c.env.SESSION_STORE,
+				scanCache: c.env.SCAN_CACHE,
+				providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
+				providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS,
+				providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
+				analytics,
+				profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+				waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+			});
+		}),
+	);
+
+	const responsePayloads = results.flatMap((result) => (result.kind === 'response' ? [result.payload] : []));
+	if (responsePayloads.length > 0) {
+		enqueueLegacyMessage(sessionId, parsedRequest.isBatch ? responsePayloads : responsePayloads[0]);
+	}
+
+	return new Response(null, { status: 202 });
+});
+
 app.get('/mcp', async (c) => {
-	// Must accept SSE
 	if (!acceptsSSE(c.req.header('accept'))) {
 		return new Response('Not Acceptable: Accept must include text/event-stream', { status: 406 });
 	}
 
-	// Session validation — GET requires an existing session (created via POST initialize)
 	const sessionId = c.req.header('mcp-session-id');
 	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
 	const isAuthenticated = c.get('isAuthenticated');
@@ -708,24 +480,42 @@ app.get('/mcp', async (c) => {
 	if (sseSession.response) {
 		return sseSession.response;
 	}
-	const effectiveSessionId = sseSession.sessionId!;
 
-	// Open an SSE stream. For this stateless server we keep the stream open
-	// briefly then close — a full implementation would push server-initiated
-	// notifications here.
 	return new Response(createSseStream(': stream opened\n\n'), {
 		status: 200,
 		headers: {
 			'Content-Type': 'text/event-stream',
 			'Cache-Control': 'no-cache',
-			'mcp-session-id': effectiveSessionId,
+			'mcp-session-id': sseSession.sessionId!,
 		},
 	});
 });
 
-// ---------------------------------------------------------------------------
-// MCP Streamable HTTP transport — DELETE /mcp (session termination)
-// ---------------------------------------------------------------------------
+app.get('/mcp/sse', async (c) => {
+	if (!acceptsSSE(c.req.header('accept'))) {
+		return new Response('Not Acceptable: Accept must include text/event-stream', { status: 406 });
+	}
+
+	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+	const isAuthenticated = c.get('isAuthenticated');
+	const controlPlaneLimited = await buildControlPlaneRateLimitResponse(
+		ip,
+		c.env.RATE_LIMIT,
+		'sse/connect',
+		isAuthenticated,
+		null,
+		undefined,
+		c.env.QUOTA_COORDINATOR,
+	);
+	if (controlPlaneLimited) {
+		return controlPlaneLimited;
+	}
+
+	const legacySessionId = await createSession(c.env.SESSION_STORE);
+	const endpointUrl = new URL(`/mcp/messages?sessionId=${encodeURIComponent(legacySessionId)}`, c.req.url).toString();
+	return openLegacySseStream(legacySessionId, endpointUrl);
+});
+
 app.delete('/mcp', async (c) => {
 	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
 	const isAuthenticated = c.get('isAuthenticated');
@@ -742,7 +532,7 @@ app.delete('/mcp', async (c) => {
 		return controlPlaneLimited;
 	}
 
-	const sessionId = c.req.header('mcp-session-id');
+	const sessionId = c.req.header('mcp-session-id') ?? c.req.query('sessionId');
 	const sessionError = await validateSessionRequest(
 		sessionId,
 		c.env.SESSION_STORE,
@@ -753,15 +543,13 @@ app.delete('/mcp', async (c) => {
 		return c.json(sessionError.payload, sessionError.status);
 	}
 
-	const validatedSessionId = sessionId!;
-	await deleteSession(validatedSessionId, c.env.SESSION_STORE);
+	await deleteSession(sessionId!, c.env.SESSION_STORE);
+	closeLegacyStream(sessionId!);
 	return new Response(null, { status: 204 });
 });
 
-// Fallback 404
 app.all('*', (c) => {
 	return c.json({ error: 'Not found' }, 404);
 });
 
-// export default is required by the Cloudflare Workers runtime (fetch handler contract)
 export default app;
