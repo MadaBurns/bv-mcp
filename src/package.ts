@@ -39,6 +39,7 @@ export {
 } from './lib/scoring';
 
 export { sanitizeDomain, sanitizeInput, validateDomain } from './lib/sanitize';
+export { SERVER_VERSION } from './lib/server-version';
 
 export { checkBimi } from './tools/check-bimi';
 export { checkCaa } from './tools/check-caa';
