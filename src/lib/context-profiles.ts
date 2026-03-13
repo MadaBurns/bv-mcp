@@ -243,7 +243,18 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 	};
 }
 
-/** Look up the weight table for a given profile. */
-export function getProfileWeights(profile: DomainProfile): Record<CheckCategory, ImportanceProfile> {
+/** Look up the weight table for a given profile, optionally from runtime config. */
+export function getProfileWeights(
+	profile: DomainProfile,
+	config?: import('./scoring-config').ScoringConfig,
+): Record<CheckCategory, ImportanceProfile> {
+	if (config) {
+		const flat = config.profileWeights[profile];
+		const result = {} as Record<CheckCategory, ImportanceProfile>;
+		for (const key of Object.keys(flat) as CheckCategory[]) {
+			result[key] = { importance: flat[key] };
+		}
+		return result;
+	}
 	return PROFILE_WEIGHTS[profile];
 }
