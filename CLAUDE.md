@@ -8,7 +8,7 @@ Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflar
 Exposes 15 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 A 16th check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 1.1.0 — keep `SERVER_VERSION` in `src/index.ts` and `version` in `package.json` in sync.
+**Version**: 1.2.0 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -35,10 +35,12 @@ npm run lint:fix                       # ESLint with auto-fix
 ## Architecture
 
 ```
-src/index.ts              — Hono app, middleware wiring, JSON-RPC dispatch, SSE transport
+src/index.ts              — Hono app, HTTP routes, middleware wiring (delegates to shared executor)
+src/stdio.ts              — Native stdio MCP transport (CLI entrypoint: blackveil-dns-mcp)
 
+src/mcp/execute.ts        — Transport-neutral shared MCP request executor (validation, rate limiting, dispatch, analytics)
 src/mcp/dispatch.ts       — JSON-RPC method → handler routing (initialize, tools/*, resources/*, ping)
-src/mcp/request.ts        — Request body reading, JSON-RPC parsing/validation, header normalization
+src/mcp/request.ts        — Request body reading, JSON-RPC parsing/validation (batch support), header normalization
 src/mcp/route-gates.ts    — Pre-dispatch guards (rate limits, session validation)
 
 src/handlers/tools.ts     — tools/list + tools/call dispatch
@@ -66,6 +68,8 @@ src/lib/json-rpc.ts       — JSON-RPC 2.0 types, error codes, response builders
 src/lib/session.ts        — KV-backed (optional) + in-memory fallback session management
 src/lib/auth.ts           — Bearer token validation (constant-time XOR comparison)
 src/lib/sse.ts            — SSE event formatting and Accept header checking
+src/lib/legacy-sse.ts     — Legacy HTTP+SSE stream lifecycle (open, enqueue, close, heartbeat)
+src/lib/server-version.ts — Single source of truth for SERVER_VERSION
 src/lib/dns.ts            — DNS-over-HTTPS facade (re-exports from dns-transport, dns-records, dns-types)
 src/lib/sanitize.ts       — Domain validation, SSRF protection
 src/lib/config.ts         — Centralized SSRF constants, DNS tuning, rate limit quotas (FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT)
@@ -86,10 +90,23 @@ test/helpers/dns-mock.ts  — Shared fetch mock for DNS-over-HTTPS queries
 
 ### Request flow
 
+**Streamable HTTP** (modern):
 ```
 MCP Client → POST /mcp → Origin check → Auth middleware → Body parse → JSON-RPC validate
-  → mcp/route-gates (rate limit + session) → mcp/dispatch.ts → handlers/tools.ts
-  → src/tools/check-*.ts → lib/dns.ts → Cloudflare DoH
+  → mcp/execute.ts (shared executor: rate limit + session + dispatch + analytics)
+  → handlers/tools.ts → src/tools/check-*.ts → lib/dns.ts → Cloudflare DoH
+```
+
+**Native stdio** (`blackveil-dns-mcp` CLI):
+```
+stdin (newline-delimited JSON-RPC) → src/stdio.ts → mcp/execute.ts (shared executor)
+  → handlers/tools.ts → src/tools/check-*.ts → stdout (JSON-RPC responses)
+```
+
+**Legacy HTTP+SSE** (deprecated clients):
+```
+GET /mcp/sse → opens SSE bootstrap stream
+POST /mcp/messages?sessionId=... → mcp/execute.ts → response enqueued to SSE stream
 ```
 
 ### scan_domain orchestration

@@ -141,4 +141,6 @@ Use these query patterns in Analytics Engine to build usage reporting:
 - `src/lib/rate-limiter.ts`
 - `src/lib/log.ts`
 - `src/lib/session.ts`
+- `src/mcp/execute.ts`
+- `src/lib/legacy-sse.ts`
 - `src/index.ts`
