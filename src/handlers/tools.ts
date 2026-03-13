@@ -48,6 +48,7 @@ interface ToolRuntimeOptions {
 	analytics?: AnalyticsClient;
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
+	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
 }
 
 async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOptions): Promise<CheckResult> {
