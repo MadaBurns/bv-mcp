@@ -28,6 +28,8 @@ export interface DispatchMcpMethodOptions {
 	analytics?: AnalyticsClient;
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
+	createSessionOnInitialize?: boolean;
+	existingSessionId?: string;
 }
 
 export type DispatchMcpMethodResult =
@@ -50,7 +52,8 @@ export type DispatchMcpMethodResult =
 export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Promise<DispatchMcpMethodResult> {
 	switch (options.method) {
 		case 'initialize': {
-			if (!options.isAuthenticated) {
+				const createSessionOnInitialize = options.createSessionOnInitialize !== false;
+				if (createSessionOnInitialize && !options.isAuthenticated) {
 				const sessionCreateGate = await checkSessionCreateRateLimit(options.ip, options.rateLimitKv, options.quotaCoordinator);
 				if (!sessionCreateGate.allowed) {
 					const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
@@ -66,8 +69,10 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				}
 			}
 
-			const newSessionId = await createSession(options.sessionStore);
-			auditSessionCreated(options.ip, newSessionId);
+				const sessionId = createSessionOnInitialize ? await createSession(options.sessionStore) : options.existingSessionId;
+				if (createSessionOnInitialize && sessionId) {
+					auditSessionCreated(options.ip, sessionId);
+				}
 
 			return {
 				kind: 'success',
@@ -82,7 +87,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 						version: options.serverVersion,
 					},
 				}),
-				newSessionId,
+				newSessionId: createSessionOnInitialize ? sessionId : undefined,
 				logCategory: 'session',
 				logResult: 'initialized',
 			};

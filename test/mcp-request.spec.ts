@@ -46,12 +46,20 @@ describe('mcp-request helpers', () => {
 		expect(invalidId?.payload.error.message).toContain('Invalid JSON-RPC id');
 	});
 
-	it('parseJsonRpcRequest returns batch-not-supported error for JSON arrays', () => {
+	it('parseJsonRpcRequest accepts JSON-RPC batch arrays', () => {
 		const result = parseJsonRpcRequest('[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","id":2,"method":"ping"}]');
+		expect(result.ok).toBe(true);
+		expect(result.isBatch).toBe(true);
+		expect(Array.isArray(result.body)).toBe(true);
+		expect((result.body as unknown[])).toHaveLength(2);
+	});
+
+	it('parseJsonRpcRequest rejects empty JSON-RPC batch arrays', () => {
+		const result = parseJsonRpcRequest('[]');
 		expect(result.ok).toBe(false);
 		expect(result.status).toBe(400);
 		expect(result.payload?.error.code).toBe(-32600);
-		expect(result.payload?.error.message).toContain('batch');
+		expect(result.payload?.error.message).toContain('empty');
 	});
 
 	it('readRequestBody returns payload too large for oversized bodies', async () => {
