@@ -33,6 +33,7 @@ import { gradeBadge, errorBadge } from './lib/badge';
 import { SERVER_VERSION } from './lib/server-version';
 import { executeMcpRequest } from './mcp/execute';
 import { closeLegacyStream, enqueueLegacyMessage, openLegacySseStream } from './lib/legacy-sse';
+import { internalRoutes } from './internal';
 export { QuotaCoordinator } from './lib/quota-coordinator';
 export { ProfileAccumulator } from './lib/profile-accumulator';
 
@@ -547,6 +548,8 @@ app.delete('/mcp', async (c) => {
 	closeLegacyStream(sessionId!);
 	return new Response(null, { status: 204 });
 });
+
+app.route('/internal', internalRoutes);
 
 app.all('*', (c) => {
 	return c.json({ error: 'Not found' }, 404);

@@ -36,6 +36,7 @@ npm run lint:fix                       # ESLint with auto-fix
 
 ```
 src/index.ts              — Hono app, HTTP routes, middleware wiring (delegates to shared executor)
+src/internal.ts           — Internal service binding routes (direct tool access, no MCP overhead)
 src/stdio.ts              — Native stdio MCP transport (CLI entrypoint: blackveil-dns-mcp)
 
 src/mcp/execute.ts        — Transport-neutral shared MCP request executor (validation, rate limiting, dispatch, analytics)
@@ -107,6 +108,12 @@ stdin (newline-delimited JSON-RPC) → src/stdio.ts → mcp/execute.ts (shared e
 ```
 GET /mcp/sse → opens SSE bootstrap stream
 POST /mcp/messages?sessionId=... → mcp/execute.ts → response enqueued to SSE stream
+```
+
+**Internal service binding** (Worker-to-Worker):
+```
+Service binding fetch → POST /internal/tools/call → guard middleware (reject public)
+  → handlers/tools.ts → src/tools/check-*.ts → JSON response (no MCP framing)
 ```
 
 ### scan_domain orchestration
@@ -206,6 +213,7 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 - **Error sanitization**: only known validation errors surface; unexpected → generic message
 - **Origin validation**: MCP spec-compliant; rejects browser requests with unauthorized `Origin` header; configurable via `ALLOWED_ORIGINS` env var
 - **Sessions**: idle TTL (30 min), sliding refresh on validate, optional KV-backed storage via `SESSION_STORE` with in-memory fallback. Missing session → 400; expired/terminated session → 404 (per MCP spec, triggers client re-initialization)
+- **Internal routes**: `/internal/*` is guarded by `cf-connecting-ip` header detection. Cloudflare only sets this header on public internet requests — service binding calls (Worker-to-Worker) never carry it. Public requests to `/internal/*` receive a 404. This allows other Workers in the same Cloudflare account to call tool handlers directly without MCP protocol overhead, auth, rate limiting, or session management.
 
 ## Adding a New Tool
 
