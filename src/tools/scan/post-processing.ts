@@ -12,6 +12,7 @@ export interface ScanRuntimeOptions {
 	profile?: 'mail_enabled' | 'enterprise_mail' | 'non_mail' | 'web_only' | 'minimal' | 'auto';
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
+	scoringConfig?: import('../../lib/scoring-config').ScoringConfig;
 }
 
 export async function applyScanPostProcessing(

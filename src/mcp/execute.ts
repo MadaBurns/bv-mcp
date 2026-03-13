@@ -53,6 +53,7 @@ export interface ExecuteMcpRequestOptions {
 	analytics?: AnalyticsClient;
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
+	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
 }
 
 function getDomainFromParams(params: Record<string, unknown> | undefined): string | undefined {
@@ -281,6 +282,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			waitUntil: options.waitUntil,
 			createSessionOnInitialize: options.createSessionOnInitialize,
 			existingSessionId: options.existingSessionId,
+			scoringConfig: options.scoringConfig,
 		}).then((dispatchResult) => {
 			if (dispatchResult.kind === 'early-error') {
 				return dispatchResult.payload;
@@ -337,6 +339,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			waitUntil: options.waitUntil,
 			createSessionOnInitialize: options.createSessionOnInitialize,
 			existingSessionId: options.existingSessionId,
+			scoringConfig: options.scoringConfig,
 		});
 
 		if (dispatchResult.kind === 'early-error') {

@@ -60,6 +60,7 @@ src/tools/scan/           — Scan sub-helpers (format-report.ts, post-processin
 src/tools/explain-finding.ts — Static explanation generator
 
 src/lib/scoring.ts        — Re-export facade for scoring subsystem
+src/lib/scoring-config.ts — Runtime scoring configuration (ScoringConfig type, defaults, parser)
 src/lib/scoring-model.ts  — Types (Finding, CheckResult, ScanScore, CheckCategory, Severity) + buildCheckResult/createFinding
 src/lib/scoring-engine.ts — IMPORTANCE_WEIGHTS, computeScanScore, scoreToGrade
 src/lib/context-profiles.ts — DomainProfile, DomainContext, PROFILE_WEIGHTS, detectDomainContext
@@ -243,6 +244,76 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 
 **Branch protection** (configure in GitHub Settings → Branches → `main`): require PR reviews, require `build-and-test`, `Secret & PII scan`, and `Dependency audit` status checks to pass before merge, disable direct pushes to `main`.
 
+### Runtime Scoring Configuration
+
+All scoring weights, thresholds, grade boundaries, and baseline failure rates are configurable via the `SCORING_CONFIG` environment variable (JSON string). When absent, built-in defaults are used (identical to the values documented above). Any subset of values can be overridden — unspecified values fall back to defaults.
+
+```jsonc
+{
+  "weights": { "spf": 10, "dmarc": 22, ... },           // base importance weights
+  "profileWeights": {                                     // per-profile weight overrides
+    "enterprise_mail": { "dmarc": 30, ... }
+  },
+  "thresholds": {
+    "emailBonusImportance": 8,
+    "spfStrongThreshold": 57,
+    "criticalOverallPenalty": 15,
+    "criticalGapCeiling": 64
+  },
+  "grades": { "aPlus": 90, "a": 85, ... },              // grade boundaries
+  "baselineFailureRates": { "dmarc": 0.40, ... }         // adaptive weight baselines
+}
+```
+
+Parsed once per request in `index.ts` and `internal.ts` via `parseScoringConfig()`, then threaded through the call chain. Invalid JSON or non-numeric values fall back to defaults silently. The `ScoringConfig` type and `DEFAULT_SCORING_CONFIG` are in `src/lib/scoring-config.ts` (re-exported via `src/lib/scoring.ts`).
+
+## Service Binding Integration
+
+bv-mcp can be consumed as a **Cloudflare service binding** by other Workers in the same account (e.g., other Workers). This provides sub-millisecond, zero-overhead access to all 15 tool handlers without MCP protocol framing, auth, rate limiting, or session management.
+
+### How it works
+
+The `/internal/tools/call` route (`src/internal.ts`) accepts plain JSON and returns raw tool results:
+
+```typescript
+// Consuming Worker's wrangler config — add service binding:
+// { "services": [{ "binding": "BV_MCP", "service": "bv-dns-security-mcp" }] }
+
+// Call from consuming Worker:
+const response = await env.BV_MCP.fetch(
+  new Request('https://internal/internal/tools/call', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'scan_domain', arguments: { domain: 'example.com' } }),
+  })
+);
+const result = await response.json();
+// result: { content: [{ type: 'text', text: '...' }], isError?: boolean }
+```
+
+### What gets bypassed vs preserved
+
+| Layer | Public `/mcp` | Internal `/internal/*` |
+|-------|:---:|:---:|
+| CORS, Origin validation | Yes | No |
+| Auth (bearer token) | Yes | No |
+| Rate limiting (all tiers) | Yes | No |
+| Session management | Yes | No |
+| JSON-RPC framing | Yes | No |
+| Body size limit (10 KB) | Yes | No |
+| **Tool execution + caching** | Yes | **Yes** |
+| **Analytics telemetry** | Yes | **Yes** |
+| **Adaptive weight scoring** | Yes | **Yes** |
+| **SSRF protection** | Yes | **Yes** |
+
+### Security
+
+The guard middleware in `src/internal.ts` rejects any request with a `cf-connecting-ip` header (which Cloudflare sets on all public internet requests). Service binding calls are Worker-to-Worker over Cloudflare's internal network and never carry this header. Public requests to `/internal/*` receive a 404.
+
+### Related repositories
+
+- Other Workers in the same account ) bv-mcp provides the core open-source DNS/email checks with scoring (adaptive weights, profiles, maturity staging).
+
 ## Deployment
 
 The public `wrangler.jsonc` has placeholder KV bindings (commented out). Real deployments use a gitignored private config:
@@ -271,4 +342,5 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 | `PROFILE_ACCUMULATOR` | Durable Object | Adaptive weight telemetry collection and EMA computation (optional; static weights fallback) |
 | `MCP_ANALYTICS` | Analytics Engine | Telemetry dataset (fail-open; optional) |
 | `PROVIDER_SIGNATURES_URL` | var | Optional URL for runtime email provider signatures |
+| `SCORING_CONFIG` | var | JSON string overriding scoring weights, thresholds, and grade boundaries (optional; built-in defaults when absent) |
 

@@ -32,6 +32,7 @@
 import { Hono } from 'hono';
 import { handleToolsCall } from './handlers/tools';
 import { createAnalyticsClient } from './lib/analytics';
+import { parseScoringConfig } from './lib/scoring-config';
 
 type InternalEnv = {
 	SCAN_CACHE?: KVNamespace;
@@ -40,6 +41,7 @@ type InternalEnv = {
 	PROVIDER_SIGNATURES_URL?: string;
 	PROVIDER_SIGNATURES_ALLOWED_HOSTS?: string;
 	PROVIDER_SIGNATURES_SHA256?: string;
+	SCORING_CONFIG?: string;
 };
 
 export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
@@ -88,6 +90,7 @@ internalRoutes.post('/tools/call', async (c) => {
 			analytics: createAnalyticsClient(c.env.MCP_ANALYTICS),
 			profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+			scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
 		},
 	);
 

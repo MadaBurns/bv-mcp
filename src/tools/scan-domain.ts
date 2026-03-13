@@ -196,7 +196,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			domainContext = {
 				profile: explicitProfile as DomainProfile,
 				signals: [...domainContext.signals, `explicit profile override: ${explicitProfile}`],
-				weights: getProfileWeights(explicitProfile as DomainProfile),
+				weights: getProfileWeights(explicitProfile as DomainProfile, runtimeOptions?.scoringConfig),
 				detectedProvider: domainContext.detectedProvider,
 			};
 		}
@@ -230,17 +230,17 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			if (adaptiveWeights) {
 				// Compute adaptive score
 				const adaptiveContext: DomainContext = { ...domainContext, weights: adaptiveWeights };
-				const adaptiveScore = computeScanScore(checkResults, adaptiveContext);
+				const adaptiveScore = computeScanScore(checkResults, adaptiveContext, runtimeOptions?.scoringConfig);
 
 				// Compute static score for comparison
 				const staticContext: DomainContext = {
 					...domainContext,
-					weights: getProfileWeights(domainContext.profile),
+					weights: getProfileWeights(domainContext.profile, runtimeOptions?.scoringConfig),
 				};
-				const staticScore = computeScanScore(checkResults, scoringContext ?? staticContext);
+				const staticScore = computeScanScore(checkResults, scoringContext ?? staticContext, runtimeOptions?.scoringConfig);
 
 				// Compute per-category weight deltas
-				const staticWeights = getProfileWeights(domainContext.profile);
+				const staticWeights = getProfileWeights(domainContext.profile, runtimeOptions?.scoringConfig);
 				const deltas: Record<string, number> = {};
 				for (const cat of Object.keys(staticWeights) as CheckCategory[]) {
 					deltas[cat] = adaptiveWeights[cat].importance - staticWeights[cat].importance;
@@ -251,10 +251,10 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				adaptiveWeightDeltas = deltas;
 				score = adaptiveScore;
 			} else {
-				score = computeScanScore(checkResults, scoringContext);
+				score = computeScanScore(checkResults, scoringContext, runtimeOptions?.scoringConfig);
 			}
 		} else {
-			score = computeScanScore(checkResults, scoringContext);
+			score = computeScanScore(checkResults, scoringContext, runtimeOptions?.scoringConfig);
 		}
 
 		const maturity = computeMaturityStage(checkResults);
@@ -304,12 +304,12 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			fallbackContext = {
 				profile: explicitProfile as DomainProfile,
 				signals: [...fallbackContext.signals, `explicit profile override: ${explicitProfile}`],
-				weights: getProfileWeights(explicitProfile as DomainProfile),
+				weights: getProfileWeights(explicitProfile as DomainProfile, runtimeOptions?.scoringConfig),
 				detectedProvider: fallbackContext.detectedProvider,
 			};
 		}
 		const fallbackScoringContext = isExplicit ? fallbackContext : undefined;
-		const score = computeScanScore(checkResults, fallbackScoringContext);
+		const score = computeScanScore(checkResults, fallbackScoringContext, runtimeOptions?.scoringConfig);
 		const maturity = computeMaturityStage(checkResults);
 		result = {
 			domain,
