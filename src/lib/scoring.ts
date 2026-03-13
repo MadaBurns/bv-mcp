@@ -34,3 +34,5 @@ export {
 	type ScanTelemetry,
 	type WeightBound,
 } from './adaptive-weights';
+
+export { parseScoringConfig, DEFAULT_SCORING_CONFIG, toImportanceRecord, type ScoringConfig } from './scoring-config';

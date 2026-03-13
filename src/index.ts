@@ -32,6 +32,7 @@ import { scanDomain } from './tools/scan-domain';
 import { gradeBadge, errorBadge } from './lib/badge';
 import { SERVER_VERSION } from './lib/server-version';
 import { executeMcpRequest } from './mcp/execute';
+import { parseScoringConfig } from './lib/scoring-config';
 import { closeLegacyStream, enqueueLegacyMessage, openLegacySseStream } from './lib/legacy-sse';
 import { internalRoutes } from './internal';
 export { QuotaCoordinator } from './lib/quota-coordinator';
@@ -67,6 +68,7 @@ type BvMcpEnv = {
 	PROVIDER_SIGNATURES_URL?: string;
 	PROVIDER_SIGNATURES_ALLOWED_HOSTS?: string;
 	PROVIDER_SIGNATURES_SHA256?: string;
+	SCORING_CONFIG?: string;
 };
 
 const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean } }>();
@@ -215,6 +217,7 @@ app.get('/badge/:domain', async (c) => {
 		const result = await scanDomain(domain, c.env.SCAN_CACHE, {
 			profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+			scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
 		});
 		return new Response(gradeBadge(result.score.grade), { status: 200, headers: svgHeaders });
 	} catch {
@@ -286,6 +289,7 @@ app.post('/mcp', async (c) => {
 					analytics,
 					profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 					waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+				scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
 				});
 			}),
 		);
@@ -336,6 +340,7 @@ app.post('/mcp', async (c) => {
 		analytics,
 		profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 		waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+		scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
 	});
 
 	if (singleResult.kind === 'notification') {

@@ -30,6 +30,7 @@ export interface DispatchMcpMethodOptions {
 	waitUntil?: (promise: Promise<unknown>) => void;
 	createSessionOnInitialize?: boolean;
 	existingSessionId?: string;
+	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
 }
 
 export type DispatchMcpMethodResult =
@@ -111,6 +112,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				analytics: options.analytics,
 				profileAccumulator: options.profileAccumulator,
 				waitUntil: options.waitUntil,
+				scoringConfig: options.scoringConfig,
 			});
 
 			return {

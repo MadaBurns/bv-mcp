@@ -10,6 +10,8 @@ import {
 } from './scoring-model';
 import type { DomainContext } from './context-profiles';
 import { PROFILE_CRITICAL_CATEGORIES, PROFILE_EMAIL_BONUS_ELIGIBLE } from './context-profiles';
+import type { ScoringConfig } from './scoring-config';
+import { DEFAULT_SCORING_CONFIG, toImportanceRecord } from './scoring-config';
 
 interface ImportanceProfile {
 	importance: number;
@@ -34,10 +36,6 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	tlsrpt: { importance: 1 },
 	lookalikes: { importance: 0 },
 };
-
-const EMAIL_BONUS_IMPORTANCE = 8;
-const SPF_STRONG_THRESHOLD = 57;
-const CRITICAL_OVERALL_PENALTY = 15;
 
 function scoreIndicatesMissingControl(findings: Finding[]): boolean {
 	return findings.some((finding) => {
@@ -69,16 +67,17 @@ function computeProviderConfidenceModifier(findings: Finding[]): number {
 }
 
 /** Map numeric score to letter grade */
-export function scoreToGrade(score: number): string {
-	if (score >= 90) return 'A+';
-	if (score >= 85) return 'A';
-	if (score >= 80) return 'B+';
-	if (score >= 75) return 'B';
-	if (score >= 70) return 'C+';
-	if (score >= 65) return 'C';
-	if (score >= 60) return 'D+';
-	if (score >= 55) return 'D';
-	if (score >= 50) return 'E';
+export function scoreToGrade(score: number, config?: ScoringConfig): string {
+	const g = config?.grades ?? DEFAULT_SCORING_CONFIG.grades;
+	if (score >= g.aPlus) return 'A+';
+	if (score >= g.a) return 'A';
+	if (score >= g.bPlus) return 'B+';
+	if (score >= g.b) return 'B';
+	if (score >= g.cPlus) return 'C+';
+	if (score >= g.c) return 'C';
+	if (score >= g.dPlus) return 'D+';
+	if (score >= g.d) return 'D';
+	if (score >= g.e) return 'E';
 	return 'F';
 }
 
@@ -95,7 +94,7 @@ const DEFAULT_CRITICAL_CATEGORIES: CheckCategory[] = ['spf', 'dmarc', 'dkim', 's
  * When a `DomainContext` is provided, uses profile-specific weights,
  * critical gap categories, and email bonus eligibility instead of defaults.
  */
-export function computeScanScore(results: CheckResult[], context?: DomainContext): ScanScore {
+export function computeScanScore(results: CheckResult[], context?: DomainContext, config?: ScoringConfig): ScanScore {
 	const partialScores: Partial<Record<CheckCategory, number>> = {};
 	const allFindings: Finding[] = [];
 
@@ -107,13 +106,19 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 	// All CheckCategory keys are populated above — safe to widen from Partial
 	const categoryScores = partialScores as Record<CheckCategory, number>;
 
+	const cfg = config ?? DEFAULT_SCORING_CONFIG;
+	const emailBonusImportance = cfg.thresholds.emailBonusImportance;
+	const spfStrongThreshold = cfg.thresholds.spfStrongThreshold;
+	const criticalOverallPenalty = cfg.thresholds.criticalOverallPenalty;
+	const criticalGapCeiling = cfg.thresholds.criticalGapCeiling;
+
 	if (results.length === 0) {
 		return {
 			overall: 100,
-			grade: scoreToGrade(100),
+			grade: scoreToGrade(100, config),
 			categoryScores,
 			findings: [],
-			summary: `Excellent! No security issues found. Grade: ${scoreToGrade(100)}`,
+			summary: `Excellent! No security issues found. Grade: ${scoreToGrade(100, config)}`,
 		};
 	}
 
@@ -125,8 +130,8 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 	let earnedPoints = 0;
 	let maxPoints = 0;
 
-	// Use context-specific weights when provided, otherwise fall back to static defaults
-	const activeWeights = context ? context.weights : IMPORTANCE_WEIGHTS;
+	// Use context-specific weights when provided, otherwise fall back to config defaults
+	const activeWeights = context ? context.weights : toImportanceRecord(cfg.weights);
 
 	// activeWeights is Record<CheckCategory, ImportanceProfile> — Object.keys returns string[], cast is safe
 	for (const category of Object.keys(activeWeights) as CheckCategory[]) {
@@ -146,24 +151,24 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 	const spfResult = results.find((result) => result.category === 'spf');
 	const dkimResult = results.find((result) => result.category === 'dkim');
 	const dmarcResult = results.find((result) => result.category === 'dmarc');
-	const spfStrong = !!spfResult && !scoreIndicatesMissingControl(spfResult.findings) && spfResult.score >= SPF_STRONG_THRESHOLD;
+	const spfStrong = !!spfResult && !scoreIndicatesMissingControl(spfResult.findings) && spfResult.score >= spfStrongThreshold;
 	const dkimPresent = !!dkimResult && !scoreIndicatesMissingControl(dkimResult.findings);
 	const dmarcPresent = !!dmarcResult && !scoreIndicatesMissingControl(dmarcResult.findings);
 
 	let emailBonus = 0;
 	if (emailBonusEligible && spfStrong && dkimPresent && dmarcPresent && dmarcResult) {
 		if (dmarcResult.score >= 90) {
-			emailBonus = EMAIL_BONUS_IMPORTANCE;
+			emailBonus = emailBonusImportance;
 		} else if (dmarcResult.score >= 70) {
-			emailBonus = Math.ceil(EMAIL_BONUS_IMPORTANCE * 0.6);
+			emailBonus = Math.ceil(emailBonusImportance * 0.6);
 		} else {
-			emailBonus = Math.ceil(EMAIL_BONUS_IMPORTANCE * 0.4);
+			emailBonus = Math.ceil(emailBonusImportance * 0.4);
 		}
 	}
 
 	earnedPoints += emailBonus;
 	if (emailBonus > 0) {
-		maxPoints += EMAIL_BONUS_IMPORTANCE;
+		maxPoints += emailBonusImportance;
 	}
 
 	const baseOverall = Math.round(maxPoints > 0 ? clampPercent((earnedPoints / maxPoints) * 100) : 0);
@@ -172,11 +177,10 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 	const verifiedCriticalCount = allFindings.filter(
 		(finding) => finding.severity === 'critical' && inferFindingConfidence(finding) === 'verified',
 	).length;
-	const criticalPenalty = verifiedCriticalCount > 0 ? CRITICAL_OVERALL_PENALTY : 0;
+	const criticalPenalty = verifiedCriticalCount > 0 ? criticalOverallPenalty : 0;
 	const preCeiling = clampPercent(baseOverall + providerModifier - criticalPenalty);
 
 	// Critical gap ceiling: cap score when foundational controls are missing
-	const CRITICAL_GAP_CEILING = 64;
 	const criticalCategories = context
 		? PROFILE_CRITICAL_CATEGORIES[context.profile]
 		: DEFAULT_CRITICAL_CATEGORIES;
@@ -184,9 +188,9 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 		const result = results.find((r) => r.category === cat);
 		return result && scoreIndicatesMissingControl(result.findings);
 	});
-	const overall = hasCriticalGap ? Math.min(preCeiling, CRITICAL_GAP_CEILING) : preCeiling;
+	const overall = hasCriticalGap ? Math.min(preCeiling, criticalGapCeiling) : preCeiling;
 
-	const grade = scoreToGrade(overall);
+	const grade = scoreToGrade(overall, config);
 
 	const highCount = allFindings.filter((finding) => finding.severity === 'high').length;
 	const totalIssues = allFindings.filter((finding) => finding.severity !== 'info').length;
