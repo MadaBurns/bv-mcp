@@ -296,6 +296,19 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 
 	const brand = extractBrandName(domain);
 	const effectiveTld = getEffectiveTld(domain);
+
+	if (!brand || !effectiveTld) {
+		findings.push(
+			createFinding(
+				'shadow_domains',
+				'Unable to extract brand name',
+				'info',
+				`Could not determine the registrable brand name from \`${domain}\`.`,
+			),
+		);
+		return buildCheckResult('shadow_domains', findings);
+	}
+
 	const variants = generateVariants(brand, effectiveTld, domain);
 
 	if (variants.length === 0) {
