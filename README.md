@@ -95,15 +95,15 @@ Full scope and limitations in [`docs/coverage.md`](docs/coverage.md).
 ## Tools
 
 ```
-  15 MCP tools
+  17 MCP tools
 
   Email Auth           Infrastructure        Brand & Threats       Meta
  ────────────         ────────────────       ─────────────────    ──────────────
   check_spf            check_dnssec           check_bimi           scan_domain
   check_dmarc          check_ns               check_tlsrpt         explain_finding
   check_dkim           check_caa              check_lookalikes     compare_baseline
-  check_mta_sts        check_ssl
-                                                          check_mx
+  check_mta_sts        check_ssl              check_shadow_domains
+  check_mx                                    check_txt_hygiene
 
   + check_subdomain_takeover (internal — runs inside scan_domain)
 ```
@@ -402,7 +402,7 @@ Prompt methods (`prompts/list`, `prompts/get`) return `-32601 Method not found`.
 - Input sanitation and domain validation
 - Optional bearer-token authentication
 - Per-IP rate limiting (KV + in-memory fallback)
-- `check_lookalikes` capped at 20/day per IP with 60-min caching
+- `check_lookalikes` and `check_shadow_domains` capped at 20/day per IP with 60-min caching
 - `scan_domain` capped at 75/day per IP (results cached 5 min)
 - Scan result caching (KV + in-memory fallback)
 - Adaptive scoring via Durable Object telemetry (graceful fallback to static weights)
