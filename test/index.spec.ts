@@ -1291,6 +1291,179 @@ describe('DNS Security MCP Server', () => {
 		});
 	});
 
+	describe('Session recovery', () => {
+		/** Helper: terminate a session via DELETE so subsequent requests see it as expired */
+		async function terminateSession(sessionId: string): Promise<void> {
+			const delReq = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'DELETE',
+				headers: { 'Mcp-Session-Id': sessionId },
+			});
+			const ctx = createExecutionContext();
+			const delRes = await worker.fetch(delReq, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(delRes.status).toBe(204);
+		}
+
+		it('returns HTTP 404 (not 200) for expired sessions when client accepts SSE', async () => {
+			const sessionId = await initSession();
+			await terminateSession(sessionId);
+
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+					'Mcp-Session-Id': sessionId,
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			// Must be HTTP 404 so MCP clients detect session expiry and re-initialize
+			expect(response.status).toBe(404);
+		});
+
+		it('allows notifications/initialized without a valid session', async () => {
+			// Notifications are fire-and-forget per MCP spec — no session required
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			// Notifications return 202 (accepted, no response body)
+			expect(response.status).toBe(202);
+		});
+
+		it('allows notifications with terminated session ID', async () => {
+			const sessionId = await initSession();
+			await terminateSession(sessionId);
+
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Mcp-Session-Id': sessionId,
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(202);
+		});
+
+		it('completes full re-initialization after session termination (Claude Desktop flow)', async () => {
+			// Step 1: Initialize and get session
+			const sessionId = await initSession();
+
+			// Step 2: Terminate the session (simulates expiry)
+			await terminateSession(sessionId);
+
+			// Step 3: tools/list with terminated session → 404
+			const expiredRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+					'Mcp-Session-Id': sessionId,
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/list', params: {} }),
+			});
+			const ctx1 = createExecutionContext();
+			const expiredResponse = await worker.fetch(expiredRequest, env, ctx1);
+			await waitOnExecutionContext(ctx1);
+			expect(expiredResponse.status).toBe(404);
+
+			// Step 4: Re-initialize with fresh session
+			const reInitRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', id: 11, method: 'initialize', params: {} }),
+			});
+			const ctx2 = createExecutionContext();
+			const reInitResponse = await worker.fetch(reInitRequest, env, ctx2);
+			await waitOnExecutionContext(ctx2);
+			expect(reInitResponse.status).toBe(200);
+			const newSessionId = reInitResponse.headers.get('mcp-session-id');
+			expect(newSessionId).toBeTruthy();
+			expect(newSessionId).not.toBe(sessionId);
+
+			// Step 5: notifications/initialized with new session → 202
+			const notifRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Mcp-Session-Id': newSessionId!,
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+			});
+			const ctx3 = createExecutionContext();
+			const notifResponse = await worker.fetch(notifRequest, env, ctx3);
+			await waitOnExecutionContext(ctx3);
+			expect(notifResponse.status).toBe(202);
+
+			// Step 6: tools/list with new session → 200
+			const toolsRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+					'Mcp-Session-Id': newSessionId!,
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', id: 12, method: 'tools/list', params: {} }),
+			});
+			const ctx4 = createExecutionContext();
+			const toolsResponse = await worker.fetch(toolsRequest, env, ctx4);
+			await waitOnExecutionContext(ctx4);
+			expect(toolsResponse.status).toBe(200);
+		});
+
+		it('returns HTTP 404 for legacy SSE POST with terminated session', async () => {
+			// Open legacy SSE stream
+			const openRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+				method: 'GET',
+				headers: { Accept: 'text/event-stream' },
+			});
+			const openCtx = createExecutionContext();
+			const streamResponse = await worker.fetch(openRequest, env, openCtx);
+			await waitOnExecutionContext(openCtx);
+			const endpointChunk = await readSseChunk(streamResponse);
+			const endpoint = parseSseEvent(endpointChunk, 'endpoint');
+			const sessionId = streamResponse.headers.get('mcp-session-id');
+			expect(sessionId).toBeTruthy();
+
+			// Terminate the session
+			await terminateSession(sessionId!);
+
+			// POST to legacy endpoint with terminated session → must get HTTP 404 directly
+			const request = new Request<unknown, IncomingRequestCfProperties>(endpoint, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			// Must be HTTP 404 directly, not HTTP 202 with undeliverable SSE message
+			expect(response.status).toBe(404);
+			const body = (await response.json()) as { error: { message: string } };
+			expect(body.error.message).toContain('session expired or terminated');
+		});
+	});
+
 	describe('404 fallback', () => {
 		it('returns 404 for unknown routes', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/unknown');
