@@ -117,6 +117,7 @@ const GOVERNMENT_TLDS = new Set([
 
 function isGovernmentDomain(domain: string): boolean {
 	const tld = getEffectiveTld(domain);
+	if (!tld) return false;
 	return GOVERNMENT_TLDS.has(tld);
 }
 
@@ -155,7 +156,7 @@ export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptio
 	const findings: Finding[] = [];
 
 	// Step 1: Fetch root TXT and _dmarc TXT in parallel
-	const [rootTxtRecords, _dmarcTxtRecords] = await Promise.all([
+	const [rootTxtRecords, dmarcTxtRecords] = await Promise.all([
 		queryTxtRecords(domain, dnsOptions),
 		queryTxtRecords(`_dmarc.${domain}`, dnsOptions),
 	]);
@@ -321,12 +322,13 @@ export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptio
 	// --- DMARC misplaced at root ---
 	const dmarcAtRoot = rootTxtRecords.some((r) => r.toLowerCase().startsWith('v=dmarc1'));
 	if (dmarcAtRoot) {
+		const dmarcAtSubdomain = dmarcTxtRecords.some((r) => r.toLowerCase().startsWith('v=dmarc1'));
 		findings.push(
 			createFinding(
 				'txt_hygiene',
 				'DMARC record misplaced at root',
 				'medium',
-				`A DMARC record (v=DMARC1) was found at the root domain instead of the correct location (_dmarc.${domain}). Mail receivers query _dmarc.${domain}, so a root-level DMARC record has no effect.`,
+				`A DMARC record (v=DMARC1) was found at the root domain instead of the correct location (_dmarc.${domain}). ${dmarcAtSubdomain ? 'A properly placed record also exists at _dmarc — the root record is redundant and should be removed.' : 'Mail receivers query _dmarc.${domain}, so a root-level DMARC record has no effect.'}`,
 			),
 		);
 	}
