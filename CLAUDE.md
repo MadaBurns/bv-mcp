@@ -311,9 +311,9 @@ const result = await response.json();
 
 The guard middleware in `src/internal.ts` rejects any request with a `cf-connecting-ip` header (which Cloudflare sets on all public internet requests). Service binding calls are Worker-to-Worker over Cloudflare's internal network and never carry this header. Public requests to `/internal/*` receive a 404.
 
-### Related repositories
+### Service binding consumers
 
-- Other Workers in the same account ) bv-mcp provides the core open-source DNS/email checks with scoring (adaptive weights, profiles, maturity staging).
+Other Workers in the same Cloudflare account can consume bv-mcp via service binding for DNS/email security checks without MCP protocol overhead.
 
 ## Deployment
 
