@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Pre-commit hook: block staging of sensitive directories and files
+
+BLOCKED_PATTERNS=(
+  "docs/"
+  ".dev/"
+  "*.env"
+  "*.env.*"
+)
+
+staged=$(git diff --cached --name-only --diff-filter=ACR)
+blocked=""
+
+for file in $staged; do
+  for pattern in "${BLOCKED_PATTERNS[@]}"; do
+    case "$file" in
+      $pattern*|*/$pattern*)
+        blocked="$blocked\n  $file"
+        ;;
+    esac
+  done
+done
+
+if [ -n "$blocked" ]; then
+  echo "BLOCKED: The following staged files are in protected paths:"
+  echo -e "$blocked"
+  echo ""
+  echo "These paths contain sensitive content and must not be committed."
+  echo "If this is intentional, use: git commit --no-verify"
+  exit 1
+fi
