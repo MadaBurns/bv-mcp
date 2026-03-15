@@ -158,5 +158,36 @@ describe('public-suffix', () => {
 			const { getEffectiveTld } = await loadModule();
 			expect(getEffectiveTld('co.nz')).toBeNull();
 		});
+
+		it('should handle domain with trailing dot without crashing', async () => {
+			const { getEffectiveTld } = await loadModule();
+			// Trailing dot creates an empty label — function should not throw
+			const result = getEffectiveTld('example.com.');
+			// Returns something (not undefined), proving it handles edge case without crashing
+			expect(() => getEffectiveTld('example.com.')).not.toThrow();
+			expect(result).toBeDefined();
+		});
+
+		it('should normalize uppercase domain', async () => {
+			const { getEffectiveTld } = await loadModule();
+			expect(getEffectiveTld('EXAMPLE.COM')).toBe('com');
+		});
+
+		it('should extract correct TLD for deep subdomain under co.nz', async () => {
+			const { getEffectiveTld } = await loadModule();
+			expect(getEffectiveTld('a.b.c.example.co.nz')).toBe('co.nz');
+		});
+	});
+
+	describe('extractBrandName — edge cases', () => {
+		it('should normalize uppercase domain and extract brand', async () => {
+			const { extractBrandName } = await loadModule();
+			expect(extractBrandName('EXAMPLE.COM')).toBe('example');
+		});
+
+		it('should extract brand from deep subdomain under co.nz', async () => {
+			const { extractBrandName } = await loadModule();
+			expect(extractBrandName('a.b.c.example.co.nz')).toBe('example');
+		});
 	});
 });

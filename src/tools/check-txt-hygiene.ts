@@ -155,11 +155,13 @@ function getHygieneRating(recordCount: number): string {
 export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	const findings: Finding[] = [];
 
-	// Step 1: Fetch root TXT and _dmarc TXT in parallel
-	const [rootTxtRecords, dmarcTxtRecords] = await Promise.all([
+	// Step 1: Fetch root TXT and _dmarc TXT in parallel (allSettled to tolerate partial failure)
+	const [rootResult, dmarcResult] = await Promise.allSettled([
 		queryTxtRecords(domain, dnsOptions),
 		queryTxtRecords(`_dmarc.${domain}`, dnsOptions),
 	]);
+	const rootTxtRecords = rootResult.status === 'fulfilled' ? rootResult.value : [];
+	const dmarcTxtRecords = dmarcResult.status === 'fulfilled' ? dmarcResult.value : [];
 
 	// Handle no TXT records
 	if (rootTxtRecords.length === 0) {
