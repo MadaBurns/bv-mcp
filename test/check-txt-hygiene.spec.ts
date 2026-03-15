@@ -265,4 +265,78 @@ describe('checkTxtHygiene', () => {
 		expect(finding).toBeDefined();
 		expect(finding!.severity).toBe('high');
 	});
+
+	it('should still return results when _dmarc DNS query throws (Promise.allSettled)', async () => {
+		// Mock: root TXT succeeds, _dmarc query throws a network error
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name } = parseDohQuery(input);
+			if (name === '_dmarc.example.com') {
+				return Promise.reject(new Error('DNS timeout'));
+			}
+			// Root TXT records
+			const records = ['v=spf1 -all', 'google-site-verification=abc123'];
+			const answers = records.map((data) => ({
+				name: 'example.com',
+				type: 16,
+				TTL: 300,
+				data: `"${data}"`,
+			}));
+			return Promise.resolve(createDohResponse([{ name: 'example.com', type: 16 }], answers));
+		});
+		const result = await run();
+		// Should not throw — should return a valid CheckResult
+		expect(result.category).toBe('txt_hygiene');
+		expect(result.findings.length).toBeGreaterThan(0);
+	});
+
+	it('should NOT flag Baidu verification on native .cn domain', async () => {
+		mockDnsResponses({
+			'example.cn': ['baidu-site-verification=abc123', 'v=spf1 -all'],
+			'_dmarc.example.cn': ['v=DMARC1; p=reject'],
+		});
+		const result = await run('example.cn');
+		const finding = result.findings.find((f) => /Chinese jurisdiction/i.test(f.title));
+		expect(finding).toBeUndefined();
+	});
+
+	it('should NOT flag stale integration when service has verification AND matching SPF include', async () => {
+		mockDnsResponses({
+			'example.com': [
+				'sendgrid-verification=abc123',
+				'v=spf1 include:sendgrid.net -all',
+			],
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const result = await run();
+		const stale = result.findings.find(
+			(f) => /Possible stale service integration/i.test(f.title) && f.title.includes('SendGrid'),
+		);
+		expect(stale).toBeUndefined();
+	});
+
+	it('should NOT flag single MS= record as tenant migration', async () => {
+		mockDnsResponses({
+			'example.com': ['MS=ms12345', 'v=spf1 -all'],
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const result = await run();
+		const tenantMigration = result.findings.find((f) => /Microsoft tenant migration residue/i.test(f.title));
+		expect(tenantMigration).toBeUndefined();
+	});
+
+	it('should match verification patterns case-insensitively', async () => {
+		mockDnsResponses({
+			'example.com': [
+				'GOOGLE-SITE-VERIFICATION=abc123',
+				'v=spf1 include:_spf.google.com -all',
+			],
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const result = await run();
+		// Should still detect Google Search Console verification
+		const googleFinding = result.findings.find(
+			(f) => f.severity === 'info' && f.title.includes('Google Search Console'),
+		);
+		expect(googleFinding).toBeDefined();
+	});
 });

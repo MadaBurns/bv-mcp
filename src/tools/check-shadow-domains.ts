@@ -52,7 +52,10 @@ interface VariantProbeResult {
  * Excludes the primary domain from the result.
  */
 export function generateVariants(brand: string, effectiveTld: string, primaryDomain: string): string[] {
-	const tldLower = effectiveTld.toLowerCase();
+	const rawTld = effectiveTld.toLowerCase();
+	// Normalize: getEffectiveTld() returns without leading dot (e.g. 'com', 'co.nz'),
+	// but the constant sets use leading dots. Ensure consistent format for comparison.
+	const tldLower = rawTld.startsWith('.') ? rawTld : '.' + rawTld;
 	const primaryLower = primaryDomain.toLowerCase();
 	const allTlds = new Set<string>();
 

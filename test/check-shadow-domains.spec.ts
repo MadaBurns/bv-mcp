@@ -350,9 +350,10 @@ describe('checkShadowDomains', () => {
 });
 
 describe('generateVariants', () => {
-	it('should generate correct NZ regional + global set for .co.nz domain', async () => {
+	it('should generate correct NZ regional + global set for .co.nz domain (no leading dot)', async () => {
 		const { generateVariants } = await import('../src/tools/check-shadow-domains');
-		const variants = generateVariants('example', '.co.nz', 'example.co.nz');
+		// Use 'co.nz' without leading dot — this is what getEffectiveTld actually returns
+		const variants = generateVariants('example', 'co.nz', 'example.co.nz');
 
 		// Should include NZ regional TLDs
 		expect(variants).toContain('example.nz');
@@ -374,9 +375,10 @@ describe('generateVariants', () => {
 		expect(variants).not.toContain('example.co.nz');
 	});
 
-	it('should generate correct set for generic .com domain', async () => {
+	it('should generate correct set for generic .com domain (no leading dot)', async () => {
 		const { generateVariants } = await import('../src/tools/check-shadow-domains');
-		const variants = generateVariants('example', '.com', 'example.com');
+		// Use 'com' without leading dot — this is what getEffectiveTld actually returns
+		const variants = generateVariants('example', 'com', 'example.com');
 
 		// Should include global ccTLDs
 		expect(variants).toContain('example.net');
@@ -391,5 +393,169 @@ describe('generateVariants', () => {
 
 		// Should NOT include the primary domain
 		expect(variants).not.toContain('example.com');
+	});
+
+	it('should also work with leading-dot format for backward compat', async () => {
+		const { generateVariants } = await import('../src/tools/check-shadow-domains');
+		const variants = generateVariants('example', '.com', 'example.com');
+
+		// Should still include generic extras
+		expect(variants).toContain('example.dev');
+		expect(variants).toContain('example.app');
+	});
+
+	it('should include UK regional variants for co.uk TLD (no leading dot)', async () => {
+		const { generateVariants } = await import('../src/tools/check-shadow-domains');
+		const variants = generateVariants('example', 'co.uk', 'example.co.uk');
+
+		expect(variants).toContain('example.org.uk');
+		expect(variants).toContain('example.uk');
+		// Global TLDs too
+		expect(variants).toContain('example.com');
+	});
+
+	it('should include NZ single-level for nz TLD (no leading dot)', async () => {
+		const { generateVariants } = await import('../src/tools/check-shadow-domains');
+		// 'nz' without leading dot — getEffectiveTld('blackveil.nz') returns 'nz'
+		const variants = generateVariants('blackveil', 'nz', 'blackveil.nz');
+
+		// Should include NZ regional TLDs because 'nz' endsWith '.nz' after normalization
+		expect(variants).toContain('blackveil.co.nz');
+		expect(variants).toContain('blackveil.org.nz');
+		expect(variants).toContain('blackveil.kiwi');
+	});
+
+	it('should integrate correctly with getEffectiveTld output for .com domain', async () => {
+		const { generateVariants } = await import('../src/tools/check-shadow-domains');
+		const { getEffectiveTld, extractBrandName } = await import('../src/lib/public-suffix');
+
+		const domain = 'example.com';
+		const brand = extractBrandName(domain)!;
+		const tld = getEffectiveTld(domain)!;
+
+		// getEffectiveTld returns 'com' (no dot), verify that generateVariants works
+		expect(tld).toBe('com');
+		const variants = generateVariants(brand, tld, domain);
+
+		// Should include generic extras (proves the GENERIC_TLDS check works without leading dot)
+		expect(variants).toContain('example.dev');
+		expect(variants).toContain('example.app');
+		// And global TLDs
+		expect(variants).toContain('example.net');
+		expect(variants).toContain('example.org');
+	});
+});
+
+describe('checkShadowDomains — classification edge cases', () => {
+	async function run(domain = 'example.com') {
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		return checkShadowDomains(domain);
+	}
+
+	it('should NOT classify MX + no SPF + DMARC p=reject as critical', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			if (name === target && (type === 'MX' || type === '15')) {
+				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.registrar.com.']));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['1.2.3.4']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.shadow.com.']));
+				if (type === 'TXT' || type === '16') return Promise.resolve(emptyResponse()); // no SPF
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(txtRecords(name, ['v=DMARC1; p=reject; rua=mailto:dmarc@example.net']));
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		// DMARC p=reject present so should NOT be critical
+		const critical = result.findings.find(
+			(f) => f.severity === 'critical' && f.detail.includes('example.net'),
+		);
+		expect(critical).toBeUndefined();
+	});
+
+	it('should treat DMARC with no p= tag as p=none (high severity)', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			if (name === target && (type === 'MX' || type === '15')) {
+				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.registrar.com.']));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['1.2.3.4']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.shadow.com.']));
+				if (type === 'TXT' || type === '16') return Promise.resolve(txtRecords(name, ['v=spf1 include:spf.provider.com -all']));
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				// DMARC record with no p= tag at all
+				return Promise.resolve(txtRecords(name, ['v=DMARC1; rua=mailto:dmarc@example.net']));
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		// Missing p= tag should default to p=none, classified as high
+		const high = result.findings.find(
+			(f) => f.severity === 'high' && f.detail.includes('example.net') && /not enforcing/i.test(f.title),
+		);
+		expect(high).toBeDefined();
+	});
+
+	it('should normalize trailing dot on MX hostname for comparison', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			// Primary MX with trailing dot
+			if (name === target && (type === 'MX' || type === '15')) {
+				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			// Variant with same MX but without trailing dot
+			if (name === 'example.org') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.registrar.com.']));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['1.2.3.4']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.example.com'])); // no trailing dot
+				if (type === 'TXT' || type === '16') return Promise.resolve(txtRecords(name, ['v=spf1 -all']));
+			}
+			if (name === '_dmarc.example.org' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(txtRecords(name, ['v=DMARC1; p=reject']));
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		// Should match as same infrastructure (low severity) despite trailing dot difference
+		const low = result.findings.find(
+			(f) => f.severity === 'low' && f.detail.includes('example.org') && /well-managed/i.test(f.title),
+		);
+		expect(low).toBeDefined();
+		// Should NOT be medium/divergent
+		const divergent = result.findings.find(
+			(f) => f.severity === 'medium' && f.detail.includes('example.org') && /divergent/i.test(f.title),
+		);
+		expect(divergent).toBeUndefined();
 	});
 });
