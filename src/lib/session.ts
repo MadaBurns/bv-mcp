@@ -51,8 +51,8 @@ export async function checkSessionCreateRateLimit(
 				quotaCoordinator,
 			);
 			if (coordinated) return coordinated;
-		} catch (err) {
-			console.warn('[session] quota coordinator create limiter failed, falling back to KV/in-memory:', err instanceof Error ? err.message : String(err));
+		} catch {
+			console.warn('[session] quota coordinator create limiter failed, falling back to KV/in-memory');
 		}
 	}
 	if (kv) {
@@ -80,8 +80,8 @@ export async function checkSessionCreateRateLimit(
 				allowed: true,
 				remaining: SESSION_CREATE_LIMIT_PER_MINUTE - nextCount,
 			};
-		} catch (err) {
-			console.warn('[session] KV create limiter failed, falling back to in-memory:', err instanceof Error ? err.message : String(err));
+		} catch {
+			console.warn('[session] KV create limiter failed, falling back to in-memory');
 		}
 	}
 
@@ -124,8 +124,8 @@ export async function createSession(kv?: KVNamespace): Promise<string> {
 		try {
 			await createSessionKVRecord(id, kv, record);
 			return id;
-		} catch (err) {
-			console.warn('[session] KV create failed, falling back to in-memory:', err instanceof Error ? err.message : String(err));
+		} catch {
+			console.warn('[session] KV create failed, falling back to in-memory');
 		}
 	}
 
@@ -150,14 +150,14 @@ export async function validateSession(id: string, kv?: KVNamespace): Promise<boo
 				record.lastAccessedAt = now;
 				try {
 					await createSessionKVRecord(id, kv, record);
-				} catch (refreshErr) {
+				} catch {
 					// Session is valid — refresh write failure is non-fatal
-					console.warn('[session] KV refresh write failed (session still valid):', refreshErr instanceof Error ? refreshErr.message : String(refreshErr));
+					console.warn('[session] KV refresh write failed (session still valid)');
 				}
 			}
 			return true;
-		} catch (err) {
-			console.warn('[session] KV validate failed, falling back to in-memory:', err instanceof Error ? err.message : String(err));
+		} catch {
+			console.warn('[session] KV validate failed, falling back to in-memory');
 		}
 	}
 
@@ -172,8 +172,8 @@ export async function deleteSession(id: string, kv?: KVNamespace): Promise<boole
 			if (!existing) return false;
 			await kv.delete(sessionKey(id));
 			return true;
-		} catch (err) {
-			console.warn('[session] KV delete failed, falling back to in-memory:', err instanceof Error ? err.message : String(err));
+		} catch {
+			console.warn('[session] KV delete failed, falling back to in-memory');
 		}
 	}
 

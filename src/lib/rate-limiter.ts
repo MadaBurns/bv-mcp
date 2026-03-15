@@ -261,16 +261,16 @@ export async function checkRateLimit(ip: string, kv?: KVNamespace, quotaCoordina
 		try {
 			const coordinated = await checkScopedRateLimitWithCoordinator(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT, quotaCoordinator);
 			if (coordinated) return coordinated;
-		} catch (err) {
-			console.warn('[rate-limiter] quota coordinator error, falling back to KV/in-memory:', err instanceof Error ? err.message : err);
+		} catch {
+			console.warn('[rate-limiter] quota coordinator error, falling back to KV/in-memory');
 		}
 	}
        if (kv) {
 	       try {
 		       return await checkRateLimitKV(ip, kv);
-	       } catch (err) {
+	       } catch {
 		       // KV error — log warning and fall back to in-memory
-		       console.warn('[rate-limiter] KV error, falling back to in-memory:', (err instanceof Error ? err.message : err));
+		       console.warn('[rate-limiter] KV error, falling back to in-memory');
 	       }
        }
        return checkRateLimitInMemory(ip);
@@ -289,15 +289,15 @@ export async function checkControlPlaneRateLimit(
 		try {
 			const coordinated = await checkScopedRateLimitWithCoordinator(ip, 'control', CONTROL_PLANE_MINUTE_LIMIT, CONTROL_PLANE_HOUR_LIMIT, quotaCoordinator);
 			if (coordinated) return coordinated;
-		} catch (err) {
-			console.warn('[rate-limiter] quota coordinator control-plane error, falling back to KV/in-memory:', err instanceof Error ? err.message : err);
+		} catch {
+			console.warn('[rate-limiter] quota coordinator control-plane error, falling back to KV/in-memory');
 		}
 	}
 	if (kv) {
 		try {
 			return await checkControlPlaneRateLimitKV(ip, kv);
-		} catch (err) {
-			console.warn('[rate-limiter] KV control-plane error, falling back to in-memory:', err instanceof Error ? err.message : err);
+		} catch {
+			console.warn('[rate-limiter] KV control-plane error, falling back to in-memory');
 		}
 	}
 	return checkControlPlaneRateLimitInMemory(ip);
@@ -318,15 +318,15 @@ export async function checkToolDailyRateLimit(
 		try {
 			const coordinated = await checkToolDailyRateLimitWithCoordinator(principalId, toolName, limit, quotaCoordinator);
 			if (coordinated) return coordinated;
-		} catch (err) {
-			console.warn('[rate-limiter] quota coordinator tool quota error, falling back to KV/in-memory:', err instanceof Error ? err.message : err);
+		} catch {
+			console.warn('[rate-limiter] quota coordinator tool quota error, falling back to KV/in-memory');
 		}
 	}
 	if (kv) {
 		try {
 			return await checkToolDailyRateLimitKV(principalId, toolName, limit, kv);
-		} catch (err) {
-			console.warn('[rate-limiter] KV tool quota error, falling back to in-memory:', err instanceof Error ? err.message : err);
+		} catch {
+			console.warn('[rate-limiter] KV tool quota error, falling back to in-memory');
 		}
 	}
 	return checkToolDailyRateLimitInMemory(principalId, toolName, limit);
@@ -345,15 +345,15 @@ export async function checkGlobalDailyLimit(
 		try {
 			const coordinated = await checkGlobalDailyLimitWithCoordinator(limit, quotaCoordinator);
 			if (coordinated) return coordinated;
-		} catch (err) {
-			console.warn('[rate-limiter] quota coordinator global cap error, falling back to KV/in-memory:', err instanceof Error ? err.message : err);
+		} catch {
+			console.warn('[rate-limiter] quota coordinator global cap error, falling back to KV/in-memory');
 		}
 	}
 	if (kv) {
 		try {
 			return await checkGlobalDailyLimitKV(limit, kv);
-		} catch (err) {
-			console.warn('[rate-limiter] KV global cap error, falling back to in-memory:', err instanceof Error ? err.message : err);
+		} catch {
+			console.warn('[rate-limiter] KV global cap error, falling back to in-memory');
 		}
 	}
 	return checkGlobalDailyLimitInMemory(limit);
