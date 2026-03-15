@@ -133,7 +133,7 @@ export async function fetchProviderPayload(
 	timeoutMs: number,
 	retries: number,
 	expectedSha256?: string,
-): Promise<ProviderSignaturePayload> {
+): Promise<ProviderSignaturePayload | null> {
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -142,7 +142,11 @@ export async function fetchProviderPayload(
 				method: 'GET',
 				headers: { Accept: 'application/json' },
 				signal: controller.signal,
+				redirect: 'manual',
 			});
+			if (response.status >= 300 && response.status < 400) {
+				return null;
+			}
 			if (!response.ok) {
 				if (attempt < retries && response.status >= 500) continue;
 				throw new Error(`Provider signature source returned HTTP ${response.status}`);

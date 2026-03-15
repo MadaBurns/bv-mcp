@@ -39,7 +39,7 @@ export function buildStructuredScanResult(result: ScanDomainResult): StructuredS
 			low: result.score.findings.filter((f) => f.severity === 'low').length,
 		},
 		scoringProfile: result.context?.profile ?? 'mail_enabled',
-		scoringSignals: result.context?.signals ?? [],
+		scoringSignals: (result.context?.signals ?? []).map((s) => s.replace(/[<>&"']/g, '')),
 		scoringNote: result.scoringNote ?? null,
 		adaptiveWeightDeltas: result.adaptiveWeightDeltas ?? null,
 		timestamp: result.timestamp,

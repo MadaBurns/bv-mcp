@@ -7,6 +7,8 @@
  * MCP Streamable HTTP transport layer.
  */
 
+import { sanitizeErrorMessage } from './json-rpc';
+
 /** Format a JSON-RPC message as an SSE `message` event */
 export function sseEvent(data: unknown, eventId?: string): string {
 	let event = '';
@@ -104,7 +106,7 @@ export function createStreamingSseResponse<T>(
 					closed = true;
 					clearInterval(heartbeat);
 					// Emit error as a proper JSON-RPC error SSE event so MCP clients can parse it
-					const message = err instanceof Error ? err.message : 'Internal error';
+					const message = sanitizeErrorMessage(err, 'Internal error');
 					const jsonRpcErr = { jsonrpc: '2.0', id: null, error: { code: -32603, message } };
 					controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify(jsonRpcErr)}\n\n`));
 					controller.close();

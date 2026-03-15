@@ -57,6 +57,9 @@ export async function loadProviderSignatures(options?: LoadProviderSignaturesOpt
 	try {
 		const validatedUrl = validateRuntimeSourceUrl(sourceUrl, allowedHosts);
 		const payload = await fetchProviderPayload(validatedUrl.toString(), timeoutMs, retries, expectedSha256);
+		if (!payload) {
+			throw new Error('Provider signature source returned a redirect');
+		}
 		const result = buildResult(payload, 'runtime', false);
 		lastKnownGood = result;
 		runtimeSignatureCache = {
