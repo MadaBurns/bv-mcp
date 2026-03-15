@@ -165,23 +165,24 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 
 **Recommended:** Open [claude.ai](https://claude.ai) → **Settings → Connectors → Add custom connector** → paste `https://dns-mcp.blackveilsecurity.com/mcp`.
 
-**Advanced fallback:** If you want first-party local stdio instead of the hosted HTTP connector, open **Settings → Developer → Edit Config** (`claude_desktop_config.json`) and add:
+This uses native Streamable HTTP with no bridge process. Prefer this over the config file approach.
+
+**Config file fallback:** Claude Desktop's `claude_desktop_config.json` only supports stdio servers. Use the `mcp-remote` bridge to proxy to the hosted endpoint:
 
 ```json
 {
   "mcpServers": {
     "blackveil-dns": {
-      "type": "stdio",
       "command": "/opt/homebrew/bin/npx",
-      "args": ["-y", "--package", "blackveil-dns", "blackveil-dns-mcp"]
+      "args": ["-y", "mcp-remote", "https://dns-mcp.blackveilsecurity.com/mcp"]
     }
   }
 }
 ```
 
-> Prefer the direct custom connector above when possible. The stdio route runs the server locally and depends on Node.js being available to Claude Desktop.
+> Prefer the Custom Connector above when possible. The `mcp-remote` bridge runs a local Node.js process that proxies stdio to HTTP.
 >
-> On macOS GUI apps, `npx` may not resolve from `PATH`; if Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path. After editing the config, fully restart Claude Desktop. If you already have other servers, merge `"blackveil-dns"` into your existing `"mcpServers"` object — don't paste a second `{ }` wrapper.
+> On macOS GUI apps, `npx` may not resolve from `PATH`; use the absolute path (run `which npx` to find yours). After editing the config, fully restart Claude Desktop (Cmd+Q, reopen). If you already have other servers, merge `"blackveil-dns"` into your existing `"mcpServers"` object.
 
 </details>
 
