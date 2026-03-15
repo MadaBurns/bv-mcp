@@ -64,7 +64,11 @@ const MULTI_LEVEL_SUFFIXES = new Set([
 export function getEffectiveTld(domain: string): string | null {
 	if (!domain) return null;
 
-	const labels = domain.toLowerCase().split('.');
+	// Strip trailing dot (e.g., "example.com." → "example.com")
+	const normalized = domain.endsWith('.') ? domain.slice(0, -1) : domain;
+	if (!normalized) return null;
+
+	const labels = normalized.toLowerCase().split('.');
 	if (labels.length < 2) return null;
 
 	// Walk from rightmost label, building candidate suffixes
@@ -114,7 +118,9 @@ export function extractBrandName(domain: string): string | null {
 	const tld = getEffectiveTld(domain);
 	if (!tld) return null;
 
-	const labels = domain.toLowerCase().split('.');
+	// Strip trailing dot to match getEffectiveTld normalization
+	const normalized = domain.endsWith('.') ? domain.slice(0, -1) : domain;
+	const labels = normalized.toLowerCase().split('.');
 	const tldLabels = tld.split('.');
 
 	// The brand label is at position (total labels - TLD labels - 1)
