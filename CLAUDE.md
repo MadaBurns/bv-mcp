@@ -270,7 +270,7 @@ Parsed once per request in `index.ts` and `internal.ts` via `parseScoringConfig(
 
 ## Service Binding Integration
 
-bv-mcp can be consumed as a **Cloudflare service binding** by other Workers in the same account (e.g., other Workers). This provides sub-millisecond, zero-overhead access to all 15 tool handlers without MCP protocol framing, auth, rate limiting, or session management.
+bv-mcp can be consumed as a **Cloudflare service binding** by other Workers in the same account. This provides sub-millisecond, zero-overhead access to all 15 tool handlers without MCP protocol framing, auth, rate limiting, or session management.
 
 ### How it works
 
