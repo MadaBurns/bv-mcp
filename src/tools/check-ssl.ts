@@ -47,14 +47,23 @@ async function checkHttps(domain: string): Promise<Finding[]> {
 			signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
 		});
 
-		// For redirects, check Location header for HTTP downgrade instead of following
-		const redirectTarget = (response.status >= 300 && response.status < 400)
-			? response.headers.get('location') ?? undefined
-			: undefined;
-		findings.push(...getHttpsFindings(domain, redirectTarget, response.headers.get('strict-transport-security')));
+		const isRedirect = response.status >= 300 && response.status < 400;
+		const location = isRedirect ? response.headers.get('location') : null;
+		const isDowngrade = location?.startsWith('http://') ?? false;
+		const isHttpsRedirect = isRedirect && !isDowngrade;
+
+		// For HTTPS-to-HTTPS redirects: skip — no downgrade and can't check final page HSTS
+		// For HTTP downgrade: report critical + check HSTS on the HTTPS redirect response
+		// For non-redirects: check HSTS normally
+		if (!isHttpsRedirect) {
+			const redirectTarget = isDowngrade ? (location ?? undefined) : undefined;
+			findings.push(...getHttpsFindings(domain, redirectTarget, response.headers.get('strict-transport-security')));
+		}
 
 	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
+		const message = err instanceof Error && (err.message.includes('timeout') || err.message.includes('abort'))
+			? err.message
+			: 'Connection failed';
 		findings.push(getHttpsErrorFinding(domain, message));
 	}
 

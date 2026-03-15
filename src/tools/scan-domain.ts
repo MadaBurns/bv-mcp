@@ -392,10 +392,9 @@ async function safeCheck(category: CheckCategory, fn: () => Promise<CheckResult>
 			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Check timed out')), PER_CHECK_TIMEOUT_MS)),
 		]);
 		return result;
-	} catch (err) {
-		const message = err instanceof Error ? err.message : 'Check failed';
-		const severity = message === 'Check timed out' ? 'low' : 'high';
-		const findings = [createFinding(category, `${category.toUpperCase()} check error`, severity, `Check failed: ${message}`)];
+	} catch {
+		const message = 'Check failed';
+		const findings = [createFinding(category, `${category.toUpperCase()} check error`, 'high', `Check failed: ${message}`)];
 		return buildCheckResult(category, findings);
 	}
 }

@@ -34,10 +34,9 @@ export async function checkMtaSts(domain: string, dnsOptions?: QueryDnsOptions):
 		const txtAnalysis = getMtaStsTxtFindings(txtRecords);
 		hasTxtRecord = txtAnalysis.hasTxtRecord;
 		findings.push(...finalizeMissingMtaStsRecordFinding(txtAnalysis.findings, domain));
-	} catch (err: unknown) {
+	} catch {
 		findings = [];
-		const message = err instanceof Error ? err.message : 'Unknown error';
-		findings.push(createFinding('mta_sts', 'MTA-STS DNS query failed', 'low', `Could not query MTA-STS TXT record for ${domain}. Error: ${message}`));
+		findings.push(createFinding('mta_sts', 'MTA-STS DNS query failed', 'low', `Could not query MTA-STS TXT record for ${domain}.`));
 	}
 
 	// Try to fetch the MTA-STS policy file
@@ -50,7 +49,7 @@ export async function checkMtaSts(domain: string, dnsOptions?: QueryDnsOptions):
 				signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
 			});
 
-			if (response.status >= 300 && response.status < 400) {
+			if ([301, 302, 303, 307, 308].includes(response.status)) {
 				findings.push(
 					createFinding(
 						'mta_sts',

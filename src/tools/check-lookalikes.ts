@@ -143,14 +143,13 @@ export async function checkLookalikes(domain: string): Promise<CheckResult> {
 	return Promise.race([
 		checkLookalikesCore(domain),
 		new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Lookalike check timed out')), LOOKALIKE_TIMEOUT_MS)),
-	]).catch((err) => {
-		const message = err instanceof Error ? err.message : 'Lookalike check failed';
+	]).catch(() => {
 		return buildCheckResult('lookalikes', [
 			createFinding(
 				'lookalikes',
 				'Lookalike check incomplete',
 				'info',
-				`${message}. This check generates many DNS queries — try again shortly, as partial results are cached.`,
+				'Lookalike check did not complete. This check generates many DNS queries — try again shortly, as partial results are cached.',
 			),
 		]);
 	});

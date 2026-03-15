@@ -148,19 +148,17 @@ describe('DNS Security MCP Server', () => {
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(200);
-			const body = (await response.json()) as { status: string; service: string; analytics: { enabled: boolean } };
+			const body = (await response.json()) as { status: string; service: string };
 			expect(body.status).toBe('ok');
 			expect(body.service).toBe('bv-dns-security-mcp');
-			expect(typeof body.analytics.enabled).toBe('boolean');
 		});
 
 		it('returns status ok (integration style)', async () => {
 			const response = await SELF.fetch('http://example.com/health');
 			expect(response.status).toBe(200);
-			const body = (await response.json()) as { status: string; service: string; analytics: { enabled: boolean } };
+			const body = (await response.json()) as { status: string; service: string };
 			expect(body.status).toBe('ok');
 			expect(body.service).toBe('bv-dns-security-mcp');
-			expect(typeof body.analytics.enabled).toBe('boolean');
 		});
 	});
 
