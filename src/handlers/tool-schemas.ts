@@ -197,6 +197,18 @@ export const TOOLS: McpTool[] = [
 		},
 	},
 	{
+		name: 'check_shadow_domains',
+		description:
+			'Discover registered alternate-TLD variants of a domain with active DNS/mail infrastructure and assess email spoofing risk. Checks whether shadow domains (e.g., .org.nz, .co.nz, .com variants) have proper email authentication (SPF, DMARC) or are fully spoofable. Standalone check — not included in scan_domain due to query volume.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
+		name: 'check_txt_hygiene',
+		description:
+			"Audit all TXT records on a domain for governance and security concerns: stale verification records, unexpected foreign service registrations (e.g., Yandex on non-Russian domains), excessive record accumulation, duplicate verifications, and cross-domain trust delegations. Maps the organisation's verified platform exposure from public DNS.",
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
 		name: 'explain_finding',
 		description: 'Get a plain-language explanation of a DNS security finding, including potential impact, adverse consequences, and recommended remediation steps.',
 		inputSchema: {

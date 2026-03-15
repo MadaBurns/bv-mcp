@@ -16,7 +16,9 @@ export type CheckCategory =
 	| 'mx'
 	| 'bimi'
 	| 'tlsrpt'
-	| 'lookalikes';
+	| 'lookalikes'
+	| 'shadow_domains'
+	| 'txt_hygiene';
 
 export interface Finding {
 	category: CheckCategory;
@@ -56,6 +58,8 @@ export const CATEGORY_DISPLAY_WEIGHTS: Record<CheckCategory, number> = {
 	bimi: 0,
 	tlsrpt: 0.02,
 	lookalikes: 0,
+	shadow_domains: 0,
+	txt_hygiene: 0,
 };
 
 /** Severity penalty multipliers applied to the category score */
