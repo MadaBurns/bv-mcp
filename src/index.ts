@@ -16,7 +16,7 @@
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { checkRateLimit } from './lib/rate-limiter';
+import { checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
 import { logEvent, logError, sanitizeHeadersForLog } from './lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
 import { normalizeHeaders, parseJsonRpcRequest, readRequestBody } from './mcp/request';
@@ -26,7 +26,7 @@ import { sseEvent, acceptsSSE, createSseStream, sseErrorResponse, createStreamin
 import { createAnalyticsClient } from './lib/analytics';
 import type { JsonRpcRequest } from './lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionRequest } from './mcp/route-gates';
-import { MAX_REQUEST_BODY_BYTES } from './lib/config';
+import { MAX_REQUEST_BODY_BYTES, FREE_TOOL_DAILY_LIMITS } from './lib/config';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { scanDomain } from './tools/scan-domain';
 import { gradeBadge, errorBadge } from './lib/badge';
@@ -131,8 +131,12 @@ for (const path of mcpPaths) {
 	});
 
 	app.use(path, async (c, next) => {
-		const apiKey = c.env.BV_API_KEY?.trim();
+		const rawApiKey = c.env.BV_API_KEY;
+		const apiKey = rawApiKey?.trim();
 		if (!apiKey) {
+			if (rawApiKey) {
+				console.warn('[auth] BV_API_KEY is configured but contains only whitespace — auth is disabled');
+			}
 			c.set('isAuthenticated', false);
 			return next();
 		}
@@ -183,9 +187,6 @@ app.get('/health', (c) => {
 	return c.json({
 		status: 'ok',
 		service: 'bv-dns-security-mcp',
-		analytics: {
-			enabled: Boolean(c.env.MCP_ANALYTICS),
-		},
 		timestamp: new Date().toISOString(),
 	});
 });
@@ -200,6 +201,11 @@ app.get('/badge/:domain', async (c) => {
 	const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
 	if (!rateResult.allowed) {
 		return new Response(errorBadge(), { status: 429, headers: svgHeaders });
+	}
+
+	const toolQuota = await checkToolDailyRateLimit(ip, 'scan_domain', FREE_TOOL_DAILY_LIMITS.scan_domain, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
+	if (!toolQuota.allowed) {
+		return c.text('Rate limit exceeded', 429);
 	}
 
 	const rawDomain = c.req.param('domain');
@@ -251,6 +257,11 @@ app.post('/mcp', async (c) => {
 
 	const parsedBodies = parsedRequest.isBatch ? (parsedRequest.body as unknown[]) : [parsedRequest.body as JsonRpcRequest];
 	if (parsedRequest.isBatch) {
+		const batch = parsedBodies;
+		if (batch.length > 20) {
+			return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Batch size exceeds maximum of 20 requests'), 400);
+		}
+
 		const results = await Promise.all(
 			parsedBodies.map(async (entry) => {
 				if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
