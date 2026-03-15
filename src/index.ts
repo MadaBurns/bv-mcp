@@ -20,7 +20,7 @@ import { checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
 import { logEvent, logError, sanitizeHeadersForLog } from './lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
 import { normalizeHeaders, parseJsonRpcRequest, readRequestBody } from './mcp/request';
-import { createSession, deleteSession } from './lib/session';
+import { createSession, deleteSession, validateSession } from './lib/session';
 import { isAuthorizedRequest, unauthorizedResponse } from './lib/auth';
 import { sseEvent, acceptsSSE, createSseStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
 import { createAnalyticsClient } from './lib/analytics';
@@ -400,6 +400,16 @@ app.post('/mcp/messages', async (c) => {
 
 	if (!sessionId) {
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: missing session'), 400);
+	}
+
+	// Early session validation — return HTTP 404 directly for expired/terminated sessions
+	// so legacy SSE clients see the error instead of getting 202 with an undeliverable SSE message
+	if (!(await validateSession(sessionId, c.env.SESSION_STORE))) {
+		closeLegacyStream(sessionId);
+		return c.json(
+			jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Not Found: session expired or terminated'),
+			404,
+		);
 	}
 
 	const bodyReadResult = await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES);
