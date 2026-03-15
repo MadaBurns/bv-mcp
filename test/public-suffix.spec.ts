@@ -81,6 +81,12 @@ describe('public-suffix', () => {
 			const { extractBrandName } = await loadModule();
 			expect(extractBrandName('co.nz')).toBeNull();
 		});
+
+		it('should handle domain with trailing dot correctly', async () => {
+			const { extractBrandName } = await loadModule();
+			expect(extractBrandName('example.com.')).toBe('example');
+			expect(extractBrandName('bbc.co.uk.')).toBe('bbc');
+		});
 	});
 
 	describe('getEffectiveTld', () => {
@@ -159,13 +165,11 @@ describe('public-suffix', () => {
 			expect(getEffectiveTld('co.nz')).toBeNull();
 		});
 
-		it('should handle domain with trailing dot without crashing', async () => {
+		it('should handle domain with trailing dot correctly', async () => {
 			const { getEffectiveTld } = await loadModule();
-			// Trailing dot creates an empty label — function should not throw
-			const result = getEffectiveTld('example.com.');
-			// Returns something (not undefined), proving it handles edge case without crashing
-			expect(() => getEffectiveTld('example.com.')).not.toThrow();
-			expect(result).toBeDefined();
+			// Trailing dot is stripped before processing
+			expect(getEffectiveTld('example.com.')).toBe('com');
+			expect(getEffectiveTld('bbc.co.uk.')).toBe('co.uk');
 		});
 
 		it('should normalize uppercase domain', async () => {

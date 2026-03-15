@@ -14,6 +14,7 @@
 import { queryTxtRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { getEffectiveTld } from '../lib/public-suffix';
+import { validateDomain } from '../lib/sanitize';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 
@@ -154,6 +155,14 @@ function getHygieneRating(recordCount: number): string {
  */
 export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	const findings: Finding[] = [];
+
+	// Defense-in-depth: validate domain even though upstream dispatch already validates
+	const validation = validateDomain(domain);
+	if (!validation.valid) {
+		return buildCheckResult('txt_hygiene', [
+			createFinding('txt_hygiene', 'Invalid domain', 'info', `Domain validation failed: ${validation.error ?? 'invalid input'}.`),
+		]);
+	}
 
 	// Step 1: Fetch root TXT and _dmarc TXT in parallel (allSettled to tolerate partial failure)
 	const [rootResult, dmarcResult] = await Promise.allSettled([
