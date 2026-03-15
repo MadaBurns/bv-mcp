@@ -460,6 +460,7 @@ Optional configuration:
 git clone https://github.com/MadaBurns/bv-mcp.git
 cd bv-mcp
 npm install
+git config core.hooksPath .githooks   # enable pre-commit safety hooks
 npm run dev       # localhost:8787/mcp
 ```
 
