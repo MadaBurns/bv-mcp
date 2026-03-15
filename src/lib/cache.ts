@@ -142,9 +142,9 @@ export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | un
 	       try {
 		       const val = await kv.get(key, 'json');
 		       return (val ?? undefined) as T | undefined; // KV.get('json') returns unknown; generic T is caller-enforced
-	       } catch (err) {
+	       } catch {
 		       // KV error — log warning and fall through to in-memory
-		       console.warn('[cache] KV get failed, falling back to in-memory:', (err instanceof Error ? err.message : err));
+		       console.warn('[cache] KV get failed, falling back to in-memory');
 	       }
        }
        return IN_MEMORY_CACHE.get(key) as T | undefined;
@@ -173,9 +173,9 @@ export async function cacheSet(key: string, value: unknown, kv?: KVNamespace, tt
 	       try {
 		       await kv.put(key, JSON.stringify(value), { expirationTtl: ttl });
 		       return;
-	       } catch (err) {
+	       } catch {
 		       // KV error — log warning and fall through to in-memory
-		       console.warn('[cache] KV put failed, falling back to in-memory:', (err instanceof Error ? err.message : err));
+		       console.warn('[cache] KV put failed, falling back to in-memory');
 	       }
        }
        IN_MEMORY_CACHE.set(key, value, ttl * 1000);
