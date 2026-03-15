@@ -33,7 +33,7 @@ async function fetchDohResponse(url: string, timeoutMs: number): Promise<DohResp
 		});
 		if (!response.ok) return null;
 		const data = await response.json();
-		if (typeof data !== 'object' || data === null || typeof (data as DohResponse).Status !== 'number') return null;
+		if (typeof data !== 'object' || data === null || typeof (data as DohResponse).Status !== 'number' || !Number.isFinite((data as DohResponse).Status)) return null;
 		return data as DohResponse;
 	} catch {
 		return null;
@@ -118,7 +118,7 @@ export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck
 		}
 
 		const raw = await response.json();
-		if (typeof raw !== 'object' || raw === null || typeof (raw as DohResponse).Status !== 'number') {
+		if (typeof raw !== 'object' || raw === null || typeof (raw as DohResponse).Status !== 'number' || !Number.isFinite((raw as DohResponse).Status)) {
 			throw new DnsQueryError('Invalid DoH response format', domain, type);
 		}
 		const data = raw as DohResponse;
