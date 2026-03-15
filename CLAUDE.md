@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What is this?
 
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
-Exposes 15 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
-A 16th check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
+Exposes 17 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
+An 18th check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
 **Version**: 1.2.0 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
@@ -51,12 +51,14 @@ src/handlers/tool-formatters.ts — mcpError/mcpText/formatCheckResult helpers
 src/handlers/tool-execution.ts — Tool logging helpers
 src/handlers/resources.ts — resources/list + resources/read (static docs)
 
-src/tools/check-*.ts      — Individual DNS checks (SPF, DMARC, DKIM, MX, SSL, BIMI, TLS-RPT, lookalikes, etc.)
+src/tools/check-*.ts      — Individual DNS checks (SPF, DMARC, DKIM, MX, SSL, BIMI, TLS-RPT, lookalikes, shadow domains, TXT hygiene, etc.)
 src/tools/*-analysis.ts   — Analysis helpers extracted from check modules
 src/tools/spf-trust-surface.ts — SPF trust surface analysis (multi-tenant SaaS platform detection)
 src/tools/lookalike-analysis.ts — Lookalike/typosquat domain permutation generator
 src/tools/scan-domain.ts  — Parallel orchestrator for all checks → ScanScore + MaturityStage
 src/tools/scan/           — Scan sub-helpers (format-report.ts, post-processing.ts, maturity-staging.ts)
+src/tools/check-shadow-domains.ts — Shadow domain TLD variant discovery and email auth risk classification
+src/tools/check-txt-hygiene.ts — TXT record hygiene auditing and platform exposure mapping
 src/tools/explain-finding.ts — Static explanation generator
 
 src/lib/scoring.ts        — Re-export facade for scoring subsystem
@@ -84,6 +86,7 @@ src/lib/audit.ts          — Audit logging
 src/lib/output-sanitize.ts — Markdown syntax sanitization for text output
 src/lib/provider-signatures.ts — Email provider database and MX pattern matching
 src/lib/provider-signature-source.ts — Runtime provider signature fetching/validation
+src/lib/public-suffix.ts  — Curated PSL subset for brand name extraction (shadow domains, TXT hygiene)
 src/lib/log.ts            — Structured JSON logging (logEvent, logError)
 
 test/                     — One spec per source file
@@ -207,8 +210,8 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 
 - **SSRF protection**: `config.ts` defines blocked IPs/TLDs/rebinding services; `sanitize.ts` enforces them. Wrangler uses `global_fetch_strictly_public` compatibility flag. All outbound fetches in tool checks (MTA-STS policy, SSL probe, subdomain takeover probe) use `redirect: 'manual'` to prevent redirect-based SSRF — redirect targets are never followed blindly.
 - **Auth**: optional bearer token (`BV_API_KEY`), constant-time XOR comparison in `lib/auth.ts`
-- **Rate limiting**: 50 req/min, 300 req/hr per IP via KV (in-memory fallback). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `ping`, `notifications/*`) are exempt. Authenticated requests (valid `BV_API_KEY` bearer token) bypass rate limiting entirely. `check_lookalikes` has a separate daily quota of 20/day per IP (unauthenticated) with 60-minute result caching, due to high outbound query volume (~100 DoH queries per invocation).
-- **Per-tool daily quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts` caps unauthenticated usage per tool (e.g., `scan_domain`: 75/day, `check_lookalikes`: 20/day, `compare_baseline`: 150/day, individual checks: 200/day). Global daily cap of 500k requests/day across all unauthenticated IPs (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via Durable Objects (`QuotaCoordinator`).
+- **Rate limiting**: 50 req/min, 300 req/hr per IP via KV (in-memory fallback). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `ping`, `notifications/*`) are exempt. Authenticated requests (valid `BV_API_KEY` bearer token) bypass rate limiting entirely. `check_lookalikes` and `check_shadow_domains` each have a separate daily quota of 20/day per IP (unauthenticated) with 60-minute result caching, due to high outbound query volume (~100 DoH queries per invocation).
+- **Per-tool daily quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts` caps unauthenticated usage per tool (e.g., `scan_domain`: 75/day, `check_lookalikes`: 20/day, `check_shadow_domains`: 20/day, `compare_baseline`: 150/day, `check_txt_hygiene`: 200/day, individual checks: 200/day). Global daily cap of 500k requests/day across all unauthenticated IPs (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via Durable Objects (`QuotaCoordinator`).
 - **Request body max**: 10 KB on `/mcp`
 - **IP sourcing**: only `cf-connecting-ip` — never `x-forwarded-for`
 - **Error sanitization**: only known validation errors surface; unexpected → generic message. Fallback `console.warn()` messages in KV/DO error paths use generic descriptions without leaking error details.

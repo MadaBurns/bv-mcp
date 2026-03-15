@@ -89,4 +89,6 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_lookalikes: 20,
 	explain_finding: 200,
 	compare_baseline: 150,
+	check_shadow_domains: 20,
+	check_txt_hygiene: 200,
 };
