@@ -28,6 +28,9 @@ export function acceptsSSE(accept: string | undefined): boolean {
  * Build a Response for an error payload, using SSE format when the client
  * sent `Accept: text/event-stream` so that SSE-only transports (e.g. mcp-remote)
  * receive the error instead of hanging.
+ *
+ * Uses the actual HTTP status code so MCP clients can detect session expiry (404)
+ * and other errors at the HTTP level, as required by the MCP spec.
  */
 export function sseErrorResponse(
 	payload: unknown,
@@ -39,7 +42,7 @@ export function sseErrorResponse(
 	if (acceptsSSE(accept)) {
 		const body = sseEvent(payload, eventId);
 		return new Response(body, {
-			status: 200,
+			status,
 			headers: {
 				'Content-Type': 'text/event-stream',
 				'Cache-Control': 'no-cache',

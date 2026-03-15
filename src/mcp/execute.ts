@@ -235,7 +235,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		}
 	}
 
-	if (options.validateSession && method !== 'initialize') {
+	if (options.validateSession && method !== 'initialize' && !method.startsWith('notifications/')) {
 		const sessionError = await validateSessionRequest(
 			options.sessionId,
 			options.sessionStore,
