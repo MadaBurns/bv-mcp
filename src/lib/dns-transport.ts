@@ -32,7 +32,9 @@ async function fetchDohResponse(url: string, timeoutMs: number): Promise<DohResp
 			cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true },
 		});
 		if (!response.ok) return null;
-		return (await response.json()) as DohResponse; // DoH JSON API returns a well-defined schema
+		const data = await response.json();
+		if (typeof data !== 'object' || data === null || typeof (data as DohResponse).Status !== 'number') return null;
+		return data as DohResponse;
 	} catch {
 		return null;
 	} finally {
@@ -115,7 +117,11 @@ export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck
 			throw new DnsQueryError(`DoH returned HTTP ${response.status}`, domain, type, response.status);
 		}
 
-		const data = (await response.json()) as DohResponse; // DoH JSON API returns a well-defined schema
+		const raw = await response.json();
+		if (typeof raw !== 'object' || raw === null || typeof (raw as DohResponse).Status !== 'number') {
+			throw new DnsQueryError('Invalid DoH response format', domain, type);
+		}
+		const data = raw as DohResponse;
 
 		if (confirmWithSecondaryOnEmpty && !opts?.skipSecondaryConfirmation && !hasTypedAnswers(data, type)) {
 			const secondary = await queryDnsFromEndpoint(SECONDARY_DOH_ENDPOINT, domain, type, dnssecCheck, timeoutMs);

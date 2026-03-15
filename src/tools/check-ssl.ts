@@ -43,12 +43,15 @@ async function checkHttps(domain: string): Promise<Finding[]> {
 	try {
 		const response = await fetch(`https://${domain}`, {
 			method: 'HEAD',
-			redirect: 'follow',
+			redirect: 'manual',
 			signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
 		});
 
-		// Check if we got redirected to HTTP (downgrade)
-		findings.push(...getHttpsFindings(domain, response.url, response.headers.get('strict-transport-security')));
+		// For redirects, check Location header for HTTP downgrade instead of following
+		const redirectTarget = (response.status >= 300 && response.status < 400)
+			? response.headers.get('location') ?? undefined
+			: undefined;
+		findings.push(...getHttpsFindings(domain, redirectTarget, response.headers.get('strict-transport-security')));
 
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);

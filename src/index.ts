@@ -79,7 +79,7 @@ for (const path of mcpPaths) {
 		path,
 		cors({
 			origin: (origin, c) => {
-				if (!origin) return '*';
+				if (!origin) return '';
 
 				try {
 					const originHost = new URL(origin).host;
