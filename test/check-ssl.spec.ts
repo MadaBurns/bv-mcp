@@ -45,10 +45,10 @@ describe('checkSsl', () => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 			if (url.startsWith('https://')) {
 				return Promise.resolve({
-					url: 'http://example.com/',
-					ok: true,
-					status: 200,
-					headers: new Headers(),
+					url: 'https://example.com/',
+					ok: false,
+					status: 301,
+					headers: new Headers({ location: 'http://example.com/' }),
 				});
 			}
 			return Promise.reject(new Error('HTTP blocked'));

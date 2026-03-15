@@ -5,6 +5,11 @@
  * Produces shields.io-style flat badges compatible with Cloudflare Workers runtime.
  */
 
+/** Escape XML special characters to prevent SVG injection */
+function escapeXml(str: string): string {
+	return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+}
+
 /** Grade-to-color mapping for the badge right side */
 const GRADE_COLORS: Record<string, string> = {
 	'A+': '#4c1',
@@ -41,8 +46,11 @@ function renderBadge(label: string, value: string, color: string): string {
 	const labelX = labelWidth / 2;
 	const valueX = labelWidth + valueWidth / 2;
 
-	return `<svg xmlns="http://www.w3.org/2000/svg" width="${totalWidth}" height="20" role="img" aria-label="${label}: ${value}">
-  <title>${label}: ${value}</title>
+	const safeLabel = escapeXml(label);
+	const safeValue = escapeXml(value);
+
+	return `<svg xmlns="http://www.w3.org/2000/svg" width="${totalWidth}" height="20" role="img" aria-label="${safeLabel}: ${safeValue}">
+  <title>${safeLabel}: ${safeValue}</title>
   <linearGradient id="s" x2="0" y2="100%">
     <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
     <stop offset="1" stop-opacity=".1"/>
@@ -56,10 +64,10 @@ function renderBadge(label: string, value: string, color: string): string {
     <rect width="${totalWidth}" height="20" fill="url(#s)"/>
   </g>
   <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="110">
-    <text aria-hidden="true" x="${labelX * 10}" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="${(labelWidth - padding) * 10}">${label}</text>
-    <text x="${labelX * 10}" y="140" transform="scale(.1)" fill="#fff" textLength="${(labelWidth - padding) * 10}">${label}</text>
-    <text aria-hidden="true" x="${valueX * 10}" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="${(valueWidth - padding) * 10}">${value}</text>
-    <text x="${valueX * 10}" y="140" transform="scale(.1)" fill="#fff" textLength="${(valueWidth - padding) * 10}">${value}</text>
+    <text aria-hidden="true" x="${labelX * 10}" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="${(labelWidth - padding) * 10}">${safeLabel}</text>
+    <text x="${labelX * 10}" y="140" transform="scale(.1)" fill="#fff" textLength="${(labelWidth - padding) * 10}">${safeLabel}</text>
+    <text aria-hidden="true" x="${valueX * 10}" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="${(valueWidth - padding) * 10}">${safeValue}</text>
+    <text x="${valueX * 10}" y="140" transform="scale(.1)" fill="#fff" textLength="${(valueWidth - padding) * 10}">${safeValue}</text>
   </g>
 </svg>`;
 }

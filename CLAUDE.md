@@ -205,14 +205,15 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 
 ## Security
 
-- **SSRF protection**: `config.ts` defines blocked IPs/TLDs/rebinding services; `sanitize.ts` enforces them. Wrangler uses `global_fetch_strictly_public` compatibility flag.
+- **SSRF protection**: `config.ts` defines blocked IPs/TLDs/rebinding services; `sanitize.ts` enforces them. Wrangler uses `global_fetch_strictly_public` compatibility flag. All outbound fetches in tool checks (MTA-STS policy, SSL probe, subdomain takeover probe) use `redirect: 'manual'` to prevent redirect-based SSRF — redirect targets are never followed blindly.
 - **Auth**: optional bearer token (`BV_API_KEY`), constant-time XOR comparison in `lib/auth.ts`
 - **Rate limiting**: 50 req/min, 300 req/hr per IP via KV (in-memory fallback). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `ping`, `notifications/*`) are exempt. Authenticated requests (valid `BV_API_KEY` bearer token) bypass rate limiting entirely. `check_lookalikes` has a separate daily quota of 20/day per IP (unauthenticated) with 60-minute result caching, due to high outbound query volume (~100 DoH queries per invocation).
 - **Per-tool daily quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts` caps unauthenticated usage per tool (e.g., `scan_domain`: 75/day, `check_lookalikes`: 20/day, `compare_baseline`: 150/day, individual checks: 200/day). Global daily cap of 500k requests/day across all unauthenticated IPs (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via Durable Objects (`QuotaCoordinator`).
 - **Request body max**: 10 KB on `/mcp`
 - **IP sourcing**: only `cf-connecting-ip` — never `x-forwarded-for`
-- **Error sanitization**: only known validation errors surface; unexpected → generic message
-- **Origin validation**: MCP spec-compliant; rejects browser requests with unauthorized `Origin` header; configurable via `ALLOWED_ORIGINS` env var
+- **Error sanitization**: only known validation errors surface; unexpected → generic message. Fallback `console.warn()` messages in KV/DO error paths use generic descriptions without leaking error details.
+- **Origin validation**: MCP spec-compliant; rejects browser requests with unauthorized `Origin` header; configurable via `ALLOWED_ORIGINS` env var. Missing `Origin` header results in empty CORS (no wildcard `*`), allowing non-browser clients through without granting cross-origin access.
+- **Output sanitization**: SVG badge output (`lib/badge.ts`) XML-escapes all interpolated values. DNS-over-HTTPS responses (`lib/dns-transport.ts`) are validated for expected schema before casting.
 - **Sessions**: idle TTL (30 min), sliding refresh on validate, optional KV-backed storage via `SESSION_STORE` with in-memory fallback. Missing session → 400; expired/terminated session → 404 (per MCP spec, triggers client re-initialization)
 - **Internal routes**: `/internal/*` is guarded by `cf-connecting-ip` header detection. Cloudflare only sets this header on public internet requests — service binding calls (Worker-to-Worker) never carry it. Public requests to `/internal/*` receive a 404. This allows other Workers in the same Cloudflare account to call tool handlers directly without MCP protocol overhead, auth, rate limiting, or session management.
 

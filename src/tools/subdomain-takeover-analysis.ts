@@ -107,9 +107,11 @@ export async function probeHttpFingerprint(fqdn: string, cname: string): Promise
 
 	try {
 		const response = await fetch(`https://${fqdn}`, {
-			redirect: 'follow',
+			redirect: 'manual',
 			signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
 		});
+		// Skip fingerprint matching on redirects — redirecting services are not deprovisioned
+		if (response.status >= 300 && response.status < 400) return null;
 		const body = await response.text();
 
 		for (const [service, fingerprint] of matchingEntries) {

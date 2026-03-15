@@ -46,10 +46,20 @@ export async function checkMtaSts(domain: string, dnsOptions?: QueryDnsOptions):
 			const policyUrl = `https://mta-sts.${domain}/.well-known/mta-sts.txt`;
 			const response = await fetch(policyUrl, {
 				method: 'GET',
+				redirect: 'manual',
 				signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
 			});
 
-			if (!response.ok) {
+			if (response.status >= 300 && response.status < 400) {
+				findings.push(
+					createFinding(
+						'mta_sts',
+						'MTA-STS policy redirects',
+						'high',
+						`MTA-STS policy file at ${policyUrl} returned HTTP ${response.status} redirect. The policy must be served directly at the well-known URL without redirects.`,
+					),
+				);
+			} else if (!response.ok) {
 				findings.push(
 					createFinding(
 						'mta_sts',
