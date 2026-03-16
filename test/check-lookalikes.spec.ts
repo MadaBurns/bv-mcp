@@ -142,6 +142,15 @@ describe('checkLookalikes', () => {
 		expect(mod.FAILURE_THRESHOLD).toBe(2);
 	});
 
+	it('exports Phase 1 lean DNS options', async () => {
+		const mod = await import('../src/tools/check-lookalikes');
+		expect(mod.PHASE1_DNS_OPTS).toEqual({
+			timeoutMs: 2000,
+			retries: 0,
+			skipSecondaryConfirmation: true,
+		});
+	});
+
 	it('should not report lookalikes that have no NS records (Phase 1 filter)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
