@@ -8,6 +8,7 @@
  */
 
 import { queryDnsRecords } from '../lib/dns';
+import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { generateLookalikes } from './lookalike-analysis';
@@ -23,6 +24,13 @@ const LOOKALIKE_TIMEOUT_MS = 20_000;
 
 /** Canary label used for wildcard detection on parent domains */
 export const WILDCARD_CANARY_LABEL = '_bv-wc-probe';
+
+/** Lean DNS options for Phase 1 existence checks — fast, no retries, no secondary confirmation. */
+export const PHASE1_DNS_OPTS: QueryDnsOptions = {
+	timeoutMs: 2000,
+	retries: 0,
+	skipSecondaryConfirmation: true,
+};
 
 interface LookalikeResult {
 	domain: string;
@@ -95,6 +103,25 @@ async function detectWildcardParents(parentDomains: string[]): Promise<Set<strin
 	});
 	await Promise.allSettled(probes);
 	return wildcardParents;
+}
+
+/**
+ * Phase 1: Fast NS existence check for all domains in parallel.
+ * Returns only domains that have NS records (i.e., are registered).
+ */
+async function filterByNsExistence(domains: string[]): Promise<string[]> {
+	const results = await Promise.allSettled(
+		domains.map(async (domain) => {
+			const ns = await queryDnsRecords(domain, 'NS', PHASE1_DNS_OPTS);
+			return { domain, hasNs: ns.length > 0 };
+		}),
+	);
+	return results
+		.filter(
+			(r): r is PromiseFulfilledResult<{ domain: string; hasNs: boolean }> =>
+				r.status === 'fulfilled' && r.value.hasNs,
+		)
+		.map((r) => r.value.domain);
 }
 
 /**
@@ -205,8 +232,23 @@ async function checkLookalikesCore(domain: string): Promise<CheckResult> {
 
 	const permsToProbe = [...nonDotInsertionPerms, ...filteredDotInsertionPerms];
 
-	// Process with adaptive batching to avoid overwhelming the DoH endpoint
-	const probeResults = await probeWithAdaptiveBatching(permsToProbe);
+	// Phase 1: Fast NS existence check — filter out unregistered domains
+	const registeredPerms = await filterByNsExistence(permsToProbe);
+
+	if (registeredPerms.length === 0) {
+		findings.push(
+			createFinding(
+				'lookalikes',
+				'No active lookalike domains detected',
+				'info',
+				`Checked ${permutations.length} domain permutations of ${domain}. No active registrations detected.`,
+			),
+		);
+		return buildCheckResult('lookalikes', findings);
+	}
+
+	// Phase 2: Detail probe only registered domains
+	const probeResults = await probeWithAdaptiveBatching(registeredPerms);
 	const results: LookalikeResult[] = [];
 	for (const result of probeResults) {
 		if (result.status === 'fulfilled') {
