@@ -347,6 +347,44 @@ describe('checkShadowDomains', () => {
 		);
 		expect(sharedNsFinding).toBeDefined();
 	});
+
+	it('should classify variant as unregistered when it has no NS records (Phase 1 filter)', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			if (name === target && (type === 'MX' || type === '15')) {
+				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			// example.net has MX but NO NS records — should not be detail-probed
+			if (name === 'example.net') {
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.shadow.com.']));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['1.2.3.4']));
+				if (type === 'TXT' || type === '16') return Promise.resolve(emptyResponse());
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(emptyResponse());
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		// Without NS, example.net should NOT be critical
+		const critical = result.findings.find(
+			(f) => f.severity === 'critical' && f.detail.includes('example.net'),
+		);
+		expect(critical).toBeUndefined();
+
+		const unregistered = result.findings.find(
+			(f) => f.severity === 'info' && f.detail.includes('example.net') && /unregistered/i.test(f.title),
+		);
+		expect(unregistered).toBeDefined();
+	});
 });
 
 describe('generateVariants', () => {
