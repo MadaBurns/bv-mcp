@@ -21,6 +21,15 @@ const INITIAL_BATCH_SIZE = 4;
 const MIN_BATCH_SIZE = 2;
 const BACKOFF_DELAY_MS = 500;
 
+export const FAILURE_THRESHOLD = 0;
+
+/** Lean DNS options for Phase 1 existence checks. */
+export const PHASE1_DNS_OPTS: QueryDnsOptions = {
+	timeoutMs: 2000,
+	retries: 0,
+	skipSecondaryConfirmation: true,
+};
+
 /** Global ccTLD set always appended. */
 const GLOBAL_TLDS = [
 	'.com', '.net', '.org', '.io', '.ai', '.co',
@@ -93,9 +102,16 @@ export function generateVariants(brand: string, effectiveTld: string, primaryDom
  * Probe a single variant domain for NS, A, MX, SPF, and DMARC records.
  * All 5 DNS queries run in parallel with skipSecondaryConfirmation.
  */
-async function probeVariant(variant: string, dnsOpts: QueryDnsOptions): Promise<VariantProbeResult> {
+async function probeVariant(
+	variant: string,
+	dnsOpts: QueryDnsOptions,
+	prefetchedNs?: string[],
+): Promise<VariantProbeResult> {
+	const nsPromise: Promise<string[]> =
+		prefetchedNs !== undefined ? Promise.resolve(prefetchedNs) : queryDnsRecords(variant, 'NS', dnsOpts);
+
 	const [nsResult, aResult, mxResult, txtResult, dmarcResult] = await Promise.allSettled([
-		queryDnsRecords(variant, 'NS', dnsOpts),
+		nsPromise,
 		queryDnsRecords(variant, 'A', dnsOpts),
 		queryMxRecords(variant, dnsOpts),
 		queryTxtRecords(variant, dnsOpts),
@@ -120,6 +136,29 @@ async function probeVariant(variant: string, dnsOpts: QueryDnsOptions): Promise<
 	}
 
 	return { variant, ns, hasA, mx, hasSpf, dmarcPolicy };
+}
+
+/**
+ * Phase 1: Fast NS existence check for all variants in parallel.
+ * Returns a Map of variant -> NS records for registered domains.
+ */
+async function filterByNsExistence(
+	variants: string[],
+	dnsOpts: QueryDnsOptions,
+): Promise<Map<string, string[]>> {
+	const registered = new Map<string, string[]>();
+	const results = await Promise.allSettled(
+		variants.map(async (variant) => {
+			const ns = await queryDnsRecords(variant, 'NS', { ...dnsOpts, ...PHASE1_DNS_OPTS });
+			return { variant, ns };
+		}),
+	);
+	for (const result of results) {
+		if (result.status === 'fulfilled' && result.value.ns.length > 0) {
+			registered.set(result.value.variant, result.value.ns);
+		}
+	}
+	return registered;
 }
 
 /**
@@ -336,15 +375,33 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 		// Primary MX query failure — continue with empty set
 	}
 
-	// Adaptive batching
+	// Phase 1: Fast NS existence check — filter out unregistered variants
+	const registeredVariants = await filterByNsExistence(variants, dnsOpts);
+
+	// Classify unregistered variants immediately as info findings
+	for (const variant of variants) {
+		if (!registeredVariants.has(variant)) {
+			findings.push(
+				createFinding(
+					'shadow_domains',
+					'Brand variant unregistered',
+					'info',
+					`${variant} does not appear to be registered. Consider defensive registration to prevent brand abuse.`,
+					{ variant, ns: [], mx: [], hasSpf: false, dmarcPolicy: null },
+				),
+			);
+		}
+	}
+
+	// Phase 2: Detail probe only registered variants with NS passthrough
+	const registeredList = [...registeredVariants.entries()];
 	let batchSize = INITIAL_BATCH_SIZE;
 	let delayMs = 0;
 	const completedProbes: VariantProbeResult[] = [];
-	let variantsChecked = 0;
+	const variantsChecked = registeredList.length;
 	let timedOut = false;
 
-	for (let i = 0; i < variants.length; i += batchSize) {
-		// Cooperative timeout check between batches
+	for (let i = 0; i < registeredList.length; i += batchSize) {
 		if (Date.now() >= deadline) {
 			timedOut = true;
 			break;
@@ -354,8 +411,10 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 			await new Promise((resolve) => setTimeout(resolve, delayMs));
 		}
 
-		const batch = variants.slice(i, i + batchSize);
-		const batchResults = await Promise.allSettled(batch.map((v) => probeVariant(v, dnsOpts)));
+		const batch = registeredList.slice(i, i + batchSize);
+		const batchResults = await Promise.allSettled(
+			batch.map(([variant, ns]) => probeVariant(variant, dnsOpts, ns)),
+		);
 
 		let failures = 0;
 		for (const result of batchResults) {
@@ -365,10 +424,9 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 				failures++;
 			}
 		}
-		variantsChecked += batch.length;
 
 		// Adaptive batch sizing
-		if (failures > 0) {
+		if (failures > FAILURE_THRESHOLD) {
 			batchSize = Math.max(MIN_BATCH_SIZE, Math.floor(batchSize / 2));
 			delayMs = BACKOFF_DELAY_MS;
 		} else if (delayMs > 0) {
