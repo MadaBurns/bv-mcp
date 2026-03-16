@@ -398,7 +398,7 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 	let batchSize = INITIAL_BATCH_SIZE;
 	let delayMs = 0;
 	const completedProbes: VariantProbeResult[] = [];
-	let variantsChecked = registeredList.length;
+	const variantsChecked = registeredList.length;
 	let timedOut = false;
 
 	for (let i = 0; i < registeredList.length; i += batchSize) {
