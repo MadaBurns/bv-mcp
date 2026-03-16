@@ -597,3 +597,15 @@ describe('checkShadowDomains — classification edge cases', () => {
 		expect(divergent).toBeUndefined();
 	});
 });
+
+describe('checkShadowDomains — Phase 1 constants', () => {
+	it('exports Phase 1 lean DNS options and FAILURE_THRESHOLD', async () => {
+		const mod = await import('../src/tools/check-shadow-domains');
+		expect(mod.PHASE1_DNS_OPTS).toEqual({
+			timeoutMs: 2000,
+			retries: 0,
+			skipSecondaryConfirmation: true,
+		});
+		expect(mod.FAILURE_THRESHOLD).toBe(0);
+	});
+});
