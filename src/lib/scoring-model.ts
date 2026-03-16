@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type FindingConfidence = 'deterministic' | 'heuristic' | 'verified';
