@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 
 import type { CheckResult } from '../lib/scoring';
 import { sanitizeOutputText } from '../lib/output-sanitize';

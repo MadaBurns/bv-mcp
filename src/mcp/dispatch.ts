@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 
 import { handleToolsList, handleToolsCall } from '../handlers/tools';
 import { handleResourcesList, handleResourcesRead } from '../handlers/resources';

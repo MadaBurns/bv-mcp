@@ -3,7 +3,7 @@
 	"version": "1.3.0",
 	"description": "Blackveil DNS — Open-source DNS & email security scanner.",
 	"type": "module",
-	"license": "MIT",
+	"license": "BUSL-1.1",
 	"author": "BLACKVEIL Security",
 	"homepage": "https://blackveilsecurity.com",
 	"repository": {

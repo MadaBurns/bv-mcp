@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 
 import { checkRateLimit, checkToolDailyRateLimit, checkGlobalDailyLimit } from '../lib/rate-limiter';
 import { logEvent, logError } from '../lib/log';

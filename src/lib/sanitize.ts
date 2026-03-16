@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 
 // For IDN/Unicode normalization
 import * as punycode from 'punycode/';

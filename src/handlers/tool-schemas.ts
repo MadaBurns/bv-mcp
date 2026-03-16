@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 
 /**
  * MCP Tool schema definitions for Blackveil DNS.

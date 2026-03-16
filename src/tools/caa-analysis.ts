@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 
 import type { CaaRecord } from '../lib/dns';
 import type { Finding } from '../lib/scoring';
