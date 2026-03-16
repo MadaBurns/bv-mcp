@@ -11,7 +11,7 @@ Open-source DNS & email security scanner for Claude, Cursor, VS Code, and MCP cl
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![Tests](https://img.shields.io/badge/Tests-800%2B-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![Coverage](https://img.shields.io/badge/Coverage-~95%25-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
-[![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
@@ -515,6 +515,6 @@ Featured in [SecurityBrief](https://securitybrief.co.nz/story/exclusive-how-cybe
 
 Want continuous monitoring? [BLACKVEIL](https://blackveilsecurity.com) provides real-time alerting and Buck AI to help you fix what this scanner finds.
 
-MIT License
+Business Source License 1.1 — see [LICENSE](LICENSE) for details
 
 </div>

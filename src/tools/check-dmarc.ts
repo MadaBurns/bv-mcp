@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 
 /**
  * DMARC (Domain-based Message Authentication, Reporting & Conformance) check tool.

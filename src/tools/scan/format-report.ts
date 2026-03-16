@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 
 import type { ScanDomainResult } from '../scan-domain';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
