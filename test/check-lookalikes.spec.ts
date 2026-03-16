@@ -40,6 +40,14 @@ describe('checkLookalikes', () => {
 
 			// Make one specific lookalike have MX records
 			if (name === 'twst.com' || name === 'tst.com' || name === 'tes.com' || name === 'testt.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
+						),
+					);
+				}
 				if (type === 'MX' || type === '15') {
 					return Promise.resolve(
 						createDohResponse(
@@ -72,6 +80,14 @@ describe('checkLookalikes', () => {
 
 			// One lookalike with A record but no MX
 			if (name === 'tst.com' || name === 'tes.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
+						),
+					);
+				}
 				if (type === 'A' || type === '1') {
 					return Promise.resolve(
 						createDohResponse(
@@ -139,6 +155,14 @@ describe('checkLookalikes - null MX filtering', () => {
 
 			// Make a lookalike resolve with A + null MX
 			if (name === 'tst.com' || name === 'tes.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
+						),
+					);
+				}
 				if (type === 'MX' || type === '15') {
 					return Promise.resolve(
 						createDohResponse(
@@ -174,6 +198,14 @@ describe('checkLookalikes - null MX filtering', () => {
 			const { name, type } = parseDohQuery(input);
 
 			if (name === 'testt.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
+						),
+					);
+				}
 				// This domain has a real MX record → HIGH
 				if (type === 'MX' || type === '15') {
 					return Promise.resolve(
@@ -193,6 +225,14 @@ describe('checkLookalikes - null MX filtering', () => {
 				}
 			}
 			if (name === 'tes.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
+						),
+					);
+				}
 				// This domain has null MX → should NOT be flagged as HIGH
 				if (type === 'MX' || type === '15') {
 					return Promise.resolve(
@@ -281,6 +321,14 @@ describe('checkLookalikes - wildcard DNS filtering', () => {
 
 			// Only the actual dot-insertion domain resolves, canary does NOT
 			if (name === 'te.st.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
+						),
+					);
+				}
 				if (type === 'A' || type === '1') {
 					return Promise.resolve(
 						createDohResponse(
@@ -308,6 +356,14 @@ describe('checkLookalikes - wildcard DNS filtering', () => {
 
 			// tst.com (character omission, not dot-insertion) resolves
 			if (name === 'tst.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
+						),
+					);
+				}
 				if (type === 'A' || type === '1') {
 					return Promise.resolve(
 						createDohResponse(
