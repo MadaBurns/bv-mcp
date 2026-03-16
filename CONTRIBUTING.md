@@ -52,4 +52,4 @@ If you discover a security vulnerability, please email security@blackveilsecurit
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+By contributing, you agree that your contributions will be licensed under the [Business Source License 1.1](LICENSE).

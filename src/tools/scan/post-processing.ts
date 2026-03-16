@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 
 import { type CheckCategory, type CheckResult, buildCheckResult, createFinding } from '../../lib/scoring';
 import { queryTxtRecords } from '../../lib/dns';
