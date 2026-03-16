@@ -8,7 +8,7 @@
 	"homepage": "https://blackveilsecurity.com",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/MadaBurns/bv-mcp.git"
+		"url": "git+https://github.com/MadaBurns/bv-mcp.git"
 	},
 	"keywords": [
 		"blackveil",
@@ -34,7 +34,7 @@
 	"module": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"bin": {
-		"blackveil-dns-mcp": "./dist/stdio.js"
+		"blackveil-dns-mcp": "dist/stdio.js"
 	},
 	"exports": {
 		".": {
