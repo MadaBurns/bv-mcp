@@ -141,6 +141,67 @@ describe('checkLookalikes', () => {
 		expect(mod.BACKOFF_DELAY_MS).toBe(500);
 		expect(mod.FAILURE_THRESHOLD).toBe(2);
 	});
+
+	it('should not report lookalikes that have no NS records (Phase 1 filter)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+
+			// tst.com has A + MX but NO NS records — should be filtered by Phase 1
+			if (name === 'tst.com') {
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 15 }],
+							[{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }],
+						),
+					);
+				}
+				if (type === 'A' || type === '1') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 1 }],
+							[{ name, type: 1, TTL: 300, data: '1.2.3.4' }],
+						),
+					);
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const result = await run('test.com');
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeUndefined();
+	});
+
+	it('should report lookalikes that pass Phase 1 NS check', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+
+			// tst.com has NS + A records (no MX) — should pass Phase 1 and be reported as medium
+			if (name === 'tst.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
+						),
+					);
+				}
+				if (type === 'A' || type === '1') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 1 }],
+							[{ name, type: 1, TTL: 300, data: '1.2.3.4' }],
+						),
+					);
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const result = await run('test.com');
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('medium');
+	});
 });
 
 describe('checkLookalikes - null MX filtering', () => {
