@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 
 import { parseJsonRpcRequest } from './mcp/request';
 import { executeMcpRequest } from './mcp/execute';

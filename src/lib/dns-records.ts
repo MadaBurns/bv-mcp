@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 
 import { queryDns } from './dns-transport';
 import { RecordType, type QueryDnsOptions, type RecordTypeName } from './dns-types';

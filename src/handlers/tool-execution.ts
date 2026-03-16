@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 
 import { logEvent, logError } from '../lib/log';
 import type { AnalyticsClient } from '../lib/analytics';
