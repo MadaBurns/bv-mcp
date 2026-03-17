@@ -110,7 +110,7 @@ export async function checkZoneHygiene(domain: string, dnsOptions?: QueryDnsOpti
 				'zone_hygiene',
 				'Zone consistency check failed',
 				'info',
-				`DNS queries for NS/SOA records failed: ${err instanceof Error ? err.message : 'unknown error'}. Zone consistency could not be assessed.`,
+				'DNS queries for NS/SOA records failed. Zone consistency could not be assessed.',
 			),
 		);
 	}
