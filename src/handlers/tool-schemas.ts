@@ -221,6 +221,12 @@ export const TOOLS: McpTool[] = [
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
+		name: 'check_mx_reputation',
+		description:
+			'Check mail server reputation and reverse DNS. Resolves MX server IPs, checks against major DNSBLs (Spamhaus, SpamCop, Barracuda), and validates PTR/FCrDNS consistency.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
 		name: 'explain_finding',
 		description: 'Get a plain-language explanation of a DNS security finding, including potential impact, adverse consequences, and recommended remediation steps.',
 		inputSchema: {
