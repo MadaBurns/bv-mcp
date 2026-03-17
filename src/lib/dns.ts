@@ -10,4 +10,18 @@
 
 export * from './dns-types';
 export { DnsQueryError, queryDns } from './dns-transport';
-export { type CaaRecord, checkDnssec, parseCaaRecord, queryCaaRecords, queryDnsRecords, queryMxRecords, queryTxtRecords } from './dns-records';
+export {
+	type CaaRecord,
+	type PtrRecord,
+	type SrvRecord,
+	type TlsaRecord,
+	checkDnssec,
+	parseCaaRecord,
+	parseTlsaRecord,
+	queryCaaRecords,
+	queryDnsRecords,
+	queryMxRecords,
+	queryPtrRecords,
+	querySrvRecords,
+	queryTxtRecords,
+} from './dns-records';

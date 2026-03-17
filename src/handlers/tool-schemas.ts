@@ -109,6 +109,18 @@ export const TOOLS: McpTool[] = [
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
+		name: 'check_http_security',
+		description:
+			'Check HTTP security headers for a domain. Analyzes Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Permissions-Policy, Referrer-Policy, CORP, and COOP headers.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
+		name: 'check_dane',
+		description:
+			'Check DANE (DNS-Based Authentication of Named Entities) TLSA records for MX servers and HTTPS endpoints. Validates certificate pinning via DNS.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
 		name: 'check_lookalikes',
 		description:
 			'Detect registered lookalike/typosquat domains with DNS or mail infrastructure. Generates domain permutations and checks for active registrations. Standalone check — not included in scan_domain due to query volume.',
@@ -117,7 +129,7 @@ export const TOOLS: McpTool[] = [
 	{
 		name: 'scan_domain',
 		description:
-			'Run a comprehensive DNS security scan on a domain. Executes all checks (SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, Subdomain Takeover) in parallel and returns an overall security score and grade.',
+			'Run a comprehensive DNS security scan on a domain. Executes all checks (SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, Subdomain Takeover, HTTP Security, DANE) in parallel and returns an overall security score and grade.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
@@ -206,6 +218,24 @@ export const TOOLS: McpTool[] = [
 		name: 'check_txt_hygiene',
 		description:
 			"Audit all TXT records on a domain for governance and security concerns: stale verification records, unexpected foreign service registrations (e.g., Yandex on non-Russian domains), excessive record accumulation, duplicate verifications, and cross-domain trust delegations. Maps the organisation's verified platform exposure from public DNS.",
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
+		name: 'check_mx_reputation',
+		description:
+			'Check mail server reputation and reverse DNS. Resolves MX server IPs, checks against major DNSBLs (Spamhaus, SpamCop, Barracuda), and validates PTR/FCrDNS consistency.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
+		name: 'check_srv',
+		description:
+			'Audit SRV service discovery records for a domain. Probes common service prefixes (email, calendar, messaging) to map DNS-visible service footprint and flag insecure protocol advertisements.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
+		name: 'check_zone_hygiene',
+		description:
+			'Audit DNS zone consistency and detect sensitive subdomains. Checks SOA serial propagation and probes common internal subdomains (vpn, admin, staging, corp, intranet) for public DNS resolution.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{

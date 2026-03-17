@@ -87,10 +87,10 @@ describe('scoring', () => {
 		it('computes weighted average from check results', () => {
 			const results: CheckResult[] = [buildCheckResult('spf', [createFinding('spf', 'x', 'critical', 'd')])];
 			const scan = computeScanScore(results);
-			// AI-Resilience v4.0 weights: SPF(10) out of total 63.
+			// AI-Resilience v4.0 weights: SPF(10) out of total 67.
 			// One SPF critical => SPF score 60. Other controls remain perfect by default.
 			// Critical global penalty now applies only to verified critical findings.
-			// Email bonus not earned (no DKIM/DMARC results), so denominator stays at 63.
+			// Email bonus not earned (no DKIM/DMARC results), so denominator stays at 67.
 			expect(scan.overall).toBe(94);
 			expect(scan.categoryScores.spf).toBe(60);
 		});
@@ -113,10 +113,11 @@ describe('scoring', () => {
 			];
 
 			const scan = computeScanScore(results);
-			// AI-Resilience v4.0: Email bonus not earned (DMARC missing), denominator stays at 63.
+			// AI-Resilience v4.0: Email bonus not earned (DMARC missing), denominator stays at 67.
 			// DMARC missing-control → effectiveScore 0. DNSSEC "missing" text → effectiveScore 0.
+			// http_security defaults to 100 (not provided), importance 3. dane defaults to 100, importance 1.
 			// Critical gap ceiling applies (DMARC missing) → capped at 64.
-			expect(scan.overall).toBe(61);
+			expect(scan.overall).toBe(64);
 			expect(scan.grade).toBe('D+');
 		});
 
@@ -130,7 +131,7 @@ describe('scoring', () => {
 			];
 
 			const scan = computeScanScore(results);
-			// subdomain_takeover score becomes 60. Base weighted overall rounds to 98, then verified critical penalty applies.
+			// subdomain_takeover score becomes 60. Base weighted overall (65.8/67) rounds to 98, then verified critical penalty applies.
 			expect(scan.overall).toBe(83);
 		});
 
@@ -148,7 +149,7 @@ describe('scoring', () => {
 
 		it('category display weights sum is reasonable', () => {
 			const sum = Object.values(CATEGORY_DISPLAY_WEIGHTS).reduce((a, b) => a + b, 0);
-			expect(sum).toBeCloseTo(1.02);
+			expect(sum).toBeCloseTo(1.07);
 		});
 
 		it('applies positive modifier for high provider confidence findings', () => {
