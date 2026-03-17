@@ -115,6 +115,12 @@ export const TOOLS: McpTool[] = [
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
+		name: 'check_dane',
+		description:
+			'Check DANE (DNS-Based Authentication of Named Entities) TLSA records for MX servers and HTTPS endpoints. Validates certificate pinning via DNS.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
 		name: 'check_lookalikes',
 		description:
 			'Detect registered lookalike/typosquat domains with DNS or mail infrastructure. Generates domain permutations and checks for active registrations. Standalone check — not included in scan_domain due to query volume.',

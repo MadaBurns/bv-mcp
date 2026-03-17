@@ -19,7 +19,8 @@ export type CheckCategory =
 	| 'lookalikes'
 	| 'shadow_domains'
 	| 'txt_hygiene'
-	| 'http_security';
+	| 'http_security'
+	| 'dane';
 
 export interface Finding {
 	category: CheckCategory;
@@ -62,6 +63,7 @@ export const CATEGORY_DISPLAY_WEIGHTS: Record<CheckCategory, number> = {
 	shadow_domains: 0,
 	txt_hygiene: 0,
 	http_security: 0.05,
+	dane: 0,
 };
 
 /** Severity penalty multipliers applied to the category score */
