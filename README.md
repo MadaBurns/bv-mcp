@@ -66,7 +66,7 @@ Transport support:
 - **Provider intelligence** — inbound/outbound email provider inference from MX, SPF, DKIM
 - **Passive and read-only** — all checks use public Cloudflare DNS-over-HTTPS; no authorization required from the target
 
-Full scope and limitations in [`docs/coverage.md`](docs/coverage.md).
+Full scope in the coverage table below.
 
 ```
   scan_domain("anthropic.com")
@@ -426,7 +426,7 @@ Implementation details in `CLAUDE.md`.
 <details>
 <summary><b>Security</b></summary>
 
-Full details in `docs/security-and-observability.md`.
+Full details in `CLAUDE.md` (Security section).
 
 - Domain inputs validated and sanitized before execution
 - IP literals rejected (standard and alternate numeric forms)
@@ -502,9 +502,7 @@ Manual request examples and failure modes in `docs/troubleshooting.md`.
 | Document | Path |
 |---|---|
 | Client setup | `docs/client-setup.md` |
-| Security & observability | `docs/security-and-observability.md` |
 | Scoring | `docs/scoring.md` |
-| Coverage & limitations | `docs/coverage.md` |
 | Troubleshooting | `docs/troubleshooting.md` |
 | Style guide | `docs/style-guide.md` |
 
