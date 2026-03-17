@@ -113,10 +113,11 @@ describe('scoring', () => {
 			];
 
 			const scan = computeScanScore(results);
-			// AI-Resilience v4.0: Email bonus not earned (DMARC missing), denominator stays at 63.
+			// AI-Resilience v4.0: Email bonus not earned (DMARC missing), denominator stays at 66.
 			// DMARC missing-control → effectiveScore 0. DNSSEC "missing" text → effectiveScore 0.
+			// http_security defaults to 100 (not provided), importance 3.
 			// Critical gap ceiling applies (DMARC missing) → capped at 64.
-			expect(scan.overall).toBe(61);
+			expect(scan.overall).toBe(63);
 			expect(scan.grade).toBe('D+');
 		});
 
@@ -148,7 +149,7 @@ describe('scoring', () => {
 
 		it('category display weights sum is reasonable', () => {
 			const sum = Object.values(CATEGORY_DISPLAY_WEIGHTS).reduce((a, b) => a + b, 0);
-			expect(sum).toBeCloseTo(1.02);
+			expect(sum).toBeCloseTo(1.07);
 		});
 
 		it('applies positive modifier for high provider confidence findings', () => {

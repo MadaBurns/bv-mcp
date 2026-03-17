@@ -16,6 +16,7 @@ import { checkTlsrpt } from '../tools/check-tlsrpt';
 import { checkLookalikes } from '../tools/check-lookalikes';
 import { checkShadowDomains } from '../tools/check-shadow-domains';
 import { checkTxtHygiene } from '../tools/check-txt-hygiene';
+import { checkHttpSecurity } from '../tools/check-http-security';
 import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
@@ -94,6 +95,7 @@ const TOOL_REGISTRY: Record<
 	check_lookalikes: { cacheKey: () => 'lookalikes', execute: (d) => checkLookalikes(d), cacheTtlSeconds: 3600 },
 	check_shadow_domains: { cacheKey: () => 'shadow_domains', execute: (d) => checkShadowDomains(d), cacheTtlSeconds: 3600 },
 	check_txt_hygiene: { cacheKey: () => 'txt_hygiene', execute: (d) => checkTxtHygiene(d) },
+	check_http_security: { cacheKey: () => 'http_security', execute: (d) => checkHttpSecurity(d) },
 };
 
 function buildToolErrorResult(message: string): McpToolResult {

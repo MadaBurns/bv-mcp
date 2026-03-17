@@ -37,6 +37,7 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	lookalikes: { importance: 0 },
 	shadow_domains: { importance: 0 },
 	txt_hygiene: { importance: 0 },
+	http_security: { importance: 3 },
 };
 
 function scoreIndicatesMissingControl(findings: Finding[]): boolean {
