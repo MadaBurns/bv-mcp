@@ -56,6 +56,8 @@ interface ToolRuntimeOptions {
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
+	/** When provided, receives the raw CheckResult before MCP text formatting. Used by internal structured response mode. */
+	resultCapture?: (result: CheckResult) => void;
 }
 
 async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOptions): Promise<CheckResult> {
@@ -166,6 +168,7 @@ export async function handleToolsCall(
 				const checkName = registeredTool.cacheKey(args);
 				const cacheKey = `cache:${validDomain}:check:${checkName}`;
 				const result = await runWithCache(cacheKey, () => registeredTool.execute(validDomain, args, runtimeOptions), scanCacheKV, registeredTool.cacheTtlSeconds);
+				runtimeOptions?.resultCapture?.(result);
 				logResult = result.passed ? 'pass' : 'fail';
 				logDetails = result;
 				logToolSuccess({

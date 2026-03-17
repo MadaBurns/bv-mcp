@@ -1,5 +1,5 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import worker from '../src';
 import { resetAllRateLimits } from '../src/lib/rate-limiter';
 import { resetSessions } from '../src/lib/session';
@@ -127,6 +127,83 @@ describe('Internal service binding routes', () => {
 				await waitOnExecutionContext(ctx);
 				expect(response.status).not.toBe(429);
 			}
+		});
+
+		it('returns raw CheckResult when format=structured', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+
+			const request = new Request<unknown, IncomingRequestCfProperties>(
+				'http://example.com/internal/tools/call?format=structured',
+				{
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
+				},
+			);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { result: { category: string; passed: boolean; score: number; findings: unknown[] }; isError: boolean };
+			expect(body.isError).toBe(false);
+			expect(body.result).toBeDefined();
+			expect(body.result.category).toBe('spf');
+			expect(typeof body.result.score).toBe('number');
+			expect(typeof body.result.passed).toBe('boolean');
+			expect(Array.isArray(body.result.findings)).toBe(true);
+		});
+
+		it('returns MCP-framed response when format param is absent', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+
+			const request = new Request<unknown, IncomingRequestCfProperties>(
+				'http://example.com/internal/tools/call',
+				{
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
+				},
+			);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { content: { type: string; text: string }[]; result?: unknown };
+			expect(body.content).toBeDefined();
+			expect(body.content[0].type).toBe('text');
+			expect(body.result).toBeUndefined();
+		});
+
+		it('falls through to MCP-framed response for non-registry tools with format=structured', async () => {
+			const { httpResponse, createDohResponse } = await import('./helpers/dns-mock');
+
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if (url.startsWith('https://example.com') || url.startsWith('http://example.com')) {
+					return Promise.resolve(httpResponse('', 200));
+				}
+				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 1 }], []));
+			});
+
+			const request = new Request<unknown, IncomingRequestCfProperties>(
+				'http://example.com/internal/tools/call?format=structured',
+				{
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ name: 'scan_domain', arguments: { domain: 'example.com' } }),
+				},
+			);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { content?: unknown; result?: unknown };
+			expect(body.content).toBeDefined();
 		});
 	});
 });
