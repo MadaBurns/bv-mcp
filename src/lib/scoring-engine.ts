@@ -38,6 +38,7 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	shadow_domains: { importance: 0 },
 	txt_hygiene: { importance: 0 },
 	http_security: { importance: 3 },
+	dane: { importance: 1 },
 };
 
 function scoreIndicatesMissingControl(findings: Finding[]): boolean {

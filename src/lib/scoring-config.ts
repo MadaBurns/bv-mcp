@@ -67,13 +67,14 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
 		shadow_domains: 0,
 		txt_hygiene: 0,
 		http_security: 3,
+		dane: 1,
 	},
 	profileWeights: {
-		mail_enabled: { dmarc: 22, dkim: 16, spf: 10, ssl: 5, subdomain_takeover: 3, dnssec: 2, mta_sts: 2, mx: 2, tlsrpt: 1, caa: 0, ns: 0, bimi: 0, lookalikes: 0, shadow_domains: 0, txt_hygiene: 0, http_security: 3 },
-		enterprise_mail: { dmarc: 24, dkim: 18, spf: 12, ssl: 5, subdomain_takeover: 3, dnssec: 3, mta_sts: 4, mx: 2, tlsrpt: 2, caa: 0, ns: 0, bimi: 1, lookalikes: 0, shadow_domains: 0, txt_hygiene: 0, http_security: 3 },
-		non_mail: { ssl: 8, subdomain_takeover: 5, dnssec: 5, caa: 3, dmarc: 2, ns: 2, dkim: 1, spf: 1, mx: 0, mta_sts: 0, tlsrpt: 0, bimi: 0, lookalikes: 0, shadow_domains: 0, txt_hygiene: 0, http_security: 5 },
-		web_only: { ssl: 12, subdomain_takeover: 5, dnssec: 5, caa: 5, dmarc: 2, ns: 2, dkim: 1, spf: 1, mx: 0, mta_sts: 0, tlsrpt: 0, bimi: 0, lookalikes: 0, shadow_domains: 0, txt_hygiene: 0, http_security: 5 },
-		minimal: { dmarc: 5, ssl: 5, dnssec: 5, dkim: 3, spf: 3, subdomain_takeover: 3, ns: 2, mx: 1, caa: 1, mta_sts: 0, tlsrpt: 0, bimi: 0, lookalikes: 0, shadow_domains: 0, txt_hygiene: 0, http_security: 2 },
+		mail_enabled: { dmarc: 22, dkim: 16, spf: 10, ssl: 5, subdomain_takeover: 3, dnssec: 2, mta_sts: 2, mx: 2, tlsrpt: 1, caa: 0, ns: 0, bimi: 0, lookalikes: 0, shadow_domains: 0, txt_hygiene: 0, http_security: 3, dane: 1 },
+		enterprise_mail: { dmarc: 24, dkim: 18, spf: 12, ssl: 5, subdomain_takeover: 3, dnssec: 3, mta_sts: 4, mx: 2, tlsrpt: 2, caa: 0, ns: 0, bimi: 1, lookalikes: 0, shadow_domains: 0, txt_hygiene: 0, http_security: 3, dane: 2 },
+		non_mail: { ssl: 8, subdomain_takeover: 5, dnssec: 5, caa: 3, dmarc: 2, ns: 2, dkim: 1, spf: 1, mx: 0, mta_sts: 0, tlsrpt: 0, bimi: 0, lookalikes: 0, shadow_domains: 0, txt_hygiene: 0, http_security: 5, dane: 0 },
+		web_only: { ssl: 12, subdomain_takeover: 5, dnssec: 5, caa: 5, dmarc: 2, ns: 2, dkim: 1, spf: 1, mx: 0, mta_sts: 0, tlsrpt: 0, bimi: 0, lookalikes: 0, shadow_domains: 0, txt_hygiene: 0, http_security: 5, dane: 0 },
+		minimal: { dmarc: 5, ssl: 5, dnssec: 5, dkim: 3, spf: 3, subdomain_takeover: 3, ns: 2, mx: 1, caa: 1, mta_sts: 0, tlsrpt: 0, bimi: 0, lookalikes: 0, shadow_domains: 0, txt_hygiene: 0, http_security: 2, dane: 0 },
 	},
 	thresholds: {
 		emailBonusImportance: 8,
@@ -109,6 +110,7 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
 		shadow_domains: 0.00,
 		txt_hygiene: 0.00,
 		http_security: 0.35,
+		dane: 0.90,
 	},
 };
 

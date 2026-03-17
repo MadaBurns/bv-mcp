@@ -119,6 +119,12 @@ export const DETAILS_PATTERNS: DetailsPattern[] = [
 	{ checkType: 'HTTP_SECURITY', pattern: /no x-content-type-options/i, key: 'HTTP_SEC_NO_XCTO' },
 	{ checkType: 'HTTP_SECURITY', pattern: /no permissions-policy/i, key: 'HTTP_SEC_NO_PP' },
 	{ checkType: 'HTTP_SECURITY', pattern: /no referrer-policy/i, key: 'HTTP_SEC_NO_RP' },
+	// DANE patterns
+	{ checkType: 'DANE', pattern: /dane without dnssec/i, key: 'DANE_WITHOUT_DNSSEC' },
+	{ checkType: 'DANE', pattern: /no dane.*mx|no tlsa.*mx/i, key: 'DANE_NO_MX_TLSA' },
+	{ checkType: 'DANE', pattern: /no dane.*https|no tlsa.*https/i, key: 'DANE_NO_HTTPS_TLSA' },
+	{ checkType: 'DANE', pattern: /invalid.*usage/i, key: 'DANE_INVALID_USAGE' },
+	{ checkType: 'DANE', pattern: /full certificate matching/i, key: 'DANE_FULL_CERT' },
 	// NS Wildcard patterns
 	{ checkType: 'NS', pattern: /wildcard dns detected/i, key: 'NS_WILDCARD_DNS' },
 	// Lookalike patterns
@@ -978,6 +984,80 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 			'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Referrer-Policy',
 		],
 	},
+	// --- Details-aware DANE entries ---
+	DANE_WITHOUT_DNSSEC: {
+		title: 'DANE TLSA Records Without DNSSEC',
+		severity: 'high',
+		explanation:
+			'Your domain has DANE TLSA records pinning certificates to DNS, but DNSSEC is not enabled — like putting a lock on a box but leaving the key taped to the outside.',
+		impact: 'Without DNSSEC, attackers can forge DNS responses containing fake TLSA records, completely bypassing the certificate pinning DANE is meant to provide.',
+		adverseConsequences:
+			'An attacker performing a man-in-the-middle attack can substitute their own certificate and matching TLSA record, making the connection appear legitimate.',
+		recommendation:
+			'Enable DNSSEC for your domain before relying on DANE. DANE without DNSSEC provides no security benefit — it requires authenticated DNS to be effective.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6698',
+			'https://datatracker.ietf.org/doc/html/rfc7671',
+			'https://www.internetsociety.org/deploy360/dane/',
+		],
+	},
+	DANE_NO_MX_TLSA: {
+		title: 'No DANE TLSA for Mail Servers',
+		severity: 'medium',
+		explanation:
+			'Your mail servers have no DANE TLSA records — like sending letters without a tamper-evident seal. The mail carrier cannot verify they are delivering to the right mailbox.',
+		impact: 'Without DANE, email delivery relies solely on the CA system. A compromised or rogue CA could issue a fraudulent certificate for your mail server.',
+		adverseConsequences:
+			'Man-in-the-middle attackers can intercept email in transit by presenting a fraudulent certificate that the sending server will accept.',
+		recommendation:
+			'Publish TLSA records at _25._tcp.<mx-host> for each MX server. Use DANE-EE (usage 3) with SHA-256 matching for the strongest protection. Ensure DNSSEC is enabled first.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc7672',
+			'https://www.internetsociety.org/deploy360/dane/',
+		],
+	},
+	DANE_NO_HTTPS_TLSA: {
+		title: 'No DANE TLSA for HTTPS',
+		severity: 'low',
+		explanation:
+			'Your web server has no DANE TLSA record — like a storefront with no way for visitors to independently verify the security guard is legitimate.',
+		impact: 'Web traffic relies entirely on the CA trust model. A compromised CA could issue a certificate for your domain without your knowledge.',
+		adverseConsequences:
+			'While rare, CA compromise or misissuance events do occur. DANE provides an additional verification layer beyond the traditional CA system.',
+		recommendation:
+			'Consider publishing a TLSA record at _443._tcp.<domain> to pin your HTTPS certificate. This is an advanced hardening measure that requires DNSSEC.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6698',
+			'https://www.huque.com/bin/gen_tlsa',
+		],
+	},
+	DANE_INVALID_USAGE: {
+		title: 'Invalid DANE TLSA Usage Field',
+		severity: 'medium',
+		explanation:
+			'Your DANE TLSA record has an invalid usage field — like a security badge with an unrecognized clearance level. Systems cannot determine what kind of certificate verification to perform.',
+		impact: 'DANE-aware clients will ignore or reject the TLSA record, providing no certificate pinning protection.',
+		adverseConsequences: 'The intended certificate pinning is not enforced, leaving the connection vulnerable to the same attacks DANE was meant to prevent.',
+		recommendation:
+			'Fix the TLSA usage field to a valid value: 0 (PKIX-TA), 1 (PKIX-EE), 2 (DANE-TA), or 3 (DANE-EE). Usage 3 (DANE-EE) is most common for SMTP.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6698#section-2.1.1',
+		],
+	},
+	DANE_FULL_CERT: {
+		title: 'DANE TLSA Uses Full Certificate Matching',
+		severity: 'low',
+		explanation:
+			'Your DANE TLSA record stores the full certificate data instead of a hash — like photocopying an entire ID card instead of just recording the ID number.',
+		impact: 'Full certificate matching creates larger DNS records and requires updating the TLSA record every time the certificate is renewed.',
+		adverseConsequences: 'Certificate rotation becomes more operationally complex, increasing the risk of mismatched records that break DANE validation.',
+		recommendation:
+			'Use matching type 1 (SHA-256) or 2 (SHA-512) instead of type 0 (full certificate). Hash-based matching produces smaller records and simplifies certificate rotation.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6698#section-2.1.3',
+			'https://datatracker.ietf.org/doc/html/rfc7671#section-5.1',
+		],
+	},
 	// --- Details-aware MTA-STS entries ---
 	MTA_STS_NO_RECORDS: {
 		title: 'No MTA-STS Records Found',
@@ -1615,5 +1695,17 @@ export const SPECIFIC_IMPACT_RULES: SpecificImpactRule[] = [
 		titleIncludes: ['no x-frame-options', 'no x-content-type-options', 'no permissions-policy', 'no referrer-policy'],
 		impact: 'Missing browser security headers leave your site vulnerable to clickjacking, MIME sniffing, and data leakage.',
 		adverseConsequences: 'Visitors may be tricked into unintended actions, or their browsing data may be leaked to third parties.',
+	},
+	{
+		checkType: 'DANE',
+		titleIncludes: ['dane without dnssec', 'no dane', 'no tlsa'],
+		impact: 'Certificate pinning via DNS is missing or ineffective, leaving connections vulnerable to CA misissuance attacks.',
+		adverseConsequences: 'A compromised or rogue certificate authority could issue fraudulent certificates for your domain without detection.',
+	},
+	{
+		checkType: 'DANE',
+		titleIncludes: ['invalid', 'full certificate matching', 'malformed'],
+		impact: 'DANE TLSA records have configuration issues that reduce or negate their security benefit.',
+		adverseConsequences: 'Certificate pinning may fail or be ignored by DANE-aware clients, leaving connections unprotected.',
 	},
 ];

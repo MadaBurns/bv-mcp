@@ -45,6 +45,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		shadow_domains: { importance: 0 },
 		txt_hygiene: { importance: 0 },
 		http_security: { importance: 3 },
+		dane: { importance: 1 },
 	},
 	enterprise_mail: {
 		dmarc: { importance: 24 },
@@ -63,6 +64,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		shadow_domains: { importance: 0 },
 		txt_hygiene: { importance: 0 },
 		http_security: { importance: 3 },
+		dane: { importance: 2 },
 	},
 	non_mail: {
 		ssl: { importance: 8 },
@@ -81,6 +83,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		shadow_domains: { importance: 0 },
 		txt_hygiene: { importance: 0 },
 		http_security: { importance: 5 },
+		dane: { importance: 0 },
 	},
 	web_only: {
 		ssl: { importance: 12 },
@@ -99,6 +102,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		shadow_domains: { importance: 0 },
 		txt_hygiene: { importance: 0 },
 		http_security: { importance: 5 },
+		dane: { importance: 0 },
 	},
 	minimal: {
 		dmarc: { importance: 5 },
@@ -117,6 +121,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		shadow_domains: { importance: 0 },
 		txt_hygiene: { importance: 0 },
 		http_security: { importance: 2 },
+		dane: { importance: 0 },
 	},
 };
 
