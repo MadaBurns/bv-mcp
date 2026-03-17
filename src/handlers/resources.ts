@@ -51,7 +51,7 @@ const RESOURCES: McpResource[] = [
 const RESOURCE_CONTENT: Record<string, string> = {
 	'dns-security://guides/security-checks': `# DNS Security Checks
 
-The Blackveil DNS scanner evaluates **50+ checks** grouped into 13 categories.
+The Blackveil DNS scanner evaluates **80+ checks** grouped into 20 categories.
 
 This MCP server exposes tools that cover the core checks in each category and returns findings compatible with Blackveil DNS scoring.
 
@@ -71,9 +71,16 @@ This MCP server exposes tools that cover the core checks in each category and re
 | Subdomain Takeover | 2 | Dangling CNAME detection across known subdomains | Expanded asset discovery and takeover surface analytics |
 | BIMI | 1 | Brand logo publication and VMC validation | - |
 | TLS-RPT | 1 | SMTP TLS failure reporting configuration | - |
+| HTTP Security | 7 | CSP, XFO, XCTO, Permissions-Policy, Referrer-Policy, CORP, COOP | Deep header analysis |
+| DANE/TLSA | 5 | MX + HTTPS TLSA validation, DNSSEC cross-ref | Certificate pinning audit |
+| MX Reputation | 4 | DNSBL checks (Spamhaus, SpamCop, Barracuda), PTR/FCrDNS | Reputation monitoring |
+| SRV Discovery | 4 | Service footprint mapping, insecure protocol detection | Service inventory |
+| Zone Hygiene | 4 | SOA consistency, sensitive subdomain probing | Zone drift monitoring |
+| Shadow Domains | 2 | Alternate-TLD variant discovery, email auth risk | Brand domain monitoring |
+| TXT Hygiene | 3 | Stale verifications, platform exposure, foreign services | TXT record governance |
 | Lookalikes | 1 | Typosquat/lookalike domain detection (standalone) | - |
 
-> Total checks: **50+** across all categories.
+> Total checks: **80+** across all categories.
 
 ## Categories and Tool Mapping
 
@@ -134,8 +141,9 @@ Part of \`check_spf\`. Identifies when SPF \`include:\` directives delegate send
 
 ## Composite Tools
 
-- \`scan_domain\`: Runs all 12 checks and produces an overall score + grade.
+- \`scan_domain\`: Runs all 14 checks in parallel and produces an overall score + grade.
 - \`explain_finding\`: Provides plain-language context and remediation guidance for individual findings.
+- \`compare_baseline\`: Compares two domains side-by-side for security posture comparison.
 `,
 
 	'dns-security://guides/scoring': `# Scoring Methodology
@@ -151,17 +159,24 @@ Overall score is based on importance points per category, not a flat average:
 | DKIM | 16 |
 | SPF | 10 |
 | SSL/TLS | 5 |
+| HTTP Security | 3 |
 | Subdomain Takeover | 3 |
 | DNSSEC | 2 |
 | MTA-STS | 2 |
 | MX | 2 |
+| DANE | 1 |
 | TLS-RPT | 1 |
 | NS | 0 (informational) |
 | CAA | 0 (informational) |
 | BIMI | 0 (informational) |
 | Lookalikes | 0 (informational) |
+| Shadow Domains | 0 (informational) |
+| TXT Hygiene | 0 (informational) |
+| MX Reputation | 0 (informational) |
+| SRV | 0 (informational) |
+| Zone Hygiene | 0 (informational) |
 
-Scored total: **63** (+ up to 8 email bonus = 71 max denominator).
+Scored total: **67** (+ up to 8 email bonus = 75 max denominator).
 
 ## Scoring Profiles
 Weights adapt based on domain purpose. Pass \`profile\` to \`scan_domain\` to override:
@@ -190,8 +205,9 @@ For categories where a required control is missing (for example, "No DMARC recor
 
 ## Critical Gap Ceiling
 Domains missing foundational controls are capped at **64** (D+). Critical categories vary by profile:
-- mail_enabled/enterprise_mail: SPF, DMARC, DKIM, SSL, DNSSEC, Subdomain Takeover
-- non_mail/web_only/minimal: SSL, DNSSEC, Subdomain Takeover
+- mail_enabled/enterprise_mail: SPF, DMARC, DKIM, SSL, Subdomain Takeover
+- non_mail/web_only: SSL, Subdomain Takeover, HTTP Security
+- minimal: SSL, Subdomain Takeover
 
 ## Critical-Finding Adjustment
 If any **verified**-confidence **critical** finding exists in the scan, an additional **-15 overall points** adjustment is applied.

@@ -20,6 +20,7 @@ npm run dev                            # Local dev at localhost:8787
 npm run typecheck                      # tsc --noEmit
 npm run lint                           # ESLint
 npm run lint:fix                       # ESLint with auto-fix
+git config core.hooksPath .githooks    # Enable pre-commit hooks (one-time setup)
 ```
 
 ## Tech
@@ -146,6 +147,7 @@ Service binding fetch → POST /internal/tools/call → guard middleware (reject
 - All tool functions return `Promise<CheckResult>` (follow pattern in `check-spf.ts`) and accept an optional `dnsOptions?: QueryDnsOptions` parameter for scan-context optimizations (e.g., `skipSecondaryConfirmation`)
 - `check_mx` is dynamically imported in `handlers/tools.ts` (for test mock isolation — unlike other checks which are statically imported)
 - MCP server key name is `"blackveil-dns"` across all client configs (README, docs, `.mcp.json`) — keep consistent
+- `tools/call` accepts `scan` as an alias for `scan_domain` — chat clients can say `scan example.com`
 - SSRF config constants live in `src/lib/config.ts`, not `sanitize.ts` — edit there when modifying blocked TLDs, IP patterns, DNS tuning (`DNS_TIMEOUT_MS` 3s, `DNS_RETRIES` 1, `DNS_RETRY_BASE_DELAY_MS` 75ms, `HTTPS_TIMEOUT_MS` 4s, `DOH_EDGE_CACHE_TTL`, `INFLIGHT_CLEANUP_MS`), etc.
 - `sanitize.ts` imports `punycode/` (trailing slash = npm package, not Node.js built-in) for IDN/Unicode domain support
 
@@ -170,7 +172,7 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEI
 | SSL | 5 | Yes |
 | HTTP Security | 3 | No (Yes in web_only/non_mail) |
 | Subdomain Takeover | 3 | Yes |
-| DNSSEC | 2 | Yes |
+| DNSSEC | 2 | No |
 | MTA-STS | 2 | No |
 | MX | 2 | No |
 | DANE | 1 | No |
@@ -242,7 +244,7 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 8. Add explanation templates in `src/tools/explain-finding-data.ts`
 9. If the new check is part of `scan_domain`, add it to the parallel orchestration in `src/tools/scan-domain.ts` (use static import there, not dynamic)
 10. Add `test/check-<name>.spec.ts` using the `dns-mock` helper pattern
-6. Update README tools table
+11. Update README tools table
 
 ## Testing
 
@@ -253,6 +255,10 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 - `tsconfig.json` `types` must be under `compilerOptions` (not top-level) — Vitest pool requires this
 - Config file is `vitest.config.mts` (not `.ts`)
 - TXT record mocking: `mockTxtRecords()` wraps values in quotes (as Cloudflare DoH does); pass unquoted strings
+
+### Pre-commit hook
+
+The `.githooks/pre-commit` hook blocks staging of sensitive paths: `docs/`, `.dev/`, `*.env`, `*.env.*`. Enable with `git config core.hooksPath .githooks`. Override with `git commit --no-verify` when intentional.
 
 ## CI/CD
 
@@ -288,7 +294,7 @@ Parsed once per request in `index.ts` and `internal.ts` via `parseScoringConfig(
 
 ## Service Binding Integration
 
-bv-mcp can be consumed as a **Cloudflare service binding** by other Workers in the same account. This provides sub-millisecond, zero-overhead access to all 15 tool handlers without MCP protocol framing, auth, rate limiting, or session management.
+bv-mcp can be consumed as a **Cloudflare service binding** by other Workers in the same account. This provides sub-millisecond, zero-overhead access to all tool handlers without MCP protocol framing, auth, rate limiting, or session management.
 
 ### How it works
 
