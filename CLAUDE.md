@@ -5,10 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What is this?
 
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
-Exposes 17 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
-An 18th check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
+Exposes 22 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
+A 23rd check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 1.3.0 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 1.4.0 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -51,7 +51,7 @@ src/handlers/tool-formatters.ts — mcpError/mcpText/formatCheckResult helpers
 src/handlers/tool-execution.ts — Tool logging helpers
 src/handlers/resources.ts — resources/list + resources/read (static docs)
 
-src/tools/check-*.ts      — Individual DNS checks (SPF, DMARC, DKIM, MX, SSL, BIMI, TLS-RPT, lookalikes, shadow domains, TXT hygiene, etc.)
+src/tools/check-*.ts      — Individual DNS checks (SPF, DMARC, DKIM, MX, SSL, BIMI, TLS-RPT, lookalikes, shadow domains, TXT hygiene, HTTP security, DANE, MX reputation, SRV, zone hygiene)
 src/tools/*-analysis.ts   — Analysis helpers extracted from check modules
 src/tools/spf-trust-surface.ts — SPF trust surface analysis (multi-tenant SaaS platform detection)
 src/tools/lookalike-analysis.ts — Lookalike/typosquat domain permutation generator
@@ -59,6 +59,11 @@ src/tools/scan-domain.ts  — Parallel orchestrator for all checks → ScanScore
 src/tools/scan/           — Scan sub-helpers (format-report.ts, post-processing.ts, maturity-staging.ts)
 src/tools/check-shadow-domains.ts — Shadow domain TLD variant discovery and email auth risk classification
 src/tools/check-txt-hygiene.ts — TXT record hygiene auditing and platform exposure mapping
+src/tools/check-http-security.ts — HTTP security header analysis (CSP, X-Frame-Options, Permissions-Policy, etc.)
+src/tools/check-dane.ts   — DANE/TLSA certificate verification for MX and HTTPS
+src/tools/check-mx-reputation.ts — Mail server DNSBL & PTR/FCrDNS validation
+src/tools/check-srv.ts    — SRV service discovery audit
+src/tools/check-zone-hygiene.ts — Zone consistency (SOA) & sensitive subdomain detection
 src/tools/explain-finding.ts — Static explanation generator
 
 src/lib/scoring.ts        — Re-export facade for scoring subsystem
@@ -122,7 +127,7 @@ Service binding fetch → POST /internal/tools/call → guard middleware (reject
 
 ### scan_domain orchestration
 
-`scan_domain` runs **12 checks** in parallel via `Promise.allSettled`: SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, BIMI, TLS-RPT, subdomain takeover, and MX. Each has its own cache key (`cache:<domain>:check:<name>`), plus a top-level `cache:<domain>` key for the full scan result. Results are cached for 5 minutes. After scoring, `computeMaturityStage()` classifies the domain into a maturity stage (0-4: Unprotected → Hardened) based on SPF/DMARC/DKIM/MTA-STS/DNSSEC/BIMI presence and enforcement.
+`scan_domain` runs **14 checks** in parallel via `Promise.allSettled`: SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, BIMI, TLS-RPT, subdomain takeover, HTTP security, DANE, and MX. Each has its own cache key (`cache:<domain>:check:<name>`), plus a top-level `cache:<domain>` key for the full scan result. Results are cached for 5 minutes. After scoring, `computeMaturityStage()` classifies the domain into a maturity stage (0-4: Unprotected → Hardened) based on SPF/DMARC/DKIM/MTA-STS/DNSSEC/BIMI/DANE presence and enforcement.
 
 **Partial results on timeout**: When the 12s scan timeout fires, completed checks are preserved and missing checks receive a timeout finding. This avoids discarding work from checks that finished in 1-2s. Individual per-check timeouts are 8s. In scan context, secondary DNS confirmation (Google DNS fallback for empty results) is skipped for speed — individual checks retain it for accuracy.
 
@@ -163,15 +168,20 @@ Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEI
 | DKIM | 16 | Yes |
 | SPF | 10 | Yes |
 | SSL | 5 | Yes |
+| HTTP Security | 3 | No (Yes in web_only/non_mail) |
 | Subdomain Takeover | 3 | Yes |
 | DNSSEC | 2 | Yes |
 | MTA-STS | 2 | No |
 | MX | 2 | No |
+| DANE | 1 | No |
 | TLS-RPT | 1 | No |
 | NS | 0 (informational) | No |
 | CAA | 0 (informational) | No |
 | BIMI | 0 (informational) | No |
 | Lookalikes | 0 (informational) | No |
+| MX Reputation | 0 (informational, standalone) | No |
+| SRV | 0 (informational, standalone) | No |
+| Zone Hygiene | 0 (informational, standalone) | No |
 
 **Email bonus** (up to +8 points): Awarded when SPF score >= 57, DKIM present, and DMARC present. DMARC score >= 90 → 8pts, >= 70 → 5pts, otherwise 4pts.
 
@@ -211,7 +221,7 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 - **SSRF protection**: `config.ts` defines blocked IPs/TLDs/rebinding services; `sanitize.ts` enforces them. Wrangler uses `global_fetch_strictly_public` compatibility flag. All outbound fetches in tool checks (MTA-STS policy, SSL probe, subdomain takeover probe) use `redirect: 'manual'` to prevent redirect-based SSRF — redirect targets are never followed blindly.
 - **Auth**: optional bearer token (`BV_API_KEY`), constant-time XOR comparison in `lib/auth.ts`
 - **Rate limiting**: 50 req/min, 300 req/hr per IP via KV (in-memory fallback). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `ping`, `notifications/*`) are exempt. Authenticated requests (valid `BV_API_KEY` bearer token) bypass rate limiting entirely. `check_lookalikes` and `check_shadow_domains` each have a separate daily quota of 20/day per IP (unauthenticated) with 60-minute result caching, due to high outbound query volume (~100 DoH queries per invocation).
-- **Per-tool daily quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts` caps unauthenticated usage per tool (e.g., `scan_domain`: 75/day, `check_lookalikes`: 20/day, `check_shadow_domains`: 20/day, `compare_baseline`: 150/day, `check_txt_hygiene`: 200/day, individual checks: 200/day). Global daily cap of 500k requests/day across all unauthenticated IPs (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via Durable Objects (`QuotaCoordinator`).
+- **Per-tool daily quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts` caps unauthenticated usage per tool (e.g., `scan_domain`: 75/day, `check_lookalikes`: 20/day, `check_shadow_domains`: 20/day, `check_mx_reputation`: 20/day, `compare_baseline`: 150/day, `check_txt_hygiene`: 200/day, individual checks: 200/day). Global daily cap of 500k requests/day across all unauthenticated IPs (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via Durable Objects (`QuotaCoordinator`).
 - **Request body max**: 10 KB on `/mcp`
 - **IP sourcing**: only `cf-connecting-ip` — never `x-forwarded-for`
 - **Error sanitization**: only known validation errors surface; unexpected → generic message. Fallback `console.warn()` messages in KV/DO error paths use generic descriptions without leaking error details.
@@ -223,10 +233,15 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 ## Adding a New Tool
 
 1. Create `src/tools/check-<name>.ts` → export async fn returning `CheckResult`
-2. Add the `CheckCategory` value to the union type in `src/lib/scoring-model.ts`
-3. Register in `src/handlers/tools.ts`: add to `TOOLS` array (schema) + `TOOL_REGISTRY` map (dispatch)
-4. If the new check is part of `scan_domain`, add it to the parallel orchestration in `src/tools/scan-domain.ts` (use static import there, not dynamic)
-5. Add `test/check-<name>.spec.ts` using the `dns-mock` helper pattern
+2. Add the `CheckCategory` value to the union type in `src/lib/scoring-model.ts` + `CATEGORY_DISPLAY_WEIGHTS`
+3. Add to `IMPORTANCE_WEIGHTS` in `src/lib/scoring-engine.ts`
+4. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 5 profiles), and baselineFailureRates in `src/lib/scoring-config.ts`
+5. Add to all 5 `PROFILE_WEIGHTS` maps in `src/lib/context-profiles.ts`
+6. Register in `src/handlers/tool-schemas.ts` (TOOLS array) + `src/handlers/tools.ts` (import + TOOL_REGISTRY)
+7. Add to `FREE_TOOL_DAILY_LIMITS` in `src/lib/config.ts`
+8. Add explanation templates in `src/tools/explain-finding-data.ts`
+9. If the new check is part of `scan_domain`, add it to the parallel orchestration in `src/tools/scan-domain.ts` (use static import there, not dynamic)
+10. Add `test/check-<name>.spec.ts` using the `dns-mock` helper pattern
 6. Update README tools table
 
 ## Testing
