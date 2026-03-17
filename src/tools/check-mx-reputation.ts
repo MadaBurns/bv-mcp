@@ -86,8 +86,9 @@ export async function checkMxReputation(domain: string, dnsOptions?: QueryDnsOpt
 				continue;
 			}
 
-			// Check the first IP of each MX host
+			// Check the first IP of each MX host — validate IPv4 format
 			const ip = ips[0];
+			if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) continue;
 
 			// PTR check
 			try {
