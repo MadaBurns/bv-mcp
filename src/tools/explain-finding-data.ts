@@ -125,6 +125,11 @@ export const DETAILS_PATTERNS: DetailsPattern[] = [
 	{ checkType: 'DANE', pattern: /no dane.*https|no tlsa.*https/i, key: 'DANE_NO_HTTPS_TLSA' },
 	{ checkType: 'DANE', pattern: /invalid.*usage/i, key: 'DANE_INVALID_USAGE' },
 	{ checkType: 'DANE', pattern: /full certificate matching/i, key: 'DANE_FULL_CERT' },
+	// MX Reputation patterns
+	{ checkType: 'MX_REPUTATION', pattern: /listed on.*dnsbl|listed on.*spamhaus|listed on.*spamcop|listed on.*barracuda/i, key: 'MX_REP_DNSBL_LISTED' },
+	{ checkType: 'MX_REPUTATION', pattern: /no ptr record/i, key: 'MX_REP_NO_PTR' },
+	{ checkType: 'MX_REPUTATION', pattern: /ptr does not match|fcrdns/i, key: 'MX_REP_PTR_MISMATCH' },
+	{ checkType: 'MX_REPUTATION', pattern: /generic.*ptr|residential.*ptr/i, key: 'MX_REP_GENERIC_PTR' },
 	// NS Wildcard patterns
 	{ checkType: 'NS', pattern: /wildcard dns detected/i, key: 'NS_WILDCARD_DNS' },
 	// Lookalike patterns
@@ -1472,6 +1477,66 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		recommendation: 'Continue periodic checks as new domains are registered daily.',
 		references: ['https://www.icann.org/resources/pages/dispute-resolution-2012-02-25-en'],
 	},
+	// --- Details-aware MX Reputation entries ---
+	MX_REP_DNSBL_LISTED: {
+		title: 'Mail Server IP on DNSBL Blocklist',
+		severity: 'high',
+		explanation:
+			'One of your mail server IPs is listed on a DNS-based blocklist — like having your mail truck flagged on a "suspicious vehicles" registry. Many receiving servers will refuse to accept your emails.',
+		impact: 'Emails sent from this server are likely being rejected or routed to spam folders by a large number of recipients.',
+		adverseConsequences:
+			'Business communications fail to deliver, customer inquiries go unanswered, and your domain reputation suffers cascading damage.',
+		recommendation:
+			'Investigate the reason for the listing (compromised server, open relay, spam complaints). Request delisting from each DNSBL after resolving the root cause. Monitor ongoing reputation.',
+		references: [
+			'https://www.spamhaus.org/lookup/',
+			'https://www.spamcop.net/bl.shtml',
+			'https://www.barracudacentral.org/lookups',
+		],
+	},
+	MX_REP_NO_PTR: {
+		title: 'No Reverse DNS (PTR) for Mail Server',
+		severity: 'medium',
+		explanation:
+			'Your mail server IP has no reverse DNS record — like sending a letter with no return address. Many receiving servers require a PTR record and will reject emails from servers without one.',
+		impact: 'Email deliverability is significantly reduced because major providers (Gmail, Outlook, Yahoo) reject or spam-folder mail from IPs without PTR records.',
+		adverseConsequences:
+			'Legitimate emails bounce or land in spam, leading to missed communications and reduced trust in your email.',
+		recommendation:
+			'Configure a PTR record for the mail server IP that matches the server hostname. Contact your hosting provider if you cannot set PTR records directly.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc5321#section-4.1.3',
+			'https://support.google.com/mail/answer/81126',
+		],
+	},
+	MX_REP_PTR_MISMATCH: {
+		title: 'Forward-Confirmed Reverse DNS (FCrDNS) Failure',
+		severity: 'medium',
+		explanation:
+			'Your mail server\'s PTR record does not resolve back to the original IP — like a return address that does not match the actual sender\'s location. This inconsistency raises suspicion with receiving servers.',
+		impact: 'FCrDNS failure causes many receiving servers to treat your email as potentially forged, leading to delivery failures or spam classification.',
+		adverseConsequences:
+			'Email reputation degrades as receiving servers cannot verify your server identity, causing ongoing deliverability problems.',
+		recommendation:
+			'Ensure the PTR hostname resolves (via A record) back to the same IP. Both forward and reverse DNS must be consistent.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc5321#section-4.1.3',
+			'https://en.wikipedia.org/wiki/Forward-confirmed_reverse_DNS',
+		],
+	},
+	MX_REP_GENERIC_PTR: {
+		title: 'Generic/Residential PTR Hostname',
+		severity: 'low',
+		explanation:
+			'Your mail server uses a generic or residential-looking PTR hostname — like sending business mail from a personal apartment mailbox. While functional, it reduces trust signals.',
+		impact: 'Some receiving servers apply stricter filtering to mail from IPs with generic PTR names, slightly reducing deliverability.',
+		adverseConsequences: 'Emails may be scored slightly higher on spam filters, increasing the chance of landing in junk folders.',
+		recommendation:
+			'Configure the PTR record to use a professional hostname that matches your mail server FQDN (e.g., mail.example.com instead of host-1-2-3-4.isp.net).',
+		references: [
+			'https://support.google.com/mail/answer/81126#ip',
+		],
+	},
 };
 
 export const DEFAULT_EXPLANATION: ExplanationTemplate = {
@@ -1496,6 +1561,7 @@ export const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
 	bimi: 'BIMI',
 	tlsrpt: 'TLSRPT',
 	lookalikes: 'LOOKALIKES',
+	mx_reputation: 'MX_REPUTATION',
 };
 
 export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
@@ -1550,6 +1616,10 @@ export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
 	LOOKALIKES: {
 		impact: 'Lookalike domains could be used to phish your customers, partners, or employees.',
 		adverseConsequences: 'Users who mistype your domain may land on malicious sites or send sensitive data to the wrong address.',
+	},
+	MX_REPUTATION: {
+		impact: 'Your mail server IP reputation or reverse DNS configuration has issues that reduce email deliverability.',
+		adverseConsequences: 'Emails from your domain are more likely to be rejected or marked as spam by receiving servers.',
 	},
 };
 
