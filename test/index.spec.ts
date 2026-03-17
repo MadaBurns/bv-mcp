@@ -210,7 +210,7 @@ describe('DNS Security MCP Server', () => {
 	});
 
 	describe('POST /mcp - tools/list', () => {
-		it('returns all 18 tools', async () => {
+		it('returns all 19 tools', async () => {
 			const sessionId = await initSession();
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
@@ -221,7 +221,7 @@ describe('DNS Security MCP Server', () => {
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
 			const body = (await response.json()) as { result: { tools: Array<{ name: string }> } };
-			expect(body.result.tools).toHaveLength(18);
+			expect(body.result.tools).toHaveLength(19);
 			const toolNames = body.result.tools.map((t) => t.name);
 			expect(toolNames).toContain('check_spf');
 			expect(toolNames).toContain('check_dmarc');
