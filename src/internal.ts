@@ -78,6 +78,11 @@ internalRoutes.post('/tools/call', async (c) => {
 		return c.json({ content: [{ type: 'text', text: 'Missing required field: name' }], isError: true }, 400);
 	}
 
+	const url = new URL(c.req.url);
+	const wantStructured = url.searchParams.get('format') === 'structured';
+
+	let capturedResult: import('./lib/scoring-model').CheckResult | null = null;
+
 	const result = await handleToolsCall(
 		{ name: body.name, arguments: body.arguments },
 		c.env.SCAN_CACHE,
@@ -91,8 +96,15 @@ internalRoutes.post('/tools/call', async (c) => {
 			profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 			scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
+			...(wantStructured ? { resultCapture: (r: import('./lib/scoring-model').CheckResult) => { capturedResult = r; } } : {}),
 		},
 	);
+
+	// If structured format was requested and a CheckResult was captured (TOOL_REGISTRY tools only),
+	// return the raw result instead of MCP-framed text.
+	if (wantStructured && capturedResult !== null) {
+		return c.json({ result: capturedResult, isError: result.isError ?? false });
+	}
 
 	return c.json(result);
 });
