@@ -109,6 +109,12 @@ export const TOOLS: McpTool[] = [
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
+		name: 'check_http_security',
+		description:
+			'Check HTTP security headers for a domain. Analyzes Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Permissions-Policy, Referrer-Policy, CORP, and COOP headers.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
 		name: 'check_lookalikes',
 		description:
 			'Detect registered lookalike/typosquat domains with DNS or mail infrastructure. Generates domain permutations and checks for active registrations. Standalone check — not included in scan_domain due to query volume.',
