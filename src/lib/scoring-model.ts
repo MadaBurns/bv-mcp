@@ -21,7 +21,8 @@ export type CheckCategory =
 	| 'txt_hygiene'
 	| 'http_security'
 	| 'dane'
-	| 'mx_reputation';
+	| 'mx_reputation'
+	| 'srv';
 
 export interface Finding {
 	category: CheckCategory;
@@ -66,6 +67,7 @@ export const CATEGORY_DISPLAY_WEIGHTS: Record<CheckCategory, number> = {
 	http_security: 0.05,
 	dane: 0,
 	mx_reputation: 0,
+	srv: 0,
 };
 
 /** Severity penalty multipliers applied to the category score */

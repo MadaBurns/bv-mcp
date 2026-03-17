@@ -227,6 +227,12 @@ export const TOOLS: McpTool[] = [
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
+		name: 'check_srv',
+		description:
+			'Audit SRV service discovery records for a domain. Probes common service prefixes (email, calendar, messaging) to map DNS-visible service footprint and flag insecure protocol advertisements.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
 		name: 'explain_finding',
 		description: 'Get a plain-language explanation of a DNS security finding, including potential impact, adverse consequences, and recommended remediation steps.',
 		inputSchema: {
