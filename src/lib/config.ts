@@ -91,4 +91,9 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	compare_baseline: 150,
 	check_shadow_domains: 20,
 	check_txt_hygiene: 200,
+	check_http_security: 200,
+	check_dane: 200,
+	check_mx_reputation: 20,
+	check_srv: 200,
+	check_zone_hygiene: 200,
 };

@@ -44,6 +44,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		lookalikes: { importance: 0 },
 		shadow_domains: { importance: 0 },
 		txt_hygiene: { importance: 0 },
+		http_security: { importance: 3 },
+		dane: { importance: 1 },
+		mx_reputation: { importance: 0 },
+		srv: { importance: 0 },
+		zone_hygiene: { importance: 0 },
 	},
 	enterprise_mail: {
 		dmarc: { importance: 24 },
@@ -61,6 +66,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		lookalikes: { importance: 0 },
 		shadow_domains: { importance: 0 },
 		txt_hygiene: { importance: 0 },
+		http_security: { importance: 3 },
+		dane: { importance: 2 },
+		mx_reputation: { importance: 0 },
+		srv: { importance: 0 },
+		zone_hygiene: { importance: 0 },
 	},
 	non_mail: {
 		ssl: { importance: 8 },
@@ -78,6 +88,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		lookalikes: { importance: 0 },
 		shadow_domains: { importance: 0 },
 		txt_hygiene: { importance: 0 },
+		http_security: { importance: 5 },
+		dane: { importance: 0 },
+		mx_reputation: { importance: 0 },
+		srv: { importance: 0 },
+		zone_hygiene: { importance: 0 },
 	},
 	web_only: {
 		ssl: { importance: 12 },
@@ -95,6 +110,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		lookalikes: { importance: 0 },
 		shadow_domains: { importance: 0 },
 		txt_hygiene: { importance: 0 },
+		http_security: { importance: 5 },
+		dane: { importance: 0 },
+		mx_reputation: { importance: 0 },
+		srv: { importance: 0 },
+		zone_hygiene: { importance: 0 },
 	},
 	minimal: {
 		dmarc: { importance: 5 },
@@ -112,6 +132,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		lookalikes: { importance: 0 },
 		shadow_domains: { importance: 0 },
 		txt_hygiene: { importance: 0 },
+		http_security: { importance: 2 },
+		dane: { importance: 0 },
+		mx_reputation: { importance: 0 },
+		srv: { importance: 0 },
+		zone_hygiene: { importance: 0 },
 	},
 };
 
@@ -119,8 +144,8 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 export const PROFILE_CRITICAL_CATEGORIES: Record<DomainProfile, CheckCategory[]> = {
 	mail_enabled: ['spf', 'dmarc', 'dkim', 'ssl', 'subdomain_takeover'],
 	enterprise_mail: ['spf', 'dmarc', 'dkim', 'ssl', 'subdomain_takeover'],
-	non_mail: ['ssl', 'subdomain_takeover'],
-	web_only: ['ssl', 'subdomain_takeover'],
+	non_mail: ['ssl', 'subdomain_takeover', 'http_security'],
+	web_only: ['ssl', 'subdomain_takeover', 'http_security'],
 	minimal: ['ssl', 'subdomain_takeover'],
 };
 

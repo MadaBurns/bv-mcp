@@ -67,9 +67,13 @@ export function computeMaturityStage(checks: CheckResult[]): MaturityStage {
 	const hasDnssec = dnssecCheck?.passed ?? false;
 	const hasBimi = bimiCheck?.findings.some((f) => /BIMI record configured/i.test(f.title)) ?? false;
 
-	// Stage 4 — Hardened: Stage 3 + at least 2 of (MTA-STS, DNSSEC, BIMI)
+	// DANE presence
+	const daneCheck = byCategory.get('dane');
+	const hasDane = daneCheck?.findings.some((f) => /DANE TLSA configured/i.test(f.title)) ?? false;
+
+	// Stage 4 — Hardened: Stage 3 + at least 2 of (MTA-STS, DNSSEC, BIMI, DANE)
 	const isEnforcing = hasSpf && hasDkim && hasDmarc && (dmarcPolicyReject || dmarcPolicyQuarantine);
-	const hardeningCount = [hasMtaSts, hasDnssec, hasBimi].filter(Boolean).length;
+	const hardeningCount = [hasMtaSts, hasDnssec, hasBimi, hasDane].filter(Boolean).length;
 
 	if (isEnforcing && hardeningCount >= 2) {
 		return {

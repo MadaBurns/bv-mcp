@@ -112,6 +112,37 @@ export function dnssecResponse(domain: string, ad: boolean) {
 	});
 }
 
+/** Build a DoH response containing TLSA records for a name. */
+export function tlsaResponse(
+	name: string,
+	records: Array<{ usage: number; selector: number; matchingType: number; certData: string }>,
+) {
+	return createDohResponse(
+		[{ name, type: 52 }],
+		records.map((r) => ({ name, type: 52, TTL: 300, data: `${r.usage} ${r.selector} ${r.matchingType} ${r.certData}` })),
+	);
+}
+
+/** Build a DoH response containing PTR records for an IP (reverse DNS). */
+export function ptrResponse(ip: string, hostnames: string[]) {
+	const reverseName = ip.split('.').reverse().join('.') + '.in-addr.arpa';
+	return createDohResponse(
+		[{ name: reverseName, type: 12 }],
+		hostnames.map((h) => ({ name: reverseName, type: 12, TTL: 300, data: `${h}.` })),
+	);
+}
+
+/** Build a DoH response containing SRV records for a name. */
+export function srvResponse(
+	name: string,
+	records: Array<{ priority: number; weight: number; port: number; target: string }>,
+) {
+	return createDohResponse(
+		[{ name, type: 33 }],
+		records.map((r) => ({ name, type: 33, TTL: 300, data: `${r.priority} ${r.weight} ${r.port} ${r.target}.` })),
+	);
+}
+
 /** Build a mock HTTP Response with text body, status, and optional headers. */
 export function httpResponse(body: string, status = 200, headers?: Headers) {
 	return {

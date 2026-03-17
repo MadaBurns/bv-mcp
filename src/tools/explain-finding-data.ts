@@ -111,6 +111,25 @@ export const DETAILS_PATTERNS: DetailsPattern[] = [
 	// SPF Trust Surface patterns
 	{ checkType: 'SPF', pattern: /spf delegates to shared platform/i, key: 'SPF_TRUST_SURFACE_PLATFORM' },
 	{ checkType: 'SPF', pattern: /spf trust surface.*shared platforms/i, key: 'SPF_TRUST_SURFACE_SUMMARY' },
+	// HTTP Security patterns
+	{ checkType: 'HTTP_SECURITY', pattern: /no content-security-policy/i, key: 'HTTP_SEC_NO_CSP' },
+	{ checkType: 'HTTP_SECURITY', pattern: /unsafe-inline/i, key: 'HTTP_SEC_CSP_UNSAFE_INLINE' },
+	{ checkType: 'HTTP_SECURITY', pattern: /unsafe-eval/i, key: 'HTTP_SEC_CSP_UNSAFE_EVAL' },
+	{ checkType: 'HTTP_SECURITY', pattern: /no x-frame-options/i, key: 'HTTP_SEC_NO_XFO' },
+	{ checkType: 'HTTP_SECURITY', pattern: /no x-content-type-options/i, key: 'HTTP_SEC_NO_XCTO' },
+	{ checkType: 'HTTP_SECURITY', pattern: /no permissions-policy/i, key: 'HTTP_SEC_NO_PP' },
+	{ checkType: 'HTTP_SECURITY', pattern: /no referrer-policy/i, key: 'HTTP_SEC_NO_RP' },
+	// DANE patterns
+	{ checkType: 'DANE', pattern: /dane without dnssec/i, key: 'DANE_WITHOUT_DNSSEC' },
+	{ checkType: 'DANE', pattern: /no dane.*mx|no tlsa.*mx/i, key: 'DANE_NO_MX_TLSA' },
+	{ checkType: 'DANE', pattern: /no dane.*https|no tlsa.*https/i, key: 'DANE_NO_HTTPS_TLSA' },
+	{ checkType: 'DANE', pattern: /invalid.*usage/i, key: 'DANE_INVALID_USAGE' },
+	{ checkType: 'DANE', pattern: /full certificate matching/i, key: 'DANE_FULL_CERT' },
+	// MX Reputation patterns
+	{ checkType: 'MX_REPUTATION', pattern: /listed on.*dnsbl|listed on.*spamhaus|listed on.*spamcop|listed on.*barracuda/i, key: 'MX_REP_DNSBL_LISTED' },
+	{ checkType: 'MX_REPUTATION', pattern: /no ptr record/i, key: 'MX_REP_NO_PTR' },
+	{ checkType: 'MX_REPUTATION', pattern: /ptr does not match|fcrdns/i, key: 'MX_REP_PTR_MISMATCH' },
+	{ checkType: 'MX_REPUTATION', pattern: /generic.*ptr|residential.*ptr/i, key: 'MX_REP_GENERIC_PTR' },
 	// NS Wildcard patterns
 	{ checkType: 'NS', pattern: /wildcard dns detected/i, key: 'NS_WILDCARD_DNS' },
 	// Lookalike patterns
@@ -118,6 +137,16 @@ export const DETAILS_PATTERNS: DetailsPattern[] = [
 	{ checkType: 'LOOKALIKES', pattern: /lookalike domain registered/i, key: 'LOOKALIKE_REGISTERED' },
 	{ checkType: 'LOOKALIKES', pattern: /lookalike domain.*mail capability/i, key: 'LOOKALIKE_SUMMARY' },
 	{ checkType: 'LOOKALIKES', pattern: /no active lookalike/i, key: 'LOOKALIKE_NONE' },
+	// SRV patterns
+	{ checkType: 'SRV', pattern: /plain-text imap/i, key: 'SRV_PLAINTEXT_IMAP' },
+	{ checkType: 'SRV', pattern: /plain-text pop3/i, key: 'SRV_PLAINTEXT_POP3' },
+	{ checkType: 'SRV', pattern: /autodiscover.*exposed/i, key: 'SRV_AUTODISCOVER' },
+	{ checkType: 'SRV', pattern: /service footprint/i, key: 'SRV_FOOTPRINT' },
+	// Zone Hygiene patterns
+	{ checkType: 'ZONE_HYGIENE', pattern: /soa serial mismatch|stale zone/i, key: 'ZONE_SOA_MISMATCH' },
+	{ checkType: 'ZONE_HYGIENE', pattern: /internal subdomain.*resolves|sensitive subdomain/i, key: 'ZONE_SENSITIVE_SUBDOMAIN' },
+	{ checkType: 'ZONE_HYGIENE', pattern: /excessive.*internal.*exposure/i, key: 'ZONE_EXCESSIVE_EXPOSURE' },
+	{ checkType: 'ZONE_HYGIENE', pattern: /ns configuration drift/i, key: 'ZONE_NS_DRIFT' },
 ];
 
 export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
@@ -872,6 +901,178 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 			'https://hstspreload.org/',
 		],
 	},
+	// --- Details-aware HTTP Security entries ---
+	HTTP_SEC_NO_CSP: {
+		title: 'No Content-Security-Policy Header',
+		severity: 'high',
+		explanation:
+			'Your website has no Content-Security-Policy header — like leaving the front gate wide open with no guest list. Any script from anywhere can run on your page.',
+		impact: 'Attackers can inject malicious scripts that steal passwords, session tokens, and personal data from your visitors.',
+		adverseConsequences:
+			'Cross-site scripting (XSS) attacks can compromise user accounts, deface your site, and spread malware to visitors.',
+		recommendation:
+			"Add a Content-Security-Policy header starting with a restrictive policy: default-src 'self'. Gradually add trusted sources as needed. Use CSP reporting to identify violations before enforcing.",
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP',
+			'https://csp-evaluator.withgoogle.com/',
+			'https://content-security-policy.com/',
+		],
+	},
+	HTTP_SEC_CSP_UNSAFE_INLINE: {
+		title: 'CSP Allows Unsafe Inline Scripts',
+		severity: 'medium',
+		explanation:
+			"Your Content-Security-Policy allows inline scripts via 'unsafe-inline' — like having a guest list but letting anyone scribble their own name on it.",
+		impact: 'Inline script injection (XSS) is still possible because the browser cannot distinguish your inline scripts from an attacker\'s.',
+		adverseConsequences: 'The primary benefit of CSP is largely negated, leaving your site vulnerable to the same XSS attacks CSP is designed to prevent.',
+		recommendation:
+			"Replace 'unsafe-inline' with nonce-based or hash-based CSP. Use 'strict-dynamic' with nonces for modern applications.",
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP',
+			'https://csp.withgoogle.com/docs/strict-csp.html',
+		],
+	},
+	HTTP_SEC_CSP_UNSAFE_EVAL: {
+		title: 'CSP Allows Dynamic Code Execution',
+		severity: 'medium',
+		explanation:
+			"Your Content-Security-Policy permits dynamic code execution — like letting guests bring their own keys to your building.",
+		impact: 'Attackers who find an injection point can execute arbitrary JavaScript, bypassing CSP protections.',
+		adverseConsequences: 'Dynamic code execution opens the door to code injection attacks that CSP should prevent.',
+		recommendation:
+			"Remove the unsafe dynamic execution directive from your CSP. Refactor code that uses dynamic string-to-code patterns. Use JSON.parse() for data parsing instead.",
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP',
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy/script-src',
+		],
+	},
+	HTTP_SEC_NO_XFO: {
+		title: 'No X-Frame-Options Header',
+		severity: 'medium',
+		explanation:
+			'Your website can be embedded in frames on other sites — like letting someone put your storefront inside their building without your permission.',
+		impact: 'Attackers can overlay invisible frames on your site to trick users into clicking buttons they cannot see (clickjacking).',
+		adverseConsequences: 'Users may unknowingly perform sensitive actions like changing passwords, making purchases, or granting permissions.',
+		recommendation:
+			"Add X-Frame-Options: DENY (or SAMEORIGIN if you need framing). Better yet, use CSP frame-ancestors 'none' which supersedes X-Frame-Options.",
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Frame-Options',
+			'https://owasp.org/www-community/attacks/Clickjacking',
+		],
+	},
+	HTTP_SEC_NO_XCTO: {
+		title: 'No X-Content-Type-Options Header',
+		severity: 'low',
+		explanation:
+			'Your website does not prevent browsers from guessing the content type — like a package arriving without a label, so the post office opens it to guess what is inside.',
+		impact: 'Browsers may interpret uploaded files as executable scripts, enabling attacks via user-uploaded content.',
+		adverseConsequences: 'A carefully crafted file uploaded to your site could be executed as JavaScript in a visitor\'s browser.',
+		recommendation: 'Add the X-Content-Type-Options: nosniff header to all responses.',
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options',
+		],
+	},
+	HTTP_SEC_NO_PP: {
+		title: 'No Permissions-Policy Header',
+		severity: 'low',
+		explanation:
+			'Your website does not restrict which browser features third-party content can use — like giving every guest in your building access to every room.',
+		impact: 'Embedded third-party content (ads, iframes) can access sensitive browser APIs like camera, microphone, and geolocation.',
+		adverseConsequences: 'Malicious third-party scripts can silently activate the camera or microphone, or track user location.',
+		recommendation:
+			'Add a Permissions-Policy header restricting unused features: camera=(), microphone=(), geolocation=(). Only grant access to features your site actually needs.',
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy',
+			'https://www.permissionspolicy.com/',
+		],
+	},
+	HTTP_SEC_NO_RP: {
+		title: 'No Referrer-Policy Header',
+		severity: 'low',
+		explanation:
+			'Your website does not control what URL information is shared when visitors click links — like a business card that shows your full home address to everyone you meet.',
+		impact: 'Full URLs including query parameters (which may contain tokens, search queries, or user IDs) are leaked to third-party sites.',
+		adverseConsequences: 'Session tokens or sensitive parameters in URLs can be harvested by external sites via the Referer header.',
+		recommendation:
+			'Add Referrer-Policy: strict-origin-when-cross-origin (or no-referrer for maximum privacy). This sends only the origin to cross-site requests.',
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Referrer-Policy',
+		],
+	},
+	// --- Details-aware DANE entries ---
+	DANE_WITHOUT_DNSSEC: {
+		title: 'DANE TLSA Records Without DNSSEC',
+		severity: 'high',
+		explanation:
+			'Your domain has DANE TLSA records pinning certificates to DNS, but DNSSEC is not enabled — like putting a lock on a box but leaving the key taped to the outside.',
+		impact: 'Without DNSSEC, attackers can forge DNS responses containing fake TLSA records, completely bypassing the certificate pinning DANE is meant to provide.',
+		adverseConsequences:
+			'An attacker performing a man-in-the-middle attack can substitute their own certificate and matching TLSA record, making the connection appear legitimate.',
+		recommendation:
+			'Enable DNSSEC for your domain before relying on DANE. DANE without DNSSEC provides no security benefit — it requires authenticated DNS to be effective.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6698',
+			'https://datatracker.ietf.org/doc/html/rfc7671',
+			'https://www.internetsociety.org/deploy360/dane/',
+		],
+	},
+	DANE_NO_MX_TLSA: {
+		title: 'No DANE TLSA for Mail Servers',
+		severity: 'medium',
+		explanation:
+			'Your mail servers have no DANE TLSA records — like sending letters without a tamper-evident seal. The mail carrier cannot verify they are delivering to the right mailbox.',
+		impact: 'Without DANE, email delivery relies solely on the CA system. A compromised or rogue CA could issue a fraudulent certificate for your mail server.',
+		adverseConsequences:
+			'Man-in-the-middle attackers can intercept email in transit by presenting a fraudulent certificate that the sending server will accept.',
+		recommendation:
+			'Publish TLSA records at _25._tcp.<mx-host> for each MX server. Use DANE-EE (usage 3) with SHA-256 matching for the strongest protection. Ensure DNSSEC is enabled first.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc7672',
+			'https://www.internetsociety.org/deploy360/dane/',
+		],
+	},
+	DANE_NO_HTTPS_TLSA: {
+		title: 'No DANE TLSA for HTTPS',
+		severity: 'low',
+		explanation:
+			'Your web server has no DANE TLSA record — like a storefront with no way for visitors to independently verify the security guard is legitimate.',
+		impact: 'Web traffic relies entirely on the CA trust model. A compromised CA could issue a certificate for your domain without your knowledge.',
+		adverseConsequences:
+			'While rare, CA compromise or misissuance events do occur. DANE provides an additional verification layer beyond the traditional CA system.',
+		recommendation:
+			'Consider publishing a TLSA record at _443._tcp.<domain> to pin your HTTPS certificate. This is an advanced hardening measure that requires DNSSEC.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6698',
+			'https://www.huque.com/bin/gen_tlsa',
+		],
+	},
+	DANE_INVALID_USAGE: {
+		title: 'Invalid DANE TLSA Usage Field',
+		severity: 'medium',
+		explanation:
+			'Your DANE TLSA record has an invalid usage field — like a security badge with an unrecognized clearance level. Systems cannot determine what kind of certificate verification to perform.',
+		impact: 'DANE-aware clients will ignore or reject the TLSA record, providing no certificate pinning protection.',
+		adverseConsequences: 'The intended certificate pinning is not enforced, leaving the connection vulnerable to the same attacks DANE was meant to prevent.',
+		recommendation:
+			'Fix the TLSA usage field to a valid value: 0 (PKIX-TA), 1 (PKIX-EE), 2 (DANE-TA), or 3 (DANE-EE). Usage 3 (DANE-EE) is most common for SMTP.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6698#section-2.1.1',
+		],
+	},
+	DANE_FULL_CERT: {
+		title: 'DANE TLSA Uses Full Certificate Matching',
+		severity: 'low',
+		explanation:
+			'Your DANE TLSA record stores the full certificate data instead of a hash — like photocopying an entire ID card instead of just recording the ID number.',
+		impact: 'Full certificate matching creates larger DNS records and requires updating the TLSA record every time the certificate is renewed.',
+		adverseConsequences: 'Certificate rotation becomes more operationally complex, increasing the risk of mismatched records that break DANE validation.',
+		recommendation:
+			'Use matching type 1 (SHA-256) or 2 (SHA-512) instead of type 0 (full certificate). Hash-based matching produces smaller records and simplifies certificate rotation.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6698#section-2.1.3',
+			'https://datatracker.ietf.org/doc/html/rfc7671#section-5.1',
+		],
+	},
 	// --- Details-aware MTA-STS entries ---
 	MTA_STS_NO_RECORDS: {
 		title: 'No MTA-STS Records Found',
@@ -1286,6 +1487,175 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		recommendation: 'Continue periodic checks as new domains are registered daily.',
 		references: ['https://www.icann.org/resources/pages/dispute-resolution-2012-02-25-en'],
 	},
+	// --- Details-aware MX Reputation entries ---
+	MX_REP_DNSBL_LISTED: {
+		title: 'Mail Server IP on DNSBL Blocklist',
+		severity: 'high',
+		explanation:
+			'One of your mail server IPs is listed on a DNS-based blocklist — like having your mail truck flagged on a "suspicious vehicles" registry. Many receiving servers will refuse to accept your emails.',
+		impact: 'Emails sent from this server are likely being rejected or routed to spam folders by a large number of recipients.',
+		adverseConsequences:
+			'Business communications fail to deliver, customer inquiries go unanswered, and your domain reputation suffers cascading damage.',
+		recommendation:
+			'Investigate the reason for the listing (compromised server, open relay, spam complaints). Request delisting from each DNSBL after resolving the root cause. Monitor ongoing reputation.',
+		references: [
+			'https://www.spamhaus.org/lookup/',
+			'https://www.spamcop.net/bl.shtml',
+			'https://www.barracudacentral.org/lookups',
+		],
+	},
+	MX_REP_NO_PTR: {
+		title: 'No Reverse DNS (PTR) for Mail Server',
+		severity: 'medium',
+		explanation:
+			'Your mail server IP has no reverse DNS record — like sending a letter with no return address. Many receiving servers require a PTR record and will reject emails from servers without one.',
+		impact: 'Email deliverability is significantly reduced because major providers (Gmail, Outlook, Yahoo) reject or spam-folder mail from IPs without PTR records.',
+		adverseConsequences:
+			'Legitimate emails bounce or land in spam, leading to missed communications and reduced trust in your email.',
+		recommendation:
+			'Configure a PTR record for the mail server IP that matches the server hostname. Contact your hosting provider if you cannot set PTR records directly.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc5321#section-4.1.3',
+			'https://support.google.com/mail/answer/81126',
+		],
+	},
+	MX_REP_PTR_MISMATCH: {
+		title: 'Forward-Confirmed Reverse DNS (FCrDNS) Failure',
+		severity: 'medium',
+		explanation:
+			'Your mail server\'s PTR record does not resolve back to the original IP — like a return address that does not match the actual sender\'s location. This inconsistency raises suspicion with receiving servers.',
+		impact: 'FCrDNS failure causes many receiving servers to treat your email as potentially forged, leading to delivery failures or spam classification.',
+		adverseConsequences:
+			'Email reputation degrades as receiving servers cannot verify your server identity, causing ongoing deliverability problems.',
+		recommendation:
+			'Ensure the PTR hostname resolves (via A record) back to the same IP. Both forward and reverse DNS must be consistent.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc5321#section-4.1.3',
+			'https://en.wikipedia.org/wiki/Forward-confirmed_reverse_DNS',
+		],
+	},
+	MX_REP_GENERIC_PTR: {
+		title: 'Generic/Residential PTR Hostname',
+		severity: 'low',
+		explanation:
+			'Your mail server uses a generic or residential-looking PTR hostname — like sending business mail from a personal apartment mailbox. While functional, it reduces trust signals.',
+		impact: 'Some receiving servers apply stricter filtering to mail from IPs with generic PTR names, slightly reducing deliverability.',
+		adverseConsequences: 'Emails may be scored slightly higher on spam filters, increasing the chance of landing in junk folders.',
+		recommendation:
+			'Configure the PTR record to use a professional hostname that matches your mail server FQDN (e.g., mail.example.com instead of host-1-2-3-4.isp.net).',
+		references: [
+			'https://support.google.com/mail/answer/81126#ip',
+		],
+	},
+	SRV_PLAINTEXT_IMAP: {
+		title: 'Plain-text IMAP Advertised Without Encrypted Variant',
+		severity: 'medium',
+		explanation:
+			'Your domain advertises an IMAP service on port 143 (unencrypted) via SRV records, but does not advertise IMAPS on port 993. Clients discovering your mail server via SRV may connect without encryption.',
+		impact: 'Email clients that use SRV-based autodiscovery may establish unencrypted IMAP connections, exposing credentials and message content on the wire.',
+		adverseConsequences: 'Login credentials and email content can be intercepted by network eavesdroppers, especially on shared or public networks.',
+		recommendation:
+			'Add an _imaps._tcp SRV record pointing to your IMAP server on port 993 (TLS). Ideally, remove the plain-text _imap._tcp record if all clients support TLS.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6186',
+		],
+	},
+	SRV_PLAINTEXT_POP3: {
+		title: 'Plain-text POP3 Advertised Without Encrypted Variant',
+		severity: 'medium',
+		explanation:
+			'Your domain advertises a POP3 service on port 110 (unencrypted) via SRV records, but does not advertise POP3S on port 995. Clients may download mail without encryption.',
+		impact: 'Email clients using SRV autodiscovery may connect to POP3 without TLS, transmitting passwords and messages in cleartext.',
+		adverseConsequences: 'Credentials and email content are exposed to anyone able to observe network traffic.',
+		recommendation:
+			'Add a _pop3s._tcp SRV record pointing to your POP3 server on port 995 (TLS). Remove the plain-text _pop3._tcp record if all clients support TLS.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6186',
+		],
+	},
+	SRV_AUTODISCOVER: {
+		title: 'Autodiscover SRV Record Exposed',
+		severity: 'low',
+		explanation:
+			'Your domain publishes an _autodiscover._tcp SRV record, which reveals the location of your Exchange/Outlook autodiscovery endpoint. While useful for client configuration, it exposes mail server infrastructure details.',
+		impact: 'Attackers gain knowledge of your mail server topology, which can assist in targeted phishing or exploitation.',
+		adverseConsequences: 'Reconnaissance becomes easier for attackers, slightly increasing the risk of targeted attacks against your mail infrastructure.',
+		recommendation:
+			'If autodiscover is not needed for external clients, consider restricting or removing the SRV record. Otherwise, ensure the autodiscover endpoint is properly secured.',
+		references: [
+			'https://learn.microsoft.com/en-us/exchange/architecture/client-access/autodiscover',
+		],
+	},
+	SRV_FOOTPRINT: {
+		title: 'SRV Service Footprint Summary',
+		severity: 'info',
+		explanation:
+			'This is a summary of all services your domain advertises via DNS SRV records. SRV records enable service discovery — clients can find mail, calendar, messaging, and other services automatically.',
+		recommendation:
+			'Review the discovered services and ensure each one is intentional. Remove SRV records for decommissioned services to reduce your attack surface.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc2782',
+			'https://datatracker.ietf.org/doc/html/rfc6186',
+		],
+	},
+	ZONE_SOA_MISMATCH: {
+		title: 'SOA Serial Mismatch Across Nameservers',
+		severity: 'high',
+		explanation:
+			'Different nameservers for your domain report different SOA serial numbers. This means some name servers are serving stale zone data — like different branches of a library carrying different editions of the same book.',
+		impact: 'Some visitors may receive outdated DNS answers, causing email to be misrouted or websites to point to decommissioned servers.',
+		adverseConsequences:
+			'Inconsistent DNS can cause intermittent service outages, email delivery failures, and create windows where security records (SPF, DMARC) are not enforced.',
+		recommendation:
+			'Verify zone transfer (AXFR/IXFR) is working between primary and secondary nameservers. Check that all secondaries can reach the primary and that NOTIFY messages are being sent.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc1035#section-3.3.13',
+			'https://datatracker.ietf.org/doc/html/rfc1996',
+		],
+	},
+	ZONE_SENSITIVE_SUBDOMAIN: {
+		title: 'Internal Subdomain Resolves Publicly',
+		severity: 'medium',
+		explanation:
+			'A subdomain with an internal-sounding name (like vpn, admin, or staging) resolves to a public IP address. This is like putting a sign on your office building pointing to every back door and service entrance.',
+		impact: 'Attackers can map your internal infrastructure without any special access, identifying VPN endpoints, admin panels, and development environments to target.',
+		adverseConsequences:
+			'Exposed internal subdomains accelerate reconnaissance and may reveal unpatched development or staging servers that lack production-grade security controls.',
+		recommendation:
+			'Move internal subdomains to split-horizon DNS (internal-only resolution) or a private DNS zone. If they must be public, ensure the services behind them are hardened and access-controlled.',
+		references: [
+			'https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/02-Configuration_and_Deployment_Management_Testing/04-Review_Old_Backup_and_Unreferenced_Files_for_Sensitive_Information',
+		],
+	},
+	ZONE_EXCESSIVE_EXPOSURE: {
+		title: 'Excessive Internal Subdomain Exposure',
+		severity: 'medium',
+		explanation:
+			'Multiple internal-sounding subdomains resolve publicly. Having three or more is a strong signal that internal infrastructure naming conventions are leaking into public DNS.',
+		impact: 'A comprehensive map of your internal services is available to anyone who queries your DNS, making targeted attacks much easier to plan.',
+		adverseConsequences:
+			'Attackers gain a detailed blueprint of your infrastructure, enabling them to identify the weakest entry points without triggering any detection.',
+		recommendation:
+			'Audit your public DNS zone and migrate internal subdomains to a private zone. Implement a DNS naming policy that separates public and internal namespaces.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6762',
+		],
+	},
+	ZONE_NS_DRIFT: {
+		title: 'Nameserver Configuration Drift',
+		severity: 'medium',
+		explanation:
+			'Some of your nameservers did not respond with SOA data when queried. This may indicate misconfigured secondaries, firewall issues, or nameservers that are listed in NS records but not actually serving your zone.',
+		impact: 'If a resolver contacts an unresponsive nameserver, DNS resolution may be delayed or fail entirely for some users.',
+		adverseConsequences:
+			'Intermittent DNS failures can cause service outages, email delivery issues, and degraded user experience. Orphaned NS records also create potential takeover risk.',
+		recommendation:
+			'Verify all nameservers listed in NS records are operational and serving the correct zone. Remove NS records for decommissioned servers.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc1035#section-4.2',
+			'https://datatracker.ietf.org/doc/html/rfc2182',
+		],
+	},
 };
 
 export const DEFAULT_EXPLANATION: ExplanationTemplate = {
@@ -1310,6 +1680,9 @@ export const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
 	bimi: 'BIMI',
 	tlsrpt: 'TLSRPT',
 	lookalikes: 'LOOKALIKES',
+	mx_reputation: 'MX_REPUTATION',
+	srv: 'SRV',
+	zone_hygiene: 'ZONE_HYGIENE',
 };
 
 export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
@@ -1364,6 +1737,14 @@ export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
 	LOOKALIKES: {
 		impact: 'Lookalike domains could be used to phish your customers, partners, or employees.',
 		adverseConsequences: 'Users who mistype your domain may land on malicious sites or send sensitive data to the wrong address.',
+	},
+	MX_REPUTATION: {
+		impact: 'Your mail server IP reputation or reverse DNS configuration has issues that reduce email deliverability.',
+		adverseConsequences: 'Emails from your domain are more likely to be rejected or marked as spam by receiving servers.',
+	},
+	SRV: {
+		impact: 'Your domain advertises services via SRV records that may expose infrastructure details or insecure protocol options.',
+		adverseConsequences: 'Clients may connect using unencrypted protocols, and attackers gain reconnaissance data about your service topology.',
 	},
 };
 
@@ -1497,5 +1878,29 @@ export const SPECIFIC_IMPACT_RULES: SpecificImpactRule[] = [
 		titleIncludes: ['lookalike domain'],
 		impact: 'Lookalike domains could be used for phishing, impersonation, or credential theft.',
 		adverseConsequences: 'Your customers and employees may fall victim to phishing from nearly identical domains.',
+	},
+	{
+		checkType: 'HTTP_SECURITY',
+		titleIncludes: ['no content-security-policy', 'csp allows', 'csp uses wildcard'],
+		impact: 'Your website lacks proper script execution controls, leaving visitors vulnerable to cross-site scripting.',
+		adverseConsequences: 'Attackers can inject malicious scripts that steal credentials and session data from your visitors.',
+	},
+	{
+		checkType: 'HTTP_SECURITY',
+		titleIncludes: ['no x-frame-options', 'no x-content-type-options', 'no permissions-policy', 'no referrer-policy'],
+		impact: 'Missing browser security headers leave your site vulnerable to clickjacking, MIME sniffing, and data leakage.',
+		adverseConsequences: 'Visitors may be tricked into unintended actions, or their browsing data may be leaked to third parties.',
+	},
+	{
+		checkType: 'DANE',
+		titleIncludes: ['dane without dnssec', 'no dane', 'no tlsa'],
+		impact: 'Certificate pinning via DNS is missing or ineffective, leaving connections vulnerable to CA misissuance attacks.',
+		adverseConsequences: 'A compromised or rogue certificate authority could issue fraudulent certificates for your domain without detection.',
+	},
+	{
+		checkType: 'DANE',
+		titleIncludes: ['invalid', 'full certificate matching', 'malformed'],
+		impact: 'DANE TLSA records have configuration issues that reduce or negate their security benefit.',
+		adverseConsequences: 'Certificate pinning may fail or be ignored by DANE-aware clients, leaving connections unprotected.',
 	},
 ];
