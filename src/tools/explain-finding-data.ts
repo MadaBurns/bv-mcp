@@ -142,6 +142,11 @@ export const DETAILS_PATTERNS: DetailsPattern[] = [
 	{ checkType: 'SRV', pattern: /plain-text pop3/i, key: 'SRV_PLAINTEXT_POP3' },
 	{ checkType: 'SRV', pattern: /autodiscover.*exposed/i, key: 'SRV_AUTODISCOVER' },
 	{ checkType: 'SRV', pattern: /service footprint/i, key: 'SRV_FOOTPRINT' },
+	// Zone Hygiene patterns
+	{ checkType: 'ZONE_HYGIENE', pattern: /soa serial mismatch|stale zone/i, key: 'ZONE_SOA_MISMATCH' },
+	{ checkType: 'ZONE_HYGIENE', pattern: /internal subdomain.*resolves|sensitive subdomain/i, key: 'ZONE_SENSITIVE_SUBDOMAIN' },
+	{ checkType: 'ZONE_HYGIENE', pattern: /excessive.*internal.*exposure/i, key: 'ZONE_EXCESSIVE_EXPOSURE' },
+	{ checkType: 'ZONE_HYGIENE', pattern: /ns configuration drift/i, key: 'ZONE_NS_DRIFT' },
 ];
 
 export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
@@ -1593,6 +1598,64 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 			'https://datatracker.ietf.org/doc/html/rfc6186',
 		],
 	},
+	ZONE_SOA_MISMATCH: {
+		title: 'SOA Serial Mismatch Across Nameservers',
+		severity: 'high',
+		explanation:
+			'Different nameservers for your domain report different SOA serial numbers. This means some name servers are serving stale zone data — like different branches of a library carrying different editions of the same book.',
+		impact: 'Some visitors may receive outdated DNS answers, causing email to be misrouted or websites to point to decommissioned servers.',
+		adverseConsequences:
+			'Inconsistent DNS can cause intermittent service outages, email delivery failures, and create windows where security records (SPF, DMARC) are not enforced.',
+		recommendation:
+			'Verify zone transfer (AXFR/IXFR) is working between primary and secondary nameservers. Check that all secondaries can reach the primary and that NOTIFY messages are being sent.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc1035#section-3.3.13',
+			'https://datatracker.ietf.org/doc/html/rfc1996',
+		],
+	},
+	ZONE_SENSITIVE_SUBDOMAIN: {
+		title: 'Internal Subdomain Resolves Publicly',
+		severity: 'medium',
+		explanation:
+			'A subdomain with an internal-sounding name (like vpn, admin, or staging) resolves to a public IP address. This is like putting a sign on your office building pointing to every back door and service entrance.',
+		impact: 'Attackers can map your internal infrastructure without any special access, identifying VPN endpoints, admin panels, and development environments to target.',
+		adverseConsequences:
+			'Exposed internal subdomains accelerate reconnaissance and may reveal unpatched development or staging servers that lack production-grade security controls.',
+		recommendation:
+			'Move internal subdomains to split-horizon DNS (internal-only resolution) or a private DNS zone. If they must be public, ensure the services behind them are hardened and access-controlled.',
+		references: [
+			'https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/02-Configuration_and_Deployment_Management_Testing/04-Review_Old_Backup_and_Unreferenced_Files_for_Sensitive_Information',
+		],
+	},
+	ZONE_EXCESSIVE_EXPOSURE: {
+		title: 'Excessive Internal Subdomain Exposure',
+		severity: 'medium',
+		explanation:
+			'Multiple internal-sounding subdomains resolve publicly. Having three or more is a strong signal that internal infrastructure naming conventions are leaking into public DNS.',
+		impact: 'A comprehensive map of your internal services is available to anyone who queries your DNS, making targeted attacks much easier to plan.',
+		adverseConsequences:
+			'Attackers gain a detailed blueprint of your infrastructure, enabling them to identify the weakest entry points without triggering any detection.',
+		recommendation:
+			'Audit your public DNS zone and migrate internal subdomains to a private zone. Implement a DNS naming policy that separates public and internal namespaces.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6762',
+		],
+	},
+	ZONE_NS_DRIFT: {
+		title: 'Nameserver Configuration Drift',
+		severity: 'medium',
+		explanation:
+			'Some of your nameservers did not respond with SOA data when queried. This may indicate misconfigured secondaries, firewall issues, or nameservers that are listed in NS records but not actually serving your zone.',
+		impact: 'If a resolver contacts an unresponsive nameserver, DNS resolution may be delayed or fail entirely for some users.',
+		adverseConsequences:
+			'Intermittent DNS failures can cause service outages, email delivery issues, and degraded user experience. Orphaned NS records also create potential takeover risk.',
+		recommendation:
+			'Verify all nameservers listed in NS records are operational and serving the correct zone. Remove NS records for decommissioned servers.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc1035#section-4.2',
+			'https://datatracker.ietf.org/doc/html/rfc2182',
+		],
+	},
 };
 
 export const DEFAULT_EXPLANATION: ExplanationTemplate = {
@@ -1619,6 +1682,7 @@ export const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
 	lookalikes: 'LOOKALIKES',
 	mx_reputation: 'MX_REPUTATION',
 	srv: 'SRV',
+	zone_hygiene: 'ZONE_HYGIENE',
 };
 
 export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {

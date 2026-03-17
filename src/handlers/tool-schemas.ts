@@ -233,6 +233,12 @@ export const TOOLS: McpTool[] = [
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
+		name: 'check_zone_hygiene',
+		description:
+			'Audit DNS zone consistency and detect sensitive subdomains. Checks SOA serial propagation and probes common internal subdomains (vpn, admin, staging, corp, intranet) for public DNS resolution.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
 		name: 'explain_finding',
 		description: 'Get a plain-language explanation of a DNS security finding, including potential impact, adverse consequences, and recommended remediation steps.',
 		inputSchema: {

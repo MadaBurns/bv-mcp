@@ -95,4 +95,5 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_dane: 200,
 	check_mx_reputation: 20,
 	check_srv: 200,
+	check_zone_hygiene: 200,
 };
