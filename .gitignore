@@ -49,6 +49,7 @@ pnpm-debug.log*
 
 # Workspace
 .workspace/
+.worktrees/
 
 # Agent config
 .agent.md
