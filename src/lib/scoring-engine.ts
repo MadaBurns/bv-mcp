@@ -41,6 +41,7 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	dane: { importance: 1 },
 	mx_reputation: { importance: 0 },
 	srv: { importance: 0 },
+	zone_hygiene: { importance: 0 },
 };
 
 function scoreIndicatesMissingControl(findings: Finding[]): boolean {
