@@ -14,6 +14,8 @@ export const RecordType = {
 	DNSKEY: 48,
 	DS: 43,
 	RRSIG: 46,
+	PTR: 12,
+	SRV: 33,
 } as const;
 
 export type RecordTypeName = keyof typeof RecordType;

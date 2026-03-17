@@ -16,6 +16,11 @@ import { checkTlsrpt } from '../tools/check-tlsrpt';
 import { checkLookalikes } from '../tools/check-lookalikes';
 import { checkShadowDomains } from '../tools/check-shadow-domains';
 import { checkTxtHygiene } from '../tools/check-txt-hygiene';
+import { checkHttpSecurity } from '../tools/check-http-security';
+import { checkDane } from '../tools/check-dane';
+import { checkMxReputation } from '../tools/check-mx-reputation';
+import { checkSrv } from '../tools/check-srv';
+import { checkZoneHygiene } from '../tools/check-zone-hygiene';
 import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
@@ -94,6 +99,11 @@ const TOOL_REGISTRY: Record<
 	check_lookalikes: { cacheKey: () => 'lookalikes', execute: (d) => checkLookalikes(d), cacheTtlSeconds: 3600 },
 	check_shadow_domains: { cacheKey: () => 'shadow_domains', execute: (d) => checkShadowDomains(d), cacheTtlSeconds: 3600 },
 	check_txt_hygiene: { cacheKey: () => 'txt_hygiene', execute: (d) => checkTxtHygiene(d) },
+	check_http_security: { cacheKey: () => 'http_security', execute: (d) => checkHttpSecurity(d) },
+	check_dane: { cacheKey: () => 'dane', execute: (d) => checkDane(d) },
+	check_mx_reputation: { cacheKey: () => 'mx_reputation', execute: (d) => checkMxReputation(d), cacheTtlSeconds: 3600 },
+	check_srv: { cacheKey: () => 'srv', execute: (d) => checkSrv(d) },
+	check_zone_hygiene: { cacheKey: () => 'zone_hygiene', execute: (d) => checkZoneHygiene(d) },
 };
 
 function buildToolErrorResult(message: string): McpToolResult {
