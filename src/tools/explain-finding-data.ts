@@ -111,6 +111,14 @@ export const DETAILS_PATTERNS: DetailsPattern[] = [
 	// SPF Trust Surface patterns
 	{ checkType: 'SPF', pattern: /spf delegates to shared platform/i, key: 'SPF_TRUST_SURFACE_PLATFORM' },
 	{ checkType: 'SPF', pattern: /spf trust surface.*shared platforms/i, key: 'SPF_TRUST_SURFACE_SUMMARY' },
+	// HTTP Security patterns
+	{ checkType: 'HTTP_SECURITY', pattern: /no content-security-policy/i, key: 'HTTP_SEC_NO_CSP' },
+	{ checkType: 'HTTP_SECURITY', pattern: /unsafe-inline/i, key: 'HTTP_SEC_CSP_UNSAFE_INLINE' },
+	{ checkType: 'HTTP_SECURITY', pattern: /unsafe-eval/i, key: 'HTTP_SEC_CSP_UNSAFE_EVAL' },
+	{ checkType: 'HTTP_SECURITY', pattern: /no x-frame-options/i, key: 'HTTP_SEC_NO_XFO' },
+	{ checkType: 'HTTP_SECURITY', pattern: /no x-content-type-options/i, key: 'HTTP_SEC_NO_XCTO' },
+	{ checkType: 'HTTP_SECURITY', pattern: /no permissions-policy/i, key: 'HTTP_SEC_NO_PP' },
+	{ checkType: 'HTTP_SECURITY', pattern: /no referrer-policy/i, key: 'HTTP_SEC_NO_RP' },
 	// NS Wildcard patterns
 	{ checkType: 'NS', pattern: /wildcard dns detected/i, key: 'NS_WILDCARD_DNS' },
 	// Lookalike patterns
@@ -872,6 +880,104 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 			'https://hstspreload.org/',
 		],
 	},
+	// --- Details-aware HTTP Security entries ---
+	HTTP_SEC_NO_CSP: {
+		title: 'No Content-Security-Policy Header',
+		severity: 'high',
+		explanation:
+			'Your website has no Content-Security-Policy header — like leaving the front gate wide open with no guest list. Any script from anywhere can run on your page.',
+		impact: 'Attackers can inject malicious scripts that steal passwords, session tokens, and personal data from your visitors.',
+		adverseConsequences:
+			'Cross-site scripting (XSS) attacks can compromise user accounts, deface your site, and spread malware to visitors.',
+		recommendation:
+			"Add a Content-Security-Policy header starting with a restrictive policy: default-src 'self'. Gradually add trusted sources as needed. Use CSP reporting to identify violations before enforcing.",
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP',
+			'https://csp-evaluator.withgoogle.com/',
+			'https://content-security-policy.com/',
+		],
+	},
+	HTTP_SEC_CSP_UNSAFE_INLINE: {
+		title: 'CSP Allows Unsafe Inline Scripts',
+		severity: 'medium',
+		explanation:
+			"Your Content-Security-Policy allows inline scripts via 'unsafe-inline' — like having a guest list but letting anyone scribble their own name on it.",
+		impact: 'Inline script injection (XSS) is still possible because the browser cannot distinguish your inline scripts from an attacker\'s.',
+		adverseConsequences: 'The primary benefit of CSP is largely negated, leaving your site vulnerable to the same XSS attacks CSP is designed to prevent.',
+		recommendation:
+			"Replace 'unsafe-inline' with nonce-based or hash-based CSP. Use 'strict-dynamic' with nonces for modern applications.",
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP',
+			'https://csp.withgoogle.com/docs/strict-csp.html',
+		],
+	},
+	HTTP_SEC_CSP_UNSAFE_EVAL: {
+		title: 'CSP Allows Dynamic Code Execution',
+		severity: 'medium',
+		explanation:
+			"Your Content-Security-Policy permits dynamic code execution — like letting guests bring their own keys to your building.",
+		impact: 'Attackers who find an injection point can execute arbitrary JavaScript, bypassing CSP protections.',
+		adverseConsequences: 'Dynamic code execution opens the door to code injection attacks that CSP should prevent.',
+		recommendation:
+			"Remove the unsafe dynamic execution directive from your CSP. Refactor code that uses dynamic string-to-code patterns. Use JSON.parse() for data parsing instead.",
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP',
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy/script-src',
+		],
+	},
+	HTTP_SEC_NO_XFO: {
+		title: 'No X-Frame-Options Header',
+		severity: 'medium',
+		explanation:
+			'Your website can be embedded in frames on other sites — like letting someone put your storefront inside their building without your permission.',
+		impact: 'Attackers can overlay invisible frames on your site to trick users into clicking buttons they cannot see (clickjacking).',
+		adverseConsequences: 'Users may unknowingly perform sensitive actions like changing passwords, making purchases, or granting permissions.',
+		recommendation:
+			"Add X-Frame-Options: DENY (or SAMEORIGIN if you need framing). Better yet, use CSP frame-ancestors 'none' which supersedes X-Frame-Options.",
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Frame-Options',
+			'https://owasp.org/www-community/attacks/Clickjacking',
+		],
+	},
+	HTTP_SEC_NO_XCTO: {
+		title: 'No X-Content-Type-Options Header',
+		severity: 'low',
+		explanation:
+			'Your website does not prevent browsers from guessing the content type — like a package arriving without a label, so the post office opens it to guess what is inside.',
+		impact: 'Browsers may interpret uploaded files as executable scripts, enabling attacks via user-uploaded content.',
+		adverseConsequences: 'A carefully crafted file uploaded to your site could be executed as JavaScript in a visitor\'s browser.',
+		recommendation: 'Add the X-Content-Type-Options: nosniff header to all responses.',
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options',
+		],
+	},
+	HTTP_SEC_NO_PP: {
+		title: 'No Permissions-Policy Header',
+		severity: 'low',
+		explanation:
+			'Your website does not restrict which browser features third-party content can use — like giving every guest in your building access to every room.',
+		impact: 'Embedded third-party content (ads, iframes) can access sensitive browser APIs like camera, microphone, and geolocation.',
+		adverseConsequences: 'Malicious third-party scripts can silently activate the camera or microphone, or track user location.',
+		recommendation:
+			'Add a Permissions-Policy header restricting unused features: camera=(), microphone=(), geolocation=(). Only grant access to features your site actually needs.',
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy',
+			'https://www.permissionspolicy.com/',
+		],
+	},
+	HTTP_SEC_NO_RP: {
+		title: 'No Referrer-Policy Header',
+		severity: 'low',
+		explanation:
+			'Your website does not control what URL information is shared when visitors click links — like a business card that shows your full home address to everyone you meet.',
+		impact: 'Full URLs including query parameters (which may contain tokens, search queries, or user IDs) are leaked to third-party sites.',
+		adverseConsequences: 'Session tokens or sensitive parameters in URLs can be harvested by external sites via the Referer header.',
+		recommendation:
+			'Add Referrer-Policy: strict-origin-when-cross-origin (or no-referrer for maximum privacy). This sends only the origin to cross-site requests.',
+		references: [
+			'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Referrer-Policy',
+		],
+	},
 	// --- Details-aware MTA-STS entries ---
 	MTA_STS_NO_RECORDS: {
 		title: 'No MTA-STS Records Found',
@@ -1497,5 +1603,17 @@ export const SPECIFIC_IMPACT_RULES: SpecificImpactRule[] = [
 		titleIncludes: ['lookalike domain'],
 		impact: 'Lookalike domains could be used for phishing, impersonation, or credential theft.',
 		adverseConsequences: 'Your customers and employees may fall victim to phishing from nearly identical domains.',
+	},
+	{
+		checkType: 'HTTP_SECURITY',
+		titleIncludes: ['no content-security-policy', 'csp allows', 'csp uses wildcard'],
+		impact: 'Your website lacks proper script execution controls, leaving visitors vulnerable to cross-site scripting.',
+		adverseConsequences: 'Attackers can inject malicious scripts that steal credentials and session data from your visitors.',
+	},
+	{
+		checkType: 'HTTP_SECURITY',
+		titleIncludes: ['no x-frame-options', 'no x-content-type-options', 'no permissions-policy', 'no referrer-policy'],
+		impact: 'Missing browser security headers leave your site vulnerable to clickjacking, MIME sniffing, and data leakage.',
+		adverseConsequences: 'Visitors may be tricked into unintended actions, or their browsing data may be leaked to third parties.',
 	},
 ];

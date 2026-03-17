@@ -42,6 +42,7 @@ import { checkBimi } from './check-bimi';
 import { checkTlsrpt } from './check-tlsrpt';
 import { checkSubdomainTakeover } from './check-subdomain-takeover';
 import { checkMx } from './check-mx';
+import { checkHttpSecurity } from './check-http-security';
 import { applyScanPostProcessing } from './scan/post-processing';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import { computeMaturityStage } from './scan/maturity-staging';
@@ -109,7 +110,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// overall scan timeout to guarantee a timely response.
 	// Uses Promise.allSettled so that completed checks are preserved on timeout.
 	const ALL_CHECK_CATEGORIES: CheckCategory[] = [
-		'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'mx',
+		'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'http_security', 'mx',
 	];
 
 	// Skip secondary DNS confirmation in scan context for speed — individual checks
@@ -128,6 +129,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		runCachedCheck(domain, 'bimi', () => safeCheck('bimi', () => checkBimi(domain, scanDns)), kv),
 		runCachedCheck(domain, 'tlsrpt', () => safeCheck('tlsrpt', () => checkTlsrpt(domain, scanDns)), kv),
 		runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain, scanDns)), kv),
+		runCachedCheck(domain, 'http_security', () => safeCheck('http_security', () => checkHttpSecurity(domain)), kv),
 		runCachedCheck(
 			domain,
 			'mx',
