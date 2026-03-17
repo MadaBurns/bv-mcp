@@ -19,6 +19,7 @@ import { checkTxtHygiene } from '../tools/check-txt-hygiene';
 import { checkHttpSecurity } from '../tools/check-http-security';
 import { checkDane } from '../tools/check-dane';
 import { checkMxReputation } from '../tools/check-mx-reputation';
+import { checkSrv } from '../tools/check-srv';
 import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
@@ -100,6 +101,7 @@ const TOOL_REGISTRY: Record<
 	check_http_security: { cacheKey: () => 'http_security', execute: (d) => checkHttpSecurity(d) },
 	check_dane: { cacheKey: () => 'dane', execute: (d) => checkDane(d) },
 	check_mx_reputation: { cacheKey: () => 'mx_reputation', execute: (d) => checkMxReputation(d), cacheTtlSeconds: 3600 },
+	check_srv: { cacheKey: () => 'srv', execute: (d) => checkSrv(d) },
 };
 
 function buildToolErrorResult(message: string): McpToolResult {

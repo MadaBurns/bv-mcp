@@ -137,6 +137,11 @@ export const DETAILS_PATTERNS: DetailsPattern[] = [
 	{ checkType: 'LOOKALIKES', pattern: /lookalike domain registered/i, key: 'LOOKALIKE_REGISTERED' },
 	{ checkType: 'LOOKALIKES', pattern: /lookalike domain.*mail capability/i, key: 'LOOKALIKE_SUMMARY' },
 	{ checkType: 'LOOKALIKES', pattern: /no active lookalike/i, key: 'LOOKALIKE_NONE' },
+	// SRV patterns
+	{ checkType: 'SRV', pattern: /plain-text imap/i, key: 'SRV_PLAINTEXT_IMAP' },
+	{ checkType: 'SRV', pattern: /plain-text pop3/i, key: 'SRV_PLAINTEXT_POP3' },
+	{ checkType: 'SRV', pattern: /autodiscover.*exposed/i, key: 'SRV_AUTODISCOVER' },
+	{ checkType: 'SRV', pattern: /service footprint/i, key: 'SRV_FOOTPRINT' },
 ];
 
 export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
@@ -1537,6 +1542,57 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 			'https://support.google.com/mail/answer/81126#ip',
 		],
 	},
+	SRV_PLAINTEXT_IMAP: {
+		title: 'Plain-text IMAP Advertised Without Encrypted Variant',
+		severity: 'medium',
+		explanation:
+			'Your domain advertises an IMAP service on port 143 (unencrypted) via SRV records, but does not advertise IMAPS on port 993. Clients discovering your mail server via SRV may connect without encryption.',
+		impact: 'Email clients that use SRV-based autodiscovery may establish unencrypted IMAP connections, exposing credentials and message content on the wire.',
+		adverseConsequences: 'Login credentials and email content can be intercepted by network eavesdroppers, especially on shared or public networks.',
+		recommendation:
+			'Add an _imaps._tcp SRV record pointing to your IMAP server on port 993 (TLS). Ideally, remove the plain-text _imap._tcp record if all clients support TLS.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6186',
+		],
+	},
+	SRV_PLAINTEXT_POP3: {
+		title: 'Plain-text POP3 Advertised Without Encrypted Variant',
+		severity: 'medium',
+		explanation:
+			'Your domain advertises a POP3 service on port 110 (unencrypted) via SRV records, but does not advertise POP3S on port 995. Clients may download mail without encryption.',
+		impact: 'Email clients using SRV autodiscovery may connect to POP3 without TLS, transmitting passwords and messages in cleartext.',
+		adverseConsequences: 'Credentials and email content are exposed to anyone able to observe network traffic.',
+		recommendation:
+			'Add a _pop3s._tcp SRV record pointing to your POP3 server on port 995 (TLS). Remove the plain-text _pop3._tcp record if all clients support TLS.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6186',
+		],
+	},
+	SRV_AUTODISCOVER: {
+		title: 'Autodiscover SRV Record Exposed',
+		severity: 'low',
+		explanation:
+			'Your domain publishes an _autodiscover._tcp SRV record, which reveals the location of your Exchange/Outlook autodiscovery endpoint. While useful for client configuration, it exposes mail server infrastructure details.',
+		impact: 'Attackers gain knowledge of your mail server topology, which can assist in targeted phishing or exploitation.',
+		adverseConsequences: 'Reconnaissance becomes easier for attackers, slightly increasing the risk of targeted attacks against your mail infrastructure.',
+		recommendation:
+			'If autodiscover is not needed for external clients, consider restricting or removing the SRV record. Otherwise, ensure the autodiscover endpoint is properly secured.',
+		references: [
+			'https://learn.microsoft.com/en-us/exchange/architecture/client-access/autodiscover',
+		],
+	},
+	SRV_FOOTPRINT: {
+		title: 'SRV Service Footprint Summary',
+		severity: 'info',
+		explanation:
+			'This is a summary of all services your domain advertises via DNS SRV records. SRV records enable service discovery — clients can find mail, calendar, messaging, and other services automatically.',
+		recommendation:
+			'Review the discovered services and ensure each one is intentional. Remove SRV records for decommissioned services to reduce your attack surface.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc2782',
+			'https://datatracker.ietf.org/doc/html/rfc6186',
+		],
+	},
 };
 
 export const DEFAULT_EXPLANATION: ExplanationTemplate = {
@@ -1562,6 +1618,7 @@ export const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
 	tlsrpt: 'TLSRPT',
 	lookalikes: 'LOOKALIKES',
 	mx_reputation: 'MX_REPUTATION',
+	srv: 'SRV',
 };
 
 export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
@@ -1620,6 +1677,10 @@ export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
 	MX_REPUTATION: {
 		impact: 'Your mail server IP reputation or reverse DNS configuration has issues that reduce email deliverability.',
 		adverseConsequences: 'Emails from your domain are more likely to be rejected or marked as spam by receiving servers.',
+	},
+	SRV: {
+		impact: 'Your domain advertises services via SRV records that may expose infrastructure details or insecure protocol options.',
+		adverseConsequences: 'Clients may connect using unencrypted protocols, and attackers gain reconnaissance data about your service topology.',
 	},
 };
 
