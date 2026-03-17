@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 import { describe, it, expect } from 'vitest';
 
 describe('public-suffix', () => {
