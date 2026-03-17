@@ -135,7 +135,7 @@ export function buildDnsblZones(): string[] {
 
 /**
  * Reverse IPv4 octets for DNSBL lookup.
- * Example: `1.2.3.4` becomes `4.3.2.1`
+ * Example: `192.0.2.1` becomes `1.2.0.192`
  *
  * @param ip - IPv4 address string
  * @returns Reversed octet string

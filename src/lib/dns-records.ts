@@ -129,7 +129,7 @@ export async function queryMxRecords(domain: string, opts?: QueryDnsOptions): Pr
 
 /**
  * Query PTR records for an IP address by constructing the reverse DNS name.
- * For IPv4 address `1.2.3.4`, queries `4.3.2.1.in-addr.arpa`.
+ * For IPv4 address `192.0.2.1`, queries `1.2.0.192.in-addr.arpa`.
  * Returns an array of PTR hostnames with trailing dots stripped.
  */
 export async function queryPtrRecords(ip: string, opts?: QueryDnsOptions): Promise<string[]> {
