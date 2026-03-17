@@ -18,7 +18,12 @@ export type CheckCategory =
 	| 'tlsrpt'
 	| 'lookalikes'
 	| 'shadow_domains'
-	| 'txt_hygiene';
+	| 'txt_hygiene'
+	| 'http_security'
+	| 'dane'
+	| 'mx_reputation'
+	| 'srv'
+	| 'zone_hygiene';
 
 export interface Finding {
 	category: CheckCategory;
@@ -60,6 +65,11 @@ export const CATEGORY_DISPLAY_WEIGHTS: Record<CheckCategory, number> = {
 	lookalikes: 0,
 	shadow_domains: 0,
 	txt_hygiene: 0,
+	http_security: 0.05,
+	dane: 0,
+	mx_reputation: 0,
+	srv: 0,
+	zone_hygiene: 0,
 };
 
 /** Severity penalty multipliers applied to the category score */
