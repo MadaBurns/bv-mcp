@@ -50,10 +50,12 @@ regexes = [
   '''93\.184\.216\.34''',           # example.com canonical IP
   '''7\.4\.1\.2''',                 # RFC section reference (not real IP)
   '''123\.45\.67\.89''',            # Placeholder IP in docs/explanations
+  '''4\.3\.2\.1''',                  # Reversed 1.2.3.4 in PTR/DNSBL examples
 ]
 # Test fixtures use well-known service IPs (GitHub Pages, AWS, DigitalOcean) intentionally
 paths = [
   '''test/''',
+  '''src/tools/.*-analysis\.ts$''',  # Analysis modules contain IP examples in JSDoc
 ]
 
 [[rules]]
