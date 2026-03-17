@@ -129,7 +129,7 @@ export const TOOLS: McpTool[] = [
 	{
 		name: 'scan_domain',
 		description:
-			'Run a comprehensive DNS security scan on a domain. Executes all checks (SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, Subdomain Takeover) in parallel and returns an overall security score and grade.',
+			'Run a comprehensive DNS security scan on a domain. Executes all checks (SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, Subdomain Takeover, HTTP Security, DANE) in parallel and returns an overall security score and grade.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
