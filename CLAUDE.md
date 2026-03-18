@@ -80,7 +80,7 @@ src/lib/auth.ts           — Bearer token validation (constant-time XOR compari
 src/lib/sse.ts            — SSE event formatting and Accept header checking
 src/lib/legacy-sse.ts     — Legacy HTTP+SSE stream lifecycle (open, enqueue, close, heartbeat)
 src/lib/server-version.ts — Single source of truth for SERVER_VERSION
-src/lib/dns.ts            — DNS-over-HTTPS facade (re-exports from dns-transport, dns-records, dns-types)
+src/lib/dns.ts            — DNS-over-HTTPS facade (re-exports from dns-transport, dns-records, dns-types); queryTxtRecords concatenates multi-string values per RFC 7208 §3.3 and unescapes RFC 1035 §5.1 backslash sequences
 src/lib/sanitize.ts       — Domain validation, SSRF protection
 src/lib/config.ts         — Centralized SSRF constants, DNS tuning, rate limit quotas (FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT)
 src/lib/cache.ts          — KV-backed + in-memory TTL cache, INFLIGHT dedup map, cacheSetDeferred()
@@ -254,7 +254,7 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 - Clear scan cache between cases when testing tool dispatch — both `cache:<domain>:check:<name>` (per-check) and `cache:<domain>` (full scan)
 - `tsconfig.json` `types` must be under `compilerOptions` (not top-level) — Vitest pool requires this
 - Config file is `vitest.config.mts` (not `.ts`)
-- TXT record mocking: `mockTxtRecords()` wraps values in quotes (as Cloudflare DoH does); pass unquoted strings
+- TXT record mocking: `mockTxtRecords()` wraps values in quotes (as Cloudflare DoH does); pass unquoted strings. To test DNS backslash escaping (e.g. `\;`), use `createDohResponse()` directly with raw `data` fields containing the escaped form
 
 ### Pre-commit hook
 
