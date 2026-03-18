@@ -27,6 +27,12 @@
       "head_sampling_rate": 1
     }
   },
+  // Cron Trigger — runs analytics alerting checks every 15 minutes.
+  // Requires CF_ACCOUNT_ID, CF_ANALYTICS_TOKEN, and ALERT_WEBHOOK_URL
+  // to be set for alerts to fire. Without them, the handler is a no-op.
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
   // KV namespaces — required for production (cross-isolate sessions, caching,
   // rate limiting). Without these, Workers fall back to in-memory stores which
   // are per-isolate and will cause session 404s with MCP clients.
@@ -47,6 +53,14 @@
   // Optional auth: leave empty for open mode.
   "vars": {
     "BV_API_KEY": "",
-    "PROVIDER_SIGNATURES_URL": ""
+    "PROVIDER_SIGNATURES_URL": "",
+    // Analytics alerting — all optional. CF_ANALYTICS_TOKEN is a secret
+    // (set via: npx wrangler secret put CF_ANALYTICS_TOKEN).
+    "CF_ACCOUNT_ID": "",
+    "ALERT_WEBHOOK_URL": "",
+    "ALERT_ERROR_THRESHOLD": "5",
+    "ALERT_P95_THRESHOLD": "10000",
+    "ALERT_RATE_LIMIT_THRESHOLD": "50",
+    "ALERT_LOOKBACK_MINUTES": "15"
   }
 }
