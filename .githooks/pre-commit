@@ -2,7 +2,12 @@
 # Pre-commit hook: block staging of sensitive directories and files
 
 BLOCKED_PATTERNS=(
-  "docs/"
+  "docs/plans/"
+  "docs/code-review/"
+  "docs/superpowers/"
+  "docs/github-settings.md"
+  "docs/hn-show-post-draft.md"
+  "docs/mcp-directory-submissions.md"
   ".dev/"
   "*.env"
   "*.env.*"
