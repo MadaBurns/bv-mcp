@@ -64,15 +64,27 @@ export async function queryTxtRecords(domain: string, opts?: QueryDnsOptions): P
 /**
  * Unescape DNS presentation-format backslash sequences in TXT record data.
  * Handles `\DDD` (decimal octet 000–255) and `\X` (literal character).
+ *
+ * Some DoH providers double-escape (e.g. `\\;` in the JS string for what
+ * should be a plain `;`), so we loop until the string stabilises.
  */
 export function unescapeDnsTxt(text: string): string {
-	return text.replace(/\\(\d{3})|\\(.)/g, (_, decimal, ch) => {
-		if (decimal !== undefined) {
-			const code = parseInt(decimal, 10);
-			return code <= 255 ? String.fromCharCode(code) : `\\${decimal}`;
-		}
-		return ch;
-	});
+	const unescape = (s: string) =>
+		s.replace(/\\(\d{3})|\\(.)/g, (_, decimal, ch) => {
+			if (decimal !== undefined) {
+				const code = parseInt(decimal, 10);
+				return code <= 255 ? String.fromCharCode(code) : `\\${decimal}`;
+			}
+			return ch;
+		});
+
+	let result = text;
+	for (let i = 0; i < 5; i++) {
+		const next = unescape(result);
+		if (next === result) break;
+		result = next;
+	}
+	return result;
 }
 
 /**
