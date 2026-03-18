@@ -9,7 +9,7 @@ Open-source DNS & email security scanner for Claude, Cursor, VS Code, and MCP cl
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
-[![Tests](https://img.shields.io/badge/Tests-1040%2B-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![Tests](https://img.shields.io/badge/Tests-1050%2B-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![Coverage](https://img.shields.io/badge/Coverage-~95%25-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
@@ -476,7 +476,7 @@ npm run dev       # localhost:8787/mcp
 ```
 
 ```bash
-npm test          # 1040+ tests, ~95% coverage
+npm test          # 1050+ tests, ~95% coverage
 npm run typecheck
 ```
 

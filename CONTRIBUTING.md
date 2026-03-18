@@ -8,7 +8,7 @@ Thanks for your interest in contributing! Blackveil DNS is an open-source DNS & 
 git clone https://github.com/MadaBurns/bv-mcp.git
 cd bv-mcp
 npm install
-npm test           # Run tests (430+ tests, ~95% coverage)
+npm test           # Run tests (1050+ tests, ~95% coverage)
 npm run dev        # Local dev server at localhost:8787
 npm run typecheck  # Type-check without emitting
 ```
@@ -25,10 +25,17 @@ Run `npx prettier --write 'src/**/*.ts' 'test/**/*.ts'` before committing.
 
 ## Adding a New Tool
 
-1. Create `src/tools/check-<name>.ts` exporting an async function that returns `CheckResult`
-2. Register the tool schema in `src/handlers/tools.ts` (add to `TOOLS` array and `handleToolsCall` switch)
-3. Add tests in `test/check-<name>.spec.ts` using the `dns-mock` helper
-4. Update the README tools table
+1. Create `src/tools/check-<name>.ts` → export async fn returning `CheckResult`
+2. Add the `CheckCategory` value to the union type in `src/lib/scoring-model.ts` + `CATEGORY_DISPLAY_WEIGHTS`
+3. Add to `IMPORTANCE_WEIGHTS` in `src/lib/scoring-engine.ts`
+4. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 5 profiles), and baselineFailureRates in `src/lib/scoring-config.ts`
+5. Add to all 5 `PROFILE_WEIGHTS` maps in `src/lib/context-profiles.ts`
+6. Register in `src/handlers/tool-schemas.ts` (TOOLS array) + `src/handlers/tools.ts` (import + TOOL_REGISTRY)
+7. Add to `FREE_TOOL_DAILY_LIMITS` in `src/lib/config.ts`
+8. Add explanation templates in `src/tools/explain-finding-data.ts`
+9. If the new check is part of `scan_domain`, add it to the parallel orchestration in `src/tools/scan-domain.ts`
+10. Add `test/check-<name>.spec.ts` using the `dns-mock` helper pattern
+11. Update the README tools table
 
 Follow the pattern in `src/tools/check-spf.ts` — use `createFinding()` and `buildCheckResult()` from `lib/scoring.ts`, never construct findings manually.
 
