@@ -21,7 +21,7 @@ import { logEvent, logError, sanitizeHeadersForLog } from './lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
 import { normalizeHeaders, parseJsonRpcRequest, readRequestBody } from './mcp/request';
 import { createSession, deleteSession, validateSession } from './lib/session';
-import { isAuthorizedRequest, unauthorizedResponse } from './lib/auth';
+import { unauthorizedResponse } from './lib/auth';
 import { sseEvent, acceptsSSE, createSseStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
 import { createAnalyticsClient } from './lib/analytics';
 import type { JsonRpcRequest } from './lib/json-rpc';
@@ -64,6 +64,8 @@ type BvMcpEnv = {
 	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
 	BV_API_KEY?: string;
+	BV_WEB?: Fetcher;
+	BV_WEB_INTERNAL_KEY?: string;
 	ALLOWED_ORIGINS?: string;
 	PROVIDER_SIGNATURES_URL?: string;
 	PROVIDER_SIGNATURES_ALLOWED_HOSTS?: string;
@@ -71,7 +73,10 @@ type BvMcpEnv = {
 	SCORING_CONFIG?: string;
 };
 
-const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean } }>();
+import type { TierAuthResult } from './lib/tier-auth';
+import { resolveTier } from './lib/tier-auth';
+
+const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean; tierAuthResult: TierAuthResult } }>();
 const mcpPaths = ['/mcp', '/mcp/messages', '/mcp/sse'] as const;
 
 for (const path of mcpPaths) {
@@ -131,27 +136,19 @@ for (const path of mcpPaths) {
 	});
 
 	app.use(path, async (c, next) => {
-		const rawApiKey = c.env.BV_API_KEY;
-		const apiKey = rawApiKey?.trim();
-		if (!apiKey) {
-			if (rawApiKey) {
-				console.warn('[auth] BV_API_KEY is configured but contains only whitespace — auth is disabled');
-			}
-			c.set('isAuthenticated', false);
-			return next();
-		}
-
 		const authHeader = c.req.header('authorization');
-		if (!authHeader) {
-			c.set('isAuthenticated', false);
-			return next();
-		}
+		const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
 
-		if (!(await isAuthorizedRequest(authHeader, apiKey))) {
+		// Resolve tier via KV cache → service binding → static BV_API_KEY fallback
+		const tierResult = await resolveTier(token, c.env);
+		c.set('tierAuthResult', tierResult);
+		c.set('isAuthenticated', tierResult.authenticated);
+
+		// If token was provided but not recognized, reject
+		if (token && !tierResult.authenticated) {
 			return unauthorizedResponse();
 		}
 
-		c.set('isAuthenticated', true);
 		return next();
 	});
 }
@@ -239,6 +236,7 @@ app.post('/mcp', async (c) => {
 	const accept = headersLc['accept'];
 	const ip = headersLc['cf-connecting-ip'] ?? 'unknown';
 	const isAuthenticated = c.get('isAuthenticated');
+	const tierAuthResult = c.get('tierAuthResult');
 
 	const bodyReadResult = await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES);
 	if (!bodyReadResult.ok) {
@@ -284,6 +282,7 @@ app.post('/mcp', async (c) => {
 					startTime,
 					ip,
 					isAuthenticated,
+					tierAuthResult,
 					userAgent: headersLc['user-agent'],
 					sessionId: headersLc['mcp-session-id'],
 					validateSession: true,
@@ -335,6 +334,7 @@ app.post('/mcp', async (c) => {
 		startTime,
 		ip,
 		isAuthenticated,
+		tierAuthResult,
 		userAgent: headersLc['user-agent'],
 		sessionId: headersLc['mcp-session-id'],
 		validateSession: true,
@@ -396,6 +396,7 @@ app.post('/mcp/messages', async (c) => {
 	const headersLc = normalizeHeaders(c.req.raw.headers);
 	const ip = headersLc['cf-connecting-ip'] ?? 'unknown';
 	const isAuthenticated = c.get('isAuthenticated');
+	const tierAuthResult = c.get('tierAuthResult');
 	const sessionId = c.req.query('sessionId');
 
 	if (!sessionId) {
@@ -449,6 +450,7 @@ app.post('/mcp/messages', async (c) => {
 				startTime,
 				ip,
 				isAuthenticated,
+				tierAuthResult,
 				userAgent: headersLc['user-agent'],
 				sessionId,
 				validateSession: true,
