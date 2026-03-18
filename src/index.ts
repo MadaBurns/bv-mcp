@@ -601,6 +601,15 @@ app.delete('/mcp', async (c) => {
 
 	await deleteSession(sessionId!, c.env.SESSION_STORE);
 	closeLegacyStream(sessionId!);
+	const analytics = createAnalyticsClient(c.env.MCP_ANALYTICS);
+	const cfProps = c.req.raw.cf as IncomingRequestCfProperties | undefined;
+	const tierResult = c.get('tierAuthResult');
+	analytics.emitSessionEvent({
+		action: 'terminated',
+		country: (cfProps?.country as string) ?? 'unknown',
+		clientType: detectMcpClient(c.req.header('user-agent') ?? ''),
+		authTier: tierResult.authenticated ? (tierResult.tier ?? 'free') : 'anon',
+	});
 	return new Response(null, { status: 204 });
 });
 
