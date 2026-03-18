@@ -80,7 +80,7 @@ src/lib/auth.ts           — Bearer token validation (constant-time XOR compari
 src/lib/sse.ts            — SSE event formatting and Accept header checking
 src/lib/legacy-sse.ts     — Legacy HTTP+SSE stream lifecycle (open, enqueue, close, heartbeat)
 src/lib/server-version.ts — Single source of truth for SERVER_VERSION
-src/lib/dns.ts            — DNS-over-HTTPS facade (re-exports from dns-transport, dns-records, dns-types); queryTxtRecords concatenates multi-string values per RFC 7208 §3.3 and unescapes RFC 1035 §5.1 backslash sequences
+src/lib/dns.ts            — DNS-over-HTTPS facade (re-exports from dns-transport, dns-records, dns-types); queryTxtRecords concatenates multi-string values per RFC 7208 §3.3 and iteratively unescapes RFC 1035 §5.1 backslash sequences (handles DoH providers that double-escape)
 src/lib/sanitize.ts       — Domain validation, SSRF protection
 src/lib/config.ts         — Centralized SSRF constants, DNS tuning, rate limit quotas (FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT)
 src/lib/cache.ts          — KV-backed + in-memory TTL cache, INFLIGHT dedup map, cacheSetDeferred()

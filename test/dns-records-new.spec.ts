@@ -25,11 +25,24 @@ describe('queryTxtRecords', () => {
 		expect(results).toEqual(['v=spf1 include:a.example.com ip4:192.0.2.1 ~all']);
 	});
 
-	it('unescapes DNS backslash-semicolons in TXT data', async () => {
-		// Cloudflare/Google DoH sometimes returns backslash-escaped semicolons
+	it('unescapes single-backslash DNS escaping in TXT data', async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			createDohResponse([{ name: '_dmarc.example.com', type: 16 }], [
 				{ name: '_dmarc.example.com', type: 16, TTL: 300, data: '"v=DMARC1\\; p=none\\; sp=reject\\; rua=mailto:d@example.com"' },
+			]),
+		);
+
+		const { queryTxtRecords } = await import('../src/lib/dns-records');
+		const results = await queryTxtRecords('_dmarc.example.com');
+
+		expect(results).toEqual(['v=DMARC1; p=none; sp=reject; rua=mailto:d@example.com']);
+	});
+
+	it('unescapes double-backslash DNS escaping from DoH providers', async () => {
+		// Cloudflare/Google DoH double-escapes: raw JSON has \\\\; which JS parses to \\;
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			createDohResponse([{ name: '_dmarc.example.com', type: 16 }], [
+				{ name: '_dmarc.example.com', type: 16, TTL: 300, data: '"v=DMARC1\\\\; p=none\\\\; sp=reject\\\\; rua=mailto:d@example.com"' },
 			]),
 		);
 
@@ -71,6 +84,11 @@ describe('unescapeDnsTxt', () => {
 	it('unescapes backslash-semicolons', async () => {
 		const { unescapeDnsTxt } = await import('../src/lib/dns-records');
 		expect(unescapeDnsTxt('p=none\\; sp=reject')).toBe('p=none; sp=reject');
+	});
+
+	it('unescapes double-backslash-semicolons from DoH providers', async () => {
+		const { unescapeDnsTxt } = await import('../src/lib/dns-records');
+		expect(unescapeDnsTxt('p=none\\\\; sp=reject')).toBe('p=none; sp=reject');
 	});
 
 	it('unescapes decimal octets', async () => {
