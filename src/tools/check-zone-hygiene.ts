@@ -104,7 +104,7 @@ export async function checkZoneHygiene(domain: string, dnsOptions?: QueryDnsOpti
 				}
 			}
 		}
-	} catch (err) {
+	} catch {
 		findings.push(
 			createFinding(
 				'zone_hygiene',
