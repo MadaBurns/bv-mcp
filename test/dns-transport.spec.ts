@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DnsQueryError, queryDns, RecordType } from '../src/lib/dns';
+import { type DohResponse, DnsQueryError, queryDns, RecordType } from '../src/lib/dns';
 import { setupFetchMock } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
@@ -101,5 +101,94 @@ describe('dns transport helpers', () => {
 			domain: 'example.com',
 			recordType: 'TXT',
 		});
+	});
+});
+
+describe('queryDns cache', () => {
+	const makeDohResponse = (domain = 'example.com', type = RecordType.TXT): DohResponse => ({
+		Status: 0,
+		TC: false,
+		RD: true,
+		RA: true,
+		AD: false,
+		CD: false,
+		Question: [{ name: domain, type }],
+		Answer: [{ name: domain, type, TTL: 300, data: '"v=spf1 -all"' }],
+	});
+
+	it('cache hit returns same response without calling fetch', async () => {
+		const cached = makeDohResponse();
+		const queryCache = new Map<string, Promise<DohResponse>>([['example.com:TXT:false', Promise.resolve(cached)]]);
+
+		const fetchMock = vi.fn();
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		const result = await queryDns('example.com', 'TXT', false, { queryCache, retries: 0, confirmWithSecondaryOnEmpty: false });
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(result).toBe(cached);
+	});
+
+	it('concurrent queries coalesce into one fetch', async () => {
+		const dohResponse = makeDohResponse();
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: () => Promise.resolve(dohResponse),
+		} as unknown as Response);
+
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		const queryCache = new Map<string, Promise<DohResponse>>();
+		const [r1, r2] = await Promise.all([
+			queryDns('example.com', 'TXT', false, { queryCache, retries: 0, confirmWithSecondaryOnEmpty: false }),
+			queryDns('example.com', 'TXT', false, { queryCache, retries: 0, confirmWithSecondaryOnEmpty: false }),
+		]);
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(r1).toBe(r2);
+	});
+
+	it('no caching when queryCache not provided', async () => {
+		const dohResponse = makeDohResponse();
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: () => Promise.resolve(dohResponse),
+		} as unknown as Response);
+
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		await queryDns('example.com', 'TXT', false, { retries: 0, confirmWithSecondaryOnEmpty: false });
+		await queryDns('example.com', 'TXT', false, { retries: 0, confirmWithSecondaryOnEmpty: false });
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('failed queries evicted from cache', async () => {
+		const dohResponse = makeDohResponse();
+		const fetchMock = vi
+			.fn()
+			.mockRejectedValueOnce(new DOMException('The operation was aborted.', 'AbortError'))
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve(dohResponse),
+			} as unknown as Response);
+
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		const queryCache = new Map<string, Promise<DohResponse>>();
+		const cacheKey = 'example.com:TXT:false';
+
+		await expect(queryDns('example.com', 'TXT', false, { queryCache, retries: 0, timeoutMs: 5 })).rejects.toThrow();
+
+		// Allow microtask for .catch() eviction to run
+		await new Promise((r) => setTimeout(r, 0));
+		expect(queryCache.has(cacheKey)).toBe(false);
+
+		const result = await queryDns('example.com', 'TXT', false, { queryCache, retries: 0, confirmWithSecondaryOnEmpty: false });
+		expect(result).toEqual(dohResponse);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 });

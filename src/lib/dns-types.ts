@@ -55,4 +55,6 @@ export interface QueryDnsOptions {
 	confirmWithSecondaryOnEmpty?: boolean;
 	/** When true, skip secondary resolver confirmation on empty results. Used in scan context for speed. */
 	skipSecondaryConfirmation?: boolean;
+	/** Scan-scoped DNS query cache. Stores Promises keyed by `domain:type:dnssecCheck` to deduplicate concurrent and sequential identical queries within a single scan. */
+	queryCache?: Map<string, Promise<DohResponse>>;
 }
