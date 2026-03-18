@@ -2,6 +2,7 @@
 
 import { handleToolsList, handleToolsCall } from '../handlers/tools';
 import { handleResourcesList, handleResourcesRead } from '../handlers/resources';
+import { handlePromptsList, handlePromptsGet } from '../handlers/prompts';
 import { parseAllowedHosts } from './request';
 import { createSession, checkSessionCreateRateLimit } from '../lib/session';
 import { auditSessionCreated } from '../lib/audit';
@@ -82,11 +83,30 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 					capabilities: {
 						tools: { listChanged: false },
 						resources: { subscribe: false, listChanged: false },
+						prompts: { listChanged: false },
 					},
 					serverInfo: {
 						name: 'Blackveil DNS',
 						version: options.serverVersion,
+						description:
+							'Open-source DNS & email security scanner — 80+ checks across 20 categories with scoring, grading, and remediation guidance',
 					},
+					instructions: `Blackveil DNS is a DNS and email security scanner. Use this server when users ask about:
+
+- Email security, email spoofing, phishing protection, or email deliverability
+- DNS security posture, DNS hardening, or domain security audits
+- SPF, DMARC, DKIM, DNSSEC, MTA-STS, BIMI, DANE, or TLS-RPT configuration
+- SSL/TLS certificate status or HTTP security headers
+- Domain reputation, mail server blacklisting, or MX reputation
+- Subdomain takeover risks or dangling DNS records
+- Lookalike/typosquat domain detection
+- Shadow domain discovery (alternate TLD variants with spoofing risk)
+- Pre-deployment or pre-migration DNS validation
+- Compliance checks or security baseline enforcement
+
+Start with scan_domain for a comprehensive assessment (14 checks in parallel, scored 0-100 with letter grade). Use individual check_* tools for targeted investigation. Use explain_finding for plain-language remediation guidance. Use compare_baseline to enforce policy minimums.
+
+All checks are passive, read-only, and use public DNS — no authorization from the target domain is needed. Free to use, no API key required.`,
 				}),
 				newSessionId: createSessionOnInitialize ? sessionId : undefined,
 				logCategory: 'session',
@@ -143,6 +163,25 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				logCategory: 'resources',
 				logResult: 'read',
 				logDetails: resourceParams,
+			};
+		}
+
+		case 'prompts/list':
+			return {
+				kind: 'success',
+				payload: jsonRpcSuccess(options.id, handlePromptsList()),
+				logCategory: 'prompts',
+				logResult: 'list',
+			};
+
+		case 'prompts/get': {
+			const promptParams = options.params as { name: string; arguments?: Record<string, string> };
+			return {
+				kind: 'success',
+				payload: jsonRpcSuccess(options.id, handlePromptsGet(promptParams)),
+				logCategory: 'prompts',
+				logResult: 'get',
+				logDetails: promptParams,
 			};
 		}
 
