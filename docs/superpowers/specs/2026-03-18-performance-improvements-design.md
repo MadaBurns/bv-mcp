@@ -1,8 +1,8 @@
 # Performance Improvements — Design Spec
 
 **Date:** 2026-03-18
-**Status:** Approved
-**Scope:** Scan latency, resource efficiency, bundle size
+**Status:** Approved (post-review revision)
+**Scope:** Scan latency, resource efficiency
 
 ---
 
@@ -28,16 +28,16 @@ Add `queryCache` field to `QueryDnsOptions` in `src/lib/dns-types.ts`:
 ```typescript
 export interface QueryDnsOptions {
   skipSecondaryConfirmation?: boolean;
-  queryCache?: Map<string, Promise<DnsResponse>>;
+  queryCache?: Map<string, Promise<DohResponse>>;  // DohResponse from dns-types.ts
 }
 ```
 
-In `queryDns()` (`src/lib/dns-transport.ts`), check the cache before making a network call:
+In `queryDns()` (`src/lib/dns-transport.ts`), check the cache before making a network call. The function signature is `queryDns(domain, type, dnssecCheck, opts?)`:
 
 ```typescript
-const cacheKey = `${domain}:${type}:${dnssec}`;
+const cacheKey = `${domain}:${type}:${dnssecCheck}`;
 if (opts?.queryCache?.has(cacheKey)) return opts.queryCache.get(cacheKey)!;
-const promise = actualQueryDns(domain, type, dnssec, opts);
+const promise = /* existing queryDns logic */;
 opts?.queryCache?.set(cacheKey, promise);
 return promise;
 ```
@@ -46,9 +46,9 @@ Key behaviors:
 - Cache stores the Promise itself, so concurrent checks coalesce on the same in-flight request
 - Cache scoped to scan lifetime (created in `scan_domain`, garbage collected after)
 - Standalone check calls (outside `scan_domain`) pass no `queryCache` — behavior unchanged
-- Secondary DNS confirmation (Google fallback) uses a separate cache key (`${domain}:${type}:${dnssec}:secondary`) so it is not suppressed
+- Secondary DNS confirmation (Google fallback) is a separate code path in `queryDns` that runs after the primary query. The primary result is cached; the secondary confirmation re-query should NOT be cached (it exists specifically to cross-check against a different resolver)
 
-In `scan_domain` (`src/tools/scan-domain.ts`):
+In `scan_domain` (`src/tools/scan-domain.ts`), the existing `scanDns` object at ~line 119 gains one field:
 
 ```typescript
 const scanDns: QueryDnsOptions = {
@@ -57,118 +57,67 @@ const scanDns: QueryDnsOptions = {
 };
 ```
 
-All 14 `safeCheck()` calls receive the same `scanDns` object.
+All 14 `safeCheck()` calls already receive `scanDns`. Note: `checkSsl` and `checkHttpSecurity` do not accept `dnsOptions` (they make no DNS calls via `queryDns`), so they are unaffected.
+
+The cache is threaded through the call chain: check functions pass `dnsOptions` → `queryDnsRecords()` / `queryTxtRecords()` in `dns-records.ts` → `queryDns()` in `dns-transport.ts`. All intermediate functions already accept and forward `QueryDnsOptions`.
 
 ### Files changed
 
 - `src/lib/dns-types.ts` — add `queryCache` to `QueryDnsOptions`
-- `src/lib/dns-transport.ts` — cache check/store in `queryDns()`
-- `src/tools/scan-domain.ts` — create shared `Map` in scan context
-- `test/dns-transport.spec.ts` — test cache hit, concurrent coalescing, no cache when absent
+- `src/lib/dns-transport.ts` — cache check/store in `queryDns()`, wrapping the existing fetch logic
+- `src/tools/scan-domain.ts` — add `queryCache: new Map()` to existing `scanDns` object
+- `test/dns-transport.spec.ts` — add tests: cache hit returns same Promise, concurrent coalescing calls fetch once, no cache when `queryCache` absent
 
 ### Expected impact
 
-20-40% fewer DNS roundtrips per scan. Eliminates ~5-6 redundant queries.
+Eliminates ~5-6 redundant DNS queries per scan. 20-40% fewer outbound DoH requests.
 
 ---
 
-## 2. Lazy-load explain-finding-data.ts
+## 2. Cap sensitive subdomain probes
 
 ### Problem
 
-`explain-finding.ts` statically imports `explain-finding-data.ts` (1,905 lines). This ~50-100 KB data structure is bundled into every request even though only `explain_finding` tool calls use it.
+`check_zone_hygiene` (`src/tools/check-zone-hygiene.ts`, ~line 119) probes all `SENSITIVE_SUBDOMAINS` (10 entries, defined in `zone-hygiene-analysis.ts`) via `Promise.allSettled` with unbounded concurrency — 10 concurrent DNS queries.
 
 ### Design
 
-Convert static import to dynamic import inside `explainFinding()`:
-
-```typescript
-// src/tools/explain-finding.ts
-export async function explainFinding(...) {
-  const { DETAILS_PATTERNS, DEFAULT_EXPLANATION, ... } = await import('./explain-finding-data');
-  // rest unchanged
-}
-```
-
-Workers runtime caches dynamic imports per isolate — first call pays import cost, subsequent calls are instant.
-
-### Files changed
-
-- `src/tools/explain-finding.ts` — convert to dynamic import
-- `test/explain-finding.spec.ts` — no changes needed (already uses dynamic import for the check function)
-
-### Expected impact
-
-~50-100 KB removed from critical bundle path. Scan requests never load it.
-
----
-
-## 3. Deferred provider signature loading in check_mx
-
-### Problem
-
-`checkMx()` calls `loadProviderSignatures()` unconditionally, including when the domain has no MX records and returns early.
-
-### Design
-
-Move `loadProviderSignatures()` below the no-MX early return:
-
-```typescript
-export async function checkMx(domain, opts?) {
-  const mxRecords = await queryMxRecords(domain, opts?.dnsOptions);
-  if (mxRecords.length === 0) {
-    return buildCheckResult('mx', findings);  // no signatures needed
-  }
-  const signatures = await loadProviderSignatures(...);  // moved here
-  // ... provider detection
-}
-```
-
-### Files changed
-
-- `src/tools/check-mx.ts` — reorder `loadProviderSignatures()` call
-- Tests unchanged (mock behavior identical)
-
-### Expected impact
-
-Saves 1 KV/fetch operation for domains with no MX records.
-
----
-
-## 4. Cap sensitive subdomain probes
-
-### Problem
-
-`check_zone_hygiene` probes all `SENSITIVE_SUBDOMAINS` in parallel with unbounded concurrency, potentially spawning 10+ concurrent DNS queries.
-
-### Design
-
-Batch into groups of 5:
+Batch into groups of 5 in `src/tools/check-zone-hygiene.ts`:
 
 ```typescript
 const PROBE_BATCH_SIZE = 5;
+const results: Array<{ subdomain: string; resolved: boolean }> = [];
 for (let i = 0; i < SENSITIVE_SUBDOMAINS.length; i += PROBE_BATCH_SIZE) {
   const batch = SENSITIVE_SUBDOMAINS.slice(i, i + PROBE_BATCH_SIZE);
-  await Promise.allSettled(batch.map(sub => queryDnsRecords(...)));
+  const settled = await Promise.allSettled(
+    batch.map(async (sub) => {
+      const fqdn = `${sub}.${domain}`;
+      const records = await queryDnsRecords(fqdn, 'A', dnsOptions);  // preserve dnsOptions
+      return { subdomain: sub, resolved: records.length > 0 };
+    }),
+  );
+  // collect results from settled...
 }
 ```
 
+Must preserve `dnsOptions` parameter passthrough (for scan-scoped query cache from Section 1).
+
 ### Files changed
 
-- `src/tools/check-zone-hygiene.ts` or `src/tools/zone-hygiene-analysis.ts` — add batching to subdomain probe loop
-- `test/check-zone-hygiene.spec.ts` — verify batched behavior
+- `src/tools/check-zone-hygiene.ts` — add batching to subdomain probe loop
+- `test/check-zone-hygiene.spec.ts` — existing tests cover probe behavior; verify they still pass
 
 ### Expected impact
 
-Bounded concurrency prevents thundering herd. More predictable resource usage under load.
+Bounded concurrency (5 concurrent DNS queries max per batch). More predictable resource usage under load. Adds one sequential batch boundary (~100ms) but reduces peak outbound query burst.
 
 ---
 
-## 5. Bump adaptive weight fetch timeout
+## 3. Bump adaptive weight fetch timeout
 
 ### Problem
 
-`ADAPTIVE_FETCH_TIMEOUT_MS = 50` in `scan-domain.ts`. Durable Object cold starts often exceed 50ms, causing most adaptive weight fetches to time out and silently fall back to static weights.
+`ADAPTIVE_FETCH_TIMEOUT_MS = 50` at `src/tools/scan-domain.ts:75`. Durable Object cold starts can exceed 50ms, causing adaptive weight fetches to time out and silently fall back to static weights.
 
 ### Design
 
@@ -178,23 +127,30 @@ Increase constant from 50 to 200:
 const ADAPTIVE_FETCH_TIMEOUT_MS = 200;
 ```
 
+The adaptive fetch happens before scoring begins (not inside a check), so it does not block the parallel check execution. 200ms is well under both the 8s per-check timeout and 12s scan timeout.
+
 ### Files changed
 
-- `src/tools/scan-domain.ts` — change constant value
+- `src/tools/scan-domain.ts` — change constant value on line 75
 
 ### Expected impact
 
-Higher adaptive weight adoption rate. 200ms is still well under the 8s per-check timeout and 12s scan timeout.
+Higher adaptive weight adoption rate. Graceful fallback to static weights still applies if DO is unavailable.
+
+---
+
+## Dropped sections (from pre-review draft)
+
+- **Lazy-load explain-finding-data.ts**: `explainFinding` and `resolveImpactNarrative` are synchronous functions called by `format-report.ts`, `tool-formatters.ts`, `handlers/tools.ts`, and re-exported via `package.ts`. Converting to async for a dynamic import would cascade through 5+ files and all their tests. Bundle savings (~50-100 KB) do not justify the blast radius.
+- **Deferred provider signatures in check_mx**: `loadProviderSignatures()` is already called at line 94, after both the no-MX return (line 31) and null-MX return (line 49). Already optimized — no change needed.
 
 ---
 
 ## Implementation order
 
 1. **DNS query cache** (Section 1) — highest impact, most files
-2. **Lazy-load explain data** (Section 2) — quick win, 1 file
-3. **Deferred provider signatures** (Section 3) — quick win, 1 file
-4. **Cap subdomain probes** (Section 4) — quick win, 1 file
-5. **Adaptive weight timeout** (Section 5) — one-liner
+2. **Cap subdomain probes** (Section 2) — quick win, 1 file
+3. **Adaptive weight timeout** (Section 3) — one-liner
 
 ## Non-goals
 
@@ -202,3 +158,4 @@ Higher adaptive weight adoption rate. 200ms is still well under the 8s per-check
 - No changes to the MCP protocol layer or session management
 - No DNS batching (multiple queries in one HTTP request) — Cloudflare DoH doesn't support it
 - No changes to KV caching strategy (already well-optimized with inflight dedup)
+- No async conversion of explain-finding exports (too invasive for marginal bundle gain)
