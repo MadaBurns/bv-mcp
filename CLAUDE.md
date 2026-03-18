@@ -8,7 +8,7 @@ Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflar
 Exposes 22 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 A 23rd check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 1.4.0 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 1.5.0 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -41,7 +41,7 @@ src/internal.ts           — Internal service binding routes (direct tool acces
 src/stdio.ts              — Native stdio MCP transport (CLI entrypoint: blackveil-dns-mcp)
 
 src/mcp/execute.ts        — Transport-neutral shared MCP request executor (validation, rate limiting, dispatch, analytics)
-src/mcp/dispatch.ts       — JSON-RPC method → handler routing (initialize, tools/*, resources/*, ping)
+src/mcp/dispatch.ts       — JSON-RPC method → handler routing (initialize, tools/*, resources/*, prompts/*, ping)
 src/mcp/request.ts        — Request body reading, JSON-RPC parsing/validation (batch support), header normalization
 src/mcp/route-gates.ts    — Pre-dispatch guards (rate limits, session validation)
 
@@ -51,6 +51,7 @@ src/handlers/tool-args.ts — Domain/argument extraction and validation
 src/handlers/tool-formatters.ts — mcpError/mcpText/formatCheckResult helpers
 src/handlers/tool-execution.ts — Tool logging helpers
 src/handlers/resources.ts — resources/list + resources/read (static docs)
+src/handlers/prompts.ts   — prompts/list + prompts/get (pre-built agent workflows)
 
 src/tools/check-*.ts      — Individual DNS checks (SPF, DMARC, DKIM, MX, SSL, BIMI, TLS-RPT, lookalikes, shadow domains, TXT hygiene, HTTP security, DANE, MX reputation, SRV, zone hygiene)
 src/tools/*-analysis.ts   — Analysis helpers extracted from check modules
@@ -222,7 +223,7 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 
 - **SSRF protection**: `config.ts` defines blocked IPs/TLDs/rebinding services; `sanitize.ts` enforces them. Wrangler uses `global_fetch_strictly_public` compatibility flag. All outbound fetches in tool checks (MTA-STS policy, SSL probe, subdomain takeover probe) use `redirect: 'manual'` to prevent redirect-based SSRF — redirect targets are never followed blindly.
 - **Auth**: optional bearer token (`BV_API_KEY`), constant-time XOR comparison in `lib/auth.ts`
-- **Rate limiting**: 50 req/min, 300 req/hr per IP via KV (in-memory fallback). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `ping`, `notifications/*`) are exempt. Authenticated requests (valid `BV_API_KEY` bearer token) bypass rate limiting entirely. `check_lookalikes` and `check_shadow_domains` each have a separate daily quota of 20/day per IP (unauthenticated) with 60-minute result caching, due to high outbound query volume (~100 DoH queries per invocation).
+- **Rate limiting**: 50 req/min, 300 req/hr per IP via KV (in-memory fallback). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `prompts/*`, `ping`, `notifications/*`) are exempt. Authenticated requests (valid `BV_API_KEY` bearer token) bypass rate limiting entirely. `check_lookalikes` and `check_shadow_domains` each have a separate daily quota of 20/day per IP (unauthenticated) with 60-minute result caching, due to high outbound query volume (~100 DoH queries per invocation).
 - **Per-tool daily quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts` caps unauthenticated usage per tool (e.g., `scan_domain`: 75/day, `check_lookalikes`: 20/day, `check_shadow_domains`: 20/day, `check_mx_reputation`: 20/day, `compare_baseline`: 150/day, `check_txt_hygiene`: 200/day, individual checks: 200/day). Global daily cap of 500k requests/day across all unauthenticated IPs (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via Durable Objects (`QuotaCoordinator`).
 - **Request body max**: 10 KB on `/mcp`
 - **IP sourcing**: only `cf-connecting-ip` — never `x-forwarded-for`
