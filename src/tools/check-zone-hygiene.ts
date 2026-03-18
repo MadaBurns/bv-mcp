@@ -115,31 +115,35 @@ export async function checkZoneHygiene(domain: string, dnsOptions?: QueryDnsOpti
 		);
 	}
 
-	// Phase 2: Sensitive Subdomain Probing
-	const subdomainProbes = SENSITIVE_SUBDOMAINS.map(async (subdomain) => {
-		const fqdn = `${subdomain}.${domain}`;
-		try {
-			const aRecords = await queryDnsRecords(fqdn, 'A', dnsOptions);
-			return {
-				subdomain: fqdn,
-				resolves: aRecords.length > 0,
-				ips: aRecords,
-			} as SubdomainProbeResult;
-		} catch {
-			return {
-				subdomain: fqdn,
-				resolves: false,
-				ips: [],
-			} as SubdomainProbeResult;
-		}
-	});
-
-	const settled = await Promise.allSettled(subdomainProbes);
+	// Phase 2: Sensitive Subdomain Probing (batched to limit concurrent DNS queries)
+	const PROBE_BATCH_SIZE = 5;
 	const probeResults: SubdomainProbeResult[] = [];
 
-	for (const result of settled) {
-		if (result.status === 'fulfilled') {
-			probeResults.push(result.value);
+	for (let i = 0; i < SENSITIVE_SUBDOMAINS.length; i += PROBE_BATCH_SIZE) {
+		const batch = SENSITIVE_SUBDOMAINS.slice(i, i + PROBE_BATCH_SIZE);
+		const settled = await Promise.allSettled(
+			batch.map(async (subdomain) => {
+				const fqdn = `${subdomain}.${domain}`;
+				try {
+					const aRecords = await queryDnsRecords(fqdn, 'A', dnsOptions);
+					return {
+						subdomain: fqdn,
+						resolves: aRecords.length > 0,
+						ips: aRecords,
+					} as SubdomainProbeResult;
+				} catch {
+					return {
+						subdomain: fqdn,
+						resolves: false,
+						ips: [],
+					} as SubdomainProbeResult;
+				}
+			}),
+		);
+		for (const result of settled) {
+			if (result.status === 'fulfilled') {
+				probeResults.push(result.value);
+			}
 		}
 	}
 
