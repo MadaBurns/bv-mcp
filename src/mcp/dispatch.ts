@@ -77,6 +77,12 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				const sessionId = createSessionOnInitialize ? await createSession(options.sessionStore) : options.existingSessionId;
 				if (createSessionOnInitialize && sessionId) {
 					auditSessionCreated(options.ip, sessionId);
+					options.analytics?.emitSessionEvent({
+						action: 'created',
+						country: options.country,
+						clientType: options.clientType as import('../lib/client-detection').McpClientType,
+						authTier: options.authTier,
+					});
 				}
 
 			return {
