@@ -58,6 +58,9 @@ interface ToolRuntimeOptions {
 	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
 	/** When provided, receives the raw CheckResult before MCP text formatting. Used by internal structured response mode. */
 	resultCapture?: (result: CheckResult) => void;
+	country?: string;
+	clientType?: string;
+	authTier?: string;
 }
 
 async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOptions): Promise<CheckResult> {
@@ -125,6 +128,9 @@ function handleExplainFindingValidationError(
 		error,
 		args,
 		severity: 'warn',
+		country: runtimeOptions?.country,
+		clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+		authTier: runtimeOptions?.authTier,
 	});
 	return buildToolErrorResult(error.message);
 }
@@ -179,6 +185,9 @@ export async function handleToolsCall(
 					status: result.passed ? 'pass' : 'fail',
 					logResult,
 					logDetails,
+					country: runtimeOptions?.country,
+					clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+					authTier: runtimeOptions?.authTier,
 				});
 				return { content: [mcpText(formatCheckResult(result))] };
 			}
@@ -199,6 +208,9 @@ export async function handleToolsCall(
 						logResult,
 						logDetails,
 						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
 					});
 					const structured = buildStructuredScanResult(result);
 					return {
@@ -223,6 +235,9 @@ export async function handleToolsCall(
 						logResult,
 						logDetails,
 						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
 					});
 					return { content: [mcpText(formatBaselineResult(result))] };
 				}
@@ -243,6 +258,9 @@ export async function handleToolsCall(
 						logResult: status,
 						logDetails: { checkType, details },
 						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
 					});
 					return { content: [mcpText(formatExplanation(result))] };
 				}
@@ -254,6 +272,9 @@ export async function handleToolsCall(
 						analytics: runtimeOptions?.analytics,
 						error: `Unknown tool: ${name}`,
 						args,
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
 					});
 					return buildToolErrorResult(`Unknown tool: ${name}`);
 			}
@@ -272,6 +293,9 @@ export async function handleToolsCall(
 				analytics: runtimeOptions?.analytics,
 				error: 'Tool call timed out',
 				args,
+				country: runtimeOptions?.country,
+				clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+				authTier: runtimeOptions?.authTier,
 			});
 			return {
 				content: [mcpError(`${name} timed out after ${TOOL_CALL_TIMEOUT_MS / 1000}s. Try a simpler check or retry — cached partial results make retries faster.`)],
@@ -286,6 +310,9 @@ export async function handleToolsCall(
 			analytics: runtimeOptions?.analytics,
 			error: err,
 			args,
+			country: runtimeOptions?.country,
+			clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+			authTier: runtimeOptions?.authTier,
 		});
 		return buildToolErrorResult(message);
 	}

@@ -32,6 +32,9 @@ export interface DispatchMcpMethodOptions {
 	createSessionOnInitialize?: boolean;
 	existingSessionId?: string;
 	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
+	country?: string;
+	clientType?: string;
+	authTier?: string;
 }
 
 export type DispatchMcpMethodResult =
@@ -133,6 +136,9 @@ All checks are passive, read-only, and use public DNS — no authorization from 
 				profileAccumulator: options.profileAccumulator,
 				waitUntil: options.waitUntil,
 				scoringConfig: options.scoringConfig,
+				country: options.country,
+				clientType: options.clientType,
+				authTier: options.authTier,
 			});
 
 			return {
