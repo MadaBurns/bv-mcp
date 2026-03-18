@@ -10,6 +10,85 @@ afterEach(() => {
 	restore();
 });
 
+describe('queryTxtRecords', () => {
+	it('concatenates multi-string TXT records without adding spaces (RFC 7208 §3.3)', async () => {
+		// Simulate DoH data where a token is split across TXT string boundaries
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			createDohResponse([{ name: 'example.com', type: 16 }], [
+				{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 include:a.example.com ip" "4:192.0.2.1 ~all"' },
+			]),
+		);
+
+		const { queryTxtRecords } = await import('../src/lib/dns-records');
+		const results = await queryTxtRecords('example.com');
+
+		expect(results).toEqual(['v=spf1 include:a.example.com ip4:192.0.2.1 ~all']);
+	});
+
+	it('unescapes DNS backslash-semicolons in TXT data', async () => {
+		// Cloudflare/Google DoH sometimes returns backslash-escaped semicolons
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			createDohResponse([{ name: '_dmarc.example.com', type: 16 }], [
+				{ name: '_dmarc.example.com', type: 16, TTL: 300, data: '"v=DMARC1\\; p=none\\; sp=reject\\; rua=mailto:d@example.com"' },
+			]),
+		);
+
+		const { queryTxtRecords } = await import('../src/lib/dns-records');
+		const results = await queryTxtRecords('_dmarc.example.com');
+
+		expect(results).toEqual(['v=DMARC1; p=none; sp=reject; rua=mailto:d@example.com']);
+	});
+
+	it('unescapes DNS decimal octet escapes (\\DDD)', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			createDohResponse([{ name: 'example.com', type: 16 }], [
+				{ name: 'example.com', type: 16, TTL: 300, data: '"hello\\032world"' },
+			]),
+		);
+
+		const { queryTxtRecords } = await import('../src/lib/dns-records');
+		const results = await queryTxtRecords('example.com');
+
+		// \032 = space character (decimal 32)
+		expect(results).toEqual(['hello world']);
+	});
+
+	it('passes through records without escaping unchanged', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			createDohResponse([{ name: 'example.com', type: 16 }], [
+				{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 include:_spf.google.com ~all"' },
+			]),
+		);
+
+		const { queryTxtRecords } = await import('../src/lib/dns-records');
+		const results = await queryTxtRecords('example.com');
+
+		expect(results).toEqual(['v=spf1 include:_spf.google.com ~all']);
+	});
+});
+
+describe('unescapeDnsTxt', () => {
+	it('unescapes backslash-semicolons', async () => {
+		const { unescapeDnsTxt } = await import('../src/lib/dns-records');
+		expect(unescapeDnsTxt('p=none\\; sp=reject')).toBe('p=none; sp=reject');
+	});
+
+	it('unescapes decimal octets', async () => {
+		const { unescapeDnsTxt } = await import('../src/lib/dns-records');
+		expect(unescapeDnsTxt('hello\\032world')).toBe('hello world');
+	});
+
+	it('preserves invalid decimal octets above 255', async () => {
+		const { unescapeDnsTxt } = await import('../src/lib/dns-records');
+		expect(unescapeDnsTxt('test\\999value')).toBe('test\\999value');
+	});
+
+	it('returns plain text unchanged', async () => {
+		const { unescapeDnsTxt } = await import('../src/lib/dns-records');
+		expect(unescapeDnsTxt('v=DMARC1; p=reject')).toBe('v=DMARC1; p=reject');
+	});
+});
+
 describe('queryPtrRecords', () => {
 	it('queries reverse DNS and strips trailing dots', async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(ptrResponse('1.2.3.4', ['mail.example.com']));
