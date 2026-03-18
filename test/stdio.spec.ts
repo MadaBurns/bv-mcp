@@ -5,9 +5,14 @@ describe('stdio MCP server', () => {
 	it('returns initialize success and marks the server initialized', async () => {
 		const server = createStdioServer();
 		const [output] = await server.handleMessage(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }));
-		const payload = JSON.parse(output ?? 'null') as { result: { protocolVersion: string } };
+		const payload = JSON.parse(output ?? 'null') as {
+			result: { protocolVersion: string; instructions: string; capabilities: { prompts: { listChanged: boolean } } };
+		};
 
 		expect(payload.result.protocolVersion).toBe('2025-03-26');
+		expect(typeof payload.result.instructions).toBe('string');
+		expect(payload.result.instructions.length).toBeGreaterThan(0);
+		expect(payload.result.capabilities.prompts).toEqual({ listChanged: false });
 		expect(server.state.initialized).toBe(true);
 	});
 

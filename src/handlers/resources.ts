@@ -45,6 +45,12 @@ const RESOURCES: McpResource[] = [
 		description: 'List of DNS record types queried by this server and their purpose in security analysis.',
 		mimeType: 'text/markdown',
 	},
+	{
+		uri: 'dns-security://guides/agent-workflows',
+		name: 'Agent Workflow Guide',
+		description: 'Recommended tool usage patterns and decision trees for common DNS security tasks.',
+		mimeType: 'text/markdown',
+	},
 ];
 
 /** Resource content keyed by URI */
@@ -225,6 +231,64 @@ The overall weighted score maps to a letter grade:
 - **D**: 55-59
 - **E**: 50-54
 - **F**: <50
+`,
+
+	'dns-security://guides/agent-workflows': `# Agent Workflow Guide
+
+Recommended tool usage patterns for common DNS security tasks.
+
+## Decision Tree: What Tool Should I Use?
+
+| User Intent | Recommended Tools | Notes |
+|---|---|---|
+| "Is my domain secure?" / "Audit my domain" | \`scan_domain\` | Start here — runs 14 checks in parallel, returns score + grade + prioritized findings |
+| "Can someone spoof my email?" / "Email spoofing risk" | \`check_spf\` → \`check_dmarc\` → \`check_dkim\` | The email authentication triad — check all three for a complete picture |
+| "Are there phishing lookalikes?" / "Brand impersonation risk" | \`check_lookalikes\` + \`check_shadow_domains\` | Standalone checks — not in scan_domain due to query volume |
+| "Is my DNS infrastructure solid?" | \`check_ns\` + \`check_zone_hygiene\` + \`check_dnssec\` | Infrastructure resilience + zone consistency + tamper protection |
+| "Are my web security headers OK?" | \`check_http_security\` + \`check_ssl\` + \`check_caa\` | Web security posture: headers + certificate + CA authorization |
+| "Is our email transport encrypted?" | \`check_mta_sts\` + \`check_tlsrpt\` + \`check_dane\` | TLS enforcement + failure reporting + certificate pinning |
+| "Do we meet compliance requirements?" | \`compare_baseline\` | Pass policy minimums as baseline — returns specific violations |
+| "What does this finding mean?" | \`explain_finding\` | Plain-language explanation with remediation steps |
+| "What services are published in DNS?" | \`check_srv\` + \`check_txt_hygiene\` | SRV records + TXT verification records map service footprint |
+| "Are our mail servers blacklisted?" | \`check_mx_reputation\` | DNSBL checks + reverse DNS validation |
+
+## Common Workflows
+
+### Full Security Audit
+1. \`scan_domain\` — get overall score and all findings
+2. \`explain_finding\` — for each critical/high finding, get remediation guidance
+3. Summarize with prioritized action plan
+
+### Email Authentication Hardening
+1. \`check_spf\` — validate SPF record and trust surface
+2. \`check_dmarc\` — check enforcement level (none → quarantine → reject)
+3. \`check_dkim\` — verify key presence and strength
+4. \`check_mta_sts\` — ensure transport encryption
+5. \`explain_finding\` — remediation for any failures
+
+### Brand Protection Assessment
+1. \`check_lookalikes\` — find registered typosquat domains
+2. \`check_shadow_domains\` — find alternate-TLD variants lacking email auth
+3. \`scan_domain\` — baseline security of the primary domain
+
+### CI/CD Policy Enforcement
+Use \`compare_baseline\` with policy requirements:
+\`\`\`json
+{
+  "grade": "B",
+  "require_spf": true,
+  "require_dmarc_enforce": true,
+  "require_dkim": true,
+  "max_critical_findings": 0
+}
+\`\`\`
+Returns pass/fail with specific violations — ideal for automated gates.
+
+## Tips
+- \`scan_domain\` caches results for 5 minutes — subsequent individual checks on the same domain return cached data
+- \`check_lookalikes\` and \`check_shadow_domains\` are rate-limited (20/day unauthenticated) — use judiciously
+- All checks are passive and read-only — safe to run against any domain
+- Use the \`profile\` parameter on \`scan_domain\` for non-mail domains (web_only, non_mail) to get more relevant scoring
 `,
 
 	'dns-security://guides/record-types': `# Supported DNS Record Types
