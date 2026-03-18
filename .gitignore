@@ -6,6 +6,7 @@ node_modules/
 dist/
 build/
 out/
+*.tgz
 
 # IDE
 .idea/
@@ -17,18 +18,23 @@ out/
 .DS_Store
 Thumbs.db
 
-# Environment
+# Environment & auth tokens
 .env
 .env.local
 .env.*
 .env.*.local
+.npmrc
 
 # Coverage
 coverage/
 
-# Docs (internal drafts and plans)
-docs/
-*troubleshooting*.md
+# Docs — internal drafts and plans (public docs are tracked)
+docs/plans/
+docs/code-review/
+docs/superpowers/
+docs/github-settings.md
+docs/hn-show-post-draft.md
+docs/mcp-directory-submissions.md
 
 # Logs
 *.log
@@ -45,7 +51,9 @@ pnpm-debug.log*
 # Cloudflare
 .wrangler/
 
+# AI tool configs
 .claude/
+.gemini/
 
 # Workspace
 .workspace/
@@ -68,5 +76,3 @@ mcp-response.txt
 
 # Local deploy overrides (real KV IDs, custom domains)
 .dev/
-
-.gemini/
