@@ -23,7 +23,8 @@ import { normalizeHeaders, parseJsonRpcRequest, readRequestBody } from './mcp/re
 import { createSession, deleteSession, validateSession } from './lib/session';
 import { unauthorizedResponse } from './lib/auth';
 import { sseEvent, acceptsSSE, createSseStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
-import { createAnalyticsClient } from './lib/analytics';
+import { createAnalyticsClient, hashForAnalytics } from './lib/analytics';
+import { detectMcpClient } from './lib/client-detection';
 import type { JsonRpcRequest } from './lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionRequest } from './mcp/route-gates';
 import { MAX_REQUEST_BODY_BYTES, FREE_TOOL_DAILY_LIMITS } from './lib/config';
@@ -238,6 +239,13 @@ app.post('/mcp', async (c) => {
 	const isAuthenticated = c.get('isAuthenticated');
 	const tierAuthResult = c.get('tierAuthResult');
 
+	// Analytics context enrichment
+	const cfProps = c.req.raw.cf as IncomingRequestCfProperties | undefined;
+	const country = (cfProps?.country as string) ?? 'unknown';
+	const clientType = detectMcpClient(headersLc['user-agent']);
+	const authTier = tierAuthResult.authenticated ? (tierAuthResult.tier ?? 'free') : 'anon';
+	const sessionHash = headersLc['mcp-session-id'] ? hashForAnalytics(headersLc['mcp-session-id']) : 'none';
+
 	const bodyReadResult = await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES);
 	if (!bodyReadResult.ok) {
 		return sseErrorResponse(bodyReadResult.payload!, bodyReadResult.status!, accept);
@@ -299,7 +307,11 @@ app.post('/mcp', async (c) => {
 					analytics,
 					profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 					waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
-				scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
+					scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
+					country,
+					clientType,
+					authTier,
+					sessionHash,
 				});
 			}),
 		);
@@ -352,6 +364,10 @@ app.post('/mcp', async (c) => {
 		profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 		waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 		scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
+		country,
+		clientType,
+		authTier,
+		sessionHash,
 	});
 
 	if (singleResult.kind === 'notification') {
@@ -398,6 +414,13 @@ app.post('/mcp/messages', async (c) => {
 	const isAuthenticated = c.get('isAuthenticated');
 	const tierAuthResult = c.get('tierAuthResult');
 	const sessionId = c.req.query('sessionId');
+
+	// Analytics context enrichment
+	const cfProps = c.req.raw.cf as IncomingRequestCfProperties | undefined;
+	const country = (cfProps?.country as string) ?? 'unknown';
+	const clientType = detectMcpClient(headersLc['user-agent']);
+	const authTier = tierAuthResult.authenticated ? (tierAuthResult.tier ?? 'free') : 'anon';
+	const sessionHash = sessionId ? hashForAnalytics(sessionId) : 'none';
 
 	if (!sessionId) {
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: missing session'), 400);
@@ -468,6 +491,10 @@ app.post('/mcp/messages', async (c) => {
 				analytics,
 				profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 				waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+				country,
+				clientType,
+				authTier,
+				sessionHash,
 			});
 		}),
 	);
