@@ -34,7 +34,7 @@ async function hashToken(token: string): Promise<string> {
  *
  * Resolution order:
  * 1. KV cache lookup (`tier:{hash}`)
- * 2. Service binding to bv-web (`POST /internal/mcp/validate-key`)
+ * 2. Service binding to bv-web (`POST /api/internal/mcp/validate-key`)
  * 3. Static BV_API_KEY comparison (backward compat for self-hosted)
  */
 export async function resolveTier(
@@ -65,14 +65,18 @@ export async function resolveTier(
 	}
 
 	// 2. Try service binding to bv-web
+	// Send both X-Internal-Key and Authorization Bearer so the endpoint can validate
+	// regardless of whether BV_WEB_INTERNAL_KEY was provisioned as INTERNAL_API_KEY
+	// or ADMIN_API_KEY.
 	if (env.BV_WEB && env.BV_WEB_INTERNAL_KEY) {
 		try {
 			const response = await env.BV_WEB.fetch(
-				new Request('https://internal/internal/mcp/validate-key', {
+				new Request('https://internal/api/internal/mcp/validate-key', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
 						'X-Internal-Key': env.BV_WEB_INTERNAL_KEY,
+						'Authorization': `Bearer ${env.BV_WEB_INTERNAL_KEY}`,
 					},
 					body: JSON.stringify({ keyHash }),
 				}),
