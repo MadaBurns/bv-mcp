@@ -1,7 +1,7 @@
 {
 	"name": "blackveil-dns",
-	"version": "1.4.0",
-	"description": "Blackveil DNS — Open-source DNS & email security scanner.",
+	"version": "1.5.0",
+	"description": "Open-source DNS & email security scanner — SPF, DMARC, DKIM, DNSSEC, SSL, and 15+ more checks via MCP. Detects spoofing risk, subdomain takeover, shadow domains, and typosquats. Scored and graded with remediation guidance.",
 	"type": "module",
 	"license": "BUSL-1.1",
 	"author": "BLACKVEIL Security",
@@ -22,7 +22,15 @@
 		"dnssec",
 		"cloudflare-workers",
 		"model-context-protocol",
-		"ai-tools"
+		"ai-tools",
+		"email-spoofing",
+		"phishing-prevention",
+		"domain-security",
+		"subdomain-takeover",
+		"dns-audit",
+		"email-authentication",
+		"security-scanner",
+		"mcp-server"
 	],
 	"bugs": {
 		"url": "https://github.com/MadaBurns/bv-mcp/issues"

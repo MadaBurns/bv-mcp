@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { handleResourcesList, handleResourcesRead } from '../src/handlers/resources';
 
 describe('handleResourcesList', () => {
-	it('returns an object with a resources array of exactly 3 items', () => {
+	it('returns an object with a resources array of exactly 4 items', () => {
 		const result = handleResourcesList();
 		expect(result).toHaveProperty('resources');
-		expect(result.resources).toHaveLength(3);
+		expect(result.resources).toHaveLength(4);
 	});
 
 	it('each resource has uri, name, mimeType, and description', () => {
@@ -24,6 +24,7 @@ describe('handleResourcesList', () => {
 		expect(uris).toContain('dns-security://guides/security-checks');
 		expect(uris).toContain('dns-security://guides/scoring');
 		expect(uris).toContain('dns-security://guides/record-types');
+		expect(uris).toContain('dns-security://guides/agent-workflows');
 	});
 
 	it('all mimeTypes are text/markdown', () => {
