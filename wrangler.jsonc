@@ -1,10 +1,12 @@
 {
+  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "bv-dns-security-mcp",
   "main": "src/index.ts",
   "compatibility_date": "2026-03-18",
   "compatibility_flags": [
     "global_fetch_strictly_public"
   ],
+  "upload_source_maps": true,
   // Durable Objects — auto-provisioned on deploy (no manual setup needed).
   // QuotaCoordinator: distributed rate limiting across isolates.
   // ProfileAccumulator: adaptive weight telemetry (EMA-based scoring adjustment).
@@ -20,7 +22,10 @@
     { "tag": "v2", "new_sqlite_classes": ["ProfileAccumulator"] }
   ],
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "logs": {
+      "head_sampling_rate": 1
+    }
   },
   // KV namespaces — required for production (cross-isolate sessions, caching,
   // rate limiting). Without these, Workers fall back to in-memory stores which
