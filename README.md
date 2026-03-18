@@ -223,6 +223,16 @@ For hosted MCP setup, stdio usage, and legacy fallback endpoints, see `docs/clie
 
 ---
 
+## API keys
+
+No key required for basic use. For higher limits, get a **free Agent key** (200 scans/day):
+
+**&rarr; [Get an Agent key](https://www.blackveilsecurity.com/developers/agent-key)**
+
+Pass it as a Bearer token in your MCP client config or the `api-key` input in the GitHub Action.
+
+---
+
 ## CI/CD
 
 Enforce DNS security grades in your pipeline with the [Blackveil DNS GitHub Action](https://github.com/MadaBurns/blackveil-dns-action):
@@ -233,7 +243,7 @@ Enforce DNS security grades in your pipeline with the [Blackveil DNS GitHub Acti
     domain: example.com
     minimum-grade: B
     profile: auto          # or: mail_enabled, enterprise_mail, non_mail, web_only, minimal
-    api-key: ${{ secrets.BV_API_KEY }}  # optional — bypasses rate limits
+    api-key: ${{ secrets.BV_API_KEY }}  # optional — free key at blackveilsecurity.com/developers/agent-key
 ```
 
 The action outputs `score`, `grade`, `maturity`, `scoring-profile`, and `passed` for downstream steps.
