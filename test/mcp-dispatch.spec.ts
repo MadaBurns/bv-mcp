@@ -32,6 +32,10 @@ describe('mcp-dispatch', () => {
 		if (result.kind !== 'success') throw new Error('expected success result');
 		expect(result.newSessionId).toBe('session-abc');
 		expect(result.payload.result.serverInfo.version).toBe('1.0.0');
+		expect(result.payload.result.serverInfo.description).toBeTruthy();
+		expect(typeof result.payload.result.instructions).toBe('string');
+		expect(result.payload.result.instructions.length).toBeGreaterThan(0);
+		expect(result.payload.result.capabilities.prompts).toEqual({ listChanged: false });
 		expect(auditSessionCreated).toHaveBeenCalledWith('203.0.113.11', 'session-abc');
 	});
 
@@ -60,6 +64,43 @@ describe('mcp-dispatch', () => {
 		expect(result.status).toBe(429);
 		expect(result.headers['retry-after']).toBe('1');
 		expect(result.payload.error.code).toBe(-32029);
+	});
+
+	it('dispatches prompts/list and returns prompts array', async () => {
+		const { dispatchMcpMethod } = await import('../src/mcp/dispatch');
+		const result = await dispatchMcpMethod({
+			id: 10,
+			method: 'prompts/list',
+			params: {},
+			ip: '203.0.113.14',
+			isAuthenticated: true,
+			rateHeaders: {},
+			serverVersion: '1.0.0',
+		});
+
+		expect(result.kind).toBe('success');
+		if (result.kind !== 'success') throw new Error('expected success result');
+		expect(result.payload.result.prompts).toBeDefined();
+		expect(Array.isArray(result.payload.result.prompts)).toBe(true);
+		expect(result.logCategory).toBe('prompts');
+	});
+
+	it('dispatches prompts/get and returns prompt messages', async () => {
+		const { dispatchMcpMethod } = await import('../src/mcp/dispatch');
+		const result = await dispatchMcpMethod({
+			id: 11,
+			method: 'prompts/get',
+			params: { name: 'full-security-audit', arguments: { domain: 'example.com' } },
+			ip: '203.0.113.15',
+			isAuthenticated: true,
+			rateHeaders: {},
+			serverVersion: '1.0.0',
+		});
+
+		expect(result.kind).toBe('success');
+		if (result.kind !== 'success') throw new Error('expected success result');
+		expect(result.payload.result.messages).toBeDefined();
+		expect(result.logCategory).toBe('prompts');
 	});
 
 	it('returns a method-not-found error for unsupported methods', async () => {

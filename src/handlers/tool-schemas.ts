@@ -36,24 +36,25 @@ export const TOOLS: McpTool[] = [
 	{
 		name: 'check_mx',
 		description:
-			'Check MX (Mail Exchange) records for a domain. Validates presence and quality of MX records, assesses outbound email usage.',
+			'Validate mail exchange infrastructure and email routing configuration. Checks MX record presence, priority ordering, and provider detection to assess whether a domain can send and receive email reliably.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_spf',
 		description:
-			'Check SPF (Sender Policy Framework) records for a domain. Validates SPF TXT records for proper syntax, mechanisms, and policy.',
+			'Detect email spoofing risk from missing or misconfigured SPF records. Validates SPF TXT records for syntax, mechanism quality, lookup limits, policy strictness (-all vs ~all), and trust surface exposure from shared SaaS platforms.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_dmarc',
 		description:
-			'Check DMARC (Domain-based Message Authentication) records for a domain. Validates _dmarc TXT records for policy configuration.',
+			'Assess domain protection against email impersonation and phishing. Validates DMARC policy enforcement level (none/quarantine/reject), reporting configuration, alignment modes, subdomain policy, and percentage coverage.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_dkim',
-		description: 'Check DKIM (DomainKeys Identified Mail) records for a domain. Probes common selectors for DKIM key records.',
+		description:
+			'Verify email message integrity and sender authenticity via DKIM. Probes common selectors across major providers, validates key strength, and checks tag configuration.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
@@ -72,64 +73,67 @@ export const TOOLS: McpTool[] = [
 	{
 		name: 'check_dnssec',
 		description:
-			'Check DNSSEC (DNS Security Extensions) status for a domain. Verifies if DNS responses are cryptographically signed and validated.',
+			'Check whether DNS responses are cryptographically signed and tamper-proof. Verifies DNSSEC validation, DNSKEY/DS record presence — protects against DNS cache poisoning and man-in-the-middle attacks.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_ssl',
-		description: 'Check SSL/TLS certificate configuration for a domain. Validates certificate status and configuration.',
+		description:
+			'Verify SSL/TLS certificate health and HTTPS configuration. Validates certificate availability, expiry, and configuration — essential for transport security and browser trust.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_mta_sts',
-		description: 'Check MTA-STS (Mail Transfer Agent Strict Transport Security) for a domain. Validates _mta-sts TXT records and policy.',
+		description:
+			'Check if email transport is protected against TLS downgrade attacks. Validates MTA-STS (RFC 8461) policy ensuring SMTP connections between mail servers are encrypted and cannot be intercepted.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_ns',
-		description: 'Check name server (NS) configuration for a domain. Analyzes NS records for redundancy, diversity, and proper delegation.',
+		description:
+			'Evaluate DNS infrastructure resilience and redundancy. Analyzes nameserver delegation, provider diversity, and proper delegation to identify single points of failure.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_caa',
 		description:
-			'Check CAA (Certificate Authority Authorization) records for a domain. Validates which CAs are authorized to issue certificates.',
+			'Check which Certificate Authorities are authorized to issue SSL certificates for a domain. Missing CAA records mean any CA can issue certificates, increasing unauthorized issuance risk.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_bimi',
 		description:
-			'Check BIMI (Brand Indicators for Message Identification) records for a domain. Validates logo and authority evidence configuration for email client brand display.',
+			'Check if a domain has Brand Indicators for Message Identification (BIMI) configured for email client logo display. Validates BIMI TXT record, logo URL format, and VMC authority evidence.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_tlsrpt',
 		description:
-			'Check TLS-RPT (SMTP TLS Reporting) records for a domain. Validates reporting configuration for SMTP TLS failures (RFC 8460).',
+			'Check if SMTP TLS failure reporting is configured. Validates TLS-RPT (RFC 8460) records that enable receiving reports when email transport encryption fails — critical for monitoring MTA-STS enforcement.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_http_security',
 		description:
-			'Check HTTP security headers for a domain. Analyzes Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Permissions-Policy, Referrer-Policy, CORP, and COOP headers.',
+			'Audit HTTP security headers protecting against XSS, clickjacking, and data leakage. Checks Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Permissions-Policy, Referrer-Policy, CORP, and COOP.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_dane',
 		description:
-			'Check DANE (DNS-Based Authentication of Named Entities) TLSA records for MX servers and HTTPS endpoints. Validates certificate pinning via DNS.',
+			'Verify DNS-based certificate pinning (DANE/TLSA) for mail servers and HTTPS endpoints. Prevents certificate substitution attacks even if a CA is compromised.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_lookalikes',
 		description:
-			'Detect registered lookalike/typosquat domains with DNS or mail infrastructure. Generates domain permutations and checks for active registrations. Standalone check — not included in scan_domain due to query volume.',
+			'Detect registered lookalike and typosquat domains that could be used for phishing or brand impersonation. Generates permutations (character swaps, homoglyphs, TLD variants) and checks for active infrastructure. Standalone — not in scan_domain due to query volume.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'scan_domain',
 		description:
-			'Run a comprehensive DNS security scan on a domain. Executes all checks (SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, Subdomain Takeover, HTTP Security, DANE) in parallel and returns an overall security score and grade.',
+			'Run a comprehensive DNS and email security audit on any domain. Executes 14 checks in parallel (SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, Subdomain Takeover, HTTP Security, DANE) and returns an overall security score (0-100), letter grade (A+ to F), maturity stage, and prioritized findings with remediation guidance. Start here for any domain security question.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
@@ -150,7 +154,7 @@ export const TOOLS: McpTool[] = [
 	{
 		name: 'compare_baseline',
 		description:
-			'Compare a domain scan against a policy baseline. Returns violations where the domain falls below the specified minimums. Useful for MSPs and security teams enforcing org-level standards.',
+			'Enforce security policy compliance by comparing a domain against minimum acceptable standards. Returns specific violations below baseline requirements. Designed for MSPs, security teams, and CI/CD pipelines enforcing organization-level DNS security standards.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
@@ -211,36 +215,37 @@ export const TOOLS: McpTool[] = [
 	{
 		name: 'check_shadow_domains',
 		description:
-			'Discover registered alternate-TLD variants of a domain with active DNS/mail infrastructure and assess email spoofing risk. Checks whether shadow domains (e.g., .org.nz, .co.nz, .com variants) have proper email authentication (SPF, DMARC) or are fully spoofable. Standalone check — not included in scan_domain due to query volume.',
+			'Discover alternate-TLD variants of a domain (e.g., .org, .net, .co) with active DNS/mail infrastructure and assess email spoofing risk. Identifies shadow domains lacking email authentication that attackers could use for impersonation. Standalone — not in scan_domain due to query volume.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_txt_hygiene',
 		description:
-			"Audit all TXT records on a domain for governance and security concerns: stale verification records, unexpected foreign service registrations (e.g., Yandex on non-Russian domains), excessive record accumulation, duplicate verifications, and cross-domain trust delegations. Maps the organisation's verified platform exposure from public DNS.",
+			'Audit TXT records for stale service verifications, unexpected platform registrations, excessive accumulation, and cross-domain trust delegations. Maps the organization\'s verified SaaS platform exposure from public DNS — useful for shadow IT discovery.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_mx_reputation',
 		description:
-			'Check mail server reputation and reverse DNS. Resolves MX server IPs, checks against major DNSBLs (Spamhaus, SpamCop, Barracuda), and validates PTR/FCrDNS consistency.',
+			'Check mail server reputation and deliverability risk. Resolves MX IPs, checks against major blocklists (Spamhaus, SpamCop, Barracuda), and validates reverse DNS (PTR/FCrDNS) consistency.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_srv',
 		description:
-			'Audit SRV service discovery records for a domain. Probes common service prefixes (email, calendar, messaging) to map DNS-visible service footprint and flag insecure protocol advertisements.',
+			'Map the DNS-visible service footprint by probing SRV records. Discovers email, calendar, messaging, and other service advertisements, and flags insecure protocol advertisements.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_zone_hygiene',
 		description:
-			'Audit DNS zone consistency and detect sensitive subdomains. Checks SOA serial propagation and probes common internal subdomains (vpn, admin, staging, corp, intranet) for public DNS resolution.',
+			'Audit DNS zone consistency and detect exposed internal infrastructure. Checks SOA serial propagation and probes sensitive subdomains (vpn, admin, staging, corp) for unintended public DNS resolution.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'explain_finding',
-		description: 'Get a plain-language explanation of a DNS security finding, including potential impact, adverse consequences, and recommended remediation steps.',
+		description:
+			'Get a plain-language explanation of any DNS security finding, including real-world impact, adverse consequences if unresolved, and step-by-step remediation guidance with RFC references.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
