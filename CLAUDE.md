@@ -258,7 +258,7 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 
 ### Pre-commit hook
 
-The `.githooks/pre-commit` hook blocks staging of sensitive paths: `docs/`, `.dev/`, `*.env`, `*.env.*`. Enable with `git config core.hooksPath .githooks`. Override with `git commit --no-verify` when intentional.
+The `.githooks/pre-commit` hook blocks staging of sensitive paths: internal docs (`docs/plans/`, `docs/code-review/`, `docs/superpowers/`, select draft files), `.dev/`, `*.env`, `*.env.*`. Public docs (`docs/client-setup.md`, `docs/scoring.md`, `docs/troubleshooting.md`, `docs/style-guide.md`) are tracked and committable. Enable with `git config core.hooksPath .githooks`. Override with `git commit --no-verify` when intentional.
 
 ## CI/CD
 
