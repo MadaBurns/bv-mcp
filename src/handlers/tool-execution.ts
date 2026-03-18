@@ -2,6 +2,7 @@
 
 import { logEvent, logError } from '../lib/log';
 import type { AnalyticsClient } from '../lib/analytics';
+import type { McpClientType } from '../lib/client-detection';
 
 type ToolSuccessStatus = 'pass' | 'fail';
 type ToolFailureSeverity = 'warn' | 'error';
@@ -11,6 +12,9 @@ interface ToolExecutionBase {
 	durationMs: number;
 	domain?: string;
 	analytics?: AnalyticsClient;
+	country?: string;
+	clientType?: McpClientType;
+	authTier?: string;
 }
 
 export function logToolSuccess(options: ToolExecutionBase & {
@@ -25,6 +29,9 @@ export function logToolSuccess(options: ToolExecutionBase & {
 		durationMs: options.durationMs,
 		domain: options.domain,
 		isError: false,
+		country: options.country,
+		clientType: options.clientType,
+		authTier: options.authTier,
 	});
 
 	logEvent({
@@ -49,6 +56,9 @@ export function logToolFailure(options: ToolExecutionBase & {
 		durationMs: options.durationMs,
 		domain: options.domain,
 		isError: true,
+		country: options.country,
+		clientType: options.clientType,
+		authTier: options.authTier,
 	});
 
 	logError(options.error instanceof Error ? options.error : String(options.error), {
