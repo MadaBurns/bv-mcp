@@ -68,12 +68,34 @@ export class DnsQueryError extends Error {
 /**
  * Query Cloudflare DoH for DNS records.
  *
+ * When `opts.queryCache` is provided, deduplicates concurrent and sequential
+ * identical queries within a single scan by caching the Promise keyed by
+ * `domain:type:dnssecCheck`. Failed queries are evicted so retries can re-attempt.
+ *
  * @param domain - The domain name to query
  * @param type - DNS record type name (e.g. "TXT", "MX", "A")
  * @param dnssecCheck - If true, sets the CD=0 flag to request DNSSEC validation
  * @returns The full DoH JSON response
  */
 export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck = false, opts?: QueryDnsOptions): Promise<DohResponse> {
+	const cache = opts?.queryCache;
+	if (!cache) {
+		return queryDnsUncached(domain, type, dnssecCheck, opts);
+	}
+
+	const cacheKey = `${domain}:${type}:${dnssecCheck}`;
+	const existing = cache.get(cacheKey);
+	if (existing) {
+		return existing;
+	}
+
+	const promise = queryDnsUncached(domain, type, dnssecCheck, opts);
+	cache.set(cacheKey, promise);
+	promise.catch(() => cache.delete(cacheKey));
+	return promise;
+}
+
+async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecCheck = false, opts?: QueryDnsOptions): Promise<DohResponse> {
 	const timeoutMs = opts?.timeoutMs ?? DNS_TIMEOUT_MS;
 	const retries = opts?.retries ?? DNS_RETRIES;
 	const confirmWithSecondaryOnEmpty = opts?.confirmWithSecondaryOnEmpty ?? DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY;
