@@ -619,4 +619,12 @@ app.all('*', (c) => {
 	return c.json({ error: 'Not found' }, 404);
 });
 
-export default app;
+import { handleScheduled } from './scheduled';
+import type { ScheduledEnv } from './scheduled';
+
+export default {
+	fetch: (req: Request, env: Record<string, unknown>, ctx: ExecutionContext) => app.fetch(req, env, ctx),
+	scheduled: async (_event: ScheduledEvent, env: Record<string, unknown>, ctx: ExecutionContext) => {
+		ctx.waitUntil(handleScheduled(env as ScheduledEnv));
+	},
+};
