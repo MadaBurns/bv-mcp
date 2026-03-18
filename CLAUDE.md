@@ -39,6 +39,7 @@ git config core.hooksPath .githooks    # Enable pre-commit hooks (one-time setup
 src/index.ts              — Hono app, HTTP routes, middleware wiring (delegates to shared executor)
 src/internal.ts           — Internal service binding routes (direct tool access, no MCP overhead)
 src/stdio.ts              — Native stdio MCP transport (CLI entrypoint: blackveil-dns-mcp)
+src/scheduled.ts          — Cron Trigger handler for analytics alerting (queries Analytics Engine SQL API)
 
 src/mcp/execute.ts        — Transport-neutral shared MCP request executor (validation, rate limiting, dispatch, analytics)
 src/mcp/dispatch.ts       — JSON-RPC method → handler routing (initialize, tools/*, resources/*, prompts/*, ping)
@@ -87,7 +88,10 @@ src/lib/config.ts         — Centralized SSRF constants, DNS tuning, rate limit
 src/lib/cache.ts          — KV-backed + in-memory TTL cache, INFLIGHT dedup map, cacheSetDeferred()
 src/lib/rate-limiter.ts   — KV-backed + in-memory per-IP rate limiting (delegates to rate-limiter-memory.ts)
 src/lib/quota-coordinator.ts — Durable Objects-based distributed rate limiting across isolates
-src/lib/analytics.ts      — Cloudflare Analytics Engine integration (fail-open telemetry)
+src/lib/analytics.ts      — Cloudflare Analytics Engine integration (fail-open telemetry, 4 event types)
+src/lib/analytics-queries.ts — Pre-built SQL queries for Analytics Engine metrics
+src/lib/alerting.ts       — Webhook alerting for Slack/Discord (fail-open delivery)
+src/lib/client-detection.ts — MCP client type detection from User-Agent headers
 src/lib/badge.ts          — SVG badge generator for /badge/:domain endpoint
 src/lib/audit.ts          — Audit logging
 src/lib/output-sanitize.ts — Markdown syntax sanitization for text output
@@ -369,4 +373,43 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 | `MCP_ANALYTICS` | Analytics Engine | Telemetry dataset (fail-open; optional) |
 | `PROVIDER_SIGNATURES_URL` | var | Optional URL for runtime email provider signatures |
 | `SCORING_CONFIG` | var | JSON string overriding scoring weights, thresholds, and grade boundaries (optional; built-in defaults when absent) |
+| `CF_ACCOUNT_ID` | var | Cloudflare account ID (required for analytics alerting) |
+| `CF_ANALYTICS_TOKEN` | Secret | API token with Account Analytics Read (required for analytics alerting) |
+| `ALERT_WEBHOOK_URL` | var | Slack/Discord webhook URL for anomaly alerts (optional) |
+| `ALERT_ERROR_THRESHOLD` | var | Error rate % trigger (default: 5) |
+| `ALERT_P95_THRESHOLD` | var | P95 latency ms trigger (default: 10000) |
+| `ALERT_RATE_LIMIT_THRESHOLD` | var | Rate limit hits trigger per interval (default: 50) |
+| `ALERT_LOOKBACK_MINUTES` | var | Alerting query window in minutes (default: 15) |
 
+## Analytics & Observability
+
+### Event schema
+
+Four event types are emitted to the `MCP_ANALYTICS` Analytics Engine dataset:
+
+- **`mcp_request`** — every JSON-RPC request (method, transport, status, auth, country, client type, tier, session hash, duration)
+- **`tool_call`** — every tool execution (tool name, status, domain hash, country, client type, tier, cache status, duration, score)
+- **`rate_limit`** — every rate limit rejection (limit type, tool name, country, tier, limit, remaining)
+- **`session`** — session lifecycle (created/terminated, country, client type, tier)
+
+### Querying metrics
+
+Pre-built SQL queries are in `src/lib/analytics-queries.ts`. Run via CLI:
+
+```bash
+npx wrangler analytics-engine sql --dataset MCP_ANALYTICS --query "$(cat <<'SQL'
+SELECT blob1 AS tool, SUM(_sample_interval) AS calls
+FROM MCP_ANALYTICS WHERE index1 = 'tool_call'
+AND timestamp > NOW() - INTERVAL '1' DAY
+GROUP BY tool ORDER BY calls DESC
+SQL
+)"
+```
+
+### Alerting
+
+The scheduled handler (`src/scheduled.ts`) runs every 15 minutes via Cron Trigger. It queries Analytics Engine SQL API for anomalies and sends Slack/Discord webhook alerts. All alerting is optional — without `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`, the cron handler is a no-op.
+
+### Client detection
+
+`src/lib/client-detection.ts` parses User-Agent headers to identify MCP clients: `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `unknown`. Used for analytics segmentation only — never for security decisions.
