@@ -41,16 +41,38 @@ export async function queryDnsRecords(domain: string, type: RecordTypeName, opts
 }
 
 /**
- * Query TXT records and strip surrounding quotes from values.
- * Cloudflare DoH returns TXT data with surrounding quotes.
+ * Query TXT records, concatenate multi-string values, and unescape DNS
+ * presentation-format backslash sequences.
+ *
+ * Cloudflare DoH returns TXT data with surrounding quotes and multiple
+ * strings separated by `" "`.  Per RFC 7208 §3.3, multi-string TXT records
+ * MUST be concatenated without adding spaces.  Some nameservers also emit
+ * RFC 1035 §5.1 backslash escapes (e.g. `\;` for a literal semicolon);
+ * we unescape both `\X` (single-char) and `\DDD` (decimal octet) forms.
  */
 export async function queryTxtRecords(domain: string, opts?: QueryDnsOptions): Promise<string[]> {
 	const records = await queryDnsRecords(domain, 'TXT', opts);
 	return records.map((record) =>
-		record
-			.replace(/" "/g, ' ')
-			.replace(/^"|"$/g, ''),
+		unescapeDnsTxt(
+			record
+				.replace(/" "/g, '')
+				.replace(/^"|"$/g, ''),
+		),
 	);
+}
+
+/**
+ * Unescape DNS presentation-format backslash sequences in TXT record data.
+ * Handles `\DDD` (decimal octet 000–255) and `\X` (literal character).
+ */
+export function unescapeDnsTxt(text: string): string {
+	return text.replace(/\\(\d{3})|\\(.)/g, (_, decimal, ch) => {
+		if (decimal !== undefined) {
+			const code = parseInt(decimal, 10);
+			return code <= 255 ? String.fromCharCode(code) : `\\${decimal}`;
+		}
+		return ch;
+	});
 }
 
 /**
