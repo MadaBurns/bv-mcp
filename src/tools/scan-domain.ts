@@ -72,7 +72,7 @@ const ADAPTIVE_CACHE_TTL_MS = 60_000;
 const ADAPTIVE_CACHE_MAX_ENTRIES = 100;
 
 /** Timeout for fetching adaptive weights from the DO (ms). */
-const ADAPTIVE_FETCH_TIMEOUT_MS = 50;
+const ADAPTIVE_FETCH_TIMEOUT_MS = 200;
 
 export interface ScanDomainResult {
 	domain: string;
