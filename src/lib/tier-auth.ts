@@ -65,6 +65,9 @@ export async function resolveTier(
 	}
 
 	// 2. Try service binding to bv-web
+	// Send both X-Internal-Key and Authorization Bearer so the endpoint can validate
+	// regardless of whether BV_WEB_INTERNAL_KEY was provisioned as INTERNAL_API_KEY
+	// or ADMIN_API_KEY.
 	if (env.BV_WEB && env.BV_WEB_INTERNAL_KEY) {
 		try {
 			const response = await env.BV_WEB.fetch(
@@ -73,6 +76,7 @@ export async function resolveTier(
 					headers: {
 						'Content-Type': 'application/json',
 						'X-Internal-Key': env.BV_WEB_INTERNAL_KEY,
+						'Authorization': `Bearer ${env.BV_WEB_INTERNAL_KEY}`,
 					},
 					body: JSON.stringify({ keyHash }),
 				}),
