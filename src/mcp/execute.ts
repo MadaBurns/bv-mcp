@@ -55,6 +55,10 @@ export interface ExecuteMcpRequestOptions {
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
+	country?: string;
+	clientType?: string;
+	authTier?: string;
+	sessionHash?: string;
 }
 
 function getDomainFromParams(params: Record<string, unknown> | undefined): string | undefined {
@@ -87,7 +91,12 @@ async function readJsonRpcPayload(response: Response): Promise<ReturnType<typeof
 	return (await response.json()) as ReturnType<typeof jsonRpcError>;
 }
 
-function emitRequestAnalytics(options: ExecuteMcpRequestOptions, method: string, status: 'ok' | 'error', hasJsonRpcError: boolean): void {
+function emitRequestAnalytics(
+	options: ExecuteMcpRequestOptions,
+	method: string,
+	status: 'ok' | 'error',
+	hasJsonRpcError: boolean,
+): void {
 	options.analytics?.emitRequestEvent({
 		method,
 		status,
@@ -95,6 +104,10 @@ function emitRequestAnalytics(options: ExecuteMcpRequestOptions, method: string,
 		isAuthenticated: options.isAuthenticated,
 		hasJsonRpcError,
 		transport: options.responseTransport,
+		country: options.country,
+		clientType: options.clientType as import('../lib/client-detection').McpClientType,
+		authTier: options.authTier,
+		sessionHash: options.sessionHash,
 	});
 }
 
@@ -140,6 +153,14 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			if (globalResult.retryAfterMs !== undefined) {
 				globalHeaders['retry-after'] = String(Math.ceil(globalResult.retryAfterMs / 1000));
 			}
+			options.analytics?.emitRateLimitEvent({
+				limitType: 'daily_global',
+				toolName: 'n/a',
+				limit: GLOBAL_DAILY_TOOL_LIMIT,
+				remaining: 0,
+				country: options.country,
+				authTier: options.authTier,
+			});
 			emitRequestAnalytics(options, method, 'error', true);
 			return {
 				kind: 'response',
@@ -164,6 +185,14 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			if (rateResult.retryAfterMs !== undefined) {
 				rateHeaders['retry-after'] = String(Math.ceil(rateResult.retryAfterMs / 1000));
 			}
+			options.analytics?.emitRateLimitEvent({
+				limitType: 'minute',
+				toolName: 'n/a',
+				limit: 50,
+				remaining: rateResult.minuteRemaining,
+				country: options.country,
+				authTier: options.authTier,
+			});
 			emitRequestAnalytics(options, method, 'error', true);
 			return {
 				kind: 'response',
@@ -196,6 +225,14 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				if (toolQuotaResult.retryAfterMs !== undefined) {
 					rateHeaders['retry-after'] = String(Math.ceil(toolQuotaResult.retryAfterMs / 1000));
 				}
+				options.analytics?.emitRateLimitEvent({
+					limitType: 'daily_tool',
+					toolName,
+					limit: toolDailyLimit,
+					remaining: 0,
+					country: options.country,
+					authTier: options.authTier ?? 'anon',
+				});
 				emitRequestAnalytics(options, method, 'error', true);
 				return {
 					kind: 'response',
@@ -234,6 +271,14 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			if (tierQuotaResult.retryAfterMs !== undefined) {
 				rateHeaders['retry-after'] = String(Math.ceil(tierQuotaResult.retryAfterMs / 1000));
 			}
+			options.analytics?.emitRateLimitEvent({
+				limitType: 'daily_tool',
+				toolName,
+				limit: dailyLimit,
+				remaining: 0,
+				country: options.country,
+				authTier: tier,
+			});
 			emitRequestAnalytics(options, method, 'error', true);
 			return {
 				kind: 'response',
@@ -321,6 +366,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			createSessionOnInitialize: options.createSessionOnInitialize,
 			existingSessionId: options.existingSessionId,
 			scoringConfig: options.scoringConfig,
+			country: options.country,
+			clientType: options.clientType,
+			authTier: options.authTier,
 		}).then((dispatchResult) => {
 			if (dispatchResult.kind === 'early-error') {
 				return dispatchResult.payload;
@@ -378,6 +426,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			createSessionOnInitialize: options.createSessionOnInitialize,
 			existingSessionId: options.existingSessionId,
 			scoringConfig: options.scoringConfig,
+			country: options.country,
+			clientType: options.clientType,
+			authTier: options.authTier,
 		});
 
 		if (dispatchResult.kind === 'early-error') {
