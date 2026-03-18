@@ -72,6 +72,17 @@ export const GLOBAL_DAILY_TOOL_LIMIT = 500_000;
  * Free-tier daily tool quotas for unauthenticated callers.
  * Tools omitted from this map are governed only by baseline per-IP rate limits.
  */
+/** MCP API key tiers with daily scan quotas. */
+export type McpApiKeyTier = 'free' | 'agent' | 'developer' | 'enterprise';
+
+/** Daily scan limits per API key tier. */
+export const TIER_DAILY_LIMITS: Record<McpApiKeyTier, number> = {
+	free: 50,
+	agent: 200,
+	developer: 500,
+	enterprise: 10_000,
+};
+
 export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	scan_domain: 75,
 	scan: 75,
