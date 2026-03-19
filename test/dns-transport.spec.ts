@@ -192,3 +192,238 @@ describe('queryDns cache', () => {
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 });
+
+describe('secondary DoH resolver (bv-dns)', () => {
+	const emptyCloudflareResponse: DohResponse = {
+		Status: 0,
+		TC: false,
+		RD: true,
+		RA: true,
+		AD: false,
+		CD: false,
+		Question: [{ name: 'example.com', type: RecordType.TXT }],
+		// No Answer — triggers secondary confirmation
+	};
+
+	const bvDnsResponse: DohResponse = {
+		Status: 0,
+		TC: false,
+		RD: true,
+		RA: true,
+		AD: false,
+		CD: false,
+		Question: [{ name: 'example.com', type: RecordType.TXT }],
+		Answer: [{ name: 'example.com', type: RecordType.TXT, TTL: 300, data: '"v=spf1 -all"' }],
+	};
+
+	const googleResponse: DohResponse = {
+		Status: 0,
+		TC: false,
+		RD: true,
+		RA: true,
+		AD: false,
+		CD: false,
+		Question: [{ name: 'example.com', type: RecordType.TXT }],
+		Answer: [{ name: 'example.com', type: RecordType.TXT, TTL: 300, data: '"v=spf1 ~all"' }],
+	};
+
+	it('uses bv-dns as secondary when Cloudflare returns empty and secondaryDoh is configured', async () => {
+		const fetchMock = vi.fn().mockImplementation((url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlStr.includes('cloudflare-dns.com')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(emptyCloudflareResponse),
+				} as unknown as Response);
+			}
+			if (urlStr.includes('harlan.blackveil')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(bvDnsResponse),
+				} as unknown as Response);
+			}
+			return Promise.reject(new Error(`unexpected URL: ${urlStr}`));
+		});
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		const result = await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			secondaryDoh: { endpoint: 'https://harlan.blackveilsecurity.com/dns-query', token: 'test-token' },
+		});
+
+		expect(result.Answer).toHaveLength(1);
+		expect(result.Answer![0].data).toBe('"v=spf1 -all"');
+		// Cloudflare + bv-dns = 2 calls, Google not called
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		const bvDnsCall = fetchMock.mock.calls.find((c: unknown[]) => (c[0] as string).includes('harlan.blackveil'));
+		expect(bvDnsCall).toBeDefined();
+	});
+
+	it('sends X-BV-Token header when token is provided', async () => {
+		const fetchMock = vi.fn().mockImplementation((url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlStr.includes('cloudflare-dns.com')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(emptyCloudflareResponse),
+				} as unknown as Response);
+			}
+			if (urlStr.includes('harlan.blackveil')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(bvDnsResponse),
+				} as unknown as Response);
+			}
+			return Promise.reject(new Error(`unexpected URL: ${urlStr}`));
+		});
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			secondaryDoh: { endpoint: 'https://harlan.blackveilsecurity.com/dns-query', token: 'my-secret' },
+		});
+
+		const bvDnsCall = fetchMock.mock.calls.find((c: unknown[]) => (c[0] as string).includes('harlan.blackveil'));
+		expect(bvDnsCall).toBeDefined();
+		expect(bvDnsCall![1].headers).toHaveProperty('X-BV-Token', 'my-secret');
+	});
+
+	it('falls through to Google when bv-dns also returns empty', async () => {
+		const emptyBvDns: DohResponse = { ...emptyCloudflareResponse };
+
+		const fetchMock = vi.fn().mockImplementation((url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlStr.includes('cloudflare-dns.com')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(emptyCloudflareResponse),
+				} as unknown as Response);
+			}
+			if (urlStr.includes('harlan.blackveil')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(emptyBvDns),
+				} as unknown as Response);
+			}
+			if (urlStr.includes('dns.google')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(googleResponse),
+				} as unknown as Response);
+			}
+			return Promise.reject(new Error(`unexpected URL: ${urlStr}`));
+		});
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		const result = await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			secondaryDoh: { endpoint: 'https://harlan.blackveilsecurity.com/dns-query' },
+		});
+
+		// Should get Google's response since bv-dns was also empty
+		expect(result.Answer).toHaveLength(1);
+		expect(result.Answer![0].data).toBe('"v=spf1 ~all"');
+		// Cloudflare + bv-dns + Google = 3 calls
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+	});
+
+	it('falls through to Google when bv-dns times out or errors', async () => {
+		const fetchMock = vi.fn().mockImplementation((url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlStr.includes('cloudflare-dns.com')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(emptyCloudflareResponse),
+				} as unknown as Response);
+			}
+			if (urlStr.includes('harlan.blackveil')) {
+				return Promise.reject(new Error('connection refused'));
+			}
+			if (urlStr.includes('dns.google')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(googleResponse),
+				} as unknown as Response);
+			}
+			return Promise.reject(new Error(`unexpected URL: ${urlStr}`));
+		});
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		const result = await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			secondaryDoh: { endpoint: 'https://harlan.blackveilsecurity.com/dns-query', token: 'test' },
+		});
+
+		// Should fall through to Google
+		expect(result.Answer).toHaveLength(1);
+		expect(result.Answer![0].data).toBe('"v=spf1 ~all"');
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+	});
+
+	it('does not call bv-dns when secondaryDoh is not configured (existing behavior)', async () => {
+		const fetchMock = vi.fn().mockImplementation((url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlStr.includes('cloudflare-dns.com')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(emptyCloudflareResponse),
+				} as unknown as Response);
+			}
+			if (urlStr.includes('dns.google')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(googleResponse),
+				} as unknown as Response);
+			}
+			return Promise.reject(new Error(`unexpected URL: ${urlStr}`));
+		});
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		const result = await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			// No secondaryDoh configured
+		});
+
+		// Should go straight to Google, no bv-dns call
+		expect(result.Answer).toHaveLength(1);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		const urls = fetchMock.mock.calls.map((c: unknown[]) => c[0] as string);
+		expect(urls.some((u: string) => u.includes('harlan.blackveil'))).toBe(false);
+	});
+
+	it('skips all secondary calls when skipSecondaryConfirmation is true', async () => {
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: () => Promise.resolve(emptyCloudflareResponse),
+		} as unknown as Response);
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		const result = await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			skipSecondaryConfirmation: true,
+			secondaryDoh: { endpoint: 'https://harlan.blackveilsecurity.com/dns-query', token: 'test' },
+		});
+
+		// Only Cloudflare called, no secondary
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(result.Answer).toBeUndefined();
+	});
+});

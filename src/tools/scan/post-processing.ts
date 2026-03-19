@@ -15,6 +15,8 @@ export interface ScanRuntimeOptions {
 	scoringConfig?: import('../../lib/scoring-config').ScoringConfig;
 	/** Override cache TTL in seconds (default: 300). Clamped to [60, 3600]. */
 	cacheTtlSeconds?: number;
+	/** Custom secondary DoH resolver config (bv-dns). Threaded to scanDns but only active when skipSecondaryConfirmation is false. */
+	secondaryDoh?: import('../../lib/dns-types').SecondaryDohConfig;
 }
 
 export async function applyScanPostProcessing(
