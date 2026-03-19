@@ -10,7 +10,6 @@ import {
 	CATEGORY_FALLBACK_IMPACT,
 	CATEGORY_TO_CHECKTYPE,
 	DEFAULT_EXPLANATION,
-	DETAILS_PATTERNS,
 	EXPLANATIONS,
 	type ExplanationTemplate,
 	type ImpactNarrative,
@@ -132,24 +131,10 @@ export function explainFinding(checkType: string, status: string, details?: stri
 	const normalizedType = checkType.toUpperCase();
 	const key = `${normalizedType}_${status.toUpperCase()}`;
 
-	// 1. Try details-aware pattern match first
-	let entry: ExplanationTemplate | undefined;
-	if (details) {
-		const detailsLower = details.toLowerCase();
-		const match = DETAILS_PATTERNS.find(
-			(p) => p.checkType === normalizedType && p.pattern.test(detailsLower),
-		);
-		if (match) {
-			entry = EXPLANATIONS[match.key];
-		}
-	}
+	// 1. Try checkType_STATUS key
+	let entry: ExplanationTemplate | undefined = EXPLANATIONS[key];
 
-	// 2. Fall back to checkType_STATUS key
-	if (!entry) {
-		entry = EXPLANATIONS[key];
-	}
-
-	// 3. Fall back to default
+	// 2. Fall back to default
 	if (!entry) {
 		entry = DEFAULT_EXPLANATION;
 	}
