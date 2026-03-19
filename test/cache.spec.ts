@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { TTLCache, cacheGet, cacheSet, scanCache } from '../src/lib/cache';
+import { TTLCache, cacheGet, cacheSet, IN_MEMORY_CACHE } from '../src/lib/cache';
 
 afterEach(() => {
 	vi.restoreAllMocks();
-	scanCache.clear();
+	IN_MEMORY_CACHE.clear();
 });
 
 describe('TTLCache', () => {
@@ -129,14 +129,14 @@ describe('TTLCache', () => {
 
 describe('cacheGet / cacheSet (KV-backed)', () => {
 	it('without KV: cacheGet returns value from in-memory cache', async () => {
-		scanCache.set('key1', 'memval');
+		IN_MEMORY_CACHE.set('key1', 'memval');
 		const result = await cacheGet<string>('key1');
 		expect(result).toBe('memval');
 	});
 
 	it('without KV: cacheSet writes to in-memory cache', async () => {
 		await cacheSet('key2', 'written');
-		expect(scanCache.get('key2')).toBe('written');
+		expect(IN_MEMORY_CACHE.get('key2')).toBe('written');
 	});
 
 	it('with KV: cacheGet returns value from KV', async () => {
@@ -159,7 +159,7 @@ describe('cacheGet / cacheSet (KV-backed)', () => {
 	});
 
 	it('KV error on get: silently falls back to in-memory', async () => {
-		scanCache.set('fallback', 'inmem');
+		IN_MEMORY_CACHE.set('fallback', 'inmem');
 		const mockKV = {
 			get: vi.fn().mockRejectedValue(new Error('KV failure')),
 			put: vi.fn(),
@@ -174,12 +174,12 @@ describe('cacheGet / cacheSet (KV-backed)', () => {
 			put: vi.fn().mockRejectedValue(new Error('KV failure')),
 		};
 		await cacheSet('errkey', 'errval', mockKV as unknown as KVNamespace);
-		expect(scanCache.get('errkey')).toBe('errval');
+		expect(IN_MEMORY_CACHE.get('errkey')).toBe('errval');
 	});
 
-	it('scanCache is the global in-memory TTLCache instance', () => {
-		expect(scanCache).toBeInstanceOf(TTLCache);
-		scanCache.set('test', 'val');
-		expect(scanCache.get('test')).toBe('val');
+	it('IN_MEMORY_CACHE is the global in-memory TTLCache instance', () => {
+		expect(IN_MEMORY_CACHE).toBeInstanceOf(TTLCache);
+		IN_MEMORY_CACHE.set('test', 'val');
+		expect(IN_MEMORY_CACHE.get('test')).toBe('val');
 	});
 });
