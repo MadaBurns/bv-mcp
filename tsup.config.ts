@@ -1,17 +1,42 @@
-import { defineConfig } from 'tsup';
+import { defineConfig, type Options } from 'tsup';
 
-export default defineConfig({
-	entry: {
-		index: 'src/package.ts',
-		stdio: 'src/stdio.ts',
+/** esbuild plugin that shims cloudflare:workers for Node.js (stdio bundle) */
+const cloudflareShimPlugin = {
+	name: 'cloudflare-workers-shim',
+	setup(build: { onResolve: Function; onLoad: Function }) {
+		build.onResolve({ filter: /^cloudflare:workers$/ }, () => ({
+			path: 'cloudflare:workers',
+			namespace: 'cf-shim',
+		}));
+		build.onLoad({ filter: /.*/, namespace: 'cf-shim' }, () => ({
+			contents: 'export class DurableObject {}',
+			loader: 'js' as const,
+		}));
 	},
+};
+
+const shared: Partial<Options> = {
 	format: ['esm'],
 	target: 'es2022',
 	platform: 'neutral',
 	dts: true,
-	clean: true,
 	sourcemap: true,
 	splitting: false,
 	treeshake: true,
-	external: ['punycode', 'cloudflare:workers'],
-});
+};
+
+export default defineConfig([
+	{
+		...shared,
+		entry: { index: 'src/package.ts' },
+		clean: true,
+		external: ['punycode', 'cloudflare:workers'],
+	},
+	{
+		...shared,
+		entry: { stdio: 'src/stdio.ts' },
+		clean: false,
+		noExternal: ['punycode'],
+		esbuildPlugins: [cloudflareShimPlugin],
+	},
+]);
