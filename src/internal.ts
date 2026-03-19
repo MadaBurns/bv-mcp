@@ -45,6 +45,8 @@ type InternalEnv = {
 	PROVIDER_SIGNATURES_SHA256?: string;
 	SCORING_CONFIG?: string;
 	CACHE_TTL_SECONDS?: string;
+	BV_DOH_ENDPOINT?: string;
+	BV_DOH_TOKEN?: string;
 };
 
 export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
@@ -102,6 +104,9 @@ internalRoutes.post('/tools/call', async (c) => {
 			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 			scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
 			cacheTtlSeconds,
+			secondaryDoh: c.env.BV_DOH_ENDPOINT
+				? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN }
+				: undefined,
 			...(wantStructured ? { resultCapture: (r: import('./lib/scoring-model').CheckResult) => { capturedResult = r; } } : {}),
 		},
 	);
@@ -217,6 +222,9 @@ internalRoutes.post('/tools/batch', async (c) => {
 						waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 						scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
 						cacheTtlSeconds,
+						secondaryDoh: c.env.BV_DOH_ENDPOINT
+							? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN }
+							: undefined,
 						...(wantStructured ? { resultCapture: (r: import('./lib/scoring-model').CheckResult) => { capturedResult = r; } } : {}),
 					},
 				);
