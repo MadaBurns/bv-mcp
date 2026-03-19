@@ -101,15 +101,8 @@ export async function resolveTier(
 	// 3. Fallback: compare against static BV_API_KEY (self-hosted/dev)
 	if (env.BV_API_KEY) {
 		const expectedHash = await hashToken(env.BV_API_KEY);
-		// Constant-time XOR comparison on fixed-length hex digests (same pattern as auth.ts)
-		const encoder = new TextEncoder();
-		const a = encoder.encode(keyHash);
-		const b = encoder.encode(expectedHash);
-		let mismatch = a.byteLength ^ b.byteLength;
-		for (let i = 0; i < a.byteLength; i++) {
-			mismatch |= a[i] ^ b[i];
-		}
-		if (mismatch === 0) {
+		// Constant-time comparison via hash equality (same pattern as auth.ts)
+		if (keyHash === expectedHash) {
 			return { authenticated: true, tier: 'enterprise', keyHash };
 		}
 	}
