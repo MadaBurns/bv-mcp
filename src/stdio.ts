@@ -131,6 +131,10 @@ export function createStdioServer(): StdioServer {
 }
 
 export async function runStdioServer(): Promise<void> {
+	// Redirect console.log to stderr so logEvent() output doesn't
+	// pollute stdout, which is the exclusive JSON-RPC transport channel.
+	console.log = console.error;
+
 	const server = createStdioServer();
 	let buffer = '';
 	let pending = Promise.resolve();
