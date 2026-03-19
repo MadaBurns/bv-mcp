@@ -54,10 +54,6 @@
   "vars": {
     "BV_API_KEY": "",
     "PROVIDER_SIGNATURES_URL": "",
-    // Custom secondary DoH resolver (bv-dns). When set, used instead of Google DoH
-    // for empty-result confirmation. Falls back to Google if bv-dns is down/slow.
-    // "BV_DOH_ENDPOINT": "https://secondary-doh.example.com/dns-query",
-    // BV_DOH_TOKEN: set as secret: npx wrangler secret put BV_DOH_TOKEN
     // Analytics alerting — all optional. CF_ANALYTICS_TOKEN is a secret
     // (set via: npx wrangler secret put CF_ANALYTICS_TOKEN).
     "CF_ACCOUNT_ID": "",
