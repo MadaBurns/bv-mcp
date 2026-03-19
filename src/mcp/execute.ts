@@ -4,7 +4,7 @@ import { checkRateLimit, checkToolDailyRateLimit, checkGlobalDailyLimit } from '
 import { logEvent, logError } from '../lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS, sanitizeErrorMessage } from '../lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, validateSessionRequest } from './route-gates';
-import { FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT, TIER_DAILY_LIMITS } from '../lib/config';
+import { FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT, TIER_DAILY_LIMITS, TIER_TOOL_DAILY_LIMITS } from '../lib/config';
 import { normalizeToolName } from '../handlers/tool-args';
 import { acceptsSSE } from '../lib/sse';
 import { dispatchMcpMethod } from './dispatch';
@@ -55,6 +55,7 @@ export interface ExecuteMcpRequestOptions {
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
+	cacheTtlSeconds?: number;
 	country?: string;
 	clientType?: string;
 	authTier?: string;
@@ -251,11 +252,13 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 	} else if (options.tierAuthResult?.authenticated && options.tierAuthResult.tier && method === 'tools/call') {
 		// Authenticated tier-based rate limiting (keyed by API key hash, not IP)
 		const tier = options.tierAuthResult.tier;
-		const dailyLimit = TIER_DAILY_LIMITS[tier];
 		const principalId = options.tierAuthResult.keyHash ?? options.ip;
 
 		const toolNameRaw = typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
 		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : 'unknown';
+
+		// Per-tool tier override takes precedence over flat tier limit
+		const dailyLimit = TIER_TOOL_DAILY_LIMITS[tier]?.[toolName] ?? TIER_DAILY_LIMITS[tier];
 
 		const tierQuotaResult = await checkToolDailyRateLimit(
 			principalId,
@@ -366,6 +369,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			createSessionOnInitialize: options.createSessionOnInitialize,
 			existingSessionId: options.existingSessionId,
 			scoringConfig: options.scoringConfig,
+			cacheTtlSeconds: options.cacheTtlSeconds,
 			country: options.country,
 			clientType: options.clientType,
 			authTier: options.authTier,
@@ -426,6 +430,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			createSessionOnInitialize: options.createSessionOnInitialize,
 			existingSessionId: options.existingSessionId,
 			scoringConfig: options.scoringConfig,
+			cacheTtlSeconds: options.cacheTtlSeconds,
 			country: options.country,
 			clientType: options.clientType,
 			authTier: options.authTier,
