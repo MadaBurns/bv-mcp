@@ -58,6 +58,8 @@ interface ToolRuntimeOptions {
 	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
 	/** When provided, receives the raw CheckResult before MCP text formatting. Used by internal structured response mode. */
 	resultCapture?: (result: CheckResult) => void;
+	/** Override cache TTL in seconds for scan results. Threaded to scanDomain. */
+	cacheTtlSeconds?: number;
 	country?: string;
 	clientType?: string;
 	authTier?: string;

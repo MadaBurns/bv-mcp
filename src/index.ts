@@ -34,6 +34,7 @@ import { gradeBadge, errorBadge } from './lib/badge';
 import { SERVER_VERSION } from './lib/server-version';
 import { executeMcpRequest } from './mcp/execute';
 import { parseScoringConfig } from './lib/scoring-config';
+import { parseCacheTtl } from './lib/config';
 import { closeLegacyStream, enqueueLegacyMessage, openLegacySseStream } from './lib/legacy-sse';
 import { internalRoutes } from './internal';
 export { QuotaCoordinator } from './lib/quota-coordinator';
@@ -72,6 +73,7 @@ type BvMcpEnv = {
 	PROVIDER_SIGNATURES_ALLOWED_HOSTS?: string;
 	PROVIDER_SIGNATURES_SHA256?: string;
 	SCORING_CONFIG?: string;
+	CACHE_TTL_SECONDS?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -222,6 +224,7 @@ app.get('/badge/:domain', async (c) => {
 			profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 			scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
+			cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 		});
 		return new Response(gradeBadge(result.score.grade), { status: 200, headers: svgHeaders });
 	} catch {
@@ -308,6 +311,7 @@ app.post('/mcp', async (c) => {
 					profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 					waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 					scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
+					cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 					country,
 					clientType,
 					authTier,
@@ -364,6 +368,7 @@ app.post('/mcp', async (c) => {
 		profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 		waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 		scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
+		cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 		country,
 		clientType,
 		authTier,
@@ -491,6 +496,7 @@ app.post('/mcp/messages', async (c) => {
 				analytics,
 				profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 				waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+				cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 				country,
 				clientType,
 				authTier,
