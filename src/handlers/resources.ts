@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: BUSL-1.1
-
 /**
  * MCP Resources handler for Blackveil DNS.
  * Exposes static documentation resources about DNS/email security checks,
@@ -57,15 +55,15 @@ const RESOURCES: McpResource[] = [
 const RESOURCE_CONTENT: Record<string, string> = {
 	'dns-security://guides/security-checks': `# DNS Security Checks
 
-The Blackveil DNS scanner evaluates **80+ checks** grouped into 20 categories.
+The Blackveil DNS scanner evaluates **57+ checks** grouped into 20 categories.
 
-This MCP server exposes tools that cover the core checks in each category and returns findings compatible with Blackveil DNS scoring.
+This MCP server exposes 22 tools that cover the core checks in each category and returns findings compatible with Blackveil DNS scoring.
 
 ## Coverage by Tier
 
 | Category | Total Scanner Checks | Free Tier (MCP/Core) | Premium Platform |
 |---|---:|---|---|
-| SPF | 8 | Core SPF policy and syntax checks, trust surface analysis | Advanced include-chain and sender-path analytics |
+| SPF | 8 | Core SPF policy and syntax checks | Advanced include-chain and sender-path analytics |
 | DMARC | 10 | Core policy, pct, reporting checks, URI validation, alignment modes | Alignment depth, subdomain inheritance, reporting quality analytics |
 | DKIM | 9 | Selector discovery, RSA key strength validation, v= tag checks | Selector entropy, rotation heuristics, key-age and drift analytics |
 | DNSSEC | 6 | AD validation and signed-zone baseline | Chain-of-trust and rollover posture analytics |
@@ -75,18 +73,18 @@ This MCP server exposes tools that cover the core checks in each category and re
 | CAA | 4 | CAA presence and issuer-allowlist baseline checks | Issuance surface modeling and mis-issuance risk analytics |
 | MX | 4 | MX presence, routing quality, and outbound provider inference | Mail routing posture and provider analytics |
 | Subdomain Takeover | 2 | Dangling CNAME detection across known subdomains | Expanded asset discovery and takeover surface analytics |
-| BIMI | 1 | Brand logo publication and VMC validation | - |
-| TLS-RPT | 1 | SMTP TLS failure reporting configuration | - |
-| HTTP Security | 7 | CSP, XFO, XCTO, Permissions-Policy, Referrer-Policy, CORP, COOP | Deep header analysis |
-| DANE/TLSA | 5 | MX + HTTPS TLSA validation, DNSSEC cross-ref | Certificate pinning audit |
-| MX Reputation | 4 | DNSBL checks (Spamhaus, SpamCop, Barracuda), PTR/FCrDNS | Reputation monitoring |
-| SRV Discovery | 4 | Service footprint mapping, insecure protocol detection | Service inventory |
-| Zone Hygiene | 4 | SOA consistency, sensitive subdomain probing | Zone drift monitoring |
-| Shadow Domains | 2 | Alternate-TLD variant discovery, email auth risk | Brand domain monitoring |
-| TXT Hygiene | 3 | Stale verifications, platform exposure, foreign services | TXT record governance |
-| Lookalikes | 1 | Typosquat/lookalike domain detection (standalone) | - |
+| HTTP Security | 7 | CSP, X-Frame-Options, COOP, CORP, Permissions-Policy checks | Header depth analytics |
+| DANE | 3 | TLSA record validation for MX and HTTPS | Certificate pinning posture |
+| Shadow Domains | 1 | Alternate-TLD email spoofing risk detection | Extended TLD coverage |
+| TXT Hygiene | 1 | Stale verifications, SaaS exposure mapping | Shadow IT discovery |
+| MX Reputation | 1 | DNSBL and PTR/FCrDNS validation | Deliverability analytics |
+| SRV | 1 | Service footprint discovery via SRV records | Protocol exposure analytics |
+| Zone Hygiene | 1 | SOA consistency and sensitive subdomain detection | Infrastructure exposure |
+| BIMI | 1 | Record presence, logo URL, VMC | Brand indicator compliance |
+| TLS-RPT | 1 | Record presence, reporting URI | Reporting depth |
+| Lookalikes | 1 | Typosquat detection, DNS + MX probing | Expanded permutation strategies |
 
-> Total checks: **80+** across all categories.
+> Total checks: **57+** across 20 categories.
 
 ## Categories and Tool Mapping
 
@@ -130,70 +128,62 @@ Validates presence and quality of MX records for a domain, including outbound em
 Tool: internal to \`scan_domain\` (not directly callable)
 Scans known subdomains for dangling CNAME records pointing to unresolved third-party services.
 
-## BIMI (Brand Indicators for Message Identification)
-Tool: \`check_bimi\`
-Validates BIMI TXT records at \`default._bimi.<domain>\`. Checks logo URL format (HTTPS, SVG Tiny PS) and VMC authority evidence. Part of \`scan_domain\`.
+## HTTP Security Headers
+Tool: \`check_http_security\`
+Audits HTTP response headers for XSS, clickjacking, and data leakage protections.
 
-## TLS-RPT (SMTP TLS Reporting)
-Tool: \`check_tlsrpt\`
-Validates TLS-RPT records at \`_smtp._tls.<domain>\` per RFC 8460. Checks reporting URI configuration. Part of \`scan_domain\`.
+## DANE (DNS-Based Authentication of Named Entities)
+Tool: \`check_dane\`
+Verifies TLSA records for certificate pinning on MX and HTTPS endpoints.
 
-## Lookalike Domain Detection
-Tool: \`check_lookalikes\`
-Generates typosquat/lookalike domain permutations and checks for active DNS/mail infrastructure. Standalone tool — not part of \`scan_domain\` due to query volume.
+## Shadow Domains
+Tool: \`check_shadow_domains\`
+Discovers alternate-TLD variants with active infrastructure and assesses email spoofing risk.
 
-## SPF Trust Surface Analysis
-Part of \`check_spf\`. Identifies when SPF \`include:\` directives delegate sending authority to multi-tenant SaaS platforms (Google Workspace, Microsoft 365, SendGrid, etc.), widening the spoofing attack surface.
+## TXT Record Hygiene
+Tool: \`check_txt_hygiene\`
+Audits TXT records for stale service verifications, SaaS exposure, and cross-domain trust delegations.
+
+## MX Reputation
+Tool: \`check_mx_reputation\`
+Checks mail server reputation via DNSBL lookups and validates reverse DNS consistency.
+
+## SRV Service Discovery
+Tool: \`check_srv\`
+Probes SRV records to map the DNS-visible service footprint.
+
+## Zone Hygiene
+Tool: \`check_zone_hygiene\`
+Audits SOA serial propagation and detects sensitive subdomains exposed in public DNS.
 
 ## Composite Tools
 
-- \`scan_domain\`: Runs all 14 checks in parallel and produces an overall score + grade.
+- \`scan_domain\`: Runs 14 checks in parallel and produces an overall score + grade.
 - \`explain_finding\`: Provides plain-language context and remediation guidance for individual findings.
-- \`compare_baseline\`: Compares two domains side-by-side for security posture comparison.
+- \`compare_baseline\`: Compares a domain against minimum acceptable security standards.
 `,
 
 	'dns-security://guides/scoring': `# Scoring Methodology
 
 This server uses scanner-aligned scoring for the overlapping controls currently implemented by MCP tools.
 
-## Importance Weights (Default: mail_enabled)
+## Importance Weights (Scanner-Aligned)
 Overall score is based on importance points per category, not a flat average:
 
 | Category | Importance Points |
 |---|---:|
+| SPF | 19 |
 | DMARC | 22 |
-| DKIM | 16 |
-| SPF | 10 |
-| SSL/TLS | 5 |
-| HTTP Security | 3 |
-| Subdomain Takeover | 3 |
-| DNSSEC | 2 |
-| MTA-STS | 2 |
-| MX | 2 |
-| DANE | 1 |
-| TLS-RPT | 1 |
-| NS | 0 (informational) |
-| CAA | 0 (informational) |
-| BIMI | 0 (informational) |
-| Lookalikes | 0 (informational) |
-| Shadow Domains | 0 (informational) |
-| TXT Hygiene | 0 (informational) |
-| MX Reputation | 0 (informational) |
-| SRV | 0 (informational) |
-| Zone Hygiene | 0 (informational) |
+| DKIM | 10 |
+| DNSSEC | 3 |
+| SSL/TLS | 8 |
+| MTA-STS | 3 |
+| NS | 3 |
+| CAA | 2 |
+| Subdomain Takeover | 2 |
+| MX | 0 (informational) |
 
-Scored total: **67** (+ up to 8 email bonus = 75 max denominator).
-
-## Scoring Profiles
-Weights adapt based on domain purpose. Pass \`profile\` to \`scan_domain\` to override:
-
-- **mail_enabled** (default): Weights above. Email bonus eligible.
-- **enterprise_mail**: Email auth elevated (DMARC:24, DKIM:18, SPF:12), MTA-STS/TLS-RPT/BIMI boosted.
-- **non_mail**: Email auth near-zero, SSL:8, DNSSEC:5, SubdomainTakeover:5, CAA:3. No email bonus.
-- **web_only**: SSL:12, CAA:5, DNSSEC:5, SubdomainTakeover:5. No email bonus.
-- **minimal**: Weights spread evenly. No email bonus.
-
-Auto-detection reports the detected profile but uses default weights (Phase 1).
+Additional bonus: up to **+5** points for strong combined email-auth posture.
 
 ## Per-Category Penalties
 Each category starts at 100 and penalties are applied per finding severity:
@@ -208,12 +198,6 @@ Each category starts at 100 and penalties are applied per finding severity:
 
 ## Missing-Control Handling
 For categories where a required control is missing (for example, "No DMARC record found"), effective contribution can be treated as zeroed in overall scoring.
-
-## Critical Gap Ceiling
-Domains missing foundational controls are capped at **64** (D+). Critical categories vary by profile:
-- mail_enabled/enterprise_mail: SPF, DMARC, DKIM, SSL, Subdomain Takeover
-- non_mail/web_only: SSL, Subdomain Takeover, HTTP Security
-- minimal: SSL, Subdomain Takeover
 
 ## Critical-Finding Adjustment
 If any **verified**-confidence **critical** finding exists in the scan, an additional **-15 overall points** adjustment is applied.
