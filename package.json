@@ -1,14 +1,14 @@
 {
 	"name": "blackveil-dns",
-	"version": "1.5.0",
-	"description": "Open-source DNS & email security scanner — SPF, DMARC, DKIM, DNSSEC, SSL, and 15+ more checks via MCP. Detects spoofing risk, subdomain takeover, shadow domains, and typosquats. Scored and graded with remediation guidance.",
+	"version": "1.2.0",
+	"description": "Blackveil DNS — Open-source DNS & email security scanner.",
 	"type": "module",
-	"license": "BUSL-1.1",
+	"license": "MIT",
 	"author": "BLACKVEIL Security",
 	"homepage": "https://blackveilsecurity.com",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/MadaBurns/bv-mcp.git"
+		"url": "https://github.com/MadaBurns/bv-mcp.git"
 	},
 	"keywords": [
 		"blackveil",
@@ -22,15 +22,7 @@
 		"dnssec",
 		"cloudflare-workers",
 		"model-context-protocol",
-		"ai-tools",
-		"email-spoofing",
-		"phishing-prevention",
-		"domain-security",
-		"subdomain-takeover",
-		"dns-audit",
-		"email-authentication",
-		"security-scanner",
-		"mcp-server"
+		"ai-tools"
 	],
 	"bugs": {
 		"url": "https://github.com/MadaBurns/bv-mcp/issues"
@@ -42,7 +34,7 @@
 	"module": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"bin": {
-		"blackveil-dns-mcp": "dist/stdio.js"
+		"blackveil-dns-mcp": "./dist/stdio.js"
 	},
 	"exports": {
 		".": {
@@ -87,10 +79,7 @@
 		"typescript": "^5.5.2",
 		"typescript-eslint": "^8.56.1",
 		"vitest": "^3.2.4",
-		"wrangler": "^4.75.0"
-	},
-	"overrides": {
-		"undici": "^7.24.0"
+		"wrangler": "^4.72.0"
 	},
 	"dependencies": {
 		"punycode": "^2.3.1"
