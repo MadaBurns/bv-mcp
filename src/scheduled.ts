@@ -44,6 +44,7 @@ async function queryAnalyticsEngine(accountId: string, token: string, sql: strin
 		method: 'POST',
 		headers: { Authorization: `Bearer ${token}` },
 		body: sql,
+		signal: AbortSignal.timeout(5_000),
 	});
 
 	if (!response.ok) {

@@ -32,6 +32,7 @@ export interface DispatchMcpMethodOptions {
 	createSessionOnInitialize?: boolean;
 	existingSessionId?: string;
 	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
+	cacheTtlSeconds?: number;
 	country?: string;
 	clientType?: string;
 	authTier?: string;
@@ -142,6 +143,7 @@ All checks are passive, read-only, and use public DNS — no authorization from 
 				profileAccumulator: options.profileAccumulator,
 				waitUntil: options.waitUntil,
 				scoringConfig: options.scoringConfig,
+				cacheTtlSeconds: options.cacheTtlSeconds,
 				country: options.country,
 				clientType: options.clientType,
 				authTier: options.authTier,
