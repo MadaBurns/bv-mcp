@@ -158,10 +158,8 @@ Service binding fetch → POST /internal/tools/call → guard middleware (reject
 
 ### Error surfacing convention
 
-Both `index.ts` and `handlers/tools.ts` sanitize errors. Only messages starting with specific prefixes pass through to clients:
-- `'Missing required'`, `'Invalid'` (both files)
-- `'Resource not found'` (index.ts only)
-- `'Domain validation failed'` (tools.ts only)
+Error sanitization is centralized in `sanitizeErrorMessage()` in `lib/json-rpc.ts`. Only messages starting with specific prefixes pass through to clients:
+- `'Missing required'`, `'Invalid'`, `'Domain '`, `'Resource not found'`, `'Rate limit exceeded'`
 
 All other errors become generic messages. New validation errors that need to reach clients **must start with one of these exact prefixes**.
 
