@@ -82,7 +82,7 @@ src/lib/auth.ts           — Bearer token validation (constant-time XOR compari
 src/lib/sse.ts            — SSE event formatting and Accept header checking
 src/lib/legacy-sse.ts     — Legacy HTTP+SSE stream lifecycle (open, enqueue, close, heartbeat)
 src/lib/server-version.ts — Single source of truth for SERVER_VERSION
-src/lib/dns.ts            — DNS-over-HTTPS facade (re-exports from dns-transport, dns-records, dns-types); queryTxtRecords concatenates multi-string values per RFC 7208 §3.3 and iteratively unescapes RFC 1035 §5.1 backslash sequences (handles DoH providers that double-escape)
+src/lib/dns.ts            — DNS-over-HTTPS facade (re-exports from dns-transport, dns-records, dns-types); queryTxtRecords concatenates multi-string values per RFC 7208 §3.3 and iteratively unescapes RFC 1035 §5.1 backslash sequences (handles DoH providers that double-escape). Primary: Cloudflare DoH; secondary confirmation: bv-dns (configurable via BV_DOH_ENDPOINT env var) → Google DoH fallback
 src/lib/sanitize.ts       — Domain validation, SSRF protection
 src/lib/config.ts         — Centralized SSRF constants, DNS tuning, rate limit quotas (FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT)
 src/lib/cache.ts          — KV-backed + in-memory TTL cache, INFLIGHT dedup map, cacheSetDeferred()
@@ -111,6 +111,7 @@ test/helpers/dns-mock.ts  — Shared fetch mock for DNS-over-HTTPS queries
 MCP Client → POST /mcp → Origin check → Auth middleware → Body parse → JSON-RPC validate
   → mcp/execute.ts (shared executor: rate limit + session + dispatch + analytics)
   → handlers/tools.ts → src/tools/check-*.ts → lib/dns.ts → Cloudflare DoH
+    (empty answers → bv-dns secondary → Google DoH fallback)
 ```
 
 **Native stdio** (`blackveil-dns-mcp` CLI):
@@ -230,6 +231,7 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 ## Security
 
 - **SSRF protection**: `config.ts` defines blocked IPs/TLDs/rebinding services; `sanitize.ts` enforces them. Wrangler uses `global_fetch_strictly_public` compatibility flag. All outbound fetches in tool checks (MTA-STS policy, SSL probe, subdomain takeover probe) use `redirect: 'manual'` to prevent redirect-based SSRF — redirect targets are never followed blindly.
+- **Secondary DoH (bv-dns)**: When `BV_DOH_ENDPOINT` is configured, empty-result secondary confirmation tries bv-dns first (with `X-BV-Token` auth header if `BV_DOH_TOKEN` is set), then falls back to Google DoH. The bv-dns fetch does not use `cf: { cacheTtl }` since it targets an external origin (Oracle Cloud). `global_fetch_strictly_public` ensures SSRF safety for this external fetch. If bv-dns is down/slow, it fails silently and Google takes over.
 - **Auth**: optional bearer token (`BV_API_KEY`), constant-time XOR comparison in `lib/auth.ts`. Tier-auth `BV_API_KEY` fallback uses SHA-256 hash comparison (constant-time) via `hashToken()` in `lib/tier-auth.ts`
 - **Rate limiting**: 50 req/min, 300 req/hr per IP via KV (in-memory fallback). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `prompts/*`, `ping`, `notifications/*`) are exempt. Authenticated requests (valid `BV_API_KEY` bearer token) bypass rate limiting entirely. `check_lookalikes` and `check_shadow_domains` each have a separate daily quota of 20/day per IP (unauthenticated) with 60-minute result caching, due to high outbound query volume (~100 DoH queries per invocation).
 - **Per-tool daily quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts` caps unauthenticated usage per tool (e.g., `scan_domain`: 75/day, `check_lookalikes`: 20/day, `check_shadow_domains`: 20/day, `check_mx_reputation`: 20/day, `compare_baseline`: 150/day, `check_txt_hygiene`: 200/day, individual checks: 200/day). Global daily cap of 500k requests/day across all unauthenticated IPs (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via Durable Objects (`QuotaCoordinator`).
@@ -399,6 +401,8 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 | `PROFILE_ACCUMULATOR` | Durable Object | Adaptive weight telemetry collection and EMA computation (optional; static weights fallback) |
 | `MCP_ANALYTICS` | Analytics Engine | Telemetry dataset (fail-open; optional) |
 | `PROVIDER_SIGNATURES_URL` | var | Optional URL for runtime email provider signatures |
+| `BV_DOH_ENDPOINT` | var | Custom secondary DoH resolver URL (e.g. `https://secondary-doh.example.com/dns-query`); optional — falls back to Google DoH when absent |
+| `BV_DOH_TOKEN` | Secret | Auth token sent as `X-BV-Token` header to bv-dns (optional; set via `npx wrangler secret put BV_DOH_TOKEN`) |
 | `SCORING_CONFIG` | var | JSON string overriding scoring weights, thresholds, and grade boundaries (optional; built-in defaults when absent) |
 | `CF_ACCOUNT_ID` | var | Cloudflare account ID (required for analytics alerting) |
 | `CF_ANALYTICS_TOKEN` | Secret | API token with Account Analytics Read (required for analytics alerting) |
