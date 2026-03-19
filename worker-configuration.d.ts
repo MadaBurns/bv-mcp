@@ -16,6 +16,8 @@ declare namespace Cloudflare {
 		PROVIDER_SIGNATURES_URL: "";
         PROVIDER_SIGNATURES_ALLOWED_HOSTS: "";
         PROVIDER_SIGNATURES_SHA256: "";
+        BV_DOH_ENDPOINT: string;
+        BV_DOH_TOKEN: string;
 	}
 }
 interface Env extends Cloudflare.Env {}
