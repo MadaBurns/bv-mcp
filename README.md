@@ -362,8 +362,12 @@ Run `explain_finding` on any result for plain-English remediation.
 | `GET` | `/mcp/sse` | Legacy SSE bootstrap stream |
 | `POST` | `/mcp/messages` | Legacy message delivery (requires `?sessionId=`) |
 | `GET` | `/health` | Health probe |
+| `POST` | `/internal/tools/call` | Service binding: single tool call (no auth/rate limits) |
+| `POST` | `/internal/tools/batch` | Service binding: bulk scan up to 500 domains |
 
-Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`.
+Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`.
+
+Prompt methods (`prompts/list`, `prompts/get`) return `-32601 Method not found`.
 
 </details>
 
@@ -460,7 +464,7 @@ npm run dev       # localhost:8787/mcp
 ```
 
 ```bash
-npm test          # 1097 tests, ~90% coverage
+npm test          # 1090+ tests, ~90% coverage
 npm run typecheck
 ```
 
@@ -508,6 +512,6 @@ Featured in [SecurityBrief](https://securitybrief.co.nz/story/exclusive-how-cybe
 
 Want continuous monitoring? [BLACKVEIL](https://blackveilsecurity.com) provides real-time alerting and Buck AI to help you fix what this scanner finds.
 
-BUSL-1.1 License
+MIT License
 
 </div>

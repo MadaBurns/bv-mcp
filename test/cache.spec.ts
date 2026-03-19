@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { TTLCache, cacheGet, cacheSet, IN_MEMORY_CACHE, runWithCache } from '../src/lib/cache';
+import { TTLCache, cacheGet, cacheSet, scanCache } from '../src/lib/cache';
 
 afterEach(() => {
 	vi.restoreAllMocks();
-	IN_MEMORY_CACHE.clear();
+	scanCache.clear();
 });
 
 describe('TTLCache', () => {
@@ -129,14 +129,14 @@ describe('TTLCache', () => {
 
 describe('cacheGet / cacheSet (KV-backed)', () => {
 	it('without KV: cacheGet returns value from in-memory cache', async () => {
-		IN_MEMORY_CACHE.set('key1', 'memval');
+		scanCache.set('key1', 'memval');
 		const result = await cacheGet<string>('key1');
 		expect(result).toBe('memval');
 	});
 
 	it('without KV: cacheSet writes to in-memory cache', async () => {
 		await cacheSet('key2', 'written');
-		expect(IN_MEMORY_CACHE.get('key2')).toBe('written');
+		expect(scanCache.get('key2')).toBe('written');
 	});
 
 	it('with KV: cacheGet returns value from KV', async () => {
@@ -149,7 +149,7 @@ describe('cacheGet / cacheSet (KV-backed)', () => {
 		expect(mockKV.get).toHaveBeenCalledWith('key', 'json');
 	});
 
-	it('with KV: cacheSet writes to KV with default expirationTtl', async () => {
+	it('with KV: cacheSet writes to KV with correct expirationTtl', async () => {
 		const mockKV = {
 			get: vi.fn(),
 			put: vi.fn().mockResolvedValue(undefined),
@@ -158,27 +158,8 @@ describe('cacheGet / cacheSet (KV-backed)', () => {
 		expect(mockKV.put).toHaveBeenCalledWith('key', JSON.stringify({ val: 1 }), { expirationTtl: 300 });
 	});
 
-	it('with KV: cacheSet with custom ttlSeconds writes to KV with matching expirationTtl', async () => {
-		const mockKV = {
-			get: vi.fn(),
-			put: vi.fn().mockResolvedValue(undefined),
-		};
-		await cacheSet('key', { val: 1 }, mockKV as unknown as KVNamespace, 3600);
-		expect(mockKV.put).toHaveBeenCalledWith('key', JSON.stringify({ val: 1 }), { expirationTtl: 3600 });
-	});
-
-	it('without KV: cacheSet with custom ttlSeconds writes to in-memory with correct TTL', async () => {
-		const now = Date.now();
-		vi.spyOn(Date, 'now').mockReturnValue(now);
-		await cacheSet('ttl-key', 'val', undefined, 60);
-		expect(IN_MEMORY_CACHE.get('ttl-key')).toBe('val');
-		// Should expire after 60 seconds (60000ms)
-		vi.spyOn(Date, 'now').mockReturnValue(now + 60_001);
-		expect(IN_MEMORY_CACHE.get('ttl-key')).toBeUndefined();
-	});
-
 	it('KV error on get: silently falls back to in-memory', async () => {
-		IN_MEMORY_CACHE.set('fallback', 'inmem');
+		scanCache.set('fallback', 'inmem');
 		const mockKV = {
 			get: vi.fn().mockRejectedValue(new Error('KV failure')),
 			put: vi.fn(),
@@ -193,124 +174,12 @@ describe('cacheGet / cacheSet (KV-backed)', () => {
 			put: vi.fn().mockRejectedValue(new Error('KV failure')),
 		};
 		await cacheSet('errkey', 'errval', mockKV as unknown as KVNamespace);
-		expect(IN_MEMORY_CACHE.get('errkey')).toBe('errval');
+		expect(scanCache.get('errkey')).toBe('errval');
 	});
 
-	it('IN_MEMORY_CACHE is the global in-memory TTLCache instance', () => {
-		expect(IN_MEMORY_CACHE).toBeInstanceOf(TTLCache);
-		IN_MEMORY_CACHE.set('test', 'val');
-		expect(IN_MEMORY_CACHE.get('test')).toBe('val');
-	});
-});
-
-describe('runWithCache (stampede protection)', () => {
-	it('deduplicates concurrent calls for the same key', async () => {
-		let callCount = 0;
-		const run = () => {
-			callCount++;
-			return new Promise<string>((resolve) => setTimeout(() => resolve('result'), 50));
-		};
-		const [r1, r2, r3] = await Promise.all([
-			runWithCache('dedup-test', run),
-			runWithCache('dedup-test', run),
-			runWithCache('dedup-test', run),
-		]);
-		expect(callCount).toBe(1);
-		expect(r1).toBe('result');
-		expect(r2).toBe('result');
-		expect(r3).toBe('result');
-	});
-
-	it('allows new calls after previous in-flight promise resolves', async () => {
-		let callCount = 0;
-		const run = () => {
-			callCount++;
-			return Promise.resolve('value-' + callCount);
-		};
-		const r1 = await runWithCache('reuse-test', run);
-		expect(r1).toBe('value-1');
-
-		// Clear the cache so the second call actually runs
-		IN_MEMORY_CACHE.clear();
-
-		const r2 = await runWithCache('reuse-test', run);
-		expect(r2).toBe('value-2');
-		expect(callCount).toBe(2);
-	});
-
-	it('cleans up in-flight entry on rejection so retries work', async () => {
-		let attempt = 0;
-		const run = () => {
-			attempt++;
-			if (attempt === 1) return Promise.reject(new Error('fail'));
-			return Promise.resolve('recovered');
-		};
-
-		await expect(runWithCache('fail-test', run)).rejects.toThrow('fail');
-
-		const r2 = await runWithCache('fail-test', run);
-		expect(r2).toBe('recovered');
-		expect(attempt).toBe(2);
-	});
-
-	it('passes custom ttlSeconds through to cacheSet', async () => {
-		const mockKV = {
-			get: vi.fn().mockResolvedValue(null),
-			put: vi.fn().mockResolvedValue(undefined),
-		};
-		await runWithCache('ttl-test', () => Promise.resolve({ data: 'result' }), mockKV as unknown as KVNamespace, 3600);
-		expect(mockKV.put).toHaveBeenCalledWith('ttl-test', JSON.stringify({ data: 'result' }), { expirationTtl: 3600 });
-	});
-
-	it('cleans up stuck INFLIGHT entry after timeout', async () => {
-		// Simulate a promise that never resolves
-		let resolveHanging: (v: string) => void;
-		const hangingPromise = new Promise<string>((resolve) => {
-			resolveHanging = resolve;
-		});
-		let callCount = 0;
-		const run = () => {
-			callCount++;
-			if (callCount === 1) return hangingPromise;
-			return Promise.resolve('recovered');
-		};
-
-		// Start a call that will hang
-		const p1 = runWithCache('stuck-key', run);
-
-		// Wait for the inflight cleanup timeout to fire (we use vi.advanceTimersByTime if fake timers are used)
-		// Since we can't use fake timers with promises easily, we rely on the actual timeout being 30s
-		// Instead, test indirectly: a second call should NOT get the stuck promise
-		// after cleanup fires. For a unit test, we'll verify the cleanup setTimeout exists
-		// by resolving the hanging promise and checking the entry is cleared.
-		resolveHanging!('late-value');
-		const result = await p1;
-		expect(result).toBe('late-value');
-
-		// After the promise resolves, INFLIGHT should be cleaned up
-		// and a new call should execute the function again
-		IN_MEMORY_CACHE.clear();
-		const result2 = await runWithCache('stuck-key', run);
-		expect(result2).toBe('recovered');
-		expect(callCount).toBe(2);
-	});
-
-	it('uses different keys independently', async () => {
-		let countA = 0;
-		let countB = 0;
-		const runA = () => {
-			countA++;
-			return new Promise<string>((resolve) => setTimeout(() => resolve('a'), 50));
-		};
-		const runB = () => {
-			countB++;
-			return new Promise<string>((resolve) => setTimeout(() => resolve('b'), 50));
-		};
-
-		const [rA, rB] = await Promise.all([runWithCache('key-a', runA), runWithCache('key-b', runB)]);
-		expect(rA).toBe('a');
-		expect(rB).toBe('b');
-		expect(countA).toBe(1);
-		expect(countB).toBe(1);
+	it('scanCache is the global in-memory TTLCache instance', () => {
+		expect(scanCache).toBeInstanceOf(TTLCache);
+		scanCache.set('test', 'val');
+		expect(scanCache.get('test')).toBe('val');
 	});
 });

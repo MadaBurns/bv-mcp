@@ -20,11 +20,10 @@ This avoids local bridge-process issues entirely.
 
 **2. If using the config file fallback, verify it exists and is valid**
 
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+**Mac/Linux:** `~/Library/Application Support/Claude/claude_desktop_config.json`  
 **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
-Claude Desktop only supports stdio servers in the config file. Use the native stdio transport via the `blackveil-dns` npm package:
-
+Fallback config (native stdio — no bridge required):
 ```json
 {
   "mcpServers": {
@@ -37,14 +36,13 @@ Claude Desktop only supports stdio servers in the config file. Use the native st
 }
 ```
 
-If Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path (macOS/Linux: `which npx`; Windows: `where npx`).
-
 **Common mistakes:**
-- Using `mcpServer` (singular) instead of `mcpServers` (plural)
-- Using `"type": "http"` or `"url"` — Claude Desktop config only supports stdio (`command` + `args`)
-- Using bare `npx` when Claude Desktop cannot resolve it from the GUI app environment — use the absolute path
-- Omitting `-y` and getting stuck on the first `npx` install prompt
-- Invalid JSON syntax (trailing commas, missing quotes)
+- ❌ Using `mcpServer` (singular) instead of `mcpServers` (plural)
+- ❌ Using bare `npx` when Claude Desktop cannot resolve it from the GUI app environment
+- ❌ Omitting `-y` and getting stuck on the first `npx` install prompt
+- ❌ Invalid JSON syntax (trailing commas, missing quotes)
+
+If Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path.
 
 **3. Restart Claude Desktop completely**
 
@@ -97,7 +95,7 @@ If Claude Code is connected but prompts like `scan blackveilsecurity.com` do not
 {
   "mcpServers": {
     "blackveil-dns": {
-      "type": "http",
+      "type": "url",
       "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
   }
@@ -194,7 +192,7 @@ curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
 - `Invalid or missing session`: Session mismatch between client and server. Re-initialize client session and retry.
 - `429 Too Many Requests`: Rate-limited (`50/min`, `300/hr` per IP for unauthenticated `tools/call`).
 - `Error: An unexpected error occurred` on `tools/call` with IP-like domain input: input validation rejected an IP literal form. Use a real DNS domain name (for example `example.com`) instead of values like `127.1`, `0177.0.0.1`, `8.8.8.8`, or `0x8.0x8.0x8.0x8`.
-- `-32601 Method not found`: The requested JSON-RPC method is not supported. Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`.
+- `-32601 Method not found: prompts/list`: Expected. This server does not implement prompt methods (`prompts/list`, `prompts/get`). Use `tools/list` / `tools/call` and `resources/list` / `resources/read`.
 
 ## 4. Debugging Checklist
 
@@ -263,3 +261,4 @@ Operational tips:
 
 - Reuse the same MCP session where possible to avoid repeated initialization overhead.
 - Prefer warmed-cache measurements (`scan_cached`) when validating interactive UX.
+- Use `scripts/benchmark.sh` for repeatable per-tool timing comparisons across domains.
