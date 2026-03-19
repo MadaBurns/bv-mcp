@@ -37,7 +37,7 @@ git config core.hooksPath .githooks    # Enable pre-commit hooks (one-time setup
 
 ```
 src/index.ts              — Hono app, HTTP routes, middleware wiring (delegates to shared executor)
-src/internal.ts           — Internal service binding routes (direct tool access, no MCP overhead)
+src/internal.ts           — Internal service binding routes (direct tool access + batch endpoint, no MCP overhead)
 src/stdio.ts              — Native stdio MCP transport (CLI entrypoint: blackveil-dns-mcp)
 src/scheduled.ts          — Cron Trigger handler for analytics alerting (queries Analytics Engine SQL API)
 
@@ -84,7 +84,7 @@ src/lib/legacy-sse.ts     — Legacy HTTP+SSE stream lifecycle (open, enqueue, c
 src/lib/server-version.ts — Single source of truth for SERVER_VERSION
 src/lib/dns.ts            — DNS-over-HTTPS facade (re-exports from dns-transport, dns-records, dns-types); queryTxtRecords concatenates multi-string values per RFC 7208 §3.3 and iteratively unescapes RFC 1035 §5.1 backslash sequences (handles DoH providers that double-escape)
 src/lib/sanitize.ts       — Domain validation, SSRF protection
-src/lib/config.ts         — Centralized SSRF constants, DNS tuning, rate limit quotas (FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT)
+src/lib/config.ts         — Centralized SSRF constants, DNS tuning, rate limit quotas (FREE_TOOL_DAILY_LIMITS, TIER_DAILY_LIMITS, TIER_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT), cache TTL config
 src/lib/cache.ts          — KV-backed + in-memory TTL cache, INFLIGHT dedup map, cacheSetDeferred()
 src/lib/rate-limiter.ts   — KV-backed + in-memory per-IP rate limiting (delegates to rate-limiter-memory.ts)
 src/lib/quota-coordinator.ts — Durable Objects-based distributed rate limiting across isolates
@@ -225,8 +225,8 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 
 - **SSRF protection**: `config.ts` defines blocked IPs/TLDs/rebinding services; `sanitize.ts` enforces them. Wrangler uses `global_fetch_strictly_public` compatibility flag. All outbound fetches in tool checks (MTA-STS policy, SSL probe, subdomain takeover probe) use `redirect: 'manual'` to prevent redirect-based SSRF — redirect targets are never followed blindly.
 - **Auth**: optional bearer token (`BV_API_KEY`), constant-time XOR comparison in `lib/auth.ts`. Tier-auth `BV_API_KEY` fallback uses SHA-256 hash comparison (constant-time) via `hashToken()` in `lib/tier-auth.ts`
-- **Rate limiting**: 50 req/min, 300 req/hr per IP via KV (in-memory fallback). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `prompts/*`, `ping`, `notifications/*`) are exempt. Authenticated requests (valid `BV_API_KEY` bearer token) bypass rate limiting entirely. `check_lookalikes` and `check_shadow_domains` each have a separate daily quota of 20/day per IP (unauthenticated) with 60-minute result caching, due to high outbound query volume (~100 DoH queries per invocation).
-- **Per-tool daily quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts` caps unauthenticated usage per tool (e.g., `scan_domain`: 75/day, `check_lookalikes`: 20/day, `check_shadow_domains`: 20/day, `check_mx_reputation`: 20/day, `compare_baseline`: 150/day, `check_txt_hygiene`: 200/day, individual checks: 200/day). Global daily cap of 500k requests/day across all unauthenticated IPs (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via Durable Objects (`QuotaCoordinator`).
+- **Rate limiting**: 50 req/min, 300 req/hr per IP via KV (in-memory fallback). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `prompts/*`, `ping`, `notifications/*`) are exempt. Authenticated requests (valid `BV_API_KEY` bearer token) bypass per-IP rate limiting and use tier-based daily quotas instead. `check_lookalikes` and `check_shadow_domains` each have a separate daily quota of 20/day per IP (unauthenticated) with 60-minute result caching, due to high outbound query volume (~100 DoH queries per invocation).
+- **Per-tool daily quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts` caps unauthenticated usage per tool (e.g., `scan_domain`: 75/day, `check_lookalikes`: 20/day, `check_shadow_domains`: 20/day, `check_mx_reputation`: 20/day, `compare_baseline`: 150/day, `check_txt_hygiene`: 200/day, individual checks: 200/day). Global daily cap of 500k requests/day across all unauthenticated IPs (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via Durable Objects (`QuotaCoordinator`). Authenticated tiers use `TIER_DAILY_LIMITS` per tier, with optional per-tool overrides via `TIER_TOOL_DAILY_LIMITS` (e.g., partner tier: scan_domain 100K/day, individual checks 500K/day).
 - **Request body max**: 10 KB on `/mcp`
 - **IP sourcing**: only `cf-connecting-ip` — never `x-forwarded-for`
 - **Error sanitization**: only known validation errors surface; unexpected → generic message. Fallback `console.warn()` messages in KV/DO error paths use generic descriptions without leaking error details.
@@ -319,6 +319,26 @@ const result = await response.json();
 // result: { content: [{ type: 'text', text: '...' }], isError?: boolean }
 ```
 
+**Batch endpoint** (`POST /internal/tools/batch`):
+```typescript
+const response = await env.BV_MCP.fetch(
+  new Request('https://internal/internal/tools/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      domains: ['example.com', 'example.org'],
+      tool: 'scan_domain',       // optional, defaults to scan_domain
+      arguments: {},              // optional, merged with { domain } per invocation
+      concurrency: 10,            // optional, 1-50, default 10
+    }),
+  })
+);
+const { results, summary } = await response.json();
+// results: [{ domain, result, isError }], summary: { total, succeeded, failed }
+```
+
+Max 500 domains per batch. Supports `?format=structured` for raw `CheckResult` output. Invalid domains are reported as errors in results without blocking valid domains.
+
 ### What gets bypassed vs preserved
 
 | Layer | Public `/mcp` | Internal `/internal/*` |
@@ -371,6 +391,7 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 | `MCP_ANALYTICS` | Analytics Engine | Telemetry dataset (fail-open; optional) |
 | `PROVIDER_SIGNATURES_URL` | var | Optional URL for runtime email provider signatures |
 | `SCORING_CONFIG` | var | JSON string overriding scoring weights, thresholds, and grade boundaries (optional; built-in defaults when absent) |
+| `CACHE_TTL_SECONDS` | var | Scan result cache TTL in seconds (optional; default 300, range 60-3600). Higher values reduce DoH queries for monitoring use cases |
 | `CF_ACCOUNT_ID` | var | Cloudflare account ID (required for analytics alerting) |
 | `CF_ANALYTICS_TOKEN` | Secret | API token with Account Analytics Read (required for analytics alerting) |
 | `ALERT_WEBHOOK_URL` | var | Slack/Discord webhook URL for anomaly alerts (optional) |

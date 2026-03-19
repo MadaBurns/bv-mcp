@@ -1,8 +1,9 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi, beforeEach } from 'vitest';
 import worker from '../src';
 import { resetAllRateLimits } from '../src/lib/rate-limiter';
 import { resetSessions } from '../src/lib/session';
+import { IN_MEMORY_CACHE } from '../src/lib/cache';
 
 afterEach(() => {
 	resetAllRateLimits();
@@ -204,6 +205,207 @@ describe('Internal service binding routes', () => {
 			expect(response.status).toBe(200);
 			const body = (await response.json()) as { content?: unknown; result?: unknown };
 			expect(body.content).toBeDefined();
+		});
+	});
+
+	describe('POST /internal/tools/batch', () => {
+		beforeEach(() => {
+			IN_MEMORY_CACHE.clear();
+		});
+
+		it('returns 400 when domains is missing', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({}),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(400);
+			const body = (await response.json()) as { error: string };
+			expect(body.error).toContain('domains');
+		});
+
+		it('returns 400 when domains is empty array', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ domains: [] }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(400);
+		});
+
+		it('returns 400 when batch exceeds 500 domains', async () => {
+			const domains = Array.from({ length: 501 }, (_, i) => `domain${i}.com`);
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ domains }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(400);
+			const body = (await response.json()) as { error: string };
+			expect(body.error).toContain('500');
+		});
+
+		it('scans multiple domains and returns results with summary', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					domains: ['example.com', 'example.org'],
+					tool: 'check_spf',
+				}),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as {
+				results: { domain: string; result: unknown; isError: boolean }[];
+				summary: { total: number; succeeded: number; failed: number };
+			};
+			expect(body.results).toHaveLength(2);
+			expect(body.summary.total).toBe(2);
+			expect(body.summary.succeeded).toBe(2);
+			expect(body.summary.failed).toBe(0);
+			expect(body.results[0].domain).toBe('example.com');
+			expect(body.results[1].domain).toBe('example.org');
+		});
+
+		it('defaults tool to scan_domain when omitted', async () => {
+			const { httpResponse, createDohResponse } = await import('./helpers/dns-mock');
+
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if (url.startsWith('https://example.com') || url.startsWith('http://example.com')) {
+					return Promise.resolve(httpResponse('', 200));
+				}
+				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 1 }], []));
+			});
+
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ domains: ['example.com'] }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as {
+				results: { domain: string; result: { content: { text: string }[] }; isError: boolean }[];
+				summary: { total: number; succeeded: number; failed: number };
+			};
+			expect(body.summary.total).toBe(1);
+			// scan_domain returns 2 content blocks (text + structured)
+			expect(body.results[0].result.content.length).toBeGreaterThanOrEqual(1);
+		});
+
+		it('reports invalid domains as errors in results', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					domains: ['example.com', 'not a domain!', '127.0.0.1'],
+					tool: 'check_spf',
+				}),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as {
+				results: { domain: string; result: unknown; isError: boolean }[];
+				summary: { total: number; succeeded: number; failed: number };
+			};
+			expect(body.summary.total).toBe(3);
+			expect(body.summary.failed).toBeGreaterThanOrEqual(2); // invalid domain + IP
+			// Valid domain should succeed
+			const validResult = body.results.find((r) => r.domain === 'example.com');
+			expect(validResult?.isError).toBe(false);
+		});
+
+		it('supports format=structured on batch endpoint', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+
+			const request = new Request<unknown, IncomingRequestCfProperties>(
+				'http://example.com/internal/tools/batch?format=structured',
+				{
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						domains: ['example.com'],
+						tool: 'check_spf',
+					}),
+				},
+			);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as {
+				results: { domain: string; result: { category: string; score: number }; isError: boolean }[];
+			};
+			expect(body.results[0].isError).toBe(false);
+			expect(body.results[0].result.category).toBe('spf');
+			expect(typeof body.results[0].result.score).toBe('number');
+		});
+
+		it('returns 413 when body exceeds 256 KB', async () => {
+			// Generate a body larger than 262,144 bytes (each domain ~540 chars × 500 = ~270KB)
+			const largeDomains = Array.from({ length: 500 }, (_, i) => `${'a'.repeat(510)}${i}.example.com`);
+			const largeBody = JSON.stringify({ domains: largeDomains, tool: 'check_spf' });
+			expect(largeBody.length).toBeGreaterThan(262_144);
+
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: largeBody,
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(413);
+			const body = (await response.json()) as { error: string };
+			expect(body.error).toContain('262144');
+		});
+
+		it('is blocked by guard middleware for public requests', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'cf-connecting-ip': '1.2.3.4',
+				},
+				body: JSON.stringify({ domains: ['example.com'] }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(404);
 		});
 	});
 });
