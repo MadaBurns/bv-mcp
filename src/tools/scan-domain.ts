@@ -116,7 +116,11 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 
 	// Skip secondary DNS confirmation in scan context for speed — individual checks
 	// still use secondary confirmation when called directly by users.
-	const scanDns: QueryDnsOptions = { skipSecondaryConfirmation: true, queryCache: new Map() };
+	const scanDns: QueryDnsOptions = {
+		skipSecondaryConfirmation: true,
+		queryCache: new Map(),
+		secondaryDoh: runtimeOptions?.secondaryDoh,
+	};
 
 	const checkPromises = [
 		runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain, scanDns)), kv),

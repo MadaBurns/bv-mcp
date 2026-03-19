@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { CheckResult } from '../lib/scoring';
+import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
 import { runWithCache } from '../lib/cache';
 import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { checkSpf } from '../tools/check-spf';
@@ -60,9 +61,17 @@ interface ToolRuntimeOptions {
 	resultCapture?: (result: CheckResult) => void;
 	/** Override cache TTL in seconds for scan results. Threaded to scanDomain. */
 	cacheTtlSeconds?: number;
+	/** Custom secondary DoH resolver config (bv-dns). Threaded to dnsOptions for individual checks. */
+	secondaryDoh?: SecondaryDohConfig;
 	country?: string;
 	clientType?: string;
 	authTier?: string;
+}
+
+/** Build QueryDnsOptions for individual check calls from runtime options. */
+function buildDnsOptions(runtimeOptions?: ToolRuntimeOptions): QueryDnsOptions | undefined {
+	if (!runtimeOptions?.secondaryDoh) return undefined;
+	return { secondaryDoh: runtimeOptions.secondaryDoh };
 }
 
 async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOptions): Promise<CheckResult> {
@@ -71,7 +80,7 @@ async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOption
 		providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
 		providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
 		providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
-	});
+	}, buildDnsOptions(runtimeOptions));
 }
 
 /**
@@ -86,31 +95,31 @@ const TOOL_REGISTRY: Record<
 		cacheTtlSeconds?: number;
 	}
 > = {
-	check_mx: { cacheKey: () => 'mx', execute: (d, _args, runtimeOptions) => dynamicCheckMx(d, runtimeOptions) },
-	check_spf: { cacheKey: () => 'spf', execute: (d) => checkSpf(d) },
-	check_dmarc: { cacheKey: () => 'dmarc', execute: (d) => checkDmarc(d) },
+	check_mx: { cacheKey: () => 'mx', execute: (d, _args, ro) => dynamicCheckMx(d, ro) },
+	check_spf: { cacheKey: () => 'spf', execute: (d, _args, ro) => checkSpf(d, buildDnsOptions(ro)) },
+	check_dmarc: { cacheKey: () => 'dmarc', execute: (d, _args, ro) => checkDmarc(d, buildDnsOptions(ro)) },
 	check_dkim: {
 		cacheKey: (args) => {
 			const sel = extractDkimSelector(args);
 			return sel ? `dkim:${sel}` : 'dkim';
 		},
-		execute: (d, args) => checkDkim(d, extractDkimSelector(args)),
+		execute: (d, args, ro) => checkDkim(d, extractDkimSelector(args), buildDnsOptions(ro)),
 	},
-	check_dnssec: { cacheKey: () => 'dnssec', execute: (d) => checkDnssec(d) },
+	check_dnssec: { cacheKey: () => 'dnssec', execute: (d, _args, ro) => checkDnssec(d, buildDnsOptions(ro)) },
 	check_ssl: { cacheKey: () => 'ssl', execute: (d) => checkSsl(d) },
-	check_mta_sts: { cacheKey: () => 'mta_sts', execute: (d) => checkMtaSts(d) },
-	check_ns: { cacheKey: () => 'ns', execute: (d) => checkNs(d) },
-	check_caa: { cacheKey: () => 'caa', execute: (d) => checkCaa(d) },
-	check_bimi: { cacheKey: () => 'bimi', execute: (d) => checkBimi(d) },
-	check_tlsrpt: { cacheKey: () => 'tlsrpt', execute: (d) => checkTlsrpt(d) },
+	check_mta_sts: { cacheKey: () => 'mta_sts', execute: (d, _args, ro) => checkMtaSts(d, buildDnsOptions(ro)) },
+	check_ns: { cacheKey: () => 'ns', execute: (d, _args, ro) => checkNs(d, buildDnsOptions(ro)) },
+	check_caa: { cacheKey: () => 'caa', execute: (d, _args, ro) => checkCaa(d, buildDnsOptions(ro)) },
+	check_bimi: { cacheKey: () => 'bimi', execute: (d, _args, ro) => checkBimi(d, buildDnsOptions(ro)) },
+	check_tlsrpt: { cacheKey: () => 'tlsrpt', execute: (d, _args, ro) => checkTlsrpt(d, buildDnsOptions(ro)) },
 	check_lookalikes: { cacheKey: () => 'lookalikes', execute: (d) => checkLookalikes(d), cacheTtlSeconds: 3600 },
-	check_shadow_domains: { cacheKey: () => 'shadow_domains', execute: (d) => checkShadowDomains(d), cacheTtlSeconds: 3600 },
-	check_txt_hygiene: { cacheKey: () => 'txt_hygiene', execute: (d) => checkTxtHygiene(d) },
+	check_shadow_domains: { cacheKey: () => 'shadow_domains', execute: (d, _args, ro) => checkShadowDomains(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
+	check_txt_hygiene: { cacheKey: () => 'txt_hygiene', execute: (d, _args, ro) => checkTxtHygiene(d, buildDnsOptions(ro)) },
 	check_http_security: { cacheKey: () => 'http_security', execute: (d) => checkHttpSecurity(d) },
-	check_dane: { cacheKey: () => 'dane', execute: (d) => checkDane(d) },
-	check_mx_reputation: { cacheKey: () => 'mx_reputation', execute: (d) => checkMxReputation(d), cacheTtlSeconds: 3600 },
-	check_srv: { cacheKey: () => 'srv', execute: (d) => checkSrv(d) },
-	check_zone_hygiene: { cacheKey: () => 'zone_hygiene', execute: (d) => checkZoneHygiene(d) },
+	check_dane: { cacheKey: () => 'dane', execute: (d, _args, ro) => checkDane(d, buildDnsOptions(ro)) },
+	check_mx_reputation: { cacheKey: () => 'mx_reputation', execute: (d, _args, ro) => checkMxReputation(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
+	check_srv: { cacheKey: () => 'srv', execute: (d, _args, ro) => checkSrv(d, buildDnsOptions(ro)) },
+	check_zone_hygiene: { cacheKey: () => 'zone_hygiene', execute: (d, _args, ro) => checkZoneHygiene(d, buildDnsOptions(ro)) },
 };
 
 function buildToolErrorResult(message: string): McpToolResult {

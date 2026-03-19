@@ -33,6 +33,10 @@ export interface DispatchMcpMethodOptions {
 	existingSessionId?: string;
 	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
 	cacheTtlSeconds?: number;
+	/** Custom secondary DoH endpoint URL (bv-dns). */
+	secondaryDohEndpoint?: string;
+	/** Auth token for custom secondary DoH. */
+	secondaryDohToken?: string;
 	country?: string;
 	clientType?: string;
 	authTier?: string;
@@ -144,6 +148,9 @@ All checks are passive, read-only, and use public DNS — no authorization from 
 				waitUntil: options.waitUntil,
 				scoringConfig: options.scoringConfig,
 				cacheTtlSeconds: options.cacheTtlSeconds,
+				secondaryDoh: options.secondaryDohEndpoint
+					? { endpoint: options.secondaryDohEndpoint, token: options.secondaryDohToken }
+					: undefined,
 				country: options.country,
 				clientType: options.clientType,
 				authTier: options.authTier,
