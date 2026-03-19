@@ -1,14 +1,14 @@
 {
 	"name": "blackveil-dns",
-	"version": "1.2.0",
+	"version": "1.4.2",
 	"description": "Blackveil DNS — Open-source DNS & email security scanner.",
 	"type": "module",
-	"license": "MIT",
+	"license": "BUSL-1.1",
 	"author": "BLACKVEIL Security",
 	"homepage": "https://blackveilsecurity.com",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/MadaBurns/bv-mcp.git"
+		"url": "git+https://github.com/MadaBurns/bv-mcp.git"
 	},
 	"keywords": [
 		"blackveil",
@@ -34,7 +34,7 @@
 	"module": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"bin": {
-		"blackveil-dns-mcp": "./dist/stdio.js"
+		"blackveil-dns-mcp": "dist/stdio.js"
 	},
 	"exports": {
 		".": {
