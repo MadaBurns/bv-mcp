@@ -74,6 +74,8 @@ type BvMcpEnv = {
 	PROVIDER_SIGNATURES_SHA256?: string;
 	SCORING_CONFIG?: string;
 	CACHE_TTL_SECONDS?: string;
+	BV_DOH_ENDPOINT?: string;
+	BV_DOH_TOKEN?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -312,6 +314,8 @@ app.post('/mcp', async (c) => {
 					waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 					scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
 					cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
+					secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
+					secondaryDohToken: c.env.BV_DOH_TOKEN,
 					country,
 					clientType,
 					authTier,
@@ -369,6 +373,8 @@ app.post('/mcp', async (c) => {
 		waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 		scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
 		cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
+		secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
+		secondaryDohToken: c.env.BV_DOH_TOKEN,
 		country,
 		clientType,
 		authTier,
@@ -497,6 +503,8 @@ app.post('/mcp/messages', async (c) => {
 				profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 				waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 				cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
+				secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
+				secondaryDohToken: c.env.BV_DOH_TOKEN,
 				country,
 				clientType,
 				authTier,
