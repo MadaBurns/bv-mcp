@@ -328,8 +328,8 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		};
 	}
 
-	// Cache the result
-	await cacheSet(cacheKey, result, kv);
+	// Cache the result (use configurable TTL if provided)
+	await cacheSet(cacheKey, result, kv, runtimeOptions?.cacheTtlSeconds);
 
 	return result;
 }

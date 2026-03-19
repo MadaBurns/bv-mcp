@@ -61,6 +61,20 @@ export const DNS_RETRY_BASE_DELAY_MS = 75;
  */
 export const DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY = true;
 
+/** Default cache TTL in seconds. Override via CACHE_TTL_SECONDS env var. */
+export const DEFAULT_CACHE_TTL_SECONDS = 300;
+
+/**
+ * Parse CACHE_TTL_SECONDS env var, clamping to [60, 3600].
+ * Returns DEFAULT_CACHE_TTL_SECONDS when absent or invalid.
+ */
+export function parseCacheTtl(envValue?: string): number {
+	if (!envValue) return DEFAULT_CACHE_TTL_SECONDS;
+	const parsed = Number(envValue);
+	if (!Number.isFinite(parsed) || parsed < 60) return DEFAULT_CACHE_TTL_SECONDS;
+	return Math.min(parsed, 3600);
+}
+
 /**
  * Global daily free-tier request ceiling across all unauthenticated IPs.
  * Protects from abuse by capping free usage at a service-wide level.
@@ -73,14 +87,47 @@ export const GLOBAL_DAILY_TOOL_LIMIT = 500_000;
  * Tools omitted from this map are governed only by baseline per-IP rate limits.
  */
 /** MCP API key tiers with daily scan quotas. */
-export type McpApiKeyTier = 'free' | 'agent' | 'developer' | 'enterprise';
+export type McpApiKeyTier = 'free' | 'agent' | 'developer' | 'enterprise' | 'partner';
 
-/** Daily scan limits per API key tier. */
+/** Daily scan limits per API key tier (applies per tool unless overridden by TIER_TOOL_DAILY_LIMITS). */
 export const TIER_DAILY_LIMITS: Record<McpApiKeyTier, number> = {
 	free: 50,
 	agent: 200,
 	developer: 500,
 	enterprise: 10_000,
+	partner: 100_000,
+};
+
+/**
+ * Per-tool daily limit overrides for specific tiers.
+ * When a tier+tool combo exists here, it takes precedence over the flat TIER_DAILY_LIMITS value.
+ */
+export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string, number>>> = {
+	partner: {
+		scan_domain: 100_000,
+		scan: 100_000,
+		compare_baseline: 100_000,
+		check_spf: 500_000,
+		check_dmarc: 500_000,
+		check_dkim: 500_000,
+		check_mx: 500_000,
+		check_ns: 500_000,
+		check_ssl: 500_000,
+		check_dnssec: 500_000,
+		check_mta_sts: 500_000,
+		check_caa: 500_000,
+		check_bimi: 500_000,
+		check_tlsrpt: 500_000,
+		check_lookalikes: 50_000,
+		check_shadow_domains: 50_000,
+		check_txt_hygiene: 500_000,
+		check_http_security: 500_000,
+		check_dane: 500_000,
+		check_mx_reputation: 50_000,
+		check_srv: 500_000,
+		check_zone_hygiene: 500_000,
+		explain_finding: 500_000,
+	},
 };
 
 export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
