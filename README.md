@@ -363,9 +363,7 @@ Run `explain_finding` on any result for plain-English remediation.
 | `POST` | `/mcp/messages` | Legacy message delivery (requires `?sessionId=`) |
 | `GET` | `/health` | Health probe |
 
-Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`.
-
-Prompt methods (`prompts/list`, `prompts/get`) return `-32601 Method not found`.
+Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`.
 
 </details>
 
@@ -462,7 +460,7 @@ npm run dev       # localhost:8787/mcp
 ```
 
 ```bash
-npm test          # 1090+ tests, ~90% coverage
+npm test          # 1097 tests, ~90% coverage
 npm run typecheck
 ```
 
@@ -510,6 +508,6 @@ Featured in [SecurityBrief](https://securitybrief.co.nz/story/exclusive-how-cybe
 
 Want continuous monitoring? [BLACKVEIL](https://blackveilsecurity.com) provides real-time alerting and Buck AI to help you fix what this scanner finds.
 
-MIT License
+BUSL-1.1 License
 
 </div>
