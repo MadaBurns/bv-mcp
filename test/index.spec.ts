@@ -1215,7 +1215,8 @@ describe('DNS Security MCP Server', () => {
 				const response = await worker.fetch(request, authEnv, ctx);
 				await waitOnExecutionContext(ctx);
 				expect(response.status).toBe(200);
-				expect(response.headers.has('x-quota-limit')).toBe(false);
+				expect(response.headers.get('x-quota-tier')).toBe('enterprise');
+				expect(response.headers.get('x-quota-limit')).toBe('10000');
 			}
 		});
 
