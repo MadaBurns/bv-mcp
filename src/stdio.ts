@@ -171,9 +171,9 @@ export async function runStdioServer(): Promise<void> {
 	await pending;
 }
 
-const directRunCandidate = process.argv[1] ?? '';
-const isDirectRun = typeof directRunCandidate === 'string' && import.meta.url === new URL(directRunCandidate, 'file:').href;
-
-if (isDirectRun) {
+// Auto-run when executed as a script.
+// Always start when the module URL ends with stdio.js (covers direct run and symlinks).
+const isBin = import.meta.url.endsWith('/stdio.js');
+if (isBin) {
 	void runStdioServer();
 }
