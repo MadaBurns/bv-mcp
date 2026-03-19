@@ -23,20 +23,21 @@ This avoids local bridge-process issues entirely.
 **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
-Claude Desktop only supports stdio servers in the config file. Use the `mcp-remote` bridge to proxy to the hosted HTTP endpoint:
+Claude Desktop only supports stdio servers in the config file. Use the native stdio transport via the `blackveil-dns` npm package:
 
 ```json
 {
   "mcpServers": {
     "blackveil-dns": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "https://dns-mcp.blackveilsecurity.com/mcp"]
+      "type": "stdio",
+      "command": "/opt/homebrew/bin/npx",
+      "args": ["-y", "--package", "blackveil-dns", "blackveil-dns-mcp"]
     }
   }
 }
 ```
 
-If Claude Desktop cannot find `npx`, replace `"npx"` with the absolute path (macOS/Linux: `which npx`; Windows: `where npx`).
+If Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path (macOS/Linux: `which npx`; Windows: `where npx`).
 
 **Common mistakes:**
 - Using `mcpServer` (singular) instead of `mcpServers` (plural)
@@ -96,7 +97,7 @@ If Claude Code is connected but prompts like `scan blackveilsecurity.com` do not
 {
   "mcpServers": {
     "blackveil-dns": {
-      "type": "url",
+      "type": "http",
       "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
   }
@@ -193,7 +194,7 @@ curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
 - `Invalid or missing session`: Session mismatch between client and server. Re-initialize client session and retry.
 - `429 Too Many Requests`: Rate-limited (`50/min`, `300/hr` per IP for unauthenticated `tools/call`).
 - `Error: An unexpected error occurred` on `tools/call` with IP-like domain input: input validation rejected an IP literal form. Use a real DNS domain name (for example `example.com`) instead of values like `127.1`, `0177.0.0.1`, `8.8.8.8`, or `0x8.0x8.0x8.0x8`.
-- `-32601 Method not found: prompts/list`: Expected. This server does not implement prompt methods (`prompts/list`, `prompts/get`). Use `tools/list` / `tools/call` and `resources/list` / `resources/read`.
+- `-32601 Method not found`: The requested JSON-RPC method is not supported. Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`.
 
 ## 4. Debugging Checklist
 
@@ -262,4 +263,3 @@ Operational tips:
 
 - Reuse the same MCP session where possible to avoid repeated initialization overhead.
 - Prefer warmed-cache measurements (`scan_cached`) when validating interactive UX.
-- Use `scripts/benchmark.sh` for repeatable per-tool timing comparisons across domains.

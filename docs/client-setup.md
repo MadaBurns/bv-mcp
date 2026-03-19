@@ -59,35 +59,23 @@ No npm install required.
 
 This uses native Streamable HTTP with no bridge process. Prefer this over the config file approach.
 
-**Config file fallback:** Claude Desktop's `claude_desktop_config.json` only supports stdio servers. Use the `mcp-remote` bridge to proxy to the hosted endpoint.
-
-Open the config file at:
-- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
-
-Add (or merge into your existing `"mcpServers"` object):
+**Advanced fallback:** If you want first-party local stdio instead of the hosted HTTP connector, open **Settings → Developer → Edit Config** (`claude_desktop_config.json`) and add:
 
 ```json
 {
   "mcpServers": {
     "blackveil-dns": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "https://dns-mcp.blackveilsecurity.com/mcp"]
+      "type": "stdio",
+      "command": "/opt/homebrew/bin/npx",
+      "args": ["-y", "--package", "blackveil-dns", "blackveil-dns-mcp"]
     }
   }
 }
 ```
 
-**Troubleshooting:** If Claude Desktop cannot find `npx`, replace `"npx"` with the absolute path to your `npx` binary. This is common on macOS where GUI apps don't inherit shell `PATH`.
-
-| OS | How to find your path |
-|---|---|
-| macOS / Linux | Run `which npx` in a terminal |
-| Windows | Run `where npx` in Command Prompt |
-
-Example (macOS Homebrew): `"/opt/homebrew/bin/npx"`. Example (Windows): `"C:\\Program Files\\nodejs\\npx.cmd"`.
-
-After saving, fully restart Claude Desktop (macOS: Cmd+Q; Windows: close from system tray) to pick up the new config.
+> Prefer the direct custom connector above when possible. The stdio route runs the server locally and depends on Node.js being available to Claude Desktop.
+>
+> On macOS GUI apps, `npx` may not resolve from `PATH`; if Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path. After editing the config, fully restart Claude Desktop. If you already have other servers, merge `"blackveil-dns"` into your existing `"mcpServers"` object — don't paste a second `{ }` wrapper.
 
 ## Claude Code
 
