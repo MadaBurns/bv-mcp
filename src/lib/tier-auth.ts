@@ -99,8 +99,12 @@ export async function resolveTier(
 	}
 
 	// 3. Fallback: compare against static BV_API_KEY (self-hosted/dev)
-	if (env.BV_API_KEY && token === env.BV_API_KEY) {
-		return { authenticated: true, tier: 'enterprise', keyHash };
+	if (env.BV_API_KEY) {
+		const expectedHash = await hashToken(env.BV_API_KEY);
+		// Constant-time comparison via hash equality (same pattern as auth.ts)
+		if (keyHash === expectedHash) {
+			return { authenticated: true, tier: 'enterprise', keyHash };
+		}
 	}
 
 	return { authenticated: false };
