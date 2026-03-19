@@ -13,6 +13,8 @@ export interface ScanRuntimeOptions {
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('../../lib/scoring-config').ScoringConfig;
+	/** Override cache TTL in seconds (default: 300). Clamped to [60, 3600]. */
+	cacheTtlSeconds?: number;
 }
 
 export async function applyScanPostProcessing(
