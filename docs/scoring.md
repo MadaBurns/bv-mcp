@@ -159,7 +159,7 @@ Source: `scoreToGrade()` in `src/lib/scoring.ts`.
 | Zone Hygiene | 0 | 0 | 0 | 0 | 0 |
 
 - **Email bonus**: only for `mail_enabled` and `enterprise_mail`
-- **Critical gap categories**: `non_mail`/`web_only` use `['ssl', 'subdomain_takeover', 'http_security']`; `minimal` uses `['ssl', 'subdomain_takeover']`
+- **Critical gap categories**: `mail_enabled`/`enterprise_mail` use `['spf', 'dmarc', 'dkim', 'ssl', 'subdomain_takeover']`; `non_mail`/`web_only` use `['ssl', 'subdomain_takeover', 'http_security']`; `minimal` uses `['ssl', 'subdomain_takeover']`
 
 ### Phase 1 (Current)
 
