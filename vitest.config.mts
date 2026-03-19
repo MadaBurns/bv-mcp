@@ -9,7 +9,7 @@ export default defineWorkersConfig({
 				wrangler: { configPath: './wrangler.jsonc' },
 			},
 		},
-		exclude: ['node_modules/**'],
+		exclude: ['node_modules/**', '.claude/**'],
 		coverage: {
 			provider: 'istanbul',
 			reporter: ['text', 'json-summary'],

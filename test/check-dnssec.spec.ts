@@ -42,7 +42,8 @@ describe('checkDnssec', () => {
 		const result = await run();
 		expect(result.category).toBe('dnssec');
 		expect(result.findings[0].severity).toBe('info');
-		expect(result.findings[0].title).toMatch(/DNSSEC enabled and validated/i);
+		// With DNSKEY records present, algorithm audit produces a modern algorithm info finding
+		expect(result.findings[0].title).toMatch(/Modern DNSSEC algorithm/i);
 	});
 
 	it('should return high finding when DNSSEC is not validated (AD=false, no keys)', async () => {
