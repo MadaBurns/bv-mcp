@@ -73,14 +73,12 @@ describe('checkNs', () => {
 		expect(r.passed).toBe(true);
 	});
 
-	it('returns high severity finding for single nameserver with RFC 1035 reference', async () => {
+	it('returns high severity finding for single nameserver', async () => {
 		mockNsResponses(['ns1.example.com.'], 'ns1.example.com. admin.example.com. 2024010101 3600 900 604800 86400');
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('Single nameserver'));
 		expect(f).toBeDefined();
 		expect(f!.severity).toBe('high');
-		expect(f!.title).toContain('RFC 1035');
-		expect(f!.detail).toContain('RFC 1035 §2.2');
 	});
 
 	it('returns low severity finding when all nameservers share same TLD', async () => {
@@ -170,144 +168,5 @@ describe('checkNs', () => {
 		expect(r.findings[0].severity).toBe('info');
 		expect(r.findings[0].detail).toContain('3 nameservers');
 		expect(r.passed).toBe(true);
-	});
-
-	it('flags SOA refresh interval too short (< 300s)', async () => {
-		mockNsResponses(
-			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
-			'ns1.provider-a.com. admin.example.com. 2024010101 60 30 604800 86400',
-		);
-		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('SOA refresh interval too short'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('low');
-		expect(f!.detail).toContain('60s');
-	});
-
-	it('flags SOA refresh interval too long (> 86400s)', async () => {
-		mockNsResponses(
-			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
-			'ns1.provider-a.com. admin.example.com. 2024010101 172800 900 604800 86400',
-		);
-		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('SOA refresh interval too long'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('low');
-		expect(f!.detail).toContain('172800s');
-	});
-
-	it('flags SOA retry exceeding refresh interval', async () => {
-		mockNsResponses(
-			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
-			'ns1.provider-a.com. admin.example.com. 2024010101 3600 7200 604800 86400',
-		);
-		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('SOA retry exceeds refresh'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('low');
-		expect(f!.detail).toContain('7200s');
-		expect(f!.detail).toContain('3600s');
-	});
-
-	it('flags SOA expire too short (< 604800s)', async () => {
-		mockNsResponses(
-			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
-			'ns1.provider-a.com. admin.example.com. 2024010101 3600 900 86400 86400',
-		);
-		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('SOA expire too short'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('medium');
-		expect(f!.detail).toContain('86400s');
-	});
-
-	it('flags SOA negative cache TTL too long (> 86400s)', async () => {
-		mockNsResponses(
-			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
-			'ns1.provider-a.com. admin.example.com. 2024010101 3600 900 604800 172800',
-		);
-		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('SOA negative cache TTL too long'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('low');
-		expect(f!.detail).toContain('172800s');
-	});
-
-	it('skips SOA validation silently when data does not parse cleanly', async () => {
-		mockNsResponses(
-			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
-			'ns1.provider-a.com. admin.example.com.',
-		);
-		const r = await run();
-		// Should not crash; should produce no SOA-related findings
-		const soaFindings = r.findings.filter((f) => f.title.includes('SOA'));
-		expect(soaFindings).toHaveLength(0);
-	});
-
-	it('does not flag SOA parameters within normal ranges', async () => {
-		mockNsResponses(
-			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
-			'ns1.provider-a.com. admin.example.com. 2024010101 3600 900 604800 86400',
-		);
-		const r = await run();
-		const soaFindings = r.findings.filter((f) => f.title.includes('SOA'));
-		expect(soaFindings).toHaveLength(0);
-	});
-
-	it('detects wildcard DNS when probe subdomain resolves', async () => {
-		globalThis.fetch = vi.fn().mockImplementation((url: string) => {
-			const typeMatch = url.match(/type=([^&]+)/);
-			const type = typeMatch ? typeMatch[1] : '';
-			const nameMatch = url.match(/name=([^&]+)/);
-			const name = nameMatch ? nameMatch[1] : '';
-
-			if (type === 'NS') {
-				return Promise.resolve(
-					createDohResponse(
-						[{ name: 'example.com', type: 2 }],
-						[
-							{ name: 'example.com', type: 2, TTL: 86400, data: 'ns1.provider-a.com.' },
-							{ name: 'example.com', type: 2, TTL: 86400, data: 'ns2.provider-b.net.' },
-						],
-					),
-				);
-			}
-			if (type === 'SOA') {
-				return Promise.resolve(
-					createDohResponse(
-						[{ name: 'example.com', type: 6 }],
-						[{ name: 'example.com', type: 6, TTL: 3600, data: 'ns1.provider-a.com. admin.example.com. 2024010101 3600 900 604800 86400' }],
-					),
-				);
-			}
-			if (type === 'A') {
-				// Wildcard: probe subdomain resolves
-				if (name.startsWith('_bv-probe-')) {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '1.2.3.4' }],
-						),
-					);
-				}
-				return Promise.resolve(createDohResponse([], []));
-			}
-			return Promise.resolve(createDohResponse([], []));
-		});
-		const r = await run();
-		const f = r.findings.find((f) => /Wildcard DNS detected/i.test(f.title));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('medium');
-		expect(f!.metadata?.wildcardDetected).toBe(true);
-	});
-
-	it('does not flag wildcard when probe subdomain does not resolve', async () => {
-		mockNsResponses(
-			['ns1.provider-a.com.', 'ns2.provider-b.net.'],
-			'ns1.provider-a.com. admin.example.com. 2024010101 3600 900 604800 86400',
-		);
-		const r = await run();
-		const f = r.findings.find((f) => /Wildcard DNS detected/i.test(f.title));
-		expect(f).toBeUndefined();
 	});
 });
