@@ -4,7 +4,7 @@ import { DNS_TIMEOUT_MS, DNS_RETRIES, DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY, DOH_E
 import { type DohResponse, type QueryDnsOptions, RecordType, type RecordTypeName } from './dns-types';
 
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
-const SECONDARY_DOH_ENDPOINT = 'https://dns.google/resolve';
+const GOOGLE_DOH_ENDPOINT = 'https://dns.google/resolve';
 
 function buildDohUrl(endpoint: string, domain: string, type: RecordTypeName, dnssecCheck: boolean): string {
 	const params = new URLSearchParams({
@@ -50,6 +50,33 @@ async function queryDnsFromEndpoint(
 	timeoutMs: number,
 ): Promise<DohResponse | null> {
 	return fetchDohResponse(buildDohUrl(endpoint, domain, type, dnssecCheck), timeoutMs);
+}
+
+/**
+ * Fetch a DoH response from an endpoint with optional auth header.
+ * Used for custom secondary resolvers (e.g., bv-dns) that may require authentication.
+ * Does NOT use Cloudflare edge cache (`cf` directive) since the target is an external origin.
+ */
+async function fetchDohWithAuth(url: string, timeoutMs: number, token?: string): Promise<DohResponse | null> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const headers: Record<string, string> = { Accept: 'application/dns-json' };
+		if (token) headers['X-BV-Token'] = token;
+		const response = await fetch(url, {
+			method: 'GET',
+			headers,
+			signal: controller.signal,
+		});
+		if (!response.ok) return null;
+		const data = await response.json();
+		if (typeof data !== 'object' || data === null || typeof (data as DohResponse).Status !== 'number' || !Number.isFinite((data as DohResponse).Status)) return null;
+		return data as DohResponse;
+	} catch {
+		return null;
+	} finally {
+		clearTimeout(timeout);
+	}
 }
 
 /** Error thrown when a DNS query fails */
@@ -146,9 +173,21 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 		const data = raw as DohResponse;
 
 		if (confirmWithSecondaryOnEmpty && !opts?.skipSecondaryConfirmation && !hasTypedAnswers(data, type)) {
-			const secondary = await queryDnsFromEndpoint(SECONDARY_DOH_ENDPOINT, domain, type, dnssecCheck, timeoutMs);
-			if (secondary && hasTypedAnswers(secondary, type)) {
-				return secondary;
+			// Try custom secondary (bv-dns) first if configured
+			if (opts?.secondaryDoh?.endpoint) {
+				const bvDns = await fetchDohWithAuth(
+					buildDohUrl(opts.secondaryDoh.endpoint, domain, type, dnssecCheck),
+					timeoutMs,
+					opts.secondaryDoh.token,
+				);
+				if (bvDns && hasTypedAnswers(bvDns, type)) {
+					return bvDns;
+				}
+			}
+			// Google DoH as final fallback
+			const google = await queryDnsFromEndpoint(GOOGLE_DOH_ENDPOINT, domain, type, dnssecCheck, timeoutMs);
+			if (google && hasTypedAnswers(google, type)) {
+				return google;
 			}
 		}
 

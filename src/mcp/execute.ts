@@ -56,6 +56,10 @@ export interface ExecuteMcpRequestOptions {
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
 	cacheTtlSeconds?: number;
+	/** Custom secondary DoH endpoint URL (bv-dns). */
+	secondaryDohEndpoint?: string;
+	/** Auth token for custom secondary DoH. */
+	secondaryDohToken?: string;
 	country?: string;
 	clientType?: string;
 	authTier?: string;
@@ -370,6 +374,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			existingSessionId: options.existingSessionId,
 			scoringConfig: options.scoringConfig,
 			cacheTtlSeconds: options.cacheTtlSeconds,
+			secondaryDohEndpoint: options.secondaryDohEndpoint,
+			secondaryDohToken: options.secondaryDohToken,
 			country: options.country,
 			clientType: options.clientType,
 			authTier: options.authTier,
@@ -431,6 +437,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			existingSessionId: options.existingSessionId,
 			scoringConfig: options.scoringConfig,
 			cacheTtlSeconds: options.cacheTtlSeconds,
+			secondaryDohEndpoint: options.secondaryDohEndpoint,
+			secondaryDohToken: options.secondaryDohToken,
 			country: options.country,
 			clientType: options.clientType,
 			authTier: options.authTier,
