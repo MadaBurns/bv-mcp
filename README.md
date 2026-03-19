@@ -9,9 +9,9 @@ Open-source DNS & email security scanner for Claude, Cursor, VS Code, and MCP cl
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
-[![Tests](https://img.shields.io/badge/Tests-1050%2B-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
-[![Coverage](https://img.shields.io/badge/Coverage-~95%25-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
-[![BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-blue.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-1090%2B-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![Coverage](https://img.shields.io/badge/Coverage-~90%25-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![BUSL-1.1 License](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
@@ -58,7 +58,7 @@ Transport support:
 
 ## What you get
 
-- **80+ checks across 20 categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, lookalike domains, HTTP security headers, DANE/TLSA, MX reputation, SRV service discovery, zone hygiene
+- **57+ checks across 20 categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, lookalike domains, HTTP security headers, DANE, shadow domains, TXT hygiene, MX reputation, SRV, zone hygiene
 - **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with next steps
 - **Trust surface analysis** — detects shared SaaS platforms (Google, M365, SendGrid) and cross-references DMARC enforcement to determine real exposure
 - **Plain-English remediation** — `explain_finding` turns findings into guidance anyone can understand
@@ -66,7 +66,7 @@ Transport support:
 - **Provider intelligence** — inbound/outbound email provider inference from MX, SPF, DKIM
 - **Passive and read-only** — all checks use public Cloudflare DNS-over-HTTPS; no authorization required from the target
 
-Full scope in the coverage table below.
+Full scope and limitations in the coverage table below.
 
 ```
   scan_domain("anthropic.com")
@@ -79,8 +79,7 @@ Full scope in the coverage table below.
   DKIM ········· 85     CAA ········· 85
   DNSSEC ······· 35     BIMI ········ 95
   SSL ········· 100     TLS-RPT ····· 95
-  MX ·········· 100     HTTP-SEC ···· 75
-  DANE ········ 100
+  MX ·········· 100
 
   2 high · 4 medium · 5 low · 5 info
 ```
@@ -104,10 +103,12 @@ Full scope in the coverage table below.
   check_dmarc          check_ns               check_tlsrpt         explain_finding
   check_dkim           check_caa              check_lookalikes     compare_baseline
   check_mta_sts        check_ssl              check_shadow_domains
-  check_mx             check_http_security    check_txt_hygiene
+  check_mx             check_http_security
   check_mx_reputation  check_dane
                        check_srv
-                       check_zone_hygiene
+  DNS Hygiene          check_zone_hygiene
+ ────────────
+  check_txt_hygiene
 
   + check_subdomain_takeover (internal — runs inside scan_domain)
 ```
@@ -169,37 +170,23 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 
 **Recommended:** Open [claude.ai](https://claude.ai) → **Settings → Connectors → Add custom connector** → paste `https://dns-mcp.blackveilsecurity.com/mcp`.
 
-This uses native Streamable HTTP with no bridge process. Prefer this over the config file approach.
-
-**Config file fallback:** Claude Desktop's `claude_desktop_config.json` only supports stdio servers. Use the `mcp-remote` bridge to proxy to the hosted endpoint.
-
-Open the config file at:
-- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
-
-Add (or merge into your existing `"mcpServers"` object):
+**Advanced fallback:** If you want first-party local stdio instead of the hosted HTTP connector, open **Settings → Developer → Edit Config** (`claude_desktop_config.json`) and add:
 
 ```json
 {
   "mcpServers": {
     "blackveil-dns": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "https://dns-mcp.blackveilsecurity.com/mcp"]
+      "type": "stdio",
+      "command": "/opt/homebrew/bin/npx",
+      "args": ["-y", "--package", "blackveil-dns", "blackveil-dns-mcp"]
     }
   }
 }
 ```
 
-> **Troubleshooting:** If Claude Desktop cannot find `npx`, replace `"npx"` with the absolute path to your `npx` binary. This is common on macOS where GUI apps don't inherit shell `PATH`.
+> Prefer the direct custom connector above when possible. The stdio route runs the server locally and depends on Node.js being available to Claude Desktop.
 >
-> | OS | How to find your path |
-> |---|---|
-> | macOS / Linux | Run `which npx` in a terminal |
-> | Windows | Run `where npx` in Command Prompt |
->
-> Example (macOS Homebrew): `"/opt/homebrew/bin/npx"`. Example (Windows): `"C:\\Program Files\\nodejs\\npx.cmd"`.
->
-> After saving, fully restart Claude Desktop (macOS: Cmd+Q; Windows: close from system tray) to pick up the new config.
+> On macOS GUI apps, `npx` may not resolve from `PATH`; if Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path. After editing the config, fully restart Claude Desktop. If you already have other servers, merge `"blackveil-dns"` into your existing `"mcpServers"` object — don't paste a second `{ }` wrapper.
 
 </details>
 
@@ -223,16 +210,6 @@ For hosted MCP setup, stdio usage, and legacy fallback endpoints, see `docs/clie
 
 ---
 
-## API keys
-
-No key required for basic use. For higher limits, get a **free Agent key** (200 scans/day):
-
-**&rarr; [Get an Agent key](https://www.blackveilsecurity.com/developers/agent-key)**
-
-Pass it as a Bearer token in your MCP client config or the `api-key` input in the GitHub Action.
-
----
-
 ## CI/CD
 
 Enforce DNS security grades in your pipeline with the [Blackveil DNS GitHub Action](https://github.com/MadaBurns/blackveil-dns-action):
@@ -243,7 +220,7 @@ Enforce DNS security grades in your pipeline with the [Blackveil DNS GitHub Acti
     domain: example.com
     minimum-grade: B
     profile: auto          # or: mail_enabled, enterprise_mail, non_mail, web_only, minimal
-    api-key: ${{ secrets.BV_API_KEY }}  # optional — free key at blackveilsecurity.com/developers/agent-key
+    api-key: ${{ secrets.BV_API_KEY }}  # optional — bypasses rate limits
 ```
 
 The action outputs `score`, `grade`, `maturity`, `scoring-profile`, and `passed` for downstream steps.
@@ -290,7 +267,7 @@ The npm package exports the reusable scanner API only. It does not start the MCP
 ---
 
 <details>
-<summary><b>Coverage — 80+ checks across 20 categories</b></summary>
+<summary><b>Coverage — 57+ checks across 20 categories</b></summary>
 
 The full [BLACKVEIL](https://blackveilsecurity.com) platform extends each with deeper analytics.
 
@@ -309,13 +286,13 @@ The full [BLACKVEIL](https://blackveilsecurity.com) platform extends each with d
 | BIMI | 1 | Record presence, logo URL, VMC | Brand indicator compliance |
 | TLS-RPT | 1 | Record presence, reporting URI | Reporting depth |
 | Lookalikes | 1 | Typosquat detection, DNS + MX probing | Expanded permutation strategies |
-| HTTP Security | 7 | CSP, XFO, XCTO, Permissions-Policy, Referrer-Policy, CORP, COOP | Deep header analysis |
-| DANE/TLSA | 5 | MX + HTTPS TLSA validation, DNSSEC cross-ref | Certificate pinning audit |
-| MX Reputation | 4 | DNSBL checks (Spamhaus, SpamCop, Barracuda), PTR/FCrDNS | Reputation monitoring |
-| SRV Discovery | 4 | Service footprint mapping, insecure protocol detection | Service inventory |
-| Zone Hygiene | 4 | SOA consistency, sensitive subdomain probing | Zone drift monitoring |
-| Shadow Domains | 2 | Alternate-TLD variant discovery, email auth risk | Brand domain monitoring |
-| TXT Hygiene | 3 | Stale verifications, platform exposure, foreign services | TXT record governance |
+| HTTP Security | 7 | CSP, X-Frame-Options, COOP, CORP, Permissions-Policy | Header depth analytics |
+| DANE | 3 | TLSA record validation for MX and HTTPS | Certificate pinning posture |
+| Shadow Domains | 1 | Alternate-TLD email spoofing risk | Extended TLD coverage |
+| TXT Hygiene | 1 | Stale verifications, SaaS exposure | Shadow IT discovery |
+| MX Reputation | 1 | DNSBL + PTR/FCrDNS validation | Deliverability analytics |
+| SRV | 1 | Service footprint discovery | Protocol exposure analytics |
+| Zone Hygiene | 1 | SOA consistency, sensitive subdomains | Infrastructure exposure |
 
 </details>
 
@@ -423,7 +400,7 @@ Prompt methods (`prompts/list`, `prompts/get`) return `-32601 Method not found`.
 - Input sanitation and domain validation
 - Optional bearer-token authentication
 - Per-IP rate limiting (KV + in-memory fallback)
-- `check_lookalikes`, `check_shadow_domains`, and `check_mx_reputation` capped at 20/day per IP with 60-min caching
+- `check_lookalikes` capped at 20/day per IP with 60-min caching
 - `scan_domain` capped at 75/day per IP (results cached 5 min)
 - Scan result caching (KV + in-memory fallback)
 - Adaptive scoring via Durable Object telemetry (graceful fallback to static weights)
@@ -436,7 +413,7 @@ Implementation details in `CLAUDE.md`.
 <details>
 <summary><b>Security</b></summary>
 
-Full details in `CLAUDE.md` (Security section).
+Full details in `CLAUDE.md` (security and observability sections).
 
 - Domain inputs validated and sanitized before execution
 - IP literals rejected (standard and alternate numeric forms)
@@ -481,12 +458,11 @@ Optional configuration:
 git clone https://github.com/MadaBurns/bv-mcp.git
 cd bv-mcp
 npm install
-git config core.hooksPath .githooks   # enable pre-commit safety hooks
 npm run dev       # localhost:8787/mcp
 ```
 
 ```bash
-npm test          # 1050+ tests, ~95% coverage
+npm test          # 1090+ tests, ~90% coverage
 npm run typecheck
 ```
 
@@ -534,6 +510,6 @@ Featured in [SecurityBrief](https://securitybrief.co.nz/story/exclusive-how-cybe
 
 Want continuous monitoring? [BLACKVEIL](https://blackveilsecurity.com) provides real-time alerting and Buck AI to help you fix what this scanner finds.
 
-Business Source License 1.1 — see [LICENSE](LICENSE) for details
+MIT License
 
 </div>

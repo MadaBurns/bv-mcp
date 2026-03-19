@@ -4,7 +4,7 @@
 
 - **Troubleshooting**: See [docs/troubleshooting.md](docs/troubleshooting.md) for common issues, error codes, and manual request examples.
 - **Client setup**: See [docs/client-setup.md](docs/client-setup.md) for VS Code, Claude Desktop, Claude Code, and Cursor configuration.
-- **Scoring and coverage**: See [docs/scoring.md](docs/scoring.md) and [docs/coverage.md](docs/coverage.md) for how checks are scored and what they cover.
+- **Scoring and coverage**: See [docs/scoring.md](docs/scoring.md) for how checks are scored and what they cover.
 
 ## Reporting Issues
 

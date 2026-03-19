@@ -6,6 +6,78 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- README license badge updated from MIT to BUSL-1.1 to match actual license.
+- README test count updated from 800+ to 1090+, coverage from ~95% to ~90%.
+- README tools table updated from 15 to 22 tools, coverage table from 13 to 20 categories.
+- Broken documentation links removed (`docs/coverage.md`, `docs/security-and-observability.md`).
+- MCP resource content (`resources.ts`) updated from 50 checks / 10 categories to 57+ checks / 20 categories.
+- CONTRIBUTING.md test count updated.
+- SUPPORT.md broken link to non-existent `docs/coverage.md` removed.
+
+## [1.5.0] - 2026-03-18
+
+### Added
+
+- **MCP prompts support**: agent-led growth optimizations for MCP discoverability.
+- **Tier-based rate limiting**: API key authentication resolves to tiers (free, agent, developer, enterprise) with per-tier daily quotas via Durable Objects.
+- **Analytics observability**: MCP client detection from user-agent, country/client/tier context threading, session lifecycle events, SQL query builders for Analytics Engine, webhook alerting for Slack/Discord, cron-based alerting.
+- **Performance**: scan-scoped DNS query cache to deduplicate redundant queries, batched sensitive subdomain probes (max concurrency 5), increased adaptive weight fetch timeout (50ms → 200ms).
+
+### Fixed
+
+- Service binding URL path corrected from `/internal/validate-key` to `/internal/validate-key`.
+- Tier-auth debug logging removed; `Headers.entries()` TypeScript error fixed.
+- Rate-limit test updated to expect tier-based quota headers for authenticated requests.
+
+## [1.4.0] - 2026-03-17
+
+### Added
+
+- **5 new MCP tools** (17 → 22 total):
+  - `check_http_security`: HTTP security header audit (CSP, X-Frame-Options, COOP, CORP, Permissions-Policy, Referrer-Policy, X-Content-Type-Options).
+  - `check_dane`: DANE/TLSA record validation for MX and HTTPS certificate pinning.
+  - `check_mx_reputation`: Mail server DNSBL lookup and PTR/FCrDNS validation.
+  - `check_srv`: SRV record discovery for email, calendar, messaging, and other services.
+  - `check_zone_hygiene`: SOA serial consistency and sensitive subdomain exposure detection.
+- `scan_domain` now runs **14 checks** in parallel (was 12), adding HTTP Security and DANE.
+- DNS library additions: PTR and SRV query helpers, TLSA record parser.
+
+### Changed
+
+- License changed from MIT to Business Source License 1.1 (BUSL-1.1).
+- Test SPDX headers updated to BUSL-1.1.
+
+### Security
+
+- Error output sanitized and IPv4 validation added for new tools.
+- Undici CVEs patched via npm override (7.18.2 → 7.24.4).
+
+## [1.3.0] - 2026-03-15
+
+### Added
+
+- **2 new MCP tools** (15 → 17 total):
+  - `check_shadow_domains`: Alternate-TLD variant discovery with email spoofing risk assessment.
+  - `check_txt_hygiene`: TXT record audit for stale verifications, SaaS exposure, and cross-domain trust.
+- Public-suffix library for brand name extraction.
+- Shadow domains and TXT hygiene added to `CheckCategory` scoring system.
+- Pre-commit hook to block committing sensitive directory paths.
+
+### Changed
+
+- Two-phase DNS probing for `check_lookalikes` and `check_shadow_domains`: Phase 1 NS existence filter reduces unnecessary queries.
+
+### Fixed
+
+- MCP session recovery after expiry for Claude Desktop.
+- Lookalike variant generation dot mismatch and TXT hygiene DNS failure handling.
+
+### Security
+
+- Defense-in-depth hardening from DevSecOps review.
+
 ## [1.2.0] - 2026-03-13
 
 ### Added
