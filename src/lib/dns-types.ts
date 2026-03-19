@@ -49,6 +49,14 @@ export interface DohResponse {
 	Authority?: DnsAuthority[];
 }
 
+/** Configuration for a custom secondary DoH resolver (e.g., bv-dns on Oracle Cloud). */
+export interface SecondaryDohConfig {
+	/** DoH endpoint URL (e.g. https://harlan.blackveilsecurity.com/dns-query) */
+	endpoint: string;
+	/** Optional auth token sent as X-BV-Token header */
+	token?: string;
+}
+
 export interface QueryDnsOptions {
 	timeoutMs?: number;
 	retries?: number;
@@ -57,4 +65,6 @@ export interface QueryDnsOptions {
 	skipSecondaryConfirmation?: boolean;
 	/** Scan-scoped DNS query cache. Stores Promises keyed by `domain:type:dnssecCheck` to deduplicate concurrent and sequential identical queries within a single scan. */
 	queryCache?: Map<string, Promise<DohResponse>>;
+	/** Custom secondary DoH resolver. When set, used instead of Google DoH for empty-result confirmation. Falls back to Google if this resolver fails. */
+	secondaryDoh?: SecondaryDohConfig;
 }
