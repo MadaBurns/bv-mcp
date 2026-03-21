@@ -162,4 +162,5 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	get_benchmark: 100,
 	get_provider_insights: 50,
 	assess_spoofability: 150,
+	check_resolver_consistency: 50,
 };
