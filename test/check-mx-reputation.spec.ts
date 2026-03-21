@@ -251,6 +251,126 @@ describe('checkMxReputation', () => {
 		expect(queriedHosts.size).toBeLessThanOrEqual(3);
 	});
 
+	it('should downgrade DNSBL finding to info for shared Google Workspace MX host', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				return Promise.resolve(
+					mxResponse('anthropic.com', [{ priority: 10, exchange: 'smtp-in.l.google.com' }]),
+				);
+			}
+			if (url.includes('name=smtp-in.l.google.com') && (url.includes('type=A') || url.includes('type=1'))) {
+				return Promise.resolve(aResponse('smtp-in.l.google.com', ['74.125.24.26']));
+			}
+			if (url.includes('in-addr.arpa') && (url.includes('type=PTR') || url.includes('type=12'))) {
+				return Promise.resolve(ptrResponse('74.125.24.26', ['smtp-in.l.google.com']));
+			}
+			if (url.includes('name=smtp-in.l.google.com') && (url.includes('type=A') || url.includes('type=1'))) {
+				return Promise.resolve(aResponse('smtp-in.l.google.com', ['74.125.24.26']));
+			}
+			// DNSBL: listed on Spamhaus
+			if (url.includes('spamhaus')) {
+				return Promise.resolve(aResponse('26.24.125.74.zen.spamhaus.org', ['127.0.0.2']));
+			}
+			if (url.includes('spamcop') || url.includes('barracuda')) {
+				return Promise.resolve(emptyResponse('lookup', 1));
+			}
+			return Promise.resolve(emptyResponse('anthropic.com', 1));
+		});
+
+		const result = await run('anthropic.com');
+		expect(result.category).toBe('mx_reputation');
+		// Should NOT have any high-severity findings — shared provider downgrades to info
+		const highFindings = result.findings.filter((f) => f.severity === 'high');
+		expect(highFindings.length).toBe(0);
+		// Should have an info finding mentioning Google Workspace and shared IP
+		const sharedFinding = result.findings.find(
+			(f) => f.severity === 'info' && f.title.includes('Google Workspace') && f.title.includes('spamhaus'),
+		);
+		expect(sharedFinding).toBeDefined();
+		expect(sharedFinding!.detail).toContain('shared');
+		expect(sharedFinding!.detail).toContain('Google Workspace');
+		// Score should be passing since all findings are info-level
+		expect(result.passed).toBe(true);
+	});
+
+	it('should downgrade DNSBL finding to info for shared Microsoft 365 MX host', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				return Promise.resolve(
+					mxResponse('contoso.com', [{ priority: 10, exchange: 'contoso-com.mail.protection.outlook.com' }]),
+				);
+			}
+			if (
+				url.includes('name=contoso-com.mail.protection.outlook.com') &&
+				(url.includes('type=A') || url.includes('type=1'))
+			) {
+				return Promise.resolve(aResponse('contoso-com.mail.protection.outlook.com', ['52.101.73.22']));
+			}
+			if (url.includes('in-addr.arpa') && (url.includes('type=PTR') || url.includes('type=12'))) {
+				return Promise.resolve(ptrResponse('52.101.73.22', ['mail-dm6nam10on2052.outbound.protection.outlook.com']));
+			}
+			if (url.includes('outbound.protection.outlook.com') && (url.includes('type=A') || url.includes('type=1'))) {
+				return Promise.resolve(aResponse('mail-dm6nam10on2052.outbound.protection.outlook.com', ['52.101.73.22']));
+			}
+			// DNSBL: listed on Spamhaus and SpamCop
+			if (url.includes('spamhaus')) {
+				return Promise.resolve(aResponse('lookup', ['127.0.0.2']));
+			}
+			if (url.includes('spamcop')) {
+				return Promise.resolve(aResponse('lookup', ['127.0.0.2']));
+			}
+			if (url.includes('barracuda')) {
+				return Promise.resolve(emptyResponse('lookup', 1));
+			}
+			return Promise.resolve(emptyResponse('contoso.com', 1));
+		});
+
+		const result = await run('contoso.com');
+		expect(result.category).toBe('mx_reputation');
+		// All DNSBL findings should be info, not high
+		const highFindings = result.findings.filter((f) => f.severity === 'high');
+		expect(highFindings.length).toBe(0);
+		const sharedFindings = result.findings.filter(
+			(f) => f.severity === 'info' && f.title.includes('Microsoft 365'),
+		);
+		expect(sharedFindings.length).toBe(2); // Two DNSBLs listed
+		expect(result.passed).toBe(true);
+	});
+
+	it('should keep high severity for dedicated MX host DNSBL listing', async () => {
+		// Dedicated MX host (not a shared provider) should still get high severity
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				return Promise.resolve(mxResponse('example.com', [{ priority: 10, exchange: 'mail.example.com' }]));
+			}
+			if (url.includes('name=mail.example.com') && (url.includes('type=A') || url.includes('type=1'))) {
+				return Promise.resolve(aResponse('mail.example.com', ['198.51.100.1']));
+			}
+			if (url.includes('in-addr.arpa') && (url.includes('type=PTR') || url.includes('type=12'))) {
+				return Promise.resolve(ptrResponse('198.51.100.1', ['mail.example.com']));
+			}
+			if (url.includes('spamhaus')) {
+				return Promise.resolve(aResponse('1.100.51.198.zen.spamhaus.org', ['127.0.0.2']));
+			}
+			if (url.includes('spamcop') || url.includes('barracuda')) {
+				return Promise.resolve(emptyResponse('lookup', 1));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run();
+		const highFinding = result.findings.find((f) => f.severity === 'high');
+		expect(highFinding).toBeDefined();
+		expect(highFinding!.title).toContain('listed on');
+		expect(highFinding!.title).not.toContain('informational');
+	});
+
 	it('should skip null MX exchanges', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
