@@ -27,6 +27,8 @@ import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
 import { generateFixPlan, formatFixPlan } from '../tools/generate-fix-plan';
 import { generateSpfRecord, generateDmarcRecord, generateDkimConfig, generateMtaStsPolicy, formatGeneratedRecord } from '../tools/generate-records';
+import { getBenchmark, getProviderInsights, formatBenchmark, formatProviderInsights } from '../tools/intelligence';
+import { assessSpoofability, formatSpoofability } from '../tools/assess-spoofability';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractFormat, extractScanProfile, normalizeToolName } from './tool-args';
@@ -189,8 +191,10 @@ export async function handleToolsCall(
 	let logResult: string | undefined;
 	let logDetails: unknown;
 	try {
-		// Extract and validate domain for tools that need it (all except explain_finding)
-		if (name !== 'explain_finding') {
+		// Extract and validate domain for tools that need it
+		// (skip for explain_finding, get_benchmark, get_provider_insights which don't require a domain)
+		const DOMAIN_OPTIONAL_TOOLS = new Set(['explain_finding', 'get_benchmark', 'get_provider_insights']);
+		if (!DOMAIN_OPTIONAL_TOOLS.has(name)) {
 			domain = extractAndValidateDomain(args);
 		}
 		// `validDomain` is guaranteed to be a string for all branches that use it
@@ -364,6 +368,63 @@ export async function handleToolsCall(
 						authTier: runtimeOptions?.authTier,
 					});
 					return { content: [mcpText(formatGeneratedRecord(record))] };
+				}
+				case 'get_benchmark': {
+					const profile = typeof args.profile === 'string' ? args.profile : 'mail_enabled';
+					const result = await getBenchmark(runtimeOptions?.profileAccumulator, profile);
+					logToolSuccess({
+						toolName: name,
+						durationMs: Date.now() - startTime,
+						analytics: runtimeOptions?.analytics,
+						status: 'pass',
+						logResult: result.status,
+						logDetails: result,
+						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
+					});
+					return { content: [mcpText(formatBenchmark(result))] };
+				}
+				case 'get_provider_insights': {
+					const provider = typeof args.provider === 'string' ? args.provider : '';
+					if (!provider) {
+						return buildToolErrorResult('Missing required parameter: provider');
+					}
+					const profile = typeof args.profile === 'string' ? args.profile : 'mail_enabled';
+					const result = await getProviderInsights(runtimeOptions?.profileAccumulator, provider, profile);
+					logToolSuccess({
+						toolName: name,
+						durationMs: Date.now() - startTime,
+						analytics: runtimeOptions?.analytics,
+						status: 'pass',
+						logResult: result.status,
+						logDetails: result,
+						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
+					});
+					return { content: [mcpText(formatProviderInsights(result))] };
+				}
+				case 'assess_spoofability': {
+					const result = await assessSpoofability(validDomain, buildDnsOptions(runtimeOptions));
+					logResult = result.riskLevel;
+					logDetails = result;
+					logToolSuccess({
+						toolName: name,
+						durationMs: Date.now() - startTime,
+						domain,
+						analytics: runtimeOptions?.analytics,
+						status: result.spoofabilityScore <= 30 ? 'pass' : 'fail',
+						logResult,
+						logDetails,
+						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
+					});
+					return { content: [mcpText(formatSpoofability(result))] };
 				}
 				case 'explain_finding': {
 					let explainArgs: ReturnType<typeof extractExplainFindingArgs>;
