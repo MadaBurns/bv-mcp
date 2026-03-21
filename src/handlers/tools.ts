@@ -29,6 +29,7 @@ import { generateFixPlan, formatFixPlan } from '../tools/generate-fix-plan';
 import { generateSpfRecord, generateDmarcRecord, generateDkimConfig, generateMtaStsPolicy, formatGeneratedRecord } from '../tools/generate-records';
 import { getBenchmark, getProviderInsights, formatBenchmark, formatProviderInsights } from '../tools/intelligence';
 import { assessSpoofability, formatSpoofability } from '../tools/assess-spoofability';
+import { checkResolverConsistency, formatResolverConsistency } from '../tools/check-resolver-consistency';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractFormat, extractScanProfile, normalizeToolName } from './tool-args';
@@ -425,6 +426,27 @@ export async function handleToolsCall(
 						authTier: runtimeOptions?.authTier,
 					});
 					return { content: [mcpText(formatSpoofability(result))] };
+				}
+				case 'check_resolver_consistency': {
+					const recordType = typeof args.record_type === 'string' ? args.record_type : undefined;
+					const result = await checkResolverConsistency(validDomain, recordType);
+					runtimeOptions?.resultCapture?.(result);
+					logResult = result.passed ? 'pass' : 'fail';
+					logDetails = result;
+					logToolSuccess({
+						toolName: name,
+						durationMs: Date.now() - startTime,
+						domain,
+						analytics: runtimeOptions?.analytics,
+						status: result.passed ? 'pass' : 'fail',
+						logResult,
+						logDetails,
+						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
+					});
+					return { content: [mcpText(formatResolverConsistency(result))] };
 				}
 				case 'explain_finding': {
 					let explainArgs: ReturnType<typeof extractExplainFindingArgs>;
