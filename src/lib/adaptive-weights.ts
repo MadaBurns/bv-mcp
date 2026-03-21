@@ -21,6 +21,8 @@ export interface ScanTelemetry {
 	provider: string | null;
 	categoryFindings: Array<{ category: string; score: number; passed: boolean }>;
 	timestamp: number;
+	/** Overall scan score (0–100). Used for intelligence layer aggregation (histogram, cohort, trends). */
+	overallScore?: number;
 }
 
 /** Response from the adaptive weights endpoint. */
