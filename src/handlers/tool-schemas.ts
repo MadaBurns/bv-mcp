@@ -24,7 +24,7 @@ const FORMAT_PROPERTY = {
 	format: {
 		type: 'string',
 		enum: ['full', 'compact'],
-		description: 'Output detail level. Auto-detected from client type when omitted.',
+		description: 'Output verbosity. Auto-detected if omitted.',
 	},
 } as const;
 
@@ -34,7 +34,7 @@ export const DOMAIN_INPUT_SCHEMA = {
 	properties: {
 		domain: {
 			type: 'string',
-			description: 'The domain name to check (e.g., example.com)',
+			description: 'Domain to check (e.g., example.com)',
 		},
 		...FORMAT_PROPERTY,
 	},
@@ -45,32 +45,32 @@ export const DOMAIN_INPUT_SCHEMA = {
 export const TOOLS: McpTool[] = [
 	{
 		name: 'check_mx',
-		description: 'Validate MX records, priority ordering, and email provider detection.',
+		description: 'Validate MX records and email provider detection.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_spf',
-		description: 'Validate SPF records for syntax, policy strictness, lookup limits, and trust surface exposure.',
+		description: 'Validate SPF syntax, policy, and trust surface.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_dmarc',
-		description: 'Validate DMARC policy enforcement, reporting configuration, alignment, and subdomain policy.',
+		description: 'Validate DMARC policy, alignment, and reporting.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_dkim',
-		description: 'Probe DKIM selectors across major providers, validate key strength and tag configuration.',
+		description: 'Probe DKIM selectors and validate key strength.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
 				domain: {
 					type: 'string',
-					description: 'The domain name to check (e.g., example.com)',
+					description: 'Domain to check (e.g., example.com)',
 				},
 				selector: {
 					type: 'string',
-					description: 'Specific DKIM selector to check. If omitted, common selectors are probed.',
+					description: 'DKIM selector. Omit to probe common ones.',
 				},
 				...FORMAT_PROPERTY,
 			},
@@ -79,69 +79,68 @@ export const TOOLS: McpTool[] = [
 	},
 	{
 		name: 'check_dnssec',
-		description: 'Verify DNSSEC validation and DNSKEY/DS record presence for DNS tamper protection.',
+		description: 'Verify DNSSEC validation and DNSKEY/DS records.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_ssl',
-		description: 'Verify SSL/TLS certificate availability, expiry, and HTTPS configuration.',
+		description: 'Verify SSL/TLS certificate and HTTPS config.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_mta_sts',
-		description: 'Validate MTA-STS policy for SMTP transport encryption enforcement.',
+		description: 'Validate MTA-STS SMTP encryption policy.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_ns',
-		description: 'Analyze nameserver delegation, provider diversity, and infrastructure resilience.',
+		description: 'Analyze NS delegation and provider diversity.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_caa',
-		description: 'Check which Certificate Authorities are authorized to issue certificates for a domain.',
+		description: 'Check authorized Certificate Authorities via CAA.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_bimi',
-		description: 'Validate BIMI record, logo URL format, and VMC authority evidence.',
+		description: 'Validate BIMI record and VMC evidence.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_tlsrpt',
-		description: 'Validate TLS-RPT records for SMTP TLS failure reporting.',
+		description: 'Validate TLS-RPT SMTP failure reporting.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_http_security',
-		description: 'Audit HTTP security headers (CSP, X-Frame-Options, COOP, CORP, Permissions-Policy, Referrer-Policy).',
+		description: 'Audit HTTP security headers (CSP, COOP, etc.).',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_dane',
-		description: 'Verify DANE/TLSA certificate pinning for mail servers and HTTPS endpoints.',
+		description: 'Verify DANE/TLSA certificate pinning.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_lookalikes',
-		description: 'Detect registered lookalike/typosquat domains with active infrastructure. Standalone, not in scan_domain.',
+		description: 'Detect active typosquat/lookalike domains. Standalone.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'scan_domain',
-		description:
-			'Comprehensive DNS and email security audit. Returns score (0-100), grade, maturity stage, and prioritized findings. Start here.',
+		description: 'Full DNS and email security audit. Score, grade, maturity, findings. Start here.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
 				domain: {
 					type: 'string',
-					description: 'The domain name to check (e.g., example.com)',
+					description: 'Domain to check (e.g., example.com)',
 				},
 				profile: {
 					type: 'string',
 					enum: ['auto', 'mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal'],
-					description: 'Scoring profile. "auto" (default) detects from results. Explicit values override detection.',
+					description: 'Scoring profile. Default "auto" detects.',
 				},
 				...FORMAT_PROPERTY,
 			},
@@ -150,58 +149,58 @@ export const TOOLS: McpTool[] = [
 	},
 	{
 		name: 'compare_baseline',
-		description: 'Compare domain security against a policy baseline. Returns pass/fail with specific violations.',
+		description: 'Compare domain security against a policy baseline.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
 				domain: {
 					type: 'string',
-					description: 'The domain to scan and compare.',
+					description: 'Domain to scan and compare.',
 				},
 				...FORMAT_PROPERTY,
 				baseline: {
 					type: 'object',
-					description: 'Policy baseline with minimum requirements.',
+					description: 'Policy baseline requirements.',
 					properties: {
 						grade: {
 							type: 'string',
-							description: 'Minimum grade (e.g., "B+").',
+							description: 'Min grade (e.g., "B+").',
 						},
 						score: {
 							type: 'number',
-							description: 'Minimum overall score (0-100).',
+							description: 'Min score (0-100).',
 						},
 						require_dmarc_enforce: {
 							type: 'boolean',
-							description: 'Require DMARC enforcement.',
+							description: 'Require DMARC enforce.',
 						},
 						require_spf: {
 							type: 'boolean',
-							description: 'Require valid SPF record.',
+							description: 'Require SPF.',
 						},
 						require_dkim: {
 							type: 'boolean',
-							description: 'Require DKIM key.',
+							description: 'Require DKIM.',
 						},
 						require_dnssec: {
 							type: 'boolean',
-							description: 'Require DNSSEC validation.',
+							description: 'Require DNSSEC.',
 						},
 						require_mta_sts: {
 							type: 'boolean',
-							description: 'Require MTA-STS policy.',
+							description: 'Require MTA-STS.',
 						},
 						require_caa: {
 							type: 'boolean',
-							description: 'Require CAA records.',
+							description: 'Require CAA.',
 						},
 						max_critical_findings: {
 							type: 'number',
-							description: 'Max critical findings (default: 0).',
+							description: 'Max critical findings (default 0).',
 						},
 						max_high_findings: {
 							type: 'number',
-							description: 'Max high findings.',
+							description: 'Max high findings allowed.',
 						},
 					},
 				},
@@ -211,48 +210,48 @@ export const TOOLS: McpTool[] = [
 	},
 	{
 		name: 'check_shadow_domains',
-		description: 'Discover alternate-TLD variants with spoofable email auth gaps. Standalone, not in scan_domain.',
+		description: 'Find TLD variants with email auth gaps. Standalone.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_txt_hygiene',
-		description: 'Audit TXT records for stale verifications, SaaS exposure, and cross-domain trust delegations.',
+		description: 'Audit TXT records for stale entries and SaaS exposure.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_mx_reputation',
-		description: 'Check mail server blocklist status (Spamhaus, SpamCop, Barracuda) and reverse DNS consistency.',
+		description: 'Check MX blocklist status and reverse DNS.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_srv',
-		description: 'Probe SRV records to map DNS-visible service footprint and flag insecure protocols.',
+		description: 'Probe SRV records for service footprint.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_zone_hygiene',
-		description: 'Audit SOA serial propagation and detect sensitive subdomains exposed in public DNS.',
+		description: 'Audit SOA propagation and sensitive subdomains.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'generate_fix_plan',
-		description: 'Generate a prioritized remediation plan with ordered action items, effort estimates, and dependencies.',
+		description: 'Generate prioritized remediation plan with effort estimates.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'generate_spf_record',
-		description: 'Generate a corrected SPF TXT record based on detected providers and current issues.',
+		description: 'Generate corrected SPF record from detected providers.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
 				domain: {
 					type: 'string',
-					description: 'The domain name (e.g., example.com)',
+					description: 'Domain (e.g., example.com)',
 				},
 				include_providers: {
 					type: 'array',
 					items: { type: 'string' },
-					description: 'Email providers to include (e.g., ["google", "sendgrid"]). Known names are auto-mapped to include domains.',
+					description: 'Providers to include (e.g., ["google"]).',
 				},
 				...FORMAT_PROPERTY,
 			},
@@ -261,22 +260,22 @@ export const TOOLS: McpTool[] = [
 	},
 	{
 		name: 'generate_dmarc_record',
-		description: 'Generate a DMARC record fixing detected issues. Provider-aware with configurable policy and reporting.',
+		description: 'Generate DMARC record with configurable policy.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
 				domain: {
 					type: 'string',
-					description: 'The domain name (e.g., example.com)',
+					description: 'Domain (e.g., example.com)',
 				},
 				policy: {
 					type: 'string',
 					enum: ['none', 'quarantine', 'reject'],
-					description: 'DMARC policy (default: "reject").',
+					description: 'Policy (default "reject").',
 				},
 				rua_email: {
 					type: 'string',
-					description: 'Aggregate report email address. Defaults to dmarc-reports@{domain}.',
+					description: 'Report email. Default: dmarc-reports@{domain}.',
 				},
 				...FORMAT_PROPERTY,
 			},
@@ -285,17 +284,17 @@ export const TOOLS: McpTool[] = [
 	},
 	{
 		name: 'generate_dkim_config',
-		description: 'Generate provider-specific DKIM setup instructions and DNS record template.',
+		description: 'Generate DKIM setup instructions and DNS record.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
 				domain: {
 					type: 'string',
-					description: 'The domain name (e.g., example.com)',
+					description: 'Domain (e.g., example.com)',
 				},
 				provider: {
 					type: 'string',
-					description: 'Email provider (e.g., "google", "microsoft"). Omit for generic instructions.',
+					description: 'Provider (e.g., "google"). Omit for generic.',
 				},
 				...FORMAT_PROPERTY,
 			},
@@ -304,18 +303,18 @@ export const TOOLS: McpTool[] = [
 	},
 	{
 		name: 'generate_mta_sts_policy',
-		description: 'Generate MTA-STS TXT record and policy file content for SMTP transport encryption.',
+		description: 'Generate MTA-STS record and policy file.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
 				domain: {
 					type: 'string',
-					description: 'The domain name (e.g., example.com)',
+					description: 'Domain (e.g., example.com)',
 				},
 				mx_hosts: {
 					type: 'array',
 					items: { type: 'string' },
-					description: 'MX hostnames for the policy. If omitted, detected from DNS.',
+					description: 'MX hosts. Omit to detect from DNS.',
 				},
 				...FORMAT_PROPERTY,
 			},
@@ -324,14 +323,14 @@ export const TOOLS: McpTool[] = [
 	},
 	{
 		name: 'get_benchmark',
-		description: 'Get anonymized score benchmarks — percentile distribution, mean/median scores, and top failing categories across scanned domains.',
+		description: 'Get score benchmarks: percentiles, mean, top failures.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
 				profile: {
 					type: 'string',
 					enum: ['mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal'],
-					description: 'Scoring profile to benchmark against (default: "mail_enabled").',
+					description: 'Profile to benchmark (default "mail_enabled").',
 				},
 				...FORMAT_PROPERTY,
 			},
@@ -340,18 +339,18 @@ export const TOOLS: McpTool[] = [
 	},
 	{
 		name: 'get_provider_insights',
-		description: 'Get email provider cohort benchmarks — average score, percentile rank, and common issues for domains using a specific provider.',
+		description: 'Get provider cohort benchmarks and common issues.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
 				provider: {
 					type: 'string',
-					description: 'Email provider name (e.g., "google workspace", "microsoft 365").',
+					description: 'Provider (e.g., "google workspace").',
 				},
 				profile: {
 					type: 'string',
 					enum: ['mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal'],
-					description: 'Scoring profile (default: "mail_enabled").',
+					description: 'Profile (default "mail_enabled").',
 				},
 				...FORMAT_PROPERTY,
 			},
@@ -360,23 +359,23 @@ export const TOOLS: McpTool[] = [
 	},
 	{
 		name: 'assess_spoofability',
-		description: 'Composite email spoofability score (0-100) combining SPF trust surface, DMARC enforcement, and DKIM coverage with interaction multipliers.',
+		description: 'Composite email spoofability score (0-100).',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_resolver_consistency',
-		description: 'Check DNS resolution consistency across 4 public resolvers (Cloudflare, Google, Quad9, OpenDNS) to detect GeoDNS, split-horizon, or poisoning.',
+		description: 'Check DNS consistency across 4 public resolvers.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
 				domain: {
 					type: 'string',
-					description: 'The domain name to check (e.g., example.com)',
+					description: 'Domain to check (e.g., example.com)',
 				},
 				record_type: {
 					type: 'string',
 					enum: ['A', 'AAAA', 'MX', 'TXT', 'NS', 'CNAME', 'SOA', 'CAA'],
-					description: 'Specific record type to check. If omitted, checks A, AAAA, MX, TXT, NS.',
+					description: 'Record type. Omit for A/AAAA/MX/TXT/NS.',
 				},
 				...FORMAT_PROPERTY,
 			},
@@ -385,22 +384,22 @@ export const TOOLS: McpTool[] = [
 	},
 	{
 		name: 'explain_finding',
-		description: 'Plain-language explanation of a finding with impact, consequences, and remediation steps.',
+		description: 'Explain a finding with impact and remediation.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
 				checkType: {
 					type: 'string',
-					description: "Check type (e.g., 'SPF', 'DMARC', 'DKIM', 'SSL')",
+					description: "Check type (e.g., 'SPF', 'DMARC').",
 				},
 				status: {
 					type: 'string',
 					enum: ['pass', 'fail', 'warning', 'critical', 'high', 'medium', 'low', 'info'],
-					description: 'Finding severity or check status.',
+					description: 'Finding severity or status.',
 				},
 				details: {
 					type: 'string',
-					description: 'Optional details from the check result.',
+					description: 'Additional detail from check result.',
 				},
 				...FORMAT_PROPERTY,
 			},
