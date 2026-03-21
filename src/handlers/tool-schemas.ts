@@ -235,6 +235,94 @@ export const TOOLS: McpTool[] = [
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
+		name: 'generate_fix_plan',
+		description: 'Generate a prioritized remediation plan with ordered action items, effort estimates, and dependencies.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
+		name: 'generate_spf_record',
+		description: 'Generate a corrected SPF TXT record based on detected providers and current issues.',
+		inputSchema: {
+			type: 'object' as const,
+			properties: {
+				domain: {
+					type: 'string',
+					description: 'The domain name (e.g., example.com)',
+				},
+				include_providers: {
+					type: 'array',
+					items: { type: 'string' },
+					description: 'Email providers to include (e.g., ["google", "sendgrid"]). Known names are auto-mapped to include domains.',
+				},
+				...FORMAT_PROPERTY,
+			},
+			required: ['domain'],
+		},
+	},
+	{
+		name: 'generate_dmarc_record',
+		description: 'Generate a DMARC record fixing detected issues. Provider-aware with configurable policy and reporting.',
+		inputSchema: {
+			type: 'object' as const,
+			properties: {
+				domain: {
+					type: 'string',
+					description: 'The domain name (e.g., example.com)',
+				},
+				policy: {
+					type: 'string',
+					enum: ['none', 'quarantine', 'reject'],
+					description: 'DMARC policy (default: "reject").',
+				},
+				rua_email: {
+					type: 'string',
+					description: 'Aggregate report email address. Defaults to dmarc-reports@{domain}.',
+				},
+				...FORMAT_PROPERTY,
+			},
+			required: ['domain'],
+		},
+	},
+	{
+		name: 'generate_dkim_config',
+		description: 'Generate provider-specific DKIM setup instructions and DNS record template.',
+		inputSchema: {
+			type: 'object' as const,
+			properties: {
+				domain: {
+					type: 'string',
+					description: 'The domain name (e.g., example.com)',
+				},
+				provider: {
+					type: 'string',
+					description: 'Email provider (e.g., "google", "microsoft"). Omit for generic instructions.',
+				},
+				...FORMAT_PROPERTY,
+			},
+			required: ['domain'],
+		},
+	},
+	{
+		name: 'generate_mta_sts_policy',
+		description: 'Generate MTA-STS TXT record and policy file content for SMTP transport encryption.',
+		inputSchema: {
+			type: 'object' as const,
+			properties: {
+				domain: {
+					type: 'string',
+					description: 'The domain name (e.g., example.com)',
+				},
+				mx_hosts: {
+					type: 'array',
+					items: { type: 'string' },
+					description: 'MX hostnames for the policy. If omitted, detected from DNS.',
+				},
+				...FORMAT_PROPERTY,
+			},
+			required: ['domain'],
+		},
+	},
+	{
 		name: 'explain_finding',
 		description: 'Plain-language explanation of a finding with impact, consequences, and remediation steps.',
 		inputSchema: {
