@@ -364,6 +364,26 @@ export const TOOLS: McpTool[] = [
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
+		name: 'check_resolver_consistency',
+		description: 'Check DNS resolution consistency across 4 public resolvers (Cloudflare, Google, Quad9, OpenDNS) to detect GeoDNS, split-horizon, or poisoning.',
+		inputSchema: {
+			type: 'object' as const,
+			properties: {
+				domain: {
+					type: 'string',
+					description: 'The domain name to check (e.g., example.com)',
+				},
+				record_type: {
+					type: 'string',
+					enum: ['A', 'AAAA', 'MX', 'TXT', 'NS', 'CNAME', 'SOA', 'CAA'],
+					description: 'Specific record type to check. If omitted, checks A, AAAA, MX, TXT, NS.',
+				},
+				...FORMAT_PROPERTY,
+			},
+			required: ['domain'],
+		},
+	},
+	{
 		name: 'explain_finding',
 		description: 'Plain-language explanation of a finding with impact, consequences, and remediation steps.',
 		inputSchema: {
