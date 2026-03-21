@@ -28,6 +28,7 @@ import {
 	type AdaptiveWeightsResponse,
 	type ScanTelemetry,
 } from '../lib/adaptive-weights';
+import { applyInteractionPenalties, type InteractionEffect } from '../lib/category-interactions';
 import { cacheGet, cacheSet, runWithCache } from '../lib/cache';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { checkSpf } from './check-spf';
@@ -84,6 +85,8 @@ export interface ScanDomainResult {
 	timestamp: string;
 	scoringNote: string | null;
 	adaptiveWeightDeltas: Record<string, number> | null;
+	/** Category interaction effects applied as post-scoring adjustments. Empty when no interactions triggered. */
+	interactionEffects: InteractionEffect[];
 }
 
 /**
@@ -265,6 +268,10 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			score = computeScanScore(checkResults, scoringContext, runtimeOptions?.scoringConfig);
 		}
 
+		// Apply category interaction penalties (post-scoring adjustment)
+		const { adjustedScore, effects: interactionEffects } = applyInteractionPenalties(score, runtimeOptions?.scoringConfig);
+		score = adjustedScore;
+
 		const maturity = computeMaturityStage(checkResults);
 
 		result = {
@@ -277,6 +284,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			timestamp: new Date().toISOString(),
 			scoringNote,
 			adaptiveWeightDeltas,
+			interactionEffects,
 		};
 
 		// POST telemetry to DO (best-effort, non-blocking)
@@ -330,6 +338,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			timestamp: new Date().toISOString(),
 			scoringNote: null,
 			adaptiveWeightDeltas: null,
+			interactionEffects: [],
 		};
 	}
 
