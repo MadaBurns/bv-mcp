@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { CheckResult } from '../lib/scoring';
+import type { OutputFormat } from './tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { resolveImpactNarrative } from '../tools/explain-finding';
 
@@ -17,7 +18,7 @@ export function mcpText(text: string): McpContent {
 	return { type: 'text', text };
 }
 
-export function formatCheckResult(result: CheckResult): string {
+export function formatCheckResult(result: CheckResult, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 	lines.push(`## ${result.category.toUpperCase()} Check`);
 	lines.push(`**Status:** ${result.passed ? '✅ Passed' : '❌ Failed'}`);
@@ -27,6 +28,11 @@ export function formatCheckResult(result: CheckResult): string {
 	if (result.findings.length > 0) {
 		lines.push('### Findings');
 		for (const finding of result.findings) {
+			if (format === 'compact') {
+				lines.push(`- [${finding.severity.toUpperCase()}] ${sanitizeOutputText(finding.title, 120)} — ${sanitizeOutputText(finding.detail, 200)}`);
+				continue;
+			}
+
 			const icon =
 				finding.severity === 'info'
 					? 'ℹ️'

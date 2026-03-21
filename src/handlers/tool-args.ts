@@ -96,6 +96,24 @@ export function extractBaseline(args: Record<string, unknown>): Record<string, u
 	return result;
 }
 
+export type OutputFormat = 'full' | 'compact';
+
+const VALID_FORMATS: readonly OutputFormat[] = ['full', 'compact'] as const;
+
+/** Extract and validate the optional output format parameter. */
+export function extractFormat(args: Record<string, unknown>): OutputFormat | undefined {
+	const format = args.format;
+	if (format === undefined || format === null) return undefined;
+	if (typeof format !== 'string') {
+		throw new Error('Invalid format: must be a string');
+	}
+	const normalized = format.trim().toLowerCase();
+	if (!(VALID_FORMATS as readonly string[]).includes(normalized)) {
+		throw new Error(`Invalid format: must be one of ${VALID_FORMATS.join(', ')}`);
+	}
+	return normalized as OutputFormat;
+}
+
 export function extractExplainFindingArgs(args: Record<string, unknown>): {
 	checkType: string;
 	status: string;

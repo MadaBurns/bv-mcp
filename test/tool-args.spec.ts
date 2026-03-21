@@ -3,6 +3,7 @@ import {
 	extractAndValidateDomain,
 	extractDkimSelector,
 	extractExplainFindingArgs,
+	extractFormat,
 	normalizeToolName,
 } from '../src/handlers/tool-args';
 
@@ -30,5 +31,16 @@ describe('tool-args helpers', () => {
 			details: 'detail',
 		});
 		expect(() => extractExplainFindingArgs({ checkType: 'SPF' })).toThrow('Missing required parameters: checkType and status');
+	});
+
+	it('extractFormat returns valid formats and rejects invalid ones', () => {
+		expect(extractFormat({ format: 'full' })).toBe('full');
+		expect(extractFormat({ format: 'compact' })).toBe('compact');
+		expect(extractFormat({ format: 'COMPACT' })).toBe('compact');
+		expect(extractFormat({ format: ' Full ' })).toBe('full');
+		expect(extractFormat({})).toBeUndefined();
+		expect(extractFormat({ format: null })).toBeUndefined();
+		expect(() => extractFormat({ format: 'verbose' })).toThrow('Invalid format');
+		expect(() => extractFormat({ format: 42 })).toThrow('Invalid format: must be a string');
 	});
 });
