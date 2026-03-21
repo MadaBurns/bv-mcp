@@ -9,7 +9,7 @@ Open-source DNS & email security scanner for Claude, Cursor, VS Code, and MCP cl
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
-[![Tests](https://img.shields.io/badge/Tests-1097-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![Tests](https://img.shields.io/badge/Tests-1245-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![Coverage](https://img.shields.io/badge/Coverage-~90%25-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![BUSL-1.1 License](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
@@ -61,7 +61,11 @@ Transport support:
 - **57+ checks across 20 categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, lookalike domains, HTTP security headers, DANE, shadow domains, TXT hygiene, MX reputation, SRV, zone hygiene
 - **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with next steps
 - **Trust surface analysis** — detects shared SaaS platforms (Google, M365, SendGrid) and cross-references DMARC enforcement to determine real exposure
-- **Plain-English remediation** — `explain_finding` turns findings into guidance anyone can understand
+- **Guided remediation** — `generate_fix_plan` produces prioritized actions; record generators output ready-to-publish SPF, DMARC, DKIM, and MTA-STS records
+- **Spoofability scoring** — `assess_spoofability` computes a composite 0-100 email spoofability score from SPF trust surface, DMARC enforcement, and DKIM coverage with interaction multipliers
+- **Intelligence layer** — `get_benchmark` and `get_provider_insights` expose anonymized aggregate insights from scan telemetry: percentile rankings, provider cohort comparisons, and 7-day trend analysis
+- **Multi-resolver consistency** — `check_resolver_consistency` queries 4 public DoH resolvers to detect GeoDNS, split-horizon DNS, or poisoning
+- **Interaction scoring** — correlated weaknesses (e.g., weak DKIM + permissive DMARC) receive additional penalties beyond individual finding scores
 - **Self-tuning scoring** — adaptive weights adjust category importance based on patterns seen across scans, so scores reflect real-world failure distributions rather than static assumptions
 - **Provider intelligence** — inbound/outbound email provider inference from MX, SPF, DKIM
 - **Passive and read-only** — all checks use public Cloudflare DNS-over-HTTPS; no authorization required from the target
@@ -95,7 +99,7 @@ Full scope and limitations in the coverage table below.
 ## Tools
 
 ```
-  22 MCP tools
+  31 MCP tools · 7 prompts · 6 resources
 
   Email Auth           Infrastructure        Brand & Threats       Meta
  ────────────         ────────────────       ─────────────────    ──────────────
@@ -104,16 +108,24 @@ Full scope and limitations in the coverage table below.
   check_dkim           check_caa              check_lookalikes     compare_baseline
   check_mta_sts        check_ssl              check_shadow_domains
   check_mx             check_http_security
-  check_mx_reputation  check_dane
-                       check_srv
-  DNS Hygiene          check_zone_hygiene
- ────────────
-  check_txt_hygiene
+  check_mx_reputation  check_dane             Intelligence         Remediation
+                       check_srv             ──────────────       ──────────────
+  DNS Hygiene          check_zone_hygiene     get_benchmark         generate_fix_plan
+ ────────────          check_resolver_        get_provider_         generate_spf_record
+  check_txt_hygiene      consistency            insights            generate_dmarc_record
+                                              assess_spoofability   generate_dkim_config
+                                                                    generate_mta_sts_policy
 
   + check_subdomain_takeover (internal — runs inside scan_domain)
 ```
 
 `explain_finding` takes any finding and returns: what it means, potential impact, adverse consequences, specific steps to fix, and relevant RFCs.
+
+`generate_fix_plan` scans a domain and produces a prioritized remediation plan with effort, impact, and dependency metadata. The record generators (`generate_spf_record`, `generate_dmarc_record`, `generate_dkim_config`, `generate_mta_sts_policy`) produce ready-to-publish DNS records based on detected configuration.
+
+`get_benchmark` and `get_provider_insights` expose anonymized aggregate data from scan telemetry — percentile rankings, provider cohort scores, and 7-day trend analysis. `assess_spoofability` computes a composite email spoofability score (0-100) from SPF, DMARC, and DKIM with interaction multipliers.
+
+`check_resolver_consistency` queries Cloudflare, Google, Quad9, and OpenDNS in parallel to detect GeoDNS, split-horizon DNS, or potential poisoning.
 
 **Confidence labels:**
 `deterministic` — direct protocol/record validation | `heuristic` — signal-based inference, may need manual validation | `verified` — high-confidence validation signal
@@ -365,9 +377,9 @@ Run `explain_finding` on any result for plain-English remediation.
 | `POST` | `/internal/tools/call` | Service binding: single tool call (no auth/rate limits) |
 | `POST` | `/internal/tools/batch` | Service binding: bulk scan up to 500 domains |
 
-Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`.
+Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`.
 
-Prompt methods (`prompts/list`, `prompts/get`) return `-32601 Method not found`.
+7 pre-built prompts guide common workflows: `full-security-audit`, `email-auth-check`, `policy-compliance-check`, `remediation-workflow`, `email-hardening-guide`, `provider-benchmark`, `attack-surface-assessment`.
 
 </details>
 
@@ -406,6 +418,8 @@ Prompt methods (`prompts/list`, `prompts/get`) return `-32601 Method not found`.
 - `scan_domain` capped at 75/day per IP (results cached 5 min)
 - Scan result caching (KV + in-memory fallback)
 - Adaptive scoring via Durable Object telemetry (graceful fallback to static weights)
+- Intelligence layer: score histograms, provider cohort benchmarks, hourly trend snapshots (ProfileAccumulator DO)
+- Category interaction scoring: correlated weaknesses receive additional penalties
 - Structured JSON logging
 
 Implementation details in `CLAUDE.md`.
@@ -464,7 +478,7 @@ npm run dev       # localhost:8787/mcp
 ```
 
 ```bash
-npm test          # 1090+ tests, ~90% coverage
+npm test          # 1245 tests
 npm run typecheck
 ```
 
@@ -512,6 +526,6 @@ Featured in [SecurityBrief](https://securitybrief.co.nz/story/exclusive-how-cybe
 
 Want continuous monitoring? [BLACKVEIL](https://blackveilsecurity.com) provides real-time alerting and Buck AI to help you fix what this scanner finds.
 
-MIT License
+BUSL-1.1 License (converts to MIT on 2030-03-17)
 
 </div>
