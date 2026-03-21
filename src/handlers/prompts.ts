@@ -91,6 +91,28 @@ const PROMPTS: McpPrompt[] = [
 			},
 		],
 	},
+	{
+		name: 'provider-benchmark',
+		description: 'Compare a domain against its email provider cohort with percentile ranking',
+		arguments: [
+			{
+				name: 'domain',
+				description: 'The domain to benchmark (e.g., example.com)',
+				required: true,
+			},
+		],
+	},
+	{
+		name: 'attack-surface-assessment',
+		description: 'Comprehensive attack surface analysis: spoofability, lookalikes, shadow domains, and risk narrative',
+		arguments: [
+			{
+				name: 'domain',
+				description: 'The domain to assess (e.g., example.com)',
+				required: true,
+			},
+		],
+	},
 ];
 
 /** Prompt message templates keyed by prompt name */
@@ -178,6 +200,47 @@ Report whether the domain passes or fails compliance, listing each specific viol
    - Current score and grade
    - Each action with the exact DNS record to publish
    - Verification steps to confirm the changes worked`,
+					},
+				},
+			];
+
+		case 'provider-benchmark':
+			return [
+				{
+					role: 'user',
+					content: {
+						type: 'text',
+						text: `Benchmark ${domain} against its email provider cohort.
+
+1. Run scan_domain on ${domain} to get the current security score and detected provider.
+2. Run get_benchmark to get the overall score distribution for domains with a similar profile.
+3. If a provider was detected (e.g., Google Workspace, Microsoft 365), run get_provider_insights with that provider.
+4. Present a comparison:
+   - Where ${domain} ranks in the overall distribution (percentile)
+   - How it compares to domains using the same email provider
+   - What the top failing categories are for similar domains
+   - Specific improvements that would move it up in the rankings`,
+					},
+				},
+			];
+
+		case 'attack-surface-assessment':
+			return [
+				{
+					role: 'user',
+					content: {
+						type: 'text',
+						text: `Perform a comprehensive attack surface assessment for ${domain}.
+
+1. Run scan_domain on ${domain} to get the baseline security posture.
+2. Run assess_spoofability on ${domain} to get the composite email spoofability score.
+3. Run check_lookalikes on ${domain} to detect registered typosquat domains.
+4. Run check_shadow_domains on ${domain} to find alternate-TLD variants with email auth gaps.
+5. Synthesize the results into a risk narrative:
+   - Overall spoofability risk with protection breakdown
+   - Brand impersonation threats from lookalike domains
+   - Shadow domain exposure across TLD variants
+   - Prioritized mitigation recommendations`,
 					},
 				},
 			];
