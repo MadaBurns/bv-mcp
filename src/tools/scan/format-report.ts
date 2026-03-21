@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { ScanDomainResult } from '../scan-domain';
+import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
 
@@ -47,7 +48,7 @@ export function buildStructuredScanResult(result: ScanDomainResult): StructuredS
 	};
 }
 
-export function formatScanReport(result: ScanDomainResult): string {
+export function formatScanReport(result: ScanDomainResult, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 
 	lines.push(`DNS Security Scan: ${result.domain}`);
@@ -57,23 +58,29 @@ export function formatScanReport(result: ScanDomainResult): string {
 	lines.push('');
 
 	if (result.maturity) {
-		lines.push(`Email Security Maturity: Stage ${result.maturity.stage} — ${result.maturity.label}`);
-		lines.push(result.maturity.description);
-		if (result.maturity.nextStep) {
-			lines.push(`Next step: ${result.maturity.nextStep}`);
+		if (format === 'compact') {
+			lines.push(`Maturity: Stage ${result.maturity.stage} — ${result.maturity.label}`);
+		} else {
+			lines.push(`Email Security Maturity: Stage ${result.maturity.stage} — ${result.maturity.label}`);
+			lines.push(result.maturity.description);
+			if (result.maturity.nextStep) {
+				lines.push(`Next step: ${result.maturity.nextStep}`);
+			}
 		}
 		lines.push('');
 	}
 
-	if (result.context) {
-		const signalSummary = result.context.signals.length > 0 ? result.context.signals.join(', ') : 'default';
-		lines.push(`Scoring Profile: ${result.context.profile} (${signalSummary})`);
-		lines.push('');
-	}
+	if (format === 'full') {
+		if (result.context) {
+			const signalSummary = result.context.signals.length > 0 ? result.context.signals.join(', ') : 'default';
+			lines.push(`Scoring Profile: ${result.context.profile} (${signalSummary})`);
+			lines.push('');
+		}
 
-	if (result.scoringNote) {
-		lines.push(result.scoringNote);
-		lines.push('');
+		if (result.scoringNote) {
+			lines.push(result.scoringNote);
+			lines.push('');
+		}
 	}
 
 	lines.push('Category Scores:');
@@ -89,6 +96,11 @@ export function formatScanReport(result: ScanDomainResult): string {
 		lines.push('Findings:');
 		lines.push('-'.repeat(30));
 		for (const finding of nonInfoFindings) {
+			if (format === 'compact') {
+				lines.push(`  [${finding.severity.toUpperCase()}] ${sanitizeOutputText(finding.title, 120)} — ${sanitizeOutputText(finding.detail, 200)}`);
+				continue;
+			}
+
 			lines.push(`  [${finding.severity.toUpperCase()}] ${sanitizeOutputText(finding.title, 120)}`);
 			lines.push(`    ${sanitizeOutputText(finding.detail)}`);
 			const verificationStatus =
