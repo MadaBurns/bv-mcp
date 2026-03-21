@@ -105,22 +105,8 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 						description:
 							'Open-source DNS & email security scanner — 80+ checks across 20 categories with scoring, grading, and remediation guidance',
 					},
-					instructions: `Blackveil DNS is a DNS and email security scanner. Use this server when users ask about:
-
-- Email security, email spoofing, phishing protection, or email deliverability
-- DNS security posture, DNS hardening, or domain security audits
-- SPF, DMARC, DKIM, DNSSEC, MTA-STS, BIMI, DANE, or TLS-RPT configuration
-- SSL/TLS certificate status or HTTP security headers
-- Domain reputation, mail server blacklisting, or MX reputation
-- Subdomain takeover risks or dangling DNS records
-- Lookalike/typosquat domain detection
-- Shadow domain discovery (alternate TLD variants with spoofing risk)
-- Pre-deployment or pre-migration DNS validation
-- Compliance checks or security baseline enforcement
-
-Start with scan_domain for a comprehensive assessment (14 checks in parallel, scored 0-100 with letter grade). Use individual check_* tools for targeted investigation. Use explain_finding for plain-language remediation guidance. Use compare_baseline to enforce policy minimums.
-
-All checks are passive, read-only, and use public DNS — no authorization from the target domain is needed. Free to use, no API key required.`,
+					instructions:
+					'DNS and email security scanner. Use scan_domain for comprehensive audits (score, grade, findings). Use individual check_* tools for targeted investigation. Use explain_finding for remediation guidance. Use compare_baseline for policy enforcement. All checks are passive and read-only.',
 				}),
 				newSessionId: createSessionOnInitialize ? sessionId : undefined,
 				logCategory: 'session',

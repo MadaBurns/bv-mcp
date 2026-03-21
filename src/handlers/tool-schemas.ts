@@ -19,6 +19,15 @@ export interface McpTool {
 	};
 }
 
+/** Shared format property for output verbosity control */
+const FORMAT_PROPERTY = {
+	format: {
+		type: 'string',
+		enum: ['full', 'compact'],
+		description: 'Output detail level. Auto-detected from client type when omitted.',
+	},
+} as const;
+
 /** Domain-only input schema shared by most tools */
 export const DOMAIN_INPUT_SCHEMA = {
 	type: 'object' as const,
@@ -27,6 +36,7 @@ export const DOMAIN_INPUT_SCHEMA = {
 			type: 'string',
 			description: 'The domain name to check (e.g., example.com)',
 		},
+		...FORMAT_PROPERTY,
 	},
 	required: ['domain'],
 };
@@ -35,26 +45,22 @@ export const DOMAIN_INPUT_SCHEMA = {
 export const TOOLS: McpTool[] = [
 	{
 		name: 'check_mx',
-		description:
-			'Validate mail exchange infrastructure and email routing configuration. Checks MX record presence, priority ordering, and provider detection to assess whether a domain can send and receive email reliably.',
+		description: 'Validate MX records, priority ordering, and email provider detection.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_spf',
-		description:
-			'Detect email spoofing risk from missing or misconfigured SPF records. Validates SPF TXT records for syntax, mechanism quality, lookup limits, policy strictness (-all vs ~all), and trust surface exposure from shared SaaS platforms.',
+		description: 'Validate SPF records for syntax, policy strictness, lookup limits, and trust surface exposure.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_dmarc',
-		description:
-			'Assess domain protection against email impersonation and phishing. Validates DMARC policy enforcement level (none/quarantine/reject), reporting configuration, alignment modes, subdomain policy, and percentage coverage.',
+		description: 'Validate DMARC policy enforcement, reporting configuration, alignment, and subdomain policy.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_dkim',
-		description:
-			'Verify email message integrity and sender authenticity via DKIM. Probes common selectors across major providers, validates key strength, and checks tag configuration.',
+		description: 'Probe DKIM selectors across major providers, validate key strength and tag configuration.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
@@ -64,76 +70,67 @@ export const TOOLS: McpTool[] = [
 				},
 				selector: {
 					type: 'string',
-					description: "Optional: specific DKIM selector to check (e.g., 'google', 'selector1'). If omitted, common selectors are probed.",
+					description: 'Specific DKIM selector to check. If omitted, common selectors are probed.',
 				},
+				...FORMAT_PROPERTY,
 			},
 			required: ['domain'],
 		},
 	},
 	{
 		name: 'check_dnssec',
-		description:
-			'Check whether DNS responses are cryptographically signed and tamper-proof. Verifies DNSSEC validation, DNSKEY/DS record presence — protects against DNS cache poisoning and man-in-the-middle attacks.',
+		description: 'Verify DNSSEC validation and DNSKEY/DS record presence for DNS tamper protection.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_ssl',
-		description:
-			'Verify SSL/TLS certificate health and HTTPS configuration. Validates certificate availability, expiry, and configuration — essential for transport security and browser trust.',
+		description: 'Verify SSL/TLS certificate availability, expiry, and HTTPS configuration.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_mta_sts',
-		description:
-			'Check if email transport is protected against TLS downgrade attacks. Validates MTA-STS (RFC 8461) policy ensuring SMTP connections between mail servers are encrypted and cannot be intercepted.',
+		description: 'Validate MTA-STS policy for SMTP transport encryption enforcement.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_ns',
-		description:
-			'Evaluate DNS infrastructure resilience and redundancy. Analyzes nameserver delegation, provider diversity, and proper delegation to identify single points of failure.',
+		description: 'Analyze nameserver delegation, provider diversity, and infrastructure resilience.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_caa',
-		description:
-			'Check which Certificate Authorities are authorized to issue SSL certificates for a domain. Missing CAA records mean any CA can issue certificates, increasing unauthorized issuance risk.',
+		description: 'Check which Certificate Authorities are authorized to issue certificates for a domain.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_bimi',
-		description:
-			'Check if a domain has Brand Indicators for Message Identification (BIMI) configured for email client logo display. Validates BIMI TXT record, logo URL format, and VMC authority evidence.',
+		description: 'Validate BIMI record, logo URL format, and VMC authority evidence.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_tlsrpt',
-		description:
-			'Check if SMTP TLS failure reporting is configured. Validates TLS-RPT (RFC 8460) records that enable receiving reports when email transport encryption fails — critical for monitoring MTA-STS enforcement.',
+		description: 'Validate TLS-RPT records for SMTP TLS failure reporting.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_http_security',
-		description:
-			'Audit HTTP security headers protecting against XSS, clickjacking, and data leakage. Checks Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Permissions-Policy, Referrer-Policy, CORP, and COOP.',
+		description: 'Audit HTTP security headers (CSP, X-Frame-Options, COOP, CORP, Permissions-Policy, Referrer-Policy).',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_dane',
-		description:
-			'Verify DNS-based certificate pinning (DANE/TLSA) for mail servers and HTTPS endpoints. Prevents certificate substitution attacks even if a CA is compromised.',
+		description: 'Verify DANE/TLSA certificate pinning for mail servers and HTTPS endpoints.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_lookalikes',
-		description:
-			'Detect registered lookalike and typosquat domains that could be used for phishing or brand impersonation. Generates permutations (character swaps, homoglyphs, TLD variants) and checks for active infrastructure. Standalone — not in scan_domain due to query volume.',
+		description: 'Detect registered lookalike/typosquat domains with active infrastructure. Standalone, not in scan_domain.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'scan_domain',
 		description:
-			'Run a comprehensive DNS and email security audit on any domain. Executes 14 checks in parallel (SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, Subdomain Takeover, HTTP Security, DANE) and returns an overall security score (0-100), letter grade (A+ to F), maturity stage, and prioritized findings with remediation guidance. Start here for any domain security question.',
+			'Comprehensive DNS and email security audit. Returns score (0-100), grade, maturity stage, and prioritized findings. Start here.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
@@ -144,17 +141,16 @@ export const TOOLS: McpTool[] = [
 				profile: {
 					type: 'string',
 					enum: ['auto', 'mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal'],
-					description:
-						'Scoring profile to apply. "auto" (default) detects the profile from scan results. Explicit values override detection and change scoring weights.',
+					description: 'Scoring profile. "auto" (default) detects from results. Explicit values override detection.',
 				},
+				...FORMAT_PROPERTY,
 			},
 			required: ['domain'],
 		},
 	},
 	{
 		name: 'compare_baseline',
-		description:
-			'Enforce security policy compliance by comparing a domain against minimum acceptable standards. Returns specific violations below baseline requirements. Designed for MSPs, security teams, and CI/CD pipelines enforcing organization-level DNS security standards.',
+		description: 'Compare domain security against a policy baseline. Returns pass/fail with specific violations.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
@@ -162,29 +158,30 @@ export const TOOLS: McpTool[] = [
 					type: 'string',
 					description: 'The domain to scan and compare.',
 				},
+				...FORMAT_PROPERTY,
 				baseline: {
 					type: 'object',
-					description: 'Policy baseline. Keys are category names or "grade"/"score". Values are minimums.',
+					description: 'Policy baseline with minimum requirements.',
 					properties: {
 						grade: {
 							type: 'string',
-							description: 'Minimum acceptable grade (e.g., "B+"). Violation if scan grade is worse.',
+							description: 'Minimum grade (e.g., "B+").',
 						},
 						score: {
 							type: 'number',
-							description: 'Minimum acceptable overall score (0-100).',
+							description: 'Minimum overall score (0-100).',
 						},
 						require_dmarc_enforce: {
 							type: 'boolean',
-							description: 'Require DMARC p=quarantine or p=reject (not p=none).',
+							description: 'Require DMARC enforcement.',
 						},
 						require_spf: {
 							type: 'boolean',
-							description: 'Require a valid SPF record.',
+							description: 'Require valid SPF record.',
 						},
 						require_dkim: {
 							type: 'boolean',
-							description: 'Require at least one DKIM key.',
+							description: 'Require DKIM key.',
 						},
 						require_dnssec: {
 							type: 'boolean',
@@ -200,11 +197,11 @@ export const TOOLS: McpTool[] = [
 						},
 						max_critical_findings: {
 							type: 'number',
-							description: 'Maximum allowed critical-severity findings (default: 0).',
+							description: 'Max critical findings (default: 0).',
 						},
 						max_high_findings: {
 							type: 'number',
-							description: 'Maximum allowed high-severity findings.',
+							description: 'Max high findings.',
 						},
 					},
 				},
@@ -214,54 +211,49 @@ export const TOOLS: McpTool[] = [
 	},
 	{
 		name: 'check_shadow_domains',
-		description:
-			'Discover alternate-TLD variants of a domain (e.g., .org, .net, .co) with active DNS/mail infrastructure and assess email spoofing risk. Identifies shadow domains lacking email authentication that attackers could use for impersonation. Standalone — not in scan_domain due to query volume.',
+		description: 'Discover alternate-TLD variants with spoofable email auth gaps. Standalone, not in scan_domain.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_txt_hygiene',
-		description:
-			'Audit TXT records for stale service verifications, unexpected platform registrations, excessive accumulation, and cross-domain trust delegations. Maps the organization\'s verified SaaS platform exposure from public DNS — useful for shadow IT discovery.',
+		description: 'Audit TXT records for stale verifications, SaaS exposure, and cross-domain trust delegations.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_mx_reputation',
-		description:
-			'Check mail server reputation and deliverability risk. Resolves MX IPs, checks against major blocklists (Spamhaus, SpamCop, Barracuda), and validates reverse DNS (PTR/FCrDNS) consistency.',
+		description: 'Check mail server blocklist status (Spamhaus, SpamCop, Barracuda) and reverse DNS consistency.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_srv',
-		description:
-			'Map the DNS-visible service footprint by probing SRV records. Discovers email, calendar, messaging, and other service advertisements, and flags insecure protocol advertisements.',
+		description: 'Probe SRV records to map DNS-visible service footprint and flag insecure protocols.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'check_zone_hygiene',
-		description:
-			'Audit DNS zone consistency and detect exposed internal infrastructure. Checks SOA serial propagation and probes sensitive subdomains (vpn, admin, staging, corp) for unintended public DNS resolution.',
+		description: 'Audit SOA serial propagation and detect sensitive subdomains exposed in public DNS.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
 		name: 'explain_finding',
-		description:
-			'Get a plain-language explanation of any DNS security finding, including real-world impact, adverse consequences if unresolved, and step-by-step remediation guidance with RFC references.',
+		description: 'Plain-language explanation of a finding with impact, consequences, and remediation steps.',
 		inputSchema: {
 			type: 'object' as const,
 			properties: {
 				checkType: {
 					type: 'string',
-					description: "The check type (e.g. 'SPF', 'DMARC', 'DKIM', 'DNSSEC', 'SSL', 'MTA_STS')",
+					description: "Check type (e.g., 'SPF', 'DMARC', 'DKIM', 'SSL')",
 				},
 				status: {
 					type: 'string',
 					enum: ['pass', 'fail', 'warning', 'critical', 'high', 'medium', 'low', 'info'],
-					description: 'The check status or finding severity (e.g., pass, fail, warning, critical, high, medium, low, info)',
+					description: 'Finding severity or check status.',
 				},
 				details: {
 					type: 'string',
-					description: 'Optional details from the check result',
+					description: 'Optional details from the check result.',
 				},
+				...FORMAT_PROPERTY,
 			},
 			required: ['checkType', 'status'],
 		},
