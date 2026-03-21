@@ -7,7 +7,7 @@
  */
 import type { CheckResult, Finding } from '../lib/scoring';
 import { createFinding, buildCheckResult } from '../lib/scoring';
-import { queryDnsRecords } from '../lib/dns';
+import { queryDnsRecords, queryTxtRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { detectProviderMatches, loadProviderSignatures } from '../lib/provider-signatures';
 import { getIpTargetFindings, getNullMxFinding, getPresenceFinding, getSingleMxFinding, isNullMxRecord, parseMxRecords } from './mx-analysis';
@@ -28,14 +28,44 @@ export async function checkMx(domain: string, options?: CheckMxOptions, dnsOptio
 	}
 
 	if (!answers || answers.length === 0) {
-		return buildCheckResult('mx', [
+		const findings: Finding[] = [
 			createFinding(
 				'mx',
 				'No MX records found',
 				'medium',
 				'No mail exchange records present. If this domain does not handle email, consider publishing a null MX record (RFC 7505).',
 			),
-		]);
+		];
+		// Non-mail domains should publish v=spf1 -all to explicitly reject all mail
+		try {
+			const txtRecords = await queryTxtRecords(domain, dnsOptions);
+			const spfRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=spf1'));
+			if (spfRecords.length === 0) {
+				findings.push(
+					createFinding(
+						'mx',
+						'Missing SPF reject-all for non-mail domain',
+						'medium',
+						`No SPF record found. Non-mail domains should publish "v=spf1 -all" to explicitly prevent email spoofing.`,
+					),
+				);
+			} else {
+				const spf = spfRecords[0].toLowerCase();
+				if (!spf.includes('-all')) {
+					findings.push(
+						createFinding(
+							'mx',
+							'SPF not set to reject-all for non-mail domain',
+							'low',
+							`SPF record found but does not use "-all" (hard fail). Non-mail domains should publish "v=spf1 -all" to explicitly reject all email.`,
+						),
+					);
+				}
+			}
+		} catch {
+			// DNS query failed — skip SPF check for non-mail domain
+		}
+		return buildCheckResult('mx', findings);
 	}
 
 	const findings: Finding[] = [];
