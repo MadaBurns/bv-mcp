@@ -172,44 +172,60 @@ function isSameMxInfra(variantMx: string[], primaryMx: string[]): boolean {
 }
 
 /**
- * Classify a probed variant into a finding based on risk.
+ * Check whether a variant's NS records overlap with the primary domain's NS records.
+ * Compares normalized (lowercased, trailing-dot-stripped) nameserver hostnames.
+ * Returns true when at least 2 nameservers are shared (typical NS pair).
  */
-function classifyVariant(probe: VariantProbeResult, primaryMx: string[]): Finding {
+function sharesNsWithPrimary(variantNs: string[], primaryNs: string[]): boolean {
+	if (variantNs.length === 0 || primaryNs.length === 0) return false;
+	const primarySet = new Set(primaryNs.map((n) => n.toLowerCase().replace(/\.$/, '')));
+	const shared = variantNs.filter((n) => primarySet.has(n.toLowerCase().replace(/\.$/, '')));
+	return shared.length >= 2;
+}
+
+/**
+ * Classify a probed variant into a finding based on risk.
+ * When the variant shares nameservers with the primary domain (indicating common ownership),
+ * email-auth findings are downgraded one severity level.
+ */
+function classifyVariant(probe: VariantProbeResult, primaryMx: string[], primaryNs: string[]): Finding {
 	const { variant, ns, mx, hasSpf, dmarcPolicy } = probe;
 	const hasMx = mx.length > 0;
 	const hasNs = ns.length > 0;
+	const sameOwner = sharesNsWithPrimary(ns, primaryNs);
 	const meta = { variant, ns, mx, hasSpf, dmarcPolicy };
+	const ownerNote = ' Likely same owner based on shared nameservers — still recommended to add DMARC.';
 
 	if (hasMx) {
 		if (!hasSpf && dmarcPolicy === null) {
-			// MX present, no SPF AND no DMARC → critical
+			// MX present, no SPF AND no DMARC → critical (or high if same owner)
 			return createFinding(
 				'shadow_domains',
 				'Shadow domain fully spoofable',
-				'critical',
-				`${variant} has mail servers but no SPF or DMARC records. Any sender can forge email from this domain.`,
+				sameOwner ? 'high' : 'critical',
+				`${variant} has mail servers but no SPF or DMARC records. Any sender can forge email from this domain.${sameOwner ? ownerNote : ''}`,
 				meta,
 			);
 		}
 
 		if (hasSpf && dmarcPolicy === null) {
-			// MX present, SPF but no DMARC → high
+			// MX present, SPF but no DMARC → high (or medium if same owner)
 			return createFinding(
 				'shadow_domains',
 				'Shadow domain lacks DMARC',
-				'high',
-				`${variant} has mail servers and SPF but no DMARC record. Without DMARC, SPF alone cannot prevent spoofing.`,
+				sameOwner ? 'medium' : 'high',
+				`${variant} has mail servers and SPF but no DMARC record. Without DMARC, SPF alone cannot prevent spoofing.${sameOwner ? ownerNote : ''}`,
 				meta,
 			);
 		}
 
 		if (dmarcPolicy === 'none') {
-			// MX present, DMARC p=none → high
+			// MX present, DMARC p=none → high (or medium if same owner)
 			return createFinding(
 				'shadow_domains',
 				'Shadow domain DMARC not enforcing',
-				'high',
-				`${variant} has mail servers with DMARC policy set to "none" — spoofed emails are monitored but not blocked.`,
+				sameOwner ? 'medium' : 'high',
+				`${variant} has mail servers with DMARC policy set to "none" — spoofed emails are monitored but not blocked.${sameOwner ? ownerNote.replace('add DMARC', 'enforce DMARC') : ''}`,
 				meta,
 			);
 		}
@@ -218,11 +234,14 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[]): Findin
 		if (dmarcPolicy === 'quarantine' || dmarcPolicy === 'reject') {
 			if (!isSameMxInfra(mx, primaryMx)) {
 				// Divergent MX infrastructure → medium
+				const divergentNote = sameOwner
+					? ` Shared nameservers suggest common ownership despite different mail servers.`
+					: '';
 				return createFinding(
 					'shadow_domains',
 					'Shadow domain divergent mail infrastructure',
 					'medium',
-					`${variant} uses different mail servers than the primary domain despite having enforcing DMARC. This may indicate separate management.`,
+					`${variant} uses different mail servers than the primary domain despite having enforcing DMARC. This may indicate separate management.${divergentNote}`,
 					meta,
 				);
 			}
@@ -239,11 +258,14 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[]): Findin
 
 		// DMARC present with unknown policy — treat as high-ish (SPF but unclear DMARC)
 		if (!isSameMxInfra(mx, primaryMx)) {
+			const divergentNote = sameOwner
+				? ` Shared nameservers suggest common ownership despite different mail servers.`
+				: '';
 			return createFinding(
 				'shadow_domains',
 				'Shadow domain divergent mail infrastructure',
 				'medium',
-				`${variant} uses different mail servers than the primary domain.`,
+				`${variant} uses different mail servers than the primary domain.${divergentNote}`,
 				meta,
 			);
 		}
@@ -365,14 +387,19 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 		return buildCheckResult('shadow_domains', findings);
 	}
 
-	// Query primary domain MX for comparison
+	// Query primary domain MX and NS for comparison
 	const dnsOpts: QueryDnsOptions = { ...dnsOptions, skipSecondaryConfirmation: true };
 	let primaryMx: string[] = [];
+	let primaryNs: string[] = [];
 	try {
-		const mxResult = await queryMxRecords(domain, dnsOpts);
-		primaryMx = mxResult.map((r) => r.exchange);
+		const [mxResult, nsResult] = await Promise.allSettled([
+			queryMxRecords(domain, dnsOpts),
+			queryDnsRecords(domain, 'NS', dnsOpts),
+		]);
+		primaryMx = mxResult.status === 'fulfilled' ? mxResult.value.map((r) => r.exchange) : [];
+		primaryNs = nsResult.status === 'fulfilled' ? nsResult.value : [];
 	} catch {
-		// Primary MX query failure — continue with empty set
+		// Primary DNS query failure — continue with empty sets
 	}
 
 	// Phase 1: Fast NS existence check — filter out unregistered variants
@@ -437,7 +464,7 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 
 	// Classify each completed probe
 	for (const probe of completedProbes) {
-		findings.push(classifyVariant(probe, primaryMx));
+		findings.push(classifyVariant(probe, primaryMx, primaryNs));
 	}
 
 	// Detect shared NS pairs
