@@ -23,6 +23,8 @@ export interface StructuredScanResult {
 	percentileRank: number | null;
 	/** Composite email spoofability score (0–100, higher = more spoofable). Null when not computed. */
 	spoofabilityScore: number | null;
+	/** Category interaction effects applied as post-scoring adjustments. */
+	interactionEffects: Array<{ ruleId: string; penalty: number; narrative: string }>;
 	timestamp: string;
 	cached: boolean;
 }
@@ -55,6 +57,11 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		adaptiveWeightDeltas: result.adaptiveWeightDeltas ?? null,
 		percentileRank: enrichment?.percentileRank ?? null,
 		spoofabilityScore: enrichment?.spoofabilityScore ?? null,
+		interactionEffects: (result.interactionEffects ?? []).map((e) => ({
+			ruleId: e.ruleId,
+			penalty: e.penalty,
+			narrative: e.narrative,
+		})),
 		timestamp: result.timestamp,
 		cached: result.cached,
 	};
@@ -141,6 +148,15 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 		}
 	} else {
 		lines.push('No security issues found.');
+	}
+
+	if (format === 'full' && result.interactionEffects && result.interactionEffects.length > 0) {
+		lines.push('');
+		lines.push('Interaction Effects:');
+		lines.push('-'.repeat(30));
+		for (const effect of result.interactionEffects) {
+			lines.push(`  [-${effect.penalty}] ${effect.narrative}`);
+		}
 	}
 
 	if (result.cached) {
