@@ -49,6 +49,12 @@ const RESOURCES: McpResource[] = [
 		description: 'Recommended tool usage patterns and decision trees for common DNS security tasks.',
 		mimeType: 'text/markdown',
 	},
+	{
+		uri: 'dns-security://guides/remediation',
+		name: 'DNS Remediation Guide',
+		description: 'Step-by-step DNS record fix patterns for each check category, using generate_* tools.',
+		mimeType: 'text/markdown',
+	},
 ];
 
 /** Resource content keyed by URI */
@@ -273,6 +279,73 @@ Returns pass/fail with specific violations — ideal for automated gates.
 - \`check_lookalikes\` and \`check_shadow_domains\` are rate-limited (20/day unauthenticated) — use judiciously
 - All checks are passive and read-only — safe to run against any domain
 - Use the \`profile\` parameter on \`scan_domain\` for non-mail domains (web_only, non_mail) to get more relevant scoring
+`,
+
+	'dns-security://guides/remediation': `# DNS Remediation Guide
+
+Use the generate_* tools to produce ready-to-publish DNS records that fix security issues.
+
+## Remediation Tools
+
+| Tool | Output | When to Use |
+|------|--------|-------------|
+| \`generate_fix_plan\` | Prioritized action list | Start here — identifies what to fix first |
+| \`generate_spf_record\` | SPF TXT record | Missing/broken SPF, trust surface issues |
+| \`generate_dmarc_record\` | DMARC TXT record | Missing/weak DMARC policy |
+| \`generate_dkim_config\` | DKIM setup instructions | Missing DKIM keys |
+| \`generate_mta_sts_policy\` | MTA-STS TXT + policy file | No transport encryption |
+
+## Recommended Workflow
+
+### 1. Generate Fix Plan
+\`\`\`
+generate_fix_plan({ domain: "example.com" })
+\`\`\`
+Returns prioritized actions sorted by impact × importance weight.
+
+### 2. Fix Email Authentication (in order)
+
+**SPF first** — establishes sender authorization:
+\`\`\`
+generate_spf_record({ domain: "example.com", include_providers: ["google"] })
+\`\`\`
+
+**DKIM second** — adds message signing (provider-specific):
+\`\`\`
+generate_dkim_config({ domain: "example.com", provider: "google" })
+\`\`\`
+
+**DMARC last** — requires SPF and DKIM to be effective:
+\`\`\`
+generate_dmarc_record({ domain: "example.com", policy: "none" })
+\`\`\`
+Start with \`p=none\` for monitoring, then upgrade to \`quarantine\` → \`reject\`.
+
+### 3. Add Transport Security
+
+**MTA-STS** — enforces TLS for inbound email:
+\`\`\`
+generate_mta_sts_policy({ domain: "example.com" })
+\`\`\`
+
+## Maturity Progression
+
+| Stage | Goal | Records to Add |
+|-------|------|----------------|
+| 0 → 1 | Basic auth | SPF + DMARC (p=none) |
+| 1 → 2 | Monitoring | DKIM + DMARC rua reporting |
+| 2 → 3 | Enforcement | DMARC p=reject + MTA-STS |
+| 3 → 4 | Hardened | DNSSEC + DANE + BIMI |
+
+## Verification
+
+After publishing records, re-run the relevant check tool to verify:
+- \`check_spf\` after publishing SPF
+- \`check_dmarc\` after publishing DMARC
+- \`check_dkim\` after configuring DKIM
+- \`check_mta_sts\` after setting up MTA-STS
+
+Allow 5-10 minutes for DNS propagation before re-checking.
 `,
 
 	'dns-security://guides/record-types': `# Supported DNS Record Types
