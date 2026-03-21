@@ -19,7 +19,8 @@
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["QuotaCoordinator"] },
-    { "tag": "v2", "new_sqlite_classes": ["ProfileAccumulator"] }
+    { "tag": "v2", "new_sqlite_classes": ["ProfileAccumulator"] },
+    { "tag": "v3" }
   ],
   "observability": {
     "enabled": true,
