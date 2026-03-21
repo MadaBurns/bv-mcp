@@ -323,6 +323,47 @@ export const TOOLS: McpTool[] = [
 		},
 	},
 	{
+		name: 'get_benchmark',
+		description: 'Get anonymized score benchmarks — percentile distribution, mean/median scores, and top failing categories across scanned domains.',
+		inputSchema: {
+			type: 'object' as const,
+			properties: {
+				profile: {
+					type: 'string',
+					enum: ['mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal'],
+					description: 'Scoring profile to benchmark against (default: "mail_enabled").',
+				},
+				...FORMAT_PROPERTY,
+			},
+			required: [],
+		},
+	},
+	{
+		name: 'get_provider_insights',
+		description: 'Get email provider cohort benchmarks — average score, percentile rank, and common issues for domains using a specific provider.',
+		inputSchema: {
+			type: 'object' as const,
+			properties: {
+				provider: {
+					type: 'string',
+					description: 'Email provider name (e.g., "google workspace", "microsoft 365").',
+				},
+				profile: {
+					type: 'string',
+					enum: ['mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal'],
+					description: 'Scoring profile (default: "mail_enabled").',
+				},
+				...FORMAT_PROPERTY,
+			},
+			required: ['provider'],
+		},
+	},
+	{
+		name: 'assess_spoofability',
+		description: 'Composite email spoofability score (0-100) combining SPF trust surface, DMARC enforcement, and DKIM coverage with interaction multipliers.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
 		name: 'explain_finding',
 		description: 'Plain-language explanation of a finding with impact, consequences, and remediation steps.',
 		inputSchema: {
