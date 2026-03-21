@@ -106,9 +106,9 @@ describe('checkTxtHygiene', () => {
 		expect(finding!.severity).toBe('medium');
 	});
 
-	it('should flag excessive TXT record accumulation (15+) as high severity', async () => {
+	it('should flag excessive TXT record accumulation (25+) as medium severity', async () => {
 		const records: string[] = [];
-		for (let i = 0; i < 16; i++) {
+		for (let i = 0; i < 26; i++) {
 			records.push(`google-site-verification=token${i}`);
 		}
 		mockDnsResponses({
@@ -118,10 +118,25 @@ describe('checkTxtHygiene', () => {
 		const result = await run();
 		const finding = result.findings.find((f) => /Excessive TXT record accumulation/i.test(f.title));
 		expect(finding).toBeDefined();
-		expect(finding!.severity).toBe('high');
+		expect(finding!.severity).toBe('medium');
 	});
 
-	it('should flag moderate TXT record accumulation (10-14) as medium severity', async () => {
+	it('should flag elevated TXT record count (15-24) as low severity', async () => {
+		const records: string[] = [];
+		for (let i = 0; i < 16; i++) {
+			records.push(`google-site-verification=token${i}`);
+		}
+		mockDnsResponses({
+			'example.com': records,
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const result = await run();
+		const finding = result.findings.find((f) => /Elevated TXT record count/i.test(f.title));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('low');
+	});
+
+	it('should flag moderate TXT record accumulation (10-14) as low severity', async () => {
 		const records: string[] = [];
 		for (let i = 0; i < 12; i++) {
 			records.push(`google-site-verification=token${i}`);
@@ -133,10 +148,10 @@ describe('checkTxtHygiene', () => {
 		const result = await run();
 		const finding = result.findings.find((f) => /TXT record accumulation/i.test(f.title));
 		expect(finding).toBeDefined();
-		expect(finding!.severity).toBe('medium');
+		expect(finding!.severity).toBe('low');
 	});
 
-	it('should flag duplicate verification records as medium severity', async () => {
+	it('should flag duplicate verification records as low severity (consolidated finding)', async () => {
 		mockDnsResponses({
 			'example.com': [
 				'google-site-verification=abc123',
@@ -146,10 +161,10 @@ describe('checkTxtHygiene', () => {
 			'_dmarc.example.com': ['v=DMARC1; p=reject'],
 		});
 		const result = await run();
-		const finding = result.findings.find((f) => /Duplicate verification records/i.test(f.title));
+		const finding = result.findings.find((f) => /Duplicate verification records detected/i.test(f.title));
 		expect(finding).toBeDefined();
-		expect(finding!.severity).toBe('medium');
-		expect(finding!.title).toContain('Google Search Console');
+		expect(finding!.severity).toBe('low');
+		expect(finding!.detail).toContain('Google Search Console');
 	});
 
 	it('should flag DMARC misplaced at root as medium severity', async () => {
@@ -322,6 +337,63 @@ describe('checkTxtHygiene', () => {
 		const result = await run();
 		const tenantMigration = result.findings.find((f) => /Microsoft tenant migration residue/i.test(f.title));
 		expect(tenantMigration).toBeUndefined();
+	});
+
+	it('should score enterprise domains with many TXT records in the 50-80 range (not 0)', async () => {
+		// Simulate a stripe.com-like scenario: 31 TXT records with duplicates and stale integrations
+		const records = [
+			'v=spf1 include:_spf.google.com include:sendgrid.net include:mailchimp.com -all',
+			// 6 Google Search Console verifications (duplicates)
+			'google-site-verification=token1',
+			'google-site-verification=token2',
+			'google-site-verification=token3',
+			'google-site-verification=token4',
+			'google-site-verification=token5',
+			'google-site-verification=token6',
+			// Various service verifications
+			'MS=ms12345',
+			'MS=ms67890',
+			'apple-domain-verification=abc123',
+			'facebook-domain-verification=xyz789',
+			'atlassian-domain-verification=atlassian1',
+			'adobe-idp-site-verification=adobe1',
+			'docusign=docusign1',
+			'slack-domain-verification=slack1',
+			'zoom-domain-verification=zoom1',
+			'onetrust-domain-verification=onetrust1',
+			'hubspot-developer-verification=hubspot1',
+			'stripe-verification=stripe1',
+			'globalsign-domain-verification=gs1',
+			'have-i-been-pwned-verification=hibp1',
+			// Stale services (no SPF include)
+			'mailchimp-domain-verification=mc1',
+			'pardot_xxx',
+			// Filler TXT records to reach ~31
+			'keybase-site-verification=kb1',
+			'_globalsign-domain-verification=gs2',
+			'brave-ledger-verification=brave1',
+			'status-page-domain-verification=sp1',
+			'workplace-domain-verification=wp1',
+			'cisco-ci-domain-verification=cisco1',
+			'teamviewer-sso-verification=tv1',
+		];
+		mockDnsResponses({
+			'example.com': records,
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const result = await run();
+		// Score should be well above 0 — enterprise domains with housekeeping issues
+		// should land in the 50-80 range, not catastrophic failure territory
+		expect(result.score).toBeGreaterThanOrEqual(50);
+		expect(result.passed).toBe(true);
+		// Should have the excessive record finding at medium (31 >= 25)
+		const excessive = result.findings.find((f) => /Excessive TXT record accumulation/i.test(f.title));
+		expect(excessive).toBeDefined();
+		expect(excessive!.severity).toBe('medium');
+		// Duplicates should be consolidated into a single finding
+		const dupFindings = result.findings.filter((f) => /Duplicate verification records/i.test(f.title));
+		expect(dupFindings).toHaveLength(1);
+		expect(dupFindings[0].severity).toBe('low');
 	});
 
 	it('should match verification patterns case-insensitively', async () => {

@@ -284,13 +284,23 @@ export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptio
 
 	// --- Record accumulation ---
 	const recordCount = rootTxtRecords.length;
-	if (recordCount >= 15) {
+	if (recordCount >= 25) {
 		findings.push(
 			createFinding(
 				'txt_hygiene',
 				'Excessive TXT record accumulation',
-				'high',
+				'medium',
 				`Found ${recordCount} TXT records for ${domain}. Excessive records increase DNS response size, risk UDP truncation, and suggest poor lifecycle management. Review and remove unused verification records.`,
+				{ recordCount },
+			),
+		);
+	} else if (recordCount >= 15) {
+		findings.push(
+			createFinding(
+				'txt_hygiene',
+				'Elevated TXT record count',
+				'low',
+				`Found ${recordCount} TXT records for ${domain}. While common for large organizations, consider auditing for stale or unnecessary records to prevent future DNS response size issues.`,
 				{ recordCount },
 			),
 		);
@@ -299,14 +309,14 @@ export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptio
 			createFinding(
 				'txt_hygiene',
 				'TXT record accumulation',
-				'medium',
+				'low',
 				`Found ${recordCount} TXT records for ${domain}. Consider auditing for stale or unnecessary records to prevent future DNS response size issues.`,
 				{ recordCount },
 			),
 		);
 	}
 
-	// --- Duplicate verification records ---
+	// --- Duplicate verification records (consolidated into a single finding) ---
 	const prefixCounts = new Map<string, { service: string; count: number }>();
 	for (const match of matchedServices) {
 		const existing = prefixCounts.get(match.prefix);
@@ -316,18 +326,23 @@ export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptio
 			prefixCounts.set(match.prefix, { service: match.service, count: 1 });
 		}
 	}
+	const duplicates: { service: string; count: number }[] = [];
 	for (const [, { service, count }] of prefixCounts) {
 		if (count >= 2) {
-			findings.push(
-				createFinding(
-					'txt_hygiene',
-					`Duplicate verification records: ${service}`,
-					'medium',
-					`Found ${count} verification records for ${service}. Duplicate verification records are unnecessary and may indicate incomplete migrations or stale configurations.`,
-					{ service, duplicateCount: count },
-				),
-			);
+			duplicates.push({ service, count });
 		}
+	}
+	if (duplicates.length > 0) {
+		const details = duplicates.map((d) => `${d.service} (${d.count}x)`).join(', ');
+		findings.push(
+			createFinding(
+				'txt_hygiene',
+				'Duplicate verification records detected',
+				'low',
+				`Duplicate verification records found: ${details}. Duplicate records are unnecessary and may indicate incomplete migrations or stale configurations. Remove extras to reduce DNS clutter.`,
+				{ duplicates },
+			),
+		);
 	}
 
 	// --- DMARC misplaced at root ---

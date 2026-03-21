@@ -14,7 +14,13 @@
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
 import { queryDnsRecords, queryMxRecords, queryPtrRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
-import { analyzePtrRecords, analyzeDnsblResults, buildDnsblZones, reverseIpForDnsbl } from './mx-reputation-analysis';
+import {
+	analyzePtrRecords,
+	analyzeDnsblResults,
+	buildDnsblZones,
+	reverseIpForDnsbl,
+	detectSharedMxProvider,
+} from './mx-reputation-analysis';
 
 /** Maximum number of MX hosts to check (bounds outbound query count). */
 const MAX_MX_HOSTS = 3;
@@ -69,6 +75,11 @@ export async function checkMxReputation(domain: string, dnsOptions?: QueryDnsOpt
 	for (const mx of hostsToCheck) {
 		const mxHost = mx.exchange;
 		if (!mxHost || mxHost === '.') continue;
+
+		// Detect shared email provider (Google Workspace, Microsoft 365, etc.)
+		// to contextualise DNSBL results — shared-infrastructure IPs don't reflect
+		// the individual domain's sending reputation.
+		const sharedProvider = detectSharedMxProvider(mxHost);
 
 		try {
 			// Resolve A records for MX host
@@ -133,7 +144,7 @@ export async function checkMxReputation(domain: string, dnsOptions?: QueryDnsOpt
 				}
 			}
 
-			findings.push(...analyzeDnsblResults(ip, dnsblResults));
+			findings.push(...analyzeDnsblResults(ip, dnsblResults, sharedProvider));
 		} catch {
 			findings.push(
 				createFinding(
