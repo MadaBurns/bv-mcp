@@ -69,6 +69,28 @@ const PROMPTS: McpPrompt[] = [
 			},
 		],
 	},
+	{
+		name: 'remediation-workflow',
+		description: 'Guided remediation: scan, generate fix plan, produce DNS records for top issues',
+		arguments: [
+			{
+				name: 'domain',
+				description: 'The domain to remediate (e.g., example.com)',
+				required: true,
+			},
+		],
+	},
+	{
+		name: 'email-hardening-guide',
+		description: 'Step-by-step email security hardening with record generation and verification',
+		arguments: [
+			{
+				name: 'domain',
+				description: 'The domain to harden (e.g., example.com)',
+				required: true,
+			},
+		],
+	},
 ];
 
 /** Prompt message templates keyed by prompt name */
@@ -136,6 +158,56 @@ Report whether the domain passes or fails compliance, listing each specific viol
 				},
 			];
 		}
+
+		case 'remediation-workflow':
+			return [
+				{
+					role: 'user',
+					content: {
+						type: 'text',
+						text: `Run a guided remediation workflow for ${domain}.
+
+1. Run generate_fix_plan on ${domain} to get a prioritized list of remediation actions.
+2. For the top 3 highest-priority actions:
+   a. If SPF-related: run generate_spf_record to produce a corrected SPF record.
+   b. If DMARC-related: run generate_dmarc_record to produce a DMARC record.
+   c. If DKIM-related: run generate_dkim_config to get provider-specific setup instructions.
+   d. If MTA-STS-related: run generate_mta_sts_policy to generate the policy.
+   e. For other issues: run explain_finding to get remediation guidance.
+3. Present a summary with:
+   - Current score and grade
+   - Each action with the exact DNS record to publish
+   - Verification steps to confirm the changes worked`,
+					},
+				},
+			];
+
+		case 'email-hardening-guide':
+			return [
+				{
+					role: 'user',
+					content: {
+						type: 'text',
+						text: `Create an email security hardening guide for ${domain}.
+
+1. Run scan_domain on ${domain} to assess the current security posture.
+2. Based on the maturity stage, create a step-by-step hardening plan:
+   - Stage 0-1 (Unprotected/Basic): Start with SPF and DMARC monitoring
+   - Stage 2 (Monitoring): Move to DMARC enforcement and add DKIM
+   - Stage 3 (Enforcing): Add MTA-STS and TLS-RPT
+   - Stage 4 (Hardened): Consider DNSSEC, DANE, and BIMI
+3. For each step, generate the appropriate DNS records:
+   - generate_spf_record for SPF
+   - generate_dmarc_record for DMARC (start with p=none, then quarantine, then reject)
+   - generate_dkim_config for DKIM
+   - generate_mta_sts_policy for MTA-STS
+4. Provide a verification checklist:
+   - How to test each change
+   - What to monitor in DMARC reports
+   - Timeline for moving from monitoring to enforcement`,
+					},
+				},
+			];
 
 		default:
 			throw new Error(`Invalid prompt name: ${name}`);
