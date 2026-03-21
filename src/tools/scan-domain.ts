@@ -286,6 +286,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				provider: domainContext.detectedProvider,
 				categoryFindings: checkResults.map((r) => ({ category: r.category, score: r.score, passed: r.passed })),
 				timestamp: Date.now(),
+				overallScore: score.overall,
 			};
 			const telemetryPromise = (async () => {
 				try {
