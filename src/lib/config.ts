@@ -159,4 +159,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	generate_dmarc_record: 200,
 	generate_dkim_config: 200,
 	generate_mta_sts_policy: 200,
+	get_benchmark: 100,
+	get_provider_insights: 50,
+	assess_spoofability: 150,
 };
