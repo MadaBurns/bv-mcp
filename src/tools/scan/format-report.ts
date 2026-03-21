@@ -19,12 +19,22 @@ export interface StructuredScanResult {
 	scoringSignals: string[];
 	scoringNote: string | null;
 	adaptiveWeightDeltas: Record<string, number> | null;
+	/** Percentile rank within the scoring profile population (0–100). Null when insufficient benchmark data. */
+	percentileRank: number | null;
+	/** Composite email spoofability score (0–100, higher = more spoofable). Null when not computed. */
+	spoofabilityScore: number | null;
 	timestamp: string;
 	cached: boolean;
 }
 
+/** Optional enrichment data for structured scan results. */
+export interface ScanResultEnrichment {
+	percentileRank?: number | null;
+	spoofabilityScore?: number | null;
+}
+
 /** Build a machine-readable structured result from a scan. */
-export function buildStructuredScanResult(result: ScanDomainResult): StructuredScanResult {
+export function buildStructuredScanResult(result: ScanDomainResult, enrichment?: ScanResultEnrichment): StructuredScanResult {
 	return {
 		domain: result.domain,
 		score: result.score.overall,
@@ -43,6 +53,8 @@ export function buildStructuredScanResult(result: ScanDomainResult): StructuredS
 		scoringSignals: (result.context?.signals ?? []).map((s) => s.replace(/[<>&"']/g, '')),
 		scoringNote: result.scoringNote ?? null,
 		adaptiveWeightDeltas: result.adaptiveWeightDeltas ?? null,
+		percentileRank: enrichment?.percentileRank ?? null,
+		spoofabilityScore: enrichment?.spoofabilityScore ?? null,
 		timestamp: result.timestamp,
 		cached: result.cached,
 	};

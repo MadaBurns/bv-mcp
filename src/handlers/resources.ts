@@ -50,6 +50,12 @@ const RESOURCES: McpResource[] = [
 		mimeType: 'text/markdown',
 	},
 	{
+		uri: 'dns-security://guides/intelligence',
+		name: 'Intelligence Layer Guide',
+		description: 'How benchmark and provider cohort features work, privacy guarantees, and data freshness.',
+		mimeType: 'text/markdown',
+	},
+	{
 		uri: 'dns-security://guides/remediation',
 		name: 'DNS Remediation Guide',
 		description: 'Step-by-step DNS record fix patterns for each check category, using generate_* tools.',
@@ -279,6 +285,62 @@ Returns pass/fail with specific violations — ideal for automated gates.
 - \`check_lookalikes\` and \`check_shadow_domains\` are rate-limited (20/day unauthenticated) — use judiciously
 - All checks are passive and read-only — safe to run against any domain
 - Use the \`profile\` parameter on \`scan_domain\` for non-mail domains (web_only, non_mail) to get more relevant scoring
+`,
+
+	'dns-security://guides/intelligence': `# Intelligence Layer Guide
+
+Blackveil DNS collects anonymized, aggregate telemetry from scans to provide benchmarking and provider cohort insights.
+
+## Tools
+
+| Tool | Purpose |
+|------|---------|
+| \`get_benchmark\` | Score distribution, percentile ranks, and top failing categories across all scanned domains |
+| \`get_provider_insights\` | Provider-specific cohort comparison (e.g., "How do Google Workspace domains typically score?") |
+
+## How It Works
+
+Every \`scan_domain\` call contributes anonymized data:
+- **Score histogram**: overall score bucketed into 10-point ranges (0-9, 10-19, ..., 90-99)
+- **Provider cohort**: EMA-smoothed average score per provider + profile combination
+- **Trend snapshots**: hourly aggregates for trend analysis
+
+## Privacy Guarantees
+
+- **No domain names stored**: domains are never recorded in intelligence tables
+- **Aggregate only**: all data is profile-level or provider-level statistics
+- **EMA smoothing**: individual scan scores are absorbed into exponential moving averages
+- **No PII**: no IP addresses, user identifiers, or session data in intelligence tables
+
+## Data Freshness
+
+- Benchmark data requires **100+ scans** per profile before results are considered meaningful
+- Provider insights are available after the first scan with that provider
+- Trend snapshots are stored hourly with a 30-day rolling window (720 snapshots per profile)
+- All timestamps use UTC ISO 8601 format
+
+## Scoring Profiles
+
+Benchmarks are segmented by scoring profile:
+- **mail_enabled** (default): domains with active MX records
+- **enterprise_mail**: domains using enterprise email providers (Google Workspace, Microsoft 365)
+- **non_mail**: domains without MX records
+- **web_only**: domains serving web content but not email
+- **minimal**: domains with >50% check failures
+
+## Example Workflows
+
+### Compare your domain to the population
+\`\`\`
+1. scan_domain({ domain: "example.com" })  → note the score and detected profile
+2. get_benchmark({ profile: "mail_enabled" })  → see where you rank
+\`\`\`
+
+### Compare to your email provider cohort
+\`\`\`
+1. scan_domain({ domain: "example.com" })  → note the detected provider
+2. get_provider_insights({ provider: "google workspace" })  → cohort comparison
+\`\`\`
 `,
 
 	'dns-security://guides/remediation': `# DNS Remediation Guide
