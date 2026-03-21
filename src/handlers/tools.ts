@@ -25,6 +25,8 @@ import { checkZoneHygiene } from '../tools/check-zone-hygiene';
 import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
+import { generateFixPlan, formatFixPlan } from '../tools/generate-fix-plan';
+import { generateSpfRecord, generateDmarcRecord, generateDkimConfig, generateMtaStsPolicy, formatGeneratedRecord } from '../tools/generate-records';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractFormat, extractScanProfile, normalizeToolName } from './tool-args';
@@ -270,6 +272,98 @@ export async function handleToolsCall(
 						authTier: runtimeOptions?.authTier,
 					});
 					return { content: [mcpText(formatBaselineResult(result))] };
+				}
+				case 'generate_fix_plan': {
+					const plan = await generateFixPlan(validDomain, scanCacheKV, runtimeOptions);
+					logResult = plan.grade;
+					logDetails = plan;
+					logToolSuccess({
+						toolName: name,
+						durationMs: Date.now() - startTime,
+						domain,
+						analytics: runtimeOptions?.analytics,
+						status: 'pass',
+						logResult,
+						logDetails,
+						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
+					});
+					return { content: [mcpText(formatFixPlan(plan))] };
+				}
+				case 'generate_spf_record': {
+					const includeProviders = Array.isArray(args.include_providers) ? args.include_providers as string[] : undefined;
+					const record = await generateSpfRecord(validDomain, includeProviders, buildDnsOptions(runtimeOptions));
+					logToolSuccess({
+						toolName: name,
+						durationMs: Date.now() - startTime,
+						domain,
+						analytics: runtimeOptions?.analytics,
+						status: 'pass',
+						logResult: 'generated',
+						logDetails: record,
+						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
+					});
+					return { content: [mcpText(formatGeneratedRecord(record))] };
+				}
+				case 'generate_dmarc_record': {
+					const policy = typeof args.policy === 'string' ? args.policy as 'none' | 'quarantine' | 'reject' : undefined;
+					const ruaEmail = typeof args.rua_email === 'string' ? args.rua_email : undefined;
+					const record = await generateDmarcRecord(validDomain, policy, ruaEmail, buildDnsOptions(runtimeOptions));
+					logToolSuccess({
+						toolName: name,
+						durationMs: Date.now() - startTime,
+						domain,
+						analytics: runtimeOptions?.analytics,
+						status: 'pass',
+						logResult: 'generated',
+						logDetails: record,
+						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
+					});
+					return { content: [mcpText(formatGeneratedRecord(record))] };
+				}
+				case 'generate_dkim_config': {
+					const provider = typeof args.provider === 'string' ? args.provider : undefined;
+					const record = await generateDkimConfig(validDomain, provider);
+					logToolSuccess({
+						toolName: name,
+						durationMs: Date.now() - startTime,
+						domain,
+						analytics: runtimeOptions?.analytics,
+						status: 'pass',
+						logResult: 'generated',
+						logDetails: record,
+						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
+					});
+					return { content: [mcpText(formatGeneratedRecord(record))] };
+				}
+				case 'generate_mta_sts_policy': {
+					const mxHosts = Array.isArray(args.mx_hosts) ? args.mx_hosts as string[] : undefined;
+					const record = await generateMtaStsPolicy(validDomain, mxHosts, buildDnsOptions(runtimeOptions));
+					logToolSuccess({
+						toolName: name,
+						durationMs: Date.now() - startTime,
+						domain,
+						analytics: runtimeOptions?.analytics,
+						status: 'pass',
+						logResult: 'generated',
+						logDetails: record,
+						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
+					});
+					return { content: [mcpText(formatGeneratedRecord(record))] };
 				}
 				case 'explain_finding': {
 					let explainArgs: ReturnType<typeof extractExplainFindingArgs>;
