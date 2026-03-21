@@ -12,6 +12,44 @@ import { createFinding } from '../lib/scoring';
 const GENERIC_PTR_PATTERN = /^(ip-|host-|static-|dynamic-|dhcp|dsl|cable|pool|customer|client|user|broadband)/i;
 
 /**
+ * Known shared email provider MX hostname suffixes.
+ * IPs behind these hostnames are shared infrastructure — DNSBL listings reflect
+ * the platform's aggregate traffic, not any individual customer domain's reputation.
+ */
+const SHARED_PROVIDER_MX_SUFFIXES: Array<{ suffix: string; provider: string }> = [
+	{ suffix: '.google.com', provider: 'Google Workspace' },
+	{ suffix: '.googlemail.com', provider: 'Google Workspace' },
+	{ suffix: '.1e100.net', provider: 'Google Workspace' },
+	{ suffix: '.outlook.com', provider: 'Microsoft 365' },
+	{ suffix: '.protection.outlook.com', provider: 'Microsoft 365' },
+	{ suffix: '.pphosted.com', provider: 'Proofpoint' },
+	{ suffix: '.mimecast.com', provider: 'Mimecast' },
+	{ suffix: '.mailgun.org', provider: 'Mailgun' },
+	{ suffix: '.sendgrid.net', provider: 'SendGrid' },
+	{ suffix: '.amazonses.com', provider: 'Amazon SES' },
+	{ suffix: '.messagelabs.com', provider: 'Symantec/Broadcom' },
+	{ suffix: '.fireeyecloud.com', provider: 'Trellix' },
+	{ suffix: '.iphmx.com', provider: 'Cisco IronPort' },
+];
+
+/**
+ * Check if an MX hostname belongs to a known shared email provider.
+ *
+ * @param mxHost - The MX exchange hostname (e.g., "smtp-in.l.google.com")
+ * @returns The provider name if matched, or null if the host is dedicated infrastructure
+ */
+export function detectSharedMxProvider(mxHost: string): string | null {
+	const normalized = mxHost.trim().toLowerCase().replace(/\.$/, '');
+	if (!normalized) return null;
+	for (const { suffix, provider } of SHARED_PROVIDER_MX_SUFFIXES) {
+		if (normalized === suffix.slice(1) || normalized.endsWith(suffix)) {
+			return provider;
+		}
+	}
+	return null;
+}
+
+/**
  * Analyze PTR (reverse DNS) records for an MX server IP.
  *
  * Checks for:
@@ -90,25 +128,47 @@ export function analyzePtrRecords(ip: string, ptrHostnames: string[], forwardIps
 /**
  * Analyze DNSBL lookup results for an MX server IP.
  *
+ * When the MX host belongs to a known shared email provider (e.g., Google Workspace,
+ * Microsoft 365), DNSBL listings are downgraded from `high` to `info` because the
+ * listed IPs are shared infrastructure — their blocklist status reflects aggregate
+ * platform traffic, not the individual domain's sending reputation.
+ *
  * @param ip - The MX server IP address
  * @param listings - Array of DNSBL zone check results
+ * @param sharedProvider - If non-null, the name of the shared provider (triggers downgrade)
  * @returns Array of findings from DNSBL analysis
  */
-export function analyzeDnsblResults(ip: string, listings: Array<{ zone: string; listed: boolean }>): Finding[] {
+export function analyzeDnsblResults(
+	ip: string,
+	listings: Array<{ zone: string; listed: boolean }>,
+	sharedProvider?: string | null,
+): Finding[] {
 	const findings: Finding[] = [];
 	const listedZones = listings.filter((l) => l.listed);
 
 	if (listedZones.length > 0) {
 		for (const listing of listedZones) {
-			findings.push(
-				createFinding(
-					'mx_reputation',
-					`MX server IP listed on ${listing.zone}`,
-					'high',
-					`IP ${ip} is listed on DNSBL ${listing.zone}. Blacklisted mail servers will have significantly degraded email deliverability.`,
-					{ ip, zone: listing.zone },
-				),
-			);
+			if (sharedProvider) {
+				findings.push(
+					createFinding(
+						'mx_reputation',
+						`Shared ${sharedProvider} IP listed on ${listing.zone} (informational)`,
+						'info',
+						`IP ${ip} is listed on DNSBL ${listing.zone}, but this is a shared ${sharedProvider} IP. DNSBL listings on shared email infrastructure reflect the provider's aggregate traffic, not your domain's individual reputation. Your sending reputation is managed at the account level by ${sharedProvider}.`,
+						{ ip, zone: listing.zone, sharedProvider },
+					),
+				);
+			} else {
+				findings.push(
+					createFinding(
+						'mx_reputation',
+						`MX server IP listed on ${listing.zone}`,
+						'high',
+						`IP ${ip} is listed on DNSBL ${listing.zone}. Blacklisted mail servers will have significantly degraded email deliverability.`,
+						{ ip, zone: listing.zone },
+					),
+				);
+			}
 		}
 	} else {
 		findings.push(

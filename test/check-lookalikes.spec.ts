@@ -459,3 +459,369 @@ describe('checkLookalikes - wildcard DNS filtering', () => {
 		expect(WILDCARD_CANARY_LABEL).toBe('_bv-wc-probe');
 	});
 });
+
+describe('checkLookalikes - shared nameserver detection', () => {
+	async function run(domain = 'example.com') {
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		return checkLookalikes(domain);
+	}
+
+	it('should downgrade to info when lookalike shares nameservers with primary domain', async () => {
+		const sharedNs = 'ns1.cloudflare.com.';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+
+			// Primary domain NS
+			if (name === 'test.com' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(
+					createDohResponse(
+						[{ name, type: 2 }],
+						[
+							{ name, type: 2, TTL: 300, data: sharedNs },
+							{ name, type: 2, TTL: 300, data: 'ns2.cloudflare.com.' },
+						],
+					),
+				);
+			}
+
+			// tst.com (char omission) — shares NS with primary
+			if (name === 'tst.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[
+								{ name, type: 2, TTL: 300, data: sharedNs },
+								{ name, type: 2, TTL: 300, data: 'ns2.cloudflare.com.' },
+							],
+						),
+					);
+				}
+				if (type === 'A' || type === '1') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 1 }],
+							[{ name, type: 1, TTL: 300, data: '1.2.3.4' }],
+						),
+					);
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 15 }],
+							[{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }],
+						),
+					);
+				}
+			}
+
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const result = await run('test.com');
+
+		// tst.com should be info (shared NS = likely same owner), NOT high
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.title).toContain('likely owned by same entity');
+		expect(tstFinding!.detail).toContain('shares nameservers');
+		expect(tstFinding!.detail).toContain('mail infrastructure');
+		expect(tstFinding!.metadata?.sharedNs).toBe(true);
+
+		// Should NOT appear in the high count summary
+		const highSummary = result.findings.find((f) => /mail capability detected/i.test(f.title));
+		expect(highSummary).toBeUndefined();
+	});
+
+	it('should keep high severity when lookalike has different nameservers', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+
+			// Primary domain NS
+			if (name === 'test.com' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(
+					createDohResponse(
+						[{ name, type: 2 }],
+						[{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com.' }],
+					),
+				);
+			}
+
+			// tst.com has DIFFERENT nameservers + MX → should remain HIGH
+			if (name === 'tst.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[{ name, type: 2, TTL: 300, data: 'ns1.attacker-dns.com.' }],
+						),
+					);
+				}
+				if (type === 'A' || type === '1') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 1 }],
+							[{ name, type: 1, TTL: 300, data: '6.6.6.6' }],
+						),
+					);
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 15 }],
+							[{ name, type: 15, TTL: 300, data: '10 mail.evil.com.' }],
+						),
+					);
+				}
+			}
+
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const result = await run('test.com');
+
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('high');
+		expect(tstFinding!.title).toContain('mail infrastructure');
+	});
+
+	it('should downgrade medium to info when lookalike with A record shares NS', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+
+			// Primary domain NS
+			if (name === 'test.com' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(
+					createDohResponse(
+						[{ name, type: 2 }],
+						[{ name, type: 2, TTL: 300, data: 'ns1.example-dns.com.' }],
+					),
+				);
+			}
+
+			// tst.com shares NS, has A record but no MX
+			if (name === 'tst.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[{ name, type: 2, TTL: 300, data: 'ns1.example-dns.com.' }],
+						),
+					);
+				}
+				if (type === 'A' || type === '1') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 1 }],
+							[{ name, type: 1, TTL: 300, data: '1.2.3.4' }],
+						),
+					);
+				}
+			}
+
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const result = await run('test.com');
+
+		// Should be info, not medium
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.title).toContain('likely owned by same entity');
+		expect(tstFinding!.detail).toContain('web presence');
+	});
+
+	it('should handle NS comparison case-insensitively and strip trailing dots', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+
+			// Primary domain NS with trailing dot and mixed case
+			if (name === 'test.com' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(
+					createDohResponse(
+						[{ name, type: 2 }],
+						[{ name, type: 2, TTL: 300, data: 'NS1.CloudFlare.COM.' }],
+					),
+				);
+			}
+
+			// tst.com has same NS but different casing/trailing dot
+			if (name === 'tst.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com' }],
+						),
+					);
+				}
+				if (type === 'A' || type === '1') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 1 }],
+							[{ name, type: 1, TTL: 300, data: '1.2.3.4' }],
+						),
+					);
+				}
+			}
+
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const result = await run('test.com');
+
+		// Despite case/dot differences, NS should match
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('info');
+	});
+
+	it('should not downgrade when primary NS query fails (empty set)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+
+			// Primary domain NS query fails (returns empty)
+			if (name === 'test.com' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(createDohResponse([], []));
+			}
+
+			// tst.com has NS + MX
+			if (name === 'tst.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com.' }],
+						),
+					);
+				}
+				if (type === 'A' || type === '1') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 1 }],
+							[{ name, type: 1, TTL: 300, data: '1.2.3.4' }],
+						),
+					);
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 15 }],
+							[{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }],
+						),
+					);
+				}
+			}
+
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const result = await run('test.com');
+
+		// Should stay HIGH because primary NS is unknown (empty set — can't compare)
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('high');
+	});
+
+	it('should handle mixed scenario: some shared NS, some different', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+
+			// Primary domain NS
+			if (name === 'test.com' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(
+					createDohResponse(
+						[{ name, type: 2 }],
+						[
+							{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com.' },
+							{ name, type: 2, TTL: 300, data: 'ns2.cloudflare.com.' },
+						],
+					),
+				);
+			}
+
+			// tst.com — shares NS (defensive registration) with MX
+			if (name === 'tst.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[
+								{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com.' },
+								{ name, type: 2, TTL: 300, data: 'ns2.cloudflare.com.' },
+							],
+						),
+					);
+				}
+				if (type === 'A' || type === '1') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 1 }],
+							[{ name, type: 1, TTL: 300, data: '1.2.3.4' }],
+						),
+					);
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 15 }],
+							[{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }],
+						),
+					);
+				}
+			}
+
+			// testt.com — different NS (attacker) with MX
+			if (name === 'testt.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[{ name, type: 2, TTL: 300, data: 'ns1.evil-registrar.com.' }],
+						),
+					);
+				}
+				if (type === 'A' || type === '1') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 1 }],
+							[{ name, type: 1, TTL: 300, data: '6.6.6.6' }],
+						),
+					);
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 15 }],
+							[{ name, type: 15, TTL: 300, data: '10 mail.evil.com.' }],
+						),
+					);
+				}
+			}
+
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const result = await run('test.com');
+
+		// tst.com should be info (shared NS)
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('info');
+
+		// testt.com should be high (different NS)
+		const testtFinding = result.findings.find(
+			(f) => f.severity === 'high' && f.title.includes('testt.com'),
+		);
+		expect(testtFinding).toBeDefined();
+
+		// Summary should count only 1 (testt.com), not 2
+		const summary = result.findings.find((f) => /mail capability detected/i.test(f.title));
+		expect(summary).toBeDefined();
+		expect(summary!.title).toContain('1 lookalike domain');
+	});
+});
