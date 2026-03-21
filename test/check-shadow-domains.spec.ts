@@ -598,6 +598,210 @@ describe('checkShadowDomains — classification edge cases', () => {
 	});
 });
 
+describe('checkShadowDomains — shared NS severity downgrade', () => {
+	const sharedNs = ['ns1.shared-registrar.com.', 'ns2.shared-registrar.com.'];
+
+	async function run(domain = 'example.com') {
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		return checkShadowDomains(domain);
+	}
+
+	it('should downgrade "fully spoofable" from critical to high when variant shares NS with primary', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			// Primary: NS + MX
+			if (name === target) {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, sharedNs));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			// Variant: same NS, MX present, but no SPF and no DMARC
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, sharedNs));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['1.2.3.4']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.shadow.com.']));
+				if (type === 'TXT' || type === '16') return Promise.resolve(emptyResponse());
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(emptyResponse());
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		// Should be downgraded to high (not critical)
+		const critical = result.findings.find(
+			(f) => f.severity === 'critical' && f.detail.includes('example.net'),
+		);
+		expect(critical).toBeUndefined();
+
+		const high = result.findings.find(
+			(f) => f.severity === 'high' && f.detail.includes('example.net') && /fully spoofable/i.test(f.title),
+		);
+		expect(high).toBeDefined();
+		expect(high!.detail).toContain('shared nameservers');
+	});
+
+	it('should downgrade "lacks DMARC" from high to medium when variant shares NS with primary', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			if (name === target) {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, sharedNs));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			// Variant: same NS, MX + SPF but no DMARC
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, sharedNs));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['1.2.3.4']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.shadow.com.']));
+				if (type === 'TXT' || type === '16') return Promise.resolve(txtRecords(name, ['v=spf1 include:spf.provider.com -all']));
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(emptyResponse());
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		// Should be downgraded to medium (not high)
+		const high = result.findings.find(
+			(f) => f.severity === 'high' && f.detail.includes('example.net') && /lacks DMARC/i.test(f.title),
+		);
+		expect(high).toBeUndefined();
+
+		const medium = result.findings.find(
+			(f) => f.severity === 'medium' && f.detail.includes('example.net') && /lacks DMARC/i.test(f.title),
+		);
+		expect(medium).toBeDefined();
+		expect(medium!.detail).toContain('shared nameservers');
+	});
+
+	it('should downgrade "DMARC not enforcing" from high to medium when variant shares NS with primary', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			if (name === target) {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, sharedNs));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			// Variant: same NS, MX + SPF + DMARC p=none
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, sharedNs));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['1.2.3.4']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.shadow.com.']));
+				if (type === 'TXT' || type === '16') return Promise.resolve(txtRecords(name, ['v=spf1 include:spf.provider.com -all']));
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(txtRecords(name, ['v=DMARC1; p=none; rua=mailto:dmarc@example.net']));
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const high = result.findings.find(
+			(f) => f.severity === 'high' && f.detail.includes('example.net') && /not enforcing/i.test(f.title),
+		);
+		expect(high).toBeUndefined();
+
+		const medium = result.findings.find(
+			(f) => f.severity === 'medium' && f.detail.includes('example.net') && /not enforcing/i.test(f.title),
+		);
+		expect(medium).toBeDefined();
+		expect(medium!.detail).toContain('shared nameservers');
+	});
+
+	it('should annotate divergent MX finding when variant shares NS with primary', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			if (name === target) {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, sharedNs));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			// Variant: same NS, different MX, enforcing DMARC
+			if (name === 'example.org') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, sharedNs));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['1.2.3.4']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.other-provider.com.']));
+				if (type === 'TXT' || type === '16') return Promise.resolve(txtRecords(name, ['v=spf1 include:spf.provider.com -all']));
+			}
+			if (name === '_dmarc.example.org' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(txtRecords(name, ['v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com']));
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const divergent = result.findings.find(
+			(f) => f.severity === 'medium' && f.detail.includes('example.org') && /divergent/i.test(f.title),
+		);
+		expect(divergent).toBeDefined();
+		expect(divergent!.detail).toContain('common ownership');
+	});
+
+	it('should NOT downgrade when variant has different NS from primary', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			// Primary: own NS
+			if (name === target) {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, sharedNs));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			// Variant: DIFFERENT NS, MX + SPF but no DMARC
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.other-registrar.com.', 'ns2.other-registrar.com.']));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['1.2.3.4']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.shadow.com.']));
+				if (type === 'TXT' || type === '16') return Promise.resolve(txtRecords(name, ['v=spf1 include:spf.provider.com -all']));
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(emptyResponse());
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		// Should remain high (not downgraded)
+		const high = result.findings.find(
+			(f) => f.severity === 'high' && f.detail.includes('example.net') && /lacks DMARC/i.test(f.title),
+		);
+		expect(high).toBeDefined();
+		expect(high!.detail).not.toContain('shared nameservers');
+	});
+});
+
 describe('checkShadowDomains — Phase 1 constants', () => {
 	it('exports Phase 1 lean DNS options and FAILURE_THRESHOLD', async () => {
 		const mod = await import('../src/tools/check-shadow-domains');
