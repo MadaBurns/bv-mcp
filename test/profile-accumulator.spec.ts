@@ -23,6 +23,26 @@ async function getWeights(stub: DurableObjectStub, profile: string, provider?: s
 	return stub.fetch(url.toString(), { method: 'GET' });
 }
 
+async function getBenchmark(stub: DurableObjectStub, profile?: string): Promise<Response> {
+	const url = new URL('https://accumulator.internal/benchmark');
+	if (profile) url.searchParams.set('profile', profile);
+	return stub.fetch(url.toString(), { method: 'GET' });
+}
+
+async function getProviderInsights(stub: DurableObjectStub, provider: string, profile?: string): Promise<Response> {
+	const url = new URL('https://accumulator.internal/provider-insights');
+	url.searchParams.set('provider', provider);
+	if (profile) url.searchParams.set('profile', profile);
+	return stub.fetch(url.toString(), { method: 'GET' });
+}
+
+async function getTrends(stub: DurableObjectStub, profile?: string, hours?: number): Promise<Response> {
+	const url = new URL('https://accumulator.internal/trends');
+	if (profile) url.searchParams.set('profile', profile);
+	if (hours) url.searchParams.set('hours', String(hours));
+	return stub.fetch(url.toString(), { method: 'GET' });
+}
+
 describe('ProfileAccumulator', () => {
 	it('returns empty weights for unknown profile', async () => {
 		const stub = getStub('global');
@@ -209,5 +229,339 @@ describe('ProfileAccumulator', () => {
 		const stub = getStub('global');
 		const res = await stub.fetch('https://accumulator.internal/nonexistent', { method: 'GET' });
 		expect(res.status).toBe(404);
+	});
+});
+
+// ─── Intelligence layer tests ───────────────────────────────────────────
+
+describe('ProfileAccumulator — Intelligence Layer', () => {
+	describe('Score Histogram (GET /benchmark)', () => {
+		it('returns insufficient_data when fewer than 100 scans', async () => {
+			const stub = getStub('bench-insufficient');
+
+			// Ingest 5 scans with overallScore
+			for (let i = 0; i < 5; i++) {
+				await ingest(stub, {
+					profile: 'mail_enabled',
+					provider: null,
+					categoryFindings: [{ category: 'dmarc', score: 80, passed: true }],
+					timestamp: Date.now(),
+					overallScore: 70 + i,
+				});
+			}
+
+			const res = await getBenchmark(stub, 'mail_enabled');
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			expect(body.status).toBe('insufficient_data');
+			expect(body.totalScans).toBe(5);
+			expect(body.minimumRequired).toBe(100);
+			expect(body.baselineFailureRates).toBeDefined();
+		});
+
+		it('returns histogram data after 100+ scans', async () => {
+			const stub = getStub('bench-sufficient');
+
+			// Ingest 110 scans with varying scores
+			for (let i = 0; i < 110; i++) {
+				const score = 30 + Math.floor((i / 110) * 60); // scores from 30 to 89
+				await ingest(stub, {
+					profile: 'mail_enabled',
+					provider: null,
+					categoryFindings: [{ category: 'spf', score: score, passed: score >= 50 }],
+					timestamp: Date.now(),
+					overallScore: score,
+				});
+			}
+
+			const res = await getBenchmark(stub, 'mail_enabled');
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			expect(body.status).toBe('ok');
+			expect(body.totalScans).toBe(110);
+			expect(body.meanScore).toBeGreaterThan(0);
+			expect(body.medianBucket).toBeGreaterThanOrEqual(0);
+			expect(body.distribution).toBeDefined();
+			expect(body.percentiles).toBeDefined();
+			expect(body.topFailingCategories).toBeInstanceOf(Array);
+			expect(body.dataFreshness).toBeDefined();
+		});
+
+		it('defaults to mail_enabled profile', async () => {
+			const stub = getStub('bench-default');
+
+			const res = await getBenchmark(stub);
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			expect(body.profile).toBe('mail_enabled');
+		});
+
+		it('returns 400 for invalid profile', async () => {
+			const stub = getStub('bench-invalid');
+
+			const url = new URL('https://accumulator.internal/benchmark');
+			url.searchParams.set('profile', 'fake_profile');
+			const res = await stub.fetch(url.toString(), { method: 'GET' });
+			expect(res.status).toBe(400);
+		});
+	});
+
+	describe('Provider Cohort (GET /provider-insights)', () => {
+		it('returns no_data for unknown provider', async () => {
+			const stub = getStub('provider-empty');
+
+			const res = await getProviderInsights(stub, 'unknown-provider');
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			expect(body.status).toBe('no_data');
+		});
+
+		it('returns cohort data after provider ingests with overallScore', async () => {
+			const stub = getStub('provider-data');
+			const provider = 'google-workspace';
+
+			for (let i = 0; i < 10; i++) {
+				await ingest(stub, {
+					profile: 'mail_enabled',
+					provider,
+					categoryFindings: [
+						{ category: 'dmarc', score: 85, passed: true },
+						{ category: 'spf', score: 70, passed: i % 3 !== 0 },
+					],
+					timestamp: Date.now(),
+					overallScore: 75 + (i % 5),
+				});
+			}
+
+			const res = await getProviderInsights(stub, provider, 'mail_enabled');
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			expect(body.status).toBe('ok');
+			expect(body.provider).toBe(provider);
+			expect(body.totalScans).toBe(10);
+			expect(body.emaOverallScore).toBeGreaterThan(0);
+			expect(body.topFailingCategories).toBeInstanceOf(Array);
+		});
+
+		it('returns 400 when provider parameter is missing', async () => {
+			const stub = getStub('provider-missing');
+
+			const res = await stub.fetch('https://accumulator.internal/provider-insights', { method: 'GET' });
+			expect(res.status).toBe(400);
+		});
+
+		it('returns 400 for invalid profile', async () => {
+			const stub = getStub('provider-bad-profile');
+
+			const url = new URL('https://accumulator.internal/provider-insights');
+			url.searchParams.set('provider', 'test');
+			url.searchParams.set('profile', 'bogus');
+			const res = await stub.fetch(url.toString(), { method: 'GET' });
+			expect(res.status).toBe(400);
+		});
+	});
+
+	describe('Trend Snapshots (GET /trends)', () => {
+		it('returns no_data when no snapshots exist', async () => {
+			const stub = getStub('trends-empty');
+
+			const res = await getTrends(stub, 'mail_enabled');
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			expect(body.status).toBe('no_data');
+		});
+
+		it('returns trend data after ingests with overallScore', async () => {
+			const stub = getStub('trends-data');
+
+			for (let i = 0; i < 5; i++) {
+				await ingest(stub, {
+					profile: 'mail_enabled',
+					provider: null,
+					categoryFindings: [
+						{ category: 'dmarc', score: 80, passed: true },
+						{ category: 'spf', score: 60, passed: false },
+					],
+					timestamp: Date.now(),
+					overallScore: 65 + i,
+				});
+			}
+
+			const res = await getTrends(stub, 'mail_enabled', 24);
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			expect(body.status).toBe('ok');
+			expect(body.snapshotCount).toBeGreaterThanOrEqual(1);
+			expect(body.totalScans).toBe(5);
+			expect(body.periodAvgScore).toBeGreaterThan(0);
+			expect(body.snapshots).toBeInstanceOf(Array);
+			expect(body.snapshots[0]).toHaveProperty('hour');
+			expect(body.snapshots[0]).toHaveProperty('timestamp');
+			expect(body.snapshots[0]).toHaveProperty('avgScore');
+			expect(body.snapshots[0]).toHaveProperty('scanCount');
+			expect(body.snapshots[0]).toHaveProperty('failureRates');
+		});
+
+		it('defaults to 168 hours when no hours param', async () => {
+			const stub = getStub('trends-default');
+
+			const res = await getTrends(stub);
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			expect(body.hours).toBe(168);
+		});
+
+		it('clamps hours to valid range', async () => {
+			const stub = getStub('trends-clamp');
+
+			// Ingest one scan so we get 'ok' status
+			await ingest(stub, {
+				profile: 'mail_enabled',
+				provider: null,
+				categoryFindings: [{ category: 'spf', score: 50, passed: true }],
+				timestamp: Date.now(),
+				overallScore: 50,
+			});
+
+			// Very large hours — clamped to 720
+			const res = await getTrends(stub, 'mail_enabled', 9999);
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			expect(body.hours).toBe(720);
+		});
+
+		it('returns 400 for invalid profile', async () => {
+			const stub = getStub('trends-bad-profile');
+
+			const url = new URL('https://accumulator.internal/trends');
+			url.searchParams.set('profile', 'nonexistent');
+			const res = await stub.fetch(url.toString(), { method: 'GET' });
+			expect(res.status).toBe(400);
+		});
+	});
+
+	describe('Ingest with overallScore', () => {
+		it('populates intelligence tables when overallScore is provided', async () => {
+			const stub = getStub('ingest-overall');
+
+			await ingest(stub, {
+				profile: 'mail_enabled',
+				provider: 'test-provider',
+				categoryFindings: [
+					{ category: 'dmarc', score: 90, passed: true },
+					{ category: 'spf', score: 70, passed: true },
+				],
+				timestamp: Date.now(),
+				overallScore: 82,
+			});
+
+			// Histogram should have data
+			const benchRes = await getBenchmark(stub, 'mail_enabled');
+			const bench = await benchRes.json();
+			expect(bench.totalScans).toBe(1);
+
+			// Provider cohort should have data
+			const provRes = await getProviderInsights(stub, 'test-provider', 'mail_enabled');
+			const prov = await provRes.json();
+			expect(prov.status).toBe('ok');
+			expect(prov.totalScans).toBe(1);
+
+			// Trends should have data
+			const trendRes = await getTrends(stub, 'mail_enabled', 1);
+			const trend = await trendRes.json();
+			expect(trend.status).toBe('ok');
+			expect(trend.totalScans).toBe(1);
+		});
+
+		it('skips intelligence tables when overallScore is absent', async () => {
+			const stub = getStub('ingest-no-overall');
+
+			await ingest(stub, {
+				profile: 'enterprise_mail',
+				provider: null,
+				categoryFindings: [{ category: 'dmarc', score: 80, passed: true }],
+				timestamp: Date.now(),
+				// No overallScore
+			});
+
+			// Weights should still work (profile_stats updated)
+			const weightsRes = await getWeights(stub, 'enterprise_mail');
+			const weights = await weightsRes.json();
+			expect(weights.sampleCount).toBe(1);
+
+			// But benchmark should show 0 scans (no histogram data)
+			const benchRes = await getBenchmark(stub, 'enterprise_mail');
+			const bench = await benchRes.json();
+			expect(bench.totalScans).toBe(0);
+		});
+
+		it('clamps overallScore to 0-100 range', async () => {
+			const stub = getStub('ingest-clamp');
+
+			// Score over 100
+			await ingest(stub, {
+				profile: 'mail_enabled',
+				provider: null,
+				categoryFindings: [{ category: 'spf', score: 50, passed: true }],
+				timestamp: Date.now(),
+				overallScore: 150,
+			});
+
+			// Score should be clamped — bucket should be 90 (max)
+			const res = await getBenchmark(stub, 'mail_enabled');
+			const body = await res.json();
+			expect(body.totalScans).toBe(1);
+		});
+
+		it('ignores non-numeric overallScore', async () => {
+			const stub = getStub('ingest-non-numeric');
+
+			await stub.fetch('https://accumulator.internal/ingest', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					profile: 'mail_enabled',
+					provider: null,
+					categoryFindings: [{ category: 'spf', score: 50, passed: true }],
+					timestamp: Date.now(),
+					overallScore: 'not a number',
+				}),
+			});
+
+			// Weights updated but no histogram
+			const weightsRes = await getWeights(stub, 'mail_enabled');
+			const weights = await weightsRes.json();
+			expect(weights.sampleCount).toBe(1);
+
+			const benchRes = await getBenchmark(stub, 'mail_enabled');
+			const bench = await benchRes.json();
+			expect(bench.totalScans).toBe(0);
+		});
+	});
+
+	describe('Trend snapshot running average', () => {
+		it('computes running average across multiple scans in same hour', async () => {
+			const stub = getStub('trends-running-avg');
+
+			// Ingest multiple scans — they share the same snapshot_hour
+			const scores = [60, 70, 80, 90];
+			for (const score of scores) {
+				await ingest(stub, {
+					profile: 'mail_enabled',
+					provider: null,
+					categoryFindings: [{ category: 'dmarc', score, passed: score >= 50 }],
+					timestamp: Date.now(),
+					overallScore: score,
+				});
+			}
+
+			const res = await getTrends(stub, 'mail_enabled', 1);
+			const body = await res.json();
+			expect(body.status).toBe('ok');
+			expect(body.snapshots.length).toBe(1);
+			expect(body.snapshots[0].scanCount).toBe(4);
+			// Running average of 60, 70, 80, 90 = 75
+			expect(body.snapshots[0].avgScore).toBeCloseTo(75, 0);
+		});
 	});
 });
