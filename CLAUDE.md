@@ -144,7 +144,24 @@ Service binding fetch → POST /internal/tools/batch → guard middleware (rejec
 
 **Non-mail domain adjustment**: After all checks complete, if `check_mx` finds no MX records, `scan_domain` queries the parent domain's DMARC `sp=`/`p=` tag and then calls `adjustForNonMailDomain()` to downgrade critical/high email-auth findings (SPF, DMARC, DKIM, MTA-STS) to `info` severity. This significantly affects scores for non-mail domains.
 
-**Structured result output**: `scan_domain` returns **two MCP content blocks**: (1) the human-readable text report via `formatScanReport()`, and (2) a machine-readable JSON block via `buildStructuredScanResult()` wrapped in `<!-- STRUCTURED_RESULT ... STRUCTURED_RESULT -->` comment delimiters. The structured block contains `domain`, `score`, `grade`, `passed`, `maturityStage`, `maturityLabel`, `categoryScores`, `findingCounts` (by severity), `timestamp`, and `cached`. CI/CD consumers (e.g., `blackveil-dns-action`) parse this instead of regex-matching the text report.
+**Structured result output**: `scan_domain` returns MCP content blocks: (1) the human-readable text report via `formatScanReport()`, and (2) for non-interactive clients only, a machine-readable JSON block via `buildStructuredScanResult()` wrapped in `<!-- STRUCTURED_RESULT ... STRUCTURED_RESULT -->` comment delimiters. The structured block is conditionally omitted for known LLM IDE clients (Claude Code, Cursor, VS Code, etc.) to reduce context consumption. CI/CD consumers (e.g., `blackveil-dns-action`) still receive it via `mcp_remote`/unknown client types or the internal batch endpoint.
+
+### Output format control
+
+All tools accept an optional `format` parameter (`full` | `compact`) controlling response verbosity. When omitted, the format is auto-detected from the MCP client type via `src/lib/client-detection.ts`:
+
+- **Interactive LLM clients** (`claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`) → default `compact`
+- **Non-interactive/unknown** (`mcp_remote`, `unknown`) → default `full`
+
+**Compact mode** (in `formatCheckResult()` and `formatScanReport()`):
+- Single-line findings: `[SEVERITY] title — detail` (no emoji icons, no impact narratives)
+- Omits maturity description/nextStep (keeps stage + label)
+- Omits scoring profile signals and scoring notes
+- Omits `<!-- STRUCTURED_RESULT -->` block for interactive clients
+
+**Full mode**: Original verbose output with emoji severity icons, multi-line findings, impact narratives via `resolveImpactNarrative()`, and structured JSON block.
+
+Format resolution: `extractFormat(args)` in `tool-args.ts` → explicit parameter wins → else `resolveFormat()` in `tools.ts` auto-detects from `clientType`. The `OutputFormat` type is exported from `tool-args.ts`.
 
 ## Conventions
 
@@ -443,4 +460,18 @@ The scheduled handler (`src/scheduled.ts`) runs every 15 minutes via Cron Trigge
 
 ### Client detection
 
-`src/lib/client-detection.ts` parses User-Agent headers to identify MCP clients: `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `unknown`. Used for analytics segmentation only — never for security decisions.
+`src/lib/client-detection.ts` parses User-Agent headers to identify MCP clients: `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `unknown`. Used for analytics segmentation and output format auto-detection — never for security decisions.
+
+## False Positive Reduction
+
+Several checks use contextual signals to reduce false positives:
+
+- **MX Reputation** (`mx-reputation-analysis.ts`): `detectSharedMxProvider()` identifies shared email provider IPs (Google, Microsoft 365, Proofpoint, Mimecast, etc.) via MX hostname suffixes. DNSBL listings for shared provider IPs are downgraded to `info` severity since per-domain reputation is managed at the account level, not the IP level. Dedicated/self-hosted MX hosts retain `high` severity.
+
+- **Lookalikes** (`check-lookalikes.ts`): After discovering active lookalike domains, queries their NS records and compares with the primary domain's NS. Shared nameservers (≥1 overlap) indicate defensive registration by the same owner → downgraded to `info` with `sharedNs: true` metadata. Falls back to original classification if primary NS query fails.
+
+- **Shadow Domains** (`check-shadow-domains.ts`): `sharesNsWithPrimary()` compares variant NS against primary domain NS (≥2 overlap). Shared NS downgrades: fully spoofable critical→high, lacks DMARC high→medium, DMARC not enforcing high→medium. Detail text annotated with ownership signal.
+
+- **TXT Hygiene** (`check-txt-hygiene.ts`): Record accumulation severity tiered: 25+ records→medium, 15-24→low, 10-14→low. Duplicate verification records consolidated into a single `low` finding listing all providers (e.g., "Google Search Console 6x") instead of one medium per provider.
+
+- **Non-mail SPF** (`check-mx.ts`): When no MX records are found, `check_mx` also queries TXT records to verify the domain has `v=spf1 -all`. Missing SPF→medium, non-reject SPF→low.
