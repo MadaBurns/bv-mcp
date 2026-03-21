@@ -67,347 +67,163 @@ const RESOURCES: McpResource[] = [
 const RESOURCE_CONTENT: Record<string, string> = {
 	'dns-security://guides/security-checks': `# DNS Security Checks
 
-The Blackveil DNS scanner evaluates **57+ checks** grouped into 20 categories.
+22 tools covering **57+ checks** across 20 categories.
 
-This MCP server exposes 22 tools that cover the core checks in each category and returns findings compatible with Blackveil DNS scoring.
+## Tool -> Category Mapping
 
-## Coverage by Tier
-
-| Category | Total Scanner Checks | Free Tier (MCP/Core) | Premium Platform |
-|---|---:|---|---|
-| SPF | 8 | Core SPF policy and syntax checks | Advanced include-chain and sender-path analytics |
-| DMARC | 10 | Core policy, pct, reporting checks, URI validation, alignment modes | Alignment depth, subdomain inheritance, reporting quality analytics |
-| DKIM | 9 | Selector discovery, RSA key strength validation, v= tag checks | Selector entropy, rotation heuristics, key-age and drift analytics |
-| DNSSEC | 6 | AD validation and signed-zone baseline | Chain-of-trust and rollover posture analytics |
-| SSL/TLS | 8 | Certificate availability and baseline validity checks | Protocol/cipher depth, PKI posture, renewal-risk analytics |
-| MTA-STS | 5 | TXT policy presence and basic policy retrieval checks | Policy hardening and reporting-depth analytics |
-| NS | 4 | Delegation, diversity, and resiliency baseline checks | Infrastructure concentration and availability analytics |
-| CAA | 4 | CAA presence and issuer-allowlist baseline checks | Issuance surface modeling and mis-issuance risk analytics |
-| MX | 4 | MX presence, routing quality, and outbound provider inference | Mail routing posture and provider analytics |
-| Subdomain Takeover | 2 | Dangling CNAME detection across known subdomains | Expanded asset discovery and takeover surface analytics |
-| HTTP Security | 7 | CSP, X-Frame-Options, COOP, CORP, Permissions-Policy checks | Header depth analytics |
-| DANE | 3 | TLSA record validation for MX and HTTPS | Certificate pinning posture |
-| Shadow Domains | 1 | Alternate-TLD email spoofing risk detection | Extended TLD coverage |
-| TXT Hygiene | 1 | Stale verifications, SaaS exposure mapping | Shadow IT discovery |
-| MX Reputation | 1 | DNSBL and PTR/FCrDNS validation | Deliverability analytics |
-| SRV | 1 | Service footprint discovery via SRV records | Protocol exposure analytics |
-| Zone Hygiene | 1 | SOA consistency and sensitive subdomain detection | Infrastructure exposure |
-| BIMI | 1 | Record presence, logo URL, VMC | Brand indicator compliance |
-| TLS-RPT | 1 | Record presence, reporting URI | Reporting depth |
-| Lookalikes | 1 | Typosquat detection, DNS + MX probing | Expanded permutation strategies |
-
-> Total checks: **57+** across 20 categories.
-
-## Categories and Tool Mapping
-
-## SPF (Sender Policy Framework)
-Tool: \`check_spf\`  
-Validates SPF TXT records to reduce spoofing risk. Includes presence, mechanism quality, lookup pressure, and policy strictness checks.
-
-## DMARC (Domain-based Message Authentication)
-Tool: \`check_dmarc\`  
-Checks \`_dmarc\` policy posture including enforcement mode, reporting URIs (rua=/ruf=), alignment modes (adkim=/aspf=), subdomain policy, and third-party aggregator detection. Validates URI format and identifies known aggregator services.
-
-## DKIM (DomainKeys Identified Mail)
-Tool: \`check_dkim\`  
-Probes common selectors under \`_domainkey\` and validates key records. Includes RSA key strength validation (512/1024/2048/4096-bit detection via base64 length heuristic), v=DKIM1 tag validation, and comprehensive selector discovery across major providers.
-
-## DNSSEC (DNS Security Extensions)
-Tool: \`check_dnssec\`  
-Verifies DNSSEC validation state and signed-response posture for the queried domain.
-
-## SSL/TLS Certificate
-Tool: \`check_ssl\`  
-Checks HTTPS certificate presence and baseline certificate health.
-
-## MTA-STS (Mail Transfer Agent Strict Transport Security)
-Tool: \`check_mta_sts\`  
-Validates \`_mta-sts\` policy publication and retrieval for secure SMTP transport.
-
-## NS (Name Server) Configuration
-Tool: \`check_ns\`  
-Analyzes delegation resilience and provider diversity indicators.
-
-## CAA (Certificate Authority Authorization)
-Tool: \`check_caa\`
-Checks CA authorization posture and issuance restriction baseline.
-
-## MX (Mail Exchange)
-Tool: \`check_mx\`
-Validates presence and quality of MX records for a domain, including outbound email provider detection.
-
-## Subdomain Takeover Detection
-Tool: internal to \`scan_domain\` (not directly callable)
-Scans known subdomains for dangling CNAME records pointing to unresolved third-party services.
-
-## HTTP Security Headers
-Tool: \`check_http_security\`
-Audits HTTP response headers for XSS, clickjacking, and data leakage protections.
-
-## DANE (DNS-Based Authentication of Named Entities)
-Tool: \`check_dane\`
-Verifies TLSA records for certificate pinning on MX and HTTPS endpoints.
-
-## Shadow Domains
-Tool: \`check_shadow_domains\`
-Discovers alternate-TLD variants with active infrastructure and assesses email spoofing risk.
-
-## TXT Record Hygiene
-Tool: \`check_txt_hygiene\`
-Audits TXT records for stale service verifications, SaaS exposure, and cross-domain trust delegations.
-
-## MX Reputation
-Tool: \`check_mx_reputation\`
-Checks mail server reputation via DNSBL lookups and validates reverse DNS consistency.
-
-## SRV Service Discovery
-Tool: \`check_srv\`
-Probes SRV records to map the DNS-visible service footprint.
-
-## Zone Hygiene
-Tool: \`check_zone_hygiene\`
-Audits SOA serial propagation and detects sensitive subdomains exposed in public DNS.
+| Tool | Category | What It Checks |
+|------|----------|---------------|
+| \`check_spf\` | SPF | Policy, syntax, mechanism quality, lookup limits, strictness |
+| \`check_dmarc\` | DMARC | Enforcement, rua/ruf URIs, alignment, subdomain policy, aggregator detection |
+| \`check_dkim\` | DKIM | Selector discovery, RSA key strength (512-4096 bit), v=DKIM1 tags |
+| \`check_dnssec\` | DNSSEC | AD validation, signed-zone posture |
+| \`check_ssl\` | SSL/TLS | Certificate presence, validity, health |
+| \`check_mta_sts\` | MTA-STS | TXT policy presence, policy retrieval |
+| \`check_ns\` | NS | Delegation resilience, provider diversity |
+| \`check_caa\` | CAA | CA authorization, issuance restrictions |
+| \`check_mx\` | MX | MX presence, routing quality, provider detection |
+| \`check_http_security\` | HTTP Security | CSP, X-Frame-Options, COOP, CORP, Permissions-Policy |
+| \`check_dane\` | DANE | TLSA records for MX and HTTPS |
+| \`check_shadow_domains\` | Shadow Domains | Alternate-TLD variants, email spoofing risk |
+| \`check_txt_hygiene\` | TXT Hygiene | Stale verifications, SaaS exposure |
+| \`check_mx_reputation\` | MX Reputation | DNSBL lookups, PTR/FCrDNS validation |
+| \`check_srv\` | SRV | Service footprint via SRV records |
+| \`check_zone_hygiene\` | Zone Hygiene | SOA consistency, sensitive subdomain detection |
+| \`check_bimi\` | BIMI | Record presence, logo URL, VMC |
+| \`check_tlsrpt\` | TLS-RPT | Record presence, reporting URI |
+| \`check_lookalikes\` | Lookalikes | Typosquat detection, DNS + MX probing |
+| _(internal)_ | Subdomain Takeover | Dangling CNAMEs to unresolved services (via \`scan_domain\` only) |
 
 ## Composite Tools
 
-- \`scan_domain\`: Runs 14 checks in parallel and produces an overall score + grade.
-- \`explain_finding\`: Provides plain-language context and remediation guidance for individual findings.
-- \`compare_baseline\`: Compares a domain against minimum acceptable security standards.
+- **\`scan_domain\`** - 14 checks in parallel, returns score + grade + prioritized findings
+- **\`explain_finding\`** - plain-language context + remediation for any finding
+- **\`compare_baseline\`** - pass/fail against minimum security standards
 `,
 
 	'dns-security://guides/scoring': `# Scoring Methodology
 
-This server uses scanner-aligned scoring for the overlapping controls currently implemented by MCP tools.
+Weighted importance scoring, not a flat average. Each category starts at 100, reduced by severity penalties.
 
-## Importance Weights (Scanner-Aligned)
-Overall score is based on importance points per category, not a flat average:
+## Importance Weights
 
-| Category | Importance Points |
-|---|---:|
-| SPF | 19 |
-| DMARC | 22 |
-| DKIM | 10 |
-| DNSSEC | 3 |
-| SSL/TLS | 8 |
-| MTA-STS | 3 |
-| NS | 3 |
-| CAA | 2 |
-| Subdomain Takeover | 2 |
-| MX | 0 (informational) |
+| Category | Weight | Category | Weight |
+|----------|-------:|----------|-------:|
+| DMARC | 22 | SPF | 19 |
+| DKIM | 10 | SSL/TLS | 8 |
+| DNSSEC | 3 | MTA-STS | 3 |
+| NS | 3 | CAA | 2 |
+| Subdomain Takeover | 2 | MX | 0 (info) |
 
-Additional bonus: up to **+5** points for strong combined email-auth posture.
+Email bonus: up to **+5 pts** for strong SPF+DKIM+DMARC.
 
-## Per-Category Penalties
-Each category starts at 100 and penalties are applied per finding severity:
+## Severity Penalties
 
-| Severity | Penalty |
-|----------|---------|
-| Critical | -40 pts |
-| High     | -25 pts |
-| Medium   | -15 pts |
-| Low      | -5 pts  |
-| Info     | 0 pts   |
+Critical: -40 | High: -25 | Medium: -15 | Low: -5 | Info: 0
 
-## Missing-Control Handling
-For categories where a required control is missing (for example, "No DMARC record found"), effective contribution can be treated as zeroed in overall scoring.
+## Special Rules
 
-## Critical-Finding Adjustment
-If any **verified**-confidence **critical** finding exists in the scan, an additional **-15 overall points** adjustment is applied.
-This ensures verified critical risks materially impact final grades even when they occur in low-importance categories.
+- **Missing control** -> category contribution zeroed
+- **Verified critical finding** -> additional **-15 overall** penalty
 
-## Grading Scale
-The overall weighted score maps to a letter grade:
-- **A+**: 90+
-- **A**: 85-89
-- **B+**: 80-84
-- **B**: 75-79
-- **C+**: 70-74
-- **C**: 65-69
-- **D+**: 60-64
-- **D**: 55-59
-- **E**: 50-54
-- **F**: <50
+## Grades
+
+A+: 90+ | A: 85-89 | B+: 80-84 | B: 75-79 | C+: 70-74 | C: 65-69 | D+: 60-64 | D: 55-59 | E: 50-54 | F: <50
 `,
 
 	'dns-security://guides/agent-workflows': `# Agent Workflow Guide
 
-Recommended tool usage patterns for common DNS security tasks.
+## Tool Selection
 
-## Decision Tree: What Tool Should I Use?
+| Intent | Tools |
+|--------|-------|
+| Full audit / "Is my domain secure?" | \`scan_domain\` then \`explain_finding\` for critical/high |
+| Email spoofing risk | \`check_spf\` -> \`check_dmarc\` -> \`check_dkim\` |
+| Brand impersonation | \`check_lookalikes\` + \`check_shadow_domains\` |
+| DNS infrastructure | \`check_ns\` + \`check_zone_hygiene\` + \`check_dnssec\` |
+| Web security | \`check_http_security\` + \`check_ssl\` + \`check_caa\` |
+| Email transport encryption | \`check_mta_sts\` + \`check_tlsrpt\` + \`check_dane\` |
+| Compliance gate | \`compare_baseline\` with policy requirements |
+| Explain a finding | \`explain_finding\` |
+| Service discovery | \`check_srv\` + \`check_txt_hygiene\` |
+| Mail server blacklist | \`check_mx_reputation\` |
 
-| User Intent | Recommended Tools | Notes |
-|---|---|---|
-| "Is my domain secure?" / "Audit my domain" | \`scan_domain\` | Start here — runs 14 checks in parallel, returns score + grade + prioritized findings |
-| "Can someone spoof my email?" / "Email spoofing risk" | \`check_spf\` → \`check_dmarc\` → \`check_dkim\` | The email authentication triad — check all three for a complete picture |
-| "Are there phishing lookalikes?" / "Brand impersonation risk" | \`check_lookalikes\` + \`check_shadow_domains\` | Standalone checks — not in scan_domain due to query volume |
-| "Is my DNS infrastructure solid?" | \`check_ns\` + \`check_zone_hygiene\` + \`check_dnssec\` | Infrastructure resilience + zone consistency + tamper protection |
-| "Are my web security headers OK?" | \`check_http_security\` + \`check_ssl\` + \`check_caa\` | Web security posture: headers + certificate + CA authorization |
-| "Is our email transport encrypted?" | \`check_mta_sts\` + \`check_tlsrpt\` + \`check_dane\` | TLS enforcement + failure reporting + certificate pinning |
-| "Do we meet compliance requirements?" | \`compare_baseline\` | Pass policy minimums as baseline — returns specific violations |
-| "What does this finding mean?" | \`explain_finding\` | Plain-language explanation with remediation steps |
-| "What services are published in DNS?" | \`check_srv\` + \`check_txt_hygiene\` | SRV records + TXT verification records map service footprint |
-| "Are our mail servers blacklisted?" | \`check_mx_reputation\` | DNSBL checks + reverse DNS validation |
+## Workflows
 
-## Common Workflows
+**Full Audit:** \`scan_domain\` -> \`explain_finding\` per critical/high -> summarize action plan
 
-### Full Security Audit
-1. \`scan_domain\` — get overall score and all findings
-2. \`explain_finding\` — for each critical/high finding, get remediation guidance
-3. Summarize with prioritized action plan
+**Email Hardening:** \`check_spf\` -> \`check_dmarc\` -> \`check_dkim\` -> \`check_mta_sts\` -> \`explain_finding\` for failures
 
-### Email Authentication Hardening
-1. \`check_spf\` — validate SPF record and trust surface
-2. \`check_dmarc\` — check enforcement level (none → quarantine → reject)
-3. \`check_dkim\` — verify key presence and strength
-4. \`check_mta_sts\` — ensure transport encryption
-5. \`explain_finding\` — remediation for any failures
+**Brand Protection:** \`check_lookalikes\` -> \`check_shadow_domains\` -> \`scan_domain\` for baseline
 
-### Brand Protection Assessment
-1. \`check_lookalikes\` — find registered typosquat domains
-2. \`check_shadow_domains\` — find alternate-TLD variants lacking email auth
-3. \`scan_domain\` — baseline security of the primary domain
-
-### CI/CD Policy Enforcement
-Use \`compare_baseline\` with policy requirements:
-\`\`\`json
-{
-  "grade": "B",
-  "require_spf": true,
-  "require_dmarc_enforce": true,
-  "require_dkim": true,
-  "max_critical_findings": 0
-}
-\`\`\`
-Returns pass/fail with specific violations — ideal for automated gates.
+**CI/CD Gate:** \`compare_baseline\` with \`{"grade":"B","require_spf":true,"require_dmarc_enforce":true,"require_dkim":true,"max_critical_findings":0}\` -> returns pass/fail + violations
 
 ## Tips
-- \`scan_domain\` caches results for 5 minutes — subsequent individual checks on the same domain return cached data
-- \`check_lookalikes\` and \`check_shadow_domains\` are rate-limited (20/day unauthenticated) — use judiciously
-- All checks are passive and read-only — safe to run against any domain
-- Use the \`profile\` parameter on \`scan_domain\` for non-mail domains (web_only, non_mail) to get more relevant scoring
+- \`scan_domain\` caches 5 min; subsequent checks use cached data
+- \`check_lookalikes\`/\`check_shadow_domains\`: 20/day limit (unauth)
+- All checks are passive/read-only
+- Use \`profile\` param on \`scan_domain\` for non-mail domains (\`web_only\`, \`non_mail\`)
 `,
 
 	'dns-security://guides/intelligence': `# Intelligence Layer Guide
 
-Blackveil DNS collects anonymized, aggregate telemetry from scans to provide benchmarking and provider cohort insights.
+Anonymized, aggregate telemetry from scans for benchmarking and provider cohort insights.
 
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
-| \`get_benchmark\` | Score distribution, percentile ranks, and top failing categories across all scanned domains |
-| \`get_provider_insights\` | Provider-specific cohort comparison (e.g., "How do Google Workspace domains typically score?") |
+| \`get_benchmark\` | Score distribution, percentile ranks, top failing categories |
+| \`get_provider_insights\` | Provider-specific cohort comparison |
 
-## How It Works
+## Data Collected Per Scan
+- Score histogram (10-point buckets) -- no domain names stored
+- Provider cohort EMA-smoothed averages
+- Hourly trend snapshots (30-day rolling window)
 
-Every \`scan_domain\` call contributes anonymized data:
-- **Score histogram**: overall score bucketed into 10-point ranges (0-9, 10-19, ..., 90-99)
-- **Provider cohort**: EMA-smoothed average score per provider + profile combination
-- **Trend snapshots**: hourly aggregates for trend analysis
+## Privacy
+No domain names, IPs, or PII stored. All data is aggregate (profile-level or provider-level) with EMA smoothing.
 
-## Privacy Guarantees
+## Profiles
+\`mail_enabled\` (default) | \`enterprise_mail\` | \`non_mail\` | \`web_only\` | \`minimal\` (>50% failures)
 
-- **No domain names stored**: domains are never recorded in intelligence tables
-- **Aggregate only**: all data is profile-level or provider-level statistics
-- **EMA smoothing**: individual scan scores are absorbed into exponential moving averages
-- **No PII**: no IP addresses, user identifiers, or session data in intelligence tables
+## Usage
+1. \`scan_domain\` -> note score + detected profile/provider
+2. \`get_benchmark\` or \`get_provider_insights\` -> compare against population/cohort
 
-## Data Freshness
-
-- Benchmark data requires **100+ scans** per profile before results are considered meaningful
-- Provider insights are available after the first scan with that provider
-- Trend snapshots are stored hourly with a 30-day rolling window (720 snapshots per profile)
-- All timestamps use UTC ISO 8601 format
-
-## Scoring Profiles
-
-Benchmarks are segmented by scoring profile:
-- **mail_enabled** (default): domains with active MX records
-- **enterprise_mail**: domains using enterprise email providers (Google Workspace, Microsoft 365)
-- **non_mail**: domains without MX records
-- **web_only**: domains serving web content but not email
-- **minimal**: domains with >50% check failures
-
-## Example Workflows
-
-### Compare your domain to the population
-\`\`\`
-1. scan_domain({ domain: "example.com" })  → note the score and detected profile
-2. get_benchmark({ profile: "mail_enabled" })  → see where you rank
-\`\`\`
-
-### Compare to your email provider cohort
-\`\`\`
-1. scan_domain({ domain: "example.com" })  → note the detected provider
-2. get_provider_insights({ provider: "google workspace" })  → cohort comparison
-\`\`\`
+Benchmarks require 100+ scans per profile to be meaningful.
 `,
 
 	'dns-security://guides/remediation': `# DNS Remediation Guide
 
-Use the generate_* tools to produce ready-to-publish DNS records that fix security issues.
+## Tools
 
-## Remediation Tools
+| Tool | Output | When |
+|------|--------|------|
+| \`generate_fix_plan\` | Prioritized action list | Start here |
+| \`generate_spf_record\` | SPF TXT record | Missing/broken SPF |
+| \`generate_dmarc_record\` | DMARC TXT record | Missing/weak DMARC |
+| \`generate_dkim_config\` | DKIM setup instructions | Missing DKIM |
+| \`generate_mta_sts_policy\` | MTA-STS TXT + policy | No transport encryption |
 
-| Tool | Output | When to Use |
-|------|--------|-------------|
-| \`generate_fix_plan\` | Prioritized action list | Start here — identifies what to fix first |
-| \`generate_spf_record\` | SPF TXT record | Missing/broken SPF, trust surface issues |
-| \`generate_dmarc_record\` | DMARC TXT record | Missing/weak DMARC policy |
-| \`generate_dkim_config\` | DKIM setup instructions | Missing DKIM keys |
-| \`generate_mta_sts_policy\` | MTA-STS TXT + policy file | No transport encryption |
-
-## Recommended Workflow
-
-### 1. Generate Fix Plan
-\`\`\`
-generate_fix_plan({ domain: "example.com" })
-\`\`\`
-Returns prioritized actions sorted by impact × importance weight.
-
-### 2. Fix Email Authentication (in order)
-
-**SPF first** — establishes sender authorization:
-\`\`\`
-generate_spf_record({ domain: "example.com", include_providers: ["google"] })
-\`\`\`
-
-**DKIM second** — adds message signing (provider-specific):
-\`\`\`
-generate_dkim_config({ domain: "example.com", provider: "google" })
-\`\`\`
-
-**DMARC last** — requires SPF and DKIM to be effective:
-\`\`\`
-generate_dmarc_record({ domain: "example.com", policy: "none" })
-\`\`\`
-Start with \`p=none\` for monitoring, then upgrade to \`quarantine\` → \`reject\`.
-
-### 3. Add Transport Security
-
-**MTA-STS** — enforces TLS for inbound email:
-\`\`\`
-generate_mta_sts_policy({ domain: "example.com" })
-\`\`\`
+## Workflow
+1. \`generate_fix_plan\` -> prioritized actions by impact
+2. \`generate_spf_record\` -> SPF first (sender authorization)
+3. \`generate_dkim_config\` -> DKIM second (message signing)
+4. \`generate_dmarc_record\` -> DMARC last (start \`p=none\`, upgrade to \`reject\`)
+5. \`generate_mta_sts_policy\` -> transport encryption
 
 ## Maturity Progression
 
-| Stage | Goal | Records to Add |
-|-------|------|----------------|
-| 0 → 1 | Basic auth | SPF + DMARC (p=none) |
-| 1 → 2 | Monitoring | DKIM + DMARC rua reporting |
-| 2 → 3 | Enforcement | DMARC p=reject + MTA-STS |
-| 3 → 4 | Hardened | DNSSEC + DANE + BIMI |
+| Stage | Records to Add |
+|-------|----------------|
+| 0->1 | SPF + DMARC (p=none) |
+| 1->2 | DKIM + DMARC rua reporting |
+| 2->3 | DMARC p=reject + MTA-STS |
+| 3->4 | DNSSEC + DANE + BIMI |
 
 ## Verification
-
-After publishing records, re-run the relevant check tool to verify:
-- \`check_spf\` after publishing SPF
-- \`check_dmarc\` after publishing DMARC
-- \`check_dkim\` after configuring DKIM
-- \`check_mta_sts\` after setting up MTA-STS
-
-Allow 5-10 minutes for DNS propagation before re-checking.
+Re-run the relevant check tool after publishing. Allow 5-10 min for DNS propagation.
 `,
 
 	'dns-security://guides/record-types': `# Supported DNS Record Types
