@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { handleResourcesList, handleResourcesRead } from '../src/handlers/resources';
 
 describe('handleResourcesList', () => {
-	it('returns an object with a resources array of exactly 4 items', () => {
+	it('returns an object with a resources array of exactly 5 items', () => {
 		const result = handleResourcesList();
 		expect(result).toHaveProperty('resources');
-		expect(result.resources).toHaveLength(4);
+		expect(result.resources).toHaveLength(5);
 	});
 
 	it('each resource has uri, name, mimeType, and description', () => {
