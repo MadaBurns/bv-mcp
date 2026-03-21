@@ -27,7 +27,8 @@ import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
-import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractScanProfile, normalizeToolName } from './tool-args';
+import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractFormat, extractScanProfile, normalizeToolName } from './tool-args';
+import type { OutputFormat } from './tool-args';
 import { logToolFailure, logToolSuccess } from './tool-execution';
 import { formatCheckResult, mcpError, mcpText } from './tool-formatters';
 import type { McpContent } from './tool-formatters';
@@ -122,6 +123,21 @@ const TOOL_REGISTRY: Record<
 	check_zone_hygiene: { cacheKey: () => 'zone_hygiene', execute: (d, _args, ro) => checkZoneHygiene(d, buildDnsOptions(ro)) },
 };
 
+/** Known interactive LLM client types that benefit from compact output. */
+const INTERACTIVE_CLIENTS = new Set(['claude_code', 'cursor', 'vscode', 'claude_desktop', 'windsurf']);
+
+/** Determine if the client type is a known interactive LLM IDE. */
+function isInteractiveClient(clientType?: string): boolean {
+	return INTERACTIVE_CLIENTS.has(clientType ?? '');
+}
+
+/** Resolve the effective output format from explicit parameter and client type. */
+function resolveFormat(args: Record<string, unknown>, clientType?: string): OutputFormat {
+	const explicit = extractFormat(args);
+	if (explicit) return explicit;
+	return isInteractiveClient(clientType) ? 'compact' : 'full';
+}
+
 function buildToolErrorResult(message: string): McpToolResult {
 	return { content: [mcpError(message)], isError: true };
 }
@@ -178,6 +194,9 @@ export async function handleToolsCall(
 		// `validDomain` is guaranteed to be a string for all branches that use it
 		const validDomain: string = domain ?? '';
 
+		const effectiveFormat = resolveFormat(args, runtimeOptions?.clientType);
+		const interactive = isInteractiveClient(runtimeOptions?.clientType);
+
 		const executeDispatch = async (): Promise<McpToolResult> => {
 			// Dispatch to the appropriate tool — check registry first, then special cases
 			const registeredTool = TOOL_REGISTRY[name];
@@ -200,7 +219,7 @@ export async function handleToolsCall(
 					clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 					authTier: runtimeOptions?.authTier,
 				});
-				return { content: [mcpText(formatCheckResult(result))] };
+				return { content: [mcpText(formatCheckResult(result, effectiveFormat))] };
 			}
 
 			switch (name) {
@@ -223,13 +242,13 @@ export async function handleToolsCall(
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
 					});
-					const structured = buildStructuredScanResult(result);
-					return {
-						content: [
-							mcpText(formatScanReport(result)),
-							mcpText(`<!-- STRUCTURED_RESULT\n${JSON.stringify(structured)}\nSTRUCTURED_RESULT -->`),
-						],
-					};
+					const content: McpContent[] = [mcpText(formatScanReport(result, effectiveFormat))];
+					// Only include structured JSON block for non-interactive clients (CI/CD, mcp_remote, unknown)
+					if (!interactive) {
+						const structured = buildStructuredScanResult(result);
+						content.push(mcpText(`<!-- STRUCTURED_RESULT\n${JSON.stringify(structured)}\nSTRUCTURED_RESULT -->`));
+					}
+					return { content };
 				}
 				case 'compare_baseline': {
 					const baseline = extractBaseline(args) as PolicyBaseline;
