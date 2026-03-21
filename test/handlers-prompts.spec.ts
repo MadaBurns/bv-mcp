@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { handlePromptsList, handlePromptsGet } from '../src/handlers/prompts';
 
 describe('handlePromptsList', () => {
-	it('returns an object with a prompts array of exactly 5 items', () => {
+	it('returns an object with a prompts array of exactly 7 items', () => {
 		const result = handlePromptsList();
 		expect(result).toHaveProperty('prompts');
-		expect(result.prompts).toHaveLength(5);
+		expect(result.prompts).toHaveLength(7);
 	});
 
 	it('each prompt has name, description, and arguments', () => {
