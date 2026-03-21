@@ -21,11 +21,15 @@ describe('checkMx', () => {
 		return checkMx(domain);
 	}
 
-	it('should return medium finding if no MX records found', async () => {
+	it('should return medium finding if no MX records found and flag missing SPF reject-all', async () => {
 		mockMxRecords('nomx.com', []);
 		const result = await run('nomx.com');
 		expect(result.findings[0].severity).toBe('medium');
 		expect(result.findings[0].title).toMatch(/No MX records found/i);
+		// Should also flag missing SPF reject-all for non-mail domain
+		const spfFinding = result.findings.find((f) => f.title.includes('SPF'));
+		expect(spfFinding).toBeDefined();
+		expect(spfFinding!.detail).toContain('v=spf1 -all');
 	});
 
 	it('should return pass if MX records found', async () => {
