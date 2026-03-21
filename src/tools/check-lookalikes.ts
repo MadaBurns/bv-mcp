@@ -38,6 +38,9 @@ interface LookalikeResult {
 	hasMX: boolean;
 }
 
+/** Minimum number of NS records that must overlap to consider domains as sharing nameservers. */
+const SHARED_NS_THRESHOLD = 1;
+
 /**
  * Check whether an MX record represents real mail infrastructure.
  * RFC 7505 null MX ("0 .") explicitly means "no mail accepted" and must be excluded.
@@ -107,21 +110,63 @@ async function detectWildcardParents(parentDomains: string[]): Promise<Set<strin
 
 /**
  * Phase 1: Fast NS existence check for all domains in parallel.
- * Returns only domains that have NS records (i.e., are registered).
+ * Returns only domains that have NS records (i.e., are registered),
+ * along with their normalized NS record data for ownership comparison.
  */
-async function filterByNsExistence(domains: string[]): Promise<string[]> {
+async function filterByNsExistence(domains: string[]): Promise<{ registered: string[]; nsMap: Map<string, Set<string>> }> {
+	const nsMap = new Map<string, Set<string>>();
 	const results = await Promise.allSettled(
 		domains.map(async (domain) => {
 			const ns = await queryDnsRecords(domain, 'NS', PHASE1_DNS_OPTS);
+			if (ns.length > 0) {
+				nsMap.set(domain, normalizeNsSet(ns));
+			}
 			return { domain, hasNs: ns.length > 0 };
 		}),
 	);
-	return results
+	const registered = results
 		.filter(
 			(r): r is PromiseFulfilledResult<{ domain: string; hasNs: boolean }> =>
 				r.status === 'fulfilled' && r.value.hasNs,
 		)
 		.map((r) => r.value.domain);
+	return { registered, nsMap };
+}
+
+/**
+ * Normalize a set of NS record values for comparison.
+ * Strips trailing dots, lowercases, and returns a Set.
+ */
+function normalizeNsSet(nsRecords: string[]): Set<string> {
+	return new Set(nsRecords.map((ns) => ns.replace(/\.$/, '').toLowerCase()));
+}
+
+/**
+ * Check whether two NS sets share at least SHARED_NS_THRESHOLD nameservers.
+ * Shared nameservers are a strong signal that both domains are controlled by the same entity.
+ */
+function sharesNameservers(primaryNs: Set<string>, lookalikeNs: Set<string>): boolean {
+	let overlap = 0;
+	for (const ns of lookalikeNs) {
+		if (primaryNs.has(ns)) {
+			overlap++;
+			if (overlap >= SHARED_NS_THRESHOLD) return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Query NS records for the primary domain to use for ownership comparison.
+ * Returns an empty set if the query fails.
+ */
+async function queryPrimaryNs(domain: string): Promise<Set<string>> {
+	try {
+		const ns = await queryDnsRecords(domain, 'NS', PHASE1_DNS_OPTS);
+		return normalizeNsSet(ns);
+	} catch {
+		return new Set<string>();
+	}
 }
 
 /**
@@ -233,7 +278,12 @@ async function checkLookalikesCore(domain: string): Promise<CheckResult> {
 	const permsToProbe = [...nonDotInsertionPerms, ...filteredDotInsertionPerms];
 
 	// Phase 1: Fast NS existence check — filter out unregistered domains
-	const registeredPerms = await filterByNsExistence(permsToProbe);
+	// Also query the primary domain's NS for ownership comparison
+	const [nsResult, primaryNs] = await Promise.all([
+		filterByNsExistence(permsToProbe),
+		queryPrimaryNs(domain),
+	]);
+	const { registered: registeredPerms, nsMap: lookalikeNsMap } = nsResult;
 
 	if (registeredPerms.length === 0) {
 		findings.push(
@@ -256,10 +306,24 @@ async function checkLookalikesCore(domain: string): Promise<CheckResult> {
 		}
 	}
 
-	// Classify results
+	// Classify results — check for shared nameservers with primary domain to detect defensive registrations
 	let highCount = 0;
 	for (const result of results) {
-		if (result.hasMX) {
+		const lookalikeNs = lookalikeNsMap.get(result.domain);
+		const sameOwner = primaryNs.size > 0 && lookalikeNs !== undefined && sharesNameservers(primaryNs, lookalikeNs);
+
+		if (sameOwner) {
+			// Shared nameservers — likely a defensive registration by the same entity
+			findings.push(
+				createFinding(
+					'lookalikes',
+					`Lookalike domain likely owned by same entity: ${result.domain}`,
+					'info',
+					`The domain ${result.domain} shares nameservers with ${domain}, indicating it is likely a defensive registration by the same owner.${result.hasMX ? ' Has active mail infrastructure.' : ''}${result.hasA ? ' Has web presence.' : ''}`,
+					{ lookalikeDomain: result.domain, hasA: result.hasA, hasMX: result.hasMX, sharedNs: true },
+				),
+			);
+		} else if (result.hasMX) {
 			highCount++;
 			findings.push(
 				createFinding(
