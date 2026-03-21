@@ -9,6 +9,24 @@
  * "unavailable" response when the DO binding is absent or unresponsive.
  */
 
+/** Trend snapshot from the DO. */
+export interface TrendSnapshot {
+	hour: number;
+	timestamp: string;
+	avgScore: number;
+	scanCount: number;
+	failureRates: Record<string, number>;
+}
+
+/** Trend summary included in benchmark responses. */
+export interface TrendSummary {
+	hours: number;
+	snapshotCount: number;
+	totalScans: number;
+	periodAvgScore: number;
+	snapshots: TrendSnapshot[];
+}
+
 /** Benchmark response from the DO. */
 export interface BenchmarkResult {
 	status: 'ok' | 'insufficient_data' | 'unavailable';
@@ -22,6 +40,7 @@ export interface BenchmarkResult {
 	topFailingCategories?: string[];
 	baselineFailureRates?: Record<string, number>;
 	dataFreshness?: string;
+	trends?: TrendSummary;
 }
 
 /** Provider insights response from the DO. */
@@ -71,7 +90,40 @@ export async function getBenchmark(
 			return { status: 'unavailable', profile };
 		}
 
-		return await response.json() as BenchmarkResult;
+		const benchmarkData = await response.json() as BenchmarkResult;
+
+		// If benchmark data is available, also fetch trend data (best-effort)
+		if (benchmarkData.status === 'ok') {
+			try {
+				const trendUrl = new URL('https://do/trends');
+				trendUrl.searchParams.set('profile', profile);
+				trendUrl.searchParams.set('hours', '168'); // 7 days
+
+				const trendResponse = await Promise.race([
+					stub.fetch(trendUrl.toString(), { method: 'GET' }),
+					new Promise<never>((_, reject) =>
+						setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS),
+					),
+				]);
+
+				if (trendResponse.ok) {
+					const trendData = await trendResponse.json() as { status: string; snapshots?: TrendSnapshot[] } & TrendSummary;
+					if (trendData.status === 'ok' && trendData.snapshots) {
+						benchmarkData.trends = {
+							hours: trendData.hours,
+							snapshotCount: trendData.snapshotCount,
+							totalScans: trendData.totalScans,
+							periodAvgScore: trendData.periodAvgScore,
+							snapshots: trendData.snapshots,
+						};
+					}
+				}
+			} catch {
+				// Trend fetch is best-effort — benchmark still valid without it
+			}
+		}
+
+		return benchmarkData;
 	} catch {
 		return { status: 'unavailable', profile };
 	}
@@ -175,6 +227,23 @@ export function formatBenchmark(result: BenchmarkResult): string {
 
 	if (result.topFailingCategories && result.topFailingCategories.length > 0) {
 		lines.push(`Top failing categories: ${result.topFailingCategories.map((c) => c.toUpperCase()).join(', ')}`);
+	}
+
+	if (result.trends && result.trends.snapshotCount > 0) {
+		lines.push('');
+		lines.push(`7-day trend: ${result.trends.totalScans} scans, avg score ${result.trends.periodAvgScore}/100`);
+		if (result.trends.snapshots.length >= 2) {
+			const first = result.trends.snapshots[0];
+			const last = result.trends.snapshots[result.trends.snapshots.length - 1];
+			const delta = Math.round((last.avgScore - first.avgScore) * 10) / 10;
+			if (delta > 0) {
+				lines.push(`  Trend: ↑ improving (+${delta} points over period)`);
+			} else if (delta < 0) {
+				lines.push(`  Trend: ↓ declining (${delta} points over period)`);
+			} else {
+				lines.push('  Trend: → stable');
+			}
+		}
 	}
 
 	if (result.dataFreshness) {
