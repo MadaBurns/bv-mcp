@@ -194,4 +194,26 @@ describe('formatFixPlan', () => {
 		});
 		expect(text).toContain('No actionable findings');
 	});
+
+	it('compact mode uses one-liners and caps at 5 actions', async () => {
+		const { formatFixPlan } = await import('../src/tools/generate-fix-plan');
+		const actions = Array.from({ length: 7 }, (_, i) => ({
+			category: 'spf' as const,
+			severity: 'high' as const,
+			action: `Action ${i + 1}`,
+			effort: 'low' as const,
+			impact: 'high' as const,
+			dependencies: ['dep'],
+		}));
+		const compact = formatFixPlan({ domain: 'test.com', score: 30, grade: 'F', maturityStage: 0, totalActions: 7, actions }, 'compact');
+		const full = formatFixPlan({ domain: 'test.com', score: 30, grade: 'F', maturityStage: 0, totalActions: 7, actions }, 'full');
+		expect(compact.length).toBeLessThan(full.length);
+		expect(compact).toContain('Fix Plan: test.com');
+		expect(compact).toContain('7 actions');
+		expect(compact).toContain('Action 5');
+		expect(compact).not.toContain('Action 6');
+		expect(compact).toContain('... and 2 more');
+		expect(compact).not.toContain('##');
+		expect(compact).not.toContain('Dependencies');
+	});
 });
