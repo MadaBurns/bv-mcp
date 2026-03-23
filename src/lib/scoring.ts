@@ -8,11 +8,13 @@
 
 export {
 	CATEGORY_DISPLAY_WEIGHTS,
+	CATEGORY_TIERS,
 	SEVERITY_PENALTIES,
 	buildCheckResult,
 	computeCategoryScore,
 	createFinding,
 	inferFindingConfidence,
+	type CategoryTier,
 	type CheckCategory,
 	type CheckResult,
 	type Finding,
