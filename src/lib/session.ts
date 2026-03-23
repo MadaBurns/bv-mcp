@@ -176,8 +176,9 @@ export async function validateSession(id: string, kv?: KVNamespace): Promise<boo
 				return false;
 			}
 
-			// Hydrate into local in-memory cache for subsequent same-isolate requests
-			createSessionInMemory(id);
+			// Hydrate into local in-memory cache for subsequent same-isolate requests,
+			// preserving the original createdAt from KV (not resetting to now)
+			ACTIVE_SESSIONS.set(id, { createdAt: record.createdAt, lastAccessedAt: record.lastAccessedAt });
 
 			if (now - record.lastAccessedAt >= SESSION_REFRESH_INTERVAL_MS) {
 				record.lastAccessedAt = now;
