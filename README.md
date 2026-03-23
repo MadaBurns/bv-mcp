@@ -446,6 +446,8 @@ Full details in `CLAUDE.md` (security and observability sections).
 - Control-plane traffic: `60/min` and `600/hr` per IP
 - Global daily cap: `500,000` unauthenticated tool calls/day (cost ceiling)
 - Session creation: `60/min` per IP (enforced on both modern and legacy transports)
+- Session TTL: 2 hours idle, dual-write (KV + in-memory) for cross-isolate resilience
+- SSE notification stream exempt from rate limiting (prevents `mcp-remote` reconnection storms)
 - Client IPs redacted in structured logs
 
 **Natural-language convenience:**
