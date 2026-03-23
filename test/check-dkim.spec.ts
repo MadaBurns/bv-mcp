@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { RecordType } from '../src/lib/dns';
+import { buildCheckResult, createFinding } from '../src/lib/scoring';
 import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
@@ -321,5 +322,91 @@ describe('checkDkim', () => {
 		// Should not crash; malformed keys are still processed
 		expect(r.category).toBe('dkim');
 		expect(r.findings.length).toBeGreaterThan(0);
+	});
+
+	it('existing DKIM not-found finding has confidence:heuristic metadata', async () => {
+		mockDkimRecords({});
+		const { checkDkim } = await import('../src/tools/check-dkim');
+		const result = await checkDkim('example.com');
+		const notFound = result.findings.find((f) => /No DKIM records found/i.test(f.title));
+		expect(notFound?.metadata?.confidence).toBe('heuristic');
+	});
+});
+
+describe('provider-informed DKIM', () => {
+	it('applyProviderDkimContext downgrades to medium for high-confidence provider', async () => {
+		const { applyProviderDkimContext } = await import('../src/tools/check-dkim');
+		const findings = [
+			createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM records found', {
+				confidence: 'heuristic',
+				selectorsChecked: ['default', 'google'],
+			}),
+		];
+		const result = buildCheckResult('dkim', findings);
+		const adjusted = applyProviderDkimContext(result, 'google workspace');
+		expect(adjusted.findings[0].severity).toBe('medium');
+		expect(adjusted.findings[0].title).toBe('DKIM selector not discovered');
+		expect(adjusted.findings[0].metadata?.detectionMethod).toBe('provider-implied');
+		expect(adjusted.score).toBe(85); // single medium = -15
+	});
+
+	it('applyProviderDkimContext adds low finding for medium-confidence provider', async () => {
+		const { applyProviderDkimContext } = await import('../src/tools/check-dkim');
+		const findings = [
+			createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM records found', {
+				confidence: 'heuristic',
+				selectorsChecked: ['default'],
+			}),
+		];
+		const result = buildCheckResult('dkim', findings);
+		const adjusted = applyProviderDkimContext(result, 'proofpoint');
+		expect(adjusted.findings).toHaveLength(2);
+		expect(adjusted.findings[0].severity).toBe('medium');
+		expect(adjusted.findings[1].severity).toBe('low');
+		expect(adjusted.score).toBe(80); // medium (-15) + low (-5)
+	});
+
+	it('applyProviderDkimContext does nothing for unknown provider', async () => {
+		const { applyProviderDkimContext } = await import('../src/tools/check-dkim');
+		const findings = [
+			createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM records found', {
+				confidence: 'heuristic',
+				selectorsChecked: ['default'],
+			}),
+		];
+		const result = buildCheckResult('dkim', findings);
+		const adjusted = applyProviderDkimContext(result, 'unknownprovider');
+		expect(adjusted.findings[0].severity).toBe('high'); // unchanged
+		expect(adjusted.score).toBe(75); // high = -25
+	});
+
+	it('applyProviderDkimContext does nothing when no high-severity not-found finding exists', async () => {
+		const { applyProviderDkimContext } = await import('../src/tools/check-dkim');
+		const findings = [
+			createFinding('dkim', 'DKIM configured', 'info', 'DKIM records found for selectors: google', {
+				signalType: 'dkim',
+				selectorsChecked: ['default', 'google'],
+				selectorsFound: ['google'],
+			}),
+		];
+		const result = buildCheckResult('dkim', findings);
+		const adjusted = applyProviderDkimContext(result, 'google workspace');
+		expect(adjusted).toBe(result); // same reference, no changes
+		expect(adjusted.score).toBe(100);
+	});
+
+	it('applyProviderDkimContext preserves selectorsChecked metadata', async () => {
+		const { applyProviderDkimContext } = await import('../src/tools/check-dkim');
+		const selectors = ['default', 'google', '20230601', 'selector1', 'selector2'];
+		const findings = [
+			createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM records found', {
+				confidence: 'heuristic',
+				selectorsChecked: selectors,
+			}),
+		];
+		const result = buildCheckResult('dkim', findings);
+		const adjusted = applyProviderDkimContext(result, 'amazon ses');
+		expect(adjusted.findings[0].metadata?.selectorsChecked).toEqual(selectors);
+		expect(adjusted.findings[0].metadata?.provider).toBe('amazon ses');
 	});
 });

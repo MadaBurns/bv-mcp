@@ -33,7 +33,7 @@ import { cacheGet, cacheSet, runWithCache } from '../lib/cache';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { checkSpf } from './check-spf';
 import { checkDmarc } from './check-dmarc';
-import { checkDkim } from './check-dkim';
+import { checkDkim, applyProviderDkimContext } from './check-dkim';
 import { checkDnssec } from './check-dnssec';
 import { checkSsl } from './check-ssl';
 import { checkMtaSts } from './check-mta-sts';
@@ -210,6 +210,16 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				weights: getProfileWeights(explicitProfile as DomainProfile, runtimeOptions?.scoringConfig),
 				detectedProvider: domainContext.detectedProvider,
 			};
+		}
+
+		// Apply provider-informed DKIM adjustment: when a known DKIM-signing
+		// provider is detected via MX, downgrade the "not found" finding since
+		// the provider likely signs by default with a custom selector.
+		if (domainContext.detectedProvider) {
+			const dkimIdx = checkResults.findIndex((r) => r.category === 'dkim');
+			if (dkimIdx !== -1) {
+				checkResults[dkimIdx] = applyProviderDkimContext(checkResults[dkimIdx], domainContext.detectedProvider);
+			}
 		}
 
 		// Phase 1: only pass context to scoring when an explicit profile is set.
