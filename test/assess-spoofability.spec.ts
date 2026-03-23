@@ -162,4 +162,27 @@ describe('formatSpoofability', () => {
 		expect(text).toContain('SPF Protection');
 		expect(text).toContain('Test effect');
 	});
+
+	it('compact mode omits narrative and interaction effects', async () => {
+		const { formatSpoofability } = await import('../src/tools/assess-spoofability');
+		const data = {
+			domain: 'example.com',
+			spoofabilityScore: 65,
+			riskLevel: 'high' as const,
+			spfProtection: 50,
+			dmarcProtection: 30,
+			dkimProtection: 0,
+			interactionEffects: ['Test effect'],
+			summary: 'Test summary',
+		};
+		const compact = formatSpoofability(data, 'compact');
+		const full = formatSpoofability(data, 'full');
+		expect(compact.length).toBeLessThan(full.length);
+		expect(compact).toContain('65/100');
+		expect(compact).toContain('SPF: 50/100');
+		expect(compact).toContain('DMARC: 30/100');
+		expect(compact).not.toContain('Test summary');
+		expect(compact).not.toContain('Test effect');
+		expect(compact).not.toContain('#');
+	});
 });
