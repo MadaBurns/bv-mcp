@@ -70,13 +70,24 @@ describe('applyInteractionPenalties', () => {
 		expect(adjustedScore.overall).toBeLessThan(50);
 	});
 
-	it('applies strong_auth_no_dnssec penalty', () => {
-		const score = buildScore({ dmarc: 90, dnssec: 0 }, 80);
-		const { adjustedScore, effects } = applyInteractionPenalties(score);
-		const rule = effects.find((e) => e.ruleId === 'strong_auth_no_dnssec');
+	it('weak_dnssec_enforcing_dmarc fires when DNSSEC <= 40 and DMARC >= 80', () => {
+		const score = buildScore({ dmarc: 90, dnssec: 35 }, 80);
+		const { effects } = applyInteractionPenalties(score);
+		const rule = effects.find((e) => e.ruleId === 'weak_dnssec_enforcing_dmarc');
 		expect(rule).toBeDefined();
 		expect(rule!.penalty).toBe(3);
-		expect(adjustedScore.overall).toBe(77);
+	});
+
+	it('old strong_auth_no_dnssec rule no longer exists', () => {
+		const score = buildScore({ dmarc: 90, dnssec: 0 }, 80);
+		const { effects } = applyInteractionPenalties(score);
+		expect(effects.find((e) => e.ruleId === 'strong_auth_no_dnssec')).toBeUndefined();
+	});
+
+	it('weak_dnssec_enforcing_dmarc does not fire when DNSSEC > 40', () => {
+		const score = buildScore({ dmarc: 90, dnssec: 85 }, 80);
+		const { effects } = applyInteractionPenalties(score);
+		expect(effects.find((e) => e.ruleId === 'weak_dnssec_enforcing_dmarc')).toBeUndefined();
 	});
 
 	it('applies no_spf_no_dkim penalty', () => {
@@ -149,13 +160,13 @@ describe('applyInteractionPenalties', () => {
 	});
 
 	it('minScore condition works correctly', () => {
-		// strong_auth_no_dnssec requires dmarc >= 80
+		// weak_dnssec_enforcing_dmarc requires dmarc >= 80 and dnssec <= 40
 		const score1 = buildScore({ dmarc: 79, dnssec: 0 }, 70);
 		const { effects: e1 } = applyInteractionPenalties(score1);
-		expect(e1.find((e) => e.ruleId === 'strong_auth_no_dnssec')).toBeUndefined();
+		expect(e1.find((e) => e.ruleId === 'weak_dnssec_enforcing_dmarc')).toBeUndefined();
 
 		const score2 = buildScore({ dmarc: 80, dnssec: 0 }, 70);
 		const { effects: e2 } = applyInteractionPenalties(score2);
-		expect(e2.find((e) => e.ruleId === 'strong_auth_no_dnssec')).toBeDefined();
+		expect(e2.find((e) => e.ruleId === 'weak_dnssec_enforcing_dmarc')).toBeDefined();
 	});
 });

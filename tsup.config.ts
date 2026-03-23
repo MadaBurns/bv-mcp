@@ -3,7 +3,7 @@ import { defineConfig, type Options } from 'tsup';
 /** esbuild plugin that shims cloudflare:workers for Node.js (stdio bundle) */
 const cloudflareShimPlugin = {
 	name: 'cloudflare-workers-shim',
-	setup(build: { onResolve: Function; onLoad: Function }) {
+	setup(build: { onResolve: (opts: { filter: RegExp }, callback: (args: { path: string }) => { path: string; namespace: string } | undefined) => void; onLoad: (opts: { filter: RegExp; namespace: string }, callback: () => { contents: string; loader: string }) => void }) {
 		build.onResolve({ filter: /^cloudflare:workers$/ }, () => ({
 			path: 'cloudflare:workers',
 			namespace: 'cf-shim',
