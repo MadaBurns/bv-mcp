@@ -8,7 +8,7 @@ Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflar
 Exposes 22 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 A 23rd check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 2.0.0 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.0.1 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -77,7 +77,7 @@ src/lib/context-profiles.ts — DomainProfile, DomainContext, PROFILE_WEIGHTS, d
 src/lib/adaptive-weights.ts — EMA-based adaptive weight computation, blending, bounds
 src/lib/profile-accumulator.ts — Durable Object for per-profile telemetry aggregation (SQLite-backed)
 src/lib/json-rpc.ts       — JSON-RPC 2.0 types, error codes, response builders
-src/lib/session.ts        — KV-backed (optional) + in-memory fallback session management
+src/lib/session.ts        — KV-backed (optional) + in-memory session management with dual-write (create writes both, validate checks in-memory first)
 src/lib/auth.ts           — Bearer token validation (constant-time XOR comparison)
 src/lib/sse.ts            — SSE event formatting and Accept header checking
 src/lib/legacy-sse.ts     — Legacy HTTP+SSE stream lifecycle (open, enqueue, close, heartbeat)
@@ -273,7 +273,7 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 - **Output sanitization**: SVG badge output (`lib/badge.ts`) XML-escapes all interpolated values and validates `color` against a hex regex. DNS-over-HTTPS responses (`lib/dns-transport.ts`) are validated for expected schema before casting. All finding `detail` strings are sanitized via `sanitizeDnsData()` in `createFinding()` to strip HTML/markdown injection from attacker-controlled DNS data. The `unescapeDnsTxt()` loop is capped at 2 iterations to prevent multi-layer decode attacks.
 - **Response body limits**: Outbound HTTP fetches to untrusted servers (MTA-STS policy, subdomain takeover probe, provider signatures) enforce body size caps (64 KB for tool checks per RFC 8461, 1 MB for provider signatures) via content-length pre-check and post-read validation.
 - **Log sanitization**: Client IP addresses are redacted in structured JSON logs via `SENSITIVE_KEY_PATTERN` in `lib/log.ts`.
-- **Sessions**: idle TTL (30 min), sliding refresh on validate, optional KV-backed storage via `SESSION_STORE` with in-memory fallback. Missing session → 400; expired/terminated session → 404 (per MCP spec, triggers client re-initialization). Session creation is rate-limited to 30/min per IP across both modern (`initialize`) and legacy (`GET /mcp/sse`) transports. `DELETE /mcp` accepts session ID only via the `Mcp-Session-Id` header (not query string).
+- **Sessions**: idle TTL (2 hours), sliding refresh on validate, optional KV-backed storage via `SESSION_STORE` with in-memory fallback + dual-write (both KV and in-memory on create, in-memory-first on validate for cross-isolate resilience). Missing session → 400; expired/terminated session → 404 (per MCP spec, triggers client re-initialization). Session creation is rate-limited to 30/min per IP across both modern (`initialize`) and legacy (`GET /mcp/sse`) transports. `DELETE /mcp` accepts session ID only via the `Mcp-Session-Id` header (not query string). `GET /mcp` SSE notification stream is exempt from control plane rate limiting to prevent `mcp-remote` reconnection storms from burning through the budget.
 - **Input validation**: Tool parameters with array types (`include_providers`, `mx_hosts`) are validated per-element for type, length (≤253 chars), and content (no whitespace/control chars in `mx_hosts`). The `record_type` parameter is validated against an allowlist. All validation errors use the `'Invalid'` prefix to pass through error sanitization.
 - **Rate limit serialization**: All KV-backed rate limit counters (per-IP, per-tool, global daily, session-create) are serialized within each isolate via `withIpKvLock()` to prevent intra-isolate read-modify-write races.
 - **Alerting**: Webhook URLs must use `https:` protocol; non-HTTPS and malformed URLs are silently skipped.
@@ -422,7 +422,7 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 2. Copy `wrangler.jsonc` to `.dev/wrangler.deploy.jsonc`, uncomment the `kv_namespaces` block, and replace placeholder IDs with the real ones from step 1
 3. Deploy: `npm run deploy:private`
 
-**Important:** KV bindings are required for production. Without them, sessions are per-Worker-isolate and MCP clients will get intermittent 404 "session expired" errors when requests hit different isolates.
+**Important:** KV bindings are required for production. Without them, sessions are per-Worker-isolate and MCP clients will get intermittent 404 "session expired" errors when requests hit different isolates. With KV, sessions are dual-written (in-memory + KV on create, in-memory-first on validate) to mitigate KV eventual consistency lag across isolates. Session TTL is 2 hours.
 
 ## Bindings
 
