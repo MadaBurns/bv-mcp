@@ -113,7 +113,7 @@ describe('adaptive-weights', () => {
 
 		it('applies non-critical floor for ns in mail_enabled', () => {
 			const b = WEIGHT_BOUNDS.mail_enabled.ns;
-			expect(b.min).toBe(0); // max(0, floor(0*0.5)) = 0
+			expect(b.min).toBe(1); // max(0, floor(2*0.5)) = 1 (ns importance is now 2 in mail_enabled)
 		});
 
 		it('treats ssl as critical for mail_enabled and enterprise_mail', () => {
@@ -257,7 +257,7 @@ describe('adaptive-weights', () => {
 			const doWeights: Record<string, number> = {};
 			const result = adaptiveWeightsToContext(doWeights, 'enterprise_mail');
 			expect(result).not.toBeNull();
-			expect(result!.dmarc.importance).toBe(24); // enterprise_mail static
+			expect(result!.dmarc.importance).toBe(26); // enterprise_mail static (updated in three-tier)
 			expect(result!.mta_sts.importance).toBe(4);
 		});
 	});
