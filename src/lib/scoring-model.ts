@@ -27,6 +27,33 @@ export type CheckCategory =
 	| 'srv'
 	| 'zone_hygiene';
 
+/** Three-tier classification for check categories: core (critical baseline), protective (active risk mitigation), hardening (advanced posture). */
+export type CategoryTier = 'core' | 'protective' | 'hardening';
+
+/** Maps every check category to its tier classification. */
+export const CATEGORY_TIERS: Record<CheckCategory, CategoryTier> = {
+	spf: 'core',
+	dmarc: 'core',
+	dkim: 'core',
+	dnssec: 'core',
+	ssl: 'core',
+	subdomain_takeover: 'protective',
+	http_security: 'protective',
+	mta_sts: 'protective',
+	mx: 'protective',
+	caa: 'protective',
+	ns: 'protective',
+	lookalikes: 'protective',
+	shadow_domains: 'protective',
+	dane: 'hardening',
+	bimi: 'hardening',
+	tlsrpt: 'hardening',
+	txt_hygiene: 'hardening',
+	mx_reputation: 'hardening',
+	srv: 'hardening',
+	zone_hygiene: 'hardening',
+};
+
 export interface Finding {
 	category: CheckCategory;
 	title: string;
