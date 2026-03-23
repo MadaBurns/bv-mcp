@@ -6,6 +6,9 @@
  * No AI binding required - uses a built-in knowledge base.
  */
 
+import type { OutputFormat } from '../handlers/tool-args';
+import { sanitizeOutputText } from '../lib/output-sanitize';
+
 import {
 	CATEGORY_FALLBACK_IMPACT,
 	CATEGORY_TO_CHECKTYPE,
@@ -151,7 +154,16 @@ export function explainFinding(checkType: string, status: string, details?: stri
 	};
 }
 
-export function formatExplanation(result: ExplanationResult): string {
+export function formatExplanation(result: ExplanationResult, format: OutputFormat = 'full'): string {
+	if (format === 'compact') {
+		const lines = [
+			`${result.title} (${result.checkType} | ${result.status})`,
+			sanitizeOutputText(result.explanation, 200),
+			`Recommendation: ${sanitizeOutputText(result.recommendation, 200)}`,
+		];
+		return lines.join('\n');
+	}
+
 	const lines = [`## ${result.title}`, `**Check Type:** ${result.checkType} | **Status:** ${result.status}`, ''];
 
 	lines.push(`### What this means`, result.explanation, '');

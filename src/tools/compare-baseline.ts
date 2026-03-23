@@ -5,6 +5,7 @@
  * Compares a scan result against a policy floor for org-level enforcement.
  */
 
+import type { OutputFormat } from '../handlers/tool-args';
 import type { CheckCategory } from '../lib/scoring';
 import type { ScanDomainResult } from './scan-domain';
 
@@ -166,7 +167,15 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 }
 
 /** Format baseline result as readable markdown text for MCP clients. */
-export function formatBaselineResult(result: BaselineResult): string {
+export function formatBaselineResult(result: BaselineResult, format: OutputFormat = 'full'): string {
+	if (format === 'compact') {
+		const lines = [`Baseline: ${result.domain} — ${result.passed ? 'PASS' : 'FAIL'} (${result.violations.length}/${result.checkedRules} violated)`];
+		for (const v of result.violations) {
+			lines.push(`- ${v.rule}: expected ${v.expected}, got ${v.actual}`);
+		}
+		return lines.join('\n');
+	}
+
 	const lines: string[] = [];
 
 	lines.push(`## Baseline Comparison: ${result.domain}`);
