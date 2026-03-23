@@ -172,6 +172,31 @@ describe('compareBaseline', () => {
 	});
 });
 
+describe('formatBaselineResult', () => {
+	it('compact mode uses terse violation lines without headings', async () => {
+		const { formatBaselineResult } = await import('../src/tools/compare-baseline');
+		const result = {
+			domain: 'example.com',
+			passed: false,
+			violations: [
+				{ rule: 'grade', message: 'Grade F is below minimum B', expected: 'B', actual: 'F' },
+				{ rule: 'require_spf', message: 'SPF not detected', expected: 'present', actual: 'missing' },
+			],
+			checkedRules: 5,
+			scoringProfile: 'mail_enabled',
+			timestamp: '2026-01-01T00:00:00Z',
+		};
+		const compact = formatBaselineResult(result, 'compact');
+		const full = formatBaselineResult(result, 'full');
+		expect(compact.length).toBeLessThan(full.length);
+		expect(compact).toContain('FAIL');
+		expect(compact).toContain('2/5 violated');
+		expect(compact).toContain('expected B, got F');
+		expect(compact).not.toContain('##');
+		expect(compact).not.toContain('### Violations');
+	});
+});
+
 describe('compare_baseline dispatch', () => {
 	it('is listed by handleToolsList', async () => {
 		const { handleToolsList } = await import('../src/handlers/tools');
