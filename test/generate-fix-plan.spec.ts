@@ -15,7 +15,7 @@ afterEach(() => restore());
 function mockScanResponses(options: { hasSpf?: boolean; hasDmarc?: boolean; hasDkim?: boolean } = {}) {
 	const { hasSpf = true, hasDmarc = true, hasDkim = true } = options;
 
-	globalThis.fetch = vi.fn().mockImplementation((url: string | URL | Request, init?: RequestInit) => {
+	globalThis.fetch = vi.fn().mockImplementation((url: string | URL | Request) => {
 		const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
 		const u = new URL(urlStr);
 
