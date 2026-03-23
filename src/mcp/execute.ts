@@ -182,9 +182,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		}
 
 		const rateResult = await checkRateLimit(options.ip, options.rateLimitKv, options.quotaCoordinator);
+		const minuteResetEpoch = Math.ceil(Date.now() / 60_000) * 60;
 		rateHeaders = {
 			'x-ratelimit-limit': '50',
 			'x-ratelimit-remaining': String(rateResult.minuteRemaining),
+			'x-ratelimit-reset': String(minuteResetEpoch),
 		};
 		if (!rateResult.allowed) {
 			if (rateResult.retryAfterMs !== undefined) {
@@ -224,8 +226,10 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				options.rateLimitKv,
 				options.quotaCoordinator,
 			);
+			const dailyResetEpoch = Math.ceil(Date.now() / 86_400_000) * 86_400;
 			rateHeaders['x-quota-limit'] = String(toolQuotaResult.limit);
 			rateHeaders['x-quota-remaining'] = String(toolQuotaResult.remaining);
+			rateHeaders['x-quota-reset'] = String(dailyResetEpoch);
 			if (!toolQuotaResult.allowed) {
 				if (toolQuotaResult.retryAfterMs !== undefined) {
 					rateHeaders['retry-after'] = String(Math.ceil(toolQuotaResult.retryAfterMs / 1000));
@@ -271,8 +275,10 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			options.rateLimitKv,
 			options.quotaCoordinator,
 		);
+		const tierDailyResetEpoch = Math.ceil(Date.now() / 86_400_000) * 86_400;
 		rateHeaders['x-quota-limit'] = String(tierQuotaResult.limit);
 		rateHeaders['x-quota-remaining'] = String(tierQuotaResult.remaining);
+		rateHeaders['x-quota-reset'] = String(tierDailyResetEpoch);
 		rateHeaders['x-quota-tier'] = tier;
 		if (!tierQuotaResult.allowed) {
 			if (tierQuotaResult.retryAfterMs !== undefined) {
