@@ -16,8 +16,10 @@ export interface SessionCreateRateResult {
 /** Active sessions keyed by session ID */
 export const ACTIVE_SESSIONS = new Map<string, SessionRecord>();
 
-/** Session idle TTL (30 minutes) */
-export const SESSION_TTL_MS = 30 * 60 * 1000;
+/** Session idle TTL (2 hours) — extended from 30min to accommodate Claude Desktop
+ *  users who go idle between queries. mcp-remote does not auto-reinitialize on
+ *  session expiry, so a short TTL causes persistent "session expired" 404 loops. */
+export const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 export const SESSION_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 const SESSION_CREATE_WINDOW_MS = 60_000;
