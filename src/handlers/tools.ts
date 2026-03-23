@@ -32,7 +32,7 @@ import { assessSpoofability, formatSpoofability } from '../tools/assess-spoofabi
 import { checkResolverConsistency, formatResolverConsistency } from '../tools/check-resolver-consistency';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
-import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractFormat, extractScanProfile, normalizeToolName } from './tool-args';
+import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName } from './tool-args';
 import type { OutputFormat } from './tool-args';
 import { logToolFailure, logToolSuccess } from './tool-execution';
 import { formatCheckResult, mcpError, mcpText } from './tool-formatters';
@@ -298,7 +298,7 @@ export async function handleToolsCall(
 					return { content: [mcpText(formatFixPlan(plan))] };
 				}
 				case 'generate_spf_record': {
-					const includeProviders = Array.isArray(args.include_providers) ? args.include_providers as string[] : undefined;
+					const includeProviders = extractIncludeProviders(args);
 					const record = await generateSpfRecord(validDomain, includeProviders, buildDnsOptions(runtimeOptions));
 					logToolSuccess({
 						toolName: name,
@@ -353,7 +353,7 @@ export async function handleToolsCall(
 					return { content: [mcpText(formatGeneratedRecord(record))] };
 				}
 				case 'generate_mta_sts_policy': {
-					const mxHosts = Array.isArray(args.mx_hosts) ? args.mx_hosts as string[] : undefined;
+					const mxHosts = extractMxHosts(args);
 					const record = await generateMtaStsPolicy(validDomain, mxHosts, buildDnsOptions(runtimeOptions));
 					logToolSuccess({
 						toolName: name,
@@ -428,7 +428,7 @@ export async function handleToolsCall(
 					return { content: [mcpText(formatSpoofability(result))] };
 				}
 				case 'check_resolver_consistency': {
-					const recordType = typeof args.record_type === 'string' ? args.record_type : undefined;
+					const recordType = extractRecordType(args);
 					const result = await checkResolverConsistency(validDomain, recordType);
 					runtimeOptions?.resultCapture?.(result);
 					logResult = result.passed ? 'pass' : 'fail';
