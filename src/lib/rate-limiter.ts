@@ -147,7 +147,7 @@ async function checkControlPlaneRateLimitKV(ip: string, kv: KVNamespace): Promis
 	return checkScopedRateLimitKV(ip, 'control', CONTROL_PLANE_MINUTE_LIMIT, CONTROL_PLANE_HOUR_LIMIT, kv);
 }
 
-async function withIpKvLock<T>(ip: string, work: () => Promise<T>): Promise<T> {
+export async function withIpKvLock<T>(ip: string, work: () => Promise<T>): Promise<T> {
 	const prevTail = KV_IP_LOCK_TAILS.get(ip) ?? Promise.resolve();
 	let release: (() => void) | undefined;
 	const current = new Promise<void>((resolve) => {
@@ -226,22 +226,24 @@ function checkGlobalDailyLimitInMemory(limit: number): GlobalRateLimitResult {
 }
 
 async function checkGlobalDailyLimitKV(limit: number, kv: KVNamespace): Promise<GlobalRateLimitResult> {
-	const now = Date.now();
-	const currentWindow = Math.floor(now / DAY_MS);
-	const key = `rl:global:day:${currentWindow}`;
+	return withIpKvLock('global:daily', async () => {
+		const now = Date.now();
+		const currentWindow = Math.floor(now / DAY_MS);
+		const key = `rl:global:day:${currentWindow}`;
 
-	const currentVal = await kv.get(key);
-	const currentCount = parseKvCounter(currentVal);
+		const currentVal = await kv.get(key);
+		const currentCount = parseKvCounter(currentVal);
 
-	if (currentCount >= limit) {
-		const windowEnd = (currentWindow + 1) * DAY_MS;
-		return { allowed: false, retryAfterMs: Math.max(windowEnd - now, 0), remaining: 0, limit };
-	}
+		if (currentCount >= limit) {
+			const windowEnd = (currentWindow + 1) * DAY_MS;
+			return { allowed: false, retryAfterMs: Math.max(windowEnd - now, 0), remaining: 0, limit };
+		}
 
-	const nextCount = currentCount + 1;
-	await kv.put(key, String(nextCount), { expirationTtl: 86_400 });
+		const nextCount = currentCount + 1;
+		await kv.put(key, String(nextCount), { expirationTtl: 86_400 });
 
-	return { allowed: true, remaining: Math.max(limit - nextCount, 0), limit };
+		return { allowed: true, remaining: Math.max(limit - nextCount, 0), limit };
+	});
 }
 
 // ---------------------------------------------------------------------------
