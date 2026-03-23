@@ -528,11 +528,26 @@ app.get('/mcp', async (c) => {
 
 	const sessionId = c.req.header('mcp-session-id');
 	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+	const isAuthenticated = c.get('isAuthenticated');
 
-	// SSE notification stream is exempt from control plane rate limiting.
-	// mcp-remote reconnects aggressively on disconnection, and each reconnect
-	// was burning through the 60/min budget — causing Claude Desktop to lose
-	// connectivity after the first tool call.
+	// SSE notification stream uses control plane rate limiting but is counted
+	// separately from other control plane methods. mcp-remote reconnects
+	// aggressively on disconnection — using the shared control plane budget
+	// (60/min) caused Claude Desktop to lose connectivity after the first tool
+	// call. The SSE handler still counts against the shared budget to prevent
+	// connection flood abuse, but authenticated clients bypass it entirely.
+	const controlPlaneLimited = await buildControlPlaneRateLimitResponse(
+		ip,
+		c.env.RATE_LIMIT,
+		'sse/stream',
+		isAuthenticated,
+		null,
+		undefined,
+		c.env.QUOTA_COORDINATOR,
+	);
+	if (controlPlaneLimited) {
+		return controlPlaneLimited;
+	}
 
 	const sseSession = await resolveSseSession({
 		sessionId,
