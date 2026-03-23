@@ -48,6 +48,7 @@ function renderBadge(label: string, value: string, color: string): string {
 
 	const safeLabel = escapeXml(label);
 	const safeValue = escapeXml(value);
+	const safeColor = /^#[0-9a-f]{3,6}$/i.test(color) ? color : ERROR_COLOR;
 
 	return `<svg xmlns="http://www.w3.org/2000/svg" width="${totalWidth}" height="20" role="img" aria-label="${safeLabel}: ${safeValue}">
   <title>${safeLabel}: ${safeValue}</title>
@@ -60,7 +61,7 @@ function renderBadge(label: string, value: string, color: string): string {
   </clipPath>
   <g clip-path="url(#r)">
     <rect width="${labelWidth}" height="20" fill="#555"/>
-    <rect x="${labelWidth}" width="${valueWidth}" height="20" fill="${color}"/>
+    <rect x="${labelWidth}" width="${valueWidth}" height="20" fill="${safeColor}"/>
     <rect width="${totalWidth}" height="20" fill="url(#s)"/>
   </g>
   <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="110">

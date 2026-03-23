@@ -20,7 +20,7 @@ import { checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
 import { logEvent, logError, sanitizeHeadersForLog } from './lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
 import { normalizeHeaders, parseJsonRpcRequest, readRequestBody } from './mcp/request';
-import { createSession, deleteSession, validateSession } from './lib/session';
+import { createSession, deleteSession, validateSession, checkSessionCreateRateLimit } from './lib/session';
 import { unauthorizedResponse } from './lib/auth';
 import { sseEvent, acceptsSSE, createSseStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
 import { createAnalyticsClient, hashForAnalytics } from './lib/analytics';
@@ -581,6 +581,17 @@ app.get('/mcp/sse', async (c) => {
 		return controlPlaneLimited;
 	}
 
+	if (!isAuthenticated) {
+		const sessionCreateGate = await checkSessionCreateRateLimit(ip, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
+		if (!sessionCreateGate.allowed) {
+			const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
+			return new Response('Rate limit exceeded', {
+				status: 429,
+				headers: { 'retry-after': String(retryAfterSeconds) },
+			});
+		}
+	}
+
 	const legacySessionId = await createSession(c.env.SESSION_STORE);
 	const endpointUrl = new URL(`/mcp/messages?sessionId=${encodeURIComponent(legacySessionId)}`, c.req.url).toString();
 	return openLegacySseStream(legacySessionId, endpointUrl);
@@ -602,7 +613,7 @@ app.delete('/mcp', async (c) => {
 		return controlPlaneLimited;
 	}
 
-	const sessionId = c.req.header('mcp-session-id') ?? c.req.query('sessionId');
+	const sessionId = c.req.header('mcp-session-id');
 	const sessionError = await validateSessionRequest(
 		sessionId,
 		c.env.SESSION_STORE,

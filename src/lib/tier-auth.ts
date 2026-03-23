@@ -19,7 +19,7 @@ export interface TierAuthResult {
 
 const TIER_KV_CACHE_TTL = 300; // 5 minutes
 
-/** SHA-256 hash a bearer token to match the key_hash stored in platform DB. */
+/** SHA-256 hash a bearer token to a hex string (for KV keys and service binding payloads). */
 async function hashToken(token: string): Promise<string> {
 	const encoder = new TextEncoder();
 	const data = encoder.encode(token);
@@ -27,6 +27,14 @@ async function hashToken(token: string): Promise<string> {
 	return Array.from(new Uint8Array(hashBuffer))
 		.map((b) => b.toString(16).padStart(2, '0'))
 		.join('');
+}
+
+/** SHA-256 digest as raw bytes (for constant-time comparison). */
+async function hashTokenRaw(token: string): Promise<Uint8Array> {
+	const encoder = new TextEncoder();
+	const data = encoder.encode(token);
+	const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+	return new Uint8Array(hashBuffer);
 }
 
 /**
@@ -72,7 +80,6 @@ export async function resolveTier(
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
-						'X-Internal-Key': env.BV_WEB_INTERNAL_KEY,
 						'Authorization': `Bearer ${env.BV_WEB_INTERNAL_KEY}`,
 					},
 					body: JSON.stringify({ keyHash }),
@@ -100,9 +107,14 @@ export async function resolveTier(
 
 	// 3. Fallback: compare against static BV_API_KEY (self-hosted/dev)
 	if (env.BV_API_KEY) {
-		const expectedHash = await hashToken(env.BV_API_KEY);
-		// Constant-time comparison via hash equality (same pattern as auth.ts)
-		if (keyHash === expectedHash) {
+		// Constant-time comparison: XOR raw SHA-256 digests byte-by-byte
+		// (same pattern as auth.ts — avoids timing side-channels from === on strings)
+		const [a, b] = await Promise.all([hashTokenRaw(token), hashTokenRaw(env.BV_API_KEY)]);
+		let mismatch = 0;
+		for (let i = 0; i < a.byteLength; i++) {
+			mismatch |= a[i] ^ b[i];
+		}
+		if (mismatch === 0) {
 			return { authenticated: true, tier: 'enterprise', keyHash };
 		}
 	}

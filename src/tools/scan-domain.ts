@@ -411,8 +411,10 @@ async function safeCheck(category: CheckCategory, fn: () => Promise<CheckResult>
 		]);
 		return result;
 	} catch (err) {
-		const message = err instanceof Error ? err.message : 'Check failed';
-		const findings = [createFinding(category, `${category.toUpperCase()} check error`, 'high', `Check failed: ${message}`)];
+		const rawMessage = err instanceof Error ? err.message : 'Check failed';
+		const SAFE_PREFIXES = ['DNS query', 'Check timed out', 'Check failed', 'Connection', 'timeout'];
+		const safeMessage = SAFE_PREFIXES.some((p) => rawMessage.startsWith(p)) ? rawMessage : 'Check failed';
+		const findings = [createFinding(category, `${category.toUpperCase()} check error`, 'high', `Check failed: ${safeMessage}`)];
 		return buildCheckResult(category, findings);
 	}
 }
