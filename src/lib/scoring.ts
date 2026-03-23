@@ -23,7 +23,7 @@ export {
 	type Severity,
 } from './scoring-model';
 
-export { computeScanScore, scoreToGrade } from './scoring-engine';
+export { computeScanScore, scoreToGrade, IMPORTANCE_WEIGHTS, CORE_WEIGHTS, PROTECTIVE_WEIGHTS } from './scoring-engine';
 
 export { detectDomainContext, getProfileWeights, type DomainContext, type DomainProfile } from './context-profiles';
 
