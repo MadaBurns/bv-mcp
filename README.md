@@ -138,6 +138,8 @@ Full scope and limitations in the coverage table below.
 
 ## Client setup
 
+The free tier requires no authentication. If you have an API key, see the **With API key** tabs below to bypass rate limits.
+
 <details>
 <summary><b>VS Code / Copilot</b></summary>
 
@@ -151,6 +153,30 @@ Full scope and limitations in the coverage table below.
       "url": "https://dns-mcp.blackveilsecurity.com/mcp"
     }
   }
+}
+```
+
+**With API key:**
+
+```json
+{
+  "servers": {
+    "blackveil-dns": {
+      "type": "http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${input:bv-api-key}"
+      }
+    }
+  },
+  "inputs": [
+    {
+      "id": "bv-api-key",
+      "type": "promptString",
+      "description": "Blackveil DNS API key",
+      "password": true
+    }
+  ]
 }
 ```
 </details>
@@ -176,6 +202,33 @@ Or via CLI:
 ```bash
 claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.com/mcp
 ```
+
+**With API key** — use `mcp-remote` to reliably forward the auth header:
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://dns-mcp.blackveilsecurity.com/mcp",
+        "--header",
+        "Authorization: Bearer YOUR_API_KEY"
+      ]
+    }
+  }
+}
+```
+
+Or via CLI:
+
+```bash
+claude mcp add-json blackveil-dns \
+  '{"command":"npx","args":["mcp-remote","https://dns-mcp.blackveilsecurity.com/mcp","--header","Authorization: Bearer YOUR_API_KEY"]}'
+```
+
+> **Why `mcp-remote`?** Claude Code's native HTTP transport does not currently forward custom `headers` from config files. The `mcp-remote` bridge reliably passes the `Authorization` header to the server. Restart Claude Code after adding the server.
 </details>
 
 <details>
@@ -183,7 +236,25 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 
 **Recommended:** Open [claude.ai](https://claude.ai) → **Settings → Connectors → Add custom connector** → paste `https://dns-mcp.blackveilsecurity.com/mcp`.
 
-**Advanced fallback:** If you want first-party local stdio instead of the hosted HTTP connector, open **Settings → Developer → Edit Config** (`claude_desktop_config.json`) and add:
+**With API key** — open **Settings → Developer → Edit Config** (`claude_desktop_config.json`) and add:
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://dns-mcp.blackveilsecurity.com/mcp",
+        "--header",
+        "Authorization: Bearer YOUR_API_KEY"
+      ]
+    }
+  }
+}
+```
+
+**Without API key (local stdio):** If you want first-party local stdio instead of the hosted HTTP connector:
 
 ```json
 {
@@ -197,8 +268,6 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 }
 ```
 
-> Prefer the direct custom connector above when possible. The stdio route runs the server locally and depends on Node.js being available to Claude Desktop.
->
 > On macOS GUI apps, `npx` may not resolve from `PATH`; if Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path. After editing the config, fully restart Claude Desktop. If you already have other servers, merge `"blackveil-dns"` into your existing `"mcpServers"` object — don't paste a second `{ }` wrapper.
 
 </details>
@@ -213,6 +282,52 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
   "mcpServers": {
     "blackveil-dns": {
       "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+**With API key:**
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>Windsurf</b></summary>
+
+`~/.codeium/windsurf/mcp_config.json`
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "serverUrl": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+**With API key:**
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "serverUrl": "https://dns-mcp.blackveilsecurity.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
     }
   }
 }
