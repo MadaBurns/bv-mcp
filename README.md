@@ -244,6 +244,30 @@ Get weekly DNS security reports in Slack or Discord. See [`examples/slack-discor
 
 ---
 
+## Pricing
+
+Full API and MCP access at every tier — no enterprise gatekeeping.
+
+| | **Free** | **Pro** | **Enterprise** |
+|---|---|---|---|
+| **Price** | $0 | $39/mo ($29/mo annual) | [Contact us](https://blackveilsecurity.com) |
+| **Scans/day** | 75 | 500 | 10,000+ |
+| **Checks/day** (per tool) | 200 | 5,000 | Unlimited |
+| **Lookalike / Shadow scans** | 20/day | 200/day | Unlimited |
+| **Rate limit** | 50 req/min | None | None |
+| **API access** | Yes | Yes | Yes |
+| **MCP access** | Yes | Yes | Yes |
+| **GitHub Action** | Yes | Yes | Yes |
+| **Batch API** | — | — | Up to 500 domains/call |
+| **SLA** | Best effort | 99.5% | 99.9% + custom |
+| **Support** | Community | Email | Dedicated |
+
+The free tier is generous by design — use it for personal projects, evaluations, and AI agent integrations with no strings attached. Upgrade when you need higher throughput.
+
+Get an API key at [blackveilsecurity.com](https://blackveilsecurity.com).
+
+---
+
 ## npm package
 
 Install from npm when you want to call the scanner from your own Node.js app, script, or service. If you are connecting from VS Code, Claude, Cursor, or another MCP client, use the MCP endpoint configuration above instead.
@@ -442,9 +466,10 @@ Full details in `CLAUDE.md` (security and observability sections).
 - DNS data sanitized at ingestion — HTML/markdown injection stripped before findings are created
 - Outbound response body caps (64 KB for tool checks, 1 MB for provider signatures)
 - Tool parameter validation with allowlists and per-element type/length checks
-- Rate limits: `50/min` and `300/hr` per IP for `tools/call`
+- Rate limits: `50/min` and `300/hr` per IP for `tools/call` (free tier; Pro and Enterprise bypass)
 - Control-plane traffic: `60/min` and `600/hr` per IP
 - Global daily cap: `500,000` unauthenticated tool calls/day (cost ceiling)
+- Authenticated requests: per-tier daily quotas keyed by API key hash (see [Pricing](#pricing))
 - Session creation: `60/min` per IP (enforced on both modern and legacy transports)
 - Session TTL: 2 hours idle, dual-write (KV + in-memory) for cross-isolate resilience
 - SSE notification stream exempt from rate limiting (prevents `mcp-remote` reconnection storms)

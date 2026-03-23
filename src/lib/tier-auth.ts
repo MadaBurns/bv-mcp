@@ -87,9 +87,9 @@ export async function resolveTier(
 			);
 
 			if (response.ok) {
-				const data = (await response.json()) as { tier: string | null };
+				const data = (await response.json()) as { tier: string | null; revokedAt?: number | null };
 				if (data.tier) {
-					// Cache the result
+					// Cache the valid tier result
 					if (env.RATE_LIMIT) {
 						await env.RATE_LIMIT.put(
 							`tier:${keyHash}`,
@@ -98,6 +98,15 @@ export async function resolveTier(
 						);
 					}
 					return { authenticated: true, tier: data.tier as McpApiKeyTier, keyHash };
+				}
+				// Null tier = revoked or unknown key — cache negative result to avoid
+				// repeated service binding calls within the TTL window
+				if (env.RATE_LIMIT) {
+					await env.RATE_LIMIT.put(
+						`tier:${keyHash}`,
+						JSON.stringify({ tier: 'free', revokedAt: Date.now() }),
+						{ expirationTtl: TIER_KV_CACHE_TTL },
+					);
 				}
 			}
 		} catch {
