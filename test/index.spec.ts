@@ -991,8 +991,9 @@ describe('DNS Security MCP Server', () => {
 			expect(payload.result.protocolVersion).toBe('2025-03-26');
 			expect(payload.result.serverInfo.name).toBe('Blackveil DNS');
 
-			const deleteRequest = new Request<unknown, IncomingRequestCfProperties>(`http://example.com/mcp?sessionId=${sessionId!}`, {
+			const deleteRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'DELETE',
+				headers: { 'Mcp-Session-Id': sessionId! },
 			});
 			const deleteCtx = createExecutionContext();
 			const deleteResponse = await worker.fetch(deleteRequest, env, deleteCtx);

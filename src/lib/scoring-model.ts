@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import { sanitizeDnsData } from './output-sanitize';
+
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type FindingConfidence = 'deterministic' | 'heuristic' | 'verified';
 
@@ -164,5 +166,5 @@ export function createFinding(
 	detail: string,
 	metadata?: Record<string, unknown>,
 ): Finding {
-	return { category, title, severity, detail, ...(metadata ? { metadata } : {}) };
+	return { category, title, severity, detail: sanitizeDnsData(detail), ...(metadata ? { metadata } : {}) };
 }

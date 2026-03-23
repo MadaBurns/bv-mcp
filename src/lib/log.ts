@@ -23,7 +23,7 @@ export type LogEvent = {
 
 const REDACTED = '[redacted]';
 const MAX_LOG_STRING_LENGTH = 256;
-const SENSITIVE_KEY_PATTERN = /(authorization|mcp-session-id|session|token|api[-_]?key|secret|password|cookie|rawbody)/i;
+const SENSITIVE_KEY_PATTERN = /(^ip$|authorization|mcp-session-id|session|token|api[-_]?key|secret|password|cookie|rawbody)/i;
 
 function isSensitiveKey(key: string): boolean {
 	return !/^has[A-Z]/.test(key) && SENSITIVE_KEY_PATTERN.test(key);

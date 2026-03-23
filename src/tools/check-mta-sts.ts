@@ -68,18 +68,44 @@ export async function checkMtaSts(domain: string, dnsOptions?: QueryDnsOptions):
 					),
 				);
 			} else {
-				const body = await response.text();
-				findings.push(...getMtaStsPolicyFindings(body, policyUrl));
+				const MAX_BODY_BYTES = 65_536; // 64 KB — RFC 8461 max for MTA-STS
+				const contentLength = parseInt(response.headers?.get('content-length') ?? '0', 10);
+				if (contentLength > MAX_BODY_BYTES) {
+					findings.push(
+						createFinding(
+							'mta_sts',
+							'MTA-STS policy file oversized',
+							'high',
+							`MTA-STS policy file at ${policyUrl} exceeds 64 KB (Content-Length: ${contentLength}). This is abnormally large for an MTA-STS policy and was not fetched.`,
+						),
+					);
+				} else {
+					const body = await response.text();
+					if (body.length > MAX_BODY_BYTES) {
+						findings.push(
+							createFinding(
+								'mta_sts',
+								'MTA-STS policy file oversized',
+								'high',
+								`MTA-STS policy file at ${policyUrl} exceeds 64 KB. This is abnormally large for an MTA-STS policy and was not parsed.`,
+							),
+						);
+					} else {
+						findings.push(...getMtaStsPolicyFindings(body, policyUrl));
 
-				const policyMxPatterns = extractPolicyMxPatterns(body);
-				const modeMatch = body.match(/mode:\s*(enforce|testing|none)/i);
-				const policyMode = modeMatch ? modeMatch[1].toLowerCase() : '';
-				if (policyMxPatterns.length > 0 && (policyMode === 'enforce' || policyMode === 'testing')) {
-					try {
-						const mxRecords = await queryMxRecords(domain, dnsOptions);
-						findings.push(...getUncoveredMxHostFindings(mxRecords.map((mx) => mx.exchange), policyMxPatterns));
-					} catch {
-						// MX query failed; skip coverage cross-check.
+						const policyMxPatterns = extractPolicyMxPatterns(body);
+						const modeMatch = body.match(/mode:\s*(enforce|testing|none)/i);
+						const policyMode = modeMatch ? modeMatch[1].toLowerCase() : '';
+						if (policyMxPatterns.length > 0 && (policyMode === 'enforce' || policyMode === 'testing')) {
+							try {
+								const mxRecords = await queryMxRecords(domain, dnsOptions);
+								findings.push(
+									...getUncoveredMxHostFindings(mxRecords.map((mx) => mx.exchange), policyMxPatterns),
+								);
+							} catch {
+								// MX query failed; skip coverage cross-check.
+							}
+						}
 					}
 				}
 			}

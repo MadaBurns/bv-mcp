@@ -152,7 +152,15 @@ export async function fetchProviderPayload(
 				throw new Error(`Provider signature source returned HTTP ${response.status}`);
 			}
 
+			const MAX_BODY_BYTES = 1_048_576; // 1 MB — provider signature JSON from pinned source
+			const contentLength = parseInt(response.headers?.get('content-length') ?? '0', 10);
+			if (contentLength > MAX_BODY_BYTES) {
+				throw new Error(`Provider signature source exceeds ${MAX_BODY_BYTES} bytes (Content-Length: ${contentLength})`);
+			}
 			const rawPayload = await response.text();
+			if (rawPayload.length > MAX_BODY_BYTES) {
+				throw new Error(`Provider signature source exceeds ${MAX_BODY_BYTES} bytes`);
+			}
 			if (!expectedSha256) {
 				throw new Error('Provider signature source requires a pinned SHA-256 digest');
 			}

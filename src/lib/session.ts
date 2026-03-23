@@ -22,6 +22,7 @@ import {
 	validateSessionInMemory,
 } from './session-memory';
 import { checkSessionCreateRateLimitWithCoordinator } from './quota-coordinator';
+import { withIpKvLock } from './rate-limiter';
 
 export { ACTIVE_SESSIONS, resetSessions, SESSION_REFRESH_INTERVAL_MS, SESSION_TTL_MS };
 
@@ -57,29 +58,31 @@ export async function checkSessionCreateRateLimit(
 	}
 	if (kv) {
 		try {
-			const now = Date.now();
-			const keyIp = ip || 'unknown';
-			const minuteWindow = Math.floor(now / SESSION_CREATE_WINDOW_MS);
-			const key = `${SESSION_CREATE_RATE_KEY_PREFIX}:${keyIp}:${minuteWindow}`;
-			const currentVal = await kv.get(key);
-			const parsed = currentVal ? parseInt(currentVal, 10) : 0;
-			const currentCount = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+			return await withIpKvLock(`session-create:${ip || 'unknown'}`, async () => {
+				const now = Date.now();
+				const keyIp = ip || 'unknown';
+				const minuteWindow = Math.floor(now / SESSION_CREATE_WINDOW_MS);
+				const key = `${SESSION_CREATE_RATE_KEY_PREFIX}:${keyIp}:${minuteWindow}`;
+				const currentVal = await kv.get(key);
+				const parsed = currentVal ? parseInt(currentVal, 10) : 0;
+				const currentCount = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 
-			if (currentCount >= SESSION_CREATE_LIMIT_PER_MINUTE) {
-				const windowEnd = (minuteWindow + 1) * SESSION_CREATE_WINDOW_MS;
+				if (currentCount >= SESSION_CREATE_LIMIT_PER_MINUTE) {
+					const windowEnd = (minuteWindow + 1) * SESSION_CREATE_WINDOW_MS;
+					return {
+						allowed: false,
+						retryAfterMs: Math.max(windowEnd - now, 0),
+						remaining: 0,
+					};
+				}
+
+				const nextCount = currentCount + 1;
+				await kv.put(key, String(nextCount), { expirationTtl: 60 });
 				return {
-					allowed: false,
-					retryAfterMs: Math.max(windowEnd - now, 0),
-					remaining: 0,
+					allowed: true,
+					remaining: SESSION_CREATE_LIMIT_PER_MINUTE - nextCount,
 				};
-			}
-
-			const nextCount = currentCount + 1;
-			await kv.put(key, String(nextCount), { expirationTtl: 60 });
-			return {
-				allowed: true,
-				remaining: SESSION_CREATE_LIMIT_PER_MINUTE - nextCount,
-			};
+			});
 		} catch {
 			console.warn('[session] KV create limiter failed, falling back to in-memory');
 		}
