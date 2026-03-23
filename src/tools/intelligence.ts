@@ -9,6 +9,8 @@
  * "unavailable" response when the DO binding is absent or unresponsive.
  */
 
+import type { OutputFormat } from '../handlers/tool-args';
+
 /** Trend snapshot from the DO. */
 export interface TrendSnapshot {
 	hour: number;
@@ -189,8 +191,29 @@ export function computePercentileRank(score: number, benchmark: BenchmarkResult)
 }
 
 /** Format benchmark data as human-readable text. */
-export function formatBenchmark(result: BenchmarkResult): string {
+export function formatBenchmark(result: BenchmarkResult, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
+
+	if (format === 'compact') {
+		if (result.status === 'unavailable') {
+			return `Benchmark: ${result.profile} — unavailable`;
+		}
+		if (result.status === 'insufficient_data') {
+			return `Benchmark: ${result.profile} — insufficient data (${result.totalScans ?? 0} scans)`;
+		}
+		lines.push(`Benchmark: ${result.profile} — ${result.totalScans} scans, mean ${result.meanScore}/100, median ${result.medianBucket}-${(result.medianBucket ?? 0) + 9}`);
+		if (result.topFailingCategories && result.topFailingCategories.length > 0) {
+			lines.push(`Top failures: ${result.topFailingCategories.map((c) => c.toUpperCase()).join(', ')}`);
+		}
+		if (result.trends && result.trends.snapshotCount > 0 && result.trends.snapshots.length >= 2) {
+			const first = result.trends.snapshots[0];
+			const last = result.trends.snapshots[result.trends.snapshots.length - 1];
+			const delta = Math.round((last.avgScore - first.avgScore) * 10) / 10;
+			const dir = delta > 0 ? `↑ +${delta}` : delta < 0 ? `↓ ${delta}` : '→ stable';
+			lines.push(`Trend: ${dir} pts over 7d`);
+		}
+		return lines.join('\n');
+	}
 
 	lines.push(`# Benchmark: ${result.profile}`);
 
@@ -254,7 +277,20 @@ export function formatBenchmark(result: BenchmarkResult): string {
 }
 
 /** Format provider insights as human-readable text. */
-export function formatProviderInsights(result: ProviderInsightsResult): string {
+export function formatProviderInsights(result: ProviderInsightsResult, format: OutputFormat = 'full'): string {
+	if (format === 'compact') {
+		if (result.status === 'unavailable') return `Provider: ${result.provider} — unavailable`;
+		if (result.status === 'no_data') return `Provider: ${result.provider} — no data`;
+		const parts = [`Provider: ${result.provider} (${result.profile}) — ${result.emaOverallScore}/100, ${result.totalScans} scans`];
+		if (result.percentileRank !== null && result.percentileRank !== undefined) {
+			parts[0] += `, ${result.percentileRank}th pctl`;
+		}
+		if (result.topFailingCategories && result.topFailingCategories.length > 0) {
+			parts.push(`Issues: ${result.topFailingCategories.map((c) => c.toUpperCase()).join(', ')}`);
+		}
+		return parts.join('\n');
+	}
+
 	const lines: string[] = [];
 
 	lines.push(`# Provider Insights: ${result.provider}`);

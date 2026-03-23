@@ -8,6 +8,8 @@
  * impact, and dependency information.
  */
 
+import type { OutputFormat } from '../handlers/tool-args';
+import { sanitizeOutputText } from '../lib/output-sanitize';
 import type { CheckResult, Finding, Severity, CheckCategory } from '../lib/scoring-model';
 import { IMPORTANCE_WEIGHTS } from '../lib/scoring-engine';
 import { scanDomain } from './scan-domain';
@@ -147,8 +149,26 @@ export async function generateFixPlan(
 }
 
 /** Format a fix plan as a human-readable text report. */
-export function formatFixPlan(plan: FixPlanResult): string {
+export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
+
+	if (format === 'compact') {
+		lines.push(`Fix Plan: ${plan.domain} — ${plan.score}/100 (${plan.grade}), ${plan.totalActions} actions`);
+		if (plan.actions.length === 0) {
+			lines.push('No actionable findings.');
+			return lines.join('\n');
+		}
+		const maxShow = 5;
+		const shown = plan.actions.slice(0, maxShow);
+		for (let i = 0; i < shown.length; i++) {
+			const a = shown[i];
+			lines.push(`${i + 1}. [${a.severity.toUpperCase()}] ${a.category.toUpperCase()}: ${sanitizeOutputText(a.action, 150)} (${a.effort})`);
+		}
+		if (plan.actions.length > maxShow) {
+			lines.push(`... and ${plan.actions.length - maxShow} more`);
+		}
+		return lines.join('\n');
+	}
 
 	lines.push(`# Fix Plan: ${plan.domain}`);
 	lines.push(`Score: ${plan.score}/100 (${plan.grade}) | Maturity Stage: ${plan.maturityStage}/4`);
