@@ -10,6 +10,24 @@ import type { QueryDnsOptions } from '../lib/dns-types';
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
 import { analyzeKeyStrength, consolidateSelectorProbeKeyStrengthFindings, getDkimTagValue } from './dkim-analysis';
 
+/**
+ * Email providers with high confidence of default DKIM signing.
+ * Matched against `detectedProvider` from domain context (lowercase provider names from MX detection).
+ */
+const HIGH_CONFIDENCE_DKIM_PROVIDERS = new Set([
+	'amazon ses',
+	'sendgrid',
+	'mailgun',
+	'postmark',
+	'google workspace',
+	'microsoft 365',
+]);
+
+/**
+ * Email providers that typically sign with DKIM but vary by configuration.
+ */
+const MEDIUM_CONFIDENCE_DKIM_PROVIDERS = new Set(['proofpoint', 'mimecast']);
+
 /** Common DKIM selectors used by major email providers */
 const COMMON_SELECTORS = [
 	'default',
@@ -219,6 +237,7 @@ export async function checkDkim(domain: string, selector?: string, dnsOptions?: 
 				`No DKIM records were found for ${domain} among the tested selector set (${selectorsToCheck.join(', ')}). This result is based on selector probing and may miss custom selector names. DKIM helps verify email authenticity and integrity.`,
 				{
 					signalType: 'dkim',
+					confidence: 'heuristic',
 					detectionMethod: 'selector-probing',
 					selectorsChecked: selectorsToCheck,
 					selectorsFound: [],
@@ -238,4 +257,60 @@ export async function checkDkim(domain: string, selector?: string, dnsOptions?: 
 	}
 
 	return buildCheckResult('dkim', findings);
+}
+
+/**
+ * Apply provider-informed context to DKIM results.
+ * Called as a post-processing step in scan_domain after MX-based provider detection completes.
+ * When a known DKIM-signing provider is detected, downgrades the "No DKIM records found"
+ * finding from HIGH to MEDIUM since the provider likely signs outbound mail by default.
+ */
+export function applyProviderDkimContext(dkimResult: CheckResult, provider: string): CheckResult {
+	const normalizedProvider = provider.toLowerCase();
+	const notFoundIdx = dkimResult.findings.findIndex(
+		(f) => /No DKIM records found/i.test(f.title) && f.severity === 'high',
+	);
+	if (notFoundIdx === -1) return dkimResult;
+
+	const selectorsChecked = (dkimResult.findings[notFoundIdx].metadata?.selectorsChecked as string[]) ?? [];
+	const newFindings = [...dkimResult.findings];
+
+	if (HIGH_CONFIDENCE_DKIM_PROVIDERS.has(normalizedProvider)) {
+		newFindings[notFoundIdx] = createFinding(
+			'dkim',
+			'DKIM selector not discovered',
+			'medium',
+			`No DKIM selectors were found among the tested set, but ${provider} is detected as the email provider and signs outbound mail by default. DKIM is likely present with a custom selector.`,
+			{
+				confidence: 'heuristic',
+				detectionMethod: 'provider-implied',
+				provider: normalizedProvider,
+				selectorsChecked,
+			},
+		);
+	} else if (MEDIUM_CONFIDENCE_DKIM_PROVIDERS.has(normalizedProvider)) {
+		newFindings[notFoundIdx] = createFinding(
+			'dkim',
+			'DKIM selector not discovered',
+			'medium',
+			`No DKIM selectors were found among the tested set. ${provider} is detected as the email provider and typically signs outbound mail.`,
+			{
+				confidence: 'heuristic',
+				detectionMethod: 'provider-implied',
+				provider: normalizedProvider,
+				selectorsChecked,
+			},
+		);
+		newFindings.push(
+			createFinding(
+				'dkim',
+				'DKIM provider signing unverified',
+				'low',
+				`${provider} signing policy varies by configuration — DKIM presence cannot be confirmed without selector discovery.`,
+				{ confidence: 'heuristic' },
+			),
+		);
+	}
+
+	return buildCheckResult('dkim', newFindings);
 }
