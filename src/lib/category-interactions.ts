@@ -61,13 +61,13 @@ export const INTERACTION_RULES: InteractionRule[] = [
 		narrative: 'Complete absence of both SPF and DMARC means any server can send as this domain with no detection mechanism.',
 	},
 	{
-		id: 'strong_auth_no_dnssec',
+		id: 'weak_dnssec_enforcing_dmarc',
 		conditions: [
 			{ category: 'dmarc', minScore: 80 },
-			{ category: 'dnssec', maxScore: 0 },
+			{ category: 'dnssec', maxScore: 40 },
 		],
 		overallPenalty: 3,
-		narrative: 'Strong email authentication records exist but DNSSEC is absent — a DNS tampering attack could modify or remove SPF/DMARC/DKIM records, bypassing all email protections.',
+		narrative: 'Strong email authentication is in place but DNSSEC is weak or absent — DNS tampering could undermine authentication records.',
 	},
 	{
 		id: 'no_spf_no_dkim',

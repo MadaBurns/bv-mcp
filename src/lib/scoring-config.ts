@@ -13,19 +13,36 @@
  */
 
 import type { CheckCategory } from './scoring-model';
+import { CATEGORY_TIERS } from './scoring-model';
 import type { DomainProfile } from './context-profiles';
 
 /** All tunable scoring parameters. */
 export interface ScoringConfig {
-	/** Base importance weights per check category (used when no profile context). */
+	/** @deprecated Use coreWeights and protectiveWeights */
 	weights: Record<CheckCategory, number>;
 
 	/** Per-profile importance weights. */
 	profileWeights: Record<DomainProfile, Record<CheckCategory, number>>;
 
+	/** Tier budget split — percentage of the total score allocated to each tier. Must sum to 100. */
+	tierSplit: { core: number; protective: number; hardening: number };
+
+	/** Importance weights for core-tier categories (SPF, DMARC, DKIM, DNSSEC, SSL). */
+	coreWeights: Record<string, number>;
+
+	/** Importance weights for protective-tier categories. */
+	protectiveWeights: Record<string, number>;
+
+	/** Per-provider DKIM confidence factors (0–1). */
+	providerDkimConfidence: Record<string, number>;
+
 	/** Scoring thresholds and constants. */
 	thresholds: {
+		/** @deprecated Use emailBonusFull, emailBonusMid, emailBonusPartial */
 		emailBonusImportance: number;
+		emailBonusFull: number;
+		emailBonusMid: number;
+		emailBonusPartial: number;
 		spfStrongThreshold: number;
 		criticalOverallPenalty: number;
 		criticalGapCeiling: number;
@@ -41,7 +58,6 @@ export interface ScoringConfig {
 		c: number;
 		dPlus: number;
 		d: number;
-		e: number;
 	};
 
 	/** Baseline failure rates for adaptive weight computation. */
@@ -79,22 +95,34 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
 		web_only: { ssl: 12, subdomain_takeover: 5, dnssec: 5, caa: 5, dmarc: 2, ns: 2, dkim: 1, spf: 1, mx: 0, mta_sts: 0, tlsrpt: 0, bimi: 0, lookalikes: 0, shadow_domains: 0, txt_hygiene: 0, http_security: 5, dane: 0, mx_reputation: 0, srv: 0, zone_hygiene: 0 },
 		minimal: { dmarc: 5, ssl: 5, dnssec: 5, dkim: 3, spf: 3, subdomain_takeover: 3, ns: 2, mx: 1, caa: 1, mta_sts: 0, tlsrpt: 0, bimi: 0, lookalikes: 0, shadow_domains: 0, txt_hygiene: 0, http_security: 2, dane: 0, mx_reputation: 0, srv: 0, zone_hygiene: 0 },
 	},
+	tierSplit: { core: 70, protective: 20, hardening: 10 },
+	coreWeights: { dmarc: 22, dkim: 16, spf: 10, dnssec: 7, ssl: 5 },
+	protectiveWeights: {
+		subdomain_takeover: 4, http_security: 3, mta_sts: 3, mx: 2,
+		caa: 2, ns: 2, lookalikes: 2, shadow_domains: 2,
+	},
+	providerDkimConfidence: {
+		amazonses: 0.8, sendgrid: 0.8, mailgun: 0.8, postmark: 0.8,
+		google: 0.9, microsoft365: 0.9, proofpoint: 0.6, mimecast: 0.6,
+	},
 	thresholds: {
 		emailBonusImportance: 8,
+		emailBonusFull: 5,
+		emailBonusMid: 3,
+		emailBonusPartial: 2,
 		spfStrongThreshold: 57,
 		criticalOverallPenalty: 15,
 		criticalGapCeiling: 64,
 	},
 	grades: {
-		aPlus: 90,
-		a: 85,
-		bPlus: 80,
-		b: 75,
+		aPlus: 92,
+		a: 87,
+		bPlus: 82,
+		b: 76,
 		cPlus: 70,
-		c: 65,
-		dPlus: 60,
-		d: 55,
-		e: 50,
+		c: 63,
+		dPlus: 56,
+		d: 50,
 	},
 	baselineFailureRates: {
 		dmarc: 0.40,
@@ -155,6 +183,12 @@ function mergeWeights(
  * Gracefully handles undefined, empty, invalid JSON, partial overrides,
  * and invalid value types. Always returns a complete config by merging
  * overrides into defaults.
+ *
+ * Provides legacy migration:
+ * - `weights` without `coreWeights` → partitions into core/protective via CATEGORY_TIERS
+ * - `thresholds.emailBonusImportance` without `emailBonusFull` → derives three-tier bonus fields
+ * - `tierSplit` not summing to 100 → falls back to default tierSplit
+ * - `grades.e` → silently ignored (E grade removed in scoring v2)
  */
 export function parseScoringConfig(raw: string | undefined): ScoringConfig {
 	if (!raw || raw.trim().length === 0) return DEFAULT_SCORING_CONFIG;
@@ -171,9 +205,10 @@ export function parseScoringConfig(raw: string | undefined): ScoringConfig {
 	}
 
 	// Merge weights
+	const rawWeightsObj = parsed.weights as Record<string, unknown> | undefined;
 	const weights = mergeWeights(
 		DEFAULT_SCORING_CONFIG.weights,
-		parsed.weights as Record<string, unknown> | undefined,
+		rawWeightsObj,
 	) as Record<CheckCategory, number>;
 
 	// Merge profile weights
@@ -190,6 +225,72 @@ export function parseScoringConfig(raw: string | undefined): ScoringConfig {
 		}
 	}
 
+	// --- Tier split ---
+	let tierSplit = { ...DEFAULT_SCORING_CONFIG.tierSplit };
+	const rawTierSplit = parsed.tierSplit as Record<string, unknown> | undefined;
+	if (rawTierSplit && typeof rawTierSplit === 'object') {
+		const c = rawTierSplit.core;
+		const p = rawTierSplit.protective;
+		const h = rawTierSplit.hardening;
+		if (typeof c === 'number' && typeof p === 'number' && typeof h === 'number' && Number.isFinite(c + p + h)) {
+			if (c + p + h === 100) {
+				tierSplit = { core: c, protective: p, hardening: h };
+			}
+			// Sum != 100 → fall back to default (validation rejection)
+		}
+	}
+
+	// --- Core/Protective weights with legacy migration ---
+	let coreWeights: Record<string, number>;
+	let protectiveWeights: Record<string, number>;
+
+	if (parsed.coreWeights && typeof parsed.coreWeights === 'object') {
+		coreWeights = mergeWeights(DEFAULT_SCORING_CONFIG.coreWeights, parsed.coreWeights as Record<string, unknown>);
+	} else if (rawWeightsObj && typeof rawWeightsObj === 'object') {
+		// Legacy migration: partition weights into core/protective via CATEGORY_TIERS
+		const migrated = { ...DEFAULT_SCORING_CONFIG.coreWeights };
+		for (const [key, value] of Object.entries(rawWeightsObj)) {
+			if (typeof value === 'number' && Number.isFinite(value) && key in CATEGORY_TIERS) {
+				const tier = CATEGORY_TIERS[key as CheckCategory];
+				if (tier === 'core') {
+					migrated[key] = Math.max(0, value);
+				}
+			}
+		}
+		coreWeights = migrated;
+	} else {
+		coreWeights = { ...DEFAULT_SCORING_CONFIG.coreWeights };
+	}
+
+	if (parsed.protectiveWeights && typeof parsed.protectiveWeights === 'object') {
+		protectiveWeights = mergeWeights(DEFAULT_SCORING_CONFIG.protectiveWeights, parsed.protectiveWeights as Record<string, unknown>);
+	} else if (rawWeightsObj && typeof rawWeightsObj === 'object') {
+		// Legacy migration: partition weights into core/protective via CATEGORY_TIERS
+		const migrated = { ...DEFAULT_SCORING_CONFIG.protectiveWeights };
+		for (const [key, value] of Object.entries(rawWeightsObj)) {
+			if (typeof value === 'number' && Number.isFinite(value) && key in CATEGORY_TIERS) {
+				const tier = CATEGORY_TIERS[key as CheckCategory];
+				if (tier === 'protective') {
+					migrated[key] = Math.max(0, value);
+				}
+			}
+		}
+		protectiveWeights = migrated;
+	} else {
+		protectiveWeights = { ...DEFAULT_SCORING_CONFIG.protectiveWeights };
+	}
+
+	// --- Provider DKIM confidence ---
+	const providerDkimConfidence = { ...DEFAULT_SCORING_CONFIG.providerDkimConfidence };
+	const rawProviderDkim = parsed.providerDkimConfidence as Record<string, unknown> | undefined;
+	if (rawProviderDkim && typeof rawProviderDkim === 'object') {
+		for (const [key, value] of Object.entries(rawProviderDkim)) {
+			if (typeof value === 'number' && Number.isFinite(value)) {
+				providerDkimConfidence[key] = Math.max(0, Math.min(1, value));
+			}
+		}
+	}
+
 	// Merge thresholds
 	const rawThresholds = parsed.thresholds as Record<string, unknown> | undefined;
 	const thresholds = { ...DEFAULT_SCORING_CONFIG.thresholds };
@@ -199,9 +300,21 @@ export function parseScoringConfig(raw: string | undefined): ScoringConfig {
 				thresholds[key] = rawThresholds[key] as number;
 			}
 		}
+
+		// Legacy migration: emailBonusImportance → three-tier bonus fields
+		if (
+			'emailBonusImportance' in rawThresholds &&
+			typeof rawThresholds.emailBonusImportance === 'number' &&
+			!('emailBonusFull' in rawThresholds)
+		) {
+			const v = rawThresholds.emailBonusImportance;
+			thresholds.emailBonusFull = v;
+			thresholds.emailBonusMid = Math.ceil(v * 0.6);
+			thresholds.emailBonusPartial = Math.ceil(v * 0.4);
+		}
 	}
 
-	// Merge grades
+	// Merge grades — silently ignore legacy 'e' grade
 	const rawGrades = parsed.grades as Record<string, unknown> | undefined;
 	const grades = { ...DEFAULT_SCORING_CONFIG.grades };
 	if (rawGrades && typeof rawGrades === 'object') {
@@ -218,5 +331,8 @@ export function parseScoringConfig(raw: string | undefined): ScoringConfig {
 		parsed.baselineFailureRates as Record<string, unknown> | undefined,
 	);
 
-	return { weights, profileWeights, thresholds, grades, baselineFailureRates };
+	return {
+		weights, profileWeights, tierSplit, coreWeights, protectiveWeights,
+		providerDkimConfidence, thresholds, grades, baselineFailureRates,
+	};
 }

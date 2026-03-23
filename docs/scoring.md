@@ -1,37 +1,47 @@
 # Scoring Methodology
 
-Canonical scoring reference for `scan_domain` results. Aligned with bv-web AI-Resilience v4.0.
+Canonical scoring reference for `scan_domain` results. Aligned with scoring v2 three-tier model.
 
-## Category Importance Weights
+## Three-Tier Category Model
 
-Overall score is computed from category scores weighted by importance.
+Categories are classified into three tiers with distinct scoring mechanics.
 
-| Category | Importance | Notes |
-| --- | ---: | --- |
-| DMARC | 22 | |
-| DKIM | 16 | |
-| SPF | 10 | |
-| SSL | 5 | |
-| HTTP Security | 3 | |
-| Subdomain Takeover | 3 | |
-| DNSSEC | 2 | |
-| MTA-STS | 2 | |
-| MX | 2 | |
-| DANE | 1 | |
-| TLS-RPT | 1 | |
-| NS | 0 | Informational |
-| CAA | 0 | Informational |
-| BIMI | 0 | Informational |
-| Lookalikes | 0 | Informational |
-| Shadow Domains | 0 | Informational |
-| TXT Hygiene | 0 | Informational |
-| MX Reputation | 0 | Informational |
-| SRV | 0 | Informational |
-| Zone Hygiene | 0 | Informational |
+### Core (70% of score)
 
-Scored total: **67** (+ up to 8 email bonus = 75 max denominator).
+Controls whose absence creates direct, exploitable risk. Missing-control rule applies (confidence-gated).
 
-Source: `IMPORTANCE_WEIGHTS` in `src/lib/scoring-engine.ts`.
+| Category | Weight |
+| --- | ---: |
+| DMARC | 22 |
+| DKIM | 16 |
+| SPF | 10 |
+| DNSSEC | 7 |
+| SSL | 5 |
+
+**Confidence gate**: `scoreIndicatesMissingControl()` only fires for `deterministic`/`verified` confidence findings. Heuristic "not found" results from selector probing do not zero the category.
+
+### Protective (20% of score)
+
+Active defenses against known attack vectors. Findings penalize but cannot trigger missing-control zeroing.
+
+| Category | Weight |
+| --- | ---: |
+| Subdomain Takeover | 4 |
+| HTTP Security | 3 |
+| MTA-STS | 3 |
+| MX | 2 |
+| CAA | 2 |
+| NS | 2 |
+| Lookalikes | 2 |
+| Shadow Domains | 2 |
+
+### Hardening (10% of score)
+
+Bonus-only defense-in-depth. Each passed category adds ~1.4 points. Never subtracts from the overall score.
+
+Categories: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene.
+
+Source: `CATEGORY_TIERS` and `computeScanScore()` in `src/lib/scoring-engine.ts`.
 
 ## Per-Finding Severity Penalties
 
@@ -45,21 +55,15 @@ Category score formula starts at `100` and deducts per finding:
 
 Source: `SEVERITY_PENALTIES` in `src/lib/scoring-model.ts`.
 
-## Missing-Control Rule
+## Missing-Control Rule (Confidence Gate)
 
-For weighted categories, findings that indicate missing required controls (for example no record found) can force effective category contribution to `0`.
+For Core categories, findings that indicate missing required controls can force effective category contribution to `0`. This only applies when the finding confidence is `deterministic` or `verified`. Heuristic findings (e.g., DKIM selector probing that returns no results) do not trigger the missing-control rule.
 
 Source: `scoreIndicatesMissingControl()` in `src/lib/scoring-engine.ts`.
 
 ## Critical Gap Ceiling
 
-Domains missing any critical foundational control are capped at a maximum score of **64** (grade D+), regardless of how well other categories score. This prevents a domain with no DMARC (or missing SPF, DKIM, SSL, or subdomain takeover protection) from receiving a passing grade.
-
-Critical categories: `spf`, `dmarc`, `dkim`, `ssl`, `subdomain_takeover`.
-
-DNSSEC is intentionally excluded: its importance weight (2) already reflects its proportional impact, and only ~30% of domains deploy it — capping the entire score at 64 for missing DNSSEC produces misleading results for well-configured domains.
-
-The ceiling is applied after all other scoring (weighted average, email bonus, provider modifier, critical penalty). If any critical category has a missing-control finding, `overall = min(computed, 64)`.
+Domains missing any critical foundational control are capped at a maximum overall score. The ceiling is applied after all other scoring.
 
 Source: `CRITICAL_GAP_CEILING` and `computeScanScore()` in `src/lib/scoring-engine.ts`.
 
@@ -70,53 +74,53 @@ If any **verified**-confidence critical finding exists across the scan, an addit
 - Verified critical present: `-15` overall points
 - No verified critical findings: `0` additional penalty
 
-This ensures verified critical risks (for example takeover or certificate failures) materially impact final grade even when they appear in low-importance categories.
-
 Source: `CRITICAL_OVERALL_PENALTY` and `computeScanScore()` in `src/lib/scoring-engine.ts`.
 
 ## Email Bonus
 
-Up to `+8` points are added when all of the following are true:
+Added when all of the following are true:
 
 - SPF is present and strong (`score >= 57`)
-- DKIM is present
+- DKIM is not deterministically missing
 - DMARC is present
 
 DMARC score determines bonus tier:
 
-- DMARC `>= 90`: `+8`
-- DMARC `>= 70`: `+5`
-- Otherwise: `+4`
+- DMARC `>= 90`: `+5`
+- DMARC `>= 70`: `+3`
+- Otherwise: `+2`
 
 Source: `EMAIL_BONUS_IMPORTANCE`, `SPF_STRONG_THRESHOLD`, and bonus logic in `computeScanScore()`.
+
+## Provider-Informed DKIM
+
+When a known DKIM-signing provider is detected (via MX/SPF analysis) but selector probing finds no records, the HIGH finding is downgraded to MEDIUM. This reduces false positives for domains whose provider manages DKIM selectors not discoverable via common probing.
+
+Provider context is applied as a post-processing step after parallel checks complete in `scan_domain`.
+
+Source: `src/tools/scan/post-processing.ts`.
 
 ## Provider Confidence Modifier
 
 After base weighted scoring and email bonus, `scan_domain` applies a bounded confidence modifier derived from provider detection findings (`metadata.providerConfidence`).
 
-- Confidence values are normalized to `[0, 1]`
-- Average confidence is centered around `0.5`
-- Overall score modifier range is approximately `-5` to `+5`
+- Confidence values normalized to `[0, 1]`
+- Average confidence centered around `0.5`
+- Overall score modifier range approximately `-5` to `+5`
 - If no provider confidence metadata is present, modifier is `0`
-
-Provider confidence is currently attached by:
-
-- Inbound provider detection in `check_mx`
-- Outbound provider inference in `scan_domain` (from SPF include/redirect signals and DKIM selector hints)
 
 Source: `computeProviderConfidenceModifier()` and `computeScanScore()` in `src/lib/scoring-engine.ts`.
 
 ## Grades
 
-- A+: `90+`
-- A: `85-89`
-- B+: `80-84`
-- B: `75-79`
-- C+: `70-74`
-- C: `65-69`
-- D+: `60-64`
-- D: `55-59`
-- E: `50-54`
+- A+: `92+`
+- A: `87-91`
+- B+: `82-86`
+- B: `76-81`
+- C+: `70-75`
+- C: `63-69`
+- D+: `56-62`
+- D: `50-55`
 - F: `<50`
 
 Source: `scoreToGrade()` in `src/lib/scoring.ts`.
@@ -127,47 +131,36 @@ Source: `scoreToGrade()` in `src/lib/scoring.ts`.
 
 | Profile | When Detected | Key Differences |
 | --- | --- | --- |
-| `mail_enabled` | Has MX, no enterprise provider (default) | Today's weights unchanged |
-| `enterprise_mail` | MX + enterprise provider + hardening signal | Email auth slightly higher, MTA-STS/TLS-RPT/BIMI elevated |
+| `mail_enabled` | Has MX, no enterprise provider (default) | Base three-tier weights |
+| `enterprise_mail` | MX + enterprise provider + hardening signal | Email auth slightly higher, MTA-STS/TLS-RPT elevated |
 | `non_mail` | No MX, no web indicators | Email auth near-zero, DNSSEC/SubdomainTakeover elevated |
-| `web_only` | No MX + CAA or SSL present | Email auth near-zero, SSL:12, CAA:5, DNSSEC:5 |
+| `web_only` | No MX + CAA or SSL present | Email auth near-zero, SSL elevated |
 | `minimal` | >50% checks failed | Weights spread evenly, lower total |
 
-### Profile Weight Table
-
-| Category | mail_enabled | enterprise_mail | non_mail | web_only | minimal |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| DMARC | 22 | 24 | 2 | 2 | 5 |
-| DKIM | 16 | 18 | 1 | 1 | 3 |
-| SPF | 10 | 12 | 1 | 1 | 3 |
-| SSL | 5 | 5 | 8 | 12 | 5 |
-| HTTP Security | 3 | 3 | 5 | 5 | 2 |
-| Subdomain Takeover | 3 | 3 | 5 | 5 | 3 |
-| DNSSEC | 2 | 3 | 5 | 5 | 5 |
-| MTA-STS | 2 | 4 | 0 | 0 | 0 |
-| MX | 2 | 2 | 0 | 0 | 1 |
-| DANE | 1 | 2 | 0 | 0 | 0 |
-| TLS-RPT | 1 | 2 | 0 | 0 | 0 |
-| CAA | 0 | 0 | 3 | 5 | 1 |
-| NS | 0 | 0 | 2 | 2 | 2 |
-| BIMI | 0 | 1 | 0 | 0 | 0 |
-| Lookalikes | 0 | 0 | 0 | 0 | 0 |
-| Shadow Domains | 0 | 0 | 0 | 0 | 0 |
-| TXT Hygiene | 0 | 0 | 0 | 0 | 0 |
-| MX Reputation | 0 | 0 | 0 | 0 | 0 |
-| SRV | 0 | 0 | 0 | 0 | 0 |
-| Zone Hygiene | 0 | 0 | 0 | 0 | 0 |
-
 - **Email bonus**: only for `mail_enabled` and `enterprise_mail`
-- **Critical gap categories**: `mail_enabled`/`enterprise_mail` use `['spf', 'dmarc', 'dkim', 'ssl', 'subdomain_takeover']`; `non_mail`/`web_only` use `['ssl', 'subdomain_takeover', 'http_security']`; `minimal` uses `['ssl', 'subdomain_takeover']`
+- **Critical gap categories**: `mail_enabled`/`enterprise_mail` use core categories; `non_mail`/`web_only` use `['ssl', 'subdomain_takeover', 'http_security']`; `minimal` uses `['ssl', 'subdomain_takeover']`
 
 ### Phase 1 (Current)
 
-Auto-detection runs and is reported in the structured result (`scoringProfile`, `scoringSignals`), but `auto` mode uses `mail_enabled` weights (identical to pre-profile behavior). Only explicit `profile` parameter values activate different weights and cache keys (`cache:<domain>:profile:<profile>`).
+Auto-detection runs and is reported in the structured result (`scoringProfile`, `scoringSignals`), but `auto` mode uses `mail_enabled` weights. Only explicit `profile` parameter values activate different weights and cache keys (`cache:<domain>:profile:<profile>`).
 
 Detection priority: `non_mail`/`web_only` (no MX or Null MX) → `mail_enabled` (MX DNS failure — safe fallback) → `enterprise_mail` (MX + provider + hardening) → `mail_enabled` (MX, default) → `minimal` (>50% failed override).
 
 Source: `src/lib/context-profiles.ts`.
+
+## Maturity Staging
+
+`computeMaturityStage()` classifies the domain into a maturity stage (0-4):
+
+| Stage | Label | Criteria |
+| --- | --- | --- |
+| 0 | Unprotected | No SPF or no DMARC |
+| 1 | Basic | SPF present, DMARC present |
+| 2 | Configured | DMARC policy != none, MTA-STS present |
+| 3 | Enforcing | DMARC policy = reject/quarantine, DNSSEC present. DKIM not required. |
+| 4 | Hardened | Stage 3 + hardening signals: BIMI, DANE, MTA-STS strict, CAA, or DKIM-discovered |
+
+Source: `src/tools/scan/maturity-staging.ts`.
 
 ## Notes on `scan_domain`
 
