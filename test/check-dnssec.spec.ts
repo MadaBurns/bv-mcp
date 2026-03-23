@@ -46,46 +46,6 @@ describe('checkDnssec', () => {
 		expect(result.findings[0].title).toMatch(/Modern DNSSEC algorithm/i);
 	});
 
-	it('should return high finding when DNSSEC is not validated (AD=false, no keys)', async () => {
-		mockDnssecResponses(false, false, false);
-		const result = await run();
-		expect(result.findings[0].severity).toMatch(/high|critical/);
-		expect(result.findings[0].title).toMatch(/DNSSEC not validated/i);
-	});
-
-	it('returns high finding when AD flag is false', async () => {
-		mockDnssecResponses(false, true, true);
-		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('not validated'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('high');
-	});
-
-	it('returns high finding for missing DNSKEY when AD=false', async () => {
-		mockDnssecResponses(false, false, true);
-		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('No DNSKEY'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('high');
-	});
-
-	it('returns medium finding for missing DS when AD=false', async () => {
-		mockDnssecResponses(false, true, false);
-		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('No DS'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('medium');
-	});
-
-	it('returns all findings when AD=false, no DNSKEY, no DS', async () => {
-		mockDnssecResponses(false, false, false);
-		const r = await run();
-		expect(r.findings.length).toBeGreaterThanOrEqual(3);
-		expect(r.findings.some((f) => f.title.includes('not validated'))).toBe(true);
-		expect(r.findings.some((f) => f.title.includes('No DNSKEY'))).toBe(true);
-		expect(r.findings.some((f) => f.title.includes('No DS'))).toBe(true);
-	});
-
 	it('returns medium finding when DNS query fails entirely', async () => {
 		mockFetchError();
 		const r = await run();
@@ -99,5 +59,36 @@ describe('checkDnssec', () => {
 		const r = await run();
 		expect(r.findings).toHaveLength(1);
 		expect(r.findings[0].severity).toBe('info');
+	});
+});
+
+describe('DNSSEC finding consolidation', () => {
+	async function run(domain = 'example.com') {
+		const { checkDnssec } = await import('../src/tools/check-dnssec');
+		return checkDnssec(domain);
+	}
+
+	it('emits single MEDIUM finding when DNSSEC is fully absent', async () => {
+		// AD=false, no DNSKEY, no DS
+		mockDnssecResponses(false, false, false);
+		const result = await run();
+		const nonInfoFindings = result.findings.filter((f) => f.severity !== 'info');
+		expect(nonInfoFindings).toHaveLength(1);
+		expect(nonInfoFindings[0].severity).toBe('medium');
+		expect(nonInfoFindings[0].title).toBe('DNSSEC not enabled');
+	});
+
+	it('emits HIGH when DNSKEY present but DS missing', async () => {
+		// AD=false, DNSKEY present, no DS
+		mockDnssecResponses(false, true, false);
+		const result = await run();
+		expect(result.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete' && f.severity === 'high')).toBe(true);
+	});
+
+	it('emits HIGH when DNSKEY+DS present but AD not set', async () => {
+		// AD=false, DNSKEY present, DS present
+		mockDnssecResponses(false, true, true);
+		const result = await run();
+		expect(result.findings.some((f) => f.title === 'DNSSEC validation failing' && f.severity === 'high')).toBe(true);
 	});
 });
