@@ -12,7 +12,7 @@ import {
 import type { DomainContext } from './context-profiles';
 import { PROFILE_CRITICAL_CATEGORIES, PROFILE_EMAIL_BONUS_ELIGIBLE } from './context-profiles';
 import type { ScoringConfig } from './scoring-config';
-import { DEFAULT_SCORING_CONFIG, toImportanceRecord } from './scoring-config';
+import { DEFAULT_SCORING_CONFIG } from './scoring-config';
 
 interface ImportanceProfile {
 	importance: number;
