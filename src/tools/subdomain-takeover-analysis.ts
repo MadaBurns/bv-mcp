@@ -112,7 +112,12 @@ export async function probeHttpFingerprint(fqdn: string, cname: string): Promise
 		});
 		// Skip fingerprint matching on redirects — redirecting services are not deprovisioned
 		if (response.status >= 300 && response.status < 400) return null;
+
+		const MAX_BODY_BYTES = 65_536; // 64 KB — no legitimate takeover fingerprint page exceeds this
+		const contentLength = parseInt(response.headers?.get('content-length') ?? '0', 10);
+		if (contentLength > MAX_BODY_BYTES) return null;
 		const body = await response.text();
+		if (body.length > MAX_BODY_BYTES) return null;
 
 		for (const [service, fingerprint] of matchingEntries) {
 			if (service === 'herokuapp.com') {

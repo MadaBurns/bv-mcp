@@ -99,7 +99,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					normalizeIndex(event.toolName),
 					event.status,
 					event.isError ? 'error' : 'ok',
-					event.domain ? hashDomain(event.domain) : 'none',
+					event.domain ? domainFingerprint(event.domain) : 'none',
 					event.country ?? 'unknown',
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
@@ -164,10 +164,10 @@ function sanitizeNumber(value: number): number {
 }
 
 /**
- * FNV-1a hash for domain anonymization before analytics emission.
- * Not cryptographic, but stable and adequate for aggregate reporting.
+ * Computes a stable 32-bit fingerprint for aggregate grouping.
+ * Not a privacy control — FNV-1a is trivially reversible for known domain sets.
  */
-function hashDomain(domain: string): string {
+function domainFingerprint(domain: string): string {
 	return fnv1aHash(domain, 'd_');
 }
 
