@@ -51,15 +51,59 @@ Add to `.vscode/mcp.json`:
 }
 ```
 
+**With API key** — VS Code supports `inputs` for secrets:
+
+```json
+{
+  "servers": {
+    "blackveil-dns": {
+      "type": "http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${input:bv-api-key}"
+      }
+    }
+  },
+  "inputs": [
+    {
+      "id": "bv-api-key",
+      "type": "promptString",
+      "description": "Blackveil DNS API key",
+      "password": true
+    }
+  ]
+}
+```
+
 ## Claude Desktop
 
 No npm install required.
 
-**Recommended:** Open [claude.ai](https://claude.ai) → **Settings → Connectors → Add custom connector** → paste `https://dns-mcp.blackveilsecurity.com/mcp`.
+**Recommended (free tier):** Open [claude.ai](https://claude.ai) → **Settings → Connectors → Add custom connector** → paste `https://dns-mcp.blackveilsecurity.com/mcp`.
 
-This uses native Streamable HTTP with no bridge process. Prefer this over the config file approach.
+This uses native Streamable HTTP with no bridge process. Prefer this for free-tier usage.
 
-**Advanced fallback:** If you want first-party local stdio instead of the hosted HTTP connector, open **Settings → Developer → Edit Config** (`claude_desktop_config.json`) and add:
+**With API key** — open **Settings → Developer → Edit Config** (`claude_desktop_config.json`) and add:
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://dns-mcp.blackveilsecurity.com/mcp",
+        "--header",
+        "Authorization: Bearer YOUR_API_KEY"
+      ]
+    }
+  }
+}
+```
+
+Fully restart Claude Desktop after editing the config. Replace `YOUR_API_KEY` with your actual key.
+
+**Without API key (local stdio):** If you want first-party local stdio instead of the hosted HTTP connector:
 
 ```json
 {
@@ -73,15 +117,13 @@ This uses native Streamable HTTP with no bridge process. Prefer this over the co
 }
 ```
 
-> Prefer the direct custom connector above when possible. The stdio route runs the server locally and depends on Node.js being available to Claude Desktop.
->
 > On macOS GUI apps, `npx` may not resolve from `PATH`; if Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path. After editing the config, fully restart Claude Desktop. If you already have other servers, merge `"blackveil-dns"` into your existing `"mcpServers"` object — don't paste a second `{ }` wrapper.
 
 ## Claude Code
 
 No npm install required.
 
-**Option A — project-level** (`.mcp.json` in repo root):
+**Free tier** — project-level (`.mcp.json` in repo root):
 
 ```json
 {
@@ -94,13 +136,38 @@ No npm install required.
 }
 ```
 
-**Option B — CLI:**
+Or via CLI:
 
 ```bash
 claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.com/mcp
 ```
 
-Restart Claude Code after adding the server.
+**With API key** — use `mcp-remote` to reliably forward the auth header:
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://dns-mcp.blackveilsecurity.com/mcp",
+        "--header",
+        "Authorization: Bearer YOUR_API_KEY"
+      ]
+    }
+  }
+}
+```
+
+Or via CLI:
+
+```bash
+claude mcp add-json blackveil-dns \
+  '{"command":"npx","args":["mcp-remote","https://dns-mcp.blackveilsecurity.com/mcp","--header","Authorization: Bearer YOUR_API_KEY"]}'
+```
+
+> **Why `mcp-remote`?** Claude Code's native HTTP transport does not currently forward custom `headers` from `.mcp.json` config files. The `mcp-remote` bridge runs as a local stdio process and reliably passes the `Authorization` header to the server. Restart Claude Code after adding the server.
 
 ## Cursor
 
@@ -113,6 +180,52 @@ Add to `.cursor/mcp.json`:
   "mcpServers": {
     "blackveil-dns": {
       "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+**With API key:**
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+## Windsurf
+
+No npm install required.
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "serverUrl": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  }
+}
+```
+
+**With API key:**
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "serverUrl": "https://dns-mcp.blackveilsecurity.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
     }
   }
 }
@@ -141,9 +254,24 @@ Important: raw JSON-RPC `tools/call` still requires `params.name` to be a tool i
 
 ## Authentication
 
-When auth is enabled (`BV_API_KEY` configured), clients must send:
+Authenticated requests bypass all rate limits. Send the API key as a bearer token:
 
-`Authorization: Bearer <BV_API_KEY>`
+```
+Authorization: Bearer <YOUR_API_KEY>
+```
+
+How to configure this depends on your client — see the **With API key** sections above for per-client examples.
+
+**Important:** Claude Code's native HTTP transport does not forward custom `headers` from config files. Use the `mcp-remote` bridge approach shown in the Claude Code section above.
+
+| Client | Auth method | Notes |
+|--------|-------------|-------|
+| VS Code / Copilot | `headers` field + `inputs` | Supports secret prompt for key |
+| Claude Code | `mcp-remote --header` | Native HTTP `headers` not forwarded |
+| Claude Desktop | `mcp-remote --header` | Custom connector does not support headers |
+| Cursor | `headers` field | Direct header support |
+| Windsurf | `headers` field | Direct header support |
+| curl / scripts | `-H "Authorization: Bearer ..."` | Standard HTTP header |
 
 ## Provider Detection Configuration
 
