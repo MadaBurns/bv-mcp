@@ -103,4 +103,15 @@ describe('formatResolverConsistency', () => {
 		expect(text).toContain('DNS Resolver Consistency Check');
 		expect(text).toContain('Summary');
 	});
+
+	it('compact mode omits per-resolver answers and info findings', async () => {
+		mockConsistentDns();
+		const { checkResolverConsistency, formatResolverConsistency } = await import('../src/tools/check-resolver-consistency');
+		const result = await checkResolverConsistency('example.com', 'A');
+		const compact = formatResolverConsistency(result, 'compact');
+		const full = formatResolverConsistency(result, 'full');
+		expect(compact.length).toBeLessThanOrEqual(full.length);
+		expect(compact).toContain('Resolver Consistency:');
+		expect(compact).not.toContain('# DNS Resolver Consistency Check');
+	});
 });

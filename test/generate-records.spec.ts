@@ -219,4 +219,23 @@ describe('formatGeneratedRecord', () => {
 		expect(text).toContain('Test warning');
 		expect(text).toContain('Step 1');
 	});
+
+	it('compact mode omits instructions but keeps warnings', async () => {
+		const { formatGeneratedRecord } = await import('../src/tools/generate-records');
+		const record = {
+			recordType: 'TXT',
+			name: 'example.com',
+			value: 'v=spf1 -all',
+			warnings: ['Test warning'],
+			instructions: ['Step 1', 'Step 2'],
+		};
+		const compact = formatGeneratedRecord(record, 'compact');
+		const full = formatGeneratedRecord(record, 'full');
+		expect(compact.length).toBeLessThan(full.length);
+		expect(compact).toContain('v=spf1 -all');
+		expect(compact).toContain('Test warning');
+		expect(compact).not.toContain('Step 1');
+		expect(compact).not.toContain('Instructions');
+		expect(compact).not.toContain('#');
+	});
 });

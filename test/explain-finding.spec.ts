@@ -479,6 +479,20 @@ describe('formatExplanation', () => {
 		expect(text).not.toContain('### Potential Impact');
 		expect(text).not.toContain('### Adverse Consequences');
 	});
+
+	it('compact mode omits impact, consequences, references, and headers', async () => {
+		const { explainFinding, formatExplanation } = await getModule();
+		const result = explainFinding('SPF', 'fail');
+		const compact = formatExplanation(result, 'compact');
+		const full = formatExplanation(result, 'full');
+		expect(compact.length).toBeLessThan(full.length);
+		expect(compact).toContain('SPF');
+		expect(compact).toContain('Recommendation:');
+		expect(compact).not.toContain('### Potential Impact');
+		expect(compact).not.toContain('### Adverse Consequences');
+		expect(compact).not.toContain('### References');
+		expect(compact).not.toContain('## ');
+	});
 });
 
 describe('resolveImpactNarrative', () => {

@@ -276,7 +276,7 @@ export async function handleToolsCall(
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
 					});
-					return { content: [mcpText(formatBaselineResult(result))] };
+					return { content: [mcpText(formatBaselineResult(result, effectiveFormat))] };
 				}
 				case 'generate_fix_plan': {
 					const plan = await generateFixPlan(validDomain, scanCacheKV, runtimeOptions);
@@ -295,7 +295,7 @@ export async function handleToolsCall(
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
 					});
-					return { content: [mcpText(formatFixPlan(plan))] };
+					return { content: [mcpText(formatFixPlan(plan, effectiveFormat))] };
 				}
 				case 'generate_spf_record': {
 					const includeProviders = extractIncludeProviders(args);
@@ -313,7 +313,7 @@ export async function handleToolsCall(
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
 					});
-					return { content: [mcpText(formatGeneratedRecord(record))] };
+					return { content: [mcpText(formatGeneratedRecord(record, effectiveFormat))] };
 				}
 				case 'generate_dmarc_record': {
 					const policy = typeof args.policy === 'string' ? args.policy as 'none' | 'quarantine' | 'reject' : undefined;
@@ -332,7 +332,7 @@ export async function handleToolsCall(
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
 					});
-					return { content: [mcpText(formatGeneratedRecord(record))] };
+					return { content: [mcpText(formatGeneratedRecord(record, effectiveFormat))] };
 				}
 				case 'generate_dkim_config': {
 					const provider = typeof args.provider === 'string' ? args.provider : undefined;
@@ -350,7 +350,7 @@ export async function handleToolsCall(
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
 					});
-					return { content: [mcpText(formatGeneratedRecord(record))] };
+					return { content: [mcpText(formatGeneratedRecord(record, effectiveFormat))] };
 				}
 				case 'generate_mta_sts_policy': {
 					const mxHosts = extractMxHosts(args);
@@ -368,7 +368,7 @@ export async function handleToolsCall(
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
 					});
-					return { content: [mcpText(formatGeneratedRecord(record))] };
+					return { content: [mcpText(formatGeneratedRecord(record, effectiveFormat))] };
 				}
 				case 'get_benchmark': {
 					const profile = typeof args.profile === 'string' ? args.profile : 'mail_enabled';
@@ -385,7 +385,7 @@ export async function handleToolsCall(
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
 					});
-					return { content: [mcpText(formatBenchmark(result))] };
+					return { content: [mcpText(formatBenchmark(result, effectiveFormat))] };
 				}
 				case 'get_provider_insights': {
 					const provider = typeof args.provider === 'string' ? args.provider : '';
@@ -406,7 +406,7 @@ export async function handleToolsCall(
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
 					});
-					return { content: [mcpText(formatProviderInsights(result))] };
+					return { content: [mcpText(formatProviderInsights(result, effectiveFormat))] };
 				}
 				case 'assess_spoofability': {
 					const result = await assessSpoofability(validDomain, buildDnsOptions(runtimeOptions));
@@ -425,7 +425,7 @@ export async function handleToolsCall(
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
 					});
-					return { content: [mcpText(formatSpoofability(result))] };
+					return { content: [mcpText(formatSpoofability(result, effectiveFormat))] };
 				}
 				case 'check_resolver_consistency': {
 					const recordType = extractRecordType(args);
@@ -446,7 +446,7 @@ export async function handleToolsCall(
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
 					});
-					return { content: [mcpText(formatResolverConsistency(result))] };
+					return { content: [mcpText(formatResolverConsistency(result, effectiveFormat))] };
 				}
 				case 'explain_finding': {
 					let explainArgs: ReturnType<typeof extractExplainFindingArgs>;
@@ -469,7 +469,7 @@ export async function handleToolsCall(
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
 					});
-					return { content: [mcpText(formatExplanation(result))] };
+					return { content: [mcpText(formatExplanation(result, effectiveFormat))] };
 				}
 				default:
 					logToolFailure({
