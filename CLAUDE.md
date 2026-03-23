@@ -153,11 +153,17 @@ All tools accept an optional `format` parameter (`full` | `compact`) controlling
 - **Interactive LLM clients** (`claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`) → default `compact`
 - **Non-interactive/unknown** (`mcp_remote`, `unknown`) → default `full`
 
-**Compact mode** (in `formatCheckResult()` and `formatScanReport()`):
-- Single-line findings: `[SEVERITY] title — detail` (no emoji icons, no impact narratives)
-- Omits maturity description/nextStep (keeps stage + label)
-- Omits scoring profile signals and scoring notes
-- Omits `<!-- STRUCTURED_RESULT -->` block for interactive clients
+**Compact mode** — all tool formatters respect the `format` parameter:
+- **Check results** (`formatCheckResult`): Single-line findings `[SEVERITY] title — detail`, no emoji icons, no impact narratives
+- **Scan report** (`formatScanReport`): Omits maturity description/nextStep, scoring profile/notes, `<!-- STRUCTURED_RESULT -->` block
+- **Explain finding** (`formatExplanation`): Title + truncated explanation + recommendation only; omits impact, consequences, references
+- **Fix plan** (`formatFixPlan`): One-liner actions, max 5 shown; omits dependencies, impact labels, markdown headings
+- **Generated records** (`formatGeneratedRecord`): Record type/name/value + warnings; omits instructions section
+- **Spoofability** (`formatSpoofability`): Single line with scores; omits summary narrative and interaction effects
+- **Benchmark** (`formatBenchmark`): Summary line with mean/median + top failures + trend direction; omits ASCII chart, snapshots, freshness
+- **Provider insights** (`formatProviderInsights`): Single line with score/scans/percentile; omits freshness
+- **Resolver consistency** (`formatResolverConsistency`): Summary + non-info findings only; omits per-resolver answer breakdowns
+- **Baseline** (`formatBaselineResult`): Terse pass/fail with violation count; omits markdown headings
 
 **Full mode**: Original verbose output with emoji severity icons, multi-line findings, impact narratives via `resolveImpactNarrative()`, and structured JSON block.
 

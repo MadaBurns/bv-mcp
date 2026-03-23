@@ -145,6 +145,28 @@ describe('formatBenchmark', () => {
 		expect(text).toContain('72.5');
 		expect(text).toContain('DMARC');
 	});
+
+	it('compact mode omits distribution chart and baseline rates', () => {
+		const data = {
+			status: 'ok' as const,
+			profile: 'mail_enabled',
+			totalScans: 500,
+			meanScore: 72.5,
+			medianBucket: 70,
+			distribution: { '70-79': 25 },
+			topFailingCategories: ['dmarc', 'dkim'],
+			dataFreshness: '2 hours ago',
+		};
+		const compact = formatBenchmark(data, 'compact');
+		const full = formatBenchmark(data, 'full');
+		expect(compact.length).toBeLessThan(full.length);
+		expect(compact).toContain('500');
+		expect(compact).toContain('72.5');
+		expect(compact).toContain('DMARC');
+		expect(compact).not.toContain('█');
+		expect(compact).not.toContain('Data freshness');
+		expect(compact).not.toContain('#');
+	});
 });
 
 describe('formatProviderInsights', () => {
@@ -168,5 +190,28 @@ describe('formatProviderInsights', () => {
 		expect(text).toContain('78.5');
 		expect(text).toContain('above');
 		expect(text).toContain('72th');
+	});
+
+	it('compact mode uses single line with percentile', () => {
+		const data = {
+			status: 'ok' as const,
+			provider: 'google workspace',
+			profile: 'mail_enabled',
+			totalScans: 200,
+			emaOverallScore: 78.5,
+			topFailingCategories: ['mta_sts'],
+			populationMeanScore: 68.3,
+			percentileRank: 72,
+			dataFreshness: '1 hour ago',
+		};
+		const compact = formatProviderInsights(data, 'compact');
+		const full = formatProviderInsights(data, 'full');
+		expect(compact.length).toBeLessThan(full.length);
+		expect(compact).toContain('google workspace');
+		expect(compact).toContain('78.5');
+		expect(compact).toContain('72th pctl');
+		expect(compact).toContain('MTA_STS');
+		expect(compact).not.toContain('Data freshness');
+		expect(compact).not.toContain('#');
 	});
 });

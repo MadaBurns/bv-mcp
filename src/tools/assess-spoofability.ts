@@ -10,6 +10,7 @@
  * 0 = fully protected, 100 = completely exposed.
  */
 
+import type { OutputFormat } from '../handlers/tool-args';
 import type { CheckResult, Finding } from '../lib/scoring-model';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { checkSpf } from './check-spf';
@@ -193,7 +194,11 @@ export async function assessSpoofability(
 }
 
 /** Format spoofability result as human-readable text. */
-export function formatSpoofability(result: SpoofabilityResult): string {
+export function formatSpoofability(result: SpoofabilityResult, format: OutputFormat = 'full'): string {
+	if (format === 'compact') {
+		return `Spoofability: ${result.domain} — ${result.spoofabilityScore}/100 (${result.riskLevel.toUpperCase()} risk)\nSPF: ${result.spfProtection}/100 | DMARC: ${result.dmarcProtection}/100 | DKIM: ${result.dkimProtection}/100`;
+	}
+
 	const lines: string[] = [];
 
 	lines.push(`# Email Spoofability Assessment: ${result.domain}`);
