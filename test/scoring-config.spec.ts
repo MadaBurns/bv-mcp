@@ -114,6 +114,60 @@ describe('parseScoringConfig', () => {
 	});
 });
 
+describe('scoring v2 config', () => {
+	it('DEFAULT_SCORING_CONFIG has tierSplit summing to 100', () => {
+		const { tierSplit } = DEFAULT_SCORING_CONFIG;
+		expect(tierSplit.core + tierSplit.protective + tierSplit.hardening).toBe(100);
+	});
+
+	it('DEFAULT_SCORING_CONFIG has coreWeights', () => {
+		expect(DEFAULT_SCORING_CONFIG.coreWeights).toEqual({
+			dmarc: 22, dkim: 16, spf: 10, dnssec: 7, ssl: 5,
+		});
+	});
+
+	it('DEFAULT_SCORING_CONFIG has protectiveWeights', () => {
+		expect(DEFAULT_SCORING_CONFIG.protectiveWeights.subdomain_takeover).toBe(4);
+		expect(Object.values(DEFAULT_SCORING_CONFIG.protectiveWeights).reduce((a, b) => a + b, 0)).toBe(20);
+	});
+
+	it('DEFAULT_SCORING_CONFIG has emailBonusFull/Mid/Partial', () => {
+		expect(DEFAULT_SCORING_CONFIG.thresholds.emailBonusFull).toBe(5);
+		expect(DEFAULT_SCORING_CONFIG.thresholds.emailBonusMid).toBe(3);
+		expect(DEFAULT_SCORING_CONFIG.thresholds.emailBonusPartial).toBe(2);
+	});
+
+	it('DEFAULT_SCORING_CONFIG has no E grade', () => {
+		expect(DEFAULT_SCORING_CONFIG.grades).not.toHaveProperty('e');
+	});
+
+	it('DEFAULT_SCORING_CONFIG has providerDkimConfidence', () => {
+		expect(DEFAULT_SCORING_CONFIG.providerDkimConfidence.amazonses).toBe(0.8);
+		expect(DEFAULT_SCORING_CONFIG.providerDkimConfidence.google).toBe(0.9);
+	});
+
+	it('parseScoringConfig migrates legacy weights to coreWeights/protectiveWeights', () => {
+		const legacy = JSON.stringify({ weights: { dmarc: 30, spf: 15 } });
+		const config = parseScoringConfig(legacy);
+		expect(config.coreWeights.dmarc).toBe(30);
+		expect(config.coreWeights.spf).toBe(15);
+	});
+
+	it('parseScoringConfig migrates emailBonusImportance to three fields', () => {
+		const legacy = JSON.stringify({ thresholds: { emailBonusImportance: 10 } });
+		const config = parseScoringConfig(legacy);
+		expect(config.thresholds.emailBonusFull).toBe(10);
+		expect(config.thresholds.emailBonusMid).toBe(6);
+		expect(config.thresholds.emailBonusPartial).toBe(4);
+	});
+
+	it('parseScoringConfig rejects tierSplit not summing to 100', () => {
+		const bad = JSON.stringify({ tierSplit: { core: 80, protective: 20, hardening: 10 } });
+		const config = parseScoringConfig(bad);
+		expect(config.tierSplit.core).toBe(70);
+	});
+});
+
 describe('toImportanceRecord', () => {
 	it('wraps flat numbers in { importance } objects', () => {
 		const result = toImportanceRecord({ spf: 10, dmarc: 22 });

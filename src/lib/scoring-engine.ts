@@ -84,7 +84,6 @@ export function scoreToGrade(score: number, config?: ScoringConfig): string {
 	if (score >= g.c) return 'C';
 	if (score >= g.dPlus) return 'D+';
 	if (score >= g.d) return 'D';
-	if (score >= g.e) return 'E';
 	return 'F';
 }
 
