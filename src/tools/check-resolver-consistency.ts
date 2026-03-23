@@ -11,6 +11,8 @@
  * - Normal consistent resolution (CONSISTENT)
  */
 
+import type { OutputFormat } from '../handlers/tool-args';
+import { sanitizeOutputText } from '../lib/output-sanitize';
 import type { CheckResult } from '../lib/scoring-model';
 import { buildCheckResult, createFinding } from '../lib/scoring-model';
 import { checkMultiResolverConsistency, type ConsistencyResult } from '../lib/dns-multi-resolver';
@@ -108,7 +110,20 @@ export async function checkResolverConsistency(
 }
 
 /** Format resolver consistency results as human-readable text. */
-export function formatResolverConsistency(result: CheckResult): string {
+export function formatResolverConsistency(result: CheckResult, format: OutputFormat = 'full'): string {
+	const suspicious = result.findings.filter((f) => f.severity === 'high').length;
+	const splits = result.findings.filter((f) => f.severity === 'low').length;
+	const consistent = result.findings.filter((f) => f.severity === 'info').length;
+
+	if (format === 'compact') {
+		const lines = [`Resolver Consistency: ${consistent} consistent, ${splits} split, ${suspicious} suspicious`];
+		for (const finding of result.findings) {
+			if (finding.severity === 'info') continue;
+			lines.push(`- [${finding.severity.toUpperCase()}] ${finding.title} — ${sanitizeOutputText(finding.detail, 200)}`);
+		}
+		return lines.join('\n');
+	}
+
 	const lines: string[] = [];
 
 	lines.push('# DNS Resolver Consistency Check');
@@ -129,10 +144,6 @@ export function formatResolverConsistency(result: CheckResult): string {
 		}
 		lines.push('');
 	}
-
-	const suspicious = result.findings.filter((f) => f.severity === 'high').length;
-	const splits = result.findings.filter((f) => f.severity === 'low').length;
-	const consistent = result.findings.filter((f) => f.severity === 'info').length;
 
 	lines.push(`Summary: ${consistent} consistent, ${splits} split/incomplete, ${suspicious} suspicious`);
 
