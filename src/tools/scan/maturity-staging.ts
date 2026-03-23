@@ -59,9 +59,6 @@ export function computeMaturityStage(checks: CheckResult[]): MaturityStage {
 	const dmarcPolicyReject = hasDmarc && !dmarcPolicyNone && !dmarcPolicyQuarantine;
 	const hasRua = dmarcCheck != null && !dmarcCheck.findings.some((f) => /No aggregate reporting/i.test(f.title));
 
-	// Determine DKIM presence
-	const hasDkim = dkimCheck != null && !dkimCheck.findings.some((f) => /No DKIM records found/i.test(f.title));
-
 	// Determine MTA-STS, DNSSEC, BIMI
 	const hasMtaSts = mtaStsCheck?.passed ?? false;
 	const hasDnssec = dnssecCheck?.passed ?? false;
@@ -71,9 +68,21 @@ export function computeMaturityStage(checks: CheckResult[]): MaturityStage {
 	const daneCheck = byCategory.get('dane');
 	const hasDane = daneCheck?.findings.some((f) => /DANE TLSA configured/i.test(f.title)) ?? false;
 
-	// Stage 4 — Hardened: Stage 3 + at least 2 of (MTA-STS, DNSSEC, BIMI, DANE)
-	const isEnforcing = hasSpf && hasDkim && hasDmarc && (dmarcPolicyReject || dmarcPolicyQuarantine);
-	const hardeningCount = [hasMtaSts, hasDnssec, hasBimi, hasDane].filter(Boolean).length;
+	// CAA presence (passed = CAA records found)
+	const caaCheck = byCategory.get('caa');
+	const hasCaa = caaCheck?.passed ?? false;
+
+	// DKIM "discovered" = at least one selector physically found (not provider-implied)
+	// Provider-implied findings have metadata.detectionMethod === 'provider-implied'
+	const hasDkimDiscovered =
+		dkimCheck != null &&
+		!dkimCheck.findings.some((f) => /No DKIM records found|DKIM selector not discovered/i.test(f.title)) &&
+		!dkimCheck.findings.some((f) => f.metadata?.detectionMethod === 'provider-implied');
+
+	// Stage 4 — Hardened: Stage 3 + at least 2 of (MTA-STS, DNSSEC, BIMI, DANE, CAA, DKIM-discovered)
+	// DKIM is no longer required for Stage 3 — enforcement alone (SPF + DMARC p=quarantine/reject) qualifies
+	const isEnforcing = hasSpf && hasDmarc && (dmarcPolicyReject || dmarcPolicyQuarantine);
+	const hardeningCount = [hasMtaSts, hasDnssec, hasBimi, hasDane, hasCaa, hasDkimDiscovered].filter(Boolean).length;
 
 	if (isEnforcing && hardeningCount >= 2) {
 		return {
