@@ -4,6 +4,12 @@
  * DNSSEC (DNS Security Extensions) check tool.
  * Validates DNSSEC by checking the AD flag, querying for DNSKEY/DS records,
  * and auditing algorithm and digest type security.
+ *
+ * Finding consolidation logic:
+ * - Fully absent (no AD, no DNSKEY, no DS) → single MEDIUM "DNSSEC not enabled"
+ * - DNSKEY present but no DS → HIGH "DNSSEC chain of trust incomplete"
+ * - DNSKEY + DS present but AD not set → HIGH "DNSSEC validation failing"
+ * - All present and valid → INFO "DNSSEC enabled and validated"
  */
 
 import { checkDnssec as dnsCheckDnssec, queryDnsRecords } from '../lib/dns';
@@ -32,53 +38,61 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions):
 		return buildCheckResult('dnssec', findings);
 	}
 
-	if (!adFlag) {
+	// Query DNSKEY and DS records independently; default to empty on failure
+	let dnskeyRecords: string[] = [];
+	let dsRecords: string[] = [];
+
+	try {
+		dnskeyRecords = await queryDnsRecords(domain, 'DNSKEY', dnsOptions);
+	} catch {
+		// Non-critical: DNSKEY query failure — treat as absent
+	}
+
+	try {
+		dsRecords = await queryDnsRecords(domain, 'DS', dnsOptions);
+	} catch {
+		// Non-critical: DS query failure — treat as absent
+	}
+
+	// Consolidated finding logic
+	if (!adFlag && dnskeyRecords.length === 0 && dsRecords.length === 0) {
+		// Fully absent → single MEDIUM
 		findings.push(
 			createFinding(
 				'dnssec',
-				'DNSSEC not validated',
+				'DNSSEC not enabled',
+				'medium',
+				`DNSSEC is not configured for ${domain}. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.`,
+			),
+		);
+	} else if (dnskeyRecords.length > 0 && dsRecords.length === 0) {
+		// DNSKEY published but no DS in parent zone → broken chain
+		findings.push(
+			createFinding(
+				'dnssec',
+				'DNSSEC chain of trust incomplete',
 				'high',
-				`DNSSEC validation failed for ${domain}. The AD (Authenticated Data) flag is not set, meaning DNS responses are not cryptographically verified.`,
+				`DNSKEY records are published for ${domain} but no DS records exist in the parent zone. The chain of trust is broken — DNSSEC validation will fail.`,
+			),
+		);
+	} else if (dnskeyRecords.length > 0 && dsRecords.length > 0 && !adFlag) {
+		// Deployed but validation failing → worse than not having DNSSEC
+		findings.push(
+			createFinding(
+				'dnssec',
+				'DNSSEC validation failing',
+				'high',
+				`DNSKEY and DS records are present for ${domain} but the AD flag is not set. DNSSEC is deployed but validation is failing — this is worse than not having DNSSEC.`,
 			),
 		);
 	}
 
-	// Check for DNSKEY records and audit algorithms
-	try {
-		const dnskeyRecords = await queryDnsRecords(domain, 'DNSKEY', dnsOptions);
-		if (dnskeyRecords.length === 0 && !adFlag) {
-			findings.push(
-				createFinding(
-					'dnssec',
-					'No DNSKEY records',
-					'high',
-					`No DNSKEY records found for ${domain}. DNSSEC requires DNSKEY records to be published in the zone.`,
-				),
-			);
-		} else if (dnskeyRecords.length > 0) {
-			findings.push(...auditDnskeyAlgorithms(domain, dnskeyRecords));
-		}
-	} catch {
-		// Non-critical: DNSKEY query failure
+	// Algorithm/digest audits (only when records exist)
+	if (dnskeyRecords.length > 0) {
+		findings.push(...auditDnskeyAlgorithms(domain, dnskeyRecords));
 	}
-
-	// Check for DS records and audit digest types
-	try {
-		const dsRecords = await queryDnsRecords(domain, 'DS', dnsOptions);
-		if (dsRecords.length === 0 && !adFlag) {
-			findings.push(
-				createFinding(
-					'dnssec',
-					'No DS records',
-					'medium',
-					`No DS (Delegation Signer) records found for ${domain}. DS records in the parent zone are needed to establish the DNSSEC chain of trust.`,
-				),
-			);
-		} else if (dsRecords.length > 0) {
-			findings.push(...auditDsDigestTypes(domain, dsRecords));
-		}
-	} catch {
-		// Non-critical: DS query failure
+	if (dsRecords.length > 0) {
+		findings.push(...auditDsDigestTypes(domain, dsRecords));
 	}
 
 	// If DNSSEC is valid and no issues found (only info findings at most)
