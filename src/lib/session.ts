@@ -123,21 +123,48 @@ export async function createSession(kv?: KVNamespace): Promise<string> {
 	const now = Date.now();
 	const record: SessionRecord = { createdAt: now, lastAccessedAt: now };
 
+	// Always write to in-memory for same-isolate read-through (avoids KV replication lag)
+	createSessionInMemory(id);
+
 	if (kv) {
 		try {
 			await createSessionKVRecord(id, kv, record);
-			return id;
 		} catch {
-			console.warn('[session] KV create failed, falling back to in-memory');
+			console.warn('[session] KV create failed, in-memory fallback active');
 		}
 	}
 
-	createSessionInMemory(id);
 	return id;
 }
 
 /** Check whether a session ID exists in the active sessions store */
 export async function validateSession(id: string, kv?: KVNamespace): Promise<boolean> {
+	// Check in-memory first (same-isolate fast path, avoids KV replication lag)
+	const inMemoryRecord = ACTIVE_SESSIONS.get(id);
+	if (inMemoryRecord) {
+		const now = Date.now();
+		if (now - inMemoryRecord.lastAccessedAt > SESSION_TTL_MS) {
+			ACTIVE_SESSIONS.delete(id);
+			// Fall through to KV check (in case another isolate refreshed it)
+		} else {
+			// Capture staleness before validateSessionInMemory refreshes the timestamp
+			const needsKvRefresh = kv && now - inMemoryRecord.lastAccessedAt >= SESSION_REFRESH_INTERVAL_MS;
+			validateSessionInMemory(id); // Updates in-memory lastAccessedAt
+			if (needsKvRefresh) {
+				const refreshedRecord = ACTIVE_SESSIONS.get(id);
+				if (refreshedRecord) {
+					try {
+						await createSessionKVRecord(id, kv, refreshedRecord);
+					} catch {
+						// Refresh write failure is non-fatal
+					}
+				}
+			}
+			return true;
+		}
+	}
+
+	// Not in local memory — check KV (cross-isolate path)
 	if (kv) {
 		try {
 			const now = Date.now();
@@ -149,36 +176,44 @@ export async function validateSession(id: string, kv?: KVNamespace): Promise<boo
 				return false;
 			}
 
+			// Hydrate into local in-memory cache for subsequent same-isolate requests
+			createSessionInMemory(id);
+
 			if (now - record.lastAccessedAt >= SESSION_REFRESH_INTERVAL_MS) {
 				record.lastAccessedAt = now;
 				try {
 					await createSessionKVRecord(id, kv, record);
 				} catch {
-					// Session is valid — refresh write failure is non-fatal
 					console.warn('[session] KV refresh write failed (session still valid)');
 				}
 			}
 			return true;
 		} catch {
-			console.warn('[session] KV validate failed, falling back to in-memory');
+			console.warn('[session] KV validate failed');
 		}
 	}
 
-	return validateSessionInMemory(id);
+	return false;
 }
 
 /** Remove a session from the store. Returns true if the session existed. */
 export async function deleteSession(id: string, kv?: KVNamespace): Promise<boolean> {
+	// Always remove from in-memory (dual-write consistency with createSession)
+	const inMemoryExisted = deleteSessionInMemory(id);
+
 	if (kv) {
 		try {
 			const existing = await readSessionKVRecord(id, kv);
-			if (!existing) return false;
-			await kv.delete(sessionKey(id));
-			return true;
+			if (existing) {
+				await kv.delete(sessionKey(id));
+				return true;
+			}
+			return inMemoryExisted;
 		} catch {
-			console.warn('[session] KV delete failed, falling back to in-memory');
+			console.warn('[session] KV delete failed');
+			return inMemoryExisted;
 		}
 	}
 
-	return deleteSessionInMemory(id);
+	return inMemoryExisted;
 }
