@@ -48,7 +48,7 @@ src/mcp/route-gates.ts    — Pre-dispatch guards (rate limits, session validati
 
 src/handlers/tools.ts     — tools/list + tools/call dispatch
 src/handlers/tool-schemas.ts — TOOLS array (MCP tool definitions)
-src/handlers/tool-args.ts — Domain/argument extraction and validation
+src/handlers/tool-args.ts — Domain/argument extraction and validation (extractRecordType, extractIncludeProviders, extractMxHosts)
 src/handlers/tool-formatters.ts — mcpError/mcpText/formatCheckResult helpers
 src/handlers/tool-execution.ts — Tool logging helpers
 src/handlers/resources.ts — resources/list + resources/read (static docs)
@@ -82,19 +82,19 @@ src/lib/auth.ts           — Bearer token validation (constant-time XOR compari
 src/lib/sse.ts            — SSE event formatting and Accept header checking
 src/lib/legacy-sse.ts     — Legacy HTTP+SSE stream lifecycle (open, enqueue, close, heartbeat)
 src/lib/server-version.ts — Single source of truth for SERVER_VERSION
-src/lib/dns.ts            — DNS-over-HTTPS facade (re-exports from dns-transport, dns-records, dns-types); queryTxtRecords concatenates multi-string values per RFC 7208 §3.3 and iteratively unescapes RFC 1035 §5.1 backslash sequences (handles DoH providers that double-escape). Primary: Cloudflare DoH; secondary confirmation: bv-dns (configurable via BV_DOH_ENDPOINT env var) → Google DoH fallback
+src/lib/dns.ts            — DNS-over-HTTPS facade (re-exports from dns-transport, dns-records, dns-types); queryTxtRecords concatenates multi-string values per RFC 7208 §3.3 and iteratively unescapes RFC 1035 §5.1 backslash sequences (max 2 passes; handles DoH providers that double-escape). Primary: Cloudflare DoH; secondary confirmation: bv-dns (configurable via BV_DOH_ENDPOINT env var) → Google DoH fallback
 src/lib/sanitize.ts       — Domain validation, SSRF protection
 src/lib/config.ts         — Centralized SSRF constants, DNS tuning, rate limit quotas (FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT)
 src/lib/cache.ts          — KV-backed + in-memory TTL cache, INFLIGHT dedup map, cacheSetDeferred()
-src/lib/rate-limiter.ts   — KV-backed + in-memory per-IP rate limiting (delegates to rate-limiter-memory.ts)
+src/lib/rate-limiter.ts   — KV-backed + in-memory per-IP rate limiting (delegates to rate-limiter-memory.ts); exports `withIpKvLock()` for intra-isolate KV counter serialization
 src/lib/quota-coordinator.ts — Durable Objects-based distributed rate limiting across isolates
-src/lib/analytics.ts      — Cloudflare Analytics Engine integration (fail-open telemetry, 4 event types)
+src/lib/analytics.ts      — Cloudflare Analytics Engine integration (fail-open telemetry, 4 event types); `domainFingerprint()` for stable aggregate grouping (FNV-1a, not a privacy control)
 src/lib/analytics-queries.ts — Pre-built SQL queries for Analytics Engine metrics
-src/lib/alerting.ts       — Webhook alerting for Slack/Discord (fail-open delivery)
+src/lib/alerting.ts       — Webhook alerting for Slack/Discord (fail-open delivery, HTTPS-only validation)
 src/lib/client-detection.ts — MCP client type detection from User-Agent headers
 src/lib/badge.ts          — SVG badge generator for /badge/:domain endpoint
 src/lib/audit.ts          — Audit logging
-src/lib/output-sanitize.ts — Markdown syntax sanitization for text output
+src/lib/output-sanitize.ts — Markdown/HTML syntax sanitization for text output + `sanitizeDnsData()` for finding detail ingestion
 src/lib/provider-signatures.ts — Email provider database and MX pattern matching
 src/lib/provider-signature-source.ts — Runtime provider signature fetching/validation
 src/lib/public-suffix.ts  — Curated PSL subset for brand name extraction (shadow domains, TXT hygiene)
@@ -165,7 +165,7 @@ Format resolution: `extractFormat(args)` in `tool-args.ts` → explicit paramete
 
 ## Conventions
 
-- `createFinding()` + `buildCheckResult()` from `lib/scoring-model.ts` (re-exported via `lib/scoring.ts`) — never construct findings manually
+- `createFinding()` + `buildCheckResult()` from `lib/scoring-model.ts` (re-exported via `lib/scoring.ts`) — never construct findings manually. `createFinding()` auto-sanitizes `detail` via `sanitizeDnsData()` to prevent HTML/markdown injection from DNS-sourced data
 - `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs
 - `mcpError()` / `mcpText()` from `handlers/tool-formatters.ts` for MCP response formatting
 - `cacheGet()` / `cacheSet()` / `cacheSetDeferred()` from `lib/cache.ts` — supports KV and in-memory; `cacheSetDeferred()` wraps writes in `ctx.waitUntil()` to avoid blocking responses
@@ -249,15 +249,20 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 
 - **SSRF protection**: `config.ts` defines blocked IPs/TLDs/rebinding services; `sanitize.ts` enforces them. Wrangler uses `global_fetch_strictly_public` compatibility flag. All outbound fetches in tool checks (MTA-STS policy, SSL probe, subdomain takeover probe) use `redirect: 'manual'` to prevent redirect-based SSRF — redirect targets are never followed blindly.
 - **Secondary DoH (bv-dns)**: When `BV_DOH_ENDPOINT` is configured, empty-result secondary confirmation tries bv-dns first (with `X-BV-Token` auth header if `BV_DOH_TOKEN` is set), then falls back to Google DoH. The bv-dns fetch does not use `cf: { cacheTtl }` since it targets an external origin (Oracle Cloud). `global_fetch_strictly_public` ensures SSRF safety for this external fetch. If bv-dns is down/slow, it fails silently and Google takes over.
-- **Auth**: optional bearer token (`BV_API_KEY`), constant-time XOR comparison in `lib/auth.ts`. Tier-auth `BV_API_KEY` fallback uses SHA-256 hash comparison (constant-time) via `hashToken()` in `lib/tier-auth.ts`
+- **Auth**: optional bearer token (`BV_API_KEY`), constant-time XOR comparison in `lib/auth.ts`. Tier-auth `BV_API_KEY` fallback uses SHA-256 digest with byte-by-byte XOR accumulation (constant-time) via `hashTokenRaw()` in `lib/tier-auth.ts`
 - **Rate limiting**: 50 req/min, 300 req/hr per IP via KV (in-memory fallback). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `prompts/*`, `ping`, `notifications/*`) are exempt. Authenticated requests (valid `BV_API_KEY` bearer token) bypass rate limiting entirely. `check_lookalikes` and `check_shadow_domains` each have a separate daily quota of 20/day per IP (unauthenticated) with 60-minute result caching, due to high outbound query volume (~100 DoH queries per invocation).
 - **Per-tool daily quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts` caps unauthenticated usage per tool (e.g., `scan_domain`: 75/day, `check_lookalikes`: 20/day, `check_shadow_domains`: 20/day, `check_mx_reputation`: 20/day, `compare_baseline`: 150/day, `check_txt_hygiene`: 200/day, individual checks: 200/day). Global daily cap of 500k requests/day across all unauthenticated IPs (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via Durable Objects (`QuotaCoordinator`).
 - **Request body max**: 10 KB on `/mcp`
 - **IP sourcing**: only `cf-connecting-ip` — never `x-forwarded-for`
 - **Error sanitization**: only known validation errors surface; unexpected → generic message. Fallback `console.warn()` messages in KV/DO error paths use generic descriptions without leaking error details.
 - **Origin validation**: MCP spec-compliant; rejects browser requests with unauthorized `Origin` header; configurable via `ALLOWED_ORIGINS` env var. Missing `Origin` header results in empty CORS (no wildcard `*`), allowing non-browser clients through without granting cross-origin access.
-- **Output sanitization**: SVG badge output (`lib/badge.ts`) XML-escapes all interpolated values. DNS-over-HTTPS responses (`lib/dns-transport.ts`) are validated for expected schema before casting.
-- **Sessions**: idle TTL (30 min), sliding refresh on validate, optional KV-backed storage via `SESSION_STORE` with in-memory fallback. Missing session → 400; expired/terminated session → 404 (per MCP spec, triggers client re-initialization)
+- **Output sanitization**: SVG badge output (`lib/badge.ts`) XML-escapes all interpolated values and validates `color` against a hex regex. DNS-over-HTTPS responses (`lib/dns-transport.ts`) are validated for expected schema before casting. All finding `detail` strings are sanitized via `sanitizeDnsData()` in `createFinding()` to strip HTML/markdown injection from attacker-controlled DNS data. The `unescapeDnsTxt()` loop is capped at 2 iterations to prevent multi-layer decode attacks.
+- **Response body limits**: Outbound HTTP fetches to untrusted servers (MTA-STS policy, subdomain takeover probe, provider signatures) enforce body size caps (64 KB for tool checks per RFC 8461, 1 MB for provider signatures) via content-length pre-check and post-read validation.
+- **Log sanitization**: Client IP addresses are redacted in structured JSON logs via `SENSITIVE_KEY_PATTERN` in `lib/log.ts`.
+- **Sessions**: idle TTL (30 min), sliding refresh on validate, optional KV-backed storage via `SESSION_STORE` with in-memory fallback. Missing session → 400; expired/terminated session → 404 (per MCP spec, triggers client re-initialization). Session creation is rate-limited to 30/min per IP across both modern (`initialize`) and legacy (`GET /mcp/sse`) transports. `DELETE /mcp` accepts session ID only via the `Mcp-Session-Id` header (not query string).
+- **Input validation**: Tool parameters with array types (`include_providers`, `mx_hosts`) are validated per-element for type, length (≤253 chars), and content (no whitespace/control chars in `mx_hosts`). The `record_type` parameter is validated against an allowlist. All validation errors use the `'Invalid'` prefix to pass through error sanitization.
+- **Rate limit serialization**: All KV-backed rate limit counters (per-IP, per-tool, global daily, session-create) are serialized within each isolate via `withIpKvLock()` to prevent intra-isolate read-modify-write races.
+- **Alerting**: Webhook URLs must use `https:` protocol; non-HTTPS and malformed URLs are silently skipped.
 - **Internal routes**: `/internal/*` is guarded by `cf-connecting-ip` header detection. Cloudflare only sets this header on public internet requests — service binding calls (Worker-to-Worker) never carry it. Public requests to `/internal/*` receive a 404. This allows other Workers in the same Cloudflare account to call tool handlers directly without MCP protocol overhead, auth, rate limiting, or session management.
 
 ## Adding a New Tool
@@ -436,7 +441,7 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 Four event types are emitted to the `MCP_ANALYTICS` Analytics Engine dataset:
 
 - **`mcp_request`** — every JSON-RPC request (method, transport, status, auth, country, client type, tier, session hash, duration)
-- **`tool_call`** — every tool execution (tool name, status, domain hash, country, client type, tier, cache status, duration, score)
+- **`tool_call`** — every tool execution (tool name, status, domain fingerprint, country, client type, tier, cache status, duration, score)
 - **`rate_limit`** — every rate limit rejection (limit type, tool name, country, tier, limit, remaining)
 - **`session`** — session lifecycle (created/terminated, country, client type, tier)
 
