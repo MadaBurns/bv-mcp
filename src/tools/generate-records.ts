@@ -10,6 +10,7 @@
  * These are pure computation over existing check data — no additional DNS queries.
  */
 
+import type { OutputFormat } from '../handlers/tool-args';
 import type { CheckResult, Finding } from '../lib/scoring-model';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { checkSpf } from './check-spf';
@@ -375,8 +376,17 @@ function extractMxHostsFromFindings(result: CheckResult): string[] {
 // ─── Format helpers ──────────────────────────────────────────────────
 
 /** Format a generated record as a human-readable text block. */
-export function formatGeneratedRecord(record: GeneratedRecord): string {
+export function formatGeneratedRecord(record: GeneratedRecord, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
+
+	if (format === 'compact') {
+		lines.push(`${record.recordType}: ${record.name}`);
+		lines.push(record.value);
+		for (const w of record.warnings) {
+			lines.push(`⚠ ${w}`);
+		}
+		return lines.join('\n');
+	}
 
 	lines.push(`# Generated ${record.recordType} Record`);
 	lines.push(`Name: ${record.name}`);
