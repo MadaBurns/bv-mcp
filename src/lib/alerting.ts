@@ -39,6 +39,13 @@ export async function sendAlert(webhookUrl: string, payload: AlertPayload): Prom
 	if (!webhookUrl) return;
 
 	try {
+		const parsed = new URL(webhookUrl);
+		if (parsed.protocol !== 'https:') return;
+	} catch {
+		return;
+	}
+
+	try {
 		await fetch(webhookUrl, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },

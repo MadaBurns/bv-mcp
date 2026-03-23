@@ -79,7 +79,7 @@ export function unescapeDnsTxt(text: string): string {
 		});
 
 	let result = text;
-	for (let i = 0; i < 5; i++) {
+	for (let i = 0; i < 2; i++) {
 		const next = unescape(result);
 		if (next === result) break;
 		result = next;
