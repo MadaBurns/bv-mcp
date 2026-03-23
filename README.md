@@ -68,6 +68,7 @@ Transport support:
 - **Interaction scoring** — correlated weaknesses (e.g., weak DKIM + permissive DMARC) receive additional penalties beyond individual finding scores
 - **Self-tuning scoring** — adaptive weights adjust category importance based on patterns seen across scans, so scores reflect real-world failure distributions rather than static assumptions
 - **Provider intelligence** — inbound/outbound email provider inference from MX, SPF, DKIM
+- **Context-optimized** — tool schemas, prompts, and resources are tuned for minimal token consumption in LLM clients
 - **Passive and read-only** — all checks use public Cloudflare DNS-over-HTTPS; no authorization required from the target
 
 Full scope and limitations in the coverage table below.
@@ -420,6 +421,7 @@ Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/
 - Adaptive scoring via Durable Object telemetry (graceful fallback to static weights)
 - Intelligence layer: score histograms, provider cohort benchmarks, hourly trend snapshots (ProfileAccumulator DO)
 - Category interaction scoring: correlated weaknesses receive additional penalties
+- Context-optimized schemas: tool descriptions, prompts, and resources tuned for minimal LLM token consumption
 - Structured JSON logging
 
 Implementation details in `CLAUDE.md`.
@@ -436,10 +438,15 @@ Full details in `CLAUDE.md` (security and observability sections).
 - SSRF protections block unsafe/private targets
 - Error responses sanitized — only known validation errors surface
 - DNS via Cloudflare DoH with optional secondary confirmation
+- Constant-time auth comparison (XOR accumulation on SHA-256 digests)
+- DNS data sanitized at ingestion — HTML/markdown injection stripped before findings are created
+- Outbound response body caps (64 KB for tool checks, 1 MB for provider signatures)
+- Tool parameter validation with allowlists and per-element type/length checks
 - Rate limits: `50/min` and `300/hr` per IP for `tools/call`
 - Control-plane traffic: `60/min` and `600/hr` per IP
 - Global daily cap: `500,000` unauthenticated tool calls/day (cost ceiling)
-- Session creation: `60/min` per IP
+- Session creation: `60/min` per IP (enforced on both modern and legacy transports)
+- Client IPs redacted in structured logs
 
 **Natural-language convenience:**
 `tools/call` supports `scan` as an alias for `scan_domain`. In chat clients, say `scan example.com`. Raw JSON-RPC expects `params.name` to be `scan` or `scan_domain`.
