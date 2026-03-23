@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCheckResult, computeCategoryScore, createFinding, inferFindingConfidence } from '../src/lib/scoring-model';
+import { buildCheckResult, CATEGORY_TIERS, computeCategoryScore, createFinding, inferFindingConfidence } from '../src/lib/scoring-model';
 
 describe('scoring-model', () => {
 	it('normalizes confidence metadata when building check results', () => {
@@ -19,5 +19,26 @@ describe('scoring-model', () => {
 			createFinding('dmarc', 'No aggregate reporting', 'medium', 'rua tag missing'),
 		];
 		expect(computeCategoryScore(findings)).toBe(45);
+	});
+});
+
+describe('CATEGORY_TIERS', () => {
+	it('classifies all 20 categories into tiers', () => {
+		expect(Object.keys(CATEGORY_TIERS)).toHaveLength(20);
+	});
+
+	it('has 5 core categories', () => {
+		const core = Object.entries(CATEGORY_TIERS).filter(([, t]) => t === 'core');
+		expect(core.map(([k]) => k).sort()).toEqual(['dkim', 'dmarc', 'dnssec', 'spf', 'ssl']);
+	});
+
+	it('has 8 protective categories', () => {
+		const protective = Object.entries(CATEGORY_TIERS).filter(([, t]) => t === 'protective');
+		expect(protective).toHaveLength(8);
+	});
+
+	it('has 7 hardening categories', () => {
+		const hardening = Object.entries(CATEGORY_TIERS).filter(([, t]) => t === 'hardening');
+		expect(hardening).toHaveLength(7);
 	});
 });
