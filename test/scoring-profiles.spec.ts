@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { computeScanScore } from '../src/lib/scoring-engine';
 import { buildCheckResult, createFinding, type CheckCategory, type CheckResult } from '../src/lib/scoring-model';
-import { getProfileWeights, type DomainContext } from '../src/lib/context-profiles';
+import { getProfileWeights, PROFILE_WEIGHTS, PROFILE_CRITICAL_CATEGORIES, type DomainContext } from '../src/lib/context-profiles';
 
 function makeResult(category: CheckCategory, score: number, title?: string, severity?: 'info' | 'low' | 'medium' | 'high' | 'critical'): CheckResult {
 	const findings = [];
@@ -153,6 +153,76 @@ describe('scoring-profiles', () => {
 			const defaultScore = computeScanScore(results);
 			const nonMailScore = computeScanScore(results, makeNonMailContext());
 			expect(nonMailScore.overall).toBeGreaterThan(defaultScore.overall);
+		});
+	});
+
+	describe('scoring v2 profile weights', () => {
+		it('mail_enabled core weights sum to 60', () => {
+			const core = PROFILE_WEIGHTS.mail_enabled;
+			const coreSum = (['spf', 'dmarc', 'dkim', 'dnssec', 'ssl'] as const)
+				.reduce((sum, k) => sum + core[k].importance, 0);
+			expect(coreSum).toBe(60);
+		});
+
+		it('mail_enabled protective weights sum to 20', () => {
+			const p = PROFILE_WEIGHTS.mail_enabled;
+			const protSum = (['subdomain_takeover', 'http_security', 'mta_sts', 'mx', 'caa', 'ns', 'lookalikes', 'shadow_domains'] as const)
+				.reduce((sum, k) => sum + p[k].importance, 0);
+			expect(protSum).toBe(20);
+		});
+
+		it('mail_enabled hardening weights are all 0', () => {
+			const p = PROFILE_WEIGHTS.mail_enabled;
+			for (const cat of ['dane', 'bimi', 'tlsrpt', 'txt_hygiene', 'mx_reputation', 'srv', 'zone_hygiene'] as const) {
+				expect(p[cat].importance).toBe(0);
+			}
+		});
+
+		it('enterprise_mail core weights sum to 68', () => {
+			const core = PROFILE_WEIGHTS.enterprise_mail;
+			const coreSum = (['spf', 'dmarc', 'dkim', 'dnssec', 'ssl'] as const)
+				.reduce((sum, k) => sum + core[k].importance, 0);
+			expect(coreSum).toBe(68);
+		});
+
+		it('web_only zeroes email auth core weights', () => {
+			const p = PROFILE_WEIGHTS.web_only;
+			expect(p.spf.importance).toBe(0);
+			expect(p.dmarc.importance).toBe(0);
+			expect(p.dkim.importance).toBe(0);
+			expect(p.ssl.importance).toBeGreaterThan(0);
+		});
+
+		it('non_mail core weights sum to 23', () => {
+			const core = PROFILE_WEIGHTS.non_mail;
+			const coreSum = (['spf', 'dmarc', 'dkim', 'dnssec', 'ssl'] as const)
+				.reduce((sum, k) => sum + core[k].importance, 0);
+			expect(coreSum).toBe(23);
+		});
+
+		it('minimal core weights sum to 10', () => {
+			const core = PROFILE_WEIGHTS.minimal;
+			const coreSum = (['spf', 'dmarc', 'dkim', 'dnssec', 'ssl'] as const)
+				.reduce((sum, k) => sum + core[k].importance, 0);
+			expect(coreSum).toBe(10);
+		});
+
+		it('PROFILE_CRITICAL_CATEGORIES excludes DNSSEC and subdomain_takeover for mail profiles', () => {
+			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).not.toContain('dnssec');
+			expect(PROFILE_CRITICAL_CATEGORIES.enterprise_mail).not.toContain('dnssec');
+			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).not.toContain('subdomain_takeover');
+			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).toEqual(
+				expect.arrayContaining(['spf', 'dmarc', 'dkim', 'ssl'])
+			);
+		});
+
+		it('non_mail/web_only ceiling triggers include http_security', () => {
+			expect(PROFILE_CRITICAL_CATEGORIES.non_mail).toContain('http_security');
+			expect(PROFILE_CRITICAL_CATEGORIES.web_only).toContain('http_security');
+		});
+
+		it('minimal ceiling triggers only ssl', () => {
+			expect(PROFILE_CRITICAL_CATEGORIES.minimal).toEqual(['ssl']);
 		});
 	});
 });
