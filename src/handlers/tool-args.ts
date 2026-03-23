@@ -114,6 +114,67 @@ export function extractFormat(args: Record<string, unknown>): OutputFormat | und
 	return normalized as OutputFormat;
 }
 
+const VALID_RECORD_TYPES = ['A', 'AAAA', 'MX', 'TXT', 'NS', 'CNAME', 'SOA', 'CAA'] as const;
+
+/** Extract and validate the optional record_type parameter for check_resolver_consistency. */
+export function extractRecordType(args: Record<string, unknown>): string | undefined {
+	const recordType = args.record_type;
+	if (recordType === undefined || recordType === null) return undefined;
+	if (typeof recordType !== 'string') {
+		throw new Error('Invalid record_type: must be a string');
+	}
+	const normalized = recordType.trim().toUpperCase();
+	if (!(VALID_RECORD_TYPES as readonly string[]).includes(normalized)) {
+		throw new Error(`Invalid record_type: must be one of ${VALID_RECORD_TYPES.join(', ')}`);
+	}
+	return normalized;
+}
+
+/** Extract and validate the optional include_providers array parameter for generate_spf_record. */
+export function extractIncludeProviders(args: Record<string, unknown>): string[] | undefined {
+	const providers = args.include_providers;
+	if (providers === undefined || providers === null) return undefined;
+	if (!Array.isArray(providers)) {
+		throw new Error('Invalid include_providers: must be an array');
+	}
+	if (providers.length > 15) {
+		throw new Error('Invalid include_providers: must not exceed 15 elements');
+	}
+	for (const element of providers) {
+		if (typeof element !== 'string') {
+			throw new Error('Invalid include_providers: all elements must be strings');
+		}
+		if (element.length > 253) {
+			throw new Error('Invalid include_providers: elements must not exceed 253 characters');
+		}
+	}
+	return providers as string[];
+}
+
+/** Extract and validate the optional mx_hosts array parameter for generate_mta_sts_policy. */
+export function extractMxHosts(args: Record<string, unknown>): string[] | undefined {
+	const hosts = args.mx_hosts;
+	if (hosts === undefined || hosts === null) return undefined;
+	if (!Array.isArray(hosts)) {
+		throw new Error('Invalid mx_hosts: must be an array');
+	}
+	if (hosts.length > 20) {
+		throw new Error('Invalid mx_hosts: must not exceed 20 elements');
+	}
+	for (const element of hosts) {
+		if (typeof element !== 'string') {
+			throw new Error('Invalid mx_hosts: all elements must be strings');
+		}
+		if (element.length > 253) {
+			throw new Error('Invalid mx_hosts: elements must not exceed 253 characters');
+		}
+		if (/[\s\x00-\x1f\x7f]/.test(element)) {
+			throw new Error('Invalid mx_hosts: elements must not contain whitespace or control characters');
+		}
+	}
+	return hosts as string[];
+}
+
 export function extractExplainFindingArgs(args: Record<string, unknown>): {
 	checkType: string;
 	status: string;
