@@ -34,8 +34,8 @@ describe('session', () => {
 		expect(kv.put).toHaveBeenCalledOnce();
 		expect(kvStore.size).toBe(1);
 
+		// Validation uses in-memory fast path (dual-write on create), no KV read needed
 		expect(await validateSession(id, kv)).toBe(true);
-		expect(kv.get).toHaveBeenCalled();
 		expect(kv.put).toHaveBeenCalledTimes(1);
 
 		expect(await deleteSession(id, kv)).toBe(true);
@@ -61,15 +61,17 @@ describe('session', () => {
 		} as unknown as KVNamespace;
 
 		const id = await createSession(kv);
-		expect(kv.put).toHaveBeenCalledTimes(1);
+		expect(kv.put).toHaveBeenCalledTimes(1); // KV create
 
+		// Not yet stale — no KV refresh
 		nowSpy.mockReturnValue(base + SESSION_REFRESH_INTERVAL_MS - 1_000);
 		expect(await validateSession(id, kv)).toBe(true);
 		expect(kv.put).toHaveBeenCalledTimes(1);
 
+		// Now stale — in-memory fast path triggers KV refresh
 		nowSpy.mockReturnValue(base + SESSION_REFRESH_INTERVAL_MS + 1_000);
 		expect(await validateSession(id, kv)).toBe(true);
-		expect(kv.put).toHaveBeenCalledTimes(2);
+		expect(kv.put).toHaveBeenCalledTimes(2); // 1 create + 1 refresh
 	});
 
 	it('validates a newly created session', async () => {
