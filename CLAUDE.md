@@ -8,7 +8,7 @@ Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflar
 Exposes 22 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 A 23rd check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 1.4.3 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.0.0 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -138,7 +138,7 @@ Service binding fetch → POST /internal/tools/batch → guard middleware (rejec
 
 ### scan_domain orchestration
 
-`scan_domain` runs **14 checks** in parallel via `Promise.allSettled`: SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, BIMI, TLS-RPT, subdomain takeover, HTTP security, DANE, and MX. Each has its own cache key (`cache:<domain>:check:<name>`), plus a top-level `cache:<domain>` key for the full scan result. Results are cached for 5 minutes. After scoring, `computeMaturityStage()` classifies the domain into a maturity stage (0-4: Unprotected → Hardened) based on SPF/DMARC/DKIM/MTA-STS/DNSSEC/BIMI/DANE presence and enforcement.
+`scan_domain` runs **14 checks** in parallel via `Promise.allSettled`: SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, BIMI, TLS-RPT, subdomain takeover, HTTP security, DANE, and MX. Each has its own cache key (`cache:<domain>:check:<name>`), plus a top-level `cache:<domain>` key for the full scan result. Results are cached for 5 minutes. After scoring, `computeMaturityStage()` classifies the domain into a maturity stage (0-4: Unprotected → Hardened) based on SPF/DMARC/MTA-STS/DNSSEC presence and enforcement. Stage 3 (Enforcing) does not require DKIM. Stage 4 (Hardened) hardening signals include CAA and DKIM-discovered (in addition to BIMI/DANE/MTA-STS strict).
 
 **Partial results on timeout**: When the 12s scan timeout fires, completed checks are preserved and missing checks receive a timeout finding. This avoids discarding work from checks that finished in 1-2s. Individual per-check timeouts are 8s. In scan context, secondary DNS confirmation (Google DNS fallback for empty results) is skipped for speed — individual checks retain it for accuracy.
 
@@ -189,38 +189,52 @@ All other errors become generic messages. New validation errors that need to rea
 
 ## Scoring
 
-Only `IMPORTANCE_WEIGHTS` drives `computeScanScore()` (the `CATEGORY_DISPLAY_WEIGHTS` map exists for display/registry purposes and is unused in scoring):
+`computeScanScore()` uses a three-tier category model. `CATEGORY_DISPLAY_WEIGHTS` exists for display/registry purposes and is unused in scoring.
 
-| Category | Importance | Critical? |
-|----------|------------|-----------|
-| DMARC | 22 | Yes |
-| DKIM | 16 | Yes |
-| SPF | 10 | Yes |
-| SSL | 5 | Yes |
-| HTTP Security | 3 | No (Yes in web_only/non_mail) |
-| Subdomain Takeover | 3 | Yes |
-| DNSSEC | 2 | No |
-| MTA-STS | 2 | No |
-| MX | 2 | No |
-| DANE | 1 | No |
-| TLS-RPT | 1 | No |
-| NS | 0 (informational) | No |
-| CAA | 0 (informational) | No |
-| BIMI | 0 (informational) | No |
-| Lookalikes | 0 (informational) | No |
-| MX Reputation | 0 (informational, standalone) | No |
-| SRV | 0 (informational, standalone) | No |
-| Zone Hygiene | 0 (informational, standalone) | No |
+### Three-Tier Category Model
 
-**Email bonus** (up to +8 points): Awarded when SPF score >= 57, DKIM present, and DMARC present. DMARC score >= 90 → 8pts, >= 70 → 5pts, otherwise 4pts.
+Categories are classified into three tiers with distinct scoring mechanics:
+
+**Core (70% of score)** — Controls whose absence creates direct, exploitable risk:
+
+| Category | Weight |
+|----------|--------|
+| DMARC | 22 |
+| DKIM | 16 |
+| SPF | 10 |
+| DNSSEC | 7 |
+| SSL | 5 |
+
+`scoreIndicatesMissingControl()` applies within Core but only for `deterministic`/`verified` confidence findings (confidence gate).
+
+**Protective (20% of score)** — Active defenses against known attack vectors:
+
+| Category | Weight |
+|----------|--------|
+| Subdomain Takeover | 4 |
+| HTTP Security | 3 |
+| MTA-STS | 3 |
+| MX | 2 |
+| CAA | 2 |
+| NS | 2 |
+| Lookalikes | 2 |
+| Shadow Domains | 2 |
+
+**Hardening (10% of score)** — Bonus-only defense-in-depth: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene. Each passed category adds ~1.4 points. Never subtracts.
+
+**Email bonus**: SPF score >= 57, DKIM not deterministically missing, DMARC present → DMARC >= 90: +5pts, >= 70: +3pts, else: +2pts.
 
 **SPF trust-surface scoring**: Shared-platform SPF findings (e.g., Google Workspace, SendGrid) are informational by default. They are elevated to `medium`/`high` only when weak DMARC enforcement or relaxed alignment corroborates the exposure.
+
+**Confidence gate**: `scoreIndicatesMissingControl()` only fires for `deterministic`/`verified` confidence findings. Heuristic DKIM "not found" (selector probing) no longer zeros the category.
+
+**Provider-informed DKIM**: When a known DKIM-signing provider is detected (via MX/SPF) but selector probing finds nothing, the HIGH finding is downgraded to MEDIUM. Provider context is applied as a post-processing step after parallel checks complete.
 
 **Per-finding severity penalties**: Critical −40, High −25, Medium −15, Low −5, Info 0.
 
 **`passed` flag**: `score >= 50` in `buildCheckResult`.
 
-**Grades**: A+ (90+), A (85–89), B+ (80–84), B (75–79), C+ (70–74), C (65–69), D+ (60–64), D (55–59), E (50–54), F (<50).
+**Grades**: A+ (92+), A (87–91), B+ (82–86), B (76–81), C+ (70–75), C (63–69), D+ (56–62), D (50–55), F (<50).
 
 ### Scoring Profiles
 
