@@ -22,7 +22,7 @@ import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
 import { normalizeHeaders, parseJsonRpcRequest, readRequestBody } from './mcp/request';
 import { createSession, deleteSession, validateSession, checkSessionCreateRateLimit } from './lib/session';
 import { unauthorizedResponse } from './lib/auth';
-import { sseEvent, acceptsSSE, createSseStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
+import { sseEvent, acceptsSSE, createSseStream, createNotificationStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
 import { createAnalyticsClient, hashForAnalytics } from './lib/analytics';
 import { detectMcpClient } from './lib/client-detection';
 import type { JsonRpcRequest } from './lib/json-rpc';
@@ -558,7 +558,7 @@ app.get('/mcp', async (c) => {
 		return sseSession.response;
 	}
 
-	return new Response(createSseStream(': stream opened\n\n'), {
+	return new Response(createNotificationStream(), {
 		status: 200,
 		headers: {
 			'Content-Type': 'text/event-stream',
