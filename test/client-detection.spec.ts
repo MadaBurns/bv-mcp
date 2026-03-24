@@ -32,6 +32,11 @@ describe('detectMcpClient', () => {
 		expect(detectMcpClient('mcp-remote/1.0.0')).toBe('mcp_remote');
 	});
 
+	it('detects blackveil-dns-action', () => {
+		expect(detectMcpClient('blackveil-dns-action/1.2.0')).toBe('blackveil_dns_action');
+		expect(detectMcpClient('blackveil_dns_action/1.0.0')).toBe('blackveil_dns_action');
+	});
+
 	it('returns unknown for unrecognized agents', () => {
 		expect(detectMcpClient('curl/7.68.0')).toBe('unknown');
 		expect(detectMcpClient('')).toBe('unknown');
