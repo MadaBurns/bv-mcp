@@ -77,7 +77,7 @@ Full scope and limitations in the coverage table below.
   scan_domain("anthropic.com")
 
   ████████████████████████████████████████░░░░░  85 / 100
-  Grade: A  ·  Maturity: Intermediate
+  Grade: A  ·  Maturity: Enforcing
 
   SPF ·········· 80     MTA-STS ····· 85
   DMARC ········ 90     NS ·········· 95
