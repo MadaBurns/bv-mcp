@@ -64,6 +64,50 @@ export function createSseStream(events: string): ReadableStream<Uint8Array> {
 	});
 }
 
+/**
+ * Duration (ms) to keep the SSE notification stream alive before closing.
+ * Cloudflare Workers have execution time limits, so we close proactively.
+ * mcp-remote will reconnect after the stream closes — keeping it open for
+ * ~55s reduces reconnections from ~60/min to ~1/min per session.
+ */
+const NOTIFICATION_STREAM_TTL_MS = 55_000;
+
+/**
+ * Create a long-lived SSE notification stream with periodic heartbeats.
+ *
+ * Unlike `createSseStream` (which closes immediately), this keeps the
+ * connection alive for NOTIFICATION_STREAM_TTL_MS to prevent mcp-remote
+ * reconnection storms that cause "client side tool call failed" errors
+ * in Claude Desktop.
+ */
+export function createNotificationStream(): ReadableStream<Uint8Array> {
+	const encoder = new TextEncoder();
+	return new ReadableStream({
+		start(controller) {
+			let closed = false;
+
+			controller.enqueue(encoder.encode(': stream opened\n\n'));
+
+			const heartbeat = setInterval(() => {
+				if (closed) return;
+				try {
+					controller.enqueue(encoder.encode(': heartbeat\n\n'));
+				} catch {
+					closed = true;
+					clearInterval(heartbeat);
+				}
+			}, HEARTBEAT_INTERVAL_MS);
+
+			setTimeout(() => {
+				if (closed) return;
+				closed = true;
+				clearInterval(heartbeat);
+				controller.close();
+			}, NOTIFICATION_STREAM_TTL_MS);
+		},
+	});
+}
+
 /** Interval between SSE heartbeat comments (ms). */
 const HEARTBEAT_INTERVAL_MS = 5_000;
 
