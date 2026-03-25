@@ -10,6 +10,9 @@
 // Types
 export type {
 	DNSQueryFunction,
+	RawDNSQueryFunction,
+	RawDNSResponse,
+	FetchFunction,
 	CheckResult,
 	CheckCategory,
 	Finding,
@@ -28,3 +31,31 @@ export {
 	inferFindingConfidence,
 	sanitizeDnsData,
 } from './check-utils';
+
+// Check implementations
+export {
+	checkSPF,
+	checkDMARC,
+	checkDKIM,
+	checkDNSSEC,
+	checkSSL,
+	checkMTASTS,
+	checkMX,
+	checkCAA,
+	checkBIMI,
+	checkNS,
+	checkTLSRPT,
+	checkDANE,
+	checkDANEHTTPS,
+	checkSVCBHTTPS,
+	checkSubdomainTakeover,
+	checkHTTPSecurity,
+	// Analysis utilities
+	parseDmarcTags,
+	parseDnskeyAlgorithm,
+	parseDsRecord,
+	parseTlsaRecord,
+	parseCaaRecord,
+	analyzeSecurityHeaders,
+} from './checks';
+export type { CaaRecord, TlsaRecord } from './checks';
