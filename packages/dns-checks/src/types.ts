@@ -14,6 +14,35 @@ export type DNSQueryFunction = (
 	options?: { timeout?: number }
 ) => Promise<string[]>;
 
+/**
+ * Raw DoH-style DNS response for checks that need the AD flag or full Answer array.
+ * Mirrors the subset of DoH JSON response used by DNSSEC and NS checks.
+ */
+export interface RawDNSResponse {
+	AD?: boolean;
+	Answer?: Array<{ type: number; data: string }>;
+}
+
+/**
+ * Extended DNS query function that returns the full DoH-style response.
+ * Used by DNSSEC and NS checks that need the AD flag or answer type filtering.
+ */
+export type RawDNSQueryFunction = (
+	domain: string,
+	recordType: string,
+	dnssecFlag?: boolean,
+	options?: { timeout?: number }
+) => Promise<RawDNSResponse>;
+
+/**
+ * Fetch function — dependency injection interface for HTTP-based checks.
+ * Matches the standard fetch() API signature.
+ */
+export type FetchFunction = (
+	url: string,
+	init?: RequestInit
+) => Promise<Response>;
+
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type FindingConfidence = 'deterministic' | 'heuristic' | 'verified';
 
