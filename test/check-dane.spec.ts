@@ -46,23 +46,15 @@ describe('checkDane', () => {
 					]),
 				);
 			}
-			// TLSA for HTTPS
-			if (url.includes('_443._tcp.example.com') && (url.includes('type=TLSA') || url.includes('type=52'))) {
-				return Promise.resolve(
-					tlsaResponse('_443._tcp.example.com', [
-						{ usage: 3, selector: 1, matchingType: 1, certData: 'ffeeddccbb' },
-					]),
-				);
-			}
 			return Promise.resolve(emptyResponse('example.com', 1));
 		});
 
 		const result = await run();
 		expect(result.category).toBe('dane');
 		expect(result.passed).toBe(true);
-		// Should have info findings for both MX and HTTPS TLSA
+		// Should have info findings for MX TLSA (HTTPS DANE is handled by check-dane-https)
 		const infoFindings = result.findings.filter((f) => f.severity === 'info');
-		expect(infoFindings.length).toBeGreaterThanOrEqual(2);
+		expect(infoFindings.length).toBeGreaterThanOrEqual(1);
 	});
 
 	it('should return high finding when DANE exists but no DNSSEC', async () => {
@@ -126,7 +118,7 @@ describe('checkDane', () => {
 		expect(mediumFinding!.title).toContain('No DANE TLSA for MX');
 	});
 
-	it('should return mixed findings when HTTPS TLSA exists but no MX TLSA', async () => {
+	it('should return medium finding when HTTPS TLSA exists but no MX TLSA', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
@@ -142,24 +134,15 @@ describe('checkDane', () => {
 			if (url.includes('_25._tcp') && (url.includes('type=TLSA') || url.includes('type=52'))) {
 				return Promise.resolve(emptyResponse('_25._tcp.mx1.example.com', 52));
 			}
-			// TLSA for HTTPS
-			if (url.includes('_443._tcp') && (url.includes('type=TLSA') || url.includes('type=52'))) {
-				return Promise.resolve(
-					tlsaResponse('_443._tcp.example.com', [
-						{ usage: 3, selector: 1, matchingType: 1, certData: 'ffeeddccbb' },
-					]),
-				);
-			}
 			return Promise.resolve(emptyResponse('example.com', 1));
 		});
 
 		const result = await run();
 		expect(result.category).toBe('dane');
-		// Should have info from HTTPS TLSA but no medium for missing MX TLSA
-		// (because hasHttpsTlsa is true, classifyDanePresence won't be called
-		// since not both are missing — the code checks hasMxTlsa || hasHttpsTlsa)
-		const infoFindings = result.findings.filter((f) => f.severity === 'info');
-		expect(infoFindings.length).toBeGreaterThanOrEqual(1);
+		// HTTPS DANE is handled by check-dane-https; email DANE check reports missing MX TLSA
+		const mediumFinding = result.findings.find((f) => f.severity === 'medium');
+		expect(mediumFinding).toBeDefined();
+		expect(mediumFinding!.title).toContain('No DANE TLSA for MX');
 	});
 
 	it('should handle DNS query failure gracefully', async () => {
@@ -171,7 +154,7 @@ describe('checkDane', () => {
 		expect(result.findings.length).toBeGreaterThan(0);
 	});
 
-	it('should still check HTTPS TLSA when MX lookup fails', async () => {
+	it('should report MX lookup failure when MX query fails', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
@@ -183,24 +166,14 @@ describe('checkDane', () => {
 			if (url.includes('type=MX') || url.includes('type=15')) {
 				return Promise.reject(new Error('MX query failed'));
 			}
-			// HTTPS TLSA present
-			if (url.includes('_443._tcp') && (url.includes('type=TLSA') || url.includes('type=52'))) {
-				return Promise.resolve(
-					tlsaResponse('_443._tcp.example.com', [
-						{ usage: 3, selector: 1, matchingType: 1, certData: 'aabbccdd' },
-					]),
-				);
-			}
 			return Promise.resolve(emptyResponse('example.com', 1));
 		});
 
 		const result = await run();
 		expect(result.category).toBe('dane');
-		// Should have MX lookup failure finding (low) and HTTPS TLSA info
+		// Should have MX lookup failure finding (low); HTTPS DANE is handled by check-dane-https
 		const lowFinding = result.findings.find((f) => f.title === 'MX lookup failed for DANE check');
 		expect(lowFinding).toBeDefined();
-		const infoFinding = result.findings.find((f) => f.title.includes('DANE TLSA configured'));
-		expect(infoFinding).toBeDefined();
 	});
 
 	it('should handle domain with no MX records', async () => {

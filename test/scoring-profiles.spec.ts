@@ -214,12 +214,12 @@ describe('scoring-profiles', () => {
 			expect(coreSum).toBe(10);
 		});
 
-		it('PROFILE_CRITICAL_CATEGORIES excludes DNSSEC and subdomain_takeover for mail profiles', () => {
-			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).not.toContain('dnssec');
-			expect(PROFILE_CRITICAL_CATEGORIES.enterprise_mail).not.toContain('dnssec');
+		it('PROFILE_CRITICAL_CATEGORIES includes DNSSEC for all mail profiles but excludes subdomain_takeover', () => {
+			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).toContain('dnssec');
+			expect(PROFILE_CRITICAL_CATEGORIES.enterprise_mail).toContain('dnssec');
 			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).not.toContain('subdomain_takeover');
 			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).toEqual(
-				expect.arrayContaining(['spf', 'dmarc', 'dkim', 'ssl'])
+				expect.arrayContaining(['spf', 'dmarc', 'dkim', 'ssl', 'dnssec'])
 			);
 		});
 
@@ -228,8 +228,8 @@ describe('scoring-profiles', () => {
 			expect(PROFILE_CRITICAL_CATEGORIES.web_only).toContain('http_security');
 		});
 
-		it('minimal ceiling triggers only ssl', () => {
-			expect(PROFILE_CRITICAL_CATEGORIES.minimal).toEqual(['ssl']);
+		it('minimal ceiling triggers ssl and dnssec', () => {
+			expect(PROFILE_CRITICAL_CATEGORIES.minimal).toEqual(['ssl', 'dnssec']);
 		});
 	});
 });
