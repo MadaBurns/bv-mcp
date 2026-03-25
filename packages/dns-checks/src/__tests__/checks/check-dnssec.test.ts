@@ -20,11 +20,8 @@ describe('checkDNSSEC', () => {
 	});
 
 	it('reports chain of trust incomplete when DNSKEY present but no DS', async () => {
-		const queryDNS = createMockDNS({
-			'example.com': ['257 3 13 base64key...'],
-		});
 		// Return DNSKEY from first call, empty from second (DS)
-		const mockDNS: DNSQueryFunction = vi.fn(async (domain: string, type: string) => {
+		const mockDNS: DNSQueryFunction = vi.fn(async (_domain: string, type: string) => {
 			if (type === 'DNSKEY') return ['257 3 13 base64key...'];
 			return [];
 		});
