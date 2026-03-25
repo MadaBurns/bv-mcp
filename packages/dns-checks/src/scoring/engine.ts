@@ -7,6 +7,7 @@ import {
 	type CheckResult,
 	type Finding,
 	inferFindingConfidence,
+	scoreIndicatesMissingControl,
 	type ScanScore,
 } from './model';
 import type { DomainContext } from './profiles';
@@ -58,23 +59,6 @@ export const PROTECTIVE_WEIGHTS: Record<string, number> = {
 	caa: 2, ns: 2, lookalikes: 2, shadow_domains: 2,
 };
 
-/** Regex for detecting missing control patterns in finding text. */
-const MISSING_CONTROL_REGEX = /(no\s+.+\s+record|missing|required|not\s+found)/i;
-
-/**
- * Determine whether findings for a category indicate a fundamentally missing control.
- * Requires both a missing-control text pattern AND deterministic/verified confidence
- * to avoid false zeroing from heuristic checks (e.g., DKIM selector probing).
- */
-export function scoreIndicatesMissingControl(findings: Finding[]): boolean {
-	return findings.some((f) => {
-		const isMissingPattern = MISSING_CONTROL_REGEX.test(f.detail) || MISSING_CONTROL_REGEX.test(f.title);
-		const confidence = (f.metadata?.confidence as string) ?? inferFindingConfidence(f);
-		return isMissingPattern
-			&& (f.severity === 'critical' || f.severity === 'high')
-			&& (confidence === 'deterministic' || confidence === 'verified');
-	});
-}
 
 function clampPercent(score: number): number {
 	return Math.max(0, Math.min(100, score));
@@ -222,10 +206,10 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 	let passedHardeningCount = 0;
 
 	for (const cat of hardeningCategories) {
-		const score = categoryScores[cat]; // defaults to 100 if no result
-		// Only count as passed if an actual result was provided AND score >= 50
-		const hasResult = results.some((r) => r.category === cat);
-		if (hasResult && score >= 50) {
+		// Only count as passed if an actual result was provided AND result.passed is true.
+		// This honors missingControl metadata and scoreIndicatesMissingControl from buildCheckResult.
+		const result = results.find((r) => r.category === cat);
+		if (result && result.passed) {
 			passedHardeningCount++;
 		}
 		// If no result was submitted, the category doesn't contribute to hardening bonus
