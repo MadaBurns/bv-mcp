@@ -8,7 +8,7 @@ Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflar
 Exposes 33 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 2.0.1 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.0.2 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -160,7 +160,7 @@ Service binding fetch → POST /internal/tools/batch → guard middleware (rejec
 
 ### scan_domain orchestration
 
-`scan_domain` runs **16 checks** in parallel via `Promise.allSettled`: SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, BIMI, TLS-RPT, subdomain takeover, HTTP security, DANE, and MX. Each has its own cache key (`cache:<domain>:check:<name>`), plus a top-level `cache:<domain>` key for the full scan result. Results are cached for 5 minutes. After scoring, `computeMaturityStage()` classifies the domain into a maturity stage (0-4: Unprotected → Hardened) based on SPF/DMARC/MTA-STS/DNSSEC presence and enforcement. Stage 3 (Enforcing) does not require DKIM. Stage 4 (Hardened) hardening signals include CAA and DKIM-discovered (in addition to BIMI/DANE/MTA-STS strict).
+`scan_domain` runs **16 checks** in parallel via `Promise.allSettled`: SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, BIMI, TLS-RPT, subdomain takeover, HTTP security, DANE, DANE HTTPS, SVCB HTTPS, and MX. Each has its own cache key (`cache:<domain>:check:<name>`), plus a top-level `cache:<domain>` key for the full scan result. Results are cached for 5 minutes. After scoring, `computeMaturityStage()` classifies the domain into a maturity stage (0-4: Unprotected → Hardened) based on SPF/DMARC/MTA-STS/DNSSEC presence and enforcement. Stage 3 (Enforcing) does not require DKIM. Stage 4 (Hardened) hardening signals include CAA and DKIM-discovered (in addition to BIMI/DANE/MTA-STS strict).
 
 **Partial results on timeout**: When the 12s scan timeout fires, completed checks are preserved and missing checks receive a timeout finding. This avoids discarding work from checks that finished in 1-2s. Individual per-check timeouts are 8s. In scan context, secondary DNS confirmation (Google DNS fallback for empty results) is skipped for speed — individual checks retain it for accuracy.
 
