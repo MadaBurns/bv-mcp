@@ -70,7 +70,7 @@ export async function checkDNSSEC(
 			createFinding(
 				'dnssec',
 				'DNSSEC not enabled',
-				'medium',
+				'high',
 				`DNSSEC is not configured for ${domain}. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.`,
 			),
 		);
