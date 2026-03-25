@@ -12,6 +12,7 @@ export {
 	CATEGORY_TIERS,
 	SEVERITY_PENALTIES,
 	inferFindingConfidence,
+	scoreIndicatesMissingControl,
 	computeCategoryScore,
 	buildCheckResult,
 	createFinding,
@@ -30,7 +31,6 @@ export {
 	IMPORTANCE_WEIGHTS,
 	CORE_WEIGHTS,
 	PROTECTIVE_WEIGHTS,
-	scoreIndicatesMissingControl,
 	scoreToGrade,
 	computeScanScore,
 } from './engine';

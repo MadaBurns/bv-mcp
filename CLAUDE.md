@@ -8,7 +8,7 @@ Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflar
 Exposes 33 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 2.0.2 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.0.3 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -260,7 +260,7 @@ Categories are classified into three tiers with distinct scoring mechanics:
 
 **Per-finding severity penalties**: Critical −40, High −25, Medium −15, Low −5, Info 0.
 
-**`passed` flag**: `score >= 50` in `buildCheckResult`.
+**`passed` flag**: `score >= 50 && !hasMissingControl` in `buildCheckResult`. A check fails if the score is below 50, if `scoreIndicatesMissingControl()` detects a missing control (critical/high + deterministic/verified confidence), or if any finding carries explicit `missingControl: true` metadata (used by hardening-tier checks like BIMI, DANE, TLS-RPT where severity is below the confidence gate threshold).
 
 **Grades**: A+ (92+), A (87–91), B+ (82–86), B (76–81), C+ (70–75), C (63–69), D+ (56–62), D (50–55), F (<50).
 
