@@ -1,0 +1,32 @@
+{
+	"name": "@blackveil/dns-checks",
+	"version": "1.0.0",
+	"description": "DNS and email security check implementations for BlackVeil Security",
+	"license": "BUSL-1.1",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"exports": {
+		".": {
+			"import": "./dist/index.js",
+			"types": "./dist/index.d.ts"
+		},
+		"./scoring": {
+			"import": "./dist/scoring/index.js",
+			"types": "./dist/scoring/index.d.ts"
+		}
+	},
+	"files": ["dist", "LICENSE", "README.md"],
+	"scripts": {
+		"build": "tsup",
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/MadaBurns/bv-mcp.git",
+		"directory": "packages/dns-checks"
+	},
+	"homepage": "https://blackveilsecurity.com/dns",
+	"bugs": "https://github.com/MadaBurns/bv-mcp/issues"
+}
