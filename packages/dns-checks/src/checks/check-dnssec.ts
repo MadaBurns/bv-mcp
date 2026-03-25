@@ -72,6 +72,7 @@ export async function checkDNSSEC(
 				'DNSSEC not enabled',
 				'high',
 				`DNSSEC is not configured for ${domain}. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.`,
+				{ missingControl: true },
 			),
 		);
 	} else if (dnskeyRecords.length > 0 && dsRecords.length === 0) {

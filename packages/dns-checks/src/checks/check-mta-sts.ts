@@ -186,6 +186,7 @@ export async function checkMTASTS(
 				'No MTA-STS or TLS-RPT records found',
 				'medium',
 				`Neither MTA-STS nor TLS-RPT records are present for ${domain}. This is normal for domains that do not accept inbound email, but consider adding these records if you operate a mail server.`,
+				{ missingControl: true },
 			),
 		);
 	}
