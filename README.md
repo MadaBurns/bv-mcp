@@ -110,12 +110,12 @@ Full scope and limitations in the coverage table below.
   check_mta_sts        check_ssl              check_shadow_domains
   check_mx             check_http_security
   check_mx_reputation  check_dane             Intelligence         Remediation
-                       check_srv             ──────────────       ──────────────
-  DNS Hygiene          check_zone_hygiene     get_benchmark         generate_fix_plan
- ────────────          check_resolver_        get_provider_         generate_spf_record
-  check_txt_hygiene      consistency            insights            generate_dmarc_record
-                                              assess_spoofability   generate_dkim_config
-                                                                    generate_mta_sts_policy
+                       check_dane_https      ──────────────       ──────────────
+  DNS Hygiene          check_svcb_https       get_benchmark         generate_fix_plan
+ ────────────          check_srv              get_provider_         generate_spf_record
+  check_txt_hygiene    check_zone_hygiene       insights            generate_dmarc_record
+                       check_resolver_        assess_spoofability   generate_dkim_config
+                         consistency                                generate_mta_sts_policy
 
   + check_subdomain_takeover (internal — runs inside scan_domain)
 ```
