@@ -12,11 +12,13 @@ Controls whose absence creates direct, exploitable risk. Missing-control rule ap
 
 | Category | Weight |
 | --- | ---: |
-| DMARC | 16 |
-| DKIM | 10 |
+| DMARC | 22 |
+| DKIM | 16 |
 | SPF | 10 |
-| DNSSEC | 8 |
-| SSL | 8 |
+| DNSSEC | 7 |
+| SSL | 5 |
+
+> These are production weights set via `SCORING_CONFIG` env var. Code defaults (when `SCORING_CONFIG` is absent): DMARC 16, DKIM 10, SPF 10, DNSSEC 8, SSL 8.
 
 **Confidence gate**: `scoreIndicatesMissingControl()` only fires for `deterministic`/`verified` confidence findings. Heuristic "not found" results from selector probing do not zero the category.
 
