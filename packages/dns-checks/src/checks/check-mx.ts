@@ -41,6 +41,7 @@ export async function checkMX(
 				'No MX records found',
 				'medium',
 				'No mail exchange records present. If this domain does not handle email, consider publishing a null MX record (RFC 7505).',
+				{ missingControl: true },
 			),
 		];
 		// Non-mail domains should publish v=spf1 -all to explicitly reject all mail
