@@ -60,7 +60,7 @@ src/scheduled.ts          — Cron Trigger handler for analytics alerting (queri
 
 src/mcp/execute.ts        — Transport-neutral shared MCP request executor (validation, rate limiting, dispatch, analytics)
 src/mcp/dispatch.ts       — JSON-RPC method → handler routing (initialize, tools/*, resources/*, prompts/*, ping)
-src/mcp/request.ts        — Request body reading, JSON-RPC parsing/validation (batch support), header normalization
+src/mcp/request.ts        — Request body reading, JSON-RPC parsing/validation (batch support), header normalization, Content-Type validation
 src/mcp/route-gates.ts    — Pre-dispatch guards (rate limits, session validation)
 
 src/handlers/tools.ts     — tools/list + tools/call dispatch
@@ -215,6 +215,8 @@ Both `index.ts` and `handlers/tools.ts` sanitize errors. Only messages starting 
 
 All other errors become generic messages. New validation errors that need to reach clients **must start with one of these exact prefixes**.
 
+**Rate limit errors**: All rate limit responses (per-IP, per-tool, per-tier, global daily, control plane) use HTTP 200 with a JSON-RPC error body (`code: -32029`), not HTTP 429. This follows the MCP spec convention where transport-level HTTP status is 200 and application-level errors are in the JSON-RPC envelope. The `retry-after` header is still set for client backoff.
+
 ## Scoring
 
 `computeScanScore()` uses a three-tier category model. `CATEGORY_DISPLAY_WEIGHTS` exists for display/registry purposes and is unused in scoring.
@@ -296,6 +298,7 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 - **Auth**: optional bearer token (`BV_API_KEY`), constant-time XOR comparison in `lib/auth.ts`. Tier-auth resolution (`lib/tier-auth.ts`) cascades: KV cache (5-min TTL) → bv-web service binding → static `BV_API_KEY` fallback (maps to `enterprise` tier). Negative results (revoked/unknown keys) are cached in KV to prevent repeated service binding calls. Five tiers: `free`, `agent`, `developer` (Pro), `enterprise`, `partner`.
 - **Rate limiting**: 50 req/min, 300 req/hr per IP via KV (in-memory fallback) for unauthenticated users. Authenticated tier users bypass per-IP rate limits; per-tier daily quotas apply instead (keyed by API key hash). Only `tools/call` counts against rate limits — protocol methods (`initialize`, `tools/list`, `resources/*`, `prompts/*`, `ping`, `notifications/*`) are exempt. `check_lookalikes` and `check_shadow_domains` each have a separate daily quota of 20/day per IP (unauthenticated) with 60-minute result caching, due to high outbound query volume (~100 DoH queries per invocation). Response headers: `x-ratelimit-limit`/`x-ratelimit-remaining`/`x-ratelimit-reset` (minute window), `x-quota-limit`/`x-quota-remaining`/`x-quota-reset`/`x-quota-tier` (daily quotas).
 - **Per-tool daily quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts` caps unauthenticated usage per tool (e.g., `scan_domain`: 75/day, `check_lookalikes`: 20/day, `check_shadow_domains`: 20/day, `check_mx_reputation`: 20/day, `compare_baseline`: 150/day, `check_txt_hygiene`: 200/day, individual checks: 200/day). Global daily cap of 500k requests/day across all unauthenticated IPs (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via Durable Objects (`QuotaCoordinator`).
+- **Content-Type validation**: POST endpoints (`/mcp`, `/mcp/messages`) require `Content-Type: application/json` (with optional parameters like `charset=utf-8`). Missing Content-Type is allowed for client compatibility. Non-JSON Content-Types (`text/plain`, `application/xml`, `multipart/form-data`, etc.) are rejected with HTTP 415 Unsupported Media Type. Validated via `validateContentType()` in `mcp/request.ts`.
 - **Request body max**: 10 KB on `/mcp`
 - **IP sourcing**: only `cf-connecting-ip` — never `x-forwarded-for`
 - **Error sanitization**: only known validation errors surface; unexpected → generic message. Fallback `console.warn()` messages in KV/DO error paths use generic descriptions without leaking error details.

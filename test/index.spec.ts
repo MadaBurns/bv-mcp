@@ -89,6 +89,83 @@ describe('DNS Security MCP Server', () => {
 			vi.restoreAllMocks();
 		});
 
+	describe('POST /mcp - Content-Type validation', () => {
+		it('accepts application/json', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+		});
+
+		it('accepts application/json with charset parameter', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json; charset=utf-8' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+		});
+
+		it('accepts missing Content-Type for client compatibility', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			// Fetch API defaults string body to text/plain — strip it to simulate no Content-Type
+			request.headers.delete('content-type');
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+		});
+
+		it('rejects text/plain with 415', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'text/plain' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(415);
+			const body = await response.text();
+			expect(body).toContain('Unsupported Media Type');
+		});
+
+		it('rejects multipart/form-data with 415', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'multipart/form-data' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(415);
+		});
+
+		it('rejects application/xml with 415', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/xml' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(415);
+		});
+	});
+
 	describe('POST /mcp - optional bearer auth', () => {
 		it('runs unauthenticated when BV_API_KEY is unset/empty', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
@@ -213,7 +290,7 @@ describe('DNS Security MCP Server', () => {
 			}
 
 			expect(lastResponse).toBeDefined();
-			expect(lastResponse!.status).toBe(429);
+			expect(lastResponse!.status).toBe(200);
 			expect(lastResponse!.headers.get('retry-after')).toBeTruthy();
 		});
 	});
@@ -1085,7 +1162,8 @@ describe('DNS Security MCP Server', () => {
 				const ctx = createExecutionContext();
 				const response = await worker.fetch(request, env, ctx);
 				await waitOnExecutionContext(ctx);
-				if (response.status === 429) {
+				const body = (await response.json()) as { error?: { code: number } };
+				if (body.error?.code === -32029) {
 					rateLimited = true;
 					break;
 				}
@@ -1130,7 +1208,7 @@ describe('DNS Security MCP Server', () => {
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(blockedRequest, env, ctx);
 			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(429);
+			expect(response.status).toBe(200);
 		});
 
 		it('unauthenticated scan_domain requests are capped at 75/day', async () => {
@@ -1179,7 +1257,7 @@ describe('DNS Security MCP Server', () => {
 			const ctx = createExecutionContext();
 			const blockedResponse = await worker.fetch(blockedRequest, env, ctx);
 			await waitOnExecutionContext(ctx);
-			expect(blockedResponse.status).toBe(429);
+			expect(blockedResponse.status).toBe(200);
 			expect(blockedResponse.headers.get('x-quota-limit')).toBe('75');
 			expect(blockedResponse.headers.get('x-quota-remaining')).toBe('0');
 

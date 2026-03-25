@@ -55,7 +55,7 @@ export type DispatchMcpMethodResult =
 	| {
 			kind: 'early-error';
 			payload: ReturnType<typeof jsonRpcError>;
-			status: 429;
+			status: 200 | 429;
 			headers: Record<string, string>;
 	  };
 
@@ -70,7 +70,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 					return {
 						kind: 'early-error',
 						payload: jsonRpcError(options.id, JSON_RPC_ERRORS.RATE_LIMITED, `Rate limit exceeded. Retry after ${retryAfterSeconds}s`),
-						status: 429,
+						status: 200,
 						headers: {
 							...options.rateHeaders,
 							'retry-after': String(retryAfterSeconds),
