@@ -227,11 +227,13 @@ Categories are classified into three tiers with distinct scoring mechanics:
 
 | Category | Weight |
 |----------|--------|
-| DMARC | 16 |
-| DKIM | 10 |
+| DMARC | 22 |
+| DKIM | 16 |
 | SPF | 10 |
-| DNSSEC | 8 |
-| SSL | 8 |
+| DNSSEC | 7 |
+| SSL | 5 |
+
+> Production overrides code defaults via `SCORING_CONFIG` env var in `.dev/wrangler.deploy.jsonc`. Code defaults: DMARC 16, DKIM 10, DNSSEC 8, SSL 8.
 
 `scoreIndicatesMissingControl()` applies within Core but only for `deterministic`/`verified` confidence findings (confidence gate).
 
