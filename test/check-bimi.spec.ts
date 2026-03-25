@@ -31,7 +31,7 @@ describe('checkBimi', () => {
 		return checkBimi(domain);
 	}
 
-	it('should return info finding when no BIMI record and DMARC not enforcing', async () => {
+	it('should return low finding when no BIMI record and DMARC not enforcing', async () => {
 		mockMultipleTxtRecords({
 			'default._bimi.example.com': [],
 			'_dmarc.example.com': ['v=DMARC1; p=none'],
@@ -39,7 +39,7 @@ describe('checkBimi', () => {
 		const result = await run();
 		expect(result.category).toBe('bimi');
 		expect(result.findings).toHaveLength(1);
-		expect(result.findings[0].severity).toBe('info');
+		expect(result.findings[0].severity).toBe('low');
 		expect(result.findings[0].title).toMatch(/No BIMI record.*DMARC not enforcing/i);
 	});
 
