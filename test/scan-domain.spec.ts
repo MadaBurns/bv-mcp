@@ -486,11 +486,11 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		const result = await run();
 		const dnssec = findCheck(result, 'dnssec');
 		expect(dnssec).toBeDefined();
-		// Fully absent DNSSEC → single MEDIUM finding; category passes (score >= 50)
+		// Fully absent DNSSEC → single HIGH finding
 		const finding = dnssec!.findings.find((f) => f.severity !== 'info');
 		expect(finding).toBeDefined();
 		expect(finding!.title).toBe('DNSSEC not enabled');
-		expect(finding!.severity).toBe('medium');
+		expect(finding!.severity).toBe('high');
 	});
 
 	it('passes DNSSEC when AD flag is set', async () => {
