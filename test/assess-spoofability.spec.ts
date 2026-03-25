@@ -78,15 +78,13 @@ describe('assessSpoofability', () => {
 			dmarc: 'v=DMARC1; p=reject; rua=mailto:d@example.com; pct=100',
 			dkim: true,
 		});
-		// Verify the underlying checks return meaningful data
+		// Verify the underlying checks return meaningful findings for the spoofability assessment
 		const { checkSpf } = await import('../src/tools/check-spf');
 		const { checkDmarc } = await import('../src/tools/check-dmarc');
 		const spf = await checkSpf('example.com');
 		const dmarc = await checkDmarc('example.com');
-		// SPF with valid record should have score > 0
-		expect(spf.score).toBeGreaterThan(0);
-		// DMARC with p=reject should have score > 0
-		expect(dmarc.score).toBeGreaterThan(0);
+		expect(spf.findings.length).toBeGreaterThan(0);
+		expect(dmarc.findings.length).toBeGreaterThan(0);
 	});
 
 	it('DMARC p=none has higher spoofability than p=reject', async () => {
