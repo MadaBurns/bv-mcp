@@ -17,6 +17,8 @@ export interface ScanRuntimeOptions {
 	cacheTtlSeconds?: number;
 	/** Custom secondary DoH resolver config (bv-dns). Threaded to scanDns but only active when skipSecondaryConfirmation is false. */
 	secondaryDoh?: import('../../lib/dns-types').SecondaryDohConfig;
+	/** Bypass cache and run a fresh scan. Useful for troubleshooting after DNS changes. */
+	forceRefresh?: boolean;
 }
 
 export async function applyScanPostProcessing(
