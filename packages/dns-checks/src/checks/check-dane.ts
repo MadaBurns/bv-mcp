@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * DANE (DNS-Based Authentication of Named Entities) check.
- * Validates TLSA records for MX servers (_25._tcp.{mx-host}) and
- * HTTPS endpoints (_443._tcp.{domain}).
+ * DANE (DNS-Based Authentication of Named Entities) check — EMAIL ONLY.
+ * Validates TLSA records for MX servers (_25._tcp.{mx-host}).
+ * HTTPS DANE (_443._tcp) is handled by the dedicated check-dane-https.ts.
  *
  * Copyright (c) 2023-2026 BlackVeil Security Ltd.
  * Licensed under BSL 1.1
@@ -11,7 +11,7 @@
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
-import { analyzeTlsaRecords, classifyDanePresence } from './dane-analysis';
+import { analyzeTlsaRecords } from './dane-analysis';
 
 /**
  * Parse MX records from raw DNS response strings.
@@ -25,7 +25,7 @@ function parseMxFromRaw(answers: string[]): Array<{ exchange: string }> {
 }
 
 /**
- * Check DANE TLSA records for a domain's MX servers and HTTPS endpoint.
+ * Check DANE TLSA records for a domain's MX servers (email DANE only).
  */
 export async function checkDANE(
 	domain: string,
@@ -37,7 +37,6 @@ export async function checkDANE(
 	const findings: Finding[] = [];
 	let hasDnssec = false;
 	let hasMxTlsa = false;
-	let hasHttpsTlsa = false;
 
 	// Step 1: Check DNSSEC status for the domain
 	if (rawQueryDNS) {
@@ -70,32 +69,27 @@ export async function checkDANE(
 			}
 		}
 	} catch {
-		// MX query failed — still check HTTPS TLSA below
+		// MX query failed
 		findings.push(
 			createFinding(
 				'dane',
 				'MX lookup failed for DANE check',
 				'low',
-				`Could not query MX records for ${domain} to check SMTP DANE. HTTPS DANE was still checked.`,
+				`Could not query MX records for ${domain} to check SMTP DANE.`,
 			),
 		);
 	}
 
-	// Step 3: Check HTTPS TLSA at _443._tcp.{domain}
-	const httpsTlsaName = `_443._tcp.${domain}`;
-	try {
-		const httpsTlsaRecords = await queryDNS(httpsTlsaName, 'TLSA', { timeout });
-		if (httpsTlsaRecords.length > 0) {
-			hasHttpsTlsa = true;
-			findings.push(...analyzeTlsaRecords(httpsTlsaRecords, httpsTlsaName, hasDnssec));
-		}
-	} catch {
-		// HTTPS TLSA query failed — continue with whatever we have
-	}
-
-	// Step 4: If no TLSA records found anywhere, classify absence
-	if (!hasMxTlsa && !hasHttpsTlsa && findings.every((f) => f.severity !== 'medium' || !f.title.includes('Malformed'))) {
-		findings.push(...classifyDanePresence(hasMxTlsa, hasHttpsTlsa));
+	// Step 3: If no MX TLSA found, report absence
+	if (!hasMxTlsa && findings.every((f) => f.severity !== 'medium' || !f.title.includes('Malformed'))) {
+		findings.push(
+			createFinding(
+				'dane',
+				'No DANE TLSA for MX servers',
+				'medium',
+				'No TLSA records found for MX server SMTP ports (_25._tcp). DANE pins TLS certificates to DNS, preventing CA misissuance attacks on email delivery.',
+			),
+		);
 	}
 
 	// Step 5: Handle case where all DNS queries failed
