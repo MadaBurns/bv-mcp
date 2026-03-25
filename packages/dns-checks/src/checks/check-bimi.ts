@@ -29,13 +29,13 @@ export async function checkBIMI(
 
 	const bimiRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=bimi1'));
 
-	if (bimiRecords.length === 0) {
-		// Check DMARC enforcement status to provide context
-		const dmarcRecords = await queryDNS(`_dmarc.${domain}`, 'TXT', { timeout });
-		const dmarcRecord = dmarcRecords.find((r) => r.toLowerCase().startsWith('v=dmarc1'));
-		const isEnforcing =
-			dmarcRecord && (/\bp=reject\b/i.test(dmarcRecord) || /\bp=quarantine\b/i.test(dmarcRecord));
+	// Check DMARC enforcement status — BIMI requires p=quarantine or p=reject
+	const dmarcRecords = await queryDNS(`_dmarc.${domain}`, 'TXT', { timeout });
+	const dmarcRecord = dmarcRecords.find((r) => r.toLowerCase().startsWith('v=dmarc1'));
+	const isEnforcing =
+		dmarcRecord && (/\bp=reject\b/i.test(dmarcRecord) || /\bp=quarantine\b/i.test(dmarcRecord));
 
+	if (bimiRecords.length === 0) {
 		if (!isEnforcing) {
 			findings.push(
 				createFinding(
@@ -43,6 +43,7 @@ export async function checkBIMI(
 					'No BIMI record (DMARC not enforcing)',
 					'info',
 					`No BIMI record found at ${bimiDomain}. BIMI requires DMARC enforcement (p=quarantine or p=reject) before a BIMI record can be validated by mail clients. Set up DMARC enforcement first.`,
+					{ missingControl: true },
 				),
 			);
 		} else {
@@ -52,10 +53,24 @@ export async function checkBIMI(
 					'No BIMI record found',
 					'low',
 					`No BIMI record found at ${bimiDomain}. This domain has DMARC enforcement and is eligible for BIMI. Publishing a BIMI record allows email clients like Gmail and Apple Mail to display your brand logo next to your emails.`,
+					{ missingControl: true },
 				),
 			);
 		}
 		return buildCheckResult('bimi', findings);
+	}
+
+	// BIMI record exists but DMARC is not enforcing — record is non-functional
+	if (!isEnforcing) {
+		findings.push(
+			createFinding(
+				'bimi',
+				'BIMI record ineffective (DMARC not enforcing)',
+				'medium',
+				`BIMI record found at ${bimiDomain} but DMARC policy is not set to quarantine or reject. Mail clients will not display the BIMI logo until DMARC enforcement is enabled.`,
+				{ missingControl: true },
+			),
+		);
 	}
 
 	if (bimiRecords.length > 1) {
