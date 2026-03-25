@@ -1266,10 +1266,12 @@ describe('DNS Security MCP Server', () => {
 			}
 		});
 
-		it('throttles unauthenticated control-plane traffic separately', async () => {
+		it('does not rate-limit protocol methods (initialize, ping, tools/list, etc.)', async () => {
 			const sessionId = await initSession();
 
-			for (let i = 0; i < 60; i++) {
+			// Send 65 ping requests — all should succeed since protocol methods are exempt
+			// from control plane rate limiting to prevent mcp-remote reconnection storms
+			for (let i = 0; i < 65; i++) {
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
@@ -1284,21 +1286,6 @@ describe('DNS Security MCP Server', () => {
 				await waitOnExecutionContext(ctx);
 				expect(response.status).toBe(200);
 			}
-
-			const blockedRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Mcp-Session-Id': sessionId,
-					'cf-connecting-ip': '203.0.113.55',
-				},
-				body: JSON.stringify({ jsonrpc: '2.0', id: 999, method: 'ping', params: {} }),
-			});
-			const ctx = createExecutionContext();
-			const blockedResponse = await worker.fetch(blockedRequest, env, ctx);
-			await waitOnExecutionContext(ctx);
-			expect(blockedResponse.status).toBe(429);
-			expect(blockedResponse.headers.get('x-ratelimit-limit')).toBe('60');
 		});
 	});
 

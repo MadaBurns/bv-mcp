@@ -16,7 +16,8 @@ describe('mcp-route-gates', () => {
 		}));
 
 		const { buildControlPlaneRateLimitResponse } = await import('../src/mcp/route-gates');
-		const response = await buildControlPlaneRateLimitResponse('203.0.113.9', undefined, 'ping', false, 7);
+		// Use a non-exempt method — all standard protocol methods (initialize, tools/list, etc.) are exempt
+		const response = await buildControlPlaneRateLimitResponse('203.0.113.9', undefined, 'unknown/method', false, 7);
 
 		expect(response).toBeInstanceOf(Response);
 		expect(response?.status).toBe(429);
