@@ -29,12 +29,12 @@ interface ImportanceProfile {
 /** Per-profile importance weights. */
 export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, ImportanceProfile>> = {
 	mail_enabled: {
-		// Core (sum=60)
+		// Core (sum=52)
 		spf: { importance: 10 },
-		dmarc: { importance: 22 },
-		dkim: { importance: 16 },
-		dnssec: { importance: 7 },
-		ssl: { importance: 5 },
+		dmarc: { importance: 16 },
+		dkim: { importance: 10 },
+		dnssec: { importance: 8 },
+		ssl: { importance: 8 },
 		// Protective (sum=20)
 		subdomain_takeover: { importance: 4 },
 		http_security: { importance: 3 },
@@ -56,12 +56,12 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		zone_hygiene: { importance: 0 },
 	},
 	enterprise_mail: {
-		// Core (sum=68)
+		// Core (sum=58)
 		spf: { importance: 10 },
-		dmarc: { importance: 26 },
-		dkim: { importance: 18 },
-		dnssec: { importance: 9 },
-		ssl: { importance: 5 },
+		dmarc: { importance: 18 },
+		dkim: { importance: 12 },
+		dnssec: { importance: 10 },
+		ssl: { importance: 8 },
 		// Protective (sum=22)
 		subdomain_takeover: { importance: 5 },
 		http_security: { importance: 3 },
@@ -83,11 +83,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		zone_hygiene: { importance: 0 },
 	},
 	non_mail: {
-		// Core (sum=23)
+		// Core (sum=19)
 		spf: { importance: 2 },
-		dmarc: { importance: 4 },
-		dkim: { importance: 2 },
-		dnssec: { importance: 7 },
+		dmarc: { importance: 2 },
+		dkim: { importance: 1 },
+		dnssec: { importance: 8 },
 		ssl: { importance: 8 },
 		// Protective (sum=24)
 		subdomain_takeover: { importance: 6 },
@@ -141,8 +141,8 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		spf: { importance: 1 },
 		dmarc: { importance: 1 },
 		dkim: { importance: 1 },
-		dnssec: { importance: 2 },
-		ssl: { importance: 5 },
+		dnssec: { importance: 3 },
+		ssl: { importance: 4 },
 		// Protective (sum=10)
 		subdomain_takeover: { importance: 2 },
 		http_security: { importance: 2 },
