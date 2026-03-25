@@ -68,13 +68,13 @@ describe('DNSSEC finding consolidation', () => {
 		return checkDnssec(domain);
 	}
 
-	it('emits single MEDIUM finding when DNSSEC is fully absent', async () => {
+	it('emits single HIGH finding when DNSSEC is fully absent', async () => {
 		// AD=false, no DNSKEY, no DS
 		mockDnssecResponses(false, false, false);
 		const result = await run();
 		const nonInfoFindings = result.findings.filter((f) => f.severity !== 'info');
 		expect(nonInfoFindings).toHaveLength(1);
-		expect(nonInfoFindings[0].severity).toBe('medium');
+		expect(nonInfoFindings[0].severity).toBe('high');
 		expect(nonInfoFindings[0].title).toBe('DNSSEC not enabled');
 	});
 
