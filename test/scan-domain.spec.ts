@@ -535,4 +535,78 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		expect(caa).toBeDefined();
 		expect(caa!.passed).toBe(true);
 	});
+
+	// -- No-send domain (SPF v=spf1 -all) --
+
+	it('downgrades DKIM/MTA-STS/BIMI findings for no-send domains with MX records', async () => {
+		// Custom fetch mock: SPF is v=spf1 -all (no-send), MX exists, DKIM/MTA-STS/BIMI missing
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=MX') || url.includes('type=15')) {
+					return Promise.resolve(
+						createDohResponse([{ name: 'example.com', type: 15 }], [{ name: 'example.com', type: 15, TTL: 300, data: '10 mail.example.com.' }]),
+					);
+				}
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=reject']));
+					// DKIM: no records found
+					if (url.includes('_domainkey.'))
+						return Promise.resolve(createDohResponse([{ name: 'default._domainkey.example.com', type: 16 }], []));
+					// MTA-STS: no record
+					if (url.includes('_mta-sts.'))
+						return Promise.resolve(createDohResponse([{ name: '_mta-sts.example.com', type: 16 }], []));
+					if (url.includes('_smtp._tls.'))
+						return Promise.resolve(createDohResponse([{ name: '_smtp._tls.example.com', type: 16 }], []));
+					// BIMI: no record
+					if (url.includes('default._bimi.'))
+						return Promise.resolve(createDohResponse([{ name: 'default._bimi.example.com', type: 16 }], []));
+					// SPF: no-send policy (v=spf1 -all with no authorizing mechanisms)
+					return Promise.resolve(txtResponse('example.com', ['v=spf1 -all']));
+				}
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse('example.com', true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+
+		const result = await run();
+
+		// SPF should still pass (v=spf1 -all is valid)
+		const spf = findCheck(result, 'spf');
+		expect(spf).toBeDefined();
+		expect(spf!.passed).toBe(true);
+
+		// DKIM: missing records should be downgraded to info
+		const dkim = findCheck(result, 'dkim');
+		expect(dkim).toBeDefined();
+		const dkimCritHigh = dkim!.findings.filter((f) => f.severity === 'critical' || f.severity === 'high');
+		expect(dkimCritHigh).toHaveLength(0);
+		const dkimDowngraded = dkim!.findings.find((f) => f.detail.includes('domain SPF policy rejects all outbound mail'));
+		expect(dkimDowngraded).toBeDefined();
+		expect(dkimDowngraded!.severity).toBe('info');
+
+		// MTA-STS: missing records should be downgraded to info
+		const mtaSts = findCheck(result, 'mta_sts');
+		expect(mtaSts).toBeDefined();
+		const mtaStsCritHigh = mtaSts!.findings.filter((f) => f.severity === 'critical' || f.severity === 'high');
+		expect(mtaStsCritHigh).toHaveLength(0);
+
+		// BIMI: missing records should be downgraded to info
+		const bimi = findCheck(result, 'bimi');
+		expect(bimi).toBeDefined();
+		const bimiCritHigh = bimi!.findings.filter((f) => f.severity === 'critical' || f.severity === 'high');
+		expect(bimiCritHigh).toHaveLength(0);
+
+		// DMARC should NOT be downgraded (still has its own finding severity)
+		const dmarc = findCheck(result, 'dmarc');
+		expect(dmarc).toBeDefined();
+		expect(dmarc!.passed).toBe(true);
+	});
 });
