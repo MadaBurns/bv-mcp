@@ -59,13 +59,17 @@ Source: `SEVERITY_PENALTIES` in `packages/dns-checks/src/types.ts` (re-exported 
 
 ## Missing-Control Rule
 
-Two mechanisms detect missing controls and set `passed = false` in `buildCheckResult`:
+Two mechanisms detect missing controls in `buildCheckResult`:
 
 1. **Confidence-gated detection** (`scoreIndicatesMissingControl()`): For findings matching missing-control text patterns (e.g., "no … record", "missing", "not found") with `critical`/`high` severity and `deterministic`/`verified` confidence. This prevents heuristic findings (e.g., DKIM selector probing) from falsely zeroing core categories.
 
-2. **Explicit metadata** (`missingControl: true`): For hardening-tier checks where the control is absent but severity is below the confidence gate threshold (info/low/medium). Used by BIMI (no record or record present but DMARC not enforcing), DANE (no TLSA records), and TLS-RPT (record missing).
+2. **Explicit metadata** (`missingControl: true`): For checks where the control is entirely absent. Used across all tiers: CAA (no records), DNSSEC (not enabled), HTTP Security (site unreachable), MTA-STS (no record), MX (no records), SVCB-HTTPS (no record), NS (no records), Zone Hygiene (no NS/SOA), BIMI (no record), DANE (no TLSA), TLS-RPT (missing).
 
-In the Core tier, `scoreIndicatesMissingControl()` zeros the category's weighted contribution. In the Hardening tier, `result.passed` determines whether a category contributes bonus points — checks with either detection active do not contribute.
+**Score zeroing**: When either mechanism fires, `score` is set to `0` (`hasMissingControl ? 0 : score`). Checks that fail due to low penalty-based score (e.g., two criticals → score 20, `passed=false`) retain their numeric score — only truly missing controls are zeroed. This prevents misleading displays like `✓ 95/100` for checks with no record at all.
+
+**`passed` flag**: `score >= 50 && !hasMissingControl`. A check fails if the score is below 50 or if either missing-control mechanism fires.
+
+In the Core tier, missing controls zero the category's weighted contribution. In the Hardening tier, `result.passed` determines whether a category contributes bonus points — checks with either detection active do not contribute.
 
 Source: `scoreIndicatesMissingControl()` and `buildCheckResult()` in `packages/dns-checks/src/scoring/model.ts`.
 

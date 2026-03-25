@@ -23,6 +23,7 @@ export function getMtaStsTxtFindings(records: string[]): { findings: Finding[]; 
 					'No MTA-STS record found',
 					'medium',
 					'',
+					{ missingControl: true },
 				),
 			],
 			hasTxtRecord: false,
@@ -57,6 +58,7 @@ export function finalizeMissingMtaStsRecordFinding(findings: Finding[], domain: 
 					'No MTA-STS record found',
 					'medium',
 					`No MTA-STS TXT record found at _mta-sts.${domain}. MTA-STS enforces TLS for incoming email, preventing downgrade attacks.`,
+					{ missingControl: true },
 				)
 			: finding,
 	);

@@ -60,6 +60,7 @@ export async function checkHTTPSecurity(
 				`HTTPS ${message.toLowerCase()}`,
 				'medium',
 				`Could not fetch https://${domain} to check security headers: ${message}.`,
+				{ missingControl: true },
 			),
 		);
 	}

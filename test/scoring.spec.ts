@@ -33,7 +33,7 @@ describe('scoring', () => {
 			const findings = [createFinding('dmarc', 'a', 'critical', 'd'), createFinding('dmarc', 'b', 'critical', 'd')];
 			const result = buildCheckResult('dmarc', findings);
 			expect(result.passed).toBe(false);
-			expect(result.score).toBe(0);
+			expect(result.score).toBe(20);
 		});
 	});
 

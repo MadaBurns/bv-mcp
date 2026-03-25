@@ -103,7 +103,7 @@ describe('buildCheckResult', () => {
 		];
 		// 100 - 40 - 25 = 35
 		const result = buildCheckResult('dmarc', findings);
-		expect(result.score).toBe(0);
+		expect(result.score).toBe(35);
 		expect(result.passed).toBe(false);
 	});
 

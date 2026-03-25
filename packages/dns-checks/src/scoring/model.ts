@@ -108,7 +108,7 @@ export function buildCheckResult(category: CheckCategory, findings: Finding[]): 
 	return {
 		category,
 		passed,
-		score: passed ? score : 0,
+		score: hasMissingControl ? 0 : score,
 		findings: normalizedFindings,
 	};
 }
