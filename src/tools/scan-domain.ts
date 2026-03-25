@@ -45,6 +45,8 @@ import { checkSubdomainTakeover } from './check-subdomain-takeover';
 import { checkMx } from './check-mx';
 import { checkHttpSecurity } from './check-http-security';
 import { checkDane } from './check-dane';
+import { checkDaneHttps } from './check-dane-https';
+import { checkSvcbHttps } from './check-svcb-https';
 import { applyScanPostProcessing } from './scan/post-processing';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import { computeMaturityStage } from './scan/maturity-staging';
@@ -114,7 +116,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// overall scan timeout to guarantee a timely response.
 	// Uses Promise.allSettled so that completed checks are preserved on timeout.
 	const ALL_CHECK_CATEGORIES: CheckCategory[] = [
-		'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'http_security', 'dane', 'mx',
+		'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'http_security', 'dane', 'mx', 'dane_https', 'svcb_https',
 	];
 
 	// Skip secondary DNS confirmation in scan context for speed — individual checks
@@ -139,6 +141,8 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain, scanDns)), kv),
 		runCachedCheck(domain, 'http_security', () => safeCheck('http_security', () => checkHttpSecurity(domain)), kv),
 		runCachedCheck(domain, 'dane', () => safeCheck('dane', () => checkDane(domain, scanDns)), kv),
+		runCachedCheck(domain, 'dane_https', () => safeCheck('dane_https', () => checkDaneHttps(domain, scanDns)), kv),
+		runCachedCheck(domain, 'svcb_https', () => safeCheck('svcb_https', () => checkSvcbHttps(domain, scanDns)), kv),
 		runCachedCheck(
 			domain,
 			'mx',
