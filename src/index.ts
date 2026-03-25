@@ -19,7 +19,7 @@ import { cors } from 'hono/cors';
 import { checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
 import { logEvent, logError, sanitizeHeadersForLog } from './lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
-import { normalizeHeaders, parseJsonRpcRequest, readRequestBody } from './mcp/request';
+import { normalizeHeaders, parseJsonRpcRequest, readRequestBody, validateContentType } from './mcp/request';
 import { createSession, deleteSession, validateSession, checkSessionCreateRateLimit } from './lib/session';
 import { unauthorizedResponse } from './lib/auth';
 import { sseEvent, acceptsSSE, createNotificationStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
@@ -84,31 +84,43 @@ import { resolveTier } from './lib/tier-auth';
 const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean; tierAuthResult: TierAuthResult } }>();
 const mcpPaths = ['/mcp', '/mcp/messages', '/mcp/sse'] as const;
 
+/**
+ * Electron-only URI schemes used by desktop IDE webviews (VS Code, Cursor, Windsurf).
+ * Browsers cannot forge these — safe to allow without explicit ALLOWED_ORIGINS entry.
+ */
+const DESKTOP_IDE_SCHEMES = ['vscode-webview:', 'vscode-file:'];
+
+/** Check if an origin is allowed for this request. Returns 'allowed' | 'denied' | 'invalid'. */
+function checkOrigin(origin: string, requestUrl: string, allowedOrigins?: string): 'allowed' | 'denied' | 'invalid' {
+	try {
+		const parsed = new URL(origin);
+		// Desktop IDE schemes (Electron-only, not forgeable by browsers)
+		if (DESKTOP_IDE_SCHEMES.includes(parsed.protocol)) return 'allowed';
+		// Same-origin
+		if (parsed.host === new URL(requestUrl).host) return 'allowed';
+	} catch {
+		return 'invalid';
+	}
+
+	if (allowedOrigins) {
+		const allowed = allowedOrigins
+			.split(',')
+			.map((value) => value.trim().toLowerCase())
+			.filter((value) => value.length > 0);
+		if (allowed.includes(origin.toLowerCase())) return 'allowed';
+	}
+
+	return 'denied';
+}
+
 for (const path of mcpPaths) {
 	app.use(
 		path,
 		cors({
 			origin: (origin, c) => {
 				if (!origin) return '';
-
-				try {
-					const originHost = new URL(origin).host;
-					const requestHost = new URL(c.req.url).host;
-					if (originHost === requestHost) return origin;
-				} catch {
-					// Malformed Origin falls through to rejection below.
-				}
-
-				const allowedOrigins = (c.env as BvMcpEnv).ALLOWED_ORIGINS?.trim();
-				if (allowedOrigins) {
-					const allowed = allowedOrigins
-						.split(',')
-						.map((value) => value.trim().toLowerCase())
-						.filter((value) => value.length > 0);
-					if (allowed.includes(origin.toLowerCase())) return origin;
-				}
-
-				return '';
+				const result = checkOrigin(origin, c.req.url, (c.env as BvMcpEnv).ALLOWED_ORIGINS?.trim());
+				return result === 'allowed' ? origin : '';
 			},
 			allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
 			allowHeaders: ['Content-Type', 'Accept', 'Mcp-Session-Id', 'Authorization'],
@@ -120,23 +132,9 @@ for (const path of mcpPaths) {
 		const origin = c.req.header('origin');
 		if (!origin) return next();
 
-		try {
-			const originHost = new URL(origin).host;
-			const requestHost = new URL(c.req.url).host;
-			if (originHost === requestHost) return next();
-		} catch {
-			return new Response('Forbidden: invalid Origin header', { status: 403 });
-		}
-
-		const allowedOrigins = c.env.ALLOWED_ORIGINS?.trim();
-		if (allowedOrigins) {
-			const allowed = allowedOrigins
-				.split(',')
-				.map((value) => value.trim().toLowerCase())
-				.filter((value) => value.length > 0);
-			if (allowed.includes(origin.toLowerCase())) return next();
-		}
-
+		const result = checkOrigin(origin, c.req.url, c.env.ALLOWED_ORIGINS?.trim());
+		if (result === 'allowed') return next();
+		if (result === 'invalid') return new Response('Forbidden: invalid Origin header', { status: 403 });
 		return new Response('Forbidden: unauthorized Origin', { status: 403 });
 	});
 
@@ -250,6 +248,11 @@ app.post('/mcp', async (c) => {
 	const clientType = detectMcpClient(headersLc['user-agent']);
 	const authTier = tierAuthResult.authenticated ? (tierAuthResult.tier ?? 'free') : 'anon';
 	const sessionHash = headersLc['mcp-session-id'] ? hashForAnalytics(headersLc['mcp-session-id']) : 'none';
+
+	const contentTypeError = validateContentType(headersLc['content-type']);
+	if (contentTypeError) {
+		return sseErrorResponse(contentTypeError.payload!, contentTypeError.status!, accept);
+	}
 
 	const bodyReadResult = await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES);
 	if (!bodyReadResult.ok) {
@@ -435,6 +438,11 @@ app.post('/mcp/messages', async (c) => {
 
 	if (!sessionId) {
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: missing session'), 400);
+	}
+
+	const legacyContentTypeError = validateContentType(headersLc['content-type']);
+	if (legacyContentTypeError) {
+		return Response.json(legacyContentTypeError.payload, { status: legacyContentTypeError.status });
 	}
 
 	// Early session validation — return HTTP 404 directly for expired/terminated sessions
@@ -648,7 +656,9 @@ app.delete('/mcp', async (c) => {
 app.route('/internal', internalRoutes);
 
 app.all('*', (c) => {
-	return c.json({ error: 'Not found' }, 404);
+	// Plain text — JSON `{"error":"..."}` is misinterpreted as an OAuth error by mcp-remote,
+	// which breaks Claude Desktop connections to servers that don't implement OAuth.
+	return c.text('Not found', 404);
 });
 
 import { handleScheduled } from './scheduled';

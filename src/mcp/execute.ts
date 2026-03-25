@@ -175,7 +175,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 					'Service capacity reached for today. Please try again tomorrow or deploy your own instance.',
 				),
 				headers: globalHeaders,
-				httpStatus: 429,
+				httpStatus: 200,
 				useErrorEnvelope: true,
 				eventId,
 			};
@@ -209,7 +209,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 					`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
 				),
 				headers: rateHeaders,
-				httpStatus: 429,
+				httpStatus: 200,
 				useErrorEnvelope: true,
 				eventId,
 			};
@@ -251,7 +251,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 						`Rate limit exceeded. ${toolName} is limited to ${toolDailyLimit} requests per day for free tier users.`,
 					),
 					headers: rateHeaders,
-					httpStatus: 429,
+					httpStatus: 200,
 					useErrorEnvelope: true,
 					eventId,
 				};
@@ -301,7 +301,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 					`Rate limit exceeded. ${tier} tier is limited to ${dailyLimit} requests per day.`,
 				),
 				headers: rateHeaders,
-				httpStatus: 429,
+				httpStatus: 200,
 				useErrorEnvelope: true,
 				eventId,
 			};
