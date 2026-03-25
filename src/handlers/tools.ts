@@ -19,6 +19,8 @@ import { checkShadowDomains } from '../tools/check-shadow-domains';
 import { checkTxtHygiene } from '../tools/check-txt-hygiene';
 import { checkHttpSecurity } from '../tools/check-http-security';
 import { checkDane } from '../tools/check-dane';
+import { checkDaneHttps } from '../tools/check-dane-https';
+import { checkSvcbHttps } from '../tools/check-svcb-https';
 import { checkMxReputation } from '../tools/check-mx-reputation';
 import { checkSrv } from '../tools/check-srv';
 import { checkZoneHygiene } from '../tools/check-zone-hygiene';
@@ -123,6 +125,8 @@ const TOOL_REGISTRY: Record<
 	check_txt_hygiene: { cacheKey: () => 'txt_hygiene', execute: (d, _args, ro) => checkTxtHygiene(d, buildDnsOptions(ro)) },
 	check_http_security: { cacheKey: () => 'http_security', execute: (d) => checkHttpSecurity(d) },
 	check_dane: { cacheKey: () => 'dane', execute: (d, _args, ro) => checkDane(d, buildDnsOptions(ro)) },
+	check_dane_https: { cacheKey: () => 'dane_https', execute: (d, _args, ro) => checkDaneHttps(d, buildDnsOptions(ro)) },
+	check_svcb_https: { cacheKey: () => 'svcb_https', execute: (d, _args, ro) => checkSvcbHttps(d, buildDnsOptions(ro)) },
 	check_mx_reputation: { cacheKey: () => 'mx_reputation', execute: (d, _args, ro) => checkMxReputation(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	check_srv: { cacheKey: () => 'srv', execute: (d, _args, ro) => checkSrv(d, buildDnsOptions(ro)) },
 	check_zone_hygiene: { cacheKey: () => 'zone_hygiene', execute: (d, _args, ro) => checkZoneHygiene(d, buildDnsOptions(ro)) },
