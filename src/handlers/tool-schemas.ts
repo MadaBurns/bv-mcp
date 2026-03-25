@@ -123,6 +123,16 @@ export const TOOLS: McpTool[] = [
 		inputSchema: DOMAIN_INPUT_SCHEMA,
 	},
 	{
+		name: 'check_dane_https',
+		description: 'Verify DANE certificate pinning for HTTPS via TLSA records at _443._tcp.{domain}.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
+		name: 'check_svcb_https',
+		description: 'Validate HTTPS/SVCB records (RFC 9460) for modern transport capability advertisement.',
+		inputSchema: DOMAIN_INPUT_SCHEMA,
+	},
+	{
 		name: 'check_lookalikes',
 		description: 'Detect active typosquat/lookalike domains. Standalone.',
 		inputSchema: DOMAIN_INPUT_SCHEMA,
