@@ -13,9 +13,10 @@ An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` 
 ## Commands
 
 ```bash
-npm install                            # Install deps
+npm install                            # Install deps (includes workspace packages)
 npm test                               # Vitest + Istanbul coverage (Workers runtime)
 npx vitest run test/check-spf.spec.ts  # Run a single test file
+npm run build                          # tsup build (npm package + stdio CLI bundle)
 npm run dev                            # Local dev at localhost:8787
 npm run typecheck                      # tsc --noEmit
 npm run lint                           # ESLint
@@ -35,8 +36,24 @@ git config core.hooksPath .githooks    # Enable pre-commit hooks (one-time setup
 
 ## Architecture
 
+### Monorepo structure
+
+This is an npm workspace monorepo. The root is a Cloudflare Worker; `packages/dns-checks` (`@blackveil/dns-checks`) is a separately publishable runtime-agnostic package exporting check implementations and scoring logic for non-Worker consumers.
+
+**Entrypoint distinction**: `src/index.ts` is the Cloudflare Worker entrypoint (Hono app). `src/package.ts` is the npm package entrypoint (built by tsup → `dist/index.js`). The tsup build also bundles `src/stdio.ts` → `dist/stdio.js` with a `cloudflare:workers` shim plugin so it can run in Node.js.
+
+```bash
+# Workspace commands
+npm -w packages/dns-checks run build      # Build sub-package
+npm -w packages/dns-checks run test       # Test sub-package
+npm -w packages/dns-checks run typecheck  # Typecheck sub-package
+```
+
+### Source layout
+
 ```
 src/index.ts              — Hono app, HTTP routes, middleware wiring (delegates to shared executor)
+src/package.ts            — npm package entrypoint (re-exports for non-Worker consumers)
 src/internal.ts           — Internal service binding routes (direct tool access, no MCP overhead)
 src/stdio.ts              — Native stdio MCP transport (CLI entrypoint: blackveil-dns-mcp)
 src/scheduled.ts          — Cron Trigger handler for analytics alerting (queries Analytics Engine SQL API)
@@ -102,6 +119,11 @@ src/lib/log.ts            — Structured JSON logging (logEvent, logError)
 
 test/                     — One spec per source file
 test/helpers/dns-mock.ts  — Shared fetch mock for DNS-over-HTTPS queries
+
+packages/dns-checks/     — @blackveil/dns-checks (runtime-agnostic check + scoring library)
+  src/checks/            — Portable check implementations (no Worker APIs)
+  src/scoring/           — Scoring engine, types, category weights
+  src/__tests__/         — Sub-package tests
 ```
 
 ### Request flow
@@ -306,7 +328,7 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 - **Dynamic imports are required** in test functions for mock isolation — e.g. `const { checkSpf } = await import('../src/tools/check-spf')` inside each test helper
 - Clear scan cache between cases when testing tool dispatch — both `cache:<domain>:check:<name>` (per-check) and `cache:<domain>` (full scan)
 - `tsconfig.json` `types` must be under `compilerOptions` (not top-level) — Vitest pool requires this
-- Config file is `vitest.config.mts` (not `.ts`)
+- Config file is `vitest.config.mts` (not `.ts`) — global test timeout is 15s, `isolatedStorage: false`
 - TXT record mocking: `mockTxtRecords()` wraps values in quotes (as Cloudflare DoH does); pass unquoted strings. To test DNS backslash escaping (e.g. `\;`), use `createDohResponse()` directly with raw `data` fields containing the escaped form
 
 ### Pre-commit hook
