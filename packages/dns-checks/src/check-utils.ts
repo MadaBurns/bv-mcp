@@ -117,10 +117,11 @@ function hasMissingControl(findings: Finding[]): boolean {
 export function buildCheckResult(category: CheckCategory, findings: Finding[]): CheckResult {
 	const normalizedFindings = findings.map(withConfidenceMetadata);
 	const score = computeCategoryScore(normalizedFindings);
+	const passed = score >= 50 && !hasMissingControl(normalizedFindings);
 	return {
 		category,
-		passed: score >= 50 && !hasMissingControl(normalizedFindings),
-		score,
+		passed,
+		score: passed ? score : 0,
 		findings: normalizedFindings,
 	};
 }
