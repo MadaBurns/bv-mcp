@@ -118,7 +118,7 @@ describe('scanDomain', () => {
 		expect(() => new Date(result.timestamp).toISOString()).not.toThrow();
 	});
 
-	it('includes all 14 check categories', async () => {
+	it('includes all 16 check categories', async () => {
 		mockAllChecks();
 		const result = await run();
 
@@ -137,7 +137,9 @@ describe('scanDomain', () => {
 		expect(categories).toContain('mx');
 		expect(categories).toContain('bimi');
 		expect(categories).toContain('tlsrpt');
-		expect(result.checks).toHaveLength(14);
+		expect(categories).toContain('dane_https');
+		expect(categories).toContain('svcb_https');
+		expect(result.checks).toHaveLength(16);
 
 		// Each check result has expected shape
 		for (const check of result.checks) {
@@ -153,8 +155,8 @@ describe('scanDomain', () => {
 		mockAllChecks({ throwForUrl: '_domainkey.' });
 		const result = await run();
 
-		// All 14 checks should still be present
-		expect(result.checks).toHaveLength(14);
+		// All 16 checks should still be present
+		expect(result.checks).toHaveLength(16);
 
 		// The DKIM check should have a degraded finding since DNS failed
 		const dkimCheck = result.checks.find((c) => c.category === 'dkim');
