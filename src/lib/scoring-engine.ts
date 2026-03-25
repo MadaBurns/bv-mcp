@@ -24,10 +24,10 @@ interface ImportanceProfile {
  */
 export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	spf: { importance: 10 },
-	dmarc: { importance: 22 },
-	dkim: { importance: 16 },
-	dnssec: { importance: 2 },
-	ssl: { importance: 5 },
+	dmarc: { importance: 16 },
+	dkim: { importance: 10 },
+	dnssec: { importance: 8 },
+	ssl: { importance: 8 },
 	mta_sts: { importance: 2 },
 	ns: { importance: 0 },
 	caa: { importance: 0 },
@@ -49,7 +49,7 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 
 /** Core-tier importance weights (SPF, DMARC, DKIM, DNSSEC, SSL). Used by the three-tier scoring formula. */
 export const CORE_WEIGHTS: Record<string, number> = {
-	dmarc: 22, dkim: 16, spf: 10, dnssec: 7, ssl: 5,
+	dmarc: 16, dkim: 10, spf: 10, dnssec: 8, ssl: 8,
 };
 
 /** Protective-tier importance weights. Used by the three-tier scoring formula. */
