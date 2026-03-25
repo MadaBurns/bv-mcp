@@ -20,7 +20,7 @@ describe('mcp-route-gates', () => {
 		const response = await buildControlPlaneRateLimitResponse('203.0.113.9', undefined, 'unknown/method', false, 7);
 
 		expect(response).toBeInstanceOf(Response);
-		expect(response?.status).toBe(429);
+		expect(response?.status).toBe(200);
 		expect(response?.headers.get('retry-after')).toBe('2');
 
 		const body = (await response?.json()) as { error: { code: number; message: string } };

@@ -5,6 +5,7 @@ import {
 	parseJsonRpcRequest,
 	readRequestBody,
 	summarizeParamsForLog,
+	validateContentType,
 	validateJsonRpcRequest,
 } from '../src/mcp/request';
 
@@ -60,6 +61,44 @@ describe('mcp-request helpers', () => {
 		expect(result.status).toBe(400);
 		expect(result.payload?.error.code).toBe(-32600);
 		expect(result.payload?.error.message).toContain('empty');
+	});
+
+	it('validateContentType accepts application/json', () => {
+		expect(validateContentType('application/json')).toBeUndefined();
+	});
+
+	it('validateContentType accepts application/json with charset', () => {
+		expect(validateContentType('application/json; charset=utf-8')).toBeUndefined();
+	});
+
+	it('validateContentType accepts missing Content-Type', () => {
+		expect(validateContentType(undefined)).toBeUndefined();
+		expect(validateContentType(null)).toBeUndefined();
+		expect(validateContentType('')).toBeUndefined();
+	});
+
+	it('validateContentType rejects text/plain', () => {
+		const result = validateContentType('text/plain');
+		expect(result?.ok).toBe(false);
+		expect(result?.status).toBe(415);
+		expect(result?.payload?.error.message).toContain('Unsupported Media Type');
+	});
+
+	it('validateContentType rejects application/xml', () => {
+		const result = validateContentType('application/xml');
+		expect(result?.ok).toBe(false);
+		expect(result?.status).toBe(415);
+	});
+
+	it('validateContentType rejects multipart/form-data', () => {
+		const result = validateContentType('multipart/form-data');
+		expect(result?.ok).toBe(false);
+		expect(result?.status).toBe(415);
+	});
+
+	it('validateContentType is case-insensitive', () => {
+		expect(validateContentType('Application/JSON')).toBeUndefined();
+		expect(validateContentType('APPLICATION/JSON; CHARSET=UTF-8')).toBeUndefined();
 	});
 
 	it('readRequestBody returns payload too large for oversized bodies', async () => {
