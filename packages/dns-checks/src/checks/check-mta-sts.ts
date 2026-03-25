@@ -1,0 +1,194 @@
+// SPDX-License-Identifier: BUSL-1.1
+
+/**
+ * MTA-STS (Mail Transfer Agent Strict Transport Security) check.
+ * Queries _mta-sts TXT records and validates the MTA-STS policy.
+ *
+ * Copyright (c) 2023-2026 BlackVeil Security Ltd.
+ * Licensed under BSL 1.1
+ */
+
+import type { CheckResult, DNSQueryFunction, FetchFunction, Finding } from '../types';
+import { buildCheckResult, createFinding } from '../check-utils';
+import {
+	finalizeMissingMtaStsRecordFinding,
+	finalizeMissingTlsRptRecordFinding,
+	extractPolicyMxPatterns,
+	getMtaStsPolicyFindings,
+	getMtaStsTxtFindings,
+	getTlsRptRecordFindings,
+	getUncoveredMxHostFindings,
+	shouldSummarizeMissingMailProtections,
+} from './mta-sts-analysis';
+
+/** Default HTTPS timeout (ms) */
+const HTTPS_TIMEOUT_MS = 4_000;
+
+/**
+ * Parse MX records from raw DNS response strings.
+ * MX data format: "priority exchange"
+ */
+function parseMxFromRaw(answers: string[]): Array<{ exchange: string }> {
+	return answers.map((answer) => {
+		const parts = answer.split(' ');
+		const exchange = (parts.slice(1).join(' ') || '').replace(/\.$/, '').toLowerCase();
+		return { exchange };
+	});
+}
+
+/**
+ * Check MTA-STS configuration for a domain.
+ * Queries _mta-sts.<domain> TXT records and optionally fetches the policy file.
+ */
+export async function checkMTASTS(
+	domain: string,
+	queryDNS: DNSQueryFunction,
+	options?: { timeout?: number; fetchFn?: FetchFunction },
+): Promise<CheckResult> {
+	const timeout = options?.timeout ?? 5000;
+	const fetchFn = options?.fetchFn;
+	let findings: Finding[] = [];
+
+	// Check for _mta-sts TXT record
+	let hasTxtRecord = false;
+	try {
+		const txtRecords = await queryDNS(`_mta-sts.${domain}`, 'TXT', { timeout });
+		const txtAnalysis = getMtaStsTxtFindings(txtRecords);
+		hasTxtRecord = txtAnalysis.hasTxtRecord;
+		findings.push(...finalizeMissingMtaStsRecordFinding(txtAnalysis.findings, domain));
+	} catch {
+		findings = [];
+		findings.push(createFinding('mta_sts', 'MTA-STS DNS query failed', 'low', `Could not query MTA-STS TXT record for ${domain}.`));
+	}
+
+	// Try to fetch the MTA-STS policy file (only if fetch function provided)
+	if (hasTxtRecord && fetchFn) {
+		try {
+			const policyUrl = `https://mta-sts.${domain}/.well-known/mta-sts.txt`;
+			const response = await fetchFn(policyUrl, {
+				method: 'GET',
+				redirect: 'manual',
+				signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
+			});
+
+			if ([301, 302, 303, 307, 308].includes(response.status)) {
+				findings.push(
+					createFinding(
+						'mta_sts',
+						'MTA-STS policy redirects',
+						'high',
+						`MTA-STS policy file at ${policyUrl} returned HTTP ${response.status} redirect. The policy must be served directly at the well-known URL without redirects.`,
+					),
+				);
+			} else if (!response.ok) {
+				findings.push(
+					createFinding(
+						'mta_sts',
+						'MTA-STS policy file not accessible',
+						'high',
+						`MTA-STS policy file at ${policyUrl} returned HTTP ${response.status}. The policy file must be accessible over HTTPS.`,
+					),
+				);
+			} else {
+				const MAX_BODY_BYTES = 65_536; // 64 KB — RFC 8461 max for MTA-STS
+				const contentLength = parseInt(response.headers?.get('content-length') ?? '0', 10);
+				if (contentLength > MAX_BODY_BYTES) {
+					findings.push(
+						createFinding(
+							'mta_sts',
+							'MTA-STS policy file oversized',
+							'high',
+							`MTA-STS policy file at ${policyUrl} exceeds 64 KB (Content-Length: ${contentLength}). This is abnormally large for an MTA-STS policy and was not fetched.`,
+						),
+					);
+				} else {
+					const body = await response.text();
+					if (body.length > MAX_BODY_BYTES) {
+						findings.push(
+							createFinding(
+								'mta_sts',
+								'MTA-STS policy file oversized',
+								'high',
+								`MTA-STS policy file at ${policyUrl} exceeds 64 KB. This is abnormally large for an MTA-STS policy and was not parsed.`,
+							),
+						);
+					} else {
+						findings.push(...getMtaStsPolicyFindings(body, policyUrl));
+
+						const policyMxPatterns = extractPolicyMxPatterns(body);
+						const modeMatch = body.match(/mode:\s*(enforce|testing|none)/i);
+						const policyMode = modeMatch ? modeMatch[1].toLowerCase() : '';
+						if (policyMxPatterns.length > 0 && (policyMode === 'enforce' || policyMode === 'testing')) {
+							try {
+								const mxAnswers = await queryDNS(domain, 'MX', { timeout });
+								const mxRecords = parseMxFromRaw(mxAnswers);
+								findings.push(
+									...getUncoveredMxHostFindings(mxRecords.map((mx) => mx.exchange), policyMxPatterns),
+								);
+							} catch {
+								// MX query failed; skip coverage cross-check.
+							}
+						}
+					}
+				}
+			}
+		} catch {
+			findings.push(
+				createFinding(
+					'mta_sts',
+					'MTA-STS policy fetch failed',
+					'medium',
+					`Could not fetch MTA-STS policy file from https://mta-sts.${domain}/.well-known/mta-sts.txt`,
+				),
+			);
+		}
+	}
+
+	// Check for TLSRPT record
+	let hasTlsRptRecord = false;
+	let tlsRptChecked = false;
+	try {
+		const tlsrptRecords = await queryDNS(`_smtp._tls.${domain}`, 'TXT', { timeout });
+		tlsRptChecked = true;
+		const tlsRptAnalysis = getTlsRptRecordFindings(tlsrptRecords);
+		hasTlsRptRecord = tlsRptAnalysis.hasTlsRptRecord;
+		findings.push(...finalizeMissingTlsRptRecordFinding(tlsRptAnalysis.findings, domain));
+	} catch {
+		tlsRptChecked = true;
+		findings.push(
+			createFinding(
+				'mta_sts',
+				'TLS-RPT DNS query failed',
+				'low',
+				`Could not query TLS-RPT TXT record for ${domain}.`,
+			),
+		);
+	}
+
+	// If no issues found
+	if (findings.length === 0) {
+		findings.push(
+			createFinding(
+				'mta_sts',
+				'MTA-STS properly configured',
+				'info',
+				`MTA-STS is properly configured for ${domain} with an accessible policy file.`,
+			),
+		);
+	}
+
+	// If both records are missing, add a clear summary and suppress duplicate findings
+	if (shouldSummarizeMissingMailProtections(findings, hasTxtRecord, tlsRptChecked, hasTlsRptRecord)) {
+		findings = [];
+		findings.push(
+			createFinding(
+				'mta_sts',
+				'No MTA-STS or TLS-RPT records found',
+				'medium',
+				`Neither MTA-STS nor TLS-RPT records are present for ${domain}. This is normal for domains that do not accept inbound email, but consider adding these records if you operate a mail server.`,
+			),
+		);
+	}
+
+	return buildCheckResult('mta_sts', findings);
+}
