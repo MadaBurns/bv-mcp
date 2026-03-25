@@ -166,12 +166,14 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 };
 
 /** Which categories trigger the critical gap ceiling per profile. */
+// DNSSEC added to all profiles per NIST SP 800-81r3 (mandatory control)
+// DANE_HTTPS added to web/non-mail profiles (certificate integrity)
 export const PROFILE_CRITICAL_CATEGORIES: Record<DomainProfile, CheckCategory[]> = {
-	mail_enabled: ['spf', 'dmarc', 'dkim', 'ssl'],
-	enterprise_mail: ['spf', 'dmarc', 'dkim', 'ssl'],
-	non_mail: ['ssl', 'http_security', 'subdomain_takeover'],
-	web_only: ['ssl', 'http_security', 'subdomain_takeover'],
-	minimal: ['ssl'],
+	mail_enabled: ['spf', 'dmarc', 'dkim', 'ssl', 'dnssec'],
+	enterprise_mail: ['spf', 'dmarc', 'dkim', 'ssl', 'dnssec'],
+	non_mail: ['ssl', 'dnssec', 'http_security', 'subdomain_takeover', 'dane_https'],
+	web_only: ['ssl', 'dnssec', 'http_security', 'subdomain_takeover', 'dane_https'],
+	minimal: ['ssl', 'dnssec'],
 };
 
 /** Whether a profile is eligible for the email bonus. */
