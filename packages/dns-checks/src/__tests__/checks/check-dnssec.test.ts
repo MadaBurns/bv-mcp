@@ -17,6 +17,8 @@ describe('checkDNSSEC', () => {
 		const result = await checkDNSSEC('example.com', queryDNS, { rawQueryDNS });
 		expect(result.category).toBe('dnssec');
 		expect(result.findings.some((f) => f.title === 'DNSSEC not enabled')).toBe(true);
+		expect(result.passed).toBe(false);
+		expect(result.score).toBe(0);
 	});
 
 	it('reports chain of trust incomplete when DNSKEY present but no DS', async () => {
