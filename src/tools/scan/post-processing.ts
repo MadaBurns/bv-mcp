@@ -37,6 +37,13 @@ export async function applyScanPostProcessing(
 		results = clarifyMtaStsForMailDomain(domain, results);
 	}
 
+	// Detect no-send SPF policy (v=spf1 -all with no authorizing mechanisms)
+	const spfResult = results.find((result) => result.category === 'spf');
+	const hasNoSendPolicy = spfResult?.findings.some((f) => f.metadata?.noSendPolicy === true) ?? false;
+	if (hasNoSendPolicy && !hasNoMx) {
+		results = adjustForNoSendDomain(results);
+	}
+
 	return addOutboundProviderInference(results, runtimeOptions);
 }
 
@@ -204,6 +211,24 @@ function adjustForNonMailDomain(results: CheckResult[], apexDmarcCovers: boolean
 					? 'expected — no MX records and parent domain DMARC policy covers subdomains'
 					: 'expected — domain has no MX records';
 				return { ...finding, severity: 'info' as const, detail: `${finding.detail} (${reason})` };
+			}
+			return finding;
+		});
+		return buildCheckResult(result.category, adjusted);
+	});
+}
+
+function adjustForNoSendDomain(results: CheckResult[]): CheckResult[] {
+	const noSendCategories: CheckCategory[] = ['dkim', 'mta_sts', 'bimi'];
+	return results.map((result) => {
+		if (!noSendCategories.includes(result.category)) return result;
+		const adjusted = result.findings.map((finding) => {
+			if ((finding.severity === 'critical' || finding.severity === 'high') && isMissingRecordFinding(finding)) {
+				return {
+					...finding,
+					severity: 'info' as const,
+					detail: `${finding.detail} (expected — domain SPF policy rejects all outbound mail)`,
+				};
 			}
 			return finding;
 		});
