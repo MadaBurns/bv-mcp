@@ -3,7 +3,7 @@
 /**
  * DNS Security Scoring Library
  *
- * Public scoring surface re-exporting the scoring model and scan aggregation engine.
+ * Public scoring surface re-exporting from @blackveil/dns-checks/scoring (single source of truth).
  */
 
 export {
@@ -14,27 +14,44 @@ export {
 	computeCategoryScore,
 	createFinding,
 	inferFindingConfidence,
-	type CategoryTier,
-	type CheckCategory,
-	type CheckResult,
-	type Finding,
-	type FindingConfidence,
-	type ScanScore,
-	type Severity,
-} from './scoring-model';
+	computeScanScore,
+	scoreToGrade,
+	IMPORTANCE_WEIGHTS,
+	CORE_WEIGHTS,
+	PROTECTIVE_WEIGHTS,
+	scoreIndicatesMissingControl,
+	detectDomainContext,
+	getProfileWeights,
+	PROFILE_WEIGHTS,
+	PROFILE_CRITICAL_CATEGORIES,
+	PROFILE_EMAIL_BONUS_ELIGIBLE,
+	DEFAULT_SCORING_CONFIG,
+	toImportanceRecord,
+	parseScoringConfig,
+} from '@blackveil/dns-checks/scoring';
 
-export { computeScanScore, scoreToGrade, IMPORTANCE_WEIGHTS, CORE_WEIGHTS, PROTECTIVE_WEIGHTS } from './scoring-engine';
-
-export { detectDomainContext, getProfileWeights, type DomainContext, type DomainProfile } from './context-profiles';
+export type {
+	CategoryTier,
+	CheckCategory,
+	CheckResult,
+	Finding,
+	FindingConfidence,
+	ScanScore,
+	Severity,
+	DomainContext,
+	DomainProfile,
+	ScoringConfig,
+} from '@blackveil/dns-checks/scoring';
 
 export {
 	adaptiveWeightsToContext,
 	generateScoringNote,
 	computeAdaptiveWeight,
 	blendWeights,
-	type AdaptiveWeightsResponse,
-	type ScanTelemetry,
-	type WeightBound,
 } from './adaptive-weights';
 
-export { parseScoringConfig, DEFAULT_SCORING_CONFIG, toImportanceRecord, type ScoringConfig } from './scoring-config';
+export type {
+	AdaptiveWeightsResponse,
+	ScanTelemetry,
+	WeightBound,
+} from './adaptive-weights';
