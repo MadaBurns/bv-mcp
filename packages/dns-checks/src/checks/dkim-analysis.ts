@@ -20,6 +20,7 @@ export type DkimKeyAnalysis = {
 };
 
 export function getDkimTagValue(record: string, tag: string): string | undefined {
+	if (!/^[a-zA-Z0-9]+$/.test(tag)) return undefined;
 	const match = record.match(new RegExp(`(?:^|;)\\s*${tag}=([^;]*)`, 'i'));
 	return match?.[1]?.trim();
 }
