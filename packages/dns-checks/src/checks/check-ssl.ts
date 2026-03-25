@@ -70,7 +70,7 @@ async function checkHttps(domain: string, fetchFn: FetchFunction, timeoutMs: num
 
 	} catch (err) {
 		const message = err instanceof Error && (err.message.includes('timeout') || err.message.includes('abort'))
-			? err.message
+			? 'Connection timeout'
 			: 'Connection failed';
 		findings.push(getHttpsErrorFinding(domain, message));
 	}
