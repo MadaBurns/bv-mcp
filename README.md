@@ -100,7 +100,7 @@ Full scope and limitations in the coverage table below.
 ## Tools
 
 ```
-  31 MCP tools · 7 prompts · 6 resources
+  33 MCP tools · 7 prompts · 6 resources
 
   Email Auth           Infrastructure        Brand & Threats       Meta
  ────────────         ────────────────       ─────────────────    ──────────────
@@ -542,7 +542,7 @@ Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/
       │
   ┌───▼──────────────────────┐
   │  Tool Handlers           │
-  │  14 checks in parallel   │
+  │  16 checks in parallel   │
   └───┬──────────────────────┘
       │
   ┌───▼──────────────────────┐
