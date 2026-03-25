@@ -55,7 +55,7 @@ export type DispatchMcpMethodResult =
 	| {
 			kind: 'early-error';
 			payload: ReturnType<typeof jsonRpcError>;
-			status: 200 | 429;
+			status: 200;
 			headers: Record<string, string>;
 	  };
 
