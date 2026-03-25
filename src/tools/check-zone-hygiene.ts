@@ -39,7 +39,7 @@ export async function checkZoneHygiene(domain: string, dnsOptions?: QueryDnsOpti
 
 		if (nameservers.length === 0) {
 			findings.push(
-				createFinding('zone_hygiene', 'No NS records found', 'medium', `No nameserver records were returned for ${domain}. Unable to perform zone consistency analysis.`),
+				createFinding('zone_hygiene', 'No NS records found', 'medium', `No nameserver records were returned for ${domain}. Unable to perform zone consistency analysis.`, { missingControl: true }),
 			);
 		} else {
 			// Query SOA record for the domain
@@ -47,7 +47,7 @@ export async function checkZoneHygiene(domain: string, dnsOptions?: QueryDnsOpti
 
 			if (soaRecords.length === 0) {
 				findings.push(
-					createFinding('zone_hygiene', 'No SOA record found', 'medium', `No SOA record was returned for ${domain}. Every zone must have exactly one SOA record.`),
+					createFinding('zone_hygiene', 'No SOA record found', 'medium', `No SOA record was returned for ${domain}. Every zone must have exactly one SOA record.`, { missingControl: true }),
 				);
 			} else {
 				const soa = parseSoaRecord(soaRecords[0]);
