@@ -53,9 +53,9 @@ describe('handleResourcesRead', () => {
 		expect(contents[0].text).toContain('DKIM');
 	});
 
-	it('scoring content mentions importance weights', () => {
+	it('scoring content mentions three-tier model', () => {
 		const { contents } = handleResourcesRead({ uri: 'dns-security://guides/scoring' });
-		expect(contents[0].text).toContain('Importance Weights');
+		expect(contents[0].text).toContain('Three-Tier Model');
 	});
 
 	it('record-types content mentions DNS record types', () => {
