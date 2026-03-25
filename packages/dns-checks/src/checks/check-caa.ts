@@ -46,6 +46,7 @@ export async function checkCAA(
 				'No CAA records',
 				'medium',
 				`No CAA records found for ${domain}. CAA records restrict which Certificate Authorities can issue certificates for your domain, preventing unauthorized issuance.`,
+				{ missingControl: true },
 			),
 		);
 		return buildCheckResult('caa', findings);
