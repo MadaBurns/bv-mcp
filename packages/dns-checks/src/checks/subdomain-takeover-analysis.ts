@@ -157,7 +157,7 @@ export async function scanSubdomainForTakeover(
 	try {
 		const cnameRecords = await queryDNS(fqdn, 'CNAME', { timeout });
 		for (const rawCname of cnameRecords) {
-			const cname = rawCname.replace(/\.$/, '').toLowerCase();
+			const cname = rawCname.replace(/\.$/, '').replace(/[\x00-\x1F\x7F]/g, '').toLowerCase();
 			if (!isThirdPartyTakeoverService(cname)) continue;
 
 			try {
