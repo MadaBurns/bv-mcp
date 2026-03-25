@@ -25,7 +25,9 @@ export type CheckCategory =
 	| 'dane'
 	| 'mx_reputation'
 	| 'srv'
-	| 'zone_hygiene';
+	| 'zone_hygiene'
+	| 'dane_https'
+	| 'svcb_https';
 
 /** Three-tier classification for check categories: core (critical baseline), protective (active risk mitigation), hardening (advanced posture). */
 export type CategoryTier = 'core' | 'protective' | 'hardening';
@@ -52,6 +54,8 @@ export const CATEGORY_TIERS: Record<CheckCategory, CategoryTier> = {
 	mx_reputation: 'hardening',
 	srv: 'hardening',
 	zone_hygiene: 'hardening',
+	dane_https: 'protective',
+	svcb_https: 'protective',
 };
 
 export interface Finding {
@@ -99,6 +103,8 @@ export const CATEGORY_DISPLAY_WEIGHTS: Record<CheckCategory, number> = {
 	mx_reputation: 0,
 	srv: 0,
 	zone_hygiene: 0,
+	dane_https: 0,
+	svcb_https: 0,
 };
 
 /** Severity penalty multipliers applied to the category score */

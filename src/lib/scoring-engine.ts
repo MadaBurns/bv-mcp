@@ -43,6 +43,8 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	mx_reputation: { importance: 0 },
 	srv: { importance: 0 },
 	zone_hygiene: { importance: 0 },
+	dane_https: { importance: 2 },
+	svcb_https: { importance: 1 },
 };
 
 /** Core-tier importance weights (SPF, DMARC, DKIM, DNSSEC, SSL). Used by the three-tier scoring formula. */
