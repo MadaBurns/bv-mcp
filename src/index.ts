@@ -22,7 +22,7 @@ import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
 import { normalizeHeaders, parseJsonRpcRequest, readRequestBody } from './mcp/request';
 import { createSession, deleteSession, validateSession, checkSessionCreateRateLimit } from './lib/session';
 import { unauthorizedResponse } from './lib/auth';
-import { sseEvent, acceptsSSE, createSseStream, createNotificationStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
+import { sseEvent, acceptsSSE, createNotificationStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
 import { createAnalyticsClient, hashForAnalytics } from './lib/analytics';
 import { detectMcpClient } from './lib/client-detection';
 import type { JsonRpcRequest } from './lib/json-rpc';
