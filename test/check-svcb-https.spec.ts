@@ -37,7 +37,8 @@ describe('checkSvcbHttps', () => {
 
 		const result = await run();
 		expect(result.category).toBe('svcb_https');
-		expect(result.passed).toBe(true); // low severity, score stays >= 50
+		expect(result.passed).toBe(false); // missingControl: true forces passed=false
+		expect(result.score).toBe(0);
 		const lowFinding = result.findings.find((f) => f.severity === 'low');
 		expect(lowFinding).toBeDefined();
 		expect(lowFinding!.title).toBe('No HTTPS record found');
