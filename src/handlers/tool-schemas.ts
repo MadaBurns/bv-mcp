@@ -152,6 +152,10 @@ export const TOOLS: McpTool[] = [
 					enum: ['auto', 'mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal'],
 					description: 'Scoring profile. Default "auto" detects.',
 				},
+				force_refresh: {
+					type: 'boolean',
+					description: 'Bypass cache and run a fresh scan. Useful after DNS changes.',
+				},
 				...FORMAT_PROPERTY,
 			},
 			required: ['domain'],
