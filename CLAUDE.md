@@ -166,6 +166,8 @@ Service binding fetch → POST /internal/tools/batch → guard middleware (rejec
 
 **Non-mail domain adjustment**: After all checks complete, if `check_mx` finds no MX records, `scan_domain` queries the parent domain's DMARC `sp=`/`p=` tag and then calls `adjustForNonMailDomain()` to downgrade critical/high email-auth findings (SPF, DMARC, DKIM, MTA-STS) to `info` severity. This significantly affects scores for non-mail domains.
 
+**No-send domain adjustment**: After all checks complete, if SPF has `noSendPolicy` metadata (indicating `v=spf1 -all` or `v=spf1 ~all` with no authorizing mechanisms), `applyScanPostProcessing()` calls `adjustForNoSendDomain()` to downgrade critical/high missing-record findings in DKIM, MTA-STS, and BIMI to `info` severity. This is separate from the non-mail adjustment (which triggers on missing MX). A domain can have MX records (for receiving) but still be a no-send domain.
+
 **Structured result output**: `scan_domain` returns MCP content blocks: (1) the human-readable text report via `formatScanReport()`, and (2) for non-interactive clients only, a machine-readable JSON block via `buildStructuredScanResult()` wrapped in `<!-- STRUCTURED_RESULT ... STRUCTURED_RESULT -->` comment delimiters. The structured block is conditionally omitted for known LLM IDE clients (Claude Code, Cursor, VS Code, etc.) to reduce context consumption. CI/CD consumers (e.g., `blackveil-dns-action`) still receive it via `mcp_remote`/unknown client types or the internal batch endpoint.
 
 ### Output format control
