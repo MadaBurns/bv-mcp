@@ -54,6 +54,16 @@ export function extractScanProfile(args: Record<string, unknown>): typeof VALID_
 	return normalized as typeof VALID_PROFILES[number];
 }
 
+/** Extract the optional force_refresh boolean parameter. */
+export function extractForceRefresh(args: Record<string, unknown>): boolean {
+	const force = args.force_refresh;
+	if (force === undefined || force === null) return false;
+	if (typeof force !== 'boolean') {
+		throw new Error('Invalid force_refresh: must be a boolean');
+	}
+	return force;
+}
+
 const VALID_GRADES = new Set(['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'E', 'F']);
 
 /** Extract and validate the optional baseline parameter for compare_baseline. */

@@ -106,10 +106,12 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		? `${CACHE_PREFIX}${domain}:profile:${explicitProfile}`
 		: `${CACHE_PREFIX}${domain}`;
 
-	// Check cache first
-	const cached = await cacheGet<ScanDomainResult>(cacheKey, kv);
-	if (cached) {
-		return { ...cached, cached: true };
+	// Check cache first (skip when force_refresh is requested)
+	if (!runtimeOptions?.forceRefresh) {
+		const cached = await cacheGet<ScanDomainResult>(cacheKey, kv);
+		if (cached) {
+			return { ...cached, cached: true };
+		}
 	}
 
 	// Run all checks in parallel with per-check timeouts, wrapped in an

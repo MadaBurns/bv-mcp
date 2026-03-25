@@ -34,7 +34,7 @@ import { assessSpoofability, formatSpoofability } from '../tools/assess-spoofabi
 import { checkResolverConsistency, formatResolverConsistency } from '../tools/check-resolver-consistency';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
-import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName } from './tool-args';
+import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName } from './tool-args';
 import type { OutputFormat } from './tool-args';
 import { logToolFailure, logToolSuccess } from './tool-execution';
 import { formatCheckResult, mcpError, mcpText } from './tool-formatters';
@@ -236,7 +236,8 @@ export async function handleToolsCall(
 			switch (name) {
 				case 'scan_domain': {
 					const profile = extractScanProfile(args);
-					const scanOptions = profile ? { ...runtimeOptions, profile } : runtimeOptions;
+					const forceRefresh = extractForceRefresh(args);
+					const scanOptions = { ...runtimeOptions, ...(profile && { profile }), ...(forceRefresh && { forceRefresh }) };
 					const result = await scanDomain(validDomain, scanCacheKV, scanOptions);
 					logResult = result.score.grade;
 					logDetails = result;
