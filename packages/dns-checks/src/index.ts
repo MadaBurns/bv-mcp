@@ -7,5 +7,24 @@
  * @module @blackveil/dns-checks
  */
 
-// Types (placeholder — will be populated in Task 2)
-export type {} from './types';
+// Types
+export type {
+	DNSQueryFunction,
+	CheckResult,
+	CheckCategory,
+	Finding,
+	Severity,
+	FindingConfidence,
+	CategoryTier,
+	ScanScore,
+} from './types';
+export { SEVERITY_PENALTIES, CATEGORY_TIERS, CATEGORY_DISPLAY_WEIGHTS } from './types';
+
+// Check utilities
+export {
+	createFinding,
+	buildCheckResult,
+	computeCategoryScore,
+	inferFindingConfidence,
+	sanitizeDnsData,
+} from './check-utils';
