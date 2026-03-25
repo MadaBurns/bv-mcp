@@ -75,15 +75,38 @@ export function computeCategoryScore(findings: Finding[]): number {
 	return Math.max(0, Math.min(100, score));
 }
 
+/** Regex for detecting missing control patterns in finding text. */
+const MISSING_CONTROL_REGEX = /(no\s+.+\s+record|missing|required|not\s+found)/i;
+
+/**
+ * Determine whether findings for a category indicate a fundamentally missing control.
+ * Requires both a missing-control text pattern AND deterministic/verified confidence
+ * to avoid false zeroing from heuristic checks (e.g., DKIM selector probing).
+ */
+export function scoreIndicatesMissingControl(findings: Finding[]): boolean {
+	return findings.some((f) => {
+		const isMissingPattern = MISSING_CONTROL_REGEX.test(f.detail) || MISSING_CONTROL_REGEX.test(f.title);
+		const confidence = (f.metadata?.confidence as string) ?? inferFindingConfidence(f);
+		return isMissingPattern
+			&& (f.severity === 'critical' || f.severity === 'high')
+			&& (confidence === 'deterministic' || confidence === 'verified');
+	});
+}
+
 /**
  * Build a CheckResult from a category and its findings.
+ * A check fails (passed=false) if the score is below 50, if findings indicate
+ * a fundamentally missing security control (e.g., no SPF/DMARC record), or if
+ * any finding carries explicit `missingControl: true` metadata.
  */
 export function buildCheckResult(category: CheckCategory, findings: Finding[]): CheckResult {
 	const normalizedFindings = findings.map(withConfidenceMetadata);
 	const score = computeCategoryScore(normalizedFindings);
+	const hasMissingControl = scoreIndicatesMissingControl(normalizedFindings)
+		|| normalizedFindings.some((f) => f.metadata?.missingControl === true);
 	return {
 		category,
-		passed: score >= 50,
+		passed: score >= 50 && !hasMissingControl,
 		score,
 		findings: normalizedFindings,
 	};

@@ -187,6 +187,7 @@ export function getTlsRptRecordFindings(records: string[]): { findings: Finding[
 					'TLS-RPT record missing',
 					'low',
 					'',
+					{ missingControl: true },
 				),
 			],
 			hasTlsRptRecord: false,
@@ -237,6 +238,7 @@ export function finalizeMissingTlsRptRecordFinding(findings: Finding[], domain: 
 					'TLS-RPT record missing',
 					'low',
 					`No TLS-RPT record found at _smtp._tls.${domain}. Consider adding a TLS-RPT record for reporting SMTP TLS issues.`,
+					{ missingControl: true },
 				)
 			: finding,
 	);
