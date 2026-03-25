@@ -252,22 +252,27 @@ describe('scoring-profiles', () => {
 			expect(coreSum).toBe(10);
 		});
 
-		it('PROFILE_CRITICAL_CATEGORIES excludes DNSSEC and subdomain_takeover for mail profiles', () => {
-			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).not.toContain('dnssec');
-			expect(PROFILE_CRITICAL_CATEGORIES.enterprise_mail).not.toContain('dnssec');
-			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).not.toContain('subdomain_takeover');
+		it('DNSSEC is critical in all profiles per NIST SP 800-81r3', () => {
+			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).toContain('dnssec');
+			expect(PROFILE_CRITICAL_CATEGORIES.enterprise_mail).toContain('dnssec');
+			expect(PROFILE_CRITICAL_CATEGORIES.non_mail).toContain('dnssec');
+			expect(PROFILE_CRITICAL_CATEGORIES.web_only).toContain('dnssec');
+			expect(PROFILE_CRITICAL_CATEGORIES.minimal).toContain('dnssec');
+		});
+
+		it('mail profiles include email auth + DNSSEC', () => {
 			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).toEqual(
-				expect.arrayContaining(['spf', 'dmarc', 'dkim', 'ssl'])
+				expect.arrayContaining(['spf', 'dmarc', 'dkim', 'ssl', 'dnssec'])
 			);
 		});
 
-		it('non_mail/web_only ceiling triggers include http_security', () => {
-			expect(PROFILE_CRITICAL_CATEGORIES.non_mail).toContain('http_security');
-			expect(PROFILE_CRITICAL_CATEGORIES.web_only).toContain('http_security');
+		it('non_mail/web_only include DANE_HTTPS for certificate integrity', () => {
+			expect(PROFILE_CRITICAL_CATEGORIES.non_mail).toContain('dane_https');
+			expect(PROFILE_CRITICAL_CATEGORIES.web_only).toContain('dane_https');
 		});
 
-		it('minimal ceiling triggers only ssl', () => {
-			expect(PROFILE_CRITICAL_CATEGORIES.minimal).toEqual(['ssl']);
+		it('minimal ceiling triggers ssl + dnssec', () => {
+			expect(PROFILE_CRITICAL_CATEGORIES.minimal).toEqual(['ssl', 'dnssec']);
 		});
 	});
 });
