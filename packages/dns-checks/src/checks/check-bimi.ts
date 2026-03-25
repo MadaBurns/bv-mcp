@@ -41,7 +41,7 @@ export async function checkBIMI(
 				createFinding(
 					'bimi',
 					'No BIMI record (DMARC not enforcing)',
-					'info',
+					'low',
 					`No BIMI record found at ${bimiDomain}. BIMI requires DMARC enforcement (p=quarantine or p=reject) before a BIMI record can be validated by mail clients. Set up DMARC enforcement first.`,
 					{ missingControl: true },
 				),
