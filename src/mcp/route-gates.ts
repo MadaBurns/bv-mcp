@@ -14,7 +14,25 @@ export async function buildControlPlaneRateLimitResponse(
 	accept?: string,
 	quotaCoordinator?: DurableObjectNamespace,
 ): Promise<Response | undefined> {
-	if (isAuthenticated || method === 'tools/call' || method.startsWith('notifications/') || method === 'sse/stream') return undefined;
+	// Exempt: authenticated users, tool calls (have their own rate limiter), notifications,
+	// SSE streams, and all read-only protocol methods. Protocol methods are idempotent and
+	// rate-limiting them causes mcp-remote reconnection storms to snowball — each reconnect
+	// burns 4 requests (initialize + tools/list + resources/list + prompts/list), hitting
+	// the 60/min control plane limit after ~15 cycles and creating a permanent dead connection.
+	if (
+		isAuthenticated ||
+		method === 'tools/call' ||
+		method.startsWith('notifications/') ||
+		method === 'sse/stream' ||
+		method === 'initialize' ||
+		method === 'tools/list' ||
+		method === 'resources/list' ||
+		method === 'resources/read' ||
+		method === 'prompts/list' ||
+		method === 'prompts/get' ||
+		method === 'ping'
+	)
+		return undefined;
 
 	const rateResult = await checkControlPlaneRateLimit(ip, kv, quotaCoordinator);
 	if (rateResult.allowed) return undefined;
