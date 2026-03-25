@@ -108,7 +108,7 @@ describe('adaptive-weights', () => {
 
 		it('applies critical mail floor for dmarc in mail_enabled', () => {
 			const b = WEIGHT_BOUNDS.mail_enabled.dmarc;
-			expect(b.min).toBe(Math.max(5, Math.floor(22 * 0.5))); // 11
+			expect(b.min).toBe(Math.max(5, Math.floor(16 * 0.5))); // 8
 		});
 
 		it('applies non-critical floor for ns in mail_enabled', () => {
@@ -231,8 +231,8 @@ describe('adaptive-weights', () => {
 			expect(result!.dmarc.importance).toBe(24);
 			expect(result!.spf.importance).toBe(12);
 			// Falls back to static for missing categories
-			expect(result!.dkim.importance).toBe(16);
-			expect(result!.ssl.importance).toBe(5);
+			expect(result!.dkim.importance).toBe(10);
+			expect(result!.ssl.importance).toBe(8);
 		});
 
 		it('returns null if any adaptive value is NaN', () => {
@@ -257,7 +257,7 @@ describe('adaptive-weights', () => {
 			const doWeights: Record<string, number> = {};
 			const result = adaptiveWeightsToContext(doWeights, 'enterprise_mail');
 			expect(result).not.toBeNull();
-			expect(result!.dmarc.importance).toBe(26); // enterprise_mail static (updated in three-tier)
+			expect(result!.dmarc.importance).toBe(18); // enterprise_mail static (rebalanced per NIST SP 800-81r3)
 			expect(result!.mta_sts.importance).toBe(4);
 		});
 	});
