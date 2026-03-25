@@ -27,7 +27,6 @@ export async function buildControlPlaneRateLimitResponse(
 		method === 'initialize' ||
 		method === 'tools/list' ||
 		method === 'resources/list' ||
-		method === 'resources/read' ||
 		method === 'prompts/list' ||
 		method === 'prompts/get' ||
 		method === 'ping'
