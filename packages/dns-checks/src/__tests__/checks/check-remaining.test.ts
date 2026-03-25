@@ -64,6 +64,8 @@ describe('checkCAA', () => {
 		const queryDNS = createMockDNS({ 'example.com': [] });
 		const result = await checkCAA('example.com', queryDNS);
 		expect(result.findings[0].title).toBe('No CAA records');
+		expect(result.passed).toBe(false);
+		expect(result.score).toBe(0);
 	});
 
 	it('returns info for properly configured CAA', async () => {
@@ -84,6 +86,8 @@ describe('checkMX', () => {
 		const queryDNS = createMockDNS({ 'example.com': [] });
 		const result = await checkMX('example.com', queryDNS);
 		expect(result.findings[0].title).toBe('No MX records found');
+		expect(result.passed).toBe(false);
+		expect(result.score).toBe(0);
 	});
 
 	it('detects null MX record', async () => {
@@ -124,6 +128,8 @@ describe('checkSVCBHTTPS', () => {
 		const queryDNS = createMockDNS({ 'example.com': [] });
 		const result = await checkSVCBHTTPS('example.com', queryDNS);
 		expect(result.findings[0].title).toBe('No HTTPS record found');
+		expect(result.passed).toBe(false);
+		expect(result.score).toBe(0);
 	});
 
 	it('detects H3 ALPN', async () => {
@@ -231,5 +237,7 @@ describe('checkMTASTS', () => {
 		});
 		const result = await checkMTASTS('example.com', queryDNS);
 		expect(result.findings.some((f) => f.title === 'No MTA-STS or TLS-RPT records found')).toBe(true);
+		expect(result.passed).toBe(false);
+		expect(result.score).toBe(0);
 	});
 });

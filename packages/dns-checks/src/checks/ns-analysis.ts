@@ -45,6 +45,7 @@ export function getNsVisibilityFinding(domain: string, domainResolves: boolean):
 		'No NS records found',
 		'critical',
 		`No nameserver records found for ${domain}. Without NS records, the domain cannot resolve.`,
+		{ missingControl: true },
 	);
 }
 

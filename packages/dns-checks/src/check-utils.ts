@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import type { CheckCategory, CheckResult, Finding, FindingConfidence, Severity } from './types';
-import { SEVERITY_PENALTIES } from './types';
+import type { CheckCategory, Finding, Severity } from './types';
+
+// Re-export scoring functions from the single source of truth (scoring/model.ts).
+// check-utils keeps createFinding + sanitizeDnsData locally because they apply
+// DNS-specific sanitization that differs from the generic scoring model version.
+export { buildCheckResult, computeCategoryScore, inferFindingConfidence } from './scoring/model';
 
 // ── Output sanitization (inlined from src/lib/output-sanitize.ts) ──────────
 
@@ -24,106 +28,6 @@ export function sanitizeDnsData(input: string): string {
 		.replace(DNS_DATA_UNSAFE, ' ')
 		.replace(/\s+/g, ' ')
 		.trim();
-}
-
-// ── Confidence inference ───────────────────────────────────────────────────
-
-function isExplicitConfidence(value: unknown): value is FindingConfidence {
-	return value === 'deterministic' || value === 'heuristic' || value === 'verified';
-}
-
-/**
- * Infer how strongly a finding can be trusted based on available evidence.
- * - verified: explicit proof (currently only supported on takeover checks)
- * - heuristic: signal-based or partial-evidence checks
- * - deterministic: direct record/protocol validation
- */
-export function inferFindingConfidence(finding: Finding): FindingConfidence {
-	const declared = finding.metadata?.confidence;
-	if (isExplicitConfidence(declared)) return declared;
-
-	if (finding.category === 'subdomain_takeover') {
-		const status = finding.metadata?.verificationStatus;
-		if (status === 'verified') return 'verified';
-		return 'heuristic';
-	}
-
-	const text = `${finding.title} ${finding.detail}`.toLowerCase();
-	if (
-		text.includes('common selectors') ||
-		text.includes('among tested selectors') ||
-		text.includes('inferred') ||
-		text.includes('manual review') ||
-		text.includes('possible') ||
-		text.includes('potential') ||
-		text.includes('could indicate')
-	) {
-		return 'heuristic';
-	}
-
-	return 'deterministic';
-}
-
-function withConfidenceMetadata(finding: Finding): Finding {
-	const confidence = inferFindingConfidence(finding);
-	return {
-		...finding,
-		metadata: {
-			...(finding.metadata ?? {}),
-			confidence,
-		},
-	};
-}
-
-// ── Score computation ──────────────────────────────────────────────────────
-
-/**
- * Compute the score for a single check category based on its findings.
- * Starts at 100 and deducts points based on finding severities.
- */
-export function computeCategoryScore(findings: Finding[]): number {
-	let score = 100;
-	for (const finding of findings) {
-		score -= SEVERITY_PENALTIES[finding.severity];
-	}
-	return Math.max(0, Math.min(100, score));
-}
-
-/** Regex for detecting missing control patterns in finding text. */
-const MISSING_CONTROL_REGEX = /(no\s+.+\s+record|missing|required|not\s+found)/i;
-
-/**
- * Determine whether findings indicate a fundamentally missing control.
- * Requires both a missing-control text pattern AND deterministic/verified confidence,
- * or explicit `missingControl: true` metadata.
- */
-function hasMissingControl(findings: Finding[]): boolean {
-	return findings.some((f) => {
-		if (f.metadata?.missingControl === true) return true;
-		const isMissingPattern = MISSING_CONTROL_REGEX.test(f.detail) || MISSING_CONTROL_REGEX.test(f.title);
-		const confidence = (f.metadata?.confidence as string) ?? inferFindingConfidence(f);
-		return isMissingPattern
-			&& (f.severity === 'critical' || f.severity === 'high')
-			&& (confidence === 'deterministic' || confidence === 'verified');
-	});
-}
-
-/**
- * Build a CheckResult from a category and its findings.
- * A check fails (passed=false) if the score is below 50, if findings indicate
- * a fundamentally missing security control, or if any finding carries explicit
- * `missingControl: true` metadata.
- */
-export function buildCheckResult(category: CheckCategory, findings: Finding[]): CheckResult {
-	const normalizedFindings = findings.map(withConfidenceMetadata);
-	const score = computeCategoryScore(normalizedFindings);
-	const passed = score >= 50 && !hasMissingControl(normalizedFindings);
-	return {
-		category,
-		passed,
-		score: passed ? score : 0,
-		findings: normalizedFindings,
-	};
 }
 
 /**
