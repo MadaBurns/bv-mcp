@@ -1,32 +1,33 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * Subdomain Takeover / Dangling CNAME Detection Tool
- * Scans known/active subdomains for orphaned CNAME records pointing to deleted/unresolved third-party services.
+ * Subdomain Takeover / Dangling CNAME Detection Tool.
+ * Thin wrapper around @blackveil/dns-checks — delegates all logic to the shared package.
  */
 
+import { checkSubdomainTakeover as checkSubdomainTakeoverPkg } from '@blackveil/dns-checks';
+import { queryDnsRecords, queryTxtRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
-import { type CheckResult, type Finding, buildCheckResult } from '../lib/scoring';
-import { KNOWN_SUBDOMAINS, getNoTakeoverFinding, scanSubdomainForTakeover } from './subdomain-takeover-analysis';
+import type { CheckResult } from '../lib/scoring';
+import { HTTPS_TIMEOUT_MS } from '../lib/config';
+
+function makeQueryDNS(dnsOptions?: QueryDnsOptions) {
+	return async (domain: string, type: string): Promise<string[]> => {
+		if (type === 'TXT') {
+			return queryTxtRecords(domain, dnsOptions);
+		}
+		return queryDnsRecords(domain, type as Parameters<typeof queryDnsRecords>[1], dnsOptions);
+	};
+}
 
 /**
  * Check for dangling CNAME records on known/active subdomains.
  * Flags orphaned records and potential takeover vectors.
  */
 export async function checkSubdomainTakeover(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
-	const findings: Finding[] = [];
-
-	const findingsPerSubdomain = await Promise.all(
-		KNOWN_SUBDOMAINS.map((subdomain) => scanSubdomainForTakeover(domain, subdomain, dnsOptions)),
-	);
-
-	for (const subdomainFindings of findingsPerSubdomain) {
-		findings.push(...subdomainFindings);
-	}
-
-	if (findings.length === 0) {
-		findings.push(getNoTakeoverFinding(domain));
-	}
-
-	return buildCheckResult('subdomain_takeover', findings);
+	return checkSubdomainTakeoverPkg(
+		domain,
+		makeQueryDNS(dnsOptions),
+		{ timeout: dnsOptions?.timeoutMs ?? HTTPS_TIMEOUT_MS, fetchFn: fetch },
+	) as Promise<CheckResult>;
 }
