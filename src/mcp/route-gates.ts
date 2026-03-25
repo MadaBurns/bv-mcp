@@ -50,7 +50,7 @@ export async function buildControlPlaneRateLimitResponse(
 			JSON_RPC_ERRORS.RATE_LIMITED,
 			`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
 		),
-		429,
+		200,
 		accept,
 		headers,
 		id != null ? String(id) : undefined,
