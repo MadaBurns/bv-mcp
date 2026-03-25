@@ -349,6 +349,99 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 			'If this domain should receive email, add MX records. If not, publish a null MX record per RFC 7505 to explicitly declare that.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc5321', 'https://datatracker.ietf.org/doc/html/rfc7505'],
 	},
+	DANE_HTTPS_PASS: {
+		title: 'DANE TLSA Configured for HTTPS',
+		severity: 'pass',
+		explanation:
+			'TLSA records at _443._tcp.{domain} pin the web server certificate to DNS, providing an additional layer of TLS trust beyond the CA system. Combined with DNSSEC, this prevents unauthorized CAs from issuing fraudulent certificates for the domain.',
+		recommendation: 'Maintain your DANE HTTPS configuration. Ensure TLSA records are updated whenever TLS certificates are renewed.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6698',
+			'https://datatracker.ietf.org/doc/html/rfc7671',
+		],
+	},
+	DANE_HTTPS_FAIL: {
+		title: 'No DANE TLSA for HTTPS',
+		severity: 'fail',
+		explanation:
+			'No TLSA records were found at _443._tcp.{domain}. DANE certificate pinning for HTTPS provides an additional trust anchor beyond the CA system, preventing unauthorized certificate issuance attacks.',
+		impact: 'Certificate issuance for this domain relies solely on the CA trust hierarchy.',
+		adverseConsequences:
+			'A compromised or rogue CA can issue a valid certificate for the domain, enabling MITM attacks that bypass standard browser trust checks.',
+		recommendation:
+			'Implement DANE-EE (usage 3) TLSA records at _443._tcp.{domain} and ensure DNSSEC is enabled. Use SHA-256 (matching type 1) or SHA-512 (matching type 2) for the certificate data hash.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6698',
+			'https://datatracker.ietf.org/doc/html/rfc7671',
+		],
+	},
+	DANE_HTTPS_WARNING: {
+		title: 'DANE HTTPS Configuration Warning',
+		severity: 'warning',
+		explanation:
+			'DANE TLSA records exist for the HTTPS endpoint but the configuration has issues that reduce their security value, such as DANE without DNSSEC or weak matching types.',
+		impact: 'DANE protection is partially effective but can be bypassed or subverted.',
+		adverseConsequences:
+			'Attackers may be able to spoof or modify TLSA records if DNSSEC is absent, negating the security benefit of DANE.',
+		recommendation:
+			'Enable DNSSEC on the domain and use DANE-EE (usage 3) with SHA-256 matching (type 1) for best security.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc6698',
+			'https://datatracker.ietf.org/doc/html/rfc7671',
+		],
+	},
+	DANE_HTTPS_INFO: {
+		title: 'DANE HTTPS Record Present',
+		severity: 'info',
+		explanation: 'A TLSA record is configured at _443._tcp.{domain}, enabling DANE certificate pinning for HTTPS.',
+		recommendation: 'Keep TLSA records synchronized with your TLS certificate. Automate renewal if possible.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc6698'],
+	},
+	SVCB_HTTPS_PASS: {
+		title: 'HTTPS Record Configured',
+		severity: 'pass',
+		explanation:
+			'HTTPS/SVCB records (RFC 9460) are present and advertise modern transport capabilities. This enables clients to negotiate HTTP/2 or HTTP/3 without an initial redirect and optionally distributes ECH parameters for privacy.',
+		recommendation: 'Maintain your HTTPS records. Consider enabling ECH for enhanced connection privacy.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc9460',
+			'https://datatracker.ietf.org/doc/html/rfc8446',
+		],
+	},
+	SVCB_HTTPS_FAIL: {
+		title: 'No HTTPS Record Found',
+		severity: 'fail',
+		explanation:
+			'No HTTPS record (type 65, RFC 9460) was found for this domain. HTTPS records advertise modern transport capabilities (ALPN, ECH) and allow clients to connect securely and efficiently without an initial redirect round-trip.',
+		impact: 'Clients cannot discover HTTP/2 or HTTP/3 support via DNS, requiring an additional round-trip.',
+		adverseConsequences:
+			'Connection setup is slower, privacy from ECH is unavailable, and the domain misses opportunities for TLS optimization.',
+		recommendation:
+			'Publish an HTTPS record with at minimum alpn="h2,h3" to enable HTTP/2 and HTTP/3 advertisement. If using Cloudflare or similar CDN, this may be automatically managed.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc9460',
+			'https://blog.cloudflare.com/speeding-up-https-and-http-3-negotiation-with-dns/',
+		],
+	},
+	SVCB_HTTPS_WARNING: {
+		title: 'HTTPS Record Configuration Warning',
+		severity: 'warning',
+		explanation:
+			'HTTPS records are present but the configuration is suboptimal — for example, no ALPN parameters or missing HTTP/2 support.',
+		impact: 'Clients cannot fully leverage the capabilities advertised in the HTTPS record.',
+		adverseConsequences:
+			'Performance benefits from SVCB are partially lost and ECH privacy may be unavailable.',
+		recommendation:
+			'Update HTTPS records to include alpn="h2,h3" and consider adding ECH parameters. Ensure alias mode targets also have valid HTTPS records.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc9460'],
+	},
+	SVCB_HTTPS_INFO: {
+		title: 'HTTPS Record Present',
+		severity: 'info',
+		explanation: 'An HTTPS/SVCB record is configured, advertising modern connection capabilities for this domain.',
+		recommendation: 'No action required. Consider adding ECH for enhanced privacy.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc9460'],
+	},
 };
 
 export const DEFAULT_EXPLANATION: ExplanationTemplate = {
@@ -370,6 +463,8 @@ export const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
 	caa: 'CAA',
 	mx: 'MX',
 	subdomain_takeover: 'SUBDOMAIN_TAKEOVER',
+	dane_https: 'DANE_HTTPS',
+	svcb_https: 'SVCB_HTTPS',
 };
 
 export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
@@ -412,6 +507,14 @@ export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
 	SUBDOMAIN_TAKEOVER: {
 		impact: 'An orphaned delegated subdomain may be claimable by an attacker.',
 		adverseConsequences: 'Users can be redirected to malicious content hosted under a trusted hostname.',
+	},
+	DANE_HTTPS: {
+		impact: 'HTTPS certificate pinning via DANE is absent or misconfigured, leaving TLS trust dependent solely on the CA system.',
+		adverseConsequences: 'A rogue or compromised CA can issue a fraudulent certificate, enabling undetected MITM attacks.',
+	},
+	SVCB_HTTPS: {
+		impact: 'Modern transport capabilities (ALPN, ECH) cannot be advertised via DNS, reducing connection efficiency and privacy.',
+		adverseConsequences: 'Clients require additional round-trips to negotiate protocols, and ECH-based privacy is unavailable.',
 	},
 };
 
