@@ -44,6 +44,8 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		ns: { importance: 2 },
 		lookalikes: { importance: 2 },
 		shadow_domains: { importance: 2 },
+		dane_https: { importance: 2 },
+		svcb_https: { importance: 1 },
 		// Hardening (all 0)
 		dane: { importance: 0 },
 		bimi: { importance: 0 },
@@ -69,6 +71,8 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		ns: { importance: 2 },
 		lookalikes: { importance: 2 },
 		shadow_domains: { importance: 2 },
+		dane_https: { importance: 2 },
+		svcb_https: { importance: 1 },
 		// Hardening (all 0)
 		dane: { importance: 0 },
 		bimi: { importance: 0 },
@@ -94,6 +98,8 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		ns: { importance: 3 },
 		lookalikes: { importance: 2 },
 		shadow_domains: { importance: 2 },
+		dane_https: { importance: 2 },
+		svcb_https: { importance: 1 },
 		// Hardening (all 0)
 		dane: { importance: 0 },
 		bimi: { importance: 0 },
@@ -119,6 +125,8 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		ns: { importance: 3 },
 		lookalikes: { importance: 2 },
 		shadow_domains: { importance: 2 },
+		dane_https: { importance: 2 },
+		svcb_https: { importance: 1 },
 		// Hardening (all 0)
 		dane: { importance: 0 },
 		bimi: { importance: 0 },
@@ -144,6 +152,8 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		ns: { importance: 1 },
 		lookalikes: { importance: 1 },
 		shadow_domains: { importance: 1 },
+		dane_https: { importance: 0 },
+		svcb_https: { importance: 0 },
 		// Hardening (all 0)
 		dane: { importance: 0 },
 		bimi: { importance: 0 },
