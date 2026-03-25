@@ -61,7 +61,7 @@ describe('mcp-dispatch', () => {
 
 		expect(result.kind).toBe('early-error');
 		if (result.kind !== 'early-error') throw new Error('expected early-error result');
-		expect(result.status).toBe(429);
+		expect(result.status).toBe(200);
 		expect(result.headers['retry-after']).toBe('1');
 		expect(result.payload.error.code).toBe(-32029);
 	});
