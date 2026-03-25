@@ -21,6 +21,16 @@ import {
 } from './spf-analysis';
 import { analyzeTrustSurface } from './spf-trust-surface';
 
+/** Detect no-send SPF policy: -all or ~all with zero authorizing mechanisms */
+function isNoSendPolicy(spf: string): boolean {
+	const allMatch = spf.match(/[+?~-]all/i);
+	if (!allMatch) return false;
+	const qualifier = allMatch[0][0];
+	if (qualifier !== '-' && qualifier !== '~') return false;
+	const hasAuthorizing = /\b(include:|a[:/\s]|a$|mx[:/\s]|mx$|ip4:|ip6:|redirect=|exists:)/i.test(spf);
+	return !hasAuthorizing;
+}
+
 interface TrustSurfaceDmarcContext {
 	corroboratedByWeakDmarc: boolean;
 	dmarcPolicy?: string;
@@ -109,11 +119,16 @@ export async function checkSPF(
 
 	const spf = spfRecords[0];
 	const spfSignals = extractSpfSignalDomains(spf);
-	const spfMetadata = {
+	const spfMetadata: Record<string, unknown> = {
 		signalType: 'spf',
 		includeDomains: spfSignals.includeDomains,
 		...(spfSignals.redirectDomain ? { redirectDomain: spfSignals.redirectDomain } : {}),
 	};
+
+	// Detect no-send policy (e.g., v=spf1 -all with no authorizing mechanisms)
+	if (isNoSendPolicy(spf)) {
+		spfMetadata.noSendPolicy = true;
+	}
 
 	// Check for redirect= — determines whether missing 'all' is an issue
 	const hasRedirect = /\bredirect=/i.test(spf);

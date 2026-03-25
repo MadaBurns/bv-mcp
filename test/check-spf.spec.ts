@@ -282,6 +282,56 @@ describe('checkSpf', () => {
 		expect(f!.metadata?.lookupCount).toBe(14);
 	});
 
+	it('should flag noSendPolicy metadata for v=spf1 -all', async () => {
+		mockTxtRecords(['v=spf1 -all']);
+		const result = await run();
+		expect(result.passed).toBe(true);
+		const infoFinding = result.findings.find((f) => f.title === 'SPF record configured');
+		expect(infoFinding).toBeDefined();
+		expect(infoFinding!.metadata?.noSendPolicy).toBe(true);
+	});
+
+	it('should flag noSendPolicy metadata for v=spf1 ~all with no mechanisms', async () => {
+		mockTxtRecords(['v=spf1 ~all']);
+		const result = await run();
+		const findings = result.findings.filter((f) => f.metadata?.noSendPolicy === true);
+		expect(findings.length).toBeGreaterThan(0);
+	});
+
+	it('should NOT flag noSendPolicy when include mechanisms exist', async () => {
+		mockMultiDomainTxt({
+			'example.com': ['v=spf1 include:_spf.google.com -all'],
+			'_spf.google.com': ['v=spf1 ip4:209.85.128.0/17 ~all'],
+		});
+		const result = await run();
+		const noSendFindings = result.findings.filter((f) => f.metadata?.noSendPolicy === true);
+		expect(noSendFindings).toHaveLength(0);
+	});
+
+	it('should NOT flag noSendPolicy for +all or ?all', async () => {
+		mockTxtRecords(['v=spf1 +all']);
+		const result = await run();
+		const noSendFindings = result.findings.filter((f) => f.metadata?.noSendPolicy === true);
+		expect(noSendFindings).toHaveLength(0);
+	});
+
+	it('should NOT flag noSendPolicy when redirect= exists', async () => {
+		mockMultiDomainTxt({
+			'example.com': ['v=spf1 redirect=_spf.other.com'],
+			'_spf.other.com': ['v=spf1 -all'],
+		});
+		const result = await run();
+		const noSendFindings = result.findings.filter((f) => f.metadata?.noSendPolicy === true);
+		expect(noSendFindings).toHaveLength(0);
+	});
+
+	it('should NOT flag noSendPolicy when ip4/ip6/a/mx mechanisms exist', async () => {
+		mockTxtRecords(['v=spf1 ip4:192.168.1.0/24 -all']);
+		const result = await run();
+		const noSendFindings = result.findings.filter((f) => f.metadata?.noSendPolicy === true);
+		expect(noSendFindings).toHaveLength(0);
+	});
+
 	it('handles failed nested DNS queries gracefully', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
 			const u = new URL(typeof url === 'string' ? url : url.toString());
