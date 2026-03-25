@@ -37,7 +37,7 @@ Active defenses against known attack vectors. Findings penalize but cannot trigg
 
 ### Hardening (10% of score)
 
-Bonus-only defense-in-depth. Each passed category adds ~1.4 points. Never subtracts from the overall score.
+Bonus-only defense-in-depth. Each passed category adds ~1.4 points. Never subtracts from the overall score. Uses `result.passed` (not raw score) to determine pass/fail — this means checks with `missingControl: true` metadata or `scoreIndicatesMissingControl()` detection do not contribute hardening bonus even if their numeric score is >= 50.
 
 Categories: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene.
 
@@ -53,19 +53,25 @@ Category score formula starts at `100` and deducts per finding:
 - Low: `-5`
 - Info: `0`
 
-Source: `SEVERITY_PENALTIES` in `src/lib/scoring-model.ts`.
+Source: `SEVERITY_PENALTIES` in `packages/dns-checks/src/types.ts` (re-exported via `src/lib/scoring.ts`).
 
-## Missing-Control Rule (Confidence Gate)
+## Missing-Control Rule
 
-For Core categories, findings that indicate missing required controls can force effective category contribution to `0`. This only applies when the finding confidence is `deterministic` or `verified`. Heuristic findings (e.g., DKIM selector probing that returns no results) do not trigger the missing-control rule.
+Two mechanisms detect missing controls and set `passed = false` in `buildCheckResult`:
 
-Source: `scoreIndicatesMissingControl()` in `src/lib/scoring-engine.ts`.
+1. **Confidence-gated detection** (`scoreIndicatesMissingControl()`): For findings matching missing-control text patterns (e.g., "no … record", "missing", "not found") with `critical`/`high` severity and `deterministic`/`verified` confidence. This prevents heuristic findings (e.g., DKIM selector probing) from falsely zeroing core categories.
+
+2. **Explicit metadata** (`missingControl: true`): For hardening-tier checks where the control is absent but severity is below the confidence gate threshold (info/low/medium). Used by BIMI (no record or record present but DMARC not enforcing), DANE (no TLSA records), and TLS-RPT (record missing).
+
+In the Core tier, `scoreIndicatesMissingControl()` zeros the category's weighted contribution. In the Hardening tier, `result.passed` determines whether a category contributes bonus points — checks with either detection active do not contribute.
+
+Source: `scoreIndicatesMissingControl()` and `buildCheckResult()` in `packages/dns-checks/src/scoring/model.ts`.
 
 ## Critical Gap Ceiling
 
 Domains missing any critical foundational control are capped at a maximum overall score. The ceiling is applied after all other scoring.
 
-Source: `CRITICAL_GAP_CEILING` and `computeScanScore()` in `src/lib/scoring-engine.ts`.
+Source: `thresholds.criticalGapCeiling` in `packages/dns-checks/src/scoring/config.ts` and `computeScanScore()` in `packages/dns-checks/src/scoring/engine.ts`.
 
 ## Critical Finding Penalty
 
@@ -74,7 +80,7 @@ If any **verified**-confidence critical finding exists across the scan, an addit
 - Verified critical present: `-15` overall points
 - No verified critical findings: `0` additional penalty
 
-Source: `CRITICAL_OVERALL_PENALTY` and `computeScanScore()` in `src/lib/scoring-engine.ts`.
+Source: `thresholds.criticalOverallPenalty` in `packages/dns-checks/src/scoring/config.ts` and `computeScanScore()` in `packages/dns-checks/src/scoring/engine.ts`.
 
 ## Email Bonus
 
@@ -90,7 +96,7 @@ DMARC score determines bonus tier:
 - DMARC `>= 70`: `+3`
 - Otherwise: `+2`
 
-Source: `EMAIL_BONUS_IMPORTANCE`, `SPF_STRONG_THRESHOLD`, and bonus logic in `computeScanScore()`.
+Source: `thresholds.emailBonusFull`/`emailBonusMid`/`emailBonusPartial`, `thresholds.spfStrongThreshold` in `packages/dns-checks/src/scoring/config.ts` and bonus logic in `computeScanScore()`.
 
 ## Provider-Informed DKIM
 
@@ -123,7 +129,7 @@ Source: `computeProviderConfidenceModifier()` and `computeScanScore()` in `src/l
 - D: `50-55`
 - F: `<50`
 
-Source: `scoreToGrade()` in `src/lib/scoring.ts`.
+Source: `scoreToGrade()` in `packages/dns-checks/src/scoring/engine.ts` (re-exported via `src/lib/scoring.ts`).
 
 ## Scoring Profiles
 

@@ -146,6 +146,7 @@ export function classifyDanePresence(hasMxTlsa: boolean, hasHttpsTlsa: boolean):
 				'No DANE TLSA for MX servers',
 				'medium',
 				'No TLSA records found for MX server SMTP ports (_25._tcp). DANE pins TLS certificates to DNS, preventing CA misissuance attacks on email delivery.',
+				{ missingControl: true },
 			),
 		);
 	}
@@ -157,6 +158,7 @@ export function classifyDanePresence(hasMxTlsa: boolean, hasHttpsTlsa: boolean):
 				'No DANE TLSA for HTTPS',
 				'low',
 				'No TLSA record found for HTTPS endpoint (_443._tcp). DANE can pin web server certificates to DNS, providing an additional layer of trust beyond the CA system.',
+				{ missingControl: true },
 			),
 		);
 	}
