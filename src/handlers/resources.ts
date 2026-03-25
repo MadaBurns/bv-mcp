@@ -67,23 +67,25 @@ const RESOURCES: McpResource[] = [
 const RESOURCE_CONTENT: Record<string, string> = {
 	'dns-security://guides/security-checks': `# DNS Security Checks
 
-22 tools covering **57+ checks** across 20 categories.
+22 check tools covering **80+ checks** across 22 categories.
 
 ## Tool -> Category Mapping
 
 | Tool | Category | What It Checks |
 |------|----------|---------------|
-| \`check_spf\` | SPF | Policy, syntax, mechanism quality, lookup limits, strictness |
+| \`check_spf\` | SPF | Policy, syntax, mechanism quality, lookup limits, trust surface |
 | \`check_dmarc\` | DMARC | Enforcement, rua/ruf URIs, alignment, subdomain policy, aggregator detection |
 | \`check_dkim\` | DKIM | Selector discovery, RSA key strength (512-4096 bit), v=DKIM1 tags |
-| \`check_dnssec\` | DNSSEC | AD validation, signed-zone posture |
-| \`check_ssl\` | SSL/TLS | Certificate presence, validity, health |
+| \`check_dnssec\` | DNSSEC | AD validation, DNSKEY/DS records, algorithm strength |
+| \`check_ssl\` | SSL/TLS | HTTPS reachability, HSTS policy |
 | \`check_mta_sts\` | MTA-STS | TXT policy presence, policy retrieval |
 | \`check_ns\` | NS | Delegation resilience, provider diversity |
 | \`check_caa\` | CAA | CA authorization, issuance restrictions |
 | \`check_mx\` | MX | MX presence, routing quality, provider detection |
 | \`check_http_security\` | HTTP Security | CSP, X-Frame-Options, COOP, CORP, Permissions-Policy |
-| \`check_dane\` | DANE | TLSA records for MX and HTTPS |
+| \`check_dane\` | DANE | TLSA records for MX SMTP ports |
+| \`check_dane_https\` | DANE HTTPS | TLSA records for HTTPS endpoints |
+| \`check_svcb_https\` | SVCB HTTPS | HTTPS/SVCB records (RFC 9460) |
 | \`check_shadow_domains\` | Shadow Domains | Alternate-TLD variants, email spoofing risk |
 | \`check_txt_hygiene\` | TXT Hygiene | Stale verifications, SaaS exposure |
 | \`check_mx_reputation\` | MX Reputation | DNSBL lookups, PTR/FCrDNS validation |
@@ -96,24 +98,20 @@ const RESOURCE_CONTENT: Record<string, string> = {
 
 ## Composite Tools
 
-- **\`scan_domain\`** - 14 checks in parallel, returns score + grade + prioritized findings
+- **\`scan_domain\`** - 16 checks in parallel, returns score + grade + prioritized findings
 - **\`explain_finding\`** - plain-language context + remediation for any finding
 - **\`compare_baseline\`** - pass/fail against minimum security standards
 `,
 
 	'dns-security://guides/scoring': `# Scoring Methodology
 
-Weighted importance scoring, not a flat average. Each category starts at 100, reduced by severity penalties.
+Three-tier weighted scoring. Each category starts at 100, reduced by severity penalties.
 
-## Importance Weights
+## Three-Tier Model
 
-| Category | Weight | Category | Weight |
-|----------|-------:|----------|-------:|
-| DMARC | 22 | SPF | 19 |
-| DKIM | 10 | SSL/TLS | 8 |
-| DNSSEC | 3 | MTA-STS | 3 |
-| NS | 3 | CAA | 2 |
-| Subdomain Takeover | 2 | MX | 0 (info) |
+**Core (70%):** DMARC (16), DKIM (10), SPF (10), DNSSEC (8), SSL (8)
+**Protective (20%):** Subdomain Takeover (3), HTTP Security (3), MTA-STS (2), MX (2), DANE HTTPS (2), TLS-RPT (1), DANE (1)
+**Hardening (10%):** BIMI, CAA, NS, Lookalikes, Shadow Domains, TXT Hygiene, MX Reputation, SRV, Zone Hygiene, SVCB HTTPS — bonus-only, never subtracts.
 
 Email bonus: up to **+5 pts** for strong SPF+DKIM+DMARC.
 
@@ -123,12 +121,12 @@ Critical: -40 | High: -25 | Medium: -15 | Low: -5 | Info: 0
 
 ## Special Rules
 
-- **Missing control** -> category contribution zeroed
+- **Missing control** -> category contribution zeroed (Core tier, deterministic/verified confidence only)
 - **Verified critical finding** -> additional **-15 overall** penalty
 
 ## Grades
 
-A+: 90+ | A: 85-89 | B+: 80-84 | B: 75-79 | C+: 70-74 | C: 65-69 | D+: 60-64 | D: 55-59 | E: 50-54 | F: <50
+A+: 92+ | A: 87-91 | B+: 82-86 | B: 76-81 | C+: 70-75 | C: 63-69 | D+: 56-62 | D: 50-55 | F: <50
 `,
 
 	'dns-security://guides/agent-workflows': `# Agent Workflow Guide
