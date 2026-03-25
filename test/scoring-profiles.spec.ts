@@ -164,11 +164,11 @@ describe('scoring-profiles', () => {
 	});
 
 	describe('scoring v2 profile weights', () => {
-		it('mail_enabled core weights sum to 60', () => {
+		it('mail_enabled core weights sum to 52', () => {
 			const core = PROFILE_WEIGHTS.mail_enabled;
 			const coreSum = (['spf', 'dmarc', 'dkim', 'dnssec', 'ssl'] as const)
 				.reduce((sum, k) => sum + core[k].importance, 0);
-			expect(coreSum).toBe(60);
+			expect(coreSum).toBe(52);
 		});
 
 		it('mail_enabled protective weights sum to 20', () => {
@@ -185,11 +185,11 @@ describe('scoring-profiles', () => {
 			}
 		});
 
-		it('enterprise_mail core weights sum to 68', () => {
+		it('enterprise_mail core weights sum to 58', () => {
 			const core = PROFILE_WEIGHTS.enterprise_mail;
 			const coreSum = (['spf', 'dmarc', 'dkim', 'dnssec', 'ssl'] as const)
 				.reduce((sum, k) => sum + core[k].importance, 0);
-			expect(coreSum).toBe(68);
+			expect(coreSum).toBe(58);
 		});
 
 		it('web_only zeroes email auth core weights', () => {
@@ -200,11 +200,11 @@ describe('scoring-profiles', () => {
 			expect(p.ssl.importance).toBeGreaterThan(0);
 		});
 
-		it('non_mail core weights sum to 23', () => {
+		it('non_mail core weights sum to 21', () => {
 			const core = PROFILE_WEIGHTS.non_mail;
 			const coreSum = (['spf', 'dmarc', 'dkim', 'dnssec', 'ssl'] as const)
 				.reduce((sum, k) => sum + core[k].importance, 0);
-			expect(coreSum).toBe(23);
+			expect(coreSum).toBe(21);
 		});
 
 		it('minimal core weights sum to 10', () => {
