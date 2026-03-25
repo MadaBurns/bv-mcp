@@ -120,7 +120,7 @@ describe('checkHttpSecurity', () => {
 		});
 		const result = await run();
 		// high(-25) + medium(-15) + 3*low(-5) + 2*info(0) = -55 → score = 45
-		expect(result.score).toBe(0);
+		expect(result.score).toBe(45);
 		expect(result.passed).toBe(false);
 	});
 
