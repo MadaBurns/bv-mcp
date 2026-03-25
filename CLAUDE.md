@@ -138,7 +138,7 @@ Service binding fetch → POST /internal/tools/batch → guard middleware (rejec
 
 ### scan_domain orchestration
 
-`scan_domain` runs **14 checks** in parallel via `Promise.allSettled`: SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, BIMI, TLS-RPT, subdomain takeover, HTTP security, DANE, and MX. Each has its own cache key (`cache:<domain>:check:<name>`), plus a top-level `cache:<domain>` key for the full scan result. Results are cached for 5 minutes. After scoring, `computeMaturityStage()` classifies the domain into a maturity stage (0-4: Unprotected → Hardened) based on SPF/DMARC/MTA-STS/DNSSEC presence and enforcement. Stage 3 (Enforcing) does not require DKIM. Stage 4 (Hardened) hardening signals include CAA and DKIM-discovered (in addition to BIMI/DANE/MTA-STS strict).
+`scan_domain` runs **16 checks** in parallel via `Promise.allSettled`: SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, BIMI, TLS-RPT, subdomain takeover, HTTP security, DANE, and MX. Each has its own cache key (`cache:<domain>:check:<name>`), plus a top-level `cache:<domain>` key for the full scan result. Results are cached for 5 minutes. After scoring, `computeMaturityStage()` classifies the domain into a maturity stage (0-4: Unprotected → Hardened) based on SPF/DMARC/MTA-STS/DNSSEC presence and enforcement. Stage 3 (Enforcing) does not require DKIM. Stage 4 (Hardened) hardening signals include CAA and DKIM-discovered (in addition to BIMI/DANE/MTA-STS strict).
 
 **Partial results on timeout**: When the 12s scan timeout fires, completed checks are preserved and missing checks receive a timeout finding. This avoids discarding work from checks that finished in 1-2s. Individual per-check timeouts are 8s. In scan context, secondary DNS confirmation (Google DNS fallback for empty results) is skipped for speed — individual checks retain it for accuracy.
 
@@ -328,7 +328,7 @@ All scoring weights, thresholds, grade boundaries, and baseline failure rates ar
 
 ```jsonc
 {
-  "weights": { "spf": 10, "dmarc": 22, ... },           // base importance weights
+  "weights": { "spf": 10, "dmarc": 16, ... },           // base importance weights
   "profileWeights": {                                     // per-profile weight overrides
     "enterprise_mail": { "dmarc": 30, ... }
   },
