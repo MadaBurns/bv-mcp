@@ -3,7 +3,7 @@
 import { JSON_RPC_ERRORS, jsonRpcError } from '../lib/json-rpc';
 import type { JsonRpcRequest } from '../lib/json-rpc';
 
-type RequestErrorStatus = 400 | 413;
+type RequestErrorStatus = 400 | 413 | 415;
 
 export interface ParsedJsonRpcRequestResult {
 	ok: boolean;
@@ -42,6 +42,25 @@ export function normalizeHeaders(headers: Headers): Record<string, string> {
 		normalized[key.toLowerCase()] = value;
 	});
 	return normalized;
+}
+
+/**
+ * Validate Content-Type for JSON-RPC POST requests.
+ * Accepts: application/json (with optional params like charset), or missing Content-Type (client compat).
+ * Rejects: text/plain, application/xml, multipart/form-data, etc. with 415 Unsupported Media Type.
+ */
+export function validateContentType(contentType: string | undefined | null): RequestBodyReadResult | undefined {
+	// Missing Content-Type: allow for client compatibility (some MCP clients omit it)
+	if (!contentType) return undefined;
+
+	const mediaType = contentType.split(';')[0].trim().toLowerCase();
+	if (mediaType === 'application/json') return undefined;
+
+	return {
+		ok: false,
+		status: 415,
+		payload: jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Unsupported Media Type: Content-Type must be application/json'),
+	};
 }
 
 export async function readRequestBody(request: Request, maxBytes: number): Promise<RequestBodyReadResult> {
