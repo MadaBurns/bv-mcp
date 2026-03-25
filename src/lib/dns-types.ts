@@ -16,6 +16,7 @@ export const RecordType = {
 	RRSIG: 46,
 	PTR: 12,
 	SRV: 33,
+	HTTPS: 65,
 } as const;
 
 export type RecordTypeName = keyof typeof RecordType;
