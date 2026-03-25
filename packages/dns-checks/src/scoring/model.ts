@@ -99,5 +99,11 @@ export function createFinding(
 	detail: string,
 	metadata?: Record<string, unknown>,
 ): Finding {
-	return { category, title, severity, detail, ...(metadata ? { metadata } : {}) };
+	// Sanitize detail to strip control characters and unsafe markdown/HTML chars
+	const sanitized = detail
+		.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+		.replace(/[`[\]<>]/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+	return { category, title, severity, detail: sanitized, ...(metadata ? { metadata } : {}) };
 }
