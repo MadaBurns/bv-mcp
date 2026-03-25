@@ -104,10 +104,11 @@ export function buildCheckResult(category: CheckCategory, findings: Finding[]): 
 	const score = computeCategoryScore(normalizedFindings);
 	const hasMissingControl = scoreIndicatesMissingControl(normalizedFindings)
 		|| normalizedFindings.some((f) => f.metadata?.missingControl === true);
+	const passed = score >= 50 && !hasMissingControl;
 	return {
 		category,
-		passed: score >= 50 && !hasMissingControl,
-		score,
+		passed,
+		score: passed ? score : 0,
 		findings: normalizedFindings,
 	};
 }
