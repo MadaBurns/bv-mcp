@@ -73,6 +73,7 @@ export async function checkSVCBHTTPS(
 				'No HTTPS record found',
 				'low',
 				`No HTTPS (type 65) record found at ${domain}. HTTPS records (RFC 9460) advertise modern transport capabilities (ALPN, ECH) and enable clients to connect securely without an initial redirect round-trip. Consider publishing an HTTPS record with h2 and h3 ALPN support.`,
+				{ missingControl: true },
 			),
 		);
 		return buildCheckResult('svcb_https', findings);
