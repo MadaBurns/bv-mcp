@@ -29,6 +29,8 @@ const USAGE_LABELS: Record<number, string> = {
  */
 export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: boolean): Finding[] {
 	const findings: Finding[] = [];
+	const seenDaneWithoutDnssec = new Set<string>();
+	let validRecordCount = 0;
 
 	for (const record of records) {
 		const parsed = parseTlsaRecord(record);
@@ -86,8 +88,9 @@ export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: b
 			continue;
 		}
 
-		// DANE-EE (3) and DANE-TA (2) require DNSSEC for security
-		if ((parsed.usage === 2 || parsed.usage === 3) && !hasDnssec) {
+		// DANE-EE (3) and DANE-TA (2) require DNSSEC for security — deduplicate per host
+		if ((parsed.usage === 2 || parsed.usage === 3) && !hasDnssec && !seenDaneWithoutDnssec.has(name)) {
+			seenDaneWithoutDnssec.add(name);
 			const usageLabel = USAGE_LABELS[parsed.usage] ?? `usage ${parsed.usage}`;
 			findings.push(
 				createFinding(
@@ -113,16 +116,18 @@ export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: b
 			);
 		}
 
-		// Valid DANE record found
-		const usageLabel = USAGE_LABELS[parsed.usage] ?? `usage ${parsed.usage}`;
+		// Count valid DANE records for consolidated info finding
+		validRecordCount++;
+	}
+
+	// Emit a single consolidated info finding for all valid TLSA records
+	if (validRecordCount > 0) {
+		const detail =
+			validRecordCount === 1
+				? `Valid TLSA record configured for ${name}.`
+				: `${validRecordCount} DANE TLSA records configured for ${name}.`;
 		findings.push(
-			createFinding(
-				'dane',
-				`DANE TLSA configured for ${name}`,
-				'info',
-				`Valid TLSA record: ${usageLabel}, selector ${parsed.selector}, matching type ${parsed.matchingType}.`,
-				{ usage: parsed.usage, selector: parsed.selector, matchingType: parsed.matchingType, name },
-			),
+			createFinding('dane', `DANE TLSA configured for ${name}`, 'info', detail, { name, validRecordCount }),
 		);
 	}
 
