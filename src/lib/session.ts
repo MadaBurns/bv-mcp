@@ -15,6 +15,8 @@ import {
 	createSessionInMemory,
 	deleteSessionInMemory,
 	resetSessions,
+	SESSION_CREATE_LIMIT_PER_MINUTE,
+	SESSION_CREATE_WINDOW_MS,
 	SESSION_REFRESH_INTERVAL_MS,
 	SESSION_TTL_MS,
 	type SessionCreateRateResult,
@@ -28,8 +30,6 @@ import { logError } from './log';
 export { ACTIVE_SESSIONS, resetSessions, SESSION_REFRESH_INTERVAL_MS, SESSION_TTL_MS };
 
 const SESSION_TTL_SECONDS = Math.ceil(SESSION_TTL_MS / 1000);
-const SESSION_CREATE_WINDOW_MS = 60_000;
-const SESSION_CREATE_LIMIT_PER_MINUTE = 30;
 
 const SESSION_KEY_PREFIX = 'session:';
 const SESSION_CREATE_RATE_KEY_PREFIX = 'rl:session-create';
@@ -111,6 +111,13 @@ async function readSessionKVRecord(id: string, kv: KVNamespace): Promise<Session
 	};
 }
 
+const SESSION_ID_PATTERN = /^[0-9a-f]{64}$/;
+
+/** Validate that a session ID matches the expected format (64 lowercase hex chars) */
+export function isValidSessionIdFormat(id: string): boolean {
+	return SESSION_ID_PATTERN.test(id);
+}
+
 /** Generate a cryptographically secure session ID (hex, visible ASCII) */
 export function generateSessionId(): string {
 	const bytes = new Uint8Array(32);
@@ -144,6 +151,9 @@ export async function createSession(kv?: KVNamespace): Promise<string> {
 
 /** Check whether a session ID exists in the active sessions store */
 export async function validateSession(id: string, kv?: KVNamespace): Promise<boolean> {
+	// Reject malformed session IDs before any storage lookup
+	if (!isValidSessionIdFormat(id)) return false;
+
 	// Check in-memory first (same-isolate fast path, avoids KV replication lag)
 	const inMemoryRecord = ACTIVE_SESSIONS.get(id);
 	if (inMemoryRecord) {
@@ -182,8 +192,9 @@ export async function validateSession(id: string, kv?: KVNamespace): Promise<boo
 			}
 
 			// Hydrate into local in-memory cache for subsequent same-isolate requests,
-			// preserving the original createdAt from KV (not resetting to now)
-			ACTIVE_SESSIONS.set(id, { createdAt: record.createdAt, lastAccessedAt: record.lastAccessedAt });
+			// preserving the original createdAt from KV (not resetting to now).
+			// Use fresh lastAccessedAt since this IS a valid access (avoid stale KV value).
+			ACTIVE_SESSIONS.set(id, { createdAt: record.createdAt, lastAccessedAt: now });
 
 			if (now - record.lastAccessedAt >= SESSION_REFRESH_INTERVAL_MS) {
 				record.lastAccessedAt = now;
@@ -204,17 +215,18 @@ export async function validateSession(id: string, kv?: KVNamespace): Promise<boo
 
 /** Remove a session from the store. Returns true if the session existed. */
 export async function deleteSession(id: string, kv?: KVNamespace): Promise<boolean> {
+	// Reject malformed session IDs before any storage lookup
+	if (!isValidSessionIdFormat(id)) return false;
+
 	// Always remove from in-memory (dual-write consistency with createSession)
 	const inMemoryExisted = deleteSessionInMemory(id);
 
 	if (kv) {
 		try {
-			const existing = await readSessionKVRecord(id, kv);
-			if (existing) {
-				await kv.delete(sessionKey(id));
-				return true;
-			}
-			return inMemoryExisted;
+			// Delete directly without reading first — the session was already validated
+			// before reaching this point, so the KV read is unnecessary
+			await kv.delete(sessionKey(id));
+			return true;
 		} catch {
 			logError('[session] KV delete failed', { category: 'session' });
 			return inMemoryExisted;
