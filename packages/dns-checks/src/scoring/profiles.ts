@@ -29,11 +29,11 @@ interface ImportanceProfile {
 /** Per-profile importance weights. */
 export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, ImportanceProfile>> = {
 	mail_enabled: {
-		// Core (sum=52)
+		// Core (sum=54)
 		spf: { importance: 10 },
 		dmarc: { importance: 16 },
 		dkim: { importance: 10 },
-		dnssec: { importance: 8 },
+		dnssec: { importance: 10 },
 		ssl: { importance: 8 },
 		// Protective (sum=20)
 		subdomain_takeover: { importance: 4 },
@@ -56,11 +56,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		zone_hygiene: { importance: 0 },
 	},
 	enterprise_mail: {
-		// Core (sum=58)
+		// Core (sum=63)
 		spf: { importance: 10 },
-		dmarc: { importance: 18 },
+		dmarc: { importance: 20 },
 		dkim: { importance: 12 },
-		dnssec: { importance: 10 },
+		dnssec: { importance: 13 },
 		ssl: { importance: 8 },
 		// Protective (sum=22)
 		subdomain_takeover: { importance: 5 },
@@ -83,12 +83,12 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		zone_hygiene: { importance: 0 },
 	},
 	non_mail: {
-		// Core (sum=19)
+		// Core (sum=29)
 		spf: { importance: 2 },
-		dmarc: { importance: 2 },
-		dkim: { importance: 1 },
-		dnssec: { importance: 8 },
-		ssl: { importance: 8 },
+		dmarc: { importance: 3 },
+		dkim: { importance: 2 },
+		dnssec: { importance: 12 },
+		ssl: { importance: 10 },
 		// Protective (sum=24)
 		subdomain_takeover: { importance: 6 },
 		http_security: { importance: 6 },
@@ -110,12 +110,12 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		zone_hygiene: { importance: 0 },
 	},
 	web_only: {
-		// Core (sum=20)
+		// Core (sum=28)
 		spf: { importance: 0 },
 		dmarc: { importance: 0 },
 		dkim: { importance: 0 },
-		dnssec: { importance: 8 },
-		ssl: { importance: 12 },
+		dnssec: { importance: 14 },
+		ssl: { importance: 14 },
 		// Protective (sum=24)
 		subdomain_takeover: { importance: 6 },
 		http_security: { importance: 8 },
@@ -137,12 +137,12 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		zone_hygiene: { importance: 0 },
 	},
 	minimal: {
-		// Core (sum=10)
+		// Core (sum=15)
 		spf: { importance: 1 },
 		dmarc: { importance: 1 },
 		dkim: { importance: 1 },
-		dnssec: { importance: 3 },
-		ssl: { importance: 4 },
+		dnssec: { importance: 5 },
+		ssl: { importance: 7 },
 		// Protective (sum=10)
 		subdomain_takeover: { importance: 2 },
 		http_security: { importance: 2 },
@@ -169,11 +169,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 // DNSSEC added to all profiles per NIST SP 800-81r3 (mandatory control)
 // DANE_HTTPS added to web/non-mail profiles (certificate integrity)
 export const PROFILE_CRITICAL_CATEGORIES: Record<DomainProfile, CheckCategory[]> = {
-	mail_enabled: ['spf', 'dmarc', 'dkim', 'ssl', 'dnssec'],
-	enterprise_mail: ['spf', 'dmarc', 'dkim', 'ssl', 'dnssec'],
+	mail_enabled: ['spf', 'dmarc', 'dkim', 'ssl', 'dnssec', 'subdomain_takeover'],
+	enterprise_mail: ['spf', 'dmarc', 'dkim', 'ssl', 'dnssec', 'subdomain_takeover'],
 	non_mail: ['ssl', 'dnssec', 'http_security', 'subdomain_takeover', 'dane_https'],
 	web_only: ['ssl', 'dnssec', 'http_security', 'subdomain_takeover', 'dane_https'],
-	minimal: ['ssl', 'dnssec'],
+	minimal: ['ssl', 'dnssec', 'subdomain_takeover'],
 };
 
 /** Whether a profile is eligible for the email bonus. */
