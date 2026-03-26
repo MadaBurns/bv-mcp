@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { TTLCache, cacheGet, cacheSet, IN_MEMORY_CACHE } from '../src/lib/cache';
+import { TTLCache, cacheGet, cacheSet, runWithCache, IN_MEMORY_CACHE } from '../src/lib/cache';
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -181,5 +181,52 @@ describe('cacheGet / cacheSet (KV-backed)', () => {
 		expect(IN_MEMORY_CACHE).toBeInstanceOf(TTLCache);
 		IN_MEMORY_CACHE.set('test', 'val');
 		expect(IN_MEMORY_CACHE.get('test')).toBe('val');
+	});
+});
+
+describe('runWithCache', () => {
+	it('returns cached value when available', async () => {
+		IN_MEMORY_CACHE.set('rw:hit', 'cached-value');
+		const run = vi.fn().mockResolvedValue('fresh-value');
+		const result = await runWithCache('rw:hit', run);
+		expect(result).toBe('cached-value');
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('calls run() and caches result on cache miss', async () => {
+		const run = vi.fn().mockResolvedValue('computed');
+		const result = await runWithCache('rw:miss', run);
+		expect(result).toBe('computed');
+		expect(run).toHaveBeenCalledOnce();
+		// Value should now be in cache
+		expect(IN_MEMORY_CACHE.get('rw:miss')).toBe('computed');
+	});
+
+	it('passes custom ttlSeconds to cacheSet', async () => {
+		const mockKV = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn().mockResolvedValue(undefined),
+		};
+		const run = vi.fn().mockResolvedValue('data');
+		await runWithCache('rw:ttl', run, mockKV as unknown as KVNamespace, 600);
+		expect(mockKV.put).toHaveBeenCalledWith('rw:ttl', JSON.stringify('data'), { expirationTtl: 600 });
+	});
+
+	it('bypasses cache when skipCache is true', async () => {
+		IN_MEMORY_CACHE.set('rw:skip', 'stale');
+		const run = vi.fn().mockResolvedValue('fresh');
+		const result = await runWithCache('rw:skip', run, undefined, undefined, true);
+		expect(result).toBe('fresh');
+		expect(run).toHaveBeenCalledOnce();
+		// The fresh value should now be cached
+		expect(IN_MEMORY_CACHE.get('rw:skip')).toBe('fresh');
+	});
+
+	it('uses cache when skipCache is false (default)', async () => {
+		IN_MEMORY_CACHE.set('rw:noskip', 'cached');
+		const run = vi.fn().mockResolvedValue('fresh');
+		const result = await runWithCache('rw:noskip', run, undefined, undefined, false);
+		expect(result).toBe('cached');
+		expect(run).not.toHaveBeenCalled();
 	});
 });
