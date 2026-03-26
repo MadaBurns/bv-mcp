@@ -22,13 +22,16 @@ export const ACTIVE_SESSIONS = new Map<string, SessionRecord>();
 export const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 export const SESSION_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
-const SESSION_CREATE_WINDOW_MS = 60_000;
-const SESSION_CREATE_LIMIT_PER_MINUTE = 30;
+export const SESSION_CREATE_WINDOW_MS = 60_000;
+export const SESSION_CREATE_LIMIT_PER_MINUTE = 30;
 const MAX_IN_MEMORY_SESSIONS = 2000;
 const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
+/** Maximum number of unique IPs tracked for session creation rate limiting */
+export const MAX_SESSION_CREATE_IPS = 5000;
+
 let lastCleanupAt = 0;
-const SESSION_CREATE_BY_IP = new Map<string, number[]>();
+export const SESSION_CREATE_BY_IP = new Map<string, number[]>();
 
 function isExpired(lastAccessedAt: number, now: number): boolean {
 	return now - lastAccessedAt > SESSION_TTL_MS;
@@ -67,6 +70,11 @@ export function checkSessionCreateRateLimitInMemory(ip: string): SessionCreateRa
 	const existing = SESSION_CREATE_BY_IP.get(key) ?? [];
 	const recent = pruneTimestamps(existing, SESSION_CREATE_WINDOW_MS, now);
 
+	// Clean up empty entries after pruning to prevent memory leak
+	if (recent.length === 0) {
+		SESSION_CREATE_BY_IP.delete(key);
+	}
+
 	if (recent.length >= SESSION_CREATE_LIMIT_PER_MINUTE) {
 		const oldest = recent[0];
 		return {
@@ -78,10 +86,36 @@ export function checkSessionCreateRateLimitInMemory(ip: string): SessionCreateRa
 
 	recent.push(now);
 	SESSION_CREATE_BY_IP.set(key, recent);
+
+	// Enforce size cap with eviction of oldest entries
+	if (SESSION_CREATE_BY_IP.size > MAX_SESSION_CREATE_IPS) {
+		evictOldestSessionCreateIps(SESSION_CREATE_BY_IP.size - MAX_SESSION_CREATE_IPS);
+	}
+
 	return {
 		allowed: true,
 		remaining: SESSION_CREATE_LIMIT_PER_MINUTE - recent.length,
 	};
+}
+
+/** Evict the N oldest IP entries from SESSION_CREATE_BY_IP based on latest timestamp */
+function evictOldestSessionCreateIps(count: number): void {
+	if (count <= 0) return;
+
+	// Build a list of [key, latestTimestamp] pairs
+	const entries: Array<[string, number]> = [];
+	for (const [key, timestamps] of SESSION_CREATE_BY_IP.entries()) {
+		const latest = timestamps.length > 0 ? timestamps[timestamps.length - 1] : 0;
+		entries.push([key, latest]);
+	}
+
+	// Sort by latest timestamp ascending (oldest first)
+	entries.sort((a, b) => a[1] - b[1]);
+
+	// Delete the oldest entries
+	for (let i = 0; i < count && i < entries.length; i++) {
+		SESSION_CREATE_BY_IP.delete(entries[i][0]);
+	}
 }
 
 export function createSessionInMemory(id: string): void {
