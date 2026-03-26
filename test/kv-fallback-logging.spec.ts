@@ -145,7 +145,8 @@ describe('KV/DO fallback structured logging', () => {
 			} as unknown as KVNamespace;
 
 			// Validate a session that doesn't exist in memory — forces KV path
-			await validateSession('nonexistent-session-id', kv);
+			// Must be valid 64-char hex format to pass format validation
+			await validateSession('a'.repeat(64), kv);
 
 			const errorLogs = getStructuredErrorLogs(consoleSpy);
 			expect(errorLogs.length).toBeGreaterThan(0);
@@ -158,7 +159,7 @@ describe('KV/DO fallback structured logging', () => {
 			const kv = {
 				get: vi.fn().mockRejectedValue(new Error('KV unavailable')),
 				put: vi.fn().mockRejectedValue(new Error('KV unavailable')),
-				delete: vi.fn(),
+				delete: vi.fn().mockRejectedValue(new Error('KV unavailable')),
 			} as unknown as KVNamespace;
 
 			const id = await createSession(); // create in-memory only
