@@ -129,22 +129,25 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		secondaryDoh: runtimeOptions?.secondaryDoh,
 	};
 
+	const forceRefresh = runtimeOptions?.forceRefresh;
+	const cacheTtl = runtimeOptions?.cacheTtlSeconds;
+
 	const checkPromises = [
-		runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain, scanDns)), kv),
-		runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain, scanDns)), kv),
-		runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain, undefined, scanDns)), kv),
-		runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain, scanDns)), kv),
-		runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain)), kv),
-		runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain, scanDns)), kv),
-		runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain, scanDns)), kv),
-		runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain, scanDns)), kv),
-		runCachedCheck(domain, 'bimi', () => safeCheck('bimi', () => checkBimi(domain, scanDns)), kv),
-		runCachedCheck(domain, 'tlsrpt', () => safeCheck('tlsrpt', () => checkTlsrpt(domain, scanDns)), kv),
-		runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain, scanDns)), kv),
-		runCachedCheck(domain, 'http_security', () => safeCheck('http_security', () => checkHttpSecurity(domain)), kv),
-		runCachedCheck(domain, 'dane', () => safeCheck('dane', () => checkDane(domain, scanDns)), kv),
-		runCachedCheck(domain, 'dane_https', () => safeCheck('dane_https', () => checkDaneHttps(domain, scanDns)), kv),
-		runCachedCheck(domain, 'svcb_https', () => safeCheck('svcb_https', () => checkSvcbHttps(domain, scanDns)), kv),
+		runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain, undefined, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'bimi', () => safeCheck('bimi', () => checkBimi(domain, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'tlsrpt', () => safeCheck('tlsrpt', () => checkTlsrpt(domain, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'http_security', () => safeCheck('http_security', () => checkHttpSecurity(domain)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'dane', () => safeCheck('dane', () => checkDane(domain, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'dane_https', () => safeCheck('dane_https', () => checkDaneHttps(domain, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'svcb_https', () => safeCheck('svcb_https', () => checkSvcbHttps(domain, scanDns)), kv, cacheTtl, forceRefresh),
 		runCachedCheck(
 			domain,
 			'mx',
@@ -159,6 +162,8 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 						}, scanDns),
 				),
 			kv,
+			cacheTtl,
+			forceRefresh,
 		),
 	];
 
@@ -359,7 +364,13 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	}
 
 	// Cache the result (use configurable TTL if provided)
-	await cacheSet(cacheKey, result, kv, runtimeOptions?.cacheTtlSeconds);
+	// Defer the write via waitUntil when available to avoid blocking the response.
+	const cachePromise = cacheSet(cacheKey, result, kv, runtimeOptions?.cacheTtlSeconds);
+	if (runtimeOptions?.waitUntil) {
+		runtimeOptions.waitUntil(cachePromise);
+	} else {
+		await cachePromise;
+	}
 
 	return result;
 }
@@ -396,7 +407,9 @@ async function fetchAdaptiveWeights(
 		if (!response.ok) return null;
 
 		const data = (await response.json()) as AdaptiveWeightsResponse;
-		if (adaptiveWeightCache.size >= ADAPTIVE_CACHE_MAX_ENTRIES) adaptiveWeightCache.clear();
+		if (adaptiveWeightCache.size >= ADAPTIVE_CACHE_MAX_ENTRIES) {
+			evictAdaptiveWeightCache();
+		}
 		adaptiveWeightCache.set(cacheKey, { weights: data, expires: now + ADAPTIVE_CACHE_TTL_MS });
 		return data;
 	} catch {
@@ -404,13 +417,48 @@ async function fetchAdaptiveWeights(
 	}
 }
 
+/**
+ * Evict entries from the adaptive weight cache.
+ * Removes expired entries first, then if still at capacity, evicts the entry with the oldest expiry time.
+ */
+export function evictAdaptiveWeightCache(): void {
+	const now = Date.now();
+
+	// First pass: remove all expired entries
+	for (const [key, entry] of adaptiveWeightCache) {
+		if (entry.expires <= now) {
+			adaptiveWeightCache.delete(key);
+		}
+	}
+
+	// If still at capacity after removing expired entries, evict the oldest by expiry
+	if (adaptiveWeightCache.size >= ADAPTIVE_CACHE_MAX_ENTRIES) {
+		let oldestKey: string | null = null;
+		let oldestExpiry = Infinity;
+		for (const [key, entry] of adaptiveWeightCache) {
+			if (entry.expires < oldestExpiry) {
+				oldestExpiry = entry.expires;
+				oldestKey = key;
+			}
+		}
+		if (oldestKey !== null) {
+			adaptiveWeightCache.delete(oldestKey);
+		}
+	}
+}
+
+/** Exposed for testing only — do not use in production code. */
+export const _adaptiveWeightCacheForTest = adaptiveWeightCache;
+
 async function runCachedCheck(
 	domain: string,
 	category: CheckCategory,
 	run: () => Promise<CheckResult>,
 	kv?: KVNamespace,
+	ttlSeconds?: number,
+	skipCache?: boolean,
 ): Promise<CheckResult> {
-	return runWithCache(`${CACHE_PREFIX}${domain}:check:${category}`, run, kv);
+	return runWithCache(`${CACHE_PREFIX}${domain}:check:${category}`, run, kv, ttlSeconds, skipCache);
 }
 
 /**
