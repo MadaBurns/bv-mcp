@@ -610,3 +610,289 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		expect(dmarc!.passed).toBe(true);
 	});
 });
+
+describe('scanDomain force_refresh', () => {
+	function mockAllChecksFn() {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.force-refresh.com', ['v=DMARC1; p=reject']));
+					if (url.includes('_domainkey.'))
+						return Promise.resolve(txtResponse('default._domainkey.force-refresh.com', ['v=DKIM1; k=rsa; p=MIGf']));
+					if (url.includes('_mta-sts.'))
+						return Promise.resolve(txtResponse('_mta-sts.force-refresh.com', ['v=STSv1; id=20240101']));
+					if (url.includes('_smtp._tls.'))
+						return Promise.resolve(txtResponse('_smtp._tls.force-refresh.com', ['v=TLSRPTv1; rua=mailto:tls@force-refresh.com']));
+					if (url.includes('default._bimi.'))
+						return Promise.resolve(txtResponse('default._bimi.force-refresh.com', ['v=BIMI1; l=https://force-refresh.com/logo.svg']));
+					return Promise.resolve(txtResponse('force-refresh.com', ['v=spf1 include:_spf.google.com -all']));
+				}
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse('force-refresh.com', ['ns1.force-refresh.com.', 'ns2.force-refresh.com.']));
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('force-refresh.com', ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse('force-refresh.com', true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known'))
+				return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.force-refresh.com\nmax_age: 86400'));
+			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+	}
+
+	it('bypasses per-check cache when forceRefresh is true', async () => {
+		mockAllChecksFn();
+		const { scanDomain } = await import('../src/tools/scan-domain');
+
+		// First scan populates per-check caches
+		const first = await scanDomain('force-refresh.com');
+		expect(first.cached).toBe(false);
+
+		// Clear only the top-level scan cache so we re-enter orchestration
+		IN_MEMORY_CACHE.delete('cache:force-refresh.com');
+
+		// Record how many fetch calls were made so far
+		const fetchCountBefore = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+
+		// Without force_refresh, per-check caches are warm — should make few/no DNS queries
+		const second = await scanDomain('force-refresh.com', undefined, { forceRefresh: false });
+		expect(second.cached).toBe(false); // top-level was cleared, re-computed from per-check cache
+		const fetchCountAfterNormal = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+		const normalFetchCount = fetchCountAfterNormal - fetchCountBefore;
+
+		// Clear top-level again for force_refresh test
+		IN_MEMORY_CACHE.delete('cache:force-refresh.com');
+
+		// With force_refresh=true, per-check caches MUST be bypassed — all checks should re-execute
+		const third = await scanDomain('force-refresh.com', undefined, { forceRefresh: true });
+		expect(third.cached).toBe(false);
+		const fetchCountAfterForce = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+		const forceFetchCount = fetchCountAfterForce - fetchCountAfterNormal;
+
+		// force_refresh should make significantly more DNS queries than the cached run
+		// because all 16 checks re-execute instead of returning from per-check cache
+		expect(forceFetchCount).toBeGreaterThan(normalFetchCount);
+	});
+
+	it('uses per-check cache normally when forceRefresh is false', async () => {
+		mockAllChecksFn();
+		const { scanDomain } = await import('../src/tools/scan-domain');
+
+		// Run a fresh scan first
+		const first = await scanDomain('normal-cache.com');
+		expect(first.cached).toBe(false);
+
+		// Clear only the top-level scan cache key so scanDomain re-enters orchestration,
+		// but per-check caches remain populated
+		IN_MEMORY_CACHE.delete('cache:normal-cache.com');
+
+		// Second scan without forceRefresh should use per-check caches (no DNS queries)
+		const fetchBefore = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+		const second = await scanDomain('normal-cache.com', undefined, { forceRefresh: false });
+		expect(second.cached).toBe(false); // top-level was cleared, but checks came from per-check cache
+		const fetchAfter = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+		// Should have made very few or no DNS queries since per-check caches are warm
+		// (at most a few for post-processing, not 16 checks worth)
+		expect(fetchAfter - fetchBefore).toBeLessThan(5);
+	});
+});
+
+describe('scanDomain cacheTtlSeconds propagation', () => {
+	function mockAllChecksFn() {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.ttl-test.com', ['v=DMARC1; p=reject']));
+					if (url.includes('_domainkey.'))
+						return Promise.resolve(txtResponse('default._domainkey.ttl-test.com', ['v=DKIM1; k=rsa; p=MIGf']));
+					if (url.includes('_mta-sts.'))
+						return Promise.resolve(txtResponse('_mta-sts.ttl-test.com', ['v=STSv1; id=20240101']));
+					if (url.includes('_smtp._tls.'))
+						return Promise.resolve(txtResponse('_smtp._tls.ttl-test.com', ['v=TLSRPTv1; rua=mailto:tls@ttl-test.com']));
+					if (url.includes('default._bimi.'))
+						return Promise.resolve(txtResponse('default._bimi.ttl-test.com', ['v=BIMI1; l=https://ttl-test.com/logo.svg']));
+					return Promise.resolve(txtResponse('ttl-test.com', ['v=spf1 include:_spf.google.com -all']));
+				}
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse('ttl-test.com', ['ns1.ttl-test.com.', 'ns2.ttl-test.com.']));
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('ttl-test.com', ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse('ttl-test.com', true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known'))
+				return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.ttl-test.com\nmax_age: 86400'));
+			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+	}
+
+	it('propagates custom cacheTtlSeconds to per-check cache writes via KV', async () => {
+		mockAllChecksFn();
+		const mockKV = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn().mockResolvedValue(undefined),
+		};
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		await scanDomain('ttl-test.com', mockKV as unknown as KVNamespace, { cacheTtlSeconds: 600 });
+
+		// KV.put should have been called with expirationTtl: 600 for per-check entries
+		const putCalls = mockKV.put.mock.calls;
+		const perCheckPuts = putCalls.filter((call: unknown[]) => (call[0] as string).includes(':check:'));
+		expect(perCheckPuts.length).toBeGreaterThan(0);
+		for (const call of perCheckPuts) {
+			expect((call[2] as { expirationTtl: number }).expirationTtl).toBe(600);
+		}
+	});
+
+	it('uses default 300s TTL when cacheTtlSeconds is not set', async () => {
+		mockAllChecksFn();
+		const mockKV = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn().mockResolvedValue(undefined),
+		};
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		await scanDomain('ttl-default.com', mockKV as unknown as KVNamespace);
+
+		const putCalls = mockKV.put.mock.calls;
+		const perCheckPuts = putCalls.filter((call: unknown[]) => (call[0] as string).includes(':check:'));
+		expect(perCheckPuts.length).toBeGreaterThan(0);
+		for (const call of perCheckPuts) {
+			expect((call[2] as { expirationTtl: number }).expirationTtl).toBe(300);
+		}
+	});
+});
+
+describe('scanDomain deferred cache write (Fix 3)', () => {
+	function mockAllChecksFn() {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.deferred.com', ['v=DMARC1; p=reject']));
+					if (url.includes('_domainkey.'))
+						return Promise.resolve(txtResponse('default._domainkey.deferred.com', ['v=DKIM1; k=rsa; p=MIGf']));
+					if (url.includes('_mta-sts.'))
+						return Promise.resolve(txtResponse('_mta-sts.deferred.com', ['v=STSv1; id=20240101']));
+					if (url.includes('_smtp._tls.'))
+						return Promise.resolve(txtResponse('_smtp._tls.deferred.com', ['v=TLSRPTv1; rua=mailto:tls@deferred.com']));
+					if (url.includes('default._bimi.'))
+						return Promise.resolve(txtResponse('default._bimi.deferred.com', ['v=BIMI1; l=https://deferred.com/logo.svg']));
+					return Promise.resolve(txtResponse('deferred.com', ['v=spf1 include:_spf.google.com -all']));
+				}
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse('deferred.com', ['ns1.deferred.com.', 'ns2.deferred.com.']));
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('deferred.com', ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse('deferred.com', true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known'))
+				return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.deferred.com\nmax_age: 86400'));
+			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+	}
+
+	it('calls waitUntil to defer the full-scan cache write when waitUntil is provided', async () => {
+		mockAllChecksFn();
+		const waitUntilFn = vi.fn();
+		const { scanDomain } = await import('../src/tools/scan-domain');
+
+		const result = await scanDomain('deferred.com', undefined, { waitUntil: waitUntilFn });
+		expect(result.cached).toBe(false);
+		expect(result.domain).toBe('deferred.com');
+
+		// waitUntil should have been called with a promise (the deferred cache write)
+		// It may also be called for telemetry, so we just check it was called at least once
+		// with a promise for the cache write
+		expect(waitUntilFn).toHaveBeenCalled();
+		const calls = waitUntilFn.mock.calls;
+		const hasPromiseCall = calls.some((call: unknown[]) => call[0] instanceof Promise);
+		expect(hasPromiseCall).toBe(true);
+	});
+
+	it('still writes to cache synchronously when waitUntil is not provided', async () => {
+		mockAllChecksFn();
+		const { scanDomain } = await import('../src/tools/scan-domain');
+
+		const result = await scanDomain('sync-cache.com');
+		expect(result.cached).toBe(false);
+
+		// The in-memory cache should have the result after return
+		const cached = IN_MEMORY_CACHE.get('cache:sync-cache.com');
+		expect(cached).toBeDefined();
+	});
+});
+
+describe('adaptiveWeightCache eviction (Fix 4)', () => {
+	it('evicts expired entries first, not all entries, when at capacity', async () => {
+		const { _adaptiveWeightCacheForTest } = await import('../src/tools/scan-domain');
+		_adaptiveWeightCacheForTest.clear();
+
+		const now = Date.now();
+
+		// Fill with 99 entries, some expired
+		for (let i = 0; i < 50; i++) {
+			_adaptiveWeightCacheForTest.set(`expired:${i}`, {
+				weights: { weights: {}, sampleCount: 0, boundHits: [] },
+				expires: now - 1000, // expired
+			});
+		}
+		for (let i = 0; i < 49; i++) {
+			_adaptiveWeightCacheForTest.set(`valid:${i}`, {
+				weights: { weights: {}, sampleCount: 0, boundHits: [] },
+				expires: now + 60_000, // still valid
+			});
+		}
+		expect(_adaptiveWeightCacheForTest.size).toBe(99);
+
+		// Add one more to hit capacity of 100
+		_adaptiveWeightCacheForTest.set(`valid:99`, {
+			weights: { weights: {}, sampleCount: 0, boundHits: [] },
+			expires: now + 60_000,
+		});
+		expect(_adaptiveWeightCacheForTest.size).toBe(100);
+
+		// Now trigger eviction by calling the evictAdaptiveWeightCache helper
+		// which should evict expired entries first, not clear everything
+		const { evictAdaptiveWeightCache } = await import('../src/tools/scan-domain');
+		evictAdaptiveWeightCache();
+
+		// Expired entries should be gone, valid entries should remain
+		expect(_adaptiveWeightCacheForTest.size).toBeLessThanOrEqual(51);
+		// All valid entries should still be present
+		for (let i = 0; i < 49; i++) {
+			expect(_adaptiveWeightCacheForTest.has(`valid:${i}`)).toBe(true);
+		}
+	});
+
+	it('evicts only the oldest entry when at capacity and nothing is expired', async () => {
+		const { _adaptiveWeightCacheForTest, evictAdaptiveWeightCache } = await import('../src/tools/scan-domain');
+		_adaptiveWeightCacheForTest.clear();
+
+		const now = Date.now();
+
+		// Fill to capacity with all valid entries — oldest has the earliest expiry
+		for (let i = 0; i < 100; i++) {
+			_adaptiveWeightCacheForTest.set(`entry:${i}`, {
+				weights: { weights: {}, sampleCount: 0, boundHits: [] },
+				expires: now + 60_000 + i * 100, // each one expires slightly later
+			});
+		}
+		expect(_adaptiveWeightCacheForTest.size).toBe(100);
+
+		evictAdaptiveWeightCache();
+
+		// Should have evicted exactly one entry (the oldest by expiry time)
+		expect(_adaptiveWeightCacheForTest.size).toBe(99);
+		// entry:0 had the earliest expiry — it should be the one evicted
+		expect(_adaptiveWeightCacheForTest.has('entry:0')).toBe(false);
+		// entry:1 through entry:99 should still be present
+		expect(_adaptiveWeightCacheForTest.has('entry:1')).toBe(true);
+		expect(_adaptiveWeightCacheForTest.has('entry:99')).toBe(true);
+	});
+});
