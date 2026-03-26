@@ -23,6 +23,7 @@ import {
 } from './session-memory';
 import { checkSessionCreateRateLimitWithCoordinator } from './quota-coordinator';
 import { withIpKvLock } from './rate-limiter';
+import { logError } from './log';
 
 export { ACTIVE_SESSIONS, resetSessions, SESSION_REFRESH_INTERVAL_MS, SESSION_TTL_MS };
 
@@ -53,7 +54,7 @@ export async function checkSessionCreateRateLimit(
 			);
 			if (coordinated) return coordinated;
 		} catch {
-			console.warn('[session] quota coordinator create limiter failed, falling back to KV/in-memory');
+			logError('[session] quota coordinator create limiter failed, falling back to KV/in-memory');
 		}
 	}
 	if (kv) {
@@ -84,7 +85,7 @@ export async function checkSessionCreateRateLimit(
 				};
 			});
 		} catch {
-			console.warn('[session] KV create limiter failed, falling back to in-memory');
+			logError('[session] KV create limiter failed, falling back to in-memory');
 		}
 	}
 
@@ -130,7 +131,7 @@ export async function createSession(kv?: KVNamespace): Promise<string> {
 		try {
 			await createSessionKVRecord(id, kv, record);
 		} catch {
-			console.warn('[session] KV create failed, in-memory fallback active');
+			logError('[session] KV create failed, in-memory fallback active');
 		}
 	}
 
@@ -185,12 +186,12 @@ export async function validateSession(id: string, kv?: KVNamespace): Promise<boo
 				try {
 					await createSessionKVRecord(id, kv, record);
 				} catch {
-					console.warn('[session] KV refresh write failed (session still valid)');
+					logError('[session] KV refresh write failed (session still valid)');
 				}
 			}
 			return true;
 		} catch {
-			console.warn('[session] KV validate failed');
+			logError('[session] KV validate failed');
 		}
 	}
 
@@ -211,7 +212,7 @@ export async function deleteSession(id: string, kv?: KVNamespace): Promise<boole
 			}
 			return inMemoryExisted;
 		} catch {
-			console.warn('[session] KV delete failed');
+			logError('[session] KV delete failed');
 			return inMemoryExisted;
 		}
 	}
