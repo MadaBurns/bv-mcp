@@ -4,7 +4,7 @@ import { handleToolsList, handleToolsCall } from '../handlers/tools';
 import { handleResourcesList, handleResourcesRead } from '../handlers/resources';
 import { handlePromptsList, handlePromptsGet } from '../handlers/prompts';
 import { parseAllowedHosts } from './request';
-import { createSession, checkSessionCreateRateLimit } from '../lib/session';
+import { createSession, checkSessionCreateRateLimit, deleteSession } from '../lib/session';
 import { auditSessionCreated } from '../lib/audit';
 import { jsonRpcError, jsonRpcSuccess, JSON_RPC_ERRORS } from '../lib/json-rpc';
 import type { AnalyticsClient } from '../lib/analytics';
@@ -78,6 +78,12 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 					};
 				}
 			}
+
+				// Invalidate old session on re-initialize to prevent stale sessions
+				// lingering for up to 2 hours after the client has moved on
+				if (createSessionOnInitialize && options.existingSessionId) {
+					await deleteSession(options.existingSessionId, options.sessionStore);
+				}
 
 				const sessionId = createSessionOnInitialize ? await createSession(options.sessionStore) : options.existingSessionId;
 				if (createSessionOnInitialize && sessionId) {

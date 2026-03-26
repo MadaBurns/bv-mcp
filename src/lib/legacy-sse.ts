@@ -6,19 +6,79 @@ interface LegacyStreamRecord {
 	controller?: ReadableStreamDefaultController<Uint8Array>;
 	queue: string[];
 	heartbeat?: number;
+	createdAt: number;
 }
 
 const LEGACY_STREAMS = new Map<string, LegacyStreamRecord>();
 const HEARTBEAT_INTERVAL_MS = 5_000;
 
+/** Maximum number of concurrent legacy SSE stream records before eviction kicks in. */
+export const MAX_LEGACY_STREAMS = 500;
+
 function endpointEvent(endpointUrl: string): string {
 	return `event: endpoint\ndata: ${endpointUrl}\n\n`;
+}
+
+/** Check whether a record is a zombie (no active controller and empty queue). */
+function isZombie(record: LegacyStreamRecord): boolean {
+	return !record.controller && record.queue.length === 0;
+}
+
+/**
+ * Evict entries when the map exceeds MAX_LEGACY_STREAMS.
+ * Strategy: remove zombie entries (no controller, empty queue) first,
+ * then evict the oldest by createdAt if still over capacity.
+ */
+function evictIfNeeded(): void {
+	if (LEGACY_STREAMS.size < MAX_LEGACY_STREAMS) return;
+
+	// Phase 1: remove zombie entries
+	for (const [id, record] of LEGACY_STREAMS.entries()) {
+		if (isZombie(record)) {
+			LEGACY_STREAMS.delete(id);
+			if (LEGACY_STREAMS.size < MAX_LEGACY_STREAMS) return;
+		}
+	}
+
+	// Phase 2: evict oldest by createdAt
+	while (LEGACY_STREAMS.size >= MAX_LEGACY_STREAMS) {
+		let oldestId: string | undefined;
+		let oldestTime = Number.POSITIVE_INFINITY;
+		for (const [id, record] of LEGACY_STREAMS.entries()) {
+			if (record.createdAt < oldestTime) {
+				oldestTime = record.createdAt;
+				oldestId = id;
+			}
+		}
+		if (oldestId) {
+			// Close the stream before evicting to clean up heartbeat interval
+			const evictedRecord = LEGACY_STREAMS.get(oldestId);
+			if (evictedRecord) {
+				if (evictedRecord.heartbeat !== undefined) {
+					clearInterval(evictedRecord.heartbeat);
+				}
+				if (evictedRecord.controller) {
+					try {
+						evictedRecord.controller.close();
+					} catch {
+						// ignore closed stream errors
+					}
+				}
+			}
+			LEGACY_STREAMS.delete(oldestId);
+		} else {
+			break;
+		}
+	}
 }
 
 function getOrCreateRecord(sessionId: string): LegacyStreamRecord {
 	const existing = LEGACY_STREAMS.get(sessionId);
 	if (existing) return existing;
-	const created: LegacyStreamRecord = { queue: [] };
+	// Evict before adding so the new entry isn't considered a zombie
+	// (its controller isn't set until the ReadableStream start() callback fires)
+	evictIfNeeded();
+	const created: LegacyStreamRecord = { queue: [], createdAt: Date.now() };
 	LEGACY_STREAMS.set(sessionId, created);
 	return created;
 }
@@ -28,6 +88,21 @@ export function resetLegacySseState(): void {
 		closeLegacyStream(sessionId);
 	}
 	LEGACY_STREAMS.clear();
+}
+
+/** Get the current number of entries in the LEGACY_STREAMS map (test helper). */
+export function getLegacyStreamCount(): number {
+	return LEGACY_STREAMS.size;
+}
+
+/** Get a stream record by session ID (test helper). */
+export function getLegacyStreamRecord(sessionId: string): LegacyStreamRecord | undefined {
+	return LEGACY_STREAMS.get(sessionId);
+}
+
+/** Inject a stream record directly (test helper — bypasses normal creation flow). */
+export function setLegacyStreamRecordForTest(sessionId: string, record: Omit<LegacyStreamRecord, 'heartbeat'>): void {
+	LEGACY_STREAMS.set(sessionId, { ...record, heartbeat: undefined });
 }
 
 export function openLegacySseStream(sessionId: string, endpointUrl: string): Response {
@@ -97,5 +172,11 @@ export function closeLegacyStream(sessionId: string, deleteRecord = true): void 
 	record.queue = [];
 	if (deleteRecord) {
 		LEGACY_STREAMS.delete(sessionId);
+	} else {
+		// When not deleting the record, clean up zombies (no controller, empty queue)
+		// to prevent accumulation of dead entries from abrupt client disconnects
+		if (isZombie(record)) {
+			LEGACY_STREAMS.delete(sessionId);
+		}
 	}
 }
