@@ -190,11 +190,14 @@ export async function cacheSet(key: string, value: unknown, kv?: KVNamespace, tt
  * @param run - Async function to execute on cache miss
  * @param kv - Optional KV namespace for persistent caching
  * @param ttlSeconds - Cache TTL in seconds (default: 300 = 5 minutes)
+ * @param skipCache - When true, bypass cache lookup and always execute the function (result is still cached)
  * @returns The cached or freshly computed result
  */
-export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: KVNamespace, ttlSeconds?: number): Promise<T> {
-	const cached = await cacheGet<T>(key, kv);
-	if (cached !== undefined) return cached;
+export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: KVNamespace, ttlSeconds?: number, skipCache?: boolean): Promise<T> {
+	if (!skipCache) {
+		const cached = await cacheGet<T>(key, kv);
+		if (cached !== undefined) return cached;
+	}
 
 	const existing = INFLIGHT.get(key);
 	if (existing) return existing as Promise<T>; // INFLIGHT map stores Promise<unknown>; keyed by same cache key ensures type match
