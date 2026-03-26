@@ -15,6 +15,9 @@ const HEARTBEAT_INTERVAL_MS = 5_000;
 /** Maximum number of concurrent legacy SSE stream records before eviction kicks in. */
 export const MAX_LEGACY_STREAMS = 500;
 
+/** Maximum pre-controller queue depth per stream to prevent memory exhaustion. */
+const MAX_LEGACY_QUEUE_DEPTH = 100;
+
 function endpointEvent(endpointUrl: string): string {
 	return `event: endpoint\ndata: ${endpointUrl}\n\n`;
 }
@@ -147,7 +150,7 @@ export function enqueueLegacyMessage(sessionId: string, payload: unknown): boole
 	const event = sseEvent(payload);
 	if (record.controller) {
 		record.controller.enqueue(new TextEncoder().encode(event));
-	} else {
+	} else if (record.queue.length < MAX_LEGACY_QUEUE_DEPTH) {
 		record.queue.push(event);
 	}
 

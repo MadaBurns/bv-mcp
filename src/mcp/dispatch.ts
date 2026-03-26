@@ -209,7 +209,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 		default:
 			return {
 				kind: 'success',
-				payload: jsonRpcError(options.id, JSON_RPC_ERRORS.METHOD_NOT_FOUND, `Method not found: ${options.method}`),
+				payload: jsonRpcError(options.id, JSON_RPC_ERRORS.METHOD_NOT_FOUND, 'Method not found'),
 				logCategory: 'error',
 				logResult: 'method_not_found',
 			};
