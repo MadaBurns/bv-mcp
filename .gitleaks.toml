@@ -16,7 +16,7 @@ keywords = ["@"]
 [rules.allowlist]
 regexTarget = "match"
 regexes = [
-  '''@example\.(com|org|net)''',
+  '''@([a-zA-Z0-9.\-]+\.)?example\.(com|org|net)''',
   '''@localhost''',
   '''@blackveilsecurity\.com''',
   '''@anthropic\.com''',
