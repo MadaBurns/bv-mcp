@@ -50,3 +50,6 @@ export {
 	getProfileWeights,
 } from './profiles';
 export type { DomainProfile, DomainContext } from './profiles';
+
+export { computeGenericScore } from './generic';
+export type { GenericScoringContext, GenericScanScore, FindingSeverityCounts, EmailBonusKeyMap, TierBreakdown } from './generic';
