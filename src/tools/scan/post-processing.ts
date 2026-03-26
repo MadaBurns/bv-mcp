@@ -182,8 +182,15 @@ async function checkApexDmarcPolicy(domain: string): Promise<boolean> {
 }
 
 function isMissingRecordFinding(finding: { title: string; detail: string }): boolean {
-	const text = `${finding.title} ${finding.detail}`.toLowerCase();
-	return /(no\s+.+\s+record|missing|not\s+found|no\s+mta-sts|no\s+dkim)/.test(text);
+	// Match against title only (controlled by check modules, not DNS data) to avoid ReDoS on attacker-controlled detail strings
+	const title = finding.title.toLowerCase();
+	return (
+		title.includes('missing') ||
+		title.includes('not found') ||
+		title.includes('no mta-sts') ||
+		title.includes('no dkim') ||
+		/^no\s+\S+\s+record/.test(title)
+	);
 }
 
 function clarifyMtaStsForMailDomain(domain: string, results: CheckResult[]): CheckResult[] {
