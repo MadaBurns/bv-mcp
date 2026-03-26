@@ -19,6 +19,39 @@ export interface MaturityStage {
  * Compute the email security maturity stage from scan check results.
  * Stages range from 0 (Unprotected) to 4 (Hardened).
  */
+/**
+ * Cap the maturity stage based on the overall scan score.
+ * Prevents a domain from being labeled "Hardened" or "Enforcing"
+ * when the actual security score indicates significant issues.
+ *
+ * - Score < 50 (F grade): cap at Stage 2 maximum
+ * - Score < 63 (D/D+ grade): cap at Stage 3 maximum
+ * - Score >= 63: no cap applied
+ *
+ * Stages already at or below the cap are returned unchanged.
+ */
+export function capMaturityStage(maturity: MaturityStage, score: number): MaturityStage {
+	if (score < 50 && maturity.stage > 2) {
+		return {
+			stage: 2,
+			label: 'Monitoring (score-capped)',
+			description: 'Controls are present but the overall security score is too low for a higher maturity rating.',
+			nextStep: 'Address critical and high-severity findings to improve the overall score before advancing maturity.',
+		};
+	}
+
+	if (score < 63 && maturity.stage > 3) {
+		return {
+			stage: 3,
+			label: 'Enforcing (score-capped)',
+			description: 'Controls are present but the overall security score is too low for the highest maturity rating.',
+			nextStep: 'Resolve remaining findings to raise the score above the D grade range and achieve full hardening.',
+		};
+	}
+
+	return maturity;
+}
+
 export function computeMaturityStage(checks: CheckResult[]): MaturityStage {
 	const byCategory = new Map(checks.map((c) => [c.category, c]));
 

@@ -33,6 +33,7 @@ export async function applyScanPostProcessing(
 	if (hasNoMx) {
 		const apexCovers = await checkApexDmarcPolicy(domain);
 		results = adjustForNonMailDomain(results, apexCovers);
+		results = adjustBimiForNonMailDomain(results);
 	} else if (mxResult) {
 		results = clarifyMtaStsForMailDomain(domain, results);
 	}
@@ -211,6 +212,23 @@ function adjustForNonMailDomain(results: CheckResult[], apexDmarcCovers: boolean
 					? 'expected — no MX records and parent domain DMARC policy covers subdomains'
 					: 'expected — domain has no MX records';
 				return { ...finding, severity: 'info' as const, detail: `${finding.detail} (${reason})` };
+			}
+			return finding;
+		});
+		return buildCheckResult(result.category, adjusted);
+	});
+}
+
+function adjustBimiForNonMailDomain(results: CheckResult[]): CheckResult[] {
+	return results.map((result) => {
+		if (result.category !== 'bimi') return result;
+		const adjusted = result.findings.map((finding) => {
+			if (finding.title === 'No BIMI record found' && finding.detail.includes('eligible for BIMI')) {
+				const bimiDomain = finding.detail.match(/at (default\._bimi\.\S+)/)?.[1] ?? `default._bimi.unknown`;
+				return {
+					...finding,
+					detail: `No BIMI record found at ${bimiDomain}. This domain does not appear to send email, so BIMI is not applicable.`,
+				};
 			}
 			return finding;
 		});
