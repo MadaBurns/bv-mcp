@@ -293,27 +293,20 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 
 function buildSummary(counts: FindingSeverityCounts | undefined, grade: string): string {
 	if (!counts) {
-		const totalIssues = 0;
-		if (totalIssues === 0) {
-			return `Excellent! No security issues found. Grade: ${grade}`;
-		}
+		return `Excellent! No security issues found. Grade: ${grade}`;
 	}
 
-	if (counts) {
-		const { critical, high, medium, low } = counts;
-		const totalNonInfo = critical + high + medium + low;
+	const { critical, high, medium, low } = counts;
+	const totalNonInfo = critical + high + medium + low;
 
-		if (totalNonInfo === 0) {
-			return `Excellent! No security issues found. Grade: ${grade}`;
-		}
-		if (critical > 0) {
-			return `${critical} critical issue(s) found requiring immediate attention. Grade: ${grade}`;
-		}
-		if (high > 0) {
-			return `${high} high-severity issue(s) found. Grade: ${grade}`;
-		}
-		return `${totalNonInfo} issue(s) found. Grade: ${grade}`;
+	if (totalNonInfo === 0) {
+		return `Excellent! No security issues found. Grade: ${grade}`;
 	}
-
-	return `Excellent! No security issues found. Grade: ${grade}`;
+	if (critical > 0) {
+		return `${critical} critical issue(s) found requiring immediate attention. Grade: ${grade}`;
+	}
+	if (high > 0) {
+		return `${high} high-severity issue(s) found. Grade: ${grade}`;
+	}
+	return `${totalNonInfo} issue(s) found. Grade: ${grade}`;
 }
