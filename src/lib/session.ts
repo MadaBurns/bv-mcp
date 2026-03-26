@@ -23,6 +23,7 @@ import {
 } from './session-memory';
 import { checkSessionCreateRateLimitWithCoordinator } from './quota-coordinator';
 import { withIpKvLock } from './rate-limiter';
+import { logError } from './log';
 
 export { ACTIVE_SESSIONS, resetSessions, SESSION_REFRESH_INTERVAL_MS, SESSION_TTL_MS };
 
@@ -53,7 +54,7 @@ export async function checkSessionCreateRateLimit(
 			);
 			if (coordinated) return coordinated;
 		} catch {
-			console.warn('[session] quota coordinator create limiter failed, falling back to KV/in-memory');
+			logError('[session] quota coordinator create limiter failed, falling back to KV/in-memory', { category: 'session' });
 		}
 	}
 	if (kv) {
@@ -84,7 +85,7 @@ export async function checkSessionCreateRateLimit(
 				};
 			});
 		} catch {
-			console.warn('[session] KV create limiter failed, falling back to in-memory');
+			logError('[session] KV create limiter failed, falling back to in-memory', { category: 'session' });
 		}
 	}
 
@@ -130,7 +131,11 @@ export async function createSession(kv?: KVNamespace): Promise<string> {
 		try {
 			await createSessionKVRecord(id, kv, record);
 		} catch {
-			console.warn('[session] KV create failed, in-memory fallback active');
+			// Intentional single-isolate degradation: session exists only in this isolate's
+			// memory. Cross-isolate requests will fail to find it, but same-isolate requests
+			// continue working. No retry — KV failures are typically transient and the next
+			// session creation will succeed.
+			logError('[session] KV create failed, in-memory fallback active', { category: 'session' });
 		}
 	}
 
@@ -185,12 +190,12 @@ export async function validateSession(id: string, kv?: KVNamespace): Promise<boo
 				try {
 					await createSessionKVRecord(id, kv, record);
 				} catch {
-					console.warn('[session] KV refresh write failed (session still valid)');
+					logError('[session] KV refresh write failed (session still valid)', { category: 'session' });
 				}
 			}
 			return true;
 		} catch {
-			console.warn('[session] KV validate failed');
+			logError('[session] KV validate failed', { category: 'session' });
 		}
 	}
 
@@ -211,7 +216,7 @@ export async function deleteSession(id: string, kv?: KVNamespace): Promise<boole
 			}
 			return inMemoryExisted;
 		} catch {
-			console.warn('[session] KV delete failed');
+			logError('[session] KV delete failed', { category: 'session' });
 			return inMemoryExisted;
 		}
 	}
