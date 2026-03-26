@@ -33,7 +33,7 @@ import { scanDomain } from './tools/scan-domain';
 import { gradeBadge, errorBadge } from './lib/badge';
 import { SERVER_VERSION } from './lib/server-version';
 import { executeMcpRequest } from './mcp/execute';
-import { parseScoringConfig } from './lib/scoring-config';
+import { parseScoringConfigCached } from './lib/scoring-config';
 import { parseCacheTtl } from './lib/config';
 import { closeLegacyStream, enqueueLegacyMessage, openLegacySseStream } from './lib/legacy-sse';
 import { internalRoutes } from './internal';
@@ -223,7 +223,7 @@ app.get('/badge/:domain', async (c) => {
 		const result = await scanDomain(domain, c.env.SCAN_CACHE, {
 			profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
-			scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
+			scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 			cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 		});
 		return new Response(gradeBadge(result.score.grade), { status: 200, headers: svgHeaders });
@@ -304,6 +304,7 @@ app.post('/mcp', async (c) => {
 					validateSession: true,
 					sessionErrorMessage: 'Bad Request: missing session',
 					createSessionOnInitialize: true,
+					existingSessionId: headersLc['mcp-session-id'],
 					serverVersion: SERVER_VERSION,
 					rateLimitKv: c.env.RATE_LIMIT,
 					quotaCoordinator: c.env.QUOTA_COORDINATOR,
@@ -315,7 +316,7 @@ app.post('/mcp', async (c) => {
 					analytics,
 					profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 					waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
-					scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
+					scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 					cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 					secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 					secondaryDohToken: c.env.BV_DOH_TOKEN,
@@ -363,6 +364,7 @@ app.post('/mcp', async (c) => {
 		validateSession: true,
 		sessionErrorMessage: 'Bad Request: missing session',
 		createSessionOnInitialize: true,
+		existingSessionId: headersLc['mcp-session-id'],
 		serverVersion: SERVER_VERSION,
 		rateLimitKv: c.env.RATE_LIMIT,
 		quotaCoordinator: c.env.QUOTA_COORDINATOR,
@@ -374,7 +376,7 @@ app.post('/mcp', async (c) => {
 		analytics,
 		profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 		waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
-		scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
+		scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 		cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 		secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 		secondaryDohToken: c.env.BV_DOH_TOKEN,
@@ -495,8 +497,7 @@ app.post('/mcp/messages', async (c) => {
 				tierAuthResult,
 				userAgent: headersLc['user-agent'],
 				sessionId,
-				validateSession: true,
-				sessionErrorMessage: 'Bad Request: missing session',
+				validateSession: false, // Session already validated at line ~450 (early HTTP 404 check)
 				createSessionOnInitialize: false,
 				existingSessionId: sessionId,
 				serverVersion: SERVER_VERSION,
