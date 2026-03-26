@@ -2,6 +2,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { parseScoringConfig, DEFAULT_SCORING_CONFIG, toImportanceRecord } from '../../scoring';
+import { PROFILE_WEIGHTS } from '../../scoring/profiles';
 
 describe('parseScoringConfig', () => {
 	it('returns defaults when input is undefined', () => {
@@ -124,7 +125,7 @@ describe('scoring v2 config', () => {
 
 	it('DEFAULT_SCORING_CONFIG has coreWeights', () => {
 		expect(DEFAULT_SCORING_CONFIG.coreWeights).toEqual({
-			dmarc: 16, dkim: 10, spf: 10, dnssec: 8, ssl: 8,
+			dmarc: 16, dkim: 10, spf: 10, dnssec: 10, ssl: 8,
 		});
 	});
 
@@ -175,5 +176,19 @@ describe('toImportanceRecord', () => {
 		const result = toImportanceRecord({ spf: 10, dmarc: 22 });
 		expect(result.spf).toEqual({ importance: 10 });
 		expect(result.dmarc).toEqual({ importance: 22 });
+	});
+});
+
+describe('config profileWeights consistency', () => {
+	it('DEFAULT_SCORING_CONFIG.profileWeights matches PROFILE_WEIGHTS for all profiles', () => {
+		for (const profile of Object.keys(PROFILE_WEIGHTS) as Array<keyof typeof PROFILE_WEIGHTS>) {
+			const configWeights = DEFAULT_SCORING_CONFIG.profileWeights[profile];
+			const profileWeights = PROFILE_WEIGHTS[profile];
+			for (const [key, value] of Object.entries(profileWeights)) {
+				expect(configWeights[key as keyof typeof configWeights],
+					`${profile}.${key}: config=${configWeights[key as keyof typeof configWeights]}, profiles=${value.importance}`
+				).toBe(value.importance);
+			}
+		}
 	});
 });
