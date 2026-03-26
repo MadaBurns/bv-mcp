@@ -18,6 +18,7 @@ export interface TierAuthResult {
 }
 
 const TIER_KV_CACHE_TTL = 300; // 5 minutes
+const VALID_TIERS: ReadonlySet<string> = new Set<McpApiKeyTier>(['free', 'agent', 'developer', 'enterprise', 'partner']);
 
 /** SHA-256 hash a bearer token to a hex string (for KV keys and service binding payloads). */
 async function hashToken(token: string): Promise<string> {
@@ -63,9 +64,20 @@ export async function resolveTier(
 		try {
 			const cached = await env.RATE_LIMIT.get(`tier:${keyHash}`);
 			if (cached) {
-				const parsed = JSON.parse(cached) as { tier: string; revokedAt: number | null };
-				if (parsed.revokedAt) return { authenticated: false };
-				return { authenticated: true, tier: parsed.tier as McpApiKeyTier, keyHash };
+				const parsed = JSON.parse(cached) as Record<string, unknown>;
+				// Runtime validation: tier must be a valid McpApiKeyTier string,
+				// revokedAt must be null or a number
+				if (
+					typeof parsed.tier !== 'string' ||
+					!VALID_TIERS.has(parsed.tier) ||
+					(parsed.revokedAt !== null && typeof parsed.revokedAt !== 'number')
+				) {
+					// Corrupted cache entry — delete and fall through to service binding
+					await env.RATE_LIMIT.delete(`tier:${keyHash}`);
+				} else {
+					if (parsed.revokedAt) return { authenticated: false };
+					return { authenticated: true, tier: parsed.tier as McpApiKeyTier, keyHash };
+				}
 			}
 		} catch {
 			// Invalid cache entry, fall through

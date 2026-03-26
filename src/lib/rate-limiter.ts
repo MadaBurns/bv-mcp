@@ -27,6 +27,7 @@ import {
 	checkScopedRateLimitWithCoordinator,
 	checkToolDailyRateLimitWithCoordinator,
 } from './quota-coordinator';
+import { logError } from './log';
 
 export interface RateLimitResult {
 	allowed: boolean;
@@ -124,11 +125,14 @@ async function checkScopedRateLimitKV(
 	}
 
 	// Allowed — increment both counters (write in parallel)
+	// Use remaining window time as TTL so keys expire when their window ends
 	const newMinute = minuteCount + 1;
 	const newHour = hourCount + 1;
+	const minuteTtl = Math.max(1, Math.ceil(((minuteWindow + 1) * MINUTE_MS - now) / 1000));
+	const hourTtl = Math.max(1, Math.ceil(((hourWindow + 1) * HOUR_MS - now) / 1000));
 	await Promise.all([
-		kv.put(minuteKey, String(newMinute), { expirationTtl: 60 }),
-		kv.put(hourKey, String(newHour), { expirationTtl: 3600 }),
+		kv.put(minuteKey, String(newMinute), { expirationTtl: minuteTtl }),
+		kv.put(hourKey, String(newHour), { expirationTtl: hourTtl }),
 	]);
 
 	return {
@@ -264,7 +268,7 @@ export async function checkRateLimit(ip: string, kv?: KVNamespace, quotaCoordina
 			const coordinated = await checkScopedRateLimitWithCoordinator(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT, quotaCoordinator);
 			if (coordinated) return coordinated;
 		} catch {
-			console.warn('[rate-limiter] quota coordinator error, falling back to KV/in-memory');
+			logError('[rate-limiter] quota coordinator error, falling back to KV/in-memory');
 		}
 	}
        if (kv) {
@@ -272,7 +276,7 @@ export async function checkRateLimit(ip: string, kv?: KVNamespace, quotaCoordina
 		       return await checkRateLimitKV(ip, kv);
 	       } catch {
 		       // KV error — log warning and fall back to in-memory
-		       console.warn('[rate-limiter] KV error, falling back to in-memory');
+		       logError('[rate-limiter] KV error, falling back to in-memory');
 	       }
        }
        return checkRateLimitInMemory(ip);
@@ -292,14 +296,14 @@ export async function checkControlPlaneRateLimit(
 			const coordinated = await checkScopedRateLimitWithCoordinator(ip, 'control', CONTROL_PLANE_MINUTE_LIMIT, CONTROL_PLANE_HOUR_LIMIT, quotaCoordinator);
 			if (coordinated) return coordinated;
 		} catch {
-			console.warn('[rate-limiter] quota coordinator control-plane error, falling back to KV/in-memory');
+			logError('[rate-limiter] quota coordinator control-plane error, falling back to KV/in-memory');
 		}
 	}
 	if (kv) {
 		try {
 			return await checkControlPlaneRateLimitKV(ip, kv);
 		} catch {
-			console.warn('[rate-limiter] KV control-plane error, falling back to in-memory');
+			logError('[rate-limiter] KV control-plane error, falling back to in-memory');
 		}
 	}
 	return checkControlPlaneRateLimitInMemory(ip);
@@ -321,14 +325,14 @@ export async function checkToolDailyRateLimit(
 			const coordinated = await checkToolDailyRateLimitWithCoordinator(principalId, toolName, limit, quotaCoordinator);
 			if (coordinated) return coordinated;
 		} catch {
-			console.warn('[rate-limiter] quota coordinator tool quota error, falling back to KV/in-memory');
+			logError('[rate-limiter] quota coordinator tool quota error, falling back to KV/in-memory');
 		}
 	}
 	if (kv) {
 		try {
 			return await checkToolDailyRateLimitKV(principalId, toolName, limit, kv);
 		} catch {
-			console.warn('[rate-limiter] KV tool quota error, falling back to in-memory');
+			logError('[rate-limiter] KV tool quota error, falling back to in-memory');
 		}
 	}
 	return checkToolDailyRateLimitInMemory(principalId, toolName, limit);
@@ -348,14 +352,14 @@ export async function checkGlobalDailyLimit(
 			const coordinated = await checkGlobalDailyLimitWithCoordinator(limit, quotaCoordinator);
 			if (coordinated) return coordinated;
 		} catch {
-			console.warn('[rate-limiter] quota coordinator global cap error, falling back to KV/in-memory');
+			logError('[rate-limiter] quota coordinator global cap error, falling back to KV/in-memory');
 		}
 	}
 	if (kv) {
 		try {
 			return await checkGlobalDailyLimitKV(limit, kv);
 		} catch {
-			console.warn('[rate-limiter] KV global cap error, falling back to in-memory');
+			logError('[rate-limiter] KV global cap error, falling back to in-memory');
 		}
 	}
 	return checkGlobalDailyLimitInMemory(limit);
