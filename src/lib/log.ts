@@ -34,7 +34,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function sanitizeString(value: string): string {
-	return value.length > MAX_LOG_STRING_LENGTH ? `${value.slice(0, MAX_LOG_STRING_LENGTH)}...` : value;
+	// Strip control characters (except tab) to prevent log injection via newlines/ANSI sequences
+	const stripped = value.replace(/[\x00-\x08\x0a-\x1f\x7f]/g, ' ');
+	return stripped.length > MAX_LOG_STRING_LENGTH ? `${stripped.slice(0, MAX_LOG_STRING_LENGTH)}...` : stripped;
 }
 
 export function sanitizeLogValue(value: unknown, key?: string): unknown {
