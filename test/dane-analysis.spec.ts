@@ -83,6 +83,36 @@ describe('analyzeTlsaRecords', () => {
 		expect(mediumFinding!.title).toBe('Malformed TLSA record');
 	});
 
+	it('should deduplicate "DANE without DNSSEC" findings for the same host', () => {
+		// Two valid DANE-EE records for the same host without DNSSEC
+		const records = ['3 1 1 aabbccdd', '3 1 1 eeff0011'];
+		const findings = analyzeTlsaRecords(records, '_25._tcp.mail.protonmail.ch', false);
+		const highFindings = findings.filter((f) => f.title === 'DANE without DNSSEC');
+		expect(highFindings).toHaveLength(1);
+		expect(highFindings[0].detail).toContain('_25._tcp.mail.protonmail.ch');
+	});
+
+	it('should deduplicate "DANE TLSA configured" info findings for the same host', () => {
+		// Two valid DANE-EE records for the same host with DNSSEC
+		const records = ['3 1 1 aabbccdd', '3 1 1 eeff0011'];
+		const findings = analyzeTlsaRecords(records, '_25._tcp.mail.protonmail.ch', true);
+		const infoFindings = findings.filter((f) => f.title.startsWith('DANE TLSA configured'));
+		expect(infoFindings).toHaveLength(1);
+		expect(infoFindings[0].detail).toContain('2 DANE TLSA records');
+	});
+
+	it('should produce separate findings for different hosts', () => {
+		// One record per host, different hosts — each gets its own finding
+		const findings1 = analyzeTlsaRecords(['3 1 1 aabbccdd'], '_25._tcp.mail.protonmail.ch', false);
+		const findings2 = analyzeTlsaRecords(['3 1 1 eeff0011'], '_25._tcp.mailsec.protonmail.ch', false);
+		const highFindings1 = findings1.filter((f) => f.title === 'DANE without DNSSEC');
+		const highFindings2 = findings2.filter((f) => f.title === 'DANE without DNSSEC');
+		expect(highFindings1).toHaveLength(1);
+		expect(highFindings2).toHaveLength(1);
+		expect(highFindings1[0].detail).toContain('_25._tcp.mail.protonmail.ch');
+		expect(highFindings2[0].detail).toContain('_25._tcp.mailsec.protonmail.ch');
+	});
+
 	it('should handle multiple records with mixed validity', () => {
 		const records = ['3 1 1 aabbccdd', '5 0 0 invalid'];
 		const findings = analyzeTlsaRecords(records, '_25._tcp.mx.example.com', true);
