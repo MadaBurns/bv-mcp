@@ -1,6 +1,6 @@
 {
 	"name": "@blackveil/dns-checks",
-	"version": "1.0.2",
+	"version": "1.0.3",
 	"description": "DNS and email security check implementations for BlackVeil Security",
 	"license": "BUSL-1.1",
 	"type": "module",
@@ -16,7 +16,11 @@
 			"types": "./dist/scoring/index.d.ts"
 		}
 	},
-	"files": ["dist", "LICENSE", "README.md"],
+	"files": [
+		"dist",
+		"LICENSE",
+		"README.md"
+	],
 	"scripts": {
 		"build": "tsup",
 		"test": "vitest run",
