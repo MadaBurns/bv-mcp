@@ -49,7 +49,7 @@ import { checkDaneHttps } from './check-dane-https';
 import { checkSvcbHttps } from './check-svcb-https';
 import { applyScanPostProcessing } from './scan/post-processing';
 import type { ScanRuntimeOptions } from './scan/post-processing';
-import { computeMaturityStage } from './scan/maturity-staging';
+import { capMaturityStage, computeMaturityStage } from './scan/maturity-staging';
 import type { MaturityStage } from './scan/maturity-staging';
 export { formatScanReport, buildStructuredScanResult } from './scan/format-report';
 export type { StructuredScanResult, ScanResultEnrichment } from './scan/format-report';
@@ -293,7 +293,8 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		const { adjustedScore, effects: interactionEffects } = applyInteractionPenalties(score, runtimeOptions?.scoringConfig);
 		score = adjustedScore;
 
-		const maturity = computeMaturityStage(checkResults);
+		const rawMaturity = computeMaturityStage(checkResults);
+		const maturity = capMaturityStage(rawMaturity, score.overall);
 
 		result = {
 			domain,
@@ -348,7 +349,8 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		}
 		const fallbackScoringContext = isExplicit ? fallbackContext : undefined;
 		const score = computeScanScore(checkResults, fallbackScoringContext, runtimeOptions?.scoringConfig);
-		const maturity = computeMaturityStage(checkResults);
+		const rawMaturity = computeMaturityStage(checkResults);
+		const maturity = capMaturityStage(rawMaturity, score.overall);
 		result = {
 			domain,
 			score,
