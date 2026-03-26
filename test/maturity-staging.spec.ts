@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeMaturityStage } from '../src/tools/scan/maturity-staging';
+import { computeMaturityStage, capMaturityStage, type MaturityStage } from '../src/tools/scan/maturity-staging';
 import { buildCheckResult, createFinding } from '../src/lib/scoring';
 import type { CheckResult } from '../src/lib/scoring';
 
@@ -219,5 +219,94 @@ describe('maturity staging v2', () => {
 		];
 		const stage = computeMaturityStage(checks);
 		expect(stage.stage).toBe(3); // Only 1 hardening signal (MTA-STS), need 2
+	});
+});
+
+describe('capMaturityStage', () => {
+	const stage4: MaturityStage = {
+		stage: 4,
+		label: 'Hardened',
+		description: 'Comprehensive email and DNS security posture with defense in depth.',
+		nextStep: '',
+	};
+
+	const stage3: MaturityStage = {
+		stage: 3,
+		label: 'Enforcing',
+		description: 'Email authentication is actively enforcing — spoofed emails are blocked or quarantined.',
+		nextStep: 'Add MTA-STS, DNSSEC, and BIMI to reach full hardening.',
+	};
+
+	const stage2: MaturityStage = {
+		stage: 2,
+		label: 'Monitoring',
+		description: 'Email authentication is published and being monitored but not enforcing.',
+		nextStep: 'After reviewing DMARC reports, move to p=quarantine and ensure DKIM is active.',
+	};
+
+	const stage1: MaturityStage = {
+		stage: 1,
+		label: 'Basic',
+		description: 'Basic email records exist but are not enforcing or monitoring.',
+		nextStep: 'Add DMARC aggregate reporting (rua=) and monitor for 2-4 weeks before enforcing.',
+	};
+
+	it('caps Stage 4 to Stage 2 when score < 50 (F grade)', () => {
+		const result = capMaturityStage(stage4, 49);
+		expect(result.stage).toBe(2);
+		expect(result.label).not.toBe('Hardened');
+		expect(result.nextStep).toBeTruthy(); // should have guidance
+	});
+
+	it('caps Stage 3 to Stage 2 when score < 50 (F grade)', () => {
+		const result = capMaturityStage(stage3, 30);
+		expect(result.stage).toBe(2);
+		expect(result.label).not.toBe('Enforcing');
+	});
+
+	it('caps Stage 4 to Stage 3 when score < 63 (D/D+ grade)', () => {
+		const result = capMaturityStage(stage4, 55);
+		expect(result.stage).toBe(3);
+		expect(result.label).not.toBe('Hardened');
+		expect(result.nextStep).toBeTruthy();
+	});
+
+	it('caps Stage 4 to Stage 3 when score is exactly 50', () => {
+		const result = capMaturityStage(stage4, 50);
+		expect(result.stage).toBe(3);
+		expect(result.label).not.toBe('Hardened');
+	});
+
+	it('does NOT cap Stage 4 when score >= 63', () => {
+		const result = capMaturityStage(stage4, 63);
+		expect(result.stage).toBe(4);
+		expect(result.label).toBe('Hardened');
+	});
+
+	it('does NOT cap Stage 4 when score is high', () => {
+		const result = capMaturityStage(stage4, 92);
+		expect(result.stage).toBe(4);
+		expect(result.label).toBe('Hardened');
+	});
+
+	it('does not modify Stage 2 when score < 50 (already at cap)', () => {
+		const result = capMaturityStage(stage2, 40);
+		expect(result.stage).toBe(2);
+		expect(result.label).toBe('Monitoring');
+		expect(result.description).toBe(stage2.description); // unchanged
+	});
+
+	it('does not modify Stage 1 when score < 50 (below cap)', () => {
+		const result = capMaturityStage(stage1, 20);
+		expect(result.stage).toBe(1);
+		expect(result.label).toBe('Basic');
+		expect(result.description).toBe(stage1.description); // unchanged
+	});
+
+	it('does not modify Stage 3 when score < 63 (already at cap)', () => {
+		const result = capMaturityStage(stage3, 55);
+		expect(result.stage).toBe(3);
+		expect(result.label).toBe('Enforcing');
+		expect(result.description).toBe(stage3.description); // unchanged
 	});
 });
