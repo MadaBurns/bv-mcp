@@ -55,6 +55,56 @@ describe('scan-post-processing helpers', () => {
 		vi.doUnmock('../src/lib/dns');
 	});
 
+	it('replaces BIMI "eligible" text with non-mail explanation when domain has no MX records', async () => {
+		vi.doMock('../src/lib/dns', () => ({
+			queryTxtRecords: vi.fn().mockResolvedValue([]),
+		}));
+		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+		const results: CheckResult[] = [
+			buildCheckResult('mx', [createFinding('mx', 'No MX records found', 'info', 'No inbound mail is configured.')]),
+			buildCheckResult('bimi', [
+				createFinding(
+					'bimi',
+					'No BIMI record found',
+					'low',
+					'No BIMI record found at default._bimi.example.com. This domain has DMARC enforcement and is eligible for BIMI. Publishing a BIMI record allows email clients like Gmail and Apple Mail to display your brand logo next to your emails.',
+					{ missingControl: true },
+				),
+			]),
+		];
+
+		const updated = await applyScanPostProcessing('example.com', results);
+		const bimi = updated.find((r) => r.category === 'bimi');
+		expect(bimi?.findings[0].detail).toContain('does not appear to send email');
+		expect(bimi?.findings[0].detail).not.toContain('eligible for BIMI');
+		expect(bimi?.findings[0].severity).toBe('low');
+		expect(bimi?.findings[0].metadata?.missingControl).toBe(true);
+		vi.doUnmock('../src/lib/dns');
+	});
+
+	it('preserves BIMI "eligible" text for mail-sending domains with MX records', async () => {
+		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+		const results: CheckResult[] = [
+			buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 MX records configured.')]),
+			buildCheckResult('bimi', [
+				createFinding(
+					'bimi',
+					'No BIMI record found',
+					'low',
+					'No BIMI record found at default._bimi.example.com. This domain has DMARC enforcement and is eligible for BIMI. Publishing a BIMI record allows email clients like Gmail and Apple Mail to display your brand logo next to your emails.',
+					{ missingControl: true },
+				),
+			]),
+		];
+
+		const updated = await applyScanPostProcessing('example.com', results);
+		const bimi = updated.find((r) => r.category === 'bimi');
+		expect(bimi?.findings[0].detail).toContain('eligible for BIMI');
+		expect(bimi?.findings[0].detail).not.toContain('does not appear to send email');
+	});
+
 	it('adds outbound provider inference when SPF include domains match provider signatures', async () => {
 		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 
