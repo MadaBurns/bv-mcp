@@ -14,6 +14,8 @@ import type { DomainContext } from './profiles';
 import { PROFILE_CRITICAL_CATEGORIES, PROFILE_EMAIL_BONUS_ELIGIBLE } from './profiles';
 import type { ScoringConfig } from './config';
 import { DEFAULT_SCORING_CONFIG } from './config';
+import { computeGenericScore } from './generic';
+import type { GenericScoringContext, FindingSeverityCounts } from './generic';
 
 interface ImportanceProfile {
 	importance: number;
@@ -60,27 +62,6 @@ export const PROTECTIVE_WEIGHTS: Record<string, number> = {
 };
 
 
-function clampPercent(score: number): number {
-	return Math.max(0, Math.min(100, score));
-}
-
-function computeProviderConfidenceModifier(findings: Finding[]): number {
-	const confidences: number[] = [];
-
-	for (const finding of findings) {
-		const confidence = finding.metadata?.providerConfidence;
-		if (typeof confidence === 'number' && Number.isFinite(confidence)) {
-			confidences.push(Math.max(0, Math.min(1, confidence)));
-		}
-	}
-
-	if (confidences.length === 0) return 0;
-
-	const avgConfidence = confidences.reduce((sum, value) => sum + value, 0) / confidences.length;
-	const centered = avgConfidence - 0.5;
-	return Math.round(centered * 10);
-}
-
 /** Map numeric score to letter grade */
 export function scoreToGrade(score: number, config?: ScoringConfig): string {
 	const g = config?.grades ?? DEFAULT_SCORING_CONFIG.grades;
@@ -99,7 +80,142 @@ export function scoreToGrade(score: number, config?: ScoringConfig): string {
 const DEFAULT_CRITICAL_CATEGORIES: CheckCategory[] = ['spf', 'dmarc', 'dkim', 'ssl'];
 
 /**
+ * Build a GenericScoringContext from CheckResult[] + DomainContext.
+ *
+ * This bridges the concrete bv-mcp types (CheckResult, CheckCategory, Finding)
+ * to the generic scoring engine's string-keyed inputs.
+ */
+function buildGenericContext(
+	results: CheckResult[],
+	categoryScores: Record<CheckCategory, number>,
+	allFindings: Finding[],
+	context: DomainContext | undefined,
+	config: ScoringConfig,
+): GenericScoringContext {
+	// --- Build weights map (flat importance values) ---
+	const weights: Record<string, number> = {};
+
+	if (context) {
+		for (const category of Object.keys(context.weights) as CheckCategory[]) {
+			weights[category] = context.weights[category].importance;
+		}
+	} else {
+		// Merge core + protective from config; hardening categories get 0
+		for (const [key, value] of Object.entries(config.coreWeights)) {
+			weights[key] = value;
+		}
+		for (const [key, value] of Object.entries(config.protectiveWeights)) {
+			weights[key] = value;
+		}
+		// Ensure hardening categories are in weights (with 0 from config defaults)
+		for (const cat of Object.keys(CATEGORY_TIERS) as CheckCategory[]) {
+			if (CATEGORY_TIERS[cat] === 'hardening' && !(cat in weights)) {
+				weights[cat] = 0;
+			}
+		}
+	}
+
+	// --- Build missingControls map ---
+	// Only mark a category as missing when an actual result exists and
+	// scoreIndicatesMissingControl returns true. Absent categories must NOT
+	// be marked missing — the original engine's critical gap ceiling check
+	// requires an actual result (`result && scoreIndicatesMissingControl(...)`),
+	// and absent categories default to 100 with no zeroing.
+	const missingControls: Record<string, boolean> = {};
+	const resultMap = new Map<CheckCategory, CheckResult>();
+	for (const result of results) {
+		resultMap.set(result.category, result);
+		if (scoreIndicatesMissingControl(result.findings)) {
+			missingControls[result.category] = true;
+		}
+	}
+
+	// --- Build hardeningPassed map ---
+	// The original engine iterates ALL hardening categories from CATEGORY_TIERS (not just
+	// those with results). It uses hardeningCount = total hardening categories.
+	// A category counts as "passed" only if result exists AND result.passed is true.
+	// Categories without results don't count as passed but DO count toward the denominator.
+	//
+	// The generic engine only counts *submitted* keys in hardeningPassed toward the denominator.
+	// To match: submit ALL hardening categories, marking passed=true only for those with passing results.
+	const hardeningPassed: Record<string, boolean> = {};
+	for (const cat of Object.keys(CATEGORY_TIERS) as CheckCategory[]) {
+		if (CATEGORY_TIERS[cat] === 'hardening') {
+			const result = resultMap.get(cat);
+			// Submit all hardening categories so denominator = total hardening count.
+			// Only mark as passed if an actual result was provided AND it passed.
+			hardeningPassed[cat] = !!(result && result.passed);
+		}
+	}
+
+	// --- Extract provider confidence from findings metadata ---
+	const providerConfidence: Record<string, number> = {};
+	for (const finding of allFindings) {
+		const confidence = finding.metadata?.providerConfidence;
+		if (typeof confidence === 'number' && Number.isFinite(confidence)) {
+			// Use a synthetic key per finding to preserve the original per-finding averaging behavior.
+			// The original engine averages ALL providerConfidence values across all findings.
+			// The generic engine averages all values in the providerConfidence map.
+			const key = `_finding_${Object.keys(providerConfidence).length}`;
+			providerConfidence[key] = confidence;
+		}
+	}
+
+	// --- Build finding severity counts ---
+	// Critical penalty: original only counts findings with severity=critical AND confidence=verified.
+	// Generic applies penalty when findingSeverityCounts.critical > 0.
+	// To match: pass only verified critical findings as the critical count.
+	const verifiedCriticalCount = allFindings.filter(
+		(f) => f.severity === 'critical' && inferFindingConfidence(f) === 'verified',
+	).length;
+
+	// For critical penalty equivalence, use verified-only count as the "critical" count.
+	// The original engine only applies the penalty for verified critical findings.
+	const findingSeverityCounts: FindingSeverityCounts = {
+		critical: verifiedCriticalCount,
+		high: allFindings.filter((f) => f.severity === 'high').length,
+		medium: allFindings.filter((f) => f.severity === 'medium').length,
+		low: allFindings.filter((f) => f.severity === 'low').length,
+		info: allFindings.filter((f) => f.severity === 'info').length,
+	};
+
+	// --- Critical categories ---
+	const criticalCategories = context
+		? PROFILE_CRITICAL_CATEGORIES[context.profile]
+		: DEFAULT_CRITICAL_CATEGORIES;
+
+	// --- Email bonus eligibility ---
+	// Original engine requires actual SPF and DMARC results to exist for the bonus
+	// (!!spfResult && !!dmarcResult). Absent DKIM qualifies (dkimNotDeterministicallyMissing = !dkimResult || ...).
+	// Disable email bonus entirely when SPF or DMARC has no result to match original behavior.
+	let emailBonusEligible = context ? PROFILE_EMAIL_BONUS_ELIGIBLE[context.profile] : true;
+	if (!resultMap.has('spf') || !resultMap.has('dmarc')) {
+		emailBonusEligible = false;
+	}
+
+	// --- Build the summary-compatible severity counts ---
+	// The original summary uses ALL critical findings (not just verified) for the summary text.
+	// We store the "display" counts separately and use them to override the summary after scoring.
+	// (The findingSeverityCounts above has verifiedCriticalCount for the penalty calculation.)
+
+	return {
+		categoryScores: { ...categoryScores },
+		tierMap: { ...CATEGORY_TIERS },
+		weights,
+		missingControls,
+		hardeningPassed,
+		criticalCategories: [...criticalCategories],
+		emailBonusEligible,
+		providerConfidence: Object.keys(providerConfidence).length > 0 ? providerConfidence : undefined,
+		findingSeverityCounts,
+	};
+}
+
+/**
  * Compute the overall scan score from individual check results using the three-tier formula.
+ *
+ * Delegates to `computeGenericScore` internally, building a `GenericScoringContext` from
+ * the concrete `CheckResult[]` and optional `DomainContext`.
  *
  * Three tiers:
  * - **Core** (default 70 points): Weighted accumulation of foundational categories (SPF, DMARC, DKIM, DNSSEC, SSL).
@@ -125,10 +241,6 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 	const categoryScores = partialScores as Record<CheckCategory, number>;
 
 	const cfg = config ?? DEFAULT_SCORING_CONFIG;
-	const tierSplit = cfg.tierSplit;
-	const spfStrongThreshold = cfg.thresholds.spfStrongThreshold;
-	const criticalOverallPenalty = cfg.thresholds.criticalOverallPenalty;
-	const criticalGapCeiling = cfg.thresholds.criticalGapCeiling;
 
 	if (results.length === 0) {
 		return {
@@ -146,147 +258,30 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 		allFindings.push(...result.findings);
 	}
 
-	// --- Determine active weights per tier ---
-	// When context is provided, partition context.weights by CATEGORY_TIERS.
-	// Otherwise, use config.coreWeights and config.protectiveWeights.
-	const activeCoreWeights: Record<string, number> = {};
-	const activeProtectiveWeights: Record<string, number> = {};
+	// Build the generic context and delegate to the generic engine
+	const genericContext = buildGenericContext(results, categoryScores, allFindings, context, cfg);
+	const genericResult = computeGenericScore(genericContext, config);
 
-	if (context) {
-		for (const category of Object.keys(context.weights) as CheckCategory[]) {
-			const tier = CATEGORY_TIERS[category];
-			const weight = context.weights[category].importance;
-			if (tier === 'core') {
-				activeCoreWeights[category] = weight;
-			} else if (tier === 'protective') {
-				activeProtectiveWeights[category] = weight;
-			}
-			// Hardening categories are handled separately (binary pass/fail)
-		}
-	} else {
-		Object.assign(activeCoreWeights, cfg.coreWeights);
-		Object.assign(activeProtectiveWeights, cfg.protectiveWeights);
-	}
-
-	// --- Core tier accumulation ---
-	const coreMax = Object.values(activeCoreWeights).reduce((sum, w) => sum + w, 0);
-	let coreEarned = 0;
-
-	for (const [category, weight] of Object.entries(activeCoreWeights)) {
-		if (weight === 0) continue;
-		const cat = category as CheckCategory;
-		const result = results.find((r) => r.category === cat);
-		const rawScore = result ? clampPercent(result.score) : 100;
-		const effectiveScore = result && scoreIndicatesMissingControl(result.findings) ? 0 : rawScore;
-		coreEarned += (effectiveScore / 100) * weight;
-	}
-
-	const corePct = coreMax > 0 ? coreEarned / coreMax : 1;
-
-	// --- Protective tier accumulation ---
-	const protectiveMax = Object.values(activeProtectiveWeights).reduce((sum, w) => sum + w, 0);
-	let protectiveEarned = 0;
-
-	for (const [category, weight] of Object.entries(activeProtectiveWeights)) {
-		if (weight === 0) continue;
-		const cat = category as CheckCategory;
-		const result = results.find((r) => r.category === cat);
-		const rawScore = result ? clampPercent(result.score) : 100;
-		// Protective: NO scoreIndicatesMissingControl override
-		protectiveEarned += (rawScore / 100) * weight;
-	}
-
-	const protectivePct = protectiveMax > 0 ? protectiveEarned / protectiveMax : 1;
-
-	// --- Hardening tier (binary pass/fail) ---
-	const hardeningCategories = (Object.keys(CATEGORY_TIERS) as CheckCategory[]).filter(
-		(cat) => CATEGORY_TIERS[cat] === 'hardening',
-	);
-	const hardeningCount = hardeningCategories.length;
-	let passedHardeningCount = 0;
-
-	for (const cat of hardeningCategories) {
-		// Only count as passed if an actual result was provided AND result.passed is true.
-		// This honors missingControl metadata and scoreIndicatesMissingControl from buildCheckResult.
-		const result = results.find((r) => r.category === cat);
-		if (result && result.passed) {
-			passedHardeningCount++;
-		}
-		// If no result was submitted, the category doesn't contribute to hardening bonus
-		// (defaults to 100 in categoryScores but shouldn't count as a passed hardening check)
-	}
-
-	const hardeningPts = hardeningCount > 0
-		? (passedHardeningCount / hardeningCount) * tierSplit.hardening
-		: 0;
-
-	// --- Base score ---
-	const base = (corePct * tierSplit.core) + (protectivePct * tierSplit.protective) + hardeningPts;
-
-	// --- Email bonus ---
-	const emailBonusEligible = context ? PROFILE_EMAIL_BONUS_ELIGIBLE[context.profile] : true;
-
-	const spfResult = results.find((result) => result.category === 'spf');
-	const dkimResult = results.find((result) => result.category === 'dkim');
-	const dmarcResult = results.find((result) => result.category === 'dmarc');
-	const spfStrong = !!spfResult && !scoreIndicatesMissingControl(spfResult.findings) && spfResult.score >= spfStrongThreshold;
-	const dkimNotDeterministicallyMissing = !dkimResult || !scoreIndicatesMissingControl(dkimResult.findings);
-	const dmarcPresent = !!dmarcResult && !scoreIndicatesMissingControl(dmarcResult.findings);
-
-	let emailBonus = 0;
-	if (emailBonusEligible && spfStrong && dkimNotDeterministicallyMissing && dmarcPresent && dmarcResult) {
-		if (dmarcResult.score >= 90) {
-			emailBonus = cfg.thresholds.emailBonusFull;
-		} else if (dmarcResult.score >= 70) {
-			emailBonus = cfg.thresholds.emailBonusMid;
-		} else {
-			emailBonus = cfg.thresholds.emailBonusPartial;
-		}
-	}
-
-	// --- Provider confidence modifier ---
-	const providerModifier = computeProviderConfidenceModifier(allFindings);
-
-	// --- Critical penalty ---
-	const verifiedCriticalCount = allFindings.filter(
-		(finding) => finding.severity === 'critical' && inferFindingConfidence(finding) === 'verified',
-	).length;
-	const criticalPenalty = verifiedCriticalCount > 0 ? criticalOverallPenalty : 0;
-
-	// --- Assemble overall ---
-	const preCeiling = clampPercent(Math.round(base) + emailBonus + providerModifier - criticalPenalty);
-
-	// --- Critical gap ceiling: only Core categories in PROFILE_CRITICAL_CATEGORIES ---
-	const criticalCategories = context
-		? PROFILE_CRITICAL_CATEGORIES[context.profile]
-		: DEFAULT_CRITICAL_CATEGORIES;
-	const hasCriticalGap = criticalCategories.some((cat) => {
-		const result = results.find((r) => r.category === cat);
-		return result && scoreIndicatesMissingControl(result.findings);
-	});
-	const overall = hasCriticalGap ? Math.min(preCeiling, criticalGapCeiling) : preCeiling;
-
-	const grade = scoreToGrade(overall, config);
-
-	// --- Summary ---
-	const criticalCount = allFindings.filter((finding) => finding.severity === 'critical').length;
-	const highCount = allFindings.filter((finding) => finding.severity === 'high').length;
-	const totalIssues = allFindings.filter((finding) => finding.severity !== 'info').length;
+	// --- Build summary using original logic ---
+	// The original summary uses ALL critical findings (not just verified ones used for penalty).
+	const criticalCount = allFindings.filter((f) => f.severity === 'critical').length;
+	const highCount = allFindings.filter((f) => f.severity === 'high').length;
+	const totalIssues = allFindings.filter((f) => f.severity !== 'info').length;
 
 	let summary: string;
 	if (totalIssues === 0) {
-		summary = `Excellent! No security issues found. Grade: ${grade}`;
+		summary = `Excellent! No security issues found. Grade: ${genericResult.grade}`;
 	} else if (criticalCount > 0) {
-		summary = `${criticalCount} critical issue(s) found requiring immediate attention. Grade: ${grade}`;
+		summary = `${criticalCount} critical issue(s) found requiring immediate attention. Grade: ${genericResult.grade}`;
 	} else if (highCount > 0) {
-		summary = `${highCount} high-severity issue(s) found. Grade: ${grade}`;
+		summary = `${highCount} high-severity issue(s) found. Grade: ${genericResult.grade}`;
 	} else {
-		summary = `${totalIssues} issue(s) found. Grade: ${grade}`;
+		summary = `${totalIssues} issue(s) found. Grade: ${genericResult.grade}`;
 	}
 
 	return {
-		overall,
-		grade,
+		overall: genericResult.overall,
+		grade: genericResult.grade,
 		categoryScores,
 		findings: allFindings,
 		summary,
