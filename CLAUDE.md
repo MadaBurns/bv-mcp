@@ -8,7 +8,7 @@ Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflar
 Exposes 33 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 2.0.6 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.0.7 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -307,7 +307,9 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 - **Content-Type validation**: POST endpoints (`/mcp`, `/mcp/messages`) require `Content-Type: application/json` (with optional parameters like `charset=utf-8`). Missing Content-Type is allowed for client compatibility. Non-JSON Content-Types (`text/plain`, `application/xml`, `multipart/form-data`, etc.) are rejected with HTTP 415 Unsupported Media Type. Validated via `validateContentType()` in `mcp/request.ts`.
 - **Request body max**: 10 KB on `/mcp`
 - **IP sourcing**: only `cf-connecting-ip` — never `x-forwarded-for`
-- **Error sanitization**: only known validation errors surface; unexpected → generic message. Fallback `logError()` calls in KV/DO/session/cache/rate-limiter error paths use structured logging (`lib/log.ts`) with generic descriptions, not `console.warn()`.
+- **Error sanitization**: only known validation errors surface; unexpected → generic message. Fallback `logError()` calls in KV/DO/session/cache/rate-limiter error paths use structured logging (`lib/log.ts`) with generic descriptions, not `console.warn()`. Unknown JSON-RPC method names are NOT reflected in error responses (static `'Method not found'` message).
+- **Log injection prevention**: `sanitizeString()` in `lib/log.ts` strips control characters (except tab) from all logged strings to prevent newline/ANSI injection into structured JSON logs.
+- **Internal batch validation**: `/internal/tools/batch` validates tool names (`/^[a-z_]+$/`, max 30 chars) and allowlists extra argument keys (`ALLOWED_BATCH_ARGS`) to prevent argument injection via service binding callers.
 - **Origin validation**: MCP spec-compliant; rejects browser requests with unauthorized `Origin` header; configurable via `ALLOWED_ORIGINS` env var. Missing `Origin` header results in empty CORS (no wildcard `*`), allowing non-browser clients through without granting cross-origin access.
 - **Output sanitization**: SVG badge output (`lib/badge.ts`) XML-escapes all interpolated values and validates `color` against a hex regex. DNS-over-HTTPS responses (`lib/dns-transport.ts`) are validated for expected schema before casting. All finding `detail` strings are sanitized via `sanitizeDnsData()` in `createFinding()` to strip HTML/markdown injection from attacker-controlled DNS data. The `unescapeDnsTxt()` loop is capped at 2 iterations to prevent multi-layer decode attacks.
 - **Response body limits**: Outbound HTTP fetches to untrusted servers (MTA-STS policy, subdomain takeover probe, provider signatures) enforce body size caps (64 KB for tool checks per RFC 8461, 1 MB for provider signatures) via content-length pre-check and post-read validation.
