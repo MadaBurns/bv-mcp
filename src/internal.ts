@@ -32,7 +32,7 @@
 import { Hono } from 'hono';
 import { handleToolsCall } from './handlers/tools';
 import { createAnalyticsClient } from './lib/analytics';
-import { parseScoringConfig } from './lib/scoring-config';
+import { parseScoringConfigCached } from './lib/scoring-config';
 import { parseCacheTtl } from './lib/config';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 
@@ -102,7 +102,7 @@ internalRoutes.post('/tools/call', async (c) => {
 			analytics: createAnalyticsClient(c.env.MCP_ANALYTICS),
 			profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
-			scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
+			scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 			cacheTtlSeconds,
 			secondaryDoh: c.env.BV_DOH_ENDPOINT
 				? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN }
@@ -220,7 +220,7 @@ internalRoutes.post('/tools/batch', async (c) => {
 						analytics: createAnalyticsClient(c.env.MCP_ANALYTICS),
 						profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 						waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
-						scoringConfig: parseScoringConfig(c.env.SCORING_CONFIG),
+						scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 						cacheTtlSeconds,
 						secondaryDoh: c.env.BV_DOH_ENDPOINT
 							? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN }

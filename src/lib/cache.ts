@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { INFLIGHT_CLEANUP_MS } from './config';
+import { logError } from './log';
 
 /**
  * TTL cache for DNS scan results.
@@ -144,7 +145,7 @@ export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | un
 		       return (val ?? undefined) as T | undefined; // KV.get('json') returns unknown; generic T is caller-enforced
 	       } catch {
 		       // KV error — log warning and fall through to in-memory
-		       console.warn('[cache] KV get failed, falling back to in-memory');
+		       logError('[cache] KV get failed, falling back to in-memory');
 	       }
        }
        return IN_MEMORY_CACHE.get(key) as T | undefined;
@@ -175,7 +176,7 @@ export async function cacheSet(key: string, value: unknown, kv?: KVNamespace, tt
 		       return;
 	       } catch {
 		       // KV error — log warning and fall through to in-memory
-		       console.warn('[cache] KV put failed, falling back to in-memory');
+		       logError('[cache] KV put failed, falling back to in-memory');
 	       }
        }
        IN_MEMORY_CACHE.set(key, value, ttl * 1000);
