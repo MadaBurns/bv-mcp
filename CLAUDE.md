@@ -8,7 +8,7 @@ Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflar
 Exposes 33 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 2.0.4 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.0.6 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -77,10 +77,12 @@ src/tools/spf-trust-surface.ts — SPF trust surface analysis (multi-tenant SaaS
 src/tools/lookalike-analysis.ts — Lookalike/typosquat domain permutation generator
 src/tools/scan-domain.ts  — Parallel orchestrator for all checks → ScanScore + MaturityStage
 src/tools/scan/           — Scan sub-helpers (format-report.ts, post-processing.ts, maturity-staging.ts)
+src/tools/scan/maturity-staging.ts — computeMaturityStage() + capMaturityStage() (score-based stage capping)
+src/tools/scan/post-processing.ts — applyScanPostProcessing(), adjustForNonMailDomain(), adjustForNoSendDomain(), adjustBimiForNonMailDomain()
 src/tools/check-shadow-domains.ts — Shadow domain TLD variant discovery and email auth risk classification
 src/tools/check-txt-hygiene.ts — TXT record hygiene auditing and platform exposure mapping
 src/tools/check-http-security.ts — HTTP security header analysis (CSP, X-Frame-Options, Permissions-Policy, etc.)
-src/tools/check-dane.ts   — DANE/TLSA certificate verification for MX and HTTPS
+src/tools/check-dane.ts   — DANE/TLSA certificate verification for MX and HTTPS (findings deduplicated per host via Set; consolidated info findings with record counts)
 src/tools/check-mx-reputation.ts — Mail server DNSBL & PTR/FCrDNS validation
 src/tools/check-srv.ts    — SRV service discovery audit
 src/tools/check-zone-hygiene.ts — Zone consistency (SOA) & sensitive subdomain detection
@@ -160,11 +162,13 @@ Service binding fetch → POST /internal/tools/batch → guard middleware (rejec
 
 ### scan_domain orchestration
 
-`scan_domain` runs **16 checks** in parallel via `Promise.allSettled`: SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, BIMI, TLS-RPT, subdomain takeover, HTTP security, DANE, DANE HTTPS, SVCB HTTPS, and MX. Each has its own cache key (`cache:<domain>:check:<name>`), plus a top-level `cache:<domain>` key for the full scan result. Results are cached for 5 minutes. After scoring, `computeMaturityStage()` classifies the domain into a maturity stage (0-4: Unprotected → Hardened) based on SPF/DMARC/MTA-STS/DNSSEC presence and enforcement. Stage 3 (Enforcing) does not require DKIM. Stage 4 (Hardened) hardening signals include CAA and DKIM-discovered (in addition to BIMI/DANE/MTA-STS strict).
+`scan_domain` runs **16 checks** in parallel via `Promise.allSettled`: SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, NS, CAA, BIMI, TLS-RPT, subdomain takeover, HTTP security, DANE, DANE HTTPS, SVCB HTTPS, and MX. Each has its own cache key (`cache:<domain>:check:<name>`), plus a top-level `cache:<domain>` key for the full scan result. Results are cached for 5 minutes (both per-check and full-scan TTLs respect `cacheTtlSeconds` override when provided). The full-scan cache write uses `cacheSetDeferred()` via `waitUntil` to avoid blocking the response. `force_refresh` propagates to per-check caches via the `skipCache` param in `runWithCache()`.
+
+After scoring, `computeMaturityStage()` classifies the domain into a maturity stage (0-4: Unprotected → Hardened) based on SPF/DMARC/MTA-STS/DNSSEC presence and enforcement. Stage 3 (Enforcing) does not require DKIM. Stage 4 (Hardened) hardening signals include CAA and DKIM-discovered (in addition to BIMI/DANE/MTA-STS strict). `capMaturityStage()` then caps the stage based on overall score: F (<50) → max Stage 2, D/D+ (<63) → max Stage 3. This prevents domains with poor security scores from being labeled "Hardened."
 
 **Partial results on timeout**: When the 12s scan timeout fires, completed checks are preserved and missing checks receive a timeout finding. This avoids discarding work from checks that finished in 1-2s. Individual per-check timeouts are 8s. In scan context, secondary DNS confirmation (Google DNS fallback for empty results) is skipped for speed — individual checks retain it for accuracy.
 
-**Non-mail domain adjustment**: After all checks complete, if `check_mx` finds no MX records, `scan_domain` queries the parent domain's DMARC `sp=`/`p=` tag and then calls `adjustForNonMailDomain()` to downgrade critical/high email-auth findings (SPF, DMARC, DKIM, MTA-STS) to `info` severity. This significantly affects scores for non-mail domains.
+**Non-mail domain adjustment**: After all checks complete, if `check_mx` finds no MX records, `scan_domain` queries the parent domain's DMARC `sp=`/`p=` tag and then calls `adjustForNonMailDomain()` to downgrade critical/high email-auth findings (SPF, DMARC, DKIM, MTA-STS) to `info` severity. `adjustBimiForNonMailDomain()` also rewrites the BIMI finding detail to indicate BIMI is not applicable for non-mail domains. This significantly affects scores for non-mail domains.
 
 **No-send domain adjustment**: After all checks complete, if SPF has `noSendPolicy` metadata (indicating `v=spf1 -all` or `v=spf1 ~all` with no authorizing mechanisms), `applyScanPostProcessing()` calls `adjustForNoSendDomain()` to downgrade critical/high missing-record findings in DKIM, MTA-STS, and BIMI to `info` severity. This is separate from the non-mail adjustment (which triggers on missing MX). A domain can have MX records (for receiving) but still be a no-send domain.
 
@@ -198,7 +202,7 @@ Format resolution: `extractFormat(args)` in `tool-args.ts` → explicit paramete
 - `createFinding()` + `buildCheckResult()` from `lib/scoring-model.ts` (re-exported via `lib/scoring.ts`) — never construct findings manually. `createFinding()` auto-sanitizes `detail` via `sanitizeDnsData()` to prevent HTML/markdown injection from DNS-sourced data
 - `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs
 - `mcpError()` / `mcpText()` from `handlers/tool-formatters.ts` for MCP response formatting
-- `cacheGet()` / `cacheSet()` / `cacheSetDeferred()` from `lib/cache.ts` — supports KV and in-memory; `cacheSetDeferred()` wraps writes in `ctx.waitUntil()` to avoid blocking responses
+- `cacheGet()` / `cacheSet()` / `cacheSetDeferred()` / `runWithCache()` from `lib/cache.ts` — supports KV and in-memory; `cacheSetDeferred()` wraps writes in `ctx.waitUntil()` to avoid blocking responses; `runWithCache()` accepts optional `skipCache` param to bypass cache lookup (used by `force_refresh`)
 - JSDoc (`/** */`) on exported functions
 - `import type { ... }` for type-only imports
 - All tool functions return `Promise<CheckResult>` (follow pattern in `check-spf.ts`) and accept an optional `dnsOptions?: QueryDnsOptions` parameter for scan-context optimizations (e.g., `skipSecondaryConfirmation`)
@@ -303,12 +307,13 @@ The adaptive weights system uses telemetry from previous scans to adjust importa
 - **Content-Type validation**: POST endpoints (`/mcp`, `/mcp/messages`) require `Content-Type: application/json` (with optional parameters like `charset=utf-8`). Missing Content-Type is allowed for client compatibility. Non-JSON Content-Types (`text/plain`, `application/xml`, `multipart/form-data`, etc.) are rejected with HTTP 415 Unsupported Media Type. Validated via `validateContentType()` in `mcp/request.ts`.
 - **Request body max**: 10 KB on `/mcp`
 - **IP sourcing**: only `cf-connecting-ip` — never `x-forwarded-for`
-- **Error sanitization**: only known validation errors surface; unexpected → generic message. Fallback `console.warn()` messages in KV/DO error paths use generic descriptions without leaking error details.
+- **Error sanitization**: only known validation errors surface; unexpected → generic message. Fallback `logError()` calls in KV/DO/session/cache/rate-limiter error paths use structured logging (`lib/log.ts`) with generic descriptions, not `console.warn()`.
 - **Origin validation**: MCP spec-compliant; rejects browser requests with unauthorized `Origin` header; configurable via `ALLOWED_ORIGINS` env var. Missing `Origin` header results in empty CORS (no wildcard `*`), allowing non-browser clients through without granting cross-origin access.
 - **Output sanitization**: SVG badge output (`lib/badge.ts`) XML-escapes all interpolated values and validates `color` against a hex regex. DNS-over-HTTPS responses (`lib/dns-transport.ts`) are validated for expected schema before casting. All finding `detail` strings are sanitized via `sanitizeDnsData()` in `createFinding()` to strip HTML/markdown injection from attacker-controlled DNS data. The `unescapeDnsTxt()` loop is capped at 2 iterations to prevent multi-layer decode attacks.
 - **Response body limits**: Outbound HTTP fetches to untrusted servers (MTA-STS policy, subdomain takeover probe, provider signatures) enforce body size caps (64 KB for tool checks per RFC 8461, 1 MB for provider signatures) via content-length pre-check and post-read validation.
 - **Log sanitization**: Client IP addresses are redacted in structured JSON logs via `SENSITIVE_KEY_PATTERN` in `lib/log.ts`.
-- **Sessions**: idle TTL (2 hours), sliding refresh on validate, optional KV-backed storage via `SESSION_STORE` with in-memory fallback + dual-write (both KV and in-memory on create, in-memory-first on validate for cross-isolate resilience). Missing session → 400; expired/terminated session → 404 (per MCP spec, triggers client re-initialization). Session creation is rate-limited to 30/min per IP across both modern (`initialize`) and legacy (`GET /mcp/sse`) transports. `DELETE /mcp` accepts session ID only via the `Mcp-Session-Id` header (not query string). `GET /mcp` SSE notification stream is exempt from control plane rate limiting to prevent `mcp-remote` reconnection storms from burning through the budget.
+- **Sessions**: idle TTL (2 hours), sliding refresh on validate, optional KV-backed storage via `SESSION_STORE` with in-memory fallback + dual-write (both KV and in-memory on create, in-memory-first on validate for cross-isolate resilience). Missing session → 400; expired/terminated session → 404 (per MCP spec, triggers client re-initialization). Session creation is rate-limited to 30/min per IP across both modern (`initialize`) and legacy (`GET /mcp/sse`) transports. `DELETE /mcp` accepts session ID only via the `Mcp-Session-Id` header (not query string). `GET /mcp` SSE notification stream is exempt from control plane rate limiting to prevent `mcp-remote` reconnection storms from burning through the budget. Session IDs are validated for format (`isValidSessionIdFormat()` — exactly 64 lowercase hex chars) before any KV/memory lookup. Re-`initialize` with an existing `Mcp-Session-Id` header explicitly deletes the old session before creating a new one.
+- **Session memory management**: `SESSION_CREATE_BY_IP` map has a `MAX_SESSION_CREATE_IPS = 5000` size cap with LRU eviction; empty IP entries are removed after timestamp pruning. `LEGACY_STREAMS` map has a `MAX_LEGACY_STREAMS = 500` cap with two-phase eviction (zombies first, then oldest by creation time).
 - **Input validation**: Tool parameters with array types (`include_providers`, `mx_hosts`) are validated per-element for type, length (≤253 chars), and content (no whitespace/control chars in `mx_hosts`). The `record_type` parameter is validated against an allowlist. All validation errors use the `'Invalid'` prefix to pass through error sanitization.
 - **Rate limit serialization**: All KV-backed rate limit counters (per-IP, per-tool, global daily, session-create) are serialized within each isolate via `withIpKvLock()` to prevent intra-isolate read-modify-write races.
 - **Alerting**: Webhook URLs must use `https:` protocol; non-HTTPS and malformed URLs are silently skipped.
@@ -372,7 +377,7 @@ All scoring weights, thresholds, grade boundaries, and baseline failure rates ar
 }
 ```
 
-Parsed once per request in `index.ts` and `internal.ts` via `parseScoringConfig()`, then threaded through the call chain. Invalid JSON or non-numeric values fall back to defaults silently. The `ScoringConfig` type and `DEFAULT_SCORING_CONFIG` are in `src/lib/scoring-config.ts` (re-exported via `src/lib/scoring.ts`).
+Parsed via `parseScoringConfigCached()` in `index.ts` and `internal.ts` — a memoized wrapper around `parseScoringConfig()` that caches the result per isolate lifetime since the env var is immutable. Invalid JSON or non-numeric values fall back to defaults silently. The `ScoringConfig` type and `DEFAULT_SCORING_CONFIG` are in `src/lib/scoring-config.ts` (re-exported via `src/lib/scoring.ts`).
 
 ## Service Binding Integration
 

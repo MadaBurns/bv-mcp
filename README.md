@@ -59,7 +59,7 @@ Transport support:
 ## What you get
 
 - **57+ checks across 20 categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, lookalike domains, HTTP security headers, DANE, shadow domains, TXT hygiene, MX reputation, SRV, zone hygiene
-- **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with next steps
+- **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with score-based capping to prevent inflated labels
 - **Trust surface analysis** — detects shared SaaS platforms (Google, M365, SendGrid) and cross-references DMARC enforcement to determine real exposure
 - **Guided remediation** — `generate_fix_plan` produces prioritized actions; record generators output ready-to-publish SPF, DMARC, DKIM, and MTA-STS records
 - **Spoofability scoring** — `assess_spoofability` computes a composite 0-100 email spoofability score from SPF trust surface, DMARC enforcement, and DKIM coverage with interaction multipliers
