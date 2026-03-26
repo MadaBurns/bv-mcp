@@ -169,7 +169,17 @@ internalRoutes.post('/tools/batch', async (c) => {
 	}
 
 	const toolName = body.tool ?? 'scan_domain';
-	const extraArgs = body.arguments ?? {};
+	// Validate tool name format — reject arbitrary strings before passing to handleToolsCall
+	if (typeof toolName !== 'string' || toolName.length > 30 || !/^[a-z_]+$/.test(toolName)) {
+		return c.json({ error: 'Invalid tool name' }, 400);
+	}
+	const rawArgs = body.arguments ?? {};
+	// Allowlist safe batch extra args — strip unknown keys to prevent argument injection
+	const ALLOWED_BATCH_ARGS = new Set(['format', 'profile', 'force_refresh', 'selector', 'record_type', 'include_providers', 'mx_hosts']);
+	const extraArgs: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(rawArgs)) {
+		if (ALLOWED_BATCH_ARGS.has(k)) extraArgs[k] = v;
+	}
 	const concurrency = Math.min(Math.max(body.concurrency ?? BATCH_DEFAULT_CONCURRENCY, 1), 50);
 
 	const url = new URL(c.req.url);
