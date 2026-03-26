@@ -7,6 +7,7 @@ import {
 	SESSION_REFRESH_INTERVAL_MS,
 	SESSION_TTL_MS,
 	checkSessionCreateRateLimit,
+	isValidSessionIdFormat,
 } from '../src/lib/session';
 
 afterEach(() => {
@@ -141,5 +142,125 @@ describe('session', () => {
 		(kv.get as ReturnType<typeof vi.fn>).mockResolvedValue('30');
 		const blocked = await checkSessionCreateRateLimit('198.51.100.88', kv);
 		expect(blocked.allowed).toBe(false);
+	});
+
+	it('isValidSessionIdFormat accepts valid 64-char hex IDs', () => {
+		// Valid: 64 lowercase hex chars (32 bytes)
+		const validId = 'a'.repeat(64);
+		expect(isValidSessionIdFormat(validId)).toBe(true);
+		expect(isValidSessionIdFormat('0123456789abcdef'.repeat(4))).toBe(true);
+	});
+
+	it('isValidSessionIdFormat rejects malformed IDs', () => {
+		// Too short
+		expect(isValidSessionIdFormat('abc123')).toBe(false);
+		// Too long
+		expect(isValidSessionIdFormat('a'.repeat(65))).toBe(false);
+		// Uppercase hex
+		expect(isValidSessionIdFormat('A'.repeat(64))).toBe(false);
+		// Non-hex characters
+		expect(isValidSessionIdFormat('g'.repeat(64))).toBe(false);
+		// Empty string
+		expect(isValidSessionIdFormat('')).toBe(false);
+		// Correct length but with spaces
+		expect(isValidSessionIdFormat(' '.repeat(64))).toBe(false);
+	});
+
+	it('validateSession returns false immediately for malformed IDs without hitting KV', async () => {
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		} as unknown as KVNamespace;
+
+		// Malformed session ID — should return false without any KV calls
+		expect(await validateSession('not-a-valid-session-id', kv)).toBe(false);
+		expect(kv.get).not.toHaveBeenCalled();
+
+		// Too long ID — should return false without any KV calls
+		expect(await validateSession('a'.repeat(200), kv)).toBe(false);
+		expect(kv.get).not.toHaveBeenCalled();
+	});
+
+	it('deleteSession returns false immediately for malformed IDs without hitting KV', async () => {
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		} as unknown as KVNamespace;
+
+		expect(await deleteSession('not-valid', kv)).toBe(false);
+		expect(kv.delete).not.toHaveBeenCalled();
+	});
+
+	it('cross-isolate KV hydration uses fresh lastAccessedAt, not stale KV value', async () => {
+		const base = 1_700_000_000_000;
+		const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(base);
+
+		const kvStore = new Map<string, string>();
+		const kv = {
+			get: vi.fn(async (key: string) => {
+				const raw = kvStore.get(key);
+				return raw ? JSON.parse(raw) : null;
+			}),
+			put: vi.fn(async (key: string, value: string) => {
+				kvStore.set(key, value);
+			}),
+			delete: vi.fn(async (key: string) => {
+				kvStore.delete(key);
+			}),
+		} as unknown as KVNamespace;
+
+		// Create session in KV at base time
+		const id = await createSession(kv);
+
+		// Simulate cross-isolate: remove from in-memory but keep in KV
+		const { ACTIVE_SESSIONS } = await import('../src/lib/session-memory');
+		ACTIVE_SESSIONS.delete(id);
+
+		// Advance time significantly (but within TTL)
+		const hydrateTime = base + 30 * 60 * 1000; // 30 min later
+		nowSpy.mockReturnValue(hydrateTime);
+
+		// Validate — should hydrate from KV
+		expect(await validateSession(id, kv)).toBe(true);
+
+		// The in-memory record's lastAccessedAt should be fresh (hydrateTime),
+		// not the stale KV value (base)
+		const hydrated = ACTIVE_SESSIONS.get(id);
+		expect(hydrated).toBeDefined();
+		expect(hydrated!.lastAccessedAt).toBe(hydrateTime);
+		// createdAt should be preserved from KV
+		expect(hydrated!.createdAt).toBe(base);
+	});
+
+	it('deleteSession with KV calls only kv.delete, not kv.get', async () => {
+		const kvStore = new Map<string, string>();
+		const kv = {
+			get: vi.fn(async (key: string) => {
+				const raw = kvStore.get(key);
+				return raw ? JSON.parse(raw) : null;
+			}),
+			put: vi.fn(async (key: string, value: string) => {
+				kvStore.set(key, value);
+			}),
+			delete: vi.fn(async (key: string) => {
+				kvStore.delete(key);
+			}),
+		} as unknown as KVNamespace;
+
+		const id = await createSession(kv);
+		// Reset call counts after session creation
+		(kv.get as ReturnType<typeof vi.fn>).mockClear();
+		(kv.put as ReturnType<typeof vi.fn>).mockClear();
+		(kv.delete as ReturnType<typeof vi.fn>).mockClear();
+
+		const result = await deleteSession(id, kv);
+		expect(result).toBe(true);
+
+		// deleteSession should NOT call kv.get (no unnecessary read before delete)
+		expect(kv.get).not.toHaveBeenCalled();
+		// deleteSession SHOULD call kv.delete
+		expect(kv.delete).toHaveBeenCalledOnce();
 	});
 });
