@@ -89,8 +89,9 @@ This uses native Streamable HTTP with no bridge process. Prefer this for free-ti
 {
   "mcpServers": {
     "blackveil-dns": {
-      "command": "npx",
+      "command": "/opt/homebrew/bin/npx",
       "args": [
+        "-y",
         "mcp-remote",
         "https://dns-mcp.blackveilsecurity.com/mcp",
         "--header",
@@ -102,6 +103,23 @@ This uses native Streamable HTTP with no bridge process. Prefer this for free-ti
 ```
 
 Fully restart Claude Desktop after editing the config. Replace `YOUR_API_KEY` with your actual key.
+
+### Production Key Registration (Operators)
+
+If your production Worker enforces bearer auth, the same key must be registered on the Worker as `BV_API_KEY`.
+
+```bash
+# Set/rotate the secret (creates a new version)
+npx wrangler versions secret put BV_API_KEY -c .dev/wrangler.deploy.jsonc
+
+# Route traffic to the new version
+npx wrangler versions deploy -c .dev/wrangler.deploy.jsonc --yes
+
+# Confirm the secret is present on deployed versions
+npx wrangler versions secret list -c .dev/wrangler.deploy.jsonc
+```
+
+If the client key is valid but not registered in production, requests fail with `401 Unauthorized: missing or invalid bearer token`.
 
 **Without API key (local stdio):** If you want first-party local stdio instead of the hosted HTTP connector:
 
