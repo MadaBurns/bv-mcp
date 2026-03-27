@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.0.9] - 2026-03-27
+
+### Added
+
+- MCP tool metadata: every tool definition in `tool-schemas.ts` now includes `group` (`email_auth` | `infrastructure` | `brand_threats` | `dns_hygiene` | `intelligence` | `remediation` | `meta`), `tier` (`core` | `protective` | `hardening`, omitted for non-scoring tools), and `scanIncluded` (boolean indicating participation in `scan_domain` parallel orchestration). Fields are included in `tools/list` responses and are backward-compatible — older clients ignore them.
+- New exported types `ToolGroup` and `ToolTier` in `tool-schemas.ts`.
+- `test/tool-schemas.spec.ts`: 10-test suite validating metadata completeness, type validity, and scan-inclusion consistency for all 33 tools.
+
 ## [2.0.8] - 2026-03-27
 
 ### Security
