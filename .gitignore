@@ -23,6 +23,7 @@ Thumbs.db
 .env.local
 .env.*
 .env.*.local
+.dev.vars
 .npmrc
 .venv/
 NPM_TOKEN.md
