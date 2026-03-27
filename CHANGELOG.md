@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.0.10] - 2026-03-27
+
+### Security
+
+- Hardened release baseline with incremental security safeguards and validation cleanups.
+
+### Documentation
+
+- Refined release documentation and metadata notes for clearer operator guidance.
+
 ## [2.0.9] - 2026-03-27
 
 ### Added
