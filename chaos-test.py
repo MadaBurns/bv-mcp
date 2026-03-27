@@ -8,9 +8,14 @@ import subprocess
 import json
 import sys
 import re
+import os
 
 BASE = "https://dns-mcp.blackveilsecurity.com"
-API_KEY = "[REDACTED]"
+API_KEY = os.getenv("BV_API_KEY")
+
+if not API_KEY:
+    print("ERROR: BV_API_KEY environment variable is required.")
+    sys.exit(1)
 
 results = []
 

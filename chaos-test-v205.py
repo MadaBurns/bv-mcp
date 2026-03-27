@@ -9,10 +9,15 @@ import subprocess
 import json
 import sys
 import time
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_URL = "https://dns-mcp.blackveilsecurity.com/mcp"
-API_KEY = "[REDACTED]"
+API_KEY = os.getenv("BV_API_KEY")
+
+if not API_KEY:
+    print("ERROR: BV_API_KEY environment variable is required.")
+    sys.exit(1)
 
 # Counters
 results = {"pass": 0, "fail": 0, "error": 0}
