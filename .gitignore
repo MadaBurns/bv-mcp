@@ -74,5 +74,8 @@ plan-*.md
 out.txt
 mcp-response.txt
 
+# Brand assets (copied from bv-web, not tracked)
+.brand/
+
 # Local deploy overrides (real KV IDs, custom domains)
 .dev/
