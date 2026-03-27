@@ -18,6 +18,14 @@ Default hosted Streamable HTTP endpoint:
 
 For MCP clients, configure this endpoint directly.
 
+## Secret Hygiene (Required)
+
+- Never hardcode API keys in scripts, config examples, docs, or committed files.
+- Keep local keys in `.dev.vars` (or equivalent local-only secret store) and keep those files gitignored.
+- If a key is exposed, rotate immediately and update all client configs.
+- Before committing, run a quick secret scan (`gitleaks detect` and/or targeted `rg` checks).
+- Use placeholder values such as `YOUR_API_KEY` in documentation only.
+
 
 ## Transport Options
 
@@ -104,6 +112,8 @@ This uses native Streamable HTTP with no bridge process. Prefer this for free-ti
 
 Fully restart Claude Desktop after editing the config. Replace `YOUR_API_KEY` with your actual key.
 
+Important: do not commit `claude_desktop_config.json` if it contains live bearer tokens.
+
 ### Production Key Registration (Operators)
 
 If your production Worker enforces bearer auth, the same key must be registered on the Worker as `BV_API_KEY`.
@@ -186,6 +196,8 @@ claude mcp add-json blackveil-dns \
 ```
 
 > **Why `mcp-remote`?** Claude Code's native HTTP transport does not currently forward custom `headers` from `.mcp.json` config files. The `mcp-remote` bridge runs as a local stdio process and reliably passes the `Authorization` header to the server. Restart Claude Code after adding the server.
+
+Important: if you script this setup, source the key from environment (`BV_API_KEY`) and avoid embedding token literals in shell history.
 
 ## Cursor
 
