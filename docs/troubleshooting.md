@@ -189,6 +189,7 @@ curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
 ## 3. Common Errors
 
 - `401 Unauthorized`: Missing or invalid bearer token while auth is enabled.
+- `Bad Request: missing session`: Auth is accepted, but no `Mcp-Session-Id` was sent for a stateful method. Call `initialize` first, then include the returned session ID header on follow-up MCP calls.
 - `Invalid or missing session`: Session mismatch between client and server. Re-initialize client session and retry. Sessions expire after 2 hours of idle time.
 - `Not Found: session expired or terminated`: Session TTL (2 hours) exceeded. Most MCP clients auto-reinitialize on 404; `mcp-remote` does not — restart Claude Desktop to force a new session.
 - `429 Too Many Requests`: Rate-limited (`50/min`, `300/hr` per IP for unauthenticated `tools/call`). Note: `GET /mcp` SSE notification stream is exempt from rate limiting.

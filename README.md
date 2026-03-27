@@ -209,8 +209,9 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 {
   "mcpServers": {
     "blackveil-dns": {
-      "command": "npx",
+      "command": "/opt/homebrew/bin/npx",
       "args": [
+        "-y",
         "mcp-remote",
         "https://dns-mcp.blackveilsecurity.com/mcp",
         "--header",
@@ -269,6 +270,13 @@ claude mcp add-json blackveil-dns \
 ```
 
 > On macOS GUI apps, `npx` may not resolve from `PATH`; if Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path. After editing the config, fully restart Claude Desktop. If you already have other servers, merge `"blackveil-dns"` into your existing `"mcpServers"` object — don't paste a second `{ }` wrapper.
+
+If you operate this Worker with bearer auth enabled, also register the same value as the production Worker secret:
+
+```bash
+npx wrangler versions secret put BV_API_KEY -c .dev/wrangler.deploy.jsonc
+npx wrangler versions deploy -c .dev/wrangler.deploy.jsonc --yes
+```
 
 </details>
 
