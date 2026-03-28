@@ -43,6 +43,12 @@ describe('DkimSelectorSchema', () => {
 	it('accepts selector with hyphens', () => {
 		expect(DkimSelectorSchema.parse('s1-2024')).toBe('s1-2024');
 	});
+	it('lowercases selector input', () => {
+		expect(DkimSelectorSchema.parse('Google')).toBe('google');
+	});
+	it('trims whitespace from selector', () => {
+		expect(DkimSelectorSchema.parse('  google  ')).toBe('google');
+	});
 	it('rejects selector starting with hyphen', () => {
 		expect(() => DkimSelectorSchema.parse('-invalid')).toThrow();
 	});
@@ -69,6 +75,13 @@ describe('ProfileSchema', () => {
 			expect(ProfileSchema.parse(p)).toBe(p);
 		}
 	});
+	it('normalizes uppercase input to lowercase', () => {
+		expect(ProfileSchema.parse('AUTO')).toBe('auto');
+		expect(ProfileSchema.parse('Mail_Enabled')).toBe('mail_enabled');
+	});
+	it('trims whitespace', () => {
+		expect(ProfileSchema.parse('  auto  ')).toBe('auto');
+	});
 	it('rejects invalid profile', () => {
 		expect(() => ProfileSchema.parse('invalid')).toThrow();
 	});
@@ -87,6 +100,13 @@ describe('FormatSchema', () => {
 	it('accepts full and compact', () => {
 		expect(FormatSchema.parse('full')).toBe('full');
 		expect(FormatSchema.parse('compact')).toBe('compact');
+	});
+	it('normalizes uppercase input', () => {
+		expect(FormatSchema.parse('FULL')).toBe('full');
+		expect(FormatSchema.parse('COMPACT')).toBe('compact');
+	});
+	it('trims whitespace', () => {
+		expect(FormatSchema.parse('  full  ')).toBe('full');
 	});
 	it('rejects other strings', () => {
 		expect(() => FormatSchema.parse('verbose')).toThrow();
