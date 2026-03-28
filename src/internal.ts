@@ -30,11 +30,13 @@
  */
 
 import { Hono } from 'hono';
+import { ZodError } from 'zod';
 import { handleToolsCall } from './handlers/tools';
 import { createAnalyticsClient } from './lib/analytics';
 import { parseScoringConfigCached } from './lib/scoring-config';
 import { parseCacheTtl } from './lib/config';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
+import { InternalToolCallSchema, BatchRequestSchema } from './schemas/internal';
 
 type InternalEnv = {
 	SCAN_CACHE?: KVNamespace;
@@ -77,9 +79,14 @@ internalRoutes.use('*', async (c, next) => {
  * Response body: { "content": McpContent[], "isError"?: boolean }
  */
 internalRoutes.post('/tools/call', async (c) => {
-	const body = await c.req.json<{ name: string; arguments?: Record<string, unknown> }>();
-
-	if (!body.name || typeof body.name !== 'string') {
+	let body: { name: string; arguments?: Record<string, unknown> };
+	try {
+		const raw = await c.req.json();
+		body = InternalToolCallSchema.parse(raw);
+	} catch (err) {
+		if (err instanceof ZodError) {
+			return c.json({ content: [{ type: 'text', text: `Invalid ${err.issues[0].path.join('.')}: ${err.issues[0].message}` }], isError: true }, 400);
+		}
 		return c.json({ content: [{ type: 'text', text: 'Missing required field: name' }], isError: true }, 400);
 	}
 
@@ -123,9 +130,6 @@ internalRoutes.post('/tools/call', async (c) => {
 /** Default concurrency for batch endpoint. */
 const BATCH_DEFAULT_CONCURRENCY = 10;
 
-/** Maximum domains per batch request. */
-const BATCH_MAX_DOMAINS = 500;
-
 /** Maximum request body size for batch endpoint (256 KB). */
 const BATCH_MAX_BODY_BYTES = 262_144;
 
@@ -153,34 +157,26 @@ internalRoutes.post('/tools/batch', async (c) => {
 		return c.json({ error: `Request body exceeds maximum of ${BATCH_MAX_BODY_BYTES} bytes` }, 413);
 	}
 
-	const body = JSON.parse(raw) as {
-		domains: string[];
-		tool?: string;
-		arguments?: Record<string, unknown>;
-		concurrency?: number;
-	};
-
-	if (!Array.isArray(body.domains) || body.domains.length === 0) {
-		return c.json({ error: 'Missing required field: domains (non-empty array)' }, 400);
+	let body: { tool: string; domains: string[]; arguments?: Record<string, unknown>; concurrency?: number };
+	try {
+		const parsed = JSON.parse(raw);
+		body = BatchRequestSchema.parse(parsed);
+	} catch (err) {
+		if (err instanceof ZodError) {
+			return c.json({ error: `Invalid ${err.issues[0].path.join('.')}: ${err.issues[0].message}` }, 400);
+		}
+		return c.json({ error: 'Invalid request body' }, 400);
 	}
 
-	if (body.domains.length > BATCH_MAX_DOMAINS) {
-		return c.json({ error: `Batch size exceeds maximum of ${BATCH_MAX_DOMAINS} domains` }, 400);
-	}
-
-	const toolName = body.tool ?? 'scan_domain';
-	// Validate tool name format — reject arbitrary strings before passing to handleToolsCall
-	if (typeof toolName !== 'string' || toolName.length > 30 || !/^[a-z_]+$/.test(toolName)) {
-		return c.json({ error: 'Invalid tool name' }, 400);
-	}
+	const toolName = body.tool;
 	const rawArgs = body.arguments ?? {};
-	// Allowlist safe batch extra args — strip unknown keys to prevent argument injection
+	// ALLOWED_BATCH_ARGS filtering stays (security allowlist, not shape validation)
 	const ALLOWED_BATCH_ARGS = new Set(['format', 'profile', 'force_refresh', 'selector', 'record_type', 'include_providers', 'mx_hosts']);
 	const extraArgs: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(rawArgs)) {
 		if (ALLOWED_BATCH_ARGS.has(k)) extraArgs[k] = v;
 	}
-	const concurrency = Math.min(Math.max(body.concurrency ?? BATCH_DEFAULT_CONCURRENCY, 1), 50);
+	const concurrency = body.concurrency ?? BATCH_DEFAULT_CONCURRENCY;
 
 	const url = new URL(c.req.url);
 	const wantStructured = url.searchParams.get('format') === 'structured';
