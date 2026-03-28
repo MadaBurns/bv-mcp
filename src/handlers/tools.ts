@@ -34,7 +34,7 @@ import { assessSpoofability, formatSpoofability } from '../tools/assess-spoofabi
 import { checkResolverConsistency, formatResolverConsistency } from '../tools/check-resolver-consistency';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
-import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName } from './tool-args';
+import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
 import type { OutputFormat } from './tool-args';
 import { logToolFailure, logToolSuccess } from './tool-execution';
 import { formatCheckResult, mcpError, mcpText } from './tool-formatters';
@@ -196,25 +196,26 @@ export async function handleToolsCall(
 	let logResult: string | undefined;
 	let logDetails: unknown;
 	try {
+		const validatedArgs = validateToolArgs(name, args);
 		// Extract and validate domain for tools that need it
 		// (skip for explain_finding, get_benchmark, get_provider_insights which don't require a domain)
 		const DOMAIN_OPTIONAL_TOOLS = new Set(['explain_finding', 'get_benchmark', 'get_provider_insights']);
 		if (!DOMAIN_OPTIONAL_TOOLS.has(name)) {
-			domain = extractAndValidateDomain(args);
+			domain = extractAndValidateDomain(validatedArgs);
 		}
 		// `validDomain` is guaranteed to be a string for all branches that use it
 		const validDomain: string = domain ?? '';
 
-		const effectiveFormat = resolveFormat(args, runtimeOptions?.clientType);
+		const effectiveFormat = resolveFormat(validatedArgs, runtimeOptions?.clientType);
 		const interactive = isInteractiveClient(runtimeOptions?.clientType);
 
 		const executeDispatch = async (): Promise<McpToolResult> => {
 			// Dispatch to the appropriate tool — check registry first, then special cases
 			const registeredTool = TOOL_REGISTRY[name];
 			if (registeredTool) {
-				const checkName = registeredTool.cacheKey(args);
+				const checkName = registeredTool.cacheKey(validatedArgs);
 				const cacheKey = `cache:${validDomain}:check:${checkName}`;
-				const result = await runWithCache(cacheKey, () => registeredTool.execute(validDomain, args, runtimeOptions), scanCacheKV, registeredTool.cacheTtlSeconds);
+				const result = await runWithCache(cacheKey, () => registeredTool.execute(validDomain, validatedArgs, runtimeOptions), scanCacheKV, registeredTool.cacheTtlSeconds);
 				runtimeOptions?.resultCapture?.(result);
 				logResult = result.passed ? 'pass' : 'fail';
 				logDetails = result;
@@ -235,8 +236,8 @@ export async function handleToolsCall(
 
 			switch (name) {
 				case 'scan_domain': {
-					const profile = extractScanProfile(args);
-					const forceRefresh = extractForceRefresh(args);
+					const profile = extractScanProfile(validatedArgs);
+					const forceRefresh = extractForceRefresh(validatedArgs);
 					const scanOptions = { ...runtimeOptions, ...(profile && { profile }), ...(forceRefresh && { forceRefresh }) };
 					const result = await scanDomain(validDomain, scanCacheKV, scanOptions);
 					logResult = result.score.grade;
@@ -263,7 +264,7 @@ export async function handleToolsCall(
 					return { content };
 				}
 				case 'compare_baseline': {
-					const baseline = extractBaseline(args) as PolicyBaseline;
+					const baseline = extractBaseline(validatedArgs) as PolicyBaseline;
 					const scan = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
 					const result = compareBaseline(scan, baseline);
 					logResult = result.passed ? 'pass' : 'fail';
@@ -303,7 +304,7 @@ export async function handleToolsCall(
 					return { content: [mcpText(formatFixPlan(plan, effectiveFormat))] };
 				}
 				case 'generate_spf_record': {
-					const includeProviders = extractIncludeProviders(args);
+					const includeProviders = extractIncludeProviders(validatedArgs);
 					const record = await generateSpfRecord(validDomain, includeProviders, buildDnsOptions(runtimeOptions));
 					logToolSuccess({
 						toolName: name,
@@ -321,8 +322,8 @@ export async function handleToolsCall(
 					return { content: [mcpText(formatGeneratedRecord(record, effectiveFormat))] };
 				}
 				case 'generate_dmarc_record': {
-					const policy = typeof args.policy === 'string' ? args.policy as 'none' | 'quarantine' | 'reject' : undefined;
-					const ruaEmail = typeof args.rua_email === 'string' ? args.rua_email : undefined;
+					const policy = typeof validatedArgs.policy === 'string' ? validatedArgs.policy as 'none' | 'quarantine' | 'reject' : undefined;
+					const ruaEmail = typeof validatedArgs.rua_email === 'string' ? validatedArgs.rua_email : undefined;
 					const record = await generateDmarcRecord(validDomain, policy, ruaEmail, buildDnsOptions(runtimeOptions));
 					logToolSuccess({
 						toolName: name,
@@ -340,7 +341,7 @@ export async function handleToolsCall(
 					return { content: [mcpText(formatGeneratedRecord(record, effectiveFormat))] };
 				}
 				case 'generate_dkim_config': {
-					const provider = typeof args.provider === 'string' ? args.provider : undefined;
+					const provider = typeof validatedArgs.provider === 'string' ? validatedArgs.provider : undefined;
 					const record = await generateDkimConfig(validDomain, provider);
 					logToolSuccess({
 						toolName: name,
@@ -358,7 +359,7 @@ export async function handleToolsCall(
 					return { content: [mcpText(formatGeneratedRecord(record, effectiveFormat))] };
 				}
 				case 'generate_mta_sts_policy': {
-					const mxHosts = extractMxHosts(args);
+					const mxHosts = extractMxHosts(validatedArgs);
 					const record = await generateMtaStsPolicy(validDomain, mxHosts, buildDnsOptions(runtimeOptions));
 					logToolSuccess({
 						toolName: name,
@@ -376,7 +377,7 @@ export async function handleToolsCall(
 					return { content: [mcpText(formatGeneratedRecord(record, effectiveFormat))] };
 				}
 				case 'get_benchmark': {
-					const profile = typeof args.profile === 'string' ? args.profile : 'mail_enabled';
+					const profile = typeof validatedArgs.profile === 'string' ? validatedArgs.profile : 'mail_enabled';
 					const result = await getBenchmark(runtimeOptions?.profileAccumulator, profile);
 					logToolSuccess({
 						toolName: name,
@@ -393,11 +394,11 @@ export async function handleToolsCall(
 					return { content: [mcpText(formatBenchmark(result, effectiveFormat))] };
 				}
 				case 'get_provider_insights': {
-					const provider = typeof args.provider === 'string' ? args.provider : '';
+					const provider = typeof validatedArgs.provider === 'string' ? validatedArgs.provider : '';
 					if (!provider) {
 						return buildToolErrorResult('Missing required parameter: provider');
 					}
-					const profile = typeof args.profile === 'string' ? args.profile : 'mail_enabled';
+					const profile = typeof validatedArgs.profile === 'string' ? validatedArgs.profile : 'mail_enabled';
 					const result = await getProviderInsights(runtimeOptions?.profileAccumulator, provider, profile);
 					logToolSuccess({
 						toolName: name,
@@ -433,7 +434,7 @@ export async function handleToolsCall(
 					return { content: [mcpText(formatSpoofability(result, effectiveFormat))] };
 				}
 				case 'check_resolver_consistency': {
-					const recordType = extractRecordType(args);
+					const recordType = extractRecordType(validatedArgs);
 					const result = await checkResolverConsistency(validDomain, recordType);
 					runtimeOptions?.resultCapture?.(result);
 					logResult = result.passed ? 'pass' : 'fail';
@@ -456,7 +457,7 @@ export async function handleToolsCall(
 				case 'explain_finding': {
 					let explainArgs: ReturnType<typeof extractExplainFindingArgs>;
 					try {
-						explainArgs = extractExplainFindingArgs(args);
+						explainArgs = extractExplainFindingArgs(validatedArgs);
 					} catch {
 						return handleExplainFindingValidationError(args, Date.now() - startTime, runtimeOptions);
 					}
