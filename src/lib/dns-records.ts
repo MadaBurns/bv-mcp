@@ -2,6 +2,7 @@
 
 import { queryDns } from './dns-transport';
 import { RecordType, type QueryDnsOptions, type RecordTypeName } from './dns-types';
+import { CaaRecordSchema, TlsaRecordSchema } from '../schemas/dns';
 
 /** Parsed CAA record with flags, tag, and value */
 export interface CaaRecord {
@@ -123,16 +124,18 @@ export function parseCaaRecord(data: string): CaaRecord | null {
 			.map((hexByte) => String.fromCharCode(parseInt(hexByte, 16)))
 			.join('');
 
-		return { flags, tag: tag.toLowerCase(), value };
+		const record = { flags, tag: tag.toLowerCase(), value };
+		return CaaRecordSchema.safeParse(record).success ? record : null;
 	}
 
 	const match = data.match(/^(\d+)\s+(\S+)\s+"?([^"]*)"?\s*$/);
 	if (match) {
-		return {
+		const record = {
 			flags: parseInt(match[1], 10),
 			tag: match[2].toLowerCase(),
 			value: match[3],
 		};
+		return CaaRecordSchema.safeParse(record).success ? record : null;
 	}
 
 	return null;
@@ -212,7 +215,8 @@ export function parseTlsaRecord(data: string): TlsaRecord | null {
 		if (isNaN(usage) || isNaN(selector) || isNaN(matchingType)) return null;
 
 		const certData = hexBytes.slice(3).join('');
-		return { usage, selector, matchingType, certData };
+		const record = { usage, selector, matchingType, certData };
+		return TlsaRecordSchema.safeParse(record).success ? record : null;
 	}
 
 	const parts = data.trim().split(/\s+/);
@@ -224,5 +228,6 @@ export function parseTlsaRecord(data: string): TlsaRecord | null {
 	if (isNaN(usage) || isNaN(selector) || isNaN(matchingType)) return null;
 
 	const certData = parts.slice(3).join('');
-	return { usage, selector, matchingType, certData };
+	const record = { usage, selector, matchingType, certData };
+	return TlsaRecordSchema.safeParse(record).success ? record : null;
 }
