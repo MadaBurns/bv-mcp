@@ -10,6 +10,7 @@
  */
 
 import type { McpApiKeyTier } from './config';
+import { TierCacheEntrySchema, ValidateKeyResponseSchema } from '../schemas/auth';
 
 export interface TierAuthResult {
 	authenticated: boolean;
@@ -18,7 +19,6 @@ export interface TierAuthResult {
 }
 
 const TIER_KV_CACHE_TTL = 300; // 5 minutes
-const VALID_TIERS: ReadonlySet<string> = new Set<McpApiKeyTier>(['free', 'agent', 'developer', 'enterprise', 'partner']);
 
 /** SHA-256 hash a bearer token to a hex string (for KV keys and service binding payloads). */
 async function hashToken(token: string): Promise<string> {
@@ -64,19 +64,13 @@ export async function resolveTier(
 		try {
 			const cached = await env.RATE_LIMIT.get(`tier:${keyHash}`);
 			if (cached) {
-				const parsed = JSON.parse(cached) as Record<string, unknown>;
-				// Runtime validation: tier must be a valid McpApiKeyTier string,
-				// revokedAt must be null or a number
-				if (
-					typeof parsed.tier !== 'string' ||
-					!VALID_TIERS.has(parsed.tier) ||
-					(parsed.revokedAt !== null && typeof parsed.revokedAt !== 'number')
-				) {
-					// Corrupted cache entry — delete and fall through to service binding
+				const raw = JSON.parse(cached);
+				const cacheResult = TierCacheEntrySchema.safeParse(raw);
+				if (!cacheResult.success) {
 					await env.RATE_LIMIT.delete(`tier:${keyHash}`);
 				} else {
-					if (parsed.revokedAt) return { authenticated: false };
-					return { authenticated: true, tier: parsed.tier as McpApiKeyTier, keyHash };
+					if (cacheResult.data.revokedAt) return { authenticated: false };
+					return { authenticated: true, tier: cacheResult.data.tier as McpApiKeyTier, keyHash };
 				}
 			}
 		} catch {
@@ -99,8 +93,10 @@ export async function resolveTier(
 			);
 
 			if (response.ok) {
-				const data = (await response.json()) as { tier: string | null; revokedAt?: number | null };
-				if (data.tier) {
+				const rawData = await response.json();
+				const keyResult = ValidateKeyResponseSchema.safeParse(rawData);
+				if (keyResult.success) {
+					const data = keyResult.data;
 					// Cache the valid tier result
 					if (env.RATE_LIMIT) {
 						await env.RATE_LIMIT.put(

@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import { ZodError } from 'zod';
 import { validateDomain, sanitizeDomain } from '../lib/sanitize';
+import { TOOL_SCHEMA_MAP } from '../schemas/tool-args';
+import type { OutputFormat, Profile } from '../schemas/primitives';
+
+export type { OutputFormat };
 
 const TOOL_ALIASES: Record<string, string> = {
 	scan: 'scan_domain',
@@ -9,6 +14,49 @@ const TOOL_ALIASES: Record<string, string> = {
 export function normalizeToolName(name: string): string {
 	const normalized = name.trim().toLowerCase();
 	return TOOL_ALIASES[normalized] ?? normalized;
+}
+
+/** Return true if the Zod issue represents a missing (undefined) field. */
+function isMissingField(issue: ZodError['issues'][number]): boolean {
+	// Zod v4: invalid_type when received is undefined (message contains "received undefined")
+	return issue.code === 'invalid_type' && issue.message.includes('received undefined');
+}
+
+/** Format a ZodError into an error message matching the existing prefix convention. */
+function formatZodError(err: ZodError, toolName?: string): string {
+	const issue = err.issues[0];
+	const path = issue.path.join('.');
+
+	// explain_finding: both checkType and status are required — keep old plural message
+	if (toolName === 'explain_finding' && (path === 'checkType' || path === 'status')) {
+		if (isMissingField(issue) || issue.code === 'invalid_value') {
+			return 'Missing required parameters: checkType and status';
+		}
+	}
+
+	// check_dkim selector: map to the expected "Invalid DKIM selector" prefix
+	if (path === 'selector') {
+		return `Invalid DKIM selector: ${issue.message}`;
+	}
+
+	if (isMissingField(issue)) {
+		return `Missing required parameter: ${path}`;
+	}
+	return `Invalid ${path}: ${issue.message}`;
+}
+
+/** Validate tool arguments against the tool's Zod schema. Throws with prefixed error message. */
+export function validateToolArgs(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+	const schema = TOOL_SCHEMA_MAP[toolName];
+	if (!schema) return args;
+	try {
+		return schema.parse(args) as Record<string, unknown>;
+	} catch (err) {
+		if (err instanceof ZodError) {
+			throw new Error(formatZodError(err, toolName));
+		}
+		throw err;
+	}
 }
 
 export function extractAndValidateDomain(args: Record<string, unknown>): string {
@@ -27,183 +75,59 @@ export function extractAndValidateDomain(args: Record<string, unknown>): string 
 	return sanitized;
 }
 
+/** Extract DKIM selector from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractDkimSelector(args: Record<string, unknown>): string | undefined {
-	if (typeof args.selector !== 'string' || args.selector.trim().length === 0) {
-		return undefined;
-	}
-	const selector = args.selector.trim().toLowerCase();
-	if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(selector) || selector.length > 63) {
-		throw new Error('Invalid DKIM selector: must be a valid DNS label (alphanumeric and hyphens, max 63 chars)');
-	}
-	return selector;
+	const selector = args.selector;
+	if (typeof selector !== 'string' || selector.trim().length === 0) return undefined;
+	return selector.trim().toLowerCase();
 }
 
-const VALID_PROFILES = ['auto', 'mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal'] as const;
-
-/** Extract and validate the optional scoring profile parameter. */
-export function extractScanProfile(args: Record<string, unknown>): typeof VALID_PROFILES[number] | undefined {
+/** Extract scoring profile from pre-validated args. Requires prior validateToolArgs() call. */
+export function extractScanProfile(args: Record<string, unknown>): Profile | undefined {
 	const profile = args.profile;
-	if (profile === undefined || profile === null) return undefined;
-	if (typeof profile !== 'string') {
-		throw new Error('Invalid profile: must be a string');
-	}
-	const normalized = profile.trim().toLowerCase();
-	if (!(VALID_PROFILES as readonly string[]).includes(normalized)) {
-		throw new Error(`Invalid profile: must be one of ${VALID_PROFILES.join(', ')}`);
-	}
-	return normalized as typeof VALID_PROFILES[number];
+	if (typeof profile !== 'string') return undefined;
+	return profile as Profile;
 }
 
-/** Extract the optional force_refresh boolean parameter. */
+/** Extract force_refresh flag from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractForceRefresh(args: Record<string, unknown>): boolean {
-	const force = args.force_refresh;
-	if (force === undefined || force === null) return false;
-	if (typeof force !== 'boolean') {
-		throw new Error('Invalid force_refresh: must be a boolean');
-	}
-	return force;
+	return (args.force_refresh as boolean) ?? false;
 }
 
-const VALID_GRADES = new Set(['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'E', 'F']);
-
-/** Extract and validate the optional baseline parameter for compare_baseline. */
+/** Extract baseline object from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractBaseline(args: Record<string, unknown>): Record<string, unknown> {
-	const raw = args.baseline;
-	if (raw === undefined || raw === null) return {};
-	if (typeof raw !== 'object' || Array.isArray(raw)) {
-		throw new Error('Invalid baseline: must be an object');
-	}
-	const b = raw as Record<string, unknown>;
-	const result: Record<string, unknown> = {};
-	if (b.grade !== undefined) {
-		if (typeof b.grade !== 'string' || !VALID_GRADES.has(b.grade.toUpperCase())) {
-			throw new Error('Invalid baseline grade');
-		}
-		result.grade = b.grade;
-	}
-	if (b.score !== undefined) {
-		if (typeof b.score !== 'number' || b.score < 0 || b.score > 100) {
-			throw new Error('Invalid baseline score: must be 0-100');
-		}
-		result.score = b.score;
-	}
-	for (const key of ['require_dmarc_enforce', 'require_spf', 'require_dkim', 'require_dnssec', 'require_mta_sts', 'require_caa'] as const) {
-		if (b[key] !== undefined) {
-			if (typeof b[key] !== 'boolean') {
-				throw new Error(`Invalid baseline ${key}: must be boolean`);
-			}
-			result[key] = b[key];
-		}
-	}
-	for (const key of ['max_critical_findings', 'max_high_findings'] as const) {
-		if (b[key] !== undefined) {
-			if (typeof b[key] !== 'number' || b[key]! < 0 || !Number.isInteger(b[key])) {
-				throw new Error(`Invalid baseline ${key}: must be a non-negative integer`);
-			}
-			result[key] = b[key];
-		}
-	}
-	return result;
+	return (args.baseline as Record<string, unknown>) ?? {};
 }
 
-export type OutputFormat = 'full' | 'compact';
-
-const VALID_FORMATS: readonly OutputFormat[] = ['full', 'compact'] as const;
-
-/** Extract and validate the optional output format parameter. */
+/** Extract output format from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractFormat(args: Record<string, unknown>): OutputFormat | undefined {
-	const format = args.format;
-	if (format === undefined || format === null) return undefined;
-	if (typeof format !== 'string') {
-		throw new Error('Invalid format: must be a string');
-	}
-	const normalized = format.trim().toLowerCase();
-	if (!(VALID_FORMATS as readonly string[]).includes(normalized)) {
-		throw new Error(`Invalid format: must be one of ${VALID_FORMATS.join(', ')}`);
-	}
-	return normalized as OutputFormat;
+	return (args.format as OutputFormat) ?? undefined;
 }
 
-const VALID_RECORD_TYPES = ['A', 'AAAA', 'MX', 'TXT', 'NS', 'CNAME', 'SOA', 'CAA'] as const;
-
-/** Extract and validate the optional record_type parameter for check_resolver_consistency. */
+/** Extract DNS record type from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractRecordType(args: Record<string, unknown>): string | undefined {
-	const recordType = args.record_type;
-	if (recordType === undefined || recordType === null) return undefined;
-	if (typeof recordType !== 'string') {
-		throw new Error('Invalid record_type: must be a string');
-	}
-	const normalized = recordType.trim().toUpperCase();
-	if (!(VALID_RECORD_TYPES as readonly string[]).includes(normalized)) {
-		throw new Error(`Invalid record_type: must be one of ${VALID_RECORD_TYPES.join(', ')}`);
-	}
-	return normalized;
+	return (args.record_type as string) ?? undefined;
 }
 
-/** Extract and validate the optional include_providers array parameter for generate_spf_record. */
+/** Extract include_providers array from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractIncludeProviders(args: Record<string, unknown>): string[] | undefined {
-	const providers = args.include_providers;
-	if (providers === undefined || providers === null) return undefined;
-	if (!Array.isArray(providers)) {
-		throw new Error('Invalid include_providers: must be an array');
-	}
-	if (providers.length > 15) {
-		throw new Error('Invalid include_providers: must not exceed 15 elements');
-	}
-	for (const element of providers) {
-		if (typeof element !== 'string') {
-			throw new Error('Invalid include_providers: all elements must be strings');
-		}
-		if (element.length > 253) {
-			throw new Error('Invalid include_providers: elements must not exceed 253 characters');
-		}
-	}
-	return providers as string[];
+	return (args.include_providers as string[]) ?? undefined;
 }
 
-/** Extract and validate the optional mx_hosts array parameter for generate_mta_sts_policy. */
+/** Extract mx_hosts array from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractMxHosts(args: Record<string, unknown>): string[] | undefined {
-	const hosts = args.mx_hosts;
-	if (hosts === undefined || hosts === null) return undefined;
-	if (!Array.isArray(hosts)) {
-		throw new Error('Invalid mx_hosts: must be an array');
-	}
-	if (hosts.length > 20) {
-		throw new Error('Invalid mx_hosts: must not exceed 20 elements');
-	}
-	for (const element of hosts) {
-		if (typeof element !== 'string') {
-			throw new Error('Invalid mx_hosts: all elements must be strings');
-		}
-		if (element.length > 253) {
-			throw new Error('Invalid mx_hosts: elements must not exceed 253 characters');
-		}
-		if (/[\s\x00-\x1f\x7f]/.test(element)) {
-			throw new Error('Invalid mx_hosts: elements must not contain whitespace or control characters');
-		}
-	}
-	return hosts as string[];
+	return (args.mx_hosts as string[]) ?? undefined;
 }
 
+/** Extract explain_finding arguments from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractExplainFindingArgs(args: Record<string, unknown>): {
 	checkType: string;
 	status: string;
 	details?: string;
 } {
-	const checkType = args.checkType;
-	const status = args.status;
-	if (typeof checkType !== 'string' || typeof status !== 'string') {
-		throw new Error('Missing required parameters: checkType and status');
-	}
-	if (checkType.length > 100) {
-		throw new Error('Invalid checkType: must be <= 100 characters');
-	}
-	if (status.length > 500) {
-		throw new Error('Invalid status: must be <= 500 characters');
-	}
-	const details = typeof args.details === 'string' ? args.details : undefined;
-	if (details && details.length > 2000) {
-		throw new Error('Invalid details: must be <= 2000 characters');
-	}
-	return { checkType, status, details };
+	return {
+		checkType: args.checkType as string,
+		status: args.status as string,
+		details: args.details as string | undefined,
+	};
 }
