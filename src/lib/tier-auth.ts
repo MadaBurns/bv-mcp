@@ -70,7 +70,7 @@ export async function resolveTier(
 					await env.RATE_LIMIT.delete(`tier:${keyHash}`);
 				} else {
 					if (cacheResult.data.revokedAt) return { authenticated: false };
-					return { authenticated: true, tier: cacheResult.data.tier as McpApiKeyTier, keyHash };
+					return { authenticated: true, tier: cacheResult.data.tier, keyHash };
 				}
 			}
 		} catch {
@@ -105,7 +105,7 @@ export async function resolveTier(
 							{ expirationTtl: TIER_KV_CACHE_TTL },
 						);
 					}
-					return { authenticated: true, tier: data.tier as McpApiKeyTier, keyHash };
+					return { authenticated: true, tier: data.tier, keyHash };
 				}
 				// Null tier = revoked or unknown key — cache negative result to avoid
 				// repeated service binding calls within the TTL window
