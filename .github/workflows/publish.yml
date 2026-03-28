@@ -1,0 +1,74 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  validate:
+    name: Pre-publish checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Validate internal dependency policy
+        run: npm run validate:internal-deps
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Security audit
+        run: npm audit --audit-level=high
+
+      - name: Verify CHANGELOG entry exists for this version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          if ! grep -q "## \[$VERSION\]\|## $VERSION" CHANGELOG.md 2>/dev/null; then
+            echo "ERROR: No CHANGELOG.md entry found for version $VERSION"
+            echo "Add a changelog entry before publishing."
+            exit 1
+          fi
+          echo "CHANGELOG entry verified for $VERSION"
+
+  publish:
+    name: Publish package
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
