@@ -142,7 +142,7 @@ export function validateJsonRpcRequest(body: JsonRpcRequest): { status: 400; pay
 		return {
 			status: 400,
 			payload: jsonRpcError(
-				(body as Record<string, unknown>)?.id ?? null,
+				body.id ?? null,
 				JSON_RPC_ERRORS.INVALID_REQUEST,
 				message,
 			),
