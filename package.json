@@ -66,6 +66,7 @@
 		"mcp:stdio": "node dist/stdio.js",
 		"start": "wrangler dev",
 		"prepack": "npm run build",
+		"validate:internal-deps": "node scripts/maintenance/validate-internal-deps.mjs",
 		"test": "vitest run",
 		"test:coverage": "vitest run --coverage",
 		"typecheck": "tsc --noEmit",
