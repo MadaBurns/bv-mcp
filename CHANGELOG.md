@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.0.11] - 2026-03-28
+
+### Fixed
+
+- **HTTP security headers false negatives on redirecting domains.** `checkHTTPSecurity` used `redirect: 'manual'` without following redirects, causing it to analyze headers on 301/302 responses instead of the final destination. Domains like `nist.gov` (which 301s to `www.nist.gov`) were incorrectly reported as missing CSP, X-Frame-Options, and other headers that the final destination actually serves. Added `followRedirects()` to traverse up to 3 hops, including Cloudflare Workers opaque redirect responses (status 0).
+- **2048-bit RSA DKIM keys incorrectly flagged as "below recommended."** `analyzeKeyStrength` in `dkim-analysis.ts` classified all keys with < 550 base64 chars as `strength: 'medium'`, which mapped to a "Below recommended RSA key" finding. A standard 2048-bit RSA key is ~392 chars and falls in this range. Split the threshold so keys below ~380 chars (sub-2048-bit) remain `'medium'`, while actual 2048-bit keys (380-549 chars) are classified as `'info'` — meeting the current minimum standard.
+
 ## [2.0.10] - 2026-03-27
 
 ### Security
