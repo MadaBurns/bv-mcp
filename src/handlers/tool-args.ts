@@ -3,7 +3,7 @@
 import { ZodError } from 'zod';
 import { validateDomain, sanitizeDomain } from '../lib/sanitize';
 import { TOOL_SCHEMA_MAP } from '../schemas/tool-args';
-import type { OutputFormat } from '../schemas/primitives';
+import type { OutputFormat, Profile } from '../schemas/primitives';
 
 export type { OutputFormat };
 
@@ -81,12 +81,10 @@ export function extractDkimSelector(args: Record<string, unknown>): string | und
 	return selector.trim().toLowerCase();
 }
 
-const VALID_PROFILES = ['auto', 'mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal'] as const;
-
-export function extractScanProfile(args: Record<string, unknown>): typeof VALID_PROFILES[number] | undefined {
+export function extractScanProfile(args: Record<string, unknown>): Profile | undefined {
 	const profile = args.profile;
 	if (typeof profile !== 'string') return undefined;
-	return profile as typeof VALID_PROFILES[number];
+	return profile as Profile;
 }
 
 export function extractForceRefresh(args: Record<string, unknown>): boolean {
