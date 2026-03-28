@@ -6,6 +6,9 @@
  * via prompts/list + prompts/get.
  */
 
+import { z } from 'zod';
+import { DomainSchema, GradeSchema } from '../schemas/primitives';
+
 /** MCP Prompt argument definition */
 interface McpPromptArgument {
 	name: string;
@@ -28,6 +31,17 @@ interface McpPromptMessage {
 		text: string;
 	};
 }
+
+/** Zod schema for prompts that require only a domain argument. */
+const DomainPromptArgs = z.object({
+	domain: DomainSchema,
+}).passthrough();
+
+/** Zod schema for the policy-compliance-check prompt (domain + optional minimum_grade). */
+const PolicyCompliancePromptArgs = z.object({
+	domain: DomainSchema,
+	minimum_grade: GradeSchema.optional(),
+}).passthrough();
 
 /** All MCP prompt definitions */
 const PROMPTS: McpPrompt[] = [
@@ -240,7 +254,22 @@ export function handlePromptsGet(params: Record<string, unknown>): {
 		throw new Error(`Invalid prompt name: ${name}`);
 	}
 
-	const args = (params.arguments as Record<string, string>) ?? {};
+	const rawArgs = (params.arguments ?? {}) as Record<string, unknown>;
+
+	// Pick the appropriate schema based on prompt name
+	const schema = name === 'policy-compliance-check' ? PolicyCompliancePromptArgs : DomainPromptArgs;
+	const parsed = schema.safeParse(rawArgs);
+	if (!parsed.success) {
+		const firstIssue = parsed.error.issues[0];
+		const field = firstIssue?.path.join('.') || 'arguments';
+		throw new Error(`Invalid ${field}: ${firstIssue?.message ?? 'validation failed'}`);
+	}
+
+	const args: Record<string, string> = {};
+	for (const [k, v] of Object.entries(parsed.data)) {
+		if (typeof v === 'string') args[k] = v;
+	}
+
 	const messages = getPromptMessages(name, args);
 
 	return {

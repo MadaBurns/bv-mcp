@@ -75,6 +75,13 @@ export function extractAndValidateDomain(args: Record<string, unknown>): string 
 	return sanitized;
 }
 
+/*
+ * Extraction helpers below operate on the Record<string, unknown> returned by validateToolArgs().
+ * Casts such as `as Profile` and `as OutputFormat` are safe — Zod has already validated and
+ * normalized these values. The casts exist only because TypeScript cannot narrow `unknown`
+ * to a union type without an explicit assertion or redundant runtime check.
+ */
+
 /** Extract DKIM selector from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractDkimSelector(args: Record<string, unknown>): string | undefined {
 	const selector = args.selector;
