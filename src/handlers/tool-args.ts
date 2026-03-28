@@ -75,42 +75,51 @@ export function extractAndValidateDomain(args: Record<string, unknown>): string 
 	return sanitized;
 }
 
+/** Extract DKIM selector from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractDkimSelector(args: Record<string, unknown>): string | undefined {
 	const selector = args.selector;
 	if (typeof selector !== 'string' || selector.trim().length === 0) return undefined;
 	return selector.trim().toLowerCase();
 }
 
+/** Extract scoring profile from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractScanProfile(args: Record<string, unknown>): Profile | undefined {
 	const profile = args.profile;
 	if (typeof profile !== 'string') return undefined;
 	return profile as Profile;
 }
 
+/** Extract force_refresh flag from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractForceRefresh(args: Record<string, unknown>): boolean {
 	return (args.force_refresh as boolean) ?? false;
 }
 
+/** Extract baseline object from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractBaseline(args: Record<string, unknown>): Record<string, unknown> {
 	return (args.baseline as Record<string, unknown>) ?? {};
 }
 
+/** Extract output format from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractFormat(args: Record<string, unknown>): OutputFormat | undefined {
 	return (args.format as OutputFormat) ?? undefined;
 }
 
+/** Extract DNS record type from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractRecordType(args: Record<string, unknown>): string | undefined {
 	return (args.record_type as string) ?? undefined;
 }
 
+/** Extract include_providers array from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractIncludeProviders(args: Record<string, unknown>): string[] | undefined {
 	return (args.include_providers as string[]) ?? undefined;
 }
 
+/** Extract mx_hosts array from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractMxHosts(args: Record<string, unknown>): string[] | undefined {
 	return (args.mx_hosts as string[]) ?? undefined;
 }
 
+/** Extract explain_finding arguments from pre-validated args. Requires prior validateToolArgs() call. */
 export function extractExplainFindingArgs(args: Record<string, unknown>): {
 	checkType: string;
 	status: string;
