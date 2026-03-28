@@ -32,5 +32,8 @@
 		"directory": "packages/dns-checks"
 	},
 	"homepage": "https://blackveilsecurity.com/dns",
-	"bugs": "https://github.com/MadaBurns/bv-mcp/issues"
+	"bugs": "https://github.com/MadaBurns/bv-mcp/issues",
+	"dependencies": {
+		"zod": "^4.3.6"
+	}
 }
