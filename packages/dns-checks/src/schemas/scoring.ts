@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+/**
+ * Zod schemas for @blackveil/dns-checks consumers to validate CheckResult, Finding,
+ * and ScanScore data at API boundaries. Not used internally by the scoring engine
+ * (which constructs these types directly via buildCheckResult/createFinding).
+ */
+
 import { z } from 'zod';
 
 /** All valid check categories. */
