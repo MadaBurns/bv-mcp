@@ -59,3 +59,14 @@ export {
 	analyzeSecurityHeaders,
 } from './checks';
 export type { CaaRecord, TlsaRecord } from './checks';
+
+// Zod schemas
+export {
+	CheckCategorySchema,
+	SeveritySchema,
+	FindingConfidenceSchema,
+	CategoryTierSchema,
+	FindingSchema,
+	CheckResultSchema,
+	ScanScoreSchema,
+} from './schemas/scoring';

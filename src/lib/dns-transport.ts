@@ -2,6 +2,7 @@
 
 import { DNS_TIMEOUT_MS, DNS_RETRIES, DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY, DOH_EDGE_CACHE_TTL, DNS_RETRY_BASE_DELAY_MS } from './config';
 import { type DohResponse, type QueryDnsOptions, RecordType, type RecordTypeName } from './dns-types';
+import { DohResponseSchema } from '../schemas/dns';
 
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
 const GOOGLE_DOH_ENDPOINT = 'https://dns.google/resolve';
@@ -33,8 +34,9 @@ async function fetchDohResponse(url: string, timeoutMs: number): Promise<DohResp
 		});
 		if (!response.ok) return null;
 		const data = await response.json();
-		if (typeof data !== 'object' || data === null || typeof (data as DohResponse).Status !== 'number' || !Number.isFinite((data as DohResponse).Status)) return null;
-		return data as DohResponse;
+		const parsed = DohResponseSchema.safeParse(data);
+		if (!parsed.success) return null;
+		return parsed.data as DohResponse;
 	} catch {
 		return null;
 	} finally {
@@ -70,8 +72,9 @@ async function fetchDohWithAuth(url: string, timeoutMs: number, token?: string):
 		});
 		if (!response.ok) return null;
 		const data = await response.json();
-		if (typeof data !== 'object' || data === null || typeof (data as DohResponse).Status !== 'number' || !Number.isFinite((data as DohResponse).Status)) return null;
-		return data as DohResponse;
+		const parsed = DohResponseSchema.safeParse(data);
+		if (!parsed.success) return null;
+		return parsed.data as DohResponse;
 	} catch {
 		return null;
 	} finally {
@@ -167,10 +170,11 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 		}
 
 		const raw = await response.json();
-		if (typeof raw !== 'object' || raw === null || typeof (raw as DohResponse).Status !== 'number' || !Number.isFinite((raw as DohResponse).Status)) {
+		const validated = DohResponseSchema.safeParse(raw);
+		if (!validated.success) {
 			throw new DnsQueryError('Invalid DoH response format', domain, type);
 		}
-		const data = raw as DohResponse;
+		const data = validated.data as DohResponse;
 
 		if (confirmWithSecondaryOnEmpty && !opts?.skipSecondaryConfirmation && !hasTypedAnswers(data, type)) {
 			// Try custom secondary (bv-dns) first if configured

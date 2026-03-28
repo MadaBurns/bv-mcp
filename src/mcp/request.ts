@@ -2,6 +2,7 @@
 
 import { JSON_RPC_ERRORS, jsonRpcError } from '../lib/json-rpc';
 import type { JsonRpcRequest } from '../lib/json-rpc';
+import { JsonRpcRequestSchema } from '../schemas/json-rpc';
 
 type RequestErrorStatus = 400 | 413 | 415;
 
@@ -132,19 +133,20 @@ export function parseJsonRpcRequest(rawBody: string): ParsedJsonRpcRequestResult
 }
 
 export function validateJsonRpcRequest(body: JsonRpcRequest): { status: 400; payload: ReturnType<typeof jsonRpcError> } | undefined {
-	if (body.jsonrpc !== '2.0' || typeof body.method !== 'string') {
+	const result = JsonRpcRequestSchema.safeParse(body);
+	if (!result.success) {
+		const hasIdIssue = result.error.issues.some((i) => i.path.includes('id'));
+		const message = hasIdIssue
+			? 'Invalid JSON-RPC id: must be string, number, or null'
+			: 'Invalid JSON-RPC 2.0 request';
 		return {
 			status: 400,
-			payload: jsonRpcError(body.id, JSON_RPC_ERRORS.INVALID_REQUEST, 'Invalid JSON-RPC 2.0 request'),
+			payload: jsonRpcError(
+				body.id ?? null,
+				JSON_RPC_ERRORS.INVALID_REQUEST,
+				message,
+			),
 		};
 	}
-
-	if (body.id !== undefined && body.id !== null && typeof body.id !== 'string' && typeof body.id !== 'number') {
-		return {
-			status: 400,
-			payload: jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Invalid JSON-RPC id: must be string, number, or null'),
-		};
-	}
-
 	return undefined;
 }
