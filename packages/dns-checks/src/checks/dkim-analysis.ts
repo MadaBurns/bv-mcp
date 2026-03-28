@@ -54,8 +54,14 @@ export function analyzeKeyStrength(publicKeyBase64: string | undefined, declared
 		return { bits: 1024, strength: 'high', keyType: 'rsa' };
 	}
 
-	if (charCount < 550) {
+	if (charCount < 380) {
 		return { bits: 2048, strength: 'medium', keyType: 'rsa' };
+	}
+
+	// 2048-bit RSA keys produce ~392 base64 chars. Keys at or above this size
+	// meet the current minimum recommendation — classify as info, not medium.
+	if (charCount < 550) {
+		return { bits: 2048, strength: 'info', keyType: 'rsa' };
 	}
 
 	return { bits: 4096, strength: 'info', keyType: 'rsa' };
