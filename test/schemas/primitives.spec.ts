@@ -4,15 +4,11 @@ import {
 	SessionIdSchema,
 	DkimSelectorSchema,
 	ToolNameSchema,
-	SafeLabelSchema,
 	ProfileSchema,
 	BenchmarkProfileSchema,
 	FormatSchema,
-	RecordTypeSchema,
 	GradeSchema,
 	TierSchema,
-	DmarcPolicySchema,
-	ExplainStatusSchema,
 } from '../../src/schemas/primitives';
 
 describe('DomainSchema', () => {
