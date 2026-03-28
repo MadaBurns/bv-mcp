@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import type { Tier } from '../schemas/primitives';
+
 /**
  * Centralized configuration for domain normalization and validation.
  */
@@ -86,8 +88,8 @@ export const GLOBAL_DAILY_TOOL_LIMIT = 500_000;
  * Free-tier daily tool quotas for unauthenticated callers.
  * Tools omitted from this map are governed only by baseline per-IP rate limits.
  */
-/** MCP API key tiers with daily scan quotas. */
-export type McpApiKeyTier = 'free' | 'agent' | 'developer' | 'enterprise' | 'partner';
+/** MCP API key tiers with daily scan quotas. Derived from the Zod TierSchema in schemas/primitives. */
+export type McpApiKeyTier = Tier;
 
 /** Daily scan limits per API key tier (applies per tool unless overridden by TIER_TOOL_DAILY_LIMITS). */
 export const TIER_DAILY_LIMITS: Record<McpApiKeyTier, number> = {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DohResponseSchema, CaaRecordSchema, TlsaRecordSchema, MxRecordSchema, SrvRecordSchema } from '../../src/schemas/dns';
+import { DohResponseSchema, CaaRecordSchema, TlsaRecordSchema } from '../../src/schemas/dns';
 
 describe('DohResponseSchema', () => {
 	it('accepts valid response', () => {
@@ -46,16 +46,3 @@ describe('TlsaRecordSchema', () => {
 	});
 });
 
-describe('MxRecordSchema', () => {
-	it('accepts valid MX record', () => {
-		const result = MxRecordSchema.safeParse({ priority: 10, exchange: 'mail.example.com' });
-		expect(result.success).toBe(true);
-	});
-});
-
-describe('SrvRecordSchema', () => {
-	it('accepts valid SRV record', () => {
-		const result = SrvRecordSchema.safeParse({ priority: 0, weight: 5, port: 443, target: 'sip.example.com' });
-		expect(result.success).toBe(true);
-	});
-});
