@@ -130,9 +130,6 @@ internalRoutes.post('/tools/call', async (c) => {
 /** Default concurrency for batch endpoint. */
 const BATCH_DEFAULT_CONCURRENCY = 10;
 
-/** Maximum domains per batch request. */
-const BATCH_MAX_DOMAINS = 500;
-
 /** Maximum request body size for batch endpoint (256 KB). */
 const BATCH_MAX_BODY_BYTES = 262_144;
 
