@@ -8,7 +8,7 @@ Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflar
 Exposes 33 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 2.0.10 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.0.11 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -63,10 +63,20 @@ src/mcp/                  — MCP protocol layer
   request.ts              — Body parsing, JSON-RPC validation (batch support), Content-Type validation
   route-gates.ts          — Pre-dispatch guards (rate limits, session validation)
 
+src/schemas/              — Centralized Zod validation schemas
+  primitives.ts           — Shared schemas: Domain, SessionId, enums (Profile, Format, Grade, Tier)
+  tool-args.ts            — Per-tool argument Zod schemas + TOOL_SCHEMA_MAP
+  tool-definitions.ts     — TOOLS array with inputSchema derived from Zod via z.toJSONSchema()
+  json-rpc.ts             — JSON-RPC 2.0 request/batch validation
+  internal.ts             — Internal route request body schemas
+  dns.ts                  — DoH response + parsed record type schemas (CAA, TLSA, MX, SRV)
+  session.ts              — Session KV record schema
+  auth.ts                 — Tier cache entry + service binding response schemas
+
 src/handlers/             — MCP method handlers
   tools.ts                — tools/list + tools/call dispatch
-  tool-schemas.ts         — TOOLS array (MCP tool definitions)
-  tool-args.ts            — Domain/argument extraction, validation, format resolution
+  tool-schemas.ts         — Re-exports TOOLS/McpTool from schemas/tool-definitions.ts
+  tool-args.ts            — Domain extraction, Zod validation dispatch, format resolution
   tool-formatters.ts      — mcpError/mcpText/formatCheckResult helpers
   tool-execution.ts       — Tool logging helpers
   resources.ts            — resources/list + resources/read
@@ -100,7 +110,9 @@ src/lib/                  — Shared infrastructure
 
 test/                     — One spec per source file
 test/helpers/dns-mock.ts  — Shared fetch mock for DNS-over-HTTPS queries
+test/schemas/             — Unit tests for Zod schemas
 packages/dns-checks/     — @blackveil/dns-checks (runtime-agnostic check + scoring library)
+packages/dns-checks/src/schemas/scoring.ts — Zod schemas for Finding, CheckResult, ScanScore
 ```
 
 ### Request flow
@@ -139,8 +151,9 @@ Resolution: `extractFormat(args)` in `tool-args.ts` → explicit param wins → 
 
 ## Conventions
 
+- **Zod schemas**: All input validation uses centralized schemas in `src/schemas/`. Tool `inputSchema` (MCP tools/list) derived from Zod via `z.toJSONSchema()` (Zod v4 built-in). Runtime validation via `validateToolArgs()` in `tool-args.ts`. Schemas use `.passthrough()` (no property stripping) and `.transform().pipe()` for case-insensitive enum normalization.
 - `createFinding()` + `buildCheckResult()` from `lib/scoring-model.ts` (re-exported via `lib/scoring.ts`) — never construct findings manually. `createFinding()` auto-sanitizes `detail` via `sanitizeDnsData()`
-- `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs
+- `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs — runs after Zod shape validation for SSRF/blocklist protection
 - `mcpError()` / `mcpText()` from `handlers/tool-formatters.ts` for MCP response formatting
 - `cacheGet()` / `cacheSet()` / `cacheSetDeferred()` / `runWithCache()` from `lib/cache.ts`; `cacheSetDeferred()` wraps in `ctx.waitUntil()`; `runWithCache()` accepts `skipCache` for `force_refresh`
 - JSDoc (`/** */`) on exported functions; `import type { ... }` for type-only imports
@@ -229,7 +242,7 @@ Idle TTL 2 hours, sliding refresh, KV + in-memory dual-write. Missing → 400; e
 
 ### Input validation
 
-Array params (`include_providers`, `mx_hosts`) validated per-element for type, length (≤253), content. `record_type` validated against allowlist. Use `'Invalid'` prefix for validation errors.
+All tool arguments validated via Zod schemas (`src/schemas/tool-args.ts`) before dispatch. `validateToolArgs()` runs the schema `.parse()` and translates `ZodError` to prefixed error messages. Array params (`include_providers`, `mx_hosts`) validated per-element for type, length (≤253), content. `record_type` validated against allowlist. Use `'Invalid'` prefix for validation errors. Enum schemas use `.transform().pipe()` for case-insensitive normalization (e.g., `"COMPACT"` → `"compact"`).
 
 ### Output sanitization
 
@@ -251,12 +264,14 @@ Array params (`include_providers`, `mx_hosts`) validated per-element for type, l
 3. Add to `IMPORTANCE_WEIGHTS` in `src/lib/scoring-engine.ts`
 4. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 5), baselineFailureRates in `scoring-config.ts`
 5. Add to all 5 `PROFILE_WEIGHTS` maps in `context-profiles.ts`
-6. Register in `tool-schemas.ts` (TOOLS array) + `tools.ts` (import + TOOL_REGISTRY)
-7. Add to `FREE_TOOL_DAILY_LIMITS` in `config.ts`
-8. Add explanation templates in `explain-finding-data.ts`
-9. If part of `scan_domain`, add to parallel orchestration in `scan-domain.ts` (static import)
-10. Add `test/check-<name>.spec.ts` using `dns-mock` helper pattern
-11. Update README tools table
+6. Add Zod schema to `src/schemas/tool-args.ts` (or use `BaseDomainArgs` if domain-only) + add to `TOOL_SCHEMA_MAP`
+7. Add tool entry to `TOOL_DEFS` in `src/schemas/tool-definitions.ts` (name, description, schema, group, tier, scanIncluded)
+8. Add to `TOOL_REGISTRY` in `handlers/tools.ts` (import + cacheKey + execute)
+9. Add to `FREE_TOOL_DAILY_LIMITS` in `config.ts`
+10. Add explanation templates in `explain-finding-data.ts`
+11. If part of `scan_domain`, add to parallel orchestration in `scan-domain.ts` (static import)
+12. Add `test/check-<name>.spec.ts` using `dns-mock` helper pattern
+13. Update README tools table
 
 ## Testing
 
