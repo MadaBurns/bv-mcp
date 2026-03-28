@@ -45,7 +45,7 @@ export const CheckResolverConsistencyArgs = z.object({
 /** generate_spf_record */
 export const GenerateSpfArgs = z.object({
 	domain: DomainSchema.describe('Domain (e.g., example.com)'),
-	include_providers: z.array(SafeLabelSchema).max(15).optional().describe('Providers to include (e.g., ["google"]).'),
+	include_providers: z.array(SafeLabelSchema.regex(/^[a-z0-9._-]+$/i)).max(15).optional().describe('Providers to include (e.g., ["google"]).'),
 	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 }).passthrough();
 
@@ -53,14 +53,14 @@ export const GenerateSpfArgs = z.object({
 export const GenerateDmarcArgs = z.object({
 	domain: DomainSchema.describe('Domain (e.g., example.com)'),
 	policy: DmarcPolicySchema.optional().describe('Policy (default "reject").'),
-	rua_email: z.string().optional().describe('Report email. Default: dmarc-reports@{domain}.'),
+	rua_email: z.string().max(254).optional().describe('Report email. Default: dmarc-reports@{domain}.'),
 	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 }).passthrough();
 
 /** generate_dkim_config */
 export const GenerateDkimConfigArgs = z.object({
 	domain: DomainSchema.describe('Domain (e.g., example.com)'),
-	provider: z.string().optional().describe('Provider (e.g., "google"). Omit for generic.'),
+	provider: z.string().max(100).optional().describe('Provider (e.g., "google"). Omit for generic.'),
 	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 }).passthrough();
 
