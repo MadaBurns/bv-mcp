@@ -26,6 +26,8 @@ import {
 import { checkSessionCreateRateLimitWithCoordinator } from './quota-coordinator';
 import { withIpKvLock } from './rate-limiter';
 import { logError } from './log';
+import { SessionRecordSchema } from '../schemas/session';
+import { SessionIdSchema } from '../schemas/primitives';
 
 export { ACTIVE_SESSIONS, resetSessions, SESSION_REFRESH_INTERVAL_MS, SESSION_TTL_MS };
 
@@ -98,24 +100,14 @@ async function createSessionKVRecord(id: string, kv: KVNamespace, record: Sessio
 
 async function readSessionKVRecord(id: string, kv: KVNamespace): Promise<SessionRecord | undefined> {
 	const record = await kv.get(sessionKey(id), 'json');
-	if (!record || typeof record !== 'object') return undefined;
-
-	const candidate = record as Partial<SessionRecord>; // KV returns unknown; fields are validated below
-	if (typeof candidate.createdAt !== 'number' || typeof candidate.lastAccessedAt !== 'number') {
-		return undefined;
-	}
-
-	return {
-		createdAt: candidate.createdAt,
-		lastAccessedAt: candidate.lastAccessedAt,
-	};
+	const parsed = SessionRecordSchema.safeParse(record);
+	if (!parsed.success) return undefined;
+	return parsed.data;
 }
-
-const SESSION_ID_PATTERN = /^[0-9a-f]{64}$/;
 
 /** Validate that a session ID matches the expected format (64 lowercase hex chars) */
 export function isValidSessionIdFormat(id: string): boolean {
-	return SESSION_ID_PATTERN.test(id);
+	return SessionIdSchema.safeParse(id).success;
 }
 
 /** Generate a cryptographically secure session ID (hex, visible ASCII) */
