@@ -2,7 +2,16 @@
 
 import { z } from 'zod';
 
-/** Domain name — shape validation only. SSRF/blocklist checks stay in sanitize.ts. */
+/**
+ * Domain name — shape validation only (length 1-253).
+ *
+ * Intentional two-layer design: this schema validates the string shape so Zod can
+ * reject obviously invalid input early (empty strings, oversized payloads). The
+ * second layer — `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` —
+ * handles structural validation (label rules, TLD checks), SSRF protection
+ * (blocked IPs/TLDs), and punycode normalization. That second layer runs after Zod
+ * in `extractAndValidateDomain()` (handlers/tool-args.ts).
+ */
 export const DomainSchema = z.string().min(1).max(253);
 
 /** Session ID — exactly 64 lowercase hex characters. */

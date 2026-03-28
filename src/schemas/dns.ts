@@ -47,17 +47,3 @@ export const TlsaRecordSchema = z.object({
 	matchingType: z.number(),
 	certData: z.string(),
 });
-
-/** Parsed MX record. */
-export const MxRecordSchema = z.object({
-	priority: z.number(),
-	exchange: z.string(),
-});
-
-/** Parsed SRV record. */
-export const SrvRecordSchema = z.object({
-	priority: z.number(),
-	weight: z.number(),
-	port: z.number(),
-	target: z.string(),
-});

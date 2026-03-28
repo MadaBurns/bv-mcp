@@ -45,6 +45,7 @@ export const CheckResolverConsistencyArgs = z.object({
 /** generate_spf_record */
 export const GenerateSpfArgs = z.object({
 	domain: DomainSchema.describe('Domain (e.g., example.com)'),
+	// SafeLabelSchema provides min(1)/max(253); .regex() adds a stacking refinement in Zod v4 (does not override).
 	include_providers: z.array(SafeLabelSchema.regex(/^[a-z0-9._-]+$/i)).max(15).optional().describe('Providers to include (e.g., ["google"]).'),
 	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 }).passthrough();
@@ -67,6 +68,7 @@ export const GenerateDkimConfigArgs = z.object({
 /** generate_mta_sts_policy */
 export const GenerateMtaStsArgs = z.object({
 	domain: DomainSchema.describe('Domain (e.g., example.com)'),
+	// SafeLabelSchema provides min(1)/max(253); .regex() adds a stacking refinement in Zod v4 (does not override).
 	mx_hosts: z.array(SafeLabelSchema.regex(/^[^\s\x00-\x1f\x7f]*$/)).max(20).optional().describe('MX hosts. Omit to detect from DNS.'),
 	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 }).passthrough();
