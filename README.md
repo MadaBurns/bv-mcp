@@ -361,6 +361,20 @@ Enforce DNS security grades in your pipeline with the [Blackveil DNS GitHub Acti
 
 The action outputs `score`, `grade`, `maturity`, `scoring-profile`, and `passed` for downstream steps.
 
+### Package Release Controls
+
+`blackveil-dns` npm publishing is gated by `.github/workflows/publish.yml`.
+
+On `v*` tags, the workflow enforces:
+- `npm run validate:internal-deps`
+- Typecheck (`npx tsc --noEmit`)
+- Lint (`npm run lint`)
+- Test (`npm test`)
+- Security audit (`npm audit --audit-level=high`)
+- Changelog presence for the target version
+
+Publish only proceeds after all gates pass.
+
 ## Monitoring
 
 Get weekly DNS security reports in Slack or Discord. See [`examples/slack-discord-webhook/`](examples/slack-discord-webhook/) for a ready-to-deploy Cloudflare Cron Trigger recipe.
