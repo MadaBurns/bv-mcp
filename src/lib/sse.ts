@@ -66,11 +66,13 @@ export function createSseStream(events: string): ReadableStream<Uint8Array> {
 
 /**
  * Duration (ms) to keep the SSE notification stream alive before closing.
- * Cloudflare Workers have execution time limits, so we close proactively.
- * mcp-remote will reconnect after the stream closes — keeping it open for
- * ~55s reduces reconnections from ~60/min to ~1/min per session.
+ * Workers Standard has no strict wall-time limit for streaming responses;
+ * 5s heartbeats keep the connection alive well within Cloudflare proxy
+ * idle timeouts. 5 minutes reduces mcp-remote reconnection churn to
+ * ~0.2/min — the previous 55s TTL caused ~1/min reconnections that
+ * created race conditions during continuous scanning from Claude Desktop.
  */
-const NOTIFICATION_STREAM_TTL_MS = 55_000;
+const NOTIFICATION_STREAM_TTL_MS = 300_000;
 
 /**
  * Create a long-lived SSE notification stream with periodic heartbeats.
