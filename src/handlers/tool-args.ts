@@ -34,6 +34,16 @@ function formatZodError(err: ZodError, toolName?: string): string {
 		}
 	}
 
+	// validate_fix: domain + check are both required
+	if (toolName === 'validate_fix' && path === 'check' && isMissingField(issue)) {
+		return 'Missing required parameters: domain and check';
+	}
+
+	// analyze_drift: domain + baseline are both required
+	if (toolName === 'analyze_drift' && path === 'baseline' && isMissingField(issue)) {
+		return 'Missing required parameters: domain and baseline';
+	}
+
 	// check_dkim selector: map to the expected "Invalid DKIM selector" prefix
 	if (path === 'selector') {
 		return `Invalid DKIM selector: ${issue.message}`;

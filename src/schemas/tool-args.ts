@@ -118,6 +118,42 @@ export const AssessSpoofabilityArgs = BaseDomainArgs;
 /** generate_fix_plan — same as BaseDomainArgs */
 export const GenerateFixPlanArgs = BaseDomainArgs;
 
+const CheckNameSchema = z.string().trim().min(1).regex(/^[a-z_]+$/, 'Invalid check name');
+
+const TimelineSchema = z.string().transform((v) => v.toLowerCase()).pipe(
+	z.enum(['aggressive', 'standard', 'conservative']),
+);
+
+const TargetPolicySchema = z.string().transform((v) => v.toLowerCase()).pipe(
+	z.enum(['quarantine', 'reject']),
+);
+
+/** validate_fix */
+export const ValidateFixArgs = z.object({
+	domain: DomainSchema.describe('Domain to validate the fix for'),
+	check: CheckNameSchema.describe('Check name to re-run (e.g., "dmarc", "spf")'),
+	expected: z.string().max(1000).optional().describe('Expected DNS record value to verify against'),
+	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+}).passthrough();
+
+/** map_supply_chain — same as BaseDomainArgs */
+export const MapSupplyChainArgs = BaseDomainArgs;
+
+/** analyze_drift */
+export const AnalyzeDriftArgs = z.object({
+	domain: DomainSchema.describe('Domain to analyze drift for'),
+	baseline: z.string().min(1).max(50_000).describe('Previous ScanScore JSON or "cached" to use last cached scan'),
+	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+}).passthrough();
+
+/** generate_rollout_plan */
+export const GenerateRolloutPlanArgs = z.object({
+	domain: DomainSchema.describe('Domain to generate rollout plan for'),
+	target_policy: TargetPolicySchema.optional().describe('Target DMARC policy (default: reject)'),
+	timeline: TimelineSchema.optional().describe('Rollout speed: aggressive, standard, conservative (default: standard)'),
+	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+}).passthrough();
+
 /**
  * Map of every tool name to its Zod argument schema.
  * Used for runtime validation in tools.ts and for inputSchema generation.
@@ -156,4 +192,8 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	assess_spoofability: AssessSpoofabilityArgs,
 	check_resolver_consistency: CheckResolverConsistencyArgs,
 	explain_finding: ExplainFindingArgs,
+	validate_fix: ValidateFixArgs,
+	map_supply_chain: MapSupplyChainArgs,
+	analyze_drift: AnalyzeDriftArgs,
+	generate_rollout_plan: GenerateRolloutPlanArgs,
 };
