@@ -5,7 +5,7 @@ afterEach(() => {
 });
 
 describe('dispatch re-initialize session invalidation', () => {
-	it('deletes the old session when re-initializing with an existing session ID', async () => {
+	it('keeps old session valid when re-initializing (TTL handles cleanup)', async () => {
 		const { dispatchMcpMethod } = await import('../src/mcp/dispatch');
 		const { createSession, validateSession, resetSessions } = await import('../src/lib/session');
 
@@ -33,8 +33,9 @@ describe('dispatch re-initialize session invalidation', () => {
 				expect(result.newSessionId).not.toBe(oldSessionId);
 			}
 
-			// Old session should be invalidated
-			expect(await validateSession(oldSessionId)).toBe(false);
+			// Old session stays valid — no eager deletion prevents race conditions
+			// where in-flight tools/call requests with the old session ID get 404s
+			expect(await validateSession(oldSessionId)).toBe(true);
 
 			// New session should be valid
 			if (result.kind === 'success' && result.newSessionId) {
