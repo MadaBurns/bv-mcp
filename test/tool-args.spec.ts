@@ -61,4 +61,41 @@ describe('tool-args helpers', () => {
 		const args = { foo: 'bar' };
 		expect(validateToolArgs('unknown_tool', args)).toBe(args);
 	});
+
+	it('validates validate_fix args', () => {
+		const result = validateToolArgs('validate_fix', { domain: 'example.com', check: 'dmarc' });
+		expect(result).toHaveProperty('domain');
+		expect(result).toHaveProperty('check', 'dmarc');
+		expect(() => validateToolArgs('validate_fix', { domain: 'example.com' })).toThrow('Missing required parameters');
+		expect(() => validateToolArgs('validate_fix', { domain: 'example.com', check: '' })).toThrow();
+	});
+
+	it('validates map_supply_chain args', () => {
+		const result = validateToolArgs('map_supply_chain', { domain: 'example.com' });
+		expect(result).toHaveProperty('domain');
+		expect(() => validateToolArgs('map_supply_chain', {})).toThrow('Missing required parameter: domain');
+	});
+
+	it('validates analyze_drift args', () => {
+		const result = validateToolArgs('analyze_drift', { domain: 'example.com', baseline: 'cached' });
+		expect(result).toHaveProperty('domain');
+		expect(result).toHaveProperty('baseline', 'cached');
+		expect(() => validateToolArgs('analyze_drift', { domain: 'example.com' })).toThrow('Missing required parameters');
+	});
+
+	it('validates generate_rollout_plan args', () => {
+		const result = validateToolArgs('generate_rollout_plan', { domain: 'example.com' });
+		expect(result).toHaveProperty('domain');
+		const full = validateToolArgs('generate_rollout_plan', {
+			domain: 'example.com',
+			target_policy: 'quarantine',
+			timeline: 'aggressive',
+		});
+		expect(full).toHaveProperty('target_policy', 'quarantine');
+		expect(full).toHaveProperty('timeline', 'aggressive');
+		expect(() => validateToolArgs('generate_rollout_plan', {
+			domain: 'example.com',
+			timeline: 'invalid',
+		})).toThrow('Invalid');
+	});
 });
