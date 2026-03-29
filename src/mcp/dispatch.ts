@@ -4,7 +4,7 @@ import { handleToolsList, handleToolsCall } from '../handlers/tools';
 import { handleResourcesList, handleResourcesRead } from '../handlers/resources';
 import { handlePromptsList, handlePromptsGet } from '../handlers/prompts';
 import { parseAllowedHosts } from './request';
-import { createSession, checkSessionCreateRateLimit, deleteSession } from '../lib/session';
+import { createSession, checkSessionCreateRateLimit } from '../lib/session';
 import { auditSessionCreated } from '../lib/audit';
 import { jsonRpcError, jsonRpcSuccess, JSON_RPC_ERRORS } from '../lib/json-rpc';
 import type { AnalyticsClient } from '../lib/analytics';
@@ -79,12 +79,12 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				}
 			}
 
-				// Invalidate old session on re-initialize to prevent stale sessions
-				// lingering for up to 2 hours after the client has moved on
-				if (createSessionOnInitialize && options.existingSessionId) {
-					await deleteSession(options.existingSessionId, options.sessionStore);
-				}
-
+				// Do NOT delete the old session on re-initialize — mcp-remote
+				// reconnects the notification stream periodically, and deleting
+				// the old session creates a race where in-flight tools/call
+				// requests with the old session ID get a 404. Old sessions
+				// expire naturally via TTL (2 hours) and are cleaned up by
+				// periodic in-memory pruning + KV expirationTtl.
 				const sessionId = createSessionOnInitialize ? await createSession(options.sessionStore) : options.existingSessionId;
 				if (createSessionOnInitialize && sessionId) {
 					auditSessionCreated(options.ip, sessionId);
