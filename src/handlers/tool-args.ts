@@ -66,7 +66,7 @@ export function extractAndValidateDomain(args: Record<string, unknown>): string 
 	}
 	const validation = validateDomain(domain);
 	if (!validation.valid) {
-		throw new Error(validation.error ?? 'Invalid domain');
+		throw new Error(`Domain validation failed: ${validation.error ?? 'invalid domain'}`);
 	}
 	const sanitized = sanitizeDomain(domain);
 	if (!sanitized) {

@@ -676,7 +676,7 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(200);
 			const body = (await response.json()) as { result: { content: Array<{ text: string }>; isError: boolean } };
 			expect(body.result.isError).toBe(true);
-			expect(body.result.content[0].text).toContain('Error: An unexpected error occurred');
+			expect(body.result.content[0].text).toContain('Domain validation failed');
 		});
 
 		it('rejects octal loopback literals', async () => {
@@ -697,7 +697,7 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(200);
 			const body = (await response.json()) as { result: { content: Array<{ text: string }>; isError: boolean } };
 			expect(body.result.isError).toBe(true);
-			expect(body.result.content[0].text).toContain('Error: An unexpected error occurred');
+			expect(body.result.content[0].text).toContain('Domain validation failed');
 		});
 
 		it('rejects public IPv4 literals', async () => {
@@ -718,7 +718,7 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(200);
 			const body = (await response.json()) as { result: { content: Array<{ text: string }>; isError: boolean } };
 			expect(body.result.isError).toBe(true);
-			expect(body.result.content[0].text).toContain('Error: An unexpected error occurred');
+			expect(body.result.content[0].text).toContain('Domain validation failed');
 		});
 
 		it('rejects alternate numeric forms of public IPv4 literals', async () => {
@@ -739,7 +739,7 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(200);
 			const body = (await response.json()) as { result: { content: Array<{ text: string }>; isError: boolean } };
 			expect(body.result.isError).toBe(true);
-			expect(body.result.content[0].text).toContain('Error: An unexpected error occurred');
+			expect(body.result.content[0].text).toContain('Domain validation failed');
 		});
 
 		it('rejects domains longer than 253 characters', async () => {

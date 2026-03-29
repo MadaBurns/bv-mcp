@@ -118,14 +118,14 @@ describe('scoring', () => {
 
 			const scan = computeScanScore(results);
 			// Three-tier scoring: DMARC missing-control → effectiveScore 0 (core, weight 16).
-			// DNSSEC score 35, not missing-control (no missing pattern match) → effectiveScore 35.
-			// Core: SPF=100(10), DMARC=0(16), DKIM=100(10), DNSSEC=35(8), SSL=100(8) → earned = 10+0+10+2.8+8 = 30.8/52 → corePct≈0.592
-			// Protective: MTA-STS=80(3), NS=100(2), CAA=85(2), rest default 100 → nearly full.
-			// Hardening: 0 results in hardening tier.
-			// Critical gap ceiling applies (DMARC missing) → capped at 64.
-			// Actual result: 57 (before ceiling would be higher, but DMARC missing → ceiling 64, and base is below 64).
-			expect(scan.overall).toBe(57);
-			expect(scan.grade).toBe('D+');
+			// DNSSEC "ad flag missing" matches MISSING_CONTROL_REGEX + severity high + deterministic → effectiveScore 0.
+			// Core (weights: dmarc=16, dkim=10, spf=10, dnssec=10, ssl=8, max=54):
+			//   earned = 10(spf) + 0(dmarc) + 10(dkim) + 0(dnssec) + 8(ssl) = 28 → corePct=28/54≈0.519 → 36.3pts
+			// Protective: MTA-STS=80(3), NS=100(2), CAA=85(2), rest default 100 → 19.1/20 → 19.1pts
+			// Hardening: 0 passed of 7 → 0pts. Base≈55.4 → round=55.
+			// Critical gap ceiling applies (DMARC missing) → capped at 64, but base 55 < 64.
+			expect(scan.overall).toBe(55);
+			expect(scan.grade).toBe('D');
 		});
 
 		it('applies global critical penalty when critical finding is verified', () => {
