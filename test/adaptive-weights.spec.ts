@@ -124,8 +124,8 @@ describe('adaptive-weights', () => {
 		});
 
 		it('treats ssl as non-critical for non_mail profile', () => {
-			// ssl importance=8 in non_mail → not critical mail → min=max(0,4)=4
-			expect(WEIGHT_BOUNDS.non_mail.ssl.min).toBe(4);
+			// ssl importance=10 in non_mail → not critical mail → min=max(0,5)=5
+			expect(WEIGHT_BOUNDS.non_mail.ssl.min).toBe(5);
 		});
 	});
 
@@ -257,7 +257,7 @@ describe('adaptive-weights', () => {
 			const doWeights: Record<string, number> = {};
 			const result = adaptiveWeightsToContext(doWeights, 'enterprise_mail');
 			expect(result).not.toBeNull();
-			expect(result!.dmarc.importance).toBe(18); // enterprise_mail static (rebalanced per NIST SP 800-81r3)
+			expect(result!.dmarc.importance).toBe(20); // enterprise_mail static
 			expect(result!.mta_sts.importance).toBe(4);
 		});
 	});
