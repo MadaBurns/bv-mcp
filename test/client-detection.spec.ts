@@ -37,6 +37,11 @@ describe('detectMcpClient', () => {
 		expect(detectMcpClient('blackveil_dns_action/1.0.0')).toBe('blackveil_dns_action');
 	});
 
+	it('detects bv-claude-dns-proxy', () => {
+		expect(detectMcpClient('bv-claude-dns-proxy/1.1.0')).toBe('bv_claude_dns_proxy');
+		expect(detectMcpClient('bv_claude_dns_proxy/1.0.0')).toBe('bv_claude_dns_proxy');
+	});
+
 	it('returns unknown for unrecognized agents', () => {
 		expect(detectMcpClient('curl/7.68.0')).toBe('unknown');
 		expect(detectMcpClient('')).toBe('unknown');

@@ -5,7 +5,7 @@
  * Used for analytics segmentation — not security decisions.
  */
 
-export type McpClientType = 'claude_code' | 'cursor' | 'vscode' | 'claude_desktop' | 'windsurf' | 'mcp_remote' | 'blackveil_dns_action' | 'unknown';
+export type McpClientType = 'claude_code' | 'cursor' | 'vscode' | 'claude_desktop' | 'windsurf' | 'mcp_remote' | 'blackveil_dns_action' | 'bv_claude_dns_proxy' | 'unknown';
 
 const CLIENT_PATTERNS: ReadonlyArray<[RegExp, McpClientType]> = [
 	[/claude[-_]?code/i, 'claude_code'],
@@ -15,6 +15,7 @@ const CLIENT_PATTERNS: ReadonlyArray<[RegExp, McpClientType]> = [
 	[/visual studio code|vscode|github copilot/i, 'vscode'],
 	[/mcp-remote/i, 'mcp_remote'],
 	[/blackveil[-_]?dns[-_]?action/i, 'blackveil_dns_action'],
+	[/bv[-_]?claude[-_]?dns[-_]?proxy/i, 'bv_claude_dns_proxy'],
 ];
 
 /** Detect MCP client from User-Agent string. Order matters — first match wins. */
