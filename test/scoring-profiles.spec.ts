@@ -164,11 +164,11 @@ describe('scoring-profiles', () => {
 	});
 
 	describe('scoring v2 profile weights', () => {
-		it('mail_enabled core weights sum to 52', () => {
+		it('mail_enabled core weights sum to 54', () => {
 			const core = PROFILE_WEIGHTS.mail_enabled;
 			const coreSum = (['spf', 'dmarc', 'dkim', 'dnssec', 'ssl'] as const)
 				.reduce((sum, k) => sum + core[k].importance, 0);
-			expect(coreSum).toBe(52);
+			expect(coreSum).toBe(54);
 		});
 
 		it('mail_enabled protective weights sum to 20', () => {
@@ -185,11 +185,11 @@ describe('scoring-profiles', () => {
 			}
 		});
 
-		it('enterprise_mail core weights sum to 58', () => {
+		it('enterprise_mail core weights sum to 63', () => {
 			const core = PROFILE_WEIGHTS.enterprise_mail;
 			const coreSum = (['spf', 'dmarc', 'dkim', 'dnssec', 'ssl'] as const)
 				.reduce((sum, k) => sum + core[k].importance, 0);
-			expect(coreSum).toBe(58);
+			expect(coreSum).toBe(63);
 		});
 
 		it('web_only zeroes email auth core weights', () => {
@@ -200,26 +200,26 @@ describe('scoring-profiles', () => {
 			expect(p.ssl.importance).toBeGreaterThan(0);
 		});
 
-		it('non_mail core weights sum to 21', () => {
+		it('non_mail core weights sum to 29', () => {
 			const core = PROFILE_WEIGHTS.non_mail;
 			const coreSum = (['spf', 'dmarc', 'dkim', 'dnssec', 'ssl'] as const)
 				.reduce((sum, k) => sum + core[k].importance, 0);
-			expect(coreSum).toBe(21);
+			expect(coreSum).toBe(29);
 		});
 
-		it('minimal core weights sum to 10', () => {
+		it('minimal core weights sum to 15', () => {
 			const core = PROFILE_WEIGHTS.minimal;
 			const coreSum = (['spf', 'dmarc', 'dkim', 'dnssec', 'ssl'] as const)
 				.reduce((sum, k) => sum + core[k].importance, 0);
-			expect(coreSum).toBe(10);
+			expect(coreSum).toBe(15);
 		});
 
-		it('PROFILE_CRITICAL_CATEGORIES includes DNSSEC for all mail profiles but excludes subdomain_takeover', () => {
+		it('PROFILE_CRITICAL_CATEGORIES includes DNSSEC and subdomain_takeover for all mail profiles', () => {
 			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).toContain('dnssec');
 			expect(PROFILE_CRITICAL_CATEGORIES.enterprise_mail).toContain('dnssec');
-			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).not.toContain('subdomain_takeover');
+			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).toContain('subdomain_takeover');
 			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).toEqual(
-				expect.arrayContaining(['spf', 'dmarc', 'dkim', 'ssl', 'dnssec'])
+				expect.arrayContaining(['spf', 'dmarc', 'dkim', 'ssl', 'dnssec', 'subdomain_takeover'])
 			);
 		});
 
@@ -228,8 +228,8 @@ describe('scoring-profiles', () => {
 			expect(PROFILE_CRITICAL_CATEGORIES.web_only).toContain('http_security');
 		});
 
-		it('minimal ceiling triggers ssl and dnssec', () => {
-			expect(PROFILE_CRITICAL_CATEGORIES.minimal).toEqual(['ssl', 'dnssec']);
+		it('minimal ceiling triggers ssl, dnssec, and subdomain_takeover', () => {
+			expect(PROFILE_CRITICAL_CATEGORIES.minimal).toEqual(['ssl', 'dnssec', 'subdomain_takeover']);
 		});
 	});
 });

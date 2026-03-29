@@ -122,7 +122,7 @@ describe('scoring v2 config', () => {
 
 	it('DEFAULT_SCORING_CONFIG has coreWeights', () => {
 		expect(DEFAULT_SCORING_CONFIG.coreWeights).toEqual({
-			dmarc: 16, dkim: 10, spf: 10, dnssec: 8, ssl: 8,
+			dmarc: 16, dkim: 10, spf: 10, dnssec: 10, ssl: 8,
 		});
 	});
 
