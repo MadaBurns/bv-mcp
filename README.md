@@ -24,6 +24,10 @@ Open-source DNS & email security scanner for Claude, Cursor, VS Code, and MCP cl
 
 ## Try it in 30 seconds
 
+**Claude Desktop** (one-click install):
+
+Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — all 33 tools available instantly.
+
 **Claude Code** (one command):
 
 ```bash
