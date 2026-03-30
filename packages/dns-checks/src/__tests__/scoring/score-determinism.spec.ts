@@ -5,17 +5,15 @@ import { computeGenericScore } from '../../scoring/generic';
 import type { GenericScoringContext } from '../../scoring/generic';
 
 /**
- * Bug: providerConfidence values change between scans due to cache state
- * (runtime=0.85, stale=0.7, cold=0.65). The providerModifier function
- * amplifies these into -5..+5 score changes, causing visible score
- * fluctuation on consecutive scans of the same domain with identical
- * category scores.
+ * Score determinism tests.
  *
- * Fix: cap providerModifier to -2..+2 so cache-dependent confidence
- * changes produce at most ±2 point score variation instead of ±5.
+ * The providerModifier is computed and returned as metadata but excluded
+ * from the overall score formula. This makes scores fully deterministic:
+ * identical category scores always produce identical overall scores,
+ * regardless of cache-dependent providerConfidence fluctuations.
  */
-describe('providerModifier stability', () => {
-	function buildContext(providerConfidence: Record<string, number>): GenericScoringContext {
+describe('score determinism', () => {
+	function buildContext(providerConfidence?: Record<string, number>): GenericScoringContext {
 		return {
 			categoryScores: {
 				spf: 95, dmarc: 90, dkim: 85, dnssec: 100, ssl: 100,
@@ -38,41 +36,38 @@ describe('providerModifier stability', () => {
 		};
 	}
 
-	it('limits providerModifier to ±2 points maximum', () => {
-		// Simulate best-case confidence (all runtime hits)
-		const bestCase = computeGenericScore(buildContext({ _0: 0.95, _1: 0.95 }));
-		// Simulate worst-case confidence (all cold cache)
-		const worstCase = computeGenericScore(buildContext({ _0: 0.0, _1: 0.0 }));
+	it('produces identical scores regardless of providerConfidence values', () => {
+		const noConfidence = computeGenericScore(buildContext());
+		const highConfidence = computeGenericScore(buildContext({ _0: 0.95, _1: 0.95 }));
+		const lowConfidence = computeGenericScore(buildContext({ _0: 0.0, _1: 0.0 }));
+		const mixedConfidence = computeGenericScore(buildContext({ _0: 0.85, _1: 0.65 }));
 
-		const swing = Math.abs(bestCase.overall - worstCase.overall);
-		expect(swing).toBeLessThanOrEqual(4); // ±2 = max 4pt total swing
+		expect(noConfidence.overall).toBe(highConfidence.overall);
+		expect(highConfidence.overall).toBe(lowConfidence.overall);
+		expect(lowConfidence.overall).toBe(mixedConfidence.overall);
 	});
 
-	it('produces at most 2-point difference between runtime and stale cache confidence', () => {
-		// Runtime: confidence = 0.85
+	it('still computes providerModifier as metadata', () => {
+		const high = computeGenericScore(buildContext({ _0: 1.0 }));
+		const low = computeGenericScore(buildContext({ _0: 0.0 }));
+
+		// Modifier is computed but does not affect overall
+		expect(high.providerModifier).toBeGreaterThan(0);
+		expect(low.providerModifier).toBeLessThan(0);
+		expect(high.overall).toBe(low.overall);
+	});
+
+	it('runtime vs stale vs cold cache all produce same score', () => {
 		const runtime = computeGenericScore(buildContext({ _0: 0.85 }));
-		// Stale: confidence = 0.70
 		const stale = computeGenericScore(buildContext({ _0: 0.70 }));
-		// Cold: confidence = 0.65
 		const cold = computeGenericScore(buildContext({ _0: 0.65 }));
 
-		expect(Math.abs(runtime.overall - stale.overall)).toBeLessThanOrEqual(2);
-		expect(Math.abs(runtime.overall - cold.overall)).toBeLessThanOrEqual(2);
-		expect(Math.abs(stale.overall - cold.overall)).toBeLessThanOrEqual(2);
+		expect(runtime.overall).toBe(stale.overall);
+		expect(stale.overall).toBe(cold.overall);
 	});
 
-	it('providerModifier never exceeds ±2', () => {
-		const maxConfidence = computeGenericScore(buildContext({ _0: 1.0 }));
-		const minConfidence = computeGenericScore(buildContext({ _0: 0.0 }));
-
-		expect(maxConfidence.providerModifier).toBeLessThanOrEqual(2);
-		expect(maxConfidence.providerModifier).toBeGreaterThanOrEqual(-2);
-		expect(minConfidence.providerModifier).toBeLessThanOrEqual(2);
-		expect(minConfidence.providerModifier).toBeGreaterThanOrEqual(-2);
-	});
-
-	it('providerModifier is 0 when confidence is 0.5 (neutral)', () => {
-		const neutral = computeGenericScore(buildContext({ _0: 0.5 }));
-		expect(neutral.providerModifier).toBe(0);
+	it('providerModifier is 0 when no confidence provided', () => {
+		const result = computeGenericScore(buildContext());
+		expect(result.providerModifier).toBe(0);
 	});
 });
