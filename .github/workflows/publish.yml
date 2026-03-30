@@ -1,17 +1,19 @@
-name: Publish to npm
+name: Release
 
+# Triggered by pushing a version tag (e.g., git tag v2.2.0 && git push origin v2.2.0)
+# All expressions use controlled inputs (tag name, secrets, job outputs) — no user-supplied text.
 on:
   push:
     tags:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
   validate:
-    name: Pre-publish checks
+    name: Pre-release checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,24 +40,78 @@ jobs:
       - name: Security audit
         run: npm audit --audit-level=high
 
-      - name: Verify CHANGELOG entry exists for this version
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
-          if ! grep -q "## \[$VERSION\]\|## $VERSION" CHANGELOG.md 2>/dev/null; then
-            echo "ERROR: No CHANGELOG.md entry found for version $VERSION"
-            echo "Add a changelog entry before publishing."
-            exit 1
-          fi
-          echo "CHANGELOG entry verified for $VERSION"
-
-  publish:
-    name: Publish package
+  version-bump:
+    name: Sync version to tag
     needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+      changelog: ${{ steps.changelog.outputs.body }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: extract
+        name: Extract version from tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing version: $VERSION"
+
+      - name: Update package.json version
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Update SERVER_VERSION
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          sed -i "s/export const SERVER_VERSION = '.*'/export const SERVER_VERSION = '$VERSION'/" src/lib/server-version.ts
+          grep SERVER_VERSION src/lib/server-version.ts
+
+      - id: changelog
+        name: Extract changelog for this version
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          BODY=$(awk "/^## \[$VERSION\]/{found=1; next} /^## \[/{if(found) exit} found{print}" CHANGELOG.md)
+          if [ -z "$BODY" ]; then
+            BODY="Release $VERSION"
+            echo "::warning::No CHANGELOG entry found for $VERSION"
+          fi
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "$BODY"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bump if changed
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json src/lib/server-version.ts
+          if git diff --cached --quiet; then
+            echo "Version already matches tag"
+          else
+            git commit -m "chore: auto-bump version to $VERSION [skip ci]"
+            git push origin HEAD:main
+          fi
+
+  publish-npm:
+    name: Publish to npm
+    needs: version-bump
     runs-on: ubuntu-latest
     environment: npm-publish
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - uses: actions/setup-node@v4
         with:
@@ -65,10 +121,49 @@ jobs:
 
       - run: npm ci
 
-      - name: Build
-        run: npm run build
+      - run: npm run build
 
       - name: Publish
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  deploy-cloudflare:
+    name: Deploy to Cloudflare Workers
+    needs: version-bump
+    runs-on: ubuntu-latest
+    environment: cloudflare
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Deploy
+        run: npx wrangler deploy -c .dev/wrangler.deploy.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  github-release:
+    name: Create GitHub Release
+    needs: [version-bump, publish-npm, deploy-cloudflare]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version-bump.outputs.version }}
+          CHANGELOG_BODY: ${{ needs.version-bump.outputs.changelog }}
+        run: |
+          gh release create "v$VERSION" \
+            --title "v$VERSION" \
+            --notes "$CHANGELOG_BODY" \
+            --verify-tag
