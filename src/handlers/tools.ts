@@ -33,6 +33,7 @@ import { getBenchmark, getProviderInsights, formatBenchmark, formatProviderInsig
 import { assessSpoofability, formatSpoofability } from '../tools/assess-spoofability';
 import { checkResolverConsistency, formatResolverConsistency } from '../tools/check-resolver-consistency';
 import { validateFix, formatValidateFix } from '../tools/validate-fix';
+import { mapSupplyChain, formatSupplyChain } from '../tools/map-supply-chain';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -499,7 +500,26 @@ export async function handleToolsCall(
 					});
 					return { content: [mcpText(formatValidateFix(result, effectiveFormat))] };
 				}
-				default:
+				case 'map_supply_chain': {
+						const result = await mapSupplyChain(validDomain, buildDnsOptions(runtimeOptions));
+						logResult = `${result.summary.totalProviders} providers`;
+						logDetails = result;
+						logToolSuccess({
+							toolName: name,
+							durationMs: Date.now() - startTime,
+							domain,
+							analytics: runtimeOptions?.analytics,
+							status: 'pass',
+							logResult,
+							logDetails,
+							severity: 'info',
+							country: runtimeOptions?.country,
+							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+							authTier: runtimeOptions?.authTier,
+						});
+						return { content: [mcpText(formatSupplyChain(result, effectiveFormat))] };
+					}
+					default:
 					logToolFailure({
 						toolName: name,
 						durationMs: Date.now() - startTime,
