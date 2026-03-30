@@ -28,12 +28,12 @@ const NON_SCAN_TOOL_NAMES = new Set([
 	'generate_dmarc_record', 'generate_dkim_config', 'generate_mta_sts_policy',
 	'get_benchmark', 'get_provider_insights', 'assess_spoofability', 'explain_finding',
 	'map_supply_chain', 'analyze_drift', 'validate_fix', 'generate_rollout_plan',
-	'resolve_spf_chain',
+	'resolve_spf_chain', 'discover_subdomains', 'map_compliance', 'simulate_attack_paths',
 ]);
 
 describe('tool-schemas metadata', () => {
-	it('exports exactly 37 tools', () => {
-		expect(TOOLS).toHaveLength(38);
+	it('exports exactly 41 tools', () => {
+		expect(TOOLS).toHaveLength(41);
 	});
 
 	it('all tool names are unique', () => {
