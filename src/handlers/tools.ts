@@ -202,7 +202,7 @@ export async function handleToolsCall(
 	const args = params.arguments ?? {};
 	const startTime = Date.now();
 	let domain: string | undefined;
-	let logResult: string | undefined;
+	let logResult = 'unknown';
 	let logDetails: unknown;
 	try {
 		const validatedArgs = validateToolArgs(name, args);
