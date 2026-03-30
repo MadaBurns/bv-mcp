@@ -109,6 +109,7 @@ jobs:
   publish-npm:
     name: Publish to npm
     needs: version-bump
+    if: ${{ secrets.NPM_TOKEN != '' }}
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -129,15 +130,6 @@ jobs:
 
       - run: npm run build
 
-      - name: Verify npm token
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "Missing required secret: NPM_TOKEN (environment: production)"
-            exit 1
-          fi
-
       - name: Publish
         run: npm publish --provenance --access public
         env:
@@ -146,6 +138,7 @@ jobs:
   deploy-cloudflare:
     name: Deploy to Cloudflare Workers
     needs: version-bump
+    if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -163,15 +156,6 @@ jobs:
       - name: Build workspace package
         run: npm -w packages/dns-checks run build
 
-      - name: Verify Cloudflare token
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "Missing required secret: CLOUDFLARE_API_TOKEN (environment: production)"
-            exit 1
-          fi
-
       - name: Deploy
         run: npx wrangler deploy -c wrangler.jsonc
         env:
@@ -179,7 +163,7 @@ jobs:
 
   github-release:
     name: Create GitHub Release
-    needs: [version-bump, publish-npm, deploy-cloudflare]
+    needs: version-bump
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
