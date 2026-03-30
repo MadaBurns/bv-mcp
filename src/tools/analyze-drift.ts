@@ -8,6 +8,7 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import type { Finding, ScanScore } from '../lib/scoring-model';
+import { sanitizeOutputText } from '../lib/output-sanitize';
 
 /** Overall drift direction classification. */
 export type DriftClassification = 'improving' | 'stable' | 'regressing' | 'mixed';
@@ -163,13 +164,13 @@ function formatDriftCompact(report: DriftReport): string {
 	}
 
 	if (report.improvements.length > 0) {
-		lines.push(`Resolved (${report.improvements.length}): ${report.improvements.map((f) => f.title).join(', ')}`);
+		lines.push(`Resolved (${report.improvements.length}): ${report.improvements.map((f) => sanitizeOutputText(f.title, 60)).join(', ')}`);
 	}
 	if (report.regressions.length > 0) {
-		lines.push(`New issues (${report.regressions.length}): ${report.regressions.map((f) => `[${f.severity.toUpperCase()}] ${f.title}`).join(', ')}`);
+		lines.push(`New issues (${report.regressions.length}): ${report.regressions.map((f) => `[${f.severity.toUpperCase()}] ${sanitizeOutputText(f.title, 60)}`).join(', ')}`);
 	}
 	if (report.changed.length > 0) {
-		lines.push(`Changed (${report.changed.length}): ${report.changed.map((f) => `${f.title} (${f.previousSeverity}->${f.severity})`).join(', ')}`);
+		lines.push(`Changed (${report.changed.length}): ${report.changed.map((f) => `${sanitizeOutputText(f.title, 60)} (${f.previousSeverity}->${f.severity})`).join(', ')}`);
 	}
 
 	return lines.join('\n');
@@ -200,8 +201,8 @@ function formatDriftFull(report: DriftReport): string {
 	if (report.improvements.length > 0) {
 		lines.push('### ✅ Resolved Findings');
 		for (const f of report.improvements) {
-			lines.push(`- **[${f.severity.toUpperCase()}]** ${f.title}`);
-			lines.push(`  ${f.detail}`);
+			lines.push(`- **[${f.severity.toUpperCase()}]** ${sanitizeOutputText(f.title, 120)}`);
+			lines.push(`  ${sanitizeOutputText(f.detail, 200)}`);
 		}
 		lines.push('');
 	}
@@ -210,8 +211,8 @@ function formatDriftFull(report: DriftReport): string {
 	if (report.regressions.length > 0) {
 		lines.push('### ❌ New Findings');
 		for (const f of report.regressions) {
-			lines.push(`- **[${f.severity.toUpperCase()}]** ${f.title}`);
-			lines.push(`  ${f.detail}`);
+			lines.push(`- **[${f.severity.toUpperCase()}]** ${sanitizeOutputText(f.title, 120)}`);
+			lines.push(`  ${sanitizeOutputText(f.detail, 200)}`);
 		}
 		lines.push('');
 	}
@@ -220,7 +221,7 @@ function formatDriftFull(report: DriftReport): string {
 	if (report.changed.length > 0) {
 		lines.push('### 🔄 Severity Changes');
 		for (const f of report.changed) {
-			lines.push(`- **${f.title}**: ${f.previousSeverity} → ${f.severity}`);
+			lines.push(`- **${sanitizeOutputText(f.title, 120)}**: ${f.previousSeverity} → ${f.severity}`);
 		}
 		lines.push('');
 	}

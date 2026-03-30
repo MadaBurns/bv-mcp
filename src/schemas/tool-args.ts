@@ -118,7 +118,9 @@ export const AssessSpoofabilityArgs = BaseDomainArgs;
 /** generate_fix_plan — same as BaseDomainArgs */
 export const GenerateFixPlanArgs = BaseDomainArgs;
 
-const CheckNameSchema = z.string().trim().min(1).regex(/^[a-z_]+$/, 'Invalid check name');
+const CheckNameSchema = z.string().transform((v) => v.toLowerCase().trim()).pipe(
+	z.enum(['spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'http_security', 'dane']),
+);
 
 const TimelineSchema = z.string().transform((v) => v.toLowerCase()).pipe(
 	z.enum(['aggressive', 'standard', 'conservative']),

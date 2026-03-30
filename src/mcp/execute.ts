@@ -64,6 +64,7 @@ export interface ExecuteMcpRequestOptions {
 	clientType?: string;
 	authTier?: string;
 	sessionHash?: string;
+	certstream?: { fetch: typeof fetch };
 }
 
 function getDomainFromParams(params: Record<string, unknown> | undefined): string | undefined {
@@ -385,6 +386,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			country: options.country,
 			clientType: options.clientType,
 			authTier: options.authTier,
+			certstream: options.certstream,
 		}).then((dispatchResult) => {
 			if (dispatchResult.kind === 'early-error') {
 				return dispatchResult.payload;
@@ -448,6 +450,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			country: options.country,
 			clientType: options.clientType,
 			authTier: options.authTier,
+			certstream: options.certstream,
 		});
 
 		if (dispatchResult.kind === 'early-error') {
