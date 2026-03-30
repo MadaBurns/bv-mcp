@@ -1,0 +1,61 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath // empty' | { read -r f; case \"$f\" in *.ts) npx eslint --no-error-on-unmatched-pattern \"$f\" 2>/dev/null || true;; esac; }",
+            "timeout": 15,
+            "statusMessage": "Linting..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git commit:*)",
+            "command": "node -e \"const p=require('./package.json');const s=require('fs').readFileSync('src/lib/server-version.ts','utf8');const m=s.match(/SERVER_VERSION = '([^']+)'/);if(!m){console.log(JSON.stringify({systemMessage:'WARNING: Cannot parse SERVER_VERSION from src/lib/server-version.ts'}));}else if(p.version!==m[1]){console.log(JSON.stringify({continue:false,stopReason:'Version mismatch: package.json='+p.version+' server-version.ts='+m[1]+'. Fix with: npm version '+m[1]+' --no-git-tag-version'}));}\"",
+            "timeout": 5,
+            "statusMessage": "Checking version sync..."
+          },
+          {
+            "type": "command",
+            "if": "Bash(git commit:*)",
+            "command": "node -e \"const fs=require('fs');const a=fs.readFileSync('src/schemas/tool-args.ts','utf8');const d=fs.readFileSync('src/schemas/tool-definitions.ts','utf8');const sb=a.match(/TOOL_SCHEMA_MAP[^{]*\\{([^}]+)\\}/s)?.[1]||'';const sk=[...sb.matchAll(/^\\t(\\w+):/gm)].map(m=>m[1]);const db=d.match(/TOOL_DEFS[^{]*\\{([\\s\\S]+?)^\\};/m)?.[1]||'';const dk=[...db.matchAll(/^\\t(\\w+):\\s*\\{$/gm)].map(m=>m[1]);const ds=new Set(dk);const ss=new Set(sk);const md=sk.filter(k=>!ds.has(k));const ms=dk.filter(k=>!ss.has(k));if(md.length||ms.length){const msg=[];if(md.length)msg.push('In TOOL_SCHEMA_MAP but not TOOL_DEFS: '+md.join(', '));if(ms.length)msg.push('In TOOL_DEFS but not TOOL_SCHEMA_MAP: '+ms.join(', '));console.log(JSON.stringify({continue:false,stopReason:msg.join('. ')}));}\"",
+            "timeout": 5,
+            "statusMessage": "Checking tool definition sync..."
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git add -A:*)",
+            "command": "echo '{\"continue\":false,\"stopReason\":\"Use specific file paths with git add instead of -A to avoid staging sensitive files.\"}'",
+            "timeout": 2
+          },
+          {
+            "type": "command",
+            "if": "Bash(git add .:*)",
+            "command": "echo '{\"continue\":false,\"stopReason\":\"Use specific file paths with git add instead of . to avoid staging sensitive files.\"}'",
+            "timeout": 2
+          },
+          {
+            "type": "command",
+            "if": "Bash(git push --force:*)",
+            "command": "echo '{\"continue\":false,\"stopReason\":\"Force push blocked. This rewrites history and breaks clones/forks. Use git push (without --force) or discuss with the user first.\"}'",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}
