@@ -51,6 +51,10 @@
   //   { "binding": "SCAN_CACHE", "id": "<YOUR_SCAN_CACHE_KV_ID>" },
   //   { "binding": "SESSION_STORE", "id": "<YOUR_SESSION_STORE_KV_ID>" }
   // ],
+  // Service bindings — optional. Without them, tools fall back to external APIs.
+  // "services": [
+  //   { "binding": "BV_CERTSTREAM", "service": "bv-certstream-worker" }
+  // ],
   // Optional auth: leave empty for open mode.
   "vars": {
     "BV_API_KEY": "",
