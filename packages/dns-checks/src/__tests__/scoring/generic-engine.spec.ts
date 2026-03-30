@@ -640,7 +640,7 @@ describe('computeGenericScore', () => {
 	});
 
 	describe('provider modifier', () => {
-		it('applies positive modifier for high confidence', () => {
+		it('computes positive modifier for high confidence (metadata only)', () => {
 			const ctx = buildContext({
 				categoryScores: { spf: 100 },
 				tierMap: { spf: 'core' },
@@ -653,12 +653,12 @@ describe('computeGenericScore', () => {
 			});
 
 			const result = computeGenericScore(ctx);
-			// providerModifier: avg=1.0, centered=0.5, scaled=5, capped to 2
+			// providerModifier computed as metadata but excluded from overall score
 			expect(result.providerModifier).toBe(2);
-			expect(result.overall).toBe(92);
+			expect(result.overall).toBe(90); // base only, no modifier applied
 		});
 
-		it('applies negative modifier for low confidence', () => {
+		it('computes negative modifier for low confidence (metadata only)', () => {
 			const ctx = buildContext({
 				categoryScores: { spf: 100 },
 				tierMap: { spf: 'core' },
@@ -671,9 +671,9 @@ describe('computeGenericScore', () => {
 			});
 
 			const result = computeGenericScore(ctx);
-			// providerModifier: avg=0.0, centered=-0.5, scaled=-5, capped to -2
+			// providerModifier computed as metadata but excluded from overall score
 			expect(result.providerModifier).toBe(-2);
-			expect(result.overall).toBe(88);
+			expect(result.overall).toBe(90); // same as high confidence — deterministic
 		});
 
 		it('returns 0 modifier when no providerConfidence provided', () => {
