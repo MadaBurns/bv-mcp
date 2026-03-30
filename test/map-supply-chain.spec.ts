@@ -7,31 +7,35 @@ const { restore } = setupFetchMock();
 afterEach(() => restore());
 
 /**
- * Mock DNS responses for TXT (SPF), NS, and CAA queries.
+ * Mock DNS responses for TXT (SPF), NS, CAA, and SRV queries.
  * Routes queries by the string-typed record type in the DoH URL params.
  */
 function mockDnsResponses(options: {
 	spf?: string | null;
+	txtRecords?: string[];
 	nsHosts?: string[];
 	caaRecords?: string[];
+	srvRecords?: Record<string, Array<{ priority: number; weight: number; port: number; target: string }>>;
 	domain?: string;
 }) {
-	const { spf, nsHosts = [], caaRecords = [], domain = 'example.com' } = options;
+	const { spf, txtRecords = [], nsHosts = [], caaRecords = [], srvRecords = {}, domain = 'example.com' } = options;
 
 	globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
 		const u = new URL(typeof url === 'string' ? url : url.toString());
 		const name = u.searchParams.get('name') ?? '';
 		const type = u.searchParams.get('type') ?? '';
 
-		// TXT queries (SPF records)
+		// TXT queries (SPF + verification records)
 		if (type === 'TXT') {
-			if (name === domain && spf !== null && spf !== undefined) {
-				return Promise.resolve(
-					createDohResponse(
-						[{ name, type: 16 }],
-						[{ name, type: 16, TTL: 300, data: `"${spf}"` }],
-					),
-				);
+			if (name === domain) {
+				const answers: Array<{ name: string; type: number; TTL: number; data: string }> = [];
+				if (spf !== null && spf !== undefined) {
+					answers.push({ name, type: 16, TTL: 300, data: `"${spf}"` });
+				}
+				for (const txt of txtRecords) {
+					answers.push({ name, type: 16, TTL: 300, data: `"${txt}"` });
+				}
+				return Promise.resolve(createDohResponse([{ name, type: 16 }], answers));
 			}
 			return Promise.resolve(createDohResponse([{ name, type: 16 }], []));
 		}
@@ -62,6 +66,22 @@ function mockDnsResponses(options: {
 				return Promise.resolve(createDohResponse([{ name, type: 257 }], answers));
 			}
 			return Promise.resolve(createDohResponse([{ name, type: 257 }], []));
+		}
+
+		// SRV queries
+		if (type === 'SRV') {
+			const srvKey = Object.keys(srvRecords).find((prefix) => name === `${prefix}.${domain}`);
+			if (srvKey) {
+				const records = srvRecords[srvKey];
+				const answers = records.map((r) => ({
+					name,
+					type: 33,
+					TTL: 300,
+					data: `${r.priority} ${r.weight} ${r.port} ${r.target}.`,
+				}));
+				return Promise.resolve(createDohResponse([{ name, type: 33 }], answers));
+			}
+			return Promise.resolve(createDohResponse([{ name, type: 33 }], []));
 		}
 
 		// Default: empty response
@@ -300,6 +320,201 @@ describe('mapSupplyChain', () => {
 		// Should still have SPF and CAA deps, just no NS
 		expect(result.dependencies.some((d) => d.provider === 'Google Workspace')).toBe(true);
 		expect(result.dependencies.some((d) => d.provider === 'letsencrypt.org')).toBe(true);
+	});
+
+	it('detects TXT verification records as saas-integration dependencies with low trust', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 include:_spf.google.com -all',
+			txtRecords: [
+				'google-site-verification=abc123',
+				'facebook-domain-verification=xyz789',
+				'slack-domain-verification=slk456',
+			],
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+		});
+
+		const result = await run();
+
+		const googleSearch = result.dependencies.find((d) => d.provider === 'Google Search Console');
+		expect(googleSearch).toBeDefined();
+		expect(googleSearch!.roles).toContain('saas-integration');
+		expect(googleSearch!.sources).toContain('txt-verification');
+		expect(googleSearch!.trustLevel).toBe('low');
+
+		const facebook = result.dependencies.find((d) => d.provider === 'Facebook');
+		expect(facebook).toBeDefined();
+		expect(facebook!.roles).toContain('saas-integration');
+		expect(facebook!.trustLevel).toBe('low');
+
+		const slack = result.dependencies.find((d) => d.provider === 'Slack');
+		expect(slack).toBeDefined();
+	});
+
+	it('detects SRV-discovered services as advertised-service dependencies with medium trust', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 include:_spf.google.com -all',
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			srvRecords: {
+				'_autodiscover._tcp': [{ priority: 10, weight: 10, port: 443, target: 'autodiscover.outlook.com' }],
+				'_imaps._tcp': [{ priority: 10, weight: 10, port: 993, target: 'imap.google.com' }],
+			},
+		});
+
+		const result = await run();
+
+		// Outlook SRV should resolve to Microsoft 365
+		const m365 = result.dependencies.find((d) => d.provider === 'Microsoft 365');
+		expect(m365).toBeDefined();
+		expect(m365!.roles).toContain('advertised-service');
+		expect(m365!.sources).toContain('srv');
+
+		// Google SRV should resolve to Google Workspace (already present from SPF, so merged)
+		const google = result.dependencies.find((d) => d.provider === 'Google Workspace');
+		expect(google).toBeDefined();
+		expect(google!.roles).toContain('advertised-service');
+		expect(google!.roles).toContain('email-sending');
+		// SPF dominates trust level
+		expect(google!.trustLevel).toBe('critical');
+	});
+
+	it('fires stale_integration signal when TXT verification has no matching SPF include', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 include:_spf.google.com -all',
+			txtRecords: [
+				'sendgrid-verification=sg123', // SendGrid has SERVICE_SPF_DOMAINS entry but no SPF include
+			],
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+		});
+
+		const result = await run();
+
+		const staleSignal = result.signals.find((s) => s.type === 'stale_integration');
+		expect(staleSignal).toBeDefined();
+		expect(staleSignal!.severity).toBe('low');
+		expect(staleSignal!.detail).toContain('SendGrid');
+		expect(staleSignal!.detail).toContain('stale');
+	});
+
+	it('fires insecure_service signal when plain IMAP without IMAPS SRV', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 -all',
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			srvRecords: {
+				'_imap._tcp': [{ priority: 10, weight: 10, port: 143, target: 'mail.example.com' }],
+				// No _imaps._tcp
+			},
+		});
+
+		const result = await run();
+
+		const insecureSignal = result.signals.find((s) => s.type === 'insecure_service');
+		expect(insecureSignal).toBeDefined();
+		expect(insecureSignal!.severity).toBe('medium');
+		expect(insecureSignal!.detail).toContain('IMAP');
+		expect(insecureSignal!.detail).toContain('_imaps._tcp');
+	});
+
+	it('fires security_tooling_exposed signal for security-category TXT verifications', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 -all',
+			txtRecords: [
+				'crowdstrike-domain-verification=cs123',
+				'knowbe4-site-verification=kb123',
+			],
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+		});
+
+		const result = await run();
+
+		const securitySignals = result.signals.filter((s) => s.type === 'security_tooling_exposed');
+		expect(securitySignals.length).toBe(2);
+		expect(securitySignals[0].severity).toBe('low');
+
+		const providers = securitySignals.map((s) => s.detail);
+		expect(providers.some((d) => d.includes('CrowdStrike'))).toBe(true);
+		expect(providers.some((d) => d.includes('KnowBe4'))).toBe(true);
+	});
+
+	it('deduplicates same provider across SPF + TXT into single dependency with multiple roles', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 include:_spf.google.com -all',
+			txtRecords: [
+				'google-site-verification=abc123', // Google Search Console (different provider name)
+				'MS=ms12345', // Microsoft 365 via TXT verification
+			],
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			srvRecords: {
+				'_autodiscover._tcp': [{ priority: 10, weight: 10, port: 443, target: 'autodiscover.outlook.com' }],
+			},
+		});
+
+		const result = await run();
+
+		// Microsoft 365 should appear once with both roles (TXT verification + SRV)
+		const m365Deps = result.dependencies.filter((d) => d.provider === 'Microsoft 365');
+		expect(m365Deps.length).toBe(1);
+		expect(m365Deps[0].roles).toContain('saas-integration');
+		expect(m365Deps[0].roles).toContain('advertised-service');
+		expect(m365Deps[0].sources).toContain('txt-verification');
+		expect(m365Deps[0].sources).toContain('srv');
+	});
+
+	it('tolerates SRV probe failures gracefully', async () => {
+		// Mock that throws for SRV queries but succeeds for everything else
+		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+			const u = new URL(typeof url === 'string' ? url : url.toString());
+			const type = u.searchParams.get('type') ?? '';
+
+			if (type === 'SRV') {
+				return Promise.reject(new Error('DNS timeout'));
+			}
+			if (type === 'TXT') {
+				return Promise.resolve(
+					createDohResponse(
+						[{ name: 'example.com', type: 16 }],
+						[{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 include:_spf.google.com -all"' }],
+					),
+				);
+			}
+			if (type === 'NS') {
+				return Promise.resolve(
+					createDohResponse(
+						[{ name: 'example.com', type: 2 }],
+						[{ name: 'example.com', type: 2, TTL: 300, data: 'ns1.cloudflare.com.' }],
+					),
+				);
+			}
+			return Promise.resolve(createDohResponse([{ name: 'example.com', type: 0 }], []));
+		});
+
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		const result = await mapSupplyChain('example.com');
+
+		// Should still have SPF and NS deps, just no SRV
+		expect(result.dependencies.some((d) => d.provider === 'Google Workspace')).toBe(true);
+		expect(result.dependencies.some((d) => d.sources.includes('srv'))).toBe(false);
+	});
+
+	it('filters out disabled SRV services (target "." or port 0)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 -all',
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			srvRecords: {
+				'_imap._tcp': [{ priority: 0, weight: 0, port: 0, target: '.' }],
+				'_imaps._tcp': [{ priority: 10, weight: 10, port: 993, target: 'imap.google.com' }],
+			},
+		});
+
+		const result = await run();
+
+		// Disabled IMAP should not appear; only IMAPS should
+		const srvDeps = result.dependencies.filter((d) => d.sources.includes('srv'));
+		expect(srvDeps.length).toBe(1);
+		expect(srvDeps[0].provider).toBe('Google Workspace');
+
+		// No insecure_service signal since _imap._tcp was disabled
+		const insecureSignal = result.signals.find((s) => s.type === 'insecure_service');
+		expect(insecureSignal).toBeUndefined();
 	});
 });
 
