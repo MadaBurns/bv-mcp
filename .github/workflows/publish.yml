@@ -107,7 +107,7 @@ jobs:
     name: Publish to npm
     needs: version-bump
     runs-on: ubuntu-latest
-    environment: npm-publish
+    environment: production
     steps:
       - uses: actions/checkout@v4
         with:
@@ -132,7 +132,7 @@ jobs:
     name: Deploy to Cloudflare Workers
     needs: version-bump
     runs-on: ubuntu-latest
-    environment: cloudflare
+    environment: production
     steps:
       - uses: actions/checkout@v4
         with:
