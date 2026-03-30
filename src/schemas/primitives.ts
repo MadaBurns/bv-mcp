@@ -42,7 +42,7 @@ export const RecordTypeSchema = z.string().transform(s => s.trim().toUpperCase()
 export const GradeSchema = z.enum(['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'F']);
 
 /** API key tier. */
-export const TierSchema = z.enum(['free', 'agent', 'developer', 'enterprise', 'partner']);
+export const TierSchema = z.enum(['free', 'agent', 'developer', 'enterprise', 'partner', 'owner']);
 
 /** DMARC policy for generate_dmarc_record. Trims and lowercases input. */
 export const DmarcPolicySchema = z.string().transform(s => s.trim().toLowerCase()).pipe(z.enum(['none', 'quarantine', 'reject']));
