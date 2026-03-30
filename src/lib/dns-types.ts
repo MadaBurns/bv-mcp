@@ -52,7 +52,7 @@ export interface DohResponse {
 
 /** Configuration for a custom secondary DoH resolver (e.g., bv-dns on Oracle Cloud). */
 export interface SecondaryDohConfig {
-	/** DoH endpoint URL (e.g. https://secondary-doh.example.com/dns-query) */
+	/** DoH endpoint URL (e.g. https://doh.example.com/dns-query) */
 	endpoint: string;
 	/** Optional auth token sent as X-BV-Token header */
 	token?: string;

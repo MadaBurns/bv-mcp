@@ -68,7 +68,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
-- Service binding URL path corrected from `/internal/validate-key` to `/internal/validate-key`.
+- Service binding URL path corrected for tier-auth validation endpoint.
 - Tier-auth debug logging removed; `Headers.entries()` TypeScript error fixed.
 - Rate-limit test updated to expect tier-based quota headers for authenticated requests.
 
