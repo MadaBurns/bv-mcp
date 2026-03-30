@@ -77,11 +77,11 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 	SPF_WARNING: {
 		title: 'SPF Soft Fail',
 		severity: 'warning',
-		explanation: 'SPF uses a soft fail (~all) policy. Emails that fail SPF will be accepted but may be flagged as suspicious.',
-		impact: 'Failing SPF messages are often still accepted, so spoofed mail may continue reaching recipients.',
-		adverseConsequences: 'Phishing risk remains elevated and security teams may need to manually triage suspicious mail.',
-		recommendation: 'Upgrade to hard fail (-all) after verifying all legitimate sources are in your SPF record.',
-		references: ['https://datatracker.ietf.org/doc/html/rfc7208#section-8.1'],
+		explanation: 'SPF uses a soft fail (~all) policy. Emails that fail SPF will be accepted but may be flagged as suspicious. However, when DMARC enforcement (p=reject or p=quarantine) is active, ~all is the recommended setting because it allows DMARC to verify DKIM before making a reject decision.',
+		impact: 'Without DMARC enforcement, failing SPF messages are often still accepted, so spoofed mail may continue reaching recipients. With DMARC enforcement, this is a non-issue.',
+		adverseConsequences: 'Without DMARC, phishing risk remains elevated. With DMARC enforcement active, ~all is correct and -all could cause premature rejection before DKIM verification.',
+		recommendation: 'If DMARC is configured with p=reject or p=quarantine, keep ~all — it is the recommended setting. Otherwise, upgrade to hard fail (-all) after verifying all legitimate sources are in your SPF record.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc7208#section-8.1', 'https://www.mailhardener.com/kb/spf'],
 	},
 	SPF_MISSING: {
 		title: 'No SPF Record Found',

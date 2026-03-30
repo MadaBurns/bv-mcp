@@ -39,13 +39,31 @@ describe('checkSPF', () => {
 		expect(result.findings.find((f) => f.title.includes('Permissive SPF'))?.severity).toBe('critical');
 	});
 
-	it('flags ~all as low', async () => {
+	it('flags ~all as low when DMARC is not enforcing', async () => {
+		const queryDNS = createMockDNS({
+			'example.com': ['v=spf1 include:_spf.google.com ~all'],
+			'_dmarc.example.com': ['v=DMARC1; p=none'],
+		});
+		const result = await checkSPF('example.com', queryDNS);
+		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all)' && f.severity === 'low')).toBe(true);
+	});
+
+	it('downgrades ~all to info when DMARC p=reject is active', async () => {
 		const queryDNS = createMockDNS({
 			'example.com': ['v=spf1 include:_spf.google.com ~all'],
 			'_dmarc.example.com': ['v=DMARC1; p=reject; aspf=s; adkim=s'],
 		});
 		const result = await checkSPF('example.com', queryDNS);
-		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all)')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all) with DMARC enforcement' && f.severity === 'info')).toBe(true);
+	});
+
+	it('downgrades ~all to info when DMARC p=quarantine is active', async () => {
+		const queryDNS = createMockDNS({
+			'example.com': ['v=spf1 include:_spf.google.com ~all'],
+			'_dmarc.example.com': ['v=DMARC1; p=quarantine'],
+		});
+		const result = await checkSPF('example.com', queryDNS);
+		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all) with DMARC enforcement' && f.severity === 'info')).toBe(true);
 	});
 
 	it('returns info for properly configured SPF with -all', async () => {

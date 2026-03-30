@@ -148,15 +148,44 @@ export async function checkSPF(
 				),
 			);
 		} else if (qualifier.toLowerCase() === '~all') {
-			findings.push(
-				createFinding(
-					'spf',
-					'SPF soft fail (~all)',
-					'low',
-					`SPF record uses "~all" (soft fail). Consider upgrading to "-all" (hard fail) for stricter enforcement once you've verified all legitimate senders are included.`,
-					spfMetadata,
-				),
-			);
+			// Check DMARC policy: ~all is the recommended setting when DMARC
+			// enforcement (p=reject or p=quarantine) is active, because -all
+			// causes rejection at SMTP level before DMARC can verify DKIM.
+			// See https://www.mailhardener.com/kb/spf
+			let dmarcEnforcing = false;
+			try {
+				const dmarcRecords = await queryDNS(`_dmarc.${domain}`, 'TXT', { timeout });
+				const dmarcRecord = dmarcRecords.find((r) => r.toLowerCase().startsWith('v=dmarc1'));
+				if (dmarcRecord) {
+					const dmarcTags = parseDmarcTags(dmarcRecord);
+					const policy = dmarcTags.get('p') ?? 'none';
+					dmarcEnforcing = policy === 'reject' || policy === 'quarantine';
+				}
+			} catch {
+				// DMARC lookup failed — fall through to default ~all finding.
+			}
+
+			if (dmarcEnforcing) {
+				findings.push(
+					createFinding(
+						'spf',
+						'SPF soft fail (~all) with DMARC enforcement',
+						'info',
+						`SPF record uses "~all" (soft fail) which is the recommended setting when DMARC enforcement is active. The DMARC policy ensures unauthorized mail is rejected after DKIM verification, while ~all avoids premature rejection at the SMTP level.`,
+						spfMetadata,
+					),
+				);
+			} else {
+				findings.push(
+					createFinding(
+						'spf',
+						'SPF soft fail (~all)',
+						'low',
+						`SPF record uses "~all" (soft fail). Consider upgrading to "-all" (hard fail) for stricter enforcement, or deploy DMARC with p=reject to handle authentication via DKIM alignment.`,
+						spfMetadata,
+					),
+				);
+			}
 		}
 		// -all is the recommended setting, no finding needed
 	} else if (!hasRedirect) {
