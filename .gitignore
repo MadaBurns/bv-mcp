@@ -18,6 +18,11 @@ out/
 .DS_Store
 Thumbs.db
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
 # Environment & auth tokens
 .env
 .env.local
@@ -53,6 +58,7 @@ pnpm-debug.log*
 
 # Cloudflare
 .wrangler/
+worker-configuration.d.ts
 
 # AI tool configs
 .claude/
