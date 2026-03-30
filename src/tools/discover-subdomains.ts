@@ -121,7 +121,7 @@ export async function discoverSubdomains(
 		const controller = new AbortController();
 		const timeoutId = setTimeout(() => controller.abort(), CRT_SH_TIMEOUT_MS);
 
-		const response = await fetch(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`, {
+		const response = await fetch(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json&exclude=expired`, {
 			signal: controller.signal,
 			redirect: 'manual',
 		});
