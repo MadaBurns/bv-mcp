@@ -165,4 +165,8 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	get_provider_insights: 50,
 	assess_spoofability: 150,
 	check_resolver_consistency: 50,
+	map_supply_chain: 75,
+	analyze_drift: 75,
+	validate_fix: 200,
+	generate_rollout_plan: 150,
 };
