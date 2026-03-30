@@ -316,6 +316,24 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'intelligence',
 		scanIncluded: false,
 	},
+	discover_subdomains: {
+		description: 'Discover subdomains via Certificate Transparency logs. Reveals shadow IT, forgotten services, and unauthorized certificate issuance.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	map_compliance: {
+		description: 'Map scan findings to compliance frameworks: NIST 800-177, PCI DSS 4.0, SOC 2, CIS Controls. Shows pass/fail/partial status per control.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	simulate_attack_paths: {
+		description: 'Analyze current DNS posture and enumerate specific attack paths an adversary could exploit, with severity, feasibility, steps, and mitigations.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
 };
 
 export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => ({
