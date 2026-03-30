@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { ScanDomainResult } from '../scan-domain';
+import type { Finding } from '../../lib/scoring';
 import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
@@ -46,13 +47,13 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		maturityLabel: result.maturity?.label ?? null,
 		categoryScores: result.score.categoryScores,
 		findingCounts: {
-			critical: result.score.findings.filter((f) => f.severity === 'critical').length,
-			high: result.score.findings.filter((f) => f.severity === 'high').length,
-			medium: result.score.findings.filter((f) => f.severity === 'medium').length,
-			low: result.score.findings.filter((f) => f.severity === 'low').length,
+			critical: result.score.findings.filter((f: Finding) => f.severity === 'critical').length,
+			high: result.score.findings.filter((f: Finding) => f.severity === 'high').length,
+			medium: result.score.findings.filter((f: Finding) => f.severity === 'medium').length,
+			low: result.score.findings.filter((f: Finding) => f.severity === 'low').length,
 		},
 		scoringProfile: result.context?.profile ?? 'mail_enabled',
-		scoringSignals: (result.context?.signals ?? []).map((s) => s.replace(/[<>&"']/g, '')),
+		scoringSignals: (result.context?.signals ?? []).map((s: string) => s.replace(/[<>&"']/g, '')),
 		scoringNote: result.scoringNote ?? null,
 		adaptiveWeightDeltas: result.adaptiveWeightDeltas ?? null,
 		percentileRank: enrichment?.percentileRank ?? null,
@@ -104,13 +105,13 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 
 	lines.push('Category Scores:');
 	lines.push('-'.repeat(30));
-	for (const [category, score] of Object.entries(result.score.categoryScores)) {
+	for (const [category, score] of Object.entries(result.score.categoryScores) as [string, number][]) {
 		const status = score >= 80 ? '✓' : score >= 50 ? '⚠' : '✗';
 		lines.push(`  ${status} ${category.toUpperCase().padEnd(10)} ${score}/100`);
 	}
 	lines.push('');
 
-	const nonInfoFindings = result.score.findings.filter((finding) => finding.severity !== 'info');
+	const nonInfoFindings = result.score.findings.filter((finding: Finding) => finding.severity !== 'info');
 	if (nonInfoFindings.length > 0) {
 		lines.push('Findings:');
 		lines.push('-'.repeat(30));

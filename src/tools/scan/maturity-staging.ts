@@ -6,7 +6,7 @@
  * based on the results of individual DNS security checks.
  */
 
-import type { CheckResult } from '../../lib/scoring';
+import type { CheckResult, Finding } from '../../lib/scoring';
 
 export interface MaturityStage {
 	stage: number;
@@ -68,7 +68,7 @@ export function computeMaturityStage(checks: CheckResult[]): MaturityStage {
 	// reuse the same numbers as the mail-domain scale. This is safe because `stage` is
 	// only ever rendered as a display value alongside `label` — it is never used as a
 	// numeric index or compared against mail-domain stages in any downstream logic.
-	const hasNoMx = mxCheck != null && mxCheck.findings.some((f) => f.title === 'No MX records found');
+	const hasNoMx = mxCheck != null && mxCheck.findings.some((f: Finding) => f.title === 'No MX records found');
 	if (hasNoMx) {
 		const hasDnssec = dnssecCheck?.passed ?? false;
 		return {
@@ -82,24 +82,24 @@ export function computeMaturityStage(checks: CheckResult[]): MaturityStage {
 	}
 
 	// Determine SPF presence
-	const hasSpf = spfCheck != null && !spfCheck.findings.some((f) => /No SPF record/i.test(f.title));
+	const hasSpf = spfCheck != null && !spfCheck.findings.some((f: Finding) => /No SPF record/i.test(f.title));
 
 	// Determine DMARC presence and policy
-	const hasDmarc = dmarcCheck != null && !dmarcCheck.findings.some((f) => /No DMARC record/i.test(f.title));
-	const dmarcPolicyNone = dmarcCheck?.findings.some((f) => /policy set to none/i.test(f.title)) ?? false;
-	const dmarcPolicyQuarantine = dmarcCheck?.findings.some((f) => /policy set to quarantine/i.test(f.title)) ?? false;
+	const hasDmarc = dmarcCheck != null && !dmarcCheck.findings.some((f: Finding) => /No DMARC record/i.test(f.title));
+	const dmarcPolicyNone = dmarcCheck?.findings.some((f: Finding) => /policy set to none/i.test(f.title)) ?? false;
+	const dmarcPolicyQuarantine = dmarcCheck?.findings.some((f: Finding) => /policy set to quarantine/i.test(f.title)) ?? false;
 	// reject = no "policy set to none" and no "policy set to quarantine" and DMARC exists
 	const dmarcPolicyReject = hasDmarc && !dmarcPolicyNone && !dmarcPolicyQuarantine;
-	const hasRua = dmarcCheck != null && !dmarcCheck.findings.some((f) => /No aggregate reporting/i.test(f.title));
+	const hasRua = dmarcCheck != null && !dmarcCheck.findings.some((f: Finding) => /No aggregate reporting/i.test(f.title));
 
 	// Determine MTA-STS, DNSSEC, BIMI
 	const hasMtaSts = mtaStsCheck?.passed ?? false;
 	const hasDnssec = dnssecCheck?.passed ?? false;
-	const hasBimi = bimiCheck?.findings.some((f) => /BIMI record configured/i.test(f.title)) ?? false;
+	const hasBimi = bimiCheck?.findings.some((f: Finding) => /BIMI record configured/i.test(f.title)) ?? false;
 
 	// DANE presence
 	const daneCheck = byCategory.get('dane');
-	const hasDane = daneCheck?.findings.some((f) => /DANE TLSA configured/i.test(f.title)) ?? false;
+	const hasDane = daneCheck?.findings.some((f: Finding) => /DANE TLSA configured/i.test(f.title)) ?? false;
 
 	// CAA presence (passed = CAA records found)
 	const caaCheck = byCategory.get('caa');
@@ -109,8 +109,8 @@ export function computeMaturityStage(checks: CheckResult[]): MaturityStage {
 	// Provider-implied findings have metadata.detectionMethod === 'provider-implied'
 	const hasDkimDiscovered =
 		dkimCheck != null &&
-		!dkimCheck.findings.some((f) => /No DKIM records found|DKIM selector not discovered/i.test(f.title)) &&
-		!dkimCheck.findings.some((f) => f.metadata?.detectionMethod === 'provider-implied');
+		!dkimCheck.findings.some((f: Finding) => /No DKIM records found|DKIM selector not discovered/i.test(f.title)) &&
+		!dkimCheck.findings.some((f: Finding) => f.metadata?.detectionMethod === 'provider-implied');
 
 	// Stage 4 — Hardened: Stage 3 + at least 2 of (MTA-STS, DNSSEC, BIMI, DANE, CAA, DKIM-discovered)
 	// DKIM is no longer required for Stage 3 — enforcement alone (SPF + DMARC p=quarantine/reject) qualifies
