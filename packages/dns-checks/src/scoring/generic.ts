@@ -135,7 +135,9 @@ function computeProviderModifier(providerConfidence: Record<string, number> | un
 	const clamped = values.map((v) => Math.max(0, Math.min(1, v)));
 	const avg = clamped.reduce((sum, v) => sum + v, 0) / clamped.length;
 	const centered = avg - 0.5;
-	return Math.round(centered * 10);
+	// Cap at ±2 to prevent cache-dependent confidence fluctuations from causing
+	// visible score changes (was ±5, caused 93→91 swings on consecutive scans)
+	return Math.max(-2, Math.min(2, Math.round(centered * 10)));
 }
 
 /**

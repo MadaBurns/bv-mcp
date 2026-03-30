@@ -653,9 +653,9 @@ describe('computeGenericScore', () => {
 			});
 
 			const result = computeGenericScore(ctx);
-			// providerModifier: avg=1.0, centered=0.5, scaled=5
-			expect(result.providerModifier).toBe(5);
-			expect(result.overall).toBe(95);
+			// providerModifier: avg=1.0, centered=0.5, scaled=5, capped to 2
+			expect(result.providerModifier).toBe(2);
+			expect(result.overall).toBe(92);
 		});
 
 		it('applies negative modifier for low confidence', () => {
@@ -671,9 +671,9 @@ describe('computeGenericScore', () => {
 			});
 
 			const result = computeGenericScore(ctx);
-			// providerModifier: avg=0.0, centered=-0.5, scaled=-5
-			expect(result.providerModifier).toBe(-5);
-			expect(result.overall).toBe(85);
+			// providerModifier: avg=0.0, centered=-0.5, scaled=-5, capped to -2
+			expect(result.providerModifier).toBe(-2);
+			expect(result.overall).toBe(88);
 		});
 
 		it('returns 0 modifier when no providerConfidence provided', () => {
