@@ -237,7 +237,10 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 		}
 	}
 
-	// --- Provider confidence modifier ---
+	// --- Provider confidence modifier (metadata only, excluded from score) ---
+	// Computed and returned for analytics consumers but not applied to the overall
+	// score. Cache-dependent providerConfidence values caused non-deterministic
+	// scores on consecutive scans of the same domain with identical findings.
 	const providerModifier = computeProviderModifier(input.providerConfidence);
 
 	// --- Critical penalty ---
@@ -245,7 +248,7 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 	const criticalPenalty = counts && counts.critical > 0 ? thresholds.criticalOverallPenalty : 0;
 
 	// --- Assemble pre-ceiling score ---
-	const preCeiling = clampPercent(Math.round(base) + emailBonus + providerModifier - criticalPenalty);
+	const preCeiling = clampPercent(Math.round(base) + emailBonus - criticalPenalty);
 
 	// --- Critical gap ceiling ---
 	const criticalGaps: string[] = [];
