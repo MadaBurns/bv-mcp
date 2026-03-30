@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectProviders, getProviderFixSteps, type DetectedProvider } from '../src/tools/provider-guides';
+import { detectProviders, getProviderFixSteps } from '../src/tools/provider-guides';
 
 describe('provider-guides', () => {
 	describe('detectProviders', () => {
