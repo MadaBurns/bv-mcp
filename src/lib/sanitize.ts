@@ -168,11 +168,13 @@ export function validateDomain(input: string): ValidationResult {
 		if (label.length === 0) {
 			return { valid: false, error: 'Domain contains empty label (consecutive dots)' };
 		}
+		// Strip HTML/script tags from label before including in error messages
+		const safeLabel = label.replace(/[<>]/g, '').slice(0, 63);
 		if (label.length > MAX_LABEL_LENGTH) {
-			return { valid: false, error: `Label "${label}" exceeds maximum length of ${MAX_LABEL_LENGTH} characters` };
+			return { valid: false, error: `Label "${safeLabel}" exceeds maximum length of ${MAX_LABEL_LENGTH} characters` };
 		}
 		if (!LABEL_REGEX.test(label)) {
-			return { valid: false, error: `Label "${label}" contains invalid characters` };
+			return { valid: false, error: `Label "${safeLabel}" contains invalid characters` };
 		}
 	}
 
