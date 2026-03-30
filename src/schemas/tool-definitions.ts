@@ -14,6 +14,10 @@ import {
 	CompareBaselineArgs,
 	GetBenchmarkArgs,
 	GetProviderInsightsArgs,
+	ValidateFixArgs,
+	MapSupplyChainArgs,
+	AnalyzeDriftArgs,
+	GenerateRolloutPlanArgs,
 	TOOL_SCHEMA_MAP,
 } from './tool-args';
 
@@ -61,7 +65,7 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 	return jsonSchema as McpTool['inputSchema'];
 }
 
-/** All 33 MCP tool definitions. */
+/** All 37 MCP tool definitions. */
 const TOOL_DEFS: Record<string, ToolDef> = {
 	check_mx: {
 		description: 'Validate MX records and email provider detection.',
@@ -280,6 +284,30 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		description: 'Explain a finding with impact and remediation.',
 		schema: ExplainFindingArgs,
 		group: 'meta',
+		scanIncluded: false,
+	},
+	map_supply_chain: {
+		description: 'Map third-party service dependencies from DNS records. Shows who can send as you, control your DNS, and receive your mail.',
+		schema: MapSupplyChainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	analyze_drift: {
+		description: 'Compare current security posture against a previous baseline. Shows what improved, regressed, or changed.',
+		schema: AnalyzeDriftArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	validate_fix: {
+		description: 'Re-check a specific control after applying a fix. Confirms whether the finding is resolved.',
+		schema: ValidateFixArgs,
+		group: 'remediation',
+		scanIncluded: false,
+	},
+	generate_rollout_plan: {
+		description: 'Generate a phased DMARC enforcement timeline with exact DNS records per phase.',
+		schema: GenerateRolloutPlanArgs,
+		group: 'remediation',
 		scanIncluded: false,
 	},
 };
