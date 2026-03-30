@@ -68,7 +68,8 @@ worker-configuration.d.ts
 *.db
 
 # AI tool configs — ignore all except project settings (hooks, permissions)
-.claude/
+# Must un-ignore directory first, then re-ignore contents, then whitelist settings
+.claude/*
 !.claude/settings.json
 .gemini/
 
