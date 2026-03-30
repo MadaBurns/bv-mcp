@@ -310,6 +310,12 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'remediation',
 		scanIncluded: false,
 	},
+	resolve_spf_chain: {
+		description: 'Recursively resolve the full SPF include chain. Shows lookup count, tree depth, and flags issues like circular includes or exceeding the 10-lookup limit.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
 };
 
 export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => ({
