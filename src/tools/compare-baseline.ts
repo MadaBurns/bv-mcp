@@ -6,7 +6,7 @@
  */
 
 import type { OutputFormat } from '../handlers/tool-args';
-import type { CheckCategory } from '../lib/scoring';
+import type { CheckCategory, Finding } from '../lib/scoring';
 import type { ScanDomainResult } from './scan-domain';
 
 const GRADE_ORDER = ['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'E', 'F'] as const;
@@ -67,7 +67,7 @@ function dmarcEnforced(scan: ScanDomainResult): boolean {
 	const dmarcCheck = scan.checks.find((value) => value.category === 'dmarc');
 	if (!dmarcCheck) return false;
 
-	const hasNonePolicyFinding = dmarcCheck.findings.some((finding) => {
+	const hasNonePolicyFinding = dmarcCheck.findings.some((finding: Finding) => {
 		const text = `${finding.title} ${finding.detail}`.toLowerCase();
 		return finding.severity !== 'info' && (text.includes('p=none') || text.includes('policy is none'));
 	});
@@ -132,7 +132,7 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 
 	if (baseline.max_critical_findings !== undefined) {
 		checkedRules++;
-		const criticalCount = scan.score.findings.filter((finding) => finding.severity === 'critical').length;
+		const criticalCount = scan.score.findings.filter((finding: Finding) => finding.severity === 'critical').length;
 		if (criticalCount > baseline.max_critical_findings) {
 			violations.push({
 				rule: 'max_critical_findings',
@@ -145,7 +145,7 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 
 	if (baseline.max_high_findings !== undefined) {
 		checkedRules++;
-		const highCount = scan.score.findings.filter((finding) => finding.severity === 'high').length;
+		const highCount = scan.score.findings.filter((finding: Finding) => finding.severity === 'high').length;
 		if (highCount > baseline.max_high_findings) {
 			violations.push({
 				rule: 'max_high_findings',
