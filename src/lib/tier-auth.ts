@@ -82,7 +82,7 @@ export async function resolveTier(
 	if (env.BV_WEB && env.BV_WEB_INTERNAL_KEY) {
 		try {
 			const response = await env.BV_WEB.fetch(
-				new Request('https://internal/internal/validate-key', {
+				new Request('https://internal/api/internal/mcp/validate-key', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
