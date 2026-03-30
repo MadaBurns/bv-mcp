@@ -5,10 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What is this?
 
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
-Exposes 33 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
+Exposes 41 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 
-**Version**: 2.0.12 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.1.0 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -88,6 +88,16 @@ src/tools/                — Individual DNS checks + orchestrator
   scan-domain.ts          — Parallel orchestrator → ScanScore + MaturityStage
   scan/                   — Scan sub-helpers (format-report, post-processing, maturity-staging)
   explain-finding.ts      — Static explanation generator
+  resolve-spf-chain.ts    — Recursive SPF include tree with lookup counting
+  discover-subdomains.ts  — CT log subdomain discovery (certstream binding + crt.sh fallback)
+  map-supply-chain.ts     — Third-party dependency graph (SPF/NS/TXT/SRV/CAA correlation)
+  map-compliance.ts       — Compliance framework mapping (NIST/PCI/SOC2/CIS)
+  simulate-attack-paths.ts — Attack path enumeration from DNS posture
+  analyze-drift.ts        — Baseline comparison with drift classification
+  validate-fix.ts         — Targeted re-check with fix verdict
+  generate-rollout-plan.ts — Phased DMARC enforcement timeline
+  provider-guides.ts      — Static provider detection rules and fix step guides
+  txt-hygiene-analysis.ts — Shared TXT verification patterns and SPF cross-reference
 
 src/lib/                  — Shared infrastructure
   scoring.ts              — Re-export facade for scoring subsystem
@@ -330,6 +340,7 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 | `PROVIDER_SIGNATURES_URL` | var | Runtime provider signatures URL |
 | `BV_DOH_ENDPOINT` | var | Custom secondary DoH URL (fallback: Google) |
 | `BV_DOH_TOKEN` | Secret | Auth for bv-dns (`X-BV-Token` header) |
+| `BV_CERTSTREAM` | Service | CT log subdomain cache (optional, falls back to crt.sh) |
 | `SCORING_CONFIG` | var | JSON scoring overrides (optional) |
 | `CF_ACCOUNT_ID` | var | Cloudflare account ID (alerting) |
 | `CF_ANALYTICS_TOKEN` | Secret | Analytics Engine read token (alerting) |

@@ -9,7 +9,7 @@ Open-source DNS & email security scanner for Claude, Cursor, VS Code, and MCP cl
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
-[![Tests](https://img.shields.io/badge/Tests-1469-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![Tests](https://img.shields.io/badge/Tests-1910-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![Coverage](https://img.shields.io/badge/Coverage-~90%25-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![BUSL-1.1 License](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
@@ -26,7 +26,7 @@ Open-source DNS & email security scanner for Claude, Cursor, VS Code, and MCP cl
 
 **Claude Desktop** (one-click install):
 
-Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — all 33 tools available instantly.
+Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — all 41 tools available instantly.
 
 **Claude Code** (one command):
 
@@ -65,7 +65,13 @@ Transport support:
 - **57+ checks across 20 categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, lookalike domains, HTTP security headers, DANE, shadow domains, TXT hygiene, MX reputation, SRV, zone hygiene
 - **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with score-based capping to prevent inflated labels
 - **Trust surface analysis** — detects shared SaaS platforms (Google, M365, SendGrid) and cross-references DMARC enforcement to determine real exposure
-- **Guided remediation** — `generate_fix_plan` produces prioritized actions; record generators output ready-to-publish SPF, DMARC, DKIM, and MTA-STS records
+- **Guided remediation** — `generate_fix_plan` produces provider-aware prioritized actions with exact console steps for Google Workspace, Microsoft 365, Cloudflare, AWS, and 9 other providers; record generators output ready-to-publish SPF, DMARC, DKIM, and MTA-STS records; `generate_rollout_plan` creates phased DMARC enforcement timelines; `validate_fix` confirms whether a fix was applied successfully
+- **Supply chain mapping** — `map_supply_chain` correlates SPF, NS, TXT verifications (39 SaaS patterns), SRV services, and CAA to build a full third-party dependency graph with trust levels and risk signals (stale integrations, shadow services, security tooling exposure)
+- **SPF chain analysis** — `resolve_spf_chain` recursively resolves the full SPF include tree, counts DNS lookups against the RFC 7208 10-lookup limit, and detects circular includes, void lookups, and redundant paths
+- **CT log subdomain discovery** — `discover_subdomains` reveals shadow IT, forgotten services, and unauthorized certificates via Certificate Transparency logs using a cached certstream service binding
+- **Compliance mapping** — `map_compliance` maps scan findings to NIST 800-177, PCI DSS 4.0, SOC 2, and CIS Controls with pass/fail/partial status per control
+- **Attack path simulation** — `simulate_attack_paths` enumerates 9 specific attack paths (email spoofing, subdomain takeover, DNS hijack, TLS stripping, XSS, etc.) with severity, feasibility, steps, and mitigations
+- **Drift analysis** — `analyze_drift` compares current posture against a previous baseline and classifies changes as improving, stable, regressing, or mixed
 - **Spoofability scoring** — `assess_spoofability` computes a composite 0-100 email spoofability score from SPF trust surface, DMARC enforcement, and DKIM coverage with interaction multipliers
 - **Intelligence layer** — `get_benchmark` and `get_provider_insights` expose anonymized aggregate insights from scan telemetry: percentile rankings, provider cohort comparisons, and 7-day trend analysis
 - **Multi-resolver consistency** — `check_resolver_consistency` queries 4 public DoH resolvers to detect GeoDNS, split-horizon DNS, or poisoning
@@ -104,7 +110,7 @@ Full scope and limitations in the coverage table below.
 ## Tools
 
 ```
-  33 MCP tools · 7 prompts · 6 resources
+  41 MCP tools · 7 prompts · 6 resources
 
   Email Auth           Infrastructure        Brand & Threats       Meta
  ────────────         ────────────────       ─────────────────    ──────────────
@@ -119,14 +125,31 @@ Full scope and limitations in the coverage table below.
  ────────────          check_srv              get_provider_         generate_spf_record
   check_txt_hygiene    check_zone_hygiene       insights            generate_dmarc_record
                        check_resolver_        assess_spoofability   generate_dkim_config
-                         consistency                                generate_mta_sts_policy
+                         consistency          map_supply_chain      generate_mta_sts_policy
+                                              resolve_spf_chain     generate_rollout_plan
+                                              discover_subdomains   validate_fix
+                                              map_compliance
+                                              simulate_attack_paths
+                                              analyze_drift
 
   + check_subdomain_takeover (internal — runs inside scan_domain)
 ```
 
 `explain_finding` takes any finding and returns: what it means, potential impact, adverse consequences, specific steps to fix, and relevant RFCs.
 
-`generate_fix_plan` scans a domain and produces a prioritized remediation plan with effort, impact, and dependency metadata. The record generators (`generate_spf_record`, `generate_dmarc_record`, `generate_dkim_config`, `generate_mta_sts_policy`) produce ready-to-publish DNS records based on detected configuration.
+`generate_fix_plan` scans a domain and produces a provider-aware prioritized remediation plan with effort, impact, dependency ordering, and exact console steps for 13 providers (Google Workspace, M365, Cloudflare, AWS, etc.). The record generators (`generate_spf_record`, `generate_dmarc_record`, `generate_dkim_config`, `generate_mta_sts_policy`) produce ready-to-publish DNS records. `generate_rollout_plan` creates phased DMARC enforcement timelines (aggressive/standard/conservative). `validate_fix` re-checks a specific control after remediation and returns a fixed/partial/not_fixed verdict.
+
+`map_supply_chain` correlates SPF includes, NS delegates, TXT verifications (39 SaaS patterns), SRV services, and CAA issuers into a unified dependency graph with trust levels (critical/high/medium/low) and risk signals (stale integrations, shadow services, insecure protocols, security tooling exposure).
+
+`resolve_spf_chain` recursively resolves the full SPF include chain and renders a tree visualization with DNS lookup counting against the RFC 7208 10-lookup limit. Detects circular includes, void lookups, and redundant paths.
+
+`discover_subdomains` queries Certificate Transparency logs to reveal shadow IT, forgotten services, and unauthorized certificates. Uses a cached certstream service binding for instant results with crt.sh fallback.
+
+`map_compliance` maps scan findings to four compliance frameworks — NIST 800-177, PCI DSS 4.0, SOC 2 Trust Services Criteria, and CIS Controls v8 — showing pass/fail/partial status per control with related findings.
+
+`simulate_attack_paths` analyzes DNS posture and enumerates 9 specific attack paths (email spoofing, subdomain takeover, DNS hijack, TLS stripping, XSS, clickjacking, cert misissuance, DKIM key compromise) with severity, feasibility, steps, and mitigations.
+
+`analyze_drift` compares current security posture against a previous baseline (caller-supplied JSON or cached scan) and classifies drift as improving, stable, regressing, or mixed with per-category deltas.
 
 `get_benchmark` and `get_provider_insights` expose anonymized aggregate data from scan telemetry — percentile rankings, provider cohort scores, and 7-day trend analysis. `assess_spoofability` computes a composite email spoofability score (0-100) from SPF, DMARC, and DKIM with interaction multipliers.
 
