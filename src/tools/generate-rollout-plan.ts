@@ -135,7 +135,6 @@ function buildPhases(
 	// From p=quarantine: Reject
 	// From p=reject: already at target (handled before this function)
 
-	const needsMonitor = currentPolicy !== 'none' || !['quarantine', 'reject'].includes(currentPolicy);
 	const isNoDmarc = currentPolicy === 'none';
 
 	// Check if we need the monitor phase (only when there's NO DMARC at all or no enforcement)
