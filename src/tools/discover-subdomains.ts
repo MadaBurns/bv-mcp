@@ -141,6 +141,11 @@ export async function discoverSubdomains(
 		return emptyResult(domain);
 	}
 
+	// Cap entries to prevent memory exhaustion on domains with huge CT histories
+	if (entries.length > 5000) {
+		entries = entries.slice(0, 5000);
+	}
+
 	// Parse and aggregate subdomain data
 	const trackers = new Map<string, SubdomainTracker>();
 	const domainSuffix = `.${domain.toLowerCase()}`;
