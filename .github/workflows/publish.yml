@@ -25,6 +25,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Build workspace package
+        run: npm -w packages/dns-checks run build
+
       - name: Validate internal dependency policy
         run: npm run validate:internal-deps
 
@@ -121,6 +124,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Build workspace package
+        run: npm -w packages/dns-checks run build
+
       - run: npm run build
 
       - name: Publish
@@ -144,6 +150,9 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      - name: Build workspace package
+        run: npm -w packages/dns-checks run build
 
       - name: Deploy
         run: npx wrangler deploy -c .dev/wrangler.deploy.jsonc
