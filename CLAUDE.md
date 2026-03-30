@@ -175,12 +175,14 @@ Resolution: `extractFormat(args)` in `tool-args.ts` → explicit param wins → 
 
 ### Error surfacing convention
 
-Both `index.ts` and `handlers/tools.ts` sanitize errors. Only messages starting with these prefixes pass through:
-- `'Missing required'`, `'Invalid'` (both files)
-- `'Resource not found'` (index.ts only)
-- `'Domain validation failed'` (tools.ts only)
+`sanitizeErrorMessage()` in `lib/json-rpc.ts` controls which error messages reach clients. Only messages starting with these `SAFE_ERROR_PREFIXES` pass through:
+- `'Missing required'` — missing tool arguments
+- `'Invalid'` — validation failures (format, selector, check name)
+- `'Domain '` — domain validation errors (e.g., `'Domain validation failed: ...'`, `'Domain uses a DNS rebinding service...'`)
+- `'Resource not found'` — unknown resources
+- `'Rate limit exceeded'` — quota/rate limit errors
 
-New validation errors that need to reach clients **must start with one of these exact prefixes**.
+All other errors return a generic fallback message. New validation errors that need to reach clients **must start with one of these exact prefixes**.
 
 **Rate limit errors**: Use HTTP 200 with JSON-RPC error body (`code: -32029`), not HTTP 429 — follows MCP spec. `retry-after` header still set.
 
