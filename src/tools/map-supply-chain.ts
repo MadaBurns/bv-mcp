@@ -3,15 +3,18 @@
 /**
  * Supply Chain Mapper tool.
  * Maps third-party service dependencies from DNS data by querying SPF (TXT),
- * NS, and CAA records in parallel, extracting provider relationships,
- * classifying trust levels, and flagging risk signals.
+ * NS, CAA, and SRV records in parallel, extracting provider relationships,
+ * classifying trust levels, correlating across sources, and flagging risk signals.
  */
 
 import type { OutputFormat } from '../handlers/tool-args';
 import type { QueryDnsOptions } from '../lib/dns-types';
-import { queryTxtRecords, queryDnsRecords } from '../lib/dns';
+import { queryTxtRecords, queryDnsRecords, querySrvRecords } from '../lib/dns';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { detectProviders } from './provider-guides';
+import { VERIFICATION_PATTERNS, SERVICE_SPF_DOMAINS } from './txt-hygiene-analysis';
+import { SRV_PREFIXES } from './srv-analysis';
+import type { SrvProbeResult } from './srv-analysis';
 
 /** Trust classification for a dependency. */
 export type TrustLevel = 'critical' | 'high' | 'medium' | 'low';
@@ -26,7 +29,7 @@ export interface Dependency {
 
 /** A risk signal detected in the supply chain. */
 export interface Signal {
-	type: 'concentration' | 'excessive_includes' | 'single_ns_provider';
+	type: 'concentration' | 'excessive_includes' | 'single_ns_provider' | 'stale_integration' | 'shadow_service' | 'insecure_service' | 'security_tooling_exposed';
 	severity: 'low' | 'medium' | 'high';
 	detail: string;
 }
@@ -82,6 +85,10 @@ function determineTrustLevel(sources: string[]): TrustLevel {
 	if (sources.some((s) => s === 'spf')) return 'critical';
 	// NS = high (they control your DNS)
 	if (sources.some((s) => s === 'ns')) return 'high';
+	// SRV = medium (advertised service)
+	if (sources.some((s) => s === 'srv')) return 'medium';
+	// TXT verification = low (SaaS integration)
+	if (sources.some((s) => s === 'txt-verification')) return 'low';
 	// CAA = low (advisory control)
 	if (sources.some((s) => s === 'caa')) return 'low';
 	return 'medium';
@@ -96,10 +103,22 @@ function sourceToRole(source: string): string {
 			return 'dns-hosting';
 		case 'caa':
 			return 'certificate-authority';
+		case 'txt-verification':
+			return 'saas-integration';
+		case 'srv':
+			return 'advertised-service';
 		default:
 			return source;
 	}
 }
+
+/** Map SRV target hostnames to known provider names. */
+const SRV_TARGET_PROVIDERS: Array<{ pattern: RegExp; provider: string }> = [
+	{ pattern: /\.outlook\.com$/i, provider: 'Microsoft 365' },
+	{ pattern: /\.google\.com$/i, provider: 'Google Workspace' },
+	{ pattern: /\.messagingengine\.com$/i, provider: 'Fastmail' },
+	{ pattern: /\.mimecast\.com$/i, provider: 'Mimecast' },
+];
 
 /**
  * Map the third-party supply chain for a domain from DNS data.
@@ -115,17 +134,36 @@ export async function mapSupplyChain(
 	domain: string,
 	dnsOptions?: QueryDnsOptions,
 ): Promise<SupplyChainMap> {
-	// Query all three record types in parallel — allSettled so one failure doesn't block others
-	const [txtSettled, nsSettled, caaSettled] = await Promise.allSettled([
+	// Query all record types in parallel — allSettled so one failure doesn't block others
+	const [txtSettled, nsSettled, caaSettled, srvBatchSettled] = await Promise.allSettled([
 		queryTxtRecords(domain, dnsOptions),
 		queryDnsRecords(domain, 'NS', dnsOptions),
 		queryDnsRecords(domain, 'CAA', dnsOptions),
+		Promise.allSettled(
+			SRV_PREFIXES.map(async (prefix) => {
+				const name = `${prefix}.${domain}`;
+				const records = await querySrvRecords(name, dnsOptions);
+				return { prefix, records } as SrvProbeResult;
+			}),
+		),
 	]);
 
 	// Extract SPF includes from TXT records
 	const txtRecords = txtSettled.status === 'fulfilled' ? txtSettled.value : [];
 	const spfRecord = txtRecords.find((r) => r.toLowerCase().startsWith('v=spf1'));
 	const spfIncludes = spfRecord ? extractSpfIncludesFromRecord(spfRecord) : [];
+
+	// Match TXT records against verification patterns (skip SPF and DMARC)
+	const verifiedServices: Array<{ service: string; category: string }> = [];
+	for (const txt of txtRecords) {
+		if (txt.toLowerCase().startsWith('v=spf1') || txt.toLowerCase().startsWith('v=dmarc1')) continue;
+		for (const pattern of VERIFICATION_PATTERNS) {
+			if (txt.startsWith(pattern.prefix)) {
+				verifiedServices.push({ service: pattern.service, category: pattern.category });
+				break; // One match per TXT record
+			}
+		}
+	}
 
 	// Extract NS hostnames
 	const rawNsRecords = nsSettled.status === 'fulfilled' ? nsSettled.value : [];
@@ -138,6 +176,20 @@ export async function mapSupplyChain(
 		const issuer = parseCaaIssuer(record);
 		if (issuer && !caaIssuers.includes(issuer)) {
 			caaIssuers.push(issuer);
+		}
+	}
+
+	// Extract SRV services
+	const srvResults: SrvProbeResult[] = [];
+	if (srvBatchSettled.status === 'fulfilled') {
+		for (const settled of srvBatchSettled.value) {
+			if (settled.status === 'fulfilled' && settled.value.records.length > 0) {
+				// Filter out explicitly disabled services (target "." or port 0)
+				const activeRecords = settled.value.records.filter((r) => r.target !== '.' && r.port !== 0);
+				if (activeRecords.length > 0) {
+					srvResults.push({ prefix: settled.value.prefix, records: activeRecords });
+				}
+			}
 		}
 	}
 
@@ -214,6 +266,27 @@ export async function mapSupplyChain(
 		addDependency(issuer, 'caa');
 	}
 
+	// Add TXT-verified services
+	for (const vs of verifiedServices) {
+		addDependency(vs.service, 'txt-verification');
+	}
+
+	// Add SRV-discovered services — resolve targets to known providers
+	const srvProviderNames: string[] = [];
+	for (const srv of srvResults) {
+		const target = srv.records[0].target;
+		let providerName: string | null = null;
+		for (const mapping of SRV_TARGET_PROVIDERS) {
+			if (mapping.pattern.test(target)) {
+				providerName = mapping.provider;
+				break;
+			}
+		}
+		const name = providerName ?? target;
+		addDependency(name, 'srv');
+		srvProviderNames.push(name);
+	}
+
 	// Build final dependency list
 	const dependencies: Dependency[] = [];
 	for (const [provider, data] of providerMap) {
@@ -256,6 +329,71 @@ export async function mapSupplyChain(
 			type: 'excessive_includes',
 			severity: 'low',
 			detail: `${spfIncludes.length} SPF include directives detected. Consider consolidating to reduce DNS lookup count.`,
+		});
+	}
+
+	// Stale integration: verified service has known SPF domains but none appear in SPF includes
+	for (const vs of verifiedServices) {
+		const expectedSpfDomains = SERVICE_SPF_DOMAINS[vs.service];
+		if (expectedSpfDomains && expectedSpfDomains.length > 0) {
+			const hasMatchingSpf = expectedSpfDomains.some((spfDomain) =>
+				spfIncludes.some((inc) => inc.includes(spfDomain)),
+			);
+			if (!hasMatchingSpf) {
+				signals.push({
+					type: 'stale_integration',
+					severity: 'low',
+					detail: `${vs.service} has a TXT verification record but no corresponding SPF include. The integration may be stale or incomplete.`,
+				});
+			}
+		}
+	}
+
+	// Shadow service: SRV-discovered provider not corroborated by TXT verifications or SPF includes
+	const verifiedServiceNames = new Set(verifiedServices.map((vs) => vs.service));
+	const spfProviderNames = new Set(
+		detectedProviders
+			.filter((p) => p.role === 'mail' || p.role === 'sending')
+			.map((p) => p.name),
+	);
+	for (const srvProvider of srvProviderNames) {
+		if (!verifiedServiceNames.has(srvProvider) && !spfProviderNames.has(srvProvider)) {
+			// Also check raw SPF includes for partial matches
+			const inSpfRaw = spfIncludes.some((inc) => inc.toLowerCase().includes(srvProvider.toLowerCase()));
+			if (!inSpfRaw) {
+				signals.push({
+					type: 'shadow_service',
+					severity: 'medium',
+					detail: `${srvProvider} discovered via SRV but not corroborated by TXT verifications or SPF includes. This service may be undocumented or unauthorized.`,
+				});
+			}
+		}
+	}
+
+	// Insecure service: plain-text protocol SRV without encrypted counterpart
+	const srvPrefixSet = new Set(srvResults.map((r) => r.prefix));
+	if (srvPrefixSet.has('_imap._tcp') && !srvPrefixSet.has('_imaps._tcp')) {
+		signals.push({
+			type: 'insecure_service',
+			severity: 'medium',
+			detail: 'IMAP SRV record (_imap._tcp) found without encrypted variant (_imaps._tcp). Clients may connect over unencrypted IMAP, exposing credentials.',
+		});
+	}
+	if (srvPrefixSet.has('_pop3._tcp') && !srvPrefixSet.has('_pop3s._tcp')) {
+		signals.push({
+			type: 'insecure_service',
+			severity: 'medium',
+			detail: 'POP3 SRV record (_pop3._tcp) found without encrypted variant (_pop3s._tcp). Clients may connect over unencrypted POP3, exposing credentials.',
+		});
+	}
+
+	// Security tooling exposed: TXT verification for a security-category service
+	const securityServices = verifiedServices.filter((vs) => vs.category === 'security');
+	for (const ss of securityServices) {
+		signals.push({
+			type: 'security_tooling_exposed',
+			severity: 'low',
+			detail: `${ss.service} TXT verification record reveals security tooling in use. Attackers can tailor evasion techniques to this specific vendor.`,
 		});
 	}
 
