@@ -34,6 +34,7 @@ import { assessSpoofability, formatSpoofability } from '../tools/assess-spoofabi
 import { checkResolverConsistency, formatResolverConsistency } from '../tools/check-resolver-consistency';
 import { validateFix, formatValidateFix } from '../tools/validate-fix';
 import { mapSupplyChain, formatSupplyChain } from '../tools/map-supply-chain';
+import { generateRolloutPlan, formatRolloutPlan } from '../tools/generate-rollout-plan';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -518,6 +519,31 @@ export async function handleToolsCall(
 							authTier: runtimeOptions?.authTier,
 						});
 						return { content: [mcpText(formatSupplyChain(result, effectiveFormat))] };
+					}
+					case 'generate_rollout_plan': {
+						const targetPolicy = typeof validatedArgs.target_policy === 'string'
+							? validatedArgs.target_policy as 'quarantine' | 'reject'
+							: 'reject';
+						const timeline = typeof validatedArgs.timeline === 'string'
+							? validatedArgs.timeline as 'aggressive' | 'standard' | 'conservative'
+							: 'standard';
+						const result = await generateRolloutPlan(validDomain, targetPolicy, timeline, buildDnsOptions(runtimeOptions));
+						logResult = result.atTarget ? 'at_target' : `${result.phases.length} phases`;
+						logDetails = result;
+						logToolSuccess({
+							toolName: name,
+							durationMs: Date.now() - startTime,
+							domain,
+							analytics: runtimeOptions?.analytics,
+							status: 'pass',
+							logResult,
+							logDetails,
+							severity: 'info',
+							country: runtimeOptions?.country,
+							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+							authTier: runtimeOptions?.authTier,
+						});
+						return { content: [mcpText(formatRolloutPlan(result, effectiveFormat))] };
 					}
 					default:
 					logToolFailure({
