@@ -311,7 +311,6 @@ async function queryCertstream(
 		const data = (await response.json()) as CertstreamEnumerateResponse;
 		if (data.error || !data.subdomains) return null;
 
-		const now = new Date();
 		const domainSuffix = `.${domain.toLowerCase()}`;
 		const subdomains: DiscoveredSubdomain[] = [];
 
