@@ -98,6 +98,7 @@ export const TIER_DAILY_LIMITS: Record<McpApiKeyTier, number> = {
 	developer: 500,
 	enterprise: 10_000,
 	partner: 100_000,
+	owner: Infinity,
 };
 
 /**
