@@ -87,7 +87,7 @@ describe('SERVICE_SPF_DOMAINS', () => {
 	});
 
 	it('every value is a non-empty array of strings', () => {
-		for (const [service, domains] of Object.entries(SERVICE_SPF_DOMAINS)) {
+		for (const [_service, domains] of Object.entries(SERVICE_SPF_DOMAINS)) {
 			expect(Array.isArray(domains)).toBe(true);
 			expect(domains.length).toBeGreaterThan(0);
 			for (const domain of domains) {
