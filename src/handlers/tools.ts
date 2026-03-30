@@ -564,7 +564,11 @@ export async function handleToolsCall(
 							baselineScore = cached.score;
 						} else {
 							try {
-								baselineScore = JSON.parse(baselineStr);
+								const parsed = JSON.parse(baselineStr);
+								if (typeof parsed?.overall !== 'number' || typeof parsed?.grade !== 'string' || !Array.isArray(parsed?.findings)) {
+									return buildToolErrorResult('Invalid baseline: JSON must contain overall (number), grade (string), and findings (array).');
+								}
+								baselineScore = parsed;
 							} catch {
 								return buildToolErrorResult('Invalid baseline: could not parse JSON. Provide a valid ScanScore JSON or "cached".');
 							}
