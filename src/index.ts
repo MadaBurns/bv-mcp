@@ -144,7 +144,9 @@ for (const path of mcpPaths) {
 		const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
 
 		// Resolve tier via KV cache → service binding → static BV_API_KEY fallback
-		const tierResult = await resolveTier(token, c.env);
+		// Pass client IP for owner-tier IP allowlist enforcement
+		const clientIp = c.req.header('cf-connecting-ip') ?? undefined;
+		const tierResult = await resolveTier(token, c.env, clientIp);
 		c.set('tierAuthResult', tierResult);
 		c.set('isAuthenticated', tierResult.authenticated);
 
