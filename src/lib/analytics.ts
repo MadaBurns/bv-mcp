@@ -56,7 +56,7 @@ export interface AnalyticsClient {
 		remaining: number;
 	} & AnalyticsContext): void;
 	emitSessionEvent(event: {
-		action: 'created' | 'terminated';
+		action: 'created' | 'terminated' | 'revived';
 	} & AnalyticsContext): void;
 }
 
