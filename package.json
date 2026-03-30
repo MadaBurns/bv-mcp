@@ -76,6 +76,7 @@
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.13.3",
+		"@cloudflare/workers-types": "^4.20260329.1",
 		"@types/punycode": "^2.1.4",
 		"eslint": "^10.0.2",
 		"hono": "^4.12.7",
