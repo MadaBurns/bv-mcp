@@ -662,9 +662,18 @@ app.delete('/mcp', async (c) => {
 
 app.route('/internal', internalRoutes);
 
+// OAuth well-known endpoints — return valid JSON so mcp-remote doesn't crash
+// parsing plain-text 404 responses during OAuth discovery probes.
+app.get('/.well-known/oauth-authorization-server', (c) => {
+	return c.json({ error: 'not_supported', error_description: 'This server does not support OAuth' }, 404);
+});
+app.get('/.well-known/oauth-protected-resource', (c) => {
+	return c.json({ error: 'not_supported', error_description: 'This server does not support OAuth' }, 404);
+});
+
 app.all('*', (c) => {
-	// Plain text — JSON `{"error":"..."}` is misinterpreted as an OAuth error by mcp-remote,
-	// which breaks Claude Desktop connections to servers that don't implement OAuth.
+	// Plain text — avoids mcp-remote misinterpreting JSON as an OAuth error.
+	// OAuth well-known paths are handled explicitly above.
 	return c.text('Not found', 404);
 });
 

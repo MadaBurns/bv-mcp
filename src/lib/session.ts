@@ -141,6 +141,30 @@ export async function createSession(kv?: KVNamespace): Promise<string> {
 	return id;
 }
 
+/**
+ * Revive an expired session by re-creating its record with the same ID.
+ *
+ * Unlike `createSession()` which generates a new ID, this preserves the
+ * existing session ID so clients that cannot learn a new ID (e.g. mcp-remote)
+ * can continue using their cached session ID after expiry recovery.
+ */
+export async function reviveSession(id: string, kv?: KVNamespace): Promise<boolean> {
+	const now = Date.now();
+	const record: SessionRecord = { createdAt: now, lastAccessedAt: now };
+
+	createSessionInMemory(id);
+
+	if (kv) {
+		try {
+			await createSessionKVRecord(id, kv, record);
+		} catch {
+			logError('[session] KV revive failed, in-memory fallback active', { category: 'session' });
+		}
+	}
+
+	return true;
+}
+
 /** Check whether a session ID exists in the active sessions store */
 export async function validateSession(id: string, kv?: KVNamespace): Promise<boolean> {
 	// Reject malformed session IDs before any storage lookup
