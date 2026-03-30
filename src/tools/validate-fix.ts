@@ -111,8 +111,8 @@ export async function validateFix(
 	const result = await checkFn(domain, dnsOptions);
 
 	// Classify findings by severity
-	const blockingFindings = result.findings.filter((f) => BLOCKING_SEVERITIES.has(f.severity));
-	const partialFindings = result.findings.filter((f) => PARTIAL_SEVERITIES.has(f.severity));
+	const blockingFindings = result.findings.filter((f: Finding) => BLOCKING_SEVERITIES.has(f.severity));
+	const partialFindings = result.findings.filter((f: Finding) => PARTIAL_SEVERITIES.has(f.severity));
 	const remainingTitles = [...blockingFindings, ...partialFindings].map((f) => f.title);
 	const resolvedTitles: string[] = [];
 
@@ -134,7 +134,7 @@ export async function validateFix(
 			expectedMatch = liveRecord.includes(expected) || expected.includes(liveRecord);
 		} else {
 			// Check if any finding detail contains the expected value
-			expectedMatch = result.findings.some((f) => f.detail.includes(expected));
+			expectedMatch = result.findings.some((f: Finding) => f.detail.includes(expected));
 		}
 	}
 
