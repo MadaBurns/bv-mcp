@@ -44,16 +44,22 @@ async function hashTokenRaw(token: string): Promise<Uint8Array> {
  * Resolution order:
  * 1. KV cache lookup (`tier:{hash}`)
  * 2. Service binding to companion app (validate-key endpoint)
- * 3. Static BV_API_KEY comparison (backward compat for self-hosted)
+ * 3. Static BV_API_KEY comparison (self-hosted fallback → owner tier)
+ *
+ * Owner tier requires IP allowlist (OWNER_ALLOW_IPS env var, comma-separated).
+ * If the key matches BV_API_KEY but the IP is not in the allowlist,
+ * the request is downgraded to partner tier.
  */
 export async function resolveTier(
 	token: string | null,
 	env: {
 		BV_API_KEY?: string;
+		OWNER_ALLOW_IPS?: string;
 		RATE_LIMIT?: KVNamespace;
 		BV_WEB?: Fetcher;
 		BV_WEB_INTERNAL_KEY?: string;
 	},
+	clientIp?: string,
 ): Promise<TierAuthResult> {
 	if (!token) return { authenticated: false };
 
@@ -132,6 +138,16 @@ export async function resolveTier(
 			mismatch |= a[i] ^ b[i];
 		}
 		if (mismatch === 0) {
+			// Owner tier requires IP allowlist. If OWNER_ALLOW_IPS is set and the
+			// client IP is not in the list, downgrade to partner (still high limits
+			// but not unlimited). If OWNER_ALLOW_IPS is unset, owner is unrestricted
+			// (backward compat for self-hosted/dev where there's no IP filtering).
+			if (env.OWNER_ALLOW_IPS && clientIp) {
+				const allowed = env.OWNER_ALLOW_IPS.split(',').map((ip) => ip.trim());
+				if (!allowed.includes(clientIp)) {
+					return { authenticated: true, tier: 'partner', keyHash };
+				}
+			}
 			return { authenticated: true, tier: 'owner', keyHash };
 		}
 	}
