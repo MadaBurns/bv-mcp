@@ -3,7 +3,7 @@ import { TOOLS } from '../../src/schemas/tool-definitions';
 
 describe('TOOLS', () => {
 	it('has 38 tools', () => {
-		expect(TOOLS).toHaveLength(38);
+		expect(TOOLS).toHaveLength(41);
 	});
 
 	it('every tool has required fields', () => {

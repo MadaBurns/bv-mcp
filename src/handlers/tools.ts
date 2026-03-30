@@ -37,6 +37,9 @@ import { mapSupplyChain, formatSupplyChain } from '../tools/map-supply-chain';
 import { generateRolloutPlan, formatRolloutPlan } from '../tools/generate-rollout-plan';
 import { computeDrift, formatDriftReport } from '../tools/analyze-drift';
 import { resolveSpfChain, formatSpfChain } from '../tools/resolve-spf-chain';
+import { discoverSubdomains, formatSubdomainDiscovery } from '../tools/discover-subdomains';
+import { mapCompliance, formatCompliance } from '../tools/map-compliance';
+import { simulateAttackPaths, formatAttackPaths } from '../tools/simulate-attack-paths';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -603,6 +606,27 @@ export async function handleToolsCall(
 							authTier: runtimeOptions?.authTier,
 						});
 						return { content: [mcpText(formatSpfChain(result, effectiveFormat))] };
+					}
+					case 'discover_subdomains': {
+						const result = await discoverSubdomains(validDomain);
+						logResult = `${result.totalSubdomains} subdomains`;
+						logDetails = { totalSubdomains: result.totalSubdomains, issues: result.issues.length };
+						logToolSuccess({ toolName: name, durationMs: Date.now() - startTime, domain, analytics: runtimeOptions?.analytics, status: 'pass', logResult, logDetails, severity: 'info', country: runtimeOptions?.country, clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType, authTier: runtimeOptions?.authTier });
+						return { content: [mcpText(formatSubdomainDiscovery(result, effectiveFormat))] };
+					}
+					case 'map_compliance': {
+						const result = await mapCompliance(validDomain, scanCacheKV, runtimeOptions);
+						logResult = 'mapped';
+						logDetails = result;
+						logToolSuccess({ toolName: name, durationMs: Date.now() - startTime, domain, analytics: runtimeOptions?.analytics, status: 'pass', logResult, logDetails, severity: 'info', country: runtimeOptions?.country, clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType, authTier: runtimeOptions?.authTier });
+						return { content: [mcpText(formatCompliance(result, effectiveFormat))] };
+					}
+					case 'simulate_attack_paths': {
+						const result = await simulateAttackPaths(validDomain, buildDnsOptions(runtimeOptions));
+						logResult = `${result.totalPaths} paths, risk: ${result.overallRisk}`;
+						logDetails = { totalPaths: result.totalPaths, overallRisk: result.overallRisk };
+						logToolSuccess({ toolName: name, durationMs: Date.now() - startTime, domain, analytics: runtimeOptions?.analytics, status: result.overallRisk === 'low' ? 'pass' : 'fail', logResult, logDetails, severity: 'info', country: runtimeOptions?.country, clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType, authTier: runtimeOptions?.authTier });
+						return { content: [mcpText(formatAttackPaths(result, effectiveFormat))] };
 					}
 					default:
 					logToolFailure({
