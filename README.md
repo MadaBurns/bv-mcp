@@ -693,6 +693,26 @@ The checked-in [wrangler.jsonc](wrangler.jsonc) stays generic for open source us
 
 </details>
 
+<details>
+<summary><b>Automated releases</b></summary>
+
+Push a version tag and CI handles everything — npm publish, Cloudflare deploy, GitHub release:
+
+```bash
+# 1. Update CHANGELOG.md with the new version entry
+# 2. Tag and push
+git tag v2.2.0
+git push origin v2.2.0
+```
+
+CI pipeline: validate (test/typecheck/lint/audit) → auto-bump `package.json` + `SERVER_VERSION` → npm publish → Cloudflare deploy → GitHub Release.
+
+**One-time setup** — add secrets to the `production` environment in GitHub Settings:
+- `NPM_TOKEN` — npm publish token
+- `CLOUDFLARE_API_TOKEN` — Cloudflare Workers deploy token
+
+</details>
+
 Manual request examples and failure modes in `docs/troubleshooting.md`.
 
 ---
