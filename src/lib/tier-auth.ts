@@ -132,7 +132,7 @@ export async function resolveTier(
 			mismatch |= a[i] ^ b[i];
 		}
 		if (mismatch === 0) {
-			return { authenticated: true, tier: 'enterprise', keyHash };
+			return { authenticated: true, tier: 'owner', keyHash };
 		}
 	}
 
