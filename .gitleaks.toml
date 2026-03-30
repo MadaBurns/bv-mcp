@@ -91,6 +91,31 @@ id = "wrangler-deploy-config"
 description = "Private Wrangler deploy config should not be committed"
 path = '''\.dev/wrangler'''
 
+# ─── IP Leakage Prevention ──────────────────────────────────────────
+
+[[rules]]
+id = "internal-hostname"
+description = "Internal infrastructure hostname leaked"
+regex = '''harlan\.blackveilsecurity\.com'''
+keywords = ["harlan"]
+
+[[rules]]
+id = "customer-name"
+description = "Customer/tenant name leaked"
+regex = '''(?i)\bcsc-global\b'''
+keywords = ["csc-global"]
+
+[[rules]]
+id = "internal-org-team"
+description = "Internal GitHub organization team name leaked"
+regex = '''@blackveil-security/'''
+keywords = ["blackveil-security"]
+
+[[rules]]
+id = "enterprise-architecture"
+description = "Enterprise architecture planning doc should not be committed"
+path = '''enterprise-architecture\.md$'''
+
 # ─── Built-in Rule Overrides ─────────────────────────────────────────
 # DKIM test fixtures contain base64-encoded public keys that trigger generic-api-key
 
