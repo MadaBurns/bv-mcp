@@ -67,8 +67,9 @@ worker-configuration.d.ts
 *.sqlite3
 *.db
 
-# AI tool configs
+# AI tool configs — ignore all except project settings (hooks, permissions)
 .claude/
+!.claude/settings.json
 .gemini/
 
 # Workspace
