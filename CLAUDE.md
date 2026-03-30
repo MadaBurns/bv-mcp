@@ -295,16 +295,36 @@ All tool arguments validated via Zod schemas (`src/schemas/tool-args.ts`) before
 
 ### Pre-commit hook
 
-`.githooks/pre-commit` blocks staging: internal docs (`docs/plans/`, `docs/code-review/`, `docs/superpowers/`), `.dev/`, `*.env*`. Public docs (`docs/client-setup.md`, `docs/scoring.md`, etc.) are committable. Override with `--no-verify`.
+`.githooks/pre-commit` has three gates:
+1. **Blocked paths**: internal docs (`docs/plans/`, `docs/code-review/`, `docs/superpowers/`), `.dev/`, `*.env*`
+2. **Generated files**: blocks staging of `*.pyc`, `__pycache__/`, `worker-configuration.d.ts`, `*.wasm`, `*.sqlite`, `*.db` — even with `git add -f`
+3. **IP leakage**: regex patterns from `.githooks/blocked-patterns` catch internal infrastructure references
+
+Public docs (`docs/client-setup.md`, `docs/scoring.md`, etc.) are committable. Override with `--no-verify`.
 
 ## CI/CD
 
 - `ci.yml`: typecheck + lint + test on PRs and `main` pushes
 - `security.yml`: Gitleaks + `npm audit` (**required checks**)
+- `repo-hygiene.yml`: blocks tracked generated files, verifies `.gitignore`, flags large blobs. Reusable — called by `blackveil-dns-action`, `bv-claude-dns`, and `bv-vibesdk` via `workflow_call`
 - `dns-security.yml`: weekly DNS scan of blackveilsecurity.com
 - `.gitleaks.toml`: custom rules; allowlists for test fixtures
 
 **Branch protection**: require PR reviews, require `build-and-test` + `Secret & PII scan` + `Dependency audit`, disable direct pushes to `main`.
+
+### Release workflow (`publish.yml`)
+
+Fully automated on tag push. Push `v2.2.0` and CI handles everything:
+
+```bash
+git tag v2.2.0 && git push origin v2.2.0
+```
+
+Pipeline: validate (test/typecheck/lint/audit) → auto-bump `package.json` + `SERVER_VERSION` → npm publish (provenance) → Cloudflare Workers deploy → GitHub Release with changelog.
+
+npm and Cloudflare deploy run in parallel after version bump. Requires `NPM_TOKEN` and `CLOUDFLARE_API_TOKEN` secrets in the `production` environment.
+
+**Workflow security**: all `${{ }}` expressions are passed via `env:` variables, never interpolated directly in `run:` blocks. Only controlled inputs used (tag name, secrets, job outputs) — no user-supplied text (issue titles, PR bodies, commit messages).
 
 ## Service Binding Integration
 
