@@ -287,7 +287,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: false,
 	},
 	map_supply_chain: {
-		description: 'Map third-party service dependencies from DNS records. Shows who can send as you, control your DNS, and receive your mail.',
+		description: 'Map third-party service dependencies from DNS records. Correlates SPF, NS, TXT verifications, SRV services, and CAA to show who can send as you, control your DNS, and what services are integrated.',
 		schema: MapSupplyChainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
