@@ -76,6 +76,7 @@ type BvMcpEnv = {
 	CACHE_TTL_SECONDS?: string;
 	BV_DOH_ENDPOINT?: string;
 	BV_DOH_TOKEN?: string;
+	BV_CERTSTREAM?: Fetcher;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -514,6 +515,7 @@ app.post('/mcp/messages', async (c) => {
 				cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 				secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 				secondaryDohToken: c.env.BV_DOH_TOKEN,
+				certstream: c.env.BV_CERTSTREAM,
 				country,
 				clientType,
 				authTier,

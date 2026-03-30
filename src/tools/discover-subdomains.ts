@@ -83,13 +83,37 @@ interface SubdomainTracker {
 	allExpired: boolean;
 }
 
+/** Response shape from bv-certstream-worker /enumerate endpoint. */
+interface CertstreamEnumerateResponse {
+	domain: string;
+	subdomains: string[];
+	certificateCount: number;
+	timedOut: boolean;
+	cached: boolean;
+	cacheAgeMinutes?: number;
+	error?: string;
+}
+
 /**
  * Discover subdomains for a domain by querying Certificate Transparency logs.
+ * Uses bv-certstream-worker service binding (fast, cached) when available,
+ * falls back to direct crt.sh query otherwise.
  *
  * @param domain - Validated, sanitized domain
+ * @param certstream - Optional bv-certstream-worker service binding
  * @returns Subdomain discovery result with metadata and issues
  */
-export async function discoverSubdomains(domain: string): Promise<SubdomainDiscoveryResult> {
+export async function discoverSubdomains(
+	domain: string,
+	certstream?: { fetch: typeof fetch },
+): Promise<SubdomainDiscoveryResult> {
+	// Fast path: use certstream service binding
+	if (certstream) {
+		const result = await queryCertstream(domain, certstream);
+		if (result) return result;
+		// Fall through to crt.sh if service binding fails
+	}
+
 	const now = new Date();
 	let entries: CrtShEntry[];
 
@@ -259,6 +283,99 @@ export async function discoverSubdomains(domain: string): Promise<SubdomainDisco
 		uniqueIssuers,
 		issues,
 	};
+}
+
+/** Query bv-certstream-worker via service binding. Returns null on failure. */
+async function queryCertstream(
+	domain: string,
+	certstream: { fetch: typeof fetch },
+): Promise<SubdomainDiscoveryResult | null> {
+	try {
+		const controller = new AbortController();
+		const timeoutId = setTimeout(() => controller.abort(), CRT_SH_TIMEOUT_MS);
+
+		const response = await certstream.fetch(
+			`https://certstream/enumerate?domain=${encodeURIComponent(domain)}`,
+			{ signal: controller.signal },
+		);
+
+		clearTimeout(timeoutId);
+
+		if (!response.ok) return null;
+
+		const data = (await response.json()) as CertstreamEnumerateResponse;
+		if (data.error || !data.subdomains) return null;
+
+		const now = new Date();
+		const domainSuffix = `.${domain.toLowerCase()}`;
+		const subdomains: DiscoveredSubdomain[] = [];
+
+		for (const name of data.subdomains) {
+			const lower = name.toLowerCase();
+			if (lower === domain.toLowerCase()) continue;
+			if (!lower.endsWith(domainSuffix) && !lower.startsWith('*.')) continue;
+
+			subdomains.push({
+				subdomain: lower,
+				firstSeen: '',
+				lastSeen: '',
+				issuer: '',
+				certCount: 1,
+				isWildcard: lower.startsWith('*.'),
+				isExpired: false,
+			});
+		}
+
+		// Deduplicate
+		const seen = new Map<string, DiscoveredSubdomain>();
+		for (const sd of subdomains) {
+			const existing = seen.get(sd.subdomain);
+			if (existing) {
+				existing.certCount++;
+			} else {
+				seen.set(sd.subdomain, sd);
+			}
+		}
+
+		const deduped = Array.from(seen.values()).slice(0, MAX_SUBDOMAINS);
+		const wildcardCerts = deduped.filter((s) => s.isWildcard).length;
+
+		const issues: SubdomainIssue[] = [];
+		if (wildcardCerts > 0) {
+			issues.push({
+				type: 'wildcard_exposure',
+				severity: 'info',
+				detail: `${wildcardCerts} wildcard subdomain${wildcardCerts > 1 ? 's' : ''} found`,
+			});
+		}
+
+		// Shadow subdomain detection
+		for (const sd of deduped) {
+			if (sd.isWildcard) continue;
+			const label = sd.subdomain.replace(domainSuffix, '').replace(/\.$/, '');
+			if (label.includes('.')) continue;
+			if (!COMMON_SUBDOMAINS.has(label)) {
+				issues.push({
+					type: 'shadow_subdomain',
+					severity: 'info',
+					detail: `${sd.subdomain} is not a common service name — verify it is authorized`,
+				});
+			}
+		}
+
+		return {
+			domain,
+			totalSubdomains: deduped.length,
+			totalCertificates: data.certificateCount ?? deduped.length,
+			subdomains: deduped,
+			wildcardCerts,
+			expiredCerts: 0,
+			uniqueIssuers: [],
+			issues,
+		};
+	} catch {
+		return null;
+	}
 }
 
 /** Build an empty result for when crt.sh is unavailable or returns no data. */

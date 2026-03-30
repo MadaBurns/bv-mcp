@@ -40,6 +40,7 @@ export interface DispatchMcpMethodOptions {
 	country?: string;
 	clientType?: string;
 	authTier?: string;
+	certstream?: { fetch: typeof fetch };
 }
 
 export type DispatchMcpMethodResult =
@@ -146,6 +147,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				country: options.country,
 				clientType: options.clientType,
 				authTier: options.authTier,
+				certstream: options.certstream,
 			});
 
 			return {

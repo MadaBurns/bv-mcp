@@ -82,6 +82,7 @@ interface ToolRuntimeOptions {
 	country?: string;
 	clientType?: string;
 	authTier?: string;
+	certstream?: { fetch: typeof fetch };
 }
 
 /** Build QueryDnsOptions for individual check calls from runtime options. */
@@ -608,7 +609,7 @@ export async function handleToolsCall(
 						return { content: [mcpText(formatSpfChain(result, effectiveFormat))] };
 					}
 					case 'discover_subdomains': {
-						const result = await discoverSubdomains(validDomain);
+						const result = await discoverSubdomains(validDomain, runtimeOptions?.certstream);
 						logResult = `${result.totalSubdomains} subdomains`;
 						logDetails = { totalSubdomains: result.totalSubdomains, issues: result.issues.length };
 						logToolSuccess({ toolName: name, durationMs: Date.now() - startTime, domain, analytics: runtimeOptions?.analytics, status: 'pass', logResult, logDetails, severity: 'info', country: runtimeOptions?.country, clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType, authTier: runtimeOptions?.authTier });
