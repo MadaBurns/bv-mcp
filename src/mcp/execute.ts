@@ -9,6 +9,7 @@ import { normalizeToolName } from '../handlers/tool-args';
 import { acceptsSSE } from '../lib/sse';
 import { dispatchMcpMethod } from './dispatch';
 import { validateJsonRpcRequest } from './request';
+import { checkSessionCreateRateLimit, createSession } from '../lib/session';
 import type { JsonRpcRequest } from '../lib/json-rpc';
 import type { AnalyticsClient } from '../lib/analytics';
 
@@ -332,6 +333,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		}
 	}
 
+	let recoveredSessionId: string | undefined;
+
 	if (options.validateSession && method !== 'initialize' && !method.startsWith('notifications/')) {
 		const sessionError = await validateSessionRequest(
 			options.sessionId,
@@ -340,6 +343,34 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			options.sessionErrorMessage ?? 'Bad Request: missing session',
 		);
 		if (sessionError) {
+			const canRecoverExpiredToolCall =
+				method === 'tools/call' &&
+				sessionError.status === 404 &&
+				typeof options.sessionId === 'string' &&
+				options.sessionId.length > 0;
+
+			if (canRecoverExpiredToolCall) {
+				let recoveryAllowed = true;
+				if (!options.isAuthenticated) {
+					const createGate = await checkSessionCreateRateLimit(options.ip, options.rateLimitKv, options.quotaCoordinator);
+					recoveryAllowed = createGate.allowed;
+				}
+
+				if (recoveryAllowed) {
+					recoveredSessionId = await createSession(options.sessionStore);
+					options.analytics?.emitSessionEvent({
+						action: 'created',
+						country: options.country,
+						clientType: options.clientType as import('../lib/client-detection').McpClientType,
+						authTier: options.authTier,
+					});
+				}
+			}
+
+			if (recoveredSessionId) {
+				// Continue request execution with a fresh session to prevent stale-session loops
+				// in clients that do not auto-reinitialize after a 404 session response.
+			} else {
 			emitRequestAnalytics(options, method, 'error', true);
 			return {
 				kind: 'response',
@@ -349,6 +380,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				useErrorEnvelope: true,
 				eventId,
 			};
+			}
 		}
 	}
 
@@ -414,7 +446,10 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		return {
 			kind: 'response',
 			payload: null,
-			headers: { ...rateHeaders },
+			headers: {
+				...rateHeaders,
+				...(recoveredSessionId ? { 'mcp-session-id': recoveredSessionId } : {}),
+			},
 			httpStatus: 200,
 			useErrorEnvelope: false,
 			eventId,
@@ -465,6 +500,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		}
 
 		const headers: Record<string, string> = {};
+		if (recoveredSessionId) {
+			headers['mcp-session-id'] = recoveredSessionId;
+		}
 		if (dispatchResult.newSessionId) {
 			headers['mcp-session-id'] = dispatchResult.newSessionId;
 		}

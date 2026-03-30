@@ -1401,6 +1401,57 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(404);
 		});
 
+		it('auto-recovers expired sessions for tools/call and returns a fresh session header', async () => {
+			const sessionId = await initSession();
+			await terminateSession(sessionId);
+
+			const toolRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Mcp-Session-Id': sessionId,
+				},
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 101,
+					method: 'tools/call',
+					params: {
+						name: 'explain_finding',
+						arguments: { checkType: 'SPF', status: 'fail' },
+					},
+				}),
+			});
+			const toolCtx = createExecutionContext();
+			const toolResponse = await worker.fetch(toolRequest, env, toolCtx);
+			await waitOnExecutionContext(toolCtx);
+
+			expect(toolResponse.status).toBe(200);
+			const recoveredSessionId = toolResponse.headers.get('mcp-session-id');
+			expect(recoveredSessionId).toBeTruthy();
+			expect(recoveredSessionId).not.toBe(sessionId);
+
+			const toolBody = (await toolResponse.json()) as {
+				result?: { content?: Array<{ type: string; text: string }> };
+				error?: { message?: string };
+			};
+			expect(toolBody.error).toBeUndefined();
+			expect(Array.isArray(toolBody.result?.content)).toBe(true);
+
+			const followupRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Mcp-Session-Id': recoveredSessionId!,
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', id: 102, method: 'tools/list', params: {} }),
+			});
+			const followupCtx = createExecutionContext();
+			const followupResponse = await worker.fetch(followupRequest, env, followupCtx);
+			await waitOnExecutionContext(followupCtx);
+
+			expect(followupResponse.status).toBe(200);
+		});
+
 		it('allows notifications/initialized without a valid session', async () => {
 			// Notifications are fire-and-forget per MCP spec — no session required
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
