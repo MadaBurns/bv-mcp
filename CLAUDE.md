@@ -324,6 +324,8 @@ Pipeline: validate (test/typecheck/lint/audit) → auto-bump `package.json` + `S
 
 npm and Cloudflare deploy run in parallel after version bump. Requires `NPM_TOKEN` and `CLOUDFLARE_API_TOKEN` secrets in the `production` environment.
 
+**Service binding consumers** (e.g., bv-web): no action required on bv-mcp release. Cloudflare service bindings are live-linked — deploying bv-mcp automatically makes the new version available to all consumers on the next request. No npm install, no version pinning, no downstream CI trigger needed.
+
 **Workflow security**: all `${{ }}` expressions are passed via `env:` variables, never interpolated directly in `run:` blocks. Only controlled inputs used (tag name, secrets, job outputs) — no user-supplied text (issue titles, PR bodies, commit messages).
 
 ## Service Binding Integration
