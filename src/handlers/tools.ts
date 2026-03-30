@@ -35,6 +35,7 @@ import { checkResolverConsistency, formatResolverConsistency } from '../tools/ch
 import { validateFix, formatValidateFix } from '../tools/validate-fix';
 import { mapSupplyChain, formatSupplyChain } from '../tools/map-supply-chain';
 import { generateRolloutPlan, formatRolloutPlan } from '../tools/generate-rollout-plan';
+import { computeDrift, formatDriftReport } from '../tools/analyze-drift';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -544,6 +545,44 @@ export async function handleToolsCall(
 							authTier: runtimeOptions?.authTier,
 						});
 						return { content: [mcpText(formatRolloutPlan(result, effectiveFormat))] };
+					}
+					case 'analyze_drift': {
+						const baselineStr = typeof validatedArgs.baseline === 'string' ? validatedArgs.baseline : '';
+
+						let baselineScore: import('../lib/scoring-model').ScanScore;
+						if (baselineStr === 'cached') {
+							const cacheKey = `cache:${validDomain}`;
+							const cached = scanCacheKV ? await import('../lib/cache').then((m) => m.cacheGet<import('../tools/scan-domain').ScanDomainResult>(cacheKey, scanCacheKV)) : undefined;
+							if (!cached) {
+								return buildToolErrorResult(`Invalid baseline: no cached scan found for ${validDomain}. Run scan_domain first or provide a baseline JSON.`);
+							}
+							baselineScore = cached.score;
+						} else {
+							try {
+								baselineScore = JSON.parse(baselineStr);
+							} catch {
+								return buildToolErrorResult('Invalid baseline: could not parse JSON. Provide a valid ScanScore JSON or "cached".');
+							}
+						}
+
+						const scanResult = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
+						const drift = computeDrift(validDomain, baselineScore, scanResult.score);
+						logResult = drift.classification;
+						logDetails = drift;
+						logToolSuccess({
+							toolName: name,
+							durationMs: Date.now() - startTime,
+							domain,
+							analytics: runtimeOptions?.analytics,
+							status: 'pass',
+							logResult,
+							logDetails,
+							severity: 'info',
+							country: runtimeOptions?.country,
+							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+							authTier: runtimeOptions?.authTier,
+						});
+						return { content: [mcpText(formatDriftReport(drift, effectiveFormat))] };
 					}
 					default:
 					logToolFailure({
