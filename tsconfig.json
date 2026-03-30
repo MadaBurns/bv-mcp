@@ -30,7 +30,7 @@
 
     /* Enable all strict type-checking options. */
 		"strict": true,
-		"types": [],
+		"types": ["@cloudflare/workers-types"],
 
     /* Skip type checking all .d.ts files. */
 		"skipLibCheck": true
