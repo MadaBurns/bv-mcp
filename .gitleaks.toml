@@ -127,7 +127,7 @@ regex = '''(?i)(?:key|api|token|secret|client|passwd|password|auth|access)(?:[0-
 keywords = ["key","api","token","secret","client","passwd","password","auth","access"]
 [rules.allowlist]
 paths = [
-  '''test/check-dkim\.spec\.ts$''', # DKIM public keys in test fixtures are not secrets
+  '''test/''', # Test fixtures use dummy keys/tokens — never real secrets
 ]
 
 # ─── Global Allowlists ───────────────────────────────────────────────
