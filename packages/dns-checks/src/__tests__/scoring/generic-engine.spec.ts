@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { computeGenericScore } from '../../scoring/generic';
-import type { GenericScoringContext, GenericScanScore } from '../../scoring/generic';
+import type { GenericScoringContext } from '../../scoring/generic';
 import { DEFAULT_SCORING_CONFIG } from '../../scoring/config';
 
 /** Helper: build a minimal context with sensible defaults. */
