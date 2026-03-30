@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.0.13] - 2026-03-30
+
+### Added
+- **`map_supply_chain`** — Map third-party service dependencies from DNS records (SPF includes, NS delegates, CAA issuers) with trust level classification and risk signals
+- **`analyze_drift`** — Compare current security posture against a previous baseline; classifies drift as improving/stable/regressing/mixed
+- **`validate_fix`** — Re-check a specific control after applying a fix; returns fixed/partial/not_fixed verdict
+- **`generate_rollout_plan`** — Generate phased DMARC enforcement timeline with exact DNS records per phase (aggressive/standard/conservative)
+- **Provider-aware fix plans** — `generate_fix_plan` now detects Google Workspace, Microsoft 365, Cloudflare, AWS, and other providers to emit exact step-by-step console instructions
+- Provider knowledge base (`provider-guides.ts`) — extensible static map of provider detection signals and fix guides
+
 ## [2.0.11] - 2026-03-28
 
 ### Fixed

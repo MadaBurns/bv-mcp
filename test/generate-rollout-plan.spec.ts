@@ -3,6 +3,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
 import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import type { RolloutPlanResult } from '../src/tools/generate-rollout-plan';
 
 const { restore } = setupFetchMock();
 
@@ -250,8 +251,8 @@ describe('formatRolloutPlan', () => {
 			estimatedDuration: '~4 weeks',
 		} as const;
 
-		const compact = formatRolloutPlan(data as any, 'compact');
-		const full = formatRolloutPlan(data as any, 'full');
+		const compact = formatRolloutPlan(data as RolloutPlanResult, 'compact');
+		const full = formatRolloutPlan(data as RolloutPlanResult, 'full');
 		expect(compact.length).toBeLessThan(full.length);
 		expect(compact).toContain('example.com');
 		expect(compact).toContain('none -> reject');
