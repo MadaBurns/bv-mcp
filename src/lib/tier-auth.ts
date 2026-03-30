@@ -43,7 +43,7 @@ async function hashTokenRaw(token: string): Promise<Uint8Array> {
  *
  * Resolution order:
  * 1. KV cache lookup (`tier:{hash}`)
- * 2. Service binding to bv-web (`POST /internal/validate-key`)
+ * 2. Service binding to companion app (validate-key endpoint)
  * 3. Static BV_API_KEY comparison (backward compat for self-hosted)
  */
 export async function resolveTier(
