@@ -22,6 +22,7 @@ jobs:
           cache: npm
 
       - run: npm ci
+      - run: npm run build --workspace=packages/dns-checks
       - run: npx tsc --noEmit
       - run: npm run lint
       - run: npm test

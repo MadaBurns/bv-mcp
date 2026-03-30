@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { type CheckCategory, type CheckResult, buildCheckResult, createFinding } from '../../lib/scoring';
+import { type CheckCategory, type CheckResult, type Finding, buildCheckResult, createFinding } from '../../lib/scoring';
 import { queryTxtRecords } from '../../lib/dns';
 import { detectProviderMatches, detectProviderMatchesBySelectors, loadProviderSignatures } from '../../lib/provider-signatures';
 import { parseDmarcTags } from '../check-dmarc';
@@ -28,7 +28,7 @@ export async function applyScanPostProcessing(
 ): Promise<CheckResult[]> {
 	let results = checkResults;
 	const mxResult = results.find((result) => result.category === 'mx');
-	const hasNoMx = mxResult ? mxResult.findings.some((finding) => finding.title === 'No MX records found') : false;
+	const hasNoMx = mxResult ? mxResult.findings.some((finding: Finding) => finding.title === 'No MX records found') : false;
 
 	if (hasNoMx) {
 		const apexCovers = await checkApexDmarcPolicy(domain);
@@ -40,7 +40,7 @@ export async function applyScanPostProcessing(
 
 	// Detect no-send SPF policy (v=spf1 -all with no authorizing mechanisms)
 	const spfResult = results.find((result) => result.category === 'spf');
-	const hasNoSendPolicy = spfResult?.findings.some((f) => f.metadata?.noSendPolicy === true) ?? false;
+	const hasNoSendPolicy = spfResult?.findings.some((f: Finding) => f.metadata?.noSendPolicy === true) ?? false;
 	if (hasNoSendPolicy && !hasNoMx) {
 		results = adjustForNoSendDomain(results);
 	}
@@ -196,7 +196,7 @@ function isMissingRecordFinding(finding: { title: string; detail: string }): boo
 function clarifyMtaStsForMailDomain(domain: string, results: CheckResult[]): CheckResult[] {
 	return results.map((result) => {
 		if (result.category !== 'mta_sts') return result;
-		const adjusted = result.findings.map((finding) => {
+		const adjusted = result.findings.map((finding: Finding) => {
 			if (finding.title === 'No MTA-STS or TLS-RPT records found') {
 				return {
 					...finding,
@@ -213,7 +213,7 @@ function adjustForNonMailDomain(results: CheckResult[], apexDmarcCovers: boolean
 	const emailCategories: CheckCategory[] = ['spf', 'dmarc', 'dkim', 'mta_sts'];
 	return results.map((result) => {
 		if (!emailCategories.includes(result.category)) return result;
-		const adjusted = result.findings.map((finding) => {
+		const adjusted = result.findings.map((finding: Finding) => {
 			if ((finding.severity === 'critical' || finding.severity === 'high') && isMissingRecordFinding(finding)) {
 				const reason = apexDmarcCovers
 					? 'expected — no MX records and parent domain DMARC policy covers subdomains'
@@ -229,7 +229,7 @@ function adjustForNonMailDomain(results: CheckResult[], apexDmarcCovers: boolean
 function adjustBimiForNonMailDomain(results: CheckResult[]): CheckResult[] {
 	return results.map((result) => {
 		if (result.category !== 'bimi') return result;
-		const adjusted = result.findings.map((finding) => {
+		const adjusted = result.findings.map((finding: Finding) => {
 			if (finding.title === 'No BIMI record found' && finding.detail.includes('eligible for BIMI')) {
 				const bimiDomain = finding.detail.match(/at (default\._bimi\.\S+)/)?.[1] ?? `default._bimi.unknown`;
 				return {
@@ -247,7 +247,7 @@ function adjustForNoSendDomain(results: CheckResult[]): CheckResult[] {
 	const noSendCategories: CheckCategory[] = ['dkim', 'mta_sts', 'bimi'];
 	return results.map((result) => {
 		if (!noSendCategories.includes(result.category)) return result;
-		const adjusted = result.findings.map((finding) => {
+		const adjusted = result.findings.map((finding: Finding) => {
 			if ((finding.severity === 'critical' || finding.severity === 'high') && isMissingRecordFinding(finding)) {
 				return {
 					...finding,
