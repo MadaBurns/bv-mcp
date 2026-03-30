@@ -135,6 +135,7 @@ paths = [
 [allowlist]
 paths = [
   '''\.gitleaks\.toml$''',           # This config file itself
+  '''\.githooks/''',                 # Hook config (contains patterns)
   '''node_modules/''',
   '''package-lock\.json$''',
   '''\.wrangler/''',
