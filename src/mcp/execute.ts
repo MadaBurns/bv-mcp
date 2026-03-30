@@ -359,7 +359,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				if (recoveryAllowed) {
 					sessionRevived = await reviveSession(options.sessionId!, options.sessionStore);
 					options.analytics?.emitSessionEvent({
-						action: 'created',
+						action: 'revived',
 						country: options.country,
 						clientType: options.clientType as import('../lib/client-detection').McpClientType,
 						authTier: options.authTier,
