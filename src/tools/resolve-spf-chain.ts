@@ -127,15 +127,13 @@ async function resolveNode(
 	for (const mech of mechanisms) {
 		const target = extractTarget(mech);
 		if (target) {
-			const child = await resolveNode(target, new Set(visited), allSeen, depth + 1, issues, dnsOptions);
+			const child = await resolveNode(target, visited, allSeen, depth + 1, issues, dnsOptions);
 			children.push(child);
 		}
 	}
 
 	const childLookups = children.reduce((sum, c) => sum + c.lookups, 0);
 	const totalLookups = directLookups + childLookups;
-
-	visited.delete(normalized);
 
 	return {
 		domain: normalized,
@@ -198,13 +196,14 @@ function renderTree(node: SpfNode, prefix: string, isLast: boolean, isRoot: bool
 		const record = node.record ? sanitizeOutputText(node.record, 200) : '(no SPF record)';
 		lines.push(`${prefix}${record}`);
 	} else {
+		const safeDomain = sanitizeOutputText(node.domain, 100);
 		const lookupLabel = node.lookups === 1 ? '1 lookup' : `${node.lookups} lookups`;
 		if (node.error) {
-			lines.push(`${prefix}${connector}${node.domain} — ${node.error}`);
+			lines.push(`${prefix}${connector}${safeDomain} — ${node.error}`);
 		} else if (node.record) {
-			lines.push(`${prefix}${connector}${node.domain} (${lookupLabel})`);
+			lines.push(`${prefix}${connector}${safeDomain} (${lookupLabel})`);
 		} else {
-			lines.push(`${prefix}${connector}${node.domain} — no SPF record`);
+			lines.push(`${prefix}${connector}${safeDomain} — no SPF record`);
 		}
 	}
 
