@@ -281,7 +281,11 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				const scoreDelta = adaptiveScore.overall - staticScore.overall;
 				scoringNote = generateScoringNote(deltas, scoreDelta, domainContext.detectedProvider);
 				adaptiveWeightDeltas = deltas;
-				score = adaptiveScore;
+				// Use STATIC score as the headline for determinism. Adaptive weights
+				// shift with each scan (EMA), causing the same domain to get different
+				// scores on consecutive scans. The adaptive delta is reported in
+				// scoringNote for analytics consumers.
+				score = staticScore;
 			} else {
 				score = computeScanScore(checkResults, scoringContext, runtimeOptions?.scoringConfig);
 			}
