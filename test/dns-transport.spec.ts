@@ -237,7 +237,7 @@ describe('secondary DoH resolver (bv-dns)', () => {
 					json: () => Promise.resolve(emptyCloudflareResponse),
 				} as unknown as Response);
 			}
-			if (urlStr.includes('harlan.blackveil')) {
+			if (urlStr.includes('secondary-doh.test')) {
 				return Promise.resolve({
 					ok: true,
 					status: 200,
@@ -251,14 +251,14 @@ describe('secondary DoH resolver (bv-dns)', () => {
 		const result = await queryDns('example.com', 'TXT', false, {
 			retries: 0,
 			confirmWithSecondaryOnEmpty: true,
-			secondaryDoh: { endpoint: 'https://secondary-doh.example.com/dns-query', token: 'test-token' },
+			secondaryDoh: { endpoint: 'https://secondary-doh.test/dns-query', token: 'test-token' },
 		});
 
 		expect(result.Answer).toHaveLength(1);
 		expect(result.Answer![0].data).toBe('"v=spf1 -all"');
 		// Cloudflare + bv-dns = 2 calls, Google not called
 		expect(fetchMock).toHaveBeenCalledTimes(2);
-		const bvDnsCall = fetchMock.mock.calls.find((c: unknown[]) => (c[0] as string).includes('harlan.blackveil'));
+		const bvDnsCall = fetchMock.mock.calls.find((c: unknown[]) => (c[0] as string).includes('secondary-doh.test'));
 		expect(bvDnsCall).toBeDefined();
 	});
 
@@ -272,7 +272,7 @@ describe('secondary DoH resolver (bv-dns)', () => {
 					json: () => Promise.resolve(emptyCloudflareResponse),
 				} as unknown as Response);
 			}
-			if (urlStr.includes('harlan.blackveil')) {
+			if (urlStr.includes('secondary-doh.test')) {
 				return Promise.resolve({
 					ok: true,
 					status: 200,
@@ -286,10 +286,10 @@ describe('secondary DoH resolver (bv-dns)', () => {
 		await queryDns('example.com', 'TXT', false, {
 			retries: 0,
 			confirmWithSecondaryOnEmpty: true,
-			secondaryDoh: { endpoint: 'https://secondary-doh.example.com/dns-query', token: 'my-secret' },
+			secondaryDoh: { endpoint: 'https://secondary-doh.test/dns-query', token: 'my-secret' },
 		});
 
-		const bvDnsCall = fetchMock.mock.calls.find((c: unknown[]) => (c[0] as string).includes('harlan.blackveil'));
+		const bvDnsCall = fetchMock.mock.calls.find((c: unknown[]) => (c[0] as string).includes('secondary-doh.test'));
 		expect(bvDnsCall).toBeDefined();
 		expect(bvDnsCall![1].headers).toHaveProperty('X-BV-Token', 'my-secret');
 	});
@@ -306,7 +306,7 @@ describe('secondary DoH resolver (bv-dns)', () => {
 					json: () => Promise.resolve(emptyCloudflareResponse),
 				} as unknown as Response);
 			}
-			if (urlStr.includes('harlan.blackveil')) {
+			if (urlStr.includes('secondary-doh.test')) {
 				return Promise.resolve({
 					ok: true,
 					status: 200,
@@ -327,7 +327,7 @@ describe('secondary DoH resolver (bv-dns)', () => {
 		const result = await queryDns('example.com', 'TXT', false, {
 			retries: 0,
 			confirmWithSecondaryOnEmpty: true,
-			secondaryDoh: { endpoint: 'https://secondary-doh.example.com/dns-query' },
+			secondaryDoh: { endpoint: 'https://secondary-doh.test/dns-query' },
 		});
 
 		// Should get Google's response since bv-dns was also empty
@@ -347,7 +347,7 @@ describe('secondary DoH resolver (bv-dns)', () => {
 					json: () => Promise.resolve(emptyCloudflareResponse),
 				} as unknown as Response);
 			}
-			if (urlStr.includes('harlan.blackveil')) {
+			if (urlStr.includes('secondary-doh.test')) {
 				return Promise.reject(new Error('connection refused'));
 			}
 			if (urlStr.includes('dns.google')) {
@@ -364,7 +364,7 @@ describe('secondary DoH resolver (bv-dns)', () => {
 		const result = await queryDns('example.com', 'TXT', false, {
 			retries: 0,
 			confirmWithSecondaryOnEmpty: true,
-			secondaryDoh: { endpoint: 'https://secondary-doh.example.com/dns-query', token: 'test' },
+			secondaryDoh: { endpoint: 'https://secondary-doh.test/dns-query', token: 'test' },
 		});
 
 		// Should fall through to Google
@@ -404,7 +404,7 @@ describe('secondary DoH resolver (bv-dns)', () => {
 		expect(result.Answer).toHaveLength(1);
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 		const urls = fetchMock.mock.calls.map((c: unknown[]) => c[0] as string);
-		expect(urls.some((u: string) => u.includes('harlan.blackveil'))).toBe(false);
+		expect(urls.some((u: string) => u.includes('secondary-doh.test'))).toBe(false);
 	});
 
 	it('skips all secondary calls when skipSecondaryConfirmation is true', async () => {
@@ -419,7 +419,7 @@ describe('secondary DoH resolver (bv-dns)', () => {
 			retries: 0,
 			confirmWithSecondaryOnEmpty: true,
 			skipSecondaryConfirmation: true,
-			secondaryDoh: { endpoint: 'https://secondary-doh.example.com/dns-query', token: 'test' },
+			secondaryDoh: { endpoint: 'https://secondary-doh.test/dns-query', token: 'test' },
 		});
 
 		// Only Cloudflare called, no secondary

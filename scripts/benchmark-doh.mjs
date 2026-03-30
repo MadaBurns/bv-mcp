@@ -6,7 +6,7 @@
 
 const CLOUDFLARE = 'https://cloudflare-dns.com/dns-query';
 const GOOGLE = 'https://dns.google/resolve';
-const BV_DNS = 'https://secondary-doh.example.com/dns-query';
+const BV_DNS = process.env.BV_DOH_ENDPOINT || 'https://doh.example.com/dns-query';
 
 const TEST_QUERIES = [
 	{ name: 'example.com', type: 'TXT' },
@@ -75,7 +75,7 @@ async function main() {
 	// Check bv-dns health first
 	let bvDnsAvailable = false;
 	try {
-		const health = await fetch('https://secondary-doh.example.com/health', {
+		const health = await fetch(BV_DNS.replace('/dns-query', '/health'), {
 			signal: AbortSignal.timeout(3000),
 		});
 		bvDnsAvailable = health.ok;

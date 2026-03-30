@@ -184,13 +184,13 @@ New validation errors that need to reach clients **must start with one of these 
 
 | Category | Weight |
 |----------|--------|
-| DMARC | 22 |
-| DKIM | 16 |
+| DMARC | 16 |
+| DKIM | 10 |
 | SPF | 10 |
-| DNSSEC | 7 |
-| SSL | 5 |
+| DNSSEC | 8 |
+| SSL | 8 |
 
-> Production overrides code defaults via `SCORING_CONFIG` env var in `.dev/wrangler.deploy.jsonc`. Code defaults: DMARC 16, DKIM 10, DNSSEC 8, SSL 8.
+> Production may override code defaults via `SCORING_CONFIG` env var in `.dev/wrangler.deploy.jsonc`.
 
 **Protective (20%)** — Active defenses: Subdomain Takeover (4), HTTP Security (3), MTA-STS (3), MX (2), CAA (2), NS (2), Lookalikes (2), Shadow Domains (2).
 
@@ -305,7 +305,7 @@ All tool arguments validated via Zod schemas (`src/schemas/tool-args.ts`) before
 | CORS, Origin, Auth, Rate limiting, Sessions, JSON-RPC, Body limit | Yes | No |
 | Tool execution, Caching, Analytics, SSRF protection | Yes | Yes |
 
-**Consumers**: bv-web (`/admin/batch` → batch, individual pages → call via `mcpClient`).
+**Consumers**: companion web app (batch scanner → batch endpoint, individual pages → call endpoint).
 
 ## Deployment
 
