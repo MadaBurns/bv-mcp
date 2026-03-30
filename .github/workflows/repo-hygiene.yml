@@ -1,0 +1,121 @@
+name: Repo Hygiene
+
+on:
+  workflow_call:
+    inputs:
+      extra_blocked_patterns:
+        description: 'Additional file patterns to block (newline-separated globs)'
+        required: false
+        type: string
+        default: ''
+
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: hygiene-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repo-hygiene:
+    name: File hygiene check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Block generated/compiled files
+        env:
+          EXTRA_PATTERNS: ${{ inputs.extra_blocked_patterns }}
+        run: |
+          BLOCKED_PATTERNS=(
+            '*.pyc'
+            '*.pyo'
+            '*.pyd'
+            '__pycache__/'
+            'worker-configuration.d.ts'
+            '*.wasm'
+            '*.sqlite'
+            '*.sqlite3'
+            '*.db'
+            '.env'
+            '.env.*'
+            '.dev.vars'
+            '*.log'
+            '.DS_Store'
+            'Thumbs.db'
+          )
+
+          # Add any extra patterns from input (safely via env var)
+          if [ -n "$EXTRA_PATTERNS" ]; then
+            while IFS= read -r pattern; do
+              [ -n "$pattern" ] && BLOCKED_PATTERNS+=("$pattern")
+            done <<< "$EXTRA_PATTERNS"
+          fi
+
+          FOUND=""
+          for pattern in "${BLOCKED_PATTERNS[@]}"; do
+            matches=$(git ls-files "$pattern" 2>/dev/null || true)
+            if [ -n "$matches" ]; then
+              FOUND="$FOUND\n$matches"
+            fi
+          done
+
+          if [ -n "$FOUND" ]; then
+            echo "::error::Generated/compiled files are tracked in git:"
+            echo -e "$FOUND"
+            echo ""
+            echo "These files should be in .gitignore. Remove with:"
+            echo "  git rm --cached <file>"
+            echo "  echo '<pattern>' >> .gitignore"
+            exit 1
+          fi
+
+          echo "✓ No generated/compiled files found in tracked files."
+
+      - name: Verify .gitignore exists
+        run: |
+          if [ ! -f .gitignore ]; then
+            echo "::error::No .gitignore file found. Every repo must have one."
+            exit 1
+          fi
+          echo "✓ .gitignore exists."
+
+      - name: Check .gitignore covers essentials
+        run: |
+          REQUIRED_PATTERNS=(
+            'node_modules/'
+            '.DS_Store'
+            '*.log'
+          )
+
+          MISSING=""
+          for pattern in "${REQUIRED_PATTERNS[@]}"; do
+            if ! grep -qF "$pattern" .gitignore; then
+              MISSING="$MISSING\n  $pattern"
+            fi
+          done
+
+          if [ -n "$MISSING" ]; then
+            echo "::warning::.gitignore is missing recommended patterns:$MISSING"
+          else
+            echo "✓ All essential patterns present in .gitignore."
+          fi
+
+      - name: Check for large tracked files
+        run: |
+          LARGE=$(find . -path ./.git -prune -o -type f -size +500k -print 2>/dev/null | while read -r f; do
+            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              size=$(wc -c < "$f" | tr -d ' ')
+              echo "  $f ($((size / 1024))KB)"
+            fi
+          done)
+
+          if [ -n "$LARGE" ]; then
+            echo "::warning::Large files tracked in git (>500KB):"
+            echo "$LARGE"
+            echo "Consider adding these to .gitignore if they are generated."
+          else
+            echo "✓ No large tracked files found."
+          fi
