@@ -17,7 +17,7 @@ import { getEffectiveTld } from '../lib/public-suffix';
 import { validateDomain } from '../lib/sanitize';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
-import { type VerificationCategory, type VerificationPattern, VERIFICATION_PATTERNS, SERVICE_SPF_DOMAINS } from './txt-hygiene-analysis';
+import { type VerificationCategory, VERIFICATION_PATTERNS, SERVICE_SPF_DOMAINS } from './txt-hygiene-analysis';
 
 // ─── Government TLD detection ────────────────────────────────────────────────
 
