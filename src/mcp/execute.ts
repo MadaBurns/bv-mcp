@@ -9,7 +9,7 @@ import { normalizeToolName } from '../handlers/tool-args';
 import { acceptsSSE } from '../lib/sse';
 import { dispatchMcpMethod } from './dispatch';
 import { validateJsonRpcRequest } from './request';
-import { checkSessionCreateRateLimit, createSession } from '../lib/session';
+import { checkSessionCreateRateLimit, reviveSession } from '../lib/session';
 import type { JsonRpcRequest } from '../lib/json-rpc';
 import type { AnalyticsClient } from '../lib/analytics';
 
@@ -333,7 +333,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		}
 	}
 
-	let recoveredSessionId: string | undefined;
+	let sessionRevived = false;
 
 	if (options.validateSession && method !== 'initialize' && !method.startsWith('notifications/')) {
 		const sessionError = await validateSessionRequest(
@@ -357,29 +357,39 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				}
 
 				if (recoveryAllowed) {
-					recoveredSessionId = await createSession(options.sessionStore);
-					options.analytics?.emitSessionEvent({
-						action: 'created',
-						country: options.country,
-						clientType: options.clientType as import('../lib/client-detection').McpClientType,
-						authTier: options.authTier,
-					});
+					sessionRevived = await reviveSession(options.sessionId!, options.sessionStore);
+					if (sessionRevived) {
+						options.analytics?.emitSessionEvent({
+							action: 'revived',
+							country: options.country,
+							clientType: options.clientType as import('../lib/client-detection').McpClientType,
+							authTier: options.authTier,
+						});
+						logEvent({
+							timestamp: new Date().toISOString(),
+							category: 'session',
+							result: 'recovered',
+							ip: options.ip,
+							details: { method, clientType: options.clientType },
+						});
+					}
 				}
 			}
 
-			if (recoveredSessionId) {
-				// Continue request execution with a fresh session to prevent stale-session loops
-				// in clients that do not auto-reinitialize after a 404 session response.
+			if (sessionRevived) {
+				// Continue request execution with the revived session to prevent stale-session
+				// loops in clients (e.g. mcp-remote) that do not learn new session IDs from
+				// response headers and cannot auto-reinitialize after a 404.
 			} else {
-			emitRequestAnalytics(options, method, 'error', true);
-			return {
-				kind: 'response',
-				payload: sessionError.payload,
-				headers: {},
-				httpStatus: sessionError.status,
-				useErrorEnvelope: true,
-				eventId,
-			};
+				emitRequestAnalytics(options, method, 'error', true);
+				return {
+					kind: 'response',
+					payload: sessionError.payload,
+					headers: {},
+					httpStatus: sessionError.status,
+					useErrorEnvelope: true,
+					eventId,
+				};
 			}
 		}
 	}
@@ -448,7 +458,6 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			payload: null,
 			headers: {
 				...rateHeaders,
-				...(recoveredSessionId ? { 'mcp-session-id': recoveredSessionId } : {}),
 			},
 			httpStatus: 200,
 			useErrorEnvelope: false,
@@ -500,9 +509,6 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		}
 
 		const headers: Record<string, string> = {};
-		if (recoveredSessionId) {
-			headers['mcp-session-id'] = recoveredSessionId;
-		}
 		if (dispatchResult.newSessionId) {
 			headers['mcp-session-id'] = dispatchResult.newSessionId;
 		}

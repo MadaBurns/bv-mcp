@@ -1401,7 +1401,7 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(404);
 		});
 
-		it('auto-recovers expired sessions for tools/call and returns a fresh session header', async () => {
+		it('auto-recovers expired sessions for tools/call by reviving the same session ID', async () => {
 			const sessionId = await initSession();
 			await terminateSession(sessionId);
 
@@ -1426,9 +1426,10 @@ describe('DNS Security MCP Server', () => {
 			await waitOnExecutionContext(toolCtx);
 
 			expect(toolResponse.status).toBe(200);
+			// No new session ID header — the original session ID is revived in-place
+			// so clients (e.g. mcp-remote) that ignore response headers keep working
 			const recoveredSessionId = toolResponse.headers.get('mcp-session-id');
-			expect(recoveredSessionId).toBeTruthy();
-			expect(recoveredSessionId).not.toBe(sessionId);
+			expect(recoveredSessionId).toBeNull();
 
 			const toolBody = (await toolResponse.json()) as {
 				result?: { content?: Array<{ type: string; text: string }> };
@@ -1437,11 +1438,12 @@ describe('DNS Security MCP Server', () => {
 			expect(toolBody.error).toBeUndefined();
 			expect(Array.isArray(toolBody.result?.content)).toBe(true);
 
+			// Follow-up request with the SAME original session ID succeeds
 			const followupRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
-					'Mcp-Session-Id': recoveredSessionId!,
+					'Mcp-Session-Id': sessionId,
 				},
 				body: JSON.stringify({ jsonrpc: '2.0', id: 102, method: 'tools/list', params: {} }),
 			});
@@ -1598,6 +1600,41 @@ describe('DNS Security MCP Server', () => {
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(404);
+		});
+	});
+
+	describe('OAuth well-known endpoints', () => {
+		it('returns valid JSON 404 for /.well-known/oauth-authorization-server', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/.well-known/oauth-authorization-server');
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(404);
+			expect(response.headers.get('content-type')).toContain('application/json');
+			const body = (await response.json()) as { error: string; error_description: string };
+			expect(body.error).toBe('not_supported');
+		});
+
+		it('returns valid JSON 404 for /.well-known/oauth-protected-resource', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/.well-known/oauth-protected-resource');
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(404);
+			expect(response.headers.get('content-type')).toContain('application/json');
+			const body = (await response.json()) as { error: string; error_description: string };
+			expect(body.error).toBe('not_supported');
+		});
+
+		it('returns parseable JSON bodies (no SyntaxError for mcp-remote)', async () => {
+			for (const path of ['/.well-known/oauth-authorization-server', '/.well-known/oauth-protected-resource']) {
+				const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com${path}`);
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(request, env, ctx);
+				await waitOnExecutionContext(ctx);
+				const text = await response.clone().text();
+				expect(() => JSON.parse(text)).not.toThrow();
+			}
 		});
 	});
 });
