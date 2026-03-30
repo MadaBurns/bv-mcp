@@ -36,6 +36,7 @@ import { validateFix, formatValidateFix } from '../tools/validate-fix';
 import { mapSupplyChain, formatSupplyChain } from '../tools/map-supply-chain';
 import { generateRolloutPlan, formatRolloutPlan } from '../tools/generate-rollout-plan';
 import { computeDrift, formatDriftReport } from '../tools/analyze-drift';
+import { resolveSpfChain, formatSpfChain } from '../tools/resolve-spf-chain';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -583,6 +584,25 @@ export async function handleToolsCall(
 							authTier: runtimeOptions?.authTier,
 						});
 						return { content: [mcpText(formatDriftReport(drift, effectiveFormat))] };
+					}
+					case 'resolve_spf_chain': {
+						const result = await resolveSpfChain(validDomain, buildDnsOptions(runtimeOptions));
+						logResult = result.overLimit ? 'over_limit' : 'ok';
+						logDetails = { totalLookups: result.totalLookups, maxDepth: result.maxDepth, issues: result.issues.length };
+						logToolSuccess({
+							toolName: name,
+							durationMs: Date.now() - startTime,
+							domain,
+							analytics: runtimeOptions?.analytics,
+							status: result.overLimit ? 'fail' : 'pass',
+							logResult,
+							logDetails,
+							severity: 'info',
+							country: runtimeOptions?.country,
+							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+							authTier: runtimeOptions?.authTier,
+						});
+						return { content: [mcpText(formatSpfChain(result, effectiveFormat))] };
 					}
 					default:
 					logToolFailure({

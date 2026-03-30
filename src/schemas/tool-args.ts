@@ -196,4 +196,5 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	map_supply_chain: MapSupplyChainArgs,
 	analyze_drift: AnalyzeDriftArgs,
 	generate_rollout_plan: GenerateRolloutPlanArgs,
+	resolve_spf_chain: BaseDomainArgs,
 };

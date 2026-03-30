@@ -169,4 +169,5 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	analyze_drift: 75,
 	validate_fix: 200,
 	generate_rollout_plan: 150,
+	resolve_spf_chain: 100,
 };
