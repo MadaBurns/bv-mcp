@@ -64,7 +64,7 @@ describe('Session expiration recovery', () => {
 				jsonrpc: '2.0',
 				id: 1,
 				method: 'tools/call',
-				params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+				params: { name: 'explain_finding', arguments: { finding_id: 'spf_softfail' } },
 			}),
 		});
 		const ctx = createExecutionContext();
@@ -95,7 +95,7 @@ describe('Session expiration recovery', () => {
 				jsonrpc: '2.0',
 				id: 2,
 				method: 'tools/call',
-				params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+				params: { name: 'explain_finding', arguments: { finding_id: 'spf_softfail' } },
 			}),
 		});
 		const ctx = createExecutionContext();
@@ -124,7 +124,7 @@ describe('Session expiration recovery', () => {
 				jsonrpc: '2.0',
 				id: 3,
 				method: 'tools/call',
-				params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+				params: { name: 'explain_finding', arguments: { finding_id: 'spf_softfail' } },
 			}),
 		});
 		const ctx1 = createExecutionContext();
@@ -143,7 +143,7 @@ describe('Session expiration recovery', () => {
 				jsonrpc: '2.0',
 				id: 4,
 				method: 'tools/call',
-				params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+				params: { name: 'explain_finding', arguments: { finding_id: 'spf_softfail' } },
 			}),
 		});
 		const ctx2 = createExecutionContext();
@@ -191,7 +191,7 @@ describe('Session expiration recovery', () => {
 				jsonrpc: '2.0',
 				id: 6,
 				method: 'tools/call',
-				params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+				params: { name: 'explain_finding', arguments: { finding_id: 'spf_softfail' } },
 			}),
 		});
 		const ctx = createExecutionContext();
