@@ -239,7 +239,7 @@ All scoring parameters configurable via `SCORING_CONFIG` env var (JSON). Support
 ### Key rules
 
 - **SSRF**: `config.ts` defines blocked IPs/TLDs; `sanitize.ts` enforces. `global_fetch_strictly_public` compat flag. All outbound fetches use `redirect: 'manual'`
-- **Auth**: Optional `BV_API_KEY`, constant-time XOR. Tier-auth cascades: KV cache → bv-web service binding → static fallback. Five tiers: `free`, `agent`, `developer`, `enterprise`, `partner`
+- **Auth**: Optional `BV_API_KEY`, constant-time XOR. Tier-auth cascades: KV cache → bv-web service binding → static fallback. Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner tier has unlimited rate limits but requires client IP in `OWNER_ALLOW_IPS` — mismatched IPs downgrade to `partner`
 - **Rate limiting**: 50 req/min, 300 req/hr per IP (unauthenticated). Authenticated users bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_lookalikes`/`check_shadow_domains`: 20/day per IP with 60-min caching
 - **Per-tool quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts`. Global cap 500k/day (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via `QuotaCoordinator` DO
 - **Content-Type**: POST requires `application/json`; missing allowed for compat; non-JSON → 415
@@ -353,7 +353,8 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 
 | Binding | Type | Purpose |
 |---------|------|---------|
-| `BV_API_KEY` | Secret | Optional bearer auth |
+| `BV_API_KEY` | Secret | Static bearer auth — resolves as `owner` tier |
+| `OWNER_ALLOW_IPS` | var | Comma-separated IPs allowed for `owner` tier (key + wrong IP → `partner`) |
 | `ALLOWED_ORIGINS` | var | Comma-separated allowed Origins |
 | `RATE_LIMIT` | KV | Per-IP rate counters (**required prod**) |
 | `SCAN_CACHE` | KV | 5-min TTL result cache (**required prod**) |
