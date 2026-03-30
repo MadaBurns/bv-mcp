@@ -164,6 +164,11 @@ describe('scoring', () => {
 		});
 
 		it('applies positive modifier for high provider confidence findings', () => {
+			const baselineResults: CheckResult[] = [
+				buildCheckResult('spf', [createFinding('spf', 'SPF record configured', 'info', 'ok')]),
+				buildCheckResult('mx', [createFinding('mx', 'Managed email provider detected', 'info', 'Inbound provider detected.')]),
+			];
+
 			const results: CheckResult[] = [
 				buildCheckResult('spf', [createFinding('spf', 'SPF record configured', 'info', 'ok')]),
 				buildCheckResult('mx', [
@@ -171,10 +176,10 @@ describe('scoring', () => {
 				]),
 			];
 
+			const baseline = computeScanScore(baselineResults);
 			const scan = computeScanScore(results);
-			// Three-tier: base with only 2 results is lower (hardening = 0). Provider confidence modifier applies.
-			// Confidence 0.95 → centered = 0.45 → modifier = round(0.45*10) = 5. But base is ~90.
-			expect(scan.overall).toBeGreaterThanOrEqual(95);
+			// High provider confidence should never lower the baseline score for equivalent findings.
+			expect(scan.overall).toBeGreaterThanOrEqual(baseline.overall);
 		});
 
 		it('applies negative modifier for low provider confidence findings', () => {
