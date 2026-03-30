@@ -2,7 +2,7 @@
 # Pre-commit hook: block sensitive paths, scan for secrets/PII, catch IP leakage patterns
 set -euo pipefail
 
-# ─── 1. Blocked paths ────────────────────────────────────────────────
+# ──�� 1. Blocked paths ──────────────────────────────���─────────────────
 BLOCKED_PATTERNS=(
   "docs/plans/"
   "docs/code-review/"
@@ -38,7 +38,7 @@ if [ -n "$blocked" ]; then
   exit 1
 fi
 
-# ─── 2. Gitleaks (secrets + PII) ─────────────────────────────────────
+# ─── 2. Gitleaks (secrets + PII) ──────���──────────────────────────────
 if command -v gitleaks &>/dev/null; then
   gitleaks protect --staged --config .gitleaks.toml --no-banner 2>&1 | head -20
   if [ "${PIPESTATUS[0]}" -ne 0 ]; then
@@ -49,28 +49,26 @@ if command -v gitleaks &>/dev/null; then
   fi
 fi
 
-# ─── 3. IP leakage patterns ──────────────────────────────────────────
-# Catches internal hostnames, customer names, production infrastructure
-# identifiers, and internal service paths that shouldn't be public.
+# ─── 3. IP leakage patterns ─────────��────────────────────────────────
+# Patterns loaded from external file to avoid self-matching.
+# Each line is an extended regex pattern. Lines starting with # are ignored.
+PATTERNS_FILE="$(git rev-parse --show-toplevel)/.githooks/blocked-patterns"
 
-IP_PATTERNS=(
-  'harlan\.blackveilsecurity\.com'    # Internal DoH server hostname
-  'csc-global'                         # Customer name
-  '@blackveil-security/'              # Internal GitHub org teams
-  'enterprise-architecture\.md'       # Enterprise planning doc
-  'wrangler\.deploy\.jsonc'           # Production deploy config reference
-)
+if [ ! -f "$PATTERNS_FILE" ]; then
+  exit 0
+fi
 
-diff_content=$(git diff --cached --diff-filter=ACM -U0 | grep '^+' | grep -v '^+++' || true)
+diff_content=$(git diff --cached --diff-filter=ACM -U0 -- ':!.githooks/' ':!.gitleaks.toml' | grep '^+' | grep -v '^+++' || true)
 
 if [ -n "$diff_content" ]; then
   ip_found=""
-  for pattern in "${IP_PATTERNS[@]}"; do
+  while IFS= read -r pattern; do
+    [[ "$pattern" =~ ^#.*$ || -z "$pattern" ]] && continue
     matches=$(echo "$diff_content" | grep -iE "$pattern" || true)
     if [ -n "$matches" ]; then
       ip_found="$ip_found\n  Pattern: $pattern\n$matches\n"
     fi
-  done
+  done < "$PATTERNS_FILE"
 
   if [ -n "$ip_found" ]; then
     echo "BLOCKED: IP leakage patterns detected in staged changes:"
