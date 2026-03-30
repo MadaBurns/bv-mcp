@@ -179,4 +179,27 @@ describe('Session expiration recovery', () => {
 		// tools/list should NOT trigger recovery — returns 404
 		expect(res.status).toBe(404);
 	});
+
+	it('rejects recovery for malformed session IDs', async () => {
+		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Mcp-Session-Id': 'not-a-valid-hex-id',
+			},
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				id: 6,
+				method: 'tools/call',
+				params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+			}),
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, env, ctx);
+		await waitOnExecutionContext(ctx);
+
+		// Malformed session IDs should NOT trigger recovery
+		expect(res.status).toBe(404);
+		expect(ACTIVE_SESSIONS.has('not-a-valid-hex-id')).toBe(false);
+	});
 });

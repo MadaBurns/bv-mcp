@@ -147,8 +147,14 @@ export async function createSession(kv?: KVNamespace): Promise<string> {
  * Unlike `createSession()` which generates a new ID, this preserves the
  * existing session ID so clients that cannot learn a new ID (e.g. mcp-remote)
  * can continue using their cached session ID after expiry recovery.
+ *
+ * Security: relies on session IDs being 256-bit cryptographic random values
+ * (validated via `isValidSessionIdFormat`), making brute-force infeasible.
+ * The session-create rate limit (30/min) also applies to revival attempts.
  */
 export async function reviveSession(id: string, kv?: KVNamespace): Promise<boolean> {
+	if (!isValidSessionIdFormat(id)) return false;
+
 	const now = Date.now();
 	const record: SessionRecord = { createdAt: now, lastAccessedAt: now };
 
