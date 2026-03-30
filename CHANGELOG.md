@@ -6,15 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-## [2.0.13] - 2026-03-30
+## [2.1.0] - 2026-03-30
 
 ### Added
-- **`map_supply_chain`** — Map third-party service dependencies from DNS records (SPF includes, NS delegates, CAA issuers) with trust level classification and risk signals
-- **`analyze_drift`** — Compare current security posture against a previous baseline; classifies drift as improving/stable/regressing/mixed
-- **`validate_fix`** — Re-check a specific control after applying a fix; returns fixed/partial/not_fixed verdict
-- **`generate_rollout_plan`** — Generate phased DMARC enforcement timeline with exact DNS records per phase (aggressive/standard/conservative)
-- **Provider-aware fix plans** — `generate_fix_plan` now detects Google Workspace, Microsoft 365, Cloudflare, AWS, and other providers to emit exact step-by-step console instructions
-- Provider knowledge base (`provider-guides.ts`) — extensible static map of provider detection signals and fix guides
+- **`map_supply_chain`** — Map third-party service dependencies from DNS records. Correlates SPF includes, NS delegates, TXT verifications (39 SaaS patterns), SRV services, and CAA issuers into a unified dependency graph with trust level classification and risk signals (stale integrations, shadow services, insecure protocols, security tooling exposure)
+- **`analyze_drift`** — Compare current security posture against a previous baseline; classifies drift as improving/stable/regressing/mixed with per-category deltas
+- **`validate_fix`** — Re-check a specific control after applying a fix; returns fixed/partial/not_fixed verdict with propagation hints
+- **`generate_rollout_plan`** — Generate phased DMARC enforcement timeline with exact DNS records per phase (aggressive/standard/conservative timelines)
+- **`resolve_spf_chain`** — Recursively resolve the full SPF include chain with tree visualization, DNS lookup counting against RFC 7208 10-lookup limit, and detection of circular includes, void lookups, and redundant paths
+- **`discover_subdomains`** — Discover subdomains via Certificate Transparency logs. Uses `bv-certstream-worker` service binding for cached data with crt.sh fallback. Detects shadow IT, expired services, wildcard exposure, and multi-CA sprawl
+- **`map_compliance`** — Map scan findings to compliance frameworks: NIST 800-177, PCI DSS 4.0, SOC 2 Trust Services Criteria, CIS Controls v8. Shows pass/fail/partial status per control with related findings
+- **`simulate_attack_paths`** — Analyze current DNS posture and enumerate 9 specific attack paths (email spoofing, subdomain takeover, DNS hijack, TLS stripping, XSS, clickjacking, cert misissuance, DKIM key compromise) with severity, feasibility, steps, and mitigations
+- **Provider-aware fix plans** — `generate_fix_plan` now detects Google Workspace, Microsoft 365, Cloudflare, AWS, and 9 other providers to emit exact step-by-step console instructions with dependency-aware ordering
+- Provider knowledge base (`provider-guides.ts`) — extensible static map of 13 provider detection signals and fix guides
+- TXT hygiene analysis module (`txt-hygiene-analysis.ts`) — shared constants for 39 SaaS verification patterns and SPF cross-reference data
+
+### Fixed
+- Domain validation errors for IP addresses and label length now surface descriptive messages instead of generic "An unexpected error occurred"
+- crt.sh queries now use `&exclude=expired` to prevent HTTP 503 on popular domains with large certificate histories
+
+### Changed
+- Tool count: 33 → 41 (8 new tools)
 
 ## [2.0.11] - 2026-03-28
 
