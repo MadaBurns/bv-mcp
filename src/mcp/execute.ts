@@ -343,13 +343,12 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			options.sessionErrorMessage ?? 'Bad Request: missing session',
 		);
 		if (sessionError) {
-			const canRecoverExpiredToolCall =
-				method === 'tools/call' &&
+			const canRecoverExpiredSession =
 				sessionError.status === 404 &&
 				typeof options.sessionId === 'string' &&
 				options.sessionId.length > 0;
 
-			if (canRecoverExpiredToolCall) {
+			if (canRecoverExpiredSession) {
 				let recoveryAllowed = true;
 				if (!options.isAuthenticated) {
 					const createGate = await checkSessionCreateRateLimit(options.ip, options.rateLimitKv, options.quotaCoordinator);
@@ -361,6 +360,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 					if (sessionRevived) {
 						options.analytics?.emitSessionEvent({
 							action: 'revived',
+							method,
 							country: options.country,
 							clientType: options.clientType as import('../lib/client-detection').McpClientType,
 							authTier: options.authTier,
