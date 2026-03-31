@@ -87,7 +87,7 @@ describe('createAnalyticsClient', () => {
 		});
 		const point = ds.writeDataPoint.mock.calls[0][0];
 		expect(point.indexes).toEqual(['session']);
-		expect(point.blobs).toEqual(['created', 'NZ', 'claude_code', 'agent']);
+		expect(point.blobs).toEqual(['created', 'NZ', 'claude_code', 'agent', 'unknown']);
 	});
 
 	it('no-ops gracefully when dataset is undefined', () => {
