@@ -40,6 +40,7 @@ export {
 
 export { sanitizeDomain, sanitizeInput, validateDomain } from './lib/sanitize';
 export { SERVER_VERSION } from './lib/server-version';
+export { TOOLS, TOOL_SCHEMA_MAP, type McpTool, type ToolGroup, type ToolTier } from './schemas/tool-definitions';
 
 export { checkBimi } from './tools/check-bimi';
 export { checkCaa } from './tools/check-caa';
