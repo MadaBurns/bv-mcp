@@ -35,11 +35,18 @@ export { ACTIVE_SESSIONS, resetSessions, SESSION_REFRESH_INTERVAL_MS, SESSION_TT
 const SESSION_TTL_SECONDS = Math.ceil(SESSION_TTL_MS / 1000);
 
 const SESSION_KEY_PREFIX = 'session:';
+const SESSION_TOMBSTONE_KEY_PREFIX = 'session-tombstone:';
+/** KV tombstone TTL matches the in-memory TOMBSTONE_TTL_MS (10 min) */
+const SESSION_TOMBSTONE_TTL_SECONDS = 600;
 const SESSION_CREATE_RATE_KEY_PREFIX = 'rl:session-create';
 
 /** Cleanup cadence for lazy background pruning (5 minutes) */
 function sessionKey(id: string): string {
 	return `${SESSION_KEY_PREFIX}${id}`;
+}
+
+function tombstoneKey(id: string): string {
+	return `${SESSION_TOMBSTONE_KEY_PREFIX}${id}`;
 }
 
 export async function checkSessionCreateRateLimit(
@@ -155,8 +162,17 @@ export async function createSession(kv?: KVNamespace): Promise<string> {
  */
 export async function reviveSession(id: string, kv?: KVNamespace): Promise<boolean> {
 	if (!isValidSessionIdFormat(id)) return false;
-	// Don't revive explicitly-terminated sessions (DELETE /mcp) — only idle-expired ones
+	// Don't revive explicitly-terminated sessions (DELETE /mcp) — only idle-expired ones.
+	// Check in-memory tombstone first (same-isolate fast path), then KV (cross-isolate).
 	if (isSessionTombstoned(id)) return false;
+	if (kv) {
+		try {
+			const kvTombstone = await kv.get(tombstoneKey(id));
+			if (kvTombstone !== null) return false;
+		} catch {
+			// KV unavailable — fall through; in-memory tombstone is still checked above
+		}
+	}
 
 	const now = Date.now();
 	const record: SessionRecord = { createdAt: now, lastAccessedAt: now };
@@ -248,9 +264,10 @@ export async function deleteSession(id: string, kv?: KVNamespace): Promise<boole
 
 	if (kv) {
 		try {
-			// Delete directly without reading first — the session was already validated
-			// before reaching this point, so the KV read is unnecessary
+			// Delete the session and write a short-lived KV tombstone to prevent
+			// cross-isolate revival after an explicit DELETE /mcp.
 			await kv.delete(sessionKey(id));
+			await kv.put(tombstoneKey(id), '1', { expirationTtl: SESSION_TOMBSTONE_TTL_SECONDS });
 			return true;
 		} catch {
 			logError('[session] KV delete failed', { category: 'session' });
