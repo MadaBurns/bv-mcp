@@ -108,8 +108,8 @@ export async function checkSPF(
 
 	// Pre-fetch DMARC context once — reused by both ~all severity and trust surface analysis
 	const trustSurfaceContext = await getTrustSurfaceDmarcContext(domain, queryDNS, timeout);
-	const dmarcEnforcing =
-		trustSurfaceContext.dmarcPolicy === 'reject' || trustSurfaceContext.dmarcPolicy === 'quarantine';
+	const dmarcPolicyToken = trustSurfaceContext.dmarcPolicy?.split(';')[0].trim();
+	const dmarcEnforcing = dmarcPolicyToken === 'reject' || dmarcPolicyToken === 'quarantine';
 
 	if (spfRecords.length > 1) {
 		findings.push(

@@ -66,6 +66,15 @@ describe('checkSPF', () => {
 		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all) with DMARC enforcement' && f.severity === 'info')).toBe(true);
 	});
 
+	it('downgrades ~all to info when DMARC p=reject with pct parameter', async () => {
+		const queryDNS = createMockDNS({
+			'example.com': ['v=spf1 include:_spf.google.com ~all'],
+			'_dmarc.example.com': ['v=DMARC1; p=reject; pct=50'],
+		});
+		const result = await checkSPF('example.com', queryDNS);
+		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all) with DMARC enforcement' && f.severity === 'info')).toBe(true);
+	});
+
 	it('flags ~all as low when DMARC record is completely absent', async () => {
 		const queryDNS = createMockDNS({
 			'example.com': ['v=spf1 include:_spf.google.com ~all'],
