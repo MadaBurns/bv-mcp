@@ -57,6 +57,7 @@ export interface AnalyticsClient {
 	} & AnalyticsContext): void;
 	emitSessionEvent(event: {
 		action: 'created' | 'terminated' | 'revived';
+		method?: string;
 	} & AnalyticsContext): void;
 }
 
@@ -128,6 +129,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.country ?? 'unknown',
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
+					event.method ?? 'unknown',
 				],
 			});
 		},
