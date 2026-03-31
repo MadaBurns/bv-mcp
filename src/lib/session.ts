@@ -14,6 +14,7 @@ import {
 	checkSessionCreateRateLimitInMemory,
 	createSessionInMemory,
 	deleteSessionInMemory,
+	isSessionTombstoned,
 	resetSessions,
 	SESSION_CREATE_LIMIT_PER_MINUTE,
 	SESSION_CREATE_WINDOW_MS,
@@ -154,6 +155,8 @@ export async function createSession(kv?: KVNamespace): Promise<string> {
  */
 export async function reviveSession(id: string, kv?: KVNamespace): Promise<boolean> {
 	if (!isValidSessionIdFormat(id)) return false;
+	// Don't revive explicitly-terminated sessions (DELETE /mcp) — only idle-expired ones
+	if (isSessionTombstoned(id)) return false;
 
 	const now = Date.now();
 	const record: SessionRecord = { createdAt: now, lastAccessedAt: now };

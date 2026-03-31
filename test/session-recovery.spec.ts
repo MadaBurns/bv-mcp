@@ -32,15 +32,10 @@ async function initSession(): Promise<string> {
 	return sessionId;
 }
 
-/** Helper: delete a session to simulate expiry */
-async function deleteSession(sessionId: string): Promise<void> {
-	const delReq = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-		method: 'DELETE',
-		headers: { 'Mcp-Session-Id': sessionId },
-	});
-	const delCtx = createExecutionContext();
-	await worker.fetch(delReq, env, delCtx);
-	await waitOnExecutionContext(delCtx);
+/** Simulate idle expiry by removing the session from in-memory store directly.
+ *  Unlike DELETE /mcp, this does NOT create a tombstone — matching real idle expiry behavior. */
+function expireSession(sessionId: string): void {
+	ACTIVE_SESSIONS.delete(sessionId);
 }
 
 describe('Session expiration recovery', () => {
@@ -48,7 +43,7 @@ describe('Session expiration recovery', () => {
 		const sessionId = await initSession();
 
 		// Terminate the session to simulate expiry
-		await deleteSession(sessionId);
+		expireSession(sessionId);
 
 		// Confirm session is expired
 		expect(ACTIVE_SESSIONS.has(sessionId)).toBe(false);
@@ -83,7 +78,7 @@ describe('Session expiration recovery', () => {
 
 	it('does not return a new session ID header on recovery', async () => {
 		const sessionId = await initSession();
-		await deleteSession(sessionId);
+		expireSession(sessionId);
 
 		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 			method: 'POST',
@@ -111,7 +106,7 @@ describe('Session expiration recovery', () => {
 
 	it('subsequent requests with the same session ID succeed after recovery', async () => {
 		const sessionId = await initSession();
-		await deleteSession(sessionId);
+		expireSession(sessionId);
 
 		// First tools/call triggers recovery
 		const req1 = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
@@ -155,9 +150,9 @@ describe('Session expiration recovery', () => {
 		expect(body2.result).toBeDefined();
 	});
 
-	it('does not recover expired sessions for tools/list (only tools/call)', async () => {
+	it('recovers expired sessions for tools/list', async () => {
 		const sessionId = await initSession();
-		await deleteSession(sessionId);
+		expireSession(sessionId);
 
 		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 			method: 'POST',
@@ -176,8 +171,68 @@ describe('Session expiration recovery', () => {
 		const res = await worker.fetch(req, env, ctx);
 		await waitOnExecutionContext(ctx);
 
-		// tools/list should NOT trigger recovery — returns 404
-		expect(res.status).toBe(404);
+		// tools/list should trigger recovery — session revived
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { result?: { tools: unknown[] }; error?: unknown };
+		expect(body.error).toBeUndefined();
+		expect(body.result).toBeDefined();
+		expect(ACTIVE_SESSIONS.has(sessionId)).toBe(true);
+	});
+
+	it('recovers expired sessions for resources/list', async () => {
+		const sessionId = await initSession();
+		expireSession(sessionId);
+
+		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Mcp-Session-Id': sessionId,
+			},
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				id: 6,
+				method: 'resources/list',
+				params: {},
+			}),
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, env, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { result?: unknown; error?: unknown };
+		expect(body.error).toBeUndefined();
+		expect(body.result).toBeDefined();
+		expect(ACTIVE_SESSIONS.has(sessionId)).toBe(true);
+	});
+
+	it('recovers expired sessions for prompts/list', async () => {
+		const sessionId = await initSession();
+		expireSession(sessionId);
+
+		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Mcp-Session-Id': sessionId,
+			},
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				id: 7,
+				method: 'prompts/list',
+				params: {},
+			}),
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, env, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { result?: unknown; error?: unknown };
+		expect(body.error).toBeUndefined();
+		expect(body.result).toBeDefined();
+		expect(ACTIVE_SESSIONS.has(sessionId)).toBe(true);
 	});
 
 	it('rejects recovery for malformed session IDs', async () => {

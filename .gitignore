@@ -94,6 +94,12 @@ mcp-response.txt
 
 # Brand assets (copied from bv-web, not tracked)
 .brand/
+assets/
+
+# Client report scripts and generated reports — contain PII
+*report*.py
+*report*.pdf
+generate_*.py
 
 # Local deploy overrides (real KV IDs, custom domains)
 .dev/
