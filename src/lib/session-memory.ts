@@ -16,6 +16,11 @@ export interface SessionCreateRateResult {
 /** Active sessions keyed by session ID */
 export const ACTIVE_SESSIONS = new Map<string, SessionRecord>();
 
+/** Tombstones for explicitly-deleted sessions (prevents revival after DELETE).
+ *  Keyed by session ID → deletion timestamp. Short-lived (10 min TTL). */
+export const SESSION_TOMBSTONES = new Map<string, number>();
+const TOMBSTONE_TTL_MS = 10 * 60 * 1000;
+
 /** Session idle TTL (2 hours) — extended from 30min to accommodate Claude Desktop
  *  users who go idle between queries. mcp-remote does not auto-reinitialize on
  *  session expiry, so a short TTL causes persistent "session expired" 404 loops. */
@@ -147,11 +152,25 @@ export function validateSessionInMemory(id: string): boolean {
 }
 
 export function deleteSessionInMemory(id: string): boolean {
-	return ACTIVE_SESSIONS.delete(id);
+	const existed = ACTIVE_SESSIONS.delete(id);
+	if (existed) SESSION_TOMBSTONES.set(id, Date.now());
+	return existed;
+}
+
+/** Check whether a session was explicitly terminated (not just idle-expired). */
+export function isSessionTombstoned(id: string): boolean {
+	const deletedAt = SESSION_TOMBSTONES.get(id);
+	if (deletedAt === undefined) return false;
+	if (Date.now() - deletedAt > TOMBSTONE_TTL_MS) {
+		SESSION_TOMBSTONES.delete(id);
+		return false;
+	}
+	return true;
 }
 
 export function resetSessions(): void {
 	ACTIVE_SESSIONS.clear();
+	SESSION_TOMBSTONES.clear();
 	SESSION_CREATE_BY_IP.clear();
 	lastCleanupAt = 0;
 }

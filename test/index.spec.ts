@@ -5,6 +5,7 @@ import { resetQuotaCoordinatorState } from '../src/lib/quota-coordinator';
 import { resetAllRateLimits } from '../src/lib/rate-limiter';
 import { resetLegacySseState } from '../src/lib/legacy-sse';
 import { resetSessions } from '../src/lib/session';
+import { ACTIVE_SESSIONS } from '../src/lib/session-memory';
 
 const TEST_API_KEY = 'test-api-key';
 
@@ -1403,7 +1404,8 @@ describe('DNS Security MCP Server', () => {
 
 		it('auto-recovers expired sessions for tools/call by reviving the same session ID', async () => {
 			const sessionId = await initSession();
-			await terminateSession(sessionId);
+			// Simulate idle expiry (not DELETE) — remove from memory without tombstone
+			ACTIVE_SESSIONS.delete(sessionId);
 
 			const toolRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
