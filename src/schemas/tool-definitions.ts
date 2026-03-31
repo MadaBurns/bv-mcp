@@ -33,6 +33,13 @@ export interface McpTool {
 		required?: string[];
 		[key: string]: unknown;
 	};
+	annotations?: {
+		title?: string;
+		readOnlyHint?: boolean;
+		destructiveHint?: boolean;
+		idempotentHint?: boolean;
+		openWorldHint?: boolean;
+	};
 	/** Functional group for client-side tool discoverability. Not used in dispatch. */
 	group: ToolGroup;
 	/** Scoring tier from the three-tier model. Absent for non-scoring tools (meta/intelligence/remediation). */
@@ -47,6 +54,17 @@ interface ToolDef {
 	group: ToolGroup;
 	tier?: ToolTier;
 	scanIncluded: boolean;
+}
+
+/** DNS/security acronyms that should be uppercased in human-readable tool titles. */
+const KNOWN_ACRONYMS = new Set(['mx', 'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta', 'sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'http', 'https', 'dane', 'svcb', 'srv', 'txt', 'doh', 'rpm']);
+
+/** Convert a snake_case tool name to a human-readable title. e.g. "check_mta_sts" → "Check MTA STS" */
+function toolNameToTitle(name: string): string {
+	return name
+		.split('_')
+		.map((word) => (KNOWN_ACRONYMS.has(word) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)))
+		.join(' ');
 }
 
 /** Convert a Zod schema to a JSON Schema object suitable for MCP inputSchema. */
@@ -340,6 +358,13 @@ export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => (
 	name,
 	description: def.description,
 	inputSchema: toInputSchema(def.schema),
+	annotations: {
+		title: toolNameToTitle(name),
+		readOnlyHint: true,
+		destructiveHint: false,
+		idempotentHint: true,
+		openWorldHint: true,
+	},
 	group: def.group,
 	...(def.tier !== undefined && { tier: def.tier }),
 	scanIncluded: def.scanIncluded,
