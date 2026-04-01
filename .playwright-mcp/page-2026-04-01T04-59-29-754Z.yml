@@ -1,0 +1,345 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - banner [ref=e3]:
+      - generic [ref=e4]:
+        - link "Smithery Logo" [ref=e6] [cursor=pointer]:
+          - /url: /
+          - img "Smithery Logo" [ref=e7]
+        - generic [ref=e10]:
+          - img [ref=e12]
+          - combobox "Search MCPs..." [ref=e15]
+        - generic [ref=e16]:
+          - generic [ref=e17]:
+            - link "MCPs" [ref=e18] [cursor=pointer]:
+              - /url: /servers
+            - link "Skills" [ref=e19] [cursor=pointer]:
+              - /url: /skills
+            - link "Docs" [ref=e20] [cursor=pointer]:
+              - /url: /docs
+            - link "Pricing" [ref=e21] [cursor=pointer]:
+              - /url: /pricing
+            - button "Publish" [ref=e22] [cursor=pointer]:
+              - text: Publish
+              - img
+          - link "Login" [ref=e24] [cursor=pointer]:
+            - /url: /login?redirect=%2Fservers%2FMadaBurns%2Fbv-mcp
+    - main [ref=e26]:
+      - generic [ref=e28]:
+        - generic [ref=e30]:
+          - generic [ref=e32]:
+            - img "blackveil-dns" [ref=e33]
+            - generic [ref=e34]:
+              - heading "blackveil-dns" [level=1] [ref=e35]:
+                - generic [ref=e36]: blackveil-dns
+              - generic [ref=e37]:
+                - generic [ref=e38] [cursor=pointer]: MadaBurns/bv-mcp
+                - generic [ref=e39]: •
+                - generic [ref=e40]: last deployed 46 seconds ago
+          - generic [ref=e41]:
+            - generic [ref=e42]:
+              - img [ref=e43]
+              - generic [ref=e46]: 89/100
+            - generic [ref=e47]:
+              - img [ref=e48]
+              - generic [ref=e51]: Remote
+            - generic [ref=e52]:
+              - img [ref=e53]
+              - generic [ref=e55]: Quick Setup
+        - generic [ref=e56]:
+          - tablist [ref=e58]:
+            - link "Overview" [ref=e59] [cursor=pointer]:
+              - /url: /servers/MadaBurns/bv-mcp
+              - tab "Overview" [selected] [ref=e60]:
+                - generic [ref=e61]:
+                  - img [ref=e62]
+                  - generic [ref=e64]: Overview
+            - link "Performance" [ref=e65] [cursor=pointer]:
+              - /url: /servers/MadaBurns/bv-mcp#performance
+              - tab "Performance" [ref=e66]:
+                - generic [ref=e67]:
+                  - img [ref=e68]
+                  - generic [ref=e71]: Performance
+            - link "Usage" [ref=e72] [cursor=pointer]:
+              - /url: /servers/MadaBurns/bv-mcp#usage
+              - tab "Usage" [ref=e73]:
+                - generic [ref=e74]:
+                  - img [ref=e75]
+                  - generic [ref=e77]: Usage
+            - link "API" [ref=e78] [cursor=pointer]:
+              - /url: /servers/MadaBurns/bv-mcp#api
+              - tab "API" [ref=e79]:
+                - generic [ref=e80]:
+                  - img [ref=e81]
+                  - generic [ref=e84]: API
+          - generic [ref=e85]:
+            - main [ref=e87]:
+              - generic [ref=e88]:
+                - generic [ref=e89]:
+                  - generic [ref=e90]:
+                    - heading "About" [level=2] [ref=e91]:
+                      - img [ref=e92]
+                      - text: About
+                    - generic [ref=e95]:
+                      - paragraph [ref=e96]: BLACKVEIL DNS
+                      - paragraph [ref=e97]: Know where you stand.
+                      - paragraph [ref=e98]: Open-source DNS & email security scanner for Claude, Cursor, VS Code, and MCP clients across Streamable HTTP, stdio, and legacy HTTP+SSE.
+                  - generic [ref=e99]:
+                    - heading "Capabilities" [level=2] [ref=e100]:
+                      - img [ref=e101]
+                      - text: Capabilities
+                    - generic [ref=e103]:
+                      - tablist [ref=e105]:
+                        - link "Tools 41" [ref=e106] [cursor=pointer]:
+                          - /url: /servers/MadaBurns/bv-mcp?capability=tools
+                          - tab "Tools 41" [selected] [ref=e107]:
+                            - img [ref=e108]
+                            - generic [ref=e112]: Tools
+                            - generic [ref=e113]: "41"
+                        - link "Resources 6" [ref=e114] [cursor=pointer]:
+                          - /url: /servers/MadaBurns/bv-mcp?capability=resources
+                          - tab "Resources 6" [ref=e115]:
+                            - img [ref=e116]
+                            - generic [ref=e120]: Resources
+                            - generic [ref=e121]: "6"
+                        - link "Prompts 7" [ref=e122] [cursor=pointer]:
+                          - /url: /servers/MadaBurns/bv-mcp?capability=prompts
+                          - tab "Prompts 7" [ref=e123]:
+                            - img [ref=e124]
+                            - generic [ref=e126]: Prompts
+                            - generic [ref=e127]: "7"
+                      - tabpanel "Tools 41" [ref=e128]:
+                        - generic [ref=e129]:
+                          - group [ref=e131]:
+                            - generic "check_mx Validate MX records and email provider detection." [ref=e132] [cursor=pointer]:
+                              - generic [ref=e133]:
+                                - generic [ref=e135]: check_mx
+                                - img [ref=e136]
+                              - paragraph [ref=e138]: Validate MX records and email provider detection.
+                          - group [ref=e140]:
+                            - generic "check_spf Validate SPF syntax, policy, and trust surface." [ref=e141] [cursor=pointer]:
+                              - generic [ref=e142]:
+                                - generic [ref=e144]: check_spf
+                                - img [ref=e145]
+                              - paragraph [ref=e147]: Validate SPF syntax, policy, and trust surface.
+                          - group [ref=e149]:
+                            - generic "check_dmarc Validate DMARC policy, alignment, and reporting." [ref=e150] [cursor=pointer]:
+                              - generic [ref=e151]:
+                                - generic [ref=e153]: check_dmarc
+                                - img [ref=e154]
+                              - paragraph [ref=e156]: Validate DMARC policy, alignment, and reporting.
+                          - group [ref=e158]:
+                            - generic "check_dkim Probe DKIM selectors and validate key strength." [ref=e159] [cursor=pointer]:
+                              - generic [ref=e160]:
+                                - generic [ref=e162]: check_dkim
+                                - img [ref=e163]
+                              - paragraph [ref=e165]: Probe DKIM selectors and validate key strength.
+                          - group [ref=e167]:
+                            - generic "check_dnssec Verify DNSSEC validation and DNSKEY/DS records." [ref=e168] [cursor=pointer]:
+                              - generic [ref=e169]:
+                                - generic [ref=e171]: check_dnssec
+                                - img [ref=e172]
+                              - paragraph [ref=e174]: Verify DNSSEC validation and DNSKEY/DS records.
+                          - group [ref=e176]:
+                            - generic "check_ssl Verify SSL/TLS certificate and HTTPS config." [ref=e177] [cursor=pointer]:
+                              - generic [ref=e178]:
+                                - generic [ref=e180]: check_ssl
+                                - img [ref=e181]
+                              - paragraph [ref=e183]: Verify SSL/TLS certificate and HTTPS config.
+                          - group [ref=e185]:
+                            - generic "check_mta_sts Validate MTA-STS SMTP encryption policy." [ref=e186] [cursor=pointer]:
+                              - generic [ref=e187]:
+                                - generic [ref=e189]: check_mta_sts
+                                - img [ref=e190]
+                              - paragraph [ref=e192]: Validate MTA-STS SMTP encryption policy.
+                          - group [ref=e194]:
+                            - generic "check_ns Analyze NS delegation and provider diversity." [ref=e195] [cursor=pointer]:
+                              - generic [ref=e196]:
+                                - generic [ref=e198]: check_ns
+                                - img [ref=e199]
+                              - paragraph [ref=e201]: Analyze NS delegation and provider diversity.
+                          - group [ref=e203]:
+                            - generic "check_caa Check authorized Certificate Authorities via CAA." [ref=e204] [cursor=pointer]:
+                              - generic [ref=e205]:
+                                - generic [ref=e207]: check_caa
+                                - img [ref=e208]
+                              - paragraph [ref=e210]: Check authorized Certificate Authorities via CAA.
+                          - group [ref=e212]:
+                            - generic "check_bimi Validate BIMI record and VMC evidence." [ref=e213] [cursor=pointer]:
+                              - generic [ref=e214]:
+                                - generic [ref=e216]: check_bimi
+                                - img [ref=e217]
+                              - paragraph [ref=e219]: Validate BIMI record and VMC evidence.
+                          - group [ref=e220]:
+                            - generic "Show 31 more..." [ref=e221] [cursor=pointer]
+                - complementary [ref=e222]:
+                  - generic [ref=e223]:
+                    - heading "Connect" [level=2] [ref=e225]:
+                      - img [ref=e226]
+                      - text: Connect
+                    - generic [ref=e231]:
+                      - generic [ref=e232]:
+                        - generic [ref=e235]:
+                          - heading "Get connection URL" [level=4] [ref=e236]
+                          - img [ref=e237]
+                        - button "https://bv-mcp--madaburns.run.tools" [ref=e240] [cursor=pointer]:
+                          - generic [ref=e242]:
+                            - img [ref=e243]
+                            - text: https://bv-mcp--madaburns.run.tools
+                          - img [ref=e247]
+                      - generic [ref=e250]:
+                        - heading "Or connect your agent" [level=4] [ref=e253]
+                        - generic [ref=e256]:
+                          - tablist [ref=e257]:
+                            - tab "Agents" [selected] [ref=e258] [cursor=pointer]
+                            - tab "Humans" [ref=e259] [cursor=pointer]
+                          - tabpanel "Agents" [ref=e260]:
+                            - generic [ref=e261]:
+                              - generic [ref=e262]:
+                                - generic [ref=e263]:
+                                  - heading "Connection Prompt" [level=3] [ref=e264]:
+                                    - img [ref=e265]
+                                    - text: Connection Prompt
+                                  - paragraph [ref=e269]: Send this prompt to your agent
+                                - button "Copy" [ref=e270] [cursor=pointer]:
+                                  - img [ref=e271]
+                                  - generic [ref=e274]: Copy
+                              - paragraph [ref=e275]:
+                                - text: “curl https://smithery.ai/skill.md and connect to MadaBurns/bv-mcp using
+                                - code [ref=e276]: smithery mcp add MadaBurns/bv-mcp
+                                - text: ”
+                        - paragraph [ref=e277]:
+                          - text: Building a client or agent?
+                          - link "View developer docs" [ref=e278] [cursor=pointer]:
+                            - /url: /docs/use/connect
+                        - generic [ref=e279]:
+                          - generic [ref=e281]:
+                            - generic [ref=e282]: Published
+                            - generic [ref=e284]:
+                              - img [ref=e285]
+                              - text: Mar 19, 2026
+                          - generic [ref=e289]:
+                            - generic [ref=e290]: Homepage
+                            - link "blackveilsecurity.com/dns" [ref=e292] [cursor=pointer]:
+                              - /url: https://blackveilsecurity.com/dns
+                              - img [ref=e293]
+                              - generic [ref=e297]: blackveilsecurity.com/dns
+            - generic [ref=e301]:
+              - heading "Performance" [level=2] [ref=e302]:
+                - img [ref=e303]
+                - text: Performance
+              - img [ref=e402]
+            - heading "Usage" [level=2] [ref=e407]:
+              - img [ref=e408]
+              - text: Usage
+            - generic [ref=e498]:
+              - heading "API" [level=2] [ref=e499]:
+                - img [ref=e500]
+                - text: API
+              - generic [ref=e504]:
+                - generic [ref=e505]:
+                  - generic [ref=e506]:
+                    - paragraph [ref=e507]:
+                      - text: Use
+                      - link "Smithery Connect" [ref=e508] [cursor=pointer]:
+                        - /url: /docs/use/connect
+                      - text: to integrate this server into your application. Create a connection, then use the MCP SDK or AI SDK to call tools — OAuth, token refresh, and session management are handled for you.
+                    - generic [ref=e509]:
+                      - link "Create API key" [ref=e510] [cursor=pointer]:
+                        - /url: /account/api-keys
+                        - img [ref=e511]
+                        - text: Create API key
+                      - link "Manage Connections" [ref=e515] [cursor=pointer]:
+                        - /url: /account/connections
+                        - img [ref=e516]
+                        - text: Manage Connections
+                  - generic [ref=e522]:
+                    - heading "Configuration for MadaBurns/bv-mcp" [level=3] [ref=e523]
+                    - button "Optional parameters" [ref=e525] [cursor=pointer]:
+                      - img [ref=e526]
+                      - text: Optional parameters
+                - generic [ref=e528]:
+                  - generic [ref=e529]:
+                    - button "CLI" [ref=e530] [cursor=pointer]:
+                      - img [ref=e531]
+                      - text: CLI
+                    - button "AI SDK" [ref=e533] [cursor=pointer]:
+                      - img [ref=e534]
+                      - text: AI SDK
+                    - button "TypeScript" [ref=e536] [cursor=pointer]:
+                      - img [ref=e537]
+                      - text: TypeScript
+                  - generic [ref=e539]:
+                    - generic [ref=e540]:
+                      - paragraph [ref=e541]: 1. Install Smithery CLI
+                      - button "npm install -g @smithery/cli@latest" [ref=e542] [cursor=pointer]:
+                        - code [ref=e546]:
+                          - generic [ref=e547]: npm install -g @smithery/cli@latest
+                        - img [ref=e549]
+                    - generic [ref=e552]:
+                      - paragraph [ref=e553]: 2. Create a namespace
+                      - 'button "smithery namespace create {your-namespace}" [ref=e554] [cursor=pointer]':
+                        - code [ref=e558]:
+                          - generic [ref=e559]: "smithery namespace create {your-namespace}"
+                        - img [ref=e561]
+                    - generic [ref=e564]:
+                      - paragraph [ref=e565]: 3. Use this server
+                      - generic [ref=e566]:
+                        - button "Copy" [ref=e568] [cursor=pointer]:
+                          - img [ref=e569]
+                        - code [ref=e575]:
+                          - generic [ref=e576]: "# Add this server"
+                          - generic [ref=e577]: smithery mcp add MadaBurns/bv-mcp
+                          - generic [ref=e578]: "# List available tools"
+                          - generic [ref=e579]: "smithery tool list {connection}"
+                          - generic [ref=e580]: "# Call a tool"
+                          - generic [ref=e581]: "smithery tool call {connection} {tool_name} '{\"key\": \"value\"}'"
+    - contentinfo [ref=e582]:
+      - generic [ref=e583]:
+        - generic [ref=e584]:
+          - generic [ref=e585]:
+            - link "Smithery Logo" [ref=e586] [cursor=pointer]:
+              - /url: /
+              - img "Smithery Logo" [ref=e587]
+            - paragraph [ref=e588]: Accelerating the Agent Economy
+          - generic [ref=e589]:
+            - heading "Resources" [level=3] [ref=e590]
+            - generic [ref=e591]:
+              - link "Documentation" [ref=e592] [cursor=pointer]:
+                - /url: /docs
+              - link "Privacy Policy" [ref=e593] [cursor=pointer]:
+                - /url: /privacy
+              - link "System Status" [ref=e594] [cursor=pointer]:
+                - /url: https://status.smithery.ai
+          - generic [ref=e595]:
+            - heading "Company" [level=3] [ref=e596]
+            - generic [ref=e597]:
+              - link "Pricing" [ref=e598] [cursor=pointer]:
+                - /url: /pricing
+              - link "About" [ref=e599] [cursor=pointer]:
+                - /url: /about
+              - link "Blog" [ref=e600] [cursor=pointer]:
+                - /url: /blog
+          - generic [ref=e601]:
+            - heading "Connect" [level=3] [ref=e602]
+            - generic [ref=e603]:
+              - link "X" [ref=e604] [cursor=pointer]:
+                - /url: https://x.com/SmitheryDotAi
+                - img [ref=e605]
+              - link "GitHub Organization" [ref=e607] [cursor=pointer]:
+                - /url: https://github.com/smithery-ai
+                - img [ref=e608]
+              - link "Discord server" [ref=e610] [cursor=pointer]:
+                - /url: https://discord.gg/sKd9uycgH9
+                - img [ref=e611]
+        - generic [ref=e614]:
+          - paragraph [ref=e615]: © 2026 Smithery. All rights reserved.
+          - group "Theme selector" [ref=e617]:
+            - radio "Light theme" [ref=e618] [cursor=pointer]:
+              - img [ref=e619]
+            - radio "System theme" [checked] [ref=e625] [cursor=pointer]:
+              - img [ref=e626]
+            - radio "Dark theme" [ref=e628] [cursor=pointer]:
+              - img [ref=e629]
+    - region "Notifications (F8)":
+      - list
+  - alert [ref=e631]

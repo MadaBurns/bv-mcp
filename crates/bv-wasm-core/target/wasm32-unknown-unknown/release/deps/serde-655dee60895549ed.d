@@ -1,0 +1,14 @@
+/Applications/Github/bv-mcp/crates/bv-wasm-core/target/wasm32-unknown-unknown/release/deps/serde-655dee60895549ed.d: /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Applications/Github/bv-mcp/crates/bv-wasm-core/target/wasm32-unknown-unknown/release/build/serde-647b9778d35e2c03/out/private.rs
+
+/Applications/Github/bv-mcp/crates/bv-wasm-core/target/wasm32-unknown-unknown/release/deps/libserde-655dee60895549ed.rlib: /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Applications/Github/bv-mcp/crates/bv-wasm-core/target/wasm32-unknown-unknown/release/build/serde-647b9778d35e2c03/out/private.rs
+
+/Applications/Github/bv-mcp/crates/bv-wasm-core/target/wasm32-unknown-unknown/release/deps/libserde-655dee60895549ed.rmeta: /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Applications/Github/bv-mcp/crates/bv-wasm-core/target/wasm32-unknown-unknown/release/build/serde-647b9778d35e2c03/out/private.rs
+
+/Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/adam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Applications/Github/bv-mcp/crates/bv-wasm-core/target/wasm32-unknown-unknown/release/build/serde-647b9778d35e2c03/out/private.rs:
+
+# env-dep:OUT_DIR=/Applications/Github/bv-mcp/crates/bv-wasm-core/target/wasm32-unknown-unknown/release/build/serde-647b9778d35e2c03/out

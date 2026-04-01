@@ -10,6 +10,8 @@ Library install:
 npm install blackveil-dns
 ```
 
+The package exports `scanDomain`, `explainFinding`, and reusable check functions. It also exports `McpTool`, `TOOLS`, and `TOOL_SCHEMA_MAP` for consumers who need access to the tool definitions and schemas at build time.
+
 ## Endpoint
 
 Default hosted Streamable HTTP endpoint:
@@ -318,24 +320,34 @@ Important: raw JSON-RPC `tools/call` still requires `params.name` to be a tool i
 
 ## Authentication
 
-Authenticated requests bypass all rate limits. Send the API key as a bearer token:
+Authenticated requests bypass all rate limits. You can send the API key as a bearer token or a query parameter:
 
-```
-Authorization: Bearer <YOUR_API_KEY>
-```
+- **Bearer Token**: `Authorization: Bearer <YOUR_API_KEY>`
+- **Query Parameter**: `?api_key=<YOUR_API_KEY>`
 
-How to configure this depends on your client — see the **With API key** sections above for per-client examples.
+The query parameter method is the simplest for clients that only support URL configuration (like Claude Code, Smithery, or simple HTTP connectors).
 
-**Important:** Claude Code's native HTTP transport does not forward custom `headers` from config files. Use the `mcp-remote` bridge approach shown in the Claude Code section above.
+**Important:** Claude Code and some other clients' native HTTP transport do not forward custom `headers` from config files. Use the `?api_key=` query parameter or the `mcp-remote` bridge approach shown in the per-client sections.
 
-| Client | Auth method | Notes |
-|--------|-------------|-------|
-| VS Code / Copilot | `headers` field + `inputs` | Supports secret prompt for key |
-| Claude Code | `mcp-remote --header` | Native HTTP `headers` not forwarded |
-| Claude Desktop | `mcp-remote --header` | Custom connector does not support headers |
+| Client | Recommended Auth Method | Notes |
+|--------|-------------------------|-------|
+| Claude Code | `?api_key=` in URL | Simple and native |
+| Smithery | `?api_key=` in URL | Native integration |
+| VS Code / Copilot | `headers` field | Supports secret prompt |
 | Cursor | `headers` field | Direct header support |
 | Windsurf | `headers` field | Direct header support |
+| Claude Desktop | `mcp-remote --header` | Hosted connector (free) or bridge |
 | curl / scripts | `-H "Authorization: Bearer ..."` | Standard HTTP header |
+
+### Troubleshooting Client-Specific Behavior
+
+If you are a developer troubleshooting how different MCP clients handle authentication, session lifecycles, or message formats, use the included chaos test:
+
+```bash
+python3 chaos-test-clients.py
+```
+
+This test covers all 9 detected MCP client types and 56 assertions across session management, auth precedence, and transport-specific edge cases.
 
 ## Provider Detection Configuration
 
