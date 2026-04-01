@@ -16,9 +16,9 @@
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-// @ts-ignore
+// @ts-expect-error WASM module import for Cloudflare Workers
 import wasm from '../crates/bv-wasm-core/pkg/bv_wasm_core_bg.wasm';
-// @ts-ignore
+// @ts-expect-error WASM module import for Cloudflare Workers
 import * as bv_wasm from '../crates/bv-wasm-core/pkg/bv_wasm_core.js';
 
 // Initialize the Wasm module

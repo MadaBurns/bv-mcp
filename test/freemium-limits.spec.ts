@@ -1,13 +1,14 @@
-import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
+import { env, createExecutionContext, _waitOnExecutionContext } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
 import worker from '../src';
+import type { Env } from '../src/types/env';
 import { resetSessions } from '../src/lib/session';
 import { resetAllRateLimits, resetGlobalDailyLimit } from '../src/lib/rate-limiter';
 
 describe('Freemium Model - Limits and Tiers', () => {
 	const TEST_API_KEY = 'test-api-key';
 	const IP_ANON = '1.1.1.1';
-	const IP_AUTH = '2.2.2.2';
+	const _IP_AUTH = '2.2.2.2';
 
 	beforeEach(async () => {
 		resetSessions();
@@ -60,7 +61,7 @@ describe('Freemium Model - Limits and Tiers', () => {
 	it('applies higher tier limits to authenticated users', async () => {
 		// Mock BV_API_KEY as an 'owner' or 'partner' would require more setup,
 		// but by default BV_API_KEY maps to 'owner' (Infinity) or 'partner' (100k).
-		const authEnv = { ...env, BV_API_KEY: TEST_API_KEY };
+		const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
 
 		const initReq = new Request('http://example.com/mcp', {
 			method: 'POST',
@@ -75,7 +76,7 @@ describe('Freemium Model - Limits and Tiers', () => {
 				params: {} 
 			}),
 		});
-		const initRes = await worker.fetch(initReq, authEnv as any, createExecutionContext());
+		const initRes = await worker.fetch(initReq, authEnv as Env, createExecutionContext());
 		const sessionId = initRes.headers.get('mcp-session-id');
 
 		const toolReq = new Request('http://example.com/mcp', {
@@ -92,7 +93,7 @@ describe('Freemium Model - Limits and Tiers', () => {
 				params: { name: 'scan_domain', arguments: { domain: 'google.com' } } 
 			}),
 		});
-		const toolRes = await worker.fetch(toolReq, authEnv as any, createExecutionContext());
+		const toolRes = await worker.fetch(toolReq, authEnv as Env, createExecutionContext());
 		
 		// Authenticated tier (default BV_API_KEY is 'owner' in this test setup)
 		expect(toolRes.headers.get('x-quota-tier')).toBe('owner');

@@ -113,6 +113,16 @@ async function readSessionKVRecord(id: string, kv: KVNamespace): Promise<Session
 	return parsed.data;
 }
 
+/** Check if a session ID has been explicitly tombstoned (deleted) in KV */
+async function isSessionTombstonedInKV(id: string, kv: KVNamespace): Promise<boolean> {
+	try {
+		const tombstone = await kv.get(tombstoneKey(id));
+		return tombstone !== null;
+	} catch {
+		return false;
+	}
+}
+
 /** Validate that a session ID matches the expected format (64 lowercase hex chars) */
 export function isValidSessionIdFormat(id: string): boolean {
 	return SessionIdSchema.safeParse(id).success;
@@ -194,6 +204,10 @@ export async function reviveSession(id: string, kv?: KVNamespace): Promise<boole
 export async function validateSession(id: string, kv?: KVNamespace): Promise<boolean> {
 	// Reject malformed session IDs before any storage lookup
 	if (!isValidSessionIdFormat(id)) return false;
+
+	// Check for explicit tombstone (session was deleted) — prevents revival after DELETE
+	if (isSessionTombstoned(id)) return false;
+	if (kv && await isSessionTombstonedInKV(id, kv)) return false;
 
 	// Check in-memory first (same-isolate fast path, avoids KV replication lag)
 	const inMemoryRecord = ACTIVE_SESSIONS.get(id);
