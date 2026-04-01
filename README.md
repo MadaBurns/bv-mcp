@@ -9,7 +9,7 @@ Open-source DNS & email security scanner for Claude, Cursor, VS Code, and MCP cl
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
-[![Tests](https://img.shields.io/badge/Tests-1914-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![Tests](https://img.shields.io/badge/Tests-1932-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![Coverage](https://img.shields.io/badge/Coverage-~90%25-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![BUSL-1.1 License](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
@@ -62,8 +62,6 @@ Transport support:
 - `Native stdio`: `blackveil-dns-mcp` CLI from the `blackveil-dns` npm package
 - `Legacy HTTP+SSE`: `GET /mcp/sse` bootstrap stream plus `POST /mcp/messages?sessionId=...`
 
-<!-- TODO: Add terminal demo GIF here -->
-
 ---
 
 ## What you get
@@ -71,45 +69,12 @@ Transport support:
 - **57+ checks across 20 categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, lookalike domains, HTTP security headers, DANE, shadow domains, TXT hygiene, MX reputation, SRV, zone hygiene
 - **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with score-based capping to prevent inflated labels
 - **Trust surface analysis** — detects shared SaaS platforms (Google, M365, SendGrid) and cross-references DMARC enforcement to determine real exposure
-- **Guided remediation** — `generate_fix_plan` produces provider-aware prioritized actions with exact console steps for Google Workspace, Microsoft 365, Cloudflare, AWS, and 9 other providers; record generators output ready-to-publish SPF, DMARC, DKIM, and MTA-STS records; `generate_rollout_plan` creates phased DMARC enforcement timelines; `validate_fix` confirms whether a fix was applied successfully
-- **Supply chain mapping** — `map_supply_chain` correlates SPF, NS, TXT verifications (39 SaaS patterns), SRV services, and CAA to build a full third-party dependency graph with trust levels and risk signals (stale integrations, shadow services, security tooling exposure)
-- **SPF chain analysis** — `resolve_spf_chain` recursively resolves the full SPF include tree, counts DNS lookups against the RFC 7208 10-lookup limit, and detects circular includes, void lookups, and redundant paths
-- **CT log subdomain discovery** — `discover_subdomains` reveals shadow IT, forgotten services, and unauthorized certificates via Certificate Transparency logs using a cached certstream service binding
-- **Compliance mapping** — `map_compliance` maps scan findings to NIST 800-177, PCI DSS 4.0, SOC 2, and CIS Controls with pass/fail/partial status per control
-- **Attack path simulation** — `simulate_attack_paths` enumerates 9 specific attack paths (email spoofing, subdomain takeover, DNS hijack, TLS stripping, XSS, etc.) with severity, feasibility, steps, and mitigations
-- **Drift analysis** — `analyze_drift` compares current posture against a previous baseline and classifies changes as improving, stable, regressing, or mixed
-- **Spoofability scoring** — `assess_spoofability` computes a composite 0-100 email spoofability score from SPF trust surface, DMARC enforcement, and DKIM coverage with interaction multipliers
-- **Intelligence layer** — `get_benchmark` and `get_provider_insights` expose anonymized aggregate insights from scan telemetry: percentile rankings, provider cohort comparisons, and 7-day trend analysis
-- **Multi-resolver consistency** — `check_resolver_consistency` queries 4 public DoH resolvers to detect GeoDNS, split-horizon DNS, or poisoning
-- **Interaction scoring** — correlated weaknesses (e.g., weak DKIM + permissive DMARC) receive additional penalties beyond individual finding scores
-- **Self-tuning scoring** — adaptive weights adjust category importance based on patterns seen across scans, so scores reflect real-world failure distributions rather than static assumptions
-- **Provider intelligence** — inbound/outbound email provider inference from MX, SPF, DKIM
-- **Context-optimized** — tool schemas, prompts, and resources are tuned for minimal token consumption in LLM clients
+- **Guided remediation** — `generate_fix_plan` produces provider-aware prioritized actions; record generators output ready-to-publish records; `validate_fix` confirms whether a fix was applied successfully
+- **Supply chain mapping** — `map_supply_chain` correlates DNS signals to build a full third-party dependency graph with trust levels and risk signals
+- **Attack path simulation** — `simulate_attack_paths` enumerates specific paths (spoofing, takeover, hijack) with severity, steps, and mitigations
+- **Compliance mapping** — `map_compliance` maps scan findings to NIST 800-177, PCI DSS 4.0, SOC 2, and CIS Controls
+- **Self-tuning scoring** — adaptive weights adjust category importance based on patterns seen across scans via Durable Object telemetry
 - **Passive and read-only** — all checks use public Cloudflare DNS-over-HTTPS; no authorization required from the target
-
-Full scope and limitations in the coverage table below.
-
-```
-  scan_domain("anthropic.com")
-
-  ████████████████████████████████████████░░░░░  85 / 100
-  Grade: A  ·  Maturity: Enforcing
-
-  SPF ·········· 80     MTA-STS ····· 85
-  DMARC ········ 90     NS ·········· 95
-  DKIM ········· 85     CAA ········· 85
-  DNSSEC ······· 35     BIMI ········ 95
-  SSL ········· 100     TLS-RPT ····· 95
-  MX ·········· 100
-
-  2 high · 4 medium · 5 low · 5 info
-```
-
-<div align="center">
-
-**[Scan your domain now &rarr; blackveilsecurity.com](https://blackveilsecurity.com)**
-
-</div>
 
 ---
 
@@ -141,456 +106,22 @@ Full scope and limitations in the coverage table below.
   + check_subdomain_takeover (internal — runs inside scan_domain)
 ```
 
-`explain_finding` takes any finding and returns: what it means, potential impact, adverse consequences, specific steps to fix, and relevant RFCs.
+---
 
-`generate_fix_plan` scans a domain and produces a provider-aware prioritized remediation plan with effort, impact, dependency ordering, and exact console steps for 13 providers (Google Workspace, M365, Cloudflare, AWS, etc.). The record generators (`generate_spf_record`, `generate_dmarc_record`, `generate_dkim_config`, `generate_mta_sts_policy`) produce ready-to-publish DNS records. `generate_rollout_plan` creates phased DMARC enforcement timelines (aggressive/standard/conservative). `validate_fix` re-checks a specific control after remediation and returns a fixed/partial/not_fixed verdict.
+## Quality & Reliability
 
-`map_supply_chain` correlates SPF includes, NS delegates, TXT verifications (39 SaaS patterns), SRV services, and CAA issuers into a unified dependency graph with trust levels (critical/high/medium/low) and risk signals (stale integrations, shadow services, insecure protocols, security tooling exposure).
+The server is continuously validated using a **comprehensive chaos test suite** (ported from `claude-code-py`) that covers all 9 detected MCP client types:
 
-`resolve_spf_chain` recursively resolves the full SPF include chain and renders a tree visualization with DNS lookup counting against the RFC 7208 10-lookup limit. Detects circular includes, void lookups, and redundant paths.
+- **Interactive clients**: `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf` (auto-format: `compact`)
+- **Non-interactive clients**: `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `unknown` (auto-format: `full`)
 
-`discover_subdomains` queries Certificate Transparency logs to reveal shadow IT, forgotten services, and unauthorized certificates. Uses a cached certstream service binding for instant results with crt.sh fallback.
+The test suite ensures session stability, authentication precedence, and transport-specific edge cases across Streamable HTTP and Legacy SSE.
 
-`map_compliance` maps scan findings to four compliance frameworks — NIST 800-177, PCI DSS 4.0, SOC 2 Trust Services Criteria, and CIS Controls v8 — showing pass/fail/partial status per control with related findings.
-
-`simulate_attack_paths` analyzes DNS posture and enumerates 9 specific attack paths (email spoofing, subdomain takeover, DNS hijack, TLS stripping, XSS, clickjacking, cert misissuance, DKIM key compromise) with severity, feasibility, steps, and mitigations.
-
-`analyze_drift` compares current security posture against a previous baseline (caller-supplied JSON or cached scan) and classifies drift as improving, stable, regressing, or mixed with per-category deltas.
-
-`get_benchmark` and `get_provider_insights` expose anonymized aggregate data from scan telemetry — percentile rankings, provider cohort scores, and 7-day trend analysis. `assess_spoofability` computes a composite email spoofability score (0-100) from SPF, DMARC, and DKIM with interaction multipliers.
-
-`check_resolver_consistency` queries Cloudflare, Google, Quad9, and OpenDNS in parallel to detect GeoDNS, split-horizon DNS, or potential poisoning.
-
-**Confidence labels:**
-`deterministic` — direct protocol/record validation | `heuristic` — signal-based inference, may need manual validation | `verified` — high-confidence validation signal
-
-**Subdomain takeover verification:**
-`potential` — DNS signal, requires proof-of-control | `verified` — deprovisioning fingerprint detected | `not_exploitable` — no takeover signal
+Run the chaos tests locally: `python3 chaos-test-clients.py`
 
 ---
 
-## Client setup
-
-The free tier requires no authentication. If you have an API key, see the **With API key** tabs below to bypass rate limits.
-
-<details>
-<summary><b>VS Code / Copilot</b></summary>
-
-`.vscode/mcp.json`
-
-```json
-{
-  "servers": {
-    "blackveil-dns": {
-      "type": "http",
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
-    }
-  }
-}
-```
-
-**With API key:**
-
-```json
-{
-  "servers": {
-    "blackveil-dns": {
-      "type": "http",
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp",
-      "headers": {
-        "Authorization": "Bearer ${input:bv-api-key}"
-      }
-    }
-  },
-  "inputs": [
-    {
-      "id": "bv-api-key",
-      "type": "promptString",
-      "description": "Blackveil DNS API key",
-      "password": true
-    }
-  ]
-}
-```
-</details>
-
-<details>
-<summary><b>Claude Code</b></summary>
-
-`.mcp.json`
-
-```json
-{
-  "mcpServers": {
-    "blackveil-dns": {
-      "type": "http",
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
-    }
-  }
-}
-```
-
-Or via CLI:
-
-```bash
-claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.com/mcp
-```
-
-**With API key** — use the `api_key` query parameter with native HTTP:
-
-```json
-{
-  "mcpServers": {
-    "blackveil-dns": {
-      "type": "http",
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp?api_key=YOUR_API_KEY"
-    }
-  }
-}
-```
-
-Or via CLI:
-
-```bash
-claude mcp add --transport http blackveil-dns "https://dns-mcp.blackveilsecurity.com/mcp?api_key=YOUR_API_KEY"
-```
-
-Alternatively, use `mcp-remote` to forward the `Authorization` header (e.g. if you want the key in a variable, not the URL):
-
-```json
-{
-  "mcpServers": {
-    "blackveil-dns": {
-      "command": "npx",
-      "args": [
-        "mcp-remote",
-        "https://dns-mcp.blackveilsecurity.com/mcp",
-        "--header",
-        "Authorization: Bearer YOUR_API_KEY"
-      ]
-    }
-  }
-}
-```
-
-> **Note:** Claude Code's native HTTP transport does not forward custom `headers` from config files. Use the `?api_key=` query parameter (above) or `mcp-remote` as a bridge.
-</details>
-
-<details>
-<summary><b>Claude Desktop</b></summary>
-
-**Recommended:** Open [claude.ai](https://claude.ai) → **Settings → Connectors → Add custom connector** → paste `https://dns-mcp.blackveilsecurity.com/mcp`.
-
-**With API key** — open **Settings → Developer → Edit Config** (`claude_desktop_config.json`) and add:
-
-```json
-{
-  "mcpServers": {
-    "blackveil-dns": {
-      "command": "npx",
-      "args": [
-        "mcp-remote",
-        "https://dns-mcp.blackveilsecurity.com/mcp",
-        "--header",
-        "Authorization: Bearer YOUR_API_KEY"
-      ]
-    }
-  }
-}
-```
-
-**Without API key (local stdio):** If you want first-party local stdio instead of the hosted HTTP connector:
-
-```json
-{
-  "mcpServers": {
-    "blackveil-dns": {
-      "type": "stdio",
-      "command": "/opt/homebrew/bin/npx",
-      "args": ["-y", "--package", "blackveil-dns", "blackveil-dns-mcp"]
-    }
-  }
-}
-```
-
-> On macOS GUI apps, `npx` may not resolve from `PATH`; if Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path. After editing the config, fully restart Claude Desktop. If you already have other servers, merge `"blackveil-dns"` into your existing `"mcpServers"` object — don't paste a second `{ }` wrapper.
-
-If you operate this Worker with bearer auth enabled, also register the same value as the production Worker secret:
-
-```bash
-npx wrangler versions secret put BV_API_KEY -c .dev/wrangler.deploy.jsonc
-npx wrangler versions deploy -c .dev/wrangler.deploy.jsonc --yes
-```
-
-</details>
-
-<details>
-<summary><b>Cursor</b></summary>
-
-`.cursor/mcp.json`
-
-```json
-{
-  "mcpServers": {
-    "blackveil-dns": {
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
-    }
-  }
-}
-```
-
-**With API key:**
-
-```json
-{
-  "mcpServers": {
-    "blackveil-dns": {
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_API_KEY"
-      }
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary><b>Windsurf</b></summary>
-
-`~/.codeium/windsurf/mcp_config.json`
-
-```json
-{
-  "mcpServers": {
-    "blackveil-dns": {
-      "serverUrl": "https://dns-mcp.blackveilsecurity.com/mcp"
-    }
-  }
-}
-```
-
-**With API key:**
-
-```json
-{
-  "mcpServers": {
-    "blackveil-dns": {
-      "serverUrl": "https://dns-mcp.blackveilsecurity.com/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_API_KEY"
-      }
-    }
-  }
-}
-```
-</details>
-
-For hosted MCP setup, stdio usage, and legacy fallback endpoints, see `docs/client-setup.md`.
-
----
-
-## CI/CD
-
-Enforce DNS security grades in your pipeline with the [Blackveil DNS GitHub Action](https://github.com/MadaBurns/blackveil-dns-action):
-
-```yaml
-- uses: MadaBurns/blackveil-dns-action@v1
-  with:
-    domain: example.com
-    minimum-grade: B
-    profile: auto          # or: mail_enabled, enterprise_mail, non_mail, web_only, minimal
-    api-key: ${{ secrets.BV_API_KEY }}  # optional — bypasses rate limits
-```
-
-The action outputs `score`, `grade`, `maturity`, `scoring-profile`, and `passed` for downstream steps.
-
-### Package Release Controls
-
-`blackveil-dns` npm publishing is gated by `.github/workflows/publish.yml`.
-
-On `v*` tags, the workflow enforces:
-- `npm run validate:internal-deps`
-- Typecheck (`npx tsc --noEmit`)
-- Lint (`npm run lint`)
-- Test (`npm test`)
-- Security audit (`npm audit --audit-level=high`)
-- Changelog presence for the target version
-
-Publish only proceeds after all gates pass.
-
-## Monitoring
-
-Get weekly DNS security reports in Slack or Discord. See [`examples/slack-discord-webhook/`](examples/slack-discord-webhook/) for a ready-to-deploy Cloudflare Cron Trigger recipe.
-
----
-
-## Pricing
-
-Full API and MCP access at every tier — no enterprise gatekeeping.
-
-| | **Free** | **Pro** | **Enterprise** |
-|---|---|---|---|
-| **Price** | $0 | $39/mo ($29/mo annual) | [Contact us](https://blackveilsecurity.com) |
-| **Scans/day** | 75 | 500 | 10,000+ |
-| **Checks/day** (per tool) | 200 | 5,000 | Unlimited |
-| **Lookalike / Shadow scans** | 20/day | 200/day | Unlimited |
-| **Rate limit** | 50 req/min | None | None |
-| **API access** | Yes | Yes | Yes |
-| **MCP access** | Yes | Yes | Yes |
-| **GitHub Action** | Yes | Yes | Yes |
-| **Batch API** | — | — | Up to 500 domains/call |
-| **SLA** | Best effort | 99.5% | 99.9% + custom |
-| **Support** | Community | Email | Dedicated |
-
-The free tier is generous by design — use it for personal projects, evaluations, and AI agent integrations with no strings attached. Upgrade when you need higher throughput.
-
-Get an API key at [blackveilsecurity.com](https://blackveilsecurity.com).
-
----
-
-## npm package
-
-Install from npm when you want to call the scanner from your own Node.js app, script, or service. If you are connecting from VS Code, Claude, Cursor, or another MCP client, use the MCP endpoint configuration above instead.
-
-```bash
-npm install blackveil-dns
-```
-
-Requirements: Node 18+ or another runtime with global `fetch`, `URL`, `AbortController`, and Web Platform APIs.
-
-<details>
-<summary><b>Usage example</b></summary>
-
-```ts
-import { scanDomain, explainFinding, formatScanReport, validateDomain } from 'blackveil-dns';
-
-const candidate = 'example.com';
-const validation = validateDomain(candidate);
-
-if (!validation.valid) {
-  throw new Error(validation.error);
-}
-
-const result = await scanDomain(candidate);
-console.log(formatScanReport(result));
-
-const guidance = explainFinding('SPF', 'fail', 'No SPF record found');
-console.log(guidance.recommendation);
-```
-
-The npm package exports the reusable scanner API only. It does not start the MCP server or Cloudflare Worker entrypoint.
-</details>
-
----
-
-<details>
-<summary><b>Coverage — 57+ checks across 20 categories</b></summary>
-
-The full [BLACKVEIL](https://blackveilsecurity.com) platform extends each with deeper analytics.
-
-| Category | Checks | MCP (Free) | Platform |
-|---|---:|---|---|
-| SPF | 8 | Policy and syntax validation | Include-chain and sender-path analytics |
-| DMARC | 10 | Policy, pct, reporting, alignment | Subdomain inheritance, reporting quality |
-| DKIM | 9 | Selector discovery, RSA key strength | Rotation heuristics, key-age drift |
-| DNSSEC | 6 | AD validation, signed-zone baseline | Chain-of-trust, rollover posture |
-| SSL/TLS | 8 | Certificate availability, validity | Protocol/cipher depth, renewal risk |
-| MTA-STS | 5 | TXT policy, policy retrieval | Policy hardening, reporting depth |
-| NS | 4 | Delegation, diversity, resiliency | Infrastructure concentration |
-| CAA | 4 | Presence, issuer allowlist | Issuance surface modeling |
-| MX | 4 | Presence, routing, provider inference | Mail routing posture |
-| Subdomain Takeover | 2 | Dangling CNAME detection | Expanded asset discovery |
-| BIMI | 1 | Record presence, logo URL, VMC | Brand indicator compliance |
-| TLS-RPT | 1 | Record presence, reporting URI | Reporting depth |
-| Lookalikes | 1 | Typosquat detection, DNS + MX probing | Expanded permutation strategies |
-| HTTP Security | 7 | CSP, X-Frame-Options, COOP, CORP, Permissions-Policy | Header depth analytics |
-| DANE | 3 | TLSA record validation for MX and HTTPS | Certificate pinning posture |
-| Shadow Domains | 1 | Alternate-TLD email spoofing risk | Extended TLD coverage |
-| TXT Hygiene | 1 | Stale verifications, SaaS exposure | Shadow IT discovery |
-| MX Reputation | 1 | DNSBL + PTR/FCrDNS validation | Deliverability analytics |
-| SRV | 1 | Service footprint discovery | Protocol exposure analytics |
-| Zone Hygiene | 1 | SOA consistency, sensitive subdomains | Infrastructure exposure |
-
-</details>
-
-<details>
-<summary><b>Scan output — anthropic.com (real, unedited)</b></summary>
-
-```
-  BLACKVEIL DNS                                          anthropic.com
- ─────────────────────────────────────────────────────────────────────
-
-  CATEGORY          SCORE    STATUS    KEY FINDINGS
- ─────────────────────────────────────────────────────────────────────
-  SPF                80/100    PASS    Soft fail (~all), Google shared
-  DMARC              90/100    PASS    p=reject, relaxed alignment
-  DKIM               85/100    PASS    google selector, 2048-bit RSA
-  DNSSEC             35/100    FAIL    Not enabled — no DNSKEY/DS
-  SSL/TLS           100/100    PASS    HTTPS + HSTS configured
-  MTA-STS            85/100    PASS    No MTA-STS/TLS-RPT records
-  NS                 95/100    PASS    Cloudflare anycast
-  CAA                85/100    PASS    No CAA records published
-  MX                100/100    PASS    5 MX records, Google Workspace
-  BIMI               95/100    PASS    Eligible but not published
-  TLS-RPT            95/100    PASS    No TLS-RPT record
- ─────────────────────────────────────────────────────────────────────
-
-  ████████████████████████████████████████░░░░░  85 / 100    Grade: A
-```
-
-### Findings
-
-```
-  SEVERITY    FINDING                                                CATEGORY
- ─────────────────────────────────────────────────────────────────────────────
-  HIGH        DNSSEC not validated — AD flag not set                  DNSSEC
-  HIGH        No DNSKEY records found                                 DNSSEC
-  MEDIUM      No DS records — chain of trust broken                   DNSSEC
-  MEDIUM      No MTA-STS or TLS-RPT records                          MTA-STS
-  MEDIUM      No CAA records — any CA can issue certs                 CAA
-  MEDIUM      DKIM RSA key below recommended (2048 < 4096)            DKIM
-  LOW         SPF soft fail (~all) — consider -all                    SPF
-  LOW         Relaxed DKIM alignment (adkim=r)                        DMARC
-  LOW         Relaxed SPF alignment (aspf=r)                          DMARC
-  LOW         Low nameserver diversity (all Cloudflare)               NS
-  LOW         No BIMI record — eligible with p=reject                 BIMI
-  LOW         No TLS-RPT record                                       TLSRPT
-  INFO        SPF delegates to shared platform: Google Workspace      SPF
-  INFO        DMARC properly configured (p=reject, sp=reject)         DMARC
-  INFO        MX records found (5 records)                            MX
-  INFO        Inbound provider: Google Workspace                      MX
-  INFO        HTTPS + HSTS properly configured                        SSL
-```
-
-**What this means.** Anthropic has strong email authentication — DMARC is set to `reject`, SPF and DKIM are present, Google Workspace handles mail. Because DMARC enforcement is strong, the shared-platform SPF delegation to Google stays informational rather than being flagged as a risk. The main gap is DNSSEC (DNS responses aren't cryptographically signed) and hardening opportunities around CAA, MTA-STS, and BIMI.
-
-Run `explain_finding` on any result for plain-English remediation.
-
-</details>
-
-<details>
-<summary><b>Protocol</b></summary>
-
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/mcp` | JSON-RPC 2.0 tool/protocol requests (single or batch) |
-| `GET` | `/mcp` | SSE stream for server notifications (requires session) |
-| `DELETE` | `/mcp` | Session termination |
-| `GET` | `/mcp/sse` | Legacy SSE bootstrap stream |
-| `POST` | `/mcp/messages` | Legacy message delivery (requires `?sessionId=`) |
-| `GET` | `/health` | Health probe |
-| `POST` | `/internal/tools/call` | Service binding: single tool call (no auth/rate limits) |
-| `POST` | `/internal/tools/batch` | Service binding: bulk scan up to 500 domains |
-
-Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`.
-
-7 pre-built prompts guide common workflows: `full-security-audit`, `email-auth-check`, `policy-compliance-check`, `remediation-workflow`, `email-hardening-guide`, `provider-benchmark`, `attack-surface-assessment`.
-
-</details>
-
-<details>
-<summary><b>Architecture</b></summary>
+## Architecture
 
 ```
   MCP Client
@@ -622,143 +153,34 @@ Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/
   └──────────────────────────┘
 ```
 
-- Input sanitation and domain validation
-- Optional bearer-token or query-param authentication
-- Per-IP rate limiting (KV + in-memory fallback)
-- `check_lookalikes` capped at 20/day per IP with 60-min caching
-- `scan_domain` capped at 75/day per IP (results cached 5 min)
-- Scan result caching (KV + in-memory fallback)
 - **Generic Scoring Engine**: Architectural core ported from `claude-code-py` for cross-language consistency
-- Adaptive scoring via Durable Object telemetry (graceful fallback to static weights)
-- Intelligence layer: score histograms, provider cohort benchmarks, hourly trend snapshots (ProfileAccumulator DO)
-- Category interaction scoring: correlated weaknesses receive additional penalties
-- Context-optimized schemas: tool descriptions, prompts, and resources tuned for minimal LLM token consumption
-- Structured JSON logging
-
-Implementation details in `CLAUDE.md`.
-
-</details>
-
-<details>
-<summary><b>Security</b></summary>
-
-Full details in `CLAUDE.md` (security and observability sections).
-
-- Domain inputs validated and sanitized before execution
-- IP literals rejected (standard and alternate numeric forms)
-- SSRF protections block unsafe/private targets
-- Error responses sanitized — only known validation errors surface
-- DNS via Cloudflare DoH with optional secondary confirmation
-- Constant-time auth comparison (XOR accumulation on SHA-256 digests)
-- DNS data sanitized at ingestion — HTML/markdown injection stripped before findings are created
-- Outbound response body caps (64 KB for tool checks, 1 MB for provider signatures)
-- Tool parameter validation with allowlists and per-element type/length checks
-- Rate limits: `50/min` and `300/hr` per IP for `tools/call` (free tier; Pro and Enterprise bypass)
-- Control-plane traffic: `60/min` and `600/hr` per IP
-- Global daily cap: `500,000` unauthenticated tool calls/day (cost ceiling)
-- Authenticated requests: per-tier daily quotas keyed by API key hash (see [Pricing](#pricing))
-- Session creation: `60/min` per IP (enforced on both modern and legacy transports)
-- Session TTL: 2 hours idle, dual-write (KV + in-memory) for cross-isolate resilience
-- SSE notification stream exempt from rate limiting (prevents `mcp-remote` reconnection storms)
-- Client IPs redacted in structured logs
-
-**Natural-language convenience:**
-`tools/call` supports `scan` as an alias for `scan_domain`. In chat clients, say `scan example.com`. Raw JSON-RPC expects `params.name` to be `scan` or `scan_domain`.
-
-</details>
-
-<details>
-<summary><b>Provider detection</b></summary>
-
-`check_mx` and `scan_domain` infer managed email providers.
-
-- **Inbound** — MX host matching
-- **Outbound** — SPF include/redirect signals + DKIM selector hints
-- Metadata: `detectionType`, `providers`, `providerConfidence` (0.0-1.0), `signatureSource`, `signatureVersion`
-- Fallback order: runtime source -> stale cache -> built-in signatures
-
-Optional configuration:
-
-| Variable | Purpose |
-|---|---|
-| `PROVIDER_SIGNATURES_URL` | Runtime provider-signature JSON source |
-| `PROVIDER_SIGNATURES_SHA256` | Required pinned digest |
-| `PROVIDER_SIGNATURES_ALLOWED_HOSTS` | Hostname allowlist |
-
-</details>
+- **WASM Policy Engine**: High-performance permission and token checks via `bv-wasm-core`
+- **Reliable Sessions**: Hardened tombstone logic prevents race-condition revival of terminated sessions
+- **Adaptive Scoring**: Durable Object telemetry adjusts weights based on real-world distributions
+- **Client Awareness**: Automatic response formatting (`compact` vs `full`) based on client `User-Agent`
 
 ---
 
-## Development
+## Client setup
 
-> **Existing clones:** The repository history was rewritten on 2026-04-01. If you cloned before that date, re-clone fresh — `git pull` will not work. See [#37](https://github.com/MadaBurns/bv-mcp/issues/37) for details.
+The free tier requires no authentication. If you have an API key, you can use either:
+- **Header**: `Authorization: Bearer <KEY>`
+- **Query Param**: `?api_key=<KEY>`
 
-```bash
-git clone https://github.com/MadaBurns/bv-mcp.git
-cd bv-mcp
-npm install
-npm run dev       # localhost:8787/mcp
-```
-
-```bash
-npm test          # 1932 tests
-npm run typecheck
-python3 chaos-test-clients.py  # test all 9 MCP client types
-```
-
-<details>
-<summary><b>Private deployment</b></summary>
-
-```bash
-cp wrangler.private.example.jsonc .dev/wrangler.deploy.jsonc
-# replace KV namespace IDs and analytics dataset in .dev/wrangler.deploy.jsonc
-npm run deploy:private
-```
-
-The checked-in [wrangler.jsonc](wrangler.jsonc) stays generic for open source use. Real KV IDs, session storage, and Analytics Engine dataset names should live only in the ignored `.dev/wrangler.deploy.jsonc` file.
-
-</details>
-
-<details>
-<summary><b>Automated releases</b></summary>
-
-Push a version tag and CI handles everything — npm publish, Cloudflare deploy, GitHub release:
-
-```bash
-# 1. Update CHANGELOG.md with the new version entry
-# 2. Tag and push
-git tag v2.2.0
-git push origin v2.2.0
-```
-
-CI pipeline: validate (test/typecheck/lint/audit) → auto-bump `package.json` + `SERVER_VERSION` → npm publish → Cloudflare deploy → GitHub Release.
-
-**One-time setup** — add secrets to the `production` environment in GitHub Settings:
-- `NPM_TOKEN` — npm publish token
-- `CLOUDFLARE_API_TOKEN` — Cloudflare Workers deploy token
-
-</details>
-
-Manual request examples and failure modes in `docs/troubleshooting.md`.
+For full hosted setup examples, stdio usage, and legacy fallback endpoints, see [**docs/client-setup.md**](docs/client-setup.md).
 
 ---
 
-## Docs
+## Pricing
 
-| Document | Path |
-|---|---|
-| Client setup | `docs/client-setup.md` |
-| Scoring | `docs/scoring.md` |
-| Troubleshooting | `docs/troubleshooting.md` |
-| Style guide | `docs/style-guide.md` |
-
----
-
-## Why
-
-Most DNS and email security tools are paywalled dashboards or CLI scripts that need local setup. Neither works inside an AI assistant where you want to check a domain mid-conversation.
-
-One endpoint URL. No install. No API key. Point any MCP client at `https://dns-mcp.blackveilsecurity.com/mcp` and know where you stand.
+| | **Free** | **Pro** | **Enterprise** |
+|---|---|---|---|
+| **Price** | $0 | $39/mo | [Contact us](https://blackveilsecurity.com) |
+| **Scans/day** | 75 | 500 | 10,000+ |
+| **Checks/day** | 200 | 5,000 | Unlimited |
+| **Rate limit** | 50 req/min | None | None |
+| **API access** | Yes | Yes | Yes |
+| **MCP access** | Yes | Yes | Yes |
 
 ---
 
@@ -766,23 +188,6 @@ One endpoint URL. No install. No API key. Point any MCP client at `https://dns-m
 
 Built and maintained by [**BLACKVEIL**](https://blackveilsecurity.com) — NZ-owned cybersecurity consultancy.
 
-Featured in [SecurityBrief](https://securitybrief.co.nz/story/exclusive-how-cybersecurity-startup-blackveil-is-targetting-ai-driven-threats) · [NZ Herald](https://www.nzherald.co.nz/video/herald-now/ryan-bridge-today/cybersecurity-medimap-hack/OMLGW3OMXOVSSJ3RLFXPMAVGKE/) · [Modern Cyber](https://www.youtube.com/watch?v=W4aJHpfB5rY)
-
-Want continuous monitoring? [BLACKVEIL](https://blackveilsecurity.com) provides real-time alerting and Buck AI to help you fix what this scanner finds.
-
 BUSL-1.1 License (converts to MIT on 2030-03-17)
-
-</div>
-MIT on 2030-03-17)
-
-</div>
-ern Cyber](https://www.youtube.com/watch?v=W4aJHpfB5rY)
-
-Want continuous monitoring? [BLACKVEIL](https://blackveilsecurity.com) provides real-time alerting and Buck AI to help you fix what this scanner finds.
-
-BUSL-1.1 License (converts to MIT on 2030-03-17)
-
-</div>
-MIT on 2030-03-17)
 
 </div>
