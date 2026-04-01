@@ -15,12 +15,18 @@ describe('Wasm Integration', () => {
     });
 
     it('enforces read-only permissions', () => {
-        expect(checkPermission('read-only', 'write_file')).toBe(false);
-        expect(checkPermission('read-only', 'read_file')).toBe(true);
+        // check_spf is ReadOnly
+        expect(checkPermission('read-only', 'check_spf')).toBe(true);
+        // generate_fix_plan is WorkspaceWrite
+        expect(checkPermission('read-only', 'generate_fix_plan')).toBe(false);
     });
 
     it('enforces workspace-write permissions', () => {
-        expect(checkPermission('workspace-write', 'write_file')).toBe(true);
-        expect(checkPermission('workspace-write', 'danger_tool')).toBe(false);
+        // generate_fix_plan is WorkspaceWrite
+        expect(checkPermission('workspace-write', 'generate_fix_plan')).toBe(true);
+        // check_spf is ReadOnly, so workspace-write (higher) should allow it
+        expect(checkPermission('workspace-write', 'check_spf')).toBe(true);
+        // Any unknown tool defaults to DangerFullAccess
+        expect(checkPermission('workspace-write', 'unknown_tool')).toBe(false);
     });
 });
