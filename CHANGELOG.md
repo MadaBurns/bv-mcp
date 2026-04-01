@@ -6,7 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-## [2.1.14] - 2026-04-01
+## [2.1.16] - 2026-04-01
+
+### Changed
+- Documentation: updated Claude Code API key setup to use `?api_key=` query parameter as primary method; added Smithery connection instructions; updated test count.
+
+## [2.1.15] - 2026-04-01
 
 ### Added
 - **`api_key` query parameter auth** — bearer token can now be passed as `?api_key=` in the URL, enabling auth for clients that only support URL configuration (Smithery, URL-only MCP configs). Header takes precedence when both are present.
