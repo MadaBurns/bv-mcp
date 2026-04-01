@@ -93,6 +93,10 @@ plan-*.md
 out.txt
 mcp-response.txt
 
+# Local dev/test scripts
+scripts/scan-test.mjs
+scripts/discover-test.mjs
+
 # Brand assets (copied from bv-web, not tracked)
 .brand/
 
