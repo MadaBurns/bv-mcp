@@ -64,6 +64,7 @@ export async function resolveTier(
 	if (!token) return { authenticated: false };
 
 	const keyHash = await hashToken(token);
+	console.log(`[auth] Resolving tier for keyHash=${keyHash.slice(0, 8)}... ip=${clientIp}`);
 
 	// 1. Try KV cache
 	if (env.RATE_LIMIT) {
