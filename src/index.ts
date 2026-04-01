@@ -85,6 +85,7 @@ type BvMcpEnv = {
 	BV_DOH_ENDPOINT?: string;
 	BV_DOH_TOKEN?: string;
 	BV_CERTSTREAM?: Fetcher;
+	REQUIRE_AUTH?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -160,8 +161,8 @@ for (const path of mcpPaths) {
 		c.set('tierAuthResult', tierResult);
 		c.set('isAuthenticated', tierResult.authenticated);
 
-		// If token was provided but not recognized, reject
-		if (token && !tierResult.authenticated) {
+		// If token was provided but not recognized, or if auth is required and not authenticated, reject
+		if ((token && !tierResult.authenticated) || (c.env.REQUIRE_AUTH === 'true' && !tierResult.authenticated)) {
 			return unauthorizedResponse();
 		}
 
