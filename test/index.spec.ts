@@ -217,6 +217,50 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = await initSession({ authToken: TEST_API_KEY, targetEnv: authEnv });
 			expect(sessionId).toBeTruthy();
 		});
+
+		it('rejects unrecognized api_key query param', async () => {
+			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp?api_key=wrong-key', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, authEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(401);
+		});
+
+		it('accepts valid api_key query param as bearer equivalent', async () => {
+			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+			const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com/mcp?api_key=${TEST_API_KEY}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, authEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			expect(response.headers.get('mcp-session-id')).toBeTruthy();
+		});
+
+		it('Authorization header takes precedence over api_key query param', async () => {
+			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp?api_key=wrong-key', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${TEST_API_KEY}`,
+				},
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, authEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			expect(response.headers.get('mcp-session-id')).toBeTruthy();
+		});
 	});
 
 	describe('GET /health', () => {
