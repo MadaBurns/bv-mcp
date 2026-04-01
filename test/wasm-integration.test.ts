@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-// @ts-ignore
+// @ts-expect-error WASM module import for testing
 import wasm from '../crates/bv-wasm-core/pkg/bv_wasm_core_bg.wasm';
-// @ts-ignore
+// @ts-expect-error WASM module import for testing
 import { initSync, estimateTokens, checkPermission } from '../crates/bv-wasm-core/pkg/bv_wasm_core.js';
 
 describe('Wasm Integration', () => {
