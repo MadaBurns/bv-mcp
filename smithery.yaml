@@ -10,4 +10,4 @@ startCommand:
           Optional API key for higher rate limits and premium features.
           Leave blank to use the free tier (50 req/min).
     required: []
-  url: https://dns-mcp.blackveilsecurity.com/mcp
+  url: "https://dns-mcp.blackveilsecurity.com/mcp{{#if apiKey}}?api_key={{apiKey}}{{/if}}"

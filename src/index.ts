@@ -141,7 +141,9 @@ for (const path of mcpPaths) {
 
 	app.use(path, async (c, next) => {
 		const authHeader = c.req.header('authorization');
-		const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+		const token = authHeader?.startsWith('Bearer ')
+			? authHeader.slice(7).trim()
+			: (c.req.query('api_key') ?? null);
 
 		// Resolve tier via KV cache → service binding → static BV_API_KEY fallback
 		// Pass client IP for owner-tier IP allowlist enforcement
