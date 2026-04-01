@@ -153,7 +153,8 @@ export function validateSessionInMemory(id: string): boolean {
 
 export function deleteSessionInMemory(id: string): boolean {
 	const existed = ACTIVE_SESSIONS.delete(id);
-	if (existed) SESSION_TOMBSTONES.set(id, Date.now());
+	// Always set the tombstone to prevent revival of this ID on this isolate
+	SESSION_TOMBSTONES.set(id, Date.now());
 	return existed;
 }
 

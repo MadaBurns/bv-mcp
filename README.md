@@ -612,17 +612,23 @@ Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/
   └───┬──────────────────────┘
       │
   ┌───▼──────────────────────┐
+  │  Generic Scoring Engine  │
+  │  Three-tier model        │
+  └───┬──────────────────────┘
+      │
+  ┌───▼──────────────────────┐
   │  Cloudflare DoH          │
   │  DNS-over-HTTPS          │
   └──────────────────────────┘
 ```
 
 - Input sanitation and domain validation
-- Optional bearer-token authentication
+- Optional bearer-token or query-param authentication
 - Per-IP rate limiting (KV + in-memory fallback)
 - `check_lookalikes` capped at 20/day per IP with 60-min caching
 - `scan_domain` capped at 75/day per IP (results cached 5 min)
 - Scan result caching (KV + in-memory fallback)
+- **Generic Scoring Engine**: Architectural core ported from `claude-code-py` for cross-language consistency
 - Adaptive scoring via Durable Object telemetry (graceful fallback to static weights)
 - Intelligence layer: score histograms, provider cohort benchmarks, hourly trend snapshots (ProfileAccumulator DO)
 - Category interaction scoring: correlated weaknesses receive additional penalties
@@ -697,6 +703,7 @@ npm run dev       # localhost:8787/mcp
 ```bash
 npm test          # 1932 tests
 npm run typecheck
+python3 chaos-test-clients.py  # test all 9 MCP client types
 ```
 
 <details>
@@ -764,5 +771,18 @@ Featured in [SecurityBrief](https://securitybrief.co.nz/story/exclusive-how-cybe
 Want continuous monitoring? [BLACKVEIL](https://blackveilsecurity.com) provides real-time alerting and Buck AI to help you fix what this scanner finds.
 
 BUSL-1.1 License (converts to MIT on 2030-03-17)
+
+</div>
+MIT on 2030-03-17)
+
+</div>
+ern Cyber](https://www.youtube.com/watch?v=W4aJHpfB5rY)
+
+Want continuous monitoring? [BLACKVEIL](https://blackveilsecurity.com) provides real-time alerting and Buck AI to help you fix what this scanner finds.
+
+BUSL-1.1 License (converts to MIT on 2030-03-17)
+
+</div>
+MIT on 2030-03-17)
 
 </div>

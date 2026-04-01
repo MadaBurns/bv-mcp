@@ -7,8 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
 Exposes 41 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
-
-**Version**: 2.1.0 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.1.18 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -16,6 +15,7 @@ An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` 
 npm install                            # Install deps (includes workspace packages)
 npm test                               # Vitest + Istanbul coverage (Workers runtime)
 npx vitest run test/check-spf.spec.ts  # Run a single test file
+python3 chaos-test-clients.py          # Chaos test: all 9 client types (v2.1.17+)
 npm run build                          # tsup build (npm package + stdio CLI bundle)
 npm run dev                            # Local dev at localhost:8787
 npm run typecheck                      # tsc --noEmit
@@ -28,6 +28,7 @@ git config core.hooksPath .githooks    # Enable pre-commit hooks (one-time setup
 
 - **Runtime**: Cloudflare Workers — no Node.js APIs (only `fetch`, `crypto`, Web APIs)
 - **Framework**: Hono v4
+- **Chaos Testing**: Python-based multi-client/multi-session validation (ported from `claude-code-py`)
 - **TypeScript**: strict, ES2024 target, Bundler resolution, `isolatedModules: true`
 - **Testing**: Vitest + `@cloudflare/vitest-pool-workers` (tests execute inside Workers runtime)
 - **Linter**: ESLint + typescript-eslint
@@ -87,6 +88,7 @@ src/tools/                — Individual DNS checks + orchestrator
   *-analysis.ts           — Analysis helpers extracted from check modules
   scan-domain.ts          — Parallel orchestrator → ScanScore + MaturityStage
   scan/                   — Scan sub-helpers (format-report, post-processing, maturity-staging)
+  explain-finding-data.ts — Static explanation generator
   explain-finding.ts      — Static explanation generator
   resolve-spf-chain.ts    — Recursive SPF include tree with lookup counting
   discover-subdomains.ts  — CT log subdomain discovery (certstream binding + crt.sh fallback)
@@ -96,13 +98,13 @@ src/tools/                — Individual DNS checks + orchestrator
   analyze-drift.ts        — Baseline comparison with drift classification
   validate-fix.ts         — Targeted re-check with fix verdict
   generate-rollout-plan.ts — Phased DMARC enforcement timeline
-  provider-guides.ts      — Static provider detection rules and fix step guides
+  provider-guides.ts      — Static provider detection rules and fix guide guides
   txt-hygiene-analysis.ts — Shared TXT verification patterns and SPF cross-reference
 
 src/lib/                  — Shared infrastructure
   scoring.ts              — Re-export facade for scoring subsystem
   scoring-model.ts        — Types (Finding, CheckResult, ScanScore) + buildCheckResult/createFinding
-  scoring-engine.ts       — IMPORTANCE_WEIGHTS, computeScanScore, scoreToGrade
+  scoring-engine.ts       — IMPORTANCE_WEIGHTS, computeScanScore, scoreToGrade (bridge to generic engine)
   scoring-config.ts       — Runtime scoring configuration (ScoringConfig type, defaults, parser)
   context-profiles.ts     — DomainProfile, DomainContext, PROFILE_WEIGHTS, detectDomainContext
   adaptive-weights.ts     — EMA-based adaptive weight computation
@@ -121,8 +123,17 @@ src/lib/                  — Shared infrastructure
 test/                     — One spec per source file
 test/helpers/dns-mock.ts  — Shared fetch mock for DNS-over-HTTPS queries
 test/schemas/             — Unit tests for Zod schemas
-packages/dns-checks/     — @blackveil/dns-checks (runtime-agnostic check + scoring library)
-packages/dns-checks/src/schemas/scoring.ts — Zod schemas for Finding, CheckResult, ScanScore
+
+packages/dns-checks/     — @blackveil/dns-checks (runtime-agnostic core library)
+  src/scoring/           — Generic scoring engine (ported from claude-code-py logic)
+    generic.ts           — String-keyed three-tier scoring implementation
+    engine.ts            — computeScanScore bridge and scoring defaults
+    model.ts             — Finding/CheckResult types and missing-control rules
+    profiles.ts          — DomainProfile weight sets and context detection
+    config.ts            — ScoringConfig parser and defaults
+  src/checks/            — Individual check implementations (SPF, DMARC, etc.)
+  src/schemas/           — Zod schemas for all check results and findings
+
 ```
 
 ### Request flow
