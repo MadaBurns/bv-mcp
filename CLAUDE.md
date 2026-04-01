@@ -136,6 +136,22 @@ packages/dns-checks/     — @blackveil/dns-checks (runtime-agnostic core librar
 
 ```
 
+### Packages & Releases
+
+**Layered Architecture**: The project uses a layered design separating runtime-agnostic business logic from infrastructure concerns:
+
+- **`packages/dns-checks/`** (`@blackveil/dns-checks`): Runtime-agnostic core library containing DNS validation logic. No Cloudflare dependencies. Contains 16 core check functions (SPF, DMARC, DKIM, etc.) and scoring engine. Published as separate npm package for reuse in other environments.
+
+- **`src/tools/`**: MCP protocol wrappers with Cloudflare infrastructure. Contains 41 MCP tools including the 16 check wrappers plus orchestration tools (scan_domain, explain_finding, etc.). Depends on `@blackveil/dns-checks` package.
+
+**When to Add to Each Layer**:
+- **dns-checks package**: New DNS validation logic, scoring algorithms, or check implementations that could be reused outside Cloudflare Workers
+- **src/tools layer**: MCP API endpoints, orchestration logic, or tools that require Cloudflare-specific features (KV, Durable Objects, service bindings)
+
+**Release Coordination**: Both packages are published together via CI/CD on version tags. The main package depends on `@blackveil/dns-checks` via npm, so releases must maintain backward compatibility. Version numbers are synchronized in `package.json` and `src/lib/server-version.ts`.
+
+**Deployment Strategy**: Cloudflare Workers deployment publishes the main package. The dns-checks package is consumed via npm dependency, not bundled. Service bindings allow live updates without downstream npm installs.
+
 ### Request flow
 
 **Streamable HTTP**: `POST /mcp → Origin check → Auth → Body parse → JSON-RPC validate → mcp/execute.ts → handlers/tools.ts → src/tools/check-*.ts → lib/dns.ts → Cloudflare DoH (empty → bv-dns → Google fallback)`
