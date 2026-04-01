@@ -1,0 +1,11 @@
+name = "blackveil-webhook-reporter"
+main = "worker.ts"
+compatibility_date = "2026-03-01"
+
+[triggers]
+crons = ["0 9 * * 1"]
+
+[vars]
+DOMAIN = "example.com"
+# WEBHOOK_URL = set via `wrangler secret put WEBHOOK_URL`
+# MCP_ENDPOINT = optional, defaults to hosted endpoint

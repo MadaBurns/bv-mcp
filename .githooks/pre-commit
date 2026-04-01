@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Pre-commit hook: block sensitive paths, scan for secrets/PII, catch IP leakage patterns
+set -euo pipefail
+
+# ──�� 1. Blocked paths ──────────────────────────────���─────────────────
+BLOCKED_PATTERNS=(
+  "docs/plans/"
+  "docs/code-review/"
+  "docs/superpowers/"
+  "docs/github-settings.md"
+  "docs/hn-show-post-draft.md"
+  "docs/mcp-directory-submissions.md"
+  "docs/enterprise-architecture.md"
+  ".dev/"
+  "*.env"
+  "*.env.*"
+)
+
+# Generated/compiled files that must never be committed
+GENERATED_PATTERNS=(
+  "*.pyc"
+  "__pycache__/"
+  "worker-configuration.d.ts"
+  "*.wasm"
+  "*.sqlite"
+  "*.sqlite3"
+  "*.db"
+)
+
+staged=$(git diff --cached --name-only --diff-filter=ACR)
+blocked=""
+
+for file in $staged; do
+  for pattern in "${BLOCKED_PATTERNS[@]}"; do
+    case "$file" in
+      $pattern*|*/$pattern*)
+        blocked="$blocked\n  $file"
+        ;;
+    esac
+  done
+done
+
+if [ -n "$blocked" ]; then
+  echo "BLOCKED: The following staged files are in protected paths:"
+  echo -e "$blocked"
+  echo ""
+  echo "These paths contain sensitive content and must not be committed."
+  echo "If this is intentional, use: git commit --no-verify"
+  exit 1
+fi
+
+# ─── 1b. Generated/compiled files ────────────────────────────────────
+generated=""
+for file in $staged; do
+  for pattern in "${GENERATED_PATTERNS[@]}"; do
+    case "$file" in
+      $pattern|*/$pattern|*.$pattern)
+        generated="$generated\n  $file"
+        ;;
+    esac
+    # Also check by extension for glob patterns like *.pyc
+    case "$pattern" in
+      \*.*)
+        ext="${pattern#\*}"
+        case "$file" in
+          *"$ext")
+            generated="$generated\n  $file"
+            ;;
+        esac
+        ;;
+    esac
+  done
+done
+
+# Deduplicate
+if [ -n "$generated" ]; then
+  generated=$(echo -e "$generated" | sort -u)
+  echo "BLOCKED: Generated/compiled files should not be committed:"
+  echo -e "$generated"
+  echo ""
+  echo "These are build artifacts. Add them to .gitignore instead."
+  echo "To remove from staging: git restore --staged <file>"
+  exit 1
+fi
+
+# ─── 2. Gitleaks (secrets + PII) ──────���──────────────────────────────
+if command -v gitleaks &>/dev/null; then
+  gitleaks protect --staged --config .gitleaks.toml --no-banner 2>&1 | head -20
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+    echo ""
+    echo "Gitleaks found secrets or PII in staged changes."
+    echo "Fix the findings above, or bypass with: git commit --no-verify"
+    exit 1
+  fi
+fi
+
+# ─── 3. IP leakage patterns ─────────��────────────────────────────────
+# Patterns loaded from external file to avoid self-matching.
+# Each line is an extended regex pattern. Lines starting with # are ignored.
+PATTERNS_FILE="$(git rev-parse --show-toplevel)/.githooks/blocked-patterns"
+
+if [ ! -f "$PATTERNS_FILE" ]; then
+  exit 0
+fi
+
+diff_content=$(git diff --cached --diff-filter=ACM -U0 -- ':!.githooks/' ':!.gitleaks.toml' | grep '^+' | grep -v '^+++' || true)
+
+if [ -n "$diff_content" ]; then
+  ip_found=""
+  while IFS= read -r pattern; do
+    [[ "$pattern" =~ ^#.*$ || -z "$pattern" ]] && continue
+    matches=$(echo "$diff_content" | grep -iE "$pattern" || true)
+    if [ -n "$matches" ]; then
+      ip_found="$ip_found\n  Pattern: $pattern\n$matches\n"
+    fi
+  done < "$PATTERNS_FILE"
+
+  if [ -n "$ip_found" ]; then
+    echo "BLOCKED: IP leakage patterns detected in staged changes:"
+    echo -e "$ip_found"
+    echo "These patterns indicate internal infrastructure, customer data,"
+    echo "or proprietary information that should not be in a public repo."
+    echo "If this is intentional, use: git commit --no-verify"
+    exit 1
+  fi
+fi
