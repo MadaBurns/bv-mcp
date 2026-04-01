@@ -26,7 +26,12 @@ export async function checkTLSRPT(
 	const tlsrptDomain = `_smtp._tls.${domain}`;
 	const txtRecords = await queryDNS(tlsrptDomain, 'TXT', { timeout });
 
-	const tlsrptRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=tlsrptv1'));
+	// Concatenate all TXT records to handle cases where TLS-RPT data is split across multiple records
+	const concatenatedTxt = txtRecords.join('');
+
+	// Extract TLS-RPT record from concatenated TXT data
+	const tlsrptMatch = concatenatedTxt.match(/v=tlsrptv1[^]*/i);
+	const tlsrptRecords = tlsrptMatch ? [tlsrptMatch[0]] : [];
 
 	if (tlsrptRecords.length === 0) {
 		findings.push(
@@ -40,13 +45,15 @@ export async function checkTLSRPT(
 		return buildCheckResult('tlsrpt', findings);
 	}
 
-	if (tlsrptRecords.length > 1) {
+	// Check for multiple TLS-RPT records in the concatenated data
+	const tlsrptMatches = concatenatedTxt.match(/v=tlsrptv1/gi);
+	if (tlsrptMatches && tlsrptMatches.length > 1) {
 		findings.push(
 			createFinding(
 				'tlsrpt',
 				'Multiple TLS-RPT records',
 				'medium',
-				`Found ${tlsrptRecords.length} TLS-RPT records at ${tlsrptDomain}. There should be exactly one TLS-RPT record per domain.`,
+				`Found ${tlsrptMatches.length} TLS-RPT records at ${tlsrptDomain}. There should be exactly one TLS-RPT record per domain.`,
 			),
 		);
 	}
