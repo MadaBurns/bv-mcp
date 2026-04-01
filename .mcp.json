@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "type": "http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp?api_key=${BV_API_KEY}",
+      "headers": {
+        "Authorization": "Bearer ${BV_API_KEY}"
+      }
+    }
+  }
+}
