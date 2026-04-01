@@ -8,12 +8,14 @@
  * summaries, trend snapshots) for benchmark and insight queries.
  *
  * Single global instance routed by name "global".
- * Uses SQLite storage for persistent EMA tracking across five tables:
- * `profile_stats`, `provider_stats`, `score_histogram`, `provider_cohort_summary`,
- * and `trend_snapshots`.
+ * Uses SQLite storage (via Drizzle ORM) for persistent EMA tracking across five
+ * tables: `profile_stats`, `provider_stats`, `score_histogram`,
+ * `provider_cohort_summary`, and `trend_snapshots`.
  */
 
 import { DurableObject } from 'cloudflare:workers';
+import { and, asc, count, desc, eq, gte, inArray, type InferSelectModel, sql } from 'drizzle-orm';
+import { drizzle, type DrizzleSqliteDODatabase } from 'drizzle-orm/durable-sqlite';
 import {
 	EMA_ALPHA,
 	MATURITY_THRESHOLD,
@@ -24,101 +26,47 @@ import {
 } from './adaptive-weights';
 import type { AdaptiveWeightsResponse } from './adaptive-weights';
 import { PROFILE_WEIGHTS } from './context-profiles';
+import * as schema from './db/schema';
+import { profileStats, providerStats, scoreHistogram, providerCohortSummary, trendSnapshots } from './db/schema';
 
-// ─── SQL schema ─────────────────────────────────────────────────────────
+// ─── DDL schema strings (idempotent CREATE TABLE IF NOT EXISTS) ──────────
+// Kept here for schema initialisation on first DO activation.
+// The Drizzle schema in src/lib/db/schema.ts is the source of truth.
 
-const SCHEMA_PROFILE_STATS = `CREATE TABLE IF NOT EXISTS profile_stats (
+const SCHEMA_DDL = `
+CREATE TABLE IF NOT EXISTS profile_stats (
   profile TEXT NOT NULL, category TEXT NOT NULL,
   sample_count INTEGER DEFAULT 0, ema_failure_rate REAL DEFAULT 0.0,
   ema_avg_score REAL DEFAULT 0.0, last_updated INTEGER DEFAULT 0,
   PRIMARY KEY (profile, category)
-);`;
-
-const SCHEMA_PROVIDER_STATS = `CREATE TABLE IF NOT EXISTS provider_stats (
+);
+CREATE TABLE IF NOT EXISTS provider_stats (
   profile TEXT NOT NULL, provider TEXT NOT NULL, category TEXT NOT NULL,
   sample_count INTEGER DEFAULT 0, ema_failure_rate REAL DEFAULT 0.0,
   ema_avg_score REAL DEFAULT 0.0, last_updated INTEGER DEFAULT 0,
   PRIMARY KEY (profile, provider, category)
-);`;
-
-// ─── Intelligence layer schema ──────────────────────────────────────────
-
-const SCHEMA_SCORE_HISTOGRAM = `CREATE TABLE IF NOT EXISTS score_histogram (
-  profile TEXT NOT NULL,
-  bucket INTEGER NOT NULL,
-  count INTEGER DEFAULT 0,
-  last_updated INTEGER DEFAULT 0,
+);
+CREATE TABLE IF NOT EXISTS score_histogram (
+  profile TEXT NOT NULL, bucket INTEGER NOT NULL,
+  count INTEGER DEFAULT 0, last_updated INTEGER DEFAULT 0,
   PRIMARY KEY (profile, bucket)
-);`;
-
-const SCHEMA_PROVIDER_COHORT = `CREATE TABLE IF NOT EXISTS provider_cohort_summary (
-  provider TEXT NOT NULL,
-  profile TEXT NOT NULL,
-  total_scans INTEGER DEFAULT 0,
-  ema_overall_score REAL DEFAULT 0.0,
-  top_failing_categories TEXT DEFAULT '[]',
-  last_updated INTEGER DEFAULT 0,
+);
+CREATE TABLE IF NOT EXISTS provider_cohort_summary (
+  provider TEXT NOT NULL, profile TEXT NOT NULL,
+  total_scans INTEGER DEFAULT 0, ema_overall_score REAL DEFAULT 0.0,
+  top_failing_categories TEXT DEFAULT '[]', last_updated INTEGER DEFAULT 0,
   PRIMARY KEY (provider, profile)
-);`;
-
-const SCHEMA_TREND_SNAPSHOTS = `CREATE TABLE IF NOT EXISTS trend_snapshots (
-  profile TEXT NOT NULL,
-  snapshot_hour INTEGER NOT NULL,
-  avg_score REAL DEFAULT 0.0,
-  scan_count INTEGER DEFAULT 0,
+);
+CREATE TABLE IF NOT EXISTS trend_snapshots (
+  profile TEXT NOT NULL, snapshot_hour INTEGER NOT NULL,
+  avg_score REAL DEFAULT 0.0, scan_count INTEGER DEFAULT 0,
   failure_rates TEXT DEFAULT '{}',
   PRIMARY KEY (profile, snapshot_hour)
 );`;
 
-// ─── Row types ──────────────────────────────────────────────────────────
+// ─── Drizzle row types ───────────────────────────────────────────────────
 
-interface ProfileStatsRow {
-	[key: string]: SqlStorageValue;
-	profile: string;
-	category: string;
-	sample_count: number;
-	ema_failure_rate: number;
-	ema_avg_score: number;
-	last_updated: number;
-}
-
-interface ProviderStatsRow {
-	[key: string]: SqlStorageValue;
-	profile: string;
-	provider: string;
-	category: string;
-	sample_count: number;
-	ema_failure_rate: number;
-	ema_avg_score: number;
-	last_updated: number;
-}
-
-interface ScoreHistogramRow {
-	[key: string]: SqlStorageValue;
-	profile: string;
-	bucket: number;
-	count: number;
-	last_updated: number;
-}
-
-interface ProviderCohortRow {
-	[key: string]: SqlStorageValue;
-	provider: string;
-	profile: string;
-	total_scans: number;
-	ema_overall_score: number;
-	top_failing_categories: string;
-	last_updated: number;
-}
-
-interface TrendSnapshotRow {
-	[key: string]: SqlStorageValue;
-	profile: string;
-	snapshot_hour: number;
-	avg_score: number;
-	scan_count: number;
-	failure_rates: string;
-}
+type ProviderStatsRow = InferSelectModel<typeof providerStats>;
 
 // ─── Validation ────────────────────────────────────────────────────────
 
@@ -148,14 +96,16 @@ export const MIN_BENCHMARK_SCANS = 100;
 /** ProfileAccumulator Durable Object for adaptive weight telemetry and intelligence aggregation. */
 export class ProfileAccumulator extends DurableObject<Env> {
 	private initialized = false;
+	private db!: DrizzleSqliteDODatabase<typeof schema>;
 
 	private ensureSchema(): void {
 		if (this.initialized) return;
-		this.ctx.storage.sql.exec(SCHEMA_PROFILE_STATS);
-		this.ctx.storage.sql.exec(SCHEMA_PROVIDER_STATS);
-		this.ctx.storage.sql.exec(SCHEMA_SCORE_HISTOGRAM);
-		this.ctx.storage.sql.exec(SCHEMA_PROVIDER_COHORT);
-		this.ctx.storage.sql.exec(SCHEMA_TREND_SNAPSHOTS);
+		// Run DDL directly on SqlStorage — CREATE TABLE IF NOT EXISTS is idempotent.
+		// The Drizzle schema in src/lib/db/schema.ts is the source of truth for column types.
+		for (const stmt of SCHEMA_DDL.split(';').map((s) => s.trim()).filter(Boolean)) {
+			this.ctx.storage.sql.exec(stmt + ';');
+		}
+		this.db = drizzle(this.ctx.storage, { schema });
 		this.initialized = true;
 	}
 
@@ -233,11 +183,11 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			const failureValue = entry.passed ? 0.0 : 1.0;
 
 			// Upsert profile_stats
-			this.upsertProfileStats(profile, entry.category, failureValue, entry.score, now);
+			await this.upsertProfileStats(profile, entry.category, failureValue, entry.score, now);
 
 			// Upsert provider_stats if provider is present
 			if (provider) {
-				this.upsertProviderStats(profile, provider, entry.category, failureValue, entry.score, now);
+				await this.upsertProviderStats(profile, provider, entry.category, failureValue, entry.score, now);
 			}
 
 			categoryFailureMap.set(entry.category, entry.passed);
@@ -249,11 +199,11 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			: null;
 
 		if (overallScore !== null) {
-			this.updateScoreHistogram(profile, overallScore, now);
-			this.updateTrendSnapshot(profile, overallScore, categoryFailureMap, now);
+			await this.updateScoreHistogram(profile, overallScore, now);
+			await this.updateTrendSnapshot(profile, overallScore, categoryFailureMap, now);
 
 			if (provider) {
-				this.updateProviderCohort(profile, provider, overallScore, categoryFailureMap, now);
+				await this.updateProviderCohort(profile, provider, overallScore, categoryFailureMap, now);
 			}
 		}
 
@@ -262,176 +212,168 @@ export class ProfileAccumulator extends DurableObject<Env> {
 
 	// ─── Profile & provider stats upserts ─────────────────────────────────
 
-	private upsertProfileStats(profile: string, category: string, failureValue: number, score: number, now: number): void {
-		// Check if row exists
-		const existing = this.ctx.storage.sql
-			.exec<ProfileStatsRow>(
-				'SELECT sample_count, ema_failure_rate, ema_avg_score FROM profile_stats WHERE profile = ? AND category = ?',
-				profile,
-				category,
-			)
-			.toArray();
+	private async upsertProfileStats(profile: string, category: string, failureValue: number, score: number, now: number): Promise<void> {
+		const [existing] = await this.db
+			.select({
+				sample_count: profileStats.sample_count,
+				ema_failure_rate: profileStats.ema_failure_rate,
+				ema_avg_score: profileStats.ema_avg_score,
+			})
+			.from(profileStats)
+			.where(and(eq(profileStats.profile, profile), eq(profileStats.category, category)));
 
-		if (existing.length > 0) {
-			const row = existing[0];
-			const newFailureRate = EMA_ALPHA * failureValue + (1 - EMA_ALPHA) * row.ema_failure_rate;
-			const newAvgScore = EMA_ALPHA * score + (1 - EMA_ALPHA) * row.ema_avg_score;
-			this.ctx.storage.sql.exec(
-				'UPDATE profile_stats SET sample_count = sample_count + 1, ema_failure_rate = ?, ema_avg_score = ?, last_updated = ? WHERE profile = ? AND category = ?',
-				newFailureRate,
-				newAvgScore,
-				now,
-				profile,
-				category,
-			);
+		if (existing) {
+			const newFailureRate = EMA_ALPHA * failureValue + (1 - EMA_ALPHA) * existing.ema_failure_rate;
+			const newAvgScore = EMA_ALPHA * score + (1 - EMA_ALPHA) * existing.ema_avg_score;
+			await this.db
+				.update(profileStats)
+				.set({
+					sample_count: sql`${profileStats.sample_count} + 1`,
+					ema_failure_rate: newFailureRate,
+					ema_avg_score: newAvgScore,
+					last_updated: now,
+				})
+				.where(and(eq(profileStats.profile, profile), eq(profileStats.category, category)));
 		} else {
 			// New row: apply EMA formula against initial 0
-			const initFailureRate = EMA_ALPHA * failureValue;
-			const initAvgScore = EMA_ALPHA * score;
-			this.ctx.storage.sql.exec(
-				'INSERT INTO profile_stats (profile, category, sample_count, ema_failure_rate, ema_avg_score, last_updated) VALUES (?, ?, 1, ?, ?, ?)',
+			await this.db.insert(profileStats).values({
 				profile,
 				category,
-				initFailureRate,
-				initAvgScore,
-				now,
-			);
+				sample_count: 1,
+				ema_failure_rate: EMA_ALPHA * failureValue,
+				ema_avg_score: EMA_ALPHA * score,
+				last_updated: now,
+			});
 		}
 	}
 
-	private upsertProviderStats(
+	private async upsertProviderStats(
 		profile: string,
 		provider: string,
 		category: string,
 		failureValue: number,
 		score: number,
 		now: number,
-	): void {
-		const existing = this.ctx.storage.sql
-			.exec<ProviderStatsRow>(
-				'SELECT sample_count, ema_failure_rate, ema_avg_score FROM provider_stats WHERE profile = ? AND provider = ? AND category = ?',
-				profile,
-				provider,
-				category,
-			)
-			.toArray();
+	): Promise<void> {
+		const [existing] = await this.db
+			.select({
+				sample_count: providerStats.sample_count,
+				ema_failure_rate: providerStats.ema_failure_rate,
+				ema_avg_score: providerStats.ema_avg_score,
+			})
+			.from(providerStats)
+			.where(
+				and(
+					eq(providerStats.profile, profile),
+					eq(providerStats.provider, provider),
+					eq(providerStats.category, category),
+				),
+			);
 
-		if (existing.length > 0) {
-			const row = existing[0];
-			const newFailureRate = EMA_ALPHA * failureValue + (1 - EMA_ALPHA) * row.ema_failure_rate;
-			const newAvgScore = EMA_ALPHA * score + (1 - EMA_ALPHA) * row.ema_avg_score;
-			this.ctx.storage.sql.exec(
-				'UPDATE provider_stats SET sample_count = sample_count + 1, ema_failure_rate = ?, ema_avg_score = ?, last_updated = ? WHERE profile = ? AND provider = ? AND category = ?',
-				newFailureRate,
-				newAvgScore,
-				now,
-				profile,
-				provider,
-				category,
-			);
+		if (existing) {
+			const newFailureRate = EMA_ALPHA * failureValue + (1 - EMA_ALPHA) * existing.ema_failure_rate;
+			const newAvgScore = EMA_ALPHA * score + (1 - EMA_ALPHA) * existing.ema_avg_score;
+			await this.db
+				.update(providerStats)
+				.set({
+					sample_count: sql`${providerStats.sample_count} + 1`,
+					ema_failure_rate: newFailureRate,
+					ema_avg_score: newAvgScore,
+					last_updated: now,
+				})
+				.where(
+					and(
+						eq(providerStats.profile, profile),
+						eq(providerStats.provider, provider),
+						eq(providerStats.category, category),
+					),
+				);
 		} else {
-			const initFailureRate = EMA_ALPHA * failureValue;
-			const initAvgScore = EMA_ALPHA * score;
-			this.ctx.storage.sql.exec(
-				'INSERT INTO provider_stats (profile, category, provider, sample_count, ema_failure_rate, ema_avg_score, last_updated) VALUES (?, ?, ?, 1, ?, ?, ?)',
+			await this.db.insert(providerStats).values({
 				profile,
-				category,
 				provider,
-				initFailureRate,
-				initAvgScore,
-				now,
-			);
+				category,
+				sample_count: 1,
+				ema_failure_rate: EMA_ALPHA * failureValue,
+				ema_avg_score: EMA_ALPHA * score,
+				last_updated: now,
+			});
 		}
 	}
 
-	// ─── Intelligence layer upserts ───────────────────────────────────────
-
 	/** Update score histogram bucket for the given profile and overall score. */
-	private updateScoreHistogram(profile: string, overallScore: number, now: number): void {
+	private async updateScoreHistogram(profile: string, overallScore: number, now: number): Promise<void> {
 		const bucket = Math.min(90, Math.floor(overallScore / 10) * 10);
 
-		const existing = this.ctx.storage.sql
-			.exec<ScoreHistogramRow>(
-				'SELECT count FROM score_histogram WHERE profile = ? AND bucket = ?',
-				profile,
-				bucket,
-			)
-			.toArray();
+		const [existing] = await this.db
+			.select({ count: scoreHistogram.count })
+			.from(scoreHistogram)
+			.where(and(eq(scoreHistogram.profile, profile), eq(scoreHistogram.bucket, bucket)));
 
-		if (existing.length > 0) {
-			this.ctx.storage.sql.exec(
-				'UPDATE score_histogram SET count = count + 1, last_updated = ? WHERE profile = ? AND bucket = ?',
-				now,
-				profile,
-				bucket,
-			);
+		if (existing) {
+			await this.db
+				.update(scoreHistogram)
+				.set({ count: sql`${scoreHistogram.count} + 1`, last_updated: now })
+				.where(and(eq(scoreHistogram.profile, profile), eq(scoreHistogram.bucket, bucket)));
 		} else {
-			this.ctx.storage.sql.exec(
-				'INSERT INTO score_histogram (profile, bucket, count, last_updated) VALUES (?, ?, 1, ?)',
-				profile,
-				bucket,
-				now,
-			);
+			await this.db.insert(scoreHistogram).values({ profile, bucket, count: 1, last_updated: now });
 		}
 	}
 
 	/** Update provider cohort summary with EMA-smoothed overall score. */
-	private updateProviderCohort(
+	private async updateProviderCohort(
 		profile: string,
 		provider: string,
 		overallScore: number,
 		categoryFailures: Map<string, boolean>,
 		now: number,
-	): void {
-		const existing = this.ctx.storage.sql
-			.exec<ProviderCohortRow>(
-				'SELECT total_scans, ema_overall_score FROM provider_cohort_summary WHERE provider = ? AND profile = ?',
-				provider,
-				profile,
-			)
-			.toArray();
+	): Promise<void> {
+		const [existing] = await this.db
+			.select({
+				total_scans: providerCohortSummary.total_scans,
+				ema_overall_score: providerCohortSummary.ema_overall_score,
+			})
+			.from(providerCohortSummary)
+			.where(and(eq(providerCohortSummary.provider, provider), eq(providerCohortSummary.profile, profile)));
 
 		// Compute top failing categories from this scan's data
-		const failingCats = Array.from(categoryFailures.entries())
-			.filter(([, passed]) => !passed)
-			.map(([cat]) => cat);
+		const topFailing = JSON.stringify(
+			Array.from(categoryFailures.entries())
+				.filter(([, passed]) => !passed)
+				.map(([cat]) => cat)
+				.slice(0, 5),
+		);
 
-		if (existing.length > 0) {
-			const row = existing[0];
-			const newEmaScore = EMA_ALPHA * overallScore + (1 - EMA_ALPHA) * row.ema_overall_score;
-
-			// Store up to 5 most recent failing categories
-			const topFailing = JSON.stringify(failingCats.slice(0, 5));
-
-			this.ctx.storage.sql.exec(
-				'UPDATE provider_cohort_summary SET total_scans = total_scans + 1, ema_overall_score = ?, top_failing_categories = ?, last_updated = ? WHERE provider = ? AND profile = ?',
-				newEmaScore,
-				topFailing,
-				now,
-				provider,
-				profile,
-			);
+		if (existing) {
+			const newEmaScore = EMA_ALPHA * overallScore + (1 - EMA_ALPHA) * existing.ema_overall_score;
+			await this.db
+				.update(providerCohortSummary)
+				.set({
+					total_scans: sql`${providerCohortSummary.total_scans} + 1`,
+					ema_overall_score: newEmaScore,
+					top_failing_categories: topFailing,
+					last_updated: now,
+				})
+				.where(and(eq(providerCohortSummary.provider, provider), eq(providerCohortSummary.profile, profile)));
 		} else {
-			const initScore = EMA_ALPHA * overallScore;
-			const topFailing = JSON.stringify(failingCats.slice(0, 5));
-			this.ctx.storage.sql.exec(
-				'INSERT INTO provider_cohort_summary (provider, profile, total_scans, ema_overall_score, top_failing_categories, last_updated) VALUES (?, ?, 1, ?, ?, ?)',
+			await this.db.insert(providerCohortSummary).values({
 				provider,
 				profile,
-				initScore,
-				topFailing,
-				now,
-			);
+				total_scans: 1,
+				ema_overall_score: EMA_ALPHA * overallScore,
+				top_failing_categories: topFailing,
+				last_updated: now,
+			});
 		}
 	}
 
 	/** Update hourly trend snapshot with running average. */
-	private updateTrendSnapshot(
+	private async updateTrendSnapshot(
 		profile: string,
 		overallScore: number,
 		categoryFailures: Map<string, boolean>,
 		now: number,
-	): void {
+	): Promise<void> {
 		const snapshotHour = Math.floor(now / 3_600_000);
 
 		// Build failure rates JSON from this scan
@@ -440,24 +382,24 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			failureRates[cat] = passed ? 0 : 1;
 		}
 
-		const existing = this.ctx.storage.sql
-			.exec<TrendSnapshotRow>(
-				'SELECT avg_score, scan_count, failure_rates FROM trend_snapshots WHERE profile = ? AND snapshot_hour = ?',
-				profile,
-				snapshotHour,
-			)
-			.toArray();
+		const [existing] = await this.db
+			.select({
+				avg_score: trendSnapshots.avg_score,
+				scan_count: trendSnapshots.scan_count,
+				failure_rates: trendSnapshots.failure_rates,
+			})
+			.from(trendSnapshots)
+			.where(and(eq(trendSnapshots.profile, profile), eq(trendSnapshots.snapshot_hour, snapshotHour)));
 
-		if (existing.length > 0) {
-			const row = existing[0];
-			const newCount = row.scan_count + 1;
+		if (existing) {
+			const newCount = existing.scan_count + 1;
 			// Running average
-			const newAvg = row.avg_score + (overallScore - row.avg_score) / newCount;
+			const newAvg = existing.avg_score + (overallScore - existing.avg_score) / newCount;
 
 			// Merge failure rates (running average per category)
 			let existingRates: Record<string, number> = {};
 			try {
-				existingRates = JSON.parse(row.failure_rates as string);
+				existingRates = JSON.parse(existing.failure_rates);
 			} catch { /* empty */ }
 
 			for (const [cat, rate] of Object.entries(failureRates)) {
@@ -465,49 +407,56 @@ export class ProfileAccumulator extends DurableObject<Env> {
 				existingRates[cat] = prev + (rate - prev) / newCount;
 			}
 
-			this.ctx.storage.sql.exec(
-				'UPDATE trend_snapshots SET avg_score = ?, scan_count = ?, failure_rates = ? WHERE profile = ? AND snapshot_hour = ?',
-				newAvg,
-				newCount,
-				JSON.stringify(existingRates),
-				profile,
-				snapshotHour,
-			);
+			await this.db
+				.update(trendSnapshots)
+				.set({
+					avg_score: newAvg,
+					scan_count: newCount,
+					failure_rates: JSON.stringify(existingRates),
+				})
+				.where(and(eq(trendSnapshots.profile, profile), eq(trendSnapshots.snapshot_hour, snapshotHour)));
 		} else {
 			// Evict old snapshots if over limit
-			this.evictOldSnapshots(profile);
+			await this.evictOldSnapshots(profile);
 
-			this.ctx.storage.sql.exec(
-				'INSERT INTO trend_snapshots (profile, snapshot_hour, avg_score, scan_count, failure_rates) VALUES (?, ?, ?, 1, ?)',
+			await this.db.insert(trendSnapshots).values({
 				profile,
-				snapshotHour,
-				overallScore,
-				JSON.stringify(failureRates),
-			);
+				snapshot_hour: snapshotHour,
+				avg_score: overallScore,
+				scan_count: 1,
+				failure_rates: JSON.stringify(failureRates),
+			});
 		}
 	}
 
 	/** Remove oldest trend snapshots when limit is exceeded. */
-	private evictOldSnapshots(profile: string): void {
-		const countResult = this.ctx.storage.sql
-			.exec<{ cnt: number }>('SELECT COUNT(*) as cnt FROM trend_snapshots WHERE profile = ?', profile)
-			.toArray();
+	private async evictOldSnapshots(profile: string): Promise<void> {
+		const [{ total }] = await this.db
+			.select({ total: count() })
+			.from(trendSnapshots)
+			.where(eq(trendSnapshots.profile, profile));
 
-		const count = countResult[0]?.cnt ?? 0;
-		if (count >= MAX_TREND_SNAPSHOTS_PER_PROFILE) {
-			const toDelete = count - MAX_TREND_SNAPSHOTS_PER_PROFILE + 1;
-			this.ctx.storage.sql.exec(
-				'DELETE FROM trend_snapshots WHERE profile = ? AND snapshot_hour IN (SELECT snapshot_hour FROM trend_snapshots WHERE profile = ? ORDER BY snapshot_hour ASC LIMIT ?)',
-				profile,
-				profile,
-				toDelete,
-			);
+		if (total >= MAX_TREND_SNAPSHOTS_PER_PROFILE) {
+			const toDelete = total - MAX_TREND_SNAPSHOTS_PER_PROFILE + 1;
+			const oldest = await this.db
+				.select({ snapshot_hour: trendSnapshots.snapshot_hour })
+				.from(trendSnapshots)
+				.where(eq(trendSnapshots.profile, profile))
+				.orderBy(asc(trendSnapshots.snapshot_hour))
+				.limit(toDelete);
+
+			await this.db
+				.delete(trendSnapshots)
+				.where(and(
+					eq(trendSnapshots.profile, profile),
+					inArray(trendSnapshots.snapshot_hour, oldest.map((r) => r.snapshot_hour)),
+				));
 		}
 	}
 
 	// ─── GET /weights (existing) ──────────────────────────────────────────
 
-	private handleGetWeights(url: URL): Response {
+	private async handleGetWeights(url: URL): Promise<Response> {
 		const profile = url.searchParams.get('profile');
 		if (!profile) {
 			return new Response('Missing required profile parameter', { status: 400 });
@@ -515,10 +464,8 @@ export class ProfileAccumulator extends DurableObject<Env> {
 
 		const provider = url.searchParams.get('provider');
 
-		// Read profile_stats rows
-		const rows = this.ctx.storage.sql
-			.exec<ProfileStatsRow>('SELECT * FROM profile_stats WHERE profile = ?', profile)
-			.toArray();
+		// Read all profile_stats rows for this profile
+		const rows = await this.db.select().from(profileStats).where(eq(profileStats.profile, profile));
 
 		if (rows.length === 0) {
 			const response: AdaptiveWeightsResponse = {
@@ -537,6 +484,18 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			PROFILE_WEIGHTS.mail_enabled;
 		const boundsMap = (WEIGHT_BOUNDS as Record<string, Record<string, { min: number; max: number }>>)[profile] ??
 			WEIGHT_BOUNDS.mail_enabled;
+
+		// Prefetch all provider stats for this profile+provider to avoid N+1 queries
+		const providerStatsMap = new Map<string, ProviderStatsRow>();
+		if (provider) {
+			const pRows = await this.db
+				.select()
+				.from(providerStats)
+				.where(and(eq(providerStats.profile, profile), eq(providerStats.provider, provider)));
+			for (const r of pRows) {
+				providerStatsMap.set(r.category, r);
+			}
+		}
 
 		const weights: Record<string, number> = {};
 		const boundHits: string[] = [];
@@ -562,21 +521,10 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			let finalWeight = blended;
 
 			// Provider overlay
-			if (provider) {
-				const providerRows = this.ctx.storage.sql
-					.exec<ProviderStatsRow>(
-						'SELECT * FROM provider_stats WHERE profile = ? AND provider = ? AND category = ?',
-						profile,
-						provider,
-						cat,
-					)
-					.toArray();
-
-				if (providerRows.length > 0) {
-					const pRow = providerRows[0];
-					const modifier = (pRow.ema_failure_rate - row.ema_failure_rate) * 0.3 * staticWeight;
-					finalWeight = Math.max(bounds.min, finalWeight + modifier);
-				}
+			const pRow = providerStatsMap.get(cat);
+			if (pRow) {
+				const modifier = (pRow.ema_failure_rate - row.ema_failure_rate) * 0.3 * staticWeight;
+				finalWeight = Math.max(bounds.min, finalWeight + modifier);
 			}
 
 			weights[cat] = Math.round(finalWeight * 100) / 100;
@@ -608,18 +556,21 @@ export class ProfileAccumulator extends DurableObject<Env> {
 	// ─── GET /benchmark ───────────────────────────────────────────────────
 
 	/** Return score histogram and percentile distribution for a profile. */
-	private handleGetBenchmark(url: URL): Response {
+	private async handleGetBenchmark(url: URL): Promise<Response> {
 		const profile = url.searchParams.get('profile') ?? 'mail_enabled';
 		if (!VALID_PROFILES.has(profile)) {
 			return new Response('Invalid profile', { status: 400 });
 		}
 
-		const rows = this.ctx.storage.sql
-			.exec<ScoreHistogramRow>(
-				'SELECT bucket, count, last_updated FROM score_histogram WHERE profile = ? ORDER BY bucket ASC',
-				profile,
-			)
-			.toArray();
+		const rows = await this.db
+			.select({
+				bucket: scoreHistogram.bucket,
+				count: scoreHistogram.count,
+				last_updated: scoreHistogram.last_updated,
+			})
+			.from(scoreHistogram)
+			.where(eq(scoreHistogram.profile, profile))
+			.orderBy(asc(scoreHistogram.bucket));
 
 		const totalScans = rows.reduce((sum, r) => sum + r.count, 0);
 
@@ -666,12 +617,12 @@ export class ProfileAccumulator extends DurableObject<Env> {
 		}
 
 		// Top failing categories from profile_stats
-		const profileStatsRows = this.ctx.storage.sql
-			.exec<ProfileStatsRow>(
-				'SELECT category, ema_failure_rate FROM profile_stats WHERE profile = ? ORDER BY ema_failure_rate DESC LIMIT 5',
-				profile,
-			)
-			.toArray();
+		const profileStatsRows = await this.db
+			.select({ category: profileStats.category, ema_failure_rate: profileStats.ema_failure_rate })
+			.from(profileStats)
+			.where(eq(profileStats.profile, profile))
+			.orderBy(desc(profileStats.ema_failure_rate))
+			.limit(5);
 
 		const topFailingCategories = profileStatsRows
 			.filter((r) => r.ema_failure_rate > 0.1)
@@ -695,7 +646,7 @@ export class ProfileAccumulator extends DurableObject<Env> {
 	// ─── GET /provider-insights ───────────────────────────────────────────
 
 	/** Return provider cohort benchmark data. */
-	private handleGetProviderInsights(url: URL): Response {
+	private async handleGetProviderInsights(url: URL): Promise<Response> {
 		const provider = url.searchParams.get('provider');
 		if (!provider) {
 			return new Response('Missing required provider parameter', { status: 400 });
@@ -706,23 +657,14 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			return new Response('Invalid profile', { status: 400 });
 		}
 
-		const rows = this.ctx.storage.sql
-			.exec<ProviderCohortRow>(
-				'SELECT * FROM provider_cohort_summary WHERE provider = ? AND profile = ?',
-				provider,
-				profile,
-			)
-			.toArray();
+		const [row] = await this.db
+			.select()
+			.from(providerCohortSummary)
+			.where(and(eq(providerCohortSummary.provider, provider), eq(providerCohortSummary.profile, profile)));
 
-		if (rows.length === 0) {
-			return Response.json({
-				status: 'no_data',
-				provider,
-				profile,
-			});
+		if (!row) {
+			return Response.json({ status: 'no_data', provider, profile });
 		}
-
-		const row = rows[0];
 
 		let topFailing: string[] = [];
 		try {
@@ -730,12 +672,11 @@ export class ProfileAccumulator extends DurableObject<Env> {
 		} catch { /* empty */ }
 
 		// Get overall population stats for comparison
-		const histogramRows = this.ctx.storage.sql
-			.exec<ScoreHistogramRow>(
-				'SELECT bucket, count FROM score_histogram WHERE profile = ? ORDER BY bucket ASC',
-				profile,
-			)
-			.toArray();
+		const histogramRows = await this.db
+			.select({ bucket: scoreHistogram.bucket, count: scoreHistogram.count })
+			.from(scoreHistogram)
+			.where(eq(scoreHistogram.profile, profile))
+			.orderBy(asc(scoreHistogram.bucket));
 
 		const populationTotal = histogramRows.reduce((sum, r) => sum + r.count, 0);
 		let populationMean: number | null = null;
@@ -773,7 +714,7 @@ export class ProfileAccumulator extends DurableObject<Env> {
 	// ─── GET /trends ──────────────────────────────────────────────────────
 
 	/** Return hourly trend snapshots for a profile. */
-	private handleGetTrends(url: URL): Response {
+	private async handleGetTrends(url: URL): Promise<Response> {
 		const profile = url.searchParams.get('profile') ?? 'mail_enabled';
 		if (!VALID_PROFILES.has(profile)) {
 			return new Response('Invalid profile', { status: 400 });
@@ -785,26 +726,25 @@ export class ProfileAccumulator extends DurableObject<Env> {
 		const currentHour = Math.floor(Date.now() / 3_600_000);
 		const startHour = currentHour - hours;
 
-		const rows = this.ctx.storage.sql
-			.exec<TrendSnapshotRow>(
-				'SELECT snapshot_hour, avg_score, scan_count, failure_rates FROM trend_snapshots WHERE profile = ? AND snapshot_hour >= ? ORDER BY snapshot_hour ASC',
-				profile,
-				startHour,
-			)
-			.toArray();
+		const rows = await this.db
+			.select({
+				snapshot_hour: trendSnapshots.snapshot_hour,
+				avg_score: trendSnapshots.avg_score,
+				scan_count: trendSnapshots.scan_count,
+				failure_rates: trendSnapshots.failure_rates,
+			})
+			.from(trendSnapshots)
+			.where(and(eq(trendSnapshots.profile, profile), gte(trendSnapshots.snapshot_hour, startHour)))
+			.orderBy(asc(trendSnapshots.snapshot_hour));
 
 		if (rows.length === 0) {
-			return Response.json({
-				status: 'no_data',
-				profile,
-				hours,
-			});
+			return Response.json({ status: 'no_data', profile, hours });
 		}
 
 		const snapshots = rows.map((r) => {
 			let failureRates: Record<string, number> = {};
 			try {
-				failureRates = JSON.parse(r.failure_rates as string);
+				failureRates = JSON.parse(r.failure_rates);
 			} catch { /* empty */ }
 
 			return {
