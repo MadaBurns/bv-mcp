@@ -3,17 +3,23 @@
 ## Build and Test
 - Install dependencies: npm install
 - Build package and CLI bundle: npm run build
+- Build subpackage: npm -w packages/dns-checks run build
 - Run local dev server: npm run dev
 - Run tests (Workers runtime): npm test
+- Run subpackage tests: npm -w packages/dns-checks run test
 - Run single test file: npx vitest run test/check-spf.spec.ts
+- Run chaos test (all 9 MCP client types): python3 scripts/chaos/chaos-test-clients.py
 - Typecheck: npm run typecheck
+- Typecheck subpackage: npm -w packages/dns-checks run typecheck
 - Lint: npm run lint
 - Auto-fix lint issues: npm run lint:fix
+- Enable pre-commit hooks: git config core.hooksPath .githooks
 - Deploy private worker config: npm run deploy:private
 
 ## Runtime and Code Style
 - Target Cloudflare Workers APIs only. Do not use Node-only APIs in runtime code.
 - Keep TypeScript strict and preserve existing module/isolatedModules patterns.
+- WASM Policy Engine: Integrated `bv-wasm-core` for high-performance, tamper-resistant permission checks and token estimation.
 - For findings/results, use createFinding() and buildCheckResult() from src/lib/scoring.ts rather than manual object construction.
 - Validate and normalize all domain input with validateDomain() and sanitizeDomain() from src/lib/sanitize.ts.
 - Keep changes minimal and avoid unrelated refactors.
@@ -26,6 +32,7 @@
 - Individual DNS checks: src/tools/check-*.ts
 - Parallel orchestration and scoring output: src/tools/scan-domain.ts
 - Core DNS/cache/session/rate-limit utilities: src/lib/
+- Monorepo structure: Root Cloudflare Worker + packages/dns-checks runtime-agnostic subpackage
 
 ## Project Conventions
 - Keep versions synchronized between package.json version and src/lib/server-version.ts SERVER_VERSION.
@@ -47,6 +54,7 @@
 - Restore fetch mocks in afterEach.
 - In tests that need mock isolation for check_mx, use dynamic imports inside test bodies.
 - Clear both scan-level and per-check cache entries between relevant test cases.
+- Chaos testing: Run `python3 scripts/chaos/chaos-test-clients.py` to validate behavior across all 9 MCP client types.
 
 ## Security and Internal Routes
 - Keep SSRF protections and domain sanitization paths intact.
