@@ -1,0 +1,553 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - banner [ref=e3]:
+      - generic [ref=e4]:
+        - link "Smithery Logo" [ref=e6] [cursor=pointer]:
+          - /url: /
+          - img "Smithery Logo" [ref=e7]
+        - generic [ref=e10]:
+          - img [ref=e12]
+          - combobox "Search MCPs..." [ref=e15]
+        - generic [ref=e16]:
+          - generic [ref=e17]:
+            - link "MCPs" [ref=e18] [cursor=pointer]:
+              - /url: /servers
+            - link "Skills" [ref=e19] [cursor=pointer]:
+              - /url: /skills
+            - link "Docs" [ref=e20] [cursor=pointer]:
+              - /url: /docs
+            - link "Pricing" [ref=e21] [cursor=pointer]:
+              - /url: /pricing
+            - button "Publish" [ref=e22] [cursor=pointer]:
+              - text: Publish
+              - img
+          - link "Login" [ref=e24] [cursor=pointer]:
+            - /url: /login?redirect=%2Fservers%2FSupabase
+    - main [ref=e26]:
+      - generic [ref=e28]:
+        - generic [ref=e30]:
+          - generic [ref=e32]:
+            - img "Supabase" [ref=e33]
+            - generic [ref=e34]:
+              - heading "Supabase" [level=1] [ref=e35]:
+                - generic [ref=e36]: Supabase
+                - img [ref=e37]
+              - generic [ref=e40]:
+                - generic [ref=e41] [cursor=pointer]: Supabase
+                - generic [ref=e42]: •
+                - generic [ref=e43]: last deployed 2 months ago
+          - generic [ref=e44]:
+            - generic [ref=e45]:
+              - img [ref=e46]
+              - generic [ref=e49]: 60/100
+            - generic [ref=e50]:
+              - img [ref=e51]
+              - generic [ref=e54]: Remote
+            - generic [ref=e55]:
+              - img [ref=e56]
+              - generic [ref=e58]: 6.5k calls
+            - generic [ref=e59]:
+              - img [ref=e60]
+              - generic [ref=e63]: 97.6% uptime
+        - generic [ref=e64]:
+          - tablist [ref=e66]:
+            - link "Overview" [ref=e67] [cursor=pointer]:
+              - /url: /servers/Supabase
+              - tab "Overview" [selected] [ref=e68]:
+                - generic [ref=e69]:
+                  - img [ref=e70]
+                  - generic [ref=e72]: Overview
+            - link "Performance" [ref=e73] [cursor=pointer]:
+              - /url: /servers/Supabase#performance
+              - tab "Performance" [ref=e74]:
+                - generic [ref=e75]:
+                  - img [ref=e76]
+                  - generic [ref=e79]: Performance
+            - link "Usage" [ref=e80] [cursor=pointer]:
+              - /url: /servers/Supabase#usage
+              - tab "Usage" [ref=e81]:
+                - generic [ref=e82]:
+                  - img [ref=e83]
+                  - generic [ref=e85]: Usage
+            - link "API" [ref=e86] [cursor=pointer]:
+              - /url: /servers/Supabase#api
+              - tab "API" [ref=e87]:
+                - generic [ref=e88]:
+                  - img [ref=e89]
+                  - generic [ref=e92]: API
+          - generic [ref=e93]:
+            - main [ref=e95]:
+              - generic [ref=e96]:
+                - generic [ref=e97]:
+                  - generic [ref=e98]:
+                    - heading "About" [level=2] [ref=e99]:
+                      - img [ref=e100]
+                      - text: About
+                    - generic [ref=e102]:
+                      - paragraph [ref=e104]: Search the Supabase docs for up-to-date guidance and troubleshoot errors quickly.
+                      - button "View more" [ref=e105] [cursor=pointer]
+                  - generic [ref=e106]:
+                    - heading "Capabilities" [level=2] [ref=e107]:
+                      - img [ref=e108]
+                      - text: Capabilities
+                    - generic [ref=e110]:
+                      - tablist [ref=e112]:
+                        - link "Tools 29" [ref=e113] [cursor=pointer]:
+                          - /url: /servers/Supabase?capability=tools
+                          - tab "Tools 29" [selected] [ref=e114]:
+                            - img [ref=e115]
+                            - generic [ref=e119]: Tools
+                            - generic [ref=e120]: "29"
+                      - tabpanel "Tools 29" [ref=e121]:
+                        - generic [ref=e122]:
+                          - group [ref=e124]:
+                            - generic [ref=e125] [cursor=pointer]:
+                              - generic [ref=e126]:
+                                - generic [ref=e128]: search_docs
+                                - img [ref=e129]
+                              - paragraph [ref=e131]: "Search the Supabase documentation using GraphQL. Must be a valid GraphQL query. You should default to calling this even if you think you already know the answer, since the documentation is always being updated. Below is the GraphQL schema for this tool: schema{query:RootQueryType}type Guide implements SearchResult{title:String href:String content:String subsections:SubsectionCollection}interface SearchResult{title:String href:String content:String}type SubsectionCollection{edges:[SubsectionEdge!]! nodes:[Subsection!]! totalCount:Int!}type SubsectionEdge{node:Subsection!}type Subsection{title:String href:String content:String}type CLICommandReference implements SearchResult{title:String href:String content:String}type ManagementApiReference implements SearchResult{title:String href:String content:String}type ClientLibraryFunctionReference implements SearchResult{title:String href:String content:String language:Language! methodName:String}enum Language{JAVASCRIPT SWIFT DART CSHARP KOTLIN PYTHON}type TroubleshootingGuide implements SearchResult{title:String href:String content:String}type RootQueryType{schema:String! searchDocs(query:String!,limit:Int):SearchResultCollection error(code:String!,service:Service!):Error errors(first:Int after:String last:Int before:String service:Service code:String):ErrorCollection}type SearchResultCollection{edges:[SearchResultEdge!]! nodes:[SearchResult!]! totalCount:Int!}type SearchResultEdge{node:SearchResult!}type Error{code:String! service:Service! httpStatusCode:Int message:String}enum Service{AUTH REALTIME STORAGE}type ErrorCollection{edges:[ErrorEdge!]! nodes:[Error!]! pageInfo:PageInfo! totalCount:Int!}type ErrorEdge{node:Error! cursor:String!}type PageInfo{hasNextPage:Boolean! hasPreviousPage:Boolean! startCursor:String endCursor:String}"
+                          - group [ref=e133]:
+                            - generic "list_organizations Lists all organizations that the user is a member of." [ref=e134] [cursor=pointer]:
+                              - generic [ref=e135]:
+                                - generic [ref=e137]: list_organizations
+                                - img [ref=e138]
+                              - paragraph [ref=e140]: Lists all organizations that the user is a member of.
+                          - group [ref=e142]:
+                            - generic "get_organization Gets details for an organization. Includes subscription plan." [ref=e143] [cursor=pointer]:
+                              - generic [ref=e144]:
+                                - generic [ref=e146]: get_organization
+                                - img [ref=e147]
+                              - paragraph [ref=e149]: Gets details for an organization. Includes subscription plan.
+                          - group [ref=e151]:
+                            - generic "list_projects Lists all Supabase projects for the user. Use this to help discover the project ID of the project that the user is working on." [ref=e152] [cursor=pointer]:
+                              - generic [ref=e153]:
+                                - generic [ref=e155]: list_projects
+                                - img [ref=e156]
+                              - paragraph [ref=e158]: Lists all Supabase projects for the user. Use this to help discover the project ID of the project that the user is working on.
+                          - group [ref=e160]:
+                            - generic "get_project Gets details for a Supabase project." [ref=e161] [cursor=pointer]:
+                              - generic [ref=e162]:
+                                - generic [ref=e164]: get_project
+                                - img [ref=e165]
+                              - paragraph [ref=e167]: Gets details for a Supabase project.
+                          - group [ref=e169]:
+                            - generic "get_cost Gets the cost of creating a new project or branch. Never assume organization as costs can be different for each." [ref=e170] [cursor=pointer]:
+                              - generic [ref=e171]:
+                                - generic [ref=e173]: get_cost
+                                - img [ref=e174]
+                              - paragraph [ref=e176]: Gets the cost of creating a new project or branch. Never assume organization as costs can be different for each.
+                          - group [ref=e178]:
+                            - 'generic "confirm_cost Ask the user to confirm their understanding of the cost of creating a new project or branch. Call `get_cost` first. Returns a unique ID for this confirmation which should be passed to `create_project` or `create_branch`." [ref=e179] [cursor=pointer]':
+                              - generic [ref=e180]:
+                                - generic [ref=e182]: confirm_cost
+                                - img [ref=e183]
+                              - paragraph [ref=e185]: "Ask the user to confirm their understanding of the cost of creating a new project or branch. Call `get_cost` first. Returns a unique ID for this confirmation which should be passed to `create_project` or `create_branch`."
+                          - group [ref=e187]:
+                            - 'generic "create_project Creates a new Supabase project. Always ask the user which organization to create the project in. The project can take a few minutes to initialize - use `get_project` to check the status." [ref=e188] [cursor=pointer]':
+                              - generic [ref=e189]:
+                                - generic [ref=e191]: create_project
+                                - img [ref=e192]
+                              - paragraph [ref=e194]: "Creates a new Supabase project. Always ask the user which organization to create the project in. The project can take a few minutes to initialize - use `get_project` to check the status."
+                          - group [ref=e196]:
+                            - generic "pause_project Pauses a Supabase project." [ref=e197] [cursor=pointer]:
+                              - generic [ref=e198]:
+                                - generic [ref=e200]: pause_project
+                                - img [ref=e201]
+                              - paragraph [ref=e203]: Pauses a Supabase project.
+                          - group [ref=e205]:
+                            - generic "restore_project Restores a Supabase project." [ref=e206] [cursor=pointer]:
+                              - generic [ref=e207]:
+                                - generic [ref=e209]: restore_project
+                                - img [ref=e210]
+                              - paragraph [ref=e212]: Restores a Supabase project.
+                          - group [ref=e213]:
+                            - generic "Show 19 more..." [ref=e214] [cursor=pointer]
+                - complementary [ref=e215]:
+                  - generic [ref=e216]:
+                    - heading "Connect" [level=2] [ref=e218]:
+                      - img [ref=e219]
+                      - text: Connect
+                    - generic [ref=e224]:
+                      - generic [ref=e225]:
+                        - generic [ref=e228]:
+                          - heading "Get connection URL" [level=4] [ref=e229]
+                          - img [ref=e230]
+                        - button "https://supabase.run.tools" [ref=e233] [cursor=pointer]:
+                          - generic [ref=e235]:
+                            - img [ref=e236]
+                            - text: https://supabase.run.tools
+                          - img [ref=e240]
+                      - generic [ref=e243]:
+                        - heading "Or connect your agent" [level=4] [ref=e246]
+                        - generic [ref=e249]:
+                          - tablist [ref=e250]:
+                            - tab "Agents" [selected] [ref=e251] [cursor=pointer]
+                            - tab "Humans" [ref=e252] [cursor=pointer]
+                          - tabpanel "Agents" [ref=e253]:
+                            - generic [ref=e254]:
+                              - generic [ref=e255]:
+                                - generic [ref=e256]:
+                                  - heading "Connection Prompt" [level=3] [ref=e257]:
+                                    - img [ref=e258]
+                                    - text: Connection Prompt
+                                  - paragraph [ref=e262]: Send this prompt to your agent
+                                - button "Copy" [ref=e263] [cursor=pointer]:
+                                  - img [ref=e264]
+                                  - generic [ref=e267]: Copy
+                              - paragraph [ref=e268]:
+                                - text: “curl https://smithery.ai/skill.md and connect to Supabase using
+                                - code [ref=e269]: smithery mcp add Supabase
+                                - text: ”
+                        - paragraph [ref=e270]:
+                          - text: Building a client or agent?
+                          - link "View developer docs" [ref=e271] [cursor=pointer]:
+                            - /url: /docs/use/connect
+                        - generic [ref=e272]:
+                          - generic [ref=e274]:
+                            - generic [ref=e275]: Published
+                            - generic [ref=e277]:
+                              - img [ref=e278]
+                              - text: Oct 2, 2025
+                          - generic [ref=e282]:
+                            - generic [ref=e283]: Homepage
+                            - link "supabase.com" [ref=e285] [cursor=pointer]:
+                              - /url: https://supabase.com/
+                              - img [ref=e286]
+                              - generic [ref=e290]: supabase.com
+                          - generic [ref=e293]:
+                            - generic [ref=e294]: Weekly Tool Calls
+                            - generic [ref=e296]:
+                              - generic [ref=e297]:
+                                - img [ref=e298]
+                                - generic [ref=e300]: "357"
+                              - img [ref=e304]
+            - generic [ref=e313]:
+              - heading "Performance" [level=2] [ref=e314]:
+                - img [ref=e315]
+                - text: Performance
+              - generic [ref=e318]:
+                - generic [ref=e319]:
+                  - generic [ref=e320]:
+                    - generic [ref=e321]: Tool
+                    - generic [ref=e322]: Calls
+                    - generic [ref=e323]: Latency
+                    - generic [ref=e324]: Uptime
+                  - generic [ref=e325]:
+                    - button "execute_sql 4,464 1.3s 99.7%" [ref=e326] [cursor=pointer]:
+                      - code [ref=e328]: execute_sql
+                      - generic [ref=e329]: 4,464
+                      - generic [ref=e330]: 1.3s
+                      - generic [ref=e331]: 99.7%
+                    - button "apply_migration 497 2.5s 99.2%" [ref=e332] [cursor=pointer]:
+                      - code [ref=e334]: apply_migration
+                      - generic [ref=e335]: "497"
+                      - generic [ref=e336]: 2.5s
+                      - generic [ref=e337]: 99.2%
+                    - button "list_projects 407 98ms 97.3%" [ref=e338] [cursor=pointer]:
+                      - code [ref=e340]: list_projects
+                      - generic [ref=e341]: "407"
+                      - generic [ref=e342]: 98ms
+                      - generic [ref=e343]: 97.3%
+                    - button "list_tables 232 1.6s 86.2%" [ref=e344] [cursor=pointer]:
+                      - code [ref=e346]: list_tables
+                      - generic [ref=e347]: "232"
+                      - generic [ref=e348]: 1.6s
+                      - generic [ref=e349]: 86.2%
+                    - button "get_logs 113 1.4s 96.5%" [ref=e350] [cursor=pointer]:
+                      - code [ref=e352]: get_logs
+                      - generic [ref=e353]: "113"
+                      - generic [ref=e354]: 1.4s
+                      - generic [ref=e355]: 96.5%
+                    - button "list_migrations 96 1.6s 100.0%" [ref=e356] [cursor=pointer]:
+                      - code [ref=e358]: list_migrations
+                      - generic [ref=e359]: "96"
+                      - generic [ref=e360]: 1.6s
+                      - generic [ref=e361]: 100.0%
+                    - button "search_docs 83 941ms 48.2%" [ref=e362] [cursor=pointer]:
+                      - code [ref=e364]: search_docs
+                      - generic [ref=e365]: "83"
+                      - generic [ref=e366]: 941ms
+                      - generic [ref=e367]: 48.2%
+                    - button "list_edge_functions 71 80ms 95.8%" [ref=e368] [cursor=pointer]:
+                      - code [ref=e370]: list_edge_functions
+                      - generic [ref=e371]: "71"
+                      - generic [ref=e372]: 80ms
+                      - generic [ref=e373]: 95.8%
+                    - button "deploy_edge_function 70 1.3s 100.0%" [ref=e374] [cursor=pointer]:
+                      - code [ref=e376]: deploy_edge_function
+                      - generic [ref=e377]: "70"
+                      - generic [ref=e378]: 1.3s
+                      - generic [ref=e379]: 100.0%
+                    - button "list_organizations 63 179ms 84.1%" [ref=e380] [cursor=pointer]:
+                      - code [ref=e382]: list_organizations
+                      - generic [ref=e383]: "63"
+                      - generic [ref=e384]: 179ms
+                      - generic [ref=e385]: 84.1%
+                    - button "get_project_url 61 159ms 98.4%" [ref=e386] [cursor=pointer]:
+                      - code [ref=e388]: get_project_url
+                      - generic [ref=e389]: "61"
+                      - generic [ref=e390]: 159ms
+                      - generic [ref=e391]: 98.4%
+                    - button "get_advisors 59 1.4s 88.1%" [ref=e392] [cursor=pointer]:
+                      - code [ref=e394]: get_advisors
+                      - generic [ref=e395]: "59"
+                      - generic [ref=e396]: 1.4s
+                      - generic [ref=e397]: 88.1%
+                    - button "get_publishable_keys 54 186ms 100.0%" [ref=e398] [cursor=pointer]:
+                      - code [ref=e400]: get_publishable_keys
+                      - generic [ref=e401]: "54"
+                      - generic [ref=e402]: 186ms
+                      - generic [ref=e403]: 100.0%
+                    - button "get_project 41 130ms 100.0%" [ref=e404] [cursor=pointer]:
+                      - code [ref=e406]: get_project
+                      - generic [ref=e407]: "41"
+                      - generic [ref=e408]: 130ms
+                      - generic [ref=e409]: 100.0%
+                    - button "get_edge_function 41 441ms 82.9%" [ref=e410] [cursor=pointer]:
+                      - code [ref=e412]: get_edge_function
+                      - generic [ref=e413]: "41"
+                      - generic [ref=e414]: 441ms
+                      - generic [ref=e415]: 82.9%
+                    - button "generate_typescript_types 23 4.3s 52.2%" [ref=e416] [cursor=pointer]:
+                      - code [ref=e418]: generate_typescript_types
+                      - generic [ref=e419]: "23"
+                      - generic [ref=e420]: 4.3s
+                      - generic [ref=e421]: 52.2%
+                    - button "get_cost 20 276ms 100.0%" [ref=e422] [cursor=pointer]:
+                      - code [ref=e424]: get_cost
+                      - generic [ref=e425]: "20"
+                      - generic [ref=e426]: 276ms
+                      - generic [ref=e427]: 100.0%
+                    - button "create_project 18 3.9s 100.0%" [ref=e428] [cursor=pointer]:
+                      - code [ref=e430]: create_project
+                      - generic [ref=e431]: "18"
+                      - generic [ref=e432]: 3.9s
+                      - generic [ref=e433]: 100.0%
+                    - button "confirm_cost 17 94ms 100.0%" [ref=e434] [cursor=pointer]:
+                      - code [ref=e436]: confirm_cost
+                      - generic [ref=e437]: "17"
+                      - generic [ref=e438]: 94ms
+                      - generic [ref=e439]: 100.0%
+                    - button "list_extensions 13 1.5s 92.3%" [ref=e440] [cursor=pointer]:
+                      - code [ref=e442]: list_extensions
+                      - generic [ref=e443]: "13"
+                      - generic [ref=e444]: 1.5s
+                      - generic [ref=e445]: 92.3%
+                    - button "get_organization 9 182ms 55.6%" [ref=e446] [cursor=pointer]:
+                      - code [ref=e448]: get_organization
+                      - generic [ref=e449]: "9"
+                      - generic [ref=e450]: 182ms
+                      - generic [ref=e451]: 55.6%
+                    - button "restore_project 8 51ms 100.0%" [ref=e452] [cursor=pointer]:
+                      - code [ref=e454]: restore_project
+                      - generic [ref=e455]: "8"
+                      - generic [ref=e456]: 51ms
+                      - generic [ref=e457]: 100.0%
+                    - button "list_branches 5 143ms 100.0%" [ref=e458] [cursor=pointer]:
+                      - code [ref=e460]: list_branches
+                      - generic [ref=e461]: "5"
+                      - generic [ref=e462]: 143ms
+                      - generic [ref=e463]: 100.0%
+                    - button "pause_project 3 2.3s 100.0%" [ref=e464] [cursor=pointer]:
+                      - code [ref=e466]: pause_project
+                      - generic [ref=e467]: "3"
+                      - generic [ref=e468]: 2.3s
+                      - generic [ref=e469]: 100.0%
+                  - generic [ref=e471]:
+                    - generic [ref=e472]: 6,468
+                    - generic [ref=e473]: 1.3s
+                    - generic [ref=e474]: 97.6%
+                - generic [ref=e475]:
+                  - generic [ref=e476]:
+                    - generic [ref=e477]:
+                      - generic [ref=e478]: Uptime (30d)
+                      - generic [ref=e479]: 99.7%
+                    - img [ref=e483]
+                  - generic [ref=e544]:
+                    - generic [ref=e545]:
+                      - generic [ref=e546]: Latency (30d)
+                      - generic [ref=e547]: 1.2s
+                    - application [ref=e551]:
+                      - generic [ref=e555]:
+                        - generic [ref=e557]: Mar 4
+                        - generic [ref=e559]: Mar 8
+                        - generic [ref=e561]: Mar 12
+                        - generic [ref=e563]: Mar 16
+                        - generic [ref=e565]: Mar 20
+                        - generic [ref=e567]: Mar 24
+                        - generic [ref=e569]: Mar 28
+                        - generic [ref=e571]: Apr 1
+                      - generic [ref=e573]:
+                        - generic [ref=e575]: 0ms
+                        - generic [ref=e577]: 450ms
+                        - generic [ref=e579]: 900ms
+                        - generic [ref=e581]: 1.4s
+                        - generic [ref=e583]: 1.8s
+            - generic [ref=e588]:
+              - heading "Usage" [level=2] [ref=e589]:
+                - img [ref=e590]
+                - text: Usage
+              - generic [ref=e592]:
+                - generic [ref=e593]:
+                  - heading "Top Clients" [level=3] [ref=e594]
+                  - generic [ref=e595]:
+                    - generic [ref=e596]:
+                      - generic [ref=e597]: "1"
+                      - img "Smithery" [ref=e599]
+                      - generic [ref=e601]:
+                        - generic [ref=e602]: Smithery
+                        - generic [ref=e603]: 18,243
+                    - generic [ref=e606]:
+                      - generic [ref=e607]: "2"
+                      - img "Codex" [ref=e609]
+                      - generic [ref=e611]:
+                        - generic [ref=e612]: Codex
+                        - generic [ref=e613]: 5,449
+                    - generic [ref=e616]:
+                      - generic [ref=e617]: "3"
+                      - img "Cursor" [ref=e619]
+                      - generic [ref=e621]:
+                        - generic [ref=e622]: Cursor
+                        - generic [ref=e623]: 3,603
+                    - generic [ref=e626]:
+                      - generic [ref=e627]: "4"
+                      - img "Claude Code" [ref=e629]
+                      - generic [ref=e631]:
+                        - generic [ref=e632]: Claude Code
+                        - generic [ref=e633]: 1,319
+                    - generic [ref=e636]:
+                      - generic [ref=e637]: "5"
+                      - img "Claude.ai" [ref=e639]
+                      - generic [ref=e641]:
+                        - generic [ref=e642]: Claude.ai
+                        - generic [ref=e643]: 1,169
+                  - generic [ref=e647]:
+                    - generic [ref=e648]: Total
+                    - generic [ref=e649]: 31,473
+                - generic [ref=e650]:
+                  - heading "Daily Sessions" [level=3] [ref=e651]
+                  - application [ref=e655]:
+                    - generic [ref=e659]:
+                      - generic [ref=e661]: Mar 4
+                      - generic [ref=e663]: Mar 7
+                      - generic [ref=e665]: Mar 10
+                      - generic [ref=e667]: Mar 13
+                      - generic [ref=e669]: Mar 16
+                      - generic [ref=e671]: Mar 19
+                      - generic [ref=e673]: Mar 22
+                      - generic [ref=e675]: Mar 25
+                      - generic [ref=e677]: Mar 28
+                      - generic [ref=e679]: Apr 1
+                    - generic [ref=e681]:
+                      - generic [ref=e683]: "0"
+                      - generic [ref=e685]: "700"
+                      - generic [ref=e687]: 1,400
+                      - generic [ref=e689]: 2,100
+                      - generic [ref=e691]: 2,800
+            - generic [ref=e754]:
+              - heading "API" [level=2] [ref=e755]:
+                - img [ref=e756]
+                - text: API
+              - generic [ref=e760]:
+                - generic [ref=e762]:
+                  - paragraph [ref=e763]:
+                    - text: Use
+                    - link "Smithery Connect" [ref=e764] [cursor=pointer]:
+                      - /url: /docs/use/connect
+                    - text: to integrate this server into your application. Create a connection, then use the MCP SDK or AI SDK to call tools — OAuth, token refresh, and session management are handled for you.
+                  - generic [ref=e765]:
+                    - link "Create API key" [ref=e766] [cursor=pointer]:
+                      - /url: /account/api-keys
+                      - img [ref=e767]
+                      - text: Create API key
+                    - link "Manage Connections" [ref=e771] [cursor=pointer]:
+                      - /url: /account/connections
+                      - img [ref=e772]
+                      - text: Manage Connections
+                - generic [ref=e778]:
+                  - generic [ref=e779]:
+                    - button "CLI" [ref=e780] [cursor=pointer]:
+                      - img [ref=e781]
+                      - text: CLI
+                    - button "AI SDK" [ref=e783] [cursor=pointer]:
+                      - img [ref=e784]
+                      - text: AI SDK
+                    - button "TypeScript" [ref=e786] [cursor=pointer]:
+                      - img [ref=e787]
+                      - text: TypeScript
+                  - generic [ref=e789]:
+                    - generic [ref=e790]:
+                      - paragraph [ref=e791]: 1. Install Smithery CLI
+                      - button "npm install -g @smithery/cli@latest" [ref=e792] [cursor=pointer]:
+                        - code [ref=e796]:
+                          - generic [ref=e797]: npm install -g @smithery/cli@latest
+                        - img [ref=e799]
+                    - generic [ref=e802]:
+                      - paragraph [ref=e803]: 2. Create a namespace
+                      - 'button "smithery namespace create {your-namespace}" [ref=e804] [cursor=pointer]':
+                        - code [ref=e808]:
+                          - generic [ref=e809]: "smithery namespace create {your-namespace}"
+                        - img [ref=e811]
+                    - generic [ref=e814]:
+                      - paragraph [ref=e815]: 3. Use this server
+                      - generic [ref=e816]:
+                        - button "Copy" [ref=e818] [cursor=pointer]:
+                          - img [ref=e819]
+                        - code [ref=e825]:
+                          - generic [ref=e826]: "# Add this server"
+                          - generic [ref=e827]: smithery mcp add Supabase
+                          - generic [ref=e828]: "# List available tools"
+                          - generic [ref=e829]: "smithery tool list {connection}"
+                          - generic [ref=e830]: "# Call a tool"
+                          - generic [ref=e831]: "smithery tool call {connection} {tool_name} '{\"key\": \"value\"}'"
+    - contentinfo [ref=e832]:
+      - generic [ref=e833]:
+        - generic [ref=e834]:
+          - generic [ref=e835]:
+            - link "Smithery Logo" [ref=e836] [cursor=pointer]:
+              - /url: /
+              - img "Smithery Logo" [ref=e837]
+            - paragraph [ref=e838]: Accelerating the Agent Economy
+          - generic [ref=e839]:
+            - heading "Resources" [level=3] [ref=e840]
+            - generic [ref=e841]:
+              - link "Documentation" [ref=e842] [cursor=pointer]:
+                - /url: /docs
+              - link "Privacy Policy" [ref=e843] [cursor=pointer]:
+                - /url: /privacy
+              - link "System Status" [ref=e844] [cursor=pointer]:
+                - /url: https://status.smithery.ai
+          - generic [ref=e845]:
+            - heading "Company" [level=3] [ref=e846]
+            - generic [ref=e847]:
+              - link "Pricing" [ref=e848] [cursor=pointer]:
+                - /url: /pricing
+              - link "About" [ref=e849] [cursor=pointer]:
+                - /url: /about
+              - link "Blog" [ref=e850] [cursor=pointer]:
+                - /url: /blog
+          - generic [ref=e851]:
+            - heading "Connect" [level=3] [ref=e852]
+            - generic [ref=e853]:
+              - link "X" [ref=e854] [cursor=pointer]:
+                - /url: https://x.com/SmitheryDotAi
+                - img [ref=e855]
+              - link "GitHub Organization" [ref=e857] [cursor=pointer]:
+                - /url: https://github.com/smithery-ai
+                - img [ref=e858]
+              - link "Discord server" [ref=e860] [cursor=pointer]:
+                - /url: https://discord.gg/sKd9uycgH9
+                - img [ref=e861]
+        - generic [ref=e864]:
+          - paragraph [ref=e865]: © 2026 Smithery. All rights reserved.
+          - group "Theme selector" [ref=e867]:
+            - radio "Light theme" [ref=e868] [cursor=pointer]:
+              - img [ref=e869]
+            - radio "System theme" [checked] [ref=e875] [cursor=pointer]:
+              - img [ref=e876]
+            - radio "Dark theme" [ref=e878] [cursor=pointer]:
+              - img [ref=e879]
+    - region "Notifications (F8)":
+      - list
+  - alert [ref=e881]
+  - generic [ref=e882]: "0"

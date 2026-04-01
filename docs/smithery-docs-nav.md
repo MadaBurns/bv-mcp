@@ -1,0 +1,124 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - link "Skip to main content" [ref=e3] [cursor=pointer]:
+      - /url: "#content-area"
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - generic [ref=e9]:
+            - link "Smithery Documentation home page light logo" [ref=e10] [cursor=pointer]:
+              - /url: https://smithery.ai
+            - button "Toggle dark mode" [ref=e13] [cursor=pointer]
+          - generic [ref=e27]:
+            - button "Open search" [ref=e28] [cursor=pointer]
+            - button "Toggle assistant panel" [ref=e35] [cursor=pointer]
+          - generic [ref=e40]:
+            - list
+            - generic [ref=e41]
+            - generic [ref=e59]
+            - generic [ref=e98]
+            - generic [ref=e116]
+            - generic [ref=e125]
+            - generic [ref=e144]
+            - generic [ref=e153]
+        - list [ref=e202]:
+          - listitem [ref=e203]:
+            - link "Support" [ref=e204] [cursor=pointer]:
+              - /url: mailto:support@smithery.ai
+          - listitem [ref=e212]:
+            - link "Discord" [ref=e213] [cursor=pointer]:
+              - /url: https://discord.gg/Afd38S5p9A
+          - listitem
+      - generic [ref=e222]:
+        - banner [ref=e223]:
+          - generic [ref=e224]:
+            - generic [ref=e225]: Getting Started
+            - generic [ref=e226]
+          - paragraph [ref=e239]:
+            - text: Smithery is the largest open marketplace of
+            - link "Model Context Protocol" [ref=e240] [cursor=pointer]:
+              - /url: https://modelcontextprotocol.io/docs/getting-started/intro
+            - text: (MCP) servers. Discover and use MCP servers that enable LLMs to search the web, access databases, and much more.
+        - generic [ref=e241]:
+          - heading "Navigate to header What can I do with Smithery?" [level=2] [ref=e242]:
+            - link "Navigate to header" [ref=e243] [cursor=pointer]:
+              - /url: "#what-can-i-do-with-smithery"
+            - generic [ref=e247] [cursor=pointer]: What can I do with Smithery?
+          - generic [ref=e248]: "You can use Smithery to find, use, and publish MCP servers. Popular MCP servers on Smithery include:"
+          - list [ref=e249]:
+            - listitem [ref=e250]
+            - listitem [ref=e252]
+            - listitem [ref=e254]
+          - link [ref=e257] [cursor=pointer]:
+            - link [ref=e259]:
+              - /url: /docs/concepts/what_is_mcp
+          - heading "Navigate to header Quickstarts" [level=2] [ref=e266]:
+            - link "Navigate to header" [ref=e267] [cursor=pointer]:
+              - /url: "#quickstarts"
+            - generic [ref=e271] [cursor=pointer]: Quickstarts
+          - generic [ref=e272]:
+            - link [ref=e273] [cursor=pointer]
+            - link [ref=e282] [cursor=pointer]
+          - heading "Navigate to header LLM-Friendly Docs" [level=2] [ref=e291]:
+            - link "Navigate to header" [ref=e292] [cursor=pointer]:
+              - /url: "#llm-friendly-docs"
+            - generic [ref=e296] [cursor=pointer]: LLM-Friendly Docs
+          - generic [ref=e297]: "The Smithery documentation is available in multiple LLM-friendly formats:"
+          - heading "Navigate to header MCP Server" [level=3] [ref=e298]:
+            - link "Navigate to header" [ref=e299] [cursor=pointer]:
+              - /url: "#mcp-server"
+            - generic [ref=e303] [cursor=pointer]: MCP Server
+          - generic [ref=e304]:
+            - text: The Smithery docs are accessible via MCP at
+            - code [ref=e305]: https://smithery.ai/docs/mcp
+            - text: . You can also use the
+            - link "Context7 MCP server" [ref=e306] [cursor=pointer]:
+              - /url: https://smithery.ai/servers/@upstash/context7-mcp
+            - text: to search the Smithery documentation.
+          - heading "Navigate to header Agent Scaffolds" [level=3] [ref=e307]:
+            - link "Navigate to header" [ref=e308] [cursor=pointer]:
+              - /url: "#agent-scaffolds"
+            - generic [ref=e312] [cursor=pointer]: Agent Scaffolds
+          - generic [ref=e313]: "Reference implementations for building agents with Smithery:"
+          - list [ref=e314]:
+            - listitem [ref=e315]
+            - listitem [ref=e317]
+          - heading "Navigate to header Markdown Format" [level=3] [ref=e319]:
+            - link "Navigate to header" [ref=e320] [cursor=pointer]:
+              - /url: "#markdown-format"
+            - generic [ref=e324] [cursor=pointer]: Markdown Format
+          - generic [ref=e325]:
+            - text: Any page can be accessed as markdown by appending
+            - code [ref=e326]: .md
+            - text: to the URL. For example, this page becomes
+            - code [ref=e327]: https://smithery.ai/docs/index.md
+            - text: . You can also copy any page as markdown directly from the documentation.
+        - generic [ref=e329]:
+          - paragraph [ref=e330]: Was this page helpful?
+          - generic [ref=e332]:
+            - button "Yes" [ref=e333] [cursor=pointer]
+            - button "No" [ref=e337] [cursor=pointer]
+        - link "Connect to servers Connect to an MCP server Next" [ref=e342] [cursor=pointer]:
+          - /url: /docs/getting_started/quickstart_connect
+          - generic [ref=e343]:
+            - generic [ref=e344]
+            - generic [ref=e348]
+        - generic [ref=e353]:
+          - textbox "Ask a question..." [ref=e354]
+          - generic: ⌘I
+          - button "Send message" [disabled] [ref=e355]:
+            - img [ref=e356]
+        - contentinfo [ref=e358]:
+          - generic [ref=e359]:
+            - link "github" [ref=e360] [cursor=pointer]:
+              - /url: https://github.com/smithery-ai
+            - link "twitter" [ref=e363] [cursor=pointer]:
+              - /url: https://twitter.com/SmitheryDotAI
+            - link "discord" [ref=e366] [cursor=pointer]:
+              - /url: https://discord.gg/Afd38S5p9A
+          - link "Powered by This documentation is built and hosted on Mintlify, a developer documentation platform" [ref=e371] [cursor=pointer]:
+            - /url: https://www.mintlify.com?utm_campaign=poweredBy&utm_medium=referral&utm_source=smithery
+            - generic [ref=e372]: Powered by
+            - img [ref=e373]
+            - generic [ref=e382]: This documentation is built and hosted on Mintlify, a developer documentation platform
+  - alert [ref=e383]
