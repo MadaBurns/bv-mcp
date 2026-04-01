@@ -19,7 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [2.1.18] - 2026-04-01
 
 ### Added
-- **`chaos-test-clients.py`** — comprehensive chaos test covering all 9 detected MCP client types (`claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `unknown`). 56 assertions across 10 sections: session lifecycle per client, format auto-detection (interactive → compact / non-interactive → full), explicit format override, `api_key` query param auth, Bearer vs `api_key` precedence, 9-client concurrent burst, legacy SSE per UA, session edge cases (missing, revival, tombstone, malformed), protocol guards (Content-Type, body size, GET without Accept), and batch JSON-RPC.
+- **`scripts/chaos/chaos-test-clients.py`** — comprehensive chaos test covering all 9 detected MCP client types
+ (`claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `unknown`). 56 assertions across 10 sections: session lifecycle per client, format auto-detection (interactive → compact / non-interactive → full), explicit format override, `api_key` query param auth, Bearer vs `api_key` precedence, 9-client concurrent burst, legacy SSE per UA, session edge cases (missing, revival, tombstone, malformed), protocol guards (Content-Type, body size, GET without Accept), and batch JSON-RPC.
 
 ## [2.1.17] - 2026-04-01
 

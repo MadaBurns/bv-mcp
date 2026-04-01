@@ -344,7 +344,7 @@ The query parameter method is the simplest for clients that only support URL con
 If you are a developer troubleshooting how different MCP clients handle authentication, session lifecycles, or message formats, use the included chaos test:
 
 ```bash
-python3 chaos-test-clients.py
+python3 scripts/chaos/chaos-test-clients.py
 ```
 
 This test covers all 9 detected MCP client types and 56 assertions across session management, auth precedence, and transport-specific edge cases.

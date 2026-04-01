@@ -15,7 +15,7 @@ An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` 
 npm install                            # Install deps (includes workspace packages)
 npm test                               # Vitest + Istanbul coverage (Workers runtime)
 npx vitest run test/check-spf.spec.ts  # Run a single test file
-python3 chaos-test-clients.py          # Chaos test: all 9 client types (v2.1.17+)
+python3 scripts/chaos/chaos-test-clients.py          # Chaos test: all 9 client types (v2.1.17+)
 npm run build                          # tsup build (npm package + stdio CLI bundle)
 npm run dev                            # Local dev at localhost:8787
 npm run typecheck                      # tsc --noEmit
