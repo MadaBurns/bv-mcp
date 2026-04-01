@@ -1,0 +1,173 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - link "Skip to main content" [ref=e3] [cursor=pointer]:
+      - /url: "#content-area"
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - generic [ref=e9]:
+            - link "Smithery Documentation home page light logo" [ref=e10] [cursor=pointer]:
+              - /url: https://smithery.ai
+              - generic [ref=e11]: Smithery Documentation home page
+              - img "light logo" [ref=e12]
+            - button "Toggle dark mode" [ref=e13] [cursor=pointer]:
+              - generic [ref=e14]:
+                - img [ref=e15]
+                - img [ref=e22]
+          - generic [ref=e27]:
+            - button "Open search" [ref=e28] [cursor=pointer]:
+              - generic [ref=e29]:
+                - img [ref=e30]
+                - generic [ref=e33]: Search...
+              - generic [ref=e34]: ⌘K
+            - button "Toggle assistant panel" [ref=e35] [cursor=pointer]:
+              - img [ref=e36]
+          - generic [ref=e40]:
+            - list
+            - generic [ref=e41]:
+              - heading "Getting Started" [level=5] [ref=e43]
+              - list [ref=e44]:
+                - listitem [ref=e45]:
+                  - link "Introduction" [ref=e46] [cursor=pointer]:
+                    - /url: /docs
+                    - img [ref=e48]
+                    - generic [ref=e51]: Introduction
+                - listitem [ref=e52]:
+                  - link "Connect to servers" [ref=e53] [cursor=pointer]:
+                    - /url: /docs/getting_started/quickstart_connect
+                    - img [ref=e55]
+                    - generic [ref=e58]: Connect to servers
+            - generic [ref=e59]:
+              - heading "Clients" [level=5] [ref=e61]
+              - list [ref=e62]:
+                - listitem [ref=e63]:
+                  - link "Overview" [ref=e64] [cursor=pointer]:
+                    - /url: /docs/use
+                    - img [ref=e66]
+                    - generic [ref=e69]: Overview
+                - listitem [ref=e70]:
+                  - link "Connect to MCPs" [ref=e71] [cursor=pointer]:
+                    - /url: /docs/use/connect
+                    - img [ref=e73]
+                    - generic [ref=e76]: Connect to MCPs
+                - listitem [ref=e77]:
+                  - link "Token Scoping" [ref=e78] [cursor=pointer]:
+                    - /url: /docs/use/token-scoping
+                    - img [ref=e80]
+                    - generic [ref=e83]: Token Scoping
+                - listitem [ref=e84]:
+                  - link "Deep Linking" [ref=e85] [cursor=pointer]:
+                    - /url: /docs/use/deep-linking
+                    - img [ref=e87]
+                    - generic [ref=e90]: Deep Linking
+                - listitem [ref=e91]:
+                  - link "Listing Your Client" [ref=e92] [cursor=pointer]:
+                    - /url: /docs/use/listing_your_client
+                    - img [ref=e94]
+                    - generic [ref=e97]: Listing Your Client
+            - generic [ref=e98]:
+              - heading "Servers" [level=5] [ref=e100]
+              - list [ref=e101]:
+                - listitem [ref=e102]:
+                  - link "Overview" [ref=e103] [cursor=pointer]:
+                    - /url: /docs/build
+                    - img [ref=e105]
+                    - generic [ref=e108]: Overview
+                - listitem [ref=e109]:
+                  - link "Publish" [ref=e110] [cursor=pointer]:
+                    - /url: /docs/build/publish
+                    - img [ref=e112]
+                    - generic [ref=e115]: Publish
+            - generic [ref=e116]:
+              - heading "Integrations" [level=5] [ref=e118]
+              - list [ref=e119]:
+                - listitem [ref=e120]:
+                  - link "Vercel AI SDK Integration" [ref=e121] [cursor=pointer]:
+                    - /url: /docs/integrations/vercel_ai_sdk
+                    - generic [ref=e124]: Vercel AI SDK Integration
+            - generic [ref=e125]:
+              - heading "Concepts" [level=5] [ref=e127]
+              - list [ref=e128]:
+                - listitem [ref=e129]:
+                  - link "What is MCP?" [ref=e130] [cursor=pointer]:
+                    - /url: /docs/concepts/what_is_mcp
+                    - generic [ref=e133]: What is MCP?
+                - listitem [ref=e134]:
+                  - link "Namespaces" [ref=e135] [cursor=pointer]:
+                    - /url: /docs/concepts/namespaces
+                    - generic [ref=e138]: Namespaces
+                - listitem [ref=e139]:
+                  - link "Smithery CLI" [ref=e140] [cursor=pointer]:
+                    - /url: /docs/concepts/cli
+                    - generic [ref=e143]: Smithery CLI
+            - generic [ref=e144]:
+              - heading "Cookbooks" [level=5] [ref=e146]
+              - list [ref=e147]:
+                - listitem [ref=e148]:
+                  - link "Build an OAuth-compatible client" [ref=e149] [cursor=pointer]:
+                    - /url: /docs/cookbooks/typescript_oauth_client
+                    - generic [ref=e152]: Build an OAuth-compatible client
+            - generic [ref=e153]:
+              - heading "API Reference" [level=5] [ref=e155]
+              - list [ref=e156]:
+                - listitem [ref=e157]:
+                  - button "Toggle API Reference section" [ref=e158] [cursor=pointer]:
+                    - generic [ref=e159]: API Reference
+                    - img [ref=e160]
+                - listitem [ref=e162]:
+                  - button "Toggle servers section" [ref=e163] [cursor=pointer]:
+                    - generic [ref=e164]: servers
+                    - img [ref=e165]
+                - listitem [ref=e167]:
+                  - button "Toggle skills section" [ref=e168] [cursor=pointer]:
+                    - generic [ref=e169]: skills
+                    - img [ref=e170]
+                - listitem [ref=e172]:
+                  - button "Toggle tokens section" [ref=e173] [cursor=pointer]:
+                    - generic [ref=e174]: tokens
+                    - img [ref=e175]
+                - listitem [ref=e177]:
+                  - button "Toggle uplink section" [ref=e178] [cursor=pointer]:
+                    - generic [ref=e179]: uplink
+                    - img [ref=e180]
+                - listitem [ref=e182]:
+                  - button "Toggle namespaces section" [ref=e183] [cursor=pointer]:
+                    - generic [ref=e184]: namespaces
+                    - img [ref=e185]
+                - listitem [ref=e187]:
+                  - button "Toggle connect section" [ref=e188] [cursor=pointer]:
+                    - generic [ref=e189]: connect
+                    - img [ref=e190]
+                - listitem [ref=e192]:
+                  - button "Toggle connect.mcp section" [ref=e193] [cursor=pointer]:
+                    - generic [ref=e194]: connect.mcp
+                    - img [ref=e195]
+                - listitem [ref=e197]:
+                  - button "Toggle connect.events section" [ref=e198] [cursor=pointer]:
+                    - generic [ref=e199]: connect.events
+                    - img [ref=e200]
+        - list [ref=e202]:
+          - listitem [ref=e203]:
+            - link "Support" [ref=e204] [cursor=pointer]:
+              - /url: mailto:support@smithery.ai
+              - generic [ref=e207]: Support
+              - img [ref=e209]
+          - listitem [ref=e212]:
+            - link "Discord" [ref=e213] [cursor=pointer]:
+              - /url: https://discord.gg/Afd38S5p9A
+              - generic [ref=e216]: Discord
+              - img [ref=e218]
+          - listitem
+      - generic [ref=e224]:
+        - generic [ref=e225]:
+          - generic [ref=e226]: "404"
+          - heading "Page Not Found" [level=1] [ref=e227]
+          - generic [ref=e228]: We couldn't find the page. Maybe you were looking for one of these pages below?
+        - generic [ref=e230]:
+          - link "Build an OAuth-compatible client" [ref=e231] [cursor=pointer]:
+            - /url: /docs/cookbooks/typescript_oauth_client#build-an-oauth-compatible-client
+          - link "Introduction" [ref=e232] [cursor=pointer]:
+            - /url: /docs/index#agent-scaffolds
+          - link "What is MCP?" [ref=e233] [cursor=pointer]:
+            - /url: /docs/concepts/what_is_mcp#what-does-smithery-do-with-mcp
+  - alert [ref=e234]

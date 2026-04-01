@@ -72,7 +72,8 @@
 		"typecheck": "tsc --noEmit",
 		"cf-typegen": "wrangler types",
 		"lint": "eslint .",
-		"lint:fix": "eslint . --fix"
+		"lint:fix": "eslint . --fix",
+		"build:wasm": "cd crates/bv-wasm-core && /Users/adam/.cargo/bin/wasm-pack build --target web"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.13.3",

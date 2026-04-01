@@ -1,0 +1,314 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - link "Skip to main content" [ref=e3] [cursor=pointer]:
+      - /url: "#content-area"
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - generic [ref=e9]:
+            - link "Smithery Documentation home page light logo" [ref=e10] [cursor=pointer]:
+              - /url: https://smithery.ai
+              - generic [ref=e11]: Smithery Documentation home page
+              - img "light logo" [ref=e12]
+            - button "Toggle dark mode" [ref=e13] [cursor=pointer]:
+              - generic [ref=e14]:
+                - img [ref=e15]
+                - img [ref=e22]
+          - generic [ref=e27]:
+            - button "Open search" [ref=e28] [cursor=pointer]:
+              - generic [ref=e29]:
+                - img [ref=e30]
+                - generic [ref=e33]: Search...
+              - generic [ref=e34]: ⌘K
+            - button "Toggle assistant panel" [ref=e35] [cursor=pointer]:
+              - img [ref=e36]
+          - generic [ref=e40]:
+            - list
+            - generic [ref=e41]:
+              - heading "Getting Started" [level=5] [ref=e43]
+              - list [ref=e44]:
+                - listitem [ref=e45]:
+                  - link "Introduction" [ref=e46] [cursor=pointer]:
+                    - /url: /docs
+                    - img [ref=e48]
+                    - generic [ref=e51]: Introduction
+                - listitem [ref=e52]:
+                  - link "Connect to servers" [ref=e53] [cursor=pointer]:
+                    - /url: /docs/getting_started/quickstart_connect
+                    - img [ref=e55]
+                    - generic [ref=e58]: Connect to servers
+            - generic [ref=e59]:
+              - heading "Clients" [level=5] [ref=e61]
+              - list [ref=e62]:
+                - listitem [ref=e63]:
+                  - link "Overview" [ref=e64] [cursor=pointer]:
+                    - /url: /docs/use
+                    - img [ref=e66]
+                    - generic [ref=e69]: Overview
+                - listitem [ref=e70]:
+                  - link "Connect to MCPs" [ref=e71] [cursor=pointer]:
+                    - /url: /docs/use/connect
+                    - img [ref=e73]
+                    - generic [ref=e76]: Connect to MCPs
+                - listitem [ref=e77]:
+                  - link "Token Scoping" [ref=e78] [cursor=pointer]:
+                    - /url: /docs/use/token-scoping
+                    - img [ref=e80]
+                    - generic [ref=e83]: Token Scoping
+                - listitem [ref=e84]:
+                  - link "Deep Linking" [ref=e85] [cursor=pointer]:
+                    - /url: /docs/use/deep-linking
+                    - img [ref=e87]
+                    - generic [ref=e90]: Deep Linking
+                - listitem [ref=e91]:
+                  - link "Listing Your Client" [ref=e92] [cursor=pointer]:
+                    - /url: /docs/use/listing_your_client
+                    - img [ref=e94]
+                    - generic [ref=e97]: Listing Your Client
+            - generic [ref=e98]:
+              - heading "Servers" [level=5] [ref=e100]
+              - list [ref=e101]:
+                - listitem [ref=e102]:
+                  - link "Overview" [ref=e103] [cursor=pointer]:
+                    - /url: /docs/build
+                    - img [ref=e105]
+                    - generic [ref=e108]: Overview
+                - listitem [ref=e109]:
+                  - link "Publish" [ref=e110] [cursor=pointer]:
+                    - /url: /docs/build/publish
+                    - img [ref=e112]
+                    - generic [ref=e115]: Publish
+            - generic [ref=e116]:
+              - heading "Integrations" [level=5] [ref=e118]
+              - list [ref=e119]:
+                - listitem [ref=e120]:
+                  - link "Vercel AI SDK Integration" [ref=e121] [cursor=pointer]:
+                    - /url: /docs/integrations/vercel_ai_sdk
+                    - generic [ref=e124]: Vercel AI SDK Integration
+            - generic [ref=e125]:
+              - heading "Concepts" [level=5] [ref=e127]
+              - list [ref=e128]:
+                - listitem [ref=e129]:
+                  - link "What is MCP?" [ref=e130] [cursor=pointer]:
+                    - /url: /docs/concepts/what_is_mcp
+                    - generic [ref=e133]: What is MCP?
+                - listitem [ref=e134]:
+                  - link "Namespaces" [ref=e135] [cursor=pointer]:
+                    - /url: /docs/concepts/namespaces
+                    - generic [ref=e138]: Namespaces
+                - listitem [ref=e139]:
+                  - link "Smithery CLI" [ref=e140] [cursor=pointer]:
+                    - /url: /docs/concepts/cli
+                    - generic [ref=e143]: Smithery CLI
+            - generic [ref=e144]:
+              - heading "Cookbooks" [level=5] [ref=e146]
+              - list [ref=e147]:
+                - listitem [ref=e148]:
+                  - link "Build an OAuth-compatible client" [ref=e149] [cursor=pointer]:
+                    - /url: /docs/cookbooks/typescript_oauth_client
+                    - generic [ref=e152]: Build an OAuth-compatible client
+            - generic [ref=e153]:
+              - heading "API Reference" [level=5] [ref=e155]
+              - list [ref=e156]:
+                - listitem [ref=e157]:
+                  - button "Toggle API Reference section" [ref=e158] [cursor=pointer]:
+                    - generic [ref=e159]: API Reference
+                    - img [ref=e160]
+                - listitem [ref=e162]:
+                  - button "Toggle servers section" [ref=e163] [cursor=pointer]:
+                    - generic [ref=e164]: servers
+                    - img [ref=e165]
+                - listitem [ref=e167]:
+                  - button "Toggle skills section" [ref=e168] [cursor=pointer]:
+                    - generic [ref=e169]: skills
+                    - img [ref=e170]
+                - listitem [ref=e172]:
+                  - button "Toggle tokens section" [ref=e173] [cursor=pointer]:
+                    - generic [ref=e174]: tokens
+                    - img [ref=e175]
+                - listitem [ref=e177]:
+                  - button "Toggle uplink section" [ref=e178] [cursor=pointer]:
+                    - generic [ref=e179]: uplink
+                    - img [ref=e180]
+                - listitem [ref=e182]:
+                  - button "Toggle namespaces section" [ref=e183] [cursor=pointer]:
+                    - generic [ref=e184]: namespaces
+                    - img [ref=e185]
+                - listitem [ref=e187]:
+                  - button "Toggle connect section" [ref=e188] [cursor=pointer]:
+                    - generic [ref=e189]: connect
+                    - img [ref=e190]
+                - listitem [ref=e192]:
+                  - button "Toggle connect.mcp section" [ref=e193] [cursor=pointer]:
+                    - generic [ref=e194]: connect.mcp
+                    - img [ref=e195]
+                - listitem [ref=e197]:
+                  - button "Toggle connect.events section" [ref=e198] [cursor=pointer]:
+                    - generic [ref=e199]: connect.events
+                    - img [ref=e200]
+        - list [ref=e202]:
+          - listitem [ref=e203]:
+            - link "Support" [ref=e204] [cursor=pointer]:
+              - /url: mailto:support@smithery.ai
+              - generic [ref=e207]: Support
+              - img [ref=e209]
+          - listitem [ref=e212]:
+            - link "Discord" [ref=e213] [cursor=pointer]:
+              - /url: https://discord.gg/Afd38S5p9A
+              - generic [ref=e216]: Discord
+              - img [ref=e218]
+          - listitem
+      - generic [ref=e222]:
+        - banner [ref=e223]:
+          - generic [ref=e224]:
+            - generic [ref=e225]: Getting Started
+            - generic [ref=e226]:
+              - heading "Introduction" [level=1] [ref=e227]
+              - generic [ref=e228]:
+                - button "Copy page" [ref=e229] [cursor=pointer]:
+                  - generic [ref=e230]:
+                    - img [ref=e231]
+                    - generic [ref=e234]: Copy page
+                - button "More actions" [ref=e235] [cursor=pointer]:
+                  - img [ref=e236]
+          - paragraph [ref=e239]:
+            - text: Smithery is the largest open marketplace of
+            - link "Model Context Protocol" [ref=e240] [cursor=pointer]:
+              - /url: https://modelcontextprotocol.io/docs/getting-started/intro
+            - text: (MCP) servers. Discover and use MCP servers that enable LLMs to search the web, access databases, and much more.
+        - generic [ref=e241]:
+          - heading "Navigate to header What can I do with Smithery?" [level=2] [ref=e242]:
+            - link "Navigate to header" [ref=e243] [cursor=pointer]:
+              - /url: "#what-can-i-do-with-smithery"
+              - img [ref=e245]
+            - generic [ref=e247] [cursor=pointer]: What can I do with Smithery?
+          - generic [ref=e248]: "You can use Smithery to find, use, and publish MCP servers. Popular MCP servers on Smithery include:"
+          - list [ref=e249]:
+            - listitem [ref=e250]:
+              - link "Exa" [ref=e251] [cursor=pointer]:
+                - /url: https://smithery.ai/servers/exa
+              - text: "- Search the live web, access LinkedIn profiles, do deep research, and more"
+            - listitem [ref=e252]:
+              - link "Context7" [ref=e253] [cursor=pointer]:
+                - /url: https://smithery.ai/servers/@upstash/context7-mcp
+              - text: "- Reference the latest docs for most major SDKs and frameworks directly in Cursor or Claude Code"
+            - listitem [ref=e254]:
+              - link "Browserbase" [ref=e255] [cursor=pointer]:
+                - /url: https://smithery.ai/servers/@browserbasehq/mcp-browserbase
+              - text: "- Control a remote web browser using"
+              - link "Stagehand" [ref=e256] [cursor=pointer]:
+                - /url: https://stagehand.dev
+          - link [ref=e257] [cursor=pointer]:
+            - link [ref=e259]:
+              - /url: /docs/concepts/what_is_mcp
+              - img [ref=e261]
+              - generic [ref=e262]:
+                - heading [level=2] [ref=e263]: What is MCP? What does Smithery actually do?
+                - generic [ref=e265]: Learn more about MCP and how to use Smithery in our concepts section
+          - heading "Navigate to header Quickstarts" [level=2] [ref=e266]:
+            - link "Navigate to header" [ref=e267] [cursor=pointer]:
+              - /url: "#quickstarts"
+              - img [ref=e269]
+            - generic [ref=e271] [cursor=pointer]: Quickstarts
+          - generic [ref=e272]:
+            - link [ref=e273] [cursor=pointer]:
+              - link [ref=e275]:
+                - /url: /docs/use/connect
+                - img [ref=e277]
+                - generic [ref=e278]:
+                  - heading [level=2] [ref=e279]: Smithery Connect
+                  - generic [ref=e281]: Add MCP servers to your app with managed OAuth and credentials
+            - link [ref=e282] [cursor=pointer]:
+              - link [ref=e284]:
+                - /url: /docs/build/publish
+                - img [ref=e286]
+                - generic [ref=e287]:
+                  - heading [level=2] [ref=e288]: Publish MCP Servers
+                  - generic [ref=e290]: Publish your MCP servers to Smithery for distribution and observability
+          - heading "Navigate to header LLM-Friendly Docs" [level=2] [ref=e291]:
+            - link "Navigate to header" [ref=e292] [cursor=pointer]:
+              - /url: "#llm-friendly-docs"
+              - img [ref=e294]
+            - generic [ref=e296] [cursor=pointer]: LLM-Friendly Docs
+          - generic [ref=e297]: "The Smithery documentation is available in multiple LLM-friendly formats:"
+          - heading "Navigate to header MCP Server" [level=3] [ref=e298]:
+            - link "Navigate to header" [ref=e299] [cursor=pointer]:
+              - /url: "#mcp-server"
+              - img [ref=e301]
+            - generic [ref=e303] [cursor=pointer]: MCP Server
+          - generic [ref=e304]:
+            - text: The Smithery docs are accessible via MCP at
+            - code [ref=e305]: https://smithery.ai/docs/mcp
+            - text: . You can also use the
+            - link "Context7 MCP server" [ref=e306] [cursor=pointer]:
+              - /url: https://smithery.ai/servers/@upstash/context7-mcp
+            - text: to search the Smithery documentation.
+          - heading "Navigate to header Agent Scaffolds" [level=3] [ref=e307]:
+            - link "Navigate to header" [ref=e308] [cursor=pointer]:
+              - /url: "#agent-scaffolds"
+              - img [ref=e310]
+            - generic [ref=e312] [cursor=pointer]: Agent Scaffolds
+          - generic [ref=e313]: "Reference implementations for building agents with Smithery:"
+          - list [ref=e314]:
+            - listitem [ref=e315]:
+              - link "Basic Scaffold" [ref=e316] [cursor=pointer]:
+                - /url: https://github.com/smithery-ai/sdk/blob/main/examples/basic-server/AGENTS.md
+              - text: "- Build basic MCP servers"
+            - listitem [ref=e317]:
+              - link "ChatGPT App" [ref=e318] [cursor=pointer]:
+                - /url: https://github.com/smithery-ai/sdk/blob/main/examples/open-ai-hello-server/AGENTS.md
+              - text: "- Build ChatGPT apps"
+          - heading "Navigate to header Markdown Format" [level=3] [ref=e319]:
+            - link "Navigate to header" [ref=e320] [cursor=pointer]:
+              - /url: "#markdown-format"
+              - img [ref=e322]
+            - generic [ref=e324] [cursor=pointer]: Markdown Format
+          - generic [ref=e325]:
+            - text: Any page can be accessed as markdown by appending
+            - code [ref=e326]: .md
+            - text: to the URL. For example, this page becomes
+            - code [ref=e327]: https://smithery.ai/docs/index.md
+            - text: . You can also copy any page as markdown directly from the documentation.
+        - generic [ref=e329]:
+          - paragraph [ref=e330]: Was this page helpful?
+          - generic [ref=e332]:
+            - button "Yes" [ref=e333] [cursor=pointer]:
+              - img [ref=e334]
+              - generic [ref=e336]: "Yes"
+            - button "No" [ref=e337] [cursor=pointer]:
+              - img [ref=e338]
+              - generic [ref=e340]: "No"
+        - link "Connect to servers Connect to an MCP server Next" [ref=e342] [cursor=pointer]:
+          - /url: /docs/getting_started/quickstart_connect
+          - generic [ref=e343]:
+            - generic [ref=e344]:
+              - generic [ref=e345]: Connect to servers
+              - generic [ref=e346]: Connect to an MCP server
+            - generic [ref=e348]:
+              - generic [ref=e349]: Next
+              - img [ref=e350]
+        - generic [ref=e353]:
+          - textbox "Ask a question..." [ref=e354]
+          - generic: ⌘I
+          - button "Send message" [disabled] [ref=e355]:
+            - img [ref=e356]
+        - contentinfo [ref=e358]:
+          - generic [ref=e359]:
+            - link "github" [ref=e360] [cursor=pointer]:
+              - /url: https://github.com/smithery-ai
+              - generic [ref=e361]: github
+              - img [ref=e362]
+            - link "twitter" [ref=e363] [cursor=pointer]:
+              - /url: https://twitter.com/SmitheryDotAI
+              - generic [ref=e364]: twitter
+              - img [ref=e365]
+            - link "discord" [ref=e366] [cursor=pointer]:
+              - /url: https://discord.gg/Afd38S5p9A
+              - generic [ref=e367]: discord
+              - img [ref=e368]
+          - link "Powered by This documentation is built and hosted on Mintlify, a developer documentation platform" [ref=e371] [cursor=pointer]:
+            - /url: https://www.mintlify.com?utm_campaign=poweredBy&utm_medium=referral&utm_source=smithery
+            - generic [ref=e372]: Powered by
+            - img [ref=e373]
+            - generic [ref=e382]: This documentation is built and hosted on Mintlify, a developer documentation platform
+  - alert [ref=e383]
