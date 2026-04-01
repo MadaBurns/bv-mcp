@@ -232,6 +232,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			rateHeaders['x-quota-limit'] = String(toolQuotaResult.limit);
 			rateHeaders['x-quota-remaining'] = String(toolQuotaResult.remaining);
 			rateHeaders['x-quota-reset'] = String(dailyResetEpoch);
+			rateHeaders['x-quota-tier'] = 'free';
 			if (!toolQuotaResult.allowed) {
 				if (toolQuotaResult.retryAfterMs !== undefined) {
 					rateHeaders['retry-after'] = String(Math.ceil(toolQuotaResult.retryAfterMs / 1000));
