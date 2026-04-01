@@ -117,7 +117,7 @@ The server is continuously validated using a **comprehensive chaos test suite** 
 
 The test suite ensures session stability, authentication precedence, and transport-specific edge cases across Streamable HTTP and Legacy SSE.
 
-Run the chaos tests locally: `python3 chaos-test-clients.py`
+Run the chaos tests locally: `python3 scripts/chaos/chaos-test-clients.py`
 
 ---
 
