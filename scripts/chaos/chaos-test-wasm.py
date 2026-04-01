@@ -6,7 +6,7 @@ import sys
 import time
 
 BASE_URL = os.getenv("BV_TARGET_URL", "http://localhost:8787")
-API_KEY = "REDACTED_KEY"
+API_KEY = os.getenv("BV_API_KEY", "mock-key-for-local-testing")
 
 def run_curl(payload):
     cmd = [

@@ -33,6 +33,7 @@ __pycache__/
 .npmrc
 .venv/
 NPM_TOKEN.md
+UNLIMITED_KEY_DO_NOT_COMMIT.txt
 
 # Coverage
 coverage/
@@ -102,3 +103,4 @@ generate_*.py
 
 # Local deploy overrides (real KV IDs, custom domains)
 .dev/
+.mcp.json
