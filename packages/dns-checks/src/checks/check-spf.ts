@@ -91,8 +91,12 @@ export async function checkSPF(
 	const findings: Finding[] = [];
 	const txtRecords = await queryDNS(domain, 'TXT', { timeout });
 
-	// Filter for SPF records
-	const spfRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=spf1'));
+	// Concatenate all TXT records to handle cases where SPF data is split across multiple records
+	const concatenatedTxt = txtRecords.join('');
+
+	// Extract SPF record from concatenated TXT data
+	const spfMatch = concatenatedTxt.match(/v=spf1[^]*/i);
+	const spfRecords = spfMatch ? [spfMatch[0]] : [];
 
 	if (spfRecords.length === 0) {
 		findings.push(
@@ -111,13 +115,15 @@ export async function checkSPF(
 	const dmarcPolicyToken = trustSurfaceContext.dmarcPolicy?.split(';')[0].trim();
 	const dmarcEnforcing = dmarcPolicyToken === 'reject' || dmarcPolicyToken === 'quarantine';
 
-	if (spfRecords.length > 1) {
+	// Check for multiple SPF records in the concatenated data
+	const spfMatches = concatenatedTxt.match(/v=spf1/gi);
+	if (spfMatches && spfMatches.length > 1) {
 		findings.push(
 			createFinding(
 				'spf',
 				'Multiple SPF records',
 				'high',
-				`Found ${spfRecords.length} SPF records. RFC 7208 requires exactly one SPF record per domain. Multiple records cause unpredictable behavior.`,
+				`Found ${spfMatches.length} SPF records in TXT data. RFC 7208 requires exactly one SPF record per domain. Multiple records cause unpredictable behavior.`,
 			),
 		);
 	}

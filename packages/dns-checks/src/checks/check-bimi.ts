@@ -27,7 +27,12 @@ export async function checkBIMI(
 	const bimiDomain = `default._bimi.${domain}`;
 	const txtRecords = await queryDNS(bimiDomain, 'TXT', { timeout });
 
-	const bimiRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=bimi1'));
+	// Concatenate all TXT records to handle cases where BIMI data is split across multiple records
+	const concatenatedTxt = txtRecords.join('');
+
+	// Extract BIMI record from concatenated TXT data
+	const bimiMatch = concatenatedTxt.match(/v=bimi1[^]*/i);
+	const bimiRecords = bimiMatch ? [bimiMatch[0]] : [];
 
 	// Check DMARC enforcement status — BIMI requires p=quarantine or p=reject
 	const dmarcRecords = await queryDNS(`_dmarc.${domain}`, 'TXT', { timeout });
@@ -73,13 +78,15 @@ export async function checkBIMI(
 		);
 	}
 
-	if (bimiRecords.length > 1) {
+	// Check for multiple BIMI records in the concatenated data
+	const bimiMatches = concatenatedTxt.match(/v=bimi1/gi);
+	if (bimiMatches && bimiMatches.length > 1) {
 		findings.push(
 			createFinding(
 				'bimi',
 				'Multiple BIMI records',
 				'medium',
-				`Found ${bimiRecords.length} BIMI records at ${bimiDomain}. There should be exactly one BIMI record.`,
+				`Found ${bimiMatches.length} BIMI records at ${bimiDomain}. There should be exactly one BIMI record.`,
 			),
 		);
 	}
