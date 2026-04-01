@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.1.17] - 2026-04-01
+
+### Changed
+- CLAUDE.md: documented `?api_key=` query param auth, SPF `~all` soft-fail downgrade rule, and Smithery listing/configSchema integration.
+
 ## [2.1.16] - 2026-04-01
 
 ### Changed
