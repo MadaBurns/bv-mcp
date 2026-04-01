@@ -1,0 +1,105 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+out/
+*.tgz
+*.wasm
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment & auth tokens
+.env
+.env.local
+.env.*
+.env.*.local
+.dev.vars
+.npmrc
+.venv/
+NPM_TOKEN.md
+
+# Coverage
+coverage/
+
+# Docs — internal drafts and plans (public docs are tracked)
+docs/plans/
+docs/code-review/
+docs/superpowers/
+docs/github-settings.md
+docs/hn-show-post-draft.md
+docs/mcp-directory-submissions.md
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.pid
+
+# TypeScript / lint cache
+*.tsbuildinfo
+.eslintcache
+
+# Cloudflare
+.wrangler/
+worker-configuration.d.ts
+.dev.vars.*
+
+# Database / data files
+*.sqlite
+*.sqlite3
+*.db
+
+# AI tool configs — ignore all except project settings (hooks, permissions)
+# Must un-ignore directory first, then re-ignore contents, then whitelist settings
+.claude/*
+!.claude/settings.json
+.gemini/
+
+# Workspace
+.workspace/
+.worktrees/
+
+# Agent config
+.agent.md
+
+# Planning / working files
+PLAN.md
+*-plan.md
+plan-*.md
+.github/agents/
+.github/prompts/
+
+# Dev output files
+*.out
+out.txt
+mcp-response.txt
+
+# Brand assets (copied from bv-web, not tracked)
+.brand/
+assets/
+
+# Client report scripts and generated reports — contain PII
+*report*.py
+*report*.pdf
+generate_*.py
+
+# Local deploy overrides (real KV IDs, custom domains)
+.dev/
