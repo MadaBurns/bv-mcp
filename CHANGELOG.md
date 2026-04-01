@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.1.19] - 2026-04-01
+
+### Added
+- **Generic Scoring Engine** — ported core architectural logic from `claude-code-py` for cross-language consistency. The engine is now decoupled from concrete DNS checks, using string-keyed categories and a three-tier pure functional formula.
+- **WASM Policy Engine** — integrated `bv-wasm-core` for high-performance, tamper-resistant permission checks and token estimation.
+- **Modernized Documentation** — completely rewritten README.md, CLAUDE.md, and scoring docs to reflect the new architecture and client-aware formatting.
+
+### Fixed
+- **Session revival race condition** — hardened tombstone logic in both memory and KV stores to prevent terminated sessions from being incorrectly revived after a DELETE request.
+
 ## [2.1.18] - 2026-04-01
 
 ### Added
