@@ -43,7 +43,19 @@ Bonus-only defense-in-depth. Each passed category adds ~1.4 points. Never subtra
 
 Categories: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene.
 
-Source: `CATEGORY_TIERS` and `computeScanScore()` in `src/lib/scoring-engine.ts`.
+**Tool Annotations**: Every tool definition includes `group`, `tier` (`core`, `protective`, or `hardening`), and a `scanIncluded` flag. These annotations align with the category tiers above and are included in `tools/list` responses for structured consumption by MCP clients.
+
+Source: `CATEGORY_TIERS` and `computeScanScore()` (bridge) in `packages/dns-checks/src/scoring/engine.ts`.
+
+## Generic Scoring Engine
+
+The core scoring logic has been refactored into a **Generic Scoring Engine** (ported from `claude-code-py` architecture). This engine is decoupled from concrete DNS check types, allowing for arbitrary string-keyed categories and tiers.
+
+- **String-keyed inputs**: Accepts `categoryScores` as a `Record<string, number>`, making it runtime-agnostic and easy to port to other languages.
+- **Three-tier formula**: Implements the Core/Protective/Hardening tier logic as a pure functional transformation.
+- **Single Source of Truth**: The `computeScanScore` function in the main package now serves as a thin bridge that maps `CheckResult[]` into the `GenericScoringContext`.
+
+Source: `packages/dns-checks/src/scoring/generic.ts`.
 
 ## Per-Finding Severity Penalties
 
@@ -55,7 +67,11 @@ Category score formula starts at `100` and deducts per finding:
 - Low: `-5`
 - Info: `0`
 
-Source: `SEVERITY_PENALTIES` in `packages/dns-checks/src/types.ts` (re-exported via `src/lib/scoring.ts`).
+**SPF `~all` Downgrade Rule**: SPF soft-fail (`~all`) findings are lowered to `info` severity (0 penalty) when the domain has an enforcing DMARC policy (`p=quarantine` or `p=reject`). Since DMARC enforcement already prevents spoofing from non-aligned sources, the RFC-recommended `~all` posture is no longer considered a risk in these environments.
+
+**DMARC `pct` Parsing**: The `pct` (percentage) parameter is parsed from DMARC records to determine the true enforcement context. If `pct < 100`, the enforcement is considered partial, which may affect how related findings (like SPF trust surface) are weighed.
+
+Source: `SEVERITY_PENALTIES` in `packages/dns-checks/src/scoring/model.ts` (re-exported via `src/lib/scoring.ts`).
 
 ## Missing-Control Rule
 
@@ -77,7 +93,7 @@ Source: `scoreIndicatesMissingControl()` and `buildCheckResult()` in `packages/d
 
 Domains missing any critical foundational control are capped at a maximum overall score. The ceiling is applied after all other scoring.
 
-Source: `thresholds.criticalGapCeiling` in `packages/dns-checks/src/scoring/config.ts` and `computeScanScore()` in `packages/dns-checks/src/scoring/engine.ts`.
+Source: `thresholds.criticalGapCeiling` in `packages/dns-checks/src/scoring/config.ts` and `computeScanScore()` (via generic engine) in `packages/dns-checks/src/scoring/engine.ts`.
 
 ## Critical Finding Penalty
 
@@ -86,7 +102,7 @@ If any **verified**-confidence critical finding exists across the scan, an addit
 - Verified critical present: `-15` overall points
 - No verified critical findings: `0` additional penalty
 
-Source: `thresholds.criticalOverallPenalty` in `packages/dns-checks/src/scoring/config.ts` and `computeScanScore()` in `packages/dns-checks/src/scoring/engine.ts`.
+Source: `thresholds.criticalOverallPenalty` in `packages/dns-checks/src/scoring/config.ts` and `computeScanScore()` (via generic engine) in `packages/dns-checks/src/scoring/engine.ts`.
 
 ## Email Bonus
 
@@ -102,7 +118,8 @@ DMARC score determines bonus tier:
 - DMARC `>= 70`: `+3`
 - Otherwise: `+2`
 
-Source: `thresholds.emailBonusFull`/`emailBonusMid`/`emailBonusPartial`, `thresholds.spfStrongThreshold` in `packages/dns-checks/src/scoring/config.ts` and bonus logic in `computeScanScore()`.
+Source: `thresholds.emailBonusFull`/`emailBonusMid`/`emailBonusPartial`, `thresholds.spfStrongThreshold` in `packages/dns-checks/src/scoring/config.ts` and generic bonus logic in `packages/dns-checks/src/scoring/generic.ts`.
+
 
 ## Provider-Informed DKIM
 
