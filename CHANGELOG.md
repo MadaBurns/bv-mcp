@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.1.20] - 2026-04-01
+
+### Added
+- **Authentication Hardening** — added `REQUIRE_AUTH` toggle to strictly enforce API key usage. When enabled, the server rejects all unauthenticated requests with 401 Unauthorized, providing a "private mode" for sensitive deployments.
+- **Freemium Quota Visibility** — anonymous users now receive `x-quota-tier: free` and other quota-tracking headers in tool responses, aligning the developer experience for free and paid tiers.
+- **Enhanced Permission Mapping** — refactored the Wasm policy engine to use an explicit tool-to-mode mapping for all 27+ tools, replacing pattern-based matching with strict architectural enforcement.
+
+### Fixed
+- **Git Secret Hygiene** — added `UNLIMITED_KEY_DO_NOT_COMMIT.txt` and `.mcp.json` to `.gitignore` to prevent accidental leakage of sensitive local configuration and master keys.
+
 ## [2.1.19] - 2026-04-01
 
 ### Added
