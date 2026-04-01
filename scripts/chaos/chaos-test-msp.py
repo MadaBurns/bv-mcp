@@ -21,7 +21,7 @@ Scenario sections:
 
 Usage:
   export BV_API_KEY=bv_...
-  python3 chaos-test-msp.py
+  python3 scripts/chaos/chaos-test-msp.py
 """
 
 import subprocess
