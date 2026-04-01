@@ -36,6 +36,12 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 
 Then ask: `scan anthropic.com`
 
+**Smithery** (one command):
+
+```bash
+smithery mcp add MadaBurns/bv-mcp
+```
+
 **Verify the endpoint is live:**
 
 ```bash
@@ -230,15 +236,33 @@ Or via CLI:
 claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.com/mcp
 ```
 
-**With API key** — use `mcp-remote` to reliably forward the auth header:
+**With API key** — use the `api_key` query parameter with native HTTP:
 
 ```json
 {
   "mcpServers": {
     "blackveil-dns": {
-      "command": "/opt/homebrew/bin/npx",
+      "type": "http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp?api_key=YOUR_API_KEY"
+    }
+  }
+}
+```
+
+Or via CLI:
+
+```bash
+claude mcp add --transport http blackveil-dns "https://dns-mcp.blackveilsecurity.com/mcp?api_key=YOUR_API_KEY"
+```
+
+Alternatively, use `mcp-remote` to forward the `Authorization` header (e.g. if you want the key in a variable, not the URL):
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "command": "npx",
       "args": [
-        "-y",
         "mcp-remote",
         "https://dns-mcp.blackveilsecurity.com/mcp",
         "--header",
@@ -249,14 +273,7 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 }
 ```
 
-Or via CLI:
-
-```bash
-claude mcp add-json blackveil-dns \
-  '{"command":"npx","args":["mcp-remote","https://dns-mcp.blackveilsecurity.com/mcp","--header","Authorization: Bearer YOUR_API_KEY"]}'
-```
-
-> **Why `mcp-remote`?** Claude Code's native HTTP transport does not currently forward custom `headers` from config files. The `mcp-remote` bridge reliably passes the `Authorization` header to the server. Restart Claude Code after adding the server.
+> **Note:** Claude Code's native HTTP transport does not forward custom `headers` from config files. Use the `?api_key=` query parameter (above) or `mcp-remote` as a bridge.
 </details>
 
 <details>
@@ -676,7 +693,7 @@ npm run dev       # localhost:8787/mcp
 ```
 
 ```bash
-npm test          # 1469 tests
+npm test          # 1932 tests
 npm run typecheck
 ```
 
