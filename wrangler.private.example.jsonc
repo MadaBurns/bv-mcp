@@ -1,0 +1,31 @@
+{
+	"name": "bv-dns-security-mcp",
+	"main": "../src/index.ts",
+	"compatibility_date": "2026-03-01",
+	"compatibility_flags": [
+		"global_fetch_strictly_public"
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "QUOTA_COORDINATOR", "class_name": "QuotaCoordinator" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["QuotaCoordinator"] }
+	],
+	"observability": {
+		"enabled": true
+	},
+	"kv_namespaces": [
+		{ "binding": "RATE_LIMIT", "id": "YOUR_RATE_LIMIT_KV_NAMESPACE_ID" },
+		{ "binding": "SCAN_CACHE", "id": "YOUR_SCAN_CACHE_KV_NAMESPACE_ID" },
+		{ "binding": "SESSION_STORE", "id": "YOUR_SESSION_STORE_KV_NAMESPACE_ID" }
+	],
+	"analytics_engine_datasets": [
+		{ "binding": "MCP_ANALYTICS", "dataset": "your_analytics_dataset" }
+	],
+	"vars": {
+		"BV_API_KEY": "",
+		"PROVIDER_SIGNATURES_URL": ""
+	}
+}
