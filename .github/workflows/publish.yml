@@ -28,6 +28,23 @@ jobs:
       - name: Build workspace package
         run: npm -w packages/dns-checks run build
 
+      - name: Cache Rust
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/bv-wasm-core/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('crates/bv-wasm-core/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        working-directory: crates/bv-wasm-core
+        run: wasm-pack build --target web
+
       - name: Validate internal dependency policy
         run: npm run validate:internal-deps
 
