@@ -106,6 +106,11 @@ export async function checkSPF(
 		return buildCheckResult('spf', findings);
 	}
 
+	// Pre-fetch DMARC context once — reused by both ~all severity and trust surface analysis
+	const trustSurfaceContext = await getTrustSurfaceDmarcContext(domain, queryDNS, timeout);
+	const dmarcPolicyToken = trustSurfaceContext.dmarcPolicy?.split(';')[0].trim();
+	const dmarcEnforcing = dmarcPolicyToken === 'reject' || dmarcPolicyToken === 'quarantine';
+
 	if (spfRecords.length > 1) {
 		findings.push(
 			createFinding(
@@ -148,15 +153,30 @@ export async function checkSPF(
 				),
 			);
 		} else if (qualifier.toLowerCase() === '~all') {
-			findings.push(
-				createFinding(
-					'spf',
-					'SPF soft fail (~all)',
-					'low',
-					`SPF record uses "~all" (soft fail). Consider upgrading to "-all" (hard fail) for stricter enforcement once you've verified all legitimate senders are included.`,
-					spfMetadata,
-				),
-			);
+			// ~all is the recommended setting when DMARC enforcement is active.
+			// -all causes rejection at SMTP level before DMARC can verify DKIM.
+			// See RFC 7489 §10.1, https://www.mailhardener.com/kb/spf
+			if (dmarcEnforcing) {
+				findings.push(
+					createFinding(
+						'spf',
+						'SPF soft fail (~all) with DMARC enforcement',
+						'info',
+						`SPF record uses "~all" (soft fail) which is the recommended setting when DMARC enforcement is active. The DMARC policy ensures unauthorized mail is rejected after DKIM verification, while ~all avoids premature rejection at the SMTP level.`,
+						spfMetadata,
+					),
+				);
+			} else {
+				findings.push(
+					createFinding(
+						'spf',
+						'SPF soft fail (~all)',
+						'low',
+						`SPF record uses "~all" (soft fail). Consider upgrading to "-all" (hard fail) for stricter enforcement, or deploy DMARC with p=reject to handle authentication via DKIM alignment.`,
+						spfMetadata,
+					),
+				);
+			}
 		}
 		// -all is the recommended setting, no finding needed
 	} else if (!hasRedirect) {
@@ -224,7 +244,6 @@ export async function checkSPF(
 	}
 
 	// Trust surface analysis — flag multi-tenant SaaS platform includes
-	const trustSurfaceContext = await getTrustSurfaceDmarcContext(domain, queryDNS, timeout);
 	const trustSurfaceFindings = analyzeTrustSurface(spf, trustSurfaceContext);
 	findings.push(...trustSurfaceFindings);
 
