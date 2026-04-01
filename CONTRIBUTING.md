@@ -50,6 +50,7 @@ Follow the pattern in `src/tools/check-spf.ts` — use `createFinding()` and `bu
 
 - Keep PRs focused — one feature or fix per PR
 - All tests must pass (`npm test`)
+- Chaos tests must pass for client-impacting changes (`python3 chaos-test-clients.py`)
 - Type check must pass (`npm run typecheck`)
 - Format with Prettier before submitting
 

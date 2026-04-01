@@ -16,6 +16,14 @@
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+// @ts-ignore
+import wasm from '../crates/bv-wasm-core/pkg/bv_wasm_core_bg.wasm';
+// @ts-ignore
+import * as bv_wasm from '../crates/bv-wasm-core/pkg/bv_wasm_core.js';
+
+// Initialize the Wasm module
+bv_wasm.initSync(wasm);
+
 import { checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
 import { logEvent, logError, sanitizeHeadersForLog } from './lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
