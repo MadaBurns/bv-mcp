@@ -170,7 +170,26 @@ Or via CLI:
 claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.com/mcp
 ```
 
-**With API key** — use `mcp-remote` to reliably forward the auth header:
+**With API key** — use the `api_key` query parameter with native HTTP (simplest):
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "type": "http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp?api_key=YOUR_API_KEY"
+    }
+  }
+}
+```
+
+Or via CLI:
+
+```bash
+claude mcp add --transport http blackveil-dns "https://dns-mcp.blackveilsecurity.com/mcp?api_key=YOUR_API_KEY"
+```
+
+Alternatively, use `mcp-remote` to forward the `Authorization` header (useful when sourcing the key from an env variable):
 
 ```json
 {
@@ -188,16 +207,31 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 }
 ```
 
-Or via CLI:
-
-```bash
-claude mcp add-json blackveil-dns \
-  '{"command":"npx","args":["mcp-remote","https://dns-mcp.blackveilsecurity.com/mcp","--header","Authorization: Bearer YOUR_API_KEY"]}'
-```
-
-> **Why `mcp-remote`?** Claude Code's native HTTP transport does not currently forward custom `headers` from `.mcp.json` config files. The `mcp-remote` bridge runs as a local stdio process and reliably passes the `Authorization` header to the server. Restart Claude Code after adding the server.
+> **Note:** Claude Code's native HTTP transport does not forward custom `headers` from config files. Use the `?api_key=` query parameter or `mcp-remote` as a bridge.
 
 Important: if you script this setup, source the key from environment (`BV_API_KEY`) and avoid embedding token literals in shell history.
+
+## Smithery
+
+No npm install required.
+
+Add via the Smithery CLI:
+
+```bash
+smithery mcp add MadaBurns/bv-mcp
+```
+
+Or connect directly with your agent using the hosted URL:
+
+```
+https://bv-mcp--madaburns.run.tools
+```
+
+**With API key** — pass during setup when prompted, or embed in the connection URL:
+
+```
+https://bv-mcp--madaburns.run.tools?api_key=YOUR_API_KEY
+```
 
 ## Cursor
 
