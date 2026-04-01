@@ -2,9 +2,9 @@
   "mcpServers": {
     "blackveil-dns": {
       "type": "http",
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp?api_key=REDACTED_KEY",
       "headers": {
-        "Authorization": "Bearer ${BV_API_KEY}"
+        "Authorization": "Bearer REDACTED_KEY"
       }
     }
   }
