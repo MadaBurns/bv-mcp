@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.1.14] - 2026-04-01
+
+### Added
+- **`api_key` query parameter auth** — bearer token can now be passed as `?api_key=` in the URL, enabling auth for clients that only support URL configuration (Smithery, URL-only MCP configs). Header takes precedence when both are present.
+- **MCP tool annotations** — every tool definition now includes `group` (`email_auth` | `infrastructure` | `brand_threats` | `dns_hygiene` | `intelligence` | `remediation` | `meta`), `tier` (`core` | `protective` | `hardening`), and `scanIncluded` flag. Fields are included in `tools/list` responses and backward-compatible.
+- **npm package exports** — `McpTool`, `TOOLS`, and `TOOL_SCHEMA_MAP` now exported from `blackveil-dns` for consumers who need the tool definitions at build time.
+- **Smithery configSchema** — `smithery.yaml` now declares the `apiKey` parameter with `x-to: {query: api_key}` for seamless Smithery Connect integration.
+
+### Fixed
+- **SPF `~all` soft-fail downgraded when DMARC enforces** — SPF soft-fail (`~all`) findings are now lowered to `info` severity when the domain has an enforcing DMARC policy (`p=quarantine` or `p=reject`). The RFC-recommended `~all` posture was being incorrectly flagged as a risk in deployments where DMARC already prevents spoofing.
+- **DMARC `pct` parameter parsed correctly** — `pct=<100` is now parsed from DMARC records when checking SPF enforcement context. Previously the `pct` check was missed on records that include the percentage tag.
+
+### Changed
+- **CI publishes `@blackveil/dns-checks` sub-package** — the `publish.yml` release workflow now publishes `packages/dns-checks` to npm alongside the root package on every version tag.
+
 ## [2.1.0] - 2026-03-30
 
 ### Added
