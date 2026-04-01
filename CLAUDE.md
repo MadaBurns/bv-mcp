@@ -212,6 +212,7 @@ All other errors return a generic fallback message. New validation errors that n
 
 - **Email bonus**: SPF ≥57, DKIM not deterministically missing, DMARC present → +5/+3/+2 pts based on DMARC score
 - **SPF trust-surface**: Shared-platform findings informational by default; elevated to medium/high only when weak DMARC/relaxed alignment corroborates
+- **SPF `~all` soft-fail**: `~all` findings downgraded to `info` when the domain has an enforcing DMARC policy (`p=quarantine` or `p=reject`). RFC 7489 §10.1 recommends `~all` when DMARC enforces — flagging it as a risk in that context is a false positive. `pct=<100` is also parsed from the DMARC record before making this determination
 - **Confidence gate**: `scoreIndicatesMissingControl()` only fires for `deterministic`/`verified` confidence. Heuristic DKIM "not found" doesn't zero category
 - **Provider-informed DKIM**: Known DKIM-signing provider detected but probing finds nothing → HIGH downgraded to MEDIUM
 - **Severity penalties**: Critical −40, High −25, Medium −15, Low −5, Info 0
@@ -239,7 +240,7 @@ All scoring parameters configurable via `SCORING_CONFIG` env var (JSON). Support
 ### Key rules
 
 - **SSRF**: `config.ts` defines blocked IPs/TLDs; `sanitize.ts` enforces. `global_fetch_strictly_public` compat flag. All outbound fetches use `redirect: 'manual'`
-- **Auth**: Optional `BV_API_KEY`, constant-time XOR. Tier-auth cascades: KV cache → bv-web service binding → static fallback. Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner tier has unlimited rate limits but requires client IP in `OWNER_ALLOW_IPS` — mismatched IPs downgrade to `partner`
+- **Auth**: Optional `BV_API_KEY`, constant-time XOR. Token extracted from `Authorization: Bearer <token>` header first, then `?api_key=` query param as fallback (enables Smithery and URL-only clients). Tier-auth cascades: KV cache → bv-web service binding → static fallback. Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner tier has unlimited rate limits but requires client IP in `OWNER_ALLOW_IPS` — mismatched IPs downgrade to `partner`
 - **Rate limiting**: 50 req/min, 300 req/hr per IP (unauthenticated). Authenticated users bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_lookalikes`/`check_shadow_domains`: 20/day per IP with 60-min caching
 - **Per-tool quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts`. Global cap 500k/day (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via `QuotaCoordinator` DO
 - **Content-Type**: POST requires `application/json`; missing allowed for compat; non-JSON → 415
@@ -303,6 +304,14 @@ All tool arguments validated via Zod schemas (`src/schemas/tool-args.ts`) before
 3. **IP leakage**: regex patterns from `.githooks/blocked-patterns` catch internal infrastructure references
 
 Public docs (`docs/client-setup.md`, `docs/scoring.md`, etc.) are committable. Override with `--no-verify`.
+
+## Smithery
+
+The server is listed on Smithery at `MadaBurns/bv-mcp` (proxy URL: `https://bv-mcp--madaburns.run.tools`).
+
+`smithery.yaml` configures the external HTTP server entry: `url` template points to `dns-mcp.blackveilsecurity.com/mcp` with an optional `{{#if apiKey}}?api_key={{apiKey}}{{/if}}` suffix. The `configSchema` `apiKey` property uses `x-to: {query: api_key}` so Smithery Connect injects it as a query parameter.
+
+Smithery registry metadata (configSchema, scanCredentials) is updated via `PUT /servers/{ns}/{server}/releases` API using the `SMITHERY_API_KEY` in `.dev/.env.testing`. The `smithery.yaml` `configSchema` is the source of truth for the open-source repo; the registry entry is pushed separately on release.
 
 ## CI/CD
 
