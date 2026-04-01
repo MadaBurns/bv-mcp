@@ -264,10 +264,10 @@ export async function deleteSession(id: string, kv?: KVNamespace): Promise<boole
 
 	if (kv) {
 		try {
-			// Delete the session and write a short-lived KV tombstone to prevent
-			// cross-isolate revival after an explicit DELETE /mcp.
-			await kv.delete(sessionKey(id));
+			// Write a short-lived KV tombstone first to prevent cross-isolate
+			// revival after an explicit DELETE /mcp, then delete the session.
 			await kv.put(tombstoneKey(id), '1', { expirationTtl: SESSION_TOMBSTONE_TTL_SECONDS });
+			await kv.delete(sessionKey(id));
 			return true;
 		} catch {
 			logError('[session] KV delete failed', { category: 'session' });
