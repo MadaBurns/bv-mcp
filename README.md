@@ -685,6 +685,8 @@ Optional configuration:
 
 ## Development
 
+> **Existing clones:** The repository history was rewritten on 2026-04-01. If you cloned before that date, re-clone fresh — `git pull` will not work. See [#37](https://github.com/MadaBurns/bv-mcp/issues/37) for details.
+
 ```bash
 git clone https://github.com/MadaBurns/bv-mcp.git
 cd bv-mcp
