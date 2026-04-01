@@ -27,8 +27,12 @@ export async function checkDMARC(
 	const findings: Finding[] = [];
 	const txtRecords = await queryDNS(`_dmarc.${domain}`, 'TXT', { timeout });
 
-	// Filter for DMARC records
-	const dmarcRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=dmarc1'));
+	// Concatenate all TXT records to handle cases where DMARC data is split across multiple records
+	const concatenatedTxt = txtRecords.join('');
+
+	// Extract DMARC record from concatenated TXT data
+	const dmarcMatch = concatenatedTxt.match(/v=dmarc1[^]*/i);
+	const dmarcRecords = dmarcMatch ? [dmarcMatch[0]] : [];
 
 	if (dmarcRecords.length === 0) {
 		findings.push(
@@ -42,13 +46,15 @@ export async function checkDMARC(
 		return buildCheckResult('dmarc', findings);
 	}
 
-	if (dmarcRecords.length > 1) {
+	// Check for multiple DMARC records in the concatenated data
+	const dmarcMatches = concatenatedTxt.match(/v=dmarc1/gi);
+	if (dmarcMatches && dmarcMatches.length > 1) {
 		findings.push(
 			createFinding(
 				'dmarc',
 				'Multiple DMARC records',
 				'high',
-				`Found ${dmarcRecords.length} DMARC records. Only one DMARC record should exist per domain.`,
+				`Found ${dmarcMatches.length} DMARC records in TXT data. Only one DMARC record should exist per domain.`,
 			),
 		);
 	}

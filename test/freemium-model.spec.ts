@@ -1,13 +1,14 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
 import worker from '../src';
+import type { Env } from '../src/types/env';
 import { resetSessions } from '../src/lib/session';
 import { resetAllRateLimits, resetGlobalDailyLimit } from '../src/lib/rate-limiter';
 
 describe('Freemium Model Verification', () => {
 	const TEST_API_KEY = 'test-api-key';
 	const IP_ANON = '1.1.1.1';
-	const IP_AUTH = '2.2.2.2';
+	const _IP_AUTH = '2.2.2.2';
 
 	beforeEach(async () => {
 		resetSessions();
@@ -34,7 +35,7 @@ describe('Freemium Model Verification', () => {
 		const initRes = await worker.fetch(initReq, env, initCtx);
 		await waitOnExecutionContext(initCtx);
 		expect(initRes.status).toBe(200);
-		const initBody = await initRes.json() as any;
+		const _initBody = await initRes.json() as Record<string, unknown>;
 		const sessionId = initRes.headers.get('mcp-session-id');
 		expect(sessionId).toBeDefined();
 
@@ -58,7 +59,7 @@ describe('Freemium Model Verification', () => {
 		await waitOnExecutionContext(toolCtx);
 		
 		expect(toolRes.status).toBe(200);
-		const toolBody = await toolRes.json() as any;
+		const toolBody = await toolRes.json() as Record<string, unknown>;
 		expect(toolBody.result).toBeDefined();
 		expect(toolBody.error).toBeUndefined();
 	});
@@ -68,7 +69,7 @@ describe('Freemium Model Verification', () => {
 		// We verify that unauthenticated users are processed with 'free' limits
 		// and authenticated users are processed with their tier limits.
 		
-		const authEnv = { ...env, BV_API_KEY: TEST_API_KEY };
+		const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
 
 		// 1. Anonymous request
 		const anonReq = new Request('http://example.com/mcp', {
@@ -84,8 +85,8 @@ describe('Freemium Model Verification', () => {
 				params: {} 
 			}),
 		});
-		const anonRes = await worker.fetch(anonReq, authEnv as any, createExecutionContext());
-		const anonTier = anonRes.headers.get('x-mcp-tier');
+		const anonRes = await worker.fetch(anonReq, authEnv, createExecutionContext());
+		const _anonTier = anonRes.headers.get('x-mcp-tier');
 		// Note: The worker might not always expose the tier in headers in production, 
 		// but we can verify authentication state in the response or logs if needed.
 		// For this test, we verify the request succeeds without a token.
@@ -106,28 +107,28 @@ describe('Freemium Model Verification', () => {
 				params: {} 
 			}),
 		});
-		const authRes = await worker.fetch(authReq, authEnv as any, createExecutionContext());
+		const authRes = await worker.fetch(authReq, authEnv, createExecutionContext());
 		expect(authRes.status).toBe(200);
 	});
 
 	it('respects REQUIRE_AUTH toggle while preserving freemium when disabled', async () => {
 		// Case A: REQUIRE_AUTH=false (default) -> Anon allowed
-		const envDefault = { ...env, REQUIRE_AUTH: 'false' };
+		const envDefault = { ...env, REQUIRE_AUTH: 'false' } as Env;
 		const reqAnon = new Request('http://example.com/mcp', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
 		});
-		const resAnon = await worker.fetch(reqAnon, envDefault as any, createExecutionContext());
+		const resAnon = await worker.fetch(reqAnon, envDefault, createExecutionContext());
 		expect(resAnon.status).toBe(200);
 
 		// Case B: REQUIRE_AUTH=true -> Anon rejected
-		const envStrict = { ...env, REQUIRE_AUTH: 'true' };
-		const resStrict = await worker.fetch(reqAnon, envStrict as any, createExecutionContext());
+		const envStrict = { ...env, REQUIRE_AUTH: 'true' } as Env;
+		const resStrict = await worker.fetch(reqAnon, envStrict, createExecutionContext());
 		expect(resStrict.status).toBe(401);
 
 		// Case C: REQUIRE_AUTH=true + Valid Key -> Allowed
-		const envStrictAuth = { ...env, REQUIRE_AUTH: 'true', BV_API_KEY: TEST_API_KEY };
+		const envStrictAuth = { ...env, REQUIRE_AUTH: 'true', BV_API_KEY: TEST_API_KEY } as Env;
 		const reqAuth = new Request('http://example.com/mcp', {
 			method: 'POST',
 			headers: { 
@@ -136,7 +137,7 @@ describe('Freemium Model Verification', () => {
 			},
 			body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'initialize', params: {} }),
 		});
-		const resStrictAuth = await worker.fetch(reqAuth, envStrictAuth as any, createExecutionContext());
+		const resStrictAuth = await worker.fetch(reqAuth, envStrictAuth, createExecutionContext());
 		expect(resStrictAuth.status).toBe(200);
 	});
 });
