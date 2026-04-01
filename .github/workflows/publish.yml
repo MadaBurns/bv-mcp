@@ -149,6 +149,12 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Publish @blackveil/dns-checks
+        if: env.skip != 'true'
+        run: npm -w packages/dns-checks publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   deploy-cloudflare:
     name: Deploy to Cloudflare Workers
     needs: version-bump
