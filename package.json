@@ -1,0 +1,95 @@
+{
+	"name": "blackveil-dns",
+	"version": "2.1.20",
+	"description": "Blackveil DNS — Open-source DNS & email security scanner.",
+	"type": "module",
+	"license": "BUSL-1.1",
+	"author": "BLACKVEIL Security",
+	"homepage": "https://blackveilsecurity.com",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/MadaBurns/bv-mcp.git"
+	},
+	"keywords": [
+		"blackveil",
+		"dns",
+		"security",
+		"mcp",
+		"email",
+		"dmarc",
+		"spf",
+		"dkim",
+		"dnssec",
+		"cloudflare-workers",
+		"model-context-protocol",
+		"ai-tools"
+	],
+	"bugs": {
+		"url": "https://github.com/MadaBurns/bv-mcp/issues"
+	},
+	"engines": {
+		"node": ">=18"
+	},
+	"workspaces": [
+		"packages/*"
+	],
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"bin": {
+		"blackveil-dns-mcp": "dist/stdio.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./stdio": {
+			"types": "./dist/stdio.d.ts",
+			"import": "./dist/stdio.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"sideEffects": false,
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsup",
+		"dev": "wrangler dev",
+		"deploy:private": "node scripts/deploy-private.mjs",
+		"mcp:stdio": "node dist/stdio.js",
+		"start": "wrangler dev",
+		"prepack": "npm run build",
+		"validate:internal-deps": "node scripts/maintenance/validate-internal-deps.mjs",
+		"test": "vitest run",
+		"test:coverage": "vitest run --coverage",
+		"typecheck": "tsc --noEmit",
+		"cf-typegen": "wrangler types",
+		"lint": "eslint .",
+		"lint:fix": "eslint . --fix",
+		"build:wasm": "cd crates/bv-wasm-core && /Users/adam/.cargo/bin/wasm-pack build --target web"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.13.3",
+		"@cloudflare/workers-types": "^4.20260329.1",
+		"@types/punycode": "^2.1.4",
+		"eslint": "^10.0.2",
+		"hono": "^4.12.7",
+		"tsup": "^8.5.0",
+		"typescript": "^5.5.2",
+		"typescript-eslint": "^8.56.1",
+		"vitest": "^4.1.0",
+		"wrangler": "^4.77.0"
+	},
+	"dependencies": {
+		"@blackveil/dns-checks": "^1.0.4",
+		"punycode": "^2.3.1",
+		"zod": "^4.3.6"
+	}
+}

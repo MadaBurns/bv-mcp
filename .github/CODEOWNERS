@@ -1,0 +1,11 @@
+# Baseline CODEOWNERS for bv-mcp
+
+* @blackveil-security/engineering
+
+# Core scanner and protocol behavior
+src/ @blackveil-security/security-team
+packages/ @blackveil-security/security-team
+
+# CI/CD and release surface
+.github/workflows/ @blackveil-security/devops
+package.json @blackveil-security/devops
