@@ -8,7 +8,7 @@ import { resetAllRateLimits, resetGlobalDailyLimit } from '../src/lib/rate-limit
 describe('Freemium Model Verification', () => {
 	const TEST_API_KEY = 'test-api-key';
 	const IP_ANON = '1.1.1.1';
-	const _IP_AUTH = '2.2.2.2';
+	const IP_AUTH = '2.2.2.2';
 
 	beforeEach(async () => {
 		resetSessions();
