@@ -142,7 +142,7 @@ const TOOL_REGISTRY: Record<
 };
 
 /** Known interactive LLM client types that benefit from compact output. */
-const INTERACTIVE_CLIENTS = new Set(['claude_code', 'cursor', 'vscode', 'claude_desktop', 'windsurf']);
+const INTERACTIVE_CLIENTS = new Set(['claude_mobile', 'claude_code', 'cursor', 'vscode', 'claude_desktop', 'windsurf']);
 
 /** Determine if the client type is a known interactive LLM IDE. */
 function isInteractiveClient(clientType?: string): boolean {
