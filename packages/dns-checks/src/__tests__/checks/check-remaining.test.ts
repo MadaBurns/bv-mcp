@@ -204,6 +204,7 @@ describe('checkHTTPSecurity', () => {
 				'referrer-policy': 'strict-origin-when-cross-origin',
 				'cross-origin-resource-policy': 'same-origin',
 				'cross-origin-opener-policy': 'same-origin',
+				'cross-origin-embedder-policy': 'require-corp',
 			},
 		}));
 		const result = await checkHTTPSecurity('example.com', fetchFn);
