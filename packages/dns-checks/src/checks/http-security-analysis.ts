@@ -20,7 +20,14 @@ const SECURITY_HEADERS = [
 	'referrer-policy',
 	'cross-origin-resource-policy',
 	'cross-origin-opener-policy',
+	'cross-origin-embedder-policy',
 ] as const;
+
+/**
+ * Referrer-Policy values that leak full URLs to all third-party origins.
+ * These values provide no privacy protection and should be flagged.
+ */
+const UNSAFE_REFERRER_POLICIES = new Set(['unsafe-url', 'no-referrer-when-downgrade']);
 
 /** CSP directive name for dynamic code execution. */
 const CSP_UNSAFE_EVAL_DIRECTIVE = "'unsafe-eval'";
@@ -94,6 +101,7 @@ export function analyzeSecurityHeaders(headers: Headers): Finding[] {
 	const rp = headers.get('referrer-policy');
 	const corp = headers.get('cross-origin-resource-policy');
 	const coop = headers.get('cross-origin-opener-policy');
+	const coep = headers.get('cross-origin-embedder-policy');
 
 	// Track whether we have CSP frame-ancestors (supersedes X-Frame-Options)
 	const cspHasFrameAncestors = csp ? /frame-ancestors/i.test(csp) : false;
@@ -148,7 +156,7 @@ export function analyzeSecurityHeaders(headers: Headers): Finding[] {
 		);
 	}
 
-	// Referrer-Policy
+	// Referrer-Policy — check presence and that the value isn't unsafe
 	if (!rp) {
 		findings.push(
 			createFinding(
@@ -156,6 +164,15 @@ export function analyzeSecurityHeaders(headers: Headers): Finding[] {
 				'No Referrer-Policy',
 				'low',
 				'No Referrer-Policy header found. Without it, the full URL including query parameters may be leaked to third-party sites via the Referer header.',
+			),
+		);
+	} else if (UNSAFE_REFERRER_POLICIES.has(rp.toLowerCase())) {
+		findings.push(
+			createFinding(
+				'http_security',
+				'Unsafe Referrer-Policy value',
+				'medium',
+				`Referrer-Policy is set to "${rp}", which leaks the full URL including query parameters to all origins. Use "strict-origin-when-cross-origin" or "no-referrer" instead.`,
 			),
 		);
 	}
@@ -180,6 +197,19 @@ export function analyzeSecurityHeaders(headers: Headers): Finding[] {
 				'No COOP header',
 				'info',
 				'No Cross-Origin-Opener-Policy header found. COOP isolates the browsing context from cross-origin popups, mitigating cross-origin attacks.',
+			),
+		);
+	}
+
+	// Cross-Origin-Embedder-Policy
+	// Required alongside COOP for cross-origin isolation (enables SharedArrayBuffer, high-res timers).
+	if (!coep) {
+		findings.push(
+			createFinding(
+				'http_security',
+				'No COEP header',
+				'info',
+				'No Cross-Origin-Embedder-Policy header found. COEP, combined with COOP, enables cross-origin isolation and mitigates Spectre-class side-channel attacks.',
 			),
 		);
 	}

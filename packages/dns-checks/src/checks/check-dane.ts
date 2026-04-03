@@ -35,20 +35,11 @@ export async function checkDANE(
 	const timeout = options?.timeout ?? 5000;
 	const rawQueryDNS = options?.rawQueryDNS;
 	const findings: Finding[] = [];
-	let hasDnssec = false;
 	let hasMxTlsa = false;
 
-	// Step 1: Check DNSSEC status for the domain
-	if (rawQueryDNS) {
-		try {
-			const resp = await rawQueryDNS(domain, 'A', true, { timeout });
-			hasDnssec = resp.AD === true;
-		} catch {
-			// DNSSEC check failed — continue without it
-		}
-	}
-
-	// Step 2: Query MX records and check TLSA for each MX host
+	// Query MX records and check TLSA for each MX host.
+	// Per RFC 7672 §3.1.3, SMTP DANE security requires DNSSEC on the MX host's zone —
+	// not the sending domain. We check the AD flag per MX host, not the main domain.
 	try {
 		const mxAnswers = await queryDNS(domain, 'MX', { timeout });
 		const mxRecords = parseMxFromRaw(mxAnswers);
@@ -57,12 +48,23 @@ export async function checkDANE(
 			const mxHost = mx.exchange;
 			if (!mxHost || mxHost === '.') continue;
 
+			// Check DNSSEC on the MX host's zone (RFC 7672 §3.1.3)
+			let mxHasDnssec = false;
+			if (rawQueryDNS) {
+				try {
+					const resp = await rawQueryDNS(mxHost, 'A', true, { timeout });
+					mxHasDnssec = resp.AD === true;
+				} catch {
+					// DNSSEC check for MX host failed — treat as unsigned
+				}
+			}
+
 			const tlsaName = `_25._tcp.${mxHost}`;
 			try {
 				const tlsaRecords = await queryDNS(tlsaName, 'TLSA', { timeout });
 				if (tlsaRecords.length > 0) {
 					hasMxTlsa = true;
-					findings.push(...analyzeTlsaRecords(tlsaRecords, tlsaName, hasDnssec));
+					findings.push(...analyzeTlsaRecords(tlsaRecords, tlsaName, mxHasDnssec));
 				}
 			} catch {
 				// Individual MX TLSA query failed — skip this host
