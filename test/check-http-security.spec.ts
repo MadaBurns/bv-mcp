@@ -124,7 +124,7 @@ describe('checkHttpSecurity', () => {
 		expect(result.passed).toBe(false);
 	});
 
-	it('should use HEAD method and manual redirect', async () => {
+	it('should use HEAD method, manual redirect, and User-Agent header', async () => {
 		const fetchSpy = vi.fn().mockResolvedValue({
 			ok: true,
 			status: 200,
@@ -145,7 +145,84 @@ describe('checkHttpSecurity', () => {
 			expect.objectContaining({
 				method: 'HEAD',
 				redirect: 'manual',
+				headers: expect.objectContaining({ 'User-Agent': expect.stringContaining('BlackVeilDNSScanner') }),
 			}),
 		);
+	});
+
+	it('should return blocked finding when 403 HEAD and 403 GET', async () => {
+		const fetchSpy = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 403,
+			headers: new Headers(),
+		});
+		globalThis.fetch = fetchSpy;
+		const result = await run();
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toBe('HTTP check blocked by security appliance');
+		expect(result.findings[0].severity).toBe('info');
+		expect(result.passed).toBe(false);
+		// HEAD + GET = 2 calls
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it('should analyze real headers when 403 HEAD succeeds with GET', async () => {
+		const fullHeaders = new Headers({
+			'content-security-policy': "default-src 'self'; frame-ancestors 'none'",
+			'x-frame-options': 'DENY',
+			'x-content-type-options': 'nosniff',
+			'permissions-policy': 'camera=()',
+			'referrer-policy': 'no-referrer',
+			'cross-origin-resource-policy': 'same-origin',
+			'cross-origin-opener-policy': 'same-origin',
+		});
+		const fetchSpy = vi
+			.fn()
+			.mockResolvedValueOnce({ ok: false, status: 403, headers: new Headers() })
+			.mockResolvedValueOnce({ ok: true, status: 200, headers: fullHeaders });
+		globalThis.fetch = fetchSpy;
+		const result = await run();
+		expect(result.passed).toBe(true);
+		expect(result.findings[0].title).toBe('HTTP security headers well configured');
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
+		expect(fetchSpy).toHaveBeenNthCalledWith(2, 'https://example.com', expect.objectContaining({ method: 'GET' }));
+	});
+
+	it('should fall back to GET when HEAD returns 405 Method Not Allowed', async () => {
+		const fullHeaders = new Headers({
+			'content-security-policy': "default-src 'self'; frame-ancestors 'none'",
+			'x-frame-options': 'DENY',
+			'x-content-type-options': 'nosniff',
+			'permissions-policy': 'camera=()',
+			'referrer-policy': 'no-referrer',
+			'cross-origin-resource-policy': 'same-origin',
+			'cross-origin-opener-policy': 'same-origin',
+		});
+		const fetchSpy = vi
+			.fn()
+			.mockResolvedValueOnce({ ok: false, status: 405, headers: new Headers() })
+			.mockResolvedValueOnce({ ok: true, status: 200, headers: fullHeaders });
+		globalThis.fetch = fetchSpy;
+		const result = await run();
+		expect(result.passed).toBe(true);
+		expect(fetchSpy).toHaveBeenNthCalledWith(2, 'https://example.com', expect.objectContaining({ method: 'GET' }));
+	});
+
+	it('should return auth finding for 401 response', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401, headers: new Headers() });
+		const result = await run();
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toBe('HTTP check requires authentication');
+		expect(result.findings[0].severity).toBe('info');
+		expect(result.passed).toBe(false);
+	});
+
+	it('should return rejected finding for other 4xx responses', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 429, headers: new Headers() });
+		const result = await run();
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toBe('HTTP request rejected');
+		expect(result.findings[0].severity).toBe('medium');
+		expect(result.passed).toBe(false);
 	});
 });
