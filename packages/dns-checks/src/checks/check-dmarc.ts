@@ -189,6 +189,23 @@ export async function checkDMARC(
 		}
 	}
 
+	// Check reporting interval (ri= tag) — RFC 7489 §6.3
+	// Value must be a positive integer (> 0). Default is 86400 (24 hours).
+	const ri = tags.get('ri');
+	if (ri !== undefined) {
+		const riValue = parseInt(ri, 10);
+		if (isNaN(riValue) || !Number.isFinite(riValue) || riValue <= 0) {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Invalid DMARC reporting interval',
+					'medium',
+					`DMARC ri value "${ri}" is invalid. RFC 7489 §6.3 requires ri= to be a positive integer greater than zero. The default is 86400 (24 hours).`,
+				),
+			);
+		}
+	}
+
 	// Check forensic failure reporting options (fo=)
 	const fo = tags.get('fo');
 	if (fo) {
