@@ -233,11 +233,12 @@ describe('checkDkim', () => {
 		expect(consolidated!.severity).toBe('info');
 	});
 
-	it('detects RSA 2048-bit key (230-550 chars) with medium severity', async () => {
-		// Simulates a 2048-bit RSA key (230-550 base64 chars, ~392 chars for real SPKI)
-		const recommendedKey =
-			'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Z3VS5JJcds3s2m0V5YxFqj7xFqJ1LxlZN8W6WqLkKl1B+dKZgL5X4dQr3+4Tx3Y3Z5Z7M9N0O1P2Q3R4S5T6U7V8W9X0Y1Z2A3B4C5D6E7F8G9H0I1J2K3L4M5N6O7P8Q9R0S1T2U3V4W5X6Y7Z8A9B0C1D2E3F4G5H6I7J8K9L0M1N2O3P4Q5R6S7T8U9AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPQQRRSSTTUUVVWWXXYYZZaabbccddeeffgghhiijjkkllmmnnooppqqrrssttuuvvwwxxyyzz001122334455667788990011223344556677';
-		mockDkimRecords({ google: [`v=DKIM1; k=rsa; p=${recommendedKey}`] });
+	it('detects RSA 2048-bit key (230-349 chars) with medium severity', async () => {
+		// Simulates a sub-optimal 2048-bit RSA key in the 230-349 base64 char range.
+		// Keys < 350 chars are below the PKCS#1 2048-bit minimum (~355 chars) and
+		// are flagged as medium per the updated threshold.
+		const borderlineKey = 'A'.repeat(280);
+		mockDkimRecords({ google: [`v=DKIM1; k=rsa; p=${borderlineKey}`] });
 		const r = await run();
 		const finding = r.findings.find((f) => /recommended|2048|below/i.test(f.title));
 		expect(finding).toBeDefined();
