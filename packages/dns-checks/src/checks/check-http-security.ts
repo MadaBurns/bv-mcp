@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-/**
- * HTTP security headers check.
- * Fetches the HTTPS endpoint and analyzes browser security headers.
- *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd.
- * Licensed under BSL 1.1
- */
+// Copyright (c) 2023-2026 BlackVeil Security Ltd.
 
 import type { CheckResult, FetchFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
