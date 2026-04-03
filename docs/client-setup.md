@@ -149,6 +149,34 @@ If the client key is valid but not registered in production, requests fail with 
 
 > On macOS GUI apps, `npx` may not resolve from `PATH`; if Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path. After editing the config, fully restart Claude Desktop. If you already have other servers, merge `"blackveil-dns"` into your existing `"mcpServers"` object — don't paste a second `{ }` wrapper.
 
+## Claude Mobile (iOS / Android)
+
+No npm install required. MCP connectors are configured on the web and auto-sync to mobile.
+
+**Setup:**
+
+1. Open [claude.ai](https://claude.ai) → **Settings** → **Connectors** → **Add custom connector**
+2. Enter:
+   - **Name**: `Blackveil DNS`
+   - **URL**: `https://dns-mcp.blackveilsecurity.com/mcp`
+3. Save — the connector syncs automatically to Claude iOS and Android apps
+
+**With API key** — append the key as a query parameter in the connector URL:
+
+```
+https://dns-mcp.blackveilsecurity.com/mcp?api_key=YOUR_API_KEY
+```
+
+Alternatively, provide the API key as a Bearer token if the connector UI supports an authentication field.
+
+**Limitations:**
+
+- Only MCP **tools** are available on mobile (prompts and resources are not supported)
+- Connectors must be added via the claude.ai web interface — the mobile app cannot add them directly
+- Requests are routed through Anthropic's servers; the MCP server sees Anthropic's IP, not the user's device IP
+
+**Output format:** The server auto-detects Claude Mobile clients and returns compact output (shorter findings, no emoji icons, no structured JSON blocks) optimized for mobile screen size.
+
 ## Claude Code
 
 No npm install required.
@@ -331,6 +359,7 @@ The query parameter method is the simplest for clients that only support URL con
 
 | Client | Recommended Auth Method | Notes |
 |--------|-------------------------|-------|
+| Claude Mobile | `?api_key=` in URL | Connector configured on web |
 | Claude Code | `?api_key=` in URL | Simple and native |
 | Smithery | `?api_key=` in URL | Native integration |
 | VS Code / Copilot | `headers` field | Supports secret prompt |

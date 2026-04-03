@@ -5,9 +5,10 @@
  * Used for analytics segmentation — not security decisions.
  */
 
-export type McpClientType = 'claude_code' | 'cursor' | 'vscode' | 'claude_desktop' | 'windsurf' | 'mcp_remote' | 'blackveil_dns_action' | 'bv_claude_dns_proxy' | 'unknown';
+export type McpClientType = 'claude_mobile' | 'claude_code' | 'cursor' | 'vscode' | 'claude_desktop' | 'windsurf' | 'mcp_remote' | 'blackveil_dns_action' | 'bv_claude_dns_proxy' | 'unknown';
 
 const CLIENT_PATTERNS: ReadonlyArray<[RegExp, McpClientType]> = [
+	[/claude[-_]?mobile|claude\.ai\/(android|ios)|claudeai[-_]?mobile/i, 'claude_mobile'],
 	[/claude[-_]?code/i, 'claude_code'],
 	[/claude[-_]?desktop/i, 'claude_desktop'],
 	[/cursor/i, 'cursor'],
