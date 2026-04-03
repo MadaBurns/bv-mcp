@@ -64,29 +64,53 @@ describe('checkBimi', () => {
 	});
 
 	it('should return info findings for valid BIMI with l= and a= tags', async () => {
-		mockMultipleTxtRecords({
+		// Smart mock: returns valid SVG for logo URLs, DNS responses for DoH queries
+		const validSvg = '<svg xmlns="http://www.w3.org/2000/svg" baseProfile="tiny-ps"></svg>';
+		const dnsMapping: Record<string, string[]> = {
 			'default._bimi.example.com': ['v=BIMI1; l=https://example.com/logo.svg; a=https://example.com/vmc.pem'],
+		};
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+			if (url.endsWith('.svg')) {
+				return Promise.resolve(new Response(validSvg, { status: 200, headers: { 'content-type': 'image/svg+xml' } }));
+			}
+			const name = new URL(url).searchParams.get('name') ?? '';
+			const records = dnsMapping[name] ?? [];
+			const answers = records.map((data) => ({ name, type: 16, TTL: 300, data: `"${data}"` }));
+			return Promise.resolve(createDohResponse([{ name, type: 16 }], answers));
 		});
 		const result = await run();
-		const configuredFinding = result.findings.find((f) => /BIMI record configured/i.test(f.title));
+		const svgFinding = result.findings.find((f) => /BIMI logo SVG validated/i.test(f.title));
 		const authFinding = result.findings.find((f) => /authority evidence present/i.test(f.title));
-		expect(configuredFinding).toBeDefined();
-		expect(configuredFinding!.severity).toBe('info');
+		expect(svgFinding).toBeDefined();
+		expect(svgFinding!.severity).toBe('info');
 		expect(authFinding).toBeDefined();
 		expect(authFinding!.severity).toBe('info');
 	});
 
-	it('should return info finding about missing VMC when l= present but no a= tag', async () => {
-		mockMultipleTxtRecords({
+	it('should return low finding about missing VMC when l= present but no a= tag', async () => {
+		// Smart mock: returns valid SVG for logo URLs, DNS responses for DoH queries
+		const validSvg = '<svg xmlns="http://www.w3.org/2000/svg" baseProfile="tiny-ps"></svg>';
+		const dnsMapping: Record<string, string[]> = {
 			'default._bimi.example.com': ['v=BIMI1; l=https://example.com/logo.svg'],
+		};
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+			if (url.endsWith('.svg')) {
+				return Promise.resolve(new Response(validSvg, { status: 200, headers: { 'content-type': 'image/svg+xml' } }));
+			}
+			const name = new URL(url).searchParams.get('name') ?? '';
+			const records = dnsMapping[name] ?? [];
+			const answers = records.map((data) => ({ name, type: 16, TTL: 300, data: `"${data}"` }));
+			return Promise.resolve(createDohResponse([{ name, type: 16 }], answers));
 		});
 		const result = await run();
 		const vmcFinding = result.findings.find((f) => /No BIMI authority evidence/i.test(f.title));
 		expect(vmcFinding).toBeDefined();
-		expect(vmcFinding!.severity).toBe('info');
-		// Should also have the configured finding
-		const configuredFinding = result.findings.find((f) => /BIMI record configured/i.test(f.title));
-		expect(configuredFinding).toBeDefined();
+		expect(vmcFinding!.severity).toBe('low');
+		// SVG validation should succeed
+		const svgFinding = result.findings.find((f) => /BIMI logo SVG validated/i.test(f.title));
+		expect(svgFinding).toBeDefined();
 	});
 
 	it('should return medium finding when BIMI record has no l= tag', async () => {

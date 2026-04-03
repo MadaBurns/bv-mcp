@@ -11,7 +11,7 @@
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
-import { auditDnskeyAlgorithms, auditDsDigestTypes } from './dnssec-analysis';
+import { auditDnskeyAlgorithms, auditDsDigestTypes, auditNsec3Params } from './dnssec-analysis';
 
 export { parseDnskeyAlgorithm, parseDsRecord } from './dnssec-analysis';
 
@@ -47,9 +47,10 @@ export async function checkDNSSEC(
 		return buildCheckResult('dnssec', findings);
 	}
 
-	// Query DNSKEY and DS records independently; default to empty on failure
+	// Query DNSKEY, DS, and NSEC3PARAM records independently; default to empty on failure
 	let dnskeyRecords: string[] = [];
 	let dsRecords: string[] = [];
+	let nsec3ParamRecords: string[] = [];
 
 	try {
 		dnskeyRecords = await queryDNS(domain, 'DNSKEY', { timeout });
@@ -61,6 +62,12 @@ export async function checkDNSSEC(
 		dsRecords = await queryDNS(domain, 'DS', { timeout });
 	} catch {
 		// Non-critical: DS query failure — treat as absent
+	}
+
+	try {
+		nsec3ParamRecords = await queryDNS(domain, 'NSEC3PARAM', { timeout });
+	} catch {
+		// Non-critical: NSEC3PARAM query failure — domain may use NSEC instead of NSEC3
 	}
 
 	// Consolidated finding logic
@@ -103,6 +110,9 @@ export async function checkDNSSEC(
 	}
 	if (dsRecords.length > 0) {
 		findings.push(...auditDsDigestTypes(domain, dsRecords));
+	}
+	if (nsec3ParamRecords.length > 0) {
+		findings.push(...auditNsec3Params(domain, nsec3ParamRecords));
 	}
 
 	// If DNSSEC is valid and no issues found (only info findings at most)
