@@ -15,6 +15,9 @@ import { analyzeSecurityHeaders } from './http-security-analysis';
 /** Default HTTPS timeout (ms) */
 const HTTPS_TIMEOUT_MS = 4_000;
 
+/** User-Agent sent with all outbound HTTP requests to reduce WAF false blocks. */
+const SCANNER_USER_AGENT = 'Mozilla/5.0 (compatible; BlackVeilDNSScanner/1.0; +https://blackveilsecurity.com)';
+
 /** Maximum redirect hops to follow */
 const MAX_REDIRECT_HOPS = 3;
 
@@ -53,6 +56,7 @@ async function followRedirects(
 			response = await fetchFn(nextUrl, {
 				method: 'HEAD',
 				redirect: 'manual',
+				headers: { 'User-Agent': SCANNER_USER_AGENT },
 				signal: AbortSignal.timeout(timeoutMs),
 			});
 		} catch {
@@ -61,6 +65,23 @@ async function followRedirects(
 	}
 
 	return response;
+}
+
+/**
+ * Attempt a GET request as fallback when HEAD is blocked (403/405).
+ * Returns null on any fetch error.
+ */
+async function tryGetFallback(url: string, fetchFn: FetchFunction, timeoutMs: number): Promise<Response | null> {
+	try {
+		return await fetchFn(url, {
+			method: 'GET',
+			redirect: 'manual',
+			headers: { 'User-Agent': SCANNER_USER_AGENT },
+			signal: AbortSignal.timeout(timeoutMs),
+		});
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -81,16 +102,17 @@ export async function checkHTTPSecurity(
 		let response = await fetchFn(`https://${domain}`, {
 			method: 'HEAD',
 			redirect: 'manual',
+			headers: { 'User-Agent': SCANNER_USER_AGENT },
 			signal: AbortSignal.timeout(timeoutMs),
 		});
 
 		// Follow redirects to get the final destination's headers
 		response = await followRedirects(response, fetchFn, timeoutMs);
 
-		// Only analyze headers on successful responses (not redirects or errors)
 		if (response.ok) {
+			// 200-299: analyze headers normally
 			findings.push(...analyzeSecurityHeaders(response.headers));
-		} else if (response.status >= 500) {
+		} else if (response.status === 0 || response.status >= 500) {
 			findings.push(
 				createFinding(
 					'http_security',
@@ -102,17 +124,44 @@ export async function checkHTTPSecurity(
 		} else if (response.status >= 300 && response.status < 400) {
 			// Still a redirect after max hops — analyze whatever headers we have
 			findings.push(...analyzeSecurityHeaders(response.headers));
-		} else if (response.status === 0) {
+		} else if (response.status === 403 || response.status === 405) {
+			// WAF block or HEAD not allowed — retry with GET to get real headers
+			const getResponse = await tryGetFallback(`https://${domain}`, fetchFn, timeoutMs);
+			if (getResponse && (getResponse.ok || (getResponse.status >= 300 && getResponse.status < 400))) {
+				const followed = await followRedirects(getResponse, fetchFn, timeoutMs);
+				findings.push(...analyzeSecurityHeaders(followed.headers));
+			} else {
+				findings.push(
+					createFinding(
+						'http_security',
+						'HTTP check blocked by security appliance',
+						'info',
+						`The site returned HTTP ${response.status} for ${domain}. A WAF or firewall is blocking external header inspection. Security headers cannot be verified.`,
+						{ missingControl: true },
+					),
+				);
+			}
+		} else if (response.status === 401) {
 			findings.push(
 				createFinding(
 					'http_security',
-					'Server error',
-					'medium',
-					`HTTPS returned status ${response.status} for ${domain}. Cannot analyze security headers.`,
+					'HTTP check requires authentication',
+					'info',
+					`The site returned HTTP 401 for ${domain}. The endpoint requires authentication; security headers cannot be verified externally.`,
+					{ missingControl: true },
 				),
 			);
 		} else {
-			findings.push(...analyzeSecurityHeaders(response.headers));
+			// Other 4xx (404, 429, etc.) — blocked or rejected
+			findings.push(
+				createFinding(
+					'http_security',
+					'HTTP request rejected',
+					'medium',
+					`HTTPS returned status ${response.status} for ${domain}. Cannot analyze security headers.`,
+					{ missingControl: true },
+				),
+			);
 		}
 	} catch (err) {
 		const message =
