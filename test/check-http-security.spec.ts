@@ -25,6 +25,7 @@ describe('checkHttpSecurity', () => {
 				'referrer-policy': 'strict-origin-when-cross-origin',
 				'cross-origin-resource-policy': 'same-origin',
 				'cross-origin-opener-policy': 'same-origin',
+				'cross-origin-embedder-policy': 'require-corp',
 			}),
 		});
 		const result = await run();
@@ -107,8 +108,8 @@ describe('checkHttpSecurity', () => {
 			headers: new Headers({}),
 		});
 		const result = await run();
-		// Missing CSP (high), XFO (medium), XCTO (low), PP (low), RP (low), CORP (info), COOP (info) = 7
-		expect(result.findings).toHaveLength(7);
+		// Missing CSP (high), XFO (medium), XCTO (low), PP (low), RP (low), CORP (info), COOP (info), COEP (info) = 8
+		expect(result.findings).toHaveLength(8);
 		expect(result.score).toBeLessThan(100);
 	});
 
@@ -175,6 +176,7 @@ describe('checkHttpSecurity', () => {
 			'referrer-policy': 'no-referrer',
 			'cross-origin-resource-policy': 'same-origin',
 			'cross-origin-opener-policy': 'same-origin',
+			'cross-origin-embedder-policy': 'require-corp',
 		});
 		const fetchSpy = vi
 			.fn()
