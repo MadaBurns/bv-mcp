@@ -9,8 +9,142 @@
  * Licensed under BSL 1.1
  */
 
-import type { CheckResult, DNSQueryFunction, Finding } from '../types';
+import type { CheckResult, DNSQueryFunction, FetchFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
+
+/** BIMI logo fetch timeout (ms). */
+const BIMI_FETCH_TIMEOUT_MS = 4_000;
+
+/** BIMI group recommendation: logos should be ≤ 32 KB. */
+const BIMI_SVG_MAX_BYTES = 32 * 1024;
+
+/**
+ * Fetch and validate a BIMI SVG logo per the BIMI SVG Tiny PS specification.
+ * Checks Content-Type, file size, baseProfile attribute, and absence of script tags.
+ */
+async function validateBimiSvg(logoUrl: string, fetchFn: FetchFunction, timeout: number): Promise<Finding[]> {
+	const findings: Finding[] = [];
+
+	try {
+		const response = await fetchFn(logoUrl, {
+			method: 'GET',
+			redirect: 'manual',
+			signal: AbortSignal.timeout(timeout),
+		});
+
+		if (response.status >= 300 && response.status < 400) {
+			findings.push(
+				createFinding(
+					'bimi',
+					'BIMI logo URL redirects',
+					'low',
+					`BIMI logo URL "${logoUrl}" returns a redirect (HTTP ${response.status}). The logo should be served directly without redirects.`,
+				),
+			);
+			return findings;
+		}
+
+		if (!response.ok) {
+			findings.push(
+				createFinding(
+					'bimi',
+					'BIMI logo URL not accessible',
+					'low',
+					`BIMI logo URL "${logoUrl}" returned HTTP ${response.status}. The logo must be publicly accessible over HTTPS.`,
+				),
+			);
+			return findings;
+		}
+
+		// Validate Content-Type
+		const contentType = response.headers.get('content-type') ?? '';
+		if (!contentType.toLowerCase().includes('image/svg+xml')) {
+			findings.push(
+				createFinding(
+					'bimi',
+					'BIMI logo wrong Content-Type',
+					'medium',
+					`BIMI logo at "${logoUrl}" is served with Content-Type "${contentType || '(none)'}". BIMI logos must be served as "image/svg+xml".`,
+				),
+			);
+		}
+
+		// Check Content-Length before fetching body
+		const contentLength = parseInt(response.headers.get('content-length') ?? '0', 10);
+		if (contentLength > BIMI_SVG_MAX_BYTES) {
+			findings.push(
+				createFinding(
+					'bimi',
+					'BIMI logo exceeds 32 KB',
+					'low',
+					`BIMI logo is ${Math.round(contentLength / 1024)} KB. The BIMI specification recommends logos be under 32 KB for reliable display in email clients.`,
+				),
+			);
+			return findings;
+		}
+
+		const body = await response.text();
+
+		if (body.length > BIMI_SVG_MAX_BYTES) {
+			findings.push(
+				createFinding(
+					'bimi',
+					'BIMI logo exceeds 32 KB',
+					'low',
+					`BIMI logo is ${Math.round(body.length / 1024)} KB. The BIMI specification recommends logos be under 32 KB for reliable display in email clients.`,
+				),
+			);
+			return findings;
+		}
+
+		// Security check: script tags are prohibited in BIMI SVG
+		if (/<script[\s>]/i.test(body)) {
+			findings.push(
+				createFinding(
+					'bimi',
+					'BIMI logo contains script tags',
+					'high',
+					`BIMI logo at "${logoUrl}" contains <script> elements. Scripts are prohibited in BIMI SVG files and will cause mail clients to reject the logo.`,
+				),
+			);
+		}
+
+		// Format check: SVG Tiny PS profile declaration required by BIMI spec
+		if (!/baseProfile\s*=\s*["']tiny-ps["']/i.test(body)) {
+			findings.push(
+				createFinding(
+					'bimi',
+					'BIMI logo missing baseProfile="tiny-ps"',
+					'medium',
+					`BIMI logo at "${logoUrl}" does not declare baseProfile="tiny-ps". The BIMI specification requires SVG Tiny 1.2 Profile (PS subset). Add baseProfile="tiny-ps" to the root <svg> element.`,
+				),
+			);
+		}
+
+		if (findings.length === 0) {
+			findings.push(
+				createFinding(
+					'bimi',
+					'BIMI logo SVG validated',
+					'info',
+					`BIMI logo at "${logoUrl}" passed Content-Type, size, security, and SVG Tiny PS format checks.`,
+				),
+			);
+		}
+	} catch (err) {
+		const isTimeout = err instanceof Error && (err.message.includes('timeout') || err.message.includes('abort'));
+		findings.push(
+			createFinding(
+				'bimi',
+				`BIMI logo fetch ${isTimeout ? 'timed out' : 'failed'}`,
+				'low',
+				`Could not fetch BIMI logo from "${logoUrl}". The logo URL must be publicly accessible over HTTPS.`,
+			),
+		);
+	}
+
+	return findings;
+}
 
 /**
  * Check BIMI records for a domain.
@@ -20,9 +154,10 @@ import { buildCheckResult, createFinding } from '../check-utils';
 export async function checkBIMI(
 	domain: string,
 	queryDNS: DNSQueryFunction,
-	options?: { timeout?: number },
+	options?: { timeout?: number; fetchFn?: FetchFunction },
 ): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
+	const fetchFn = options?.fetchFn;
 	const findings: Finding[] = [];
 	const bimiDomain = `default._bimi.${domain}`;
 	const txtRecords = await queryDNS(bimiDomain, 'TXT', { timeout });
@@ -135,8 +270,8 @@ export async function checkBIMI(
 			createFinding(
 				'bimi',
 				'No BIMI authority evidence (VMC)',
-				'info',
-				`BIMI record at ${bimiDomain} does not include an authority evidence URL (a= tag). A Verified Mark Certificate (VMC) is optional but required by Gmail to display your logo. Consider obtaining a VMC from a certificate authority like DigiCert or Entrust.`,
+				'low',
+				`BIMI record at ${bimiDomain} does not include an authority evidence URL (a= tag). A Verified Mark Certificate (VMC) is required by Gmail and Apple Mail to display your brand logo. Without a VMC, BIMI logos will not appear in most major email clients. Obtain a VMC from DigiCert or Entrust.`,
 			),
 		);
 	} else {
@@ -150,16 +285,20 @@ export async function checkBIMI(
 		);
 	}
 
-	// If logo URL is valid and present, add a positive finding
+	// If logo URL is valid and present, validate the SVG content
 	if (logoUrl && logoUrl.toLowerCase().startsWith('https://') && logoUrl.toLowerCase().endsWith('.svg')) {
-		findings.push(
-			createFinding(
-				'bimi',
-				'BIMI record configured',
-				'info',
-				`BIMI record found and configured at ${bimiDomain} with a valid HTTPS SVG logo reference.`,
-			),
-		);
+		if (fetchFn) {
+			findings.push(...await validateBimiSvg(logoUrl, fetchFn, BIMI_FETCH_TIMEOUT_MS));
+		} else {
+			findings.push(
+				createFinding(
+					'bimi',
+					'BIMI record configured',
+					'info',
+					`BIMI record found and configured at ${bimiDomain} with a valid HTTPS SVG logo reference.`,
+				),
+			);
+		}
 	}
 
 	return buildCheckResult('bimi', findings);

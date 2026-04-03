@@ -28,6 +28,6 @@ export async function checkBimi(domain: string, dnsOptions?: QueryDnsOptions): P
 	return checkBIMI(
 		domain,
 		makeQueryDNS(dnsOptions),
-		{ timeout: dnsOptions?.timeoutMs ?? 5000 },
+		{ timeout: dnsOptions?.timeoutMs ?? 5000, fetchFn: fetch },
 	) as Promise<CheckResult>;
 }

@@ -184,6 +184,24 @@ export async function checkDKIM(
 						),
 					);
 				}
+
+				// Check for deprecated SHA-1 hash algorithm (RFC 8301)
+				// h= tag restricts which hash algorithms are accepted for this key.
+				// If only sha1 is listed (no sha256), the key cannot verify modern DKIM signatures.
+				const hashTag = getDkimTagValue(record, 'h');
+				if (hashTag) {
+					const hashAlgs = hashTag.split(':').map((h) => h.trim().toLowerCase()).filter(Boolean);
+					if (hashAlgs.length > 0 && !hashAlgs.includes('sha256') && hashAlgs.includes('sha1')) {
+						findings.push(
+							createFinding(
+								'dkim',
+								`Deprecated hash algorithm (h=sha1): ${result.selector}`,
+								'medium',
+								`DKIM selector "${result.selector}" only accepts SHA-1 signatures (h=sha1). SHA-1 is deprecated for DKIM signing per RFC 8301. Add sha256 to the h= tag or remove the restriction.`,
+							),
+						);
+					}
+				}
 			}
 		}
 	}
