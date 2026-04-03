@@ -6,8 +6,6 @@ import { DohResponseSchema } from '../schemas/dns';
 
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
 const GOOGLE_DOH_ENDPOINT = 'https://dns.google/resolve';
-/** Quad9 unfiltered — no RPZ/malware blocking, used as last-resort fallback. */
-const QUAD9_UNFILTERED_ENDPOINT = 'https://dns9.quad9.net/dns-query';
 
 function buildDohUrl(endpoint: string, domain: string, type: RecordTypeName, dnssecCheck: boolean): string {
 	const params = new URLSearchParams({
@@ -190,15 +188,10 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 					return bvDns;
 				}
 			}
-			// Google DoH as secondary fallback
+			// Google DoH as final fallback
 			const google = await queryDnsFromEndpoint(GOOGLE_DOH_ENDPOINT, domain, type, dnssecCheck, timeoutMs);
 			if (google && hasTypedAnswers(google, type)) {
 				return google;
-			}
-			// Quad9 unfiltered as final fallback (no RPZ — bypasses DNS firewall blocks)
-			const quad9 = await queryDnsFromEndpoint(QUAD9_UNFILTERED_ENDPOINT, domain, type, dnssecCheck, timeoutMs);
-			if (quad9 && hasTypedAnswers(quad9, type)) {
-				return quad9;
 			}
 		}
 
