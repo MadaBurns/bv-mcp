@@ -20,22 +20,9 @@ export interface TierAuthResult {
 
 const TIER_KV_CACHE_TTL = 300; // 5 minutes
 
-/** SHA-256 hash a bearer token to a hex string (for KV keys and service binding payloads). */
-async function hashToken(token: string): Promise<string> {
-	const encoder = new TextEncoder();
-	const data = encoder.encode(token);
-	const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-	return Array.from(new Uint8Array(hashBuffer))
-		.map((b) => b.toString(16).padStart(2, '0'))
-		.join('');
-}
-
-/** SHA-256 digest as raw bytes (for constant-time comparison). */
+/** SHA-256 digest as raw bytes (for constant-time comparison and hex derivation). */
 async function hashTokenRaw(token: string): Promise<Uint8Array> {
-	const encoder = new TextEncoder();
-	const data = encoder.encode(token);
-	const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-	return new Uint8Array(hashBuffer);
+	return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
 }
 
 /**
@@ -63,7 +50,10 @@ export async function resolveTier(
 ): Promise<TierAuthResult> {
 	if (!token) return { authenticated: false };
 
-	const keyHash = await hashToken(token);
+	const tokenRaw = await hashTokenRaw(token);
+	const keyHash = Array.from(tokenRaw)
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('');
 
 	// 1. Try KV cache
 	if (env.RATE_LIMIT) {
@@ -132,7 +122,8 @@ export async function resolveTier(
 	if (env.BV_API_KEY) {
 		// Constant-time comparison: XOR raw SHA-256 digests byte-by-byte
 		// (same pattern as auth.ts — avoids timing side-channels from === on strings)
-		const [a, b] = await Promise.all([hashTokenRaw(token), hashTokenRaw(env.BV_API_KEY)]);
+		const a = tokenRaw;
+		const b = await hashTokenRaw(env.BV_API_KEY);
 		let mismatch = 0;
 		for (let i = 0; i < a.byteLength; i++) {
 			mismatch |= a[i] ^ b[i];
