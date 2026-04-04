@@ -46,6 +46,8 @@ import { internalRoutes } from './internal';
 export { QuotaCoordinator } from './lib/quota-coordinator';
 export { ProfileAccumulator } from './lib/profile-accumulator';
 
+const TEXT_ENCODER = new TextEncoder();
+
 let hasLoggedAnalyticsBindingStatus = false;
 
 function logAnalyticsBindingStatus(enabled: boolean): void {
@@ -152,8 +154,6 @@ for (const path of mcpPaths) {
 			? authHeader.slice(7).trim()
 			: (c.req.query('api_key') ?? null);
 
-		// Resolve tier via KV cache → service binding → static BV_API_KEY fallback
-		// Pass client IP for owner-tier IP allowlist enforcement
 		const clientIp = c.req.header('cf-connecting-ip') ?? undefined;
 		const tierResult = await resolveTier(token, c.env, clientIp);
 		c.set('tierAuthResult', tierResult);
@@ -353,7 +353,7 @@ app.post('/mcp', async (c) => {
 				headers: {
 					'Content-Type': 'text/event-stream',
 					'Cache-Control': 'no-cache',
-					'Content-Length': String(new TextEncoder().encode(ssePayload).byteLength),
+					'Content-Length': String(TEXT_ENCODER.encode(ssePayload).byteLength),
 				},
 			});
 		}
@@ -423,7 +423,7 @@ app.post('/mcp', async (c) => {
 			headers: {
 				'Content-Type': 'text/event-stream',
 				'Cache-Control': 'no-cache',
-				'Content-Length': String(new TextEncoder().encode(ssePayload).byteLength),
+				'Content-Length': String(TEXT_ENCODER.encode(ssePayload).byteLength),
 				...singleResult.headers,
 			},
 		});
@@ -525,6 +525,7 @@ app.post('/mcp/messages', async (c) => {
 				analytics,
 				profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 				waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+				scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 				cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 				secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 				secondaryDohToken: c.env.BV_DOH_TOKEN,

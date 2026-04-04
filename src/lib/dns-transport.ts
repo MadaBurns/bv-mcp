@@ -21,54 +21,29 @@ function hasTypedAnswers(response: DohResponse, type: RecordTypeName): boolean {
 	return (response.Answer ?? []).some((answer) => answer.type === RecordType[type]);
 }
 
-async function fetchDohResponse(url: string, timeoutMs: number): Promise<DohResponse | null> {
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-	try {
-		const response = await fetch(url, {
-			method: 'GET',
-			headers: { Accept: 'application/dns-json' },
-			signal: controller.signal,
-			cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true },
-		});
-		if (!response.ok) return null;
-		const data = await response.json();
-		const parsed = DohResponseSchema.safeParse(data);
-		if (!parsed.success) return null;
-		return parsed.data as DohResponse;
-	} catch {
-		return null;
-	} finally {
-		clearTimeout(timeout);
-	}
-}
-
-async function queryDnsFromEndpoint(
-	endpoint: string,
-	domain: string,
-	type: RecordTypeName,
-	dnssecCheck: boolean,
-	timeoutMs: number,
-): Promise<DohResponse | null> {
-	return fetchDohResponse(buildDohUrl(endpoint, domain, type, dnssecCheck), timeoutMs);
+function retryDelay(attempt: number): Promise<void> {
+	return new Promise((r) => setTimeout(r, DNS_RETRY_BASE_DELAY_MS * (attempt + 1) + Math.random() * 50));
 }
 
 /**
- * Fetch a DoH response from an endpoint with optional auth header.
- * Used for custom secondary resolvers (e.g., bv-dns) that may require authentication.
- * Does NOT use Cloudflare edge cache (`cf` directive) since the target is an external origin.
+ * Fetch a DoH response from a URL.
+ *
+ * @param token - Optional auth token sent as `X-BV-Token` (for custom secondary resolvers).
+ * @param useEdgeCache - If true, attaches Cloudflare `cf` cache directive. Omit for external origins.
  */
-async function fetchDohWithAuth(url: string, timeoutMs: number, token?: string): Promise<DohResponse | null> {
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), timeoutMs);
+async function fetchDohResponse(
+	url: string,
+	timeoutMs: number,
+	opts?: { token?: string; useEdgeCache?: boolean },
+): Promise<DohResponse | null> {
 	try {
 		const headers: Record<string, string> = { Accept: 'application/dns-json' };
-		if (token) headers['X-BV-Token'] = token;
+		if (opts?.token) headers['X-BV-Token'] = opts.token;
 		const response = await fetch(url, {
 			method: 'GET',
 			headers,
-			signal: controller.signal,
+			signal: AbortSignal.timeout(timeoutMs),
+			...(opts?.useEdgeCache ? { cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true } } : {}),
 		});
 		if (!response.ok) return null;
 		const data = await response.json();
@@ -77,8 +52,6 @@ async function fetchDohWithAuth(url: string, timeoutMs: number, token?: string):
 		return parsed.data as DohResponse;
 	} catch {
 		return null;
-	} finally {
-		clearTimeout(timeout);
 	}
 }
 
@@ -132,38 +105,33 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 	const url = buildDohUrl(DOH_ENDPOINT, domain, type, dnssecCheck);
 
 	for (let attempt = 0; attempt <= retries; attempt++) {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), timeoutMs);
 		let response: Response;
 
 		try {
 			response = await fetch(url, {
 				method: 'GET',
 				headers: { Accept: 'application/dns-json' },
-				signal: controller.signal,
+				signal: AbortSignal.timeout(timeoutMs),
 				cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true },
 			});
 		} catch (err) {
-			clearTimeout(timeout);
 			if (err instanceof DOMException && err.name === 'AbortError') {
 				if (attempt < retries) {
-					await new Promise((r) => setTimeout(r, DNS_RETRY_BASE_DELAY_MS * (attempt + 1) + Math.random() * 50));
+					await retryDelay(attempt);
 					continue;
 				}
 				throw new DnsQueryError(`DNS query timed out after ${timeoutMs}ms`, domain, type);
 			}
 			if (attempt < retries) {
-				await new Promise((r) => setTimeout(r, DNS_RETRY_BASE_DELAY_MS * (attempt + 1) + Math.random() * 50));
+				await retryDelay(attempt);
 				continue;
 			}
 			throw new DnsQueryError(`DNS query failed: ${err instanceof Error ? err.message : String(err)}`, domain, type);
 		}
 
-		clearTimeout(timeout);
-
 		if (!response.ok) {
 			if (attempt < retries && response.status >= 500) {
-				await new Promise((r) => setTimeout(r, DNS_RETRY_BASE_DELAY_MS * (attempt + 1) + Math.random() * 50));
+				await retryDelay(attempt);
 				continue;
 			}
 			throw new DnsQueryError(`DoH returned HTTP ${response.status}`, domain, type, response.status);
@@ -179,17 +147,21 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 		if (confirmWithSecondaryOnEmpty && !opts?.skipSecondaryConfirmation && !hasTypedAnswers(data, type)) {
 			// Try custom secondary (bv-dns) first if configured
 			if (opts?.secondaryDoh?.endpoint) {
-				const bvDns = await fetchDohWithAuth(
+				const bvDns = await fetchDohResponse(
 					buildDohUrl(opts.secondaryDoh.endpoint, domain, type, dnssecCheck),
 					timeoutMs,
-					opts.secondaryDoh.token,
+					{ token: opts.secondaryDoh.token },
 				);
 				if (bvDns && hasTypedAnswers(bvDns, type)) {
 					return bvDns;
 				}
 			}
 			// Google DoH as final fallback
-			const google = await queryDnsFromEndpoint(GOOGLE_DOH_ENDPOINT, domain, type, dnssecCheck, timeoutMs);
+			const google = await fetchDohResponse(
+				buildDohUrl(GOOGLE_DOH_ENDPOINT, domain, type, dnssecCheck),
+				timeoutMs,
+				{ useEdgeCache: true },
+			);
 			if (google && hasTypedAnswers(google, type)) {
 				return google;
 			}
