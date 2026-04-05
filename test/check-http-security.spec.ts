@@ -228,3 +228,52 @@ describe('checkHttpSecurity', () => {
 		expect(result.passed).toBe(false);
 	});
 });
+
+describe('checkHttpSecurity CDN detection', () => {
+	function mockHttpResponse(status: number, headers: Record<string, string>, body = 'OK') {
+		globalThis.fetch = vi.fn().mockImplementation(() =>
+			Promise.resolve(new Response(body, { status, headers })),
+		);
+	}
+
+	it('adds INFO finding with Cloudflare as cdnProvider when cf-ray header present', async () => {
+		mockHttpResponse(200, {
+			'cf-ray': '7a2b3c4d5e6f7a8b-SYD',
+			'content-security-policy': "default-src 'self'",
+		});
+		const { checkHttpSecurity } = await import('../src/tools/check-http-security');
+		const result = await checkHttpSecurity('example.com');
+		const cdnFinding = result.findings.find((f) => f.metadata?.cdnProvider);
+		expect(cdnFinding).toBeDefined();
+		expect(cdnFinding!.severity).toBe('info');
+		expect(cdnFinding!.metadata!.cdnProvider).toBe('Cloudflare');
+		expect(cdnFinding!.title).toContain('Cloudflare');
+	});
+
+	it('adds INFO finding for Vercel via x-vercel-id header', async () => {
+		mockHttpResponse(200, { 'x-vercel-id': 'syd1::abc123' });
+		const { checkHttpSecurity } = await import('../src/tools/check-http-security');
+		const result = await checkHttpSecurity('example.com');
+		const cdnFinding = result.findings.find((f) => f.metadata?.cdnProvider);
+		expect(cdnFinding!.metadata!.cdnProvider).toBe('Vercel');
+	});
+
+	it('does NOT add CDN finding when no CDN headers present', async () => {
+		mockHttpResponse(200, {
+			'content-security-policy': "default-src 'self'",
+			'x-frame-options': 'SAMEORIGIN',
+		});
+		const { checkHttpSecurity } = await import('../src/tools/check-http-security');
+		const result = await checkHttpSecurity('example.com');
+		const cdnFinding = result.findings.find((f) => f.metadata?.cdnProvider);
+		expect(cdnFinding).toBeUndefined();
+	});
+
+	it('adds cloudflare finding when server header contains cloudflare', async () => {
+		mockHttpResponse(200, { server: 'cloudflare' });
+		const { checkHttpSecurity } = await import('../src/tools/check-http-security');
+		const result = await checkHttpSecurity('example.com');
+		const cdnFinding = result.findings.find((f) => f.metadata?.cdnProvider === 'Cloudflare');
+		expect(cdnFinding).toBeDefined();
+	});
+});
