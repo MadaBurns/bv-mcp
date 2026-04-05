@@ -25,6 +25,8 @@ import { checkMxReputation } from '../tools/check-mx-reputation';
 import { checkSrv } from '../tools/check-srv';
 import { checkZoneHygiene } from '../tools/check-zone-hygiene';
 import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
+import { batchScan, formatBatchScan } from '../tools/batch-scan';
+import { compareDomains, formatDomainComparison } from '../tools/compare-domains';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
 import { generateFixPlan, formatFixPlan } from '../tools/generate-fix-plan';
@@ -208,7 +210,7 @@ export async function handleToolsCall(
 		const validatedArgs = validateToolArgs(name, args);
 		// Extract and validate domain for tools that need it
 		// (skip for explain_finding, get_benchmark, get_provider_insights which don't require a domain)
-		const DOMAIN_OPTIONAL_TOOLS = new Set(['explain_finding', 'get_benchmark', 'get_provider_insights']);
+		const DOMAIN_OPTIONAL_TOOLS = new Set(['explain_finding', 'get_benchmark', 'get_provider_insights', 'batch_scan', 'compare_domains']);
 		if (!DOMAIN_OPTIONAL_TOOLS.has(name)) {
 			domain = extractAndValidateDomain(validatedArgs);
 		}
@@ -271,6 +273,66 @@ export async function handleToolsCall(
 						content.push(mcpText(`<!-- STRUCTURED_RESULT\n${JSON.stringify(structured)}\nSTRUCTURED_RESULT -->`));
 					}
 					return { content };
+				}
+				case 'batch_scan': {
+					const domains = validatedArgs.domains as string[];
+					const forceRefresh = extractForceRefresh(validatedArgs);
+					const batchResults = await batchScan(domains, {
+						force_refresh: forceRefresh,
+						kv: scanCacheKV,
+						runtimeOptions: {
+							providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
+							providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
+							providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
+							scoringConfig: runtimeOptions?.scoringConfig,
+							waitUntil: runtimeOptions?.waitUntil,
+							profileAccumulator: runtimeOptions?.profileAccumulator,
+							secondaryDoh: runtimeOptions?.secondaryDoh,
+						},
+					});
+					const batchText = formatBatchScan(batchResults, effectiveFormat);
+					logToolSuccess({
+						toolName: 'batch_scan',
+						durationMs: Date.now() - startTime,
+						analytics: runtimeOptions?.analytics,
+						status: 'pass',
+						logResult: `${batchResults.filter((r) => !r.error).length}/${batchResults.length} domains`,
+						logDetails: { totalDomains: batchResults.length },
+						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
+					});
+					return { content: [mcpText(batchText)] };
+				}
+				case 'compare_domains': {
+					const domains = validatedArgs.domains as string[];
+					const compareResults = await compareDomains(domains, {
+						kv: scanCacheKV,
+						runtimeOptions: {
+							providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
+							providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
+							providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
+							scoringConfig: runtimeOptions?.scoringConfig,
+							waitUntil: runtimeOptions?.waitUntil,
+							profileAccumulator: runtimeOptions?.profileAccumulator,
+							secondaryDoh: runtimeOptions?.secondaryDoh,
+						},
+					});
+					const compareText = formatDomainComparison(compareResults, effectiveFormat);
+					logToolSuccess({
+						toolName: 'compare_domains',
+						durationMs: Date.now() - startTime,
+						analytics: runtimeOptions?.analytics,
+						status: 'pass',
+						logResult: `${Object.keys(compareResults.scores).length}/${compareResults.domains.length} domains compared`,
+						logDetails: { totalDomains: compareResults.domains.length, winner: compareResults.winner },
+						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
+					});
+					return { content: [mcpText(compareText)] };
 				}
 				case 'compare_baseline': {
 					const baseline = extractBaseline(validatedArgs) as PolicyBaseline;

@@ -23,6 +23,7 @@ export type {
 	Finding,
 	FindingConfidence,
 	CheckResult,
+	CheckStatus,
 	ScanScore,
 	Severity,
 } from './model';
