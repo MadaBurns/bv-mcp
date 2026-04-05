@@ -276,4 +276,22 @@ describe('checkHttpSecurity CDN detection', () => {
 		const cdnFinding = result.findings.find((f) => f.metadata?.cdnProvider === 'Cloudflare');
 		expect(cdnFinding).toBeDefined();
 	});
+
+	it('does NOT add CDN finding when the check returned a missingControl finding', async () => {
+		// Simulate a blocked response (403 HEAD + 403 GET) that still carries CDN headers.
+		// Both attempts return 403 with cf-ray, so the underlying check produces a
+		// missingControl finding ("HTTP check blocked by security appliance").
+		globalThis.fetch = vi.fn().mockImplementation(() =>
+			Promise.resolve(new Response('Blocked', {
+				status: 403,
+				headers: { 'cf-ray': '7a2b3c4d5e6f7a8b-SYD' },
+			})),
+		);
+		const { checkHttpSecurity } = await import('../src/tools/check-http-security');
+		const result = await checkHttpSecurity('example.com');
+		const cdnFinding = result.findings.find((f) => f.metadata?.cdnProvider);
+		// CDN finding must NOT appear: the check couldn't analyze headers (missingControl=true),
+		// so the CDN annotation is suppressed to avoid a spurious CDN finding alongside the blocked finding.
+		expect(cdnFinding).toBeUndefined();
+	});
 });

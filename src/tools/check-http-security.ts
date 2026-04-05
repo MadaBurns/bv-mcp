@@ -52,6 +52,15 @@ export async function checkHttpSecurity(domain: string): Promise<CheckResult> {
 	const cdnProvider = detectCdnProvider(capturedHeaders);
 	if (!cdnProvider) return result;
 
+	// Only annotate CDN when headers were actually analyzed.
+	// If the check was blocked (WAF, connection refused, etc.) or timed out,
+	// capturedHeaders may reflect the error response, not the security response.
+	const isUnanalyzable =
+		result.checkStatus === 'error' ||
+		result.checkStatus === 'timeout' ||
+		result.findings.some((f) => f.metadata?.missingControl === true);
+	if (isUnanalyzable) return result;
+
 	const cdnFinding = createFinding(
 		'http_security',
 		`HTTP headers via ${cdnProvider} CDN`,
