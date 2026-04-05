@@ -129,6 +129,7 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		check_mx_reputation: 50_000,
 		check_srv: 500_000,
 		check_zone_hygiene: 500_000,
+		check_subdomailing: 500_000,
 		explain_finding: 500_000,
 	},
 };
@@ -159,6 +160,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_mx_reputation: 20,
 	check_srv: 200,
 	check_zone_hygiene: 200,
+	check_subdomailing: 200,
 	generate_fix_plan: 75,
 	generate_spf_record: 200,
 	generate_dmarc_record: 200,

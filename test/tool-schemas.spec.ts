@@ -18,6 +18,7 @@ const SCAN_DOMAIN_TOOL_NAMES = new Set([
 	'check_spf', 'check_dmarc', 'check_dkim', 'check_dnssec', 'check_ssl',
 	'check_mta_sts', 'check_ns', 'check_caa', 'check_bimi', 'check_tlsrpt',
 	'check_http_security', 'check_dane', 'check_dane_https', 'check_svcb_https', 'check_mx',
+	'check_subdomailing',
 ]);
 
 /** Tools that are standalone-only or non-scoring orchestration/meta tools. */
@@ -32,8 +33,8 @@ const NON_SCAN_TOOL_NAMES = new Set([
 ]);
 
 describe('tool-schemas metadata', () => {
-	it('exports exactly 41 tools', () => {
-		expect(TOOLS).toHaveLength(43);
+	it('exports exactly 42 tools', () => {
+		expect(TOOLS).toHaveLength(44);
 	});
 
 	it('all tool names are unique', () => {

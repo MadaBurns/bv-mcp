@@ -199,6 +199,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		tier: 'protective',
 		scanIncluded: false,
 	},
+	check_subdomailing: {
+		description: 'Detect SubdoMailing risk by analyzing SPF include chain for takeover-vulnerable domains.',
+		schema: BaseDomainArgs,
+		group: 'email_auth',
+		tier: 'protective',
+		scanIncluded: true,
+	},
 	scan_domain: {
 		description: 'Full DNS and email security audit. Score, grade, maturity, findings. Start here.',
 		schema: ScanDomainArgs,
