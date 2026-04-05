@@ -117,4 +117,13 @@ describe('checkDnssec — dnssecSource detection', () => {
 		const hasDomainConfigured = result.findings.some((f) => f.metadata?.dnssecSource === 'domain_configured');
 		expect(hasDomainConfigured).toBe(true);
 	});
+
+	it('does not add dnssecSource metadata when DNSSEC is fully absent', async () => {
+		// AD=false, no DNSKEY, no DS — base result will contain 'DNSSEC not enabled'
+		mockDnssecResponses(false, false, false);
+		const { checkDnssec } = await import('../src/tools/check-dnssec');
+		const result = await checkDnssec('example.com');
+		const hasSourceMeta = result.findings.some((f) => f.metadata?.dnssecSource !== undefined);
+		expect(hasSourceMeta).toBe(false);
+	});
 });
