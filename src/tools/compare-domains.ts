@@ -22,7 +22,7 @@ export interface DomainComparisonResult {
 	/** Categories where ALL scanned domains score below 50. */
 	commonGaps: string[];
 	/** Categories where only one domain scores below 50 (unique weakness). */
-	uniqueGaps: Array<{ domain: string; findings: string[] }>;
+	uniqueGaps: Array<{ domain: string; categories: string[] }>;
 	/** Errors keyed by domain, for domains that failed validation or scanning. */
 	errors: Record<string, string>;
 }
@@ -110,7 +110,7 @@ export async function compareDomains(
 		.map((cc) => cc.category);
 
 	// Unique gaps: categories where exactly one domain scores below 50
-	const uniqueGaps: Array<{ domain: string; findings: string[] }> = [];
+	const uniqueGaps: Array<{ domain: string; categories: string[] }> = [];
 	for (const [domain] of validResults) {
 		const unique = categoryComparison
 			.filter((cc) => {
@@ -120,7 +120,7 @@ export async function compareDomains(
 			})
 			.map((cc) => cc.category);
 		if (unique.length > 0) {
-			uniqueGaps.push({ domain, findings: unique });
+			uniqueGaps.push({ domain, categories: unique });
 		}
 	}
 
@@ -155,7 +155,7 @@ export function formatDomainComparison(result: DomainComparisonResult, format: O
 	if (result.uniqueGaps.length > 0) {
 		lines.push('Unique weaknesses:');
 		for (const ug of result.uniqueGaps) {
-			lines.push(`  ${ug.domain}: ${ug.findings.join(', ')}`);
+			lines.push(`  ${ug.domain}: ${ug.categories.join(', ')}`);
 		}
 		lines.push('');
 	}

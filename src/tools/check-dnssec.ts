@@ -41,10 +41,14 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions):
 		},
 	) as CheckResult;
 
-	// Skip augmentation only when DNSSEC is definitively absent or the check failed
+	// Skip augmentation when DNSSEC is definitively absent, failed, or misconfigured at the domain level.
+	// 'DNSSEC chain of trust incomplete' means the domain has DNSKEY but no DS — it is domain-operator-configured
+	// (just broken), not TLD-inherited. 'DNSSEC validation failing' means records exist but fail verification.
 	const dnssecAbsent =
 		baseResult.findings.some((f) => f.title === 'DNSSEC not enabled') ||
-		baseResult.findings.some((f) => f.title === 'DNSSEC check failed');
+		baseResult.findings.some((f) => f.title === 'DNSSEC check failed') ||
+		baseResult.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete') ||
+		baseResult.findings.some((f) => f.title === 'DNSSEC validation failing');
 	if (dnssecAbsent) {
 		return baseResult;
 	}

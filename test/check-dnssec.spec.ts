@@ -88,6 +88,14 @@ describe('DNSSEC finding consolidation', () => {
 		expect(result.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete' && f.severity === 'high')).toBe(true);
 	});
 
+	it('does NOT add tld_inherited finding when chain-of-trust is incomplete', async () => {
+		// AD=false, DNSKEY present, no DS — domain-operator-configured but broken, not TLD-inherited
+		mockDnssecResponses(false, true, false);
+		const result = await run();
+		const spuriousFinding = result.findings.find((f) => f.title === 'DNSSEC inherited from TLD');
+		expect(spuriousFinding).toBeUndefined();
+	});
+
 	it('emits HIGH when DNSKEY+DS present but AD not set', async () => {
 		// AD=false, DNSKEY present, DS present
 		mockDnssecResponses(false, true, true);
