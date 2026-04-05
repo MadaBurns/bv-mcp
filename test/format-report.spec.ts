@@ -2,7 +2,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { ScanDomainResult } from '../src/tools/scan-domain';
-import { buildStructuredScanResult } from '../src/tools/scan/format-report';
+import { buildStructuredScanResult, formatScanReport } from '../src/tools/scan/format-report';
 
 function makeMockScanResult(overrides: Partial<ScanDomainResult> = {}): ScanDomainResult {
 	return {
@@ -170,5 +170,54 @@ describe('buildStructuredScanResult', () => {
 		const s = buildStructuredScanResult(result, { percentileRank: 75, spoofabilityScore: 30 });
 		expect(s.percentileRank).toBe(75);
 		expect(s.spoofabilityScore).toBe(30);
+	});
+});
+
+describe('formatScanReport web-only email categories', () => {
+	it('shows N/A for email categories when web_only and findings are all info', () => {
+		const result = makeMockScanResult({
+			score: {
+				overall: 85,
+				grade: 'A',
+				categoryScores: { spf: 100, dmarc: 100, ssl: 90 } as any,
+				findings: [],
+				summary: 'ok',
+			},
+			context: { profile: 'web_only' as any, signals: [], weights: {} as any, detectedProvider: null },
+			checks: [
+				{
+					category: 'spf', passed: true, score: 100,
+					findings: [{ category: 'spf', title: 'No SPF record found', severity: 'info', detail: 'expected' }],
+				},
+				{ category: 'dmarc', passed: true, score: 100, findings: [] },
+				{ category: 'ssl', passed: true, score: 90, findings: [] },
+			] as any,
+		});
+		const output = formatScanReport(result, 'compact');
+		expect(output).toContain('∅ SPF        N/A');
+		expect(output).toContain('∅ DMARC      N/A');
+		expect(output).not.toContain('SPF        100/100');
+		// SSL is not an email category — should still show score
+		expect(output).toContain('SSL');
+		expect(output).toContain('90/100');
+	});
+
+	it('does NOT show N/A for mail_enabled profile even if findings are info', () => {
+		const result = makeMockScanResult({
+			score: {
+				overall: 90,
+				grade: 'A',
+				categoryScores: { spf: 100 } as any,
+				findings: [],
+				summary: 'ok',
+			},
+			context: { profile: 'mail_enabled' as any, signals: [], weights: {} as any, detectedProvider: null },
+			checks: [
+				{ category: 'spf', passed: true, score: 100, findings: [{ category: 'spf', title: 'Info', severity: 'info', detail: 'x' }] },
+			] as any,
+		});
+		const output = formatScanReport(result, 'compact');
+		expect(output).not.toContain('N/A');
+		expect(output).toContain('100/100');
 	});
 });
