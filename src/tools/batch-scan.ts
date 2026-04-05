@@ -37,7 +37,6 @@ export async function batchScan(
 	const results: BatchScanResultItem[] = [];
 
 	for (const rawDomain of domains) {
-		let domain: string;
 		const validation = validateDomain(rawDomain);
 		if (!validation.valid) {
 			results.push({
@@ -66,7 +65,7 @@ export async function batchScan(
 			});
 			continue;
 		}
-		domain = sanitizeDomain(rawDomain);
+		const domain = sanitizeDomain(rawDomain);
 
 		try {
 			const runtimeOpts: ScanRuntimeOptions = {
