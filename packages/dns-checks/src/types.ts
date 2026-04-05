@@ -107,11 +107,15 @@ export interface Finding {
 	metadata?: Record<string, unknown>;
 }
 
+export type CheckStatus = 'completed' | 'timeout' | 'error';
+
 export interface CheckResult {
 	category: CheckCategory;
 	passed: boolean;
 	score: number;
 	findings: Finding[];
+	/** Execution status of the check. Undefined means completed (backward compat). */
+	checkStatus?: CheckStatus;
 }
 
 export interface ScanScore {
