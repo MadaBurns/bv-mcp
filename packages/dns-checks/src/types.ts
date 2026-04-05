@@ -114,7 +114,7 @@ export interface CheckResult {
 	passed: boolean;
 	score: number;
 	findings: Finding[];
-	/** Execution status of the check. Undefined means completed (backward compat). */
+	/** Execution status of the check. Absent or 'completed' means the check ran normally. 'timeout'/'error' indicate failed execution — findings are unreliable and category score is forced to 0. */
 	checkStatus?: CheckStatus;
 }
 
