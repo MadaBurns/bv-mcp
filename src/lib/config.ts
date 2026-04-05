@@ -136,6 +136,8 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	scan_domain: 75,
 	scan: 75,
+	batch_scan: 20,
+	compare_domains: 15,
 	check_spf: 200,
 	check_dmarc: 200,
 	check_dkim: 200,

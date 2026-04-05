@@ -54,11 +54,14 @@ describe('checkDnssec', () => {
 		expect(f!.severity).toBe('medium');
 	});
 
-	it('does not flag missing DNSKEY/DS when AD=true', async () => {
+	it('adds tld_inherited info finding when AD=true but no DNSKEY/DS on domain', async () => {
 		mockDnssecResponses(true, false, false);
 		const r = await run();
-		expect(r.findings).toHaveLength(1);
-		expect(r.findings[0].severity).toBe('info');
+		// Base result has one info finding; augmentation adds the tld_inherited finding
+		expect(r.findings.every((f) => f.severity === 'info')).toBe(true);
+		const inherited = r.findings.find((f) => f.title === 'DNSSEC inherited from TLD');
+		expect(inherited).toBeDefined();
+		expect(inherited!.metadata?.dnssecSource).toBe('tld_inherited');
 	});
 });
 
@@ -85,10 +88,50 @@ describe('DNSSEC finding consolidation', () => {
 		expect(result.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete' && f.severity === 'high')).toBe(true);
 	});
 
+	it('does NOT add tld_inherited finding when chain-of-trust is incomplete', async () => {
+		// AD=false, DNSKEY present, no DS — domain-operator-configured but broken, not TLD-inherited
+		mockDnssecResponses(false, true, false);
+		const result = await run();
+		const spuriousFinding = result.findings.find((f) => f.title === 'DNSSEC inherited from TLD');
+		expect(spuriousFinding).toBeUndefined();
+	});
+
 	it('emits HIGH when DNSKEY+DS present but AD not set', async () => {
 		// AD=false, DNSKEY present, DS present
 		mockDnssecResponses(false, true, true);
 		const result = await run();
 		expect(result.findings.some((f) => f.title === 'DNSSEC validation failing' && f.severity === 'high')).toBe(true);
+	});
+});
+
+describe('checkDnssec — dnssecSource detection', () => {
+	it('adds tld_inherited finding when DNSSEC validates but no DNSKEY/DS on domain', async () => {
+		mockDnssecResponses(true, false, false);
+		const { checkDnssec } = await import('../src/tools/check-dnssec');
+		const result = await checkDnssec('example.com');
+		const inheritedFinding = result.findings.find((f) => f.title === 'DNSSEC inherited from TLD');
+		expect(inheritedFinding).toBeDefined();
+		expect(inheritedFinding!.severity).toBe('info');
+		expect(inheritedFinding!.metadata?.dnssecSource).toBe('tld_inherited');
+	});
+
+	it('tags domain_configured when both DNSKEY and DS records are present', async () => {
+		mockDnssecResponses(true, true, true);
+		const { checkDnssec } = await import('../src/tools/check-dnssec');
+		const result = await checkDnssec('example.com');
+		const tldFinding = result.findings.find((f) => f.title === 'DNSSEC inherited from TLD');
+		expect(tldFinding).toBeUndefined();
+		// Source should be domain_configured somewhere in findings metadata
+		const hasDomainConfigured = result.findings.some((f) => f.metadata?.dnssecSource === 'domain_configured');
+		expect(hasDomainConfigured).toBe(true);
+	});
+
+	it('does not add dnssecSource metadata when DNSSEC is fully absent', async () => {
+		// AD=false, no DNSKEY, no DS — base result will contain 'DNSSEC not enabled'
+		mockDnssecResponses(false, false, false);
+		const { checkDnssec } = await import('../src/tools/check-dnssec');
+		const result = await checkDnssec('example.com');
+		const hasSourceMeta = result.findings.some((f) => f.metadata?.dnssecSource !== undefined);
+		expect(hasSourceMeta).toBe(false);
 	});
 });

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import type { CheckCategory, CheckResult, Finding, Severity } from '../types';
+import type { CheckCategory, CheckResult, CheckStatus, Finding, Severity } from '../types';
 import { CATEGORY_DISPLAY_WEIGHTS, SEVERITY_PENALTIES } from '../types';
 
-export type { CheckCategory, CheckResult, Finding, Severity };
+export type { CheckCategory, CheckResult, CheckStatus, Finding, Severity };
 export { CATEGORY_DISPLAY_WEIGHTS, SEVERITY_PENALTIES };
 
 export type { CategoryTier } from '../types';
