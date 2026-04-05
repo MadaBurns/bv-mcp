@@ -24,7 +24,7 @@ const SCAN_DOMAIN_TOOL_NAMES = new Set([
 const NON_SCAN_TOOL_NAMES = new Set([
 	'check_lookalikes', 'check_shadow_domains', 'check_txt_hygiene',
 	'check_mx_reputation', 'check_srv', 'check_zone_hygiene', 'check_resolver_consistency',
-	'scan_domain', 'batch_scan', 'compare_baseline', 'generate_fix_plan', 'generate_spf_record',
+	'scan_domain', 'batch_scan', 'compare_domains', 'compare_baseline', 'generate_fix_plan', 'generate_spf_record',
 	'generate_dmarc_record', 'generate_dkim_config', 'generate_mta_sts_policy',
 	'get_benchmark', 'get_provider_insights', 'assess_spoofability', 'explain_finding',
 	'map_supply_chain', 'analyze_drift', 'validate_fix', 'generate_rollout_plan',
@@ -33,7 +33,7 @@ const NON_SCAN_TOOL_NAMES = new Set([
 
 describe('tool-schemas metadata', () => {
 	it('exports exactly 41 tools', () => {
-		expect(TOOLS).toHaveLength(42);
+		expect(TOOLS).toHaveLength(43);
 	});
 
 	it('all tool names are unique', () => {
