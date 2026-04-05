@@ -221,3 +221,52 @@ describe('formatScanReport web-only email categories', () => {
 		expect(output).toContain('100/100');
 	});
 });
+
+describe('formatScanReport compact truncation', () => {
+	it('does not truncate critical finding detail in compact mode', () => {
+		const longDetail = 'A'.repeat(280) + ' END';
+		const result = makeMockScanResult({
+			score: {
+				overall: 50,
+				grade: 'D',
+				categoryScores: {} as any,
+				findings: [{
+					category: 'spf' as any,
+					title: 'Critical SPF issue',
+					severity: 'critical' as const,
+					detail: longDetail,
+				}],
+				summary: 'ok',
+			},
+			checks: [],
+		});
+		const output = formatScanReport(result, 'compact');
+		expect(output).toContain('END');
+	});
+
+	it('truncates medium finding detail at 300 chars in compact mode', () => {
+		const longDetail = 'B'.repeat(350);
+		const result = makeMockScanResult({
+			score: {
+				overall: 70,
+				grade: 'C',
+				categoryScores: {} as any,
+				findings: [{
+					category: 'spf' as any,
+					title: 'Medium SPF issue',
+					severity: 'medium' as const,
+					detail: longDetail,
+				}],
+				summary: 'ok',
+			},
+			checks: [],
+		});
+		const output = formatScanReport(result, 'compact');
+		// Should truncate — the 350-char detail should be cut to 300 + '...'
+		expect(output).toContain('...');
+		// But should NOT contain the END of the string (chars 301-350)
+		// Since it's all B's, just check the total finding line doesn't include all 350 B's
+		const bCount = (output.match(/B/g) || []).length;
+		expect(bCount).toBeLessThanOrEqual(300);
+	});
+});
