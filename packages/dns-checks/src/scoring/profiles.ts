@@ -35,10 +35,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		dkim: { importance: 10 },
 		dnssec: { importance: 10 },
 		ssl: { importance: 8 },
-		// Protective (sum=20)
+		// Protective (sum=23)
 		subdomain_takeover: { importance: 4 },
 		http_security: { importance: 3 },
 		mta_sts: { importance: 3 },
+		subdomailing: { importance: 3 },
 		mx: { importance: 2 },
 		caa: { importance: 2 },
 		ns: { importance: 2 },
@@ -62,10 +63,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		dkim: { importance: 12 },
 		dnssec: { importance: 13 },
 		ssl: { importance: 8 },
-		// Protective (sum=22)
+		// Protective (sum=26)
 		subdomain_takeover: { importance: 5 },
 		http_security: { importance: 3 },
 		mta_sts: { importance: 4 },
+		subdomailing: { importance: 4 },
 		mx: { importance: 2 },
 		caa: { importance: 2 },
 		ns: { importance: 2 },
@@ -89,10 +91,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		dkim: { importance: 2 },
 		dnssec: { importance: 12 },
 		ssl: { importance: 10 },
-		// Protective (sum=24)
+		// Protective (sum=25)
 		subdomain_takeover: { importance: 6 },
 		http_security: { importance: 6 },
 		mta_sts: { importance: 1 },
+		subdomailing: { importance: 1 },
 		mx: { importance: 1 },
 		caa: { importance: 3 },
 		ns: { importance: 3 },
@@ -120,6 +123,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		subdomain_takeover: { importance: 6 },
 		http_security: { importance: 8 },
 		mta_sts: { importance: 0 },
+		subdomailing: { importance: 0 },
 		mx: { importance: 0 },
 		caa: { importance: 3 },
 		ns: { importance: 3 },
@@ -143,10 +147,11 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		dkim: { importance: 1 },
 		dnssec: { importance: 5 },
 		ssl: { importance: 7 },
-		// Protective (sum=10)
+		// Protective (sum=11)
 		subdomain_takeover: { importance: 2 },
 		http_security: { importance: 2 },
 		mta_sts: { importance: 1 },
+		subdomailing: { importance: 1 },
 		mx: { importance: 1 },
 		caa: { importance: 1 },
 		ns: { importance: 1 },

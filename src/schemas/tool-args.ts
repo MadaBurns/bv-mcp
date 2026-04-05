@@ -195,6 +195,7 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	check_mx_reputation: BaseDomainArgs,
 	check_srv: BaseDomainArgs,
 	check_zone_hygiene: BaseDomainArgs,
+	check_subdomailing: BaseDomainArgs,
 	scan_domain: ScanDomainArgs,
 	batch_scan: BatchScanArgs,
 	compare_domains: CompareDomainsArgs,

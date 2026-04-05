@@ -128,7 +128,7 @@ describe('scoring v2 config', () => {
 
 	it('DEFAULT_SCORING_CONFIG has protectiveWeights', () => {
 		expect(DEFAULT_SCORING_CONFIG.protectiveWeights.subdomain_takeover).toBe(4);
-		expect(Object.values(DEFAULT_SCORING_CONFIG.protectiveWeights).reduce((a, b) => a + b, 0)).toBe(20);
+		expect(Object.values(DEFAULT_SCORING_CONFIG.protectiveWeights).reduce((a, b) => a + b, 0)).toBe(23);
 	});
 
 	it('DEFAULT_SCORING_CONFIG has emailBonusFull/Mid/Partial', () => {

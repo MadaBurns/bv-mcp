@@ -210,7 +210,7 @@ function clarifyMtaStsForMailDomain(domain: string, results: CheckResult[]): Che
 }
 
 function adjustForNonMailDomain(results: CheckResult[], apexDmarcCovers: boolean): CheckResult[] {
-	const emailCategories: CheckCategory[] = ['spf', 'dmarc', 'dkim', 'mta_sts'];
+	const emailCategories: CheckCategory[] = ['spf', 'dmarc', 'dkim', 'mta_sts', 'subdomailing'];
 	return results.map((result) => {
 		if (!emailCategories.includes(result.category)) return result;
 		const adjusted = result.findings.map((finding: Finding) => {

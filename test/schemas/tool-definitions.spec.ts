@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { TOOLS } from '../../src/schemas/tool-definitions';
 
 describe('TOOLS', () => {
-	it('has 38 tools', () => {
-		expect(TOOLS).toHaveLength(43);
+	it('has 39 tools', () => {
+		expect(TOOLS).toHaveLength(44);
 	});
 
 	it('every tool has required fields', () => {

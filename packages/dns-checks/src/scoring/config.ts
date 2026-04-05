@@ -89,18 +89,19 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
 		zone_hygiene: 0,
 		dane_https: 2,
 		svcb_https: 1,
+		subdomailing: 3,
 	},
 	profileWeights: {
-		mail_enabled: { dmarc: 16, dkim: 10, spf: 10, ssl: 8, subdomain_takeover: 4, dnssec: 10, mta_sts: 3, mx: 2, tlsrpt: 0, caa: 2, ns: 2, bimi: 0, lookalikes: 2, shadow_domains: 2, txt_hygiene: 0, http_security: 3, dane: 0, mx_reputation: 0, srv: 0, zone_hygiene: 0, dane_https: 2, svcb_https: 1 },
-		enterprise_mail: { dmarc: 20, dkim: 12, spf: 10, ssl: 8, subdomain_takeover: 5, dnssec: 13, mta_sts: 4, mx: 2, tlsrpt: 0, caa: 2, ns: 2, bimi: 0, lookalikes: 2, shadow_domains: 2, txt_hygiene: 0, http_security: 3, dane: 0, mx_reputation: 0, srv: 0, zone_hygiene: 0, dane_https: 2, svcb_https: 1 },
-		non_mail: { ssl: 10, subdomain_takeover: 6, dnssec: 12, caa: 3, dmarc: 3, ns: 3, dkim: 2, spf: 2, mx: 1, mta_sts: 1, tlsrpt: 0, bimi: 0, lookalikes: 2, shadow_domains: 2, txt_hygiene: 0, http_security: 6, dane: 0, mx_reputation: 0, srv: 0, zone_hygiene: 0, dane_https: 2, svcb_https: 1 },
-		web_only: { ssl: 14, subdomain_takeover: 6, dnssec: 14, caa: 3, dmarc: 0, ns: 3, dkim: 0, spf: 0, mx: 0, mta_sts: 0, tlsrpt: 0, bimi: 0, lookalikes: 2, shadow_domains: 2, txt_hygiene: 0, http_security: 8, dane: 0, mx_reputation: 0, srv: 0, zone_hygiene: 0, dane_https: 2, svcb_https: 1 },
-		minimal: { dmarc: 1, ssl: 7, dnssec: 5, dkim: 1, spf: 1, subdomain_takeover: 2, ns: 1, mx: 1, caa: 1, mta_sts: 1, tlsrpt: 0, bimi: 0, lookalikes: 1, shadow_domains: 1, txt_hygiene: 0, http_security: 2, dane: 0, mx_reputation: 0, srv: 0, zone_hygiene: 0, dane_https: 0, svcb_https: 0 },
+		mail_enabled: { dmarc: 16, dkim: 10, spf: 10, ssl: 8, subdomain_takeover: 4, dnssec: 10, mta_sts: 3, subdomailing: 3, mx: 2, tlsrpt: 0, caa: 2, ns: 2, bimi: 0, lookalikes: 2, shadow_domains: 2, txt_hygiene: 0, http_security: 3, dane: 0, mx_reputation: 0, srv: 0, zone_hygiene: 0, dane_https: 2, svcb_https: 1 },
+		enterprise_mail: { dmarc: 20, dkim: 12, spf: 10, ssl: 8, subdomain_takeover: 5, dnssec: 13, mta_sts: 4, subdomailing: 4, mx: 2, tlsrpt: 0, caa: 2, ns: 2, bimi: 0, lookalikes: 2, shadow_domains: 2, txt_hygiene: 0, http_security: 3, dane: 0, mx_reputation: 0, srv: 0, zone_hygiene: 0, dane_https: 2, svcb_https: 1 },
+		non_mail: { ssl: 10, subdomain_takeover: 6, dnssec: 12, caa: 3, dmarc: 3, ns: 3, dkim: 2, spf: 2, subdomailing: 1, mx: 1, mta_sts: 1, tlsrpt: 0, bimi: 0, lookalikes: 2, shadow_domains: 2, txt_hygiene: 0, http_security: 6, dane: 0, mx_reputation: 0, srv: 0, zone_hygiene: 0, dane_https: 2, svcb_https: 1 },
+		web_only: { ssl: 14, subdomain_takeover: 6, dnssec: 14, caa: 3, dmarc: 0, ns: 3, dkim: 0, spf: 0, subdomailing: 0, mx: 0, mta_sts: 0, tlsrpt: 0, bimi: 0, lookalikes: 2, shadow_domains: 2, txt_hygiene: 0, http_security: 8, dane: 0, mx_reputation: 0, srv: 0, zone_hygiene: 0, dane_https: 2, svcb_https: 1 },
+		minimal: { dmarc: 1, ssl: 7, dnssec: 5, dkim: 1, spf: 1, subdomain_takeover: 2, subdomailing: 1, ns: 1, mx: 1, caa: 1, mta_sts: 1, tlsrpt: 0, bimi: 0, lookalikes: 1, shadow_domains: 1, txt_hygiene: 0, http_security: 2, dane: 0, mx_reputation: 0, srv: 0, zone_hygiene: 0, dane_https: 0, svcb_https: 0 },
 	},
 	tierSplit: { core: 70, protective: 20, hardening: 10 },
 	coreWeights: { dmarc: 16, dkim: 10, spf: 10, dnssec: 10, ssl: 8 },
 	protectiveWeights: {
-		subdomain_takeover: 4, http_security: 3, mta_sts: 3, mx: 2,
+		subdomain_takeover: 4, http_security: 3, mta_sts: 3, subdomailing: 3, mx: 2,
 		caa: 2, ns: 2, lookalikes: 2, shadow_domains: 2,
 	},
 	providerDkimConfidence: {
@@ -149,6 +150,7 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
 		zone_hygiene: 0.00,
 		dane_https: 0.95,
 		svcb_https: 0.85,
+		subdomailing: 0.15,
 	},
 };
 
