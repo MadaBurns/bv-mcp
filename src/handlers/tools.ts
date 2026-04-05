@@ -287,6 +287,7 @@ export async function handleToolsCall(
 							scoringConfig: runtimeOptions?.scoringConfig,
 							waitUntil: runtimeOptions?.waitUntil,
 							profileAccumulator: runtimeOptions?.profileAccumulator,
+							secondaryDoh: runtimeOptions?.secondaryDoh,
 						},
 					});
 					const batchText = formatBatchScan(batchResults, effectiveFormat);
@@ -315,6 +316,7 @@ export async function handleToolsCall(
 							scoringConfig: runtimeOptions?.scoringConfig,
 							waitUntil: runtimeOptions?.waitUntil,
 							profileAccumulator: runtimeOptions?.profileAccumulator,
+							secondaryDoh: runtimeOptions?.secondaryDoh,
 						},
 					});
 					const compareText = formatDomainComparison(compareResults, effectiveFormat);
