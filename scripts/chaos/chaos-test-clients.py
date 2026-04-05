@@ -68,7 +68,8 @@ def curl_json(method, path, body=None, headers=None, include_headers=False,
     if params:
         qs = "&".join(f"{k}={v}" for k, v in params.items())
         url = f"{url}?{qs}"
-    cmd = ["curl", "-s", "-w", "\n%{http_code}"]
+    cmd = ["curl", "-s", "-w", "\n%{http_code}",
+           "--connect-timeout", "10", "--max-time", str(timeout)]
     if include_headers:
         cmd.append("-D-")
     if method != "GET":
@@ -80,10 +81,12 @@ def curl_json(method, path, body=None, headers=None, include_headers=False,
         cmd += ["-d", json.dumps(body) if isinstance(body, (dict, list)) else body]
     cmd.append(url)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
         output = r.stdout.strip()
+        if not output:
+            return 0, "EMPTY_RESPONSE", ""
         lines = output.split("\n")
-        status_code = int(lines[-1])
+        status_code = int(lines[-1]) if lines[-1].isdigit() else 0
         body_text = "\n".join(lines[:-1])
         return status_code, body_text, r.stdout
     except subprocess.TimeoutExpired:
@@ -180,6 +183,7 @@ def validate_key():
         return
     ua = "chaos-clients/1.0"
     cmd = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+           "--connect-timeout", "10", "--max-time", "10",
            "-X", "POST", f"{BASE}/mcp",
            "-H", "Content-Type: application/json",
            "-H", f"User-Agent: {ua}",
@@ -691,6 +695,7 @@ def test_protocol_guards():
     if ct_sid:
         # Build the curl command manually to send truly absent Content-Type
         cmd = ["curl", "-s", "-w", "\n%{http_code}",
+               "--connect-timeout", "10", "--max-time", "15",
                "-X", "POST",
                "-H", f"User-Agent: {ua}",
                "-H", f"Mcp-Session-Id: {ct_sid}",
