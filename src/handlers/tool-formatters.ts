@@ -29,7 +29,9 @@ export function formatCheckResult(result: CheckResult, format: OutputFormat = 'f
 		lines.push('### Findings');
 		for (const finding of result.findings) {
 			if (format === 'compact') {
-				lines.push(`- [${finding.severity.toUpperCase()}] ${sanitizeOutputText(finding.title, 120)} — ${sanitizeOutputText(finding.detail, 200)}`);
+				const isHighPriority = finding.severity === 'critical' || finding.severity === 'high';
+				const detailLimit = isHighPriority ? 4000 : 300;
+				lines.push(`- [${finding.severity.toUpperCase()}] ${sanitizeOutputText(finding.title, 120)} — ${sanitizeOutputText(finding.detail, detailLimit)}`);
 				continue;
 			}
 
