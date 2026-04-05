@@ -163,7 +163,7 @@ No npm install required. MCP connectors are configured on the web and auto-sync 
 
 **With API key** — append the key as a query parameter in the connector URL:
 
-```
+```text
 https://dns-mcp.blackveilsecurity.com/mcp?api_key=YOUR_API_KEY
 ```
 
