@@ -166,9 +166,21 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 		}
 	}
 
+	const isNonMailProfile = ['non_mail', 'web_only'].includes(result.context?.profile ?? '');
+	const naEmailCategories = new Set(['spf', 'dmarc', 'dkim', 'mta_sts']);
+
 	lines.push('Category Scores:');
 	lines.push('-'.repeat(30));
 	for (const [category, score] of Object.entries(result.score.categoryScores) as [string, number][]) {
+		if (isNonMailProfile && naEmailCategories.has(category)) {
+			const check = result.checks?.find((c) => c.category === category);
+			const allInfo = check && check.findings.length > 0 && check.findings.every((f: Finding) => f.severity === 'info');
+			const noFindings = !check || (check.findings.length === 0 && score === 100);
+			if (allInfo || noFindings) {
+				lines.push(`  ∅ ${category.toUpperCase().padEnd(10)} N/A (web-only, no MX records)`);
+				continue;
+			}
+		}
 		const status = score >= 80 ? '✓' : score >= 50 ? '⚠' : '✗';
 		lines.push(`  ${status} ${category.toUpperCase().padEnd(10)} ${score}/100`);
 	}
