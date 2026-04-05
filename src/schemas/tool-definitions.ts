@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
 	BaseDomainArgs,
 	ScanDomainArgs,
+	BatchScanArgs,
 	CheckDkimArgs,
 	CheckResolverConsistencyArgs,
 	GenerateSpfArgs,
@@ -200,6 +201,12 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	scan_domain: {
 		description: 'Full DNS and email security audit. Score, grade, maturity, findings. Start here.',
 		schema: ScanDomainArgs,
+		group: 'meta',
+		scanIncluded: false,
+	},
+	batch_scan: {
+		description: 'Scan up to 10 domains at once. Returns score, grade, and finding counts per domain.',
+		schema: BatchScanArgs,
 		group: 'meta',
 		scanIncluded: false,
 	},
