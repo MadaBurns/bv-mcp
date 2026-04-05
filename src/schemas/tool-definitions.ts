@@ -5,6 +5,7 @@ import {
 	BaseDomainArgs,
 	ScanDomainArgs,
 	BatchScanArgs,
+	CompareDomainsArgs,
 	CheckDkimArgs,
 	CheckResolverConsistencyArgs,
 	GenerateSpfArgs,
@@ -84,7 +85,7 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 	return jsonSchema as McpTool['inputSchema'];
 }
 
-/** All 41 MCP tool definitions. */
+/** All 43 MCP tool definitions. */
 const TOOL_DEFS: Record<string, ToolDef> = {
 	check_mx: {
 		description: 'Validate MX records and email provider detection.',
@@ -207,6 +208,12 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	batch_scan: {
 		description: 'Scan up to 10 domains at once. Returns score, grade, and finding counts per domain.',
 		schema: BatchScanArgs,
+		group: 'meta',
+		scanIncluded: false,
+	},
+	compare_domains: {
+		description: 'Side-by-side security comparison of 2–5 domains. Shows scores, category gaps, and unique weaknesses.',
+		schema: CompareDomainsArgs,
 		group: 'meta',
 		scanIncluded: false,
 	},
