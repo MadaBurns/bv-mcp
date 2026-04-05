@@ -41,13 +41,11 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions):
 		},
 	) as CheckResult;
 
-	// Only augment if DNSSEC is active on this domain
-	const dnssecActive =
-		baseResult.passed ||
-		baseResult.findings.some(
-			(f) => f.title.toLowerCase().includes('dnskey') || f.title.toLowerCase().includes('dnssec validated'),
-		);
-	if (!dnssecActive) {
+	// Skip augmentation only when DNSSEC is definitively absent or the check failed
+	const dnssecAbsent =
+		baseResult.findings.some((f) => f.title === 'DNSSEC not enabled') ||
+		baseResult.findings.some((f) => f.title === 'DNSSEC check failed');
+	if (dnssecAbsent) {
 		return baseResult;
 	}
 
