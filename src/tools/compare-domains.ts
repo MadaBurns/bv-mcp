@@ -85,15 +85,13 @@ export async function compareDomains(
 		grades[domain] = r.grade;
 	}
 
-	// Winner: highest score, null on tie
+	// Winner: highest score, null on tie or fewer than 2 valid results
 	let winner: string | null = null;
 	if (validResults.length >= 2) {
 		const sorted = [...validResults].sort((a, b) => b[1].score - a[1].score);
 		if (sorted[0][1].score > sorted[1][1].score) {
 			winner = sorted[0][0];
 		}
-	} else if (validResults.length === 1) {
-		winner = validResults[0][0];
 	}
 
 	// Category comparison

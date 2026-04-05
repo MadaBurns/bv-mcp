@@ -36,4 +36,11 @@ describe('compareDomains', () => {
 		const result = await compareDomains(['example.com', 'invalid!@#domain'], { kv: env.SCAN_CACHE });
 		expect(Object.keys(result.errors).length).toBeGreaterThan(0);
 	});
+
+	it('returns null winner when only 1 domain scanned successfully', async () => {
+		const { compareDomains } = await import('../src/tools/compare-domains');
+		const result = await compareDomains(['example.com', 'invalid!@#domain'], { kv: env.SCAN_CACHE });
+		// Only example.com scans successfully; winner should be null (< 2 valid results)
+		expect(result.winner).toBeNull();
+	});
 });
