@@ -25,8 +25,8 @@ describe('scoring-model', () => {
 });
 
 describe('CATEGORY_TIERS', () => {
-	it('classifies all 22 categories into tiers', () => {
-		expect(Object.keys(CATEGORY_TIERS)).toHaveLength(22);
+	it('classifies all 23 categories into tiers', () => {
+		expect(Object.keys(CATEGORY_TIERS)).toHaveLength(23);
 	});
 
 	it('has 5 core categories', () => {
@@ -34,9 +34,9 @@ describe('CATEGORY_TIERS', () => {
 		expect(core.map(([k]) => k).sort()).toEqual(['dkim', 'dmarc', 'dnssec', 'spf', 'ssl']);
 	});
 
-	it('has 10 protective categories', () => {
+	it('has 11 protective categories', () => {
 		const protective = Object.entries(CATEGORY_TIERS).filter(([, t]) => t === 'protective');
-		expect(protective).toHaveLength(10);
+		expect(protective).toHaveLength(11);
 	});
 
 	it('has 7 hardening categories', () => {

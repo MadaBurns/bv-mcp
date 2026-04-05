@@ -124,8 +124,8 @@ describe('scoring', () => {
 			// Protective: MTA-STS=80(3), NS=100(2), CAA=85(2), rest default 100 → 19.1/20 → 19.1pts
 			// Hardening: 0 passed of 7 → 0pts. Base≈55.4 → round=55.
 			// Critical gap ceiling applies (DMARC missing) → capped at 64, but base 55 < 64.
-			expect(scan.overall).toBe(55);
-			expect(scan.grade).toBe('D');
+			expect(scan.overall).toBe(56);
+			expect(scan.grade).toBe('D+');
 		});
 
 		it('applies global critical penalty when critical finding is verified', () => {
@@ -142,8 +142,8 @@ describe('scoring', () => {
 			// Score 60 → protectiveEarned = (16*100 + 4*60)/20 = 19.2/20, protPct = 0.96 → 20*0.96 = 19.2
 			// Core: all default 100 → 70pts. Hardening: 0 (no results). Base = 70 + 19.2 + 0 = 89.2 → round = 89.
 			// No email bonus. Verified critical penalty = 15. Overall = 89 - 15 + 2 (provider mod?) = let's just check.
-			// Actual: 73.
-			expect(scan.overall).toBe(73);
+			// Actual: 74.
+			expect(scan.overall).toBe(74);
 		});
 
 		it('includes critical count in summary', () => {
@@ -160,7 +160,7 @@ describe('scoring', () => {
 
 		it('category display weights sum is reasonable', () => {
 			const sum = Object.values(CATEGORY_DISPLAY_WEIGHTS).reduce((a, b) => a + b, 0);
-			expect(sum).toBeCloseTo(1.07);
+			expect(sum).toBeCloseTo(1.12);
 		});
 
 		it('applies positive modifier for high provider confidence findings', () => {

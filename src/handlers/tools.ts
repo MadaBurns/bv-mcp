@@ -24,6 +24,7 @@ import { checkSvcbHttps } from '../tools/check-svcb-https';
 import { checkMxReputation } from '../tools/check-mx-reputation';
 import { checkSrv } from '../tools/check-srv';
 import { checkZoneHygiene } from '../tools/check-zone-hygiene';
+import { checkSubdomailing } from '../tools/check-subdomailing';
 import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
 import { batchScan, formatBatchScan } from '../tools/batch-scan';
 import { compareDomains, formatDomainComparison } from '../tools/compare-domains';
@@ -141,6 +142,7 @@ const TOOL_REGISTRY: Record<
 	check_mx_reputation: { cacheKey: () => 'mx_reputation', execute: (d, _args, ro) => checkMxReputation(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	check_srv: { cacheKey: () => 'srv', execute: (d, _args, ro) => checkSrv(d, buildDnsOptions(ro)) },
 	check_zone_hygiene: { cacheKey: () => 'zone_hygiene', execute: (d, _args, ro) => checkZoneHygiene(d, buildDnsOptions(ro)) },
+	check_subdomailing: { cacheKey: () => 'subdomailing', execute: (d, _args, ro) => checkSubdomailing(d, buildDnsOptions(ro)) },
 };
 
 /** Known interactive LLM client types that benefit from compact output. */
