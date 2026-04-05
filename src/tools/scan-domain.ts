@@ -362,7 +362,14 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			if (runtimeOptions.waitUntil) runtimeOptions.waitUntil(telemetryPromise);
 		}
 	} catch {
-		// Post-processing or scoring failed — return whatever we have
+		// Post-processing or scoring failed — return whatever we have.
+		// Re-apply degraded status overrides in case post-processing ran partially.
+		if (degradedStatuses.size > 0) {
+			checkResults = checkResults.map((r) => {
+				const status = degradedStatuses.get(r.category);
+				return status ? { ...r, score: 0, checkStatus: status } : r;
+			});
+		}
 		let fallbackContext = detectDomainContext(checkResults);
 		if (isExplicit) {
 			fallbackContext = {
