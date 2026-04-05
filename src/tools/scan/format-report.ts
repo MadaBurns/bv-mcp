@@ -26,6 +26,14 @@ export interface StructuredScanResult {
 	spoofabilityScore: number | null;
 	/** Category interaction effects applied as post-scoring adjustments. */
 	interactionEffects: Array<{ ruleId: string; penalty: number; narrative: string }>;
+	/** Execution status per check category. 'completed' = ran normally, 'timeout' = per-check timeout, 'error' = threw. */
+	checkStatuses: Record<string, 'completed' | 'timeout' | 'error'>;
+	/** DNSSEC configuration source. 'domain_configured' = domain has own DNSKEY/DS; 'tld_inherited' = inherited from TLD registry. null = not yet available. */
+	dnssecSource: 'domain_configured' | 'tld_inherited' | null;
+	/** CDN provider detected from HTTP response headers. null when no CDN detected or check did not run. */
+	cdnProvider: string | null;
+	/** Email categories that scored 100 due to web-only/non-mail profile (no MX). Downstream consumers should treat these as N/A rather than perfect. */
+	notApplicableCategories: string[];
 	timestamp: string;
 	cached: boolean;
 }
@@ -38,6 +46,57 @@ export interface ScanResultEnrichment {
 
 /** Build a machine-readable structured result from a scan. */
 export function buildStructuredScanResult(result: ScanDomainResult, enrichment?: ScanResultEnrichment): StructuredScanResult {
+	// checkStatuses
+	const checkStatuses: Record<string, 'completed' | 'timeout' | 'error'> = {};
+	for (const check of result.checks) {
+		checkStatuses[check.category] = check.checkStatus ?? 'completed';
+	}
+
+	// dnssecSource
+	const dnssecCheck = result.checks.find((c) => c.category === 'dnssec');
+	let dnssecSource: 'domain_configured' | 'tld_inherited' | null = null;
+	if (dnssecCheck) {
+		for (const f of dnssecCheck.findings) {
+			const src = f.metadata?.dnssecSource;
+			if (src === 'domain_configured' || src === 'tld_inherited') {
+				dnssecSource = src as 'domain_configured' | 'tld_inherited';
+				break;
+			}
+		}
+		if (dnssecSource === null && dnssecCheck.passed && (checkStatuses['dnssec'] ?? 'completed') === 'completed') {
+			dnssecSource = 'domain_configured';
+		}
+	}
+
+	// cdnProvider
+	const httpCheck = result.checks.find((c) => c.category === 'http_security');
+	let cdnProvider: string | null = null;
+	if (httpCheck) {
+		for (const f of httpCheck.findings) {
+			const cdn = f.metadata?.cdnProvider;
+			if (typeof cdn === 'string') {
+				cdnProvider = cdn;
+				break;
+			}
+		}
+	}
+
+	// notApplicableCategories
+	const emailCategories = ['spf', 'dmarc', 'dkim', 'mta_sts'];
+	const isNonMailProfile = ['non_mail', 'web_only'].includes(result.context?.profile ?? '');
+	const notApplicableCategories: string[] = [];
+	if (isNonMailProfile) {
+		for (const check of result.checks) {
+			if (emailCategories.includes(check.category)) {
+				const allInfo = check.findings.length > 0 && check.findings.every((f: Finding) => f.severity === 'info');
+				const noFindings = check.findings.length === 0 && check.score === 100;
+				if (allInfo || noFindings) {
+					notApplicableCategories.push(check.category);
+				}
+			}
+		}
+	}
+
 	return {
 		domain: result.domain,
 		score: result.score.overall,
@@ -63,6 +122,10 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 			penalty: e.penalty,
 			narrative: e.narrative,
 		})),
+		checkStatuses,
+		dnssecSource,
+		cdnProvider,
+		notApplicableCategories,
 		timestamp: result.timestamp,
 		cached: result.cached,
 	};
