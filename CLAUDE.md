@@ -9,7 +9,7 @@ Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflar
 **Architecture diagrams**: See `docs/architecture.md` for Mermaid diagrams covering system overview, request flows (HTTP, stdio, service binding), scan orchestration, scoring model, and security layers.
 Exposes 44 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
-**Version**: 2.3.0 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.3.2 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -146,7 +146,7 @@ packages/dns-checks/     — @blackveil/dns-checks (runtime-agnostic core librar
 
 - **`packages/dns-checks/`** (`@blackveil/dns-checks`): Runtime-agnostic core library containing DNS validation logic. No Cloudflare dependencies. Contains 16 core check functions (SPF, DMARC, DKIM, etc.) and scoring engine. Published as separate npm package for reuse in other environments.
 
-- **`src/tools/`**: MCP protocol wrappers with Cloudflare infrastructure. Contains 41 MCP tools including the 16 check wrappers plus orchestration tools (scan_domain, explain_finding, etc.). Depends on `@blackveil/dns-checks` package.
+- **`src/tools/`**: MCP protocol wrappers with Cloudflare infrastructure. Contains 44 MCP tools including the 16 check wrappers plus orchestration tools (scan_domain, explain_finding, etc.). Depends on `@blackveil/dns-checks` package.
 
 **When to Add to Each Layer**:
 - **dns-checks package**: New DNS validation logic, scoring algorithms, or check implementations that could be reused outside Cloudflare Workers
@@ -235,7 +235,7 @@ All other errors return a generic fallback message. New validation errors that n
 
 > Production may override code defaults via `SCORING_CONFIG` env var in `.dev/wrangler.deploy.jsonc`.
 
-**Protective (20%)** — Active defenses: Subdomain Takeover (4), HTTP Security (3), MTA-STS (3), MX (2), CAA (2), NS (2), Lookalikes (2), Shadow Domains (2).
+**Protective (20%)** — Active defenses: Subdomain Takeover (4), HTTP Security (3), MTA-STS (3), Subdomailing (3), MX (2), CAA (2), NS (2), Lookalikes (2), Shadow Domains (2).
 
 **Hardening (10%)** — Bonus-only: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene. ~1.4 pts each. Never subtracts.
 

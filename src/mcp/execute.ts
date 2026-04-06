@@ -339,7 +339,13 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 	let sessionRevived = false;
 
-	if (options.validateSession && method !== 'initialize' && !method.startsWith('notifications/')) {
+	// Authenticated users can call read-only protocol methods without a session (e.g. Smithery
+	// proxy-style clients that discover tools via ?api_key= before establishing a session).
+	const isSessionlessProtocolMethod =
+		options.isAuthenticated &&
+		(method === 'tools/list' || method === 'resources/list' || method === 'prompts/list' || method === 'prompts/get' || method === 'ping');
+
+	if (options.validateSession && method !== 'initialize' && !method.startsWith('notifications/') && !isSessionlessProtocolMethod) {
 		const sessionError = await validateSessionRequest(
 			options.sessionId,
 			options.sessionStore,
