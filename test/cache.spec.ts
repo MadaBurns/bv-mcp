@@ -250,6 +250,24 @@ describe('runWithCache — cross-isolate dedup', () => {
 		expect(sentinelPut).toBeDefined();
 	});
 
+	it('writes sentinel with 10-second TTL', async () => {
+		const mockKV = {
+			get: vi.fn()
+				.mockResolvedValueOnce(null)  // cacheGet
+				.mockResolvedValueOnce(null), // sentinel check
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const run = vi.fn().mockResolvedValue('result');
+		await runWithCache('sentinel:ttl', run, mockKV as unknown as KVNamespace);
+		const sentinelPut = mockKV.put.mock.calls.find(
+			(c: [string, string, Record<string, unknown>]) => c[0] === 'sentinel:ttl:computing'
+		);
+		expect(sentinelPut).toBeDefined();
+		// Sentinel TTL should be 10 seconds (tightened from 30s)
+		expect(sentinelPut![2]).toEqual({ expirationTtl: 10 });
+	});
+
 	it('cleans up sentinel after successful computation', async () => {
 		const mockKV = {
 			get: vi.fn()
@@ -291,14 +309,14 @@ describe('runWithCache — cross-isolate dedup', () => {
 		expect(run).not.toHaveBeenCalled();
 	});
 
-	it('falls back to execution when polling exhausts without result', async () => {
+	it('falls back to execution when polling exhausts without result (3 polls)', async () => {
 		const mockKV = {
 			get: vi.fn()
 				.mockResolvedValueOnce(null)   // cacheGet — no cached result
 				.mockResolvedValueOnce('12345') // sentinel exists
-				.mockResolvedValueOnce(null)    // poll 1 — nothing
-				.mockResolvedValueOnce(null)    // poll 2 — nothing
-				.mockResolvedValueOnce(null),   // poll 3 — nothing
+				.mockResolvedValueOnce(null)    // poll 1 (250ms) — nothing
+				.mockResolvedValueOnce(null)    // poll 2 (500ms) — nothing
+				.mockResolvedValueOnce(null),   // poll 3 (750ms) — nothing
 			put: vi.fn().mockResolvedValue(undefined),
 			delete: vi.fn().mockResolvedValue(undefined),
 		};
