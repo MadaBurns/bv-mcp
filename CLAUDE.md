@@ -9,7 +9,7 @@ Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflar
 **Architecture diagrams**: See `docs/architecture.md` for Mermaid diagrams covering system overview, request flows (HTTP, stdio, service binding), scan orchestration, scoring model, and security layers.
 Exposes 44 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
-**Version**: 2.3.4 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.3.5 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
