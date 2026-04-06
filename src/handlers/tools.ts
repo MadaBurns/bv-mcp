@@ -713,7 +713,7 @@ export async function handleToolsCall(
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
 					});
-					return buildToolErrorResult(`Unknown tool: ${name}`);
+					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all 44 available tools.`);
 			}
 		};
 
@@ -739,7 +739,7 @@ export async function handleToolsCall(
 				isError: true,
 			};
 		}
-		const message = sanitizeErrorMessage(err, 'An unexpected error occurred');
+		const message = sanitizeErrorMessage(err, `An unexpected error occurred while running ${name}. Retry the request — transient DNS failures are common.`);
 		logToolFailure({
 			toolName: name,
 			durationMs: Date.now() - startTime,
