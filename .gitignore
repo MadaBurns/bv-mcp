@@ -108,3 +108,6 @@ generate_*.py
 # Local deploy overrides (real KV IDs, custom domains)
 .dev/
 .mcp.json
+
+# Tranco scan result data (generated, large)
+scripts/tranco-*-*.json
