@@ -97,5 +97,40 @@ describe('createAnalyticsClient', () => {
 		client.emitToolEvent({ toolName: 'check_spf', status: 'pass', durationMs: 50, isError: false, ...ctx });
 		client.emitRateLimitEvent({ limitType: 'minute', toolName: 'n/a', limit: 50, remaining: 0, ...ctx });
 		client.emitSessionEvent({ action: 'created', ...ctx });
+		client.emitDegradationEvent({ degradationType: 'dns_resolver_failure', component: 'fetchDohResponse', ...ctx });
+	});
+
+	it('emitDegradationEvent writes degradation index', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitDegradationEvent({
+			degradationType: 'dns_resolver_failure',
+			component: 'fetchDohResponse',
+			domain: 'example.com',
+			...ctx,
+		});
+		expect(ds.writeDataPoint).toHaveBeenCalledOnce();
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		expect(point.indexes).toEqual(['degradation']);
+		expect(point.blobs[0]).toBe('dns_resolver_failure');
+		expect(point.blobs[1]).toBe('fetchdohresponse');
+		expect(point.blobs[3]).toBe('NZ');
+		expect(point.blobs[4]).toBe('claude_code');
+		expect(point.blobs[5]).toBe('agent');
+	});
+
+	it('emitDegradationEvent handles missing optional fields', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitDegradationEvent({
+			degradationType: 'kv_fallback',
+			component: 'sessionStore',
+		});
+		expect(ds.writeDataPoint).toHaveBeenCalledOnce();
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		expect(point.indexes).toEqual(['degradation']);
+		expect(point.blobs[0]).toBe('kv_fallback');
+		expect(point.blobs[2]).toBe('none');
+		expect(point.blobs[3]).toBe('unknown');
 	});
 });
