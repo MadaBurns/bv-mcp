@@ -273,8 +273,8 @@ export async function handleToolsCall(
 						authTier: runtimeOptions?.authTier,
 					});
 					const content: McpContent[] = [mcpText(formatScanReport(result, effectiveFormat))];
-					// Only include structured JSON block for non-interactive clients (CI/CD, mcp_remote, unknown)
-					if (!interactive) {
+					// Include structured JSON block when format is 'full' (explicit or auto-detected for non-interactive clients)
+					if (effectiveFormat === 'full') {
 						const structured = buildStructuredScanResult(result);
 						content.push(mcpText(`<!-- STRUCTURED_RESULT\n${JSON.stringify(structured)}\nSTRUCTURED_RESULT -->`));
 					}

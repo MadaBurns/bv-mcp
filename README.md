@@ -9,7 +9,7 @@ Open-source DNS & email security scanner for Claude, Cursor, VS Code, and MCP cl
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
-[![Tests](https://img.shields.io/badge/Tests-2077-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![Tests](https://img.shields.io/badge/Tests-2283-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![Coverage](https://img.shields.io/badge/Coverage-~90%25-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![BUSL-1.1 License](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
@@ -81,25 +81,25 @@ Transport support:
 ## Tools
 
 ```
-  41 MCP tools · 7 prompts · 6 resources
+  44 MCP tools · 7 prompts · 6 resources
 
   Email Auth           Infrastructure        Brand & Threats       Meta
- ────────────         ────────────────       ─────────────────    ──────────────
+ ────────────         ────────────────       ─────────────────    ──────────────────────
   check_spf            check_dnssec           check_bimi           scan_domain
-  check_dmarc          check_ns               check_tlsrpt         explain_finding
-  check_dkim           check_caa              check_lookalikes     compare_baseline
-  check_mta_sts        check_ssl              check_shadow_domains
-  check_mx             check_http_security
-  check_mx_reputation  check_dane             Intelligence         Remediation
-                       check_dane_https      ──────────────       ──────────────
-  DNS Hygiene          check_svcb_https       get_benchmark         generate_fix_plan
- ────────────          check_srv              get_provider_         generate_spf_record
-  check_txt_hygiene    check_zone_hygiene       insights            generate_dmarc_record
-                       check_resolver_        assess_spoofability   generate_dkim_config
-                         consistency          map_supply_chain      generate_mta_sts_policy
-                                              resolve_spf_chain     generate_rollout_plan
-                                              discover_subdomains   validate_fix
-                                              map_compliance
+  check_dmarc          check_ns               check_tlsrpt         batch_scan
+  check_dkim           check_caa              check_lookalikes     compare_domains
+  check_mta_sts        check_ssl              check_shadow_domains compare_baseline
+  check_mx             check_http_security                         explain_finding
+  check_mx_reputation  check_dane             Intelligence
+  check_subdomailing   check_dane_https      ──────────────       Remediation
+                       check_svcb_https       get_benchmark       ──────────────
+  DNS Hygiene          check_srv              get_provider_        generate_fix_plan
+ ────────────          check_zone_hygiene       insights           generate_spf_record
+  check_txt_hygiene    check_resolver_        assess_spoofability  generate_dmarc_record
+                         consistency          map_supply_chain     generate_dkim_config
+                                              resolve_spf_chain    generate_mta_sts_policy
+                                              discover_subdomains  generate_rollout_plan
+                                              map_compliance       validate_fix
                                               simulate_attack_paths
                                               analyze_drift
 

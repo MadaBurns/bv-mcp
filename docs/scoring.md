@@ -31,6 +31,7 @@ Active defenses against known attack vectors. Findings penalize but cannot trigg
 | Subdomain Takeover | 4 |
 | HTTP Security | 3 |
 | MTA-STS | 3 |
+| Subdomailing | 3 |
 | MX | 2 |
 | CAA | 2 |
 | NS | 2 |
