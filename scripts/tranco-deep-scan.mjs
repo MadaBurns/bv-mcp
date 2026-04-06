@@ -24,8 +24,9 @@ import path from 'path';
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const EP = 'https://dns-mcp.blackveilsecurity.com/mcp';
-const API_KEY = 'bv_f021e37eeb8616997d7544c4e43ddb7da36e47c601501a59baac429fd91a6a3d';
+const EP = process.env.BV_MCP_ENDPOINT || 'https://dns-mcp.blackveilsecurity.com/mcp';
+const API_KEY = process.env.BV_API_KEY;
+if (!API_KEY) { console.error('Error: BV_API_KEY environment variable is required'); process.exit(1); }
 
 const args = process.argv.slice(2);
 const getArg = (flag, def) => {
