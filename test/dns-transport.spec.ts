@@ -244,6 +244,13 @@ describe('secondary DoH resolver (bv-dns)', () => {
 					json: () => Promise.resolve(bvDnsResponse),
 				} as unknown as Response);
 			}
+			if (urlStr.includes('dns.google')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(googleResponse),
+				} as unknown as Response);
+			}
 			return Promise.reject(new Error(`unexpected URL: ${urlStr}`));
 		});
 		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
@@ -256,8 +263,8 @@ describe('secondary DoH resolver (bv-dns)', () => {
 
 		expect(result.Answer).toHaveLength(1);
 		expect(result.Answer![0].data).toBe('"v=spf1 -all"');
-		// Cloudflare + bv-dns = 2 calls, Google not called
-		expect(fetchMock).toHaveBeenCalledTimes(2);
+		// Cloudflare + bv-dns + Google (parallel) = 3 calls
+		expect(fetchMock).toHaveBeenCalledTimes(3);
 		const bvDnsCall = fetchMock.mock.calls.find((c: unknown[]) => (c[0] as string).includes('secondary-doh.test'));
 		expect(bvDnsCall).toBeDefined();
 	});
@@ -425,5 +432,122 @@ describe('secondary DoH resolver (bv-dns)', () => {
 		// Only Cloudflare called, no secondary
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		expect(result.Answer).toBeUndefined();
+	});
+
+	it('races bv-dns and Google in parallel when both configured', async () => {
+		const callOrder: string[] = [];
+
+		const fetchMock = vi.fn().mockImplementation((url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlStr.includes('cloudflare-dns.com')) {
+				callOrder.push('cloudflare');
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(emptyCloudflareResponse),
+				} as unknown as Response);
+			}
+			if (urlStr.includes('secondary-doh.test')) {
+				callOrder.push('bv-dns');
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(bvDnsResponse),
+				} as unknown as Response);
+			}
+			if (urlStr.includes('dns.google')) {
+				callOrder.push('google');
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(googleResponse),
+				} as unknown as Response);
+			}
+			return Promise.reject(new Error(`unexpected URL: ${urlStr}`));
+		});
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		const result = await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			secondaryDoh: { endpoint: 'https://secondary-doh.test/dns-query', token: 'test' },
+		});
+
+		// Both bv-dns and Google should have been called (parallel)
+		expect(callOrder).toContain('bv-dns');
+		expect(callOrder).toContain('google');
+		// Should return one of the secondary results with typed answers
+		expect(result.Answer).toBeDefined();
+		expect(result.Answer!.length).toBeGreaterThan(0);
+		// All 3 resolvers should have been called
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+	});
+
+	it('returns result when bv-dns succeeds and Google fails in parallel', async () => {
+		const fetchMock = vi.fn().mockImplementation((url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlStr.includes('cloudflare-dns.com')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(emptyCloudflareResponse),
+				} as unknown as Response);
+			}
+			if (urlStr.includes('secondary-doh.test')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(bvDnsResponse),
+				} as unknown as Response);
+			}
+			if (urlStr.includes('dns.google')) {
+				return Promise.reject(new Error('Google timeout'));
+			}
+			return Promise.reject(new Error(`unexpected URL: ${urlStr}`));
+		});
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		const result = await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			secondaryDoh: { endpoint: 'https://secondary-doh.test/dns-query', token: 'test' },
+		});
+
+		expect(result.Answer).toBeDefined();
+		expect(result.Answer![0].data).toBe('"v=spf1 -all"'); // bv-dns result
+	});
+
+	it('returns Google result when bv-dns fails in parallel', async () => {
+		const fetchMock = vi.fn().mockImplementation((url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlStr.includes('cloudflare-dns.com')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(emptyCloudflareResponse),
+				} as unknown as Response);
+			}
+			if (urlStr.includes('secondary-doh.test')) {
+				return Promise.reject(new Error('bv-dns timeout'));
+			}
+			if (urlStr.includes('dns.google')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(googleResponse),
+				} as unknown as Response);
+			}
+			return Promise.reject(new Error(`unexpected URL: ${urlStr}`));
+		});
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		const result = await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			secondaryDoh: { endpoint: 'https://secondary-doh.test/dns-query', token: 'test' },
+		});
+
+		expect(result.Answer).toBeDefined();
+		expect(result.Answer![0].data).toBe('"v=spf1 ~all"'); // Google result
 	});
 });
