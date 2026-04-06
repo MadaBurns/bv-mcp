@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.3.5] - 2026-04-07
+
+### Fixed
+- **Lint error** — removed unused `interactive` variable in tool handler introduced in v2.3.4.
+- **vite 8.0.4 → 8.0.5** — patched 3 high-severity CVEs (path traversal, fs.deny bypass, WebSocket file read).
+
 ## [2.3.4] - 2026-04-07
 
 ### Improved
