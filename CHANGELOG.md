@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-04-06
+
+### Added
+- **Expanded test coverage** — new test files for tool handler dispatch, MCP execute flow, output sanitization, tool execution logging, and security audit assertions (+4,000 lines).
+- **Tranco benchmark scripts** — `scripts/tranco-scan.mjs` (top-1000 scan) and `scripts/tranco-deep-scan.mjs` (29-tool deep analysis) for production performance benchmarking.
+
+### Fixed
+- **Hardcoded API key removed** — Tranco scripts now read `BV_API_KEY` from environment variable instead of embedding credentials.
+
+### Security
+- Gitleaks correctly flagged hardcoded API key in benchmark scripts; key has been rotated.
+
+## [2.3.1] - 2026-04-06
+
+### Fixed
+- Harden failure modes — eliminate silent errors and misclassification.
+
 ## [2.3.0] - 2026-04-06
 
 ### Added
