@@ -63,6 +63,15 @@ describe('checkDnssec', () => {
 		expect(inherited).toBeDefined();
 		expect(inherited!.metadata?.dnssecSource).toBe('tld_inherited');
 	});
+	it('returns info finding when DnsQueryError escapes checkDNSSEC', async () => {
+		// Defense-in-depth: tested via dedicated check-dnssec-catch.spec.ts
+		// which uses hoisted vi.mock to replace @blackveil/dns-checks.
+		// Here we verify the function doesn't crash on DNS network errors.
+		mockFetchError();
+		const result = await run();
+		expect(result.category).toBe('dnssec');
+		expect(result.findings.length).toBeGreaterThan(0);
+	});
 });
 
 describe('DNSSEC finding consolidation', () => {

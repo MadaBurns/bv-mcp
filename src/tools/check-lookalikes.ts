@@ -216,14 +216,17 @@ export async function checkLookalikes(domain: string): Promise<CheckResult> {
 		checkLookalikesCore(domain),
 		new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Lookalike check timed out')), LOOKALIKE_TIMEOUT_MS)),
 	]).catch(() => {
-		return buildCheckResult('lookalikes', [
+		const result = buildCheckResult('lookalikes', [
 			createFinding(
 				'lookalikes',
 				'Lookalike check incomplete',
 				'info',
-				'Lookalike check did not complete. This check generates many DNS queries — try again shortly, as partial results are cached.',
+				'Lookalike check did not complete within the time limit. Results may be incomplete — try again shortly.',
 			),
 		]);
+		// Mark as partial so callers can skip caching
+		(result as unknown as Record<string, unknown>).partial = true;
+		return result;
 	});
 }
 

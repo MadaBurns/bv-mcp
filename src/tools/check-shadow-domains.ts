@@ -391,6 +391,7 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 	const dnsOpts: QueryDnsOptions = { ...dnsOptions, skipSecondaryConfirmation: true };
 	let primaryMx: string[] = [];
 	let primaryNs: string[] = [];
+	let primaryDnsUnavailable = false;
 	try {
 		const [mxResult, nsResult] = await Promise.allSettled([
 			queryMxRecords(domain, dnsOpts),
@@ -398,8 +399,23 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 		]);
 		primaryMx = mxResult.status === 'fulfilled' ? mxResult.value.map((r) => r.exchange) : [];
 		primaryNs = nsResult.status === 'fulfilled' ? nsResult.value : [];
+		// If both queries rejected, treat as unavailable
+		if (mxResult.status === 'rejected' && nsResult.status === 'rejected') {
+			primaryDnsUnavailable = true;
+		}
 	} catch {
-		// Primary DNS query failure — continue with empty sets
+		primaryDnsUnavailable = true;
+	}
+
+	if (primaryDnsUnavailable) {
+		findings.push(
+			createFinding(
+				'shadow_domains',
+				'Primary domain DNS unavailable',
+				'info',
+				`DNS queries for ${domain} failed — shadow domain analysis may be incomplete.`,
+			),
+		);
 	}
 
 	// Phase 1: Fast NS existence check — filter out unregistered variants

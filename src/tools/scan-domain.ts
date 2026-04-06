@@ -50,6 +50,7 @@ import { checkSvcbHttps } from './check-svcb-https';
 import { checkSubdomailing } from './check-subdomailing';
 import { applyScanPostProcessing } from './scan/post-processing';
 import type { ScanRuntimeOptions } from './scan/post-processing';
+import { logError } from '../lib/log';
 import { capMaturityStage, computeMaturityStage } from './scan/maturity-staging';
 import type { MaturityStage } from './scan/maturity-staging';
 export { formatScanReport, buildStructuredScanResult } from './scan/format-report';
@@ -363,8 +364,13 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			})();
 			if (runtimeOptions.waitUntil) runtimeOptions.waitUntil(telemetryPromise);
 		}
-	} catch {
-		// Post-processing or scoring failed — return whatever we have.
+	} catch (postProcessError) {
+		// Post-processing or scoring failed — return whatever we have with degradation note.
+		logError(postProcessError instanceof Error ? postProcessError : String(postProcessError), {
+			category: 'scan-domain',
+			domain,
+			details: { phase: 'post-processing', checksCompleted: checkResults.length },
+		});
 		// Re-apply degraded status overrides in case post-processing ran partially.
 		if (degradedStatuses.size > 0) {
 			checkResults = checkResults.map((r) => {
@@ -393,7 +399,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			context: fallbackContext,
 			cached: false,
 			timestamp: new Date().toISOString(),
-			scoringNote: null,
+			scoringNote: 'Post-processing encountered an error; results may be approximate',
 			adaptiveWeightDeltas: null,
 			interactionEffects: [],
 		};
@@ -512,11 +518,23 @@ async function safeCheck(category: CheckCategory, fn: () => Promise<CheckResult>
 		return result;
 	} catch (err) {
 		const rawMessage = err instanceof Error ? err.message : 'Check failed';
+		const isTimeout = rawMessage === 'Check timed out';
 		const SAFE_PREFIXES = ['DNS query', 'Check timed out', 'Check failed', 'Connection', 'timeout'];
 		const safeMessage = SAFE_PREFIXES.some((p) => rawMessage.startsWith(p)) ? rawMessage : 'Check failed';
-		const findings = [createFinding(category, `${category.toUpperCase()} check error`, 'high', `Check failed: ${safeMessage}`)];
+
+		// Timeouts are infrastructure issues, not security findings — use 'low' severity
+		// and 'timeout' status consistent with scan-level timeout handling.
+		// Actual errors (DNS failures, connection errors) remain 'high' severity.
+		const severity = isTimeout ? 'low' : ('high' as const);
+		const title = isTimeout ? `${category.toUpperCase()} check timed out` : `${category.toUpperCase()} check error`;
+		const detail = isTimeout
+			? `Check did not complete within the ${PER_CHECK_TIMEOUT_MS / 1000}s per-check time limit. Try running this check individually.`
+			: `Check failed: ${safeMessage}`;
+		const checkStatus = isTimeout ? ('timeout' as const) : ('error' as const);
+
+		const findings = [createFinding(category, title, severity, detail)];
 		const result = buildCheckResult(category, findings);
-		return { ...result, score: 0, checkStatus: 'error' as const };
+		return { ...result, score: 0, checkStatus };
 	}
 }
 

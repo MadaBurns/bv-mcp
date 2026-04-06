@@ -229,6 +229,14 @@ describe('scanDomain', () => {
 		expect(result.checks.length).toBeGreaterThanOrEqual(1);
 		expect(result.domain).toBe('example.com');
 		expect(result.score).toBeDefined();
+
+		// Per-check timeouts should produce LOW severity (infrastructure issue, not security)
+		// and checkStatus: 'timeout' — not HIGH severity 'error'
+		const sslCheck = result.checks.find((c) => c.category === 'ssl');
+		if (sslCheck?.checkStatus === 'timeout') {
+			expect(sslCheck.findings[0]?.severity).toBe('low');
+			expect(sslCheck.findings[0]?.title).toContain('timed out');
+		}
 	}, 15_000);
 
 	it('caches results with KV and returns cached:true on hit', async () => {

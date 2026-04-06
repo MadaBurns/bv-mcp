@@ -253,11 +253,11 @@ export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: K
 	return promise;
 }
 
-/** Sentinel TTL — matches INFLIGHT_CLEANUP_MS in seconds. */
-const SENTINEL_TTL_SECONDS = 30;
+/** Sentinel TTL — short-lived to avoid stale dedup locks. */
+const SENTINEL_TTL_SECONDS = 10;
 
-/** Poll intervals for cross-isolate dedup (exponential backoff). */
-const POLL_DELAYS_MS = [500, 1000, 2000];
+/** Poll intervals for cross-isolate dedup. */
+const POLL_DELAYS_MS = [250, 500, 750];
 
 /** Poll KV for a result with exponential backoff. */
 async function pollForResult<T>(key: string, kv: KVNamespace): Promise<T | undefined> {
