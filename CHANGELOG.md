@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-04-06
+
+### Fixed
+- **STRUCTURED_RESULT format gate** — block is now gated on `effectiveFormat === 'full'` instead of the `interactive` boolean, correctly honoring explicit `format` parameter overrides.
+- **Sessionless tools/list for authenticated users** — authenticated clients (via `api_key` or Bearer token) can now call `tools/list`, `resources/list`, `prompts/list`, `prompts/get`, and `ping` without establishing a session first. Enables Smithery proxy-style tool discovery.
+
 ## [2.3.2] - 2026-04-06
 
 ### Added
