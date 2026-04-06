@@ -350,7 +350,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			options.sessionId,
 			options.sessionStore,
 			id,
-			options.sessionErrorMessage ?? 'Bad Request: missing session',
+			options.sessionErrorMessage ?? 'Bad Request: missing session. Send an initialize request first to create a session.',
 		);
 		if (sessionError) {
 			const canRecoverExpiredSession =
