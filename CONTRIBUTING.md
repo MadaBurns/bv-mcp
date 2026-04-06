@@ -8,7 +8,7 @@ Thanks for your interest in contributing! Blackveil DNS is an open-source DNS & 
 git clone https://github.com/MadaBurns/bv-mcp.git
 cd bv-mcp
 npm install
-npm test           # Run tests (1456 tests, ~90% coverage)
+npm test           # Run tests (2000+ tests, ~90% coverage)
 npm run dev        # Local dev server at localhost:8787
 npm run typecheck  # Type-check without emitting
 ```

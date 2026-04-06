@@ -85,7 +85,7 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 	return jsonSchema as McpTool['inputSchema'];
 }
 
-/** All 43 MCP tool definitions. */
+/** All 44 MCP tool definitions. */
 const TOOL_DEFS: Record<string, ToolDef> = {
 	check_mx: {
 		description: 'Validate MX records and email provider detection.',
