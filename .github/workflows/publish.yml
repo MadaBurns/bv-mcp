@@ -1,0 +1,230 @@
+name: Release
+
+# Triggered by pushing a version tag (e.g., git tag v2.2.0 && git push origin v2.2.0)
+# All expressions use controlled inputs (tag name, secrets, job outputs) — no user-supplied text.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  validate:
+    name: Pre-release checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build workspace package
+        run: npm -w packages/dns-checks run build
+
+      - name: Cache Rust
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/bv-wasm-core/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('crates/bv-wasm-core/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        working-directory: crates/bv-wasm-core
+        run: wasm-pack build --target web
+
+      - name: Validate internal dependency policy
+        run: npm run validate:internal-deps
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Security audit
+        run: npm audit --audit-level=high
+
+  version-bump:
+    name: Sync version to tag
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+      changelog: ${{ steps.changelog.outputs.body }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - id: extract
+        name: Extract version from tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing version: $VERSION"
+
+      - name: Update package.json version
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Update SERVER_VERSION
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          sed -i "s/export const SERVER_VERSION = '.*'/export const SERVER_VERSION = '$VERSION'/" src/lib/server-version.ts
+          grep SERVER_VERSION src/lib/server-version.ts
+
+      - id: changelog
+        name: Extract changelog for this version
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          BODY=$(awk "/^## \[$VERSION\]/{found=1; next} /^## \[/{if(found) exit} found{print}" CHANGELOG.md)
+          if [ -z "$BODY" ]; then
+            BODY="Release $VERSION"
+            echo "::warning::No CHANGELOG entry found for $VERSION"
+          fi
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "$BODY"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bump if changed
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json src/lib/server-version.ts
+          if git diff --cached --quiet; then
+            echo "Version already matches tag"
+          else
+            git commit -m "chore: auto-bump version to $VERSION [skip ci]"
+            git push origin HEAD:main
+          fi
+
+  publish-npm:
+    name: Publish to npm
+    needs: version-bump
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check npm token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::warning::NPM_TOKEN not configured — skipping npm publish"
+            echo "skip=true" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v4
+        if: env.skip != 'true'
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        if: env.skip != 'true'
+        with:
+          node-version: '20'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+        if: env.skip != 'true'
+
+      - name: Build workspace package
+        if: env.skip != 'true'
+        run: npm -w packages/dns-checks run build
+
+      - if: env.skip != 'true'
+        run: npm run build
+
+      - name: Publish
+        if: env.skip != 'true'
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @blackveil/dns-checks
+        if: env.skip != 'true'
+        run: npm -w packages/dns-checks publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  deploy-cloudflare:
+    name: Deploy to Cloudflare Workers
+    needs: version-bump
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check Cloudflare token
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CF_TOKEN" ]; then
+            echo "::warning::CLOUDFLARE_API_TOKEN not configured — skipping deploy"
+            echo "skip=true" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v4
+        if: env.skip != 'true'
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        if: env.skip != 'true'
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+        if: env.skip != 'true'
+
+      - name: Build workspace package
+        if: env.skip != 'true'
+        run: npm -w packages/dns-checks run build
+
+      - name: Deploy
+        if: env.skip != 'true'
+        run: npx wrangler deploy -c wrangler.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  github-release:
+    name: Create GitHub Release
+    needs: version-bump
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version-bump.outputs.version }}
+          CHANGELOG_BODY: ${{ needs.version-bump.outputs.changelog }}
+        run: |
+          gh release create "v$VERSION" \
+            --title "v$VERSION" \
+            --notes "$CHANGELOG_BODY" \
+            --verify-tag
