@@ -68,4 +68,6 @@ export interface QueryDnsOptions {
 	queryCache?: Map<string, Promise<DohResponse>>;
 	/** Custom secondary DoH resolver. When set, used instead of Google DoH for empty-result confirmation. Falls back to Google if this resolver fails. */
 	secondaryDoh?: SecondaryDohConfig;
+	/** Semaphore for capping concurrent outbound DoH fetches per isolate. */
+	dnsSemaphore?: import('./semaphore').Semaphore;
 }
