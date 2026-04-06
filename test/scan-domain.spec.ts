@@ -742,7 +742,7 @@ describe('scanDomain cacheTtlSeconds propagation', () => {
 
 		// KV.put should have been called with expirationTtl: 600 for per-check entries
 		const putCalls = mockKV.put.mock.calls;
-		const perCheckPuts = putCalls.filter((call: unknown[]) => (call[0] as string).includes(':check:'));
+		const perCheckPuts = putCalls.filter((call: unknown[]) => (call[0] as string).includes(':check:') && !(call[0] as string).endsWith(':computing'));
 		expect(perCheckPuts.length).toBeGreaterThan(0);
 		for (const call of perCheckPuts) {
 			expect((call[2] as { expirationTtl: number }).expirationTtl).toBe(600);
@@ -759,7 +759,7 @@ describe('scanDomain cacheTtlSeconds propagation', () => {
 		await scanDomain('ttl-default.com', mockKV as unknown as KVNamespace);
 
 		const putCalls = mockKV.put.mock.calls;
-		const perCheckPuts = putCalls.filter((call: unknown[]) => (call[0] as string).includes(':check:'));
+		const perCheckPuts = putCalls.filter((call: unknown[]) => (call[0] as string).includes(':check:') && !(call[0] as string).endsWith(':computing'));
 		expect(perCheckPuts.length).toBeGreaterThan(0);
 		for (const call of perCheckPuts) {
 			expect((call[2] as { expirationTtl: number }).expirationTtl).toBe(300);

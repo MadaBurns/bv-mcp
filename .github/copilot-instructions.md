@@ -47,7 +47,11 @@
 - Per-check cache key pattern: cache:<domain>:check:<name>
 - Scan-level cache key pattern: cache:<domain>
 - Profile cache key pattern: cache:<domain>:profile:<profile>
+- Cross-isolate dedup sentinel key pattern: cache:<domain>:check:<name>:computing (30s TTL)
 - For force_refresh flows, propagate skipCache through runWithCache().
+- Circuit breaker wraps all QuotaCoordinator DO calls (3 failures → 60s cooldown).
+- DNS secondary confirmation races bv-dns and Google in parallel via Promise.allSettled.
+- Per-tier concurrency limits (TIER_CONCURRENT_LIMITS) enforced per-isolate in execute.ts.
 
 ## Testing Patterns
 - Use test/helpers/dns-mock.ts utilities for DNS mocking.
@@ -64,6 +68,7 @@
 
 ## Documentation Map (Link, Do Not Duplicate)
 - Canonical architecture and repository conventions: CLAUDE.md
+- **Architecture diagrams (Mermaid): docs/architecture.md** — system overview, request flows, scoring model, security layers
 - User-facing overview and quick start: README.md
 - Contributor workflow and expectations: CONTRIBUTING.md
 - Client setup and transport details: docs/client-setup.md

@@ -179,3 +179,74 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	map_compliance: 75,
 	simulate_attack_paths: 75,
 };
+
+/**
+ * Per-tier concurrent tool execution limits (per-isolate, best-effort fairness).
+ * Prevents any single authenticated user from monopolizing worker capacity.
+ */
+export const TIER_CONCURRENT_LIMITS: Record<McpApiKeyTier, number> = {
+	free: 3,
+	agent: 5,
+	developer: 10,
+	enterprise: 25,
+	partner: 50,
+	owner: Infinity,
+};
+
+// ---------------------------------------------------------------------------
+// Runtime-configurable limit parsers (env var overrides, no redeploy needed)
+// ---------------------------------------------------------------------------
+
+/** Default scan-level timeout (ms). */
+export const SCAN_TIMEOUT_MS = 12_000;
+
+/** Default per-check timeout (ms). */
+export const PER_CHECK_TIMEOUT_MS = 8_000;
+
+/** Helper: parse an env var as a clamped integer, returning defaultVal on invalid/out-of-range input. */
+function parseClampedInt(envValue: string | undefined, defaultVal: number, min: number, max: number): number {
+	if (!envValue) return defaultVal;
+	const parsed = Number(envValue);
+	if (!Number.isFinite(parsed) || parsed < min) return defaultVal;
+	return Math.min(parsed, max);
+}
+
+/**
+ * Parse DNS_TIMEOUT_MS override, clamping to [1000, 10000].
+ * Returns DNS_TIMEOUT_MS when absent or invalid.
+ */
+export function parseDnsTimeout(envValue?: string): number {
+	return parseClampedInt(envValue, DNS_TIMEOUT_MS, 1000, 10000);
+}
+
+/**
+ * Parse INFLIGHT_CLEANUP_MS override, clamping to [5000, 120000].
+ * Returns INFLIGHT_CLEANUP_MS when absent or invalid.
+ */
+export function parseInflightCleanup(envValue?: string): number {
+	return parseClampedInt(envValue, INFLIGHT_CLEANUP_MS, 5000, 120000);
+}
+
+/**
+ * Parse GLOBAL_DAILY_TOOL_LIMIT override, clamping to [10000, 5000000].
+ * Returns GLOBAL_DAILY_TOOL_LIMIT when absent or invalid.
+ */
+export function parseGlobalDailyLimit(envValue?: string): number {
+	return parseClampedInt(envValue, GLOBAL_DAILY_TOOL_LIMIT, 10000, 5000000);
+}
+
+/**
+ * Parse SCAN_TIMEOUT_MS override, clamping to [5000, 30000].
+ * Returns 12000 when absent or invalid.
+ */
+export function parseScanTimeout(envValue?: string): number {
+	return parseClampedInt(envValue, SCAN_TIMEOUT_MS, 5000, 30000);
+}
+
+/**
+ * Parse PER_CHECK_TIMEOUT_MS override, clamping to [2000, 15000].
+ * Returns 8000 when absent or invalid.
+ */
+export function parsePerCheckTimeout(envValue?: string): number {
+	return parseClampedInt(envValue, PER_CHECK_TIMEOUT_MS, 2000, 15000);
+}

@@ -3,12 +3,21 @@ import {
 	checkControlPlaneRateLimit,
 	checkRateLimit,
 	checkToolDailyRateLimit,
+	checkGlobalDailyLimit,
 	resetRateLimit,
 	resetAllRateLimits,
+	resetGlobalDailyLimit,
+	resetQuotaCoordinatorBreaker,
+	acquireConcurrencySlot,
+	releaseConcurrencySlot,
+	resetConcurrencyLimits,
 } from '../src/lib/rate-limiter';
 
 afterEach(() => {
 	resetAllRateLimits();
+	resetGlobalDailyLimit();
+	resetQuotaCoordinatorBreaker();
+	resetConcurrencyLimits();
 	vi.restoreAllMocks();
 });
 
@@ -290,6 +299,156 @@ describe('rate-limiter', () => {
 			const controlPlane = await checkControlPlaneRateLimit('198.51.100.40');
 			expect(controlPlane.allowed).toBe(true);
 			expect(controlPlane.minuteRemaining).toBe(59);
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// Circuit breaker for QuotaCoordinator DO
+	// -----------------------------------------------------------------------
+	describe('DO circuit breaker', () => {
+		function createFailingDO(): DurableObjectNamespace {
+			return {
+				getByName: () => ({
+					fetch: () => Promise.reject(new Error('DO unavailable')),
+				}),
+			} as unknown as DurableObjectNamespace;
+		}
+
+		it('falls back to in-memory after DO failure', async () => {
+			const result = await checkRateLimit('10.0.0.1', undefined, createFailingDO());
+			// Should still get a result via in-memory fallback
+			expect(result.allowed).toBe(true);
+		});
+
+		it('opens circuit after 3 consecutive DO failures', async () => {
+			const failingDO = createFailingDO();
+			// Trigger 3 failures to open circuit
+			for (let i = 0; i < 3; i++) {
+				await checkRateLimit(`10.0.0.${i}`, undefined, failingDO);
+			}
+			// 4th call should not hit DO at all (circuit open), but still succeed via fallback
+			const result = await checkRateLimit('10.0.0.99', undefined, failingDO);
+			expect(result.allowed).toBe(true);
+		});
+
+		it('circuit breaker wraps global daily limit DO calls', async () => {
+			const failingDO = createFailingDO();
+			// Open the circuit with 3 failures
+			for (let i = 0; i < 3; i++) {
+				await checkGlobalDailyLimit(500_000, undefined, failingDO);
+			}
+			// Should fall through to in-memory without calling DO
+			const result = await checkGlobalDailyLimit(500_000, undefined, failingDO);
+			expect(result.allowed).toBe(true);
+		});
+
+		it('circuit breaker wraps tool daily limit DO calls', async () => {
+			const failingDO = createFailingDO();
+			for (let i = 0; i < 3; i++) {
+				await checkToolDailyRateLimit('user1', 'check_spf', 200, undefined, failingDO);
+			}
+			const result = await checkToolDailyRateLimit('user1', 'check_spf', 200, undefined, failingDO);
+			expect(result.allowed).toBe(true);
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// Per-tier concurrency limits
+	// -----------------------------------------------------------------------
+	describe('per-tier concurrency limits', () => {
+		it('free tier: allows up to 3 concurrent executions', () => {
+			const limit = 3;
+			for (let i = 0; i < limit; i++) {
+				const result = acquireConcurrencySlot('ip:1.2.3.4', limit);
+				expect(result.allowed).toBe(true);
+				expect(result.active).toBe(i + 1);
+				expect(result.limit).toBe(limit);
+			}
+			const blocked = acquireConcurrencySlot('ip:1.2.3.4', limit);
+			expect(blocked.allowed).toBe(false);
+			expect(blocked.retryAfterMs).toBeGreaterThan(0);
+			expect(blocked.active).toBe(limit);
+		});
+
+		it('agent tier: allows up to 5 concurrent executions', () => {
+			const limit = 5;
+			for (let i = 0; i < limit; i++) {
+				expect(acquireConcurrencySlot('key:agent1', limit).allowed).toBe(true);
+			}
+			expect(acquireConcurrencySlot('key:agent1', limit).allowed).toBe(false);
+		});
+
+		it('developer tier: allows up to 10 concurrent executions', () => {
+			const limit = 10;
+			for (let i = 0; i < limit; i++) {
+				expect(acquireConcurrencySlot('key:dev1', limit).allowed).toBe(true);
+			}
+			expect(acquireConcurrencySlot('key:dev1', limit).allowed).toBe(false);
+		});
+
+		it('enterprise tier: allows up to 25 concurrent executions', () => {
+			const limit = 25;
+			for (let i = 0; i < limit; i++) {
+				expect(acquireConcurrencySlot('key:ent1', limit).allowed).toBe(true);
+			}
+			expect(acquireConcurrencySlot('key:ent1', limit).allowed).toBe(false);
+		});
+
+		it('partner tier: allows up to 50 concurrent executions', () => {
+			const limit = 50;
+			for (let i = 0; i < limit; i++) {
+				expect(acquireConcurrencySlot('key:partner1', limit).allowed).toBe(true);
+			}
+			expect(acquireConcurrencySlot('key:partner1', limit).allowed).toBe(false);
+		});
+
+		it('owner tier: unlimited (Infinity limit)', () => {
+			// Owner tier uses Infinity — execute.ts skips slot tracking
+			// But if someone calls acquireConcurrencySlot with Infinity, it should always allow
+			for (let i = 0; i < 100; i++) {
+				expect(acquireConcurrencySlot('key:owner1', Infinity).allowed).toBe(true);
+			}
+		});
+
+		it('returns JSON-RPC error -32029 semantics when at limit', () => {
+			const limit = 3;
+			for (let i = 0; i < limit; i++) {
+				acquireConcurrencySlot('ip:blocked', limit);
+			}
+			const blocked = acquireConcurrencySlot('ip:blocked', limit);
+			expect(blocked.allowed).toBe(false);
+			expect(blocked.retryAfterMs).toBe(1000);
+			expect(blocked.active).toBe(limit);
+			expect(blocked.limit).toBe(limit);
+		});
+
+		it('concurrent count decrements on release (even after error)', () => {
+			const limit = 3;
+			// Fill all slots
+			acquireConcurrencySlot('key:test', limit);
+			acquireConcurrencySlot('key:test', limit);
+			acquireConcurrencySlot('key:test', limit);
+			expect(acquireConcurrencySlot('key:test', limit).allowed).toBe(false);
+
+			// Release one slot (simulates finally block after error)
+			releaseConcurrencySlot('key:test');
+			const afterRelease = acquireConcurrencySlot('key:test', limit);
+			expect(afterRelease.allowed).toBe(true);
+			expect(afterRelease.active).toBe(3);
+		});
+
+		it('tracked per principal, not shared across principals', () => {
+			const limit = 3;
+			// Fill slots for principal A
+			for (let i = 0; i < limit; i++) {
+				acquireConcurrencySlot('key:A', limit);
+			}
+			expect(acquireConcurrencySlot('key:A', limit).allowed).toBe(false);
+
+			// Principal B should still be allowed
+			const resultB = acquireConcurrencySlot('key:B', limit);
+			expect(resultB.allowed).toBe(true);
+			expect(resultB.active).toBe(1);
 		});
 	});
 });

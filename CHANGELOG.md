@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-04-06
+
+### Added
+- **Circuit breaker for Durable Objects** — new `CircuitBreaker` class (`src/lib/circuit-breaker.ts`) wraps all QuotaCoordinator DO calls; opens after 3 consecutive failures with 60s cooldown, preventing cascading timeouts when a DO is unavailable. Falls back silently to KV/in-memory.
+- **DNS query concurrency control** — new `Semaphore` class (`src/lib/semaphore.ts`) limits parallel outbound DNS-over-HTTPS requests per scan. Promise-based FIFO queuing with optional timeout and `drain()` for graceful shutdown.
+- **Runtime-configurable limits** — scan timeout, per-check timeout, DNS timeout, INFLIGHT cleanup, and global daily limit are now overridable via environment variables with clamped ranges. New parsers: `parseScanTimeout()`, `parsePerCheckTimeout()`, `parseDnsTimeout()`, `parseInflightCleanup()`, `parseGlobalDailyLimit()` in `config.ts`.
+- **Cross-isolate cache dedup** — `runWithCache()` now uses KV sentinel keys (`{key}:computing`, 30s TTL) to coordinate parallel isolates computing the same cache entry. Waiters poll with exponential backoff before falling through to re-execute.
+- **Parallel DNS secondary confirmation** — `confirmWithSecondaryResolvers()` races bv-dns and Google DoH simultaneously via `Promise.allSettled`, reducing worst-case secondary confirmation from 9s to ~3s.
+- **Per-tier concurrency limits** — new `TIER_CONCURRENT_LIMITS` in `config.ts` (free:3, agent:5, developer:10, enterprise:25, partner:50, owner:∞) with `acquireConcurrencySlot()`/`releaseConcurrencySlot()` in `rate-limiter.ts`. Integrated in `execute.ts` with `finally`-block release on both SSE and JSON dispatch paths. Returns JSON-RPC error `-32029` when at limit.
+- **74 new tests** across 6 test files — circuit-breaker.spec.ts (15), dns-semaphore.spec.ts (8), config.spec.ts (+30), cache.spec.ts (+8), dns-transport.spec.ts (+4), rate-limiter.spec.ts (+9).
+
 ## [2.2.3] - 2026-04-06
 
 ### Fixed
