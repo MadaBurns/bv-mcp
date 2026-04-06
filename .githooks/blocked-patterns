@@ -1,0 +1,9 @@
+# IP leakage patterns for pre-commit hook
+# Each line is an extended regex. Lines starting with # are ignored.
+# Add new patterns here when new internal hostnames, customer names,
+# or infrastructure identifiers are introduced.
+harlan\.blackveilsecurity\.com
+csc-global
+@blackveil-security/
+enterprise-architecture\.md
+wrangler\.deploy\.jsonc

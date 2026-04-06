@@ -1,0 +1,362 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - link "Skip to main content" [ref=e3] [cursor=pointer]:
+      - /url: "#content-area"
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - generic [ref=e9]:
+            - link "Smithery Documentation home page light logo" [ref=e10] [cursor=pointer]:
+              - /url: https://smithery.ai
+              - generic [ref=e11]: Smithery Documentation home page
+              - img "light logo" [ref=e12]
+            - button "Toggle dark mode" [ref=e13] [cursor=pointer]:
+              - generic [ref=e14]:
+                - img [ref=e15]
+                - img [ref=e22]
+          - generic [ref=e27]:
+            - button "Open search" [ref=e28] [cursor=pointer]:
+              - generic [ref=e29]:
+                - img [ref=e30]
+                - generic [ref=e33]: Search...
+              - generic [ref=e34]: ⌘K
+            - button "Toggle assistant panel" [ref=e35] [cursor=pointer]:
+              - img [ref=e36]
+          - generic [ref=e40]:
+            - list
+            - generic [ref=e41]:
+              - heading "Getting Started" [level=5] [ref=e43]
+              - list [ref=e44]:
+                - listitem [ref=e45]:
+                  - link "Introduction" [ref=e46] [cursor=pointer]:
+                    - /url: /docs
+                    - img [ref=e48]
+                    - generic [ref=e51]: Introduction
+                - listitem [ref=e52]:
+                  - link "Connect to servers" [ref=e53] [cursor=pointer]:
+                    - /url: /docs/getting_started/quickstart_connect
+                    - img [ref=e55]
+                    - generic [ref=e58]: Connect to servers
+            - generic [ref=e59]:
+              - heading "Clients" [level=5] [ref=e61]
+              - list [ref=e62]:
+                - listitem [ref=e63]:
+                  - link "Overview" [ref=e64] [cursor=pointer]:
+                    - /url: /docs/use
+                    - img [ref=e66]
+                    - generic [ref=e69]: Overview
+                - listitem [ref=e70]:
+                  - link "Connect to MCPs" [ref=e71] [cursor=pointer]:
+                    - /url: /docs/use/connect
+                    - img [ref=e73]
+                    - generic [ref=e76]: Connect to MCPs
+                - listitem [ref=e77]:
+                  - link "Token Scoping" [ref=e78] [cursor=pointer]:
+                    - /url: /docs/use/token-scoping
+                    - img [ref=e80]
+                    - generic [ref=e83]: Token Scoping
+                - listitem [ref=e84]:
+                  - link "Deep Linking" [ref=e85] [cursor=pointer]:
+                    - /url: /docs/use/deep-linking
+                    - img [ref=e87]
+                    - generic [ref=e90]: Deep Linking
+                - listitem [ref=e91]:
+                  - link "Listing Your Client" [ref=e92] [cursor=pointer]:
+                    - /url: /docs/use/listing_your_client
+                    - img [ref=e94]
+                    - generic [ref=e97]: Listing Your Client
+            - generic [ref=e98]:
+              - heading "Servers" [level=5] [ref=e100]
+              - list [ref=e101]:
+                - listitem [ref=e102]:
+                  - link "Overview" [ref=e103] [cursor=pointer]:
+                    - /url: /docs/build
+                    - img [ref=e105]
+                    - generic [ref=e108]: Overview
+                - listitem [ref=e109]:
+                  - link "Publish" [ref=e110] [cursor=pointer]:
+                    - /url: /docs/build/publish
+                    - img [ref=e112]
+                    - generic [ref=e115]: Publish
+            - generic [ref=e116]:
+              - heading "Integrations" [level=5] [ref=e118]
+              - list [ref=e119]:
+                - listitem [ref=e120]:
+                  - link "Vercel AI SDK Integration" [ref=e121] [cursor=pointer]:
+                    - /url: /docs/integrations/vercel_ai_sdk
+                    - generic [ref=e124]: Vercel AI SDK Integration
+            - generic [ref=e125]:
+              - heading "Concepts" [level=5] [ref=e127]
+              - list [ref=e128]:
+                - listitem [ref=e129]:
+                  - link "What is MCP?" [ref=e130] [cursor=pointer]:
+                    - /url: /docs/concepts/what_is_mcp
+                    - generic [ref=e133]: What is MCP?
+                - listitem [ref=e134]:
+                  - link "Namespaces" [ref=e135] [cursor=pointer]:
+                    - /url: /docs/concepts/namespaces
+                    - generic [ref=e138]: Namespaces
+                - listitem [ref=e139]:
+                  - link "Smithery CLI" [ref=e140] [cursor=pointer]:
+                    - /url: /docs/concepts/cli
+                    - generic [ref=e143]: Smithery CLI
+            - generic [ref=e144]:
+              - heading "Cookbooks" [level=5] [ref=e146]
+              - list [ref=e147]:
+                - listitem [ref=e148]:
+                  - link "Build an OAuth-compatible client" [ref=e149] [cursor=pointer]:
+                    - /url: /docs/cookbooks/typescript_oauth_client
+                    - generic [ref=e152]: Build an OAuth-compatible client
+            - generic [ref=e153]:
+              - heading "API Reference" [level=5] [ref=e155]
+              - list [ref=e156]:
+                - listitem [ref=e157]:
+                  - button "Toggle API Reference section" [ref=e158] [cursor=pointer]:
+                    - generic [ref=e159]: API Reference
+                    - img [ref=e160]
+                - listitem [ref=e162]:
+                  - button "Toggle servers section" [ref=e163] [cursor=pointer]:
+                    - generic [ref=e164]: servers
+                    - img [ref=e165]
+                - listitem [ref=e167]:
+                  - button "Toggle skills section" [ref=e168] [cursor=pointer]:
+                    - generic [ref=e169]: skills
+                    - img [ref=e170]
+                - listitem [ref=e172]:
+                  - button "Toggle tokens section" [ref=e173] [cursor=pointer]:
+                    - generic [ref=e174]: tokens
+                    - img [ref=e175]
+                - listitem [ref=e177]:
+                  - button "Toggle uplink section" [ref=e178] [cursor=pointer]:
+                    - generic [ref=e179]: uplink
+                    - img [ref=e180]
+                - listitem [ref=e182]:
+                  - button "Toggle namespaces section" [ref=e183] [cursor=pointer]:
+                    - generic [ref=e184]: namespaces
+                    - img [ref=e185]
+                - listitem [ref=e187]:
+                  - button "Toggle connect section" [ref=e188] [cursor=pointer]:
+                    - generic [ref=e189]: connect
+                    - img [ref=e190]
+                - listitem [ref=e192]:
+                  - button "Toggle connect.mcp section" [ref=e193] [cursor=pointer]:
+                    - generic [ref=e194]: connect.mcp
+                    - img [ref=e195]
+                - listitem [ref=e197]:
+                  - button "Toggle connect.events section" [ref=e198] [cursor=pointer]:
+                    - generic [ref=e199]: connect.events
+                    - img [ref=e200]
+        - list [ref=e202]:
+          - listitem [ref=e203]:
+            - link "Support" [ref=e204] [cursor=pointer]:
+              - /url: mailto:support@smithery.ai
+              - generic [ref=e207]: Support
+              - img [ref=e209]
+          - listitem [ref=e212]:
+            - link "Discord" [ref=e213] [cursor=pointer]:
+              - /url: https://discord.gg/Afd38S5p9A
+              - generic [ref=e216]: Discord
+              - img [ref=e218]
+          - listitem
+      - generic [ref=e222]:
+        - banner [ref=e223]:
+          - generic [ref=e224]:
+            - generic [ref=e225]: Servers
+            - generic [ref=e226]:
+              - heading "Publish" [level=1] [ref=e227]
+              - generic [ref=e228]:
+                - button "Copy page" [ref=e229] [cursor=pointer]:
+                  - generic [ref=e230]:
+                    - img [ref=e231]
+                    - generic [ref=e234]: Copy page
+                - button "More actions" [ref=e235] [cursor=pointer]:
+                  - img [ref=e236]
+          - paragraph [ref=e239]: Publish your MCP server on Smithery for distribution and analytics.
+        - generic [ref=e240]:
+          - generic [ref=e241]: Publish your MCP server to Smithery Gateway for distribution, analytics, and OAuth UI.
+          - generic [ref=e242]:
+            - tablist [ref=e243]:
+              - tab "URL" [selected] [ref=e244] [cursor=pointer]:
+                - generic [ref=e245]:
+                  - img [ref=e246]
+                  - text: URL
+            - 'tabpanel "URL Bring your own hosting — Smithery Gateway proxies to your upstream server. Go to smithery.ai/new Enter your server’s public HTTPS URL Complete the publishing flow Navigate to header Requirements Streamable HTTP transport OAuth support (if auth required) Tip No client registration needed. Smithery handles client registration automatically via Client ID Metadata Documents. Tip Need a framework or hosting? Build MCP servers with xmcp or host them on Gram — both work with Smithery’s URL publishing. Navigate to header Server Scanning Smithery scans your server to extract metadata (tools, prompts, resources) for your server page. Public servers: Scan completes automatically Auth-required servers: You’ll be prompted to authenticate so we can complete the scan Static Server Card (manual metadata) CLI (Advanced)" [ref=e248]':
+              - generic [ref=e249]:
+                - strong [ref=e250]: Bring your own hosting
+                - text: — Smithery Gateway proxies to your upstream server.
+              - list [ref=e251]:
+                - listitem [ref=e252]:
+                  - text: Go to
+                  - link "smithery.ai/new" [ref=e253] [cursor=pointer]:
+                    - /url: https://smithery.ai/new
+                - listitem [ref=e254]: Enter your server’s public HTTPS URL
+                - listitem [ref=e255]: Complete the publishing flow
+              - heading "Navigate to header Requirements" [level=3] [ref=e256]:
+                - link "Navigate to header" [ref=e257] [cursor=pointer]:
+                  - /url: "#requirements"
+                  - img [ref=e259]
+                - generic [ref=e261] [cursor=pointer]: Requirements
+              - list [ref=e262]:
+                - listitem [ref=e263]: Streamable HTTP transport
+                - listitem [ref=e264]: OAuth support (if auth required)
+              - generic [ref=e265]:
+                - img "Tip" [ref=e267]
+                - generic [ref=e270]:
+                  - strong [ref=e271]: No client registration needed.
+                  - text: Smithery handles client registration automatically via
+                  - link "Client ID Metadata Documents" [ref=e272] [cursor=pointer]:
+                    - /url: https://modelcontextprotocol.io/specification/draft/basic/authorization#client-id-metadata-documents
+                  - text: .
+              - generic [ref=e273]:
+                - img "Tip" [ref=e275]
+                - generic [ref=e278]:
+                  - strong [ref=e279]: Need a framework or hosting?
+                  - text: Build MCP servers with
+                  - link "xmcp" [ref=e280] [cursor=pointer]:
+                    - /url: https://xmcp.dev
+                  - text: or host them on
+                  - link "Gram" [ref=e281] [cursor=pointer]:
+                    - /url: https://www.getgram.ai/
+                  - text: — both work with Smithery’s URL publishing.
+              - heading "Navigate to header Server Scanning" [level=3] [ref=e282]:
+                - link "Navigate to header" [ref=e283] [cursor=pointer]:
+                  - /url: "#server-scanning"
+                  - img [ref=e285]
+                - generic [ref=e287] [cursor=pointer]: Server Scanning
+              - generic [ref=e288]: Smithery scans your server to extract metadata (tools, prompts, resources) for your server page.
+              - list [ref=e289]:
+                - listitem [ref=e290]:
+                  - strong [ref=e291]: Public servers
+                  - text: ": Scan completes automatically"
+                - listitem [ref=e292]:
+                  - strong [ref=e293]: Auth-required servers
+                  - text: ": You’ll be prompted to authenticate so we can complete the scan"
+              - group [ref=e294]:
+                - generic "Static Server Card (manual metadata)" [ref=e295] [cursor=pointer]:
+                  - img [ref=e297]
+                  - paragraph [ref=e299]: Static Server Card (manual metadata)
+              - group [ref=e300]:
+                - generic "CLI (Advanced)" [ref=e301] [cursor=pointer]:
+                  - img [ref=e303]
+                  - paragraph [ref=e305]: CLI (Advanced)
+          - heading "Navigate to header Troubleshooting" [level=2] [ref=e306]:
+            - link "Navigate to header" [ref=e307] [cursor=pointer]:
+              - /url: "#troubleshooting"
+              - img [ref=e309]
+            - generic [ref=e311] [cursor=pointer]: Troubleshooting
+          - heading "Navigate to header 403 Forbidden during scan" [level=3] [ref=e312]:
+            - link "Navigate to header" [ref=e313] [cursor=pointer]:
+              - /url: "#403-forbidden-during-scan"
+              - img [ref=e315]
+            - generic [ref=e317] [cursor=pointer]: 403 Forbidden during scan
+          - generic [ref=e318]:
+            - text: If your deployment fails with
+            - strong [ref=e319]: “Initialization failed with status 403”
+            - text: ", it means your server rejected Smithery’s scan request. Common causes:"
+          - list [ref=e320]:
+            - listitem [ref=e321]:
+              - strong [ref=e322]: WAF or bot protection
+              - text: (e.g. Cloudflare Bot Fight Mode) blocking automated requests
+            - listitem [ref=e323]:
+              - strong [ref=e324]: Server returning 403 for unauthenticated requests
+              - text: instead of 401 — per the
+              - link "MCP auth spec" [ref=e325] [cursor=pointer]:
+                - /url: https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization
+              - text: ", servers should return 401 to trigger OAuth discovery"
+            - listitem [ref=e326]:
+              - strong [ref=e327]: IP-based access restrictions
+              - text: or allowlists that don’t include Smithery’s IP range
+          - generic [ref=e328]:
+            - text: Smithery sends requests with User-Agent
+            - code [ref=e329]: SmitheryBot/1.0 (+https://smithery.ai)
+            - text: . These requests originate from Cloudflare Workers, which some WAF configurations block by default.
+          - 'heading "Navigate to header Option 1: Ensure your server returns 401 (not 403) for OAuth" [level=4] [ref=e330]':
+            - link "Navigate to header" [ref=e331] [cursor=pointer]:
+              - /url: "#option-1-ensure-your-server-returns-401-not-403-for-oauth"
+              - img [ref=e333]
+            - generic [ref=e335] [cursor=pointer]: "Option 1: Ensure your server returns 401 (not 403) for OAuth"
+          - generic [ref=e336]:
+            - text: If your server requires OAuth, make sure it returns
+            - strong [ref=e337]: 401 Unauthorized
+            - text: (not 403 Forbidden) for unauthenticated requests. Smithery uses the 401 response to detect OAuth support per
+            - link "RFC 9728" [ref=e338] [cursor=pointer]:
+              - /url: https://www.rfc-editor.org/rfc/rfc9728.html
+            - text: .
+          - 'heading "Navigate to header Option 2: Whitelist Smithery requests" [level=4] [ref=e339]':
+            - link "Navigate to header" [ref=e340] [cursor=pointer]:
+              - /url: "#option-2-whitelist-smithery-requests"
+              - img [ref=e342]
+            - generic [ref=e344] [cursor=pointer]: "Option 2: Whitelist Smithery requests"
+          - generic [ref=e345]:
+            - group [ref=e346]:
+              - generic "Cloudflare (Free plan / Bot Fight Mode)" [ref=e347] [cursor=pointer]:
+                - img [ref=e349]
+                - paragraph [ref=e351]: Cloudflare (Free plan / Bot Fight Mode)
+            - group [ref=e352]:
+              - generic "Cloudflare (Pro+ / Super Bot Fight Mode)" [ref=e353] [cursor=pointer]:
+                - img [ref=e355]
+                - paragraph [ref=e357]: Cloudflare (Pro+ / Super Bot Fight Mode)
+            - group [ref=e358]:
+              - generic "Other CDN / WAF providers" [ref=e359] [cursor=pointer]:
+                - img [ref=e361]
+                - paragraph [ref=e363]: Other CDN / WAF providers
+          - 'heading "Navigate to header Option 3: Publish a static server card" [level=4] [ref=e364]':
+            - link "Navigate to header" [ref=e365] [cursor=pointer]:
+              - /url: "#option-3-publish-a-static-server-card"
+              - img [ref=e367]
+            - generic [ref=e369] [cursor=pointer]: "Option 3: Publish a static server card"
+          - generic [ref=e370]:
+            - text: Bypass scanning entirely by serving a
+            - code [ref=e371]: /.well-known/mcp/server-card.json
+            - text: endpoint on your server. See
+            - link "Static Server Card" [ref=e372] [cursor=pointer]:
+              - /url: "#server-scanning"
+            - text: above.
+        - generic [ref=e374]:
+          - paragraph [ref=e375]: Was this page helpful?
+          - generic [ref=e377]:
+            - button "Yes" [ref=e378] [cursor=pointer]:
+              - img [ref=e379]
+              - generic [ref=e381]: "Yes"
+            - button "No" [ref=e382] [cursor=pointer]:
+              - img [ref=e383]
+              - generic [ref=e385]: "No"
+        - generic [ref=e386]:
+          - link "Previous" [ref=e387] [cursor=pointer]:
+            - /url: /docs/build
+            - img [ref=e388]
+            - generic [ref=e390]: Previous
+          - link "Vercel AI SDK Integration Integrate MCP servers with Vercel AI SDK using Smithery Connect Next" [ref=e391] [cursor=pointer]:
+            - /url: /docs/integrations/vercel_ai_sdk
+            - generic [ref=e392]:
+              - generic [ref=e393]:
+                - generic [ref=e394]: Vercel AI SDK Integration
+                - generic [ref=e395]: Integrate MCP servers with Vercel AI SDK using Smithery Connect
+              - generic [ref=e397]:
+                - generic [ref=e398]: Next
+                - img [ref=e399]
+        - generic [ref=e402]:
+          - textbox "Ask a question..." [ref=e403]
+          - generic: ⌘I
+          - button "Send message" [disabled] [ref=e404]:
+            - img [ref=e405]
+        - contentinfo [ref=e407]:
+          - generic [ref=e408]:
+            - link "github" [ref=e409] [cursor=pointer]:
+              - /url: https://github.com/smithery-ai
+              - generic [ref=e410]: github
+              - img [ref=e411]
+            - link "twitter" [ref=e412] [cursor=pointer]:
+              - /url: https://twitter.com/SmitheryDotAI
+              - generic [ref=e413]: twitter
+              - img [ref=e414]
+            - link "discord" [ref=e415] [cursor=pointer]:
+              - /url: https://discord.gg/Afd38S5p9A
+              - generic [ref=e416]: discord
+              - img [ref=e417]
+          - link "Powered by This documentation is built and hosted on Mintlify, a developer documentation platform" [ref=e420] [cursor=pointer]:
+            - /url: https://www.mintlify.com?utm_campaign=poweredBy&utm_medium=referral&utm_source=smithery
+            - generic [ref=e421]: Powered by
+            - img [ref=e422]
+            - generic [ref=e431]: This documentation is built and hosted on Mintlify, a developer documentation platform
+  - alert [ref=e432]
