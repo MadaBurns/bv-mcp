@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-04-06
+
+### Fixed
+- **Origin validation hardening** — `checkOrigin()` now compares full origins (`scheme+host+port` via `.origin`) instead of just `.host`, preventing a theoretical same-host cross-scheme bypass.
+
 ## [2.2.2] - 2026-04-06
 
 ### Fixed
