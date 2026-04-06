@@ -520,7 +520,7 @@ describe('executeMcpRequest — session validation', () => {
 				body: { jsonrpc: '2.0', id: 8, method: 'tools/list', params: {} } as JsonRpcRequest,
 				validateSession: true,
 				sessionId: undefined,
-				sessionErrorMessage: 'Bad Request: missing session',
+				sessionErrorMessage: 'Bad Request: missing session. Send an initialize request first to create a session.',
 			}),
 		);
 
@@ -528,7 +528,7 @@ describe('executeMcpRequest — session validation', () => {
 		if (result.kind !== 'response') throw new Error('expected response');
 		expect(result.httpStatus).toBe(400);
 		const payload = result.payload as { error: { code: number; message: string } };
-		expect(payload.error.message).toBe('Bad Request: missing session');
+		expect(payload.error.message).toContain('Bad Request: missing session');
 		expect(result.useErrorEnvelope).toBe(true);
 	});
 

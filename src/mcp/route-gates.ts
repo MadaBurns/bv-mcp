@@ -81,7 +81,7 @@ export async function validateSessionRequest(
 	if (!(await validateSession(sessionId, sessionStore))) {
 		return {
 			status: 404,
-			payload: jsonRpcError(id, JSON_RPC_ERRORS.INVALID_REQUEST, 'Not Found: session expired or terminated'),
+			payload: jsonRpcError(id, JSON_RPC_ERRORS.INVALID_REQUEST, 'Not Found: session expired or terminated. Send a new initialize request to start a fresh session.'),
 		};
 	}
 	return undefined;
@@ -100,7 +100,7 @@ export async function resolveSseSession(options: {
 	if (!options.sessionId) {
 		return {
 			response: Response.json(
-				jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: missing session'),
+				jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: missing session. Send an initialize request first to create a session.'),
 				{ status: 400 },
 			),
 		};
@@ -109,7 +109,7 @@ export async function resolveSseSession(options: {
 	if (!(await validateSession(options.sessionId, options.sessionStore))) {
 		return {
 			response: Response.json(
-				jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Not Found: session expired or terminated'),
+				jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Not Found: session expired or terminated. Send a new initialize request to start a fresh session.'),
 				{ status: 404 },
 			),
 		};

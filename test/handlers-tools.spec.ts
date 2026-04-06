@@ -384,13 +384,13 @@ describe('handleToolsCall - error categorization', () => {
 		expect(result.content[0].text).toContain('Missing required parameter: domain');
 	});
 
-	it('unexpected errors return generic "An unexpected error occurred"', async () => {
+	it('unexpected errors return generic error with tool name', async () => {
 		globalThis.fetch = vi.fn().mockImplementation(() => {
 			throw new Error('ECONNREFUSED');
 		});
 		const result = await call('check_spf', { domain: 'error-test.example.com' });
 		expect(result.isError).toBe(true);
-		expect(result.content[0].text).toContain('An unexpected error occurred');
+		expect(result.content[0].text).toContain('An unexpected error occurred while running check_spf');
 	});
 });
 
