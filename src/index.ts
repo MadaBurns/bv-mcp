@@ -314,7 +314,7 @@ app.post('/mcp', async (c) => {
 					userAgent: headersLc['user-agent'],
 					sessionId: headersLc['mcp-session-id'],
 					validateSession: true,
-					sessionErrorMessage: 'Bad Request: missing session',
+					sessionErrorMessage: 'Bad Request: missing session. Send an initialize request first to create a session.',
 					createSessionOnInitialize: true,
 					existingSessionId: headersLc['mcp-session-id'],
 					serverVersion: SERVER_VERSION,
@@ -375,7 +375,7 @@ app.post('/mcp', async (c) => {
 		userAgent: headersLc['user-agent'],
 		sessionId: headersLc['mcp-session-id'],
 		validateSession: true,
-		sessionErrorMessage: 'Bad Request: missing session',
+		sessionErrorMessage: 'Bad Request: missing session. Send an initialize request first to create a session.',
 		createSessionOnInitialize: true,
 		existingSessionId: headersLc['mcp-session-id'],
 		serverVersion: SERVER_VERSION,
@@ -650,7 +650,7 @@ app.delete('/mcp', async (c) => {
 		sessionId,
 		c.env.SESSION_STORE,
 		null,
-		'Bad Request: missing session',
+		'Bad Request: missing Mcp-Session-Id header. Include the session ID from your initialize response.',
 	);
 	if (sessionError) {
 		return c.json(sessionError.payload, sessionError.status);
