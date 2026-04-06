@@ -46,11 +46,18 @@ export async function sendAlert(webhookUrl: string, payload: AlertPayload): Prom
 	}
 
 	try {
-		await fetch(webhookUrl, {
+		const response = await fetch(webhookUrl, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(payload),
+			redirect: 'manual',
 		});
+		if (!response.ok) {
+			logError(`Alert webhook returned HTTP ${response.status}`, {
+				severity: 'warn',
+				category: 'alerting',
+			});
+		}
 	} catch (err) {
 		logError(err instanceof Error ? err : String(err), {
 			severity: 'warn',
