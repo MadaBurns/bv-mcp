@@ -27,6 +27,7 @@ import {
 	checkScopedRateLimitWithCoordinator,
 	checkToolDailyRateLimitWithCoordinator,
 } from './quota-coordinator';
+import { CircuitBreaker, CircuitBreakerOpen } from './circuit-breaker';
 import { logError } from './log';
 
 export interface RateLimitResult {
@@ -61,6 +62,18 @@ const DAY_MS = 86_400_000;
 // Best-effort per-IP serialization for KV updates inside a single isolate.
 // This does not provide cross-isolate atomicity, but it prevents local races.
 const KV_IP_LOCK_TAILS = new Map<string, Promise<void>>();
+
+/** Circuit breaker for QuotaCoordinator DO — avoids hammering a failing DO. */
+const quotaCoordinatorBreaker = new CircuitBreaker({
+	name: 'QuotaCoordinator',
+	failureThreshold: 3,
+	cooldownMs: 60_000,
+});
+
+/** @internal Reset the DO circuit breaker (test use only). */
+export function resetQuotaCoordinatorBreaker(): void {
+	quotaCoordinatorBreaker.reset();
+}
 
 function checkRateLimitInMemory(ip: string): RateLimitResult {
 	return checkScopedRateLimitInMemory(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT);
@@ -265,10 +278,14 @@ async function checkGlobalDailyLimitKV(limit: number, kv: KVNamespace): Promise<
 export async function checkRateLimit(ip: string, kv?: KVNamespace, quotaCoordinator?: DurableObjectNamespace): Promise<RateLimitResult> {
 	if (quotaCoordinator) {
 		try {
-			const coordinated = await checkScopedRateLimitWithCoordinator(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT, quotaCoordinator);
+			const coordinated = await quotaCoordinatorBreaker.call(
+				() => checkScopedRateLimitWithCoordinator(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT, quotaCoordinator),
+			);
 			if (coordinated) return coordinated;
-		} catch {
-			logError('[rate-limiter] quota coordinator error, falling back to KV/in-memory');
+		} catch (err) {
+			if (!(err instanceof CircuitBreakerOpen)) {
+				logError('[rate-limiter] quota coordinator error, falling back to KV/in-memory');
+			}
 		}
 	}
        if (kv) {
@@ -293,10 +310,14 @@ export async function checkControlPlaneRateLimit(
 ): Promise<RateLimitResult> {
 	if (quotaCoordinator) {
 		try {
-			const coordinated = await checkScopedRateLimitWithCoordinator(ip, 'control', CONTROL_PLANE_MINUTE_LIMIT, CONTROL_PLANE_HOUR_LIMIT, quotaCoordinator);
+			const coordinated = await quotaCoordinatorBreaker.call(
+				() => checkScopedRateLimitWithCoordinator(ip, 'control', CONTROL_PLANE_MINUTE_LIMIT, CONTROL_PLANE_HOUR_LIMIT, quotaCoordinator),
+			);
 			if (coordinated) return coordinated;
-		} catch {
-			logError('[rate-limiter] quota coordinator control-plane error, falling back to KV/in-memory');
+		} catch (err) {
+			if (!(err instanceof CircuitBreakerOpen)) {
+				logError('[rate-limiter] quota coordinator control-plane error, falling back to KV/in-memory');
+			}
 		}
 	}
 	if (kv) {
@@ -322,10 +343,14 @@ export async function checkToolDailyRateLimit(
 ): Promise<ToolDailyRateLimitResult> {
 	if (quotaCoordinator) {
 		try {
-			const coordinated = await checkToolDailyRateLimitWithCoordinator(principalId, toolName, limit, quotaCoordinator);
+			const coordinated = await quotaCoordinatorBreaker.call(
+				() => checkToolDailyRateLimitWithCoordinator(principalId, toolName, limit, quotaCoordinator),
+			);
 			if (coordinated) return coordinated;
-		} catch {
-			logError('[rate-limiter] quota coordinator tool quota error, falling back to KV/in-memory');
+		} catch (err) {
+			if (!(err instanceof CircuitBreakerOpen)) {
+				logError('[rate-limiter] quota coordinator tool quota error, falling back to KV/in-memory');
+			}
 		}
 	}
 	if (kv) {
@@ -349,10 +374,14 @@ export async function checkGlobalDailyLimit(
 ): Promise<GlobalRateLimitResult> {
 	if (quotaCoordinator) {
 		try {
-			const coordinated = await checkGlobalDailyLimitWithCoordinator(limit, quotaCoordinator);
+			const coordinated = await quotaCoordinatorBreaker.call(
+				() => checkGlobalDailyLimitWithCoordinator(limit, quotaCoordinator),
+			);
 			if (coordinated) return coordinated;
-		} catch {
-			logError('[rate-limiter] quota coordinator global cap error, falling back to KV/in-memory');
+		} catch (err) {
+			if (!(err instanceof CircuitBreakerOpen)) {
+				logError('[rate-limiter] quota coordinator global cap error, falling back to KV/in-memory');
+			}
 		}
 	}
 	if (kv) {
@@ -375,4 +404,53 @@ export { pruneTimestamps, resetRateLimit, resetAllRateLimits };
 export function resetGlobalDailyLimit(): void {
 	globalDayWindow = 0;
 	globalDayCount = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Per-tier concurrency limits (best-effort per-isolate fairness)
+// ---------------------------------------------------------------------------
+
+/**
+ * In-memory map tracking active concurrent tool executions per principal.
+ * Keyed by principalId (API key hash for authenticated, IP for unauthenticated).
+ */
+const activeConcurrency = new Map<string, number>();
+
+export interface ConcurrencyLimitResult {
+	allowed: boolean;
+	retryAfterMs?: number;
+	active: number;
+	limit: number;
+}
+
+/**
+ * Attempt to acquire a concurrency slot for the given principal/tier.
+ * Returns allowed=true and increments the active count, or
+ * allowed=false with retryAfterMs if the limit is reached.
+ */
+export function acquireConcurrencySlot(principalId: string, limit: number): ConcurrencyLimitResult {
+	const current = activeConcurrency.get(principalId) ?? 0;
+	if (current >= limit) {
+		return { allowed: false, retryAfterMs: 1000, active: current, limit };
+	}
+	activeConcurrency.set(principalId, current + 1);
+	return { allowed: true, active: current + 1, limit };
+}
+
+/**
+ * Release a concurrency slot for the given principal.
+ * Must be called in a `finally` block after tool execution completes.
+ */
+export function releaseConcurrencySlot(principalId: string): void {
+	const current = activeConcurrency.get(principalId) ?? 0;
+	if (current <= 1) {
+		activeConcurrency.delete(principalId);
+	} else {
+		activeConcurrency.set(principalId, current - 1);
+	}
+}
+
+/** @internal Reset all concurrency tracking state (test use only). */
+export function resetConcurrencyLimits(): void {
+	activeConcurrency.clear();
 }

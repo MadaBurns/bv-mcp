@@ -5,9 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What is this?
 
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
+
+**Architecture diagrams**: See `docs/architecture.md` for Mermaid diagrams covering system overview, request flows (HTTP, stdio, service binding), scan orchestration, scoring model, and security layers.
 Exposes 44 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
-**Version**: 2.2.2 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.3.0 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -111,10 +113,12 @@ src/lib/                  — Shared infrastructure
   profile-accumulator.ts  — Durable Object for per-profile telemetry (SQLite-backed)
   dns.ts                  — DNS-over-HTTPS facade; queryTxtRecords concatenates per RFC 7208 §3.3, unescapes RFC 1035 §5.1 (max 2 passes)
   sanitize.ts             — Domain validation, SSRF protection (imports `punycode/` — trailing slash = npm package)
-  config.ts               — SSRF constants, DNS tuning, rate limit quotas
+  config.ts               — SSRF constants, DNS tuning, rate limit quotas, TIER_CONCURRENT_LIMITS, runtime-overridable parsers
   session.ts              — KV + in-memory session management with dual-write
-  cache.ts                — KV + in-memory TTL cache, INFLIGHT dedup, cacheSetDeferred()
-  rate-limiter.ts         — KV + in-memory per-IP rate limiting; withIpKvLock() for serialization
+  cache.ts                — KV + in-memory TTL cache, INFLIGHT dedup, cacheSetDeferred(), cross-isolate sentinel dedup
+  rate-limiter.ts         — KV + in-memory per-IP rate limiting; withIpKvLock(); per-tier concurrency limits; DO circuit breaker
+  circuit-breaker.ts      — Lightweight per-isolate circuit breaker (CLOSED→OPEN→HALF_OPEN) for external dependencies
+  semaphore.ts            — Promise-based counting semaphore for DNS query concurrency control
   json-rpc.ts             — JSON-RPC 2.0 types, error codes, response builders
   auth.ts                 — Bearer token validation (constant-time XOR)
   analytics.ts            — Analytics Engine integration (fail-open, 4 event types)
@@ -192,7 +196,7 @@ Resolution: `extractFormat(args)` in `tool-args.ts` → explicit param wins → 
 - `createFinding()` + `buildCheckResult()` from `lib/scoring-model.ts` (re-exported via `lib/scoring.ts`) — never construct findings manually. `createFinding()` auto-sanitizes `detail` via `sanitizeDnsData()`
 - `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs — runs after Zod shape validation for SSRF/blocklist protection
 - `mcpError()` / `mcpText()` from `handlers/tool-formatters.ts` for MCP response formatting
-- `cacheGet()` / `cacheSet()` / `cacheSetDeferred()` / `runWithCache()` from `lib/cache.ts`; `cacheSetDeferred()` wraps in `ctx.waitUntil()`; `runWithCache()` accepts `skipCache` for `force_refresh`
+- `cacheGet()` / `cacheSet()` / `cacheSetDeferred()` / `runWithCache()` from `lib/cache.ts`; `cacheSetDeferred()` wraps in `ctx.waitUntil()`; `runWithCache()` accepts `skipCache` for `force_refresh`; `runWithCache()` uses KV sentinel keys for cross-isolate dedup
 - JSDoc (`/** */`) on exported functions; `import type { ... }` for type-only imports
 - All tool functions return `Promise<CheckResult>` (follow `check-spf.ts` pattern) and accept optional `dnsOptions?: QueryDnsOptions`
 - `check_mx` is dynamically imported in `handlers/tools.ts` (for test mock isolation)
@@ -268,7 +272,7 @@ All scoring parameters configurable via `SCORING_CONFIG` env var (JSON). Support
 
 - **SSRF**: `config.ts` defines blocked IPs/TLDs; `sanitize.ts` enforces. `global_fetch_strictly_public` compat flag. All outbound fetches use `redirect: 'manual'`
 - **Auth**: Optional `BV_API_KEY`, constant-time XOR. Token extracted from `Authorization: Bearer <token>` header first, then `?api_key=` query param as fallback (enables Smithery and URL-only clients). Tier-auth cascades: KV cache → bv-web service binding → static fallback. Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner tier has unlimited rate limits but requires client IP in `OWNER_ALLOW_IPS` — mismatched IPs downgrade to `partner`
-- **Rate limiting**: 50 req/min, 300 req/hr per IP (unauthenticated). Authenticated users bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_lookalikes`/`check_shadow_domains`: 20/day per IP with 60-min caching
+- **Rate limiting**: 50 req/min, 300 req/hr per IP (unauthenticated). Authenticated users bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_lookalikes`/`check_shadow_domains`: 20/day per IP with 60-min caching. Per-tier concurrency limits (free:3, agent:5, developer:10, enterprise:25, partner:50, owner:∞) — best-effort per-isolate fairness, not hard enforcement
 - **Per-tool quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts`. Global cap 500k/day (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via `QuotaCoordinator` DO
 - **Content-Type**: POST requires `application/json`; missing allowed for compat; non-JSON → 415
 - **Body limit**: 10 KB on `/mcp`

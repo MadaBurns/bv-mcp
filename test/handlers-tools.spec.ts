@@ -247,7 +247,7 @@ describe('handleToolsCall - per-tool cache TTL', () => {
 		};
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		await handleToolsCall({ name: 'check_lookalikes', arguments: { domain: 'example.com' } }, mockKV as unknown as KVNamespace);
-		const lookalikesPut = mockKV.put.mock.calls.find((c: unknown[]) => (c[0] as string).includes('lookalikes'));
+		const lookalikesPut = mockKV.put.mock.calls.find((c: unknown[]) => (c[0] as string).includes('lookalikes') && !(c[0] as string).endsWith(':computing'));
 		expect(lookalikesPut).toBeDefined();
 		expect(lookalikesPut![2]).toEqual({ expirationTtl: 3600 });
 	});
@@ -260,7 +260,7 @@ describe('handleToolsCall - per-tool cache TTL', () => {
 		};
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		await handleToolsCall({ name: 'check_spf', arguments: { domain: 'example.com' } }, mockKV as unknown as KVNamespace);
-		const spfPut = mockKV.put.mock.calls.find((c: unknown[]) => (c[0] as string).includes('spf'));
+		const spfPut = mockKV.put.mock.calls.find((c: unknown[]) => (c[0] as string).includes('spf') && !(c[0] as string).endsWith(':computing'));
 		expect(spfPut).toBeDefined();
 		expect(spfPut![2]).toEqual({ expirationTtl: 300 });
 	});

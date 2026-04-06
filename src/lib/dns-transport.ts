@@ -3,6 +3,7 @@
 import { DNS_TIMEOUT_MS, DNS_RETRIES, DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY, DOH_EDGE_CACHE_TTL, DNS_RETRY_BASE_DELAY_MS } from './config';
 import { type DohResponse, type QueryDnsOptions, RecordType, type RecordTypeName } from './dns-types';
 import { DohResponseSchema } from '../schemas/dns';
+import type { Semaphore } from './semaphore';
 
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
 const GOOGLE_DOH_ENDPOINT = 'https://dns.google/resolve';
@@ -34,17 +35,18 @@ function retryDelay(attempt: number): Promise<void> {
 async function fetchDohResponse(
 	url: string,
 	timeoutMs: number,
-	opts?: { token?: string; useEdgeCache?: boolean },
+	opts?: { token?: string; useEdgeCache?: boolean; semaphore?: Semaphore },
 ): Promise<DohResponse | null> {
 	try {
 		const headers: Record<string, string> = { Accept: 'application/dns-json' };
 		if (opts?.token) headers['X-BV-Token'] = opts.token;
-		const response = await fetch(url, {
+		const doFetch = () => fetch(url, {
 			method: 'GET',
 			headers,
 			signal: AbortSignal.timeout(timeoutMs),
 			...(opts?.useEdgeCache ? { cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true } } : {}),
 		});
+		const response = opts?.semaphore ? await opts.semaphore.run(doFetch) : await doFetch();
 		if (!response.ok) return null;
 		const data = await response.json();
 		const parsed = DohResponseSchema.safeParse(data);
@@ -102,13 +104,18 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 	const timeoutMs = opts?.timeoutMs ?? DNS_TIMEOUT_MS;
 	const retries = opts?.retries ?? DNS_RETRIES;
 	const confirmWithSecondaryOnEmpty = opts?.confirmWithSecondaryOnEmpty ?? DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY;
+	const sem = opts?.dnsSemaphore;
 	const url = buildDohUrl(DOH_ENDPOINT, domain, type, dnssecCheck);
+
+	/** Optionally run a fetch through the semaphore when one is provided. */
+	const guardedFetch = (input: string | Request, init?: RequestInit & { cf?: Record<string, unknown> }): Promise<Response> =>
+		sem ? sem.run(() => fetch(input, init)) : fetch(input, init);
 
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		let response: Response;
 
 		try {
-			response = await fetch(url, {
+			response = await guardedFetch(url, {
 				method: 'GET',
 				headers: { Accept: 'application/dns-json' },
 				signal: AbortSignal.timeout(timeoutMs),
@@ -145,30 +152,55 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 		const data = validated.data as DohResponse;
 
 		if (confirmWithSecondaryOnEmpty && !opts?.skipSecondaryConfirmation && !hasTypedAnswers(data, type)) {
-			// Try custom secondary (bv-dns) first if configured
-			if (opts?.secondaryDoh?.endpoint) {
-				const bvDns = await fetchDohResponse(
-					buildDohUrl(opts.secondaryDoh.endpoint, domain, type, dnssecCheck),
-					timeoutMs,
-					{ token: opts.secondaryDoh.token },
-				);
-				if (bvDns && hasTypedAnswers(bvDns, type)) {
-					return bvDns;
-				}
-			}
-			// Google DoH as final fallback
-			const google = await fetchDohResponse(
-				buildDohUrl(GOOGLE_DOH_ENDPOINT, domain, type, dnssecCheck),
-				timeoutMs,
-				{ useEdgeCache: true },
-			);
-			if (google && hasTypedAnswers(google, type)) {
-				return google;
-			}
+			const secondaryResult = await confirmWithSecondaryResolvers(domain, type, dnssecCheck, timeoutMs, sem, opts);
+			if (secondaryResult) return secondaryResult;
 		}
 
 		return data;
 	}
 
 	throw new DnsQueryError('DNS query failed after retries', domain, type);
+}
+
+/**
+ * Confirm empty primary results with secondary resolvers.
+ * When both bv-dns and Google are available, races them in parallel (max 3s)
+ * — first responder with typed answers wins. Falls back to sequential when
+ * only Google is configured.
+ */
+async function confirmWithSecondaryResolvers(
+	domain: string,
+	type: RecordTypeName,
+	dnssecCheck: boolean,
+	timeoutMs: number,
+	sem: Semaphore | undefined,
+	opts?: QueryDnsOptions,
+): Promise<DohResponse | null> {
+	const hasBvDns = !!opts?.secondaryDoh?.endpoint;
+	const googleUrl = buildDohUrl(GOOGLE_DOH_ENDPOINT, domain, type, dnssecCheck);
+
+	if (hasBvDns) {
+		const bvDnsUrl = buildDohUrl(opts!.secondaryDoh!.endpoint, domain, type, dnssecCheck);
+
+		// Race bv-dns and Google in parallel — first with typed answers wins
+		const candidates = [
+			fetchDohResponse(bvDnsUrl, timeoutMs, { token: opts!.secondaryDoh!.token, semaphore: sem }),
+			fetchDohResponse(googleUrl, timeoutMs, { useEdgeCache: true, semaphore: sem }),
+		];
+
+		const results = await Promise.allSettled(candidates);
+		for (const r of results) {
+			if (r.status === 'fulfilled' && r.value && hasTypedAnswers(r.value, type)) {
+				return r.value;
+			}
+		}
+		return null;
+	}
+
+	// Only Google available
+	const google = await fetchDohResponse(googleUrl, timeoutMs, { useEdgeCache: true, semaphore: sem });
+	if (google && hasTypedAnswers(google, type)) {
+		return google;
+	}
+	return null;
 }
