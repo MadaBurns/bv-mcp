@@ -7,6 +7,9 @@ import {
 	queryClientBreakdown,
 	queryGeoDistribution,
 	queryRateLimitHits,
+	queryTierBreakdown,
+	queryRecentAnomalies,
+	queryRateLimitSurge,
 } from '../src/lib/analytics-queries';
 
 describe('analytics query builders', () => {
@@ -54,5 +57,41 @@ describe('analytics query builders', () => {
 		const sql = queryDailyActiveUsers("1'; DROP TABLE --");
 		expect(sql).toContain("INTERVAL '1' DAY");
 		expect(sql).not.toContain('DROP');
+	});
+
+	it('queryTierBreakdown reads blob8 from mcp_request events', () => {
+		const sql = queryTierBreakdown('7');
+		expect(sql).toContain("index1 = 'mcp_request'");
+		expect(sql).toContain('blob8 AS tier');
+		expect(sql).toContain("INTERVAL '7' DAY");
+		expect(sql).toContain('SUM(_sample_interval)');
+	});
+
+	it('queryRecentAnomalies returns error rate and p95 for tool_call events', () => {
+		const sql = queryRecentAnomalies('15');
+		expect(sql).toContain("index1 = 'tool_call'");
+		expect(sql).toContain("blob3 = 'error'");
+		expect(sql).toContain('error_pct');
+		expect(sql).toContain('p95_ms');
+		expect(sql).toContain("INTERVAL '15' MINUTE");
+		expect(sql).toContain('GREATEST');
+	});
+
+	it('queryRecentAnomalies sanitizes minutes parameter', () => {
+		const sql = queryRecentAnomalies("10'; DROP TABLE --");
+		expect(sql).toContain("INTERVAL '10' MINUTE");
+		expect(sql).not.toContain('DROP');
+	});
+
+	it('queryRateLimitSurge returns total hits for rate_limit events', () => {
+		const sql = queryRateLimitSurge('15');
+		expect(sql).toContain("index1 = 'rate_limit'");
+		expect(sql).toContain('total_hits');
+		expect(sql).toContain("INTERVAL '15' MINUTE");
+	});
+
+	it('queryRateLimitSurge sanitizes minutes parameter', () => {
+		const sql = queryRateLimitSurge('abc');
+		expect(sql).toContain("INTERVAL '1' MINUTE");
 	});
 });

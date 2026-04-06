@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-04-06
+
+### Fixed
+- **SSRF protection — alert webhook** — added `redirect: 'manual'` to `sendAlert()` fetch call in `alerting.ts`, preventing user-configured webhook URLs from following redirects to internal services.
+- **SSRF protection — Analytics Engine API** — added `redirect: 'manual'` to `queryAnalyticsEngine()` fetch in `scheduled.ts`, aligning with project-wide SSRF convention.
+- **Silent webhook failures** — `sendAlert()` now logs a warning via `logError()` when the webhook returns HTTP 4xx/5xx, instead of silently discarding the error response.
+- **Falsy-zero threshold bug** — replaced `parseFloat(...) || DEFAULT` with `Number.isFinite()` check in `scheduled.ts` threshold parsing, so a configured threshold of `"0"` is honored instead of falling through to the default.
+- **Missing analytics metadata** — threaded `score` and `cacheStatus` through `ToolExecutionBase` in `tool-execution.ts` so `emitToolEvent` analytics events carry score and cache status data.
+
+### Added
+- **Alerting query test coverage** — added 6 tests for `queryRecentAnomalies`, `queryRateLimitSurge`, and `queryTierBreakdown` in `analytics-queries.spec.ts` (SQL structure, blob positions, interval sanitization, injection prevention).
+- **Webhook safety tests** — added tests for `redirect: 'manual'`, HTTP error logging, and non-HTTPS rejection in `alerting.spec.ts`.
+
 ## [2.1.20] - 2026-04-01
 
 ### Added
