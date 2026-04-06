@@ -184,6 +184,14 @@ For full hosted setup examples, stdio usage, and legacy fallback endpoints, see 
 
 ---
 
+## Responsible use
+
+This tool is intended for **authorized security assessments** of domains you own or have explicit permission to test. Do not use it for unauthorized reconnaissance, harassment, or any activity that violates applicable laws. Findings from attack simulation, spoofability, and subdomain discovery tools should be used to **improve your own security posture**, not to exploit others.
+
+If you discover a vulnerability in a third-party domain, please follow [coordinated disclosure](https://www.cisa.gov/coordinated-vulnerability-disclosure-process) practices.
+
+---
+
 <div align="center">
 
 Built and maintained by [**BLACKVEIL**](https://blackveilsecurity.com) — NZ-owned cybersecurity consultancy.
