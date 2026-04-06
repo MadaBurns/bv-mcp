@@ -68,6 +68,5 @@
 - Contributor workflow and expectations: CONTRIBUTING.md
 - Client setup and transport details: docs/client-setup.md
 - Scoring model details: docs/scoring.md
-- Enterprise architecture notes: docs/enterprise-architecture.md
 - Troubleshooting guide: docs/troubleshooting.md
 - Security policy and disclosure process: SECURITY.md
