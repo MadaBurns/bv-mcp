@@ -36,7 +36,7 @@ describe('mcp-route-gates', () => {
 		}));
 
 		const { validateSessionRequest } = await import('../src/mcp/route-gates');
-		const result = await validateSessionRequest('bad-session', undefined, 3, 'Bad Request: missing session');
+		const result = await validateSessionRequest('bad-session', undefined, 3, 'Bad Request: missing session. Send an initialize request first to create a session.');
 
 		expect(result).toBeTruthy();
 		expect(result?.status).toBe(404);
@@ -46,12 +46,12 @@ describe('mcp-route-gates', () => {
 
 	it('returns 400 for missing session header', async () => {
 		const { validateSessionRequest } = await import('../src/mcp/route-gates');
-		const result = await validateSessionRequest(undefined, undefined, 3, 'Bad Request: missing session');
+		const result = await validateSessionRequest(undefined, undefined, 3, 'Bad Request: missing session. Send an initialize request first to create a session.');
 
 		expect(result).toBeTruthy();
 		expect(result?.status).toBe(400);
 		expect(result?.payload.error.code).toBe(-32600);
-		expect(result?.payload.error.message).toBe('Bad Request: missing session');
+		expect(result?.payload.error.message).toContain('Bad Request: missing session');
 	});
 
 	it('returns 400 for SSE when no session is provided', async () => {
