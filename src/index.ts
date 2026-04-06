@@ -106,8 +106,8 @@ function checkOrigin(origin: string, requestUrl: string, allowedOrigins?: string
 		const parsed = new URL(origin);
 		// Desktop IDE schemes (Electron-only, not forgeable by browsers)
 		if (DESKTOP_IDE_SCHEMES.includes(parsed.protocol)) return 'allowed';
-		// Same-origin
-		if (parsed.host === new URL(requestUrl).host) return 'allowed';
+		// Same-origin: compare full origin (scheme+host+port) not just host
+		if (parsed.origin === new URL(requestUrl).origin) return 'allowed';
 	} catch {
 		return 'invalid';
 	}
