@@ -45,6 +45,7 @@ async function queryAnalyticsEngine(accountId: string, token: string, sql: strin
 		headers: { Authorization: `Bearer ${token}` },
 		body: sql,
 		signal: AbortSignal.timeout(5_000),
+		redirect: 'manual',
 	});
 
 	if (!response.ok) {
@@ -60,9 +61,12 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	if (!env.ALERT_WEBHOOK_URL) return;
 	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return;
 
-	const errorThreshold = parseFloat(env.ALERT_ERROR_THRESHOLD ?? '') || DEFAULT_ERROR_THRESHOLD;
-	const p95Threshold = parseFloat(env.ALERT_P95_THRESHOLD ?? '') || DEFAULT_P95_THRESHOLD;
-	const rateLimitThreshold = parseFloat(env.ALERT_RATE_LIMIT_THRESHOLD ?? '') || DEFAULT_RATE_LIMIT_THRESHOLD;
+	const parsedError = parseFloat(env.ALERT_ERROR_THRESHOLD ?? '');
+	const errorThreshold = Number.isFinite(parsedError) ? parsedError : DEFAULT_ERROR_THRESHOLD;
+	const parsedP95 = parseFloat(env.ALERT_P95_THRESHOLD ?? '');
+	const p95Threshold = Number.isFinite(parsedP95) ? parsedP95 : DEFAULT_P95_THRESHOLD;
+	const parsedRateLimit = parseFloat(env.ALERT_RATE_LIMIT_THRESHOLD ?? '');
+	const rateLimitThreshold = Number.isFinite(parsedRateLimit) ? parsedRateLimit : DEFAULT_RATE_LIMIT_THRESHOLD;
 	const lookback = env.ALERT_LOOKBACK_MINUTES ?? String(DEFAULT_LOOKBACK_MINUTES);
 
 	try {
