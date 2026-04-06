@@ -229,6 +229,10 @@ export async function handleToolsCall(
 				const checkName = registeredTool.cacheKey(validatedArgs);
 				const cacheKey = `cache:${validDomain}:check:${checkName}`;
 				const result = await runWithCache(cacheKey, () => registeredTool.execute(validDomain, validatedArgs, runtimeOptions), scanCacheKV, registeredTool.cacheTtlSeconds);
+				// Don't cache partial results (e.g. lookalike timeout) — evict what runWithCache just stored
+				if ((result as unknown as Record<string, unknown>).partial && scanCacheKV) {
+					try { await scanCacheKV.delete(cacheKey); } catch { /* best-effort */ }
+				}
 				runtimeOptions?.resultCapture?.(result);
 				logResult = result.passed ? 'pass' : 'fail';
 				logDetails = result;

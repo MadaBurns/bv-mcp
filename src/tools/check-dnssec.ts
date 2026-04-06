@@ -6,7 +6,7 @@
  */
 
 import { checkDNSSEC } from '@blackveil/dns-checks';
-import { queryDns, queryDnsRecords, queryTxtRecords } from '../lib/dns';
+import { DnsQueryError, queryDns, queryDnsRecords, queryTxtRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult } from '../lib/scoring';
@@ -29,6 +29,7 @@ function makeQueryDNS(dnsOptions?: QueryDnsOptions) {
  * Augments results with dnssecSource metadata: 'domain_configured' or 'tld_inherited'.
  */
 export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
+	try {
 	const baseResult = await checkDNSSEC(
 		domain,
 		makeQueryDNS(dnsOptions),
@@ -89,4 +90,18 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions):
 		{ dnssecSource: 'domain_configured' },
 	);
 	return buildCheckResult('dnssec', [configuredFinding]);
+	} catch (err) {
+		if (err instanceof DnsQueryError) {
+			return buildCheckResult('dnssec', [
+				createFinding(
+					'dnssec',
+					'DNSSEC check could not complete',
+					'info',
+					`Unable to verify DNSSEC for ${domain} — DNS query failed: ${err.message}`,
+					{ checkStatus: 'error' },
+				),
+			]);
+		}
+		throw err;
+	}
 }

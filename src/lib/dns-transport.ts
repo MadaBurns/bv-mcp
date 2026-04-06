@@ -3,6 +3,7 @@
 import { DNS_TIMEOUT_MS, DNS_RETRIES, DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY, DOH_EDGE_CACHE_TTL, DNS_RETRY_BASE_DELAY_MS } from './config';
 import { type DohResponse, type QueryDnsOptions, RecordType, type RecordTypeName } from './dns-types';
 import { DohResponseSchema } from '../schemas/dns';
+import { logError } from './log';
 import type { Semaphore } from './semaphore';
 
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
@@ -52,7 +53,13 @@ async function fetchDohResponse(
 		const parsed = DohResponseSchema.safeParse(data);
 		if (!parsed.success) return null;
 		return parsed.data as DohResponse;
-	} catch {
+	} catch (err) {
+		const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
+		logError(isTimeout ? 'DNS fetch timeout' : 'DNS fetch failed', {
+			severity: 'warn',
+			category: 'dns-transport',
+			details: { url: url.replace(/name=[^&]+/, 'name=<domain>'), errorType: isTimeout ? 'timeout' : 'network' },
+		});
 		return null;
 	}
 }
@@ -193,6 +200,14 @@ async function confirmWithSecondaryResolvers(
 			if (r.status === 'fulfilled' && r.value && hasTypedAnswers(r.value, type)) {
 				return r.value;
 			}
+		}
+		const allFailed = results.every((r) => r.status === 'rejected' || !r.value);
+		if (allFailed) {
+			logError('All secondary DNS resolvers failed', {
+				severity: 'warn',
+				category: 'dns-transport',
+				details: { domain, type },
+			});
 		}
 		return null;
 	}

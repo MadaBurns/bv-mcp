@@ -59,6 +59,11 @@ export interface AnalyticsClient {
 		action: 'created' | 'terminated' | 'revived';
 		method?: string;
 	} & AnalyticsContext): void;
+	emitDegradationEvent(event: {
+		degradationType: 'dns_resolver_failure' | 'kv_fallback' | 'provider_detection_failure' | 'partial_result' | 'post_processing_error';
+		component: string;
+		domain?: string;
+	} & AnalyticsContext): void;
 }
 
 /**
@@ -71,7 +76,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 	};
 
 	if (!dataset) {
-		return { enabled: false, emitRequestEvent: noop, emitToolEvent: noop, emitRateLimitEvent: noop, emitSessionEvent: noop };
+		return { enabled: false, emitRequestEvent: noop, emitToolEvent: noop, emitRateLimitEvent: noop, emitSessionEvent: noop, emitDegradationEvent: noop };
 	}
 
 	return {
@@ -130,6 +135,19 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
 					event.method ?? 'unknown',
+				],
+			});
+		},
+		emitDegradationEvent: (event) => {
+			safeWrite(dataset, {
+				indexes: ['degradation'],
+				blobs: [
+					event.degradationType,
+					normalizeIndex(event.component),
+					event.domain ? domainFingerprint(event.domain) : 'none',
+					event.country ?? 'unknown',
+					event.clientType ?? 'unknown',
+					event.authTier ?? 'anon',
 				],
 			});
 		},
