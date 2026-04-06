@@ -220,7 +220,7 @@ export async function handleToolsCall(
 		const validDomain: string = domain ?? '';
 
 		const effectiveFormat = resolveFormat(validatedArgs, runtimeOptions?.clientType);
-		const interactive = isInteractiveClient(runtimeOptions?.clientType);
+		const _interactive = isInteractiveClient(runtimeOptions?.clientType);
 
 		const executeDispatch = async (): Promise<McpToolResult> => {
 			// Dispatch to the appropriate tool — check registry first, then special cases
