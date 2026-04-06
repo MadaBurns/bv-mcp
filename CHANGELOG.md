@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.3.4] - 2026-04-07
+
+### Improved
+- **Client-facing error messages** — all key error responses now include actionable guidance:
+  - Auth 401: hints to remove stale token for free tier or verify API key
+  - Missing session 400: tells client to send `initialize` first
+  - Session expired 404: tells client to re-initialize for a fresh session
+  - DELETE missing header: names the `Mcp-Session-Id` header explicitly
+  - Unknown tool: suggests calling `tools/list` to discover available tools
+  - Generic tool errors: includes the tool name and retry guidance
+
 ## [2.3.3] - 2026-04-06
 
 ### Fixed
