@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-04-07
+
+### Added
+- **Structured JSON output for all 44 tools** — all tools now return a `<!-- STRUCTURED_RESULT -->` JSON block when `format=full` (non-interactive clients). Previously only `scan_domain` returned structured data. Compact mode (interactive LLM clients: Claude Code, Cursor, etc.) is unaffected.
+
 ## [2.3.5] - 2026-04-07
 
 ### Fixed
