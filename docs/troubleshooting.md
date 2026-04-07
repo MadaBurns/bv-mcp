@@ -24,6 +24,8 @@ This avoids local bridge-process issues entirely.
 **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
 Fallback config (native stdio — no bridge required):
+
+**macOS / Linux:**
 ```json
 {
   "mcpServers": {
@@ -36,13 +38,27 @@ Fallback config (native stdio — no bridge required):
 }
 ```
 
+**Windows:**
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "--package", "blackveil-dns", "blackveil-dns-mcp"]
+    }
+  }
+}
+```
+
 **Common mistakes:**
 - ❌ Using `mcpServer` (singular) instead of `mcpServers` (plural)
-- ❌ Using bare `npx` when Claude Desktop cannot resolve it from the GUI app environment
+- ❌ Using bare `npx` when Claude Desktop cannot resolve it from the GUI app environment (macOS)
+- ❌ Using the full `C:\Program Files\nodejs\npx.cmd` path on Windows — the space breaks `cmd.exe` (see [§3](#3-windows-cprogram-is-not-recognized))
 - ❌ Omitting `-y` and getting stuck on the first `npx` install prompt
 - ❌ Invalid JSON syntax (trailing commas, missing quotes)
 
-If Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path.
+If Homebrew is installed elsewhere (macOS), replace `/opt/homebrew/bin/npx` with your actual `npx` path.
 
 **3. Restart Claude Desktop completely**
 
@@ -186,7 +202,78 @@ curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
   --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 ```
 
-## 3. Common Errors
+## 3. Windows: `'C:\Program' is not recognized`
+
+If the MCP client log shows:
+
+```
+'C:\Program' is not recognized as an internal or external command,
+operable program or batch file.
+```
+
+This means `cmd.exe /C` is splitting the `npx.cmd` path at the space in `C:\Program Files`. The fix depends on your client:
+
+**Option A — Use `npx` directly as the command (preferred)**
+
+Most MCP clients resolve `npx` from `PATH` automatically:
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote",
+        "https://dns-mcp.blackveilsecurity.com/mcp",
+        "--header",
+        "Authorization: Bearer YOUR_API_KEY"
+      ]
+    }
+  }
+}
+```
+
+**Option B — Quote the full path**
+
+If you must specify the full path, wrap it in escaped quotes:
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "command": "cmd",
+      "args": [
+        "/C",
+        "\"C:\\Program Files\\nodejs\\npx.cmd\"",
+        "-y", "mcp-remote",
+        "https://dns-mcp.blackveilsecurity.com/mcp",
+        "--header",
+        "Authorization: Bearer YOUR_API_KEY"
+      ]
+    }
+  }
+}
+```
+
+**Option C — Use native HTTP transport (no bridge process)**
+
+Avoid `mcp-remote` entirely. VS Code and Cursor support `"type": "http"` natively:
+
+```json
+{
+  "servers": {
+    "blackveil-dns": {
+      "type": "http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+## 4. Common Errors
 
 - `401 Unauthorized`: Missing or invalid bearer token while auth is enabled.
 - `Bad Request: missing session`: Auth is accepted, but no `Mcp-Session-Id` was sent for a stateful method. Call `initialize` first, then include the returned session ID header on follow-up MCP calls.
@@ -196,7 +283,7 @@ curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
 - `Error: An unexpected error occurred` on `tools/call` with IP-like domain input: input validation rejected an IP literal form. Use a real DNS domain name (for example `example.com`) instead of values like `127.1`, `0177.0.0.1`, `8.8.8.8`, or `0x8.0x8.0x8.0x8`.
 - `-32601 Method not found: prompts/list`: Expected. This server does not implement prompt methods (`prompts/list`, `prompts/get`). Use `tools/list` / `tools/call` and `resources/list` / `resources/read`.
 
-## 4. Debugging Checklist
+## 5. Debugging Checklist
 
 - Confirm endpoint URL is correct.
 - Confirm auth mode (`open` vs bearer) matches configuration.
@@ -204,7 +291,7 @@ curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
 - Verify `domain` is a valid public DNS domain name (not an IPv4 literal in standard or alternate numeric notation).
 - Inspect Wrangler/Worker logs for request ID and tool error details.
 
-## 5. Local Development Checks
+## 6. Local Development Checks
 
 ```bash
 npm run typecheck
@@ -212,7 +299,7 @@ npm test
 npm run dev
 ```
 
-## 6. Investigating `scan_domain` Slowness (Claude Desktop)
+## 7. Investigating `scan_domain` Slowness (Claude Desktop)
 
 Perceived latency in Claude Desktop is often a combination of MCP handshake overhead and tool execution time.
 
