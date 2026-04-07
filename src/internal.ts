@@ -36,10 +36,12 @@ import { createAnalyticsClient } from './lib/analytics';
 import { parseScoringConfigCached } from './lib/scoring-config';
 import { parseCacheTtl } from './lib/config';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
-import { InternalToolCallSchema, BatchRequestSchema } from './schemas/internal';
+import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
+import { createTrialKey, getTrialKeyStatus, revokeTrialKey, listTrialKeys } from './lib/trial-keys';
 
 type InternalEnv = {
 	SCAN_CACHE?: KVNamespace;
+	RATE_LIMIT?: KVNamespace;
 	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
 	PROVIDER_SIGNATURES_URL?: string;
@@ -258,5 +260,127 @@ internalRoutes.post('/tools/batch', async (c) => {
 	return c.json({
 		results,
 		summary: { total: body.domains.length, succeeded, failed },
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Trial API Key Management
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /internal/trial-keys
+ *
+ * Create a new trial API key. Returns the raw key (shown once) and metadata.
+ *
+ * Request body: { "label": string, "tier"?: Tier, "expiresInDays"?: number, "maxUses"?: number }
+ * Response body: { "key": string, "hash": string, "tier": string, "expiresAt": number, "maxUses": number }
+ */
+internalRoutes.post('/trial-keys', async (c) => {
+	if (!c.env.RATE_LIMIT) {
+		return c.json({ error: 'RATE_LIMIT KV namespace not configured' }, 500);
+	}
+
+	let body: { label: string; tier?: string; expiresInDays?: number; maxUses?: number };
+	try {
+		const raw = await c.req.json();
+		body = CreateTrialKeyRequestSchema.parse(raw);
+	} catch (err) {
+		if (err instanceof ZodError) {
+			return c.json({ error: `Invalid ${err.issues[0].path.join('.')}: ${err.issues[0].message}` }, 400);
+		}
+		return c.json({ error: 'Invalid request body' }, 400);
+	}
+
+	const result = await createTrialKey(c.env.RATE_LIMIT, {
+		label: body.label,
+		tier: body.tier as import('./lib/config').McpApiKeyTier | undefined,
+		expiresInDays: body.expiresInDays,
+		maxUses: body.maxUses,
+	});
+
+	return c.json({
+		key: result.rawKey,
+		hash: result.hash,
+		tier: result.record.tier,
+		expiresAt: result.record.expiresAt,
+		maxUses: result.record.maxUses,
+		label: result.record.label,
+	});
+});
+
+/**
+ * GET /internal/trial-keys/:hash
+ *
+ * Get the current status of a trial key by its hash.
+ */
+internalRoutes.get('/trial-keys/:hash', async (c) => {
+	if (!c.env.RATE_LIMIT) {
+		return c.json({ error: 'RATE_LIMIT KV namespace not configured' }, 500);
+	}
+
+	const hash = c.req.param('hash');
+	if (!/^[0-9a-f]{64}$/.test(hash)) {
+		return c.json({ error: 'Invalid hash format' }, 400);
+	}
+
+	const record = await getTrialKeyStatus(c.env.RATE_LIMIT, hash);
+	if (!record) {
+		return c.json({ error: 'Trial key not found' }, 404);
+	}
+
+	const now = Date.now();
+	return c.json({
+		...record,
+		expired: now >= record.expiresAt,
+		exhausted: record.currentUses >= record.maxUses,
+		usesRemaining: Math.max(0, record.maxUses - record.currentUses),
+		daysRemaining: Math.max(0, Math.ceil((record.expiresAt - now) / (24 * 60 * 60 * 1000))),
+	});
+});
+
+/**
+ * DELETE /internal/trial-keys/:hash
+ *
+ * Revoke (delete) a trial key.
+ */
+internalRoutes.delete('/trial-keys/:hash', async (c) => {
+	if (!c.env.RATE_LIMIT) {
+		return c.json({ error: 'RATE_LIMIT KV namespace not configured' }, 500);
+	}
+
+	const hash = c.req.param('hash');
+	if (!/^[0-9a-f]{64}$/.test(hash)) {
+		return c.json({ error: 'Invalid hash format' }, 400);
+	}
+
+	const deleted = await revokeTrialKey(c.env.RATE_LIMIT, hash);
+	return c.json({ deleted });
+});
+
+/**
+ * GET /internal/trial-keys
+ *
+ * List all trial keys with their current status.
+ */
+internalRoutes.get('/trial-keys', async (c) => {
+	if (!c.env.RATE_LIMIT) {
+		return c.json({ error: 'RATE_LIMIT KV namespace not configured' }, 500);
+	}
+
+	const url = new URL(c.req.url);
+	const limit = Math.min(Number(url.searchParams.get('limit') ?? 100), 1000);
+
+	const keys = await listTrialKeys(c.env.RATE_LIMIT, { limit });
+	const now = Date.now();
+
+	return c.json({
+		keys: keys.map(({ hash, record }) => ({
+			hash,
+			...record,
+			expired: now >= record.expiresAt,
+			exhausted: record.currentUses >= record.maxUses,
+			usesRemaining: Math.max(0, record.maxUses - record.currentUses),
+		})),
+		total: keys.length,
 	});
 });
