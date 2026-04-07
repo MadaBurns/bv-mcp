@@ -194,6 +194,22 @@ export const TIER_CONCURRENT_LIMITS: Record<McpApiKeyTier, number> = {
 };
 
 // ---------------------------------------------------------------------------
+// Trial API key defaults
+// ---------------------------------------------------------------------------
+
+/** Default trial duration in days. */
+export const TRIAL_DEFAULT_EXPIRES_DAYS = 14;
+
+/** Default maximum tool invocations per trial key. */
+export const TRIAL_DEFAULT_MAX_USES = 1000;
+
+/** Default tier for trial keys. Maps to existing tier quotas + concurrency limits. */
+export const TRIAL_DEFAULT_TIER: McpApiKeyTier = 'developer';
+
+/** TTL (seconds) for tier-cache entries resolved from trial keys. Shorter than normal 300s to detect expiry/exhaustion sooner. */
+export const TRIAL_KEY_CACHE_TTL = 60;
+
+// ---------------------------------------------------------------------------
 // Runtime-configurable limit parsers (env var overrides, no redeploy needed)
 // ---------------------------------------------------------------------------
 
