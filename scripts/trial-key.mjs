@@ -75,7 +75,7 @@ async function hashToken(token) {
 
 function kvGet(namespaceId, key) {
 	try {
-		return execSync(`npx wrangler kv key get --namespace-id=${namespaceId} "${key}"`, {
+		return execSync(`npx wrangler kv key get --namespace-id=${namespaceId} --remote "${key}"`, {
 			encoding: 'utf-8',
 			stdio: ['pipe', 'pipe', 'pipe'],
 		}).trim();
@@ -86,7 +86,7 @@ function kvGet(namespaceId, key) {
 
 function kvPut(namespaceId, key, value, ttlSeconds) {
 	const ttlArg = ttlSeconds ? `--ttl=${ttlSeconds}` : '';
-	execSync(`npx wrangler kv key put --namespace-id=${namespaceId} "${key}" '${value.replace(/'/g, "'\\''")}' ${ttlArg}`, {
+	execSync(`npx wrangler kv key put --namespace-id=${namespaceId} --remote "${key}" '${value.replace(/'/g, "'\\'\''") }' ${ttlArg}`, {
 		encoding: 'utf-8',
 		stdio: ['pipe', 'pipe', 'pipe'],
 	});
@@ -94,7 +94,7 @@ function kvPut(namespaceId, key, value, ttlSeconds) {
 
 function kvDelete(namespaceId, key) {
 	try {
-		execSync(`npx wrangler kv key delete --namespace-id=${namespaceId} "${key}" --force`, {
+		execSync(`npx wrangler kv key delete --namespace-id=${namespaceId} --remote "${key}" --force`, {
 			encoding: 'utf-8',
 			stdio: ['pipe', 'pipe', 'pipe'],
 		});
@@ -106,7 +106,7 @@ function kvDelete(namespaceId, key) {
 
 function kvList(namespaceId, prefix, limit = 100) {
 	try {
-		const output = execSync(`npx wrangler kv key list --namespace-id=${namespaceId} --prefix="${prefix}" --limit=${limit}`, {
+		const output = execSync(`npx wrangler kv key list --namespace-id=${namespaceId} --remote --prefix="${prefix}" --limit=${limit}`, {
 			encoding: 'utf-8',
 			stdio: ['pipe', 'pipe', 'pipe'],
 		});
