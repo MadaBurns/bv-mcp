@@ -1,9 +1,13 @@
 # IP leakage patterns for pre-commit hook
+#
+# This file has been moved to .dev/blocked-patterns (gitignored) to avoid
+# exposing internal hostnames and infrastructure identifiers in the public repo.
+#
+# To set up: copy .dev/blocked-patterns.example to .dev/blocked-patterns
+# and add your organization-specific patterns.
+#
 # Each line is an extended regex. Lines starting with # are ignored.
-# Add new patterns here when new internal hostnames, customer names,
-# or infrastructure identifiers are introduced.
-harlan\.blackveilsecurity\.com
-csc-global
-@blackveil-security/
-enterprise-architecture\.md
-wrangler\.deploy\.jsonc
+# Example patterns:
+#   internal\.example\.com
+#   @my-org/
+#   deploy\.jsonc

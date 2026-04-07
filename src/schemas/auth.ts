@@ -13,3 +13,15 @@ export const TierCacheEntrySchema = z.object({
 export const ValidateKeyResponseSchema = z.object({
 	tier: TierSchema,
 });
+
+/** Trial API key record stored in KV at `trial:{hash}`. */
+export const TrialKeyRecordSchema = z.object({
+	tier: TierSchema,
+	expiresAt: z.number(),
+	maxUses: z.number().int().nonnegative(),
+	currentUses: z.number().int().nonnegative(),
+	label: z.string().max(200),
+	createdAt: z.number(),
+});
+
+export type TrialKeyRecord = z.infer<typeof TrialKeyRecordSchema>;
