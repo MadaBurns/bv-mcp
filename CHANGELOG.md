@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-04-08
+
+### Fixed
+- **CI deploy workflows** — `publish.yml` deploy-cloudflare job and both jobs in `deploy-hook.yml` were missing WASM build steps; each runs on a fresh runner with no `pkg/` artifacts. Added `wasm-pack` install + `npm run build:wasm` before `wrangler deploy` and `npm test`.
+
 ## [2.4.0] - 2026-04-07
 
 ### Added
