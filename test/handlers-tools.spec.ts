@@ -62,8 +62,9 @@ describe('handleToolsCall - dispatch routing', () => {
 		mockTxtRecords(['v=spf1 -all']);
 		const result = await call('check_spf', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('SPF');
+		expect(result.content[1].text).toContain('STRUCTURED_RESULT');
 	});
 
 	it('check_spf surfaces shared-platform trust as informational when DMARC is strict', async () => {
@@ -86,7 +87,7 @@ describe('handleToolsCall - dispatch routing', () => {
 
 		const result = await call('check_spf', { domain: 'strict-spf.example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('**Status:** ✅ Passed');
 		expect(result.content[0].text).toContain('**[INFO]** SPF delegates to shared platform: Google Workspace');
 		expect(result.content[0].text).toContain('**[INFO]** SPF record configured');
@@ -96,7 +97,7 @@ describe('handleToolsCall - dispatch routing', () => {
 		mockTxtRecords(['v=DMARC1; p=reject'], '_dmarc.example.com');
 		const result = await call('check_dmarc', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].type).toBe('text');
 		expect(result.content[0].text.length).toBeGreaterThan(0);
 	});
@@ -106,7 +107,7 @@ describe('handleToolsCall - dispatch routing', () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([{ name: 'example.com', type: 257 }], caaAnswers));
 		const result = await call('check_caa', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('CAA');
 	});
 
@@ -142,7 +143,7 @@ describe('handleToolsCall - dispatch routing', () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([{ name: 'example.com', type: 15 }], mxAnswers));
 		const result = await call('check_mx', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('MX');
 	});
 
@@ -156,7 +157,7 @@ describe('handleToolsCall - dispatch routing', () => {
 		);
 		const result = await call('check_dnssec', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('DNSSEC');
 	});
 
@@ -184,7 +185,7 @@ describe('handleToolsCall - dispatch routing', () => {
 		});
 		const result = await call('check_ssl', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('SSL');
 	});
 
@@ -212,7 +213,7 @@ describe('handleToolsCall - dispatch routing', () => {
 		});
 		const result = await call('check_mta_sts', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('MTA_STS');
 	});
 
@@ -229,7 +230,7 @@ describe('handleToolsCall - dispatch routing', () => {
 		});
 		const result = await call('check_ns', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('NS');
 	});
 });
@@ -307,7 +308,7 @@ describe('handleToolsCall - explain_finding', () => {
 	it('valid checkType + status returns content (not isError)', async () => {
 		const result = await call('explain_finding', { checkType: 'SPF', status: 'pass' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text.length).toBeGreaterThan(0);
 	});
 
@@ -709,7 +710,7 @@ describe('handleToolsCall - additional registry tool routing', () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
 		const result = await call('check_bimi', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('BIMI');
 	});
 
@@ -717,7 +718,7 @@ describe('handleToolsCall - additional registry tool routing', () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
 		const result = await call('check_tlsrpt', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('TLS');
 	});
 
@@ -725,7 +726,7 @@ describe('handleToolsCall - additional registry tool routing', () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
 		const result = await call('check_dane', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('DANE');
 	});
 
@@ -733,7 +734,7 @@ describe('handleToolsCall - additional registry tool routing', () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
 		const result = await call('check_dane_https', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('DANE');
 	});
 
@@ -741,7 +742,7 @@ describe('handleToolsCall - additional registry tool routing', () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
 		const result = await call('check_svcb_https', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('HTTPS');
 	});
 
@@ -754,7 +755,7 @@ describe('handleToolsCall - additional registry tool routing', () => {
 		);
 		const result = await call('check_txt_hygiene', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('TXT');
 	});
 
@@ -784,7 +785,7 @@ describe('handleToolsCall - additional registry tool routing', () => {
 		});
 		const result = await call('check_http_security', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('HTTP');
 	});
 
@@ -792,7 +793,7 @@ describe('handleToolsCall - additional registry tool routing', () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
 		const result = await call('check_srv', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('SRV');
 	});
 
@@ -800,7 +801,7 @@ describe('handleToolsCall - additional registry tool routing', () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
 		const result = await call('check_zone_hygiene', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text.length).toBeGreaterThan(0);
 	});
 
@@ -808,7 +809,7 @@ describe('handleToolsCall - additional registry tool routing', () => {
 		mockTxtRecords(['v=spf1 -all']);
 		const result = await call('check_subdomailing', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text.length).toBeGreaterThan(0);
 	});
 });
@@ -824,7 +825,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 	it('get_benchmark returns benchmark content without requiring a domain', async () => {
 		const result = await call('get_benchmark', {});
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text.length).toBeGreaterThan(0);
 	});
 
@@ -837,7 +838,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 	it('get_provider_insights with provider returns content', async () => {
 		const result = await call('get_provider_insights', { provider: 'google' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text.length).toBeGreaterThan(0);
 	});
 
@@ -861,7 +862,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 		});
 		const result = await call('assess_spoofability', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text.length).toBeGreaterThan(0);
 	});
 
@@ -874,7 +875,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 		);
 		const result = await call('generate_spf_record', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('spf1');
 	});
 
@@ -882,7 +883,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
 		const result = await call('generate_dmarc_record', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('DMARC');
 	});
 
@@ -890,7 +891,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
 		const result = await call('generate_dkim_config', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('DKIM');
 	});
 
@@ -909,7 +910,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 		});
 		const result = await call('generate_mta_sts_policy', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('MTA');
 	});
 
@@ -917,7 +918,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 		mockAllChecks();
 		const result = await call('generate_fix_plan', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text.length).toBeGreaterThan(0);
 	});
 
@@ -941,7 +942,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 		});
 		const result = await call('resolve_spf_chain', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('SPF');
 	});
 
@@ -965,7 +966,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 		});
 		const result = await call('simulate_attack_paths', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text.length).toBeGreaterThan(0);
 	});
 
@@ -992,7 +993,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 		});
 		const result = await call('map_supply_chain', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text.length).toBeGreaterThan(0);
 	});
 });
