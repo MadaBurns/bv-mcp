@@ -49,11 +49,18 @@ jobs:
       - name: Build workspace package
         run: npm -w packages/dns-checks run build
 
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        run: npm run build:wasm
+
       - name: Typecheck
         run: npx tsc --noEmit
 
       - name: Test
         run: npm test
+
 
   deploy:
     name: Deploy to Cloudflare Workers
@@ -83,8 +90,15 @@ jobs:
       - name: Build workspace package
         run: npm -w packages/dns-checks run build
 
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        run: npm run build:wasm
+
       - name: Deploy
         run: npx wrangler deploy -c wrangler.jsonc
+
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
