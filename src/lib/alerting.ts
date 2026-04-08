@@ -66,3 +66,38 @@ export async function sendAlert(webhookUrl: string, payload: AlertPayload): Prom
 		});
 	}
 }
+
+export interface TierDigestRow {
+	tier?: string;
+	total_calls?: number;
+	unique_domains?: number;
+	unique_keys?: number;
+	error_rate?: number;
+	avg_latency_ms?: number;
+}
+
+/** Build a daily digest payload summarizing per-tier usage. */
+export function buildDigestPayload(rows: TierDigestRow[], days: number): AlertPayload {
+	const header = `[Blackveil DNS] Daily Tier Digest (${days}d)\n`;
+	const timestamp = `Time: ${new Date().toISOString()}\n`;
+
+	if (!rows.length) {
+		const text = `${header}\nNo activity in the last ${days} day(s).\n\n${timestamp}`;
+		return { text, content: text };
+	}
+
+	const tierLines = rows.map((r) => {
+		const tier = r.tier ?? 'unknown';
+		const calls = r.total_calls ?? 0;
+		const domains = r.unique_domains ?? 0;
+		const keys = r.unique_keys ?? 0;
+		const errRate = r.error_rate != null ? `${(Number(r.error_rate) * 100).toFixed(1)}%` : 'n/a';
+		const latency = r.avg_latency_ms != null ? `${Math.round(Number(r.avg_latency_ms))}ms` : 'n/a';
+		return `  ${tier}: ${calls} calls, ${domains} domains, ${keys} keys, err=${errRate}, p50=${latency}`;
+	});
+
+	const totalCalls = rows.reduce((sum, r) => sum + (r.total_calls ?? 0), 0);
+	const text = `${header}\nTotal: ${totalCalls} calls across ${rows.length} tier(s)\n\n${tierLines.join('\n')}\n\n${timestamp}`;
+
+	return { text, content: text };
+}
