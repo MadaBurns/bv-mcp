@@ -2,7 +2,7 @@
 
 import type { CheckResult } from '../lib/scoring';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
-import { runWithCache } from '../lib/cache';
+import { runWithCache, runWithCacheTracked } from '../lib/cache';
 import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { checkSpf } from '../tools/check-spf';
 import { checkDmarc } from '../tools/check-dmarc';
@@ -230,8 +230,8 @@ export async function handleToolsCall(
 			if (registeredTool) {
 				const checkName = registeredTool.cacheKey(validatedArgs);
 				const cacheKey = `cache:${validDomain}:check:${checkName}`;
-				const result = await runWithCache(cacheKey, () => registeredTool.execute(validDomain, validatedArgs, runtimeOptions), scanCacheKV, registeredTool.cacheTtlSeconds);
-				// Don't cache partial results (e.g. lookalike timeout) — evict what runWithCache just stored
+				const { data: result, cacheStatus } = await runWithCacheTracked(cacheKey, () => registeredTool.execute(validDomain, validatedArgs, runtimeOptions), scanCacheKV, registeredTool.cacheTtlSeconds);
+				// Don't cache partial results (e.g. lookalike timeout) — evict what runWithCacheTracked just stored
 				if ((result as unknown as Record<string, unknown>).partial && scanCacheKV) {
 					try { await scanCacheKV.delete(cacheKey); } catch { /* best-effort */ }
 				}
@@ -249,7 +249,8 @@ export async function handleToolsCall(
 					country: runtimeOptions?.country,
 					clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 					authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
+					keyHash: runtimeOptions?.keyHash,
+					cacheStatus,
 				});
 				return { content: buildToolContent(formatCheckResult(result, effectiveFormat), result, effectiveFormat) };
 			}
