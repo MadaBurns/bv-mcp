@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-04-08
+
+### Added
+- **Per-tier analytics queries** — 13 new query functions for Cloudflare Analytics Engine covering tool usage, latency, error rates, cache performance, rate limits, sessions, daily trends, client types, and key-level usage per auth tier. All queries use parameterized sanitization to prevent SQL injection.
+- **Key-level usage tracking** — analytics events now include a truncated, non-reversible key hash for per-key usage attribution without exposing credentials.
+- **Operator analytics API** — three new internal service binding endpoints (`/internal/analytics/tier-summary`, `/internal/analytics/key-usage`, `/internal/analytics/digest`) for programmatic access to per-tier metrics. Guarded by service binding isolation (not publicly accessible).
+- **Daily tier digest** — new `0 8 * * *` Cron Trigger summarizes per-tier tool usage, request counts, and unique domains for the previous 24 hours. Delivered via existing webhook integration.
+- **Shared Analytics Engine client** — extracted `queryAnalyticsEngine()` into `src/lib/analytics-engine.ts` for reuse across scheduled handlers and internal API endpoints.
+- **17 new test cases** for per-tier query builders with SQL injection sanitization validation.
+
+### Changed
+- Analytics event schema extended: `tool_call` (blob9), `mcp_request` (blob10), `session` (blob6) now carry key hash.
+- `degradation` promoted to a documented fifth event type alongside `mcp_request`, `tool_call`, `rate_limit`, and `session`.
+
+## [2.5.0] - 2026-04-08
+
+### Fixed
+- **Windows client setup** — added `.bat` wrapper documentation and `cmd.exe` path quoting guidance for Windows users.
+- **trial-key.mjs** — fixed `--remote` flag not being recognized.
+
 ## [2.4.1] - 2026-04-08
 
 ### Fixed
