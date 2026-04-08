@@ -253,6 +253,31 @@ export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: K
 	return promise;
 }
 
+export interface CacheResult<T> {
+	data: T;
+	cacheStatus: 'hit' | 'miss';
+}
+
+/**
+ * Like `runWithCache`, but returns cache hit/miss metadata alongside the result.
+ * Used where callers need to report cache status (e.g. analytics).
+ */
+export async function runWithCacheTracked<T>(
+	key: string,
+	run: () => Promise<T>,
+	kv?: KVNamespace,
+	ttlSeconds?: number,
+	skipCache?: boolean,
+): Promise<CacheResult<T>> {
+	if (!skipCache) {
+		const cached = await cacheGet<T>(key, kv);
+		if (cached !== undefined) return { data: cached, cacheStatus: 'hit' };
+	}
+
+	const data = await runWithCache(key, run, kv, ttlSeconds, true);
+	return { data, cacheStatus: 'miss' };
+}
+
 /** Sentinel TTL — short-lived to avoid stale dedup locks. */
 const SENTINEL_TTL_SECONDS = 10;
 
