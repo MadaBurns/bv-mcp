@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.6.3] - 2026-04-09
+
+### Changed
+- **Improved tool descriptions for LLM discoverability** — rewrote `scan_domain` and 11 other tool descriptions to use natural language that LLM clients match against user intent. Phrases like "look up", "check", and "for a domain" help clients like Claude Desktop route domain-related requests to the MCP tools instead of falling back to `dig`/`nslookup`.
+
 ## [2.6.0] - 2026-04-08
 
 ### Added
