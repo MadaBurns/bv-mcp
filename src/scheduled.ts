@@ -11,9 +11,21 @@
  *   ALERT_RATE_LIMIT_THRESHOLD (default 50 hits), ALERT_LOOKBACK_MINUTES (default 15)
  */
 
-import { queryRecentAnomalies, queryRateLimitSurge } from './lib/analytics-queries';
-import { buildAlertPayload, sendAlert } from './lib/alerting';
+import { queryRecentAnomalies, queryRateLimitSurge, queryTierDigest } from './lib/analytics-queries';
+import { buildAlertPayload, buildDigestPayload, sendAlert } from './lib/alerting';
+import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { logEvent, logError } from './lib/log';
+
+interface AnomalyRow {
+	total_calls?: number;
+	error_count?: number;
+	error_pct?: number;
+	p95_ms?: number;
+}
+
+interface RateLimitRow {
+	total_hits?: number;
+}
 
 export interface ScheduledEnv {
 	CF_ACCOUNT_ID?: string;
@@ -30,32 +42,6 @@ const DEFAULT_P95_THRESHOLD = 10_000;
 const DEFAULT_RATE_LIMIT_THRESHOLD = 50;
 const DEFAULT_LOOKBACK_MINUTES = 15;
 
-interface AnalyticsRow {
-	total_calls?: number;
-	error_count?: number;
-	error_pct?: number;
-	p95_ms?: number;
-	total_hits?: number;
-}
-
-async function queryAnalyticsEngine(accountId: string, token: string, sql: string): Promise<AnalyticsRow[]> {
-	const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/analytics_engine/sql`;
-	const response = await fetch(url, {
-		method: 'POST',
-		headers: { Authorization: `Bearer ${token}` },
-		body: sql,
-		signal: AbortSignal.timeout(5_000),
-		redirect: 'manual',
-	});
-
-	if (!response.ok) {
-		throw new Error(`Analytics Engine query failed: ${response.status}`);
-	}
-
-	const result = (await response.json()) as { data?: AnalyticsRow[] };
-	return result.data ?? [];
-}
-
 /** Main scheduled handler — called by Cron Trigger. */
 export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	if (!env.ALERT_WEBHOOK_URL) return;
@@ -70,7 +56,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	const lookback = env.ALERT_LOOKBACK_MINUTES ?? String(DEFAULT_LOOKBACK_MINUTES);
 
 	try {
-		const anomalyRows = await queryAnalyticsEngine(env.CF_ACCOUNT_ID, env.CF_ANALYTICS_TOKEN, queryRecentAnomalies(lookback));
+		const anomalyRows = await queryAnalyticsEngine(env.CF_ACCOUNT_ID, env.CF_ANALYTICS_TOKEN, queryRecentAnomalies(lookback)) as AnomalyRow[];
 		const anomaly = anomalyRows[0];
 
 		if (anomaly && anomaly.total_calls && anomaly.total_calls > 0) {
@@ -115,7 +101,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			env.CF_ACCOUNT_ID,
 			env.CF_ANALYTICS_TOKEN,
 			queryRateLimitSurge(lookback),
-		);
+		) as RateLimitRow[];
 		const rateLimitData = rateLimitRows[0];
 
 		if (rateLimitData && (rateLimitData.total_hits ?? 0) > rateLimitThreshold) {
@@ -147,6 +133,35 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			severity: 'error',
 			category: 'scheduled',
 			details: { message: 'Analytics alerting check failed' },
+		});
+	}
+}
+
+/**
+ * Daily tier digest — sends a summary of per-tier usage to the alert webhook.
+ * Called by a separate daily Cron Trigger (e.g., `0 8 * * *`).
+ */
+export async function handleDailyDigest(env: ScheduledEnv): Promise<void> {
+	if (!env.ALERT_WEBHOOK_URL) return;
+	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return;
+
+	try {
+		const rows = await queryAnalyticsEngine(env.CF_ACCOUNT_ID, env.CF_ANALYTICS_TOKEN, queryTierDigest('1'));
+		const payload = buildDigestPayload(rows, 1);
+		await sendAlert(env.ALERT_WEBHOOK_URL, payload);
+
+		logEvent({
+			timestamp: new Date().toISOString(),
+			category: 'scheduled',
+			result: 'ok',
+			severity: 'info',
+			details: { message: 'Daily tier digest sent', tierCount: rows.length },
+		});
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'error',
+			category: 'scheduled',
+			details: { message: 'Daily tier digest failed' },
 		});
 	}
 }
