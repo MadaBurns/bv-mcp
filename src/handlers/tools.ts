@@ -85,6 +85,7 @@ interface ToolRuntimeOptions {
 	country?: string;
 	clientType?: string;
 	authTier?: string;
+	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
 }
 
@@ -180,6 +181,7 @@ function handleExplainFindingValidationError(
 		country: runtimeOptions?.country,
 		clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 		authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 	});
 	return buildToolErrorResult(error.message);
 }
@@ -247,6 +249,7 @@ export async function handleToolsCall(
 					country: runtimeOptions?.country,
 					clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 					authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 				});
 				return { content: buildToolContent(formatCheckResult(result, effectiveFormat), result, effectiveFormat) };
 			}
@@ -271,6 +274,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					const structured = buildStructuredScanResult(result);
 					return { content: buildToolContent(formatScanReport(result, effectiveFormat), structured, effectiveFormat) };
@@ -303,6 +307,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(batchText, batchResults, effectiveFormat) };
 				}
@@ -332,6 +337,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(compareText, compareResults, effectiveFormat) };
 				}
@@ -353,6 +359,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(formatBaselineResult(result, effectiveFormat), result, effectiveFormat) };
 				}
@@ -372,6 +379,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(formatFixPlan(plan, effectiveFormat), plan, effectiveFormat) };
 				}
@@ -390,6 +398,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
 				}
@@ -409,6 +418,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
 				}
@@ -427,6 +437,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
 				}
@@ -445,6 +456,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
 				}
@@ -462,6 +474,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(formatBenchmark(result, effectiveFormat), result, effectiveFormat) };
 				}
@@ -483,6 +496,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(formatProviderInsights(result, effectiveFormat), result, effectiveFormat) };
 				}
@@ -502,6 +516,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(formatSpoofability(result, effectiveFormat), result, effectiveFormat) };
 				}
@@ -523,6 +538,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(formatResolverConsistency(result, effectiveFormat), result, effectiveFormat) };
 				}
@@ -546,6 +562,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(formatExplanation(result, effectiveFormat), result, effectiveFormat) };
 				}
@@ -567,6 +584,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return { content: buildToolContent(formatValidateFix(result, effectiveFormat), result, effectiveFormat) };
 				}
@@ -586,6 +604,7 @@ export async function handleToolsCall(
 							country: runtimeOptions?.country,
 							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 							authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 						});
 						return { content: buildToolContent(formatSupplyChain(result, effectiveFormat), result, effectiveFormat) };
 					}
@@ -611,6 +630,7 @@ export async function handleToolsCall(
 							country: runtimeOptions?.country,
 							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 							authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 						});
 						return { content: buildToolContent(formatRolloutPlan(result, effectiveFormat), result, effectiveFormat) };
 					}
@@ -653,6 +673,7 @@ export async function handleToolsCall(
 							country: runtimeOptions?.country,
 							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 							authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 						});
 						return { content: buildToolContent(formatDriftReport(drift, effectiveFormat), drift, effectiveFormat) };
 					}
@@ -672,6 +693,7 @@ export async function handleToolsCall(
 							country: runtimeOptions?.country,
 							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 							authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 						});
 						return { content: buildToolContent(formatSpfChain(result, effectiveFormat), result, effectiveFormat) };
 					}
@@ -707,6 +729,7 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
 					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all 44 available tools.`);
 			}
@@ -728,6 +751,7 @@ export async function handleToolsCall(
 				country: runtimeOptions?.country,
 				clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 				authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 			});
 			return {
 				content: [mcpError(`${name} timed out after ${TOOL_CALL_TIMEOUT_MS / 1000}s. Try a simpler check or retry — cached partial results make retries faster.`)],
@@ -745,6 +769,7 @@ export async function handleToolsCall(
 			country: runtimeOptions?.country,
 			clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 			authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 		});
 		return buildToolErrorResult(message);
 	}
