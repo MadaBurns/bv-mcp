@@ -38,6 +38,19 @@ import { parseCacheTtl } from './lib/config';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
 import { createTrialKey, getTrialKeyStatus, revokeTrialKey, listTrialKeys } from './lib/trial-keys';
+import { queryAnalyticsEngine } from './lib/analytics-engine';
+import {
+	queryTierToolUsage,
+	queryTierLatency,
+	queryTierErrorRate,
+	queryTierCachePerformance,
+	queryTierRateLimits,
+	queryTierSessions,
+	queryTierDailyTrend,
+	queryTierTopTools,
+	queryKeyUsage,
+	queryTierDigest,
+} from './lib/analytics-queries';
 
 type InternalEnv = {
 	SCAN_CACHE?: KVNamespace;
@@ -51,6 +64,8 @@ type InternalEnv = {
 	CACHE_TTL_SECONDS?: string;
 	BV_DOH_ENDPOINT?: string;
 	BV_DOH_TOKEN?: string;
+	CF_ACCOUNT_ID?: string;
+	CF_ANALYTICS_TOKEN?: string;
 };
 
 export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
@@ -383,4 +398,118 @@ internalRoutes.get('/trial-keys', async (c) => {
 		})),
 		total: keys.length,
 	});
+});
+
+// ─── Analytics Endpoints ───────────────────────────────────────────────
+
+/** Validate analytics prerequisites (CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN). */
+function requireAnalyticsConfig(env: InternalEnv): { accountId: string; token: string } | null {
+	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return null;
+	return { accountId: env.CF_ACCOUNT_ID, token: env.CF_ANALYTICS_TOKEN };
+}
+
+/** Parse and clamp the `days` query parameter (1–90, default 7). */
+function parseDays(url: URL): string {
+	const raw = Number(url.searchParams.get('days') ?? 7);
+	const clamped = Number.isFinite(raw) ? Math.max(1, Math.min(90, Math.round(raw))) : 7;
+	return String(clamped);
+}
+
+/**
+ * GET /internal/analytics/tier-summary
+ *
+ * Aggregated metrics across all tiers (or a single tier).
+ * Query params: ?days=7&tier=developer
+ *
+ * Returns: tool usage, latency, error rates, cache performance,
+ * rate limit hits, sessions, daily trend, and top tools per tier.
+ */
+internalRoutes.get('/analytics/tier-summary', async (c) => {
+	const config = requireAnalyticsConfig(c.env);
+	if (!config) {
+		return c.json({ error: 'Analytics not configured (CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN required)' }, 500);
+	}
+
+	const url = new URL(c.req.url);
+	const days = parseDays(url);
+	const hours = String(Number(days) * 24);
+	const tier = url.searchParams.get('tier') ?? undefined;
+
+	try {
+		const [usage, latency, errors, cache, rateLimits, sessions, trend, topTools] = await Promise.all([
+			queryAnalyticsEngine(config.accountId, config.token, queryTierToolUsage(days, tier)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierLatency(days, tier)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierErrorRate(days, tier)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierCachePerformance(days, tier)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierRateLimits(days, tier)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierSessions(days, tier)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierDailyTrend(days, tier)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierTopTools(hours)),
+		]);
+
+		return c.json({
+			days,
+			tier: tier ?? 'all',
+			usage,
+			latency,
+			errors,
+			cache,
+			rateLimits,
+			sessions,
+			trend,
+			topTools,
+		});
+	} catch (err) {
+		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message : 'unknown' }, 502);
+	}
+});
+
+/**
+ * GET /internal/analytics/key-usage
+ *
+ * Per-key usage breakdown.
+ * Query params: ?days=7&key_hash=<prefix>
+ *
+ * key_hash is the 16-char prefix stored in analytics blobs.
+ */
+internalRoutes.get('/analytics/key-usage', async (c) => {
+	const config = requireAnalyticsConfig(c.env);
+	if (!config) {
+		return c.json({ error: 'Analytics not configured (CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN required)' }, 500);
+	}
+
+	const url = new URL(c.req.url);
+	const days = parseDays(url);
+	const keyHashPrefix = url.searchParams.get('key_hash') ?? undefined;
+
+	try {
+		const rows = await queryAnalyticsEngine(config.accountId, config.token, queryKeyUsage(days, keyHashPrefix));
+		return c.json({ days, keyHash: keyHashPrefix ?? 'all', usage: rows });
+	} catch (err) {
+		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message : 'unknown' }, 502);
+	}
+});
+
+/**
+ * GET /internal/analytics/digest
+ *
+ * High-level tier digest (suitable for daily webhook reports).
+ * Query params: ?days=1
+ */
+internalRoutes.get('/analytics/digest', async (c) => {
+	const config = requireAnalyticsConfig(c.env);
+	if (!config) {
+		return c.json({ error: 'Analytics not configured (CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN required)' }, 500);
+	}
+
+	const url = new URL(c.req.url);
+	const days = parseDays(url);
+	const hours = String(Number(days) * 24);
+
+	try {
+		const rows = await queryAnalyticsEngine(config.accountId, config.token, queryTierDigest(hours));
+		return c.json({ days, tiers: rows });
+	} catch (err) {
+		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message : 'unknown' }, 502);
+	}
 });
