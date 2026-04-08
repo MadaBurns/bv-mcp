@@ -259,6 +259,7 @@ app.post('/mcp', async (c) => {
 	const country = (cfProps?.country as string) ?? 'unknown';
 	const clientType = detectMcpClient(headersLc['user-agent']);
 	const authTier = tierAuthResult.authenticated ? (tierAuthResult.tier ?? 'free') : 'anon';
+	const keyHash = tierAuthResult.keyHash ? tierAuthResult.keyHash.slice(0, 16) : undefined;
 	const sessionHash = headersLc['mcp-session-id'] ? hashForAnalytics(headersLc['mcp-session-id']) : 'none';
 
 	const contentTypeError = validateContentType(headersLc['content-type']);
@@ -336,6 +337,7 @@ app.post('/mcp', async (c) => {
 					country,
 					clientType,
 					authTier,
+					keyHash,
 					sessionHash,
 				});
 			}),
@@ -397,6 +399,7 @@ app.post('/mcp', async (c) => {
 		country,
 		clientType,
 		authTier,
+		keyHash,
 		sessionHash,
 	});
 
@@ -450,6 +453,7 @@ app.post('/mcp/messages', async (c) => {
 	const country = (cfProps?.country as string) ?? 'unknown';
 	const clientType = detectMcpClient(headersLc['user-agent']);
 	const authTier = tierAuthResult.authenticated ? (tierAuthResult.tier ?? 'free') : 'anon';
+	const keyHash = tierAuthResult.keyHash ? tierAuthResult.keyHash.slice(0, 16) : undefined;
 	const sessionHash = sessionId ? hashForAnalytics(sessionId) : 'none';
 
 	if (!sessionId) {
@@ -533,6 +537,7 @@ app.post('/mcp/messages', async (c) => {
 				country,
 				clientType,
 				authTier,
+				keyHash,
 				sessionHash,
 			});
 		}),
@@ -666,6 +671,7 @@ app.delete('/mcp', async (c) => {
 		country: (cfProps?.country as string) ?? 'unknown',
 		clientType: detectMcpClient(c.req.header('user-agent') ?? ''),
 		authTier: tierResult.authenticated ? (tierResult.tier ?? 'free') : 'anon',
+		keyHash: tierResult.keyHash ? tierResult.keyHash.slice(0, 16) : undefined,
 	});
 	return new Response(null, { status: 204 });
 });
@@ -687,12 +693,16 @@ app.all('*', (c) => {
 	return c.text('Not found', 404);
 });
 
-import { handleScheduled } from './scheduled';
+import { handleScheduled, handleDailyDigest } from './scheduled';
 import type { ScheduledEnv } from './scheduled';
 
 export default {
 	fetch: (req: Request, env: Record<string, unknown>, ctx: ExecutionContext) => app.fetch(req, env, ctx),
-	scheduled: async (_event: ScheduledEvent, env: Record<string, unknown>, ctx: ExecutionContext) => {
-		ctx.waitUntil(handleScheduled(env as ScheduledEnv));
+	scheduled: async (event: ScheduledEvent, env: Record<string, unknown>, ctx: ExecutionContext) => {
+		if (event.cron === '0 8 * * *') {
+			ctx.waitUntil(handleDailyDigest(env as ScheduledEnv));
+		} else {
+			ctx.waitUntil(handleScheduled(env as ScheduledEnv));
+		}
 	},
 };

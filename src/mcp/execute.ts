@@ -65,6 +65,8 @@ export interface ExecuteMcpRequestOptions {
 	clientType?: string;
 	authTier?: string;
 	sessionHash?: string;
+	/** Truncated key hash for analytics (first 16 chars of SHA-256). */
+	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
 }
 
@@ -115,6 +117,7 @@ function emitRequestAnalytics(
 		clientType: options.clientType as import('../lib/client-detection').McpClientType,
 		authTier: options.authTier,
 		sessionHash: options.sessionHash,
+		keyHash: options.keyHash,
 	});
 }
 
@@ -374,6 +377,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 							country: options.country,
 							clientType: options.clientType as import('../lib/client-detection').McpClientType,
 							authTier: options.authTier,
+							keyHash: options.keyHash,
 						});
 						logEvent({
 							timestamp: new Date().toISOString(),

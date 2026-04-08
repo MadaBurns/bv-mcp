@@ -28,6 +28,8 @@ export interface AnalyticsContext {
 	clientType?: McpClientType;
 	authTier?: string;
 	sessionHash?: string;
+	/** Truncated SHA-256 hash of the API key (first 16 chars). Enables per-customer analytics. */
+	keyHash?: string;
 }
 
 export interface AnalyticsClient {
@@ -94,6 +96,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
 					event.sessionHash ?? 'none',
+					event.keyHash ?? 'none',
 				],
 				doubles: [sanitizeNumber(event.durationMs)],
 			});
@@ -110,6 +113,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
 					event.cacheStatus ?? 'n/a',
+					event.keyHash ?? 'none',
 				],
 				doubles: [sanitizeNumber(event.durationMs), sanitizeNumber(event.score ?? 0)],
 			});
@@ -135,6 +139,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
 					event.method ?? 'unknown',
+					event.keyHash ?? 'none',
 				],
 			});
 		},

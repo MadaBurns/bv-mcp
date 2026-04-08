@@ -54,7 +54,7 @@ Fallback config (native stdio — no bridge required):
 **Common mistakes:**
 - ❌ Using `mcpServer` (singular) instead of `mcpServers` (plural)
 - ❌ Using bare `npx` when Claude Desktop cannot resolve it from the GUI app environment (macOS)
-- ❌ Using the full `C:\Program Files\nodejs\npx.cmd` path on Windows — the space breaks `cmd.exe` (see [§3](#3-windows-cprogram-is-not-recognized))
+- ❌ Using the full `C:\Program Files\nodejs\npx.cmd` path on Windows — the space breaks `cmd.exe` (see [§3](#3-windows-cprogram-is-not-recognized)). If bare `npx` also fails, use a wrapper `.bat` file (Option C in §3)
 - ❌ Omitting `-y` and getting stuck on the first `npx` install prompt
 - ❌ Invalid JSON syntax (trailing commas, missing quotes)
 
@@ -255,7 +255,38 @@ If you must specify the full path, wrap it in escaped quotes:
 }
 ```
 
-**Option C — Use native HTTP transport (no bridge process)**
+**Option C — Create an `npx` wrapper script**
+
+If bare `npx` still fails (some Windows environments don't resolve it from `PATH` inside `cmd.exe /C`), create a one-line wrapper:
+
+1. Create `C:\scripts\npx-wrapper.bat` with this content:
+
+```bat
+@echo off
+"C:\Program Files\nodejs\npx.cmd" %*
+```
+
+2. Reference the wrapper in your config:
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "command": "C:\\scripts\\npx-wrapper.bat",
+      "args": [
+        "-y", "mcp-remote",
+        "https://dns-mcp.blackveilsecurity.com/mcp",
+        "--header",
+        "Authorization: Bearer YOUR_API_KEY"
+      ]
+    }
+  }
+}
+```
+
+The wrapper quotes the path internally, so `cmd.exe` never sees the space in `Program Files`. You can place the `.bat` file anywhere — just avoid paths with spaces.
+
+**Option D — Use native HTTP transport (no bridge process)**
 
 Avoid `mcp-remote` entirely. VS Code and Cursor support `"type": "http"` natively:
 
