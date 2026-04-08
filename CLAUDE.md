@@ -43,7 +43,7 @@ git config core.hooksPath .githooks    # Enable pre-commit hooks (one-time setup
 
 npm workspace monorepo. Root is a Cloudflare Worker; `packages/dns-checks` (`@blackveil/dns-checks`) is a separately publishable runtime-agnostic package.
 
-**Entrypoints**: `src/index.ts` (Worker/Hono app), `src/package.ts` (npm package → `dist/index.js`), `src/stdio.ts` (CLI → `dist/stdio.js` with `cloudflare:workers` shim), `src/internal.ts` (service binding routes), `src/scheduled.ts` (Cron Trigger alerting).
+**Entrypoints**: `src/index.ts` (Worker/Hono app), `src/package.ts` (npm package → `dist/index.js`), `src/stdio.ts` (CLI → `dist/stdio.js` with `cloudflare:workers` shim), `src/internal.ts` (service binding routes), `src/scheduled.ts` (Cron Trigger alerting + daily tier digest).
 
 ```bash
 npm -w packages/dns-checks run build      # Build sub-package
@@ -58,7 +58,7 @@ src/index.ts              — Hono app, HTTP routes, middleware wiring
 src/package.ts            — npm package entrypoint
 src/internal.ts           — Internal service binding routes (no MCP overhead)
 src/stdio.ts              — Native stdio MCP transport (CLI)
-src/scheduled.ts          — Cron Trigger handler for analytics alerting
+src/scheduled.ts          — Cron Trigger handler for analytics alerting + daily tier digest
 
 src/mcp/                  — MCP protocol layer
   execute.ts              — Transport-neutral shared executor (validation, rate limiting, dispatch, analytics)
@@ -121,7 +121,9 @@ src/lib/                  — Shared infrastructure
   semaphore.ts            — Promise-based counting semaphore for DNS query concurrency control
   json-rpc.ts             — JSON-RPC 2.0 types, error codes, response builders
   auth.ts                 — Bearer token validation (constant-time XOR)
-  analytics.ts            — Analytics Engine integration (fail-open, 4 event types)
+  analytics.ts            — Analytics Engine integration (fail-open, 5 event types)
+  analytics-engine.ts     — Shared Analytics Engine SQL API client
+  analytics-queries.ts    — Pre-built per-tier and aggregate SQL query builders
   log.ts                  — Structured JSON logging with sanitization
 
 test/                     — One spec per source file
@@ -372,7 +374,7 @@ npm and Cloudflare deploy run in parallel after version bump. Requires `NPM_TOKE
 
 ## Service Binding Integration
 
-`/internal/tools/call` accepts plain JSON `{ name, arguments }`, returns `{ content, isError? }`. `/internal/tools/batch` runs same tool across multiple domains (max 500, concurrency 1-50, 256 KB body limit). `?format=structured` returns raw `CheckResult` per domain.
+`/internal/tools/call` accepts plain JSON `{ name, arguments }`, returns `{ content, isError? }`. `/internal/tools/batch` runs same tool across multiple domains (max 500, concurrency 1-50, 256 KB body limit). `?format=structured` returns raw `CheckResult` per domain. `/internal/analytics/*` endpoints provide per-tier usage summaries, key-level breakdowns, and daily digests.
 
 | Layer | Public `/mcp` | Internal `/internal/*` |
 |-------|:---:|:---:|
@@ -415,7 +417,11 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 
 ## Analytics & Observability
 
-Four event types: `mcp_request`, `tool_call`, `rate_limit`, `session`. Pre-built queries in `analytics-queries.ts`. Scheduled handler (`scheduled.ts`) runs every 15 min via Cron Trigger for anomaly alerts. All alerting optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
+Five event types: `mcp_request`, `tool_call`, `rate_limit`, `session`, `degradation`. Each event includes auth tier and key hash (truncated, non-reversible) for per-tier analytics. Pre-built per-tier query builders in `analytics-queries.ts` cover tool usage, latency, error rates, cache performance, rate limits, sessions, client types, daily trends, and key-level usage. Shared `queryAnalyticsEngine()` client in `analytics-engine.ts`.
+
+Two Cron Triggers: `*/15 * * * *` (anomaly alerting) and `0 8 * * *` (daily tier digest). Anomaly alerting checks error rates, p95 latency, and rate-limit spikes. Daily digest summarizes per-tier tool usage, requests, and unique domains for the previous 24h. Both optional — require `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
+
+Operator analytics API (internal service binding only): `GET /internal/analytics/tier-summary`, `GET /internal/analytics/key-usage`, `GET /internal/analytics/digest`. All guarded by `cf-connecting-ip` check (not accessible from public internet).
 
 Client detection (`client-detection.ts`): `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `unknown`. Used for analytics + format auto-detection, never security.
 
