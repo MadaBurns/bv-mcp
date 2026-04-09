@@ -48,6 +48,7 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	zone_hygiene: { importance: 0 },
 	dane_https: { importance: 2 },
 	svcb_https: { importance: 1 },
+	subdomailing: { importance: 3 },
 };
 
 /** Core-tier importance weights (SPF, DMARC, DKIM, DNSSEC, SSL). Used by the three-tier scoring formula. */
@@ -57,7 +58,7 @@ export const CORE_WEIGHTS: Record<string, number> = {
 
 /** Protective-tier importance weights. Used by the three-tier scoring formula. */
 export const PROTECTIVE_WEIGHTS: Record<string, number> = {
-	subdomain_takeover: 4, http_security: 3, mta_sts: 3, mx: 2,
+	subdomain_takeover: 4, http_security: 3, mta_sts: 3, subdomailing: 3, mx: 2,
 	caa: 2, ns: 2, lookalikes: 2, shadow_domains: 2,
 };
 
@@ -143,8 +144,10 @@ function buildGenericContext(
 		if (CATEGORY_TIERS[cat] === 'hardening') {
 			const result = resultMap.get(cat);
 			// Submit all hardening categories so denominator = total hardening count.
-			// Only mark as passed if an actual result was provided AND it passed.
-			hardeningPassed[cat] = !!(result && result.passed);
+			// Only mark as passed if an actual result was provided AND it passed AND
+			// the score is >= 50. This prevents degraded checks (score forced to 0
+			// but passed=true from timeout handling) from inflating hardening points.
+			hardeningPassed[cat] = !!(result && result.passed && result.score >= 50);
 		}
 	}
 

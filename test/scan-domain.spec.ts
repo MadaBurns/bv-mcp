@@ -118,7 +118,7 @@ describe('scanDomain', () => {
 		expect(() => new Date(result.timestamp).toISOString()).not.toThrow();
 	});
 
-	it('includes all 16 check categories', async () => {
+	it('includes all 17 check categories', async () => {
 		mockAllChecks();
 		const result = await run();
 
@@ -139,7 +139,8 @@ describe('scanDomain', () => {
 		expect(categories).toContain('tlsrpt');
 		expect(categories).toContain('dane_https');
 		expect(categories).toContain('svcb_https');
-		expect(result.checks).toHaveLength(16);
+		expect(categories).toContain('subdomailing');
+		expect(result.checks).toHaveLength(17);
 
 		// Each check result has expected shape
 		for (const check of result.checks) {
@@ -155,8 +156,8 @@ describe('scanDomain', () => {
 		mockAllChecks({ throwForUrl: '_domainkey.' });
 		const result = await run();
 
-		// All 16 checks should still be present
-		expect(result.checks).toHaveLength(16);
+		// All 17 checks should still be present
+		expect(result.checks).toHaveLength(17);
 
 		// The DKIM check should have a degraded finding since DNS failed
 		const dkimCheck = result.checks.find((c) => c.category === 'dkim');
@@ -228,6 +229,14 @@ describe('scanDomain', () => {
 		expect(result.checks.length).toBeGreaterThanOrEqual(1);
 		expect(result.domain).toBe('example.com');
 		expect(result.score).toBeDefined();
+
+		// Per-check timeouts should produce LOW severity (infrastructure issue, not security)
+		// and checkStatus: 'timeout' — not HIGH severity 'error'
+		const sslCheck = result.checks.find((c) => c.category === 'ssl');
+		if (sslCheck?.checkStatus === 'timeout') {
+			expect(sslCheck.findings[0]?.severity).toBe('low');
+			expect(sslCheck.findings[0]?.title).toContain('timed out');
+		}
 	}, 15_000);
 
 	it('caches results with KV and returns cached:true on hit', async () => {
@@ -741,7 +750,7 @@ describe('scanDomain cacheTtlSeconds propagation', () => {
 
 		// KV.put should have been called with expirationTtl: 600 for per-check entries
 		const putCalls = mockKV.put.mock.calls;
-		const perCheckPuts = putCalls.filter((call: unknown[]) => (call[0] as string).includes(':check:'));
+		const perCheckPuts = putCalls.filter((call: unknown[]) => (call[0] as string).includes(':check:') && !(call[0] as string).endsWith(':computing'));
 		expect(perCheckPuts.length).toBeGreaterThan(0);
 		for (const call of perCheckPuts) {
 			expect((call[2] as { expirationTtl: number }).expirationTtl).toBe(600);
@@ -758,7 +767,7 @@ describe('scanDomain cacheTtlSeconds propagation', () => {
 		await scanDomain('ttl-default.com', mockKV as unknown as KVNamespace);
 
 		const putCalls = mockKV.put.mock.calls;
-		const perCheckPuts = putCalls.filter((call: unknown[]) => (call[0] as string).includes(':check:'));
+		const perCheckPuts = putCalls.filter((call: unknown[]) => (call[0] as string).includes(':check:') && !(call[0] as string).endsWith(':computing'));
 		expect(perCheckPuts.length).toBeGreaterThan(0);
 		for (const call of perCheckPuts) {
 			expect((call[2] as { expirationTtl: number }).expirationTtl).toBe(300);

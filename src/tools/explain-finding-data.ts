@@ -55,6 +55,55 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		recommendation: 'Continue regular DNS audits and monitoring for new subdomains or changes.',
 		references: ['https://github.com/EdOverflow/can-i-take-over-xyz'],
 	},
+	SUBDOMAILING_CRITICAL: {
+		title: 'Dangling CNAME in SPF Include Chain — SubdoMailing Risk',
+		severity: 'critical',
+		explanation:
+			'An SPF include domain has a dangling CNAME record pointing to a third-party service that does not resolve. An attacker could register the orphaned resource, gain control of the SPF include, and send authenticated email as the target domain.',
+		impact: 'Full email authentication bypass — attacker-sent messages pass SPF checks and may pass DMARC alignment.',
+		adverseConsequences:
+			'Targeted phishing campaigns sent from a trusted domain identity, bypassing email security filters at scale.',
+		recommendation: 'Remove the include mechanism from the SPF record or update it to point to a valid, owned resource. Audit all SPF includes periodically.',
+		references: [
+			'https://guardio.co/blog/subdomailing',
+			'https://datatracker.ietf.org/doc/html/rfc7208',
+			'https://github.com/EdOverflow/can-i-take-over-xyz',
+		],
+	},
+	SUBDOMAILING_HIGH: {
+		title: 'Dangling NS Delegation in SPF Include Chain',
+		severity: 'high',
+		explanation:
+			'An SPF include domain has nameservers that do not resolve. An attacker could register the NS target domains and take control of DNS for the include domain, enabling SPF authorization hijacking.',
+		impact: 'Potential email authentication bypass if the attacker registers the unresolvable nameserver domains.',
+		adverseConsequences:
+			'Spoofed emails could pass SPF validation, eroding trust and enabling impersonation attacks.',
+		recommendation: 'Remove the include mechanism or ensure its nameservers resolve correctly. Consider consolidating SPF includes to domains under your direct control.',
+		references: [
+			'https://guardio.co/blog/subdomailing',
+			'https://datatracker.ietf.org/doc/html/rfc7208',
+		],
+	},
+	SUBDOMAILING_LOW: {
+		title: 'Void SPF Include',
+		severity: 'low',
+		explanation:
+			'An SPF include domain has no SPF record. While not immediately exploitable, this wastes a DNS lookup and could become a risk if the domain is abandoned or expires.',
+		recommendation: 'Remove unused include mechanisms from the SPF record to reduce lookup waste and attack surface.',
+		references: [
+			'https://datatracker.ietf.org/doc/html/rfc7208',
+		],
+	},
+	SUBDOMAILING_INFO: {
+		title: 'No SubdoMailing Risk Detected',
+		severity: 'info',
+		explanation: 'All SPF include and redirect domains resolve correctly with no takeover indicators. The SPF include chain is secure for this check.',
+		recommendation: 'Continue periodic audits of SPF include domains, especially after vendor changes.',
+		references: [
+			'https://guardio.co/blog/subdomailing',
+			'https://datatracker.ietf.org/doc/html/rfc7208',
+		],
+	},
 	SPF_PASS: {
 		title: 'SPF Validated',
 		severity: 'pass',
@@ -463,6 +512,7 @@ export const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
 	caa: 'CAA',
 	mx: 'MX',
 	subdomain_takeover: 'SUBDOMAIN_TAKEOVER',
+	subdomailing: 'SUBDOMAILING',
 	dane_https: 'DANE_HTTPS',
 	svcb_https: 'SVCB_HTTPS',
 };
@@ -507,6 +557,10 @@ export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
 	SUBDOMAIN_TAKEOVER: {
 		impact: 'An orphaned delegated subdomain may be claimable by an attacker.',
 		adverseConsequences: 'Users can be redirected to malicious content hosted under a trusted hostname.',
+	},
+	SUBDOMAILING: {
+		impact: 'SPF include chain references a takeover-vulnerable domain, potentially allowing unauthorized email sending.',
+		adverseConsequences: 'Attackers could send authenticated phishing emails from the trusted domain, bypassing email security controls.',
 	},
 	DANE_HTTPS: {
 		impact: 'HTTPS certificate pinning via DANE is absent or misconfigured, leaving TLS trust dependent solely on the CA system.',
