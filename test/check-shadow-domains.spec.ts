@@ -802,6 +802,74 @@ describe('checkShadowDomains — shared NS severity downgrade', () => {
 	});
 });
 
+describe('checkShadowDomains — primary DNS unavailable', () => {
+	async function run(domain = 'example.com') {
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		return checkShadowDomains(domain);
+	}
+
+	it('adds info finding when primary domain DNS is unavailable', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			// Primary domain MX and NS queries BOTH fail
+			if (name === target && (type === 'MX' || type === '15')) {
+				return Promise.reject(new Error('DNS query failed'));
+			}
+			if (name === target && (type === 'NS' || type === '2')) {
+				return Promise.reject(new Error('DNS query failed'));
+			}
+
+			// Variant resolves fine
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.registrar.com.']));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['1.2.3.4']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.shadow.com.']));
+				if (type === 'TXT' || type === '16') return Promise.resolve(emptyResponse());
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(emptyResponse());
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const dnsUnavailableFinding = result.findings.find((f) => f.title === 'Primary domain DNS unavailable');
+		expect(dnsUnavailableFinding).toBeDefined();
+		expect(dnsUnavailableFinding!.severity).toBe('info');
+		expect(dnsUnavailableFinding!.detail).toContain(target);
+	});
+
+	it('does NOT add DNS unavailable finding when only one primary query fails', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			// Primary MX fails, but NS succeeds
+			if (name === target && (type === 'MX' || type === '15')) {
+				return Promise.reject(new Error('DNS query failed'));
+			}
+			if (name === target && (type === 'NS' || type === '2')) {
+				return Promise.resolve(nsRecords(name, ['ns1.example.com.', 'ns2.example.com.']));
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const dnsUnavailableFinding = result.findings.find((f) => f.title === 'Primary domain DNS unavailable');
+		expect(dnsUnavailableFinding).toBeUndefined();
+	});
+});
+
 describe('checkShadowDomains — Phase 1 constants', () => {
 	it('exports Phase 1 lean DNS options and FAILURE_THRESHOLD', async () => {
 		const mod = await import('../src/tools/check-shadow-domains');

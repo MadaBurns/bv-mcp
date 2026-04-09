@@ -47,8 +47,10 @@ import { checkHttpSecurity } from './check-http-security';
 import { checkDane } from './check-dane';
 import { checkDaneHttps } from './check-dane-https';
 import { checkSvcbHttps } from './check-svcb-https';
+import { checkSubdomailing } from './check-subdomailing';
 import { applyScanPostProcessing } from './scan/post-processing';
 import type { ScanRuntimeOptions } from './scan/post-processing';
+import { logError } from '../lib/log';
 import { capMaturityStage, computeMaturityStage } from './scan/maturity-staging';
 import type { MaturityStage } from './scan/maturity-staging';
 export { formatScanReport, buildStructuredScanResult } from './scan/format-report';
@@ -118,7 +120,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// overall scan timeout to guarantee a timely response.
 	// Uses Promise.allSettled so that completed checks are preserved on timeout.
 	const ALL_CHECK_CATEGORIES: CheckCategory[] = [
-		'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'http_security', 'dane', 'mx', 'dane_https', 'svcb_https',
+		'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'http_security', 'dane', 'mx', 'dane_https', 'svcb_https', 'subdomailing',
 	];
 
 	// Skip secondary DNS confirmation in scan context for speed — individual checks
@@ -148,6 +150,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		runCachedCheck(domain, 'dane', () => safeCheck('dane', () => checkDane(domain, scanDns)), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'dane_https', () => safeCheck('dane_https', () => checkDaneHttps(domain, scanDns)), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'svcb_https', () => safeCheck('svcb_https', () => checkSvcbHttps(domain, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'subdomailing', () => safeCheck('subdomailing', () => checkSubdomailing(domain, scanDns)), kv, cacheTtl, forceRefresh),
 		runCachedCheck(
 			domain,
 			'mx',
@@ -187,21 +190,32 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		.filter((r): r is PromiseFulfilledResult<CheckResult> => r.status === 'fulfilled')
 		.map((r) => r.value);
 
+	// Track categories with degraded status before post-processing strips checkStatus.
+	// Post-processing calls buildCheckResult() which creates new objects without checkStatus,
+	// so we must record these statuses separately and re-apply them after post-processing.
+	const degradedStatuses = new Map<CheckCategory, 'error' | 'timeout'>();
+	for (const r of checkResults) {
+		if (r.checkStatus === 'error' || r.checkStatus === 'timeout') {
+			degradedStatuses.set(r.category, r.checkStatus);
+		}
+	}
+
 	// For any checks that didn't complete, add a timeout finding
 	if (timedOut) {
 		const completedCategories = new Set(checkResults.map((r) => r.category));
 		for (const category of ALL_CHECK_CATEGORIES) {
 			if (!completedCategories.has(category)) {
-				checkResults.push(
-					buildCheckResult(category, [
-						createFinding(
-							category,
-							`${category.toUpperCase()} check timed out`,
-							'low',
-							`Check did not complete within the ${SCAN_TIMEOUT_MS / 1000}s scan time limit. Try running this check individually.`,
-						),
-					]),
-				);
+				const findings = [
+					createFinding(
+						category,
+						`${category.toUpperCase()} check timed out`,
+						'low',
+						`Check did not complete within the ${SCAN_TIMEOUT_MS / 1000}s scan time limit. Try running this check individually.`,
+					),
+				];
+				const result = buildCheckResult(category, findings);
+				checkResults.push({ ...result, score: 0, passed: false, checkStatus: 'timeout' as const });
+				degradedStatuses.set(category, 'timeout');
 			}
 		}
 	}
@@ -209,6 +223,16 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	let result: ScanDomainResult;
 	try {
 		checkResults = await applyScanPostProcessing(domain, checkResults, runtimeOptions);
+
+		// Re-apply score=0 and checkStatus for checks that errored or timed out.
+		// Post-processing calls buildCheckResult() which creates new objects that lose checkStatus,
+		// so we re-enforce the zero score, failed status, and passed=false using the degradedStatuses map.
+		if (degradedStatuses.size > 0) {
+			checkResults = checkResults.map((r) => {
+				const status = degradedStatuses.get(r.category);
+				return status ? { ...r, score: 0, passed: false, checkStatus: status } : r;
+			});
+		}
 
 		// Detect domain context from check results
 		let domainContext = detectDomainContext(checkResults);
@@ -340,8 +364,20 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			})();
 			if (runtimeOptions.waitUntil) runtimeOptions.waitUntil(telemetryPromise);
 		}
-	} catch {
-		// Post-processing or scoring failed — return whatever we have
+	} catch (postProcessError) {
+		// Post-processing or scoring failed — return whatever we have with degradation note.
+		logError(postProcessError instanceof Error ? postProcessError : String(postProcessError), {
+			category: 'scan-domain',
+			domain,
+			details: { phase: 'post-processing', checksCompleted: checkResults.length },
+		});
+		// Re-apply degraded status overrides in case post-processing ran partially.
+		if (degradedStatuses.size > 0) {
+			checkResults = checkResults.map((r) => {
+				const status = degradedStatuses.get(r.category);
+				return status ? { ...r, score: 0, checkStatus: status } : r;
+			});
+		}
 		let fallbackContext = detectDomainContext(checkResults);
 		if (isExplicit) {
 			fallbackContext = {
@@ -363,7 +399,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			context: fallbackContext,
 			cached: false,
 			timestamp: new Date().toISOString(),
-			scoringNote: null,
+			scoringNote: 'Post-processing encountered an error; results may be approximate',
 			adaptiveWeightDeltas: null,
 			interactionEffects: [],
 		};
@@ -482,10 +518,23 @@ async function safeCheck(category: CheckCategory, fn: () => Promise<CheckResult>
 		return result;
 	} catch (err) {
 		const rawMessage = err instanceof Error ? err.message : 'Check failed';
+		const isTimeout = rawMessage === 'Check timed out';
 		const SAFE_PREFIXES = ['DNS query', 'Check timed out', 'Check failed', 'Connection', 'timeout'];
 		const safeMessage = SAFE_PREFIXES.some((p) => rawMessage.startsWith(p)) ? rawMessage : 'Check failed';
-		const findings = [createFinding(category, `${category.toUpperCase()} check error`, 'high', `Check failed: ${safeMessage}`)];
-		return buildCheckResult(category, findings);
+
+		// Timeouts are infrastructure issues, not security findings — use 'low' severity
+		// and 'timeout' status consistent with scan-level timeout handling.
+		// Actual errors (DNS failures, connection errors) remain 'high' severity.
+		const severity = isTimeout ? 'low' : ('high' as const);
+		const title = isTimeout ? `${category.toUpperCase()} check timed out` : `${category.toUpperCase()} check error`;
+		const detail = isTimeout
+			? `Check did not complete within the ${PER_CHECK_TIMEOUT_MS / 1000}s per-check time limit. Try running this check individually.`
+			: `Check failed: ${safeMessage}`;
+		const checkStatus = isTimeout ? ('timeout' as const) : ('error' as const);
+
+		const findings = [createFinding(category, title, severity, detail)];
+		const result = buildCheckResult(category, findings);
+		return { ...result, score: 0, checkStatus };
 	}
 }
 
