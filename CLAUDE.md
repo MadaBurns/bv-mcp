@@ -9,7 +9,7 @@ Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflar
 **Architecture diagrams**: See `docs/architecture.md` for Mermaid diagrams covering system overview, request flows (HTTP, stdio, service binding), scan orchestration, scoring model, and security layers.
 Exposes 44 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
-**Version**: 2.6.0 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.6.4 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -175,7 +175,7 @@ Runs **16 checks** in parallel via `Promise.allSettled`. Each has cache key `cac
 
 **Maturity staging**: `computeMaturityStage()` classifies 0-4 (Unprotected → Hardened). Stage 3 doesn't require DKIM. Stage 4 hardening signals: CAA, DKIM-discovered, BIMI, DANE, MTA-STS strict. `capMaturityStage()` caps by score: F (<50) → max Stage 2, D/D+ (<63) → max Stage 3.
 
-**Partial results on timeout**: 12s scan timeout preserves completed checks; missing get timeout findings. Per-check timeouts 8s. Scan context skips secondary DNS confirmation for speed.
+**Partial results on timeout**: 12s scan timeout preserves completed checks; missing get timeout findings with `passed: false` and `score: 0`. Per-check timeouts 8s. Scan context skips secondary DNS confirmation for speed.
 
 **Post-processing adjustments**:
 - **Non-mail**: No MX → queries parent DMARC `sp=`/`p=` → downgrades email-auth findings to `info`
@@ -239,7 +239,7 @@ All other errors return a generic fallback message. New validation errors that n
 
 **Protective (20%)** — Active defenses: Subdomain Takeover (4), HTTP Security (3), MTA-STS (3), Subdomailing (3), MX (2), CAA (2), NS (2), Lookalikes (2), Shadow Domains (2).
 
-**Hardening (10%)** — Bonus-only: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene. ~1.4 pts each. Never subtracts.
+**Hardening (10%)** — Bonus-only: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene. ~1.4 pts each. Never subtracts. Pass requires `result.passed && result.score >= 50` to prevent degraded checks from inflating score.
 
 ### Scoring rules
 
