@@ -2,7 +2,7 @@
 
 import type { CheckResult } from '../lib/scoring';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
-import { runWithCache, runWithCacheTracked } from '../lib/cache';
+import { runWithCacheTracked } from '../lib/cache';
 import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { checkSpf } from '../tools/check-spf';
 import { checkDmarc } from '../tools/check-dmarc';
@@ -48,7 +48,7 @@ import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
 import type { OutputFormat } from './tool-args';
 import { logToolFailure, logToolSuccess } from './tool-execution';
-import { formatCheckResult, mcpError, mcpText, buildToolContent } from './tool-formatters';
+import { formatCheckResult, mcpError, buildToolContent } from './tool-formatters';
 import type { McpContent } from './tool-formatters';
 import { TOOLS } from './tool-schemas';
 import type { McpTool } from './tool-schemas';
