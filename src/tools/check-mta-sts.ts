@@ -6,19 +6,10 @@
  */
 
 import { checkMTASTS } from '@blackveil/dns-checks';
-import { queryDnsRecords, queryTxtRecords } from '../lib/dns';
+import { makeQueryDNS } from '../lib/dns-query-adapter';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
-
-function makeQueryDNS(dnsOptions?: QueryDnsOptions) {
-	return async (domain: string, type: string): Promise<string[]> => {
-		if (type === 'TXT') {
-			return queryTxtRecords(domain, dnsOptions);
-		}
-		return queryDnsRecords(domain, type as Parameters<typeof queryDnsRecords>[1], dnsOptions);
-	};
-}
 
 /**
  * Check MTA-STS configuration for a domain.

@@ -8,7 +8,8 @@
 
 import { checkMX, createFinding } from '@blackveil/dns-checks';
 import type { CheckResult } from '../lib/scoring';
-import { queryDnsRecords, queryTxtRecords } from '../lib/dns';
+import { queryDnsRecords } from '../lib/dns';
+import { makeQueryDNS } from '../lib/dns-query-adapter';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { detectProviderMatches, loadProviderSignatures } from '../lib/provider-signatures';
 import { logEvent } from '../lib/log';
@@ -17,15 +18,6 @@ export interface CheckMxOptions {
 	providerSignaturesUrl?: string;
 	providerSignaturesAllowedHosts?: string[];
 	providerSignaturesSha256?: string;
-}
-
-function makeQueryDNS(dnsOptions?: QueryDnsOptions) {
-	return async (domain: string, type: string): Promise<string[]> => {
-		if (type === 'TXT') {
-			return queryTxtRecords(domain, dnsOptions);
-		}
-		return queryDnsRecords(domain, type as Parameters<typeof queryDnsRecords>[1], dnsOptions);
-	};
 }
 
 /** Check MX record configuration for a domain */
