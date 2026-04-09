@@ -214,7 +214,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 					),
 				];
 				const result = buildCheckResult(category, findings);
-				checkResults.push({ ...result, score: 0, checkStatus: 'timeout' as const });
+				checkResults.push({ ...result, score: 0, passed: false, checkStatus: 'timeout' as const });
 				degradedStatuses.set(category, 'timeout');
 			}
 		}
@@ -226,11 +226,11 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 
 		// Re-apply score=0 and checkStatus for checks that errored or timed out.
 		// Post-processing calls buildCheckResult() which creates new objects that lose checkStatus,
-		// so we re-enforce the zero score and status using the degradedStatuses map recorded above.
+		// so we re-enforce the zero score, failed status, and passed=false using the degradedStatuses map.
 		if (degradedStatuses.size > 0) {
 			checkResults = checkResults.map((r) => {
 				const status = degradedStatuses.get(r.category);
-				return status ? { ...r, score: 0, checkStatus: status } : r;
+				return status ? { ...r, score: 0, passed: false, checkStatus: status } : r;
 			});
 		}
 

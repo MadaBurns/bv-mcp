@@ -144,8 +144,10 @@ function buildGenericContext(
 		if (CATEGORY_TIERS[cat] === 'hardening') {
 			const result = resultMap.get(cat);
 			// Submit all hardening categories so denominator = total hardening count.
-			// Only mark as passed if an actual result was provided AND it passed.
-			hardeningPassed[cat] = !!(result && result.passed);
+			// Only mark as passed if an actual result was provided AND it passed AND
+			// the score is >= 50. This prevents degraded checks (score forced to 0
+			// but passed=true from timeout handling) from inflating hardening points.
+			hardeningPassed[cat] = !!(result && result.passed && result.score >= 50);
 		}
 	}
 
