@@ -1,0 +1,113 @@
+name: Deploy Hook
+
+# Trigger via:
+#   1. GitHub Actions UI → "Run workflow" button
+#   2. Webhook: POST https://api.github.com/repos/MadaBurns/bv-mcp/dispatches
+#      Headers: Authorization: Bearer <GITHUB_TOKEN>, Accept: application/vnd.github+json
+#      Body: { "event_type": "deploy", "client_payload": { "environment": "production" } }
+#   3. curl one-liner:
+#      curl -X POST https://api.github.com/repos/MadaBurns/bv-mcp/dispatches \
+#        -H "Authorization: Bearer $GITHUB_TOKEN" \
+#        -H "Accept: application/vnd.github+json" \
+#        -d '{"event_type":"deploy"}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+      dry_run:
+        description: 'Dry run (build + test only, skip deploy)'
+        required: false
+        default: false
+        type: boolean
+  repository_dispatch:
+    types: [deploy]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Pre-deploy checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build workspace package
+        run: npm -w packages/dns-checks run build
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        run: npm run build:wasm
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npm test
+
+
+  deploy:
+    name: Deploy to Cloudflare Workers
+    needs: validate
+    if: ${{ !(github.event.inputs.dry_run == 'true') }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check Cloudflare token
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CF_TOKEN" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN not configured"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build workspace package
+        run: npm -w packages/dns-checks run build
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        run: npm run build:wasm
+
+      - name: Deploy
+        run: npx wrangler deploy -c wrangler.jsonc
+
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Verify deployment
+        run: |
+          sleep 5
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://dns-mcp.blackveilsecurity.com/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "::warning::Health check returned $STATUS (expected 200)"
+          else
+            echo "Deployment verified — health check returned 200"
+          fi

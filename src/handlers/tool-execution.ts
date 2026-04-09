@@ -15,6 +15,9 @@ interface ToolExecutionBase {
 	country?: string;
 	clientType?: McpClientType;
 	authTier?: string;
+	score?: number;
+	cacheStatus?: 'hit' | 'miss' | 'n/a';
+	keyHash?: string;
 }
 
 export function logToolSuccess(options: ToolExecutionBase & {
@@ -29,9 +32,12 @@ export function logToolSuccess(options: ToolExecutionBase & {
 		durationMs: options.durationMs,
 		domain: options.domain,
 		isError: false,
+		score: options.score,
+		cacheStatus: options.cacheStatus,
 		country: options.country,
 		clientType: options.clientType,
 		authTier: options.authTier,
+		keyHash: options.keyHash,
 	});
 
 	logEvent({
@@ -56,9 +62,12 @@ export function logToolFailure(options: ToolExecutionBase & {
 		durationMs: options.durationMs,
 		domain: options.domain,
 		isError: true,
+		score: options.score,
+		cacheStatus: options.cacheStatus,
 		country: options.country,
 		clientType: options.clientType,
 		authTier: options.authTier,
+		keyHash: options.keyHash,
 	});
 
 	logError(options.error instanceof Error ? options.error : String(options.error), {

@@ -2,7 +2,7 @@
 
 import type { CheckResult } from '../lib/scoring';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
-import { runWithCache } from '../lib/cache';
+import { runWithCache, runWithCacheTracked } from '../lib/cache';
 import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { checkSpf } from '../tools/check-spf';
 import { checkDmarc } from '../tools/check-dmarc';
@@ -24,7 +24,10 @@ import { checkSvcbHttps } from '../tools/check-svcb-https';
 import { checkMxReputation } from '../tools/check-mx-reputation';
 import { checkSrv } from '../tools/check-srv';
 import { checkZoneHygiene } from '../tools/check-zone-hygiene';
+import { checkSubdomailing } from '../tools/check-subdomailing';
 import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
+import { batchScan, formatBatchScan } from '../tools/batch-scan';
+import { compareDomains, formatDomainComparison } from '../tools/compare-domains';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
 import { generateFixPlan, formatFixPlan } from '../tools/generate-fix-plan';
@@ -45,7 +48,7 @@ import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
 import type { OutputFormat } from './tool-args';
 import { logToolFailure, logToolSuccess } from './tool-execution';
-import { formatCheckResult, mcpError, mcpText } from './tool-formatters';
+import { formatCheckResult, mcpError, mcpText, buildToolContent } from './tool-formatters';
 import type { McpContent } from './tool-formatters';
 import { TOOLS } from './tool-schemas';
 import type { McpTool } from './tool-schemas';
@@ -82,6 +85,7 @@ interface ToolRuntimeOptions {
 	country?: string;
 	clientType?: string;
 	authTier?: string;
+	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
 }
 
@@ -139,6 +143,7 @@ const TOOL_REGISTRY: Record<
 	check_mx_reputation: { cacheKey: () => 'mx_reputation', execute: (d, _args, ro) => checkMxReputation(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	check_srv: { cacheKey: () => 'srv', execute: (d, _args, ro) => checkSrv(d, buildDnsOptions(ro)) },
 	check_zone_hygiene: { cacheKey: () => 'zone_hygiene', execute: (d, _args, ro) => checkZoneHygiene(d, buildDnsOptions(ro)) },
+	check_subdomailing: { cacheKey: () => 'subdomailing', execute: (d, _args, ro) => checkSubdomailing(d, buildDnsOptions(ro)) },
 };
 
 /** Known interactive LLM client types that benefit from compact output. */
@@ -176,6 +181,7 @@ function handleExplainFindingValidationError(
 		country: runtimeOptions?.country,
 		clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 		authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 	});
 	return buildToolErrorResult(error.message);
 }
@@ -208,7 +214,7 @@ export async function handleToolsCall(
 		const validatedArgs = validateToolArgs(name, args);
 		// Extract and validate domain for tools that need it
 		// (skip for explain_finding, get_benchmark, get_provider_insights which don't require a domain)
-		const DOMAIN_OPTIONAL_TOOLS = new Set(['explain_finding', 'get_benchmark', 'get_provider_insights']);
+		const DOMAIN_OPTIONAL_TOOLS = new Set(['explain_finding', 'get_benchmark', 'get_provider_insights', 'batch_scan', 'compare_domains']);
 		if (!DOMAIN_OPTIONAL_TOOLS.has(name)) {
 			domain = extractAndValidateDomain(validatedArgs);
 		}
@@ -216,7 +222,7 @@ export async function handleToolsCall(
 		const validDomain: string = domain ?? '';
 
 		const effectiveFormat = resolveFormat(validatedArgs, runtimeOptions?.clientType);
-		const interactive = isInteractiveClient(runtimeOptions?.clientType);
+		const _interactive = isInteractiveClient(runtimeOptions?.clientType);
 
 		const executeDispatch = async (): Promise<McpToolResult> => {
 			// Dispatch to the appropriate tool — check registry first, then special cases
@@ -224,7 +230,11 @@ export async function handleToolsCall(
 			if (registeredTool) {
 				const checkName = registeredTool.cacheKey(validatedArgs);
 				const cacheKey = `cache:${validDomain}:check:${checkName}`;
-				const result = await runWithCache(cacheKey, () => registeredTool.execute(validDomain, validatedArgs, runtimeOptions), scanCacheKV, registeredTool.cacheTtlSeconds);
+				const { data: result, cacheStatus } = await runWithCacheTracked(cacheKey, () => registeredTool.execute(validDomain, validatedArgs, runtimeOptions), scanCacheKV, registeredTool.cacheTtlSeconds);
+				// Don't cache partial results (e.g. lookalike timeout) — evict what runWithCacheTracked just stored
+				if ((result as unknown as Record<string, unknown>).partial && scanCacheKV) {
+					try { await scanCacheKV.delete(cacheKey); } catch { /* best-effort */ }
+				}
 				runtimeOptions?.resultCapture?.(result);
 				logResult = result.passed ? 'pass' : 'fail';
 				logDetails = result;
@@ -239,8 +249,10 @@ export async function handleToolsCall(
 					country: runtimeOptions?.country,
 					clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 					authTier: runtimeOptions?.authTier,
+					keyHash: runtimeOptions?.keyHash,
+					cacheStatus,
 				});
-				return { content: [mcpText(formatCheckResult(result, effectiveFormat))] };
+				return { content: buildToolContent(formatCheckResult(result, effectiveFormat), result, effectiveFormat) };
 			}
 
 			switch (name) {
@@ -263,14 +275,72 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					const content: McpContent[] = [mcpText(formatScanReport(result, effectiveFormat))];
-					// Only include structured JSON block for non-interactive clients (CI/CD, mcp_remote, unknown)
-					if (!interactive) {
-						const structured = buildStructuredScanResult(result);
-						content.push(mcpText(`<!-- STRUCTURED_RESULT\n${JSON.stringify(structured)}\nSTRUCTURED_RESULT -->`));
-					}
-					return { content };
+					const structured = buildStructuredScanResult(result);
+					return { content: buildToolContent(formatScanReport(result, effectiveFormat), structured, effectiveFormat) };
+				}
+				case 'batch_scan': {
+					const domains = validatedArgs.domains as string[];
+					const forceRefresh = extractForceRefresh(validatedArgs);
+					const batchResults = await batchScan(domains, {
+						force_refresh: forceRefresh,
+						kv: scanCacheKV,
+						runtimeOptions: {
+							providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
+							providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
+							providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
+							scoringConfig: runtimeOptions?.scoringConfig,
+							waitUntil: runtimeOptions?.waitUntil,
+							profileAccumulator: runtimeOptions?.profileAccumulator,
+							secondaryDoh: runtimeOptions?.secondaryDoh,
+						},
+					});
+					const batchText = formatBatchScan(batchResults, effectiveFormat);
+					logToolSuccess({
+						toolName: 'batch_scan',
+						durationMs: Date.now() - startTime,
+						analytics: runtimeOptions?.analytics,
+						status: 'pass',
+						logResult: `${batchResults.filter((r) => !r.error).length}/${batchResults.length} domains`,
+						logDetails: { totalDomains: batchResults.length },
+						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
+					});
+					return { content: buildToolContent(batchText, batchResults, effectiveFormat) };
+				}
+				case 'compare_domains': {
+					const domains = validatedArgs.domains as string[];
+					const compareResults = await compareDomains(domains, {
+						kv: scanCacheKV,
+						runtimeOptions: {
+							providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
+							providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
+							providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
+							scoringConfig: runtimeOptions?.scoringConfig,
+							waitUntil: runtimeOptions?.waitUntil,
+							profileAccumulator: runtimeOptions?.profileAccumulator,
+							secondaryDoh: runtimeOptions?.secondaryDoh,
+						},
+					});
+					const compareText = formatDomainComparison(compareResults, effectiveFormat);
+					logToolSuccess({
+						toolName: 'compare_domains',
+						durationMs: Date.now() - startTime,
+						analytics: runtimeOptions?.analytics,
+						status: 'pass',
+						logResult: `${Object.keys(compareResults.scores).length}/${compareResults.domains.length} domains compared`,
+						logDetails: { totalDomains: compareResults.domains.length, winner: compareResults.winner },
+						severity: 'info',
+						country: runtimeOptions?.country,
+						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
+						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
+					});
+					return { content: buildToolContent(compareText, compareResults, effectiveFormat) };
 				}
 				case 'compare_baseline': {
 					const baseline = extractBaseline(validatedArgs) as PolicyBaseline;
@@ -290,8 +360,9 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					return { content: [mcpText(formatBaselineResult(result, effectiveFormat))] };
+					return { content: buildToolContent(formatBaselineResult(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'generate_fix_plan': {
 					const plan = await generateFixPlan(validDomain, scanCacheKV, runtimeOptions);
@@ -309,8 +380,9 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					return { content: [mcpText(formatFixPlan(plan, effectiveFormat))] };
+					return { content: buildToolContent(formatFixPlan(plan, effectiveFormat), plan, effectiveFormat) };
 				}
 				case 'generate_spf_record': {
 					const includeProviders = extractIncludeProviders(validatedArgs);
@@ -327,8 +399,9 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					return { content: [mcpText(formatGeneratedRecord(record, effectiveFormat))] };
+					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
 				}
 				case 'generate_dmarc_record': {
 					const policy = typeof validatedArgs.policy === 'string' ? validatedArgs.policy as 'none' | 'quarantine' | 'reject' : undefined;
@@ -346,8 +419,9 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					return { content: [mcpText(formatGeneratedRecord(record, effectiveFormat))] };
+					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
 				}
 				case 'generate_dkim_config': {
 					const provider = typeof validatedArgs.provider === 'string' ? validatedArgs.provider : undefined;
@@ -364,8 +438,9 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					return { content: [mcpText(formatGeneratedRecord(record, effectiveFormat))] };
+					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
 				}
 				case 'generate_mta_sts_policy': {
 					const mxHosts = extractMxHosts(validatedArgs);
@@ -382,8 +457,9 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					return { content: [mcpText(formatGeneratedRecord(record, effectiveFormat))] };
+					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
 				}
 				case 'get_benchmark': {
 					const profile = typeof validatedArgs.profile === 'string' ? validatedArgs.profile : 'mail_enabled';
@@ -399,8 +475,9 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					return { content: [mcpText(formatBenchmark(result, effectiveFormat))] };
+					return { content: buildToolContent(formatBenchmark(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'get_provider_insights': {
 					const provider = typeof validatedArgs.provider === 'string' ? validatedArgs.provider : '';
@@ -420,8 +497,9 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					return { content: [mcpText(formatProviderInsights(result, effectiveFormat))] };
+					return { content: buildToolContent(formatProviderInsights(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'assess_spoofability': {
 					const result = await assessSpoofability(validDomain, buildDnsOptions(runtimeOptions));
@@ -439,8 +517,9 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					return { content: [mcpText(formatSpoofability(result, effectiveFormat))] };
+					return { content: buildToolContent(formatSpoofability(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'check_resolver_consistency': {
 					const recordType = extractRecordType(validatedArgs);
@@ -460,8 +539,9 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					return { content: [mcpText(formatResolverConsistency(result, effectiveFormat))] };
+					return { content: buildToolContent(formatResolverConsistency(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'explain_finding': {
 					let explainArgs: ReturnType<typeof extractExplainFindingArgs>;
@@ -483,8 +563,9 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					return { content: [mcpText(formatExplanation(result, effectiveFormat))] };
+					return { content: buildToolContent(formatExplanation(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'validate_fix': {
 					const check = typeof validatedArgs.check === 'string' ? validatedArgs.check : '';
@@ -504,8 +585,9 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					return { content: [mcpText(formatValidateFix(result, effectiveFormat))] };
+					return { content: buildToolContent(formatValidateFix(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'map_supply_chain': {
 						const result = await mapSupplyChain(validDomain, buildDnsOptions(runtimeOptions));
@@ -523,8 +605,9 @@ export async function handleToolsCall(
 							country: runtimeOptions?.country,
 							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 							authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 						});
-						return { content: [mcpText(formatSupplyChain(result, effectiveFormat))] };
+						return { content: buildToolContent(formatSupplyChain(result, effectiveFormat), result, effectiveFormat) };
 					}
 					case 'generate_rollout_plan': {
 						const targetPolicy = typeof validatedArgs.target_policy === 'string'
@@ -548,8 +631,9 @@ export async function handleToolsCall(
 							country: runtimeOptions?.country,
 							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 							authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 						});
-						return { content: [mcpText(formatRolloutPlan(result, effectiveFormat))] };
+						return { content: buildToolContent(formatRolloutPlan(result, effectiveFormat), result, effectiveFormat) };
 					}
 					case 'analyze_drift': {
 						const baselineStr = typeof validatedArgs.baseline === 'string' ? validatedArgs.baseline : '';
@@ -590,8 +674,9 @@ export async function handleToolsCall(
 							country: runtimeOptions?.country,
 							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 							authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 						});
-						return { content: [mcpText(formatDriftReport(drift, effectiveFormat))] };
+						return { content: buildToolContent(formatDriftReport(drift, effectiveFormat), drift, effectiveFormat) };
 					}
 					case 'resolve_spf_chain': {
 						const result = await resolveSpfChain(validDomain, buildDnsOptions(runtimeOptions));
@@ -609,29 +694,30 @@ export async function handleToolsCall(
 							country: runtimeOptions?.country,
 							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 							authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 						});
-						return { content: [mcpText(formatSpfChain(result, effectiveFormat))] };
+						return { content: buildToolContent(formatSpfChain(result, effectiveFormat), result, effectiveFormat) };
 					}
 					case 'discover_subdomains': {
 						const result = await discoverSubdomains(validDomain, runtimeOptions?.certstream);
 						logResult = `${result.totalSubdomains} subdomains`;
 						logDetails = { totalSubdomains: result.totalSubdomains, issues: result.issues.length };
 						logToolSuccess({ toolName: name, durationMs: Date.now() - startTime, domain, analytics: runtimeOptions?.analytics, status: 'pass', logResult, logDetails, severity: 'info', country: runtimeOptions?.country, clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType, authTier: runtimeOptions?.authTier });
-						return { content: [mcpText(formatSubdomainDiscovery(result, effectiveFormat))] };
+						return { content: buildToolContent(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat) };
 					}
 					case 'map_compliance': {
 						const result = await mapCompliance(validDomain, scanCacheKV, runtimeOptions);
 						logResult = 'mapped';
 						logDetails = result;
 						logToolSuccess({ toolName: name, durationMs: Date.now() - startTime, domain, analytics: runtimeOptions?.analytics, status: 'pass', logResult, logDetails, severity: 'info', country: runtimeOptions?.country, clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType, authTier: runtimeOptions?.authTier });
-						return { content: [mcpText(formatCompliance(result, effectiveFormat))] };
+						return { content: buildToolContent(formatCompliance(result, effectiveFormat), result, effectiveFormat) };
 					}
 					case 'simulate_attack_paths': {
 						const result = await simulateAttackPaths(validDomain, buildDnsOptions(runtimeOptions));
 						logResult = `${result.totalPaths} paths, risk: ${result.overallRisk}`;
 						logDetails = { totalPaths: result.totalPaths, overallRisk: result.overallRisk };
 						logToolSuccess({ toolName: name, durationMs: Date.now() - startTime, domain, analytics: runtimeOptions?.analytics, status: result.overallRisk === 'low' ? 'pass' : 'fail', logResult, logDetails, severity: 'info', country: runtimeOptions?.country, clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType, authTier: runtimeOptions?.authTier });
-						return { content: [mcpText(formatAttackPaths(result, effectiveFormat))] };
+						return { content: buildToolContent(formatAttackPaths(result, effectiveFormat), result, effectiveFormat) };
 					}
 					default:
 					logToolFailure({
@@ -644,8 +730,9 @@ export async function handleToolsCall(
 						country: runtimeOptions?.country,
 						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 						authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 					});
-					return buildToolErrorResult(`Unknown tool: ${name}`);
+					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all 44 available tools.`);
 			}
 		};
 
@@ -665,13 +752,14 @@ export async function handleToolsCall(
 				country: runtimeOptions?.country,
 				clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 				authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 			});
 			return {
 				content: [mcpError(`${name} timed out after ${TOOL_CALL_TIMEOUT_MS / 1000}s. Try a simpler check or retry — cached partial results make retries faster.`)],
 				isError: true,
 			};
 		}
-		const message = sanitizeErrorMessage(err, 'An unexpected error occurred');
+		const message = sanitizeErrorMessage(err, `An unexpected error occurred while running ${name}. Retry the request — transient DNS failures are common.`);
 		logToolFailure({
 			toolName: name,
 			durationMs: Date.now() - startTime,
@@ -682,6 +770,7 @@ export async function handleToolsCall(
 			country: runtimeOptions?.country,
 			clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
 			authTier: runtimeOptions?.authTier,
+						keyHash: runtimeOptions?.keyHash,
 		});
 		return buildToolErrorResult(message);
 	}

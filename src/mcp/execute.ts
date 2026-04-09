@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { checkRateLimit, checkToolDailyRateLimit, checkGlobalDailyLimit } from '../lib/rate-limiter';
+import { checkRateLimit, checkToolDailyRateLimit, checkGlobalDailyLimit, acquireConcurrencySlot, releaseConcurrencySlot } from '../lib/rate-limiter';
 import { logEvent, logError } from '../lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS, sanitizeErrorMessage } from '../lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, validateSessionRequest } from './route-gates';
-import { FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT, TIER_DAILY_LIMITS, TIER_TOOL_DAILY_LIMITS } from '../lib/config';
+import { FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT, TIER_DAILY_LIMITS, TIER_TOOL_DAILY_LIMITS, TIER_CONCURRENT_LIMITS } from '../lib/config';
 import { normalizeToolName } from '../handlers/tool-args';
 import { acceptsSSE } from '../lib/sse';
 import { dispatchMcpMethod } from './dispatch';
@@ -65,6 +65,8 @@ export interface ExecuteMcpRequestOptions {
 	clientType?: string;
 	authTier?: string;
 	sessionHash?: string;
+	/** Truncated key hash for analytics (first 16 chars of SHA-256). */
+	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
 }
 
@@ -115,6 +117,7 @@ function emitRequestAnalytics(
 		clientType: options.clientType as import('../lib/client-detection').McpClientType,
 		authTier: options.authTier,
 		sessionHash: options.sessionHash,
+		keyHash: options.keyHash,
 	});
 }
 
@@ -311,6 +314,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		}
 	}
 
+	// Per-tier concurrency limiting deferred to after notification check (below).
+	let concurrencyPrincipalId: string | undefined;
+
 	if (method !== 'tools/call') {
 		const controlPlaneLimited = await buildControlPlaneRateLimitResponse(
 			options.ip,
@@ -336,12 +342,18 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 	let sessionRevived = false;
 
-	if (options.validateSession && method !== 'initialize' && !method.startsWith('notifications/')) {
+	// Authenticated users can call read-only protocol methods without a session (e.g. Smithery
+	// proxy-style clients that discover tools via ?api_key= before establishing a session).
+	const isSessionlessProtocolMethod =
+		options.isAuthenticated &&
+		(method === 'tools/list' || method === 'resources/list' || method === 'prompts/list' || method === 'prompts/get' || method === 'ping');
+
+	if (options.validateSession && method !== 'initialize' && !method.startsWith('notifications/') && !isSessionlessProtocolMethod) {
 		const sessionError = await validateSessionRequest(
 			options.sessionId,
 			options.sessionStore,
 			id,
-			options.sessionErrorMessage ?? 'Bad Request: missing session',
+			options.sessionErrorMessage ?? 'Bad Request: missing session. Send an initialize request first to create a session.',
 		);
 		if (sessionError) {
 			const canRecoverExpiredSession =
@@ -365,6 +377,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 							country: options.country,
 							clientType: options.clientType as import('../lib/client-detection').McpClientType,
 							authTier: options.authTier,
+							keyHash: options.keyHash,
 						});
 						logEvent({
 							timestamp: new Date().toISOString(),
@@ -399,6 +412,51 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 	if (isNotification && method !== 'initialize') {
 		emitRequestAnalytics(options, method, 'ok', false);
 		return { kind: 'notification' };
+	}
+
+	// Per-tier concurrency limiting for tools/call (after notification early-return)
+	if (method === 'tools/call') {
+		const tier = options.tierAuthResult?.authenticated && options.tierAuthResult.tier
+			? options.tierAuthResult.tier
+			: 'free' as const;
+		const concurrencyLimit = TIER_CONCURRENT_LIMITS[tier];
+		concurrencyPrincipalId = options.tierAuthResult?.authenticated && options.tierAuthResult.keyHash
+			? options.tierAuthResult.keyHash
+			: options.ip;
+
+		if (concurrencyLimit !== Infinity) {
+			const concurrencyResult = acquireConcurrencySlot(concurrencyPrincipalId, concurrencyLimit);
+			if (!concurrencyResult.allowed) {
+				const concurrencyHeaders: Record<string, string> = {
+					...rateHeaders,
+					'retry-after': String(Math.ceil((concurrencyResult.retryAfterMs ?? 1000) / 1000)),
+				};
+				options.analytics?.emitRateLimitEvent({
+					limitType: 'concurrency' as 'minute',
+					toolName: 'n/a',
+					limit: concurrencyLimit,
+					remaining: 0,
+					country: options.country,
+					authTier: options.authTier ?? tier,
+				});
+				emitRequestAnalytics(options, method, 'error', true);
+				return {
+					kind: 'response',
+					payload: jsonRpcError(
+						id,
+						JSON_RPC_ERRORS.RATE_LIMITED,
+						`Rate limit exceeded. ${tier} tier is limited to ${concurrencyLimit} concurrent requests.`,
+					),
+					headers: concurrencyHeaders,
+					httpStatus: 200,
+					useErrorEnvelope: true,
+					eventId,
+				};
+			}
+		} else {
+			// owner tier: unlimited, no slot tracking needed
+			concurrencyPrincipalId = undefined;
+		}
 	}
 
 	if (options.allowStreaming && method === 'tools/call' && options.responseTransport === 'sse' && acceptsSSE(options.accept)) {
@@ -452,6 +510,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			const hasJsonRpcError = typeof dispatchResult.payload === 'object' && dispatchResult.payload !== null && 'error' in dispatchResult.payload;
 			emitRequestAnalytics(options, method, hasJsonRpcError ? 'error' : 'ok', hasJsonRpcError);
 			return dispatchResult.payload;
+		}).finally(() => {
+			if (concurrencyPrincipalId) releaseConcurrencySlot(concurrencyPrincipalId);
 		});
 
 		return {
@@ -559,5 +619,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			useErrorEnvelope: true,
 			eventId,
 		};
+	} finally {
+		if (concurrencyPrincipalId) releaseConcurrencySlot(concurrencyPrincipalId);
 	}
 }

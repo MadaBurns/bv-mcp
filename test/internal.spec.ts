@@ -59,7 +59,7 @@ describe('Internal service binding routes', () => {
 
 			expect(response.status).toBe(200);
 			const result = (await response.json()) as { content: { type: string; text: string }[]; isError?: boolean };
-			expect(result.content).toHaveLength(1);
+			expect(result.content).toHaveLength(2);
 			expect(result.content[0].text).toContain('SPF');
 			expect(result.isError).toBeUndefined();
 		});

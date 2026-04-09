@@ -58,4 +58,34 @@ describe('sendAlert', () => {
 		await sendAlert('', { text: 'hello' });
 		expect(mockFetch).not.toHaveBeenCalled();
 	});
+
+	it('sends fetch with redirect manual for SSRF protection', async () => {
+		const calls: RequestInit[] = [];
+		globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			calls.push(init!);
+			return new Response('ok', { status: 200 });
+		}) as typeof fetch;
+		await sendAlert('https://hooks.slack.com/test', { text: 'hello' });
+		expect(calls[0].redirect).toBe('manual');
+	});
+
+	it('logs warning on HTTP error response without throwing', async () => {
+		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		globalThis.fetch = vi.fn(async () => {
+			return new Response('Forbidden', { status: 403 });
+		}) as typeof fetch;
+		// Should not throw
+		await sendAlert('https://hooks.slack.com/test', { text: 'hello' });
+		const logCalls = consoleSpy.mock.calls.map((c) => c[0]);
+		const hasAlertWarning = logCalls.some((log) => typeof log === 'string' && log.includes('403'));
+		expect(hasAlertWarning).toBe(true);
+		consoleSpy.mockRestore();
+	});
+
+	it('rejects non-HTTPS webhook URLs', async () => {
+		const mockFetch = vi.fn() as typeof fetch;
+		globalThis.fetch = mockFetch;
+		await sendAlert('http://hooks.slack.com/test', { text: 'hello' });
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
 });

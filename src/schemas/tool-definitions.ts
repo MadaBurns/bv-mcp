@@ -4,6 +4,8 @@ import { z } from 'zod';
 import {
 	BaseDomainArgs,
 	ScanDomainArgs,
+	BatchScanArgs,
+	CompareDomainsArgs,
 	CheckDkimArgs,
 	CheckResolverConsistencyArgs,
 	GenerateSpfArgs,
@@ -83,45 +85,45 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 	return jsonSchema as McpTool['inputSchema'];
 }
 
-/** All 41 MCP tool definitions. */
+/** All 44 MCP tool definitions. */
 const TOOL_DEFS: Record<string, ToolDef> = {
 	check_mx: {
-		description: 'Validate MX records and email provider detection.',
+		description: 'Look up MX records for a domain. Shows mail servers, email provider detection, and validates configuration.',
 		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'protective',
 		scanIncluded: true,
 	},
 	check_spf: {
-		description: 'Validate SPF syntax, policy, and trust surface.',
+		description: 'Look up and validate SPF record for a domain. Shows authorized senders, syntax issues, and trust surface.',
 		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'core',
 		scanIncluded: true,
 	},
 	check_dmarc: {
-		description: 'Validate DMARC policy, alignment, and reporting.',
+		description: 'Look up and validate DMARC record for a domain. Shows policy enforcement, alignment mode, and reporting config.',
 		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'core',
 		scanIncluded: true,
 	},
 	check_dkim: {
-		description: 'Probe DKIM selectors and validate key strength.',
+		description: 'Look up DKIM records for a domain. Probes common selectors and validates key strength and algorithm.',
 		schema: CheckDkimArgs,
 		group: 'email_auth',
 		tier: 'core',
 		scanIncluded: true,
 	},
 	check_dnssec: {
-		description: 'Verify DNSSEC validation and DNSKEY/DS records.',
+		description: 'Check DNSSEC status for a domain. Verifies DNSKEY/DS records and validation chain.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'core',
 		scanIncluded: true,
 	},
 	check_ssl: {
-		description: 'Verify SSL/TLS certificate and HTTPS config.',
+		description: 'Check SSL/TLS certificate for a domain. Shows issuer, expiry, protocol versions, and HTTPS configuration.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'core',
@@ -135,14 +137,14 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: true,
 	},
 	check_ns: {
-		description: 'Analyze NS delegation and provider diversity.',
+		description: 'Look up NS (nameserver) records for a domain. Shows DNS provider, delegation, and redundancy.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'protective',
 		scanIncluded: true,
 	},
 	check_caa: {
-		description: 'Check authorized Certificate Authorities via CAA.',
+		description: 'Look up CAA records for a domain. Shows which Certificate Authorities are authorized to issue certificates.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'protective',
@@ -197,9 +199,29 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		tier: 'protective',
 		scanIncluded: false,
 	},
+	check_subdomailing: {
+		description: 'Detect SubdoMailing risk by analyzing SPF include chain for takeover-vulnerable domains.',
+		schema: BaseDomainArgs,
+		group: 'email_auth',
+		tier: 'protective',
+		scanIncluded: true,
+	},
 	scan_domain: {
-		description: 'Full DNS and email security audit. Score, grade, maturity, findings. Start here.',
+		description:
+			'Look up any domain to get a full DNS and email security audit. Use this whenever a user mentions a domain name, asks to check/scan/lookup/analyze a domain, or wants to know about a domain\'s security posture. Returns score, grade, maturity stage, and prioritized findings. Start here for any domain-related question.',
 		schema: ScanDomainArgs,
+		group: 'meta',
+		scanIncluded: false,
+	},
+	batch_scan: {
+		description: 'Scan up to 10 domains at once. Returns score, grade, and finding counts per domain.',
+		schema: BatchScanArgs,
+		group: 'meta',
+		scanIncluded: false,
+	},
+	compare_domains: {
+		description: 'Side-by-side security comparison of 2–5 domains. Shows scores, category gaps, and unique weaknesses.',
+		schema: CompareDomainsArgs,
 		group: 'meta',
 		scanIncluded: false,
 	},
@@ -329,13 +351,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: false,
 	},
 	resolve_spf_chain: {
-		description: 'Recursively resolve the full SPF include chain. Shows lookup count, tree depth, and flags issues like circular includes or exceeding the 10-lookup limit.',
+		description: 'Trace the full SPF include chain for a domain. Recursively resolves all includes, shows lookup count, tree depth, and flags circular includes or exceeding the 10-lookup limit.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	discover_subdomains: {
-		description: 'Discover subdomains via Certificate Transparency logs. Reveals shadow IT, forgotten services, and unauthorized certificate issuance.',
+		description: 'Find subdomains of a domain using Certificate Transparency logs. Reveals shadow IT, forgotten services, and unauthorized certificate issuance.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,

@@ -28,6 +28,8 @@ export interface AnalyticsContext {
 	clientType?: McpClientType;
 	authTier?: string;
 	sessionHash?: string;
+	/** Truncated SHA-256 hash of the API key (first 16 chars). Enables per-customer analytics. */
+	keyHash?: string;
 }
 
 export interface AnalyticsClient {
@@ -59,6 +61,11 @@ export interface AnalyticsClient {
 		action: 'created' | 'terminated' | 'revived';
 		method?: string;
 	} & AnalyticsContext): void;
+	emitDegradationEvent(event: {
+		degradationType: 'dns_resolver_failure' | 'kv_fallback' | 'provider_detection_failure' | 'partial_result' | 'post_processing_error';
+		component: string;
+		domain?: string;
+	} & AnalyticsContext): void;
 }
 
 /**
@@ -71,7 +78,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 	};
 
 	if (!dataset) {
-		return { enabled: false, emitRequestEvent: noop, emitToolEvent: noop, emitRateLimitEvent: noop, emitSessionEvent: noop };
+		return { enabled: false, emitRequestEvent: noop, emitToolEvent: noop, emitRateLimitEvent: noop, emitSessionEvent: noop, emitDegradationEvent: noop };
 	}
 
 	return {
@@ -89,6 +96,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
 					event.sessionHash ?? 'none',
+					event.keyHash ?? 'none',
 				],
 				doubles: [sanitizeNumber(event.durationMs)],
 			});
@@ -105,6 +113,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
 					event.cacheStatus ?? 'n/a',
+					event.keyHash ?? 'none',
 				],
 				doubles: [sanitizeNumber(event.durationMs), sanitizeNumber(event.score ?? 0)],
 			});
@@ -130,6 +139,20 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
 					event.method ?? 'unknown',
+					event.keyHash ?? 'none',
+				],
+			});
+		},
+		emitDegradationEvent: (event) => {
+			safeWrite(dataset, {
+				indexes: ['degradation'],
+				blobs: [
+					event.degradationType,
+					normalizeIndex(event.component),
+					event.domain ? domainFingerprint(event.domain) : 'none',
+					event.country ?? 'unknown',
+					event.clientType ?? 'unknown',
+					event.authTier ?? 'anon',
 				],
 			});
 		},

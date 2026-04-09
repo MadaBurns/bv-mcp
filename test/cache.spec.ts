@@ -230,3 +230,136 @@ describe('runWithCache', () => {
 		expect(run).not.toHaveBeenCalled();
 	});
 });
+
+describe('runWithCache — cross-isolate dedup', () => {
+	it('writes sentinel to KV before executing on cache miss', async () => {
+		const mockKV = {
+			get: vi.fn()
+				.mockResolvedValueOnce(null)  // cacheGet
+				.mockResolvedValueOnce(null), // sentinel check
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const run = vi.fn().mockResolvedValue('computed');
+		await runWithCache('sentinel:write', run, mockKV as unknown as KVNamespace);
+		expect(run).toHaveBeenCalledOnce();
+		// Sentinel was written (second put call — first is the result cache write)
+		const sentinelPut = mockKV.put.mock.calls.find(
+			(c: [string, string, Record<string, unknown>]) => c[0] === 'sentinel:write:computing'
+		);
+		expect(sentinelPut).toBeDefined();
+	});
+
+	it('writes sentinel with 10-second TTL', async () => {
+		const mockKV = {
+			get: vi.fn()
+				.mockResolvedValueOnce(null)  // cacheGet
+				.mockResolvedValueOnce(null), // sentinel check
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const run = vi.fn().mockResolvedValue('result');
+		await runWithCache('sentinel:ttl', run, mockKV as unknown as KVNamespace);
+		const sentinelPut = mockKV.put.mock.calls.find(
+			(c: [string, string, Record<string, unknown>]) => c[0] === 'sentinel:ttl:computing'
+		);
+		expect(sentinelPut).toBeDefined();
+		// Sentinel TTL should be 10 seconds (tightened from 30s)
+		expect(sentinelPut![2]).toEqual({ expirationTtl: 10 });
+	});
+
+	it('cleans up sentinel after successful computation', async () => {
+		const mockKV = {
+			get: vi.fn()
+				.mockResolvedValueOnce(null)  // cacheGet
+				.mockResolvedValueOnce(null), // sentinel check
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const run = vi.fn().mockResolvedValue('result');
+		await runWithCache('sentinel:cleanup', run, mockKV as unknown as KVNamespace);
+		expect(mockKV.delete).toHaveBeenCalledWith('sentinel:cleanup:computing');
+	});
+
+	it('cleans up sentinel on computation failure', async () => {
+		const mockKV = {
+			get: vi.fn()
+				.mockResolvedValueOnce(null)  // cacheGet
+				.mockResolvedValueOnce(null), // sentinel check
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const run = vi.fn().mockRejectedValue(new Error('fail'));
+		await expect(runWithCache('sentinel:fail', run, mockKV as unknown as KVNamespace)).rejects.toThrow('fail');
+		expect(mockKV.delete).toHaveBeenCalledWith('sentinel:fail:computing');
+	});
+
+	it('polls and returns result when sentinel exists and result appears', async () => {
+		const mockKV = {
+			get: vi.fn()
+				.mockResolvedValueOnce(null)       // cacheGet — no cached result
+				.mockResolvedValueOnce('12345')     // sentinel exists (another isolate computing)
+				.mockResolvedValueOnce('polled-result'), // poll attempt 1 succeeds
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const run = vi.fn().mockResolvedValue('should-not-run');
+		const result = await runWithCache('sentinel:poll', run, mockKV as unknown as KVNamespace);
+		expect(result).toBe('polled-result');
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('falls back to execution when polling exhausts without result (3 polls)', async () => {
+		const mockKV = {
+			get: vi.fn()
+				.mockResolvedValueOnce(null)   // cacheGet — no cached result
+				.mockResolvedValueOnce('12345') // sentinel exists
+				.mockResolvedValueOnce(null)    // poll 1 (250ms) — nothing
+				.mockResolvedValueOnce(null)    // poll 2 (500ms) — nothing
+				.mockResolvedValueOnce(null),   // poll 3 (750ms) — nothing
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const run = vi.fn().mockResolvedValue('fallback-executed');
+		const result = await runWithCache('sentinel:exhaust', run, mockKV as unknown as KVNamespace);
+		expect(result).toBe('fallback-executed');
+		expect(run).toHaveBeenCalledOnce();
+	});
+
+	it('skips sentinel logic when KV is unavailable', async () => {
+		const run = vi.fn().mockResolvedValue('no-kv');
+		const result = await runWithCache('sentinel:nokv', run);
+		expect(result).toBe('no-kv');
+		expect(run).toHaveBeenCalledOnce();
+	});
+
+	it('skips sentinel logic when skipCache is true', async () => {
+		const mockKV = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const run = vi.fn().mockResolvedValue('forced');
+		const result = await runWithCache('sentinel:skip', run, mockKV as unknown as KVNamespace, undefined, true);
+		expect(result).toBe('forced');
+		// Sentinel check should NOT have been called (only the result cache put)
+		const sentinelCheck = mockKV.get.mock.calls.find(
+			(c: [string, ...unknown[]]) => c[0] === 'sentinel:skip:computing'
+		);
+		expect(sentinelCheck).toBeUndefined();
+	});
+
+	it('degrades gracefully when KV sentinel operations fail', async () => {
+		const mockKV = {
+			get: vi.fn()
+				.mockResolvedValueOnce(null)          // cacheGet
+				.mockRejectedValueOnce(new Error('KV down')), // sentinel check fails
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const run = vi.fn().mockResolvedValue('degraded-ok');
+		const result = await runWithCache('sentinel:degrade', run, mockKV as unknown as KVNamespace);
+		expect(result).toBe('degraded-ok');
+		expect(run).toHaveBeenCalledOnce();
+	});
+});

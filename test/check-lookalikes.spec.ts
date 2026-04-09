@@ -825,3 +825,36 @@ describe('checkLookalikes - shared nameserver detection', () => {
 		expect(summary!.title).toContain('1 lookalike domain');
 	});
 });
+
+describe('checkLookalikes - timeout partial flag', () => {
+	it('marks result as partial when check times out', async () => {
+		// Make all DNS queries hang indefinitely so the timeout fires
+		globalThis.fetch = vi.fn().mockImplementation(() => {
+			return new Promise(() => {
+				// Never resolves — forces the LOOKALIKE_TIMEOUT_MS race to win
+			});
+		});
+
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		const result = await checkLookalikes('test.com');
+
+		// Timeout path should mark result as partial
+		expect((result as Record<string, unknown>).partial).toBe(true);
+		expect(result.findings.length).toBe(1);
+		expect(result.findings[0].title).toBe('Lookalike check incomplete');
+		expect(result.findings[0].severity).toBe('info');
+		expect(result.findings[0].detail).toContain('did not complete within the time limit');
+	}, 25_000);
+
+	it('does not mark successful results as partial', async () => {
+		// All DNS queries return empty — check completes normally
+		globalThis.fetch = vi.fn().mockImplementation(() => {
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		const result = await checkLookalikes('test.com');
+
+		expect((result as Record<string, unknown>).partial).toBeUndefined();
+	});
+});

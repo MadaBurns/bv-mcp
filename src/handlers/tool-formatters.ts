@@ -18,6 +18,18 @@ export function mcpText(text: string): McpContent {
 	return { type: 'text', text };
 }
 
+/**
+ * Build MCP content array with human-readable text and, for non-interactive clients (format=full),
+ * an appended structured JSON block for machine-readable consumption.
+ */
+export function buildToolContent(text: string, structuredData: unknown, format: OutputFormat): McpContent[] {
+	const content: McpContent[] = [mcpText(text)];
+	if (format === 'full') {
+		content.push(mcpText(`<!-- STRUCTURED_RESULT\n${JSON.stringify(structuredData)}\nSTRUCTURED_RESULT -->`));
+	}
+	return content;
+}
+
 export function formatCheckResult(result: CheckResult, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 	lines.push(`## ${result.category.toUpperCase()} Check`);
@@ -29,7 +41,9 @@ export function formatCheckResult(result: CheckResult, format: OutputFormat = 'f
 		lines.push('### Findings');
 		for (const finding of result.findings) {
 			if (format === 'compact') {
-				lines.push(`- [${finding.severity.toUpperCase()}] ${sanitizeOutputText(finding.title, 120)} — ${sanitizeOutputText(finding.detail, 200)}`);
+				const isHighPriority = finding.severity === 'critical' || finding.severity === 'high';
+				const detailLimit = isHighPriority ? 4000 : 300;
+				lines.push(`- [${finding.severity.toUpperCase()}] ${sanitizeOutputText(finding.title, 120)} — ${sanitizeOutputText(finding.detail, detailLimit)}`);
 				continue;
 			}
 

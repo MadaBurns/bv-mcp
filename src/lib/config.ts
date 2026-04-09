@@ -129,6 +129,7 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		check_mx_reputation: 50_000,
 		check_srv: 500_000,
 		check_zone_hygiene: 500_000,
+		check_subdomailing: 500_000,
 		explain_finding: 500_000,
 	},
 };
@@ -136,6 +137,8 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	scan_domain: 75,
 	scan: 75,
+	batch_scan: 20,
+	compare_domains: 15,
 	check_spf: 200,
 	check_dmarc: 200,
 	check_dkim: 200,
@@ -157,6 +160,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_mx_reputation: 20,
 	check_srv: 200,
 	check_zone_hygiene: 200,
+	check_subdomailing: 200,
 	generate_fix_plan: 75,
 	generate_spf_record: 200,
 	generate_dmarc_record: 200,
@@ -175,3 +179,90 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	map_compliance: 75,
 	simulate_attack_paths: 75,
 };
+
+/**
+ * Per-tier concurrent tool execution limits (per-isolate, best-effort fairness).
+ * Prevents any single authenticated user from monopolizing worker capacity.
+ */
+export const TIER_CONCURRENT_LIMITS: Record<McpApiKeyTier, number> = {
+	free: 3,
+	agent: 5,
+	developer: 10,
+	enterprise: 25,
+	partner: 50,
+	owner: Infinity,
+};
+
+// ---------------------------------------------------------------------------
+// Trial API key defaults
+// ---------------------------------------------------------------------------
+
+/** Default trial duration in days. */
+export const TRIAL_DEFAULT_EXPIRES_DAYS = 14;
+
+/** Default maximum tool invocations per trial key. */
+export const TRIAL_DEFAULT_MAX_USES = 1000;
+
+/** Default tier for trial keys. Maps to existing tier quotas + concurrency limits. */
+export const TRIAL_DEFAULT_TIER: McpApiKeyTier = 'developer';
+
+/** TTL (seconds) for tier-cache entries resolved from trial keys. Shorter than normal 300s to detect expiry/exhaustion sooner. */
+export const TRIAL_KEY_CACHE_TTL = 60;
+
+// ---------------------------------------------------------------------------
+// Runtime-configurable limit parsers (env var overrides, no redeploy needed)
+// ---------------------------------------------------------------------------
+
+/** Default scan-level timeout (ms). */
+export const SCAN_TIMEOUT_MS = 12_000;
+
+/** Default per-check timeout (ms). */
+export const PER_CHECK_TIMEOUT_MS = 8_000;
+
+/** Helper: parse an env var as a clamped integer, returning defaultVal on invalid/out-of-range input. */
+function parseClampedInt(envValue: string | undefined, defaultVal: number, min: number, max: number): number {
+	if (!envValue) return defaultVal;
+	const parsed = Number(envValue);
+	if (!Number.isFinite(parsed) || parsed < min) return defaultVal;
+	return Math.min(parsed, max);
+}
+
+/**
+ * Parse DNS_TIMEOUT_MS override, clamping to [1000, 10000].
+ * Returns DNS_TIMEOUT_MS when absent or invalid.
+ */
+export function parseDnsTimeout(envValue?: string): number {
+	return parseClampedInt(envValue, DNS_TIMEOUT_MS, 1000, 10000);
+}
+
+/**
+ * Parse INFLIGHT_CLEANUP_MS override, clamping to [5000, 120000].
+ * Returns INFLIGHT_CLEANUP_MS when absent or invalid.
+ */
+export function parseInflightCleanup(envValue?: string): number {
+	return parseClampedInt(envValue, INFLIGHT_CLEANUP_MS, 5000, 120000);
+}
+
+/**
+ * Parse GLOBAL_DAILY_TOOL_LIMIT override, clamping to [10000, 5000000].
+ * Returns GLOBAL_DAILY_TOOL_LIMIT when absent or invalid.
+ */
+export function parseGlobalDailyLimit(envValue?: string): number {
+	return parseClampedInt(envValue, GLOBAL_DAILY_TOOL_LIMIT, 10000, 5000000);
+}
+
+/**
+ * Parse SCAN_TIMEOUT_MS override, clamping to [5000, 30000].
+ * Returns 12000 when absent or invalid.
+ */
+export function parseScanTimeout(envValue?: string): number {
+	return parseClampedInt(envValue, SCAN_TIMEOUT_MS, 5000, 30000);
+}
+
+/**
+ * Parse PER_CHECK_TIMEOUT_MS override, clamping to [2000, 15000].
+ * Returns 8000 when absent or invalid.
+ */
+export function parsePerCheckTimeout(envValue?: string): number {
+	return parseClampedInt(envValue, PER_CHECK_TIMEOUT_MS, 2000, 15000);
+}

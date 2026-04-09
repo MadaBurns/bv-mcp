@@ -97,7 +97,8 @@ fi
 # ─── 3. IP leakage patterns ─────────��────────────────────────────────
 # Patterns loaded from external file to avoid self-matching.
 # Each line is an extended regex pattern. Lines starting with # are ignored.
-PATTERNS_FILE="$(git rev-parse --show-toplevel)/.githooks/blocked-patterns"
+# Loaded from .dev/ (gitignored) to avoid exposing internal hostnames in the public repo.
+PATTERNS_FILE="$(git rev-parse --show-toplevel)/.dev/blocked-patterns"
 
 if [ ! -f "$PATTERNS_FILE" ]; then
   exit 0
