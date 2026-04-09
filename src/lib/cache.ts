@@ -152,6 +152,17 @@ export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | un
 }
 
 /**
+ * Delete a cached value by key from both KV and in-memory stores.
+ * Best-effort: silently ignores KV errors.
+ */
+export async function cacheDelete(key: string, kv?: KVNamespace): Promise<void> {
+	IN_MEMORY_CACHE.delete(key);
+	if (kv) {
+		try { await kv.delete(key); } catch { /* best-effort */ }
+	}
+}
+
+/**
  * Set a cached value with configurable TTL.
  * Uses KV when available, falls back to in-memory.
  *
