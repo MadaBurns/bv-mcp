@@ -118,6 +118,8 @@ export interface CheckResult {
 	findings: Finding[];
 	/** Execution status of the check. Absent or 'completed' means the check ran normally. 'timeout'/'error' indicate failed execution — findings are unreliable and category score is forced to 0. */
 	checkStatus?: CheckStatus;
+	/** When true, the result is incomplete (e.g. timeout) and should not be cached long-term. */
+	partial?: boolean;
 }
 
 export interface ScanScore {

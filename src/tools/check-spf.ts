@@ -6,23 +6,9 @@
  */
 
 import { checkSPF } from '@blackveil/dns-checks';
-import { queryDnsRecords, queryTxtRecords } from '../lib/dns';
+import { makeQueryDNS } from '../lib/dns-query-adapter';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult } from '../lib/scoring';
-
-/**
- * Build a DNSQueryFunction adapter that routes TXT queries through queryTxtRecords
- * (which strips surrounding quotes from DoH TXT data) and all other record types
- * through queryDnsRecords.
- */
-function makeQueryDNS(dnsOptions?: QueryDnsOptions) {
-	return async (domain: string, type: string): Promise<string[]> => {
-		if (type === 'TXT') {
-			return queryTxtRecords(domain, dnsOptions);
-		}
-		return queryDnsRecords(domain, type as Parameters<typeof queryDnsRecords>[1], dnsOptions);
-	};
-}
 
 /**
  * Check SPF records for a domain.

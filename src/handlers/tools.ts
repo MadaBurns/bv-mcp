@@ -2,7 +2,7 @@
 
 import type { CheckResult } from '../lib/scoring';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
-import { runWithCacheTracked } from '../lib/cache';
+import { runWithCacheTracked, cacheDelete } from '../lib/cache';
 import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { checkSpf } from '../tools/check-spf';
 import { checkDmarc } from '../tools/check-dmarc';
@@ -47,7 +47,7 @@ import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
 import type { OutputFormat } from './tool-args';
-import { logToolFailure, logToolSuccess } from './tool-execution';
+import { buildLogContext, logToolFailure, logToolSuccess } from './tool-execution';
 import { formatCheckResult, mcpError, buildToolContent } from './tool-formatters';
 import type { McpContent } from './tool-formatters';
 import { TOOLS } from './tool-schemas';
@@ -167,21 +167,15 @@ function buildToolErrorResult(message: string): McpToolResult {
 
 function handleExplainFindingValidationError(
 	args: Record<string, unknown>,
-	durationMs: number,
+	startTime: number,
 	runtimeOptions?: ToolRuntimeOptions,
 ): McpToolResult {
 	const error = new Error('Missing required parameters: checkType and status');
 	logToolFailure({
-		toolName: 'explain_finding',
-		durationMs,
-		analytics: runtimeOptions?.analytics,
+		...buildLogContext('explain_finding', startTime, undefined, runtimeOptions),
 		error,
 		args,
 		severity: 'warn',
-		country: runtimeOptions?.country,
-		clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-		authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
 	});
 	return buildToolErrorResult(error.message);
 }
@@ -207,6 +201,8 @@ export async function handleToolsCall(
 	const name = normalizeToolName(params.name);
 	const args = params.arguments ?? {};
 	const startTime = Date.now();
+	/** Lazy log context builder — evaluates durationMs at call time. */
+	const ctx = () => buildLogContext(name, startTime, domain, runtimeOptions);
 	let domain: string | undefined;
 	let logResult = 'unknown';
 	let logDetails: unknown;
@@ -232,24 +228,17 @@ export async function handleToolsCall(
 				const cacheKey = `cache:${validDomain}:check:${checkName}`;
 				const { data: result, cacheStatus } = await runWithCacheTracked(cacheKey, () => registeredTool.execute(validDomain, validatedArgs, runtimeOptions), scanCacheKV, registeredTool.cacheTtlSeconds);
 				// Don't cache partial results (e.g. lookalike timeout) — evict what runWithCacheTracked just stored
-				if ((result as unknown as Record<string, unknown>).partial && scanCacheKV) {
-					try { await scanCacheKV.delete(cacheKey); } catch { /* best-effort */ }
+				if (result.partial) {
+					await cacheDelete(cacheKey, scanCacheKV);
 				}
 				runtimeOptions?.resultCapture?.(result);
 				logResult = result.passed ? 'pass' : 'fail';
 				logDetails = result;
 				logToolSuccess({
-					toolName: name,
-					durationMs: Date.now() - startTime,
-					domain,
-					analytics: runtimeOptions?.analytics,
+					...ctx(),
 					status: result.passed ? 'pass' : 'fail',
 					logResult,
 					logDetails,
-					country: runtimeOptions?.country,
-					clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-					authTier: runtimeOptions?.authTier,
-					keyHash: runtimeOptions?.keyHash,
 					cacheStatus,
 				});
 				return { content: buildToolContent(formatCheckResult(result, effectiveFormat), result, effectiveFormat) };
@@ -263,20 +252,7 @@ export async function handleToolsCall(
 					const result = await scanDomain(validDomain, scanCacheKV, scanOptions);
 					logResult = result.score.grade;
 					logDetails = result;
-					logToolSuccess({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						domain,
-						analytics: runtimeOptions?.analytics,
-						status: result.score.overall >= 50 ? 'pass' : 'fail',
-						logResult,
-						logDetails,
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: result.score.overall >= 50 ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
 					const structured = buildStructuredScanResult(result);
 					return { content: buildToolContent(formatScanReport(result, effectiveFormat), structured, effectiveFormat) };
 				}
@@ -297,19 +273,7 @@ export async function handleToolsCall(
 						},
 					});
 					const batchText = formatBatchScan(batchResults, effectiveFormat);
-					logToolSuccess({
-						toolName: 'batch_scan',
-						durationMs: Date.now() - startTime,
-						analytics: runtimeOptions?.analytics,
-						status: 'pass',
-						logResult: `${batchResults.filter((r) => !r.error).length}/${batchResults.length} domains`,
-						logDetails: { totalDomains: batchResults.length },
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: 'pass', logResult: `${batchResults.filter((r) => !r.error).length}/${batchResults.length} domains`, logDetails: { totalDomains: batchResults.length }, severity: 'info' });
 					return { content: buildToolContent(batchText, batchResults, effectiveFormat) };
 				}
 				case 'compare_domains': {
@@ -327,19 +291,7 @@ export async function handleToolsCall(
 						},
 					});
 					const compareText = formatDomainComparison(compareResults, effectiveFormat);
-					logToolSuccess({
-						toolName: 'compare_domains',
-						durationMs: Date.now() - startTime,
-						analytics: runtimeOptions?.analytics,
-						status: 'pass',
-						logResult: `${Object.keys(compareResults.scores).length}/${compareResults.domains.length} domains compared`,
-						logDetails: { totalDomains: compareResults.domains.length, winner: compareResults.winner },
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: 'pass', logResult: `${Object.keys(compareResults.scores).length}/${compareResults.domains.length} domains compared`, logDetails: { totalDomains: compareResults.domains.length, winner: compareResults.winner }, severity: 'info' });
 					return { content: buildToolContent(compareText, compareResults, effectiveFormat) };
 				}
 				case 'compare_baseline': {
@@ -348,135 +300,45 @@ export async function handleToolsCall(
 					const result = compareBaseline(scan, baseline);
 					logResult = result.passed ? 'pass' : 'fail';
 					logDetails = result;
-					logToolSuccess({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						domain,
-						analytics: runtimeOptions?.analytics,
-						status: result.passed ? 'pass' : 'fail',
-						logResult,
-						logDetails,
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: result.passed ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
 					return { content: buildToolContent(formatBaselineResult(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'generate_fix_plan': {
 					const plan = await generateFixPlan(validDomain, scanCacheKV, runtimeOptions);
 					logResult = plan.grade;
 					logDetails = plan;
-					logToolSuccess({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						domain,
-						analytics: runtimeOptions?.analytics,
-						status: 'pass',
-						logResult,
-						logDetails,
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 					return { content: buildToolContent(formatFixPlan(plan, effectiveFormat), plan, effectiveFormat) };
 				}
 				case 'generate_spf_record': {
 					const includeProviders = extractIncludeProviders(validatedArgs);
 					const record = await generateSpfRecord(validDomain, includeProviders, buildDnsOptions(runtimeOptions));
-					logToolSuccess({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						domain,
-						analytics: runtimeOptions?.analytics,
-						status: 'pass',
-						logResult: 'generated',
-						logDetails: record,
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
 					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
 				}
 				case 'generate_dmarc_record': {
 					const policy = typeof validatedArgs.policy === 'string' ? validatedArgs.policy as 'none' | 'quarantine' | 'reject' : undefined;
 					const ruaEmail = typeof validatedArgs.rua_email === 'string' ? validatedArgs.rua_email : undefined;
 					const record = await generateDmarcRecord(validDomain, policy, ruaEmail, buildDnsOptions(runtimeOptions));
-					logToolSuccess({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						domain,
-						analytics: runtimeOptions?.analytics,
-						status: 'pass',
-						logResult: 'generated',
-						logDetails: record,
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
 					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
 				}
 				case 'generate_dkim_config': {
 					const provider = typeof validatedArgs.provider === 'string' ? validatedArgs.provider : undefined;
 					const record = await generateDkimConfig(validDomain, provider);
-					logToolSuccess({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						domain,
-						analytics: runtimeOptions?.analytics,
-						status: 'pass',
-						logResult: 'generated',
-						logDetails: record,
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
 					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
 				}
 				case 'generate_mta_sts_policy': {
 					const mxHosts = extractMxHosts(validatedArgs);
 					const record = await generateMtaStsPolicy(validDomain, mxHosts, buildDnsOptions(runtimeOptions));
-					logToolSuccess({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						domain,
-						analytics: runtimeOptions?.analytics,
-						status: 'pass',
-						logResult: 'generated',
-						logDetails: record,
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
 					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
 				}
 				case 'get_benchmark': {
 					const profile = typeof validatedArgs.profile === 'string' ? validatedArgs.profile : 'mail_enabled';
 					const result = await getBenchmark(runtimeOptions?.profileAccumulator, profile);
-					logToolSuccess({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						analytics: runtimeOptions?.analytics,
-						status: 'pass',
-						logResult: result.status,
-						logDetails: result,
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: 'pass', logResult: result.status, logDetails: result, severity: 'info' });
 					return { content: buildToolContent(formatBenchmark(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'get_provider_insights': {
@@ -486,39 +348,14 @@ export async function handleToolsCall(
 					}
 					const profile = typeof validatedArgs.profile === 'string' ? validatedArgs.profile : 'mail_enabled';
 					const result = await getProviderInsights(runtimeOptions?.profileAccumulator, provider, profile);
-					logToolSuccess({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						analytics: runtimeOptions?.analytics,
-						status: 'pass',
-						logResult: result.status,
-						logDetails: result,
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: 'pass', logResult: result.status, logDetails: result, severity: 'info' });
 					return { content: buildToolContent(formatProviderInsights(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'assess_spoofability': {
 					const result = await assessSpoofability(validDomain, buildDnsOptions(runtimeOptions));
 					logResult = result.riskLevel;
 					logDetails = result;
-					logToolSuccess({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						domain,
-						analytics: runtimeOptions?.analytics,
-						status: result.spoofabilityScore <= 30 ? 'pass' : 'fail',
-						logResult,
-						logDetails,
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: result.spoofabilityScore <= 30 ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
 					return { content: buildToolContent(formatSpoofability(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'check_resolver_consistency': {
@@ -527,20 +364,7 @@ export async function handleToolsCall(
 					runtimeOptions?.resultCapture?.(result);
 					logResult = result.passed ? 'pass' : 'fail';
 					logDetails = result;
-					logToolSuccess({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						domain,
-						analytics: runtimeOptions?.analytics,
-						status: result.passed ? 'pass' : 'fail',
-						logResult,
-						logDetails,
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: result.passed ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
 					return { content: buildToolContent(formatResolverConsistency(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'explain_finding': {
@@ -548,23 +372,11 @@ export async function handleToolsCall(
 					try {
 						explainArgs = extractExplainFindingArgs(validatedArgs);
 					} catch {
-						return handleExplainFindingValidationError(args, Date.now() - startTime, runtimeOptions);
+						return handleExplainFindingValidationError(args, startTime, runtimeOptions);
 					}
 					const { checkType, status, details } = explainArgs;
 					const result = explainFinding(checkType, status, details);
-					logToolSuccess({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						analytics: runtimeOptions?.analytics,
-						status: 'pass',
-						logResult: status,
-						logDetails: { checkType, details },
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: 'pass', logResult: status, logDetails: { checkType, details }, severity: 'info' });
 					return { content: buildToolContent(formatExplanation(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'validate_fix': {
@@ -573,40 +385,14 @@ export async function handleToolsCall(
 					const result = await validateFix(validDomain, check, expected, buildDnsOptions(runtimeOptions));
 					logResult = result.verdict;
 					logDetails = result;
-					logToolSuccess({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						domain,
-						analytics: runtimeOptions?.analytics,
-						status: result.verdict === 'fixed' ? 'pass' : 'fail',
-						logResult,
-						logDetails,
-						severity: 'info',
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolSuccess({ ...ctx(), status: result.verdict === 'fixed' ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
 					return { content: buildToolContent(formatValidateFix(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'map_supply_chain': {
 						const result = await mapSupplyChain(validDomain, buildDnsOptions(runtimeOptions));
 						logResult = `${result.summary.totalProviders} providers`;
 						logDetails = result;
-						logToolSuccess({
-							toolName: name,
-							durationMs: Date.now() - startTime,
-							domain,
-							analytics: runtimeOptions?.analytics,
-							status: 'pass',
-							logResult,
-							logDetails,
-							severity: 'info',
-							country: runtimeOptions?.country,
-							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-							authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-						});
+						logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 						return { content: buildToolContent(formatSupplyChain(result, effectiveFormat), result, effectiveFormat) };
 					}
 					case 'generate_rollout_plan': {
@@ -619,20 +405,7 @@ export async function handleToolsCall(
 						const result = await generateRolloutPlan(validDomain, targetPolicy, timeline, buildDnsOptions(runtimeOptions));
 						logResult = result.atTarget ? 'at_target' : `${result.phases.length} phases`;
 						logDetails = result;
-						logToolSuccess({
-							toolName: name,
-							durationMs: Date.now() - startTime,
-							domain,
-							analytics: runtimeOptions?.analytics,
-							status: 'pass',
-							logResult,
-							logDetails,
-							severity: 'info',
-							country: runtimeOptions?.country,
-							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-							authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-						});
+						logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 						return { content: buildToolContent(formatRolloutPlan(result, effectiveFormat), result, effectiveFormat) };
 					}
 					case 'analyze_drift': {
@@ -662,76 +435,39 @@ export async function handleToolsCall(
 						const drift = computeDrift(validDomain, baselineScore, scanResult.score);
 						logResult = drift.classification;
 						logDetails = drift;
-						logToolSuccess({
-							toolName: name,
-							durationMs: Date.now() - startTime,
-							domain,
-							analytics: runtimeOptions?.analytics,
-							status: 'pass',
-							logResult,
-							logDetails,
-							severity: 'info',
-							country: runtimeOptions?.country,
-							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-							authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-						});
+						logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 						return { content: buildToolContent(formatDriftReport(drift, effectiveFormat), drift, effectiveFormat) };
 					}
 					case 'resolve_spf_chain': {
 						const result = await resolveSpfChain(validDomain, buildDnsOptions(runtimeOptions));
 						logResult = result.overLimit ? 'over_limit' : 'ok';
 						logDetails = { totalLookups: result.totalLookups, maxDepth: result.maxDepth, issues: result.issues.length };
-						logToolSuccess({
-							toolName: name,
-							durationMs: Date.now() - startTime,
-							domain,
-							analytics: runtimeOptions?.analytics,
-							status: result.overLimit ? 'fail' : 'pass',
-							logResult,
-							logDetails,
-							severity: 'info',
-							country: runtimeOptions?.country,
-							clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-							authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-						});
+						logToolSuccess({ ...ctx(), status: result.overLimit ? 'fail' : 'pass', logResult, logDetails, severity: 'info' });
 						return { content: buildToolContent(formatSpfChain(result, effectiveFormat), result, effectiveFormat) };
 					}
 					case 'discover_subdomains': {
 						const result = await discoverSubdomains(validDomain, runtimeOptions?.certstream);
 						logResult = `${result.totalSubdomains} subdomains`;
 						logDetails = { totalSubdomains: result.totalSubdomains, issues: result.issues.length };
-						logToolSuccess({ toolName: name, durationMs: Date.now() - startTime, domain, analytics: runtimeOptions?.analytics, status: 'pass', logResult, logDetails, severity: 'info', country: runtimeOptions?.country, clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType, authTier: runtimeOptions?.authTier });
+						logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 						return { content: buildToolContent(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat) };
 					}
 					case 'map_compliance': {
 						const result = await mapCompliance(validDomain, scanCacheKV, runtimeOptions);
 						logResult = 'mapped';
 						logDetails = result;
-						logToolSuccess({ toolName: name, durationMs: Date.now() - startTime, domain, analytics: runtimeOptions?.analytics, status: 'pass', logResult, logDetails, severity: 'info', country: runtimeOptions?.country, clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType, authTier: runtimeOptions?.authTier });
+						logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 						return { content: buildToolContent(formatCompliance(result, effectiveFormat), result, effectiveFormat) };
 					}
 					case 'simulate_attack_paths': {
 						const result = await simulateAttackPaths(validDomain, buildDnsOptions(runtimeOptions));
 						logResult = `${result.totalPaths} paths, risk: ${result.overallRisk}`;
 						logDetails = { totalPaths: result.totalPaths, overallRisk: result.overallRisk };
-						logToolSuccess({ toolName: name, durationMs: Date.now() - startTime, domain, analytics: runtimeOptions?.analytics, status: result.overallRisk === 'low' ? 'pass' : 'fail', logResult, logDetails, severity: 'info', country: runtimeOptions?.country, clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType, authTier: runtimeOptions?.authTier });
+						logToolSuccess({ ...ctx(), status: result.overallRisk === 'low' ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
 						return { content: buildToolContent(formatAttackPaths(result, effectiveFormat), result, effectiveFormat) };
 					}
 					default:
-					logToolFailure({
-						toolName: name,
-						durationMs: Date.now() - startTime,
-						domain,
-						analytics: runtimeOptions?.analytics,
-						error: `Unknown tool: ${name}`,
-						args,
-						country: runtimeOptions?.country,
-						clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-						authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-					});
+					logToolFailure({ ...ctx(), error: `Unknown tool: ${name}`, args });
 					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all 44 available tools.`);
 			}
 		};
@@ -742,36 +478,14 @@ export async function handleToolsCall(
 		]);
 	} catch (err) {
 		if (err instanceof Error && err.message === '__tool_timeout__') {
-			logToolFailure({
-				toolName: name,
-				durationMs: Date.now() - startTime,
-				domain,
-				analytics: runtimeOptions?.analytics,
-				error: 'Tool call timed out',
-				args,
-				country: runtimeOptions?.country,
-				clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-				authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-			});
+			logToolFailure({ ...ctx(), error: 'Tool call timed out', args });
 			return {
 				content: [mcpError(`${name} timed out after ${TOOL_CALL_TIMEOUT_MS / 1000}s. Try a simpler check or retry — cached partial results make retries faster.`)],
 				isError: true,
 			};
 		}
 		const message = sanitizeErrorMessage(err, `An unexpected error occurred while running ${name}. Retry the request — transient DNS failures are common.`);
-		logToolFailure({
-			toolName: name,
-			durationMs: Date.now() - startTime,
-			domain,
-			analytics: runtimeOptions?.analytics,
-			error: err,
-			args,
-			country: runtimeOptions?.country,
-			clientType: runtimeOptions?.clientType as import('../lib/client-detection').McpClientType,
-			authTier: runtimeOptions?.authTier,
-						keyHash: runtimeOptions?.keyHash,
-		});
+		logToolFailure({ ...ctx(), error: err, args });
 		return buildToolErrorResult(message);
 	}
 }

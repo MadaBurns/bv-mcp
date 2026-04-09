@@ -225,7 +225,7 @@ export async function checkLookalikes(domain: string): Promise<CheckResult> {
 			),
 		]);
 		// Mark as partial so callers can skip caching
-		(result as unknown as Record<string, unknown>).partial = true;
+		result.partial = true;
 		return result;
 	});
 }
