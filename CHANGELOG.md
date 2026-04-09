@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.6.4] - 2026-04-09
+
+### Fixed
+- **Non-deterministic scoring on identical scan results** — consecutive fresh scans of the same domain with identical findings could produce overall scores differing by 1–2 points. Root cause: timeout-degraded checks had `score: 0` but preserved `passed: true` from `buildCheckResult()`, causing the hardening tier to count them as passing (~1.43 pts each). Fixed in three layers: `scan-domain.ts` now sets `passed: false` on all degraded checks, and `buildGenericContext` validates `score >= 50` before marking hardening as passed.
+
 ## [2.6.3] - 2026-04-09
 
 ### Changed
