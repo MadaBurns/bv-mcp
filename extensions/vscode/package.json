@@ -1,0 +1,49 @@
+{
+	"name": "blackveil-dns",
+	"displayName": "Blackveil DNS — MCP Security Scanner",
+	"description": "44 DNS & email security tools for GitHub Copilot Chat via MCP. Scan SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, and more — no install, no API key required.",
+	"version": "1.0.0",
+	"publisher": "BlackveilSecurity",
+	"license": "BUSL-1.1",
+	"icon": "icon.png",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/MadaBurns/bv-mcp.git",
+		"directory": "extensions/vscode"
+	},
+	"homepage": "https://blackveilsecurity.com",
+	"bugs": {
+		"url": "https://github.com/MadaBurns/bv-mcp/issues"
+	},
+	"categories": [
+		"AI",
+		"Linters",
+		"Other"
+	],
+	"keywords": [
+		"mcp",
+		"dns",
+		"security",
+		"email",
+		"copilot",
+		"dmarc",
+		"spf",
+		"dkim",
+		"dnssec",
+		"mcp-server"
+	],
+	"engines": {
+		"vscode": "^1.99.0"
+	},
+	"extensionDependencies": [
+		"github.copilot-chat"
+	],
+	"contributes": {
+		"mcpServers": {
+			"blackveil-dns": {
+				"type": "http",
+				"url": "https://dns-mcp.blackveilsecurity.com/mcp"
+			}
+		}
+	}
+}
