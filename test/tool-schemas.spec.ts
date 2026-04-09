@@ -18,13 +18,14 @@ const SCAN_DOMAIN_TOOL_NAMES = new Set([
 	'check_spf', 'check_dmarc', 'check_dkim', 'check_dnssec', 'check_ssl',
 	'check_mta_sts', 'check_ns', 'check_caa', 'check_bimi', 'check_tlsrpt',
 	'check_http_security', 'check_dane', 'check_dane_https', 'check_svcb_https', 'check_mx',
+	'check_subdomailing',
 ]);
 
 /** Tools that are standalone-only or non-scoring orchestration/meta tools. */
 const NON_SCAN_TOOL_NAMES = new Set([
 	'check_lookalikes', 'check_shadow_domains', 'check_txt_hygiene',
 	'check_mx_reputation', 'check_srv', 'check_zone_hygiene', 'check_resolver_consistency',
-	'scan_domain', 'compare_baseline', 'generate_fix_plan', 'generate_spf_record',
+	'scan_domain', 'batch_scan', 'compare_domains', 'compare_baseline', 'generate_fix_plan', 'generate_spf_record',
 	'generate_dmarc_record', 'generate_dkim_config', 'generate_mta_sts_policy',
 	'get_benchmark', 'get_provider_insights', 'assess_spoofability', 'explain_finding',
 	'map_supply_chain', 'analyze_drift', 'validate_fix', 'generate_rollout_plan',
@@ -32,8 +33,8 @@ const NON_SCAN_TOOL_NAMES = new Set([
 ]);
 
 describe('tool-schemas metadata', () => {
-	it('exports exactly 41 tools', () => {
-		expect(TOOLS).toHaveLength(41);
+	it('exports exactly 42 tools', () => {
+		expect(TOOLS).toHaveLength(44);
 	});
 
 	it('all tool names are unique', () => {

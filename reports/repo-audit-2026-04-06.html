@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>bv-mcp Repository Audit — April 6, 2026</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 1.75rem; margin-bottom: 0.25rem; }
+  .subtitle { color: var(--muted); margin-bottom: 2rem; font-size: 0.9rem; }
+  h2 {
+    font-size: 1.2rem;
+    margin: 2rem 0 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--accent);
+  }
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    text-align: center;
+  }
+  .stat-card .number {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .stat-card .label {
+    color: var(--muted);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.9rem;
+  }
+  th, td {
+    padding: 0.65rem 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    background: var(--surface);
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  tr:hover td { background: rgba(88, 166, 255, 0.04); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    vertical-align: middle;
+    margin-right: 0.5rem;
+  }
+  .badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .badge-org { background: rgba(188, 140, 255, 0.15); color: var(--purple); }
+  .badge-user { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+  .badge-identical { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+  .badge-diverged { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+  .badge-active { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+  .badge-risk-low { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+  .badge-risk-med { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+  .badge-risk-high { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+  .chart-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+  }
+  .bar-chart { display: flex; align-items: flex-end; gap: 4px; height: 160px; }
+  .bar-group { flex: 1; display: flex; flex-direction: column; align-items: center; }
+  .bar {
+    width: 100%;
+    max-width: 48px;
+    border-radius: 3px 3px 0 0;
+    position: relative;
+    min-height: 2px;
+    transition: opacity 0.2s;
+  }
+  .bar:hover { opacity: 0.8; }
+  .bar-clones { background: var(--accent); }
+  .bar-unique { background: var(--purple); }
+  .bar-views { background: var(--green); }
+  .bar-label {
+    font-size: 0.65rem;
+    color: var(--muted);
+    margin-top: 6px;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    height: 50px;
+  }
+  .bar-value {
+    font-size: 0.6rem;
+    color: var(--muted);
+    margin-bottom: 2px;
+  }
+  .legend {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 1rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  .legend-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 5px;
+    vertical-align: middle;
+  }
+  .insight-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 0.75rem 0;
+    border-left: 3px solid var(--accent);
+    font-size: 0.9rem;
+  }
+  .insight-card strong { color: var(--accent); }
+  .referrer-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0.5rem 0;
+  }
+  .referrer-fill {
+    height: 8px;
+    border-radius: 4px;
+    background: var(--accent);
+  }
+  .referrer-label { min-width: 100px; font-size: 0.85rem; }
+  .referrer-count { font-size: 0.8rem; color: var(--muted); min-width: 30px; text-align: right; }
+  .section-note {
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-style: italic;
+    margin-bottom: 1rem;
+  }
+  .risk-assessment {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin: 1rem 0;
+  }
+  @media (max-width: 768px) {
+    .risk-assessment { grid-template-columns: 1fr; }
+    body { padding: 1rem; }
+  }
+  footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.75rem;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>bv-mcp Repository Audit</h1>
+<p class="subtitle">MadaBurns/bv-mcp — Generated April 6, 2026 · Data covers last 14 days (Mar 23 – Apr 5)</p>
+
+<!-- Overview Stats -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="number">5,823</div>
+    <div class="label">Total Clones</div>
+  </div>
+  <div class="stat-card">
+    <div class="number">613</div>
+    <div class="label">Unique Cloners</div>
+  </div>
+  <div class="stat-card">
+    <div class="number">84</div>
+    <div class="label">Page Views</div>
+  </div>
+  <div class="stat-card">
+    <div class="number">4</div>
+    <div class="label">Forks</div>
+  </div>
+  <div class="stat-card">
+    <div class="number">5</div>
+    <div class="label">Stars</div>
+  </div>
+  <div class="stat-card">
+    <div class="number">42 days</div>
+    <div class="label">Repo Age</div>
+  </div>
+</div>
+
+<!-- Clone Traffic Chart -->
+<h2>📊 Clone Traffic (Last 14 Days)</h2>
+<p class="section-note">GitHub only retains 14 days of traffic data. The March 30 spike (3,197 clones, 223 unique) is notable — likely a listing or social post drove it.</p>
+<div class="chart-container">
+  <div class="bar-chart">
+    <div class="bar-group">
+      <div class="bar-value">142</div>
+      <div class="bar bar-clones" style="height: calc(142 / 3197 * 140px)"></div>
+      <div class="bar-label">Mar 23</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">44</div>
+      <div class="bar bar-clones" style="height: calc(44 / 3197 * 140px)"></div>
+      <div class="bar-label">Mar 24</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">350</div>
+      <div class="bar bar-clones" style="height: calc(350 / 3197 * 140px)"></div>
+      <div class="bar-label">Mar 25</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">361</div>
+      <div class="bar bar-clones" style="height: calc(361 / 3197 * 140px)"></div>
+      <div class="bar-label">Mar 26</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">161</div>
+      <div class="bar bar-clones" style="height: calc(161 / 3197 * 140px)"></div>
+      <div class="bar-label">Mar 27</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">131</div>
+      <div class="bar bar-clones" style="height: calc(131 / 3197 * 140px)"></div>
+      <div class="bar-label">Mar 28</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">51</div>
+      <div class="bar bar-clones" style="height: calc(51 / 3197 * 140px)"></div>
+      <div class="bar-label">Mar 29</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value" style="color: var(--yellow); font-weight:700;">3,197</div>
+      <div class="bar bar-clones" style="height: 140px"></div>
+      <div class="bar-label">Mar 30</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">157</div>
+      <div class="bar bar-clones" style="height: calc(157 / 3197 * 140px)"></div>
+      <div class="bar-label">Mar 31</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">615</div>
+      <div class="bar bar-clones" style="height: calc(615 / 3197 * 140px)"></div>
+      <div class="bar-label">Apr 1</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">29</div>
+      <div class="bar bar-clones" style="height: calc(29 / 3197 * 140px)"></div>
+      <div class="bar-label">Apr 2</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">151</div>
+      <div class="bar bar-clones" style="height: calc(151 / 3197 * 140px)"></div>
+      <div class="bar-label">Apr 3</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">296</div>
+      <div class="bar bar-clones" style="height: calc(296 / 3197 * 140px)"></div>
+      <div class="bar-label">Apr 4</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">138</div>
+      <div class="bar bar-clones" style="height: calc(138 / 3197 * 140px)"></div>
+      <div class="bar-label">Apr 5</div>
+    </div>
+  </div>
+  <div class="legend">
+    <span><span class="legend-dot" style="background: var(--accent)"></span> Total clones</span>
+  </div>
+</div>
+
+<!-- Page Views Chart -->
+<h2>👁 Page Views (Last 14 Days)</h2>
+<div class="chart-container">
+  <div class="bar-chart">
+    <div class="bar-group">
+      <div class="bar-value">4</div>
+      <div class="bar bar-views" style="height: calc(4 / 33 * 140px)"></div>
+      <div class="bar-label">Mar 23</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">5</div>
+      <div class="bar bar-views" style="height: calc(5 / 33 * 140px)"></div>
+      <div class="bar-label">Mar 24</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">6</div>
+      <div class="bar bar-views" style="height: calc(6 / 33 * 140px)"></div>
+      <div class="bar-label">Mar 25</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">2</div>
+      <div class="bar bar-views" style="height: calc(2 / 33 * 140px)"></div>
+      <div class="bar-label">Mar 26</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">2</div>
+      <div class="bar bar-views" style="height: calc(2 / 33 * 140px)"></div>
+      <div class="bar-label">Mar 27</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">0</div>
+      <div class="bar bar-views" style="height: 2px"></div>
+      <div class="bar-label">Mar 28</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">5</div>
+      <div class="bar bar-views" style="height: calc(5 / 33 * 140px)"></div>
+      <div class="bar-label">Mar 29</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value" style="color: var(--yellow); font-weight:700;">33</div>
+      <div class="bar bar-views" style="height: 140px"></div>
+      <div class="bar-label">Mar 30</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">3</div>
+      <div class="bar bar-views" style="height: calc(3 / 33 * 140px)"></div>
+      <div class="bar-label">Mar 31</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">11</div>
+      <div class="bar bar-views" style="height: calc(11 / 33 * 140px)"></div>
+      <div class="bar-label">Apr 1</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">3</div>
+      <div class="bar bar-views" style="height: calc(3 / 33 * 140px)"></div>
+      <div class="bar-label">Apr 2</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">2</div>
+      <div class="bar bar-views" style="height: calc(2 / 33 * 140px)"></div>
+      <div class="bar-label">Apr 3</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">3</div>
+      <div class="bar bar-views" style="height: calc(3 / 33 * 140px)"></div>
+      <div class="bar-label">Apr 4</div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-value">5</div>
+      <div class="bar bar-views" style="height: calc(5 / 33 * 140px)"></div>
+      <div class="bar-label">Apr 5</div>
+    </div>
+  </div>
+  <div class="legend">
+    <span><span class="legend-dot" style="background: var(--green)"></span> Page views</span>
+  </div>
+</div>
+
+<!-- Referrer Sources -->
+<h2>🔗 Top Referrers</h2>
+<div class="chart-container">
+  <div class="referrer-bar">
+    <span class="referrer-label">github.com</span>
+    <div class="referrer-fill" style="width: calc(7 / 7 * 60%)"></div>
+    <span class="referrer-count">7 (5 unique)</span>
+  </div>
+  <div class="referrer-bar">
+    <span class="referrer-label">Google</span>
+    <div class="referrer-fill" style="width: calc(3 / 7 * 60%)"></div>
+    <span class="referrer-count">3 (3 unique)</span>
+  </div>
+  <div class="referrer-bar">
+    <span class="referrer-label">linkedin.com</span>
+    <div class="referrer-fill" style="width: calc(1 / 7 * 60%)"></div>
+    <span class="referrer-count">1 (1 unique)</span>
+  </div>
+  <div class="referrer-bar">
+    <span class="referrer-label">reddit.com</span>
+    <div class="referrer-fill" style="width: calc(1 / 7 * 60%)"></div>
+    <span class="referrer-count">1 (1 unique)</span>
+  </div>
+  <div class="referrer-bar">
+    <span class="referrer-label">shynk.io</span>
+    <div class="referrer-fill" style="width: calc(1 / 7 * 60%)"></div>
+    <span class="referrer-count">1 (1 unique)</span>
+  </div>
+</div>
+
+<!-- Popular Paths -->
+<h2>📄 Most Visited Pages</h2>
+<table>
+  <thead>
+    <tr><th>Path</th><th>Views</th><th>Unique</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><a href="https://github.com/MadaBurns/bv-mcp">/ (Overview)</a></td><td>40</td><td>27</td></tr>
+    <tr><td><a href="https://github.com/MadaBurns/bv-mcp/tree/main/src">/tree/main/src</a></td><td>4</td><td>2</td></tr>
+    <tr><td><a href="https://github.com/MadaBurns/bv-mcp/pull/36">PR #36</a></td><td>4</td><td>1</td></tr>
+    <tr><td><a href="https://github.com/MadaBurns/bv-mcp/pull/38">PR #38</a></td><td>4</td><td>1</td></tr>
+    <tr><td><a href="https://github.com/MadaBurns/bv-mcp/tree/main/src/tools">/tree/main/src/tools</a></td><td>3</td><td>3</td></tr>
+    <tr><td><a href="https://github.com/MadaBurns/bv-mcp/pull/36/changes">PR #36 changes</a></td><td>3</td><td>1</td></tr>
+    <tr><td><a href="https://github.com/MadaBurns/bv-mcp/issues">/issues</a></td><td>2</td><td>2</td></tr>
+    <tr><td><a href="https://github.com/MadaBurns/bv-mcp/compare/main...klodr:bv-mcp:fix/spf-softfail-dmarc-context">klodr compare</a></td><td>2</td><td>1</td></tr>
+  </tbody>
+</table>
+
+<!-- Fork Audit -->
+<h2>🍴 Fork Audit (Who, What, When, Where, Why)</h2>
+<p class="section-note">All 4 forks are currently identical to upstream main — no divergent commits detected. One fork (klodr) has a feature branch.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Who</th>
+      <th>Type</th>
+      <th>When Forked</th>
+      <th>Where</th>
+      <th>Divergence</th>
+      <th>Risk</th>
+      <th>Why (Assessment)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <img class="avatar" src="https://avatars.githubusercontent.com/u/489942?v=4" alt="">
+        <a href="https://github.com/klodr">klodr</a>
+        <br><small style="color: var(--muted)">Claude Perrin · Altixia · France</small>
+      </td>
+      <td><span class="badge badge-user">User</span></td>
+      <td>Mar 30, 2026</td>
+      <td><a href="https://github.com/klodr/bv-mcp">klodr/bv-mcp</a></td>
+      <td>
+        <span class="badge badge-identical">main: identical</span><br>
+        <span class="badge badge-active" style="margin-top:4px">+1 branch</span>
+        <br><small style="color: var(--muted)">fix/spf-softfail-dmarc-context</small>
+      </td>
+      <td><span class="badge badge-risk-low">Low</span></td>
+      <td><strong>Contributor.</strong> Active user (35 repos, est. 2010). Created a feature branch for an SPF fix — likely submitted or plans to submit a PR. Legitimate open-source contribution pattern.</td>
+    </tr>
+    <tr>
+      <td>
+        <img class="avatar" src="https://avatars.githubusercontent.com/u/225302845?v=4" alt="">
+        <a href="https://github.com/iflow-mcp">iflow-mcp</a>
+      </td>
+      <td><span class="badge badge-org">Org</span></td>
+      <td>Mar 17, 2026</td>
+      <td><a href="https://github.com/iflow-mcp/madaburns-bv-mcp">iflow-mcp/madaburns-bv-mcp</a></td>
+      <td><span class="badge badge-identical">identical</span></td>
+      <td><span class="badge badge-risk-high">High</span></td>
+      <td><strong>Mass-fork aggregator.</strong> Organization with 22,594 public repos and no bio — this is an automated MCP tool mirroring/aggregation bot. Created Aug 2025. Forks everything matching "mcp" across GitHub. No custom changes. License compliance risk — BUSL-1.1 prohibits commercial use; if they redistribute as a hosted service, that's a violation.</td>
+    </tr>
+    <tr>
+      <td>
+        <img class="avatar" src="https://avatars.githubusercontent.com/u/261912477?v=4" alt="">
+        <a href="https://github.com/jozefkun">jozefkun</a>
+      </td>
+      <td><span class="badge badge-user">User</span></td>
+      <td>Mar 11, 2026</td>
+      <td><a href="https://github.com/jozefkun/bv-mcp">jozefkun/bv-mcp</a></td>
+      <td><span class="badge badge-identical">identical</span></td>
+      <td><span class="badge badge-risk-med">Medium</span></td>
+      <td><strong>Collector / evaluator.</strong> New account (Feb 2026) with 302 repos — likely bulk-forking to evaluate tools or build a catalogue. No modifications made. No clear malicious intent but the volume + new account is a yellow flag.</td>
+    </tr>
+    <tr>
+      <td>
+        <img class="avatar" src="https://avatars.githubusercontent.com/u/58114977?v=4" alt="">
+        <a href="https://github.com/zayonne">zayonne</a>
+      </td>
+      <td><span class="badge badge-user">User</span></td>
+      <td>Mar 10, 2026</td>
+      <td><a href="https://github.com/zayonne/bv-mcp">zayonne/bv-mcp</a></td>
+      <td><span class="badge badge-identical">identical</span></td>
+      <td><span class="badge badge-risk-low">Low</span></td>
+      <td><strong>Interested user.</strong> Established account (2019), 30 repos — normal fork profile. Forked same day as first external stars. No changes — likely evaluating or bookmarking for later use.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- Stargazer Audit -->
+<h2>⭐ Stargazer Timeline</h2>
+<table>
+  <thead>
+    <tr><th>Who</th><th>When</th><th>Note</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img class="avatar" src="https://avatars.githubusercontent.com/u/1845415?v=4" alt=""><a href="https://github.com/LaurentFough">LaurentFough</a></td>
+      <td>Mar 10, 2026 05:58 UTC</td>
+      <td>First external star — same day as first fork (zayonne)</td>
+    </tr>
+    <tr>
+      <td><img class="avatar" src="https://avatars.githubusercontent.com/u/837861?v=4" alt=""><a href="https://github.com/nbrains">nbrains</a></td>
+      <td>Mar 10, 2026 07:37 UTC</td>
+      <td>Second star, ~2 hours after first</td>
+    </tr>
+    <tr>
+      <td><img class="avatar" src="https://avatars.githubusercontent.com/u/40107068?v=4" alt=""><a href="https://github.com/zebadee2kk">zebadee2kk</a></td>
+      <td>Mar 11, 2026 08:43 UTC</td>
+      <td>Day after initial wave</td>
+    </tr>
+    <tr>
+      <td><img class="avatar" src="https://avatars.githubusercontent.com/u/63769775?v=4" alt=""><a href="https://github.com/thomas-griffiths">thomas-griffiths</a></td>
+      <td>Mar 20, 2026 20:43 UTC</td>
+      <td>10-day gap — organic discovery</td>
+    </tr>
+    <tr>
+      <td><img class="avatar" src="https://avatars.githubusercontent.com/u/83378247?v=4" alt=""><a href="https://github.com/MadaBurns">MadaBurns</a></td>
+      <td>Mar 21, 2026 06:50 UTC</td>
+      <td>Repo owner self-star</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- Key Insights -->
+<h2>🔍 Key Insights</h2>
+
+<div class="insight-card">
+  <strong>Clone-to-view ratio is extreme (69:1).</strong>
+  5,823 clones vs 84 page views suggests heavy automated/CI cloning — likely MCP tool registries, package indexers, or bots cloning without visiting the GitHub page. This is typical for tools listed on aggregator sites (Smithery, etc.).
+</div>
+
+<div class="insight-card">
+  <strong>March 30 spike: 3,197 clones in one day (55% of all traffic).</strong>
+  This coincides with klodr's fork creation. Likely triggered by a listing going live, a social media post, or registry inclusion. The 223 unique cloners that day suggest real human interest, not just a single bot.
+</div>
+
+<div class="insight-card">
+  <strong>iflow-mcp is an automated mass-forking aggregator.</strong>
+  22,594 public repos in an org created Aug 2025 — this is a bot that mirrors MCP servers. No changes to your code, but worth monitoring. Their fork name includes your username (<code>madaburns-bv-mcp</code>) which suggests automated cataloguing. Under BUSL-1.1, forking alone is fine; hosting commercially would violate the license.
+</div>
+
+<div class="insight-card">
+  <strong>Only one fork shows genuine contribution intent.</strong>
+  klodr (Claude Perrin, France) created a <code>fix/spf-softfail-dmarc-context</code> branch and their fork was visited via the compare page. This is a real contributor working on an SPF improvement.
+</div>
+
+<div class="insight-card">
+  <strong>Organic discovery is working.</strong>
+  Referrers include Google (3), LinkedIn (1), Reddit (1), and shynk.io (1) — diverse sources. Visitors are navigating to <code>src/tools/</code> (3 unique) which indicates engineers evaluating the implementation, not just passers-by.
+</div>
+
+<!-- Risk Summary -->
+<h2>⚠️ Risk Summary</h2>
+<div class="risk-assessment">
+  <div class="stat-card" style="border-left: 3px solid var(--green);">
+    <div class="label" style="margin-bottom: 0.5rem;">License Compliance</div>
+    <div style="font-size: 0.9rem;">No fork has diverged or added code. iflow-mcp is the only redistribution concern — monitor for hosted services using the fork.</div>
+  </div>
+  <div class="stat-card" style="border-left: 3px solid var(--green);">
+    <div class="label" style="margin-bottom: 0.5rem;">Code Integrity</div>
+    <div style="font-size: 0.9rem;">All forks identical to upstream. No evidence of malicious modifications, backdoor branches, or trojanized versions being distributed.</div>
+  </div>
+  <div class="stat-card" style="border-left: 3px solid var(--yellow);">
+    <div class="label" style="margin-bottom: 0.5rem;">Bot / Scraper Activity</div>
+    <div style="font-size: 0.9rem;">High clone volume with low page views (69:1 ratio) indicates automated tooling. iflow-mcp and jozefkun are likely automated. Not harmful but inflates metrics.</div>
+  </div>
+  <div class="stat-card" style="border-left: 3px solid var(--green);">
+    <div class="label" style="margin-bottom: 0.5rem;">Misuse Potential</div>
+    <div style="font-size: 0.9rem;">No evidence of forks being used for malicious purposes. Responsible use disclosure now added to README (Apr 6, 2026).</div>
+  </div>
+</div>
+
+<footer>
+  Generated by GitHub Copilot · Data sourced from GitHub REST API (repos, traffic, forks, stargazers endpoints)<br>
+  Traffic data limited to last 14 days per GitHub API constraints · Fork divergence checked at time of report generation
+</footer>
+
+</div>
+</body>
+</html>

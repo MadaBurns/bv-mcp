@@ -70,7 +70,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - id: extract
         name: Extract version from tag
@@ -205,9 +205,18 @@ jobs:
         if: env.skip != 'true'
         run: npm -w packages/dns-checks run build
 
+      - name: Install wasm-pack
+        if: env.skip != 'true'
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        if: env.skip != 'true'
+        run: npm run build:wasm
+
       - name: Deploy
         if: env.skip != 'true'
         run: npx wrangler deploy -c wrangler.jsonc
+
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 

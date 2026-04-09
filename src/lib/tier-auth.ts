@@ -5,12 +5,15 @@
  *
  * Resolves a bearer token to its tier via:
  * 1. KV cache (sub-ms, 5-min TTL)
- * 2. bv-web service binding (cache miss fallback)
- * 3. Static BV_API_KEY comparison (self-hosted fallback)
+ * 2. Trial key lookup (KV `trial:` prefix, 60s cache TTL)
+ * 3. bv-web service binding (cache miss fallback)
+ * 4. Static BV_API_KEY comparison (self-hosted fallback)
  */
 
 import type { McpApiKeyTier } from './config';
+import { TRIAL_KEY_CACHE_TTL } from './config';
 import { TierCacheEntrySchema, ValidateKeyResponseSchema } from '../schemas/auth';
+import { resolveTrialKey } from './trial-keys';
 
 export interface TierAuthResult {
 	authenticated: boolean;
@@ -20,22 +23,9 @@ export interface TierAuthResult {
 
 const TIER_KV_CACHE_TTL = 300; // 5 minutes
 
-/** SHA-256 hash a bearer token to a hex string (for KV keys and service binding payloads). */
-async function hashToken(token: string): Promise<string> {
-	const encoder = new TextEncoder();
-	const data = encoder.encode(token);
-	const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-	return Array.from(new Uint8Array(hashBuffer))
-		.map((b) => b.toString(16).padStart(2, '0'))
-		.join('');
-}
-
-/** SHA-256 digest as raw bytes (for constant-time comparison). */
+/** SHA-256 digest as raw bytes (for constant-time comparison and hex derivation). */
 async function hashTokenRaw(token: string): Promise<Uint8Array> {
-	const encoder = new TextEncoder();
-	const data = encoder.encode(token);
-	const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-	return new Uint8Array(hashBuffer);
+	return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
 }
 
 /**
@@ -43,8 +33,9 @@ async function hashTokenRaw(token: string): Promise<Uint8Array> {
  *
  * Resolution order:
  * 1. KV cache lookup (`tier:{hash}`)
- * 2. Service binding to companion app (validate-key endpoint)
- * 3. Static BV_API_KEY comparison (self-hosted fallback → owner tier)
+ * 2. Trial key lookup (`trial:{hash}` in KV — time + usage limits)
+ * 3. Service binding to companion app (validate-key endpoint)
+ * 4. Static BV_API_KEY comparison (self-hosted fallback → owner tier)
  *
  * Owner tier requires IP allowlist (OWNER_ALLOW_IPS env var, comma-separated).
  * If the key matches BV_API_KEY but the IP is not in the allowlist,
@@ -63,7 +54,10 @@ export async function resolveTier(
 ): Promise<TierAuthResult> {
 	if (!token) return { authenticated: false };
 
-	const keyHash = await hashToken(token);
+	const tokenRaw = await hashTokenRaw(token);
+	const keyHash = Array.from(tokenRaw)
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('');
 
 	// 1. Try KV cache
 	if (env.RATE_LIMIT) {
@@ -84,7 +78,34 @@ export async function resolveTier(
 		}
 	}
 
-	// 2. Try service binding to bv-web
+	// 2. Try trial key lookup
+	if (env.RATE_LIMIT) {
+		try {
+			const trialResult = await resolveTrialKey(env.RATE_LIMIT, keyHash);
+			if (trialResult) {
+				if (!trialResult.authenticated) {
+					// Expired or exhausted — cache as revoked to avoid repeated lookups
+					await env.RATE_LIMIT.put(
+						`tier:${keyHash}`,
+						JSON.stringify({ tier: 'free', revokedAt: Date.now() }),
+						{ expirationTtl: TRIAL_KEY_CACHE_TTL },
+					);
+					return { authenticated: false };
+				}
+				// Valid trial key — cache with shorter TTL for faster expiry/exhaustion detection
+				await env.RATE_LIMIT.put(
+					`tier:${keyHash}`,
+					JSON.stringify({ tier: trialResult.tier, revokedAt: null }),
+					{ expirationTtl: TRIAL_KEY_CACHE_TTL },
+				);
+				return { authenticated: true, tier: trialResult.tier, keyHash };
+			}
+		} catch {
+			// Trial lookup failed, fall through
+		}
+	}
+
+	// 3. Try service binding to bv-web
 	if (env.BV_WEB && env.BV_WEB_INTERNAL_KEY) {
 		try {
 			const response = await env.BV_WEB.fetch(
@@ -128,11 +149,12 @@ export async function resolveTier(
 		}
 	}
 
-	// 3. Fallback: compare against static BV_API_KEY (self-hosted/dev)
+	// 4. Fallback: compare against static BV_API_KEY (self-hosted/dev)
 	if (env.BV_API_KEY) {
 		// Constant-time comparison: XOR raw SHA-256 digests byte-by-byte
 		// (same pattern as auth.ts — avoids timing side-channels from === on strings)
-		const [a, b] = await Promise.all([hashTokenRaw(token), hashTokenRaw(env.BV_API_KEY)]);
+		const a = tokenRaw;
+		const b = await hashTokenRaw(env.BV_API_KEY);
 		let mismatch = 0;
 		for (let i = 0; i < a.byteLength; i++) {
 			mismatch |= a[i] ^ b[i];

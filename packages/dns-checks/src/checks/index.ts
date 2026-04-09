@@ -23,6 +23,7 @@ export { checkDANE } from './check-dane';
 export { checkDANEHTTPS } from './check-dane-https';
 export { checkSVCBHTTPS } from './check-svcb-https';
 export { checkSubdomainTakeover } from './check-subdomain-takeover';
+export { checkSubdomailing } from './check-subdomailing';
 export { checkHTTPSecurity } from './check-http-security';
 
 // ── Analysis utilities (re-exported for consumers) ───────────────────────────

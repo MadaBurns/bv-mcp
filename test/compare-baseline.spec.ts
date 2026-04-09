@@ -214,7 +214,7 @@ describe('compare_baseline dispatch', () => {
 		});
 
 		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(1);
+		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('Baseline Comparison: example.com');
 		expect(result.content[0].text).toContain('Result:');
 	});

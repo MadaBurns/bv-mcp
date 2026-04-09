@@ -28,6 +28,19 @@ export const ScanDomainArgs = z.object({
 	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 }).passthrough();
 
+/** batch_scan */
+export const BatchScanArgs = z.object({
+	domains: z.array(z.string().min(1).max(253)).min(1).max(10).describe('Domains to scan (max 10 per request)'),
+	force_refresh: z.boolean().optional().describe('Bypass cache and run fresh scans.'),
+	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+}).passthrough();
+
+/** compare_domains */
+export const CompareDomainsArgs = z.object({
+	domains: z.array(z.string().min(1).max(253)).min(2).max(5).describe('Domains to compare (2–5 domains)'),
+	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+}).passthrough();
+
 /** check_dkim */
 export const CheckDkimArgs = z.object({
 	domain: DomainSchema.describe('Domain to check (e.g., example.com)'),
@@ -182,7 +195,10 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	check_mx_reputation: BaseDomainArgs,
 	check_srv: BaseDomainArgs,
 	check_zone_hygiene: BaseDomainArgs,
+	check_subdomailing: BaseDomainArgs,
 	scan_domain: ScanDomainArgs,
+	batch_scan: BatchScanArgs,
+	compare_domains: CompareDomainsArgs,
 	compare_baseline: CompareBaselineArgs,
 	generate_fix_plan: GenerateFixPlanArgs,
 	generate_spf_record: GenerateSpfArgs,

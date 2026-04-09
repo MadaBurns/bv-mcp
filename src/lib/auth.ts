@@ -41,5 +41,12 @@ export async function isAuthorizedRequest(authHeader: string | undefined, expect
 
 /** Build a 401 JSON response with a JSON-RPC unauthorized error */
 export function unauthorizedResponse() {
-	return Response.json(jsonRpcError(null, JSON_RPC_ERRORS.UNAUTHORIZED, 'Unauthorized: missing or invalid bearer token'), { status: 401 });
+	return Response.json(
+		jsonRpcError(
+			null,
+			JSON_RPC_ERRORS.UNAUTHORIZED,
+			'Unauthorized: missing or invalid bearer token. Remove the token to use the free tier, or verify your API key is current.',
+		),
+		{ status: 401 },
+	);
 }

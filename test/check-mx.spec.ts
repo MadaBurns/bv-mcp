@@ -130,4 +130,35 @@ describe('checkMx', () => {
 		expect(finding!.severity).toBe('medium');
 		expect(finding!.detail).toContain('ghost.dangling.com');
 	});
+
+	it('logs warning when provider detection fails', async () => {
+		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		// First MX query (from checkMX package) succeeds; second (re-query in wrapper) throws
+		let mxCallCount = 0;
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com') && (url.includes('type=MX') || url.includes('type=15'))) {
+				mxCallCount++;
+				if (mxCallCount <= 1) {
+					const answers = [{ name: 'provider-fail.com', type: 15, TTL: 300, data: '10 mx.provider-fail.com.' }];
+					return Promise.resolve(createDohResponse([{ name: 'provider-fail.com', type: 15 }], answers));
+				}
+				// Second MX call (re-query for provider detection) — simulate DNS failure
+				return Promise.reject(new Error('DNS query failed'));
+			}
+			if (url.includes('cloudflare-dns.com') && url.includes('type=TXT')) {
+				return Promise.resolve(createDohResponse([{ name: 'provider-fail.com', type: 16 }], []));
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const { checkMx } = await import('../src/tools/check-mx');
+		const result = await checkMx('provider-fail.com');
+		// Should still return a result (non-critical failure)
+		expect(result.category).toBe('mx');
+		// Verify warn-level log was emitted
+		const logCalls = consoleSpy.mock.calls.map((c) => String(c[0]));
+		const warnLog = logCalls.find((l) => l.includes('"severity":"warn"') && l.includes('provider'));
+		expect(warnLog).toBeDefined();
+		consoleSpy.mockRestore();
+	});
 });

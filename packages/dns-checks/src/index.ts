@@ -49,6 +49,7 @@ export {
 	checkDANEHTTPS,
 	checkSVCBHTTPS,
 	checkSubdomainTakeover,
+	checkSubdomailing,
 	checkHTTPSecurity,
 	// Analysis utilities
 	parseDmarcTags,
