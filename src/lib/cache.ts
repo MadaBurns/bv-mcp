@@ -187,6 +187,10 @@ export async function cacheSet(key: string, value: unknown, kv?: KVNamespace, tt
  * otherwise executes the function and caches the result.
  * Includes in-flight deduplication to prevent cache stampedes.
  *
+ * When KV is available, uses a sentinel key (`key:computing`) for cross-isolate
+ * deduplication. If another isolate is already computing, polls KV for the result
+ * with exponential backoff before falling back to re-execution.
+ *
  * @param key - Cache key
  * @param run - Async function to execute on cache miss
  * @param kv - Optional KV namespace for persistent caching
@@ -200,14 +204,45 @@ export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: K
 		if (cached !== undefined) return cached;
 	}
 
+	// Per-isolate INFLIGHT dedup (same as before)
 	const existing = INFLIGHT.get(key);
-	if (existing) return existing as Promise<T>; // INFLIGHT map stores Promise<unknown>; keyed by same cache key ensures type match
+	if (existing) return existing as Promise<T>;
+
+	// Cross-isolate dedup via KV sentinel (best-effort)
+	if (kv && !skipCache) {
+		const sentinelKey = `${key}:computing`;
+		try {
+			const sentinel = await kv.get(sentinelKey);
+			if (sentinel) {
+				// Another isolate is computing — poll for result
+				const polled = await pollForResult<T>(key, kv);
+				if (polled !== undefined) return polled;
+				// Poll exhausted — fall through and re-execute (acceptable double-execution)
+			} else {
+				// Claim the computation
+				await kv.put(sentinelKey, String(Date.now()), { expirationTtl: SENTINEL_TTL_SECONDS });
+			}
+		} catch {
+			// KV error — proceed without cross-isolate dedup
+		}
+	}
 
 	const cleanup = setTimeout(() => INFLIGHT.delete(key), INFLIGHT_CLEANUP_MS);
 	const promise = run()
 		.then(async (result) => {
 			await cacheSet(key, result, kv, ttlSeconds);
+			// Clean up sentinel
+			if (kv) {
+				try { await kv.delete(`${key}:computing`); } catch { /* best-effort */ }
+			}
 			return result;
+		})
+		.catch(async (err) => {
+			// Clean up sentinel on failure
+			if (kv) {
+				try { await kv.delete(`${key}:computing`); } catch { /* best-effort */ }
+			}
+			throw err;
 		})
 		.finally(() => {
 			clearTimeout(cleanup);
@@ -216,4 +251,49 @@ export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: K
 
 	INFLIGHT.set(key, promise);
 	return promise;
+}
+
+export interface CacheResult<T> {
+	data: T;
+	cacheStatus: 'hit' | 'miss';
+}
+
+/**
+ * Like `runWithCache`, but returns cache hit/miss metadata alongside the result.
+ * Used where callers need to report cache status (e.g. analytics).
+ */
+export async function runWithCacheTracked<T>(
+	key: string,
+	run: () => Promise<T>,
+	kv?: KVNamespace,
+	ttlSeconds?: number,
+	skipCache?: boolean,
+): Promise<CacheResult<T>> {
+	if (!skipCache) {
+		const cached = await cacheGet<T>(key, kv);
+		if (cached !== undefined) return { data: cached, cacheStatus: 'hit' };
+	}
+
+	const data = await runWithCache(key, run, kv, ttlSeconds, true);
+	return { data, cacheStatus: 'miss' };
+}
+
+/** Sentinel TTL — short-lived to avoid stale dedup locks. */
+const SENTINEL_TTL_SECONDS = 10;
+
+/** Poll intervals for cross-isolate dedup. */
+const POLL_DELAYS_MS = [250, 500, 750];
+
+/** Poll KV for a result with exponential backoff. */
+async function pollForResult<T>(key: string, kv: KVNamespace): Promise<T | undefined> {
+	for (const delay of POLL_DELAYS_MS) {
+		await new Promise((r) => setTimeout(r, delay));
+		try {
+			const val = await kv.get(key, 'json');
+			if (val !== null) return val as T;
+		} catch {
+			return undefined; // KV error — stop polling
+		}
+	}
+	return undefined;
 }

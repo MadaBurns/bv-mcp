@@ -95,6 +95,8 @@ This uses native Streamable HTTP with no bridge process. Prefer this for free-ti
 
 **With API key** — open **Settings → Developer → Edit Config** (`claude_desktop_config.json`) and add:
 
+**macOS / Linux:**
+
 ```json
 {
   "mcpServers": {
@@ -111,6 +113,29 @@ This uses native Streamable HTTP with no bridge process. Prefer this for free-ti
   }
 }
 ```
+
+> On macOS, if Homebrew is installed elsewhere replace `/opt/homebrew/bin/npx` with your actual `npx` path (run `which npx` to find it).
+
+**Windows** (`%APPDATA%\Claude\claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://dns-mcp.blackveilsecurity.com/mcp",
+        "--header",
+        "Authorization: Bearer YOUR_API_KEY"
+      ]
+    }
+  }
+}
+```
+
+> Use bare `"command": "npx"` — do **not** use the full `C:\Program Files\nodejs\npx.cmd` path. The space in `Program Files` breaks `cmd.exe` argument parsing. If bare `npx` still fails, create a wrapper `.bat` file — see [Troubleshooting § Windows](troubleshooting.md#3-windows-cprogram-is-not-recognized) for the fix and other options.
 
 Fully restart Claude Desktop after editing the config. Replace `YOUR_API_KEY` with your actual key.
 
@@ -135,6 +160,8 @@ If the client key is valid but not registered in production, requests fail with 
 
 **Without API key (local stdio):** If you want first-party local stdio instead of the hosted HTTP connector:
 
+**macOS / Linux:**
+
 ```json
 {
   "mcpServers": {
@@ -147,7 +174,25 @@ If the client key is valid but not registered in production, requests fail with 
 }
 ```
 
-> On macOS GUI apps, `npx` may not resolve from `PATH`; if Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path. After editing the config, fully restart Claude Desktop. If you already have other servers, merge `"blackveil-dns"` into your existing `"mcpServers"` object — don't paste a second `{ }` wrapper.
+> If Homebrew is installed elsewhere, replace `/opt/homebrew/bin/npx` with your actual `npx` path.
+
+**Windows:**
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "--package", "blackveil-dns", "blackveil-dns-mcp"]
+    }
+  }
+}
+```
+
+> Use bare `"command": "npx"` on Windows — do not use the full path. If bare `npx` still fails, create a wrapper `.bat` file — see [Troubleshooting § Windows](troubleshooting.md#3-windows-cprogram-is-not-recognized) for the fix and other options.
+
+After editing the config, fully restart Claude Desktop. If you already have other servers, merge `"blackveil-dns"` into your existing `"mcpServers"` object — don't paste a second `{ }` wrapper.
 
 ## Claude Mobile (iOS / Android)
 
