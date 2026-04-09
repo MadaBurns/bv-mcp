@@ -28,11 +28,13 @@
       "head_sampling_rate": 1
     }
   },
-  // Cron Trigger — runs analytics alerting checks every 15 minutes.
+  // Cron Triggers:
+  // - Every 15 minutes: analytics alerting checks (error rate, latency, rate limits)
+  // - Daily at 08:00 UTC: per-tier usage digest webhook
   // Requires CF_ACCOUNT_ID, CF_ANALYTICS_TOKEN, and ALERT_WEBHOOK_URL
-  // to be set for alerts to fire. Without them, the handler is a no-op.
+  // to be set for alerts to fire. Without them, the handlers are no-ops.
   "triggers": {
-    "crons": ["*/15 * * * *"]
+    "crons": ["*/15 * * * *", "0 8 * * *"]
   },
   // KV namespaces — required for production (cross-isolate sessions, caching,
   // rate limiting). Without these, Workers fall back to in-memory stores which
