@@ -11,6 +11,7 @@ import type { CheckResult } from '../lib/scoring';
 import { queryDnsRecords, queryTxtRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { detectProviderMatches, loadProviderSignatures } from '../lib/provider-signatures';
+import { logEvent } from '../lib/log';
 
 export interface CheckMxOptions {
 	providerSignaturesUrl?: string;
@@ -100,8 +101,17 @@ export async function checkMx(domain: string, options?: CheckMxOptions, dnsOptio
 				);
 			}
 		}
-	} catch {
-		// Provider detection failure is non-critical — return base result
+	} catch (err) {
+		// Provider detection failure is non-critical — return base result with warning log
+		logEvent({
+			timestamp: new Date().toISOString(),
+			severity: 'warn',
+			category: 'provider-detection',
+			domain,
+			tool: 'check_mx',
+			error: err instanceof Error ? err.message : String(err),
+			details: { phase: 'provider_detection' },
+		});
 	}
 
 	return { ...baseResult, findings };
