@@ -6,18 +6,10 @@
  */
 
 import { checkDANE } from '@blackveil/dns-checks';
-import { queryDns, queryDnsRecords, queryTxtRecords } from '../lib/dns';
+import { queryDns } from '../lib/dns';
+import { makeQueryDNS } from '../lib/dns-query-adapter';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult } from '../lib/scoring';
-
-function makeQueryDNS(dnsOptions?: QueryDnsOptions) {
-	return async (domain: string, type: string): Promise<string[]> => {
-		if (type === 'TXT') {
-			return queryTxtRecords(domain, dnsOptions);
-		}
-		return queryDnsRecords(domain, type as Parameters<typeof queryDnsRecords>[1], dnsOptions);
-	};
-}
 
 /**
  * Check DANE TLSA records for a domain's MX servers and HTTPS endpoint.

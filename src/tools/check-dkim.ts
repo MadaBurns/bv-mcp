@@ -7,7 +7,7 @@
  */
 
 import { checkDKIM, createFinding, buildCheckResult } from '@blackveil/dns-checks';
-import { queryDnsRecords, queryTxtRecords } from '../lib/dns';
+import { makeQueryDNS } from '../lib/dns-query-adapter';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult } from '../lib/scoring';
 
@@ -27,15 +27,6 @@ const HIGH_CONFIDENCE_DKIM_PROVIDERS = new Set([
  * Email providers that typically sign with DKIM but vary by configuration.
  */
 const MEDIUM_CONFIDENCE_DKIM_PROVIDERS = new Set(['proofpoint', 'mimecast']);
-
-function makeQueryDNS(dnsOptions?: QueryDnsOptions) {
-	return async (domain: string, type: string): Promise<string[]> => {
-		if (type === 'TXT') {
-			return queryTxtRecords(domain, dnsOptions);
-		}
-		return queryDnsRecords(domain, type as Parameters<typeof queryDnsRecords>[1], dnsOptions);
-	};
-}
 
 /**
  * Check DKIM records for a domain.

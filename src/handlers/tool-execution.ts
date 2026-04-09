@@ -20,6 +20,34 @@ interface ToolExecutionBase {
 	keyHash?: string;
 }
 
+/**
+ * Build the common ToolExecutionBase fields from handler-level variables.
+ * Eliminates repeating these 8 fields at every logToolSuccess / logToolFailure call site.
+ */
+export function buildLogContext(
+	toolName: string,
+	startTime: number,
+	domain: string | undefined,
+	runtimeOptions?: {
+		analytics?: AnalyticsClient;
+		country?: string;
+		clientType?: string;
+		authTier?: string;
+		keyHash?: string;
+	},
+): ToolExecutionBase {
+	return {
+		toolName,
+		durationMs: Date.now() - startTime,
+		domain,
+		analytics: runtimeOptions?.analytics,
+		country: runtimeOptions?.country,
+		clientType: runtimeOptions?.clientType as McpClientType,
+		authTier: runtimeOptions?.authTier,
+		keyHash: runtimeOptions?.keyHash,
+	};
+}
+
 export function logToolSuccess(options: ToolExecutionBase & {
 	status: ToolSuccessStatus;
 	logResult: string;

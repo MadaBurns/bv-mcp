@@ -839,7 +839,7 @@ describe('checkLookalikes - timeout partial flag', () => {
 		const result = await checkLookalikes('test.com');
 
 		// Timeout path should mark result as partial
-		expect((result as Record<string, unknown>).partial).toBe(true);
+		expect(result.partial).toBe(true);
 		expect(result.findings.length).toBe(1);
 		expect(result.findings[0].title).toBe('Lookalike check incomplete');
 		expect(result.findings[0].severity).toBe('info');
@@ -855,6 +855,6 @@ describe('checkLookalikes - timeout partial flag', () => {
 		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
 		const result = await checkLookalikes('test.com');
 
-		expect((result as Record<string, unknown>).partial).toBeUndefined();
+		expect(result.partial).toBeUndefined();
 	});
 });

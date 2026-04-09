@@ -61,7 +61,9 @@ const DAY_MS = 86_400_000;
 
 // Best-effort per-IP serialization for KV updates inside a single isolate.
 // This does not provide cross-isolate atomicity, but it prevents local races.
+// Capped at 5000 entries — excess IPs skip serialization (acceptable for best-effort).
 const KV_IP_LOCK_TAILS = new Map<string, Promise<void>>();
+const KV_IP_LOCK_MAX = 5000;
 
 /** Circuit breaker for QuotaCoordinator DO — avoids hammering a failing DO. */
 const quotaCoordinatorBreaker = new CircuitBreaker({
@@ -165,6 +167,10 @@ async function checkControlPlaneRateLimitKV(ip: string, kv: KVNamespace): Promis
 }
 
 export async function withIpKvLock<T>(ip: string, work: () => Promise<T>): Promise<T> {
+	// Skip serialization if map is at capacity — best-effort fairness
+	if (KV_IP_LOCK_TAILS.size >= KV_IP_LOCK_MAX && !KV_IP_LOCK_TAILS.has(ip)) {
+		return work();
+	}
 	const prevTail = KV_IP_LOCK_TAILS.get(ip) ?? Promise.resolve();
 	let release: (() => void) | undefined;
 	const current = new Promise<void>((resolve) => {
