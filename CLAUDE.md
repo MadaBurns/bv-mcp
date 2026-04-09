@@ -5,11 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What is this?
 
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
-
-**Architecture diagrams**: See `docs/architecture.md` for Mermaid diagrams covering system overview, request flows (HTTP, stdio, service binding), scan orchestration, scoring model, and security layers.
-Exposes 44 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
+Exposes 41 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
-**Version**: 2.6.4 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.1.18 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
 ## Commands
 
@@ -43,7 +41,7 @@ git config core.hooksPath .githooks    # Enable pre-commit hooks (one-time setup
 
 npm workspace monorepo. Root is a Cloudflare Worker; `packages/dns-checks` (`@blackveil/dns-checks`) is a separately publishable runtime-agnostic package.
 
-**Entrypoints**: `src/index.ts` (Worker/Hono app), `src/package.ts` (npm package → `dist/index.js`), `src/stdio.ts` (CLI → `dist/stdio.js` with `cloudflare:workers` shim), `src/internal.ts` (service binding routes), `src/scheduled.ts` (Cron Trigger alerting + daily tier digest).
+**Entrypoints**: `src/index.ts` (Worker/Hono app), `src/package.ts` (npm package → `dist/index.js`), `src/stdio.ts` (CLI → `dist/stdio.js` with `cloudflare:workers` shim), `src/internal.ts` (service binding routes), `src/scheduled.ts` (Cron Trigger alerting).
 
 ```bash
 npm -w packages/dns-checks run build      # Build sub-package
@@ -58,7 +56,7 @@ src/index.ts              — Hono app, HTTP routes, middleware wiring
 src/package.ts            — npm package entrypoint
 src/internal.ts           — Internal service binding routes (no MCP overhead)
 src/stdio.ts              — Native stdio MCP transport (CLI)
-src/scheduled.ts          — Cron Trigger handler for analytics alerting + daily tier digest
+src/scheduled.ts          — Cron Trigger handler for analytics alerting
 
 src/mcp/                  — MCP protocol layer
   execute.ts              — Transport-neutral shared executor (validation, rate limiting, dispatch, analytics)
@@ -113,17 +111,13 @@ src/lib/                  — Shared infrastructure
   profile-accumulator.ts  — Durable Object for per-profile telemetry (SQLite-backed)
   dns.ts                  — DNS-over-HTTPS facade; queryTxtRecords concatenates per RFC 7208 §3.3, unescapes RFC 1035 §5.1 (max 2 passes)
   sanitize.ts             — Domain validation, SSRF protection (imports `punycode/` — trailing slash = npm package)
-  config.ts               — SSRF constants, DNS tuning, rate limit quotas, TIER_CONCURRENT_LIMITS, runtime-overridable parsers
+  config.ts               — SSRF constants, DNS tuning, rate limit quotas
   session.ts              — KV + in-memory session management with dual-write
-  cache.ts                — KV + in-memory TTL cache, INFLIGHT dedup, cacheSetDeferred(), cross-isolate sentinel dedup
-  rate-limiter.ts         — KV + in-memory per-IP rate limiting; withIpKvLock(); per-tier concurrency limits; DO circuit breaker
-  circuit-breaker.ts      — Lightweight per-isolate circuit breaker (CLOSED→OPEN→HALF_OPEN) for external dependencies
-  semaphore.ts            — Promise-based counting semaphore for DNS query concurrency control
+  cache.ts                — KV + in-memory TTL cache, INFLIGHT dedup, cacheSetDeferred()
+  rate-limiter.ts         — KV + in-memory per-IP rate limiting; withIpKvLock() for serialization
   json-rpc.ts             — JSON-RPC 2.0 types, error codes, response builders
   auth.ts                 — Bearer token validation (constant-time XOR)
-  analytics.ts            — Analytics Engine integration (fail-open, 5 event types)
-  analytics-engine.ts     — Shared Analytics Engine SQL API client
-  analytics-queries.ts    — Pre-built per-tier and aggregate SQL query builders
+  analytics.ts            — Analytics Engine integration (fail-open, 4 event types)
   log.ts                  — Structured JSON logging with sanitization
 
 test/                     — One spec per source file
@@ -148,7 +142,7 @@ packages/dns-checks/     — @blackveil/dns-checks (runtime-agnostic core librar
 
 - **`packages/dns-checks/`** (`@blackveil/dns-checks`): Runtime-agnostic core library containing DNS validation logic. No Cloudflare dependencies. Contains 16 core check functions (SPF, DMARC, DKIM, etc.) and scoring engine. Published as separate npm package for reuse in other environments.
 
-- **`src/tools/`**: MCP protocol wrappers with Cloudflare infrastructure. Contains 44 MCP tools including the 16 check wrappers plus orchestration tools (scan_domain, explain_finding, etc.). Depends on `@blackveil/dns-checks` package.
+- **`src/tools/`**: MCP protocol wrappers with Cloudflare infrastructure. Contains 41 MCP tools including the 16 check wrappers plus orchestration tools (scan_domain, explain_finding, etc.). Depends on `@blackveil/dns-checks` package.
 
 **When to Add to Each Layer**:
 - **dns-checks package**: New DNS validation logic, scoring algorithms, or check implementations that could be reused outside Cloudflare Workers
@@ -175,7 +169,7 @@ Runs **16 checks** in parallel via `Promise.allSettled`. Each has cache key `cac
 
 **Maturity staging**: `computeMaturityStage()` classifies 0-4 (Unprotected → Hardened). Stage 3 doesn't require DKIM. Stage 4 hardening signals: CAA, DKIM-discovered, BIMI, DANE, MTA-STS strict. `capMaturityStage()` caps by score: F (<50) → max Stage 2, D/D+ (<63) → max Stage 3.
 
-**Partial results on timeout**: 12s scan timeout preserves completed checks; missing get timeout findings with `passed: false` and `score: 0`. Per-check timeouts 8s. Scan context skips secondary DNS confirmation for speed.
+**Partial results on timeout**: 12s scan timeout preserves completed checks; missing get timeout findings. Per-check timeouts 8s. Scan context skips secondary DNS confirmation for speed.
 
 **Post-processing adjustments**:
 - **Non-mail**: No MX → queries parent DMARC `sp=`/`p=` → downgrades email-auth findings to `info`
@@ -198,7 +192,7 @@ Resolution: `extractFormat(args)` in `tool-args.ts` → explicit param wins → 
 - `createFinding()` + `buildCheckResult()` from `lib/scoring-model.ts` (re-exported via `lib/scoring.ts`) — never construct findings manually. `createFinding()` auto-sanitizes `detail` via `sanitizeDnsData()`
 - `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs — runs after Zod shape validation for SSRF/blocklist protection
 - `mcpError()` / `mcpText()` from `handlers/tool-formatters.ts` for MCP response formatting
-- `cacheGet()` / `cacheSet()` / `cacheSetDeferred()` / `runWithCache()` from `lib/cache.ts`; `cacheSetDeferred()` wraps in `ctx.waitUntil()`; `runWithCache()` accepts `skipCache` for `force_refresh`; `runWithCache()` uses KV sentinel keys for cross-isolate dedup
+- `cacheGet()` / `cacheSet()` / `cacheSetDeferred()` / `runWithCache()` from `lib/cache.ts`; `cacheSetDeferred()` wraps in `ctx.waitUntil()`; `runWithCache()` accepts `skipCache` for `force_refresh`
 - JSDoc (`/** */`) on exported functions; `import type { ... }` for type-only imports
 - All tool functions return `Promise<CheckResult>` (follow `check-spf.ts` pattern) and accept optional `dnsOptions?: QueryDnsOptions`
 - `check_mx` is dynamically imported in `handlers/tools.ts` (for test mock isolation)
@@ -237,9 +231,9 @@ All other errors return a generic fallback message. New validation errors that n
 
 > Production may override code defaults via `SCORING_CONFIG` env var in `.dev/wrangler.deploy.jsonc`.
 
-**Protective (20%)** — Active defenses: Subdomain Takeover (4), HTTP Security (3), MTA-STS (3), Subdomailing (3), MX (2), CAA (2), NS (2), Lookalikes (2), Shadow Domains (2).
+**Protective (20%)** — Active defenses: Subdomain Takeover (4), HTTP Security (3), MTA-STS (3), MX (2), CAA (2), NS (2), Lookalikes (2), Shadow Domains (2).
 
-**Hardening (10%)** — Bonus-only: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene. ~1.4 pts each. Never subtracts. Pass requires `result.passed && result.score >= 50` to prevent degraded checks from inflating score.
+**Hardening (10%)** — Bonus-only: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene. ~1.4 pts each. Never subtracts.
 
 ### Scoring rules
 
@@ -274,7 +268,7 @@ All scoring parameters configurable via `SCORING_CONFIG` env var (JSON). Support
 
 - **SSRF**: `config.ts` defines blocked IPs/TLDs; `sanitize.ts` enforces. `global_fetch_strictly_public` compat flag. All outbound fetches use `redirect: 'manual'`
 - **Auth**: Optional `BV_API_KEY`, constant-time XOR. Token extracted from `Authorization: Bearer <token>` header first, then `?api_key=` query param as fallback (enables Smithery and URL-only clients). Tier-auth cascades: KV cache → bv-web service binding → static fallback. Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner tier has unlimited rate limits but requires client IP in `OWNER_ALLOW_IPS` — mismatched IPs downgrade to `partner`
-- **Rate limiting**: 50 req/min, 300 req/hr per IP (unauthenticated). Authenticated users bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_lookalikes`/`check_shadow_domains`: 20/day per IP with 60-min caching. Per-tier concurrency limits (free:3, agent:5, developer:10, enterprise:25, partner:50, owner:∞) — best-effort per-isolate fairness, not hard enforcement
+- **Rate limiting**: 50 req/min, 300 req/hr per IP (unauthenticated). Authenticated users bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_lookalikes`/`check_shadow_domains`: 20/day per IP with 60-min caching
 - **Per-tool quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts`. Global cap 500k/day (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via `QuotaCoordinator` DO
 - **Content-Type**: POST requires `application/json`; missing allowed for compat; non-JSON → 415
 - **Body limit**: 10 KB on `/mcp`
@@ -374,7 +368,7 @@ npm and Cloudflare deploy run in parallel after version bump. Requires `NPM_TOKE
 
 ## Service Binding Integration
 
-`/internal/tools/call` accepts plain JSON `{ name, arguments }`, returns `{ content, isError? }`. `/internal/tools/batch` runs same tool across multiple domains (max 500, concurrency 1-50, 256 KB body limit). `?format=structured` returns raw `CheckResult` per domain. `/internal/analytics/*` endpoints provide per-tier usage summaries, key-level breakdowns, and daily digests.
+`/internal/tools/call` accepts plain JSON `{ name, arguments }`, returns `{ content, isError? }`. `/internal/tools/batch` runs same tool across multiple domains (max 500, concurrency 1-50, 256 KB body limit). `?format=structured` returns raw `CheckResult` per domain.
 
 | Layer | Public `/mcp` | Internal `/internal/*` |
 |-------|:---:|:---:|
@@ -417,11 +411,7 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 
 ## Analytics & Observability
 
-Five event types: `mcp_request`, `tool_call`, `rate_limit`, `session`, `degradation`. Each event includes auth tier and key hash (truncated, non-reversible) for per-tier analytics. Pre-built per-tier query builders in `analytics-queries.ts` cover tool usage, latency, error rates, cache performance, rate limits, sessions, client types, daily trends, and key-level usage. Shared `queryAnalyticsEngine()` client in `analytics-engine.ts`.
-
-Two Cron Triggers: `*/15 * * * *` (anomaly alerting) and `0 8 * * *` (daily tier digest). Anomaly alerting checks error rates, p95 latency, and rate-limit spikes. Daily digest summarizes per-tier tool usage, requests, and unique domains for the previous 24h. Both optional — require `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
-
-Operator analytics API (internal service binding only): `GET /internal/analytics/tier-summary`, `GET /internal/analytics/key-usage`, `GET /internal/analytics/digest`. All guarded by `cf-connecting-ip` check (not accessible from public internet).
+Four event types: `mcp_request`, `tool_call`, `rate_limit`, `session`. Pre-built queries in `analytics-queries.ts`. Scheduled handler (`scheduled.ts`) runs every 15 min via Cron Trigger for anomaly alerts. All alerting optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
 
 Client detection (`client-detection.ts`): `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `unknown`. Used for analytics + format auto-detection, never security.
 
