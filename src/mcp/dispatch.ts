@@ -40,6 +40,7 @@ export interface DispatchMcpMethodOptions {
 	country?: string;
 	clientType?: string;
 	authTier?: string;
+	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
 }
 
@@ -94,6 +95,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 						country: options.country,
 						clientType: options.clientType as import('../lib/client-detection').McpClientType,
 						authTier: options.authTier,
+						keyHash: options.keyHash,
 					});
 				}
 
@@ -147,6 +149,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				country: options.country,
 				clientType: options.clientType,
 				authTier: options.authTier,
+				keyHash: options.keyHash,
 				certstream: options.certstream,
 			});
 

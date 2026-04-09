@@ -34,6 +34,7 @@ export type {
 	CategoryTier,
 	CheckCategory,
 	CheckResult,
+	CheckStatus,
 	Finding,
 	FindingConfidence,
 	ScanScore,
