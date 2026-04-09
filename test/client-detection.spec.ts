@@ -2,6 +2,21 @@ import { describe, it, expect } from 'vitest';
 import { detectMcpClient } from '../src/lib/client-detection';
 
 describe('detectMcpClient', () => {
+	it('detects Claude Mobile', () => {
+		expect(detectMcpClient('claude-mobile/1.0.0')).toBe('claude_mobile');
+		expect(detectMcpClient('ClaudeMobile/1.0.0')).toBe('claude_mobile');
+		expect(detectMcpClient('claude.ai/ios/1.0.0')).toBe('claude_mobile');
+		expect(detectMcpClient('claude.ai/android/1.0.0')).toBe('claude_mobile');
+		expect(detectMcpClient('claudeai-mobile/1.0.0')).toBe('claude_mobile');
+	});
+
+	it('does not confuse claude_mobile with claude_code or claude_desktop', () => {
+		// claude-code must not match mobile
+		expect(detectMcpClient('claude-code/1.0.0')).toBe('claude_code');
+		// claude-desktop must not match mobile
+		expect(detectMcpClient('claude-desktop/1.0.0')).toBe('claude_desktop');
+	});
+
 	it('detects Claude Code', () => {
 		expect(detectMcpClient('claude-code/1.0.0')).toBe('claude_code');
 		expect(detectMcpClient('Claude-Code/2.1.3 Node/20.0.0')).toBe('claude_code');

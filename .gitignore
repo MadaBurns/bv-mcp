@@ -34,7 +34,6 @@ __pycache__/
 .venv/
 NPM_TOKEN.md
 UNLIMITED_KEY_DO_NOT_COMMIT.txt
-*_TRIAL_KEY.txt
 
 # Coverage
 coverage/
@@ -86,10 +85,8 @@ worker-configuration.d.ts
 PLAN.md
 *-plan.md
 plan-*.md
-
-# Copilot agents and prompts are tracked (team-shared)
-# .github/agents/
-# .github/prompts/
+.github/agents/
+.github/prompts/
 
 # Dev output files
 *.out
@@ -99,9 +96,6 @@ mcp-response.txt
 # Local dev/test scripts
 scripts/scan-test.mjs
 scripts/discover-test.mjs
-scripts/context-usage-test.py
-scripts/conversation-sim.py
-scripts/output-usage-test.py
 
 # Brand assets (copied from bv-web, not tracked)
 .brand/
@@ -114,6 +108,4 @@ generate_*.py
 # Local deploy overrides (real KV IDs, custom domains)
 .dev/
 .mcp.json
-
-# Tranco scan result data (generated, large)
-scripts/tranco-*-*.json
+.mcp.json

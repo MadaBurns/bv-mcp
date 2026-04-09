@@ -1,7 +1,7 @@
 {
 	"name": "blackveil-dns",
-	"version": "2.6.4",
-	"description": "Blackveil DNS — Open-source DNS & email security scanner exposing 44 MCP tools via Streamable HTTP, stdio, and legacy SSE.",
+	"version": "2.1.25",
+	"description": "Blackveil DNS — Open-source DNS & email security scanner.",
 	"type": "module",
 	"license": "BUSL-1.1",
 	"author": "BLACKVEIL Security",
@@ -73,7 +73,7 @@
 		"cf-typegen": "wrangler types",
 		"lint": "eslint .",
 		"lint:fix": "eslint . --fix",
-		"build:wasm": "cd crates/bv-wasm-core && wasm-pack build --target web"
+		"build:wasm": "cd crates/bv-wasm-core && /Users/adam/.cargo/bin/wasm-pack build --target web"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.13.3",
