@@ -46,6 +46,8 @@ import { internalRoutes } from './internal';
 export { QuotaCoordinator } from './lib/quota-coordinator';
 export { ProfileAccumulator } from './lib/profile-accumulator';
 
+const TEXT_ENCODER = new TextEncoder();
+
 let hasLoggedAnalyticsBindingStatus = false;
 
 function logAnalyticsBindingStatus(enabled: boolean): void {
@@ -104,8 +106,8 @@ function checkOrigin(origin: string, requestUrl: string, allowedOrigins?: string
 		const parsed = new URL(origin);
 		// Desktop IDE schemes (Electron-only, not forgeable by browsers)
 		if (DESKTOP_IDE_SCHEMES.includes(parsed.protocol)) return 'allowed';
-		// Same-origin
-		if (parsed.host === new URL(requestUrl).host) return 'allowed';
+		// Same-origin: compare full origin (scheme+host+port) not just host
+		if (parsed.origin === new URL(requestUrl).origin) return 'allowed';
 	} catch {
 		return 'invalid';
 	}
@@ -152,8 +154,6 @@ for (const path of mcpPaths) {
 			? authHeader.slice(7).trim()
 			: (c.req.query('api_key') ?? null);
 
-		// Resolve tier via KV cache → service binding → static BV_API_KEY fallback
-		// Pass client IP for owner-tier IP allowlist enforcement
 		const clientIp = c.req.header('cf-connecting-ip') ?? undefined;
 		const tierResult = await resolveTier(token, c.env, clientIp);
 		c.set('tierAuthResult', tierResult);
@@ -259,6 +259,7 @@ app.post('/mcp', async (c) => {
 	const country = (cfProps?.country as string) ?? 'unknown';
 	const clientType = detectMcpClient(headersLc['user-agent']);
 	const authTier = tierAuthResult.authenticated ? (tierAuthResult.tier ?? 'free') : 'anon';
+	const keyHash = tierAuthResult.keyHash ? tierAuthResult.keyHash.slice(0, 16) : undefined;
 	const sessionHash = headersLc['mcp-session-id'] ? hashForAnalytics(headersLc['mcp-session-id']) : 'none';
 
 	const contentTypeError = validateContentType(headersLc['content-type']);
@@ -314,7 +315,7 @@ app.post('/mcp', async (c) => {
 					userAgent: headersLc['user-agent'],
 					sessionId: headersLc['mcp-session-id'],
 					validateSession: true,
-					sessionErrorMessage: 'Bad Request: missing session',
+					sessionErrorMessage: 'Bad Request: missing session. Send an initialize request first to create a session.',
 					createSessionOnInitialize: true,
 					existingSessionId: headersLc['mcp-session-id'],
 					serverVersion: SERVER_VERSION,
@@ -336,6 +337,7 @@ app.post('/mcp', async (c) => {
 					country,
 					clientType,
 					authTier,
+					keyHash,
 					sessionHash,
 				});
 			}),
@@ -353,7 +355,7 @@ app.post('/mcp', async (c) => {
 				headers: {
 					'Content-Type': 'text/event-stream',
 					'Cache-Control': 'no-cache',
-					'Content-Length': String(new TextEncoder().encode(ssePayload).byteLength),
+					'Content-Length': String(TEXT_ENCODER.encode(ssePayload).byteLength),
 				},
 			});
 		}
@@ -375,7 +377,7 @@ app.post('/mcp', async (c) => {
 		userAgent: headersLc['user-agent'],
 		sessionId: headersLc['mcp-session-id'],
 		validateSession: true,
-		sessionErrorMessage: 'Bad Request: missing session',
+		sessionErrorMessage: 'Bad Request: missing session. Send an initialize request first to create a session.',
 		createSessionOnInitialize: true,
 		existingSessionId: headersLc['mcp-session-id'],
 		serverVersion: SERVER_VERSION,
@@ -397,6 +399,7 @@ app.post('/mcp', async (c) => {
 		country,
 		clientType,
 		authTier,
+		keyHash,
 		sessionHash,
 	});
 
@@ -423,7 +426,7 @@ app.post('/mcp', async (c) => {
 			headers: {
 				'Content-Type': 'text/event-stream',
 				'Cache-Control': 'no-cache',
-				'Content-Length': String(new TextEncoder().encode(ssePayload).byteLength),
+				'Content-Length': String(TEXT_ENCODER.encode(ssePayload).byteLength),
 				...singleResult.headers,
 			},
 		});
@@ -450,6 +453,7 @@ app.post('/mcp/messages', async (c) => {
 	const country = (cfProps?.country as string) ?? 'unknown';
 	const clientType = detectMcpClient(headersLc['user-agent']);
 	const authTier = tierAuthResult.authenticated ? (tierAuthResult.tier ?? 'free') : 'anon';
+	const keyHash = tierAuthResult.keyHash ? tierAuthResult.keyHash.slice(0, 16) : undefined;
 	const sessionHash = sessionId ? hashForAnalytics(sessionId) : 'none';
 
 	if (!sessionId) {
@@ -525,6 +529,7 @@ app.post('/mcp/messages', async (c) => {
 				analytics,
 				profileAccumulator: c.env.PROFILE_ACCUMULATOR,
 				waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+				scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 				cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
 				secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 				secondaryDohToken: c.env.BV_DOH_TOKEN,
@@ -532,6 +537,7 @@ app.post('/mcp/messages', async (c) => {
 				country,
 				clientType,
 				authTier,
+				keyHash,
 				sessionHash,
 			});
 		}),
@@ -649,7 +655,7 @@ app.delete('/mcp', async (c) => {
 		sessionId,
 		c.env.SESSION_STORE,
 		null,
-		'Bad Request: missing session',
+		'Bad Request: missing Mcp-Session-Id header. Include the session ID from your initialize response.',
 	);
 	if (sessionError) {
 		return c.json(sessionError.payload, sessionError.status);
@@ -665,6 +671,7 @@ app.delete('/mcp', async (c) => {
 		country: (cfProps?.country as string) ?? 'unknown',
 		clientType: detectMcpClient(c.req.header('user-agent') ?? ''),
 		authTier: tierResult.authenticated ? (tierResult.tier ?? 'free') : 'anon',
+		keyHash: tierResult.keyHash ? tierResult.keyHash.slice(0, 16) : undefined,
 	});
 	return new Response(null, { status: 204 });
 });
@@ -686,12 +693,16 @@ app.all('*', (c) => {
 	return c.text('Not found', 404);
 });
 
-import { handleScheduled } from './scheduled';
+import { handleScheduled, handleDailyDigest } from './scheduled';
 import type { ScheduledEnv } from './scheduled';
 
 export default {
 	fetch: (req: Request, env: Record<string, unknown>, ctx: ExecutionContext) => app.fetch(req, env, ctx),
-	scheduled: async (_event: ScheduledEvent, env: Record<string, unknown>, ctx: ExecutionContext) => {
-		ctx.waitUntil(handleScheduled(env as ScheduledEnv));
+	scheduled: async (event: ScheduledEvent, env: Record<string, unknown>, ctx: ExecutionContext) => {
+		if (event.cron === '0 8 * * *') {
+			ctx.waitUntil(handleDailyDigest(env as ScheduledEnv));
+		} else {
+			ctx.waitUntil(handleScheduled(env as ScheduledEnv));
+		}
 	},
 };
