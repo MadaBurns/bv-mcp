@@ -144,3 +144,115 @@ describe('checkDnssec — dnssecSource detection', () => {
 		expect(hasSourceMeta).toBe(false);
 	});
 });
+
+describe('checkDnssec — AD flag confirmation probe', () => {
+	/**
+	 * Helper that mocks primary Cloudflare DoH responses AND a separate Google DoH
+	 * response for the AD confirmation probe. Google calls are identified by URL
+	 * prefix `https://dns.google/resolve`.
+	 */
+	function mockDnssecWithGoogleConfirmation(opts: {
+		primaryAd: boolean;
+		hasDnskey?: boolean;
+		hasDs?: boolean;
+		googleAd?: boolean;
+		googleThrows?: boolean;
+	}) {
+		const { primaryAd, hasDnskey = true, hasDs = true, googleAd = true, googleThrows = false } = opts;
+
+		globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+			// Google DoH confirmation probe
+			if (typeof url === 'string' && url.startsWith('https://dns.google/resolve')) {
+				if (googleThrows) {
+					return Promise.reject(new Error('Google DoH timeout'));
+				}
+				return Promise.resolve(
+					createDohResponse(
+						[{ name: 'example.com', type: 1 }],
+						[{ name: 'example.com', type: RecordType.A, TTL: 300, data: '93.184.216.34' }],
+						{ ad: googleAd },
+					),
+				);
+			}
+
+			// Primary Cloudflare DoH responses
+			const typeMatch = url.match(/type=([^&]+)/);
+			const type = typeMatch ? typeMatch[1] : '';
+			if (type === 'A') {
+				return Promise.resolve(
+					createDohResponse(
+						[{ name: 'example.com', type: 1 }],
+						[{ name: 'example.com', type: RecordType.A, TTL: 300, data: '93.184.216.34' }],
+						{ ad: primaryAd },
+					),
+				);
+			}
+			if (type === 'DNSKEY') {
+				const answers = hasDnskey
+					? [{ name: 'example.com', type: RecordType.DNSKEY, TTL: 300, data: '257 3 13 mdsswUyr3DPW...' }]
+					: [];
+				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 48 }], answers));
+			}
+			if (type === 'DS') {
+				const answers = hasDs ? [{ name: 'example.com', type: RecordType.DS, TTL: 300, data: '12345 13 2 abc123...' }] : [];
+				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 43 }], answers));
+			}
+			if (type === 'NSEC3PARAM') {
+				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 50 }], []));
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+	}
+
+	it('resolves AD flap when Google confirms AD=true', async () => {
+		// Primary says AD=false with DNSKEY+DS, but Google says AD=true
+		mockDnssecWithGoogleConfirmation({ primaryAd: false, hasDnskey: true, hasDs: true, googleAd: true });
+		const { checkDnssec } = await import('../src/tools/check-dnssec');
+		const result = await checkDnssec('example.com');
+
+		const validationFailing = result.findings.find((f) => f.title === 'DNSSEC validation failing');
+		expect(validationFailing).toBeUndefined();
+		expect(result.score).toBeGreaterThan(75);
+	});
+
+	it('preserves finding when Google also confirms AD=false', async () => {
+		// Both primary and Google say AD=false — DNSSEC really is broken
+		mockDnssecWithGoogleConfirmation({ primaryAd: false, hasDnskey: true, hasDs: true, googleAd: false });
+		const { checkDnssec } = await import('../src/tools/check-dnssec');
+		const result = await checkDnssec('example.com');
+
+		const validationFailing = result.findings.find((f) => f.title === 'DNSSEC validation failing');
+		expect(validationFailing).toBeDefined();
+		expect(validationFailing!.severity).toBe('high');
+	});
+
+	it('degrades gracefully when Google DoH throws an error', async () => {
+		// Primary says AD=false with DNSKEY+DS, Google DoH throws
+		mockDnssecWithGoogleConfirmation({ primaryAd: false, hasDnskey: true, hasDs: true, googleThrows: true });
+		const { checkDnssec } = await import('../src/tools/check-dnssec');
+		const result = await checkDnssec('example.com');
+
+		// Original result preserved — "DNSSEC validation failing" still present
+		const validationFailing = result.findings.find((f) => f.title === 'DNSSEC validation failing');
+		expect(validationFailing).toBeDefined();
+		expect(validationFailing!.severity).toBe('high');
+	});
+
+	it('does not fire AD confirmation probe when no DNSKEY/DS records exist', async () => {
+		// AD=false, no DNSKEY, no DS — should never fire the AD confirmation probe
+		mockDnssecResponses(false, false, false);
+		const { checkDnssec } = await import('../src/tools/check-dnssec');
+		await checkDnssec('example.com');
+
+		// The AD confirmation probe queries Google DoH with type=A specifically.
+		// Other Google calls (secondary resolver for DNSKEY/DS empty confirmation) are expected.
+		const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+		const adProbeCalls = fetchMock.mock.calls.filter(
+			(call: unknown[]) =>
+				typeof call[0] === 'string' &&
+				call[0].startsWith('https://dns.google/resolve') &&
+				call[0].includes('type=A'),
+		);
+		expect(adProbeCalls).toHaveLength(0);
+	});
+});
