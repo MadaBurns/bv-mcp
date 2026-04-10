@@ -228,3 +228,120 @@ describe('checkHttpSecurity', () => {
 		expect(result.passed).toBe(false);
 	});
 });
+
+describe('checkHttpSecurity — dual-fetch header union', () => {
+	async function run(domain = 'example.com') {
+		const { checkHttpSecurity } = await import('../src/tools/check-http-security');
+		return checkHttpSecurity(domain);
+	}
+
+	it('merges headers from two fetches (union): no missing-XCTO or missing-XFO findings', async () => {
+		// First fetch has CSP (no frame-ancestors) + XCTO but no XFO.
+		// Second fetch has CSP (no frame-ancestors) + XFO but no XCTO.
+		// Without union, the first fetch's headers would trigger a missing-XFO finding;
+		// the second fetch's headers alone would trigger missing-XCTO. Union resolves both.
+		let callCount = 0;
+		globalThis.fetch = vi.fn().mockImplementation(() => {
+			callCount++;
+			if (callCount <= 1) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					type: 'basic',
+					headers: new Headers({
+						'content-security-policy': "default-src 'self'",
+						'x-content-type-options': 'nosniff',
+						'permissions-policy': 'camera=()',
+						'referrer-policy': 'no-referrer',
+						'cross-origin-resource-policy': 'same-origin',
+						'cross-origin-opener-policy': 'same-origin',
+						'cross-origin-embedder-policy': 'require-corp',
+					}),
+				});
+			}
+			return Promise.resolve({
+				ok: true,
+				status: 200,
+				type: 'basic',
+				headers: new Headers({
+					'content-security-policy': "default-src 'self'",
+					'x-frame-options': 'DENY',
+					'permissions-policy': 'camera=()',
+					'referrer-policy': 'no-referrer',
+					'cross-origin-resource-policy': 'same-origin',
+					'cross-origin-opener-policy': 'same-origin',
+					'cross-origin-embedder-policy': 'require-corp',
+				}),
+			});
+		});
+		const result = await run();
+		// Union of headers means both XCTO and XFO are present → no findings for either
+		const xctoFinding = result.findings.find((f) => f.title === 'No X-Content-Type-Options');
+		const xfoFinding = result.findings.find((f) => f.title === 'No X-Frame-Options');
+		expect(xctoFinding).toBeUndefined();
+		expect(xfoFinding).toBeUndefined();
+		// Should have "well configured" info finding
+		expect(result.findings[0].title).toBe('HTTP security headers well configured');
+	});
+
+	it('uses single response when one fetch fails', async () => {
+		let callCount = 0;
+		globalThis.fetch = vi.fn().mockImplementation(() => {
+			callCount++;
+			if (callCount <= 1) {
+				// First fetch: succeeds with some headers
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					type: 'basic',
+					headers: new Headers({
+						'content-security-policy': "default-src 'self'; frame-ancestors 'none'",
+						'x-frame-options': 'DENY',
+						'x-content-type-options': 'nosniff',
+						'permissions-policy': 'camera=()',
+						'referrer-policy': 'no-referrer',
+						'cross-origin-resource-policy': 'same-origin',
+						'cross-origin-opener-policy': 'same-origin',
+					}),
+				});
+			}
+			// Second fetch: fails
+			return Promise.reject(new Error('ECONNREFUSED'));
+		});
+		const result = await run();
+		// Should still work with the first fetch's headers
+		expect(result.category).toBe('http_security');
+		const cspFinding = result.findings.find((f) => f.title === 'No Content-Security-Policy');
+		expect(cspFinding).toBeUndefined(); // CSP was present in first fetch
+	});
+
+	it('falls through to error handling when both fetches fail', async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+		const result = await run();
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].severity).toBe('medium');
+		expect(result.findings[0].title).toMatch(/connection failed/i);
+	});
+
+	it('produces identical result when both fetches return same headers', async () => {
+		const headers = new Headers({
+			'content-security-policy': "default-src 'self'; frame-ancestors 'none'",
+			'x-frame-options': 'DENY',
+			'x-content-type-options': 'nosniff',
+			'permissions-policy': 'camera=()',
+			'referrer-policy': 'no-referrer',
+			'cross-origin-resource-policy': 'same-origin',
+			'cross-origin-opener-policy': 'same-origin',
+			'cross-origin-embedder-policy': 'require-corp',
+		});
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			type: 'basic',
+			headers,
+		});
+		const result = await run();
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toBe('HTTP security headers well configured');
+	});
+});
