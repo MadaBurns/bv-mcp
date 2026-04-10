@@ -67,6 +67,15 @@ const PER_CHECK_TIMEOUT_MS = 8_000;
 /** Maximum wall-clock time for the entire scan_domain orchestration (ms). */
 const SCAN_TIMEOUT_MS = 12_000;
 
+/** Budget (ms) reserved for retry attempts of transiently-failed checks. */
+const RETRY_BUDGET_MS = 3_000;
+
+/** Maximum number of checks retried per scan to protect the overall budget. */
+const MAX_RETRIES_PER_SCAN = 3;
+
+/** Per-retry timeout (ms) — tighter than the initial 8s per-check timeout. */
+const RETRY_TIMEOUT_MS = 2_500;
+
 /** In-memory cache for adaptive weight responses from the ProfileAccumulator DO. */
 const adaptiveWeightCache = new Map<string, { weights: AdaptiveWeightsResponse; expires: number }>();
 
@@ -94,6 +103,65 @@ export interface ScanDomainResult {
 }
 
 /**
+ * Decide whether a check result qualifies for a single retry.
+ * Retries fire only for transient failures: checks that threw and were
+ * caught by safeCheck(), producing checkStatus='error' and score=0.
+ * Timeouts (checkStatus='timeout') are excluded because the scan budget
+ * is already exhausted in that case.
+ */
+function shouldRetry(result: CheckResult): boolean {
+	return result.checkStatus === 'error' && result.score === 0;
+}
+
+/**
+ * Dispatch a single check retry for the given category with fresh DNS options.
+ * Uses a tighter timeout than the initial scan check to protect the budget.
+ */
+async function runCheckRetry(
+	category: CheckCategory,
+	domain: string,
+	scanDns: QueryDnsOptions,
+	runtimeOptions?: ScanRuntimeOptions,
+): Promise<CheckResult> {
+	const retryDns: QueryDnsOptions = { ...scanDns, queryCache: new Map() };
+	const timeoutPromise = new Promise<never>((_, reject) =>
+		setTimeout(() => reject(new Error('Retry timed out')), RETRY_TIMEOUT_MS),
+	);
+
+	let checkPromise: Promise<CheckResult>;
+	switch (category) {
+		case 'spf': checkPromise = checkSpf(domain, retryDns); break;
+		case 'dmarc': checkPromise = checkDmarc(domain, retryDns); break;
+		case 'dkim': checkPromise = checkDkim(domain, undefined, retryDns); break;
+		case 'dnssec': checkPromise = checkDnssec(domain, retryDns); break;
+		case 'ssl': checkPromise = checkSsl(domain); break;
+		case 'mta_sts': checkPromise = checkMtaSts(domain, retryDns); break;
+		case 'ns': checkPromise = checkNs(domain, retryDns); break;
+		case 'caa': checkPromise = checkCaa(domain, retryDns); break;
+		case 'bimi': checkPromise = checkBimi(domain, retryDns); break;
+		case 'tlsrpt': checkPromise = checkTlsrpt(domain, retryDns); break;
+		case 'subdomain_takeover': checkPromise = checkSubdomainTakeover(domain, retryDns); break;
+		case 'http_security': checkPromise = checkHttpSecurity(domain); break;
+		case 'dane': checkPromise = checkDane(domain, retryDns); break;
+		case 'dane_https': checkPromise = checkDaneHttps(domain, retryDns); break;
+		case 'svcb_https': checkPromise = checkSvcbHttps(domain, retryDns); break;
+		case 'subdomailing': checkPromise = checkSubdomailing(domain, retryDns); break;
+		case 'mx':
+			checkPromise = checkMx(domain, {
+				providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
+				providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
+				providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
+			}, retryDns);
+			break;
+		default:
+			// Unsupported category — return a synthetic error result
+			return { ...buildCheckResult(category, []), score: 0, passed: false, checkStatus: 'error' as const };
+	}
+
+	return Promise.race([checkPromise, timeoutPromise]);
+}
+
+/**
  * Run a full DNS security scan on a domain.
  * Executes all checks in parallel and computes an overall score.
  *
@@ -102,6 +170,7 @@ export interface ScanDomainResult {
  * @returns Full scan result with score, individual check results, and metadata
  */
 export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOptions?: ScanRuntimeOptions): Promise<ScanDomainResult> {
+	const scanStartTime = Date.now();
 	const explicitProfile = runtimeOptions?.profile;
 	const isExplicit = explicitProfile && explicitProfile !== 'auto';
 	const cacheKey = isExplicit
@@ -197,6 +266,31 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	for (const r of checkResults) {
 		if (r.checkStatus === 'error' || r.checkStatus === 'timeout') {
 			degradedStatuses.set(r.category, r.checkStatus);
+		}
+	}
+
+	// Retry transient zero-score failures when we have budget remaining.
+	// Only fires for errored checks (checkStatus='error', score=0) caught
+	// by safeCheck() — thrown exceptions from DNS/HTTPS failures. Timeouts
+	// are skipped because they mean the scan budget is already exhausted.
+	if (!timedOut && (Date.now() - scanStartTime) < (SCAN_TIMEOUT_MS - RETRY_BUDGET_MS)) {
+		const retryable = checkResults
+			.map((r, idx) => ({ r, idx }))
+			.filter(({ r }) => shouldRetry(r))
+			.slice(0, MAX_RETRIES_PER_SCAN);
+
+		if (retryable.length > 0) {
+			const retrySettled = await Promise.allSettled(
+				retryable.map(({ r }) => runCheckRetry(r.category, domain, scanDns, runtimeOptions)),
+			);
+			for (let i = 0; i < retryable.length; i++) {
+				const s = retrySettled[i];
+				if (s.status === 'fulfilled' && s.value.checkStatus !== 'error' && s.value.score > 0) {
+					checkResults[retryable[i].idx] = s.value;
+					// Clear the degraded status since the retry succeeded
+					degradedStatuses.delete(retryable[i].r.category);
+				}
+			}
 		}
 	}
 
