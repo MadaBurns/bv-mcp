@@ -163,8 +163,9 @@ describe('checkHttpSecurity', () => {
 		expect(result.findings[0].title).toBe('HTTP check blocked by security appliance');
 		expect(result.findings[0].severity).toBe('info');
 		expect(result.passed).toBe(false);
-		// HEAD + GET = 2 calls
-		expect(fetchSpy).toHaveBeenCalledTimes(2);
+		// Dual-fetch fires 2 parallel HEAD probes (both 403 → unusable, returns null),
+		// then the package runs its own HEAD + GET fallback = 4 calls total.
+		expect(fetchSpy).toHaveBeenCalledTimes(4);
 	});
 
 	it('should analyze real headers when 403 HEAD succeeds with GET', async () => {
@@ -178,16 +179,25 @@ describe('checkHttpSecurity', () => {
 			'cross-origin-opener-policy': 'same-origin',
 			'cross-origin-embedder-policy': 'require-corp',
 		});
-		const fetchSpy = vi
-			.fn()
-			.mockResolvedValueOnce({ ok: false, status: 403, headers: new Headers() })
-			.mockResolvedValueOnce({ ok: true, status: 200, headers: fullHeaders });
+		// With dual-fetch, HEAD is called multiple times (2 parallel probes + package HEAD).
+		// Route by method: all HEADs return 403, GET returns the full headers.
+		const fetchSpy = vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+			if (init?.method === 'GET') {
+				return Promise.resolve({ ok: true, status: 200, headers: fullHeaders });
+			}
+			return Promise.resolve({ ok: false, status: 403, headers: new Headers() });
+		});
 		globalThis.fetch = fetchSpy;
 		const result = await run();
 		expect(result.passed).toBe(true);
 		expect(result.findings[0].title).toBe('HTTP security headers well configured');
-		expect(fetchSpy).toHaveBeenCalledTimes(2);
-		expect(fetchSpy).toHaveBeenNthCalledWith(2, 'https://example.com', expect.objectContaining({ method: 'GET' }));
+		// At least one GET call must have been made as the package's fallback.
+		const getCalls = fetchSpy.mock.calls.filter((call: unknown[]) => {
+			const init = call[1] as RequestInit | undefined;
+			return init?.method === 'GET';
+		});
+		expect(getCalls.length).toBeGreaterThanOrEqual(1);
+		expect(getCalls[0][0]).toBe('https://example.com');
 	});
 
 	it('should fall back to GET when HEAD returns 405 Method Not Allowed', async () => {
@@ -200,14 +210,23 @@ describe('checkHttpSecurity', () => {
 			'cross-origin-resource-policy': 'same-origin',
 			'cross-origin-opener-policy': 'same-origin',
 		});
-		const fetchSpy = vi
-			.fn()
-			.mockResolvedValueOnce({ ok: false, status: 405, headers: new Headers() })
-			.mockResolvedValueOnce({ ok: true, status: 200, headers: fullHeaders });
+		// Dual-fetch fires 2 HEAD probes before the package runs. Route by method:
+		// all HEADs return 405, GET returns the full headers.
+		const fetchSpy = vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+			if (init?.method === 'GET') {
+				return Promise.resolve({ ok: true, status: 200, headers: fullHeaders });
+			}
+			return Promise.resolve({ ok: false, status: 405, headers: new Headers() });
+		});
 		globalThis.fetch = fetchSpy;
 		const result = await run();
 		expect(result.passed).toBe(true);
-		expect(fetchSpy).toHaveBeenNthCalledWith(2, 'https://example.com', expect.objectContaining({ method: 'GET' }));
+		const getCalls = fetchSpy.mock.calls.filter((call: unknown[]) => {
+			const init = call[1] as RequestInit | undefined;
+			return init?.method === 'GET';
+		});
+		expect(getCalls.length).toBeGreaterThanOrEqual(1);
+		expect(getCalls[0][0]).toBe('https://example.com');
 	});
 
 	it('should return auth finding for 401 response', async () => {
