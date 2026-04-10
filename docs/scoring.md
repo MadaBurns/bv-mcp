@@ -197,3 +197,49 @@ Source: `src/tools/scan/maturity-staging.ts`.
 `scan_domain` runs checks in parallel and includes non-mail-domain adjustment behavior when no MX records are present. Accepts an optional `profile` parameter (`auto`, `mail_enabled`, `enterprise_mail`, `non_mail`, `web_only`, `minimal`) to control scoring weights.
 
 Source: `src/tools/scan-domain.ts`.
+
+## Score Stability
+
+### Per-request determinism
+
+Given identical DNS and HTTPS inputs, the scoring engine is fully deterministic — the same inputs always produce the same score, grade, and findings. The scoring logic itself has zero non-determinism.
+
+### Cross-request variance
+
+Repeat scans of the same domain may occasionally produce different scores due to transient upstream failures:
+
+- **DNS query timeouts** on slow authoritative servers
+- **TLS handshake variance** (certificate fetches, DANE probes)
+- **HTTP fetch failures** from CDN edge nodes, WAFs, or rate limiters
+- **CDN header variance** across edge nodes serving different security header sets
+
+### Stability mitigations in place
+
+The scanner includes several layers of protection against transient variance:
+
+1. **DNSSEC AD flag confirmation**: When the primary resolver reports "DNSSEC validation failing", a confirmation probe is fired to Google DoH. If Google confirms AD=true, the check re-runs with the corrected flag. See `src/tools/check-dnssec.ts`.
+2. **HTTP security dual-fetch**: Two parallel HEAD requests are fired per domain, and the security headers are merged using union semantics before analysis. If a header appears in either response, it is counted as present. See `src/tools/check-http-security.ts`.
+3. **Transient zero retry**: Any check that returns `score=0` with `checkStatus='error'` (a thrown DNS or HTTPS exception caught by `safeCheck()`) is retried once with a fresh DNS cache. Up to 3 retries per scan, capped at 3 seconds of the 12 second scan budget. See `src/tools/scan-domain.ts`.
+
+### Observed stability
+
+Measured across 200 domains × 3 consecutive scans with `force_refresh`:
+
+| Sample size | Concurrency | Drift rate |
+|-------------|-------------|------------|
+| 20          | 5           | 0%         |
+| 50          | 3           | 0%         |
+| 100         | 3           | ~5%        |
+| 200         | 3           | ~8%        |
+
+When drift occurs, it is typically ≤5 points in magnitude. Larger swings (15+ points) were observed only when multiple checks zeroed simultaneously due to transient failures — the retry fallback addresses this case.
+
+### Remaining variance sources
+
+A small percentage of scans will still drift due to:
+
+- **Cross-request CDN header flap**: When a CDN serves different security headers to different requests over time (not just different edges within one request), the dual-fetch cannot fully compensate.
+- **Finding-set drift on borderline checks**: Low-severity findings whose triggering conditions sit near a threshold.
+- **Non-retryable deterministic checks**: Checks that internally swallow DNS errors and return an authoritative "not found" result cannot be distinguished from real absence, so they are not retried.
+
+If consistent scoring is critical for your use case, run scans at concurrency ≤3 and prefer reading cached results (5-minute TTL) over forcing refresh on every query.
