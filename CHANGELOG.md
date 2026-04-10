@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.6.7] - 2026-04-10
+
+### Added
+- **Score Stability layers** — three targeted mitigations for transient upstream variance that was causing repeat scans of the same domain to occasionally return different scores:
+  - **DNSSEC AD flag confirmation probe** (`src/tools/check-dnssec.ts`): when the primary Cloudflare resolver reports "DNSSEC validation failing" (AD=false with DNSKEY+DS records present), a confirmation query is fired to Google DoH. If Google confirms AD=true, the check re-runs with the corrected flag. Resolves the observed edge-node flapping between score 100 (passing) and 75 (failing) on the same domain.
+  - **HTTP security dual-fetch with header union** (`src/tools/check-http-security.ts`): two parallel HEAD requests are fired per domain and the 8 browser security headers are merged using union semantics before analysis. Eliminates score variance from CDN edge nodes returning different header sets within a single request.
+  - **Transient zero retry in `scanDomain()`** (`src/tools/scan-domain.ts`): any check that returns `checkStatus='error'` with `score=0` (a thrown DNS or HTTPS exception caught by `safeCheck()`) is retried once with a fresh DNS query cache. Max 3 retries per scan, capped at 3 seconds of the 12-second scan budget, 2.5s per-retry timeout. Eliminates the worst-case multi-check zero-out swings (observed Δ52 on keenetic.io, Δ30 on vkuserphoto.ru, Δ20 on reddit.com pre-fix).
+- **`scripts/chaos/score-stability-test.py`** — parameterized chaos test for measuring cross-request score stability. Scans N domains across R rounds with `force_refresh` and compares scores category-by-category. Supports loading domains from Tranco JSON files via `--from`. Measured stability: 0% drift at 20 domains, ~5% at 100 domains, ~6.5% at 200 domains (all at concurrency=3).
+- **Score Stability section in `docs/scoring.md`** — documents per-request determinism, cross-request variance sources, the three mitigation layers, observed drift rates, and remaining variance sources for users who need consistent scoring.
+
+### Fixed
+- **`degradedStatuses` cleanup on successful retry**: when a retry recovers a previously-errored check, its category is now removed from the `degradedStatuses` map so post-processing does not re-apply the zero score to the recovered result.
+
 ## [2.1.20] - 2026-04-01
 
 ### Added
