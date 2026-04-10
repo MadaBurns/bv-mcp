@@ -27,6 +27,7 @@ async function confirmAdWithGoogle(domain: string, timeoutMs = AD_CONFIRM_TIMEOU
 		const url = `${GOOGLE_DOH_ENDPOINT}?name=${encodeURIComponent(domain)}&type=A&cd=0`;
 		const resp = await fetch(url, {
 			method: 'GET',
+			redirect: 'manual',
 			headers: { Accept: 'application/dns-json' },
 			signal: AbortSignal.timeout(timeoutMs),
 		});
