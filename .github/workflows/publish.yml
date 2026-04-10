@@ -109,6 +109,10 @@ jobs:
             echo "CHANGELOG_EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # Note: the push below is rejected by `main` branch protection unless
+      # the workflow runs under a token with bypass permission (RELEASE_TOKEN).
+      # The supported workflow is to pre-bump the version locally before
+      # tagging so this step becomes a no-op. See CLAUDE.md "Release workflow".
       - name: Commit version bump if changed
         env:
           VERSION: ${{ steps.extract.outputs.version }}
