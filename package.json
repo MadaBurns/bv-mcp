@@ -1,6 +1,6 @@
 {
 	"name": "blackveil-dns",
-	"version": "2.6.6",
+	"version": "2.6.7",
 	"description": "Blackveil DNS — Open-source DNS & email security scanner.",
 	"type": "module",
 	"license": "BUSL-1.1",
