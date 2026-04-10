@@ -998,11 +998,13 @@ describe('scanDomain — transient zero retry', () => {
 	});
 
 	it('fires retries for multiple simultaneously failing checks up to the cap', async () => {
-		// Throw on SPF, DMARC, MTA-STS, TLSRPT, and BIMI TXT lookups on the first 2 fetches
+		// Throw on SPF, DMARC, TLSRPT, and BIMI TXT lookups on the first 2 fetches
 		// (DNS_RETRIES=1 means 2 fetches per query). Each subsequent fetch succeeds, so the
-		// retry pass can recover them. That's 5 qualifying retries; cap is 3, so exactly
-		// 3 should recover.
-		const counters: Record<string, number> = { spf: 0, dmarc: 0, mtaSts: 0, tlsrpt: 0, bimi: 0 };
+		// retry pass can recover them. That's 4 qualifying retries; cap is MAX_RETRIES_PER_SCAN=3.
+		// The first 3 (by checkResults order: spf, dmarc, bimi) retry successfully; tlsrpt
+		// remains errored. (MTA-STS and DKIM are excluded because they swallow DNS errors
+		// internally and never propagate to safeCheck.)
+		const counters: Record<string, number> = { spf: 0, dmarc: 0, tlsrpt: 0, bimi: 0 };
 		function shouldThrow(key: string): boolean {
 			counters[key]++;
 			return counters[key] <= 2;
@@ -1017,7 +1019,6 @@ describe('scanDomain — transient zero retry', () => {
 						return Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=reject']));
 					}
 					if (url.includes('_mta-sts.')) {
-						if (shouldThrow('mtaSts')) return Promise.reject(new Error('DNS query failed'));
 						return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
 					}
 					if (url.includes('_smtp._tls.')) {
@@ -1051,9 +1052,9 @@ describe('scanDomain — transient zero retry', () => {
 
 		const result = await run();
 
-		// Count how many of the 5 originally-failing checks ended up with a non-error result.
-		// With MAX_RETRIES_PER_SCAN=3, exactly 3 should have recovered via retry.
-		const targets = ['spf', 'dmarc', 'mta_sts', 'tlsrpt', 'bimi'] as const;
+		// Count how many of the 4 originally-failing checks ended up with a non-error result.
+		// With MAX_RETRIES_PER_SCAN=3, exactly 3 should have recovered via retry; the 4th stays errored.
+		const targets = ['spf', 'dmarc', 'tlsrpt', 'bimi'] as const;
 		const recovered = targets
 			.map((cat) => result.checks.find((c) => c.category === cat))
 			.filter((c) => c && c.checkStatus !== 'error' && c.score > 0);
