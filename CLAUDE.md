@@ -352,15 +352,26 @@ Smithery registry metadata (configSchema, scanCredentials) is updated via `PUT /
 
 ### Release workflow (`publish.yml`)
 
-Fully automated on tag push. Push `v2.2.0` and CI handles everything:
+**Important**: `main` has branch protection requiring 3 status checks for direct pushes. The workflow's "Sync version to tag" step tries to push an auto-bump commit and **will be rejected by branch protection**. To avoid this, **always pre-bump the version locally before tagging**:
 
 ```bash
-git tag v2.2.0 && git push origin v2.2.0
+# 1. Update CHANGELOG.md with the new version entry under [Unreleased]
+# 2. Bump package.json + package-lock.json + SERVER_VERSION in one commit
+npm version 2.6.8 --no-git-tag-version --allow-same-version
+sed -i '' "s/export const SERVER_VERSION = '.*'/export const SERVER_VERSION = '2.6.8'/" src/lib/server-version.ts
+git add package.json package-lock.json src/lib/server-version.ts CHANGELOG.md
+git commit -m "chore: bump version to 2.6.8"
+git push origin main
+
+# 3. Tag and push — workflow will find version already matches and skip the auto-bump push
+git tag v2.6.8 && git push origin v2.6.8
 ```
 
-Pipeline: validate (test/typecheck/lint/audit) → auto-bump `package.json` + `SERVER_VERSION` → npm publish (provenance) → Cloudflare Workers deploy → GitHub Release with changelog.
+Pipeline: validate (test/typecheck/lint/audit) → sync version to tag (no-op when pre-bumped) → npm publish (provenance) → Cloudflare Workers deploy → GitHub Release with changelog.
 
-npm and Cloudflare deploy run in parallel after version bump. Requires `NPM_TOKEN` and `CLOUDFLARE_API_TOKEN` secrets in the `production` environment.
+npm and Cloudflare deploy run in parallel after the sync step. Requires `NPM_TOKEN` and `CLOUDFLARE_API_TOKEN` secrets in the `production` environment — without them, those steps log warnings and skip. A manual `npm run deploy:private` replaces the Cloudflare deploy step when the secret is absent.
+
+**Alternative fix (not yet implemented)**: configure a `RELEASE_TOKEN` repo secret with a personal access token that has "bypass branch protection" permission. The workflow's checkout step already prefers `RELEASE_TOKEN` over `GITHUB_TOKEN`. With that secret in place, the auto-bump push would succeed and the pre-bump step becomes optional.
 
 **Service binding consumers** (e.g., bv-web): no action required on bv-mcp release. Cloudflare service bindings are live-linked — deploying bv-mcp automatically makes the new version available to all consumers on the next request. No npm install, no version pinning, no downstream CI trigger needed.
 
