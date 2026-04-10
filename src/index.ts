@@ -678,14 +678,22 @@ app.delete('/mcp', async (c) => {
 
 app.route('/internal', internalRoutes);
 
-// OAuth well-known endpoints — return valid JSON so mcp-remote doesn't crash
-// parsing plain-text 404 responses during OAuth discovery probes.
-app.get('/.well-known/oauth-authorization-server', (c) => {
-	return c.json({ error: 'not_supported', error_description: 'This server does not support OAuth' }, 404);
-});
-app.get('/.well-known/oauth-protected-resource', (c) => {
-	return c.json({ error: 'not_supported', error_description: 'This server does not support OAuth' }, 404);
-});
+// OAuth well-known endpoints — return valid JSON so SDKs don't crash parsing
+// plain-text 404 responses during OAuth discovery probes. RFC 8414 §3 and
+// RFC 9728 §3 form the metadata URL by inserting the well-known path between
+// the authority and the resource path, so spec-compliant clients probe both
+// the bare path (e.g. /.well-known/oauth-protected-resource) and the
+// path-suffixed variant (e.g. /.well-known/oauth-protected-resource/mcp).
+app.on(
+	'GET',
+	[
+		'/.well-known/oauth-authorization-server',
+		'/.well-known/oauth-authorization-server/*',
+		'/.well-known/oauth-protected-resource',
+		'/.well-known/oauth-protected-resource/*',
+	],
+	(c) => c.json({ error: 'not_supported', error_description: 'This server does not support OAuth' }, 404),
+);
 
 app.all('*', (c) => {
 	// Plain text — avoids mcp-remote misinterpreting JSON as an OAuth error.

@@ -1672,8 +1672,33 @@ describe('DNS Security MCP Server', () => {
 			expect(body.error).toBe('not_supported');
 		});
 
+		it('returns valid JSON 404 for path-suffixed variants (RFC 8414 / RFC 9728)', async () => {
+			// Spec-compliant clients probe /.well-known/<type>/<path> derived from the
+			// resource URL, e.g. /.well-known/oauth-protected-resource/mcp. Before
+			// these routes were added, the catchall returned plain text "Not found"
+			// and SDKs crashed trying to JSON-parse it as an OAuth error response.
+			for (const path of [
+				'/.well-known/oauth-authorization-server/mcp',
+				'/.well-known/oauth-protected-resource/mcp',
+			]) {
+				const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com${path}`);
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(request, env, ctx);
+				await waitOnExecutionContext(ctx);
+				expect(response.status).toBe(404);
+				expect(response.headers.get('content-type')).toContain('application/json');
+				const body = (await response.json()) as { error: string; error_description: string };
+				expect(body.error).toBe('not_supported');
+			}
+		});
+
 		it('returns parseable JSON bodies (no SyntaxError for mcp-remote)', async () => {
-			for (const path of ['/.well-known/oauth-authorization-server', '/.well-known/oauth-protected-resource']) {
+			for (const path of [
+				'/.well-known/oauth-authorization-server',
+				'/.well-known/oauth-authorization-server/mcp',
+				'/.well-known/oauth-protected-resource',
+				'/.well-known/oauth-protected-resource/mcp',
+			]) {
 				const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com${path}`);
 				const ctx = createExecutionContext();
 				const response = await worker.fetch(request, env, ctx);
