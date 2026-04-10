@@ -252,11 +252,8 @@ def test_session_lifecycle():
 def test_format_autodetect():
     print("\n=== 2. Format Auto-Detection (scan_domain) ===")
 
-    if not API_KEY:
-        print("  SKIP: BV_API_KEY required to run scan_domain without rate limits")
-        record("2. Format auto-detect (skipped, no key)", True)
-        return
-
+    # scan_domain is free-tier callable (75/day per IP). Run on both auth modes.
+    auth_mode = "bearer" if API_KEY else "none"
     SCAN_DOMAIN = "cloudflare.com"
     SCAN_ARGS   = {"domain": SCAN_DOMAIN}  # no explicit format — auto-detect
 
@@ -267,13 +264,18 @@ def test_format_autodetect():
     ]
 
     for name, ua, is_interactive in test_pairs:
-        sid, _ = create_session(ua, auth="bearer")
+        sid, _ = create_session(ua, auth=auth_mode)
         if not sid:
             record(f"2. {name}: scan_domain format detect", False, "no session")
             continue
 
-        status, body, _ = tool_call(sid, ua, "scan_domain", SCAN_ARGS, auth="bearer")
+        status, body, _ = tool_call(sid, ua, "scan_domain", SCAN_ARGS, auth=auth_mode)
         delete_session(sid, ua)
+
+        if is_rate_limited(body):
+            record(f"2. {name}: scan_domain format detect",
+                   True, "rate-limited (free-tier quota, server working)")
+            continue
 
         try:
             d = json.loads(body)
@@ -300,10 +302,9 @@ def test_format_autodetect():
 
 def test_format_override():
     print("\n=== 3. Format Explicit Override (compact/full) ===")
-    if not API_KEY:
-        print("  SKIP: BV_API_KEY required")
-        record("3. Format override (skipped, no key)", True)
-        return
+
+    # scan_domain is free-tier callable (75/day per IP). Run on both auth modes.
+    auth_mode = "bearer" if API_KEY else "none"
 
     # Non-interactive client forced to compact: should get no STRUCTURED_RESULT
     # Interactive client forced to full: should get STRUCTURED_RESULT
@@ -313,7 +314,7 @@ def test_format_override():
     ]
 
     for name, ua, forced_fmt, expect_structured in cases:
-        sid, _ = create_session(ua, auth="bearer")
+        sid, _ = create_session(ua, auth=auth_mode)
         if not sid:
             record(f"3. {name}: force format={forced_fmt}", False, "no session")
             continue
@@ -321,9 +322,14 @@ def test_format_override():
         status, body, _ = tool_call(
             sid, ua, "scan_domain",
             {"domain": "cloudflare.com", "format": forced_fmt},
-            auth="bearer",
+            auth=auth_mode,
         )
         delete_session(sid, ua)
+
+        if is_rate_limited(body):
+            record(f"3. {name}: force format={forced_fmt}",
+                   True, "rate-limited (free-tier quota, server working)")
+            continue
 
         try:
             d = json.loads(body)
