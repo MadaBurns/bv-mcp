@@ -905,3 +905,158 @@ describe('adaptiveWeightCache eviction (Fix 4)', () => {
 		expect(_adaptiveWeightCacheForTest.has('entry:99')).toBe(true);
 	});
 });
+
+describe('scanDomain — transient zero retry', () => {
+	/**
+	 * Builds a fetch mock that throws on the first N transport-level fetches whose URL
+	 * contains `flakyUrl`, then succeeds afterward. DNS_RETRIES=1 means each queryDns()
+	 * call issues up to 2 fetches before giving up — so to make a check throw once,
+	 * use throwCount >= 2 (both attempts fail, DnsQueryError propagates to safeCheck).
+	 * To make it succeed on the retry scan, throwCount of 2 is enough.
+	 */
+	function mockWithFlakyUrl(flakyUrl: string, throwCount: number) {
+		let calls = 0;
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes(flakyUrl)) {
+				calls++;
+				if (calls <= throwCount) {
+					return Promise.reject(new Error('DNS query failed: transient'));
+				}
+			}
+
+			// Replay the default routing from mockAllChecks
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=reject']));
+					if (url.includes('_domainkey.'))
+						return Promise.resolve(txtResponse('default._domainkey.example.com', ['v=DKIM1; k=rsa; p=MIGf']));
+					if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
+					if (url.includes('_smtp._tls.'))
+						return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
+					if (url.includes('default._bimi.'))
+						return Promise.resolve(txtResponse('default._bimi.example.com', ['v=BIMI1; l=https://example.com/logo.svg']));
+					return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
+				}
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse('example.com', true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known')) {
+				return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'));
+			}
+			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+	}
+
+	async function run(domain = 'example.com') {
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		return scanDomain(domain);
+	}
+
+	it('retries a zero-score errored check and uses the successful retry result', async () => {
+		// DMARC fetch throws on both initial attempts (2 throws = DNS_RETRIES exhausted),
+		// then succeeds on the retry-scan pass. DMARC propagates DnsQueryError up to
+		// safeCheck, so we get checkStatus='error' + score=0 on the first pass.
+		mockWithFlakyUrl('_dmarc.', 2);
+		const result = await run();
+
+		const dmarc = result.checks.find((c) => c.category === 'dmarc');
+		expect(dmarc).toBeDefined();
+		// After retry succeeded, score should NOT be zero and status should NOT be error
+		expect(dmarc!.score).toBeGreaterThan(0);
+		expect(dmarc!.checkStatus).not.toBe('error');
+	});
+
+	it('keeps original zero-score result when retry also fails', async () => {
+		// Throw forever for DMARC — retry also fails → original zero should be preserved.
+		mockWithFlakyUrl('_dmarc.', 999);
+		const result = await run();
+
+		const dmarc = result.checks.find((c) => c.category === 'dmarc');
+		expect(dmarc).toBeDefined();
+		expect(dmarc!.score).toBe(0);
+		expect(dmarc!.checkStatus).toBe('error');
+	});
+
+	it('does not retry checks that returned normally (non-error status)', async () => {
+		// All checks succeed → no retries should fire. We verify this by checking that
+		// DMARC's TXT query is issued exactly once (not duplicated by a retry pass).
+		mockAllChecks();
+		const fetchSpy = globalThis.fetch as ReturnType<typeof vi.fn>;
+		await run();
+
+		const callUrls = fetchSpy.mock.calls.map((c) => (typeof c[0] === 'string' ? c[0] : ''));
+		const dmarcCalls = callUrls.filter((u) => u.includes('_dmarc.'));
+		// DMARC issues exactly one TXT query under normal circumstances
+		expect(dmarcCalls.length).toBe(1);
+	});
+
+	it('fires retries for multiple simultaneously failing checks up to the cap', async () => {
+		// Throw on SPF, DMARC, MTA-STS, TLSRPT, and BIMI TXT lookups on the first 2 fetches
+		// (DNS_RETRIES=1 means 2 fetches per query). Each subsequent fetch succeeds, so the
+		// retry pass can recover them. That's 5 qualifying retries; cap is 3, so exactly
+		// 3 should recover.
+		const counters: Record<string, number> = { spf: 0, dmarc: 0, mtaSts: 0, tlsrpt: 0, bimi: 0 };
+		function shouldThrow(key: string): boolean {
+			counters[key]++;
+			return counters[key] <= 2;
+		}
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) {
+						if (shouldThrow('dmarc')) return Promise.reject(new Error('DNS query failed'));
+						return Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=reject']));
+					}
+					if (url.includes('_mta-sts.')) {
+						if (shouldThrow('mtaSts')) return Promise.reject(new Error('DNS query failed'));
+						return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
+					}
+					if (url.includes('_smtp._tls.')) {
+						if (shouldThrow('tlsrpt')) return Promise.reject(new Error('DNS query failed'));
+						return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
+					}
+					if (url.includes('default._bimi.')) {
+						if (shouldThrow('bimi')) return Promise.reject(new Error('DNS query failed'));
+						return Promise.resolve(txtResponse('default._bimi.example.com', ['v=BIMI1; l=https://example.com/logo.svg']));
+					}
+					if (url.includes('_domainkey.')) {
+						return Promise.resolve(txtResponse('default._domainkey.example.com', ['v=DKIM1; k=rsa; p=MIGf']));
+					}
+					// SPF query (plain example.com TXT)
+					if (shouldThrow('spf')) return Promise.reject(new Error('DNS query failed'));
+					return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
+				}
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse('example.com', true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known')) {
+				return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'));
+			}
+			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+
+		const result = await run();
+
+		// Count how many of the 5 originally-failing checks ended up with a non-error result.
+		// With MAX_RETRIES_PER_SCAN=3, exactly 3 should have recovered via retry.
+		const targets = ['spf', 'dmarc', 'mta_sts', 'tlsrpt', 'bimi'] as const;
+		const recovered = targets
+			.map((cat) => result.checks.find((c) => c.category === cat))
+			.filter((c) => c && c.checkStatus !== 'error' && c.score > 0);
+		expect(recovered.length).toBe(3);
+	});
+});
