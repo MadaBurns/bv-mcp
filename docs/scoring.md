@@ -50,7 +50,7 @@ Source: `CATEGORY_TIERS` and `computeScanScore()` (bridge) in `packages/dns-chec
 
 ## Generic Scoring Engine
 
-The core scoring logic has been refactored into a **Generic Scoring Engine** (ported from `claude-code-py` architecture). This engine is decoupled from concrete DNS check types, allowing for arbitrary string-keyed categories and tiers.
+The core scoring logic has been refactored into a **Generic Scoring Engine**. This engine is decoupled from concrete DNS check types, allowing for arbitrary string-keyed categories and tiers.
 
 - **String-keyed inputs**: Accepts `categoryScores` as a `Record<string, number>`, making it runtime-agnostic and easy to port to other languages.
 - **Three-tier formula**: Implements the Core/Protective/Hardening tier logic as a pure functional transformation.
