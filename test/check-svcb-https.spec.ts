@@ -153,6 +153,50 @@ describe('checkSvcbHttps', () => {
 		expect(noH2Finding!.severity).toBe('low');
 	});
 
+	// RFC 3597 wire-format fixture: real Cloudflare DoH response for blackveilsecurity.com.
+	// Decodes to: priority=1, target=., alpn=["h3","h2"], ipv4hint=[104.18.8.92, 104.18.9.92], ipv6hint=[2 IPv6 addrs]
+	// Cloudflare DoH returns HTTPS records in this format (RFC 3597 §5) instead of presentation form.
+	const cloudflareWireFormatH2H3 =
+		'\\# 61 00 01 00 00 01 00 06 02 68 33 02 68 32 00 04 00 08 68 12 08 5c 68 12 09 5c 00 06 00 20 26 06 47 00 00 00 00 00 00 00 00 00 68 12 08 5c 26 06 47 00 00 00 00 00 00 00 00 00 68 12 09 5c';
+
+	it('parses ALPN from RFC 3597 wire-format DoH response (Cloudflare)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('type=HTTPS') || url.includes('type=65')) {
+				return Promise.resolve(httpsRecordResponse('example.com', [cloudflareWireFormatH2H3]));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run();
+		const titles = result.findings.map((f) => f.title);
+		expect(titles).toContain('HTTP/3 (QUIC) advertised via HTTPS record');
+		expect(titles).not.toContain('HTTPS record missing ALPN parameter');
+		expect(titles).not.toContain('HTTPS record does not advertise HTTP/2');
+	});
+
+	it('parses ALPN from wire-format record with multi-label TargetName', async () => {
+		// priority=1, target="www.example.com.", alpn=["h2"]
+		// 00 01 | 03 "www" 07 "example" 03 "com" 00 | 00 01 00 03 02 "h2"  → 26 bytes
+		const wire =
+			'\\# 26 00 01 03 77 77 77 07 65 78 61 6d 70 6c 65 03 63 6f 6d 00 00 01 00 03 02 68 32';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('type=HTTPS') || url.includes('type=65')) {
+				return Promise.resolve(httpsRecordResponse('example.com', [wire]));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run();
+		const titles = result.findings.map((f) => f.title);
+		expect(titles).toContain('HTTPS record configured');
+		expect(titles).not.toContain('HTTPS record missing ALPN parameter');
+		const configured = result.findings.find((f) => f.title === 'HTTPS record configured');
+		expect(configured?.metadata).toMatchObject({ alpn: ['h2'], priority: 1 });
+	});
+
 	it('should handle DNS query failure gracefully', async () => {
 		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DNS failure'));
 

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-04-14
+
+### Fixed
+- **`check_svcb_https` wire-format parsing** (`packages/dns-checks/src/checks/check-svcb-https.ts`): Cloudflare DoH JSON returns HTTPS (type 65) records in RFC 3597 wire format (`\# <length> <hex>`) rather than the human-readable presentation form. The previous regex-based parsers (`parseAlpn`, `hasEch`, `parsePriority`) only recognised presentation format, so every domain whose HTTPS record was resolved via Cloudflare DoH was incorrectly flagged with `HTTPS record missing ALPN parameter` and `HTTPS record does not advertise HTTP/2`. Added `parseHttpsRecordWire()` that detects the `\# ` prefix, walks the DNS-name labels of TargetName, and decodes SvcParams to extract priority, ALPN protocol list, and ECH presence. Presentation-format parsers retained for the Google DoH fallback path which already returns presentation form. Tests in `test/check-svcb-https.spec.ts` were previously mocking presentation strings (which Cloudflare never returns), masking the bug — added two new tests using real Cloudflare wire-format hex and a synthesised multi-label TargetName fixture.
+
 ## [2.7.0] - 2026-04-14
 
 ### Added
