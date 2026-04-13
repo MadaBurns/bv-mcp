@@ -197,6 +197,26 @@ describe('checkSvcbHttps', () => {
 		expect(configured?.metadata).toMatchObject({ alpn: ['h2'], priority: 1 });
 	});
 
+	it('parses ALPN from wire-format record using bare # prefix', async () => {
+		// RFC 3597 also permits the prefix without the leading backslash.
+		// Existing parseTlsaRecord/parseCaaRecord accept both forms; align HTTPS
+		// parser style. priority=1, target=., alpn=["h3","h2"]  → 13 bytes
+		const wire = '# 13 00 01 00 00 01 00 06 02 68 33 02 68 32';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('type=HTTPS') || url.includes('type=65')) {
+				return Promise.resolve(httpsRecordResponse('example.com', [wire]));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run();
+		const titles = result.findings.map((f) => f.title);
+		expect(titles).toContain('HTTPS record configured');
+		expect(titles).not.toContain('HTTPS record missing ALPN parameter');
+	});
+
 	it('should handle DNS query failure gracefully', async () => {
 		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DNS failure'));
 
