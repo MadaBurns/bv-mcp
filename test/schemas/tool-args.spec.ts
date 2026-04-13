@@ -147,7 +147,7 @@ describe('GetProviderInsightsArgs', () => {
 
 describe('TOOL_SCHEMA_MAP', () => {
 	it('has 38 tools', () => {
-		expect(Object.keys(TOOL_SCHEMA_MAP)).toHaveLength(48);
+		expect(Object.keys(TOOL_SCHEMA_MAP)).toHaveLength(49);
 	});
 	it('all values are Zod schemas', () => {
 		for (const schema of Object.values(TOOL_SCHEMA_MAP)) {
