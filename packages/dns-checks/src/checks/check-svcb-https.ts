@@ -13,7 +13,7 @@ import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 
 /**
- * Parse ALPN protocols from an HTTPS record data string.
+ * Parse ALPN protocols from an HTTPS record data string (presentation format).
  */
 function parseAlpn(data: string): string[] {
 	const match = data.match(/\balpn=(?:"([^"]+)"|(\S+))/i);
@@ -23,19 +23,86 @@ function parseAlpn(data: string): string[] {
 }
 
 /**
- * Check for ECH (Encrypted Client Hello) in the HTTPS record data.
+ * Check for ECH (Encrypted Client Hello) in the HTTPS record data (presentation format).
  */
 function hasEch(data: string): boolean {
 	return /\bech=/i.test(data);
 }
 
 /**
- * Parse the priority from HTTPS record data.
+ * Parse the priority from HTTPS record data (presentation format).
  */
 function parsePriority(data: string): number | null {
 	const match = data.match(/^(\d+)\s/);
 	if (!match) return null;
 	return parseInt(match[1], 10);
+}
+
+/**
+ * Parse RFC 3597 wire-format HTTPS records: `\# <length> <hex bytes>`.
+ * Cloudflare DoH JSON returns HTTPS (type 65) responses in this format rather
+ * than the human-readable presentation form. Returns null if `data` is not in
+ * wire format.
+ */
+function parseHttpsRecordWire(
+	data: string,
+): { priority: number; alpn: string[]; ech: boolean } | null {
+	if (!data.startsWith('\\# ')) return null;
+
+	const parts = data.slice(3).trim().split(/\s+/);
+	const declaredLen = parseInt(parts[0], 10);
+	if (!Number.isFinite(declaredLen) || declaredLen < 3) return null;
+
+	const hex = parts.slice(1).join('');
+	if (hex.length !== declaredLen * 2) return null;
+
+	const bytes = new Uint8Array(declaredLen);
+	for (let i = 0; i < declaredLen; i++) {
+		const b = parseInt(hex.substr(i * 2, 2), 16);
+		if (!Number.isFinite(b)) return null;
+		bytes[i] = b;
+	}
+
+	let off = 0;
+	const priority = (bytes[off] << 8) | bytes[off + 1];
+	off += 2;
+
+	// Walk DNS labels of TargetName until terminating 0x00 label.
+	while (off < bytes.length) {
+		const labelLen = bytes[off++];
+		if (labelLen === 0) break;
+		if (labelLen >= 0xc0) return null; // compression pointers not permitted in SVCB
+		off += labelLen;
+		if (off > bytes.length) return null;
+	}
+
+	const alpn: string[] = [];
+	let ech = false;
+	const decoder = new TextDecoder();
+
+	while (off + 4 <= bytes.length) {
+		const key = (bytes[off] << 8) | bytes[off + 1];
+		const len = (bytes[off + 2] << 8) | bytes[off + 3];
+		off += 4;
+		if (off + len > bytes.length) break;
+		const value = bytes.subarray(off, off + len);
+		off += len;
+
+		if (key === 1) {
+			// ALPN: sequence of length-prefixed protocol id strings (RFC 7301).
+			let p = 0;
+			while (p < value.length) {
+				const sLen = value[p++];
+				if (p + sLen > value.length) break;
+				alpn.push(decoder.decode(value.subarray(p, p + sLen)));
+				p += sLen;
+			}
+		} else if (key === 5) {
+			ech = true;
+		}
+	}
+
+	return { priority, alpn, ech };
 }
 
 /**
@@ -87,7 +154,8 @@ export async function checkSVCBHTTPS(
 	let validServiceModeRecords = 0;
 
 	for (const record of httpsRecords) {
-		const priority = parsePriority(record);
+		const wire = parseHttpsRecordWire(record);
+		const priority = wire ? wire.priority : parsePriority(record);
 
 		if (priority === 0) {
 			// Alias mode — delegates to another name for parameters
@@ -106,8 +174,8 @@ export async function checkSVCBHTTPS(
 
 		// Service mode (priority >= 1)
 		validServiceModeRecords++;
-		const alpnProtocols = parseAlpn(record);
-		const recordHasEch = hasEch(record);
+		const alpnProtocols = wire ? wire.alpn : parseAlpn(record);
+		const recordHasEch = wire ? wire.ech : hasEch(record);
 
 		if (alpnProtocols.includes('h2')) hasH2 = true;
 		if (alpnProtocols.includes('h3')) hasH3 = true;
