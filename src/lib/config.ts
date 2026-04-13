@@ -178,6 +178,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	discover_subdomains: 50,
 	map_compliance: 75,
 	simulate_attack_paths: 75,
+	check_dbl: 30,
 };
 
 /**
