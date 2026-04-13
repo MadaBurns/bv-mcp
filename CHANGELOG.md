@@ -50,7 +50,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [2.1.19] - 2026-04-01
 
 ### Added
-- **Generic Scoring Engine** — ported core architectural logic from `claude-code-py` for cross-language consistency. The engine is now decoupled from concrete DNS checks, using string-keyed categories and a three-tier pure functional formula.
+- **Generic Scoring Engine** — decoupled from concrete DNS checks, using string-keyed categories and a three-tier pure functional formula.
 - **WASM Policy Engine** — integrated `bv-wasm-core` for high-performance, tamper-resistant permission checks and token estimation.
 - **Modernized Documentation** — completely rewritten README.md, CLAUDE.md, and scoring docs to reflect the new architecture and client-aware formatting.
 
