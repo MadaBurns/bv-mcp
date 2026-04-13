@@ -85,7 +85,7 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 	return jsonSchema as McpTool['inputSchema'];
 }
 
-/** All 49 MCP tool definitions. */
+/** All 50 MCP tool definitions. */
 const TOOL_DEFS: Record<string, ToolDef> = {
 	check_mx: {
 		description: 'Look up MX records for a domain. Shows mail servers, email provider detection, and validates configuration.',
@@ -404,6 +404,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	check_nsec_walkability: {
 		description:
 			'Assess zone walkability risk by analyzing NSEC3PARAM configuration. Detects plain NSEC zones, weak NSEC3 parameters, and opt-out flags.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	check_dnssec_chain: {
+		description:
+			'Walk the DNSSEC chain of trust from root to target domain. Reports DS/DNSKEY records, algorithm usage, and linkage status at each zone level.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
