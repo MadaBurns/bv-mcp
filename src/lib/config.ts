@@ -178,6 +178,13 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	discover_subdomains: 50,
 	map_compliance: 75,
 	simulate_attack_paths: 75,
+	check_dbl: 30,
+	check_rbl: 20,
+	cymru_asn: 30,
+	rdap_lookup: 20,
+	check_nsec_walkability: 30,
+	check_dnssec_chain: 30,
+	check_fast_flux: 10,
 };
 
 /**
