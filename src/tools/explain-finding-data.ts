@@ -491,6 +491,71 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		recommendation: 'No action required. Consider adding ECH for enhanced privacy.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc9460'],
 	},
+	// --- Intelligence tools (mclose parity) ---
+	DBL_LISTED: {
+		title: 'Domain Listed on Blocklist',
+		severity: 'high',
+		explanation:
+			'The domain appears on one or more DNS-based Domain Block Lists (DBLs), indicating it has been flagged for spam, phishing, or malware distribution.',
+		impact: 'Listed domains may have email deliverability issues and are often blocked by recipient mail servers.',
+		adverseConsequences: 'Legitimate email from this domain may be silently dropped or quarantined.',
+		recommendation:
+			'Investigate the listing reason. For Spamhaus DBL, check https://check.spamhaus.org/. Request delisting after resolving the underlying issue.',
+		references: ['https://www.spamhaus.org/dbl/', 'https://uribl.com/', 'https://www.surbl.org/'],
+	},
+	RBL_LISTED: {
+		title: 'IP Listed on Real-time Blocklist',
+		severity: 'high',
+		explanation:
+			'One or more mail server IPs are listed on DNS-based Real-time Blocklists, indicating the IP has been flagged for sending spam or malicious traffic.',
+		impact: 'Email from listed IPs is likely to be rejected or quarantined by recipient servers.',
+		adverseConsequences: 'Significant email deliverability degradation. May require IP change or delisting process.',
+		recommendation:
+			'Check Spamhaus at https://check.spamhaus.org/. For shared hosting, contact your provider. For dedicated IPs, resolve the abuse issue and request delisting.',
+		references: ['https://www.spamhaus.org/zen/', 'https://www.spamcop.net/'],
+	},
+	ASN_HIGH_RISK: {
+		title: 'High-Risk ASN Detected',
+		severity: 'medium',
+		explanation:
+			'The domain resolves to IP addresses in an Autonomous System commonly associated with abuse infrastructure (bulletproof hosting, botnets).',
+		recommendation:
+			'Verify the hosting choice is intentional. High-risk ASNs are not inherently malicious but are statistically over-represented in abuse reports.',
+		references: ['https://www.team-cymru.com/ip-asn-mapping'],
+	},
+	FAST_FLUX_DETECTED: {
+		title: 'Fast-Flux Behavior Detected',
+		severity: 'high',
+		explanation:
+			'The domain shows rapidly rotating IP addresses with very low TTLs, a technique commonly used by botnets and phishing operations to evade takedown.',
+		impact: 'Fast-flux domains are a strong indicator of malicious infrastructure.',
+		adverseConsequences: 'Associating with fast-flux infrastructure damages domain reputation and may trigger automated blocking.',
+		recommendation:
+			'Investigate immediately. If this is a CDN or legitimate load balancer, TTLs are typically higher and rotation patterns are predictable.',
+		references: ['https://en.wikipedia.org/wiki/Fast_flux'],
+	},
+	DNSSEC_CHAIN_BROKEN: {
+		title: 'DNSSEC Chain of Trust Broken',
+		severity: 'high',
+		explanation:
+			'The DNSSEC chain of trust has a gap — a DS record exists at the parent zone but the corresponding DNSKEY is missing or mismatched at the child zone.',
+		impact: 'DNSSEC-validating resolvers will return SERVFAIL for this domain, causing complete resolution failure for security-conscious clients.',
+		adverseConsequences: 'Domain may be unreachable for users behind DNSSEC-validating resolvers.',
+		recommendation:
+			'Ensure the DS record at the parent matches a DNSKEY at the child zone. Use `delv +vtrace` for detailed chain debugging.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc4033'],
+	},
+	NSEC_WALKABLE: {
+		title: 'Zone Walkable (No NSEC3)',
+		severity: 'high',
+		explanation:
+			'The zone does not appear to use NSEC3, meaning it likely uses plain NSEC records which allow full zone enumeration (zone walking).',
+		impact: 'Attackers can discover all hostnames in the zone without brute-forcing, exposing internal infrastructure.',
+		adverseConsequences: 'Complete zone enumeration reveals the attack surface — internal hosts, staging environments, and service names.',
+		recommendation:
+			'Deploy NSEC3 with at least algorithm 1 (SHA-1) and consider using salt. RFC 9276 recommends 0 iterations with no salt as the minimum.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc5155', 'https://datatracker.ietf.org/doc/html/rfc9276'],
+	},
 };
 
 export const DEFAULT_EXPLANATION: ExplanationTemplate = {
@@ -569,6 +634,26 @@ export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
 	SVCB_HTTPS: {
 		impact: 'Modern transport capabilities (ALPN, ECH) cannot be advertised via DNS, reducing connection efficiency and privacy.',
 		adverseConsequences: 'Clients require additional round-trips to negotiate protocols, and ECH-based privacy is unavailable.',
+	},
+	RBL: {
+		impact: 'Mail server IPs are listed on one or more DNS blocklists, likely degrading email deliverability.',
+		adverseConsequences: 'Outbound email may be silently dropped or quarantined by recipient servers.',
+	},
+	DBL: {
+		impact: 'Domain is flagged on DNS-based domain blocklists, indicating prior spam or abuse association.',
+		adverseConsequences: 'Domain reputation is damaged. Email and web traffic may be blocked by security tools.',
+	},
+	FAST_FLUX: {
+		impact: 'DNS resolution shows fast-flux patterns — rapidly rotating IPs with low TTLs.',
+		adverseConsequences: 'Strong indicator of botnet or phishing infrastructure. Domain reputation will be severely impacted.',
+	},
+	DNSSEC_CHAIN: {
+		impact: 'DNSSEC chain structure has gaps or uses weak algorithms, reducing trust in DNS responses.',
+		adverseConsequences: 'DNSSEC-validating resolvers may fail to resolve the domain or accept spoofed responses.',
+	},
+	NSEC_WALKABILITY: {
+		impact: 'Zone denial-of-existence parameters allow enumeration of zone contents.',
+		adverseConsequences: 'Attackers can map the full attack surface by walking the zone without brute-forcing.',
 	},
 };
 
