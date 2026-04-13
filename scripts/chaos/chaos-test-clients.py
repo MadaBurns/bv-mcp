@@ -225,9 +225,9 @@ def test_session_lifecycle():
         try:
             d = json.loads(body)
             count = len(d.get("result", {}).get("tools", []))
-            record(f"1. {name}: tools/list = 44", count == 44, f"got {count}, status={status}")
+            record(f"1. {name}: tools/list = 51", count == 51, f"got {count}, status={status}")
         except Exception as e:
-            record(f"1. {name}: tools/list = 44", False, str(e))
+            record(f"1. {name}: tools/list = 51", False, str(e))
 
         # tools/call
         status, body, _ = tool_call(sid, ua, TOOL_CHECK, TOOL_ARGS,
@@ -392,7 +392,7 @@ def test_api_key_param():
     try:
         d = json.loads(body)
         count = len(d.get("result", {}).get("tools", []))
-        record("4c. tools/list no session + ?api_key= → 44 tools", count == 44, f"got {count}")
+        record("4c. tools/list no session + ?api_key= → 51 tools", count == 51, f"got {count}")
     except Exception as e:
         record("4c. tools/list no session + ?api_key=", False, str(e))
 
@@ -623,8 +623,8 @@ def test_session_edge_cases():
         d = json.loads(body)
         count = len(d.get("result", {}).get("tools", []))
         rate = is_rate_limited(body)
-        record("8b. Valid-format unknown session → auto-revival (44 tools or rate-limited)",
-               count == 44 or rate,
+        record("8b. Valid-format unknown session → auto-revival (51 tools or rate-limited)",
+               count == 51 or rate,
                f"HTTP {status}, tools={count}, rate={rate}")
     except Exception as e:
         record("8b. Valid-format unknown session → auto-revival", False, str(e))
@@ -667,7 +667,7 @@ def test_session_edge_cases():
         try:
             d = json.loads(body)
             count = len(d.get("result", {}).get("tools", []))
-            record("8e. Different UA on existing session → 44 tools", count == 44,
+            record("8e. Different UA on existing session → 51 tools", count == 51,
                    f"got {count}, status={status}")
         except Exception as e:
             record("8e. Different UA on existing session", False, str(e))
