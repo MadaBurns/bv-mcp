@@ -33,11 +33,12 @@ const NON_SCAN_TOOL_NAMES = new Set([
 	'check_dbl',
 	'check_rbl',
 	'cymru_asn',
+	'rdap_lookup',
 ]);
 
 describe('tool-schemas metadata', () => {
 	it('exports exactly 42 tools', () => {
-		expect(TOOLS).toHaveLength(47);
+		expect(TOOLS).toHaveLength(48);
 	});
 
 	it('all tool names are unique', () => {
