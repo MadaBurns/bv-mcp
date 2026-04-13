@@ -387,6 +387,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'intelligence',
 		scanIncluded: false,
 	},
+	cymru_asn: {
+		description:
+			'Map domain IPs to Autonomous System Numbers via Team Cymru DNS. Returns ASN, prefix, country, registry, and organization for each IP. Flags high-risk hosting ASNs.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
 };
 
 export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => ({

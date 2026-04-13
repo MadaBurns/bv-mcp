@@ -32,11 +32,12 @@ const NON_SCAN_TOOL_NAMES = new Set([
 	'resolve_spf_chain', 'discover_subdomains', 'map_compliance', 'simulate_attack_paths',
 	'check_dbl',
 	'check_rbl',
+	'cymru_asn',
 ]);
 
 describe('tool-schemas metadata', () => {
 	it('exports exactly 42 tools', () => {
-		expect(TOOLS).toHaveLength(46);
+		expect(TOOLS).toHaveLength(47);
 	});
 
 	it('all tool names are unique', () => {
