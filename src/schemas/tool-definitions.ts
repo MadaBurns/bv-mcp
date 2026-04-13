@@ -59,7 +59,7 @@ interface ToolDef {
 }
 
 /** DNS/security acronyms that should be uppercased in human-readable tool titles. */
-const KNOWN_ACRONYMS = new Set(['mx', 'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta', 'sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'http', 'https', 'dane', 'svcb', 'srv', 'txt', 'doh', 'rpm', 'dbl']);
+const KNOWN_ACRONYMS = new Set(['mx', 'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta', 'sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'http', 'https', 'dane', 'svcb', 'srv', 'txt', 'doh', 'rpm', 'dbl', 'rdap']);
 
 /** Convert a snake_case tool name to a human-readable title. e.g. "check_mta_sts" → "Check MTA STS" */
 function toolNameToTitle(name: string): string {
@@ -390,6 +390,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	cymru_asn: {
 		description:
 			'Map domain IPs to Autonomous System Numbers via Team Cymru DNS. Returns ASN, prefix, country, registry, and organization for each IP. Flags high-risk hosting ASNs.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	rdap_lookup: {
+		description:
+			'Fetch domain registration data via RDAP (modern WHOIS replacement). Returns registrar, creation/expiration dates, EPP status, registrant info, and domain age.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
