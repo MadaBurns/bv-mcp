@@ -56,6 +56,7 @@ regexes = [
 paths = [
   '''test/''',
   '''src/tools/.*-analysis\.ts$''',  # Analysis modules contain IP examples in JSDoc
+  '''src/lib/ip-utils\.ts$''',       # IP utility module contains example IPs in JSDoc
 ]
 
 [[rules]]

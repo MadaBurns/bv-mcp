@@ -169,6 +169,13 @@ export const GenerateRolloutPlanArgs = z.object({
 	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 }).passthrough();
 
+/** check_fast_flux — domain + rounds + format */
+export const CheckFastFluxArgs = z.object({
+	domain: DomainSchema.describe('Domain to check (e.g., example.com)'),
+	rounds: z.number().int().min(3).max(5).optional().describe('Number of query rounds (3-5, default 3).'),
+	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+}).passthrough();
+
 /**
  * Map of every tool name to its Zod argument schema.
  * Used for runtime validation in tools.ts and for inputSchema generation.
@@ -218,4 +225,11 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	discover_subdomains: BaseDomainArgs,
 	map_compliance: BaseDomainArgs,
 	simulate_attack_paths: BaseDomainArgs,
+	check_dbl: BaseDomainArgs,
+	check_rbl: BaseDomainArgs,
+	cymru_asn: BaseDomainArgs,
+	rdap_lookup: BaseDomainArgs,
+	check_nsec_walkability: BaseDomainArgs,
+	check_dnssec_chain: BaseDomainArgs,
+	check_fast_flux: CheckFastFluxArgs,
 };

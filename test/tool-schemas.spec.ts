@@ -30,11 +30,18 @@ const NON_SCAN_TOOL_NAMES = new Set([
 	'get_benchmark', 'get_provider_insights', 'assess_spoofability', 'explain_finding',
 	'map_supply_chain', 'analyze_drift', 'validate_fix', 'generate_rollout_plan',
 	'resolve_spf_chain', 'discover_subdomains', 'map_compliance', 'simulate_attack_paths',
+	'check_dbl',
+	'check_rbl',
+	'cymru_asn',
+	'rdap_lookup',
+	'check_nsec_walkability',
+	'check_dnssec_chain',
+	'check_fast_flux',
 ]);
 
 describe('tool-schemas metadata', () => {
 	it('exports exactly 42 tools', () => {
-		expect(TOOLS).toHaveLength(44);
+		expect(TOOLS).toHaveLength(51);
 	});
 
 	it('all tool names are unique', () => {
@@ -79,7 +86,7 @@ describe('tool-schemas metadata', () => {
 	});
 
 	it('all scoring check tools have a tier (except check_resolver_consistency)', () => {
-		const checkTools = TOOLS.filter((t) => t.name.startsWith('check_') && t.name !== 'check_resolver_consistency');
+		const checkTools = TOOLS.filter((t) => t.name.startsWith('check_') && t.name !== 'check_resolver_consistency' && t.group !== 'intelligence');
 		for (const tool of checkTools) {
 			expect(tool.tier, `${tool.name} is a scoring check but is missing a tier`).toBeDefined();
 		}
