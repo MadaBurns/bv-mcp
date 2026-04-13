@@ -460,7 +460,7 @@ internalRoutes.get('/analytics/tier-summary', async (c) => {
 			topTools,
 		});
 	} catch (err) {
-		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message : 'unknown' }, 502);
+		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
 	}
 });
 
@@ -486,7 +486,7 @@ internalRoutes.get('/analytics/key-usage', async (c) => {
 		const rows = await queryAnalyticsEngine(config.accountId, config.token, queryKeyUsage(days, keyHashPrefix));
 		return c.json({ days, keyHash: keyHashPrefix ?? 'all', usage: rows });
 	} catch (err) {
-		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message : 'unknown' }, 502);
+		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
 	}
 });
 
@@ -510,6 +510,6 @@ internalRoutes.get('/analytics/digest', async (c) => {
 		const rows = await queryAnalyticsEngine(config.accountId, config.token, queryTierDigest(hours));
 		return c.json({ days, tiers: rows });
 	} catch (err) {
-		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message : 'unknown' }, 502);
+		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
 	}
 });

@@ -164,9 +164,9 @@ export async function resolveTier(
 			// client IP is not in the list, downgrade to partner (still high limits
 			// but not unlimited). If OWNER_ALLOW_IPS is unset, owner is unrestricted
 			// (backward compat for self-hosted/dev where there's no IP filtering).
-			if (env.OWNER_ALLOW_IPS && clientIp) {
+			if (env.OWNER_ALLOW_IPS) {
 				const allowed = env.OWNER_ALLOW_IPS.split(',').map((ip) => ip.trim());
-				if (!allowed.includes(clientIp)) {
+				if (!clientIp || !allowed.includes(clientIp)) {
 					return { authenticated: true, tier: 'partner', keyHash };
 				}
 			}
