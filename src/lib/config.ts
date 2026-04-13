@@ -184,6 +184,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	rdap_lookup: 20,
 	check_nsec_walkability: 30,
 	check_dnssec_chain: 30,
+	check_fast_flux: 10,
 };
 
 /**
