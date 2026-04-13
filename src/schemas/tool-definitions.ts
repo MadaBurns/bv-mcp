@@ -20,6 +20,7 @@ import {
 	MapSupplyChainArgs,
 	AnalyzeDriftArgs,
 	GenerateRolloutPlanArgs,
+	CheckFastFluxArgs,
 	TOOL_SCHEMA_MAP,
 } from './tool-args';
 
@@ -85,7 +86,7 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 	return jsonSchema as McpTool['inputSchema'];
 }
 
-/** All 50 MCP tool definitions. */
+/** All 51 MCP tool definitions. */
 const TOOL_DEFS: Record<string, ToolDef> = {
 	check_mx: {
 		description: 'Look up MX records for a domain. Shows mail servers, email provider detection, and validates configuration.',
@@ -412,6 +413,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		description:
 			'Walk the DNSSEC chain of trust from root to target domain. Reports DS/DNSKEY records, algorithm usage, and linkage status at each zone level.',
 		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	check_fast_flux: {
+		description:
+			'Detect fast-flux DNS behavior by performing multiple rounds of A/AAAA queries with delays. Compares IP answer sets and TTLs across rounds to identify rotating infrastructure.',
+		schema: CheckFastFluxArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},

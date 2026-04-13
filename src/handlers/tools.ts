@@ -49,6 +49,7 @@ import { checkCymruAsn } from '../tools/check-cymru-asn';
 import { checkRdapLookup } from '../tools/check-rdap-lookup';
 import { checkNsecWalkability } from '../tools/check-nsec-walkability';
 import { checkDnssecChain } from '../tools/check-dnssec-chain';
+import { checkFastFlux } from '../tools/check-fast-flux';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -156,6 +157,7 @@ const TOOL_REGISTRY: Record<
 	rdap_lookup: { cacheKey: () => 'rdap', execute: (d) => checkRdapLookup(d), cacheTtlSeconds: 3600 },
 	check_nsec_walkability: { cacheKey: () => 'nsec_walkability', execute: (d, _args, ro) => checkNsecWalkability(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	check_dnssec_chain: { cacheKey: () => 'dnssec_chain', execute: (d, _args, ro) => checkDnssecChain(d, buildDnsOptions(ro)) },
+	check_fast_flux: { cacheKey: () => 'fast_flux', execute: (d, args, ro) => checkFastFlux(d, (args.rounds as number | undefined) ?? 3, buildDnsOptions(ro)) },
 };
 
 /** Known interactive LLM client types that benefit from compact output. */
@@ -480,7 +482,7 @@ export async function handleToolsCall(
 					}
 					default:
 					logToolFailure({ ...ctx(), error: `Unknown tool: ${name}`, args });
-					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all 50 available tools.`);
+					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all 51 available tools.`);
 			}
 		};
 

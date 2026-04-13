@@ -36,11 +36,12 @@ const NON_SCAN_TOOL_NAMES = new Set([
 	'rdap_lookup',
 	'check_nsec_walkability',
 	'check_dnssec_chain',
+	'check_fast_flux',
 ]);
 
 describe('tool-schemas metadata', () => {
 	it('exports exactly 42 tools', () => {
-		expect(TOOLS).toHaveLength(50);
+		expect(TOOLS).toHaveLength(51);
 	});
 
 	it('all tool names are unique', () => {
