@@ -183,6 +183,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	cymru_asn: 30,
 	rdap_lookup: 20,
 	check_nsec_walkability: 30,
+	check_dnssec_chain: 30,
 };
 
 /**

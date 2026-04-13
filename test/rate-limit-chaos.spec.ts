@@ -331,7 +331,7 @@ describe('rate-limit chaos tests', () => {
 	describe('config consistency', () => {
 		it('all check_* tools in config have the same daily limit (200)', () => {
 			const checkTools = Object.entries(FREE_TOOL_DAILY_LIMITS).filter(
-				([name]) => name.startsWith('check_') && name !== 'check_lookalikes' && name !== 'check_shadow_domains' && name !== 'check_mx_reputation' && name !== 'check_resolver_consistency' && name !== 'check_dbl' && name !== 'check_rbl' && name !== 'check_nsec_walkability',
+				([name]) => name.startsWith('check_') && name !== 'check_lookalikes' && name !== 'check_shadow_domains' && name !== 'check_mx_reputation' && name !== 'check_resolver_consistency' && name !== 'check_dbl' && name !== 'check_rbl' && name !== 'check_nsec_walkability' && name !== 'check_dnssec_chain',
 			);
 			for (const [name, limit] of checkTools) {
 				expect(limit, `${name} should have limit 200`).toBe(200);
