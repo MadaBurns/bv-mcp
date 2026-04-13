@@ -180,6 +180,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	simulate_attack_paths: 75,
 	check_dbl: 30,
 	check_rbl: 20,
+	cymru_asn: 30,
 };
 
 /**
