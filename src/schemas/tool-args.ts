@@ -221,4 +221,5 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	check_dbl: BaseDomainArgs,
 	check_rbl: BaseDomainArgs,
 	cymru_asn: BaseDomainArgs,
+	rdap_lookup: BaseDomainArgs,
 };

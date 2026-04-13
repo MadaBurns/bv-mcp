@@ -46,6 +46,7 @@ import { simulateAttackPaths, formatAttackPaths } from '../tools/simulate-attack
 import { checkDbl } from '../tools/check-dbl';
 import { checkRbl } from '../tools/check-rbl';
 import { checkCymruAsn } from '../tools/check-cymru-asn';
+import { checkRdapLookup } from '../tools/check-rdap-lookup';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -150,6 +151,7 @@ const TOOL_REGISTRY: Record<
 	check_dbl: { cacheKey: () => 'dbl', execute: (d, _args, ro) => checkDbl(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	check_rbl: { cacheKey: () => 'rbl', execute: (d, _args, ro) => checkRbl(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	cymru_asn: { cacheKey: () => 'asn', execute: (d, _args, ro) => checkCymruAsn(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
+	rdap_lookup: { cacheKey: () => 'rdap', execute: (d) => checkRdapLookup(d), cacheTtlSeconds: 3600 },
 };
 
 /** Known interactive LLM client types that benefit from compact output. */
@@ -474,7 +476,7 @@ export async function handleToolsCall(
 					}
 					default:
 					logToolFailure({ ...ctx(), error: `Unknown tool: ${name}`, args });
-					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all 47 available tools.`);
+					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all 48 available tools.`);
 			}
 		};
 
