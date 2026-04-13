@@ -28,7 +28,7 @@ git config core.hooksPath .githooks    # Enable pre-commit hooks (one-time setup
 
 - **Runtime**: Cloudflare Workers — no Node.js APIs (only `fetch`, `crypto`, Web APIs)
 - **Framework**: Hono v4
-- **Chaos Testing**: Python-based multi-client/multi-session validation (ported from `claude-code-py`)
+- **Chaos Testing**: Python-based multi-client/multi-session validation
 - **TypeScript**: strict, ES2024 target, Bundler resolution, `isolatedModules: true`
 - **Testing**: Vitest + `@cloudflare/vitest-pool-workers` (tests execute inside Workers runtime)
 - **Linter**: ESLint + typescript-eslint
@@ -125,7 +125,7 @@ test/helpers/dns-mock.ts  — Shared fetch mock for DNS-over-HTTPS queries
 test/schemas/             — Unit tests for Zod schemas
 
 packages/dns-checks/     — @blackveil/dns-checks (runtime-agnostic core library)
-  src/scoring/           — Generic scoring engine (ported from claude-code-py logic)
+  src/scoring/           — Generic scoring engine
     generic.ts           — String-keyed three-tier scoring implementation
     engine.ts            — computeScanScore bridge and scoring defaults
     model.ts             — Finding/CheckResult types and missing-control rules
