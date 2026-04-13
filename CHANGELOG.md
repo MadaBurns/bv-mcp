@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-04-14
+
+### Added
+- **7 new intelligence tools** inspired by [mclose/dns-mcp](https://github.com/mclose/dns-mcp), adapted for Cloudflare Workers:
+  - `check_rbl` — Check MX server IP reputation against 8 DNS-based Real-time Blocklists (Spamhaus ZEN, SpamCop, UCEProtect L1/L2, Mailspike, Barracuda, PSBL, SORBS)
+  - `check_dbl` — Check domain reputation against Spamhaus DBL, URIBL, and SURBL with bitmask return code decoding
+  - `cymru_asn` — Map domain IPs to Autonomous System Numbers via Team Cymru DNS service with high-risk ASN flagging
+  - `rdap_lookup` — Fetch domain registration data via RDAP (modern WHOIS) with IANA bootstrap, domain age calculation, and newly-registered domain detection
+  - `check_fast_flux` — Detect fast-flux DNS behavior via multi-round DoH queries comparing IP rotation and TTLs
+  - `check_dnssec_chain` — Walk the DNSSEC chain of trust from root to target domain, reporting DS/DNSKEY linkage and algorithm strength at each zone level
+  - `check_nsec_walkability` — Assess zone walkability risk by analyzing NSEC3PARAM configuration (iterations, salt, opt-out)
+- **Shared IP utilities** (`src/lib/ip-utils.ts`) — IPv4/IPv6 reversal and private IP detection for RBL/ASN lookups
+- **NSEC3PARAM record type** (type 51) added to DoH query layer
+- **Explanation templates** for all 7 new tool categories in `explain_finding`
+
+### Fixed
+- **CI `contract` job** — replaced hardcoded `/Users/adam/.cargo/bin/wasm-pack` path with PATH-resolved `wasm-pack` in `build:wasm` script, fixing CI failures across all PRs
+
 ## [2.6.7] - 2026-04-10
 
 ### Added
