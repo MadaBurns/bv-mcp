@@ -218,4 +218,5 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	discover_subdomains: BaseDomainArgs,
 	map_compliance: BaseDomainArgs,
 	simulate_attack_paths: BaseDomainArgs,
+	check_dbl: BaseDomainArgs,
 };
