@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [2.7.0] - 2026-04-14
 
 ### Added
-- **7 new intelligence tools** inspired by [mclose/dns-mcp](https://github.com/mclose/dns-mcp), adapted for Cloudflare Workers:
+- **7 new intelligence tools** for Cloudflare Workers:
   - `check_rbl` — Check MX server IP reputation against 8 DNS-based Real-time Blocklists (Spamhaus ZEN, SpamCop, UCEProtect L1/L2, Mailspike, Barracuda, PSBL, SORBS)
   - `check_dbl` — Check domain reputation against Spamhaus DBL, URIBL, and SURBL with bitmask return code decoding
   - `cymru_asn` — Map domain IPs to Autonomous System Numbers via Team Cymru DNS service with high-risk ASN flagging
