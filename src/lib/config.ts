@@ -181,6 +181,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_dbl: 30,
 	check_rbl: 20,
 	cymru_asn: 30,
+	rdap_lookup: 20,
 };
 
 /**
