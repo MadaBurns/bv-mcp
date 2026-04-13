@@ -47,13 +47,14 @@ function parsePriority(data: string): number | null {
 function parseHttpsRecordWire(
 	data: string,
 ): { priority: number; alpn: string[]; ech: boolean } | null {
-	if (!data.startsWith('\\# ')) return null;
+	if (!data.startsWith('\\#') && !data.startsWith('#')) return null;
 
-	const parts = data.slice(3).trim().split(/\s+/);
-	const declaredLen = parseInt(parts[0], 10);
+	const parts = data.trim().split(/\s+/);
+	const hexStart = parts[0] === '\\#' || parts[0] === '#' ? 2 : 1;
+	const declaredLen = parseInt(parts[hexStart - 1], 10);
 	if (!Number.isFinite(declaredLen) || declaredLen < 3) return null;
 
-	const hex = parts.slice(1).join('');
+	const hex = parts.slice(hexStart).join('');
 	if (hex.length !== declaredLen * 2) return null;
 
 	const bytes = new Uint8Array(declaredLen);
