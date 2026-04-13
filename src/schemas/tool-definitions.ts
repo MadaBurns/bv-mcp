@@ -20,6 +20,7 @@ import {
 	MapSupplyChainArgs,
 	AnalyzeDriftArgs,
 	GenerateRolloutPlanArgs,
+	CheckFastFluxArgs,
 	TOOL_SCHEMA_MAP,
 } from './tool-args';
 
@@ -59,7 +60,7 @@ interface ToolDef {
 }
 
 /** DNS/security acronyms that should be uppercased in human-readable tool titles. */
-const KNOWN_ACRONYMS = new Set(['mx', 'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta', 'sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'http', 'https', 'dane', 'svcb', 'srv', 'txt', 'doh', 'rpm']);
+const KNOWN_ACRONYMS = new Set(['mx', 'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta', 'sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'http', 'https', 'dane', 'svcb', 'srv', 'txt', 'doh', 'rpm', 'dbl', 'rdap', 'nsec']);
 
 /** Convert a snake_case tool name to a human-readable title. e.g. "check_mta_sts" → "Check MTA STS" */
 function toolNameToTitle(name: string): string {
@@ -85,7 +86,7 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 	return jsonSchema as McpTool['inputSchema'];
 }
 
-/** All 44 MCP tool definitions. */
+/** All 51 MCP tool definitions. */
 const TOOL_DEFS: Record<string, ToolDef> = {
 	check_mx: {
 		description: 'Look up MX records for a domain. Shows mail servers, email provider detection, and validates configuration.',
@@ -371,6 +372,54 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	simulate_attack_paths: {
 		description: 'Analyze current DNS posture and enumerate specific attack paths an adversary could exploit, with severity, feasibility, steps, and mitigations.',
 		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	check_dbl: {
+		description: 'Check domain reputation against DNS-based Domain Block Lists (Spamhaus DBL, URIBL, SURBL). Returns listing status with decoded return codes.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	check_rbl: {
+		description:
+			'Check MX server IP reputation against 8 DNS-based Real-time Blocklists (Spamhaus ZEN, SpamCop, UCEProtect, Mailspike, Barracuda, PSBL, SORBS). Resolves MX hosts to IPs first.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	cymru_asn: {
+		description:
+			'Map domain IPs to Autonomous System Numbers via Team Cymru DNS. Returns ASN, prefix, country, registry, and organization for each IP. Flags high-risk hosting ASNs.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	rdap_lookup: {
+		description:
+			'Fetch domain registration data via RDAP (modern WHOIS replacement). Returns registrar, creation/expiration dates, EPP status, registrant info, and domain age.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	check_nsec_walkability: {
+		description:
+			'Assess zone walkability risk by analyzing NSEC3PARAM configuration. Detects plain NSEC zones, weak NSEC3 parameters, and opt-out flags.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	check_dnssec_chain: {
+		description:
+			'Walk the DNSSEC chain of trust from root to target domain. Reports DS/DNSKEY records, algorithm usage, and linkage status at each zone level.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	check_fast_flux: {
+		description:
+			'Detect fast-flux DNS behavior by performing multiple rounds of A/AAAA queries with delays. Compares IP answer sets and TTLs across rounds to identify rotating infrastructure.',
+		schema: CheckFastFluxArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},

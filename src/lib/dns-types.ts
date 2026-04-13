@@ -14,6 +14,7 @@ export const RecordType = {
 	DNSKEY: 48,
 	DS: 43,
 	RRSIG: 46,
+	NSEC3PARAM: 51,
 	PTR: 12,
 	SRV: 33,
 	HTTPS: 65,
