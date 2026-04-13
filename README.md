@@ -111,7 +111,7 @@ Transport support:
 
 ## Quality & Reliability
 
-The server is continuously validated using a **comprehensive chaos test suite** (ported from `claude-code-py`) that covers all 9 detected MCP client types:
+The server is continuously validated using a **comprehensive chaos test suite** that covers all 9 detected MCP client types:
 
 - **Interactive clients**: `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf` (auto-format: `compact`)
 - **Non-interactive clients**: `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `unknown` (auto-format: `full`)
@@ -154,7 +154,7 @@ Run the chaos tests locally: `python3 scripts/chaos/chaos-test-clients.py`
   └──────────────────────────┘
 ```
 
-- **Generic Scoring Engine**: Architectural core ported from `claude-code-py` for cross-language consistency
+- **Generic Scoring Engine**: Runtime-agnostic, string-keyed three-tier scoring with configurable weights
 - **WASM Policy Engine**: High-performance permission and token checks via `bv-wasm-core`
 - **Reliable Sessions**: Hardened tombstone logic prevents race-condition revival of terminated sessions
 - **Adaptive Scoring**: Durable Object telemetry adjusts weights based on real-world distributions
