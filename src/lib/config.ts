@@ -179,6 +179,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	map_compliance: 75,
 	simulate_attack_paths: 75,
 	check_dbl: 30,
+	check_rbl: 20,
 };
 
 /**

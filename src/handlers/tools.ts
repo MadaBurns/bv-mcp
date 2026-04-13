@@ -44,6 +44,7 @@ import { discoverSubdomains, formatSubdomainDiscovery } from '../tools/discover-
 import { mapCompliance, formatCompliance } from '../tools/map-compliance';
 import { simulateAttackPaths, formatAttackPaths } from '../tools/simulate-attack-paths';
 import { checkDbl } from '../tools/check-dbl';
+import { checkRbl } from '../tools/check-rbl';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -146,6 +147,7 @@ const TOOL_REGISTRY: Record<
 	check_zone_hygiene: { cacheKey: () => 'zone_hygiene', execute: (d, _args, ro) => checkZoneHygiene(d, buildDnsOptions(ro)) },
 	check_subdomailing: { cacheKey: () => 'subdomailing', execute: (d, _args, ro) => checkSubdomailing(d, buildDnsOptions(ro)) },
 	check_dbl: { cacheKey: () => 'dbl', execute: (d, _args, ro) => checkDbl(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
+	check_rbl: { cacheKey: () => 'rbl', execute: (d, _args, ro) => checkRbl(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 };
 
 /** Known interactive LLM client types that benefit from compact output. */
@@ -470,7 +472,7 @@ export async function handleToolsCall(
 					}
 					default:
 					logToolFailure({ ...ctx(), error: `Unknown tool: ${name}`, args });
-					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all 45 available tools.`);
+					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all 46 available tools.`);
 			}
 		};
 

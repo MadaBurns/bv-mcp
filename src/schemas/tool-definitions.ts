@@ -380,6 +380,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'intelligence',
 		scanIncluded: false,
 	},
+	check_rbl: {
+		description:
+			'Check MX server IP reputation against 8 DNS-based Real-time Blocklists (Spamhaus ZEN, SpamCop, UCEProtect, Mailspike, Barracuda, PSBL, SORBS). Resolves MX hosts to IPs first.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
 };
 
 export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => ({

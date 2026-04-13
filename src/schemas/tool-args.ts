@@ -219,4 +219,5 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	map_compliance: BaseDomainArgs,
 	simulate_attack_paths: BaseDomainArgs,
 	check_dbl: BaseDomainArgs,
+	check_rbl: BaseDomainArgs,
 };
