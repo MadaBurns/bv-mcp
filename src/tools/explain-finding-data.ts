@@ -491,7 +491,7 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		recommendation: 'No action required. Consider adding ECH for enhanced privacy.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc9460'],
 	},
-	// --- Intelligence tools (mclose parity) ---
+	// --- Intelligence tools ---
 	DBL_LISTED: {
 		title: 'Domain Listed on Blocklist',
 		severity: 'high',
