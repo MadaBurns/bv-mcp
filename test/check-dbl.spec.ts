@@ -52,14 +52,14 @@ describe('checkDbl', () => {
 		expect(highFinding!.detail).toContain('Spam');
 	});
 
-	it('should decode URIBL bitmask (127.0.0.2 = Grey)', async () => {
+	it('should decode URIBL bitmask (127.0.0.2 = Black)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
 			if (url.includes('dbl.spamhaus.org')) {
 				return Promise.resolve(emptyResponse('example.com.dbl.spamhaus.org'));
 			}
-			// URIBL: listed as Grey (bitmask 0x02 → 127.0.0.2)
+			// URIBL: listed as Black (bitmask 0x02 → 127.0.0.2)
 			if (url.includes('multi.uribl.com')) {
 				return Promise.resolve(aResponse('example.com.multi.uribl.com', ['127.0.0.2']));
 			}
@@ -74,10 +74,10 @@ describe('checkDbl', () => {
 		const mediumFinding = result.findings.find((f) => f.severity === 'medium');
 		expect(mediumFinding).toBeDefined();
 		expect(mediumFinding!.title).toMatch(/URIBL/i);
-		expect(mediumFinding!.detail).toContain('Grey');
+		expect(mediumFinding!.detail).toContain('Black');
 	});
 
-	it('should decode SURBL bitmask (127.0.0.16 = Phishing)', async () => {
+	it('should decode SURBL bitmask (127.0.0.8 = PH Phishing)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
@@ -87,9 +87,9 @@ describe('checkDbl', () => {
 			if (url.includes('multi.uribl.com')) {
 				return Promise.resolve(emptyResponse('example.com.multi.uribl.com'));
 			}
-			// SURBL: listed as Phishing (bitmask 0x10 → 127.0.0.16)
+			// SURBL: listed as Phishing (bitmask 0x08 → 127.0.0.8)
 			if (url.includes('multi.surbl.org')) {
-				return Promise.resolve(aResponse('example.com.multi.surbl.org', ['127.0.0.16']));
+				return Promise.resolve(aResponse('example.com.multi.surbl.org', ['127.0.0.8']));
 			}
 			return Promise.resolve(emptyResponse('example.com'));
 		});
@@ -99,7 +99,7 @@ describe('checkDbl', () => {
 		const mediumFinding = result.findings.find((f) => f.severity === 'medium');
 		expect(mediumFinding).toBeDefined();
 		expect(mediumFinding!.title).toMatch(/SURBL/i);
-		expect(mediumFinding!.detail).toContain('Phishing');
+		expect(mediumFinding!.detail).toContain('PH (Phishing)');
 	});
 
 	it('should report info finding when clean on all zones (NXDOMAIN)', async () => {

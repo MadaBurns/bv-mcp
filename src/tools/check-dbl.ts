@@ -65,17 +65,20 @@ function decodeSpamhaus(ip: string): DblDecodeResult | null {
 }
 
 // -- URIBL bitmask flags ------------------------------------------------------
+// Reference: https://uribl.com — 0x01 means the querier is rate-limited/blocked.
 
 const URIBL_FLAGS: Array<{ mask: number; label: string }> = [
-	{ mask: 0x01, label: 'Black' },
-	{ mask: 0x02, label: 'Grey' },
-	{ mask: 0x04, label: 'Red' },
-	{ mask: 0x08, label: 'Multi' },
+	{ mask: 0x02, label: 'Black' },
+	{ mask: 0x04, label: 'Grey' },
+	{ mask: 0x08, label: 'Red' },
 ];
 
 function decodeUribl(ip: string): DblDecodeResult | null {
 	const octet = parseInt(ip.split('.')[3], 10);
 	if (!Number.isFinite(octet) || octet === 0) return null;
+
+	// 0x01 = querier rate-limited/blocked by URIBL — NOT a listing
+	if ((octet & 0x01) !== 0 && (octet & ~0x01) === 0) return null;
 
 	const matched = URIBL_FLAGS.filter((f) => (octet & f.mask) !== 0).map((f) => f.label);
 	if (matched.length === 0) return null;
@@ -89,10 +92,11 @@ function decodeUribl(ip: string): DblDecodeResult | null {
 const SURBL_FLAGS: Array<{ mask: number; label: string }> = [
 	{ mask: 0x02, label: 'SC (SpamCop)' },
 	{ mask: 0x04, label: 'WS (sa-blacklist)' },
-	{ mask: 0x08, label: 'AB (AbuseButler)' },
-	{ mask: 0x10, label: 'Phishing' },
-	{ mask: 0x40, label: 'Malware' },
-	{ mask: 0x80, label: 'CRX (Cracked/compromised)' },
+	{ mask: 0x08, label: 'PH (Phishing)' },
+	{ mask: 0x10, label: 'MW (Malware)' },
+	{ mask: 0x20, label: 'AB (AbuseButler)' },
+	{ mask: 0x40, label: 'JP' },
+	{ mask: 0x80, label: 'CR (Cracked)' },
 ];
 
 function decodeSurbl(ip: string): DblDecodeResult | null {
@@ -184,6 +188,23 @@ export async function checkDbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 				),
 			);
 			continue;
+		}
+
+		// URIBL rate-limit/blocked detection (last octet == 1, i.e. only 0x01 set)
+		if (zone.zone === 'multi.uribl.com') {
+			const uriblOctet = parseInt(ip.split('.')[3], 10);
+			if (uriblOctet === 1) {
+				findings.push(
+					createFinding(
+						CATEGORY,
+						`${zone.name} query rate-limited`,
+						'info',
+						`URIBL returned ${ip}, indicating the querier is rate-limited or blocked. This is not a listing. Results from this zone are unavailable.`,
+						{ zone: zone.zone, returnCode: ip, quotaError: true },
+					),
+				);
+				continue;
+			}
 		}
 
 		// Decode the return code
