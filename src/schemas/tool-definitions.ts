@@ -59,7 +59,7 @@ interface ToolDef {
 }
 
 /** DNS/security acronyms that should be uppercased in human-readable tool titles. */
-const KNOWN_ACRONYMS = new Set(['mx', 'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta', 'sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'http', 'https', 'dane', 'svcb', 'srv', 'txt', 'doh', 'rpm']);
+const KNOWN_ACRONYMS = new Set(['mx', 'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta', 'sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'http', 'https', 'dane', 'svcb', 'srv', 'txt', 'doh', 'rpm', 'dbl']);
 
 /** Convert a snake_case tool name to a human-readable title. e.g. "check_mta_sts" → "Check MTA STS" */
 function toolNameToTitle(name: string): string {
@@ -85,7 +85,7 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 	return jsonSchema as McpTool['inputSchema'];
 }
 
-/** All 44 MCP tool definitions. */
+/** All 45 MCP tool definitions. */
 const TOOL_DEFS: Record<string, ToolDef> = {
 	check_mx: {
 		description: 'Look up MX records for a domain. Shows mail servers, email provider detection, and validates configuration.',
@@ -370,6 +370,12 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	simulate_attack_paths: {
 		description: 'Analyze current DNS posture and enumerate specific attack paths an adversary could exploit, with severity, feasibility, steps, and mitigations.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	check_dbl: {
+		description: 'Check domain reputation against DNS-based Domain Block Lists (Spamhaus DBL, URIBL, SURBL). Returns listing status with decoded return codes.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
