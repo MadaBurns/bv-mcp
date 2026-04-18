@@ -175,6 +175,80 @@ describe('POST /oauth/authorize', () => {
 		expect(second.expiresAt).toBe(first.expiresAt);
 	});
 
+	it('OWNER_ALLOW_IPS set + client IP in allowlist → 302 success with code', async () => {
+		// Phase 6 amendment: the IP allowlist gate must run at the CONSENT step (before
+		// BV_API_KEY is checked), not only at the Bearer-path tier resolver, because Phase 8
+		// trusts the OAuth JWT as owner tier unconditionally. A client IP inside the allowlist
+		// must still flow through and land on the success redirect.
+		const cid = await registerClient();
+		const form = buildForm(TEST_API_KEY, cid);
+		const authEnv = { ...env, BV_API_KEY: TEST_API_KEY, OWNER_ALLOW_IPS: '10.0.0.1,10.0.0.2' } as Env;
+		const request = new Request<unknown, IncomingRequestCfProperties>('https://example.com/oauth/authorize', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'cf-connecting-ip': '10.0.0.1' },
+			body: form.toString(),
+			redirect: 'manual',
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, authEnv, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(302);
+		const loc = new URL(res.headers.get('location') ?? '');
+		expect(loc.searchParams.get('code')).toMatch(/^[A-Za-z0-9_-]{16,}$/);
+		expect(loc.searchParams.get('error')).toBeNull();
+	});
+
+	it('OWNER_ALLOW_IPS set + client IP NOT in allowlist → access_denied, no code persisted', async () => {
+		// Hard security test: correct BV_API_KEY from a disallowed IP must NOT mint a code.
+		// The deny path must go through redirectWithError (so the client surfaces the standard
+		// OAuth error), and no `oauth:code:*` entry may exist in KV afterwards.
+		const cid = await registerClient();
+		const form = buildForm(TEST_API_KEY, cid);
+		const authEnv = { ...env, BV_API_KEY: TEST_API_KEY, OWNER_ALLOW_IPS: '10.0.0.1' } as Env;
+		const request = new Request<unknown, IncomingRequestCfProperties>('https://example.com/oauth/authorize', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'cf-connecting-ip': '203.0.113.1' },
+			body: form.toString(),
+			redirect: 'manual',
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, authEnv, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(302);
+		const loc = new URL(res.headers.get('location') ?? '');
+		expect(loc.origin + loc.pathname).toBe('https://claude.ai/cb');
+		expect(loc.searchParams.get('error')).toBe('access_denied');
+		expect(loc.searchParams.get('state')).toBe('stateval');
+		expect(loc.searchParams.get('code')).toBeNull();
+
+		// Verify no code record was persisted to KV — response-level check alone is not enough.
+		const codeList = await env.SESSION_STORE.list({ prefix: `${OAUTH_KV_PREFIX}code:` });
+		expect(codeList.keys.length).toBe(0);
+	});
+
+	it('OWNER_ALLOW_IPS unset → backward-compatible (no IP gating at consent)', async () => {
+		// Self-hosted / dev default: no OWNER_ALLOW_IPS → any IP with the correct key passes.
+		// Explicitly asserts we did not regress the existing success path when the env var is
+		// absent. Uses a non-routable IP distinct from the other tests to avoid rate-limit
+		// contamination across tests sharing the default cf-connecting-ip fallback.
+		const cid = await registerClient();
+		const form = buildForm(TEST_API_KEY, cid);
+		const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+		const request = new Request<unknown, IncomingRequestCfProperties>('https://example.com/oauth/authorize', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'cf-connecting-ip': '192.0.2.55' },
+			body: form.toString(),
+			redirect: 'manual',
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, authEnv, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(302);
+		const loc = new URL(res.headers.get('location') ?? '');
+		expect(loc.searchParams.get('code')).toMatch(/^[A-Za-z0-9_-]{16,}$/);
+		expect(loc.searchParams.get('error')).toBeNull();
+	});
+
 	it('persists code record with submitted code_challenge at the KV layer', async () => {
 		const cid = await registerClient();
 		const challenge = 'a'.repeat(64);

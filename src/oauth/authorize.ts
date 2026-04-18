@@ -186,6 +186,23 @@ export async function handleAuthorizePost(c: Context): Promise<Response> {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
 	}
 
+	// OWNER_ALLOW_IPS gate — enforced at the OAuth consent step before BV_API_KEY verification.
+	// Mirrors the Bearer-path owner-tier allowlist in lib/tier-auth.ts but applied here because
+	// Phase 8 trusts the minted OAuth JWT as owner tier unconditionally (no IP re-check on every
+	// MCP request). If the env var is set, only allowlisted IPs may proceed; anything else
+	// redirects back with `access_denied` before any code is written. When unset we retain the
+	// self-hosted / dev default of no IP gating.
+	const allowIps = (c.env as { OWNER_ALLOW_IPS?: string }).OWNER_ALLOW_IPS;
+	if (allowIps) {
+		const allowed = allowIps
+			.split(',')
+			.map((value) => value.trim())
+			.filter((value) => value.length > 0);
+		if (!allowed.includes(ip)) {
+			return redirectWithError(parsed.redirect_uri, 'access_denied', parsed.state);
+		}
+	}
+
 	const expected = (c.env as { BV_API_KEY?: string }).BV_API_KEY ?? '';
 	const ok = await isAuthorizedRequest(`Bearer ${apiKey}`, expected);
 	if (!ok) {
