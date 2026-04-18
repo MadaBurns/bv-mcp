@@ -166,4 +166,64 @@ describe('POST /oauth/token', () => {
 		expect(res.status).toBe(500);
 		expect(((await res.json()) as Record<string, unknown>).error).toBe('server_error');
 	});
+
+	it('returns 500 server_error when OAUTH_SIGNING_SECRET is shorter than 32 bytes', async () => {
+		// HS256 requires ≥32 bytes for 256-bit security margin (RFC 7518 §3.2). A too-short
+		// secret must be rejected identically to a missing one — same error_description, no
+		// leak of the distinction between "missing" and "too short".
+		const { verifier, challenge } = await pkcePair();
+		const cid = await registerClient();
+		const code = await getAuthCode(cid, challenge);
+		const shortSecretEnv = { ...env, BV_API_KEY: TEST_API_KEY, OAUTH_SIGNING_SECRET: 'short' } as TestEnv;
+		const body = new URLSearchParams({
+			grant_type: 'authorization_code',
+			code,
+			client_id: cid,
+			redirect_uri: 'https://claude.ai/cb',
+			code_verifier: verifier,
+		});
+		const res = await postToken(body, shortSecretEnv);
+		expect(res.status).toBe(500);
+		const payload = (await res.json()) as Record<string, unknown>;
+		expect(payload.error).toBe('server_error');
+		expect(payload.error_description).toBe('OAUTH_SIGNING_SECRET not configured');
+	});
+
+	it('rate-limits token requests at 30/min per IP', async () => {
+		// Mirrors the fixed-window limiter pattern in authorize.ts: 30 requests per IP per 60s.
+		// The 31st call from the same IP must return 429 with invalid_request. We fire requests
+		// with a bogus code so each one short-circuits at invalid_grant (cheap path) — the rate
+		// limiter check runs BEFORE content-type / grant-type / Zod parsing, so the status
+		// progression is deterministic regardless of downstream validation.
+		const ip = '203.0.113.42';
+		const body = new URLSearchParams({
+			grant_type: 'authorization_code',
+			code: 'never-issued',
+			client_id: 'no-such-client',
+			redirect_uri: 'https://claude.ai/cb',
+			code_verifier: 'v'.repeat(43),
+		});
+
+		async function postWithIp(): Promise<Response> {
+			const req = new Request<unknown, IncomingRequestCfProperties>('https://example.com/oauth/token', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'cf-connecting-ip': ip },
+				body: body.toString(),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, authEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			return res;
+		}
+
+		for (let i = 0; i < 30; i++) {
+			const res = await postWithIp();
+			expect(res.status).not.toBe(429);
+		}
+		const limited = await postWithIp();
+		expect(limited.status).toBe(429);
+		const payload = (await limited.json()) as Record<string, unknown>;
+		expect(payload.error).toBe('invalid_request');
+		expect(payload.error_description).toBe('Too many token requests');
+	});
 });
