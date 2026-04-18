@@ -16,6 +16,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { and, asc, count, desc, eq, gte, inArray, type InferSelectModel, sql } from 'drizzle-orm';
 import { drizzle, type DrizzleSqliteDODatabase } from 'drizzle-orm/durable-sqlite';
+import { logError } from './log';
 import {
 	EMA_ALPHA,
 	MATURITY_THRESHOLD,
@@ -770,5 +771,54 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			periodAvgScore: Math.round(weightedAvg * 10) / 10,
 			snapshots,
 		});
+	}
+}
+
+// ─── KV-backed cross-isolate convergence helpers ────────────────────────────
+
+const ADAPTIVE_WEIGHT_KV_TTL_SECONDS = 60;
+
+function awKey(profile: string, provider: string): string {
+	return `aw:${profile}:${provider}`;
+}
+
+/**
+ * Publish a cross-isolate-visible summary of adaptive weights to KV.
+ * Called opportunistically (via waitUntil) after telemetry updates to converge
+ * scoring across isolates within one TTL window.
+ */
+export async function publishAdaptiveWeightSummary(
+	profile: string,
+	provider: string,
+	weights: Record<string, number>,
+	kv: KVNamespace,
+): Promise<void> {
+	try {
+		await kv.put(awKey(profile, provider), JSON.stringify(weights), {
+			expirationTtl: ADAPTIVE_WEIGHT_KV_TTL_SECONDS,
+		});
+	} catch {
+		logError('[profile-accumulator] KV publish failed', {
+			severity: 'warn',
+			category: 'profile-accumulator',
+		});
+	}
+}
+
+/**
+ * Read a cross-isolate adaptive-weight summary from KV. Returns null on cache
+ * miss or KV error — caller falls back to the DO call or static weights.
+ */
+export async function getAdaptiveWeights(
+	profile: string,
+	provider: string,
+	kv: KVNamespace,
+): Promise<Record<string, number> | null> {
+	try {
+		const raw = await kv.get(awKey(profile, provider));
+		if (!raw) return null;
+		return JSON.parse(raw) as Record<string, number>;
+	} catch {
+		return null;
 	}
 }
