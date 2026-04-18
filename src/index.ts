@@ -161,7 +161,7 @@ for (const path of mcpPaths) {
 			: (c.req.query('api_key') ?? null);
 
 		const clientIp = c.req.header('cf-connecting-ip') ?? undefined;
-		const tierResult = await resolveTier(token, c.env, clientIp);
+		const tierResult = await resolveTier(token, c.env, clientIp, c.req.url);
 		c.set('tierAuthResult', tierResult);
 		c.set('isAuthenticated', tierResult.authenticated);
 
