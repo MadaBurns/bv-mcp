@@ -1,0 +1,82 @@
+name: Triage issues
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+
+jobs:
+  flag-promotional:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flag patterns typical of vendor pitches
+        uses: actions/github-script@v7
+        env:
+          # Untrusted issue payload fields are passed via env so the script
+          # cannot be shell-injected. The script reads them via process.env.
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ACTION: ${{ github.event.action }}
+        with:
+          script: |
+            const title = (process.env.ISSUE_TITLE || '').toLowerCase();
+            const body = (process.env.ISSUE_BODY || '').toLowerCase();
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const action = process.env.ACTION || '';
+            if (!issueNumber) return;
+            const combined = `${title}\n${body}`;
+
+            // Conservative pattern set — phrasing common to drive-by vendor
+            // outreach. Designed to flag, not auto-close, to avoid false
+            // positives on genuine feature requests.
+            const promoPatterns = [
+              /add\s+\S+\s+to\s+your\s+(mcp|server|repo|codebase|project)/,
+              /integrate\s+\S+\s+(with|into)\s+your\s+(mcp|server|repo|project)/,
+              /protect\s+your\s+\S+\s+with\s+\S+/,
+              /\b(our|my)\s+(product|tool|service|company|startup|platform)\b/,
+              /try\s+(our|my|this)\s+free/,
+              /gdpr-compliant\s+\S+\s+(protection|solution)\s+(with|using)/,
+            ];
+
+            const matched = promoPatterns.some((p) => p.test(combined));
+            if (!matched) return;
+
+            // Ensure the label exists (idempotent — ignore "already exists").
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'possibly-promotional',
+                color: 'ededed',
+                description: 'Matched vendor-pitch / promotional patterns — review before triaging',
+              });
+            } catch (err) {
+              if (err.status !== 422) throw err;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              labels: ['possibly-promotional'],
+            });
+
+            // Only comment once, on the initial open — not every edit.
+            if (action !== 'opened') return;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: [
+                'Thanks for reaching out. This issue matched patterns typical of vendor or product pitches and has been labeled `possibly-promotional` for review.',
+                '',
+                '- If you are filing a **genuine bug report or feature request**, please edit the issue to describe the specific bug or feature and how it relates to the Blackveil DNS MCP server. A maintainer will remove the label.',
+                '- For **vendor outreach, partnership proposals, or product integrations**, please use the channels listed in the [contact options](https://github.com/MadaBurns/bv-mcp/issues/new/choose) — the issue tracker is reserved for bug reports and feature work on this codebase.',
+                '',
+                'This is an automated response.',
+              ].join('\n'),
+            });
