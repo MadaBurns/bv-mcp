@@ -1,6 +1,7 @@
 import { SELF, env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
+import { OAUTH_KV_PREFIX } from '../../src/lib/config';
 
 const TEST_API_KEY = 'testkey';
 
@@ -138,5 +139,74 @@ describe('POST /oauth/authorize', () => {
 			redirect: 'manual',
 		});
 		expect(res.status).toBe(400);
+	});
+
+	it('rate-limit window is fixed: expiresAt is stable across increments (not reset per write)', async () => {
+		const cid = await registerClient();
+		const form = buildForm('wrongkey', cid);
+		const ip = '198.51.100.77';
+		const rlKey = `${OAUTH_KV_PREFIX}consent-rl:${ip}`;
+
+		// First failed attempt — establishes the window
+		await SELF.fetch('https://example.com/oauth/authorize', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'CF-Connecting-IP': ip },
+			body: form.toString(),
+			redirect: 'manual',
+		});
+		const firstRaw = await env.SESSION_STORE.get(rlKey);
+		expect(firstRaw).not.toBeNull();
+		const first = JSON.parse(firstRaw as string) as { count: number; expiresAt: number };
+		expect(first.count).toBe(1);
+		expect(typeof first.expiresAt).toBe('number');
+
+		// Second failed attempt — must preserve the ORIGINAL expiresAt (fixed window).
+		// Current buggy impl resets TTL on every put → expiresAt drifts forward.
+		await SELF.fetch('https://example.com/oauth/authorize', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'CF-Connecting-IP': ip },
+			body: form.toString(),
+			redirect: 'manual',
+		});
+		const secondRaw = await env.SESSION_STORE.get(rlKey);
+		expect(secondRaw).not.toBeNull();
+		const second = JSON.parse(secondRaw as string) as { count: number; expiresAt: number };
+		expect(second.count).toBe(2);
+		expect(second.expiresAt).toBe(first.expiresAt);
+	});
+
+	it('persists code record with submitted code_challenge at the KV layer', async () => {
+		const cid = await registerClient();
+		const challenge = 'a'.repeat(64);
+		const q = new URLSearchParams({
+			client_id: cid,
+			redirect_uri: 'https://claude.ai/cb',
+			response_type: 'code',
+			state: 'stateval',
+			code_challenge: challenge,
+			code_challenge_method: 'S256',
+		}).toString();
+		const form = new URLSearchParams({ api_key: TEST_API_KEY, _q: q });
+		const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+		const request = new Request<unknown, IncomingRequestCfProperties>('https://example.com/oauth/authorize', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: form.toString(),
+			redirect: 'manual',
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, authEnv, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(302);
+		const loc = new URL(res.headers.get('location') ?? '');
+		const code = loc.searchParams.get('code');
+		expect(code).toBeTruthy();
+
+		const raw = await env.SESSION_STORE.get(`${OAUTH_KV_PREFIX}code:${code}`);
+		expect(raw).not.toBeNull();
+		const rec = JSON.parse(raw as string) as { code_challenge: string; client_id: string; redirect_uri: string };
+		expect(rec.code_challenge).toBe(challenge);
+		expect(rec.client_id).toBe(cid);
+		expect(rec.redirect_uri).toBe('https://claude.ai/cb');
 	});
 });
