@@ -660,7 +660,10 @@ describe('confirmWithSecondaryResolvers', () => {
 			};
 		}) as unknown as typeof fetch;
 		const transport = await import('../src/lib/dns-transport');
-		const result = await transport.confirmWithSecondaryResolvers('example.com', 'TXT', false, 2000);
+		// bv-dns (call 1) throws; Google (call 2) returns a valid empty response — still a DohResponse, not unconfirmed
+		const result = await transport.confirmWithSecondaryResolvers('example.com', 'TXT', false, 2000, undefined, {
+			secondaryDoh: { url: 'https://bv-dns.test/dns-query' },
+		});
 		expect((result as { kind?: string }).kind).not.toBe('unconfirmed');
 	});
 });
