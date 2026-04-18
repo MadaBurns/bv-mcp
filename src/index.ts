@@ -43,6 +43,7 @@ import { parseScoringConfigCached } from './lib/scoring-config';
 import { parseCacheTtl } from './lib/config';
 import { closeLegacyStream, enqueueLegacyMessage, openLegacySseStream } from './lib/legacy-sse';
 import { internalRoutes } from './internal';
+import { buildAuthorizationServerMetadata, buildProtectedResourceMetadata, resolveIssuer } from './oauth/discovery';
 export { QuotaCoordinator } from './lib/quota-coordinator';
 export { ProfileAccumulator } from './lib/profile-accumulator';
 
@@ -86,6 +87,7 @@ type BvMcpEnv = {
 	BV_DOH_TOKEN?: string;
 	BV_CERTSTREAM?: Fetcher;
 	REQUIRE_AUTH?: string;
+	OAUTH_ISSUER?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -678,21 +680,16 @@ app.delete('/mcp', async (c) => {
 
 app.route('/internal', internalRoutes);
 
-// OAuth well-known endpoints — return valid JSON so SDKs don't crash parsing
-// plain-text 404 responses during OAuth discovery probes. RFC 8414 §3 and
-// RFC 9728 §3 form the metadata URL by inserting the well-known path between
-// the authority and the resource path, so spec-compliant clients probe both
-// the bare path (e.g. /.well-known/oauth-protected-resource) and the
-// path-suffixed variant (e.g. /.well-known/oauth-protected-resource/mcp).
+// OAuth 2.1 discovery endpoints (RFC 8414 + RFC 9728).
 app.on(
 	'GET',
-	[
-		'/.well-known/oauth-authorization-server',
-		'/.well-known/oauth-authorization-server/*',
-		'/.well-known/oauth-protected-resource',
-		'/.well-known/oauth-protected-resource/*',
-	],
-	(c) => c.json({ error: 'not_supported', error_description: 'This server does not support OAuth' }, 404),
+	['/.well-known/oauth-authorization-server', '/.well-known/oauth-authorization-server/*'],
+	(c) => c.json(buildAuthorizationServerMetadata(resolveIssuer(c.req.url, (c.env as BvMcpEnv & { OAUTH_ISSUER?: string }).OAUTH_ISSUER))),
+);
+app.on(
+	'GET',
+	['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/*'],
+	(c) => c.json(buildProtectedResourceMetadata(resolveIssuer(c.req.url, (c.env as BvMcpEnv & { OAUTH_ISSUER?: string }).OAUTH_ISSUER))),
 );
 
 app.all('*', (c) => {
