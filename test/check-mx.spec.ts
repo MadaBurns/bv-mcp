@@ -131,6 +131,25 @@ describe('checkMx', () => {
 		expect(finding!.detail).toContain('ghost.dangling.com');
 	});
 
+	it('surfaces providerDetectionFailed metadata when provider signature fetch fails', async () => {
+		const { restore: localRestore } = setupFetchMock();
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : String((url as URL).href ?? url);
+			if (urlStr.includes('provider-signatures') || urlStr.includes('provider_signatures')) {
+				throw new TypeError('fetch failed');
+			}
+			// Return a successful MX response for any DNS query.
+			return createDohResponse(
+				[{ name: 'example.com', type: 15 }],
+				[{ name: 'example.com', type: 15, TTL: 300, data: '10 smtp.google.com.' }],
+			);
+		});
+		const { checkMx } = await import('../src/tools/check-mx');
+		const result = await checkMx('example.com', { providerSignaturesUrl: 'https://example.com/provider-signatures' });
+		expect((result.metadata as { providerDetectionFailed?: boolean })?.providerDetectionFailed).toBe(true);
+		localRestore();
+	});
+
 	it('logs warning when provider detection fails', async () => {
 		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 		// First MX query (from checkMX package) succeeds; second (re-query in wrapper) throws
