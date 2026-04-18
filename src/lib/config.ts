@@ -281,7 +281,7 @@ export function parsePerCheckTimeout(envValue?: string): number {
 }
 
 // ─── OAuth 2.1 (Phase 0 — shared constants) ─────────────────────────────────
-export const OAUTH_CODE_TTL_SECONDS = 30;
+export const OAUTH_CODE_TTL_SECONDS = 60; // KV minimum TTL is 60s; auth codes are short-lived
 export const OAUTH_CLIENT_TTL_SECONDS = 60 * 60 * 24 * 365; // 1 year, refreshed on use
 export const OAUTH_JWT_TTL_SECONDS = 60 * 60 * 24 * 90;     // 90 days
 export const OAUTH_JWT_CLOCK_SKEW_SECONDS = 30;
