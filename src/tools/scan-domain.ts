@@ -25,6 +25,7 @@ import {
 import {
 	adaptiveWeightsToContext,
 	generateScoringNote,
+	MATURITY_THRESHOLD,
 	type AdaptiveWeightsResponse,
 	type ScanTelemetry,
 } from '../lib/adaptive-weights';
@@ -51,6 +52,7 @@ import { checkSubdomailing } from './check-subdomailing';
 import { applyScanPostProcessing } from './scan/post-processing';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import { logError } from '../lib/log';
+import { getAdaptiveWeights, publishAdaptiveWeightSummary } from '../lib/profile-accumulator';
 import { capMaturityStage, computeMaturityStage } from './scan/maturity-staging';
 import type { MaturityStage } from './scan/maturity-staging';
 export { formatScanReport, buildStructuredScanResult } from './scan/format-report';
@@ -170,6 +172,9 @@ async function runCheckRetry(
  * @returns Full scan result with score, individual check results, and metadata
  */
 export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOptions?: ScanRuntimeOptions): Promise<ScanDomainResult> {
+	// scanId: generated once per scan for threading to analytics degradation events.
+	// Currently unused here — callers will pass it when emitDegradationEvent sites migrate.
+	const _scanId = crypto.randomUUID();
 	const scanStartTime = Date.now();
 	const explicitProfile = runtimeOptions?.profile;
 	const isExplicit = explicitProfile && explicitProfile !== 'auto';
@@ -356,14 +361,39 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		// uses the default weights (identical to pre-profile behavior).
 		const scoringContext = isExplicit ? domainContext : undefined;
 
-		// Attempt to fetch adaptive weights from the ProfileAccumulator DO
+		// Attempt to fetch adaptive weights — KV first for cross-isolate convergence,
+		// then fall through to the ProfileAccumulator DO on miss.
 		let adaptiveResponse: AdaptiveWeightsResponse | null = null;
-		if (runtimeOptions?.profileAccumulator) {
+		const adaptiveProvider = domainContext.detectedProvider ?? '';
+
+		if (kv && adaptiveProvider) {
+			const kvWeights = await getAdaptiveWeights(domainContext.profile, adaptiveProvider, kv);
+			if (kvWeights) {
+				// Synthesise a minimal AdaptiveWeightsResponse from KV data so the
+				// downstream code path is unchanged.
+				adaptiveResponse = {
+					profile: domainContext.profile,
+					provider: adaptiveProvider,
+					sampleCount: MATURITY_THRESHOLD,
+					blendFactor: 1,
+					weights: kvWeights,
+					boundHits: [],
+				};
+			}
+		}
+
+		if (!adaptiveResponse && runtimeOptions?.profileAccumulator) {
 			adaptiveResponse = await fetchAdaptiveWeights(
 				runtimeOptions.profileAccumulator,
 				domainContext.profile,
 				domainContext.detectedProvider,
 			);
+			// Publish to KV so other isolates can converge within the TTL window.
+			if (adaptiveResponse && adaptiveProvider && kv && runtimeOptions.waitUntil) {
+				runtimeOptions.waitUntil(
+					publishAdaptiveWeightSummary(domainContext.profile, adaptiveProvider, adaptiveResponse.weights, kv),
+				);
+			}
 		}
 
 		// Add bound hits to signals if present

@@ -100,6 +100,14 @@ function upsertCheckResult(results: CheckResult[], updated: CheckResult): CheckR
 }
 
 async function addOutboundProviderInference(results: CheckResult[], runtimeOptions?: ScanRuntimeOptions): Promise<CheckResult[]> {
+	// If the MX provider detection failed, skip provider-informed DKIM/SPF adjustments
+	// to avoid false inferences based on incomplete or degraded provider data.
+	const mxResult = results.find((result) => result.category === 'mx');
+	const providerDetectionFailed = Boolean(
+		(mxResult?.metadata as { providerDetectionFailed?: boolean } | undefined)?.providerDetectionFailed,
+	);
+	if (providerDetectionFailed) return results;
+
 	const spfResult = results.find((result) => result.category === 'spf');
 	const dkimResult = results.find((result) => result.category === 'dkim');
 

@@ -148,3 +148,42 @@ describe('log string truncation', () => {
 		expect(payload.details.message.length).toBeLessThan(300);
 	});
 });
+
+describe('logError error-severity truncation', () => {
+	const origLog = console.log;
+	afterEach(() => {
+		console.log = origLog;
+		vi.restoreAllMocks();
+	});
+
+	it('preserves up to ~1024 chars of an error-severity message', async () => {
+		const captured: string[] = [];
+		console.log = vi.fn((...args: unknown[]) => {
+			captured.push(args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+		});
+		const { logError } = await import('../src/lib/log');
+		const long = 'e'.repeat(1500);
+		logError(new Error(long), { severity: 'error', category: 'test-truncation' });
+		const joined = captured.join('');
+		// Error-severity gets the 1024 cap, not the 256 cap.
+		// sanitizeString with max=1024 preserves head + ' ... ' + tail, so emitted body contains >= ~1024 chars of 'e'.
+		const eCount = (joined.match(/e/g) ?? []).length;
+		expect(eCount).toBeGreaterThanOrEqual(1000);
+		expect(eCount).toBeLessThanOrEqual(1500);
+	});
+
+	it('preserves only up to ~256 chars of an info-severity message', async () => {
+		const captured: string[] = [];
+		console.log = vi.fn((...args: unknown[]) => {
+			captured.push(args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+		});
+		const { logError } = await import('../src/lib/log');
+		const long = 'x'.repeat(1500);
+		// info severity takes the short truncation path
+		logError(long, { severity: 'info', category: 'test-truncation' });
+		const joined = captured.join('');
+		const xCount = (joined.match(/x/g) ?? []).length;
+		expect(xCount).toBeGreaterThanOrEqual(200);
+		expect(xCount).toBeLessThan(500);
+	});
+});
