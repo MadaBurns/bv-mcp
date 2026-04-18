@@ -29,6 +29,7 @@ import {
 } from './quota-coordinator';
 import { CircuitBreaker, CircuitBreakerOpen } from './circuit-breaker';
 import { logError } from './log';
+import { IP_LOCK_TTL_MS, IP_LOCK_RETRY_MS } from './config';
 
 export interface RateLimitResult {
 	allowed: boolean;
@@ -159,7 +160,7 @@ async function checkScopedRateLimitKV(
 }
 
 async function checkRateLimitKV(ip: string, kv: KVNamespace): Promise<RateLimitResult> {
-	return checkScopedRateLimitKV(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT, kv);
+	return checkScopedRateLimitKVWithAdvisory(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT, kv);
 }
 
 async function checkControlPlaneRateLimitKV(ip: string, kv: KVNamespace): Promise<RateLimitResult> {
@@ -187,6 +188,48 @@ export async function withIpKvLock<T>(ip: string, work: () => Promise<T>): Promi
 		if (KV_IP_LOCK_TAILS.get(ip) === tail) {
 			KV_IP_LOCK_TAILS.delete(ip);
 		}
+	}
+}
+
+/**
+ * Best-effort cross-isolate per-IP advisory lock. Activates only when the
+ * in-memory KV_IP_LOCK_TAILS already has a tail for this IP (indicating
+ * contention on this isolate). On uncontended paths, skips the KV read
+ * entirely — zero added latency.
+ *
+ * KV outage → falls through to `work()` without the advisory layer.
+ */
+async function withIpKvAdvisoryLock<T>(ip: string, kv: KVNamespace, work: () => Promise<T>): Promise<T> {
+	const contended = KV_IP_LOCK_TAILS.has(ip);
+	if (!contended) return work();
+	const advisoryKey = `lk:ip:${ip}`;
+	try {
+		const held = await kv.get(advisoryKey);
+		if (held) await new Promise((r) => setTimeout(r, IP_LOCK_RETRY_MS));
+		await kv.put(advisoryKey, String(Date.now()), { expirationTtl: Math.max(1, Math.ceil(IP_LOCK_TTL_MS / 1000)) });
+	} catch {
+		// KV outage → best-effort fallback to in-memory lock only.
+	}
+	try {
+		return await work();
+	} finally {
+		try { await kv.delete(advisoryKey); } catch { /* best-effort */ }
+	}
+}
+
+export async function checkScopedRateLimitKVWithAdvisory(
+	ip: string,
+	scope: RateLimitScope,
+	minuteLimit: number,
+	hourLimit: number,
+	kv: KVNamespace,
+): Promise<RateLimitResult> {
+	try {
+		return await withIpKvAdvisoryLock(ip, kv, () => checkScopedRateLimitKV(ip, scope, minuteLimit, hourLimit, kv));
+	} catch {
+		// KV outage — log warning and fall back to in-memory
+		logError('[rate-limiter] KV error, falling back to in-memory');
+		return checkScopedRateLimitInMemory(ip, scope, minuteLimit, hourLimit);
 	}
 }
 

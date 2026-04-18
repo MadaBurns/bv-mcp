@@ -13,11 +13,44 @@
 
 import { checkHTTPSecurity } from '@blackveil/dns-checks';
 import type { CheckResult } from '../lib/scoring';
-import { createFinding } from '../lib/scoring';
+import { buildCheckResult, createFinding } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 
 /** User-Agent for outbound probes — matches the package's scanner UA. */
 const SCANNER_USER_AGENT = 'Mozilla/5.0 (compatible; BlackVeilDNSScanner/1.0; +https://blackveilsecurity.com)';
+
+/** WAF/CDN challenge page fingerprints. Matched against response headers (and optionally body). */
+const WAF_CHALLENGE_FINGERPRINTS: Array<{
+	name: string;
+	matchHeaders: (h: Headers) => boolean;
+	matchBody?: (body: string) => boolean;
+}> = [
+	{
+		name: 'cloudflare',
+		// cf-ray header is conclusive on its own; body title is a belt-and-suspenders signal
+		matchHeaders: (h) =>
+			!!(h.get('cf-ray') && (h.get('server') ?? '').toLowerCase().includes('cloudflare')),
+		matchBody: (body) => /just a moment/i.test(body),
+	},
+	{
+		name: 'akamai',
+		matchHeaders: (h) => (h.get('server') ?? '').toLowerCase().includes('akamaighost'),
+	},
+];
+
+/**
+ * Detect a WAF/CDN challenge page from response headers and optional body.
+ * Returns the WAF provider name if matched, null otherwise.
+ */
+function detectWafChallenge(headers: Headers, body?: string): string | null {
+	for (const fp of WAF_CHALLENGE_FINGERPRINTS) {
+		if (!fp.matchHeaders(headers)) continue;
+		// If a body matcher is defined, at least one of headers or body must match
+		if (fp.matchBody && body !== undefined && !fp.matchBody(body)) continue;
+		return fp.name;
+	}
+	return null;
+}
 
 /** Security headers to merge (union) across dual fetches. */
 const MERGE_HEADERS = [
@@ -160,6 +193,24 @@ async function dualFetchHeaders(
 }
 
 /**
+ * Fetch the page body for WAF challenge fingerprinting.
+ * Returns an empty string on error (fail-open — WAF detection should not block normal analysis).
+ */
+async function fetchBodyForWafDetection(url: string, timeoutMs: number): Promise<string> {
+	try {
+		const response = await fetch(url, {
+			method: 'GET',
+			redirect: 'manual',
+			headers: { 'User-Agent': SCANNER_USER_AGENT },
+			signal: AbortSignal.timeout(timeoutMs),
+		});
+		return await response.text();
+	} catch {
+		return '';
+	}
+}
+
+/**
  * Check HTTP security headers for a domain.
  *
  * Strategy: fire two parallel HEAD fetches, union the security headers, then
@@ -171,9 +222,32 @@ async function dualFetchHeaders(
  *
  * Also detects CDN provider from the analyzed headers and adds an info
  * finding when a CDN is fronting the origin.
+ *
+ * WAF/CDN challenge pages are fingerprinted early (after the dual-fetch)
+ * and short-circuit the header analysis — returning checkStatus='error'
+ * with a single info finding instead of misleading header-missing findings.
  */
 export async function checkHttpSecurity(domain: string): Promise<CheckResult> {
 	const dualResult = await dualFetchHeaders(domain, HTTPS_TIMEOUT_MS);
+
+	// WAF/CDN challenge detection — short-circuit before header analysis
+	if (dualResult) {
+		const headersForWaf = dualResult.headers;
+		const needsBody = WAF_CHALLENGE_FINGERPRINTS.some((fp) => fp.matchHeaders(headersForWaf) && fp.matchBody);
+		const body = needsBody ? await fetchBodyForWafDetection(`https://${domain}`, HTTPS_TIMEOUT_MS) : undefined;
+		const wafName = detectWafChallenge(headersForWaf, body);
+		if (wafName) {
+			const finding = createFinding(
+				'http_security',
+				`${wafName.charAt(0).toUpperCase() + wafName.slice(1)} WAF challenge intercepted`,
+				'info',
+				`The fetched response appears to be a WAF/CDN challenge page, not the real site. Header analysis is inconclusive.`,
+				{ wafChallenge: wafName, inconclusive: true },
+			);
+			const base = buildCheckResult('http_security', [finding]);
+			return { ...base, score: 0, passed: false, checkStatus: 'error' };
+		}
+	}
 
 	let capturedHeaders: Headers | null = null;
 
