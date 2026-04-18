@@ -45,7 +45,7 @@ import { closeLegacyStream, enqueueLegacyMessage, openLegacySseStream } from './
 import { internalRoutes } from './internal';
 import { buildAuthorizationServerMetadata, buildProtectedResourceMetadata, resolveIssuer } from './oauth/discovery';
 import { handleRegister } from './oauth/register';
-import { handleAuthorizeGet } from './oauth/authorize';
+import { handleAuthorizeGet, handleAuthorizePost } from './oauth/authorize';
 export { QuotaCoordinator } from './lib/quota-coordinator';
 export { ProfileAccumulator } from './lib/profile-accumulator';
 
@@ -695,6 +695,7 @@ app.on(
 );
 app.post('/oauth/register', handleRegister);
 app.get('/oauth/authorize', handleAuthorizeGet);
+app.post('/oauth/authorize', handleAuthorizePost);
 
 app.all('*', (c) => {
 	// Plain text — avoids mcp-remote misinterpreting JSON as an OAuth error.
