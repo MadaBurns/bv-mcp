@@ -72,3 +72,20 @@ export interface QueryDnsOptions {
 	/** Semaphore for capping concurrent outbound DoH fetches per isolate. */
 	dnsSemaphore?: import('./semaphore').Semaphore;
 }
+
+/**
+ * Outcome of a single DoH fetch attempt. `ok` includes 200-OK responses with
+ * empty `Answer[]` — a valid "no records" result. `error` is reserved for
+ * failures that make the outcome ambiguous to the caller.
+ */
+export type DohOutcome =
+	| { kind: 'ok'; response: DohResponse }
+	| { kind: 'error'; reason: 'timeout' | 'network' | 'parse' | 'http' };
+
+/**
+ * Back-compat adapter: maps `DohOutcome` to the legacy `DohResponse | null`
+ * return shape. `ok` → response, `error` → null.
+ */
+export function toNullable(outcome: DohOutcome): DohResponse | null {
+	return outcome.kind === 'ok' ? outcome.response : null;
+}
