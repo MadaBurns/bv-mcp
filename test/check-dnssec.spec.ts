@@ -145,6 +145,19 @@ describe('checkDnssec — dnssecSource detection', () => {
 	});
 });
 
+describe('checkDnssec — transport-level failure', () => {
+	it("returns checkStatus='error' when DNS transport fails entirely", async () => {
+		const { restore } = setupFetchMock();
+		globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('network down'));
+		const { checkDnssec } = await import('../src/tools/check-dnssec');
+		const result = await checkDnssec('example.com');
+		expect(result.checkStatus).toBe('error');
+		// Should not misreport as "not configured"
+		expect(result.findings.some((f) => (f.title ?? '').toLowerCase().includes('not configured'))).toBe(false);
+		restore();
+	});
+});
+
 describe('checkDnssec — AD flag confirmation probe', () => {
 	/**
 	 * Helper that mocks primary Cloudflare DoH responses AND a separate Google DoH
