@@ -6,7 +6,7 @@
  */
 
 import { checkDNSSEC } from '@blackveil/dns-checks';
-import { queryDns, queryDnsRecords } from '../lib/dns';
+import { queryDns, queryDnsRecords, DnsQueryError } from '../lib/dns';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildCheckResult, createFinding } from '../lib/scoring';
@@ -151,16 +151,16 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions):
 
 	return augmentWithSource(domain, baseResult, dnsOptions);
 	} catch (err) {
-		if (err instanceof Error) {
+		if (err instanceof DnsQueryError) {
 			const message = err.message;
 			return {
 				...buildCheckResult('dnssec', [
 					createFinding(
 						'dnssec',
-						'DNSSEC check could not be completed',
+						'DNSSEC check could not complete',
 						'info',
-						`DNS lookup failed (${message}). DNSSEC posture unknown.`,
-						{ dnsError: message },
+						`DNS query failed (${message}). DNSSEC posture unknown.`,
+						{ dnsError: message, checkStatus: 'error' },
 					),
 				]),
 				checkStatus: 'error' as const,
