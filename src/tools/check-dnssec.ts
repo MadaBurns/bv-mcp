@@ -6,7 +6,7 @@
  */
 
 import { checkDNSSEC } from '@blackveil/dns-checks';
-import { DnsQueryError, queryDns, queryDnsRecords } from '../lib/dns';
+import { queryDns, queryDnsRecords } from '../lib/dns';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildCheckResult, createFinding } from '../lib/scoring';
@@ -105,6 +105,14 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions):
 		},
 	) as CheckResult;
 
+	// If the inner check returned a transport-error sentinel finding, surface checkStatus='error'.
+	// checkDNSSEC catches transport failures internally and returns a 'DNSSEC check failed' finding
+	// rather than throwing — we detect this to distinguish transport errors from "no DNSSEC deployed".
+	const isDnsTransportError = baseResult.findings.some((f) => f.title === 'DNSSEC check failed');
+	if (isDnsTransportError) {
+		return { ...baseResult, checkStatus: 'error' as const };
+	}
+
 	// Skip augmentation when DNSSEC is definitively absent, failed, or misconfigured at the domain level.
 	// 'DNSSEC chain of trust incomplete' means the domain has DNSKEY but no DS — it is domain-operator-configured
 	// (just broken), not TLD-inherited.
@@ -143,16 +151,20 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions):
 
 	return augmentWithSource(domain, baseResult, dnsOptions);
 	} catch (err) {
-		if (err instanceof DnsQueryError) {
-			return buildCheckResult('dnssec', [
-				createFinding(
-					'dnssec',
-					'DNSSEC check could not complete',
-					'info',
-					`Unable to verify DNSSEC for ${domain} — DNS query failed: ${err.message}`,
-					{ checkStatus: 'error' },
-				),
-			]);
+		if (err instanceof Error) {
+			const message = err.message;
+			return {
+				...buildCheckResult('dnssec', [
+					createFinding(
+						'dnssec',
+						'DNSSEC check could not be completed',
+						'info',
+						`DNS lookup failed (${message}). DNSSEC posture unknown.`,
+						{ dnsError: message },
+					),
+				]),
+				checkStatus: 'error' as const,
+			};
 		}
 		throw err;
 	}
