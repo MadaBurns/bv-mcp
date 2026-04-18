@@ -48,4 +48,16 @@ describe('oauth/jwt', () => {
 			verifyJwt('not-a-jwt', { secret: SECRET, issuer: 'https://x', audience: 'https://y', now: NOW }),
 		).rejects.toThrow(/malformed/i);
 	});
+
+	it('signJwt ignores attempts to override iss/aud via payload', async () => {
+		const { signJwt, verifyJwt } = await import('../../src/oauth/jwt');
+		const token = await signJwt(
+			{ sub: 'owner', jti: 'j1', iss: 'evil', aud: 'evil', exp: 9999999999 } as never,
+			{ secret: SECRET, ttlSeconds: 60, issuer: 'https://x', audience: 'https://y', now: NOW },
+		);
+		const claims = await verifyJwt(token, { secret: SECRET, issuer: 'https://x', audience: 'https://y', now: NOW });
+		expect(claims.iss).toBe('https://x');
+		expect(claims.aud).toBe('https://y');
+		expect(claims.exp).toBe(NOW + 60);
+	});
 });
