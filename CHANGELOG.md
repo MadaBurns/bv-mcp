@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-04-19
+
+### Added
+- **OAuth 2.1 authorization server for Claude mobile custom connector** — six new routes wired into the Hono app:
+  - `POST /oauth/register` — RFC 7591 Dynamic Client Registration with redirect-URI allowlist, one-time `client_secret_basic` (hashed at rest), registration rate-limit (10/min per IP, fixed window).
+  - `GET /oauth/authorize` — consent page with restrictive CSP (`default-src 'self'; script-src 'none'; form-action 'self'`), `X-Frame-Options: DENY`, plain-text 400 for pre-redirect_uri-verification errors (no HTML, no open-redirect vector).
+  - `POST /oauth/authorize` — consent form handler with per-IP fixed-window rate-limit (5/min — pinned `expiresAt` prevents indefinite lockout), re-validates original query via `_q` hidden field, constant-time `BV_API_KEY` check, enforces `OWNER_ALLOW_IPS` at consent (see Changed).
+  - `POST /oauth/token` — `authorization_code` grant with PKCE S256 verification, one-time code consumption (atomic `consumeCode`), HS256 JWT issuance (90-day TTL), enforces ≥32-byte `OAUTH_SIGNING_SECRET` floor per RFC 7518 §3.2, per-IP rate-limit (30/min).
+  - `GET /.well-known/oauth-authorization-server` — RFC 8414 metadata.
+  - `GET /.well-known/oauth-protected-resource` — RFC 9728 metadata pointing at the resource at `<issuer>/mcp`.
+- **HS256 JWT utility** (`src/oauth/jwt.ts`): `signJwt` / `verifyJwt` / `newJti` built on Web Crypto HMAC-SHA256. Signature verified BEFORE payload parse (defense against parser bugs). `clockSkewSeconds: 30` from `config.ts` tolerates reasonable clock drift between worker and client.
+- **KV-backed OAuth storage** (`src/oauth/storage.ts`): clients, codes, and revocation denylist under `oauth:` prefix. `consumeCode` is atomic (get-then-delete), preventing code replay under concurrent token requests. Revoked JTIs stored with bounded TTL matching JWT lifetime.
+- **OAuth JWT in Bearer auth path** (`src/lib/tier-auth.ts`): three-segment tokens route through `verifyJwt` → `isRevoked` → owner-claim check at the top of `resolveTier`. On any verify failure (bad signature, wrong issuer/audience, expired, revoked), falls through silently to existing static-key / service-binding cascade — no double-401, no information leak.
+- **Shared `parseOwnerAllowIps` helper** (`src/lib/config.ts`): trims, filters empty entries, treats whitespace-only input as "no gate." Used by both consent gate and static-key path for consistent semantics.
+- **OAuth Zod schemas** (`src/schemas/oauth.ts`): per-endpoint request validation with static error descriptions (no Zod `error.message` leakage to clients).
+
+### Changed
+- **`OWNER_ALLOW_IPS` gate moved to consent step** (`src/oauth/authorize.ts`): previously enforced only at `/mcp` in `tier-auth.ts:167-173`. Since the OAuth JWT carries `tier: 'owner'` for 90 days, the gate now runs at `POST /oauth/authorize` before `BV_API_KEY` verification. Net effect: stolen owner credential from a non-allowlisted IP still downgrades to partner (static-key path unchanged), AND cannot mint an owner JWT (new consent gate). JWTs already issued to allowlisted IPs work from anywhere for their TTL — use `revokeJti` to kill specific tokens.
+- **Global CSP hardened with `form-action 'self'`** (`src/index.ts`): blocks cross-origin form submissions to `/oauth/authorize`, closing a CSRF vector that would otherwise be open.
+
+### Security
+- **PKCE S256 only** — `plain` rejected at schema layer.
+- **Constant-time PKCE verification** — computed challenge compared to stored challenge via SHA-256 digest + byte-wise XOR.
+- **`client_secret` never round-trips** — stored hashed (SHA-256) in KV; only the plaintext from the DCR response is usable by the client, and DCR is one-shot.
+- **Static `'Request body failed validation'` on Zod failures** at `/oauth/token` — no parser-internal detail leaks into `error_description`.
+- **Discovery metadata** includes only the grant types and PKCE methods this server actually accepts (no wildcards).
+
+### Env bindings
+- **New secret**: `OAUTH_SIGNING_SECRET` — HS256 signing key, ≥32 bytes, upload via `wrangler secret put`. Token endpoint returns 500 with static error until populated.
+- **New optional var**: `OAUTH_ISSUER` — issuer override. When unset, `resolveIssuer()` derives from request URL origin (correct for typical deployments; set this only if behind a proxy that mangles Host).
+
 ## [2.8.1] - 2026-04-18
 
 ### Added
