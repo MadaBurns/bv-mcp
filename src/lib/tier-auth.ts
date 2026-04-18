@@ -11,7 +11,7 @@
  */
 
 import type { McpApiKeyTier } from './config';
-import { OAUTH_JWT_CLOCK_SKEW_SECONDS, TRIAL_KEY_CACHE_TTL } from './config';
+import { OAUTH_JWT_CLOCK_SKEW_SECONDS, parseOwnerAllowIps, TRIAL_KEY_CACHE_TTL } from './config';
 import { TierCacheEntrySchema, ValidateKeyResponseSchema } from '../schemas/auth';
 import { resolveTrialKey } from './trial-keys';
 import { verifyJwt } from '../oauth/jwt';
@@ -56,8 +56,8 @@ export async function resolveTier(
 		OAUTH_ISSUER?: string;
 		SESSION_STORE?: KVNamespace;
 	},
-	clientIp?: string,
-	requestUrl?: string,
+	clientIp: string | undefined,
+	requestUrl: string,
 ): Promise<TierAuthResult> {
 	if (!token) return { authenticated: false };
 
@@ -67,7 +67,7 @@ export async function resolveTier(
 	// paying a signing-key lookup. OWNER_ALLOW_IPS is NOT re-checked here — it was enforced at
 	// the /oauth/authorize consent step (Phase 6 amendment), so minting the JWT already
 	// required a permitted IP. The jti revocation lookup is defense-in-depth.
-	if (env.OAUTH_SIGNING_SECRET && env.SESSION_STORE && requestUrl && token.split('.').length === 3) {
+	if (env.OAUTH_SIGNING_SECRET && env.SESSION_STORE && token.split('.').length === 3) {
 		try {
 			const issuer = resolveIssuer(requestUrl, env.OAUTH_ISSUER);
 			const claims = await verifyJwt(token, {
@@ -196,15 +196,14 @@ export async function resolveTier(
 			mismatch |= a[i] ^ b[i];
 		}
 		if (mismatch === 0) {
-			// Owner tier requires IP allowlist. If OWNER_ALLOW_IPS is set and the
-			// client IP is not in the list, downgrade to partner (still high limits
-			// but not unlimited). If OWNER_ALLOW_IPS is unset, owner is unrestricted
-			// (backward compat for self-hosted/dev where there's no IP filtering).
-			if (env.OWNER_ALLOW_IPS) {
-				const allowed = env.OWNER_ALLOW_IPS.split(',').map((ip) => ip.trim());
-				if (!clientIp || !allowed.includes(clientIp)) {
-					return { authenticated: true, tier: 'partner', keyHash };
-				}
+			// Owner tier requires IP allowlist. If OWNER_ALLOW_IPS is set and non-empty
+			// and the client IP is not in the list, downgrade to partner (still high
+			// limits but not unlimited). If OWNER_ALLOW_IPS is unset, empty, or whitespace-
+			// only, owner is unrestricted (backward compat for self-hosted/dev where
+			// there's no IP filtering).
+			const allowed = parseOwnerAllowIps(env.OWNER_ALLOW_IPS);
+			if (allowed.length > 0 && (!clientIp || !allowed.includes(clientIp))) {
+				return { authenticated: true, tier: 'partner', keyHash };
 			}
 			return { authenticated: true, tier: 'owner', keyHash };
 		}
