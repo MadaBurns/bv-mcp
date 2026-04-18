@@ -37,13 +37,20 @@ function securityHeaders(): HeadersInit {
 	return {
 		'Content-Type': 'text/html; charset=utf-8',
 		'X-Frame-Options': 'DENY',
-		'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; form-action 'self'",
+		'Content-Security-Policy': "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
 		'Cache-Control': 'no-store',
 		Pragma: 'no-cache',
 		'Referrer-Policy': 'no-referrer',
 	};
 }
 
+/**
+ * Serves the consent page for an OAuth authorization request. Validates query params via
+ * Zod (`AuthorizeQuerySchema`), then verifies the client exists and the supplied `redirect_uri`
+ * is registered to it. On success returns HTML with restrictive security headers (CSP, frame
+ * deny, no-store). On any validation or lookup failure returns a plain-text 400 — never HTML
+ * and never a redirect — to avoid open-redirect risk before `redirect_uri` is trusted.
+ */
 export async function handleAuthorizeGet(c: Context): Promise<Response> {
 	const sp = new URL(c.req.url).searchParams;
 	const q: Record<string, string> = {};
@@ -62,6 +69,7 @@ export async function handleAuthorizeGet(c: Context): Promise<Response> {
 	if (!client.redirect_uris.includes(parsed.redirect_uri)) {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
 	}
+	// Canonicalized form; Phase 6 POST handler must re-parse via URLSearchParams and re-validate with AuthorizeQuerySchema.
 	const query = new URL(c.req.url).searchParams.toString();
 	return new Response(renderConsentPage({ client_id: parsed.client_id, client_name: client.client_name, query }), {
 		headers: securityHeaders(),
