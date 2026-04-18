@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { DNS_TIMEOUT_MS, DNS_RETRIES, DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY, DOH_EDGE_CACHE_TTL, DNS_RETRY_BASE_DELAY_MS } from './config';
-import { type DohResponse, type QueryDnsOptions, RecordType, type RecordTypeName } from './dns-types';
+import { type DohResponse, type DohOutcome, type QueryDnsOptions, RecordType, type RecordTypeName, toNullable } from './dns-types';
 import { DohResponseSchema } from '../schemas/dns';
 import { logError } from './log';
 import type { Semaphore } from './semaphore';
@@ -28,31 +28,47 @@ function retryDelay(attempt: number): Promise<void> {
 }
 
 /**
- * Fetch a DoH response from a URL.
+ * Fetch a DoH response and classify the outcome. Existing callers that want
+ * the legacy `DohResponse | null` shape use `fetchDohResponse` (below).
  *
  * @param token - Optional auth token sent as `X-BV-Token` (for custom secondary resolvers).
  * @param useEdgeCache - If true, attaches Cloudflare `cf` cache directive. Omit for external origins.
  */
-async function fetchDohResponse(
+export async function fetchDohOutcome(
 	url: string,
 	timeoutMs: number,
 	opts?: { token?: string; useEdgeCache?: boolean; semaphore?: Semaphore },
-): Promise<DohResponse | null> {
+): Promise<DohOutcome> {
 	try {
 		const headers: Record<string, string> = { Accept: 'application/dns-json' };
 		if (opts?.token) headers['X-BV-Token'] = opts.token;
-		const doFetch = () => fetch(url, {
-			method: 'GET',
-			headers,
-			signal: AbortSignal.timeout(timeoutMs),
-			...(opts?.useEdgeCache ? { cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true } } : {}),
-		});
+		const doFetch = () =>
+			fetch(url, {
+				method: 'GET',
+				headers,
+				signal: AbortSignal.timeout(timeoutMs),
+				...(opts?.useEdgeCache ? { cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true } } : {}),
+			});
 		const response = opts?.semaphore ? await opts.semaphore.run(doFetch) : await doFetch();
-		if (!response.ok) return null;
+		if (!response.ok) {
+			logError('DNS fetch non-2xx', {
+				severity: 'warn',
+				category: 'dns-transport',
+				details: { url: url.replace(/name=[^&]+/, 'name=<domain>'), status: response.status },
+			});
+			return { kind: 'error', reason: 'http' };
+		}
 		const data = await response.json();
 		const parsed = DohResponseSchema.safeParse(data);
-		if (!parsed.success) return null;
-		return parsed.data as DohResponse;
+		if (!parsed.success) {
+			logError('DNS parse failure', {
+				severity: 'warn',
+				category: 'dns-transport',
+				details: { url: url.replace(/name=[^&]+/, 'name=<domain>') },
+			});
+			return { kind: 'error', reason: 'parse' };
+		}
+		return { kind: 'ok', response: parsed.data as DohResponse };
 	} catch (err) {
 		const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
 		logError(isTimeout ? 'DNS fetch timeout' : 'DNS fetch failed', {
@@ -60,8 +76,16 @@ async function fetchDohResponse(
 			category: 'dns-transport',
 			details: { url: url.replace(/name=[^&]+/, 'name=<domain>'), errorType: isTimeout ? 'timeout' : 'network' },
 		});
-		return null;
+		return { kind: 'error', reason: isTimeout ? 'timeout' : 'network' };
 	}
+}
+
+async function fetchDohResponse(
+	url: string,
+	timeoutMs: number,
+	opts?: { token?: string; useEdgeCache?: boolean; semaphore?: Semaphore },
+): Promise<DohResponse | null> {
+	return toNullable(await fetchDohOutcome(url, timeoutMs, opts));
 }
 
 /** Error thrown when a DNS query fails */
