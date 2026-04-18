@@ -363,3 +363,59 @@ describe('runWithCache — cross-isolate dedup', () => {
 		expect(run).toHaveBeenCalledOnce();
 	});
 });
+
+describe('runWithCache sentinel lifecycle', () => {
+	function makeMockKv() {
+		const store = new Map<string, { value: string; expiresAt?: number }>();
+		const writeLog: Array<{ key: string; value: string; ttl?: number; op: 'put' | 'delete' }> = [];
+		const kv = {
+			async get(key: string) {
+				const e = store.get(key);
+				if (!e) return null;
+				if (e.expiresAt && Date.now() > e.expiresAt) {
+					store.delete(key);
+					return null;
+				}
+				return e.value;
+			},
+			async put(key: string, value: string, opts?: { expirationTtl?: number }) {
+				const expiresAt = opts?.expirationTtl ? Date.now() + opts.expirationTtl * 1000 : undefined;
+				store.set(key, { value, expiresAt });
+				writeLog.push({ key, value, ttl: opts?.expirationTtl, op: 'put' });
+			},
+			async delete(key: string) {
+				store.delete(key);
+				writeLog.push({ key, value: '', op: 'delete' });
+			},
+		} as unknown as KVNamespace;
+		return { kv, writeLog, store };
+	}
+
+	it('sentinel TTL is <= 10 seconds', async () => {
+		const { kv, writeLog } = makeMockKv();
+		const { runWithCache } = await import('../src/lib/cache');
+		await runWithCache('sentinel-ttl-key', async () => ({ ok: true }), kv);
+		const sentinelWrite = writeLog.find((e) => e.op === 'put' && e.key === 'sentinel-ttl-key:computing');
+		expect(sentinelWrite).toBeDefined();
+		expect(sentinelWrite!.ttl).toBeDefined();
+		expect(sentinelWrite!.ttl!).toBeLessThanOrEqual(10);
+	});
+
+	it('sentinel is deleted in finally even when run() throws', async () => {
+		const { kv, store } = makeMockKv();
+		const { runWithCache } = await import('../src/lib/cache');
+		await expect(runWithCache('sentinel-throw-key', async () => { throw new Error('boom'); }, kv)).rejects.toThrow('boom');
+		expect(store.get('sentinel-throw-key:computing')).toBeUndefined();
+	});
+
+	it('sentinel delete happens AFTER result put (racing poller sees result first)', async () => {
+		const { kv, writeLog } = makeMockKv();
+		const { runWithCache } = await import('../src/lib/cache');
+		await runWithCache('sentinel-order-key', async () => ({ hit: true }), kv);
+		const putResultIdx = writeLog.findIndex((e) => e.op === 'put' && e.key === 'sentinel-order-key');
+		const deleteSentinelIdx = writeLog.findIndex((e) => e.op === 'delete' && e.key === 'sentinel-order-key:computing');
+		expect(putResultIdx).toBeGreaterThanOrEqual(0);
+		expect(deleteSentinelIdx).toBeGreaterThanOrEqual(0);
+		expect(deleteSentinelIdx).toBeGreaterThan(putResultIdx);
+	});
+});
