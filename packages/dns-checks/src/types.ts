@@ -120,6 +120,8 @@ export interface CheckResult {
 	checkStatus?: CheckStatus;
 	/** When true, the result is incomplete (e.g. timeout) and should not be cached long-term. */
 	partial?: boolean;
+	/** Optional structured metadata attached to the result by the check wrapper (not the core package). */
+	metadata?: Record<string, unknown>;
 }
 
 export interface ScanScore {
