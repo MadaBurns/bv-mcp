@@ -24,6 +24,21 @@ describe('oauth/storage — client registration', () => {
 		const got = await getClient(env.SESSION_STORE as unknown as KVNamespace, 'missing');
 		expect(got).toBeNull();
 	});
+
+	it('getClient returns null when stored value is corrupt JSON', async () => {
+		const { getClient } = await import('../../src/oauth/storage');
+		// Write bad data directly under the oauth:client: prefix
+		await env.SESSION_STORE.put('oauth:client:corrupt', 'not-json');
+		const got = await getClient(env.SESSION_STORE as unknown as KVNamespace, 'corrupt');
+		expect(got).toBeNull();
+	});
+
+	it('getClient returns null when stored value fails schema validation', async () => {
+		const { getClient } = await import('../../src/oauth/storage');
+		await env.SESSION_STORE.put('oauth:client:bad-shape', JSON.stringify({ foo: 'bar' }));
+		const got = await getClient(env.SESSION_STORE as unknown as KVNamespace, 'bad-shape');
+		expect(got).toBeNull();
+	});
 });
 
 describe('oauth/storage — authorization codes', () => {
@@ -48,5 +63,12 @@ describe('oauth/storage — revocation', () => {
 		expect(await isRevoked(env.SESSION_STORE as unknown as KVNamespace, 'j1')).toBe(false);
 		await revokeJti(env.SESSION_STORE as unknown as KVNamespace, 'j1', 60);
 		expect(await isRevoked(env.SESSION_STORE as unknown as KVNamespace, 'j1')).toBe(true);
+	});
+
+	it('revokeJti clamps TTL to KV minimum of 60s when given smaller ttl', async () => {
+		const { revokeJti, isRevoked } = await import('../../src/oauth/storage');
+		// Should not throw — Math.max(60, 10) = 60 satisfies KV minimum
+		await revokeJti(env.SESSION_STORE as unknown as KVNamespace, 'j-small-ttl', 10);
+		expect(await isRevoked(env.SESSION_STORE as unknown as KVNamespace, 'j-small-ttl')).toBe(true);
 	});
 });
