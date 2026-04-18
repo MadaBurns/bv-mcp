@@ -226,6 +226,12 @@ export const SCAN_TIMEOUT_MS = 12_000;
 /** Default per-check timeout (ms). */
 export const PER_CHECK_TIMEOUT_MS = 8_000;
 
+/** TTL for the best-effort cross-isolate per-IP advisory lock. */
+export const IP_LOCK_TTL_MS = 500;
+
+/** Single-retry delay when advisory lock is held by another isolate. */
+export const IP_LOCK_RETRY_MS = 200;
+
 /** Helper: parse an env var as a clamped integer, returning defaultVal on invalid/out-of-range input. */
 function parseClampedInt(envValue: string | undefined, defaultVal: number, min: number, max: number): number {
 	if (!envValue) return defaultVal;
