@@ -3,7 +3,7 @@ import type { Context } from 'hono';
 import { AuthorizeQuerySchema } from '../schemas/oauth';
 import { getClient, putCode } from './storage';
 import { isAuthorizedRequest } from '../lib/auth';
-import { OAUTH_CONSENT_RATE_LIMIT, OAUTH_CONSENT_RATE_WINDOW_SECONDS, OAUTH_KV_PREFIX } from '../lib/config';
+import { OAUTH_CONSENT_RATE_LIMIT, OAUTH_CONSENT_RATE_WINDOW_SECONDS, OAUTH_KV_PREFIX, parseOwnerAllowIps } from '../lib/config';
 
 function escapeHtml(s: string): string {
 	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -192,15 +192,9 @@ export async function handleAuthorizePost(c: Context): Promise<Response> {
 	// MCP request). If the env var is set, only allowlisted IPs may proceed; anything else
 	// redirects back with `access_denied` before any code is written. When unset we retain the
 	// self-hosted / dev default of no IP gating.
-	const allowIps = (c.env as { OWNER_ALLOW_IPS?: string }).OWNER_ALLOW_IPS;
-	if (allowIps) {
-		const allowed = allowIps
-			.split(',')
-			.map((value) => value.trim())
-			.filter((value) => value.length > 0);
-		if (!allowed.includes(ip)) {
-			return redirectWithError(parsed.redirect_uri, 'access_denied', parsed.state);
-		}
+	const allowed = parseOwnerAllowIps((c.env as { OWNER_ALLOW_IPS?: string }).OWNER_ALLOW_IPS);
+	if (allowed.length > 0 && !allowed.includes(ip)) {
+		return redirectWithError(parsed.redirect_uri, 'access_denied', parsed.state);
 	}
 
 	const expected = (c.env as { BV_API_KEY?: string }).BV_API_KEY ?? '';

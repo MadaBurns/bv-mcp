@@ -299,3 +299,17 @@ export const OAUTH_REDIRECT_URI_ALLOWLIST: RegExp[] = [
 	/^http:\/\/127\.0\.0\.1(:\d+)?(\/.*)?$/,
 ];
 export const OAUTH_KV_PREFIX = 'oauth:' as const;
+
+/**
+ * Parse a comma-separated IP allowlist string. Trims whitespace, filters empty entries.
+ * Returns `[]` for undefined / empty / whitespace-only input, which callers should treat
+ * as "no gate" (backward-compatible with installations where the env var is unset).
+ */
+export function parseOwnerAllowIps(value: string | undefined): string[] {
+	if (!value) return [];
+	const list = value
+		.split(',')
+		.map((s) => s.trim())
+		.filter(Boolean);
+	return list;
+}
