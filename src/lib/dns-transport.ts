@@ -28,8 +28,9 @@ function retryDelay(attempt: number): Promise<void> {
 }
 
 /**
- * Fetch a DoH response and classify the outcome. Existing callers that want
- * the legacy `DohResponse | null` shape use `fetchDohResponse` (below).
+ * Fetch a DoH response and classify the outcome. The discriminated return
+ * type lets callers distinguish transport-level failures (timeout, network,
+ * parse, http) from "no records" results (a valid `ok` with empty Answer[]).
  *
  * @param token - Optional auth token sent as `X-BV-Token` (for custom secondary resolvers).
  * @param useEdgeCache - If true, attaches Cloudflare `cf` cache directive. Omit for external origins.
