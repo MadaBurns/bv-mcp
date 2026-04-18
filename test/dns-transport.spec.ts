@@ -633,3 +633,34 @@ describe('fetchDohOutcome', () => {
 		expect(toNullable({ kind: 'error', reason: 'timeout' })).toBeNull();
 	});
 });
+
+describe('confirmWithSecondaryResolvers', () => {
+	const savedFetch = globalThis.fetch;
+	afterEach(() => {
+		globalThis.fetch = savedFetch;
+		vi.restoreAllMocks();
+	});
+
+	it('returns { kind: "unconfirmed" } when all secondary resolvers fail', async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('net')) as unknown as typeof fetch;
+		const transport = await import('../src/lib/dns-transport');
+		const result = await transport.confirmWithSecondaryResolvers('example.com', 'TXT', false, 2000);
+		expect((result as { kind?: string }).kind).toBe('unconfirmed');
+	});
+
+	it('returns a DohResponse when at least one secondary succeeds', async () => {
+		let calls = 0;
+		globalThis.fetch = vi.fn().mockImplementation(async () => {
+			calls += 1;
+			if (calls === 1) throw new TypeError('bv-dns down');
+			return {
+				ok: true,
+				status: 200,
+				json: async () => ({ Status: 0, Answer: [] }),
+			};
+		}) as unknown as typeof fetch;
+		const transport = await import('../src/lib/dns-transport');
+		const result = await transport.confirmWithSecondaryResolvers('example.com', 'TXT', false, 2000);
+		expect((result as { kind?: string }).kind).not.toBe('unconfirmed');
+	});
+});
