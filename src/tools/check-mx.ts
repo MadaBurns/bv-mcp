@@ -41,6 +41,7 @@ export async function checkMx(domain: string, options?: CheckMxOptions, dnsOptio
 
 	// Provider detection post-processing
 	const findings = [...baseResult.findings];
+	let providerDetectionFailed = false;
 
 	try {
 		// Re-query MX records to get raw strings for provider matching
@@ -76,6 +77,7 @@ export async function checkMx(domain: string, options?: CheckMxOptions, dnsOptio
 			}
 
 			if (providerSignatures.degraded) {
+				providerDetectionFailed = true;
 				findings.push(
 					createFinding(
 						'mx',
@@ -95,6 +97,7 @@ export async function checkMx(domain: string, options?: CheckMxOptions, dnsOptio
 		}
 	} catch (err) {
 		// Provider detection failure is non-critical — return base result with warning log
+		providerDetectionFailed = true;
 		logEvent({
 			timestamp: new Date().toISOString(),
 			severity: 'warn',
@@ -106,5 +109,9 @@ export async function checkMx(domain: string, options?: CheckMxOptions, dnsOptio
 		});
 	}
 
-	return { ...baseResult, findings };
+	return {
+		...baseResult,
+		findings,
+		...(providerDetectionFailed ? { metadata: { providerDetectionFailed: true } } : {}),
+	};
 }
