@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-04-18
+
+### Added
+- **`DohOutcome` discriminated type** (`src/lib/dns-types.ts`, `src/lib/dns-transport.ts`): DoH transport now returns a discriminated `{ kind: 'ok'; response } | { kind: 'error'; reason: 'timeout' | 'network' | 'parse' | 'http' }` outcome. Callers can distinguish transport failures from "no records" results. Legacy `DohResponse | null` shape still available via `toNullable()`.
+- **Unconfirmed secondary-resolver sentinel** (`src/lib/dns-transport.ts`): `confirmWithSecondaryResolvers` returns `{ kind: 'unconfirmed' }` when both bv-dns and Google DoH fail. `queryDoh` falls back to the primary result instead of treating "both resolvers down" as "confirmed absent," eliminating false-negative downgrades.
+- **Session analytics on KV failure** (`src/lib/session.ts`): `createSession` accepts optional `AnalyticsClient`; emits `{ degradationType: 'kv_fallback', component: 'session' }` when the KV write fails. Wired via `src/mcp/dispatch.ts` and `src/index.ts`.
+- **Per-IP KV advisory lock** (`src/lib/rate-limiter.ts`, `src/lib/config.ts`): `withIpKvAdvisoryLock` + `checkScopedRateLimitKVWithAdvisory` — bounded (≤500ms TTL, single 200ms retry) cross-isolate advisory lock activated only under in-memory contention on the same IP. Zero added latency on uncontended paths.
+- **Adaptive-weight cross-isolate convergence** (`src/lib/profile-accumulator.ts`, `src/tools/scan-domain.ts`): `publishAdaptiveWeightSummary` + `getAdaptiveWeights` — isolates converge on identical `(profile, provider)` weight vectors within a 60-second KV TTL window while telemetry is flowing. Static-weight fallback on cache miss or accumulator outage.
+- **WAF/CDN challenge classification** (`src/tools/check-http-security.ts`): Cloudflare and Akamai challenge pages are fingerprinted (`server` header + body "Just a moment..." match). Short-circuits to `checkStatus: 'error'` with `metadata: { wafChallenge: <name> }` and a single info finding instead of emitting misleading header-missing findings against a challenge page. Score zeroed on the direct-call path to match the scan-domain reconciliation.
+- **Provider-detection degradation flag** (`src/tools/check-mx.ts`, `src/tools/scan/post-processing.ts`): `CheckResult.metadata.providerDetectionFailed = true` when the provider-signature fetch fails. Post-processing respects the flag and skips provider-informed DKIM severity adjustments instead of silently degrading.
+- **DNSSEC transport-error classification** (`src/tools/check-dnssec.ts`): DNS transport failures surface as `checkStatus: 'error'` (via the inner-check "DNSSEC check failed" finding sentinel) instead of "not configured." Narrow `DnsQueryError` catch preserved so non-DnsQueryError exceptions still propagate.
+- **Degradation event dedup + FNV collision probe** (`src/lib/analytics.ts`): `emitDegradationEvent` accepts optional `scanId` and dedups `(scanId, degradationType, component)` triples within a 60-second rolling window. `doubles[0]` carries `hashCollisionSuspected` (0/1) from an opportunistic in-memory FNV-1a collision cache (10k-entry LRU, production-path zero cost). `scanId` generated once per scan in `scanDomain`.
+- **`CheckResult.metadata` field** (`packages/dns-checks/src/types.ts`): additive optional `metadata?: Record<string, unknown>` for carrying diagnostic signals (`providerDetectionFailed`, `wafChallenge`, `dnsError`, etc.). Non-breaking; Zod schema uses plain `z.object` so the field is stripped on validation boundaries rather than rejected.
+- **Chaos regression harness** (`test/chaos/invariants.spec.ts`): 11 deterministic regression tests, one per invariant across P1–P8. Reverting any single production fix causes exactly one test to fail. Synchronous fault injection only — no `setTimeout`-based races.
+
+### Changed
+- **Error-path log truncation** (`src/lib/log.ts`): verified `MAX_ERROR_STRING_LENGTH = 1024` bound is preserved (error severity keeps four times the context of info/warn severities). Regression test pins the behavior.
+- **Runtime `SENTINEL_TTL_SECONDS = 10`** (`src/lib/cache.ts`): tests now pin the bounded sentinel TTL plus the `.then`/`.catch` cleanup ordering so a racing poller always observes the cached result before the sentinel is cleared.
+
+### Fixed
+- **Dependency audit** (`package-lock.json`): bumped `hono` transitively to ≥4.12.14 to resolve moderate advisory `GHSA-458j-xx4x-4375` (hono/jsx SSR — unused by this project, but flagged by `npm audit --audit-level=moderate`).
+
 ## [2.7.1] - 2026-04-14
 
 ### Fixed
