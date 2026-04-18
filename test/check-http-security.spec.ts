@@ -246,6 +246,36 @@ describe('checkHttpSecurity', () => {
 		expect(result.findings[0].severity).toBe('medium');
 		expect(result.passed).toBe(false);
 	});
+
+	it('returns inconclusive when response matches a WAF/CDN challenge fingerprint', async () => {
+		const { restore } = setupFetchMock();
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			headers: new Headers({
+				'cf-ray': '88abc123-SFO',
+				server: 'cloudflare',
+				'content-type': 'text/html; charset=UTF-8',
+			}),
+			text: async () => '<html><head><title>Just a moment...</title></head><body></body></html>',
+		} as unknown as Response);
+		const { checkHttpSecurity } = await import('../src/tools/check-http-security');
+		const result = await checkHttpSecurity('example.com');
+		// WAF challenge → error/inconclusive status
+		expect(result.checkStatus).toBe('error');
+		// Single finding identifying the WAF interception
+		expect(result.findings.some((f) => f.metadata?.wafChallenge !== undefined)).toBe(true);
+		// No header-missing findings — they'd be about the WAF, not the site
+		expect(
+			result.findings.some(
+				(f) =>
+					f.title.startsWith('No ') ||
+					f.title.toLowerCase().includes('missing') ||
+					f.title.toLowerCase().includes('header'),
+			),
+		).toBe(false);
+		restore();
+	});
 });
 
 describe('checkHttpSecurity — dual-fetch header union', () => {
