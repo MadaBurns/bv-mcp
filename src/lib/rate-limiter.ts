@@ -227,7 +227,8 @@ export async function checkScopedRateLimitKVWithAdvisory(
 	try {
 		return await withIpKvAdvisoryLock(ip, kv, () => checkScopedRateLimitKV(ip, scope, minuteLimit, hourLimit, kv));
 	} catch {
-		// KV outage — fall back to in-memory
+		// KV outage — log warning and fall back to in-memory
+		logError('[rate-limiter] KV error, falling back to in-memory');
 		return checkScopedRateLimitInMemory(ip, scope, minuteLimit, hourLimit);
 	}
 }
