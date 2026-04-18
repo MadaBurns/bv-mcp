@@ -684,12 +684,12 @@ app.route('/internal', internalRoutes);
 app.on(
 	'GET',
 	['/.well-known/oauth-authorization-server', '/.well-known/oauth-authorization-server/*'],
-	(c) => c.json(buildAuthorizationServerMetadata(resolveIssuer(c.req.url, (c.env as BvMcpEnv & { OAUTH_ISSUER?: string }).OAUTH_ISSUER))),
+	(c) => c.json(buildAuthorizationServerMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER))),
 );
 app.on(
 	'GET',
 	['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/*'],
-	(c) => c.json(buildProtectedResourceMetadata(resolveIssuer(c.req.url, (c.env as BvMcpEnv & { OAUTH_ISSUER?: string }).OAUTH_ISSUER))),
+	(c) => c.json(buildProtectedResourceMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER))),
 );
 
 app.all('*', (c) => {

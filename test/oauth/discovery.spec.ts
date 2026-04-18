@@ -1,5 +1,6 @@
 import { SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
+import { resolveIssuer } from '../../src/oauth/discovery';
 
 describe('oauth discovery endpoints', () => {
 	it('GET /.well-known/oauth-authorization-server returns RFC 8414 metadata', async () => {
@@ -26,5 +27,25 @@ describe('oauth discovery endpoints', () => {
 	it('path-suffixed variant is also served', async () => {
 		const res = await SELF.fetch('https://example.com/.well-known/oauth-protected-resource/mcp');
 		expect(res.status).toBe(200);
+	});
+});
+
+describe('resolveIssuer', () => {
+	it('envIssuer wins over request URL', () => {
+		expect(resolveIssuer('https://request.example.com/path', 'https://configured.example.com')).toBe(
+			'https://configured.example.com',
+		);
+	});
+
+	it('strips trailing slash from envIssuer', () => {
+		expect(resolveIssuer('https://req.test/', 'https://issuer.test/')).toBe('https://issuer.test');
+	});
+
+	it('treats empty-string envIssuer as unset and falls back to request origin', () => {
+		expect(resolveIssuer('https://req.test/whatever', '')).toBe('https://req.test');
+	});
+
+	it('falls back to request origin (preserving port) when envIssuer is undefined', () => {
+		expect(resolveIssuer('https://req.test:8443/x?q=1', undefined)).toBe('https://req.test:8443');
 	});
 });
