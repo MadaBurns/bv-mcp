@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.8.1] - 2026-04-18
+
+### Added
+- **Issue tracker triage automation** (`.github/workflows/triage-issues.yml`): on `issues: [opened, edited]`, matches six promotional-pattern regexes against title + body; applies `possibly-promotional` label and posts a single automated comment on initial open. Labels only — never auto-closes — so genuine feature requests aren't silently dropped. Workflow reads untrusted event payload fields via `env:` (no expression-injection risk).
+- **Issue template config** (`.github/ISSUE_TEMPLATE/config.yml`): disables blank issues, adds structured contact links for Discussions, Security Advisories, and vendor-outreach routing. Forces issue authors to pick a template.
+
+### Changed
+- **`production` environment protection**: now requires admin approval + `protected_branches: true` deployment branch policy (applied via API, not in-repo). Affects CI-driven `publish.yml` Cloudflare and npm publish steps once their secrets are configured.
+- **GitHub Actions allowlist**: restricted from `all` to `selected` — only GitHub-owned actions, verified-marketplace actions, and `MadaBurns/*` reusable workflows are permitted. Current workflows verified compatible.
+
 ## [2.8.0] - 2026-04-18
 
 ### Added
