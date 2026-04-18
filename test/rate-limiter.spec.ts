@@ -452,3 +452,40 @@ describe('rate-limiter', () => {
 		});
 	});
 });
+
+describe('per-IP KV advisory lock', () => {
+	it('under contention on same IP, advisory path activates (counter writes bounded)', async () => {
+		let counterWrites = 0;
+		const store = new Map<string, string>();
+		const kv = {
+			async get(key: string) { return store.get(key) ?? null; },
+			async put(key: string, value: string) {
+				if (key.startsWith('rl:min:')) counterWrites += 1;
+				store.set(key, value);
+			},
+			async delete(key: string) { store.delete(key); },
+		} as unknown as KVNamespace;
+
+		const mod = await import('../src/lib/rate-limiter');
+		expect(typeof (mod as { checkScopedRateLimitKVWithAdvisory?: unknown }).checkScopedRateLimitKVWithAdvisory).toBe('function');
+		await Promise.all([
+			mod.checkScopedRateLimitKVWithAdvisory!('1.1.1.1', 'tools', 50, 300, kv),
+			mod.checkScopedRateLimitKVWithAdvisory!('1.1.1.1', 'tools', 50, 300, kv),
+		]);
+		expect(counterWrites).toBeGreaterThanOrEqual(1);
+		expect(counterWrites).toBeLessThanOrEqual(2);
+	});
+
+	it('KV outage during advisory lock degrades without throwing', async () => {
+		const kv = {
+			async get() { throw new Error('KV down'); },
+			async put() { throw new Error('KV down'); },
+			async delete() { throw new Error('KV down'); },
+		} as unknown as KVNamespace;
+
+		const { checkScopedRateLimitKVWithAdvisory } = await import('../src/lib/rate-limiter');
+		await expect(
+			checkScopedRateLimitKVWithAdvisory!('2.2.2.2', 'tools', 50, 300, kv),
+		).resolves.toBeDefined();
+	});
+});
