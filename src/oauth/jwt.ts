@@ -53,7 +53,7 @@ function base64UrlDecode(s: string): Uint8Array {
 }
 
 async function hmacKey(secret: string): Promise<CryptoKey> {
-	return crypto.subtle.importKey('raw', textEncoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+	return crypto.subtle.importKey('raw', textEncoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
 }
 
 function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -66,13 +66,13 @@ function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
 export async function signJwt(payload: Partial<JwtClaims> & { sub: string; jti: string }, opts: JwtSignOptions): Promise<string> {
 	const now = opts.now ?? Math.floor(Date.now() / 1000);
 	const claims: JwtClaims = {
+		...payload,
 		iss: opts.issuer,
 		aud: opts.audience,
 		sub: payload.sub,
 		jti: payload.jti,
 		iat: now,
 		exp: now + opts.ttlSeconds,
-		...payload,
 	};
 	const header = { alg: 'HS256', typ: 'JWT' };
 	const h = base64UrlEncodeString(JSON.stringify(header));
@@ -87,16 +87,26 @@ export async function verifyJwt(token: string, opts: JwtVerifyOptions): Promise<
 	const parts = token.split('.');
 	if (parts.length !== 3) throw new Error('malformed token');
 	const [h, p, s] = parts;
+
+	// Verify signature FIRST, before trusting any payload bytes
+	const key = await hmacKey(opts.secret);
+	const expected = new Uint8Array(await crypto.subtle.sign('HMAC', key, textEncoder.encode(`${h}.${p}`)));
+	let given: Uint8Array;
+	try {
+		given = base64UrlDecode(s);
+	} catch {
+		throw new Error('malformed token');
+	}
+	if (!constantTimeEqual(expected, given)) throw new Error('invalid signature');
+
+	// Signature verified — safe to parse claims
 	let claims: JwtClaims;
 	try {
 		claims = JSON.parse(new TextDecoder().decode(base64UrlDecode(p))) as JwtClaims;
 	} catch {
 		throw new Error('malformed token payload');
 	}
-	const key = await hmacKey(opts.secret);
-	const expected = new Uint8Array(await crypto.subtle.sign('HMAC', key, textEncoder.encode(`${h}.${p}`)));
-	const given = base64UrlDecode(s);
-	if (!constantTimeEqual(expected, given)) throw new Error('invalid signature');
+
 	const now = opts.now ?? Math.floor(Date.now() / 1000);
 	const skew = opts.clockSkewSeconds ?? 30;
 	if (claims.exp <= now - skew) throw new Error('token expired');
