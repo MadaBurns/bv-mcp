@@ -245,7 +245,7 @@ export async function checkHttpSecurity(domain: string): Promise<CheckResult> {
 				{ wafChallenge: wafName, inconclusive: true },
 			);
 			const base = buildCheckResult('http_security', [finding]);
-			return { ...base, checkStatus: 'error' };
+			return { ...base, score: 0, passed: false, checkStatus: 'error' };
 		}
 	}
 
