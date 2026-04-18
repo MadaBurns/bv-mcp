@@ -3,8 +3,54 @@ import type { Context } from 'hono';
 import { TokenRequestSchema } from '../schemas/oauth';
 import { consumeCode } from './storage';
 import { signJwt, newJti } from './jwt';
-import { OAUTH_JWT_TTL_SECONDS } from '../lib/config';
+import { OAUTH_JWT_TTL_SECONDS, OAUTH_KV_PREFIX } from '../lib/config';
 import { resolveIssuer } from './discovery';
+
+// HS256 security floor: RFC 7518 §3.2 requires a key at least as long as the hash
+// output (256 bits = 32 bytes). An operator deploying with `OAUTH_SIGNING_SECRET=x`
+// would otherwise happily mint tokens that are trivial to forge.
+const OAUTH_SIGNING_SECRET_MIN_BYTES = 32;
+
+// Fixed-window per-IP rate limit on /oauth/token. Token exchange happens once per OAuth
+// flow for legitimate clients — 30/min is generous for humans and tight for attackers
+// flooding invalid codes to burn KV ops. Kept local (not in lib/config.ts) per Phase 7 scope.
+const TOKEN_RATE_LIMIT = 30;
+const TOKEN_RATE_WINDOW_SECONDS = 60;
+
+/**
+ * Increment and check the per-IP token-endpoint rate limiter. Returns true if over the limit.
+ *
+ * Mirrors `consentRateExceeded` in authorize.ts: FIXED window keyed on `expiresAt`, pinned
+ * by the first write and preserved across subsequent increments so a stream of attempts
+ * cannot extend a lockout indefinitely (which is what naive `expirationTtl`-refresh would do).
+ */
+async function tokenRateExceeded(kv: KVNamespace, ip: string): Promise<boolean> {
+	const key = `${OAUTH_KV_PREFIX}token-rl:${ip}`;
+	const nowMs = Date.now();
+	const raw = await kv.get(key);
+
+	let count = 0;
+	let expiresAt = nowMs + TOKEN_RATE_WINDOW_SECONDS * 1000;
+	if (raw) {
+		try {
+			const parsed = JSON.parse(raw) as { count?: unknown; expiresAt?: unknown };
+			if (typeof parsed.expiresAt === 'number' && parsed.expiresAt > nowMs) {
+				count = typeof parsed.count === 'number' ? parsed.count : 0;
+				expiresAt = parsed.expiresAt;
+			}
+		} catch {
+			// Malformed — start a fresh window.
+		}
+	}
+
+	if (count >= TOKEN_RATE_LIMIT) return true;
+
+	const next = { count: count + 1, expiresAt };
+	// CF KV minimum TTL is 60s; `expiresAt` is authoritative for window correctness.
+	const ttl = Math.max(60, Math.ceil((expiresAt - nowMs) / 1000));
+	await kv.put(key, JSON.stringify(next), { expirationTtl: ttl });
+	return false;
+}
 
 function base64url(buf: ArrayBuffer): string {
 	const b = new Uint8Array(buf);
@@ -45,6 +91,13 @@ async function verifyPkce(verifier: string, challenge: string): Promise<boolean>
 export async function handleToken(c: Context): Promise<Response> {
 	const env = c.env as { SESSION_STORE: KVNamespace; OAUTH_SIGNING_SECRET?: string; OAUTH_ISSUER?: string };
 
+	// Rate limit runs FIRST — before content-type / grant-type / Zod — so an attacker
+	// flooding the endpoint with invalid payloads still hits the cheap KV gate.
+	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+	if (await tokenRateExceeded(env.SESSION_STORE, ip)) {
+		return c.json({ error: 'invalid_request', error_description: 'Too many token requests' }, 429);
+	}
+
 	const ct = c.req.header('content-type') ?? '';
 	if (!ct.toLowerCase().includes('application/x-www-form-urlencoded')) {
 		return c.json({ error: 'invalid_request', error_description: 'Content-Type must be application/x-www-form-urlencoded' }, 415);
@@ -84,11 +137,16 @@ export async function handleToken(c: Context): Promise<Response> {
 	}
 
 	const secret = env.OAUTH_SIGNING_SECRET;
-	if (!secret) {
+	// Treat missing and too-short identically — the static description deliberately does not
+	// leak which branch failed, so an operator probing the endpoint can't fingerprint config.
+	if (!secret || secret.length < OAUTH_SIGNING_SECRET_MIN_BYTES) {
 		return c.json({ error: 'server_error', error_description: 'OAUTH_SIGNING_SECRET not configured' }, 500);
 	}
 
 	const issuer = resolveIssuer(c.req.url, env.OAUTH_ISSUER);
+	// TODO(phase-8): `sub` and `tier` are currently hard-coded because the only path to consent
+	// today is BV_API_KEY (owner). When Phase 9+ adds tiered or email-based consent, thread
+	// the authenticated identity through CodeRecord (Phase 0 schema) and bind it here.
 	const token = await signJwt(
 		{ sub: 'owner', jti: newJti(), tier: 'owner', client_id: parsed.client_id },
 		{ secret, ttlSeconds: OAUTH_JWT_TTL_SECONDS, issuer, audience: `${issuer}/mcp` },
