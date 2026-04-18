@@ -36,9 +36,17 @@ describe('GET /oauth/authorize', () => {
 		expect(res.status).toBe(200);
 		expect(res.headers.get('content-type')).toMatch(/text\/html/);
 		expect(res.headers.get('x-frame-options')).toBe('DENY');
+		expect(res.headers.get('content-security-policy')).toContain("default-src 'self'");
+		expect(res.headers.get('content-security-policy')).toContain("form-action 'self'");
+		expect(res.headers.get('cache-control')).toBe('no-store');
 		const html = await res.text();
 		expect(html).toContain('name="api_key"');
 		expect(html).toContain(cid);
+		// _q must round-trip the full original query (Phase 6 relies on this).
+		expect(html).toContain('name="_q"');
+		expect(html).toContain(`client_id=${cid}`);
+		expect(html).toContain('code_challenge=');
+		expect(html).toContain('state=stateval');
 	});
 
 	it('rejects unknown client_id', async () => {
@@ -88,5 +96,22 @@ describe('GET /oauth/authorize', () => {
 		url.searchParams.set('code_challenge_method', 'plain');
 		const res = await SELF.fetch(url.toString());
 		expect(res.status).toBe(400);
+	});
+
+	it('returns plain text (not HTML) for 400 errors — defense against XSS via error paths', async () => {
+		const url = new URL('https://example.com/oauth/authorize');
+		url.searchParams.set('client_id', 'missing');
+		url.searchParams.set('redirect_uri', 'https://claude.ai/cb');
+		url.searchParams.set('response_type', 'code');
+		url.searchParams.set('state', 's');
+		url.searchParams.set('code_challenge', 'x'.repeat(43));
+		url.searchParams.set('code_challenge_method', 'S256');
+		const res = await SELF.fetch(url.toString());
+		expect(res.status).toBe(400);
+		const ct = res.headers.get('content-type') ?? '';
+		expect(ct).not.toMatch(/text\/html/);
+		const body = await res.text();
+		expect(body).not.toContain('<!doctype html>');
+		expect(body).not.toContain('<html');
 	});
 });
