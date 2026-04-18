@@ -7,12 +7,21 @@ import {
 	OAUTH_TOKEN_AUTH_METHODS_SUPPORTED,
 } from '../lib/config';
 
+/**
+ * Resolve the canonical OAuth issuer URL. When `envIssuer` is provided it wins (trailing
+ * slash stripped); otherwise the issuer is derived from the request URL's origin. Deriving
+ * from the request means the `Host` header influences the advertised `authorization_endpoint`
+ * and `token_endpoint` in discovery metadata — in production, always set `OAUTH_ISSUER` to
+ * prevent Host-header spoofing from injecting attacker-controlled endpoint URLs. Cloudflare's
+ * route binding normally constrains Host, but setting `OAUTH_ISSUER` is the hardening path.
+ */
 export function resolveIssuer(requestUrl: string, envIssuer?: string): string {
 	if (envIssuer && envIssuer.length > 0) return envIssuer.replace(/\/$/, '');
-	const u = new URL(requestUrl);
-	return `${u.protocol}//${u.host}`;
+	const url = new URL(requestUrl);
+	return `${url.protocol}//${url.host}`;
 }
 
+/** Build RFC 8414 OAuth 2.0 Authorization Server Metadata for the given issuer. */
 export function buildAuthorizationServerMetadata(issuer: string): Record<string, unknown> {
 	return {
 		issuer,
@@ -28,6 +37,7 @@ export function buildAuthorizationServerMetadata(issuer: string): Record<string,
 	};
 }
 
+/** Build RFC 9728 OAuth 2.0 Protected Resource Metadata pointing at the `/mcp` resource. */
 export function buildProtectedResourceMetadata(issuer: string): Record<string, unknown> {
 	return {
 		resource: `${issuer}/mcp`,
