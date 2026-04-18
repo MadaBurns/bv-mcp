@@ -54,4 +54,26 @@ describe('POST /oauth/register', () => {
 		});
 		expect(res.status).toBe(413);
 	});
+
+	it('rejects array where any redirect_uri is outside allowlist', async () => {
+		const res = await SELF.fetch('https://example.com/oauth/register', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ redirect_uris: ['https://claude.ai/cb', 'https://evil.example/cb'] }),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('invalid_redirect_uri');
+	});
+
+	it('rejects malformed JSON body with invalid_client_metadata', async () => {
+		const res = await SELF.fetch('https://example.com/oauth/register', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: '{ not valid json',
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('invalid_client_metadata');
+	});
 });
