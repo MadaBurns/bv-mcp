@@ -11,9 +11,12 @@
  */
 
 import type { McpApiKeyTier } from './config';
-import { TRIAL_KEY_CACHE_TTL } from './config';
+import { OAUTH_JWT_CLOCK_SKEW_SECONDS, TRIAL_KEY_CACHE_TTL } from './config';
 import { TierCacheEntrySchema, ValidateKeyResponseSchema } from '../schemas/auth';
 import { resolveTrialKey } from './trial-keys';
+import { verifyJwt } from '../oauth/jwt';
+import { resolveIssuer } from '../oauth/discovery';
+import { isRevoked } from '../oauth/storage';
 
 export interface TierAuthResult {
 	authenticated: boolean;
@@ -49,10 +52,43 @@ export async function resolveTier(
 		RATE_LIMIT?: KVNamespace;
 		BV_WEB?: Fetcher;
 		BV_WEB_INTERNAL_KEY?: string;
+		OAUTH_SIGNING_SECRET?: string;
+		OAUTH_ISSUER?: string;
+		SESSION_STORE?: KVNamespace;
 	},
 	clientIp?: string,
+	requestUrl?: string,
 ): Promise<TierAuthResult> {
 	if (!token) return { authenticated: false };
+
+	// 0. OAuth 2.1 Bearer JWT path — runs FIRST so a valid access token short-circuits before
+	// any KV / service-binding work. Shape check (3 dot-separated segments) is a cheap gate that
+	// lets a non-JWT bearer (e.g. static BV_API_KEY) skip straight to the legacy flow without
+	// paying a signing-key lookup. OWNER_ALLOW_IPS is NOT re-checked here — it was enforced at
+	// the /oauth/authorize consent step (Phase 6 amendment), so minting the JWT already
+	// required a permitted IP. The jti revocation lookup is defense-in-depth.
+	if (env.OAUTH_SIGNING_SECRET && env.SESSION_STORE && requestUrl && token.split('.').length === 3) {
+		try {
+			const issuer = resolveIssuer(requestUrl, env.OAUTH_ISSUER);
+			const claims = await verifyJwt(token, {
+				secret: env.OAUTH_SIGNING_SECRET,
+				issuer,
+				audience: `${issuer}/mcp`,
+				clockSkewSeconds: OAUTH_JWT_CLOCK_SKEW_SECONDS,
+			});
+			if (claims.sub === 'owner' && claims.tier === 'owner') {
+				if (await isRevoked(env.SESSION_STORE, claims.jti)) {
+					return { authenticated: false };
+				}
+				return { authenticated: true, tier: 'owner' };
+			}
+			// JWT verified but payload doesn't grant owner — fall through so static key path
+			// still has a chance (e.g. a future tiered JWT could live alongside BV_API_KEY).
+		} catch {
+			// Not a valid OAuth JWT — fall through to the legacy static/service-binding path
+			// so an operator using a 3-segment static key isn't accidentally rejected.
+		}
+	}
 
 	const tokenRaw = await hashTokenRaw(token);
 	const keyHash = Array.from(tokenRaw)
