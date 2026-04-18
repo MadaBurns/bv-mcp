@@ -551,3 +551,85 @@ describe('secondary DoH resolver (bv-dns)', () => {
 		expect(result.Answer![0].data).toBe('"v=spf1 ~all"'); // Google result
 	});
 });
+
+describe('fetchDohOutcome', () => {
+	const savedFetch = globalThis.fetch;
+	afterEach(() => {
+		globalThis.fetch = savedFetch;
+		vi.restoreAllMocks();
+	});
+
+	it('returns ok with response on 200 with answers', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({
+				Status: 0,
+				Answer: [{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 -all"' }],
+			}),
+		}) as unknown as typeof fetch;
+		const { fetchDohOutcome } = await import('../src/lib/dns-transport');
+		const outcome = await fetchDohOutcome('https://cloudflare-dns.com/dns-query?name=example.com&type=TXT', 3000);
+		expect(outcome.kind).toBe('ok');
+		if (outcome.kind === 'ok') expect(outcome.response.Answer?.length).toBe(1);
+	});
+
+	it('returns ok with empty Answer on 200 with no answers (NXDOMAIN-style)', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({ Status: 0, Answer: [] }),
+		}) as unknown as typeof fetch;
+		const { fetchDohOutcome } = await import('../src/lib/dns-transport');
+		const outcome = await fetchDohOutcome('https://cloudflare-dns.com/dns-query?name=example.com&type=TXT', 3000);
+		expect(outcome.kind).toBe('ok');
+		if (outcome.kind === 'ok') expect(outcome.response.Answer?.length ?? 0).toBe(0);
+	});
+
+	it('returns error with reason=timeout on AbortSignal timeout', async () => {
+		globalThis.fetch = vi.fn().mockImplementation(() => {
+			const err = new DOMException('The operation was aborted.', 'TimeoutError');
+			return Promise.reject(err);
+		}) as unknown as typeof fetch;
+		const { fetchDohOutcome } = await import('../src/lib/dns-transport');
+		const outcome = await fetchDohOutcome('https://cloudflare-dns.com/dns-query?name=example.com&type=TXT', 50);
+		expect(outcome.kind).toBe('error');
+		if (outcome.kind === 'error') expect(outcome.reason).toBe('timeout');
+	});
+
+	it('returns error with reason=network on generic fetch rejection', async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('failed to fetch')) as unknown as typeof fetch;
+		const { fetchDohOutcome } = await import('../src/lib/dns-transport');
+		const outcome = await fetchDohOutcome('https://cloudflare-dns.com/dns-query?name=example.com&type=TXT', 3000);
+		expect(outcome.kind).toBe('error');
+		if (outcome.kind === 'error') expect(outcome.reason).toBe('network');
+	});
+
+	it('returns error with reason=http on non-2xx response', async () => {
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue({ ok: false, status: 502, json: async () => ({}) }) as unknown as typeof fetch;
+		const { fetchDohOutcome } = await import('../src/lib/dns-transport');
+		const outcome = await fetchDohOutcome('https://cloudflare-dns.com/dns-query?name=example.com&type=TXT', 3000);
+		expect(outcome.kind).toBe('error');
+		if (outcome.kind === 'error') expect(outcome.reason).toBe('http');
+	});
+
+	it('returns error with reason=parse on schema-invalid body', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({ notADohResponse: true }),
+		}) as unknown as typeof fetch;
+		const { fetchDohOutcome } = await import('../src/lib/dns-transport');
+		const outcome = await fetchDohOutcome('https://cloudflare-dns.com/dns-query?name=example.com&type=TXT', 3000);
+		expect(outcome.kind).toBe('error');
+		if (outcome.kind === 'error') expect(outcome.reason).toBe('parse');
+	});
+
+	it('toNullable maps ok → response, error → null', async () => {
+		const { toNullable } = await import('../src/lib/dns-types');
+		expect(toNullable({ kind: 'ok', response: { Status: 0 } as never })).not.toBeNull();
+		expect(toNullable({ kind: 'error', reason: 'timeout' })).toBeNull();
+	});
+});
