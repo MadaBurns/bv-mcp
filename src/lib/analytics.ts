@@ -13,6 +13,64 @@
 import { logError } from './log';
 import type { McpClientType } from './client-detection';
 
+// ---------------------------------------------------------------------------
+// Degradation dedup — isolate-local rolling window (Task 18)
+// ---------------------------------------------------------------------------
+
+const DEGRADATION_SEEN = new Map<string, number>(); // key → insertedAtMs
+const DEGRADATION_WINDOW_MS = 60_000;
+
+function degradationDedupKey(scanId: string | undefined, type: string, component: string): string {
+	return `${scanId ?? ''}|${type}|${component}`;
+}
+
+function shouldEmitDegradation(scanId: string | undefined, type: string, component: string): boolean {
+	if (!scanId) return true; // no dedup when scanId is missing
+	const k = degradationDedupKey(scanId, type, component);
+	const now = Date.now();
+	for (const [existing, t] of DEGRADATION_SEEN) {
+		if (now - t > DEGRADATION_WINDOW_MS) DEGRADATION_SEEN.delete(existing);
+	}
+	if (DEGRADATION_SEEN.has(k)) return false;
+	DEGRADATION_SEEN.set(k, now);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// FNV-1a collision probe — opportunistic, zero cost on uncontended paths (Task 19)
+// ---------------------------------------------------------------------------
+
+const FNV_HASH_SEEN = new Map<string, string>(); // hash → originalValue
+const FNV_HASH_SEEN_MAX = 10_000;
+let PENDING_COLLISION_FLAG = false;
+
+function recordHash(value: string, hash: string): void {
+	const cached = FNV_HASH_SEEN.get(hash);
+	if (cached !== undefined && cached !== value) {
+		PENDING_COLLISION_FLAG = true;
+	} else if (cached === undefined) {
+		FNV_HASH_SEEN.set(hash, value);
+		if (FNV_HASH_SEEN.size > FNV_HASH_SEEN_MAX) {
+			const firstKey = FNV_HASH_SEEN.keys().next().value;
+			if (firstKey !== undefined) FNV_HASH_SEEN.delete(firstKey);
+		}
+	}
+}
+
+/**
+ * Test-only helper: simulate a hash collision between existingValue and newValue.
+ * Not used in production paths.
+ */
+export function __forceCollisionForTest(existingValue: string, newValue: string): void {
+	for (const [h, v] of FNV_HASH_SEEN) {
+		if (v === existingValue) {
+			// Simulate a collision: a different value hashes to the same slot.
+			recordHash(newValue, h);
+			return;
+		}
+	}
+}
+
 /** Minimal shape used by Cloudflare Analytics Engine dataset bindings. */
 interface AnalyticsDatasetLike {
 	writeDataPoint: (point: {
@@ -65,6 +123,10 @@ export interface AnalyticsClient {
 		degradationType: 'dns_resolver_failure' | 'kv_fallback' | 'provider_detection_failure' | 'partial_result' | 'post_processing_error';
 		component: string;
 		domain?: string;
+		/** Per-scan correlation ID for dedup of parallel check degradations (Task 18). */
+		scanId?: string;
+		/** Override collision flag directly (probe-only, not a migration). */
+		hashCollisionSuspected?: boolean;
 	} & AnalyticsContext): void;
 }
 
@@ -144,16 +206,21 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 			});
 		},
 		emitDegradationEvent: (event) => {
+			if (!shouldEmitDegradation(event.scanId, event.degradationType, event.component)) return;
+			const collision = PENDING_COLLISION_FLAG || Boolean(event.hashCollisionSuspected);
+			PENDING_COLLISION_FLAG = false;
 			safeWrite(dataset, {
 				indexes: ['degradation'],
 				blobs: [
 					event.degradationType,
 					normalizeIndex(event.component),
 					event.domain ? domainFingerprint(event.domain) : 'none',
+					event.scanId ?? '',
 					event.country ?? 'unknown',
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
 				],
+				doubles: [collision ? 1 : 0],
 			});
 		},
 	};
@@ -191,9 +258,15 @@ function sanitizeNumber(value: number): number {
 /**
  * Computes a stable 32-bit fingerprint for aggregate grouping.
  * Not a privacy control — FNV-1a is trivially reversible for known domain sets.
+ *
+ * Also exported as `hashDomain` for opportunistic collision probing (Task 19).
  */
-function domainFingerprint(domain: string): string {
+export function hashDomain(domain: string): string {
 	return fnv1aHash(domain, 'd_');
+}
+
+function domainFingerprint(domain: string): string {
+	return hashDomain(domain);
 }
 
 /**
@@ -204,7 +277,7 @@ export function hashForAnalytics(value: string): string {
 	return fnv1aHash(value, 's_');
 }
 
-/** Shared FNV-1a hash with configurable prefix. */
+/** Shared FNV-1a hash with configurable prefix. Records result for collision probing (Task 19). */
 function fnv1aHash(value: string, prefix: string): string {
 	let hash = 0x811c9dc5;
 	const normalized = value.trim().toLowerCase();
@@ -212,5 +285,7 @@ function fnv1aHash(value: string, prefix: string): string {
 		hash ^= normalized.charCodeAt(i);
 		hash = Math.imul(hash, 0x01000193);
 	}
-	return `${prefix}${(hash >>> 0).toString(16)}`;
+	const result = `${prefix}${(hash >>> 0).toString(16)}`;
+	recordHash(normalized, result);
+	return result;
 }

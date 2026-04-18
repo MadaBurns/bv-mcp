@@ -29,6 +29,7 @@ import { withIpKvLock } from './rate-limiter';
 import { logError } from './log';
 import { SessionRecordSchema } from '../schemas/session';
 import { SessionIdSchema } from '../schemas/primitives';
+import type { AnalyticsClient } from './analytics';
 
 export { ACTIVE_SESSIONS, resetSessions, SESSION_REFRESH_INTERVAL_MS, SESSION_TTL_MS };
 
@@ -136,7 +137,7 @@ export function generateSessionId(): string {
 }
 
 /** Create a new session and return its ID */
-export async function createSession(kv?: KVNamespace): Promise<string> {
+export async function createSession(kv?: KVNamespace, analytics?: AnalyticsClient): Promise<string> {
 	const id = generateSessionId();
 	const now = Date.now();
 	const record: SessionRecord = { createdAt: now, lastAccessedAt: now };
@@ -153,6 +154,7 @@ export async function createSession(kv?: KVNamespace): Promise<string> {
 			// continue working. No retry — KV failures are typically transient and the next
 			// session creation will succeed.
 			logError('[session] KV create failed, in-memory fallback active', { category: 'session' });
+			analytics?.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session' });
 		}
 	}
 
