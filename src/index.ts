@@ -46,6 +46,7 @@ import { internalRoutes } from './internal';
 import { buildAuthorizationServerMetadata, buildProtectedResourceMetadata, resolveIssuer } from './oauth/discovery';
 import { handleRegister } from './oauth/register';
 import { handleAuthorizeGet, handleAuthorizePost } from './oauth/authorize';
+import { handleToken } from './oauth/token';
 export { QuotaCoordinator } from './lib/quota-coordinator';
 export { ProfileAccumulator } from './lib/profile-accumulator';
 
@@ -90,6 +91,7 @@ type BvMcpEnv = {
 	BV_CERTSTREAM?: Fetcher;
 	REQUIRE_AUTH?: string;
 	OAUTH_ISSUER?: string;
+	OAUTH_SIGNING_SECRET?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -696,6 +698,7 @@ app.on(
 app.post('/oauth/register', handleRegister);
 app.get('/oauth/authorize', handleAuthorizeGet);
 app.post('/oauth/authorize', handleAuthorizePost);
+app.post('/oauth/token', handleToken);
 
 app.all('*', (c) => {
 	// Plain text — avoids mcp-remote misinterpreting JSON as an OAuth error.
