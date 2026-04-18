@@ -279,3 +279,23 @@ export function parseScanTimeout(envValue?: string): number {
 export function parsePerCheckTimeout(envValue?: string): number {
 	return parseClampedInt(envValue, PER_CHECK_TIMEOUT_MS, 2000, 15000);
 }
+
+// ─── OAuth 2.1 (Phase 0 — shared constants) ─────────────────────────────────
+export const OAUTH_CODE_TTL_SECONDS = 30;
+export const OAUTH_CLIENT_TTL_SECONDS = 60 * 60 * 24 * 365; // 1 year, refreshed on use
+export const OAUTH_JWT_TTL_SECONDS = 60 * 60 * 24 * 90;     // 90 days
+export const OAUTH_JWT_CLOCK_SKEW_SECONDS = 30;
+export const OAUTH_CONSENT_RATE_LIMIT = 5;
+export const OAUTH_CONSENT_RATE_WINDOW_SECONDS = 60 * 15;
+export const OAUTH_SCOPES_SUPPORTED = ['mcp'] as const;
+export const OAUTH_GRANT_TYPES_SUPPORTED = ['authorization_code'] as const;
+export const OAUTH_RESPONSE_TYPES_SUPPORTED = ['code'] as const;
+export const OAUTH_TOKEN_AUTH_METHODS_SUPPORTED = ['none'] as const;
+export const OAUTH_CODE_CHALLENGE_METHODS_SUPPORTED = ['S256'] as const;
+export const OAUTH_REDIRECT_URI_ALLOWLIST: RegExp[] = [
+	/^https:\/\/claude\.ai(\/.*)?$/,
+	/^https:\/\/[^/]+\.anthropic\.com(\/.*)?$/,
+	/^http:\/\/localhost(:\d+)?(\/.*)?$/,
+	/^http:\/\/127\.0\.0\.1(:\d+)?(\/.*)?$/,
+];
+export const OAUTH_KV_PREFIX = 'oauth:' as const;
