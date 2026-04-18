@@ -629,7 +629,7 @@ app.get('/mcp/sse', async (c) => {
 		}
 	}
 
-	const legacySessionId = await createSession(c.env.SESSION_STORE);
+	const legacySessionId = await createSession(c.env.SESSION_STORE, createAnalyticsClient(c.env.MCP_ANALYTICS));
 	const endpointUrl = new URL(`/mcp/messages?sessionId=${encodeURIComponent(legacySessionId)}`, c.req.url).toString();
 	return openLegacySseStream(legacySessionId, endpointUrl);
 });
