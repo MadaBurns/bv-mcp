@@ -316,3 +316,44 @@ describe('adaptive-weights', () => {
 		});
 	});
 });
+
+describe('adaptive weight KV convergence', () => {
+	function makeKv() {
+		const store = new Map<string, string>();
+		return {
+			kv: {
+				async get(key: string) { return store.get(key) ?? null; },
+				async put(key: string, value: string, _opts?: { expirationTtl?: number }) { store.set(key, value); },
+				async delete(key: string) { store.delete(key); },
+			} as unknown as KVNamespace,
+			store,
+		};
+	}
+
+	it('publishAdaptiveWeightSummary + getAdaptiveWeights round-trip via KV', async () => {
+		const { kv } = makeKv();
+		const { publishAdaptiveWeightSummary, getAdaptiveWeights } = await import('../src/lib/profile-accumulator');
+		const weights = { spf: 10.5, dmarc: 16.2 };
+		await publishAdaptiveWeightSummary('mail_enabled', 'google', weights, kv);
+		const a = await getAdaptiveWeights('mail_enabled', 'google', kv);
+		const b = await getAdaptiveWeights('mail_enabled', 'google', kv);
+		expect(a).toEqual(b);
+		expect(a).toEqual(weights);
+	});
+
+	it('getAdaptiveWeights returns null on cache miss (caller falls back to static)', async () => {
+		const { kv } = makeKv();
+		const { getAdaptiveWeights } = await import('../src/lib/profile-accumulator');
+		expect(await getAdaptiveWeights('mail_enabled', 'unknown', kv)).toBeNull();
+	});
+
+	it('getAdaptiveWeights returns null on KV error (graceful fallback)', async () => {
+		const kv = {
+			async get() { throw new Error('KV down'); },
+			async put() {},
+			async delete() {},
+		} as unknown as KVNamespace;
+		const { getAdaptiveWeights } = await import('../src/lib/profile-accumulator');
+		expect(await getAdaptiveWeights('mail_enabled', 'google', kv)).toBeNull();
+	});
+});
