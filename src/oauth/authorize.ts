@@ -87,13 +87,45 @@ function newCode(): string {
 	return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-/** Increment and check the per-IP consent-POST rate limiter. Returns true if over the limit. */
+/**
+ * Increment and check the per-IP consent-POST rate limiter. Returns true if over the limit.
+ *
+ * Implements a FIXED window: once the first attempt lands, `expiresAt` is pinned for
+ * `OAUTH_CONSENT_RATE_WINDOW_SECONDS` and preserved across subsequent increments. The
+ * naive approach of `kv.put(..., { expirationTtl })` on every write would refresh the TTL
+ * and allow an attacker (or any stream of attempts) to extend a lockout indefinitely.
+ *
+ * The stored value is `{ count, expiresAt }` JSON; `expiresAt` is authoritative for window
+ * math, and `expirationTtl` on the KV write is only a cleanup mechanism.
+ */
 async function consentRateExceeded(kv: KVNamespace, ip: string): Promise<boolean> {
 	const key = `${OAUTH_KV_PREFIX}consent-rl:${ip}`;
+	const nowMs = Date.now();
 	const raw = await kv.get(key);
-	const count = raw ? Number(raw) || 0 : 0;
+
+	let count = 0;
+	let expiresAt = nowMs + OAUTH_CONSENT_RATE_WINDOW_SECONDS * 1000;
+	if (raw) {
+		try {
+			const parsed = JSON.parse(raw) as { count?: unknown; expiresAt?: unknown };
+			if (typeof parsed.expiresAt === 'number' && parsed.expiresAt > nowMs) {
+				// Window still active — preserve expiresAt, keep accumulated count.
+				count = typeof parsed.count === 'number' ? parsed.count : 0;
+				expiresAt = parsed.expiresAt;
+			}
+			// Otherwise: expired or malformed → start a fresh window (count=0, new expiresAt).
+		} catch {
+			// Malformed (e.g., legacy numeric value) — start a fresh window.
+		}
+	}
+
 	if (count >= OAUTH_CONSENT_RATE_LIMIT) return true;
-	await kv.put(key, String(count + 1), { expirationTtl: OAUTH_CONSENT_RATE_WINDOW_SECONDS });
+
+	const next = { count: count + 1, expiresAt };
+	// `expirationTtl` is bounded by CF KV's 60s minimum and used only for cleanup; the
+	// stored `expiresAt` is authoritative for window correctness.
+	const ttl = Math.max(60, Math.ceil((expiresAt - nowMs) / 1000));
+	await kv.put(key, JSON.stringify(next), { expirationTtl: ttl });
 	return false;
 }
 
