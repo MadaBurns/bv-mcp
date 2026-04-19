@@ -51,17 +51,24 @@ def pkce_pair() -> tuple[str, str]:
 
 def smoke_mode() -> int:
     """
-    POST junk to /oauth/token; expect 4xx (typically 400 invalid_grant).
-    Fail on 5xx or unexpected 2xx.
+    POST junk to /oauth/token; expect 400 invalid_grant.
+    Fail on 5xx, unexpected 2xx, or 4xx that isn't invalid_grant.
     """
     try:
-        data = urllib.parse.urlencode(
-            {"grant_type": "authorization_code", "code": "junk"}
-        ).encode("utf-8")
+        data = urllib.parse.urlencode({
+            "grant_type": "authorization_code",
+            "code": "junk",
+            "redirect_uri": "https://claude.ai/cb",
+            "client_id": "junk",
+            "code_verifier": "junkjunkjunkjunkjunkjunkjunkjunkjunkjunkjunkjunk",
+        }).encode("utf-8")
         req = urllib.request.Request(
             f"{BASE}/oauth/token",
             data=data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "bv-mcp-smoke-probe/1.0",
+            },
             method="POST",
         )
         try:
@@ -75,12 +82,33 @@ def smoke_mode() -> int:
             return 1
         except HTTPError as e:
             status = e.code
-            if 400 <= status < 500:
-                print(f"OK: got {status} (expected 4xx)")
-                return 0
-            # 5xx
-            print(f"FAIL: got {status} (5xx server error)", file=sys.stderr)
-            return 1
+            body = e.read().decode("utf-8")
+
+            if status == 400:
+                # Check for invalid_grant in response
+                if "invalid_grant" in body:
+                    print(f"OK: got 400 with invalid_grant (expected)")
+                    return 0
+                else:
+                    print(
+                        f"FAIL: got 400 but missing invalid_grant. Body: {body[:200]}",
+                        file=sys.stderr,
+                    )
+                    return 1
+            elif 400 <= status < 500:
+                # Other 4xx is unexpected
+                print(
+                    f"FAIL: got {status} (expected 400 invalid_grant). Body: {body[:200]}",
+                    file=sys.stderr,
+                )
+                return 1
+            else:
+                # 5xx or other
+                print(
+                    f"FAIL: got {status} (expected 400). Body: {body[:200]}",
+                    file=sys.stderr,
+                )
+                return 1
     except Exception as e:
         print(f"FAIL: {e}", file=sys.stderr)
         return 1
