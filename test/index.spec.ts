@@ -1650,33 +1650,36 @@ describe('DNS Security MCP Server', () => {
 	});
 
 	describe('OAuth well-known endpoints', () => {
-		it('returns valid JSON 404 for /.well-known/oauth-authorization-server', async () => {
+		it('returns RFC 8414 metadata for /.well-known/oauth-authorization-server', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/.well-known/oauth-authorization-server');
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(404);
+			expect(response.status).toBe(200);
 			expect(response.headers.get('content-type')).toContain('application/json');
-			const body = (await response.json()) as { error: string; error_description: string };
-			expect(body.error).toBe('not_supported');
+			const body = (await response.json()) as Record<string, unknown>;
+			expect(body.issuer).toBeTypeOf('string');
+			expect(body.authorization_endpoint).toMatch(/\/oauth\/authorize$/);
+			expect(body.token_endpoint).toMatch(/\/oauth\/token$/);
+			expect(body.code_challenge_methods_supported).toEqual(['S256']);
 		});
 
-		it('returns valid JSON 404 for /.well-known/oauth-protected-resource', async () => {
+		it('returns RFC 9728 metadata for /.well-known/oauth-protected-resource', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/.well-known/oauth-protected-resource');
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(404);
+			expect(response.status).toBe(200);
 			expect(response.headers.get('content-type')).toContain('application/json');
-			const body = (await response.json()) as { error: string; error_description: string };
-			expect(body.error).toBe('not_supported');
+			const body = (await response.json()) as Record<string, unknown>;
+			expect(body.resource).toBeTypeOf('string');
+			expect(Array.isArray(body.authorization_servers)).toBe(true);
 		});
 
-		it('returns valid JSON 404 for path-suffixed variants (RFC 8414 / RFC 9728)', async () => {
+		it('returns metadata for path-suffixed variants (RFC 8414 / RFC 9728)', async () => {
 			// Spec-compliant clients probe /.well-known/<type>/<path> derived from the
-			// resource URL, e.g. /.well-known/oauth-protected-resource/mcp. Before
-			// these routes were added, the catchall returned plain text "Not found"
-			// and SDKs crashed trying to JSON-parse it as an OAuth error response.
+			// resource URL, e.g. /.well-known/oauth-protected-resource/mcp. Both the
+			// bare and path-suffixed variants must serve the same metadata document.
 			for (const path of [
 				'/.well-known/oauth-authorization-server/mcp',
 				'/.well-known/oauth-protected-resource/mcp',
@@ -1685,10 +1688,8 @@ describe('DNS Security MCP Server', () => {
 				const ctx = createExecutionContext();
 				const response = await worker.fetch(request, env, ctx);
 				await waitOnExecutionContext(ctx);
-				expect(response.status).toBe(404);
+				expect(response.status).toBe(200);
 				expect(response.headers.get('content-type')).toContain('application/json');
-				const body = (await response.json()) as { error: string; error_description: string };
-				expect(body.error).toBe('not_supported');
 			}
 		});
 
