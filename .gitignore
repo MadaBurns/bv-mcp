@@ -109,4 +109,3 @@ generate_*.py
 # Local deploy overrides (real KV IDs, custom domains)
 .dev/
 .mcp.json
-.mcp.json
