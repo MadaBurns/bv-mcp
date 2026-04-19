@@ -1,0 +1,88 @@
+{
+  "scripts": [
+    {
+      "name": "build",
+      "command": "npm run build",
+      "mode": "command",
+      "category": "build"
+    },
+    {
+      "name": "dev",
+      "command": "npm run dev",
+      "mode": "service",
+      "category": "dev"
+    },
+    {
+      "name": "deploy:private",
+      "command": "npm run deploy:private",
+      "mode": "command",
+      "category": "other"
+    },
+    {
+      "name": "mcp:stdio",
+      "command": "npm run mcp:stdio",
+      "mode": "command",
+      "category": "other"
+    },
+    {
+      "name": "start",
+      "command": "npm run start",
+      "mode": "service",
+      "category": "dev"
+    },
+    {
+      "name": "prepack",
+      "command": "npm run prepack",
+      "mode": "command",
+      "category": "other"
+    },
+    {
+      "name": "validate:internal-deps",
+      "command": "npm run validate:internal-deps",
+      "mode": "command",
+      "category": "other"
+    },
+    {
+      "name": "test",
+      "command": "npm run test",
+      "mode": "command",
+      "category": "test"
+    },
+    {
+      "name": "test:coverage",
+      "command": "npm run test:coverage",
+      "mode": "command",
+      "category": "test"
+    },
+    {
+      "name": "typecheck",
+      "command": "npm run typecheck",
+      "mode": "command",
+      "category": "typecheck"
+    },
+    {
+      "name": "cf-typegen",
+      "command": "npm run cf-typegen",
+      "mode": "command",
+      "category": "other"
+    },
+    {
+      "name": "lint",
+      "command": "npm run lint",
+      "mode": "command",
+      "category": "lint"
+    },
+    {
+      "name": "lint:fix",
+      "command": "npm run lint:fix",
+      "mode": "command",
+      "category": "lint"
+    },
+    {
+      "name": "build:wasm",
+      "command": "npm run build:wasm",
+      "mode": "command",
+      "category": "build"
+    }
+  ]
+}
