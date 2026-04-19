@@ -13,6 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`scripts/oauth/prod-probe.py`** — Two-mode production OAuth probe. `--mode=smoke` POSTs a full junk payload to `/oauth/token` and asserts `400 invalid_grant` (verifies routing past the Zod/rate-limit gates). `--mode=e2e` runs the full `register → authorize → token → /mcp` flow against a live owner `BV_API_KEY` and asserts ≥40 tools in `tools/list`.
 - **`scripts/oauth/README.md`** — Rotation and rollback runbook for the OAuth signing secret.
 
+### Docs
+- **README + client-setup + architecture + CLAUDE.md**: tool count updated 41/44 → 51 (current `tools/list` output). `docs/client-setup.md` now documents OAuth 2.1 as a third auth path alongside Bearer / `?api_key=`, including discovery endpoints, the register → authorize → token flow, PKCE constraints, and a link to the probe + rotation runbook. CLAUDE.md `Bindings` table now includes `OAUTH_SIGNING_SECRET` and `OAUTH_ISSUER`.
+
 ## [2.9.1] - 2026-04-19
 
 ### Changed
