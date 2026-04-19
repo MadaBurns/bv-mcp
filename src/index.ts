@@ -43,6 +43,10 @@ import { parseScoringConfigCached } from './lib/scoring-config';
 import { parseCacheTtl } from './lib/config';
 import { closeLegacyStream, enqueueLegacyMessage, openLegacySseStream } from './lib/legacy-sse';
 import { internalRoutes } from './internal';
+import { buildAuthorizationServerMetadata, buildProtectedResourceMetadata, resolveIssuer } from './oauth/discovery';
+import { handleRegister } from './oauth/register';
+import { handleAuthorizeGet, handleAuthorizePost } from './oauth/authorize';
+import { handleToken } from './oauth/token';
 export { QuotaCoordinator } from './lib/quota-coordinator';
 export { ProfileAccumulator } from './lib/profile-accumulator';
 
@@ -86,6 +90,8 @@ type BvMcpEnv = {
 	BV_DOH_TOKEN?: string;
 	BV_CERTSTREAM?: Fetcher;
 	REQUIRE_AUTH?: string;
+	OAUTH_ISSUER?: string;
+	OAUTH_SIGNING_SECRET?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -155,7 +161,7 @@ for (const path of mcpPaths) {
 			: (c.req.query('api_key') ?? null);
 
 		const clientIp = c.req.header('cf-connecting-ip') ?? undefined;
-		const tierResult = await resolveTier(token, c.env, clientIp);
+		const tierResult = await resolveTier(token, c.env, clientIp, c.req.url);
 		c.set('tierAuthResult', tierResult);
 		c.set('isAuthenticated', tierResult.authenticated);
 
@@ -175,7 +181,7 @@ app.use('*', async (c, next) => {
 	c.header('X-XSS-Protection', '0');
 	c.header('Referrer-Policy', 'no-referrer');
 	c.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
-	c.header('Content-Security-Policy', "default-src 'self'; script-src 'none'; object-src 'none'; frame-ancestors 'none'");
+	c.header('Content-Security-Policy', "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; form-action 'self'");
 	c.header('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
 });
 
@@ -678,22 +684,21 @@ app.delete('/mcp', async (c) => {
 
 app.route('/internal', internalRoutes);
 
-// OAuth well-known endpoints — return valid JSON so SDKs don't crash parsing
-// plain-text 404 responses during OAuth discovery probes. RFC 8414 §3 and
-// RFC 9728 §3 form the metadata URL by inserting the well-known path between
-// the authority and the resource path, so spec-compliant clients probe both
-// the bare path (e.g. /.well-known/oauth-protected-resource) and the
-// path-suffixed variant (e.g. /.well-known/oauth-protected-resource/mcp).
+// OAuth 2.1 discovery endpoints (RFC 8414 + RFC 9728).
 app.on(
 	'GET',
-	[
-		'/.well-known/oauth-authorization-server',
-		'/.well-known/oauth-authorization-server/*',
-		'/.well-known/oauth-protected-resource',
-		'/.well-known/oauth-protected-resource/*',
-	],
-	(c) => c.json({ error: 'not_supported', error_description: 'This server does not support OAuth' }, 404),
+	['/.well-known/oauth-authorization-server', '/.well-known/oauth-authorization-server/*'],
+	(c) => c.json(buildAuthorizationServerMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER))),
 );
+app.on(
+	'GET',
+	['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/*'],
+	(c) => c.json(buildProtectedResourceMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER))),
+);
+app.post('/oauth/register', handleRegister);
+app.get('/oauth/authorize', handleAuthorizeGet);
+app.post('/oauth/authorize', handleAuthorizePost);
+app.post('/oauth/token', handleToken);
 
 app.all('*', (c) => {
 	// Plain text — avoids mcp-remote misinterpreting JSON as an OAuth error.
