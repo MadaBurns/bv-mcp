@@ -393,10 +393,11 @@ Important: raw JSON-RPC `tools/call` still requires `params.name` to be a tool i
 
 ## Authentication
 
-Authenticated requests bypass all rate limits. You can send the API key as a bearer token or a query parameter:
+Authenticated requests bypass per-IP rate limits and apply the caller's tier quota. Three authentication methods are supported:
 
 - **Bearer Token**: `Authorization: Bearer <YOUR_API_KEY>`
 - **Query Parameter**: `?api_key=<YOUR_API_KEY>`
+- **OAuth 2.1** (authorization code + PKCE) — used by the Claude mobile custom connector. See the [OAuth 2.1](#oauth-21) section below.
 
 The query parameter method is the simplest for clients that only support URL configuration (like Claude Code, Smithery, or simple HTTP connectors).
 
@@ -404,7 +405,7 @@ The query parameter method is the simplest for clients that only support URL con
 
 | Client | Recommended Auth Method | Notes |
 |--------|-------------------------|-------|
-| Claude Mobile | `?api_key=` in URL | Connector configured on web |
+| Claude Mobile | OAuth 2.1 custom connector | Discovered via `/.well-known/oauth-authorization-server` |
 | Claude Code | `?api_key=` in URL | Simple and native |
 | Smithery | `?api_key=` in URL | Native integration |
 | VS Code / Copilot | `headers` field | Supports secret prompt |
@@ -412,6 +413,31 @@ The query parameter method is the simplest for clients that only support URL con
 | Windsurf | `headers` field | Direct header support |
 | Claude Desktop | `mcp-remote --header` | Hosted connector (free) or bridge |
 | curl / scripts | `-H "Authorization: Bearer ..."` | Standard HTTP header |
+
+### OAuth 2.1
+
+The server implements RFC 6749 authorization-code grant with PKCE (S256 only), RFC 7591 dynamic client registration, and RFC 8414 / RFC 9728 discovery. Tokens are HS256 JWTs with a 90-day TTL.
+
+**Discovery endpoints** (no auth):
+
+- `GET /.well-known/oauth-authorization-server` — RFC 8414 authorization server metadata (issuer, `/oauth/authorize`, `/oauth/token`, `/oauth/register`, supported grants + PKCE methods).
+- `GET /.well-known/oauth-protected-resource` — RFC 9728 metadata pointing at `/mcp` as the protected resource.
+
+**Flow** (performed by the MCP client, not the user directly):
+
+1. `POST /oauth/register` with `{ "redirect_uris": [<client redirect>] }` → receive `client_id` and a one-time `client_secret`.
+2. `GET /oauth/authorize` with `client_id`, `redirect_uri`, `response_type=code`, `code_challenge`, `code_challenge_method=S256`, `state` → the user consents via a form that accepts the owner's `BV_API_KEY`.
+3. `POST /oauth/token` with `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `code_verifier` → receive `access_token` (JWT).
+4. Call `/mcp` with `Authorization: Bearer <access_token>`.
+
+**Constraints:**
+
+- PKCE is mandatory. `plain` is rejected at the schema layer — only `S256`.
+- `client_secret` is hashed in KV and is only available from the one-shot DCR response. Rotating means re-registering.
+- `OWNER_ALLOW_IPS` is enforced at the consent step for owner-tier JWT issuance. A stolen owner key from a non-allowlisted IP cannot mint an owner JWT.
+- JWT revocation is by JTI. Rotation of `OAUTH_SIGNING_SECRET` invalidates every outstanding JWT at next verify.
+
+**Reference client** (probes, rotation, and rollback runbook): [`scripts/oauth/README.md`](../scripts/oauth/README.md) and [`scripts/oauth/prod-probe.py`](../scripts/oauth/prod-probe.py).
 
 ### Troubleshooting Client-Specific Behavior
 
@@ -497,3 +523,8 @@ Example payload:
 | POST | `/mcp/messages` | Legacy HTTP+SSE client messages |
 | DELETE | `/mcp` | Session termination |
 | GET | `/health` | Health check |
+| GET | `/.well-known/oauth-authorization-server` | OAuth 2.1 authorization server metadata (RFC 8414) |
+| GET | `/.well-known/oauth-protected-resource` | OAuth 2.1 protected resource metadata (RFC 9728) |
+| POST | `/oauth/register` | Dynamic client registration (RFC 7591) |
+| GET / POST | `/oauth/authorize` | Authorization endpoint (consent + code issuance) |
+| POST | `/oauth/token` | Token endpoint (authorization code grant with PKCE) |

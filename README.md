@@ -26,7 +26,7 @@ Open-source DNS & email security scanner for Claude, Cursor, VS Code, and MCP cl
 
 **Claude Desktop** (one-click install):
 
-Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — all 44 tools available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
+Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — all 51 tools available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
 
 **Claude Code** (one command):
 
@@ -164,11 +164,13 @@ Run the chaos tests locally: `python3 scripts/chaos/chaos-test-clients.py`
 
 ## Client setup
 
-The free tier requires no authentication. If you have an API key, you can use either:
-- **Header**: `Authorization: Bearer <KEY>`
-- **Query Param**: `?api_key=<KEY>`
+The free tier requires no authentication. Authenticated requests bypass per-IP rate limits and follow your tier's daily quota. Three authentication methods are supported:
 
-For full hosted setup examples, stdio usage, and legacy fallback endpoints, see [**docs/client-setup.md**](docs/client-setup.md).
+- **Header**: `Authorization: Bearer <KEY>`
+- **Query Param**: `?api_key=<KEY>` (for clients that can't send custom headers — Smithery, Claude Code)
+- **OAuth 2.1**: authorization-code flow with PKCE, discovered via `/.well-known/oauth-authorization-server` — used by the Claude mobile custom connector.
+
+For full hosted setup examples, stdio usage, OAuth setup, and legacy fallback endpoints, see [**docs/client-setup.md**](docs/client-setup.md).
 
 ---
 
