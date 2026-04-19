@@ -1,0 +1,1202 @@
+[
+  {
+    "domain": "facebook.com",
+    "score": 72,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: facebook.com\n========================================\nOverall Score: 72/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      70/100\n  ⚠ DKIM       65/100\n  ✗ DNSSEC  "
+  },
+  {
+    "domain": "google.com",
+    "score": 77,
+    "grade": "B",
+    "rawText": "DNS Security Scan: google.com\n========================================\nOverall Score: 77/100 (B)\n2 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "gtld-servers.net",
+    "score": 72,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: gtld-servers.net\n========================================\nOverall Score: 72/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ⚠ DMARC      70/100\n  ∅ D"
+  },
+  {
+    "domain": "gstatic.com",
+    "score": 63,
+    "grade": "C",
+    "rawText": "DNS Security Scan: gstatic.com\n========================================\nOverall Score: 63/100 (C)\n1 critical issue(s) found requiring immediate attention. Grade: C\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ⚠ SPF        60/100\n  ⚠ DMARC      60/100\n  ∅ DKIM  "
+  },
+  {
+    "domain": "microsoft.com",
+    "score": 74,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: microsoft.com\n========================================\nOverall Score: 74/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC "
+  },
+  {
+    "domain": "youtube.com",
+    "score": 70,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: youtube.com\n========================================\nOverall Score: 70/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ⚠ DKIM       70/100\n  ✗ DNSSEC   "
+  },
+  {
+    "domain": "googleapis.com",
+    "score": 71,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: googleapis.com\n========================================\nOverall Score: 71/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      80/100\n  ∅ DKI"
+  },
+  {
+    "domain": "pv-cdn.net",
+    "score": 72,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: pv-cdn.net\n========================================\nOverall Score: 72/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ⚠ DMARC      70/100\n  ∅ DKIM   "
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": 80,
+    "grade": "B",
+    "rawText": "DNS Security Scan: cloudflare.com\n========================================\nOverall Score: 80/100 (B)\n2 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ✗ DKIM       45/100\n  ✓ DNSSEC  "
+  },
+  {
+    "domain": "amazonaws.com",
+    "score": 65,
+    "grade": "C",
+    "rawText": "DNS Security Scan: amazonaws.com\n========================================\nOverall Score: 65/100 (C)\n3 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      55/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC  "
+  },
+  {
+    "domain": "akamai.net",
+    "score": 27,
+    "grade": "F",
+    "rawText": "DNS Security Scan: akamai.net\n========================================\nOverall Score: 27/100 (F)\n2 critical issue(s) found requiring immediate attention. Grade: F\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✗ SPF        0/100\n  ✗ DMARC      0/100\n  ✓ DKIM     "
+  },
+  {
+    "domain": "fbcdn.net",
+    "score": 67,
+    "grade": "C",
+    "rawText": "DNS Security Scan: fbcdn.net\n========================================\nOverall Score: 67/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✓ SPF        95/100\n  ✗ DMARC      45/100\n  ∅ DKIM       N/A (web-only, no MX r"
+  },
+  {
+    "domain": "mail.ru",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: mail.ru\n========================================\nOverall Score: 73/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC     0/"
+  },
+  {
+    "domain": "googletagmanager.com",
+    "score": 71,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: googletagmanager.com\n========================================\nOverall Score: 71/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      80/100\n "
+  },
+  {
+    "domain": "linkedin.com",
+    "score": 74,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: linkedin.com\n========================================\nOverall Score: 74/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC  "
+  },
+  {
+    "domain": "instagram.com",
+    "score": 71,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: instagram.com\n========================================\nOverall Score: 71/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      65/100\n  ✓ DKIM       80/100\n  ✗ DNSSEC"
+  },
+  {
+    "domain": "dzen.ru",
+    "score": 69,
+    "grade": "C",
+    "rawText": "DNS Security Scan: dzen.ru\n========================================\nOverall Score: 69/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC     0/1"
+  },
+  {
+    "domain": "googlevideo.com",
+    "score": 66,
+    "grade": "C",
+    "rawText": "DNS Security Scan: googlevideo.com\n========================================\nOverall Score: 66/100 (C)\n1 critical issue(s) found requiring immediate attention. Grade: C\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ⚠ SPF        60/100\n  ⚠ DMARC      60/100\n  ∅ DK"
+  },
+  {
+    "domain": "apple.com",
+    "score": 74,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: apple.com\n========================================\nOverall Score: 74/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "twitter.com",
+    "score": 69,
+    "grade": "C",
+    "rawText": "DNS Security Scan: twitter.com\n========================================\nOverall Score: 69/100 (C)\n3 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC    "
+  },
+  {
+    "domain": "office.com",
+    "score": 79,
+    "grade": "B",
+    "rawText": "DNS Security Scan: office.com\n========================================\nOverall Score: 79/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      85/100\n  ∅ DKIM     "
+  },
+  {
+    "domain": "akamaiedge.net",
+    "score": 27,
+    "grade": "F",
+    "rawText": "DNS Security Scan: akamaiedge.net\n========================================\nOverall Score: 27/100 (F)\n2 critical issue(s) found requiring immediate attention. Grade: F\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✗ SPF        0/100\n  ✗ DMARC      0/100\n  ✓ DKIM "
+  },
+  {
+    "domain": "akadns.net",
+    "score": 52,
+    "grade": "D",
+    "rawText": "DNS Security Scan: akadns.net\n========================================\nOverall Score: 52/100 (D)\n1 critical issue(s) found requiring immediate attention. Grade: D\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✗ DMARC      0/100\n  ✓ DKIM   "
+  },
+  {
+    "domain": "live.com",
+    "score": 72,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: live.com\n========================================\nOverall Score: 72/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✓ SPF        80/100\n  ⚠ DMARC      65/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC    "
+  },
+  {
+    "domain": "amazon.com",
+    "score": 62,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: amazon.com\n========================================\nOverall Score: 62/100 (D+)\n4 high-severity issue(s) found. Grade: D+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✗ SPF        45/100\n  ⚠ DMARC      70/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC    "
+  },
+  {
+    "domain": "azure.com",
+    "score": 70,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: azure.com\n========================================\nOverall Score: 70/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✓ SPF        95/100\n  ⚠ DMARC      65/100\n  ✓ DKIM       85/100\n  ✗ DNSSEC    "
+  },
+  {
+    "domain": "github.com",
+    "score": 50,
+    "grade": "D",
+    "rawText": "DNS Security Scan: github.com\n========================================\nOverall Score: 50/100 (D)\n4 high-severity issue(s) found. Grade: D\n\nMaturity: Stage 3 — Enforcing (score-capped)\n\nCategory Scores:\n------------------------------\n  ✗ SPF        0/100\n  ✓ DMARC      85/100\n  ✗ DKIM       30/100\n  "
+  },
+  {
+    "domain": "wikipedia.org",
+    "score": 71,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: wikipedia.org\n========================================\nOverall Score: 71/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC"
+  },
+  {
+    "domain": "googleusercontent.com",
+    "score": 59,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: googleusercontent.com\n========================================\nOverall Score: 59/100 (D+)\n1 critical issue(s) found requiring immediate attention. Grade: D+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✗ SPF        45/100\n  ⚠ DMARC      60/10"
+  },
+  {
+    "domain": "domaincontrol.com",
+    "score": 52,
+    "grade": "D",
+    "rawText": "DNS Security Scan: domaincontrol.com\n========================================\nOverall Score: 52/100 (D)\n1 critical issue(s) found requiring immediate attention. Grade: D\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✗ DMARC      0/100\n  ✓ "
+  },
+  {
+    "domain": "keenetic.io",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: keenetic.io\n========================================\nOverall Score: 78/100 (B)\n1 critical issue(s) found requiring immediate attention. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC"
+  },
+  {
+    "domain": "doubleclick.net",
+    "score": 64,
+    "grade": "C",
+    "rawText": "DNS Security Scan: doubleclick.net\n========================================\nOverall Score: 64/100 (C)\n1 critical issue(s) found requiring immediate attention. Grade: C\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ⚠ SPF        60/100\n  ⚠ DMARC      60/100\n  ✓ DKI"
+  },
+  {
+    "domain": "bing.com",
+    "score": 71,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: bing.com\n========================================\nOverall Score: 71/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      65/100\n  ✓ DKIM       85/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "netflix.com",
+    "score": 70,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: netflix.com\n========================================\nOverall Score: 70/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       60/100\n  ✗ DNSSEC   "
+  },
+  {
+    "domain": "chatgpt.com",
+    "score": 77,
+    "grade": "B",
+    "rawText": "DNS Security Scan: chatgpt.com\n========================================\nOverall Score: 77/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no M"
+  },
+  {
+    "domain": "fastly.net",
+    "score": 74,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: fastly.net\n========================================\nOverall Score: 74/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      65/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC   "
+  },
+  {
+    "domain": "appsflyersdk.com",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: appsflyersdk.com\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only,"
+  },
+  {
+    "domain": "microsoftonline.com",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: microsoftonline.com\n========================================\nOverall Score: 73/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ✓ DKIM       85/100\n  ✗ "
+  },
+  {
+    "domain": "whatsapp.net",
+    "score": 82,
+    "grade": "B+",
+    "rawText": "DNS Security Scan: whatsapp.net\n========================================\nOverall Score: 82/100 (B+)\n1 high-severity issue(s) found. Grade: B+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, n"
+  },
+  {
+    "domain": "office.net",
+    "score": 80,
+    "grade": "B",
+    "rawText": "DNS Security Scan: office.net\n========================================\nOverall Score: 80/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no MX"
+  },
+  {
+    "domain": "apple-dns.net",
+    "score": 80,
+    "grade": "B",
+    "rawText": "DNS Security Scan: apple-dns.net\n========================================\nOverall Score: 80/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no"
+  },
+  {
+    "domain": "wordpress.org",
+    "score": 71,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: wordpress.org\n========================================\nOverall Score: 71/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       70/100\n  ✗ DNSSEC "
+  },
+  {
+    "domain": "digicert.com",
+    "score": 65,
+    "grade": "C",
+    "rawText": "DNS Security Scan: digicert.com\n========================================\nOverall Score: 65/100 (C)\n3 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        85/100\n  ✓ DMARC      80/100\n  ✗ DKIM       45/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "workers.dev",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: workers.dev\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      95/100\n  ∅ DKIM    "
+  },
+  {
+    "domain": "trafficmanager.net",
+    "score": 80,
+    "grade": "B",
+    "rawText": "DNS Security Scan: trafficmanager.net\n========================================\nOverall Score: 80/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-onl"
+  },
+  {
+    "domain": "sharepoint.com",
+    "score": 77,
+    "grade": "B",
+    "rawText": "DNS Security Scan: sharepoint.com\n========================================\nOverall Score: 77/100 (B)\n2 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC "
+  },
+  {
+    "domain": "aaplimg.com",
+    "score": 74,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: aaplimg.com\n========================================\nOverall Score: 74/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      85/100\n  ∅ DKIM  "
+  },
+  {
+    "domain": "youtu.be",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: youtu.be\n========================================\nOverall Score: 73/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ✓ DKIM       85/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "skype.com",
+    "score": 75,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: skype.com\n========================================\nOverall Score: 75/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ✓ DKIM       85/100\n  ✗ DNSSEC    "
+  },
+  {
+    "domain": "windowsupdate.com",
+    "score": 71,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: windowsupdate.com\n========================================\nOverall Score: 71/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ⚠ DMARC      65/100\n  ∅ "
+  },
+  {
+    "domain": "pinterest.com",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: pinterest.com\n========================================\nOverall Score: 73/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC "
+  },
+  {
+    "domain": "whatsapp.com",
+    "score": 70,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: whatsapp.com\n========================================\nOverall Score: 70/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      65/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC  "
+  },
+  {
+    "domain": "cloudfront.net",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: cloudfront.net\n========================================\nOverall Score: 73/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ⚠ DMARC      70/100\n  ∅ DKI"
+  },
+  {
+    "domain": "googlesyndication.com",
+    "score": 60,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: googlesyndication.com\n========================================\nOverall Score: 60/100 (D+)\n1 critical issue(s) found requiring immediate attention. Grade: D+\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✗ SPF        45/100\n  ⚠ DMARC      60/100"
+  },
+  {
+    "domain": "goo.gl",
+    "score": 72,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: goo.gl\n========================================\nOverall Score: 72/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      80/100\n  ∅ DKIM       "
+  },
+  {
+    "domain": "icloud.com",
+    "score": 75,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: icloud.com\n========================================\nOverall Score: 75/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC   "
+  },
+  {
+    "domain": "yahoo.com",
+    "score": 75,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: yahoo.com\n========================================\nOverall Score: 75/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "x.com",
+    "score": 74,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: x.com\n========================================\nOverall Score: 74/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC     0/"
+  },
+  {
+    "domain": "ezviz7.com",
+    "score": 47,
+    "grade": "F",
+    "rawText": "DNS Security Scan: ezviz7.com\n========================================\nOverall Score: 47/100 (F)\n1 critical issue(s) found requiring immediate attention. Grade: F\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✗ DMARC      0/100\n  ⚠ DKIM   "
+  },
+  {
+    "domain": "msn.com",
+    "score": 68,
+    "grade": "C",
+    "rawText": "DNS Security Scan: msn.com\n========================================\nOverall Score: 68/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✓ SPF        80/100\n  ⚠ DMARC      60/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC     0/"
+  },
+  {
+    "domain": "windows.net",
+    "score": 75,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: windows.net\n========================================\nOverall Score: 75/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      85/100\n  ∅ DKIM  "
+  },
+  {
+    "domain": "spotify.com",
+    "score": 64,
+    "grade": "C",
+    "rawText": "DNS Security Scan: spotify.com\n========================================\nOverall Score: 64/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ✗ DKIM       30/100\n  ✗ DNSSEC    "
+  },
+  {
+    "domain": "gandi.net",
+    "score": 66,
+    "grade": "C",
+    "rawText": "DNS Security Scan: gandi.net\n========================================\nOverall Score: 66/100 (C)\n4 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      60/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "tiktok.com",
+    "score": 63,
+    "grade": "C",
+    "rawText": "DNS Security Scan: tiktok.com\n========================================\nOverall Score: 63/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      70/100\n  ✗ DKIM       30/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "adobe.com",
+    "score": 67,
+    "grade": "C",
+    "rawText": "DNS Security Scan: adobe.com\n========================================\nOverall Score: 67/100 (C)\n3 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      90/100\n  ✗ DKIM       30/100\n  ✗ DNSSEC     0"
+  },
+  {
+    "domain": "gvt1.com",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: gvt1.com\n========================================\nOverall Score: 73/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      80/100\n  ∅ DKIM     "
+  },
+  {
+    "domain": "vimeo.com",
+    "score": 74,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: vimeo.com\n========================================\nOverall Score: 74/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      90/100\n  ⚠ DKIM       60/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "akam.net",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: akam.net\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no MX r"
+  },
+  {
+    "domain": "tiktokcdn.com",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: tiktokcdn.com\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no"
+  },
+  {
+    "domain": "ntp.org",
+    "score": 69,
+    "grade": "C",
+    "rawText": "DNS Security Scan: ntp.org\n========================================\nOverall Score: 69/100 (C)\n3 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC     0/1"
+  },
+  {
+    "domain": "cloudflare.net",
+    "score": 80,
+    "grade": "B",
+    "rawText": "DNS Security Scan: cloudflare.net\n========================================\nOverall Score: 80/100 (B)\n2 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✓ DNSSEC "
+  },
+  {
+    "domain": "googledomains.com",
+    "score": 61,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: googledomains.com\n========================================\nOverall Score: 61/100 (D+)\n1 critical issue(s) found requiring immediate attention. Grade: D+\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✗ SPF        45/100\n  ⚠ DMARC      60/100\n  ✓"
+  },
+  {
+    "domain": "gvt2.com",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: gvt2.com\n========================================\nOverall Score: 73/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      80/100\n  ∅ DKIM     "
+  },
+  {
+    "domain": "roblox.com",
+    "score": 69,
+    "grade": "C",
+    "rawText": "DNS Security Scan: roblox.com\n========================================\nOverall Score: 69/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      90/100\n  ✗ DKIM       30/100\n  ✗ DNSSEC     0"
+  },
+  {
+    "domain": "telekom.de",
+    "score": 68,
+    "grade": "C",
+    "rawText": "DNS Security Scan: telekom.de\n========================================\nOverall Score: 68/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       60/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "ripn.net",
+    "score": 43,
+    "grade": "F",
+    "rawText": "DNS Security Scan: ripn.net\n========================================\nOverall Score: 43/100 (F)\n1 critical issue(s) found requiring immediate attention. Grade: F\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✓ SPF        95/100\n  ✗ DMARC      0/100\n  ✓ DKIM      "
+  },
+  {
+    "domain": "zoom.us",
+    "score": 64,
+    "grade": "C",
+    "rawText": "DNS Security Scan: zoom.us\n========================================\nOverall Score: 64/100 (C)\n3 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ✗ DKIM       30/100\n  ✗ DNSSEC     0/10"
+  },
+  {
+    "domain": "tiktokv.com",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: tiktokv.com\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no M"
+  },
+  {
+    "domain": "ytimg.com",
+    "score": 74,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: ytimg.com\n========================================\nOverall Score: 74/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC   "
+  },
+  {
+    "domain": "wa.me",
+    "score": 81,
+    "grade": "B",
+    "rawText": "DNS Security Scan: wa.me\n========================================\nOverall Score: 81/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✓ SPF        95/100\n  ∅ DMARC      N/A (web-only, no MX records)\n  ∅ DKIM       N/A"
+  },
+  {
+    "domain": "cloud.microsoft",
+    "score": 89,
+    "grade": "A",
+    "rawText": "DNS Security Scan: cloud.microsoft\n========================================\nOverall Score: 89/100 (A)\n1 high-severity issue(s) found. Grade: A\n\nMaturity: Stage 1 — DNS-Only\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no "
+  },
+  {
+    "domain": "edgekey.net",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: edgekey.net\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no M"
+  },
+  {
+    "domain": "myfritz.net",
+    "score": 71,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: myfritz.net\n========================================\nOverall Score: 71/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC  "
+  },
+  {
+    "domain": "qq.com",
+    "score": 70,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: qq.com\n========================================\nOverall Score: 70/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC     0/"
+  },
+  {
+    "domain": "nginx.org",
+    "score": 47,
+    "grade": "F",
+    "rawText": "DNS Security Scan: nginx.org\n========================================\nOverall Score: 47/100 (F)\n1 critical issue(s) found requiring immediate attention. Grade: F\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✓ SPF        95/100\n  ✗ DMARC      0/100\n  ⚠ DKIM     "
+  },
+  {
+    "domain": "cloudflare-dns.com",
+    "score": 91,
+    "grade": "A",
+    "rawText": "DNS Security Scan: cloudflare-dns.com\n========================================\nOverall Score: 91/100 (A)\n1 high-severity issue(s) found. Grade: A\n\nMaturity: Stage 1 — DNS-Only\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, "
+  },
+  {
+    "domain": "e2ro.com",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: e2ro.com\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      90/100\n  ∅ DKIM       "
+  },
+  {
+    "domain": "yandex.net",
+    "score": 50,
+    "grade": "D",
+    "rawText": "DNS Security Scan: yandex.net\n========================================\nOverall Score: 50/100 (D)\n1 critical issue(s) found requiring immediate attention. Grade: D\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✗ DMARC      0/100\n  ⚠ DKIM   "
+  },
+  {
+    "domain": "windows.com",
+    "score": 72,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: windows.com\n========================================\nOverall Score: 72/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC  "
+  },
+  {
+    "domain": "baidu.com",
+    "score": 60,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: baidu.com\n========================================\nOverall Score: 60/100 (D+)\n2 high-severity issue(s) found. Grade: D+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC    "
+  },
+  {
+    "domain": "bit.ly",
+    "score": 69,
+    "grade": "C",
+    "rawText": "DNS Security Scan: bit.ly\n========================================\nOverall Score: 69/100 (C)\n4 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      65/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC     0/1"
+  },
+  {
+    "domain": "opera.com",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: opera.com\n========================================\nOverall Score: 73/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      90/100\n  ⚠ DKIM       60/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "samsung.com",
+    "score": 67,
+    "grade": "C",
+    "rawText": "DNS Security Scan: samsung.com\n========================================\nOverall Score: 67/100 (C)\n4 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✓ SPF        95/100\n  ⚠ DMARC      65/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC    "
+  },
+  {
+    "domain": "google-analytics.com",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: google-analytics.com\n========================================\nOverall Score: 73/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      80/100\n "
+  },
+  {
+    "domain": "wordpress.com",
+    "score": 71,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: wordpress.com\n========================================\nOverall Score: 71/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       60/100\n  ✗ DNSSEC "
+  },
+  {
+    "domain": "yandex.ru",
+    "score": 69,
+    "grade": "C",
+    "rawText": "DNS Security Scan: yandex.ru\n========================================\nOverall Score: 69/100 (C)\n3 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      65/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "hicloudcam.com",
+    "score": 65,
+    "grade": "C",
+    "rawText": "DNS Security Scan: hicloudcam.com\n========================================\nOverall Score: 65/100 (C)\n3 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      60/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC"
+  },
+  {
+    "domain": "edgesuite.net",
+    "score": 25,
+    "grade": "F",
+    "rawText": "DNS Security Scan: edgesuite.net\n========================================\nOverall Score: 25/100 (F)\n2 critical issue(s) found requiring immediate attention. Grade: F\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✗ SPF        0/100\n  ✗ DMARC      0/100\n  ⚠ DKIM  "
+  },
+  {
+    "domain": "nginx.com",
+    "score": 57,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: nginx.com\n========================================\nOverall Score: 57/100 (D+)\n4 high-severity issue(s) found. Grade: D+\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✗ SPF        25/100\n  ⚠ DMARC      65/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC    "
+  },
+  {
+    "domain": "nic.ru",
+    "score": 58,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: nic.ru\n========================================\nOverall Score: 58/100 (D+)\n3 high-severity issue(s) found. Grade: D+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ⚠ SPF        75/100\n  ⚠ DMARC      70/100\n  ✗ DKIM       40/100\n  ✗ DNSSEC     0/1"
+  },
+  {
+    "domain": "ui.com",
+    "score": 72,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: ui.com\n========================================\nOverall Score: 72/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC     0/"
+  },
+  {
+    "domain": "mozilla.org",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: mozilla.org\n========================================\nOverall Score: 73/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC   "
+  },
+  {
+    "domain": "root-servers.net",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: root-servers.net\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only,"
+  },
+  {
+    "domain": "office365.com",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: office365.com\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      85/100\n  ∅ DKIM  "
+  },
+  {
+    "domain": "sentry.io",
+    "score": 68,
+    "grade": "C",
+    "rawText": "DNS Security Scan: sentry.io\n========================================\nOverall Score: 68/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ⚠ DKIM       60/100\n  ✗ DNSSEC     0/"
+  },
+  {
+    "domain": "reddit.com",
+    "score": 66,
+    "grade": "C",
+    "rawText": "DNS Security Scan: reddit.com\n========================================\nOverall Score: 66/100 (C)\n1 critical issue(s) found requiring immediate attention. Grade: C\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ⚠ SPF        60/100\n  ✓ DMARC      85/100\n  ⚠ DKIM      "
+  },
+  {
+    "domain": "a2z.com",
+    "score": 70,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: a2z.com\n========================================\nOverall Score: 70/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC     0"
+  },
+  {
+    "domain": "okcdn.ru",
+    "score": 69,
+    "grade": "C",
+    "rawText": "DNS Security Scan: okcdn.ru\n========================================\nOverall Score: 69/100 (C)\n1 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ⚠ DMARC      65/100\n  ∅ DKIM       "
+  },
+  {
+    "domain": "googleadservices.com",
+    "score": 70,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: googleadservices.com\n========================================\nOverall Score: 70/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ✓ DKIM       85/100\n  ✗"
+  },
+  {
+    "domain": "cdninstagram.com",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: cdninstagram.com\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✓ SPF        95/100\n  ∅ DMARC      N/A (web-only, no MX records)\n  ∅ DKI"
+  },
+  {
+    "domain": "unity3d.com",
+    "score": 59,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: unity3d.com\n========================================\nOverall Score: 59/100 (D+)\n3 high-severity issue(s) found. Grade: D+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        85/100\n  ✓ DMARC      80/100\n  ✗ DKIM       30/100\n  ✗ DNSSEC   "
+  },
+  {
+    "domain": "intuit.com",
+    "score": 62,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: intuit.com\n========================================\nOverall Score: 62/100 (D+)\n3 high-severity issue(s) found. Grade: D+\n\nMaturity: Stage 3 — Enforcing (score-capped)\n\nCategory Scores:\n------------------------------\n  ⚠ SPF        75/100\n  ✓ DMARC      85/100\n  ✗ DKIM       30/100"
+  },
+  {
+    "domain": "discord.gg",
+    "score": 72,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: discord.gg\n========================================\nOverall Score: 72/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      70/100\n  ✓ DKIM       85/100\n  ✗ DNSSEC   "
+  },
+  {
+    "domain": "blogspot.com",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: blogspot.com\n========================================\nOverall Score: 73/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      80/100\n  ∅ DKIM "
+  },
+  {
+    "domain": "vedcdnlb.com",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: vedcdnlb.com\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no "
+  },
+  {
+    "domain": "b-cdn.net",
+    "score": 29,
+    "grade": "F",
+    "rawText": "DNS Security Scan: b-cdn.net\n========================================\nOverall Score: 29/100 (F)\n2 critical issue(s) found requiring immediate attention. Grade: F\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✗ SPF        0/100\n  ✗ DMARC      0/100\n  ✓ DKIM      "
+  },
+  {
+    "domain": "snapchat.com",
+    "score": 72,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: snapchat.com\n========================================\nOverall Score: 72/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC "
+  },
+  {
+    "domain": "amazonvideo.com",
+    "score": 74,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: amazonvideo.com\n========================================\nOverall Score: 74/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      70/100\n  ✓ DKIM       100/100\n  ✗ DNS"
+  },
+  {
+    "domain": "t.me",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: t.me\n========================================\nOverall Score: 73/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      85/100\n  ∅ DKIM       N/"
+  },
+  {
+    "domain": "criteo.com",
+    "score": 68,
+    "grade": "C",
+    "rawText": "DNS Security Scan: criteo.com\n========================================\nOverall Score: 68/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ✗ DKIM       45/100\n  ✗ DNSSEC     0"
+  },
+  {
+    "domain": "europa.eu",
+    "score": 62,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: europa.eu\n========================================\nOverall Score: 62/100 (D+)\n1 critical issue(s) found requiring immediate attention. Grade: D+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✗ DMARC      0/100\n  ✓ DKIM  "
+  },
+  {
+    "domain": "github.io",
+    "score": 81,
+    "grade": "B",
+    "rawText": "DNS Security Scan: github.io\n========================================\nOverall Score: 81/100 (B)\n2 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no MX "
+  },
+  {
+    "domain": "cdn77.org",
+    "score": 26,
+    "grade": "F",
+    "rawText": "DNS Security Scan: cdn77.org\n========================================\nOverall Score: 26/100 (F)\n2 critical issue(s) found requiring immediate attention. Grade: F\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✗ SPF        0/100\n  ✗ DMARC      0/100\n  ⚠ DKIM      "
+  },
+  {
+    "domain": "vk.com",
+    "score": 57,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: vk.com\n========================================\nOverall Score: 57/100 (D+)\n1 critical issue(s) found requiring immediate attention. Grade: D+\n\nMaturity: Stage 3 — Enforcing (score-capped)\n\nCategory Scores:\n------------------------------\n  ✗ SPF        0/100\n  ✓ DMARC      85/100\n "
+  },
+  {
+    "domain": "dropbox.com",
+    "score": 74,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: dropbox.com\n========================================\nOverall Score: 74/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ✓ DKIM       80/100\n  ✗ DNSSEC  "
+  },
+  {
+    "domain": "app-measurement.com",
+    "score": 71,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: app-measurement.com\n========================================\nOverall Score: 71/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      80/100\n  "
+  },
+  {
+    "domain": "dns.google",
+    "score": 83,
+    "grade": "B+",
+    "rawText": "DNS Security Scan: dns.google\n========================================\nOverall Score: 83/100 (B+)\n1 high-severity issue(s) found. Grade: B+\n\nMaturity: Stage 1 — DNS-Only\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      80/100\n  ∅ DKIM      "
+  },
+  {
+    "domain": "apache.org",
+    "score": 70,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: apache.org\n========================================\nOverall Score: 70/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 1 — Basic\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      50/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC     0"
+  },
+  {
+    "domain": "amazon.dev",
+    "score": 66,
+    "grade": "C",
+    "rawText": "DNS Security Scan: amazon.dev\n========================================\nOverall Score: 66/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ⚠ DMARC      50/100\n  ∅ DKIM     "
+  },
+  {
+    "domain": "gravatar.com",
+    "score": 74,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: gravatar.com\n========================================\nOverall Score: 74/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC "
+  },
+  {
+    "domain": "outlook.com",
+    "score": 76,
+    "grade": "B",
+    "rawText": "DNS Security Scan: outlook.com\n========================================\nOverall Score: 76/100 (B)\n3 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      65/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC  "
+  },
+  {
+    "domain": "amazon-adsystem.com",
+    "score": 71,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: amazon-adsystem.com\n========================================\nOverall Score: 71/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ⚠ DMARC      70/100\n  "
+  },
+  {
+    "domain": "spo-msedge.net",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: spo-msedge.net\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, n"
+  },
+  {
+    "domain": "msftncsi.com",
+    "score": 71,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: msftncsi.com\n========================================\nOverall Score: 71/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ⚠ DMARC      65/100\n  ∅ DKIM "
+  },
+  {
+    "domain": "mailinabox.email",
+    "score": 77,
+    "grade": "B",
+    "rawText": "DNS Security Scan: mailinabox.email\n========================================\nOverall Score: 77/100 (B)\n2 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      70/100\n  ✓ DKIM       100/100\n  ✗ DNSSE"
+  },
+  {
+    "domain": "app-analytics-services.com",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: app-analytics-services.com\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A "
+  },
+  {
+    "domain": "bytefcdn-oversea.com",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: bytefcdn-oversea.com\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-o"
+  },
+  {
+    "domain": "registrar-servers.com",
+    "score": 48,
+    "grade": "F",
+    "rawText": "DNS Security Scan: registrar-servers.com\n========================================\nOverall Score: 48/100 (F)\n1 critical issue(s) found requiring immediate attention. Grade: F\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✓ SPF        95/100\n  ✗ DMARC      0/100\n "
+  },
+  {
+    "domain": "steamserver.net",
+    "score": 77,
+    "grade": "B",
+    "rawText": "DNS Security Scan: steamserver.net\n========================================\nOverall Score: 77/100 (B)\n2 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      100/100\n  ⚠ DKIM       75/100\n  ✗ DNSSE"
+  },
+  {
+    "domain": "kaspersky.com",
+    "score": 66,
+    "grade": "C",
+    "rawText": "DNS Security Scan: kaspersky.com\n========================================\nOverall Score: 66/100 (C)\n3 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ⚠ DKIM       60/100\n  ✗ DNSSEC  "
+  },
+  {
+    "domain": "epicgames.com",
+    "score": 62,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: epicgames.com\n========================================\nOverall Score: 62/100 (D+)\n3 high-severity issue(s) found. Grade: D+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ✗ DKIM       30/100\n  ✗ DNSSEC"
+  },
+  {
+    "domain": "forms.gle",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: forms.gle\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no MX "
+  },
+  {
+    "domain": "azurefd.net",
+    "score": 80,
+    "grade": "B",
+    "rawText": "DNS Security Scan: azurefd.net\n========================================\nOverall Score: 80/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no M"
+  },
+  {
+    "domain": "xiaomi.com",
+    "score": 70,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: xiaomi.com\n========================================\nOverall Score: 70/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC   "
+  },
+  {
+    "domain": "one.one",
+    "score": 91,
+    "grade": "A",
+    "rawText": "DNS Security Scan: one.one\n========================================\nOverall Score: 91/100 (A)\n1 high-severity issue(s) found. Grade: A\n\nMaturity: Stage 1 — DNS-Only\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no MX recor"
+  },
+  {
+    "domain": "archive.org",
+    "score": 62,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: archive.org\n========================================\nOverall Score: 62/100 (D+)\n3 high-severity issue(s) found. Grade: D+\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✗ SPF        45/100\n  ⚠ DMARC      60/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC "
+  },
+  {
+    "domain": "applovin.com",
+    "score": 56,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: applovin.com\n========================================\nOverall Score: 56/100 (D+)\n1 critical issue(s) found requiring immediate attention. Grade: D+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ⚠ SPF        60/100\n  ✓ DMARC      80/100\n  ✗ DKIM "
+  },
+  {
+    "domain": "dnsowl.com",
+    "score": 26,
+    "grade": "F",
+    "rawText": "DNS Security Scan: dnsowl.com\n========================================\nOverall Score: 26/100 (F)\n2 critical issue(s) found requiring immediate attention. Grade: F\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✗ SPF        0/100\n  ✗ DMARC      0/100\n  ⚠ DKIM     "
+  },
+  {
+    "domain": "trbcdn.net",
+    "score": 75,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: trbcdn.net\n========================================\nOverall Score: 75/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no "
+  },
+  {
+    "domain": "msftconnecttest.com",
+    "score": 74,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: msftconnecttest.com\n========================================\nOverall Score: 74/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      85/100\n  "
+  },
+  {
+    "domain": "f5.com",
+    "score": 70,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: f5.com\n========================================\nOverall Score: 70/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ✗ DKIM       45/100\n  ✗ DNSSEC     0/1"
+  },
+  {
+    "domain": "ax-msedge.net",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: ax-msedge.net\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no"
+  },
+  {
+    "domain": "nytimes.com",
+    "score": 68,
+    "grade": "C",
+    "rawText": "DNS Security Scan: nytimes.com\n========================================\nOverall Score: 68/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ⚠ DKIM       60/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "nih.gov",
+    "score": 61,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: nih.gov\n========================================\nOverall Score: 61/100 (D+)\n1 high-severity issue(s) found. Grade: D+\n\nMaturity: Stage 3 — Enforcing (score-capped)\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ✗ DKIM       30/100\n "
+  },
+  {
+    "domain": "tumblr.com",
+    "score": 61,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: tumblr.com\n========================================\nOverall Score: 61/100 (D+)\n3 high-severity issue(s) found. Grade: D+\n\nMaturity: Stage 3 — Enforcing (score-capped)\n\nCategory Scores:\n------------------------------\n  ✗ SPF        15/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100"
+  },
+  {
+    "domain": "ggpht.com",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: ggpht.com\n========================================\nOverall Score: 73/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      80/100\n  ∅ DKIM    "
+  },
+  {
+    "domain": "3gppnetwork.org",
+    "score": 48,
+    "grade": "F",
+    "rawText": "DNS Security Scan: 3gppnetwork.org\n========================================\nOverall Score: 48/100 (F)\n1 critical issue(s) found requiring immediate attention. Grade: F\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✓ SPF        85/100\n  ✗ DMARC      0/100\n  ✓ DKI"
+  },
+  {
+    "domain": "godaddy.com",
+    "score": 72,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: godaddy.com\n========================================\nOverall Score: 72/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC  "
+  },
+  {
+    "domain": "triplinkintl.com",
+    "score": 62,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: triplinkintl.com\n========================================\nOverall Score: 62/100 (D+)\n4 high-severity issue(s) found. Grade: D+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✗ DMARC      45/100\n  ⚠ DKIM       75/100\n  ✗ DNS"
+  },
+  {
+    "domain": "paypal.com",
+    "score": 77,
+    "grade": "B",
+    "rawText": "DNS Security Scan: paypal.com\n========================================\nOverall Score: 77/100 (B)\n2 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ⚠ SPF        75/100\n  ✓ DMARC      85/100\n  ✗ DKIM       45/100\n  ✓ DNSSEC     10"
+  },
+  {
+    "domain": "shopify.com",
+    "score": 72,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: shopify.com\n========================================\nOverall Score: 72/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC  "
+  },
+  {
+    "domain": "miit.gov.cn",
+    "score": 26,
+    "grade": "F",
+    "rawText": "DNS Security Scan: miit.gov.cn\n========================================\nOverall Score: 26/100 (F)\n1 critical issue(s) found requiring immediate attention. Grade: F\n\nMaturity: Stage 2 — Monitoring (score-capped)\n\nCategory Scores:\n------------------------------\n  ✗ SPF        0/100\n  ✗ DMARC      0/10"
+  },
+  {
+    "domain": "aliyuncs.com",
+    "score": 72,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: aliyuncs.com\n========================================\nOverall Score: 72/100 (C+)\n1 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ⚠ DMARC      70/100\n  ∅ DKIM "
+  },
+  {
+    "domain": "wac-msedge.net",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: wac-msedge.net\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, n"
+  },
+  {
+    "domain": "discord.com",
+    "score": 72,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: discord.com\n========================================\nOverall Score: 72/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      70/100\n  ✗ DKIM       45/100\n  ⚠ DNSSEC   "
+  },
+  {
+    "domain": "azurewebsites.net",
+    "score": 80,
+    "grade": "B",
+    "rawText": "DNS Security Scan: azurewebsites.net\n========================================\nOverall Score: 80/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only"
+  },
+  {
+    "domain": "cdn-apple.com",
+    "score": 54,
+    "grade": "D",
+    "rawText": "DNS Security Scan: cdn-apple.com\n========================================\nOverall Score: 54/100 (D)\n1 critical issue(s) found requiring immediate attention. Grade: D\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✗ DMARC      0/100\n  ✓ DKIM"
+  },
+  {
+    "domain": "t-msedge.net",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: t-msedge.net\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no "
+  },
+  {
+    "domain": "nflxso.net",
+    "score": 80,
+    "grade": "B",
+    "rawText": "DNS Security Scan: nflxso.net\n========================================\nOverall Score: 80/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no MX"
+  },
+  {
+    "domain": "webex.com",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: webex.com\n========================================\nOverall Score: 73/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC    "
+  },
+  {
+    "domain": "reg.ru",
+    "score": 70,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: reg.ru\n========================================\nOverall Score: 70/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC     0/"
+  },
+  {
+    "domain": "tiktokcdn-us.com",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: tiktokcdn-us.com\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only,"
+  },
+  {
+    "domain": "vkuserphoto.ru",
+    "score": 55,
+    "grade": "D",
+    "rawText": "DNS Security Scan: vkuserphoto.ru\n========================================\nOverall Score: 55/100 (D)\n1 critical issue(s) found requiring immediate attention. Grade: D\n\nMaturity: Stage 3 — Enforcing (score-capped)\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✗ DMARC      "
+  },
+  {
+    "domain": "example.com",
+    "score": 82,
+    "grade": "B+",
+    "rawText": "DNS Security Scan: example.com\n========================================\nOverall Score: 82/100 (B+)\n2 high-severity issue(s) found. Grade: B+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      85/100\n  ∅ DKIM     "
+  },
+  {
+    "domain": "adobe.io",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: adobe.io\n========================================\nOverall Score: 78/100 (B)\n2 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ✓ DMARC      95/100\n  ∅ DKIM       "
+  },
+  {
+    "domain": "aws.dev",
+    "score": 66,
+    "grade": "C",
+    "rawText": "DNS Security Scan: aws.dev\n========================================\nOverall Score: 66/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ⚠ DMARC      50/100\n  ∅ DKIM       N"
+  },
+  {
+    "domain": "soundcloud.com",
+    "score": 70,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: soundcloud.com\n========================================\nOverall Score: 70/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      90/100\n  ✗ DKIM       45/100\n  ✗ DNSSEC"
+  },
+  {
+    "domain": "flickr.com",
+    "score": 76,
+    "grade": "B",
+    "rawText": "DNS Security Scan: flickr.com\n========================================\nOverall Score: 76/100 (B)\n3 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC     "
+  },
+  {
+    "domain": "cnn.com",
+    "score": 69,
+    "grade": "C",
+    "rawText": "DNS Security Scan: cnn.com\n========================================\nOverall Score: 69/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       60/100\n  ✗ DNSSEC     0/1"
+  },
+  {
+    "domain": "medium.com",
+    "score": 68,
+    "grade": "C",
+    "rawText": "DNS Security Scan: medium.com\n========================================\nOverall Score: 68/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      90/100\n  ✗ DKIM       45/100\n  ✗ DNSSEC     0"
+  },
+  {
+    "domain": "ebay.com",
+    "score": 63,
+    "grade": "C",
+    "rawText": "DNS Security Scan: ebay.com\n========================================\nOverall Score: 63/100 (C)\n4 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ⚠ SPF        75/100\n  ✓ DMARC      85/100\n  ✗ DKIM       30/100\n  ✗ DNSSEC     0/10"
+  },
+  {
+    "domain": "macromedia.com",
+    "score": 68,
+    "grade": "C",
+    "rawText": "DNS Security Scan: macromedia.com\n========================================\nOverall Score: 68/100 (C)\n1 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      90/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC"
+  },
+  {
+    "domain": "w3.org",
+    "score": 71,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: w3.org\n========================================\nOverall Score: 71/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✓ SPF        80/100\n  ⚠ DMARC      65/100\n  ✓ DKIM       95/100\n  ✗ DNSSEC     0/"
+  },
+  {
+    "domain": "vungle.com",
+    "score": 57,
+    "grade": "D+",
+    "rawText": "DNS Security Scan: vungle.com\n========================================\nOverall Score: 57/100 (D+)\n3 high-severity issue(s) found. Grade: D+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✗ SPF        15/100\n  ⚠ DMARC      55/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC   "
+  },
+  {
+    "domain": "akamaized.net",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: akamaized.net\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no"
+  },
+  {
+    "domain": "avast.com",
+    "score": 70,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: avast.com\n========================================\nOverall Score: 70/100 (C+)\n3 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      70/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC    "
+  },
+  {
+    "domain": "azureedge.net",
+    "score": 80,
+    "grade": "B",
+    "rawText": "DNS Security Scan: azureedge.net\n========================================\nOverall Score: 80/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no"
+  },
+  {
+    "domain": "taboola.com",
+    "score": 83,
+    "grade": "B+",
+    "rawText": "DNS Security Scan: taboola.com\n========================================\nOverall Score: 83/100 (B+)\n1 high-severity issue(s) found. Grade: B+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       60/100\n  ✓ DNSSEC   "
+  },
+  {
+    "domain": "rubiconproject.com",
+    "score": 49,
+    "grade": "F",
+    "rawText": "DNS Security Scan: rubiconproject.com\n========================================\nOverall Score: 49/100 (F)\n5 high-severity issue(s) found. Grade: F\n\nMaturity: Stage 2 — Monitoring (score-capped)\n\nCategory Scores:\n------------------------------\n  ✗ SPF        0/100\n  ⚠ DMARC      65/100\n  ✗ DKIM       "
+  },
+  {
+    "domain": "userapi.com",
+    "score": 52,
+    "grade": "D",
+    "rawText": "DNS Security Scan: userapi.com\n========================================\nOverall Score: 52/100 (D)\n2 high-severity issue(s) found. Grade: D\n\nMaturity: Stage 3 — Enforcing\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✗ DMARC      0/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC    "
+  },
+  {
+    "domain": "theguardian.com",
+    "score": 77,
+    "grade": "B",
+    "rawText": "DNS Security Scan: theguardian.com\n========================================\nOverall Score: 77/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ✓ DMARC      80/100\n  ✓ DKIM       100/100\n  ✗ DNSSEC"
+  },
+  {
+    "domain": "nominetdns.uk",
+    "score": 90,
+    "grade": "A",
+    "rawText": "DNS Security Scan: nominetdns.uk\n========================================\nOverall Score: 90/100 (A)\n13 issue(s) found. Grade: A\n\nMaturity: Stage 1 — DNS-Only\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no MX records)\n  ∅"
+  },
+  {
+    "domain": "ttdns2.com",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: ttdns2.com\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no MX"
+  },
+  {
+    "domain": "spov-msedge.net",
+    "score": 78,
+    "grade": "B",
+    "rawText": "DNS Security Scan: spov-msedge.net\n========================================\nOverall Score: 78/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, "
+  },
+  {
+    "domain": "fastly-edge.com",
+    "score": 80,
+    "grade": "B",
+    "rawText": "DNS Security Scan: fastly-edge.com\n========================================\nOverall Score: 80/100 (B)\n1 high-severity issue(s) found. Grade: B\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, "
+  },
+  {
+    "domain": "wildberries.ru",
+    "score": 73,
+    "grade": "C+",
+    "rawText": "DNS Security Scan: wildberries.ru\n========================================\nOverall Score: 73/100 (C+)\n2 high-severity issue(s) found. Grade: C+\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ✓ SPF        100/100\n  ⚠ DMARC      75/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC"
+  },
+  {
+    "domain": "shifen.com",
+    "score": 17,
+    "grade": "F",
+    "rawText": "DNS Security Scan: shifen.com\n========================================\nOverall Score: 17/100 (F)\n2 critical issue(s) found requiring immediate attention. Grade: F\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ✗ SPF        0/100\n  ✗ DMARC      0/100\n  ⚠ DKIM     "
+  },
+  {
+    "domain": "oracle.com",
+    "score": 69,
+    "grade": "C",
+    "rawText": "DNS Security Scan: oracle.com\n========================================\nOverall Score: 69/100 (C)\n2 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 4 — Hardened\n\nCategory Scores:\n------------------------------\n  ⚠ SPF        75/100\n  ✓ DMARC      85/100\n  ⚠ DKIM       70/100\n  ✗ DNSSEC     0/"
+  },
+  {
+    "domain": "telekom.net",
+    "score": 68,
+    "grade": "C",
+    "rawText": "DNS Security Scan: telekom.net\n========================================\nOverall Score: 68/100 (C)\n3 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 2 — Monitoring\n\nCategory Scores:\n------------------------------\n  ✓ SPF        95/100\n  ⚠ DMARC      65/100\n  ⚠ DKIM       75/100\n  ✗ DNSSEC    "
+  },
+  {
+    "domain": "msedge.net",
+    "score": 69,
+    "grade": "C",
+    "rawText": "DNS Security Scan: msedge.net\n========================================\nOverall Score: 69/100 (C)\n1 high-severity issue(s) found. Grade: C\n\nMaturity: Stage 0 — Unprotected\n\nCategory Scores:\n------------------------------\n  ∅ SPF        N/A (web-only, no MX records)\n  ∅ DMARC      N/A (web-only, no MX"
+  }
+]
