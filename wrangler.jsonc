@@ -60,6 +60,10 @@
   // Optional auth: leave empty for open mode.
   "vars": {
     "BV_API_KEY": "",
+    // OAuth 2.1 HS256 signing secret — leave empty in this file; set via
+    //   npx wrangler secret put OAUTH_SIGNING_SECRET
+    // The token endpoint returns server_error 500 until this is populated.
+    "OAUTH_SIGNING_SECRET": "",
     "PROVIDER_SIGNATURES_URL": "",
     // Analytics alerting — all optional. CF_ANALYTICS_TOKEN is a secret
     // (set via: npx wrangler secret put CF_ANALYTICS_TOKEN).
