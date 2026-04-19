@@ -297,7 +297,7 @@ describe('trial-keys', () => {
 			const { rawKey, hash } = await createTrialKey(kv, { label: 'Cascade Test' });
 
 			// resolveTier should find the trial key (step 2) after cache miss (step 1)
-			const result = await resolveTier(rawKey, { RATE_LIMIT: kv });
+			const result = await resolveTier(rawKey, { RATE_LIMIT: kv }, undefined, 'https://example.com/mcp');
 			expect(result.authenticated).toBe(true);
 			expect(result.tier).toBe('developer');
 			expect(result.keyHash).toBe(hash);
@@ -311,7 +311,7 @@ describe('trial-keys', () => {
 			const { createTrialKey } = await import('../src/lib/trial-keys');
 			const { rawKey, hash } = await createTrialKey(kv, { label: 'Cache TTL Test' });
 
-			await resolveTier(rawKey, { RATE_LIMIT: kv });
+			await resolveTier(rawKey, { RATE_LIMIT: kv }, undefined, 'https://example.com/mcp');
 
 			// Should have cached the tier result
 			const cached = store.get(`tier:${hash}`);
@@ -343,7 +343,7 @@ describe('trial-keys', () => {
 
 			store.set(`trial:${tokenHash}`, { value: JSON.stringify(expiredRecord) });
 
-			const result = await resolveTier('expired-token', { RATE_LIMIT: kv });
+			const result = await resolveTier('expired-token', { RATE_LIMIT: kv }, undefined, 'https://example.com/mcp');
 			expect(result.authenticated).toBe(false);
 		});
 
@@ -351,10 +351,15 @@ describe('trial-keys', () => {
 			const { resolveTier } = await import('../src/lib/tier-auth');
 			const kv = createMockKv();
 
-			const result = await resolveTier('my-static-key', {
-				RATE_LIMIT: kv,
-				BV_API_KEY: 'my-static-key',
-			});
+			const result = await resolveTier(
+				'my-static-key',
+				{
+					RATE_LIMIT: kv,
+					BV_API_KEY: 'my-static-key',
+				},
+				undefined,
+				'https://example.com/mcp',
+			);
 			expect(result.authenticated).toBe(true);
 			expect(result.tier).toBe('owner');
 		});
