@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-04-19
+
+### Changed
+- **Dev dependencies**: bumped `wrangler` to `^4.83.0`.
+- **Repo tooling**: added `.intent/` workspace config and new harness scripts (`scripts/context-usage-test.py`, `scripts/conversation-sim.py`, `scripts/output-usage-test.py`) plus tranco scan-result snapshots under `scripts/`. Dev-only; no runtime or published-package impact.
+- **`.gitignore`**: removed duplicate `.mcp.json` entry.
+
 ## [2.9.0] - 2026-04-19
 
 ### Added
