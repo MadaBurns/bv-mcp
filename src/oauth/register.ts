@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: BUSL-1.1
+import type { Context } from 'hono';
+import { RegisterRequestSchema } from '../schemas/oauth';
+import { OAUTH_REDIRECT_URI_ALLOWLIST } from '../lib/config';
+import { putClient } from './storage';
+
+const MAX_BODY_BYTES = 4 * 1024;
+
+/**
+ * RFC 7591 Dynamic Client Registration endpoint. Accepts a JSON body describing a client's
+ * redirect URIs and metadata, persists the record to KV, and returns an issued `client_id`.
+ * Safety: enforces `application/json` Content-Type, a 4 KB body cap, and a strict redirect
+ * URI allowlist (`OAUTH_REDIRECT_URI_ALLOWLIST`) before any write. The `client_id` is a
+ * UUID v4 generated via Web Crypto (`crypto.randomUUID`) — unguessable and globally unique.
+ */
+export async function handleRegister(c: Context): Promise<Response> {
+	// TODO(phase-10): add per-IP rate limiting before public exposure
+	const ct = c.req.header('content-type') ?? '';
+	if (!ct.toLowerCase().includes('application/json')) {
+		return c.json({ error: 'invalid_request', error_description: 'Content-Type must be application/json' }, 415);
+	}
+	const raw = await c.req.raw.clone().text();
+	if (new TextEncoder().encode(raw).byteLength > MAX_BODY_BYTES) {
+		return c.json({ error: 'invalid_request', error_description: 'Body exceeds 4 KB' }, 413);
+	}
+
+	let parsed;
+	try {
+		parsed = RegisterRequestSchema.parse(JSON.parse(raw));
+	} catch {
+		return c.json({ error: 'invalid_client_metadata', error_description: 'Request body failed validation' }, 400);
+	}
+
+	for (const uri of parsed.redirect_uris) {
+		if (!OAUTH_REDIRECT_URI_ALLOWLIST.some((re) => re.test(uri))) {
+			return c.json({ error: 'invalid_redirect_uri', error_description: `redirect_uri not allowed: ${uri}` }, 400);
+		}
+	}
+
+	const client_id = crypto.randomUUID();
+	const rec = {
+		client_id,
+		client_id_issued_at: Math.floor(Date.now() / 1000),
+		redirect_uris: parsed.redirect_uris,
+		client_name: parsed.client_name,
+		software_id: parsed.software_id,
+		software_version: parsed.software_version,
+	};
+	const kv = (c.env as { SESSION_STORE: KVNamespace }).SESSION_STORE;
+	await putClient(kv, rec);
+
+	return c.json(
+		{
+			client_id,
+			client_id_issued_at: rec.client_id_issued_at,
+			redirect_uris: rec.redirect_uris,
+			token_endpoint_auth_method: 'none',
+			grant_types: ['authorization_code'],
+			response_types: ['code'],
+		},
+		201,
+	);
+}
