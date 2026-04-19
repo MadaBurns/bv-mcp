@@ -85,7 +85,7 @@
 		"typescript": "^5.5.2",
 		"typescript-eslint": "^8.56.1",
 		"vitest": "^4.1.0",
-		"wrangler": "^4.77.0"
+		"wrangler": "^4.83.0"
 	},
 	"dependencies": {
 		"@blackveil/dns-checks": "^1.0.4",
