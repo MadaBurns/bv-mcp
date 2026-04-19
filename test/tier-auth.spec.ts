@@ -14,7 +14,7 @@ describe('tier-auth KV cache validation', () => {
 			delete: vi.fn(),
 		} as unknown as KVNamespace;
 
-		const result = await resolveTier('test-token', { RATE_LIMIT: kv });
+		const result = await resolveTier('test-token', { RATE_LIMIT: kv }, undefined, 'https://example.com/mcp');
 		expect(result.authenticated).toBe(true);
 		expect(result.tier).toBe('enterprise');
 	});
@@ -29,7 +29,7 @@ describe('tier-auth KV cache validation', () => {
 		} as unknown as KVNamespace;
 
 		// No service binding, no BV_API_KEY — should fall through to unauthenticated
-		const result = await resolveTier('test-token', { RATE_LIMIT: kv });
+		const result = await resolveTier('test-token', { RATE_LIMIT: kv }, undefined, 'https://example.com/mcp');
 		expect(result.authenticated).toBe(false);
 		// Bad KV entry should be deleted
 		expect(kv.delete).toHaveBeenCalled();
@@ -44,7 +44,7 @@ describe('tier-auth KV cache validation', () => {
 			delete: vi.fn(),
 		} as unknown as KVNamespace;
 
-		const result = await resolveTier('test-token', { RATE_LIMIT: kv });
+		const result = await resolveTier('test-token', { RATE_LIMIT: kv }, undefined, 'https://example.com/mcp');
 		expect(result.authenticated).toBe(false);
 		expect(kv.delete).toHaveBeenCalled();
 	});
@@ -58,7 +58,7 @@ describe('tier-auth KV cache validation', () => {
 			delete: vi.fn(),
 		} as unknown as KVNamespace;
 
-		const result = await resolveTier('test-token', { RATE_LIMIT: kv });
+		const result = await resolveTier('test-token', { RATE_LIMIT: kv }, undefined, 'https://example.com/mcp');
 		expect(result.authenticated).toBe(false);
 		expect(kv.delete).toHaveBeenCalled();
 	});
@@ -72,7 +72,7 @@ describe('tier-auth KV cache validation', () => {
 			delete: vi.fn(),
 		} as unknown as KVNamespace;
 
-		const result = await resolveTier('test-token', { RATE_LIMIT: kv });
+		const result = await resolveTier('test-token', { RATE_LIMIT: kv }, undefined, 'https://example.com/mcp');
 		expect(result.authenticated).toBe(false);
 		expect(kv.delete).toHaveBeenCalled();
 	});
@@ -86,7 +86,7 @@ describe('tier-auth KV cache validation', () => {
 			delete: vi.fn(),
 		} as unknown as KVNamespace;
 
-		const result = await resolveTier('test-token', { RATE_LIMIT: kv });
+		const result = await resolveTier('test-token', { RATE_LIMIT: kv }, undefined, 'https://example.com/mcp');
 		expect(result.authenticated).toBe(false);
 		// Valid revokedAt structure, should NOT be deleted
 		expect(kv.delete).not.toHaveBeenCalled();
@@ -103,7 +103,7 @@ describe('tier-auth KV cache validation', () => {
 				delete: vi.fn(),
 			} as unknown as KVNamespace;
 
-			const result = await resolveTier(`token-for-${tier}`, { RATE_LIMIT: kv });
+			const result = await resolveTier(`token-for-${tier}`, { RATE_LIMIT: kv }, undefined, 'https://example.com/mcp');
 			expect(result.authenticated).toBe(true);
 			expect(result.tier).toBe(tier);
 		}
