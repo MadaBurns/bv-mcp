@@ -27,7 +27,7 @@ export async function handleRegister(c: Context): Promise<Response> {
 	let parsed;
 	try {
 		parsed = RegisterRequestSchema.parse(JSON.parse(raw));
-	} catch (err) {
+	} catch {
 		return c.json({ error: 'invalid_client_metadata', error_description: 'Request body failed validation' }, 400);
 	}
 
