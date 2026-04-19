@@ -164,7 +164,7 @@ sequenceDiagram
         TH->>TH: Format response (compact/full)
         TH-->>C: MCP text content
     else tools/list
-        DI-->>C: TOOLS array (44 tools)
+        DI-->>C: TOOLS array (51 tools)
     end
 ```
 

@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What is this?
 
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
-Exposes 41 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
+Exposes 51 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
 **Version**: 2.1.18 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
 
@@ -142,7 +142,7 @@ packages/dns-checks/     — @blackveil/dns-checks (runtime-agnostic core librar
 
 - **`packages/dns-checks/`** (`@blackveil/dns-checks`): Runtime-agnostic core library containing DNS validation logic. No Cloudflare dependencies. Contains 16 core check functions (SPF, DMARC, DKIM, etc.) and scoring engine. Published as separate npm package for reuse in other environments.
 
-- **`src/tools/`**: MCP protocol wrappers with Cloudflare infrastructure. Contains 41 MCP tools including the 16 check wrappers plus orchestration tools (scan_domain, explain_finding, etc.). Depends on `@blackveil/dns-checks` package.
+- **`src/tools/`**: MCP protocol wrappers with Cloudflare infrastructure. Contains 51 MCP tools including the 16 check wrappers plus orchestration tools (scan_domain, explain_finding, etc.). Depends on `@blackveil/dns-checks` package.
 
 **When to Add to Each Layer**:
 - **dns-checks package**: New DNS validation logic, scoring algorithms, or check implementations that could be reused outside Cloudflare Workers
@@ -401,7 +401,9 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 | Binding | Type | Purpose |
 |---------|------|---------|
 | `BV_API_KEY` | Secret | Static bearer auth — resolves as `owner` tier |
-| `OWNER_ALLOW_IPS` | var | Comma-separated IPs allowed for `owner` tier (key + wrong IP → `partner`) |
+| `OWNER_ALLOW_IPS` | var | Comma-separated IPs allowed for `owner` tier (key + wrong IP → `partner`). Also enforced at `/oauth/authorize` consent step. |
+| `OAUTH_SIGNING_SECRET` | Secret | HS256 signing key (≥32 bytes). Upload via `wrangler secret put`. `/oauth/token` returns `server_error` 500 until set. |
+| `OAUTH_ISSUER` | var | Optional issuer override (e.g. `https://dns-mcp.blackveilsecurity.com`). Falls back to request Host — set in prod to harden against Host-header spoofing of discovery metadata. |
 | `ALLOWED_ORIGINS` | var | Comma-separated allowed Origins |
 | `RATE_LIMIT` | KV | Per-IP rate counters (**required prod**) |
 | `SCAN_CACHE` | KV | 5-min TTL result cache (**required prod**) |
