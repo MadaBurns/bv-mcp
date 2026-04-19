@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Security
+- **OAuth 2.1 enabled in production** — `OAUTH_SIGNING_SECRET` (HS256, 32-byte random hex) uploaded via `wrangler secret put`, and `OAUTH_ISSUER=https://dns-mcp.blackveilsecurity.com` pinned as a hardening var against Host-header spoofing of discovery metadata. Discovery endpoints at `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource` are live and return the pinned issuer. Rotation runbook: `scripts/oauth/README.md`.
+
+### Added
+- **`scripts/oauth/prod-probe.py`** — Two-mode production OAuth probe. `--mode=smoke` POSTs a full junk payload to `/oauth/token` and asserts `400 invalid_grant` (verifies routing past the Zod/rate-limit gates). `--mode=e2e` runs the full `register → authorize → token → /mcp` flow against a live owner `BV_API_KEY` and asserts ≥40 tools in `tools/list`.
+- **`scripts/oauth/README.md`** — Rotation and rollback runbook for the OAuth signing secret.
+
 ## [2.9.1] - 2026-04-19
 
 ### Changed
