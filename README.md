@@ -199,6 +199,6 @@ If you discover a vulnerability in a third-party domain, please follow [coordina
 
 Built and maintained by [**BLACKVEIL**](https://blackveilsecurity.com) — NZ-owned cybersecurity consultancy.
 
-BUSL-1.1 License (converts to MIT on 2030-03-17)
+[Privacy Policy](https://www.blackveilsecurity.com/privacy) · [License](LICENSE) (BUSL-1.1 → MIT on 2030-03-17)
 
 </div>
