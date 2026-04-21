@@ -6,7 +6,26 @@
     "url": "https://github.com/MadaBurns/bv-mcp",
     "source": "github"
   },
-  "version": "2.9.1",
+  "version": "2.9.2",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "blackveil-dns",
+      "version": "2.9.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "description": "Blackveil API key (optional — free tier works without)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "BV_API_KEY"
+        }
+      ]
+    }
+  ],
   "remotes": [
     {
       "type": "streamable-http",
