@@ -241,3 +241,34 @@ jobs:
             --title "v$VERSION" \
             --notes "$CHANGELOG_BODY" \
             --verify-tag
+
+  publish-registry:
+    name: Publish to MCP Registry
+    needs: [validate, version-bump]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check registry token
+        env:
+          MCP_TOKEN: ${{ secrets.MCP_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$MCP_TOKEN" ]; then
+            echo "::warning::MCP_REGISTRY_TOKEN not configured — skipping registry publish"
+            echo "skip=true" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v4
+        if: env.skip != 'true'
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        if: env.skip != 'true'
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Publish to registry
+        if: env.skip != 'true'
+        run: npx mcp-publisher publish
+        env:
+          MCP_REGISTRY_TOKEN: ${{ secrets.MCP_REGISTRY_TOKEN }}
