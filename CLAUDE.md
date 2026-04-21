@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
 Exposes 51 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
-**Version**: 2.1.18 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync.
+**Version**: 2.9.2 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync. Listed on the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.blackveilsecurity/dns`.
 
 ## Commands
 
@@ -332,6 +332,10 @@ All tool arguments validated via Zod schemas (`src/schemas/tool-args.ts`) before
 
 Public docs (`docs/client-setup.md`, `docs/scoring.md`, etc.) are committable. Override with `--no-verify`.
 
+## MCP Registry
+
+Listed as `com.blackveilsecurity/dns` on the [MCP Registry](https://registry.modelcontextprotocol.io). `server.json` at the repo root is the registry manifest (pushed by `publish.yml` on version tags). `package.json` includes `mcpName: "com.blackveilsecurity/dns"` for registry resolution.
+
 ## Smithery
 
 The server is listed on Smithery at `MadaBurns/bv-mcp` (proxy URL: `https://bv-mcp--madaburns.run.tools`).
@@ -367,7 +371,7 @@ git push origin main
 git tag v2.6.8 && git push origin v2.6.8
 ```
 
-Pipeline: validate (test/typecheck/lint/audit) → sync version to tag (no-op when pre-bumped) → npm publish (provenance) → Cloudflare Workers deploy → GitHub Release with changelog.
+Pipeline: validate (test/typecheck/lint/audit) → sync version to tag (no-op when pre-bumped) → npm publish (provenance) → Cloudflare Workers deploy → MCP Registry publish (`server.json`) → GitHub Release with changelog.
 
 npm and Cloudflare deploy run in parallel after the sync step. Requires `NPM_TOKEN` and `CLOUDFLARE_API_TOKEN` secrets in the `production` environment — without them, those steps log warnings and skip. A manual `npm run deploy:private` replaces the Cloudflare deploy step when the secret is absent.
 
