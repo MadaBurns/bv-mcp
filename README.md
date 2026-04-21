@@ -82,7 +82,7 @@ Transport support:
 ## Tools
 
 ```
-  44 MCP tools · 7 prompts · 6 resources
+  51 MCP tools · 7 prompts · 6 resources
 
   Email Auth           Infrastructure        Brand & Threats       Meta
  ────────────         ────────────────       ─────────────────    ──────────────────────
