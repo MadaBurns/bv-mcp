@@ -16,6 +16,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Docs
 - **README + client-setup + architecture + CLAUDE.md**: tool count updated 41/44 → 51 (current `tools/list` output). `docs/client-setup.md` now documents OAuth 2.1 as a third auth path alongside Bearer / `?api_key=`, including discovery endpoints, the register → authorize → token flow, PKCE constraints, and a link to the probe + rotation runbook. CLAUDE.md `Bindings` table now includes `OAUTH_SIGNING_SECRET` and `OAUTH_ISSUER`.
 
+## [2.9.2] - 2026-04-21
+
+### Added
+- **MCP Registry listing** — published as `com.blackveilsecurity/dns` v2.9.2 on the [MCP Registry](https://registry.modelcontextprotocol.io). `server.json` added for registry publishing; `mcpName` field added to `package.json`.
+- **Tool count assertion test** — CI now validates the tool count matches the declared total, preventing stale counts in docs.
+- **CI auto-publish to MCP Registry** — `publish.yml` now pushes `server.json` to the registry on version tags alongside the existing npm + Cloudflare deploy steps.
+- **Privacy policy link** — added to README footer linking to `https://www.blackveilsecurity.com/privacy`.
+
+### Fixed
+- **npm publish resumed** — the publish gap from 2.6.4 → 2.9.2 was caused by a GitHub Actions billing pause. Versions 2.6.5–2.9.1 were deployed to Cloudflare Workers but not published to npm. All changes are now included in this release.
+- **README tool count** — corrected ASCII art diagram from "44 MCP tools" to "51 MCP tools" to match the actual `tools/list` output.
+
 ## [2.9.1] - 2026-04-19
 
 ### Changed
