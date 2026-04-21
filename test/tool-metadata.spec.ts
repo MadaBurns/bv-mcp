@@ -18,4 +18,8 @@ describe('tool metadata', () => {
 			expect(tool.scanIncluded).toBe(false);
 		}
 	});
+
+	it('has exactly 51 tools', () => {
+		expect(TOOLS).toHaveLength(51);
+	});
 });
