@@ -187,6 +187,28 @@ For full hosted setup examples, stdio usage, OAuth setup, and legacy fallback en
 
 ---
 
+## Example prompts
+
+These demonstrate core functionality — paste any of them into Claude with the Blackveil DNS connector enabled:
+
+| Prompt | What it does |
+|--------|-------------|
+| `Scan blackveilsecurity.com and tell me what needs fixing` | Full security audit — score, grade, prioritized findings |
+| `Compare the email security of google.com and microsoft.com` | Side-by-side comparison of two domains' postures |
+| `Generate a DMARC record for example.com with reject policy` | Produces a ready-to-publish DNS record |
+| `What attack paths exist for example.com?` | Enumerates spoofing, takeover, and hijack vectors |
+| `Map example.com's compliance against NIST 800-177` | Maps findings to compliance framework controls |
+
+---
+
+## Support
+
+- **Bug reports & feature requests:** [GitHub Issues](https://github.com/MadaBurns/bv-mcp/issues)
+- **Security vulnerabilities:** [security@blackveilsecurity.com](mailto:security@blackveilsecurity.com) (see [SECURITY.md](SECURITY.md))
+- **General questions:** [GitHub Discussions](https://github.com/MadaBurns/bv-mcp/discussions)
+
+---
+
 ## Responsible use
 
 This tool is intended for **authorized security assessments** of domains you own or have explicit permission to test. Do not use it for unauthorized reconnaissance, harassment, or any activity that violates applicable laws. Findings from attack simulation, spoofability, and subdomain discovery tools should be used to **improve your own security posture**, not to exploit others.
