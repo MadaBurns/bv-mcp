@@ -1,0 +1,16 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.blackveilsecurity/dns",
+  "description": "DNS & email security scanner — 51 tools for SPF, DMARC, DKIM, DNSSEC, SSL, and more.",
+  "repository": {
+    "url": "https://github.com/MadaBurns/bv-mcp",
+    "source": "github"
+  },
+  "version": "2.9.1",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
+    }
+  ]
+}
