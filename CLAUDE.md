@@ -195,6 +195,9 @@ Resolution: `extractFormat(args)` in `tool-args.ts` → explicit param wins → 
 - `cacheGet()` / `cacheSet()` / `cacheSetDeferred()` / `runWithCache()` from `lib/cache.ts`; `cacheSetDeferred()` wraps in `ctx.waitUntil()`; `runWithCache()` accepts `skipCache` for `force_refresh`
 - JSDoc (`/** */`) on exported functions; `import type { ... }` for type-only imports
 - All tool functions return `Promise<CheckResult>` (follow `check-spf.ts` pattern) and accept optional `dnsOptions?: QueryDnsOptions`
+- **DNS-failure resilience**: wrappers around `@blackveil/dns-checks` that are called directly by clients (not just from `scan_domain`'s `safeCheck`) should catch top-level DNS errors and return a `CheckResult` with a `missingControl: true` finding instead of throwing. Follow `check-spf.ts` as the reference — it distinguishes `errorKind: 'timeout' | 'dns_error'` based on regex match of the error message. Inside `scan_domain`, `safeCheck()` already handles this for you; the pattern matters for direct `tools/call` invocations where error rates get counted against the tool in analytics.
+- **Total-budget caps**: tools that spawn multiple sequential external fetches (e.g. `check_http_security` does dual-fetch + WAF body + package probe) should wrap the whole thing in a single `Promise.race` against a `TOTAL_BUDGET_MS` timer so package-internal sequentiality can't compound into a Worker-CPU-ceiling outage. Current caps: `check_http_security` = 10s.
+- **`batch_scan` budget**: `batch-scan.ts` enforces `budgetMs` (default 25s) + `concurrency` (default 3) with per-domain `Promise.race` timeouts. Items that exhaust the budget return `error: 'batch_budget_exceeded'`. Both options are exposed via `BatchScanOptions` for tests; production callers should use defaults.
 - `check_mx` is dynamically imported in `handlers/tools.ts` (for test mock isolation)
 - MCP server key name is `"blackveil-dns"` across all configs — keep consistent
 - `tools/call` accepts `scan` as alias for `scan_domain`
@@ -430,7 +433,7 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 
 Four event types: `mcp_request`, `tool_call`, `rate_limit`, `session`. Pre-built queries in `analytics-queries.ts`. Scheduled handler (`scheduled.ts`) runs every 15 min via Cron Trigger for anomaly alerts. All alerting optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
 
-Client detection (`client-detection.ts`): `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `unknown`. Used for analytics + format auto-detection, never security.
+Client detection (`client-detection.ts`): `claude_mobile`, `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `bv_load_test`, `unknown`. Used for analytics + format auto-detection, never security. `bv_load_test` matches `bv-{load,chaos,tranco}-{test,scan}` UAs emitted by internal scripts (`scripts/tranco-scan.mjs`, `scripts/tranco-deep-scan.mjs`) and is classified as non-interactive (`full` format) — it exists to keep internal load traffic out of the real-client `unknown` bucket.
 
 ## False Positive Reduction
 

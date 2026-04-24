@@ -313,6 +313,9 @@ Avoid `mcp-remote` entirely. VS Code and Cursor support `"type": "http"` nativel
 - `429 Too Many Requests`: Rate-limited (`50/min`, `300/hr` per IP for unauthenticated `tools/call`). Note: `GET /mcp` SSE notification stream is exempt from rate limiting.
 - `Error: An unexpected error occurred` on `tools/call` with IP-like domain input: input validation rejected an IP literal form. Use a real DNS domain name (for example `example.com`) instead of values like `127.1`, `0177.0.0.1`, `8.8.8.8`, or `0x8.0x8.0x8.0x8`.
 - `-32601 Method not found: prompts/list`: Expected. This server does not implement prompt methods (`prompts/list`, `prompts/get`). Use `tools/list` / `tools/call` and `resources/list` / `resources/read`.
+- `check_spf` finding **“SPF check timed out”** or **“SPF check could not complete”** (`errorKind: 'timeout' | 'dns_error'`, `missingControl: true`): the top-level DNS lookup for the domain failed before SPF could be read. This is not an MCP error — the tool returns a structured result with `passed: false` and `score: 0`. Retry once with `force_refresh: true`; if it persists, the authoritative DNS for the zone is unreachable.
+- `check_http_security` finding **“HTTP security check timed out”** (`checkStatus: 'timeout'`, `missingControl: true`): the total 10s budget (dual-fetch + WAF body + package probe) was exhausted. The host was unreachable or extremely slow. The scan still completes — this category contributes zero rather than blocking other checks.
+- `batch_scan` item with `error: 'batch_budget_exceeded'`: the 25-second wall-clock budget for the entire batch was exhausted before this domain could be scanned. Slow domains earlier in the batch (or a domain that itself hits `scan_domain`'s 12s ceiling) consume the budget. Split the batch into smaller groups, or call `scan_domain` per-domain in parallel to keep items independent.
 
 ## 5. Debugging Checklist
 

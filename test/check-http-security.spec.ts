@@ -393,4 +393,28 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0].title).toBe('HTTP security headers well configured');
 	});
+
+	// ---- Total-budget guard (production probe showed 28s outliers) ----
+
+	it('caps total wall time even when every fetch hangs', async () => {
+		// Every fetch hangs forever — package-internal sequential fetches would
+		// otherwise compound to ≫ the per-fetch HTTPS_TIMEOUT_MS.
+		globalThis.fetch = vi.fn().mockImplementation(
+			() => new Promise<Response>(() => {/* never resolves */}),
+		);
+
+		const start = Date.now();
+		const result = await run('slow.example.com');
+		const elapsed = Date.now() - start;
+
+		// Total-budget cap (implementation): 10_000 ms. Test tolerates 12s wall.
+		expect(elapsed).toBeLessThan(12_000);
+		expect(result.category).toBe('http_security');
+		expect(result.checkStatus === 'timeout' || result.checkStatus === 'error').toBe(true);
+		// Surfaced as a timeout finding
+		const timeoutFinding = result.findings.find(
+			(f) => /timed? out|total budget|could not complete/i.test(f.title),
+		);
+		expect(timeoutFinding).toBeDefined();
+	}, 15_000);
 });

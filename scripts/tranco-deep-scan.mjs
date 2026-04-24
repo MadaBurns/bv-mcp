@@ -69,6 +69,7 @@ const HEADERS = {
 	'Content-Type': 'application/json',
 	Accept: 'application/json',
 	Authorization: `Bearer ${API_KEY}`,
+	'User-Agent': 'bv-tranco-scan/1.0',
 };
 
 // ---------------------------------------------------------------------------
