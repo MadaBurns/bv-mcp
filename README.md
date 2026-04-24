@@ -111,10 +111,12 @@ Transport support:
 
 ## Quality & Reliability
 
-The server is continuously validated using a **comprehensive chaos test suite** that covers all 9 detected MCP client types:
+The server is continuously validated using a **comprehensive chaos test suite** that covers all detected MCP client types:
 
-- **Interactive clients**: `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf` (auto-format: `compact`)
-- **Non-interactive clients**: `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `unknown` (auto-format: `full`)
+- **Interactive clients**: `claude_mobile`, `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf` (auto-format: `compact`)
+- **Non-interactive clients**: `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `bv_load_test`, `unknown` (auto-format: `full`)
+
+The `bv_load_test` class identifies internal load/chaos/tranco-scan traffic so it stays out of real-client analytics segments.
 
 The test suite ensures session stability, authentication precedence, and transport-specific edge cases across Streamable HTTP and Legacy SSE.
 

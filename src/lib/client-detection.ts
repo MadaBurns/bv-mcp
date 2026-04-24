@@ -5,7 +5,7 @@
  * Used for analytics segmentation — not security decisions.
  */
 
-export type McpClientType = 'claude_mobile' | 'claude_code' | 'cursor' | 'vscode' | 'claude_desktop' | 'windsurf' | 'mcp_remote' | 'blackveil_dns_action' | 'bv_claude_dns_proxy' | 'unknown';
+export type McpClientType = 'claude_mobile' | 'claude_code' | 'cursor' | 'vscode' | 'claude_desktop' | 'windsurf' | 'mcp_remote' | 'blackveil_dns_action' | 'bv_claude_dns_proxy' | 'bv_load_test' | 'unknown';
 
 const CLIENT_PATTERNS: ReadonlyArray<[RegExp, McpClientType]> = [
 	[/claude[-_]?mobile|claude\.ai\/(android|ios)|claudeai[-_]?mobile/i, 'claude_mobile'],
@@ -17,6 +17,8 @@ const CLIENT_PATTERNS: ReadonlyArray<[RegExp, McpClientType]> = [
 	[/mcp-remote/i, 'mcp_remote'],
 	[/blackveil[-_]?dns[-_]?action/i, 'blackveil_dns_action'],
 	[/bv[-_]?claude[-_]?dns[-_]?proxy/i, 'bv_claude_dns_proxy'],
+	// Internal load- and chaos-test scripts. Keep last so real-client patterns win.
+	[/bv[-_](load|chaos|tranco)[-_](test|scan)/i, 'bv_load_test'],
 ];
 
 /** Detect MCP client from User-Agent string. Order matters — first match wins. */

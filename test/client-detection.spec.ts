@@ -62,4 +62,12 @@ describe('detectMcpClient', () => {
 		expect(detectMcpClient('')).toBe('unknown');
 		expect(detectMcpClient(undefined)).toBe('unknown');
 	});
+
+	it('detects internal bv load-test clients', () => {
+		expect(detectMcpClient('bv-load-test/1.0')).toBe('bv_load_test');
+		expect(detectMcpClient('bv-chaos-test/1.0 node/20')).toBe('bv_load_test');
+		expect(detectMcpClient('bv-tranco-scan/1.0')).toBe('bv_load_test');
+		// Case-insensitive + alternate separators
+		expect(detectMcpClient('BV_Load_Test/1.0')).toBe('bv_load_test');
+	});
 });

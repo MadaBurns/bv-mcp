@@ -332,6 +332,37 @@ describe('checkSpf', () => {
 		expect(noSendFindings).toHaveLength(0);
 	});
 
+	it('returns a failing CheckResult when the top-level DNS query throws', async () => {
+		// Top-level DNS failure (e.g. DoH HTTP 500, SERVFAIL, network error) must
+		// not propagate out of the tool wrapper — it should surface as a finding
+		// so the caller sees a structured result instead of a thrown error.
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DoH returned HTTP 503'));
+
+		const { checkSpf } = await import('../src/tools/check-spf');
+		const result = await checkSpf('example.com');
+
+		expect(result.category).toBe('spf');
+		expect(result.passed).toBe(false);
+		const errFinding = result.findings.find((f) => /SPF check (could not complete|failed)/i.test(f.title));
+		expect(errFinding).toBeDefined();
+		expect(errFinding!.severity).toBe('high');
+		expect(errFinding!.detail).toMatch(/DoH|503|DNS/);
+	});
+
+	it('classifies DNS timeouts with a timeout-specific finding', async () => {
+		// Simulate a timeout by rejecting with an error message matching the transport layer
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DNS query timed out after 5000ms'));
+
+		const { checkSpf } = await import('../src/tools/check-spf');
+		const result = await checkSpf('slow.example.com');
+
+		expect(result.category).toBe('spf');
+		expect(result.passed).toBe(false);
+		const timeoutFinding = result.findings.find((f) => /timed? out|timeout/i.test(f.detail));
+		expect(timeoutFinding).toBeDefined();
+		expect(timeoutFinding!.metadata?.errorKind).toBe('timeout');
+	});
+
 	it('handles failed nested DNS queries gracefully', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
 			const u = new URL(typeof url === 'string' ? url : url.toString());

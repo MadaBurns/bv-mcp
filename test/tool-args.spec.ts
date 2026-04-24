@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	extractAndValidateDomain,
 	extractDkimSelector,
@@ -55,6 +55,61 @@ describe('tool-args helpers', () => {
 		expect(() => validateToolArgs('explain_finding', { status: 'pass' })).toThrow('Missing required parameters');
 		// explain_finding: missing status (enum)
 		expect(() => validateToolArgs('explain_finding', { checkType: 'SPF' })).toThrow('Missing required parameters');
+	});
+
+	describe('explain_finding rejection telemetry', () => {
+		let logSpy: ReturnType<typeof vi.spyOn>;
+
+		afterEach(() => {
+			logSpy?.mockRestore();
+		});
+
+		it('emits a structured log event when explain_finding is rejected by Zod', () => {
+			logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+			expect(() =>
+				validateToolArgs('explain_finding', { checkType: 'SPF', status: 'unexpected_value_xyz' }),
+			).toThrow();
+
+			const telemetryCall = logSpy.mock.calls.find((args) => {
+				const msg = args[0];
+				return typeof msg === 'string' && msg.includes('explain_finding_rejected');
+			});
+			expect(telemetryCall).toBeDefined();
+			const payload = JSON.parse(telemetryCall![0] as string);
+			expect(payload.result).toBe('explain_finding_rejected');
+			expect(payload.tool).toBe('explain_finding');
+			expect(payload.details.rejectedField).toBe('status');
+			expect(payload.details.rejectedValue).toContain('unexpected_value_xyz');
+			expect((payload.details.rejectedValue as string).length).toBeLessThanOrEqual(64);
+		});
+
+		it('truncates long or unusual rejected values', () => {
+			logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+			const longValue = 'x'.repeat(500);
+			expect(() => validateToolArgs('explain_finding', { checkType: 'SPF', status: longValue })).toThrow();
+
+			const telemetryCall = logSpy.mock.calls.find((args) => {
+				const msg = args[0];
+				return typeof msg === 'string' && msg.includes('explain_finding_rejected');
+			});
+			expect(telemetryCall).toBeDefined();
+			const payload = JSON.parse(telemetryCall![0] as string);
+			expect((payload.details.rejectedValue as string).length).toBeLessThanOrEqual(64);
+		});
+
+		it('does not emit telemetry for other tools when Zod rejects', () => {
+			logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+			expect(() => validateToolArgs('check_spf', {})).toThrow();
+
+			const telemetryCall = logSpy.mock.calls.find((args) => {
+				const msg = args[0];
+				return typeof msg === 'string' && msg.includes('explain_finding_rejected');
+			});
+			expect(telemetryCall).toBeUndefined();
+		});
 	});
 
 	it('validateToolArgs passes through unknown tool names', () => {
