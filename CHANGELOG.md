@@ -6,15 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-04-25
+
 ### Security
 - **OAuth 2.1 enabled in production** — `OAUTH_SIGNING_SECRET` (HS256, 32-byte random hex) uploaded via `wrangler secret put`, and `OAUTH_ISSUER=https://dns-mcp.blackveilsecurity.com` pinned as a hardening var against Host-header spoofing of discovery metadata. Discovery endpoints at `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource` are live and return the pinned issuer. Rotation runbook: `scripts/oauth/README.md`.
+
+### Changed — Reliability (2026-04-25, analytics-informed)
+- **`check_spf`** — top-level DNS failures (timeout, DoH HTTP error, invalid response) now return a structured `CheckResult` with a `missingControl: true` finding (`errorKind: 'timeout' | 'dns_error'`) instead of throwing. Previously these propagated to the MCP caller as generic errors (~17.9% of direct `check_spf` calls over 30 days).
+- **`batch_scan`** — replaced the sequential `for` loop with a bounded worker pool (default `concurrency: 3`) and a total wall-clock budget (default `budgetMs: 25_000`, leaving 5s Worker headroom). Domains that don't finish within budget return `error: 'batch_budget_exceeded'`. New `BatchScanOptions`: `budgetMs`, `concurrency`, `scanFn` (test injection). Production `p95`/`p99` was previously pinned at 28s; the new cap bounds single-domain stalls without starving other items in the batch.
+- **`check_http_security`** — wrapped in a `TOTAL_BUDGET_MS = 10_000` cap covering dual-fetch + WAF body + package-level fetch. On budget exhaustion the tool returns `checkStatus: 'timeout'`, `score: 0`, and a high-severity `missingControl` finding. Caps a rare bimodal outlier observed in production (one domain drove `p99`/`max` to 28s while `p50` stayed at 3ms).
+- **Client detection** — added `bv_load_test` client type (matches `bv-{load,chaos,tranco}-{test,scan}` user-agents). `scripts/tranco-scan.mjs` and `scripts/tranco-deep-scan.mjs` now send `User-Agent: bv-tranco-scan/1.0` so internal load-test traffic is segmented away from real-client `unknown` in analytics.
 
 ### Added
 - **`scripts/oauth/prod-probe.py`** — Two-mode production OAuth probe. `--mode=smoke` POSTs a full junk payload to `/oauth/token` and asserts `400 invalid_grant` (verifies routing past the Zod/rate-limit gates). `--mode=e2e` runs the full `register → authorize → token → /mcp` flow against a live owner `BV_API_KEY` and asserts ≥40 tools in `tools/list`.
 - **`scripts/oauth/README.md`** — Rotation and rollback runbook for the OAuth signing secret.
+- **`explain_finding` telemetry spike (time-boxed, 2026-04-25)** — `src/handlers/tool-args.ts::logExplainFindingRejection` emits a sanitized `result: 'explain_finding_rejected'` log event when Zod rejects the tool's arguments, recording the rejected field, a 64-char-truncated value, and the Zod issue code. Diagnosing a 27% error rate (10/37 calls). Scheduled for removal or conversion into a schema fix once 7 days of data is reviewed (see `docs/plans/2026-04-25-analytics-findings-tdd-plan.md` Workstream D).
+- **`.dev/analytics-30d.mjs`** — local script for ad-hoc Cloudflare Analytics Engine queries (daily volume, tool popularity, error rates, latency percentiles, client types, geo, tier breakdown, rate-limit hits, and a `check_http_security` per-domain outlier probe). Requires a CF API token with `Account Analytics:Read`:
+  ```bash
+  CF_ANALYTICS_TOKEN=$(grep '^oauth_token' ~/.wrangler/config/default.toml | sed 's/.*= *"\(.*\)"/\1/') \
+    node .dev/analytics-30d.mjs 7
+  ```
 
 ### Docs
 - **README + client-setup + architecture + CLAUDE.md**: tool count updated 41/44 → 51 (current `tools/list` output). `docs/client-setup.md` now documents OAuth 2.1 as a third auth path alongside Bearer / `?api_key=`, including discovery endpoints, the register → authorize → token flow, PKCE constraints, and a link to the probe + rotation runbook. CLAUDE.md `Bindings` table now includes `OAUTH_SIGNING_SECRET` and `OAUTH_ISSUER`.
+- **README + CLAUDE.md + troubleshooting**: `bv_load_test` client type documented. New batch/SPF/HTTP-security resilience behaviors documented in CLAUDE.md "Conventions" and `docs/troubleshooting.md` "Common Errors".
 
 ## [2.9.2] - 2026-04-21
 
