@@ -227,7 +227,40 @@ async function fetchBodyForWafDetection(url: string, timeoutMs: number): Promise
  * and short-circuit the header analysis — returning checkStatus='error'
  * with a single info finding instead of misleading header-missing findings.
  */
+/**
+ * Total wall-clock budget across all fetches (dual-fetch + WAF body + package
+ * GET fallback). Protects against compound timeouts when remote hosts stall
+ * partway through the handshake. Production telemetry (2026-04-25 probe)
+ * observed a single domain driving p99 to 28s — this cap guarantees any
+ * single-domain pathology stays well under the Cloudflare Worker CPU ceiling.
+ */
+const TOTAL_BUDGET_MS = 10_000;
+
 export async function checkHttpSecurity(domain: string): Promise<CheckResult> {
+	let budgetTimeoutId: ReturnType<typeof setTimeout> | undefined;
+	const budgetExceeded = new Promise<'budget_exceeded'>((resolve) => {
+		budgetTimeoutId = setTimeout(() => resolve('budget_exceeded'), TOTAL_BUDGET_MS);
+	});
+	try {
+		const raced = await Promise.race([checkHttpSecurityInner(domain), budgetExceeded]);
+		if (raced === 'budget_exceeded') {
+			const finding = createFinding(
+				'http_security',
+				'HTTP security check timed out',
+				'high',
+				`Could not complete HTTP security header analysis for ${domain} within ${TOTAL_BUDGET_MS}ms. Host was likely unreachable or extremely slow.`,
+				{ missingControl: true, confidence: 'heuristic', errorKind: 'timeout' },
+			);
+			const base = buildCheckResult('http_security', [finding]);
+			return { ...base, score: 0, passed: false, checkStatus: 'timeout' };
+		}
+		return raced;
+	} finally {
+		if (budgetTimeoutId !== undefined) clearTimeout(budgetTimeoutId);
+	}
+}
+
+async function checkHttpSecurityInner(domain: string): Promise<CheckResult> {
 	const dualResult = await dualFetchHeaders(domain, HTTPS_TIMEOUT_MS);
 
 	// WAF/CDN challenge detection — short-circuit before header analysis

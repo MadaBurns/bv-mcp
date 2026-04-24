@@ -2,8 +2,36 @@
 
 import { ZodError } from 'zod';
 import { validateDomain, sanitizeDomain } from '../lib/sanitize';
+import { logEvent } from '../lib/log';
 import { TOOL_SCHEMA_MAP } from '../schemas/tool-args';
 import type { OutputFormat, Profile } from '../schemas/primitives';
+
+/**
+ * Time-boxed telemetry: record what inputs clients send that get rejected.
+ * Added 2026-04-25 to diagnose explain_finding's 27% error rate (10/37 calls).
+ * Remove once 7 days of data has been reviewed and the root cause is known.
+ */
+function logExplainFindingRejection(args: Record<string, unknown>, err: ZodError): void {
+	const issue = err.issues[0];
+	const path = issue.path.join('.');
+	const received = args[path];
+	let rejectedValue: string;
+	if (received === undefined) rejectedValue = '<missing>';
+	else if (received === null) rejectedValue = '<null>';
+	else if (typeof received === 'string') rejectedValue = received.replace(/[\x00-\x1F\x7F]/g, '?').slice(0, 64);
+	else rejectedValue = typeof received;
+	logEvent({
+		timestamp: new Date().toISOString(),
+		severity: 'info',
+		tool: 'explain_finding',
+		result: 'explain_finding_rejected',
+		details: {
+			rejectedField: path,
+			rejectedValue,
+			issueCode: issue.code,
+		},
+	});
+}
 
 export type { OutputFormat };
 
@@ -63,6 +91,9 @@ export function validateToolArgs(toolName: string, args: Record<string, unknown>
 		return schema.parse(args) as Record<string, unknown>;
 	} catch (err) {
 		if (err instanceof ZodError) {
+			if (toolName === 'explain_finding') {
+				logExplainFindingRejection(args, err);
+			}
 			throw new Error(formatZodError(err, toolName));
 		}
 		throw err;
