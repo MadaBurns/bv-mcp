@@ -386,12 +386,15 @@ describe('handleToolsCall - error categorization', () => {
 	});
 
 	it('unexpected errors return generic error with tool name', async () => {
+		// check_spf has its own DNS-failure catch (see Workstream A, 2026-04-25),
+		// so use check_dmarc — still throws on DNS failure and exercises the
+		// handler's generic-error safety net.
 		globalThis.fetch = vi.fn().mockImplementation(() => {
 			throw new Error('ECONNREFUSED');
 		});
-		const result = await call('check_spf', { domain: 'error-test.example.com' });
+		const result = await call('check_dmarc', { domain: 'error-test.example.com' });
 		expect(result.isError).toBe(true);
-		expect(result.content[0].text).toContain('An unexpected error occurred while running check_spf');
+		expect(result.content[0].text).toContain('An unexpected error occurred while running check_dmarc');
 	});
 });
 
