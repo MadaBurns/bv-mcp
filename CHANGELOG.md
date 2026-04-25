@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.1] - 2026-04-25
+
+### Fixed
+- **CI: Security workflow** — replaced `gitleaks/gitleaks-action@v2` with a self-installed pinned binary (`gitleaks 8.30.1`). The repo's Actions allowlist (`patterns_allowed: ["MadaBurns/*"]`) had been silently rejecting the third-party action since 2026-04-22, causing every Security run to `startup_failure` with 0 jobs created. Replicates the action's incremental scan behavior — PRs scan `base..head`, pushes scan `before..sha` (fallback `HEAD~1..HEAD` for fresh branches).
+
+### Security
+- **postcss 8.5.8 → 8.5.10** (transitive dev dep via `tsup`/`vitest`/`vite`) — resolves [GHSA-qx2v-qp2m-jg93](https://github.com/advisories/GHSA-qx2v-qp2m-jg93) (XSS via unescaped `</style>` in CSS Stringify Output). Dev-only impact; no production runtime exposure.
+
 ## [2.10.0] - 2026-04-25
 
 ### Security
