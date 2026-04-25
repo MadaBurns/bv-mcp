@@ -173,6 +173,7 @@ export class ProfileAccumulator extends DurableObject<Env> {
 
 		// Extract per-category failure rates for trend snapshots
 		const categoryFailureMap = new Map<string, boolean>();
+		const upserts: Promise<void>[] = [];
 
 		for (const cf of body.categoryFindings as Array<unknown>) {
 			if (!cf || typeof cf !== 'object') continue;
@@ -182,17 +183,20 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			if (typeof entry.passed !== 'boolean') continue;
 
 			const failureValue = entry.passed ? 0.0 : 1.0;
+			const category = entry.category;
+			const score = entry.score;
 
-			// Upsert profile_stats
-			await this.upsertProfileStats(profile, entry.category, failureValue, entry.score, now);
-
-			// Upsert provider_stats if provider is present
+			// Each category touches a unique row in profile_stats and (profile,provider,category) in provider_stats,
+			// so parallelizing across categories is safe — DO input gates serialize concurrent fetch invocations.
+			upserts.push(this.upsertProfileStats(profile, category, failureValue, score, now));
 			if (provider) {
-				await this.upsertProviderStats(profile, provider, entry.category, failureValue, entry.score, now);
+				upserts.push(this.upsertProviderStats(profile, provider, category, failureValue, score, now));
 			}
 
 			categoryFailureMap.set(entry.category, entry.passed);
 		}
+
+		await Promise.all(upserts);
 
 		// Intelligence layer updates — only when overallScore is present
 		const overallScore = typeof body.overallScore === 'number' && Number.isFinite(body.overallScore)
@@ -200,12 +204,14 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			: null;
 
 		if (overallScore !== null) {
-			await this.updateScoreHistogram(profile, overallScore, now);
-			await this.updateTrendSnapshot(profile, overallScore, categoryFailureMap, now);
-
+			const intelligence: Promise<void>[] = [
+				this.updateScoreHistogram(profile, overallScore, now),
+				this.updateTrendSnapshot(profile, overallScore, categoryFailureMap, now),
+			];
 			if (provider) {
-				await this.updateProviderCohort(profile, provider, overallScore, categoryFailureMap, now);
+				intelligence.push(this.updateProviderCohort(profile, provider, overallScore, categoryFailureMap, now));
 			}
+			await Promise.all(intelligence);
 		}
 
 		return new Response(null, { status: 204 });
