@@ -10,6 +10,9 @@ concurrency:
   group: security-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  GITLEAKS_VERSION: 8.30.1
+
 jobs:
   secret-scan:
     name: Secret & PII scan
@@ -19,10 +22,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: gitleaks/gitleaks-action@v2
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          rm gitleaks.tar.gz
+          gitleaks version
+
+      - name: Run gitleaks
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="HEAD~1..HEAD"
+          else
+            RANGE="${BASE_SHA}..${HEAD_SHA}"
+          fi
+          echo "Scanning range: $RANGE"
+          gitleaks detect --config=.gitleaks.toml --source=. --redact --verbose --exit-code 1 --no-banner --log-opts="$RANGE"
 
   dependency-audit:
     name: Dependency audit
