@@ -11,6 +11,6 @@ export default defineConfig({
 	],
 	test: {
 		testTimeout: 15_000,
-		exclude: ['node_modules/**', '.claude/**'],
+		exclude: ['node_modules/**', '.claude/**', '.worktrees/**'],
 	},
 });
