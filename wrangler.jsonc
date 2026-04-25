@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "bv-dns-security-mcp",
   "main": "src/index.ts",
-  "compatibility_date": "2026-03-17",
+  "compatibility_date": "2026-04-22",
   "compatibility_flags": [
     "global_fetch_strictly_public"
   ],
@@ -25,7 +25,10 @@
   "observability": {
     "enabled": true,
     "logs": {
-      "head_sampling_rate": 1
+      "head_sampling_rate": 1,
+      // Worker emits its own structured logs via lib/log.ts; CF auto-emitted
+      // request/response invocation lines would be duplicate volume.
+      "invocation_logs": false
     }
   },
   // Cron Triggers:
