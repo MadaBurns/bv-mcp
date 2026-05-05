@@ -423,9 +423,9 @@ Do not configure both `?api_key=` and `Authorization` for the same server unless
 
 ### OAuth 2.1
 
-OAuth is disabled on the hosted endpoint by default so MCP clients do not auto-open a browser asking for the owner API key. Operators can enable it with `ENABLE_OAUTH=true`.
+OAuth is disabled on the hosted endpoint by default so MCP clients do not auto-open a browser asking for the owner API key. Public discovery requires `ENABLE_OAUTH=true`; the legacy owner-key consent page additionally requires `ENABLE_OWNER_OAUTH=true`.
 
-When enabled, the server implements RFC 6749 authorization-code grant with PKCE (S256 only), RFC 7591 dynamic client registration, and RFC 8414 / RFC 9728 discovery. Tokens are HS256 JWTs with a 90-day TTL.
+When enabled, the server implements RFC 6749 authorization-code grant with PKCE (S256 only), RFC 7591 dynamic client registration, and RFC 8414 / RFC 9728 discovery. Tokens are HS256 JWTs with a 90-day TTL. Paid-plan OAuth tokens can carry `agent`, `developer`, or `enterprise` tier claims from a validated bv-web/Stripe entitlement; `owner` is reserved for the separate owner OAuth mode.
 
 **Discovery endpoints** (no auth, only when `ENABLE_OAUTH=true`):
 
@@ -435,7 +435,7 @@ When enabled, the server implements RFC 6749 authorization-code grant with PKCE 
 **Flow** (performed by the MCP client, not the user directly):
 
 1. `POST /oauth/register` with `{ "redirect_uris": [<client redirect>] }` → receive `client_id` and a one-time `client_secret`.
-2. `GET /oauth/authorize` with `client_id`, `redirect_uri`, `response_type=code`, `code_challenge`, `code_challenge_method=S256`, `state` → the user consents via a form that accepts the owner's `BV_API_KEY`.
+2. `GET /oauth/authorize` with `client_id`, `redirect_uri`, `response_type=code`, `code_challenge`, `code_challenge_method=S256`, `state` → customer OAuth delegates to bv-web for account/Stripe entitlement checks; owner-key consent is only rendered when `ENABLE_OWNER_OAUTH=true`.
 3. `POST /oauth/token` with `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `code_verifier` → receive `access_token` (JWT).
 4. Call `/mcp` with `Authorization: Bearer <access_token>`.
 
@@ -444,6 +444,7 @@ When enabled, the server implements RFC 6749 authorization-code grant with PKCE 
 - PKCE is mandatory. `plain` is rejected at the schema layer — only `S256`.
 - `client_secret` is hashed in KV and is only available from the one-shot DCR response. Rotating means re-registering.
 - `OWNER_ALLOW_IPS` is enforced at the consent step for owner-tier JWT issuance. A stolen owner key from a non-allowlisted IP cannot mint an owner JWT.
+- bv-web OAuth entitlement responses are schema-validated before code issuance and cannot grant `owner` or `partner` tiers.
 - JWT revocation is by JTI. Rotation of `OAUTH_SIGNING_SECRET` invalidates every outstanding JWT at next verify.
 
 **Reference client** (probes, rotation, and rollback runbook): [`scripts/oauth/README.md`](../scripts/oauth/README.md) and [`scripts/oauth/prod-probe.py`](../scripts/oauth/prod-probe.py).
@@ -538,4 +539,4 @@ Example payload:
 | GET / POST | `/oauth/authorize` | Authorization endpoint (consent + code issuance) |
 | POST | `/oauth/token` | Token endpoint (authorization code grant with PKCE) |
 
-OAuth endpoints return `404` unless the operator explicitly sets `ENABLE_OAUTH=true`.
+OAuth endpoints return `404` unless the operator explicitly sets `ENABLE_OAUTH=true`. The owner API-key consent UI remains disabled unless `ENABLE_OWNER_OAUTH=true`.

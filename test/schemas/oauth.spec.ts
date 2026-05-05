@@ -52,4 +52,53 @@ describe('oauth schemas', () => {
 		});
 		expect(parsed.grant_type).toBe('authorization_code');
 	});
+
+	it('PaidOAuthEntitlementResponseSchema accepts active developer entitlement metadata', async () => {
+		const { PaidOAuthEntitlementResponseSchema } = await import('../../src/schemas/oauth');
+		const parsed = PaidOAuthEntitlementResponseSchema.parse({
+			subject: 'user_123',
+			emailHash: 'a'.repeat(64),
+			tier: 'developer',
+			stripeCustomerId: 'cus_123',
+			stripeSubscriptionId: 'sub_123',
+			subscriptionStatus: 'active',
+			scopes: ['mcp'],
+			entitlementExpiresAt: 1893456000,
+		});
+		expect(parsed.tier).toBe('developer');
+		expect(parsed.subscriptionStatus).toBe('active');
+	});
+
+	it('PaidOAuthEntitlementResponseSchema rejects owner escalation from Stripe-backed entitlements', async () => {
+		const { PaidOAuthEntitlementResponseSchema } = await import('../../src/schemas/oauth');
+		expect(() =>
+			PaidOAuthEntitlementResponseSchema.parse({
+				subject: 'user_123',
+				tier: 'owner',
+				stripeCustomerId: 'cus_123',
+				stripeSubscriptionId: 'sub_123',
+				subscriptionStatus: 'active',
+				scopes: ['mcp'],
+			}),
+		).toThrow();
+	});
+
+	it('CodeRecordSchema accepts customer OAuth tier metadata', async () => {
+		const { CodeRecordSchema } = await import('../../src/schemas/oauth');
+		const parsed = CodeRecordSchema.parse({
+			client_id: 'client_123',
+			redirect_uri: 'https://claude.ai/cb',
+			code_challenge: 'x'.repeat(43),
+			issued_at: 1,
+			scope: 'mcp',
+			subject: 'user_123',
+			tier: 'developer',
+			stripeCustomerId: 'cus_123',
+			stripeSubscriptionId: 'sub_123',
+			subscriptionStatus: 'active',
+			entitlementExpiresAt: 1893456000,
+		});
+		expect(parsed.subject).toBe('user_123');
+		expect(parsed.tier).toBe('developer');
+	});
 });
