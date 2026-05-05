@@ -1,0 +1,139 @@
+name: Auto Deploy Main
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+      - CI Contract
+      - Security
+      - Repo Hygiene
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: auto-deploy-main-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy main after CI gates
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPOSITORY: ${{ github.repository }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      REQUIRED_WORKFLOWS: |-
+        CI
+        CI Contract
+        Security
+        Repo Hygiene
+    steps:
+      - id: gates
+        name: Verify required workflow gates
+        run: |
+          set -euo pipefail
+
+          ready=true
+          while IFS= read -r workflow; do
+            [ -z "$workflow" ] && continue
+
+            run_json=$(gh run list \
+              --repo "$REPOSITORY" \
+              --workflow "$workflow" \
+              --commit "$HEAD_SHA" \
+              --event push \
+              --limit 1 \
+              --json databaseId,status,conclusion,url \
+              --jq '.[0] // empty')
+
+            if [ -z "$run_json" ]; then
+              echo "::notice::Required workflow '$workflow' has not started for $HEAD_SHA yet."
+              ready=false
+              continue
+            fi
+
+            status=$(echo "$run_json" | jq -r '.status')
+            conclusion=$(echo "$run_json" | jq -r '.conclusion // ""')
+            url=$(echo "$run_json" | jq -r '.url')
+
+            echo "$workflow: status=$status conclusion=${conclusion:-pending} url=$url"
+
+            if [ "$status" != "completed" ]; then
+              ready=false
+              continue
+            fi
+
+            if [ "$conclusion" != "success" ]; then
+              echo "::error::Required workflow '$workflow' concluded with '$conclusion': $url"
+              exit 1
+            fi
+          done <<< "$REQUIRED_WORKFLOWS"
+
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          if [ "$ready" != "true" ]; then
+            echo "::notice::Not all required workflow gates are complete yet; a later workflow_run event will re-check this commit."
+          fi
+
+      - name: Check Cloudflare token
+        if: steps.gates.outputs.ready == 'true'
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CF_TOKEN" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN not configured"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gates.outputs.ready == 'true'
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: actions/setup-node@v4
+        if: steps.gates.outputs.ready == 'true'
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.gates.outputs.ready == 'true'
+        run: npm ci
+
+      - name: Build workspace package
+        if: steps.gates.outputs.ready == 'true'
+        run: npm -w packages/dns-checks run build
+
+      - name: Install wasm-pack
+        if: steps.gates.outputs.ready == 'true'
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        if: steps.gates.outputs.ready == 'true'
+        run: npm run build:wasm
+
+      - name: Deploy to Cloudflare Workers
+        if: steps.gates.outputs.ready == 'true'
+        run: npx wrangler deploy -c wrangler.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Verify deployment health
+        if: steps.gates.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          sleep 5
+          status=$(curl -fsS -o /dev/null -w "%{http_code}" https://dns-mcp.blackveilsecurity.com/health)
+          if [ "$status" != "200" ]; then
+            echo "::error::Health check returned $status (expected 200)"
+            exit 1
+          fi
+          echo "Deployment verified - health check returned 200"
