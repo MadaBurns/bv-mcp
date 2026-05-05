@@ -258,6 +258,10 @@ claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.
 }
 ```
 
+Use one authentication method per server entry. For Claude Code's native HTTP transport, prefer the query parameter and do not also add an `Authorization` header; some clients ignore headers from config files, and an invalid token or placeholder can cause a `401` during MCP initialization.
+
+If `.mcp.json` is committed in your project, keep it on the free-tier URL or use placeholders only. Put live keys in user-level client settings or a local ignored override, not in a tracked repository file.
+
 Or via CLI:
 
 ```bash
@@ -272,6 +276,7 @@ Alternatively, use `mcp-remote` to forward the `Authorization` header (useful wh
     "blackveil-dns": {
       "command": "npx",
       "args": [
+        "-y",
         "mcp-remote",
         "https://dns-mcp.blackveilsecurity.com/mcp",
         "--header",
@@ -284,7 +289,7 @@ Alternatively, use `mcp-remote` to forward the `Authorization` header (useful wh
 
 > **Note:** Claude Code's native HTTP transport does not forward custom `headers` from config files. Use the `?api_key=` query parameter or `mcp-remote` as a bridge.
 
-Important: if you script this setup, source the key from environment (`BV_API_KEY`) and avoid embedding token literals in shell history.
+Important: if you script this setup, source the key from environment (`BV_API_KEY`) and avoid embedding token literals in shell history. `mcp-remote` and `npx` add a local bridge process, so native HTTP is preferred unless you specifically need header forwarding.
 
 ## Smithery
 
@@ -402,6 +407,8 @@ Authenticated requests bypass per-IP rate limits and apply the caller's tier quo
 The query parameter method is the simplest for clients that only support URL configuration (like Claude Code, Smithery, or simple HTTP connectors).
 
 **Important:** Claude Code and some other clients' native HTTP transport do not forward custom `headers` from config files. Use the `?api_key=` query parameter or the `mcp-remote` bridge approach shown in the per-client sections.
+
+Do not configure both `?api_key=` and `Authorization` for the same server unless both values are intentionally valid. A stale placeholder in either location can make startup fail with `401 Unauthorized` instead of falling back to the free tier.
 
 | Client | Recommended Auth Method | Notes |
 |--------|-------------------------|-------|
