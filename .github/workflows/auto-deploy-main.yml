@@ -18,14 +18,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    name: Deploy main after CI gates
+  gates:
+    name: Verify required workflow gates
     if: >-
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    environment: production
+    outputs:
+      ready: ${{ steps.gates.outputs.ready }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPOSITORY: ${{ github.repository }}
@@ -37,7 +38,7 @@ jobs:
         Repo Hygiene
     steps:
       - id: gates
-        name: Verify required workflow gates
+        name: Check completed gate workflows
         run: |
           set -euo pipefail
 
@@ -82,8 +83,14 @@ jobs:
             echo "::notice::Not all required workflow gates are complete yet; a later workflow_run event will re-check this commit."
           fi
 
+  deploy:
+    name: Deploy main to Cloudflare
+    needs: gates
+    if: needs.gates.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
       - name: Check Cloudflare token
-        if: steps.gates.outputs.ready == 'true'
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
@@ -94,40 +101,32 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
-        if: steps.gates.outputs.ready == 'true'
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - uses: actions/setup-node@v4
-        if: steps.gates.outputs.ready == 'true'
         with:
           node-version: '20'
           cache: npm
 
       - name: Install dependencies
-        if: steps.gates.outputs.ready == 'true'
         run: npm ci
 
       - name: Build workspace package
-        if: steps.gates.outputs.ready == 'true'
         run: npm -w packages/dns-checks run build
 
       - name: Install wasm-pack
-        if: steps.gates.outputs.ready == 'true'
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build WASM
-        if: steps.gates.outputs.ready == 'true'
         run: npm run build:wasm
 
       - name: Deploy to Cloudflare Workers
-        if: steps.gates.outputs.ready == 'true'
         run: npx wrangler deploy -c wrangler.jsonc
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Verify deployment health
-        if: steps.gates.outputs.ready == 'true'
         run: |
           set -euo pipefail
           sleep 5
