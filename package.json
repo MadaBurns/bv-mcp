@@ -63,6 +63,7 @@
 	"scripts": {
 		"build": "tsup",
 		"dev": "wrangler dev",
+		"deploy": "wrangler deploy -c wrangler.jsonc",
 		"deploy:private": "node scripts/deploy-private.mjs",
 		"mcp:stdio": "node dist/stdio.js",
 		"start": "wrangler dev",
