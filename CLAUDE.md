@@ -34,6 +34,7 @@ git config core.hooksPath .githooks    # Enable pre-commit hooks (one-time setup
 - **Linter**: ESLint + typescript-eslint
 - **Formatter**: Prettier (tabs, single quotes, semi, 140 width)
 - **Package manager**: npm
+- **Tooling Node.js**: Node 22+ for CI/dev/deploy workflows because Wrangler 4.87+ hard-fails on Node <22
 
 ## Architecture
 
