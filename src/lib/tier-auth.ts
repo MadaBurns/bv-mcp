@@ -17,6 +17,7 @@ import { resolveTrialKey } from './trial-keys';
 import { verifyJwt } from '../oauth/jwt';
 import { resolveIssuer } from '../oauth/discovery';
 import { isRevoked } from '../oauth/storage';
+import { TierSchema } from '../schemas/primitives';
 
 export interface TierAuthResult {
 	authenticated: boolean;
@@ -76,14 +77,15 @@ export async function resolveTier(
 				audience: `${issuer}/mcp`,
 				clockSkewSeconds: OAUTH_JWT_CLOCK_SKEW_SECONDS,
 			});
-			if (claims.sub === 'owner' && claims.tier === 'owner') {
+			const tierResult = TierSchema.safeParse(claims.tier);
+			if (typeof claims.sub === 'string' && tierResult.success) {
 				if (await isRevoked(env.SESSION_STORE, claims.jti)) {
 					return { authenticated: false };
 				}
-				return { authenticated: true, tier: 'owner' };
+				return { authenticated: true, tier: tierResult.data };
 			}
-			// JWT verified but payload doesn't grant owner — fall through so static key path
-			// still has a chance (e.g. a future tiered JWT could live alongside BV_API_KEY).
+			// JWT verified but payload is not a recognized MCP tier — fall through so static key
+			// path still has a chance for legacy operators with unusual three-segment keys.
 		} catch {
 			// Not a valid OAuth JWT — fall through to the legacy static/service-binding path
 			// so an operator using a 3-segment static key isn't accidentally rejected.

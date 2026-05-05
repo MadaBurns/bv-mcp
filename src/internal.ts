@@ -32,13 +32,17 @@
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
 import { handleToolsCall } from './handlers/tools';
+import { isAuthorizedRequest } from './lib/auth';
 import { createAnalyticsClient } from './lib/analytics';
 import { parseScoringConfigCached } from './lib/scoring-config';
-import { parseCacheTtl } from './lib/config';
+import { OAUTH_CODE_TTL_SECONDS, parseCacheTtl } from './lib/config';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
+import { InternalOAuthGrantRequestSchema } from './schemas/oauth';
 import { createTrialKey, getTrialKeyStatus, revokeTrialKey, listTrialKeys } from './lib/trial-keys';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
+import { buildCodeRecordFromEntitlement } from './oauth/entitlements';
+import { createAuthorizationCode, getClient, putCode } from './oauth/storage';
 import {
 	queryTierToolUsage,
 	queryTierLatency,
@@ -53,6 +57,7 @@ import {
 } from './lib/analytics-queries';
 
 type InternalEnv = {
+	SESSION_STORE?: KVNamespace;
 	SCAN_CACHE?: KVNamespace;
 	RATE_LIMIT?: KVNamespace;
 	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
@@ -66,6 +71,7 @@ type InternalEnv = {
 	BV_DOH_TOKEN?: string;
 	CF_ACCOUNT_ID?: string;
 	CF_ANALYTICS_TOKEN?: string;
+	BV_WEB_INTERNAL_KEY?: string;
 };
 
 export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
@@ -142,6 +148,65 @@ internalRoutes.post('/tools/call', async (c) => {
 	}
 
 	return c.json(result);
+});
+
+/**
+ * POST /internal/oauth/grants
+ *
+ * Internal bv-web handoff endpoint for paid customer OAuth consent. bv-web
+ * authenticates the user and subscription, then asks bv-mcp to create the
+ * one-time authorization code bound to the original client, redirect URI, and PKCE challenge.
+ */
+internalRoutes.post('/oauth/grants', async (c) => {
+	const expected = c.env.BV_WEB_INTERNAL_KEY;
+	if (!expected) {
+		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
+	}
+
+	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {
+		return c.json({ error: 'unauthorized' }, 401, { 'Cache-Control': 'no-store' });
+	}
+
+	if (!c.env.SESSION_STORE) {
+		return c.json({ error: 'session_store_not_configured' }, 500, { 'Cache-Control': 'no-store' });
+	}
+
+	let body;
+	try {
+		body = InternalOAuthGrantRequestSchema.parse(await c.req.json());
+	} catch {
+		return c.json({ error: 'invalid_grant_request' }, 400, { 'Cache-Control': 'no-store' });
+	}
+
+	const client = await getClient(c.env.SESSION_STORE, body.clientId);
+	if (!client) {
+		return c.json({ error: 'unknown_client' }, 400, { 'Cache-Control': 'no-store' });
+	}
+	if (!client.redirect_uris.includes(body.redirectUri)) {
+		return c.json({ error: 'redirect_uri_not_registered' }, 400, { 'Cache-Control': 'no-store' });
+	}
+
+	const code = createAuthorizationCode();
+	await putCode(
+		c.env.SESSION_STORE,
+		code,
+		buildCodeRecordFromEntitlement({
+			clientId: body.clientId,
+			redirectUri: body.redirectUri,
+			codeChallenge: body.codeChallenge,
+			...(body.scope ? { scope: body.scope } : {}),
+			entitlement: body.entitlement,
+		}),
+	);
+
+	const redirectTo = new URL(body.redirectUri);
+	redirectTo.searchParams.set('code', code);
+	redirectTo.searchParams.set('state', body.state);
+	return c.json(
+		{ redirectTo: redirectTo.toString(), expiresIn: OAUTH_CODE_TTL_SECONDS },
+		200,
+		{ 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+	);
 });
 
 /** Default concurrency for batch endpoint. */

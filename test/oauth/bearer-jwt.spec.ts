@@ -29,16 +29,25 @@ async function clearPrefix(prefix: string) {
 	await Promise.all(list.keys.map((k) => env.SESSION_STORE.delete(k.name)));
 }
 
-async function mintOwnerJwt(opts?: { secret?: string; issuer?: string; audience?: string; jti?: string }): Promise<{ token: string; jti: string }> {
+async function mintOAuthJwt(opts?: {
+	secret?: string;
+	issuer?: string;
+	audience?: string;
+	jti?: string;
+	sub?: string;
+	tier?: 'owner' | 'developer' | 'enterprise' | 'agent';
+}): Promise<{ token: string; jti: string }> {
 	const issuer = opts?.issuer ?? 'https://example.com';
 	const audience = opts?.audience ?? `${issuer}/mcp`;
 	const jti = opts?.jti ?? newJti();
 	const token = await signJwt(
-		{ sub: 'owner', jti, tier: 'owner', client_id: 'test-client' },
+		{ sub: opts?.sub ?? 'owner', jti, tier: opts?.tier ?? 'owner', client_id: 'test-client' },
 		{ secret: opts?.secret ?? TEST_SIGNING_SECRET, ttlSeconds: OAUTH_JWT_TTL_SECONDS, issuer, audience },
 	);
 	return { token, jti };
 }
+
+const mintOwnerJwt = mintOAuthJwt;
 
 function mcpInitRequest(token: string): Request<unknown, IncomingRequestCfProperties> {
 	return new Request<unknown, IncomingRequestCfProperties>('https://example.com/mcp', {
@@ -102,25 +111,12 @@ describe('POST /mcp Bearer JWT acceptance', () => {
 		expect(res.status).toBe(200);
 	});
 
-	it('JWT with tier !== "owner" falls through to static-key branch (no early 401)', async () => {
-		// Mint a validly-signed JWT whose payload does NOT grant owner tier. The OAuth branch
-		// verifies successfully but the `claims.tier === 'owner'` gate fails, so execution
-		// falls through to the legacy static-key comparison. Because the JWT string is not
-		// equal to BV_API_KEY, that branch also rejects — the request ends in 401. This proves
-		// the fall-through path runs (rather than an early 401 on payload mismatch), because if
-		// the JWT branch short-circuited we'd never exercise the static-key comparator; the
-		// observable status is the same but the middleware contract differs. Coverage of the
-		// fall-through control flow is provided by the code path being the only way to reach a
-		// 401 for a validly-signed but non-owner JWT.
-		const jti = newJti();
-		const token = await signJwt(
-			{ sub: 'owner', jti, tier: 'developer', client_id: 'test-client' },
-			{ secret: TEST_SIGNING_SECRET, ttlSeconds: OAUTH_JWT_TTL_SECONDS, issuer: 'https://example.com', audience: 'https://example.com/mcp' },
-		);
+	it('valid developer-tier OAuth JWT → authenticated (NOT 401)', async () => {
+		const { token } = await mintOAuthJwt({ sub: 'user_123', tier: 'developer' });
 		const ctx = createExecutionContext();
 		const res = await worker.fetch(mcpInitRequest(token), jwtEnv, ctx);
 		await waitOnExecutionContext(ctx);
-		expect(res.status).toBe(401);
+		expect(res.status).not.toBe(401);
 	});
 
 	it('JWT with wrong audience → 401', async () => {

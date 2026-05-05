@@ -144,14 +144,10 @@ export async function handleToken(c: Context): Promise<Response> {
 	}
 
 	const issuer = resolveIssuer(c.req.url, env.OAUTH_ISSUER);
-	// `sub` and `tier` are hard-coded to `owner` because the only consent path today is
-	// BV_API_KEY, and Phase 6 enforces the OWNER_ALLOW_IPS allowlist before a code is issued.
-	// Phase 8 wires this claim into lib/tier-auth::resolveTier so the JWT grants owner tier
-	// on /mcp without re-checking the IP (consent already did). When Phase 9+ adds tiered or
-	// email-based consent, thread the authenticated identity through CodeRecord and bind it
-	// here instead of the static literal.
+	const subject = codeRec.subject ?? 'owner';
+	const tier = codeRec.tier ?? 'owner';
 	const token = await signJwt(
-		{ sub: 'owner', jti: newJti(), tier: 'owner', client_id: parsed.client_id },
+		{ sub: subject, jti: newJti(), tier, client_id: parsed.client_id },
 		{ secret, ttlSeconds: OAUTH_JWT_TTL_SECONDS, issuer, audience: `${issuer}/mcp` },
 	);
 

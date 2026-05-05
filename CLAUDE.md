@@ -413,6 +413,7 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 |---------|------|---------|
 | `BV_API_KEY` | Secret | Static bearer auth — resolves as `owner` tier |
 | `ENABLE_OAUTH` | var | Set to `true` to expose OAuth discovery/register/authorize/token routes. Defaults disabled so clients do not auto-open owner-key browser consent. |
+| `ENABLE_OWNER_OAUTH` | var | Set to `true` only for operator/admin deployments that should render the legacy owner `BV_API_KEY` consent page. Defaults disabled; paid customer OAuth uses bv-web/Stripe entitlements instead. |
 | `OWNER_ALLOW_IPS` | var | Comma-separated IPs allowed for `owner` tier (key + wrong IP → `partner`). Also enforced at `/oauth/authorize` consent step. |
 | `OAUTH_SIGNING_SECRET` | Secret | HS256 signing key (≥32 bytes). Upload via `wrangler secret put`. `/oauth/token` returns `server_error` 500 until set. |
 | `OAUTH_ISSUER` | var | Optional issuer override (e.g. `https://dns-mcp.blackveilsecurity.com`). Falls back to request Host — set in prod to harden against Host-header spoofing of discovery metadata. |

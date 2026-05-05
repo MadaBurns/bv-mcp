@@ -7,6 +7,15 @@ const clientKey = (id: string) => `${OAUTH_KV_PREFIX}client:${id}`;
 const codeKey = (code: string) => `${OAUTH_KV_PREFIX}code:${code}`;
 const revokedKey = (jti: string) => `${OAUTH_KV_PREFIX}revoked:${jti}`;
 
+/** Generate a URL-safe opaque authorization code (~32 bytes of entropy, base64url). */
+export function createAuthorizationCode(): string {
+	const bytes = new Uint8Array(32);
+	crypto.getRandomValues(bytes);
+	let s = '';
+	for (const b of bytes) s += String.fromCharCode(b);
+	return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 /** Persist a registered OAuth client record. Refreshes the 1-year TTL on every write. */
 export async function putClient(kv: KVNamespace, rec: ClientRecord): Promise<void> {
 	await kv.put(clientKey(rec.client_id), JSON.stringify(rec), { expirationTtl: OAUTH_CLIENT_TTL_SECONDS });

@@ -1,0 +1,1 @@
+Always use the bv-context-engine MCP's codebase_search tool for any semantic search or architectural exploration. Prioritize this over grep to minimize context usage.

@@ -1,6 +1,7 @@
 import { SELF, env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
+import { putCode } from '../../src/oauth/storage';
 
 const TEST_API_KEY = 'testkey';
 const TEST_SIGNING_SECRET = 'a'.repeat(32);
@@ -100,6 +101,43 @@ describe('POST /oauth/token', () => {
 		expect(typeof tok.access_token).toBe('string');
 		expect((tok.access_token as string).split('.')).toHaveLength(3);
 		expect(tok.expires_in).toBeGreaterThan(0);
+	});
+
+	it('issues a developer-tier JWT when the authorization code carries Stripe entitlement metadata', async () => {
+		const { verifier, challenge } = await pkcePair();
+		const cid = await registerClient();
+		const code = 'paid-code-dev';
+		await putCode(env.SESSION_STORE, code, {
+			client_id: cid,
+			redirect_uri: 'https://claude.ai/cb',
+			code_challenge: challenge,
+			issued_at: Math.floor(Date.now() / 1000),
+			scope: 'mcp',
+			subject: 'user_123',
+			tier: 'developer',
+			stripeCustomerId: 'cus_123',
+			stripeSubscriptionId: 'sub_123',
+			subscriptionStatus: 'active',
+			entitlementExpiresAt: 1893456000,
+		});
+		const res = await postToken(
+			new URLSearchParams({
+				grant_type: 'authorization_code',
+				code,
+				client_id: cid,
+				redirect_uri: 'https://claude.ai/cb',
+				code_verifier: verifier,
+			}),
+		);
+		expect(res.status).toBe(200);
+		const tok = (await res.json()) as { access_token: string };
+		const [, payload] = tok.access_token.split('.');
+		const claims = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as Record<string, unknown>;
+		expect(claims.sub).toBe('user_123');
+		expect(claims.tier).toBe('developer');
+		expect(claims.client_id).toBe(cid);
+		expect(claims.stripeCustomerId).toBeUndefined();
+		expect(claims.stripeSubscriptionId).toBeUndefined();
 	});
 
 	it('rejects replay of the same code', async () => {

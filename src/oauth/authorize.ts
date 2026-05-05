@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 import type { Context } from 'hono';
 import { AuthorizeQuerySchema } from '../schemas/oauth';
-import { getClient, putCode } from './storage';
+import { createAuthorizationCode, getClient, putCode } from './storage';
 import { isAuthorizedRequest } from '../lib/auth';
 import { OAUTH_CONSENT_RATE_LIMIT, OAUTH_CONSENT_RATE_WINDOW_SECONDS, OAUTH_KV_PREFIX, parseOwnerAllowIps } from '../lib/config';
 
@@ -46,6 +46,51 @@ function securityHeaders(): HeadersInit {
 	};
 }
 
+function ownerOAuthEnabled(env: { ENABLE_OWNER_OAUTH?: string }): boolean {
+	return env.ENABLE_OWNER_OAUTH === 'true';
+}
+
+function customerOAuthNotConfigured(): Response {
+	return new Response('OAuth customer login is not configured', {
+		status: 503,
+		headers: {
+			'Content-Type': 'text/plain; charset=utf-8',
+			'Cache-Control': 'no-store',
+		},
+	});
+}
+
+function redirectToCustomerConsent(
+	consentUrl: string | undefined,
+	parsed: {
+		client_id: string;
+		redirect_uri: string;
+		response_type: 'code';
+		state: string;
+		scope?: string;
+		code_challenge: string;
+		code_challenge_method: 'S256';
+	},
+): Response | null {
+	if (!consentUrl) return null;
+	let target: URL;
+	try {
+		target = new URL(consentUrl);
+	} catch {
+		return null;
+	}
+
+	target.searchParams.set('client_id', parsed.client_id);
+	target.searchParams.set('redirect_uri', parsed.redirect_uri);
+	target.searchParams.set('response_type', parsed.response_type);
+	target.searchParams.set('state', parsed.state);
+	target.searchParams.set('code_challenge', parsed.code_challenge);
+	target.searchParams.set('code_challenge_method', parsed.code_challenge_method);
+	if (parsed.scope) target.searchParams.set('scope', parsed.scope);
+
+	return Response.redirect(target.toString(), 302);
+}
+
 /**
  * Serves the consent page for an OAuth authorization request. Validates query params via
  * Zod (`AuthorizeQuerySchema`), then verifies the client exists and the supplied `redirect_uri`
@@ -71,20 +116,19 @@ export async function handleAuthorizeGet(c: Context): Promise<Response> {
 	if (!client.redirect_uris.includes(parsed.redirect_uri)) {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
 	}
+	if (!ownerOAuthEnabled(c.env as { ENABLE_OWNER_OAUTH?: string })) {
+		const customerRedirect = redirectToCustomerConsent(
+			(c.env as { BV_WEB_OAUTH_CONSENT_URL?: string }).BV_WEB_OAUTH_CONSENT_URL,
+			parsed,
+		);
+		if (customerRedirect) return customerRedirect;
+		return customerOAuthNotConfigured();
+	}
 	// Canonicalized form; Phase 6 POST handler must re-parse via URLSearchParams and re-validate with AuthorizeQuerySchema.
 	const query = new URL(c.req.url).searchParams.toString();
 	return new Response(renderConsentPage({ client_id: parsed.client_id, client_name: client.client_name, query }), {
 		headers: securityHeaders(),
 	});
-}
-
-/** Generate a URL-safe opaque authorization code (~32 bytes of entropy, base64url). */
-function newCode(): string {
-	const bytes = new Uint8Array(32);
-	crypto.getRandomValues(bytes);
-	let s = '';
-	for (const b of bytes) s += String.fromCharCode(b);
-	return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 /**
@@ -185,6 +229,9 @@ export async function handleAuthorizePost(c: Context): Promise<Response> {
 	if (!client.redirect_uris.includes(parsed.redirect_uri)) {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
 	}
+	if (!ownerOAuthEnabled(c.env as { ENABLE_OWNER_OAUTH?: string })) {
+		return redirectWithError(parsed.redirect_uri, 'temporarily_unavailable', parsed.state);
+	}
 
 	// OWNER_ALLOW_IPS gate — enforced at the OAuth consent step before BV_API_KEY verification.
 	// Mirrors the Bearer-path owner-tier allowlist in lib/tier-auth.ts but applied here because
@@ -203,7 +250,7 @@ export async function handleAuthorizePost(c: Context): Promise<Response> {
 		return redirectWithError(parsed.redirect_uri, 'access_denied', parsed.state);
 	}
 
-	const code = newCode();
+	const code = createAuthorizationCode();
 	await putCode(kv, code, {
 		client_id: parsed.client_id,
 		redirect_uri: parsed.redirect_uri,

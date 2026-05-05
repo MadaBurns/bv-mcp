@@ -91,6 +91,8 @@ type BvMcpEnv = {
 	BV_CERTSTREAM?: Fetcher;
 	REQUIRE_AUTH?: string;
 	ENABLE_OAUTH?: string;
+	ENABLE_OWNER_OAUTH?: string;
+	BV_WEB_OAUTH_CONSENT_URL?: string;
 	OAUTH_ISSUER?: string;
 	OAUTH_SIGNING_SECRET?: string;
 };
