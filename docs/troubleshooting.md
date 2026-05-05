@@ -60,6 +60,8 @@ Fallback config (native stdio — no bridge required):
 
 If Homebrew is installed elsewhere (macOS), replace `/opt/homebrew/bin/npx` with your actual `npx` path.
 
+If the client reports that `blackveil-dns` is "taking longer than expected to connect", prefer the hosted HTTP connector first. A cold `npx --package blackveil-dns blackveil-dns-mcp` launch can spend tens of seconds resolving and installing the package before the MCP server starts, even when the hosted endpoint is healthy.
+
 **3. Restart Claude Desktop completely**
 
 After adding/editing the config:
@@ -93,6 +95,8 @@ curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
 ```
 
 Should return JSON with a tools array including `scan_domain`.
+
+If this returns `401 Unauthorized`, remove any configured API key to use the free tier, or replace it with a valid key. Do not mix `?api_key=` and `Authorization` in the same server entry unless both values are valid; stale placeholders can cause initialization to fail instead of falling back to unauthenticated access.
 
 **6. If tools still don't connect, check Claude Desktop logs**
 
@@ -307,6 +311,7 @@ Avoid `mcp-remote` entirely. VS Code and Cursor support `"type": "http"` nativel
 ## 4. Common Errors
 
 - `401 Unauthorized`: Missing or invalid bearer token while auth is enabled.
+- `MCP server 'blackveil-dns' is taking longer than expected to connect`: Usually a local bridge/startup issue, not a hosted endpoint outage. Prefer native HTTP (`https://dns-mcp.blackveilsecurity.com/mcp`) where supported; if using stdio with `npx`, include `-y`, wait for the first cold install, or preinstall the package globally.
 - `Bad Request: missing session`: Auth is accepted, but no `Mcp-Session-Id` was sent for a stateful method. Call `initialize` first, then include the returned session ID header on follow-up MCP calls.
 - `Invalid or missing session`: Session mismatch between client and server. Re-initialize client session and retry. Sessions expire after 2 hours of idle time.
 - `Not Found: session expired or terminated`: Session TTL (2 hours) exceeded. Most MCP clients auto-reinitialize on 404; `mcp-remote` does not — restart Claude Desktop to force a new session.
