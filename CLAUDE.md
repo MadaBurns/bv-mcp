@@ -353,9 +353,12 @@ Smithery registry metadata (configSchema, scanCredentials) is updated via `PUT /
 - `security.yml`: Gitleaks + `npm audit` (**required checks**)
 - `repo-hygiene.yml`: blocks tracked generated files, verifies `.gitignore`, flags large blobs. Reusable — called by `blackveil-dns-action`, `bv-claude-dns`, and `bv-vibesdk` via `workflow_call`
 - `dns-security.yml`: weekly DNS scan of blackveilsecurity.com
+- `auto-deploy-main.yml`: deploys `main` to Cloudflare after `CI`, `CI Contract`, `Security`, and `Repo Hygiene` all pass for the same commit
 - `.gitleaks.toml`: custom rules; allowlists for test fixtures
 
 **Branch protection**: require PR reviews, require `build-and-test` + `Secret & PII scan` + `Dependency audit`, disable direct pushes to `main`.
+
+Main branch deploys are automated separately from tagged releases. `auto-deploy-main.yml` is triggered by completed workflow runs, re-checks the required gates for the same SHA, deploys with `CLOUDFLARE_API_TOKEN` from the `production` environment, and verifies `/health`. Tagged releases still use `publish.yml` for npm, MCP Registry, GitHub Release creation, and version synchronization.
 
 ### Release workflow (`publish.yml`)
 
