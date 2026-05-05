@@ -29,8 +29,8 @@ describe('ValidateKeyResponseSchema', () => {
 		const result = ValidateKeyResponseSchema.safeParse({ tier: 'developer' });
 		expect(result.success).toBe(true);
 	});
-	it('rejects null tier', () => {
+	it('accepts null tier for unknown or revoked keys', () => {
 		const result = ValidateKeyResponseSchema.safeParse({ tier: null });
-		expect(result.success).toBe(false);
+		expect(result.success).toBe(true);
 	});
 });

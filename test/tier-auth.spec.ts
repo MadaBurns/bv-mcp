@@ -94,7 +94,7 @@ describe('tier-auth KV cache validation', () => {
 
 	it('accepts all valid McpApiKeyTier values', async () => {
 		const { resolveTier } = await import('../src/lib/tier-auth');
-		const validTiers = ['free', 'agent', 'developer', 'enterprise', 'partner'];
+		const validTiers = ['free', 'agent', 'developer', 'enterprise', 'partner', 'owner'];
 
 		for (const tier of validTiers) {
 			const kv = {
@@ -107,5 +107,85 @@ describe('tier-auth KV cache validation', () => {
 			expect(result.authenticated).toBe(true);
 			expect(result.tier).toBe(tier);
 		}
+	});
+
+	it('authenticates a valid tier returned by the bv-web service binding', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockResolvedValue(Response.json({ tier: 'developer' })),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'service-bound-key',
+			{ RATE_LIMIT: kv, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			undefined,
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('developer');
+		expect(bvWeb.fetch).toHaveBeenCalledOnce();
+		expect(kv.put).toHaveBeenCalledWith(
+			`tier:${result.keyHash}`,
+			JSON.stringify({ tier: 'developer', revokedAt: null }),
+			{ expirationTtl: 300 },
+		);
+	});
+
+	it('treats null tier from bv-web as an unauthenticated revoked or unknown key', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockResolvedValue(Response.json({ tier: null })),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'unknown-service-bound-key',
+			{ RATE_LIMIT: kv, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			undefined,
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(false);
+		expect(bvWeb.fetch).toHaveBeenCalledOnce();
+		const putArgs = vi.mocked(kv.put).mock.calls[0];
+		expect(putArgs[0]).toMatch(/^tier:[a-f0-9]{64}$/);
+		expect(JSON.parse(String(putArgs[1]))).toEqual({ tier: 'free', revokedAt: expect.any(Number) });
+		expect(putArgs[2]).toEqual({ expirationTtl: 300 });
+	});
+
+	it('does not negative-cache malformed bv-web validation responses', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockResolvedValue(Response.json({ tier: 'invalid-tier' })),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'malformed-service-bound-key',
+			{ RATE_LIMIT: kv, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			undefined,
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(false);
+		expect(bvWeb.fetch).toHaveBeenCalledOnce();
+		expect(kv.put).not.toHaveBeenCalled();
 	});
 });

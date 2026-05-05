@@ -160,24 +160,26 @@ export async function resolveTier(
 				const keyResult = ValidateKeyResponseSchema.safeParse(rawData);
 				if (keyResult.success) {
 					const data = keyResult.data;
-					// Cache the valid tier result
+					if (data.tier !== null) {
+						// Cache the valid tier result
+						if (env.RATE_LIMIT) {
+							await env.RATE_LIMIT.put(
+								`tier:${keyHash}`,
+								JSON.stringify({ tier: data.tier, revokedAt: null }),
+								{ expirationTtl: TIER_KV_CACHE_TTL },
+							);
+						}
+						return { authenticated: true, tier: data.tier, keyHash };
+					}
+					// Null tier = revoked or unknown key — cache negative result to avoid
+					// repeated service binding calls within the TTL window
 					if (env.RATE_LIMIT) {
 						await env.RATE_LIMIT.put(
 							`tier:${keyHash}`,
-							JSON.stringify({ tier: data.tier, revokedAt: null }),
+							JSON.stringify({ tier: 'free', revokedAt: Date.now() }),
 							{ expirationTtl: TIER_KV_CACHE_TTL },
 						);
 					}
-					return { authenticated: true, tier: data.tier, keyHash };
-				}
-				// Null tier = revoked or unknown key — cache negative result to avoid
-				// repeated service binding calls within the TTL window
-				if (env.RATE_LIMIT) {
-					await env.RATE_LIMIT.put(
-						`tier:${keyHash}`,
-						JSON.stringify({ tier: 'free', revokedAt: Date.now() }),
-						{ expirationTtl: TIER_KV_CACHE_TTL },
-					);
 				}
 			}
 		} catch {

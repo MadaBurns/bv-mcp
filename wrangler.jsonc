@@ -61,8 +61,9 @@
   //   { "binding": "BV_CERTSTREAM", "service": "bv-certstream-worker" }
   // ],
   // Optional auth: leave empty for open mode.
+  // Set owner auth as a secret (`npx wrangler secret put BV_API_KEY`);
+  // do not declare BV_API_KEY here or deploys will publish an empty plain var.
   "vars": {
-    "BV_API_KEY": "",
     // OAuth 2.1 HS256 signing secret — leave empty in this file; set via
     //   npx wrangler secret put OAUTH_SIGNING_SECRET
     // The token endpoint returns server_error 500 until this is populated.

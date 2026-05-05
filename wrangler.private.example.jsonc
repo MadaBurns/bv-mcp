@@ -25,7 +25,7 @@
 		{ "binding": "MCP_ANALYTICS", "dataset": "your_analytics_dataset" }
 	],
 	"vars": {
-		"BV_API_KEY": "",
+		// Set BV_API_KEY with `npx wrangler secret put BV_API_KEY`.
 		"PROVIDER_SIGNATURES_URL": ""
 	}
 }
