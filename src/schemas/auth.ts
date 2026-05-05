@@ -11,7 +11,7 @@ export const TierCacheEntrySchema = z.object({
 
 /** Response from bv-web service binding validate-key endpoint. */
 export const ValidateKeyResponseSchema = z.object({
-	tier: TierSchema,
+	tier: TierSchema.nullable(),
 });
 
 /** Trial API key record stored in KV at `trial:{hash}`. */
