@@ -90,6 +90,7 @@ type BvMcpEnv = {
 	BV_DOH_TOKEN?: string;
 	BV_CERTSTREAM?: Fetcher;
 	REQUIRE_AUTH?: string;
+	ENABLE_OAUTH?: string;
 	OAUTH_ISSUER?: string;
 	OAUTH_SIGNING_SECRET?: string;
 };
@@ -99,6 +100,14 @@ import { resolveTier } from './lib/tier-auth';
 
 const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean; tierAuthResult: TierAuthResult } }>();
 const mcpPaths = ['/mcp', '/mcp/messages', '/mcp/sse'] as const;
+
+function isOAuthEnabled(env: Pick<BvMcpEnv, 'ENABLE_OAUTH'>): boolean {
+	return env.ENABLE_OAUTH === 'true';
+}
+
+function oauthDisabledResponse(): Response {
+	return new Response('Not found', { status: 404 });
+}
 
 /**
  * Electron-only URI schemes used by desktop IDE webviews (VS Code, Cursor, Windsurf).
@@ -688,17 +697,17 @@ app.route('/internal', internalRoutes);
 app.on(
 	'GET',
 	['/.well-known/oauth-authorization-server', '/.well-known/oauth-authorization-server/*'],
-	(c) => c.json(buildAuthorizationServerMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER))),
+	(c) => isOAuthEnabled(c.env) ? c.json(buildAuthorizationServerMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER))) : oauthDisabledResponse(),
 );
 app.on(
 	'GET',
 	['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/*'],
-	(c) => c.json(buildProtectedResourceMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER))),
+	(c) => isOAuthEnabled(c.env) ? c.json(buildProtectedResourceMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER))) : oauthDisabledResponse(),
 );
-app.post('/oauth/register', handleRegister);
-app.get('/oauth/authorize', handleAuthorizeGet);
-app.post('/oauth/authorize', handleAuthorizePost);
-app.post('/oauth/token', handleToken);
+app.post('/oauth/register', (c) => isOAuthEnabled(c.env) ? handleRegister(c) : oauthDisabledResponse());
+app.get('/oauth/authorize', (c) => isOAuthEnabled(c.env) ? handleAuthorizeGet(c) : oauthDisabledResponse());
+app.post('/oauth/authorize', (c) => isOAuthEnabled(c.env) ? handleAuthorizePost(c) : oauthDisabledResponse());
+app.post('/oauth/token', (c) => isOAuthEnabled(c.env) ? handleToken(c) : oauthDisabledResponse());
 
 app.all('*', (c) => {
 	// Plain text — avoids mcp-remote misinterpreting JSON as an OAuth error.

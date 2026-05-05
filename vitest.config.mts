@@ -6,7 +6,7 @@ export default defineConfig({
 		cloudflareTest({
 			isolatedStorage: false,
 			wrangler: { configPath: './wrangler.jsonc' },
-			miniflare: { kvNamespaces: ['SESSION_STORE'] },
+			miniflare: { kvNamespaces: ['SESSION_STORE'], bindings: { ENABLE_OAUTH: 'true' } },
 		}),
 	],
 	test: {
