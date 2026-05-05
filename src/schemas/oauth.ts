@@ -2,6 +2,37 @@
 import { z } from 'zod';
 
 const RedirectUriSchema = z.string().url().max(2048);
+const SafeOAuthIdentifierSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9:_-]+$/);
+const StripeIdSchema = z.string().min(4).max(128).regex(/^[a-z]+_[A-Za-z0-9]+$/);
+const EmailHashSchema = z.string().length(64).regex(/^[a-f0-9]{64}$/i);
+
+export const CustomerOAuthTierSchema = z.enum(['agent', 'developer', 'enterprise']);
+export const ActiveStripeSubscriptionStatusSchema = z.enum(['active', 'trialing']);
+
+export const PaidOAuthEntitlementResponseSchema = z.object({
+	subject: SafeOAuthIdentifierSchema,
+	emailHash: EmailHashSchema.optional(),
+	tier: CustomerOAuthTierSchema,
+	stripeCustomerId: StripeIdSchema,
+	stripeSubscriptionId: StripeIdSchema,
+	subscriptionStatus: ActiveStripeSubscriptionStatusSchema,
+	scopes: z.array(z.string().min(1).max(64).regex(/^[a-z0-9:_-]+$/i)).min(1).max(20),
+	entitlementExpiresAt: z.number().int().positive().optional(),
+});
+export type PaidOAuthEntitlementResponse = z.infer<typeof PaidOAuthEntitlementResponseSchema>;
+
+export const InternalOAuthGrantRequestSchema = z
+	.object({
+		clientId: z.string().min(1).max(200),
+		redirectUri: RedirectUriSchema,
+		state: z.string().min(1).max(1024),
+		scope: z.string().min(1).max(200).optional(),
+		codeChallenge: z.string().min(43).max(128),
+		codeChallengeMethod: z.literal('S256'),
+		entitlement: PaidOAuthEntitlementResponseSchema,
+	})
+	.passthrough();
+export type InternalOAuthGrantRequest = z.infer<typeof InternalOAuthGrantRequestSchema>;
 
 export const RegisterRequestSchema = z
 	.object({
@@ -51,11 +82,29 @@ export const ClientRecordSchema = z.object({
 });
 export type ClientRecord = z.infer<typeof ClientRecordSchema>;
 
-export const CodeRecordSchema = z.object({
-	client_id: z.string(),
-	redirect_uri: z.string(),
-	code_challenge: z.string(),
-	issued_at: z.number(),
-	scope: z.string().optional(),
-});
+export const CodeRecordSchema = z
+	.object({
+		client_id: z.string(),
+		redirect_uri: z.string(),
+		code_challenge: z.string(),
+		issued_at: z.number(),
+		scope: z.string().optional(),
+		subject: SafeOAuthIdentifierSchema.optional(),
+		tier: CustomerOAuthTierSchema.optional(),
+		emailHash: EmailHashSchema.optional(),
+		stripeCustomerId: StripeIdSchema.optional(),
+		stripeSubscriptionId: StripeIdSchema.optional(),
+		subscriptionStatus: ActiveStripeSubscriptionStatusSchema.optional(),
+		entitlementExpiresAt: z.number().int().positive().optional(),
+	})
+	.superRefine((rec, ctx) => {
+		const hasCustomerIdentity = rec.subject !== undefined || rec.tier !== undefined;
+		if (hasCustomerIdentity && (!rec.subject || !rec.tier)) {
+			ctx.addIssue({
+				code: 'custom',
+				path: ['subject'],
+				message: 'Customer OAuth code records require both subject and tier',
+			});
+		}
+	});
 export type CodeRecord = z.infer<typeof CodeRecordSchema>;
