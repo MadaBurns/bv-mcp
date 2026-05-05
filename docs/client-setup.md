@@ -402,7 +402,7 @@ Authenticated requests bypass per-IP rate limits and apply the caller's tier quo
 
 - **Bearer Token**: `Authorization: Bearer <YOUR_API_KEY>`
 - **Query Parameter**: `?api_key=<YOUR_API_KEY>`
-- **OAuth 2.1** (authorization code + PKCE) — used by the Claude mobile custom connector. See the [OAuth 2.1](#oauth-21) section below.
+- **OAuth 2.1** (authorization code + PKCE) — optional operator-enabled flow. See the [OAuth 2.1](#oauth-21) section below.
 
 The query parameter method is the simplest for clients that only support URL configuration (like Claude Code, Smithery, or simple HTTP connectors).
 
@@ -412,7 +412,7 @@ Do not configure both `?api_key=` and `Authorization` for the same server unless
 
 | Client | Recommended Auth Method | Notes |
 |--------|-------------------------|-------|
-| Claude Mobile | OAuth 2.1 custom connector | Discovered via `/.well-known/oauth-authorization-server` |
+| Claude Mobile | Hosted connector URL | OAuth is opt-in; use `?api_key=` if you need authenticated quota |
 | Claude Code | `?api_key=` in URL | Simple and native |
 | Smithery | `?api_key=` in URL | Native integration |
 | VS Code / Copilot | `headers` field | Supports secret prompt |
@@ -423,9 +423,11 @@ Do not configure both `?api_key=` and `Authorization` for the same server unless
 
 ### OAuth 2.1
 
-The server implements RFC 6749 authorization-code grant with PKCE (S256 only), RFC 7591 dynamic client registration, and RFC 8414 / RFC 9728 discovery. Tokens are HS256 JWTs with a 90-day TTL.
+OAuth is disabled on the hosted endpoint by default so MCP clients do not auto-open a browser asking for the owner API key. Operators can enable it with `ENABLE_OAUTH=true`.
 
-**Discovery endpoints** (no auth):
+When enabled, the server implements RFC 6749 authorization-code grant with PKCE (S256 only), RFC 7591 dynamic client registration, and RFC 8414 / RFC 9728 discovery. Tokens are HS256 JWTs with a 90-day TTL.
+
+**Discovery endpoints** (no auth, only when `ENABLE_OAUTH=true`):
 
 - `GET /.well-known/oauth-authorization-server` — RFC 8414 authorization server metadata (issuer, `/oauth/authorize`, `/oauth/token`, `/oauth/register`, supported grants + PKCE methods).
 - `GET /.well-known/oauth-protected-resource` — RFC 9728 metadata pointing at `/mcp` as the protected resource.
@@ -535,3 +537,5 @@ Example payload:
 | POST | `/oauth/register` | Dynamic client registration (RFC 7591) |
 | GET / POST | `/oauth/authorize` | Authorization endpoint (consent + code issuance) |
 | POST | `/oauth/token` | Token endpoint (authorization code grant with PKCE) |
+
+OAuth endpoints return `404` unless the operator explicitly sets `ENABLE_OAUTH=true`.

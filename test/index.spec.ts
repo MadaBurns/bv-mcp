@@ -1650,6 +1650,14 @@ describe('DNS Security MCP Server', () => {
 	});
 
 	describe('OAuth well-known endpoints', () => {
+		it('returns 404 for OAuth discovery when OAuth is disabled', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/.well-known/oauth-authorization-server');
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, { ...env, ENABLE_OAUTH: 'false' }, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(404);
+		});
+
 		it('returns RFC 8414 metadata for /.well-known/oauth-authorization-server', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/.well-known/oauth-authorization-server');
 			const ctx = createExecutionContext();

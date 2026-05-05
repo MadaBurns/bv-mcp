@@ -170,7 +170,7 @@ The free tier requires no authentication. Authenticated requests bypass per-IP r
 
 - **Header**: `Authorization: Bearer <KEY>`
 - **Query Param**: `?api_key=<KEY>` (for clients that can't send custom headers — Smithery, Claude Code)
-- **OAuth 2.1**: authorization-code flow with PKCE, discovered via `/.well-known/oauth-authorization-server` — used by the Claude mobile custom connector.
+- **OAuth 2.1**: optional authorization-code flow with PKCE, enabled only when operators set `ENABLE_OAUTH=true`.
 
 For full hosted setup examples, stdio usage, OAuth setup, and legacy fallback endpoints, see [**docs/client-setup.md**](docs/client-setup.md).
 
