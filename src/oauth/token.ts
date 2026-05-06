@@ -2,7 +2,7 @@
 import type { Context } from 'hono';
 import { TokenRequestSchema } from '../schemas/oauth';
 import { consumeCode } from './storage';
-import { signJwt, newJti } from './jwt';
+import { signJwt, newJti, constantTimeEqual } from './jwt';
 import { OAUTH_JWT_TTL_SECONDS, OAUTH_KV_PREFIX } from '../lib/config';
 import { resolveIssuer } from './discovery';
 
@@ -52,21 +52,33 @@ async function tokenRateExceeded(kv: KVNamespace, ip: string): Promise<boolean> 
 	return false;
 }
 
-function base64url(buf: ArrayBuffer): string {
-	const b = new Uint8Array(buf);
-	let s = '';
-	for (const x of b) s += String.fromCharCode(x);
-	return btoa(s).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+/** Decode a base64url string. Returns null on any non-base64url input rather than throwing. */
+function base64UrlDecodeSafe(s: string): Uint8Array | null {
+	if (!/^[A-Za-z0-9_-]*$/.test(s)) return null;
+	const pad = s.length % 4 === 0 ? '' : '='.repeat(4 - (s.length % 4));
+	try {
+		const bin = atob(s.replace(/-/g, '+').replace(/_/g, '/') + pad);
+		const bytes = new Uint8Array(bin.length);
+		for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+		return bytes;
+	} catch {
+		return null;
+	}
 }
 
 /**
- * Verify an RFC 7636 PKCE challenge. Computes `BASE64URL(SHA256(verifier))` and compares it
- * against the `code_challenge` captured at the authorize step. Only the S256 method is
- * supported — the authorize schema rejects anything else, so `plain` never reaches here.
+ * Verify an RFC 7636 PKCE challenge. Computes `SHA256(verifier)` and compares it
+ * against the decoded `code_challenge` bytes in constant time. Only the S256
+ * method is supported — the authorize schema rejects anything else, so `plain`
+ * never reaches here.
+ *
+ * Exported for unit testing — callers in this module should use it directly.
  */
-async function verifyPkce(verifier: string, challenge: string): Promise<boolean> {
-	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
-	return base64url(digest) === challenge;
+export async function verifyPkce(verifier: string, challenge: string): Promise<boolean> {
+	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+	const challengeBytes = base64UrlDecodeSafe(challenge);
+	if (!challengeBytes) return false;
+	return constantTimeEqual(digest, challengeBytes);
 }
 
 /**
