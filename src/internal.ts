@@ -77,6 +77,16 @@ type InternalEnv = {
 export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
 
 /**
+ * Pure decision used by the guard middleware. Cloudflare sets `cf-connecting-ip`
+ * authoritatively on every public-internet request and never on service-binding
+ * calls, so its presence is the only signal we trust. The Host header is
+ * attacker-influenced and must not be used to bypass this check.
+ */
+export function isPublicInternetRequest(headers: { cfConnectingIp: string | null; host: string | null }): boolean {
+	return Boolean(headers.cfConnectingIp);
+}
+
+/**
  * Guard: reject requests from the public internet.
  *
  * Cloudflare sets `cf-connecting-ip` on every request that arrives
@@ -87,11 +97,7 @@ export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
  * return 404 to make the route invisible.
  */
 internalRoutes.use('*', async (c, next) => {
-	const host = c.req.header('host');
-	if (host && (host.startsWith('localhost:') || host.startsWith('127.0.0.1:'))) {
-		return next();
-	}
-	if (c.req.header('cf-connecting-ip')) {
+	if (isPublicInternetRequest({ cfConnectingIp: c.req.header('cf-connecting-ip') ?? null, host: c.req.header('host') ?? null })) {
 		return c.json({ error: 'Not found' }, 404);
 	}
 	return next();
@@ -350,6 +356,25 @@ internalRoutes.post('/tools/batch', async (c) => {
 // ---------------------------------------------------------------------------
 // Trial API Key Management
 // ---------------------------------------------------------------------------
+
+/**
+ * Auth gate for /trial-keys (collection) and /trial-keys/* (item) — these routes
+ * mint API credentials, so the network guard is not enough on its own. Mirrors
+ * the /oauth/grants pattern: 503 if BV_WEB_INTERNAL_KEY is unset (mis-deploy),
+ * 401 on missing/bad bearer.
+ */
+const trialKeysAuthGate: import('hono').MiddlewareHandler<{ Bindings: InternalEnv }> = async (c, next) => {
+	const expected = c.env.BV_WEB_INTERNAL_KEY;
+	if (!expected) {
+		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
+	}
+	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {
+		return c.json({ error: 'unauthorized' }, 401, { 'Cache-Control': 'no-store' });
+	}
+	return next();
+};
+internalRoutes.use('/trial-keys', trialKeysAuthGate);
+internalRoutes.use('/trial-keys/*', trialKeysAuthGate);
 
 /**
  * POST /internal/trial-keys
