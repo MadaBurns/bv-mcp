@@ -271,7 +271,7 @@ All scoring parameters configurable via `SCORING_CONFIG` env var (JSON). Support
 ### Key rules
 
 - **SSRF**: `config.ts` defines blocked IPs/TLDs; `sanitize.ts` enforces. `global_fetch_strictly_public` compat flag. All outbound fetches use `redirect: 'manual'`
-- **Auth**: Optional `BV_API_KEY`, constant-time XOR. Token extracted from `Authorization: Bearer <token>` header first, then `?api_key=` query param as fallback (enables Smithery and URL-only clients). Tier-auth cascades: KV cache → bv-web service binding → static fallback. Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner tier has unlimited rate limits but requires client IP in `OWNER_ALLOW_IPS` — mismatched IPs downgrade to `partner`
+- **Auth**: Optional `BV_API_KEY`, constant-time XOR. Token extracted from `Authorization: Bearer <token>` header first, then `?api_key=` query param as fallback (enables Smithery and URL-only clients). Tier-auth cascades: KV cache → bv-web service binding → static fallback. Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner tier has unlimited rate limits but requires client IP in `OWNER_ALLOW_IPS` — mismatched IPs downgrade to `partner`. **Paid OAuth tier mapping** (from bv-web Stripe subscriptions): `pro`/`business` → `developer` tier (500 scans/day), `enterprise` → `enterprise` tier (10,000 scans/day). See also: **Paid OAuth Tiers** section below.
 - **Rate limiting**: 50 req/min, 300 req/hr per IP (unauthenticated). Authenticated users bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_lookalikes`/`check_shadow_domains`: 20/day per IP with 60-min caching
 - **Per-tool quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts`. Global cap 500k/day (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via `QuotaCoordinator` DO
 - **Content-Type**: POST requires `application/json`; missing allowed for compat; non-JSON → 415
@@ -283,6 +283,24 @@ All scoring parameters configurable via `SCORING_CONFIG` env var (JSON). Support
 ### Sessions
 
 Idle TTL 2 hours, sliding refresh, KV + in-memory dual-write. Missing → 400; expired → 404 (triggers re-init). Creation rate-limited 30/min per IP. Session IDs: exactly 64 lowercase hex chars. `DELETE /mcp` accepts ID via `Mcp-Session-Id` header only. `SESSION_CREATE_BY_IP` capped at 5000 IPs (LRU). `LEGACY_STREAMS` capped at 500 (two-phase eviction).
+
+### Paid OAuth Tiers
+
+When a user purchases a plan on bv-web and authenticates via OAuth, their token carries a tier claim that maps to rate limits in bv-mcp:
+
+| bv-web Plan | OAuth Tier | Scans/Day | Concurrent Tools | Support |
+|---|---|---|---|---|
+| free (unauthenticated) | (none) | 50 | 3 | Community |
+| starter | (none) | 50 | 3 | Community |
+| pro | developer | 500 | 10 | Business |
+| business | developer | 500 | 10 | Business |
+| MCP Developer ($39/mo) | developer | 500 | 10 | 48h |
+| enterprise | enterprise | 10,000 | 25 | Enterprise |
+| MCP Enterprise ($199/mo) | enterprise | 10,000 | 25 | 4h |
+
+**Implementation**: Tier resolution in `src/oauth/entitlements.ts` queries bv-web service binding `api/internal/mcp/oauth/authorize`, which validates the Stripe subscription and returns `tier` claim. Mapping logic in bv-web: `app/lib/services/mcp/oauth-entitlements.server.ts` (lines 60–66) defines `PLAN_TO_MCP_TIER`.
+
+**Static API Keys**: The `agent` tier (200 scans/day, 5 concurrent) is only for static API key authentication, not OAuth. OAuth credentials always resolve to `developer` or `enterprise` tiers.
 
 ### Input validation
 

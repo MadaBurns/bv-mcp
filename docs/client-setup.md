@@ -410,6 +410,49 @@ The query parameter method is the simplest for clients that only support URL con
 
 Do not configure both `?api_key=` and `Authorization` for the same server unless both values are intentionally valid. A stale placeholder in either location can make startup fail with `401 Unauthorized` instead of falling back to the free tier.
 
+### Static API Key Tiers
+
+Static API keys (via `?api_key=` or `Authorization: Bearer`) authenticate as a specific tier:
+
+| Tier | Quota | Use Case | Source |
+|---|---|---|---|
+| free | 50 scans/day, 3 concurrent | Unauthenticated, public testing | Per-IP rate limit (no key) |
+| **agent** | **200 scans/day, 5 concurrent** | **Team automation, CI/CD scripts** | **`BV_API_KEY` environment variable** |
+| developer | 500 scans/day, 10 concurrent | OAuth + MCP Developer plan | Stripe subscription (bv-web) |
+| enterprise | 10,000 scans/day, 25 concurrent | OAuth + MCP Enterprise plan | Stripe subscription (bv-web) |
+
+**Agent tier** is intended for:
+- **CI/CD pipelines**: Commit-on-push DNS scans as part of security checks
+- **Team automation**: Shared team key for dashboards or reporting tools
+- **Internal tools**: Monitoring scripts, periodic compliance audits
+- **Development**: Testing MCP integration before purchasing a paid plan
+
+**Configuration**:
+
+```bash
+# .env (local) or CI/CD secrets
+BV_API_KEY="bv_Kx8eZ2rdtUPfdzR8e_..."
+
+# In MCP config
+{
+  "server": "https://dns-mcp.blackveilsecurity.com/mcp?api_key=${BV_API_KEY}"
+}
+
+# Or as header (where supported)
+Authorization: Bearer bv_Kx8eZ2rdtUPfdzR8e_...
+```
+
+**Important**: 
+- Agent keys are static and long-lived. Treat them like passwords.
+- Do not commit keys to version control. Use environment variables or secret managers.
+- Rotate regularly (no built-in rotation; delete old key and generate new one).
+
+| Tier | Authentication | Plan/Payment | TTL | Use |
+|---|---|---|---|---|
+| **agent** | Static `BV_API_KEY` | Internal/team | Indefinite | Automation, CI/CD |
+| **developer** (OAuth) | Stripe subscription | MCP Developer ($39/mo) | 1 hour (JWT) | Individual developers |
+| **enterprise** (OAuth) | Stripe subscription | MCP Enterprise ($199/mo) | 1 hour (JWT) | Organizations |
+
 | Client | Recommended Auth Method | Notes |
 |--------|-------------------------|-------|
 | Claude Mobile | Hosted connector URL | OAuth is opt-in; use `?api_key=` if you need authenticated quota |
@@ -425,7 +468,7 @@ Do not configure both `?api_key=` and `Authorization` for the same server unless
 
 OAuth is disabled on the hosted endpoint by default so MCP clients do not auto-open a browser asking for the owner API key. Public discovery requires `ENABLE_OAUTH=true`; the legacy owner-key consent page additionally requires `ENABLE_OWNER_OAUTH=true`.
 
-When enabled, the server implements RFC 6749 authorization-code grant with PKCE (S256 only), RFC 7591 dynamic client registration, and RFC 8414 / RFC 9728 discovery. Tokens are HS256 JWTs with a 90-day TTL. Paid-plan OAuth tokens can carry `agent`, `developer`, or `enterprise` tier claims from a validated bv-web/Stripe entitlement; `owner` is reserved for the separate owner OAuth mode.
+When enabled, the server implements RFC 6749 authorization-code grant with PKCE (S256 only), RFC 7591 dynamic client registration, and RFC 8414 / RFC 9728 discovery. Tokens are HS256 JWTs with a 1-hour TTL. Paid-plan OAuth tokens carry `developer` or `enterprise` tier claims from a validated bv-web/Stripe entitlement; `agent`, `owner`, and `partner` are reserved for static keys and admin flows.
 
 **Discovery endpoints** (no auth, only when `ENABLE_OAUTH=true`):
 
@@ -448,6 +491,8 @@ When enabled, the server implements RFC 6749 authorization-code grant with PKCE 
 - JWT revocation is by JTI. Rotation of `OAUTH_SIGNING_SECRET` invalidates every outstanding JWT at next verify.
 
 **Reference client** (probes, rotation, and rollback runbook): [`scripts/oauth/README.md`](../scripts/oauth/README.md) and [`scripts/oauth/prod-probe.py`](../scripts/oauth/prod-probe.py).
+
+**OAuth Tier Resolution**: See [`docs/oauth-stripe-integration.md`](./oauth-stripe-integration.md) for how Stripe subscriptions map to OAuth tiers.
 
 ### Troubleshooting Client-Specific Behavior
 
