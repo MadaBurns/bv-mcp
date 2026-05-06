@@ -112,3 +112,5 @@ generate_*.py
 .mcp-registry-key.pem
 reports/csc-readiness-proof.html
 scripts/chaos/csc-scale-chaos.py
+reports/scan-manifest.json
+reports/scale-audit-log.txt
