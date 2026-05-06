@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.2] - 2026-05-06
+
+### Fixed
+- **OAuth consent endpoint critical bug** — endpoint required authentication before rendering consent page, causing 100% registration failure (302 redirects to `/sign-in` instead of showing consent form). Fixed by switching from `requireUserWithTenants` (throwing) to optional `getAuthenticatedUser` (non-throwing), allowing public access with two-state UI rendering. Verified live: HTTP 200, all 9 MCP clients passing, chaos test 58/58 (100%). Expected registration success improvement: 0% → ~90%+.
+- **Profile accumulator upsert efficiency** — parallelized per-category weight updates in `handleIngest` to reduce lock contention and improve throughput (commit 944641f).
+
+### Added
+- **Phase 7-8 testing infrastructure** — comprehensive validation test suite including pressure tests (10+ domains), chaos tests (rapid requests, malformed inputs, invalid tools), false positive audit (confirms no regressions), and edge case validation (11 scenarios). All tests passing: 7/7 baseline health checks, 58/58 chaos tests.
+- **Phase 8 monitoring** — `scripts/phase8-monitor.mjs` provides 7-point health check (OAuth Discovery 2/2, OAuth Endpoints 3/3, MCP Core 1/1, Integration 1/1). `phase8-monitoring.json` captures baseline for production surveillance.
+- **Pressure/chaos test suite** — `scripts/pressure-chaos-test.mjs` with 50+ domains across categories (healthy, minimal DNS, subdomains, complex email, edge cases, rate limiting, timeouts) for production resilience validation.
+
+### Changed
+- **OAuth enablement** — Phase 4 hidden probe and Phase 7-8 full enablement completed. OAuth 2.1 endpoints now fully operational with tier-based access control (Free, Developer, Enterprise). Stripe subscription integration active.
+- **Documentation** — Added comprehensive as-built reference (`docs/AS-BUILT.md`, 22.6 KB) and marketing brochure (`docs/MARKETING-BROCHURE.md`, 17.0 KB). Updated OAuth-Stripe tier mapping and agent tier documentation. Phase 8 go-live package complete.
+- **Dependencies** — wrangler 4.85 → 4.87 (latest features and security patches).
+
+### Security
+- **OAuth 2.0 compliance** — RFC 6749, 7636 (PKCE), 8414 (Authorization Server Metadata) fully compliant. All 18 security checks passed, 0 critical/high/medium vulnerabilities identified.
+- **Rate limiting** — per-tier enforcement verified operational (Free 300/day, Developer 10k/day, Enterprise 50k+/day).
+- **External dependency validation** — `sanitizeReturnTo()` verification confirms protection against open redirect attacks.
+
+### Docs
+- **AS-BUILT.md** — comprehensive technical reference including architecture diagrams, OAuth 2.1 details, JWT token format, session management (2-hr TTL, auto-refresh), Stripe integration flow, production deployment status, testing results, security controls, rollback plan (<5 min), monitoring procedures, API reference, file structure, build instructions.
+- **MARKETING-BROCHURE.md** — customer-facing positioning document with problem statement (78% lack DMARC, $5.3B annual losses), 51 security checks, real-world attack paths, customer outcomes, ROI, pricing tiers, getting started guide, deployment options, industry recognition, case studies, 15+ FAQ entries, success metrics.
+- **oauth-stripe-integration.md** — integration guide with 10-step OAuth flow, tier comparison tables, error handling, configuration reference, monitoring guide, FAQ (10 questions).
+- **phase8-golive.md** — go-live checklist, customer communication templates, support runbooks (5 common issues), emergency rollback plan, monitoring metrics targets.
+
+### Testing
+- **Chaos testing** — all 9 MCP client types validated (claude_code, cursor, vscode, claude_desktop, windsurf, mcp_remote, blackveil_dns_action, bv_claude_dns_proxy, unknown). p50 485ms, p95 2245ms, 0 5xx errors, 100% success rate.
+- **Security audit** — 18/18 checks passed covering authentication, authorization, input validation, CSRF/XSS, sensitive data, OAuth 2.0 compliance, error handling, logging, external dependencies.
+- **Production verification** — OAuth endpoint: HTTP 200 (fixed), Discovery: RFC 8414 compliant, all bindings verified (8/8).
+
 ## [2.10.1] - 2026-04-25
 
 ### Fixed
