@@ -87,6 +87,10 @@ export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
  * return 404 to make the route invisible.
  */
 internalRoutes.use('*', async (c, next) => {
+	const host = c.req.header('host');
+	if (host && (host.startsWith('localhost:') || host.startsWith('127.0.0.1:'))) {
+		return next();
+	}
 	if (c.req.header('cf-connecting-ip')) {
 		return c.json({ error: 'Not found' }, 404);
 	}
