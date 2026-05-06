@@ -29,7 +29,7 @@
 		"url": "https://github.com/MadaBurns/bv-mcp/issues"
 	},
 	"engines": {
-		"node": ">=18"
+		"node": ">=22.0.0"
 	},
 	"workspaces": [
 		"packages/*"
@@ -62,7 +62,7 @@
 	},
 	"scripts": {
 		"build": "tsup",
-		"dev": "wrangler dev",
+		"dev": "wrangler dev -c .dev/wrangler.dev.jsonc",
 		"deploy": "wrangler deploy -c wrangler.jsonc",
 		"deploy:private": "node scripts/deploy-private.mjs",
 		"mcp:stdio": "node dist/stdio.js",
@@ -79,20 +79,20 @@
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.13.3",
-		"@cloudflare/workers-types": "^4.20260329.1",
+		"@cloudflare/workers-types": "4.20260506.1",
 		"@types/punycode": "^2.1.4",
-		"eslint": "^10.0.2",
-		"hono": "^4.12.7",
-		"tsup": "^8.5.0",
-		"typescript": "^5.5.2",
-		"typescript-eslint": "^8.56.1",
-		"vitest": "^4.1.0",
-		"wrangler": "^4.87.0"
+		"eslint": "9.39.3",
+		"hono": "4.12.14",
+		"tsup": "8.5.0",
+		"typescript": "5.9.3",
+		"typescript-eslint": "8.56.0",
+		"vitest": "4.1.2",
+		"wrangler": "4.88.0"
 	},
 	"dependencies": {
 		"@blackveil/dns-checks": "^1.0.4",
-		"drizzle-orm": "^0.45.2",
+		"drizzle-orm": "0.45.2",
 		"punycode": "^2.3.1",
-		"zod": "^4.3.6"
+		"zod": "4.3.6"
 	}
 }
