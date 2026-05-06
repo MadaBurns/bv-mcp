@@ -112,3 +112,5 @@ generate_*.py
 .mcp-registry-key.pem
 reports/tenant-readiness-proof.html
 scripts/chaos/tenant-scale-chaos.py
+reports/scan-manifest.json
+reports/scale-audit-log.txt
