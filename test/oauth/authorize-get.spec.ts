@@ -60,7 +60,7 @@ describe('GET /oauth/authorize', () => {
 		url.searchParams.set('code_challenge', 'x'.repeat(43));
 		url.searchParams.set('code_challenge_method', 'S256');
 		const ctx = createExecutionContext();
-		const res = await worker.fetch(new Request(url.toString()), { ...env, ENABLE_OAUTH: 'true', ENABLE_OWNER_OAUTH: 'false' }, ctx);
+		const res = await worker.fetch(new Request(url.toString()), { ...env, ENABLE_OAUTH: 'true', ENABLE_OWNER_OAUTH: 'false', BV_WEB_OAUTH_CONSENT_URL: undefined }, ctx);
 		await waitOnExecutionContext(ctx);
 		expect(res.status).toBe(503);
 		const body = await res.text();
