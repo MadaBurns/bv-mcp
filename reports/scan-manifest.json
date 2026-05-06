@@ -1,0 +1,4002 @@
+[
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zendesk.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "salesforce.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "zoom.us",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "adobe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "netflix.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "paypal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "google.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "figma.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "atlassian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscglobal.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "apple.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "theguardian.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "shopify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "dropbox.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cnn.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "amazon.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "hubspot.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "meta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "twitter.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "stripe.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "slack.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cloudflare.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "corporateservicecompany.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "reuters.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "github.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "notion.so",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "nytimes.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "cscdigitalbrand.services",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "bbc.co.uk",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "spotify.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "okta.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "microsoft.com",
+    "score": null,
+    "grade": null
+  },
+  {
+    "domain": "linkedin.com",
+    "score": null,
+    "grade": null
+  }
+]
