@@ -66,7 +66,7 @@
   "vars": {
     // OAuth browser consent is opt-in. Leave disabled for the hosted endpoint so
     // MCP clients do not auto-open a browser asking for the owner API key.
-    "ENABLE_OAUTH": "false",
+    "ENABLE_OAUTH": "true",
     "ENABLE_OWNER_OAUTH": "false",
     // Customer OAuth consent page hosted by bv-web. Required before enabling public OAuth.
     "BV_WEB_OAUTH_CONSENT_URL": "",
