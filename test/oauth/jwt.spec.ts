@@ -60,4 +60,32 @@ describe('oauth/jwt', () => {
 		expect(claims.aud).toBe('https://y');
 		expect(claims.exp).toBe(NOW + 60);
 	});
+
+	it('verifyJwt rejects a token whose header alg is not HS256, even with a valid HS256 HMAC', async () => {
+		// Forge a token: header says alg=none, body is normal claims, signature is the
+		// correct HS256 HMAC over header.body. RFC 8725 §3.1 requires verifiers to pin
+		// the expected alg to defend against algorithm-confusion / downgrade attacks.
+		const b64url = (s: string) => btoa(s).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+		const header = b64url(JSON.stringify({ alg: 'none', typ: 'JWT' }));
+		const payload = b64url(
+			JSON.stringify({ iss: 'https://x', aud: 'https://y', sub: 'owner', jti: 'j1', iat: NOW, exp: NOW + 60 }),
+		);
+		const unsigned = `${header}.${payload}`;
+		const key = await crypto.subtle.importKey(
+			'raw',
+			new TextEncoder().encode(SECRET),
+			{ name: 'HMAC', hash: 'SHA-256' },
+			false,
+			['sign'],
+		);
+		const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(unsigned)));
+		let s = '';
+		for (const x of sig) s += String.fromCharCode(x);
+		const token = `${unsigned}.${btoa(s).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')}`;
+
+		const { verifyJwt } = await import('../../src/oauth/jwt');
+		await expect(
+			verifyJwt(token, { secret: SECRET, issuer: 'https://x', audience: 'https://y', now: NOW }),
+		).rejects.toThrow(/alg|algorithm/i);
+	});
 });

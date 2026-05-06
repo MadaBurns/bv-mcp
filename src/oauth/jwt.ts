@@ -56,7 +56,7 @@ async function hmacKey(secret: string): Promise<CryptoKey> {
 	return crypto.subtle.importKey('raw', textEncoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
 }
 
-function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
+export function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
 	if (a.byteLength !== b.byteLength) return false;
 	let diff = 0;
 	for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
@@ -87,6 +87,17 @@ export async function verifyJwt(token: string, opts: JwtVerifyOptions): Promise<
 	const parts = token.split('.');
 	if (parts.length !== 3) throw new Error('malformed token');
 	const [h, p, s] = parts;
+
+	// Pin alg=HS256 (RFC 8725 §3.1). Reject `none` and any other algorithm
+	// before doing further work — defends against algorithm-confusion attacks
+	// where a forged header tricks a verifier into the wrong code path.
+	let header: { alg?: unknown; typ?: unknown };
+	try {
+		header = JSON.parse(new TextDecoder().decode(base64UrlDecode(h))) as { alg?: unknown };
+	} catch {
+		throw new Error('malformed token');
+	}
+	if (header.alg !== 'HS256') throw new Error('unsupported alg');
 
 	// Verify signature FIRST, before trusting any payload bytes
 	const key = await hmacKey(opts.secret);
