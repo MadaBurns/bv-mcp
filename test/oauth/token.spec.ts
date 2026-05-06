@@ -192,7 +192,7 @@ describe('POST /oauth/token', () => {
 		const cid = await registerClient();
 		// Use authEnv (with secret) to mint the code, then call /oauth/token without the secret.
 		const code = await getAuthCode(cid, challenge);
-		const noSecretEnv = { ...env, BV_API_KEY: TEST_API_KEY } as TestEnv;
+		const noSecretEnv = { ...env, BV_API_KEY: TEST_API_KEY, OAUTH_SIGNING_SECRET: undefined } as TestEnv;
 		const body = new URLSearchParams({
 			grant_type: 'authorization_code',
 			code,
