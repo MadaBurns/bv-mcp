@@ -1,0 +1,30 @@
+{
+  "timestamp": "2026-05-06T04:34:45.438Z",
+  "apiKey": "bv_Kx8eZ2r***",
+  "tests": {
+    "pressure": {
+      "successCount": 10,
+      "errorCount": 0,
+      "avgTime": 1037.1,
+      "successRate": 100,
+      "errors": []
+    },
+    "chaos": {
+      "passCount": 14,
+      "failCount": 1,
+      "passRate": 93.33333333333333
+    },
+    "falsePositives": {
+      "issuesFound": 0,
+      "issues": []
+    },
+    "edgeCases": {
+      "passCount": 11,
+      "failCount": 0
+    },
+    "tierEnforcement": {
+      "requestCount": 3,
+      "rateLimitHit": false
+    }
+  }
+}
