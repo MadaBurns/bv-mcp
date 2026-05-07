@@ -9,12 +9,12 @@ Open-source DNS & email security scanner for Claude, Cursor, VS Code, and MCP cl
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
-[![Tests](https://img.shields.io/badge/Tests-2317-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![Tests](https://img.shields.io/badge/Tests-2587-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![Coverage](https://img.shields.io/badge/Coverage-~90%25-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![BUSL-1.1 License](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
 ![DNS Security](https://dns-mcp.blackveilsecurity.com/badge/blackveilsecurity.com)
 
