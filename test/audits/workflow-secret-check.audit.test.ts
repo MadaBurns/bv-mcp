@@ -17,27 +17,20 @@
 // Per testing-methodology.md principle 4 — audit tests replace review checklists.
 
 import { describe, it, expect } from 'vitest';
-import autoDeployMain from '../../.github/workflows/auto-deploy-main.yml?raw';
-import ciContract from '../../.github/workflows/ci-contract.yml?raw';
-import ci from '../../.github/workflows/ci.yml?raw';
-import deployHook from '../../.github/workflows/deploy-hook.yml?raw';
-import dnsSecurity from '../../.github/workflows/dns-security.yml?raw';
-import publishYml from '../../.github/workflows/publish.yml?raw';
-import repoHygiene from '../../.github/workflows/repo-hygiene.yml?raw';
-import securityYml from '../../.github/workflows/security.yml?raw';
-import triageIssues from '../../.github/workflows/triage-issues.yml?raw';
 
-const WORKFLOWS: ReadonlyArray<readonly [string, string]> = [
-	['auto-deploy-main.yml', autoDeployMain],
-	['ci-contract.yml', ciContract],
-	['ci.yml', ci],
-	['deploy-hook.yml', deployHook],
-	['dns-security.yml', dnsSecurity],
-	['publish.yml', publishYml],
-	['repo-hygiene.yml', repoHygiene],
-	['security.yml', securityYml],
-	['triage-issues.yml', triageIssues],
-];
+// Glob `*.yml` only — disabled workflows (`*.yml.disabled`) don't run, so
+// auditing their secret-check patterns is irrelevant. Renaming to
+// `.disabled` (operational pause) or back to `.yml` (re-enable) just shifts
+// which files get scanned, no static-import edits required.
+const workflowModules = import.meta.glob('../../.github/workflows/*.yml', {
+	query: '?raw',
+	import: 'default',
+	eager: true,
+}) as Record<string, string>;
+
+const WORKFLOWS: ReadonlyArray<readonly [string, string]> = Object.entries(workflowModules)
+	.map(([path, content]) => [path.split('/').pop()!, content] as const)
+	.sort(([a], [b]) => a.localeCompare(b));
 
 describe('workflow secret-check audit', () => {
 	it('no workflow uses the warn-and-skip anti-pattern (`skip=true` written to $GITHUB_ENV)', () => {
