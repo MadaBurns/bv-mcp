@@ -722,7 +722,7 @@ app.all('*', (c) => {
 	return c.text('Not found', 404);
 });
 
-import { handleScheduled, handleDailyDigest } from './scheduled';
+import { handleScheduled, handleDailyDigest, handleFuzzingScan } from './scheduled';
 import type { ScheduledEnv } from './scheduled';
 
 export default {
@@ -732,6 +732,7 @@ export default {
 			ctx.waitUntil(handleDailyDigest(env as ScheduledEnv));
 		} else {
 			ctx.waitUntil(handleScheduled(env as ScheduledEnv));
+			ctx.waitUntil(handleFuzzingScan(env as ScheduledEnv));
 		}
 	},
 };

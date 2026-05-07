@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.6] - 2026-05-07
+
+### Added
+- **Fuzzing detection** — the worker now records error events from suspicious traffic patterns (unknown tool enumeration, JSON-RPC method enumeration, Zod argument fuzzing, auth probing) into a KV-backed sliding-window counter, and the existing 15-min cron emits a `fuzzing_suspected` alert via `ALERT_WEBHOOK_URL` when any principal trips the threshold. Detection is fail-soft — KV unavailable, webhook 500, or any other infrastructure failure must not break the request path. Principals are identified by `keyHash` for authenticated traffic and `ipHash` (FNV-1a of cf-connecting-ip) for anonymous; raw IPs never appear in alert payloads. New module surface: `src/lib/fuzzing-detector.ts`, `src/lib/fuzzing-counter.ts`, `src/schemas/alerting.ts`, `handleFuzzingScan` in `src/scheduled.ts`. Threshold config: `FUZZ_THRESHOLDS` in `src/lib/config.ts` (single source of truth, audited). v1 thresholds are conservative (×3 the plan defaults) to stay silent for one week of baseline collection before lowering.
+- **`RATE_LIMIT` KV in test bindings** — required for the new integration tests.
+
+### Testing
+- 28 new tests across all 6 layers of the testing pyramid (unit / integration / contract / audit / subcutaneous E2E / chaos), each written first and watched fail per TDD. Full suite: 2587 pass.
+
 ## [2.10.5] - 2026-05-07
 
 ### Security

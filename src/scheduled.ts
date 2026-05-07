@@ -15,6 +15,10 @@ import { queryRecentAnomalies, queryRateLimitSurge, queryTierDigest } from './li
 import { buildAlertPayload, buildDigestPayload, sendAlert } from './lib/alerting';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { logEvent, logError } from './lib/log';
+import { scoreWindow } from './lib/fuzzing-detector';
+import { readWindow } from './lib/fuzzing-counter';
+import { buildFuzzingAlertPayload } from './schemas/alerting';
+import { FUZZ_THRESHOLDS } from './lib/config';
 
 interface AnomalyRow {
 	total_calls?: number;
@@ -35,6 +39,7 @@ export interface ScheduledEnv {
 	ALERT_P95_THRESHOLD?: string;
 	ALERT_RATE_LIMIT_THRESHOLD?: string;
 	ALERT_LOOKBACK_MINUTES?: string;
+	RATE_LIMIT?: KVNamespace;
 }
 
 const DEFAULT_ERROR_THRESHOLD = 5;
@@ -134,6 +139,91 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			category: 'scheduled',
 			details: { message: 'Analytics alerting check failed' },
 		});
+	}
+}
+
+/** Send a fuzzing alert as a JSON payload — separate from sendAlert which is Slack-shaped. */
+async function sendFuzzingAlert(webhookUrl: string, payload: import('./schemas/alerting').FuzzingAlert): Promise<void> {
+	if (!webhookUrl) return;
+	try {
+		const parsed = new URL(webhookUrl);
+		if (parsed.protocol !== 'https:') return;
+	} catch {
+		return;
+	}
+	try {
+		await fetch(webhookUrl, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(payload),
+			redirect: 'manual',
+		});
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'warn',
+			category: 'alerting',
+			details: { message: 'fuzz_alert_dispatch_failed' },
+		});
+	}
+}
+
+/**
+ * Fuzzing-detection scan: lists every principal with recent fuzz events in
+ * RATE_LIMIT KV, scores their sliding window against FUZZ_THRESHOLDS, and posts
+ * a `fuzzing_suspected` alert to ALERT_WEBHOOK_URL when the verdict trips.
+ *
+ * Designed to fail-soft: KV unavailable or webhook 500 must not throw.
+ * See docs/plans/2026-05-07-fuzzing-detection-tdd-plan.md.
+ */
+export async function handleFuzzingScan(env: ScheduledEnv): Promise<void> {
+	if (!env.ALERT_WEBHOOK_URL || !env.RATE_LIMIT) return;
+
+	const nowSec = Math.floor(Date.now() / 1000);
+	const observedAt = new Date().toISOString();
+
+	// fuzz:p:<principalId>:e:<bucket>:<kind> — scan to find all unique principals.
+	let cursor: string | undefined;
+	const principals = new Set<string>();
+	try {
+		do {
+			const list = await env.RATE_LIMIT.list({ prefix: 'fuzz:p:', cursor, limit: 1000 });
+			for (const k of list.keys) {
+				// Extract `<principalId>` between `fuzz:p:` and `:e:`.
+				const rest = k.name.slice('fuzz:p:'.length);
+				const eIdx = rest.indexOf(':e:');
+				if (eIdx > 0) principals.add(rest.slice(0, eIdx));
+			}
+			cursor = list.list_complete ? undefined : list.cursor;
+		} while (cursor);
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'warn',
+			category: 'scheduled',
+			details: { message: 'fuzz_scan_list_failed' },
+		});
+		return;
+	}
+
+	for (const principalId of principals) {
+		try {
+			const events = await readWindow(env.RATE_LIMIT, principalId, nowSec, FUZZ_THRESHOLDS.windowSeconds);
+			const verdict = scoreWindow(events, FUZZ_THRESHOLDS);
+			if (!verdict.suspected) continue;
+			// principalIdHash invariant: 16 hex chars. The recorder writes either keyHash
+			// (already 16 hex from tier-auth) or ipHash (`i_<hex>` from analytics).
+			// Strip the `i_` prefix and pad/trim to 16 hex chars to satisfy the schema.
+			const principalKind: 'ip' | 'keyHash' = principalId.startsWith('i_') ? 'ip' : 'keyHash';
+			const rawHash = principalId.startsWith('i_') ? principalId.slice(2) : principalId;
+			const principalIdHash = rawHash.padEnd(16, '0').slice(0, 16);
+			const payload = buildFuzzingAlertPayload(verdict, { principalKind, principalIdHash, observedAt });
+			await sendFuzzingAlert(env.ALERT_WEBHOOK_URL, payload);
+		} catch (err) {
+			logError(err instanceof Error ? err : String(err), {
+				severity: 'warn',
+				category: 'scheduled',
+				details: { message: 'fuzz_scan_principal_failed', principalId: principalId.slice(0, 8) },
+			});
+		}
 	}
 }
 
