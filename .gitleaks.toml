@@ -55,8 +55,13 @@ regexes = [
 # Test fixtures use well-known service IPs (GitHub Pages, AWS, DigitalOcean) intentionally
 paths = [
   '''test/''',
-  '''src/tools/.*-analysis\.ts$''',  # Analysis modules contain IP examples in JSDoc
-  '''src/lib/ip-utils\.ts$''',       # IP utility module contains example IPs in JSDoc
+  '''packages/[^/]+/test/''',          # Sub-package fixtures
+  '''src/tools/.*-analysis\.ts$''',    # Analysis modules contain IP examples in JSDoc
+  '''src/lib/ip-utils\.ts$''',         # IP utility module contains example IPs in JSDoc
+  '''docs/.*\.md$''',                  # IPv4 examples in RFC / explanation context (per-rule, not global)
+  '''CHANGELOG\.md$''',                # IPs that appear in incident write-ups
+  '''scripts/tranco-deep-.*\.json$''', # Captured scan artifacts (resolved IPs from public Tranco list)
+  '''scripts/phase\d+-.*\.json$''',    # Captured monitoring snapshots
 ]
 
 [[rules]]
@@ -69,6 +74,13 @@ keywords = ["phone", "tel", "mobile", "cell", "fax"]
 [rules.allowlist]
 paths = [
   '''test/''',
+  '''packages/[^/]+/test/''',
+  '''scripts/tranco-deep-.*\.json$''',     # Numeric IDs in scan artifacts
+  '''scripts/phase\d+-.*\.json$''',
+  '''scripts/chaos/''',                    # Test sentinels (e.g. 1234567890 placeholders)
+  '''crates/[^/]+/Cargo\.lock$''',         # Rust deps include numeric versions/hashes
+  '''crates/[^/]+/target/''',              # Rust build artifacts (gitignored locally; safety net)
+  '''docs/.*\.md$''',                      # Phone-number-shaped numerics in docs (timestamps, hashes)
 ]
 
 [[rules]]
@@ -128,7 +140,18 @@ regex = '''(?i)(?:key|api|token|secret|client|passwd|password|auth|access)(?:[0-
 keywords = ["key","api","token","secret","client","passwd","password","auth","access"]
 [rules.allowlist]
 paths = [
-  '''test/''', # Test fixtures use dummy keys/tokens — never real secrets
+  '''test/''',                       # Test fixtures use dummy keys/tokens — never real secrets
+  '''packages/[^/]+/test/''',
+]
+regexTarget = "match"
+# Env-var-default literals — these reference the env var name (or a placeholder
+# documented in shell-export form), not a real key. Cataloged by
+# test/audits/no-tracked-secrets.audit.test.ts (N5).
+regexes = [
+  '''process\.env\.BV_API_KEY''',           # scripts/tranco-scan.mjs:21, tranco-deep-scan.mjs:28
+  '''os\.getenv\(.{0,40}BV_API_KEY''',      # scripts/chaos/chaos-test-wasm.py:9
+  '''api_key=\$\{BV_API_KEY\}''',           # .mcp.json placeholder
+  '''bv_Kx8eZ2rdtUPfdzR8e_\.\.\.''',        # docs/client-setup.md:434 — truncated doc placeholder
 ]
 
 # ─── Global Allowlists ───────────────────────────────────────────────
@@ -145,4 +168,5 @@ paths = [
   '''worker-configuration\.d\.ts$''', # Generated CF types
   '''\.dev/''',                      # Local deploy overrides (gitignored)
   '''docs/plans/''',                 # Internal planning docs (gitignored)
+  '''test/audits/no-tracked-secrets\.audit\.test\.ts$''', # Audit test contains regex literals (incl. PEM header)
 ]
