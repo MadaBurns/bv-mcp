@@ -187,10 +187,14 @@ describe('POST /oauth/token', () => {
 		expect(((await res.json()) as Record<string, unknown>).error).toBe('unsupported_grant_type');
 	});
 
-	it('returns 500 server_error when OAUTH_SIGNING_SECRET is missing', async () => {
+	it('returns 503 service_unavailable when OAUTH_SIGNING_SECRET is missing (v2.10.9 route-layer gate)', async () => {
+		// Pre-v2.10.9 this was a 500 from the inner handler (`src/oauth/token.ts:154`).
+		// v2.10.9 added a route-layer `oauthAvailability` gate that intercepts FIRST,
+		// so the user-visible failure now surfaces as 503 service_unavailable. The
+		// inner 500 path remains as defense in depth — exercised by direct handler
+		// unit tests, not via worker.fetch.
 		const { verifier, challenge } = await pkcePair();
 		const cid = await registerClient();
-		// Use authEnv (with secret) to mint the code, then call /oauth/token without the secret.
 		const code = await getAuthCode(cid, challenge);
 		const noSecretEnv = { ...env, BV_API_KEY: TEST_API_KEY, OAUTH_SIGNING_SECRET: undefined } as TestEnv;
 		const body = new URLSearchParams({
@@ -201,14 +205,14 @@ describe('POST /oauth/token', () => {
 			code_verifier: verifier,
 		});
 		const res = await postToken(body, noSecretEnv);
-		expect(res.status).toBe(500);
-		expect(((await res.json()) as Record<string, unknown>).error).toBe('server_error');
+		expect(res.status).toBe(503);
+		expect(((await res.json()) as Record<string, unknown>).error).toBe('service_unavailable');
 	});
 
-	it('returns 500 server_error when OAUTH_SIGNING_SECRET is shorter than 32 bytes', async () => {
+	it('returns 503 service_unavailable when OAUTH_SIGNING_SECRET is shorter than 32 bytes', async () => {
 		// HS256 requires ≥32 bytes for 256-bit security margin (RFC 7518 §3.2). A too-short
-		// secret must be rejected identically to a missing one — same error_description, no
-		// leak of the distinction between "missing" and "too short".
+		// secret must be rejected identically to a missing one. Both states are 'misconfigured'
+		// per `oauthAvailability` and surface the same wire shape.
 		const { verifier, challenge } = await pkcePair();
 		const cid = await registerClient();
 		const code = await getAuthCode(cid, challenge);
@@ -221,10 +225,9 @@ describe('POST /oauth/token', () => {
 			code_verifier: verifier,
 		});
 		const res = await postToken(body, shortSecretEnv);
-		expect(res.status).toBe(500);
+		expect(res.status).toBe(503);
 		const payload = (await res.json()) as Record<string, unknown>;
-		expect(payload.error).toBe('server_error');
-		expect(payload.error_description).toBe('OAUTH_SIGNING_SECRET not configured');
+		expect(payload.error).toBe('service_unavailable');
 	});
 
 	it('rate-limits token requests at 30/min per IP', async () => {
