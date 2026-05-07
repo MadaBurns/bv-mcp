@@ -85,6 +85,23 @@ export function parseCacheTtl(envValue?: string): number {
 export const GLOBAL_DAILY_TOOL_LIMIT = 500_000;
 
 /**
+ * Sliding-window thresholds for the fuzzing detector. Single source of truth —
+ * the audit test in test/audits/fuzzing-config.audit.test.ts asserts these are
+ * not duplicated elsewhere.
+ *
+ * Defaults are deliberately conservative for v1 rollout (×3 the values in
+ * docs/plans/2026-05-07-fuzzing-detection-tdd-plan.md) so prod stays silent
+ * for one week of baseline collection before lowering.
+ */
+export const FUZZ_THRESHOLDS = {
+	windowSeconds: 60,
+	unknown_tool: 30,
+	unknown_method: 15,
+	zod_arg: 60,
+	auth_fail: 90,
+} as const;
+
+/**
  * Free-tier daily tool quotas for unauthenticated callers.
  * Tools omitted from this map are governed only by baseline per-IP rate limits.
  */
