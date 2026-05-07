@@ -231,13 +231,14 @@ jobs:
     name: Publish to MCP Registry
     needs: [validate, version-bump]
     runs-on: ubuntu-latest
+    environment: production
     steps:
-      - name: Check registry token
+      - name: Check publisher key
         env:
-          MCP_TOKEN: ${{ secrets.MCP_REGISTRY_TOKEN }}
+          MCP_PUBLISHER_KEY: ${{ secrets.MCP_PUBLISHER_KEY }}
         run: |
-          if [ -z "$MCP_TOKEN" ]; then
-            echo "::error::MCP_REGISTRY_TOKEN not configured"
+          if [ -z "$MCP_PUBLISHER_KEY" ]; then
+            echo "::error::MCP_PUBLISHER_KEY not configured in production environment"
             exit 1
           fi
 
@@ -250,7 +251,14 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - name: Publish to registry
-        run: npx mcp-publisher publish
+      # DNS-based login + publish (com.blackveilsecurity/* namespace requires
+      # ed25519 ownership proof at the apex blackveilsecurity.com TXT — see
+      # CLAUDE.md "MCP Registry DNS auth"). The previous design used a
+      # long-lived JWT in MCP_REGISTRY_TOKEN, which expired silently and went
+      # unnoticed because publish.yml warn-and-skipped on missing secrets.
+      - name: Login + publish to registry
         env:
-          MCP_REGISTRY_TOKEN: ${{ secrets.MCP_REGISTRY_TOKEN }}
+          MCP_PUBLISHER_KEY: ${{ secrets.MCP_PUBLISHER_KEY }}
+        run: |
+          npx mcp-publisher login dns --domain blackveilsecurity.com --private-key "$MCP_PUBLISHER_KEY"
+          npx mcp-publisher publish
