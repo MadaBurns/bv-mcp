@@ -1,9 +1,9 @@
 # Blackveil DNS OAuth Integration — As-Built Documentation
 
-**Version**: 2.10.7
+**Version**: 2.10.9
 **Status**: Production Live
-**Date**: May 7, 2026
-**Build Duration**: 8 phases over 2 weeks (Phase 1-8); v2.10.2-v2.10.7 hardening releases
+**Date**: May 8, 2026
+**Build Duration**: 8 phases over 2 weeks (Phase 1-8); v2.10.2-v2.10.9 hardening releases
 
 ---
 
@@ -22,13 +22,13 @@
 | Rate Limiting | Per-tier enforcement | ✅ |
 | Production Status | Live | ✅ |
 | Rollback Time | <5 minutes | ✅ |
-| Test Suite | 2587 tests across 6 pyramid layers | ✅ |
+| Test Suite | 2610 tests across 6 pyramid layers | ✅ |
 
 ---
 
-## Post-Launch Hardening (v2.10.2 → v2.10.7)
+## Post-Launch Hardening (v2.10.2 → v2.10.9)
 
-Eight phases delivered the system to v2.10.1 production. Five subsequent releases hardened the system against findings from operational use and security review:
+Eight phases delivered the system to v2.10.1 production. Eight subsequent releases hardened the system against findings from operational use and security review:
 
 | Version | Theme | Key changes |
 |---------|-------|-------------|
@@ -38,6 +38,8 @@ Eight phases delivered the system to v2.10.1 production. Five subsequent release
 | **v2.10.5** | Dependency hygiene | Hono 4.12.14 → 4.12.18 (advisories GHSA-9vqf-7f2p-gf9v + GHSA-69xw-7hcm-h432, neither exploitable in our codebase) |
 | **v2.10.6** | Fuzzing detection | KV-backed sliding-window detector for unknown-tool / unknown-method / zod-arg / auth-fail patterns; alerts via existing 15-min cron; principals identified by `keyHash` or `ipHash`, never raw IP. 28 new tests across all 6 pyramid layers |
 | **v2.10.7** | CI integrity | `publish.yml` switched from warn-and-skip to fail-fast on missing secrets; new audit test scans every `.github/workflows/*.yml` for the silent-skip anti-pattern. Root-cause: v2.10.2-v2.10.6 npm + Cloudflare publishes had silently dropped because secrets were missing and the workflow exited green |
+| **v2.10.8** | Production-readiness audit + secret rotation | Removed leaked `BV_API_KEY` fallback defaults from two committed scripts; rotated and `git filter-repo --replace-text` purged 4 hex tokens from history (main + branches + 79 tags force-pushed); per-rule `.gitleaks.toml` allowlists dropped repo leak count 10,161 → ~108. Three new TDD-driven invariants: `tool-quota-coverage` audit, exact-value `FUZZ_THRESHOLDS` audit lock, `oauth-tier` contract narrowing `CustomerOAuthTierSchema` to `developer \| enterprise`. Bumped `@cloudflare/vitest-pool-workers` 0.13.3 → 0.15.2 to clear the compat-date fallback warning |
+| **v2.10.9** | OAuth fail-fast hardening | `oauthAvailability` 3-state route gate added in `src/index.ts` — `'misconfigured'` (ENABLE_OAUTH=true but `OAUTH_SIGNING_SECRET` missing/<32B) returns 503 service_unavailable from every OAuth route at first RTT, rather than luring the user through register/authorize/consent and failing opaquely at /oauth/token. `'disabled'` (feature off) preserves 404, semantically distinct from "broken". Driven by the v2.10.8 incident: prod was deployed without `OAUTH_SIGNING_SECRET`; Claude Desktop showed "Couldn't connect" only after consent. Locked by `test/chaos/oauth-misconfiguration.chaos.test.ts` (6 routes × 3 env states) and `test/audits/oauth-readiness-gate.audit.test.ts` (forbids bare `isOAuthEnabled` checks at the route layer). Constant `OAUTH_SIGNING_SECRET_MIN_BYTES` and helper `isValidOAuthSigningSecret()` shared between route gate and signer (`src/lib/config.ts`). Inner-handler 500 path preserved as defense-in-depth |
 
 **TDD discipline:** Every behaviour change in v2.10.3 onwards landed through RED→GREEN→REFACTOR with the failing test watched before implementation. New tests by layer:
 - Unit: 17 (fuzzing-detector, internal-guard, oauth/pkce, oauth/jwt alg-pin)
