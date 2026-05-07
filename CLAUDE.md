@@ -403,16 +403,20 @@ Smithery registry metadata (configSchema, scanCredentials) is updated via `PUT /
 - `security.yml`: Gitleaks + `npm audit` (**required checks**)
 - `repo-hygiene.yml`: blocks tracked generated files, verifies `.gitignore`, flags large blobs. Reusable — called by `blackveil-dns-action`, `bv-claude-dns`, and `bv-vibesdk` via `workflow_call`
 - `dns-security.yml`: weekly DNS scan of blackveilsecurity.com
-- `auto-deploy-main.yml`: deploys `main` to Cloudflare after `CI`, `CI Contract`, `Security`, and `Repo Hygiene` all pass for the same commit
+- `auto-deploy-main.yml.disabled`: **currently disabled** (renamed from `.yml`). When active, deploys `main` to Cloudflare after `CI`, `CI Contract`, `Security`, and `Repo Hygiene` all pass for the same commit. Re-enable: upload `CLOUDFLARE_API_TOKEN` to GH `production` env, then `git mv auto-deploy-main.yml.disabled auto-deploy-main.yml`.
 - `.gitleaks.toml`: custom rules; allowlists for test fixtures
 
-**Branch protection**: require PR reviews, require `build-and-test` + `Secret & PII scan` + `Dependency audit`, disable direct pushes to `main`.
+**Branch protection** (configured 2026-05-07):
+- Required status checks: `build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`
+- `allow_force_pushes: false`, `allow_deletions: false`
+- No required PR reviews; admin-merge permitted for trivial CI/doc changes (full code changes go through normal PR cycle)
+- Direct pushes to `main` blocked except by admin
 
-Main branch deploys are automated separately from tagged releases. `auto-deploy-main.yml` is triggered by completed workflow runs, re-checks the required gates for the same SHA, deploys with `CLOUDFLARE_API_TOKEN` from the `production` environment, and verifies `/health`. Tagged releases still use `publish.yml` for npm, MCP Registry, GitHub Release creation, and version synchronization.
+**Deploy mode**: bv-mcp currently operates in **manual-deploy mode** — `npm run deploy:private` (uses operator's wrangler OAuth, no GH secret needed) is the active path. `auto-deploy-main.yml` is disabled because `CLOUDFLARE_API_TOKEN` is intentionally absent from the GH `production` environment; the v2.10.6 fail-fast guards would otherwise turn every main push red. Tagged releases use the manual fallback below; `publish.yml` is still active but will fail-fast on tag pushes until secrets are restored.
 
 ### Release workflow (`publish.yml`)
 
-**Important**: `main` has branch protection requiring 3 status checks for direct pushes. The workflow's "Sync version to tag" step tries to push an auto-bump commit and **will be rejected by branch protection**. To avoid this, **always pre-bump the version locally before tagging**:
+**Important**: `main` has branch protection requiring 4 status checks for direct pushes (`build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`). The workflow's "Sync version to tag" step tries to push an auto-bump commit and **will be rejected by branch protection**. To avoid this, **always pre-bump the version locally before tagging**:
 
 ```bash
 # 1. Update CHANGELOG.md with the new version entry under [Unreleased]
