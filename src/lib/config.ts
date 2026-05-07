@@ -174,6 +174,8 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_txt_hygiene: 200,
 	check_http_security: 200,
 	check_dane: 200,
+	check_dane_https: 200,
+	check_svcb_https: 200,
 	check_mx_reputation: 20,
 	check_srv: 200,
 	check_zone_hygiene: 200,
@@ -203,6 +205,9 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_dnssec_chain: 30,
 	check_fast_flux: 10,
 };
+
+/** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
+export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>([]);
 
 /**
  * Per-tier concurrent tool execution limits (per-isolate, best-effort fairness).
