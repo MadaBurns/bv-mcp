@@ -309,6 +309,13 @@ export const OAUTH_JWT_TTL_SECONDS = 60 * 60 * 24 * 90;     // 90 days
 export const OAUTH_JWT_CLOCK_SKEW_SECONDS = 30;
 export const OAUTH_CONSENT_RATE_LIMIT = 5;
 export const OAUTH_CONSENT_RATE_WINDOW_SECONDS = 60 * 15;
+// HS256 security floor — RFC 7518 §3.2 requires a key at least as long as the hash
+// output (256 bits = 32 bytes). Treated as a hard gate at the route layer (503 if
+// shorter) AND at signing time (500 server_error from token.ts as defense in depth).
+export const OAUTH_SIGNING_SECRET_MIN_BYTES = 32;
+export function isValidOAuthSigningSecret(s: string | undefined): boolean {
+	return typeof s === 'string' && s.length >= OAUTH_SIGNING_SECRET_MIN_BYTES;
+}
 export const OAUTH_SCOPES_SUPPORTED = ['mcp'] as const;
 export const OAUTH_GRANT_TYPES_SUPPORTED = ['authorization_code'] as const;
 export const OAUTH_RESPONSE_TYPES_SUPPORTED = ['code'] as const;
