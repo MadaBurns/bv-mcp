@@ -62,10 +62,10 @@ describe('workflow secret-check audit', () => {
 		for (const [name, content] of WORKFLOWS) {
 			const lines = content.split('\n');
 			for (let i = 0; i < lines.length; i++) {
-				// Only match secret-token guards (`_TOKEN` suffix). Other `[ -z "$VAR" ]`
-				// checks are typically graceful defaults (e.g. CHANGELOG body fallback)
-				// and don't represent silent-skip risk.
-				const m = lines[i].match(/if\s+\[\s+-z\s+"\$([A-Z_][A-Z0-9_]*_TOKEN)"/);
+				// Match secret-presence guards by suffix: _TOKEN / _KEY / _SECRET.
+				// Other `[ -z "$VAR" ]` checks are typically graceful defaults (e.g.
+				// CHANGELOG body fallback) and don't represent silent-skip risk.
+				const m = lines[i].match(/if\s+\[\s+-z\s+"\$([A-Z_][A-Z0-9_]*(_TOKEN|_KEY|_SECRET))"/);
 				if (!m) continue;
 				// Look ahead until `fi` or 10 lines (whichever first) for an exit/fail signal.
 				let foundExit = false;
