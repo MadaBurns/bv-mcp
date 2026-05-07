@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
 Exposes 51 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
-**Version**: 2.10.7 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync. Listed on the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.blackveilsecurity/dns`.
+**Version**: 2.10.9 — keep `SERVER_VERSION` (`src/lib/server-version.ts`), `version` (`package.json`, `package-lock.json`), `version` AND `packages[0].version` (`server.json` — known foot-gun, both fields), and the `[X.Y.Z]` heading in `CHANGELOG.md` in sync. Listed on the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.blackveilsecurity/dns`.
 
 ## Commands
 
@@ -523,7 +523,7 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 | `ENABLE_OAUTH` | var | Set to `true` to expose OAuth discovery/register/authorize/token routes. Defaults disabled so clients do not auto-open owner-key browser consent. |
 | `ENABLE_OWNER_OAUTH` | var | Set to `true` only for operator/admin deployments that should render the legacy owner `BV_API_KEY` consent page. Defaults disabled; paid customer OAuth uses bv-web/Stripe entitlements instead. |
 | `OWNER_ALLOW_IPS` | var | Comma-separated IPs allowed for `owner` tier (key + wrong IP → `partner`). Also enforced at `/oauth/authorize` consent step. |
-| `OAUTH_SIGNING_SECRET` | Secret | HS256 signing key (≥32 bytes). Upload via `wrangler secret put`. `/oauth/token` returns `server_error` 500 until set. |
+| `OAUTH_SIGNING_SECRET` | Secret | HS256 signing key (≥32 bytes). Upload via `wrangler secret put`. **Required when `ENABLE_OAUTH=true`** — v2.10.9 added a route-layer gate (`oauthAvailability` in `src/index.ts`) that returns `service_unavailable` 503 from every OAuth route (`/.well-known/oauth-*`, `/oauth/{register,authorize,token}`) until the secret is set. The inner `/oauth/token` 500 path is preserved as defense in depth. Pre-v2.10.9 the failure surfaced only after user consent; the v2.10.8 incident drove the hardening. Codified by `test/chaos/oauth-misconfiguration.chaos.test.ts` and `test/audits/oauth-readiness-gate.audit.test.ts`. |
 | `OAUTH_ISSUER` | var | Optional issuer override (e.g. `https://dns-mcp.blackveilsecurity.com`). Falls back to request Host — set in prod to harden against Host-header spoofing of discovery metadata. |
 | `ALLOWED_ORIGINS` | var | Comma-separated allowed Origins |
 | `RATE_LIMIT` | KV | Per-IP rate counters (**required prod**) |
