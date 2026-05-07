@@ -14,7 +14,7 @@
  *   POST /mcp/messages  - Legacy HTTP+SSE client-to-server messages
  */
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import wasm from '../crates/bv-wasm-core/pkg/bv_wasm_core_bg.wasm';
 import * as bv_wasm from '../crates/bv-wasm-core/pkg/bv_wasm_core.js';
@@ -33,7 +33,7 @@ import { createAnalyticsClient, hashForAnalytics, hashIpForAnalytics } from './l
 import { detectMcpClient } from './lib/client-detection';
 import type { JsonRpcRequest } from './lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionRequest } from './mcp/route-gates';
-import { MAX_REQUEST_BODY_BYTES, FREE_TOOL_DAILY_LIMITS } from './lib/config';
+import { MAX_REQUEST_BODY_BYTES, FREE_TOOL_DAILY_LIMITS, isValidOAuthSigningSecret } from './lib/config';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { scanDomain } from './tools/scan-domain';
 import { gradeBadge, errorBadge } from './lib/badge';
@@ -103,12 +103,39 @@ import { resolveTier } from './lib/tier-auth';
 const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean; tierAuthResult: TierAuthResult } }>();
 const mcpPaths = ['/mcp', '/mcp/messages', '/mcp/sse'] as const;
 
-function isOAuthEnabled(env: Pick<BvMcpEnv, 'ENABLE_OAUTH'>): boolean {
-	return env.ENABLE_OAUTH === 'true';
+type OAuthAvailability = 'ready' | 'disabled' | 'misconfigured';
+
+/**
+ * Three-state OAuth gate. `'ready'` requires BOTH `ENABLE_OAUTH==='true'` AND a
+ * valid `OAUTH_SIGNING_SECRET`. The split matters: a misconfigured deploy used
+ * to expose discovery + register + authorize + consent successfully and only
+ * fail at /oauth/token, after the user had committed to the consent dance and
+ * the relay client (claude.ai) had no diagnostic to surface — see chaos test
+ * `oauth-misconfiguration.chaos.test.ts` and the 2026-05-08 incident.
+ *
+ * `'misconfigured'` → 503 from every OAuth route (fail-fast at first RTT).
+ * `'disabled'` → 404 (feature off, semantically distinct from "broken").
+ */
+function oauthAvailability(env: Pick<BvMcpEnv, 'ENABLE_OAUTH' | 'OAUTH_SIGNING_SECRET'>): OAuthAvailability {
+	if (env.ENABLE_OAUTH !== 'true') return 'disabled';
+	if (!isValidOAuthSigningSecret(env.OAUTH_SIGNING_SECRET)) return 'misconfigured';
+	return 'ready';
 }
 
 function oauthDisabledResponse(): Response {
 	return new Response('Not found', { status: 404 });
+}
+
+function oauthMisconfiguredResponse(): Response {
+	// 503 + JSON body so OAuth clients (which expect JSON errors per RFC 6749 §5.2)
+	// can render an actionable message instead of "couldn't connect".
+	return new Response(
+		JSON.stringify({
+			error: 'service_unavailable',
+			error_description: 'OAuth is enabled but the server is not configured to issue tokens',
+		}),
+		{ status: 503, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } },
+	);
 }
 
 /**
@@ -701,20 +728,32 @@ app.delete('/mcp', async (c) => {
 app.route('/internal', internalRoutes);
 
 // OAuth 2.1 discovery endpoints (RFC 8414 + RFC 9728).
+//
+// Every route below dispatches on `oauthAvailability(c.env)` rather than a
+// boolean. `'disabled'` → 404 (feature off). `'misconfigured'` → 503 (feature
+// on but signing secret missing/short — fail-fast at first RTT instead of
+// after the user completes the consent dance).
+function oauthGuarded<T>(c: Context, ready: () => T | Response): T | Response {
+	const state = oauthAvailability(c.env as Pick<BvMcpEnv, 'ENABLE_OAUTH' | 'OAUTH_SIGNING_SECRET'>);
+	if (state === 'disabled') return oauthDisabledResponse();
+	if (state === 'misconfigured') return oauthMisconfiguredResponse();
+	return ready();
+}
+
 app.on(
 	'GET',
 	['/.well-known/oauth-authorization-server', '/.well-known/oauth-authorization-server/*'],
-	(c) => isOAuthEnabled(c.env) ? c.json(buildAuthorizationServerMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER))) : oauthDisabledResponse(),
+	(c) => oauthGuarded(c, () => c.json(buildAuthorizationServerMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER)))),
 );
 app.on(
 	'GET',
 	['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/*'],
-	(c) => isOAuthEnabled(c.env) ? c.json(buildProtectedResourceMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER))) : oauthDisabledResponse(),
+	(c) => oauthGuarded(c, () => c.json(buildProtectedResourceMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER)))),
 );
-app.post('/oauth/register', (c) => isOAuthEnabled(c.env) ? handleRegister(c) : oauthDisabledResponse());
-app.get('/oauth/authorize', (c) => isOAuthEnabled(c.env) ? handleAuthorizeGet(c) : oauthDisabledResponse());
-app.post('/oauth/authorize', (c) => isOAuthEnabled(c.env) ? handleAuthorizePost(c) : oauthDisabledResponse());
-app.post('/oauth/token', (c) => isOAuthEnabled(c.env) ? handleToken(c) : oauthDisabledResponse());
+app.post('/oauth/register', (c) => oauthGuarded(c, () => handleRegister(c)));
+app.get('/oauth/authorize', (c) => oauthGuarded(c, () => handleAuthorizeGet(c)));
+app.post('/oauth/authorize', (c) => oauthGuarded(c, () => handleAuthorizePost(c)));
+app.post('/oauth/token', (c) => oauthGuarded(c, () => handleToken(c)));
 
 app.all('*', (c) => {
 	// Plain text — avoids mcp-remote misinterpreting JSON as an OAuth error.

@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.9] - 2026-05-08
+
+### Security / Hardening
+- **OAuth misconfig fails fast at first RTT, not after consent.** v2.10.8 was deployed to production without `OAUTH_SIGNING_SECRET`. Discovery, register, authorize, and the consent dance all succeeded; only `/oauth/token` failed (500 server_error) — claude.ai surfaced it as the opaque "Couldn't connect" *after* the user had committed to the consent flow. Root-caused by chaos-walking the live flow.
+- **`oauthAvailability` three-state gate** added at `src/index.ts`. Every OAuth route (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/oauth/register`, `/oauth/{authorize,token}`) now dispatches through `oauthGuarded`, which returns `503 service_unavailable` (with JSON body per RFC 6749 §5.2) when `ENABLE_OAUTH=true` but `OAUTH_SIGNING_SECRET` is missing or under 32 bytes. `404 Not Found` is reserved for `ENABLE_OAUTH != 'true'` ("feature off"), preserving the semantic distinction OAuth clients can render different UI for.
+- **`OAUTH_SIGNING_SECRET` constant promoted to `src/lib/config.ts`** (`OAUTH_SIGNING_SECRET_MIN_BYTES = 32`) plus an `isValidOAuthSigningSecret(s)` helper, so the route layer and the inner token signer share the same gate. The token-handler 500 path remains as defense in depth — exercised by direct unit tests, no longer reachable from outside the route.
+
+### Added
+- **Chaos test `test/chaos/oauth-misconfiguration.chaos.test.ts`** — walks every OAuth route under three env states (`OAUTH_SIGNING_SECRET` undefined, < 32 bytes, `ENABLE_OAUTH=false`) and asserts the wire shape (503 vs 404, error code, no leaked token shape).
+- **Audit test `test/audits/oauth-readiness-gate.audit.test.ts`** — locks the contract via static analysis of `src/index.ts`: forbids bare `isOAuthEnabled` / `env.ENABLE_OAUTH ===` checks at the route layer, requires every OAuth route to dispatch through `oauthGuarded`, requires the `OAuthAvailability` type union to remain exactly `"ready" | "disabled" | "misconfigured"`. Catches future regressions at lint time.
+
+### Changed
+- **`test/oauth/token.spec.ts`**: the two tests that asserted 500 on missing/short signing secret now assert 503 (the route gate intercepts first). Inner-handler 500 path is preserved as defense in depth.
+
+### Operational
+- **Production rotation**: `OAUTH_SIGNING_SECRET` (64-byte hex) generated and pushed via `wrangler secret put` on 2026-05-08; `BV_API_KEY` rotated again the same session as routine hygiene. Both validated against live production.
+
 ## [2.10.8] - 2026-05-07
 
 ### Security

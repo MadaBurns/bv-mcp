@@ -3,13 +3,8 @@ import type { Context } from 'hono';
 import { TokenRequestSchema } from '../schemas/oauth';
 import { consumeCode } from './storage';
 import { signJwt, newJti, constantTimeEqual } from './jwt';
-import { OAUTH_JWT_TTL_SECONDS, OAUTH_KV_PREFIX } from '../lib/config';
+import { OAUTH_JWT_TTL_SECONDS, OAUTH_KV_PREFIX, OAUTH_SIGNING_SECRET_MIN_BYTES } from '../lib/config';
 import { resolveIssuer } from './discovery';
-
-// HS256 security floor: RFC 7518 §3.2 requires a key at least as long as the hash
-// output (256 bits = 32 bytes). An operator deploying with `OAUTH_SIGNING_SECRET=x`
-// would otherwise happily mint tokens that are trivial to forge.
-const OAUTH_SIGNING_SECRET_MIN_BYTES = 32;
 
 // Fixed-window per-IP rate limit on /oauth/token. Token exchange happens once per OAuth
 // flow for legitimate clients — 30/min is generous for humans and tight for attackers
