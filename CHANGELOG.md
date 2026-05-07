@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.8] - 2026-05-07
+
+### Security
+- **Rotated `BV_API_KEY` and redacted four leaked owner-tier tokens from git history.** Two committed scripts (`scripts/phase7-validation.mjs:21`, `scripts/phase8-monitor.mjs:19`) carried real owner keys as `process.env.BV_API_KEY || '...'` fallback defaults. Three additional hex tokens surfaced in past commits to `.mcp.json`, `scripts/tranco-{scan,deep-scan}.mjs`, and `scripts/chaos/chaos-test-wasm.py`. All four are invalidated in production (old keys → 401, new key → 200). `git filter-repo --replace-text` rewrote main, all branches, and all 79 tags; `allow_force_pushes` was lifted for the rewrite then restored. Both committed scripts now hard-fail on missing env var rather than fall back to a literal.
+- **`gitleaks` signal-to-noise**: per-rule `.gitleaks.toml` allowlists (PII rules scoped to docs/test/scan-artifact paths; env-var-default patterns whitelisted) drop the repo-wide leak count from 10,161 → ~108 without loosening any actual secret-detection rules.
+
+### Added
+- **Audit `test/audits/no-tracked-secrets.audit.test.ts`**: scans every tracked file (via Vite `import.meta.glob('?raw')`) for BV-key, AWS-key, and PEM-header patterns, with explicit exclusions for legitimate test fixtures. TDD: `git stash` round-trip confirmed RED → GREEN.
+- **Audit `test/audits/tool-quota-coverage.audit.test.ts`**: requires every tool in `TOOL_DEFS` to be either in `FREE_TOOL_DAILY_LIMITS` or in a new `INTENTIONALLY_UNLIMITED_TOOLS` set — never both, never neither. Forces the limit-vs-unlimited decision into PR diff.
+- **Contract `test/contracts/oauth-tier.contract.test.ts`**: locks `CustomerOAuthTierSchema` to `developer | enterprise` only; rejects `agent` per the documented "Paid OAuth Tiers" contract.
+
+### Changed
+- **`check_dane_https` and `check_svcb_https` now have explicit per-IP daily limits (200/day each)**, mirroring `check_dane`. Previously they were governed only by baseline per-IP rate limiting. Surfaced by the new tool-quota-coverage audit; remaining 49 tools were already covered.
+- **`CustomerOAuthTierSchema` narrowed from `['agent','developer','enterprise']` to `['developer','enterprise']`.** The `agent` tier is reachable via static API key only, never via OAuth — `bv-web`'s `PLAN_TO_MCP_TIER` mapping never returns `agent`. The schema now matches the documented contract. No runtime impact for any existing OAuth caller.
+- **`FUZZ_THRESHOLDS` audit upgraded from shape-only to exact-value `toEqual`**. Future drift in either direction now requires updating both `src/lib/config.ts` and `test/audits/fuzzing-config.audit.test.ts` in the same PR diff, surfacing the change in code review.
+- **`@cloudflare/vitest-pool-workers` bumped `^0.13.3 → ^0.15.2`** so the bundled `workerd` (`1.20260430.1`) supports the pinned `compatibility_date: 2026-04-22`. Eliminates the "requested 2026-04-22 falls back to 2026-03-17" warning that appeared on every test run.
+
+### Operational
+- **Manual-deploy mode**: `auto-deploy-main.yml` renamed to `auto-deploy-main.yml.disabled` while `CLOUDFLARE_API_TOKEN` is intentionally absent from the GitHub `production` environment. The v2.10.6 fail-fast guards correctly turned every main push red — disabling the workflow stops the noise. Re-enable: upload the token, then `git mv` back. Active ship path is `npm run deploy:private` from local.
+- **Branch protection tightened**: added `File hygiene check` to required status checks (now 4: `build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`). `allow_force_pushes` and `allow_deletions` both `false`.
+
 ## [2.10.7] - 2026-05-07
 
 ### Fixed
