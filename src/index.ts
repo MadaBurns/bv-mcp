@@ -29,7 +29,7 @@ import { normalizeHeaders, parseJsonRpcRequest, readRequestBody, validateContent
 import { createSession, deleteSession, validateSession, checkSessionCreateRateLimit } from './lib/session';
 import { unauthorizedResponse } from './lib/auth';
 import { sseEvent, acceptsSSE, createNotificationStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
-import { createAnalyticsClient, hashForAnalytics } from './lib/analytics';
+import { createAnalyticsClient, hashForAnalytics, hashIpForAnalytics } from './lib/analytics';
 import { detectMcpClient } from './lib/client-detection';
 import type { JsonRpcRequest } from './lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionRequest } from './mcp/route-gates';
@@ -278,6 +278,7 @@ app.post('/mcp', async (c) => {
 	const authTier = tierAuthResult.authenticated ? (tierAuthResult.tier ?? 'free') : 'anon';
 	const keyHash = tierAuthResult.keyHash ? tierAuthResult.keyHash.slice(0, 16) : undefined;
 	const sessionHash = headersLc['mcp-session-id'] ? hashForAnalytics(headersLc['mcp-session-id']) : 'none';
+	const ipHash = ip !== 'unknown' ? hashIpForAnalytics(ip) : undefined;
 
 	const contentTypeError = validateContentType(headersLc['content-type']);
 	if (contentTypeError) {
@@ -356,6 +357,7 @@ app.post('/mcp', async (c) => {
 					authTier,
 					keyHash,
 					sessionHash,
+					ipHash,
 				});
 			}),
 		);
@@ -418,6 +420,7 @@ app.post('/mcp', async (c) => {
 		authTier,
 		keyHash,
 		sessionHash,
+		ipHash,
 	});
 
 	if (singleResult.kind === 'notification') {
@@ -472,6 +475,7 @@ app.post('/mcp/messages', async (c) => {
 	const authTier = tierAuthResult.authenticated ? (tierAuthResult.tier ?? 'free') : 'anon';
 	const keyHash = tierAuthResult.keyHash ? tierAuthResult.keyHash.slice(0, 16) : undefined;
 	const sessionHash = sessionId ? hashForAnalytics(sessionId) : 'none';
+	const ipHash = ip !== 'unknown' ? hashIpForAnalytics(ip) : undefined;
 
 	if (!sessionId) {
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: missing session'), 400);
@@ -556,6 +560,7 @@ app.post('/mcp/messages', async (c) => {
 				authTier,
 				keyHash,
 				sessionHash,
+				ipHash,
 			});
 		}),
 	);
