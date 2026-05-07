@@ -88,6 +88,15 @@ export interface AnalyticsContext {
 	sessionHash?: string;
 	/** Truncated SHA-256 hash of the API key (first 16 chars). Enables per-customer analytics. */
 	keyHash?: string;
+	/**
+	 * FNV-1a hash of the cf-connecting-ip (`i_` prefix). Lossy by design — groups equal IPs
+	 * for analytics queries but is trivially reversible if the IP is already known. We
+	 * deliberately accept this property because the alternative (raw IP in telemetry) is
+	 * what we want to avoid; a defender investigating a known suspect IP can hash it
+	 * client-side and filter, while a leak of the analytics dataset doesn't directly
+	 * expose addresses.
+	 */
+	ipHash?: string;
 }
 
 export interface AnalyticsClient {
@@ -159,6 +168,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.authTier ?? 'anon',
 					event.sessionHash ?? 'none',
 					event.keyHash ?? 'none',
+					event.ipHash ?? 'none',
 				],
 				doubles: [sanitizeNumber(event.durationMs)],
 			});
@@ -176,6 +186,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.authTier ?? 'anon',
 					event.cacheStatus ?? 'n/a',
 					event.keyHash ?? 'none',
+					event.ipHash ?? 'none',
 				],
 				doubles: [sanitizeNumber(event.durationMs), sanitizeNumber(event.score ?? 0)],
 			});
@@ -275,6 +286,14 @@ function domainFingerprint(domain: string): string {
  */
 export function hashForAnalytics(value: string): string {
 	return fnv1aHash(value, 's_');
+}
+
+/**
+ * FNV-1a hash for cf-connecting-ip — `i_` prefix to distinguish from session/domain hashes.
+ * Lossy aggregation key; not a security control. See AnalyticsContext.ipHash for rationale.
+ */
+export function hashIpForAnalytics(ip: string): string {
+	return fnv1aHash(ip, 'i_');
 }
 
 /** Shared FNV-1a hash with configurable prefix. Records result for collision probing (Task 19). */
