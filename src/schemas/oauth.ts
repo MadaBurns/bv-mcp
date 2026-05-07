@@ -6,7 +6,17 @@ const SafeOAuthIdentifierSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9:
 const StripeIdSchema = z.string().min(4).max(128).regex(/^[a-z]+_[A-Za-z0-9]+$/);
 const EmailHashSchema = z.string().length(64).regex(/^[a-f0-9]{64}$/i);
 
-export const CustomerOAuthTierSchema = z.enum(['agent', 'developer', 'enterprise']);
+/**
+ * Tiers reachable via OAuth (bv-web Stripe entitlements).
+ *
+ * Per CLAUDE.md "Paid OAuth Tiers": only paid plans flow through OAuth, mapping to
+ * `developer` (Pro / Business / MCP-Developer) or `enterprise` (Enterprise /
+ * MCP-Enterprise). The `agent` tier is reserved for static API keys and is never
+ * minted by bv-web; `owner` is privileged and never customer-facing. Keeping this
+ * union narrow prevents a misconfigured bv-web response from silently escalating an
+ * OAuth principal into a tier the rate limiter / quota coordinator never expected.
+ */
+export const CustomerOAuthTierSchema = z.enum(['developer', 'enterprise']);
 export const ActiveStripeSubscriptionStatusSchema = z.enum(['active', 'trialing']);
 
 export const PaidOAuthEntitlementResponseSchema = z.object({
