@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.7] - 2026-05-07
+
+### Fixed
+- **CI release pipeline silently skipped npm + Cloudflare for v2.10.2 through v2.10.6** — `.github/workflows/publish.yml` used a warn-and-skip pattern (`echo skip=true >> $GITHUB_ENV`) when `NPM_TOKEN` or `CLOUDFLARE_API_TOKEN` was missing, gating downstream steps with `if: env.skip != 'true'`. The job exited `success` while publishing nothing. The MCP Registry and GitHub Release jobs ran fine (different secrets), so the workflow looked green for five consecutive releases. Production was running pre-v2.10.2 code until a manual deploy on 2026-05-07. Mirrored the `auto-deploy-main.yml` fail-fast pattern across all three publish.yml gates so missing secrets become a red CI signal.
+
+### Added
+- **Audit test for the silent-skip anti-pattern** — `test/audits/workflow-secret-check.audit.test.ts` scans every `.github/workflows/*.yml` (via Vite `?raw` imports) and asserts (a) no workflow writes `skip=true` to `$GITHUB_ENV`, and (b) every `if [ -z "$*_TOKEN" ]` guard ends with `exit 1`. Catches the regression at lint time before another five releases vanish.
+
 ## [2.10.6] - 2026-05-07
 
 ### Added
