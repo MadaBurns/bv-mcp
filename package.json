@@ -83,7 +83,7 @@
 		"@types/punycode": "^2.1.4",
 		"eslint": "9.39.3",
 		"hono": "4.12.18",
-		"tsup": "8.5.0",
+		"tsup": "8.5.1",
 		"typescript": "5.9.3",
 		"typescript-eslint": "8.56.0",
 		"vitest": "4.1.2",
