@@ -67,6 +67,8 @@ export interface ExecuteMcpRequestOptions {
 	sessionHash?: string;
 	/** Truncated key hash for analytics (first 16 chars of SHA-256). */
 	keyHash?: string;
+	/** FNV-1a hash of cf-connecting-ip (`i_` prefix) for per-IP analytics filtering. */
+	ipHash?: string;
 	certstream?: { fetch: typeof fetch };
 }
 
@@ -118,6 +120,7 @@ function emitRequestAnalytics(
 		authTier: options.authTier,
 		sessionHash: options.sessionHash,
 		keyHash: options.keyHash,
+		ipHash: options.ipHash,
 	});
 }
 

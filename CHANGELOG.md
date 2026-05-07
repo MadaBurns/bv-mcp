@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.4] - 2026-05-07
+
+### Added
+- **`ipHash` analytics dimension** — Cloudflare Analytics Engine `mcp_request` events now record an `i_`-prefixed FNV-1a hash of `cf-connecting-ip` as `blob11`, and `tool_call` events record it as `blob10`. This enables per-IP traffic investigation via the existing analytics pipeline; without this dimension, `src/lib/analytics.ts` only stored country/clientType/sessionHash/keyHash and there was no way to attribute traffic to a specific IP. The hash is lossy by design — equal IPs hash equally and a defender investigating a known suspect can hash client-side and filter, while a leak of the analytics dataset doesn't directly expose addresses. Filter via `WHERE blob11 = '<ipHash>'` (mcp_request) or `blob10 = '<ipHash>'` (tool_call).
+- **Per-IP analytics CLI** — `IP=<addr> CF_ANALYTICS_TOKEN=... node .dev/analytics-30d.mjs [days]` now emits per-IP daily volume + tool breakdown sections. The script computes the FNV-1a `i_<hex>` hash locally so no IP ever leaves the operator's machine.
+
 ## [2.10.3] - 2026-05-07
 
 ### Security
