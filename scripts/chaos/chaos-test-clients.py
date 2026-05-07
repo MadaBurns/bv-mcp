@@ -116,7 +116,7 @@ def make_headers(ua, session_id=None, content_type="application/json",
     if auth == "bearer" and API_KEY:
         h.append(f"Authorization: Bearer {API_KEY}")
     elif auth == "bearer_invalid":
-        h.append("Authorization: Bearer <redacted-api-key>")
+        h.append("Authorization: Bearer bv_invalid_test_sentinel")
     if api_key_header:
         h.append(f"Authorization: Bearer {api_key_header}")
     return h
@@ -420,7 +420,7 @@ def test_auth_precedence():
         }),
         headers=make_headers(ua, auth="bearer"),
         include_headers=True,
-        params={"api_key": "<redacted-api-key>"},
+        params={"api_key": "bv_bogus_test_sentinel"},
     )
     sid = extract_session_id(raw)
     record("5a. valid Bearer + bogus api_key → session created (Bearer wins)",
@@ -430,7 +430,7 @@ def test_auth_precedence():
         curl_json("POST", "/mcp",
                   body={"jsonrpc": "2.0", "method": "notifications/initialized"},
                   headers=make_headers(ua, session_id=sid, auth="bearer"),
-                  params={"api_key": "<redacted-api-key>"})
+                  params={"api_key": "bv_bogus_test_sentinel"})
         delete_session(sid, ua)
 
     # 5b. Invalid Bearer + valid api_key → should FAIL (Bearer header takes precedence)
