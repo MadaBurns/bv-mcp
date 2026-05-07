@@ -1,5 +1,12 @@
 name: Auto Deploy Main
 
+# DISABLED 2026-05-07 — operating in manual-deploy mode (`npm run deploy:private`).
+# Re-enable: rename this file back to `auto-deploy-main.yml` AFTER uploading
+# `CLOUDFLARE_API_TOKEN` (Workers Edit + Account Read) to the GitHub
+# `production` environment. Without that secret, the deploy job fails fast
+# on every main push (per the v2.10.6 fail-fast guards). See CLAUDE.md
+# "Manual release fallback" for the manual deploy procedure.
+
 on:
   workflow_run:
     workflows:
