@@ -1,9 +1,9 @@
 # Blackveil DNS OAuth Integration — As-Built Documentation
 
-**Version**: 2.10.1  
-**Status**: Production Live  
-**Date**: May 6, 2026  
-**Build Duration**: 8 phases over 2 weeks (Phase 1-8)
+**Version**: 2.10.7
+**Status**: Production Live
+**Date**: May 7, 2026
+**Build Duration**: 8 phases over 2 weeks (Phase 1-8); v2.10.2-v2.10.7 hardening releases
 
 ---
 
@@ -22,6 +22,30 @@
 | Rate Limiting | Per-tier enforcement | ✅ |
 | Production Status | Live | ✅ |
 | Rollback Time | <5 minutes | ✅ |
+| Test Suite | 2587 tests across 6 pyramid layers | ✅ |
+
+---
+
+## Post-Launch Hardening (v2.10.2 → v2.10.7)
+
+Eight phases delivered the system to v2.10.1 production. Five subsequent releases hardened the system against findings from operational use and security review:
+
+| Version | Theme | Key changes |
+|---------|-------|-------------|
+| **v2.10.2** | Production fix | OAuth consent endpoint authentication bug fixed (registration success 0% → ~90%) |
+| **v2.10.3** | OAuth security review | Closed `/internal/*` Host-header bypass; required `BV_WEB_INTERNAL_KEY` on `/internal/trial-keys/*`; constant-time PKCE verification; pinned `alg=HS256` in JWT verify (RFC 8725 §3.1) |
+| **v2.10.4** | Per-IP analytics | New `ipHash` blob (FNV-1a, `i_` prefix) on `mcp_request` (blob11) and `tool_call` (blob10) events; raw IP never stored |
+| **v2.10.5** | Dependency hygiene | Hono 4.12.14 → 4.12.18 (advisories GHSA-9vqf-7f2p-gf9v + GHSA-69xw-7hcm-h432, neither exploitable in our codebase) |
+| **v2.10.6** | Fuzzing detection | KV-backed sliding-window detector for unknown-tool / unknown-method / zod-arg / auth-fail patterns; alerts via existing 15-min cron; principals identified by `keyHash` or `ipHash`, never raw IP. 28 new tests across all 6 pyramid layers |
+| **v2.10.7** | CI integrity | `publish.yml` switched from warn-and-skip to fail-fast on missing secrets; new audit test scans every `.github/workflows/*.yml` for the silent-skip anti-pattern. Root-cause: v2.10.2-v2.10.6 npm + Cloudflare publishes had silently dropped because secrets were missing and the workflow exited green |
+
+**TDD discipline:** Every behaviour change in v2.10.3 onwards landed through RED→GREEN→REFACTOR with the failing test watched before implementation. New tests by layer:
+- Unit: 17 (fuzzing-detector, internal-guard, oauth/pkce, oauth/jwt alg-pin)
+- Integration: 13 (fuzzing-counter, internal-trial-keys-auth, analytics-ip-hash)
+- Contract: 4 (fuzzing-alert)
+- Audit: 5 (workflow-secret-check + fuzzing-config)
+- Subcutaneous E2E: 1 (fuzzing happy path through real `worker.fetch` + `worker.scheduled`)
+- Chaos: 3 (KV down, webhook 500, false-positive bound)
 
 ---
 
