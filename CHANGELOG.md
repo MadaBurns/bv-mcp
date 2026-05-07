@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.3] - 2026-05-07
+
+### Security
+- **`/internal/*` Host-header bypass closed** — removed the `Host: localhost:*` branch in the internal-route guard so an attacker who can spoof the Host header on a public-internet request can no longer skip the `cf-connecting-ip` gate. Cloudflare always sets `cf-connecting-ip` on public requests, making it the authoritative signal; the guard is now driven by a pure `isPublicInternetRequest()` helper. Defense-in-depth — likely not exploitable in production today.
+- **`/internal/trial-keys/*` now requires `BV_WEB_INTERNAL_KEY`** — these routes mint API credentials and previously relied solely on the network-level guard. Added a `trialKeysAuthGate` middleware mirroring the `/oauth/grants` pattern: 503 if `BV_WEB_INTERNAL_KEY` is unset (mis-deploy), 401 on missing/wrong bearer.
+- **PKCE verification is now constant-time** — `verifyPkce` decodes the challenge to bytes and compares against `SHA-256(verifier)` via the shared `constantTimeEqual` helper instead of string `===`. Not realistically exploitable due to SHA-256 preimage resistance and the 60s single-use code TTL, but eliminates the timing side-channel inconsistency with the rest of the auth code.
+- **JWT `alg=HS256` pinned in verify** — `verifyJwt` now parses the header and rejects anything other than `HS256` before HMAC checking (RFC 8725 §3.1). Defense-in-depth against algorithm-confusion / downgrade attacks.
+
+### Testing
+- 16 new tests added across `test/internal-guard.spec.ts`, `test/internal-trial-keys-auth.spec.ts`, `test/oauth/pkce.spec.ts`, and `test/oauth/jwt.spec.ts` — written first and watched fail per TDD. Full suite: 2553 pass.
+
 ## [2.10.2] - 2026-05-06
 
 ### Fixed
