@@ -24,6 +24,20 @@ describe('fuzzing-config audit', () => {
 		});
 	});
 
+	// Lock the exact numeric values so any drift (loosening or unannounced
+	// tightening) requires an explicit audit-test update + PR review note.
+	// Per CLAUDE.md: "v1 defaults are 3× the plan values to stay silent for one
+	// week of baseline collection before lowering."
+	it('FUZZ_THRESHOLDS values match the locked v1 baseline', () => {
+		expect(FUZZ_THRESHOLDS).toEqual({
+			windowSeconds: 60,
+			unknown_tool: 30,
+			unknown_method: 15,
+			zod_arg: 60,
+			auth_fail: 90,
+		});
+	});
+
 	it('detector + counter + alerting modules do not redeclare FUZZ_THRESHOLDS', () => {
 		// `const FUZZ_THRESHOLDS = ...` would be the offending shape; importing the
 		// type or the value from config.ts is fine (we're only forbidding redeclaration).
