@@ -12,6 +12,8 @@ import { validateJsonRpcRequest } from './request';
 import { checkSessionCreateRateLimit, reviveSession } from '../lib/session';
 import type { JsonRpcRequest } from '../lib/json-rpc';
 import type { AnalyticsClient } from '../lib/analytics';
+import { classifyError as classifyFuzzError } from '../lib/fuzzing-detector';
+import { recordEvent as recordFuzzCounter } from '../lib/fuzzing-counter';
 
 export type ProcessedRequestResult =
 	| {
@@ -107,6 +109,8 @@ function emitRequestAnalytics(
 	method: string,
 	status: 'ok' | 'error',
 	hasJsonRpcError: boolean,
+	jsonRpcErrorCode?: number,
+	jsonRpcErrorDescription?: string,
 ): void {
 	options.analytics?.emitRequestEvent({
 		method,
@@ -122,6 +126,52 @@ function emitRequestAnalytics(
 		keyHash: options.keyHash,
 		ipHash: options.ipHash,
 	});
+
+	// Fuzzing-detection: record an event if the error matches a known fuzz pattern.
+	// Best-effort and non-blocking — see docs/plans/2026-05-07-fuzzing-detection-tdd-plan.md.
+	if (status === 'error' && options.rateLimitKv && jsonRpcErrorCode !== undefined) {
+		void recordFuzzEvent(options, method, jsonRpcErrorCode, jsonRpcErrorDescription);
+	}
+}
+
+async function recordFuzzEvent(
+	options: ExecuteMcpRequestOptions,
+	method: string,
+	jsonRpcErrorCode: number,
+	jsonRpcErrorDescription: string | undefined,
+): Promise<void> {
+	const dispatchPath = method === 'tools/call' ? 'tools/call' : 'dispatch';
+	const kind = classifyFuzzError({
+		jsonRpcCode: jsonRpcErrorCode,
+		dispatchPath,
+		description: jsonRpcErrorDescription,
+	});
+	if (!kind) return;
+	// Principal selection: keyHash for authenticated, ipHash for anonymous.
+	const principalId = options.keyHash ?? options.ipHash;
+	if (!principalId) return;
+	const recordPromise = recordFuzzCounter(options.rateLimitKv!, principalId, kind, Math.floor(Date.now() / 1000));
+	if (options.waitUntil) options.waitUntil(recordPromise);
+	else await recordPromise.catch(() => undefined);
+}
+
+/**
+ * MCP `tools/call` errors come back as `{ result: { isError: true, content: [...] } }`,
+ * not as JSON-RPC `-32601`. We detect the unknown-tool flavour by inspecting the
+ * content text and feed it into the same fuzz counter as JSON-RPC -32601s.
+ */
+function recordMcpToolErrorIfUnknownTool(options: ExecuteMcpRequestOptions, method: string, payload: unknown): void {
+	if (method !== 'tools/call') return;
+	if (!options.rateLimitKv) return;
+	const principalId = options.keyHash ?? options.ipHash;
+	if (!principalId) return;
+	const result = (payload as { result?: { isError?: boolean; content?: { text?: string }[] } })?.result;
+	if (!result?.isError) return;
+	const text = result.content?.[0]?.text ?? '';
+	if (!text.includes('Unknown tool:')) return;
+	const recordPromise = recordFuzzCounter(options.rateLimitKv, principalId, 'unknown_tool', Math.floor(Date.now() / 1000));
+	if (options.waitUntil) options.waitUntil(recordPromise);
+	else void recordPromise.catch(() => undefined);
 }
 
 export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Promise<ProcessedRequestResult> {
@@ -511,7 +561,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			});
 
 			const hasJsonRpcError = typeof dispatchResult.payload === 'object' && dispatchResult.payload !== null && 'error' in dispatchResult.payload;
-			emitRequestAnalytics(options, method, hasJsonRpcError ? 'error' : 'ok', hasJsonRpcError);
+			const errPayload = hasJsonRpcError ? (dispatchResult.payload as { error?: { code?: number; message?: string } }).error : undefined;
+			emitRequestAnalytics(options, method, hasJsonRpcError ? 'error' : 'ok', hasJsonRpcError, errPayload?.code, errPayload?.message);
+			recordMcpToolErrorIfUnknownTool(options, method, dispatchResult.payload);
 			return dispatchResult.payload;
 		}).finally(() => {
 			if (concurrencyPrincipalId) releaseConcurrencySlot(concurrencyPrincipalId);
