@@ -18,7 +18,11 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const BV_API_KEY = process.env.BV_API_KEY || 'bv_Kx8eZ2rdtUPfdzR8e_JfSCIVZ_UsdLQn3NOqwICW0HA';
+const BV_API_KEY = process.env.BV_API_KEY;
+if (!BV_API_KEY) {
+	console.error('Error: BV_API_KEY environment variable is required');
+	process.exit(1);
+}
 const API_BASE = 'https://dns-mcp.blackveilsecurity.com/mcp';
 
 // Colors for output
