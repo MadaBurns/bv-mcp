@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
 Exposes 51 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
-**Version**: 2.9.2 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync. Listed on the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.blackveilsecurity/dns`.
+**Version**: 2.10.7 — keep `SERVER_VERSION` in `src/lib/server-version.ts` and `version` in `package.json` in sync. Listed on the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.blackveilsecurity/dns`.
 
 ## Commands
 
@@ -317,7 +317,30 @@ All tool arguments validated via Zod schemas (`src/schemas/tool-args.ts`) before
 
 ### Internal routes
 
-`/internal/*` guarded by `cf-connecting-ip` detection. Cloudflare sets this on public requests; service binding calls don't carry it. Public requests → 404. Batch endpoint validates tool names (`/^[a-z_]+$/`, max 30 chars) and allowlists arg keys.
+`/internal/*` guarded by `cf-connecting-ip` detection (pure helper `isPublicInternetRequest()` in `src/internal.ts`). Cloudflare sets this on public requests; service binding calls don't carry it. Public requests → 404. Batch endpoint validates tool names (`/^[a-z_]+$/`, max 30 chars) and allowlists arg keys. `/internal/trial-keys/*` additionally requires `BV_WEB_INTERNAL_KEY` bearer (defense-in-depth — these routes mint API credentials so the network guard alone is insufficient).
+
+### Fuzzing detection (v2.10.6+)
+
+Pattern-based detection for adversarial enumeration of the MCP surface, emitted as `fuzzing_suspected` alerts via `ALERT_WEBHOOK_URL` from the existing 15-min cron.
+
+**Tracked patterns:**
+- `unknown_tool` — repeated MCP `isError: true` "Unknown tool:" responses, OR JSON-RPC `-32601` from `tools/call`
+- `unknown_method` — repeated JSON-RPC `-32601` from top-level dispatch
+- `zod_arg` — repeated `-32602` errors with `'Invalid …'` description (argument fuzzing on valid tools)
+- `auth_fail` — bursts of HTTP 401 from one IP
+
+**Architecture:**
+- `src/lib/fuzzing-detector.ts` — pure `classifyError` + sliding-window `scoreWindow` (no I/O, fully unit-tested)
+- `src/lib/fuzzing-counter.ts` — KV-backed sliding-window counter on `RATE_LIMIT` namespace (key shape `fuzz:p:<principalId>:e:<bucketEpoch10s>:<kind>`); fail-soft on KV errors so the request path stays green
+- `src/schemas/alerting.ts` — `FuzzingAlertSchema` (Zod contract); refuses to include raw IP — only the truncated 16-hex hash
+- `handleFuzzingScan` in `src/scheduled.ts` — lists principals with recent fuzz events, scores against `FUZZ_THRESHOLDS`, posts via `sendFuzzingAlert`
+- Wire-up in `src/mcp/execute.ts` — `recordFuzzEvent` (JSON-RPC errors) + `recordMcpToolErrorIfUnknownTool` (MCP-content errors)
+
+**Principal identification:** `keyHash` for authenticated traffic, `ipHash` for anonymous (FNV-1a of cf-connecting-ip with `i_` prefix from `analytics.ts`). Raw IPs never appear in alerts.
+
+**Thresholds:** `FUZZ_THRESHOLDS` in `src/lib/config.ts` is the **single source of truth** — enforced by `test/audits/fuzzing-config.audit.test.ts`. v1 defaults are 3× the plan values to stay silent for one week of baseline collection before lowering.
+
+**Fail-soft invariants** (covered by `test/chaos/fuzzing-degradation.chaos.test.ts`): KV down → `recordEvent` swallows; webhook 500 → next tick retries; 9 errors + 100 successes → verdict still clean (no false positive bound).
 
 ## Adding a New Tool
 
@@ -455,7 +478,19 @@ npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
 
 ## Analytics & Observability
 
-Four event types: `mcp_request`, `tool_call`, `rate_limit`, `session`. Pre-built queries in `analytics-queries.ts`. Scheduled handler (`scheduled.ts`) runs every 15 min via Cron Trigger for anomaly alerts. All alerting optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
+Four event types: `mcp_request`, `tool_call`, `rate_limit`, `session`. Pre-built queries in `analytics-queries.ts`. Scheduled handler (`scheduled.ts`) runs every 15 min via Cron Trigger for anomaly alerts (also runs `handleFuzzingScan` on the same tick — see Fuzzing detection section). All alerting optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
+
+**Blob layout** — keep in sync if adding new dimensions:
+- `mcp_request`: blob1=method, blob2=transport, blob3=status, blob4=auth-flag, blob5=jsonrpc-flag, blob6=country, blob7=clientType, blob8=authTier, blob9=sessionHash, blob10=keyHash, **blob11=ipHash** (added v2.10.4 — FNV-1a of cf-connecting-ip with `i_` prefix; lossy for privacy, equal IPs hash equally so a defender can hash client-side and filter)
+- `tool_call`: blob1=toolName, blob2=status, blob3=isError, blob4=domainFingerprint, blob5=country, blob6=clientType, blob7=authTier, blob8=cacheStatus, blob9=keyHash, **blob10=ipHash**
+- `rate_limit`: blob1=limitType, blob2=toolName, blob3=country, blob4=authTier
+- `session`: blob1=action, blob2=country, blob3=clientType, blob4=authTier, blob5=method, blob6=keyHash
+
+**Per-IP investigation** (after v2.10.4):
+```
+IP=<addr> CF_ANALYTICS_TOKEN=... node .dev/analytics-30d.mjs 30
+```
+Hashes the IP locally so it never leaves the operator's machine, then filters by `blob11`/`blob10`.
 
 Client detection (`client-detection.ts`): `claude_mobile`, `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `bv_load_test`, `unknown`. Used for analytics + format auto-detection, never security. `bv_load_test` matches `bv-{load,chaos,tranco}-{test,scan}` UAs emitted by internal scripts (`scripts/tranco-scan.mjs`, `scripts/tranco-deep-scan.mjs`) and is classified as non-interactive (`full` format) — it exists to keep internal load traffic out of the real-client `unknown` bucket.
 
