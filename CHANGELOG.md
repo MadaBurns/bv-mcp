@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.5] - 2026-05-07
+
+### Security
+- **hono 4.12.14 → 4.12.18** — pulls in fixes for [GHSA-9vqf-7f2p-gf9v](https://github.com/advisories/GHSA-9vqf-7f2p-gf9v) (`bodyLimit()` chunked-encoding bypass) and [GHSA-69xw-7hcm-h432](https://github.com/advisories/GHSA-69xw-7hcm-h432) (`hono/jsx` HTML injection). Neither was exploitable in our codebase — we don't use Hono's `bodyLimit()` middleware (our custom `readRequestBody` in `src/mcp/request.ts` already streams chunks and checks bytes incrementally per the advisory's recommendation), and we don't import `hono/jsx` anywhere. Update is for clean `npm audit` output and defense-in-depth on transitive code paths.
+
 ## [2.10.4] - 2026-05-07
 
 ### Added
