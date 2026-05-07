@@ -429,6 +429,57 @@ npm and Cloudflare deploy run in parallel after the sync step. Requires `NPM_TOK
 
 **Workflow security**: all `${{ }}` expressions are passed via `env:` variables, never interpolated directly in `run:` blocks. Only controlled inputs used (tag name, secrets, job outputs) — no user-supplied text (issue titles, PR bodies, commit messages).
 
+**Workflow secret-check audit** (`test/audits/workflow-secret-check.audit.test.ts`, v2.10.7+): scans every `.github/workflows/*.yml` and asserts (a) no workflow uses the warn-and-skip anti-pattern (`echo skip=true >> "$GITHUB_ENV"`) and (b) every `[ -z "$*_TOKEN" ]` guard ends with `exit 1` within 10 lines. v2.10.2-v2.10.6 silently dropped off npm + Cloudflare because publish.yml warn-and-skipped on missing `NPM_TOKEN`/`CLOUDFLARE_API_TOKEN`/`MCP_REGISTRY_TOKEN`; this audit makes that regression a red CI signal.
+
+### Manual release fallback
+
+When the `production` GitHub environment is missing `NPM_TOKEN`/`CLOUDFLARE_API_TOKEN`/`MCP_REGISTRY_TOKEN`, the corresponding `publish.yml` jobs fail-fast (intentional — silent skips drove the v2.10.2-v2.10.6 prod-stale incident). Until those secrets are restored, ship each tagged release manually from local:
+
+```bash
+# 1. npm — uses NPM_KEY from .dev.vars (Automation-type token, bypasses 2FA)
+npm -w packages/dns-checks run build && npm run build
+NPM_TOKEN=$(grep '^NPM_KEY=' .dev.vars | cut -d= -f2-)
+echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > /tmp/.npmrc-bv && chmod 600 /tmp/.npmrc-bv
+NPM_CONFIG_USERCONFIG=/tmp/.npmrc-bv npm publish --access public
+rm /tmp/.npmrc-bv
+
+# 2. Cloudflare Workers — uses local wrangler OAuth (no secret needed)
+npm run deploy:private
+
+# 3. MCP Registry — DNS-based auth (see "MCP Registry DNS auth" below)
+npx mcp-publisher login dns --domain blackveilsecurity.com --private-key <ed25519-hex>
+npx mcp-publisher publish
+
+# 4. Verify
+curl -s "https://registry.npmjs.org/-/package/blackveil-dns/dist-tags"
+npx wrangler deployments list --name bv-dns-security-mcp | tail -5
+curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=blackveil"
+curl -s https://dns-mcp.blackveilsecurity.com/health
+```
+
+**`server.json` has TWO version fields** — top-level `version` and `packages[0].version` — both must match the tag. The npm-only auto-bump in publish.yml only touches `package.json`, not `server.json`, so update it manually before publishing to the registry.
+
+**Approving gated deploys via API** (rather than dashboard clicks):
+```bash
+RUN_ID=$(gh run list --workflow 253147675 --limit 1 --json databaseId -q '.[0].databaseId')
+gh api -X POST /repos/MadaBurns/bv-mcp/actions/runs/$RUN_ID/pending_deployments \
+  -F 'environment_ids[]=12532483134' -f state=approved -f comment="Approving v2.x.y"
+```
+The production environment id is `12532483134`. Required secrets to add (will eliminate the manual fallback above): `NPM_TOKEN` (Automation-type granular token), `CLOUDFLARE_API_TOKEN` (Workers Edit + Account Read), `MCP_REGISTRY_TOKEN` (or refresh DNS-auth JWT — operationally simpler is to use `github-oidc` login from the Action runner once configured).
+
+### MCP Registry DNS auth
+
+The `com.blackveilsecurity/*` namespace is gated by **DNS ownership proof** at the apex `blackveilsecurity.com` TXT:
+```
+v=MCPv1; k=ed25519; p=<base64-ed25519-public-key>
+```
+
+**Generating a fresh keypair** (when the private key is lost):
+```bash
+node -e 'const {generateKeyPairSync}=require("crypto"); const {publicKey,privateKey}=generateKeyPairSync("ed25519"); console.log("priv-hex:", privateKey.export({type:"pkcs8",format:"der"}).subarray(-32).toString("hex")); console.log("pub-b64:", publicKey.export({type:"spki",format:"der"}).subarray(-32).toString("base64"))'
+```
+Then update the apex TXT in Cloudflare DNS, wait for propagation across resolvers, and login + publish. **Cloudflare MCP does NOT expose DNS CRUD** — only Workers/D1/KV/R2 — so use the dashboard or a CF API token with `Zone:DNS:Edit`. Save the private key to your password manager *and* `.dev.vars` (suggested name `MCP_PUBLISHER_KEY`) so the next rotation is one command, not a recovery.
+
 ## Service Binding Integration
 
 `/internal/tools/call` accepts plain JSON `{ name, arguments }`, returns `{ content, isError? }`. `/internal/tools/batch` runs same tool across multiple domains (max 500, concurrency 1-50, 256 KB body limit). `?format=structured` returns raw `CheckResult` per domain.
