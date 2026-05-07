@@ -121,9 +121,17 @@ src/lib/                  — Shared infrastructure
   analytics.ts            — Analytics Engine integration (fail-open, 4 event types)
   log.ts                  — Structured JSON logging with sanitization
 
-test/                     — One spec per source file
-test/helpers/dns-mock.ts  — Shared fetch mock for DNS-over-HTTPS queries
-test/schemas/             — Unit tests for Zod schemas
+test/                     — Specs are flat by source file (e.g. test/check-spf.spec.ts ↔ src/tools/check-spf.ts).
+                            The 6-layer test pyramid (Unit → Integration → Contract → Audit → E2E → Chaos)
+                            is methodology, not directory layout — most tests live at the top level and a
+                            spec's layer is conveyed by filename suffix (.spec.ts, .integration.test.ts,
+                            .audit.test.ts, .contract.test.ts, .chaos.test.ts).
+test/helpers/             — Shared test fixtures (dns-mock.ts: setupFetchMock, mockTxtRecords, ...)
+test/schemas/             — Unit tests for Zod schemas in src/schemas/
+test/oauth/               — OAuth flow specs (authorize, token, PKCE, JWT, entitlements, e2e)
+test/audits/              — Audit-layer tests (config drift, workflow regressions, tool quota coverage)
+test/contracts/           — Contract tests for cross-service Zod payloads (e.g. fuzzing alert webhook)
+test/chaos/               — Chaos-layer fail-soft invariant tests (KV down, webhook 500, etc.)
 
 packages/dns-checks/     — @blackveil/dns-checks (runtime-agnostic core library)
   src/scoring/           — Generic scoring engine
