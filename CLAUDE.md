@@ -459,8 +459,12 @@ rm /tmp/.npmrc-bv
 npm run deploy:private
 
 # 3. MCP Registry — DNS-based auth (see "MCP Registry DNS auth" below)
-npx mcp-publisher login dns --domain blackveilsecurity.com --private-key <ed25519-hex>
-npx mcp-publisher publish
+# `mcp-publisher` is a Go binary, NOT an npm package. Install via homebrew
+# (`brew install mcp-publisher`) or download from
+# https://github.com/modelcontextprotocol/registry/releases — `npx
+# mcp-publisher` will 404 on the npm registry.
+mcp-publisher login dns --domain blackveilsecurity.com --private-key <ed25519-hex>
+mcp-publisher publish
 
 # 4. Verify
 curl -s "https://registry.npmjs.org/-/package/blackveil-dns/dist-tags"
