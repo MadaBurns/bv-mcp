@@ -256,9 +256,20 @@ jobs:
       # CLAUDE.md "MCP Registry DNS auth"). The previous design used a
       # long-lived JWT in MCP_REGISTRY_TOKEN, which expired silently and went
       # unnoticed because publish.yml warn-and-skipped on missing secrets.
+      # `mcp-publisher` is a Go binary distributed via GitHub releases at
+      # modelcontextprotocol/registry — NOT an npm package. `npx mcp-publisher`
+      # 404s. Pin to a known-good version; bump deliberately.
+      - name: Install mcp-publisher
+        env:
+          MCP_PUBLISHER_VERSION: '1.7.8'
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/mcp-publisher_${MCP_PUBLISHER_VERSION}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin mcp-publisher
+          mcp-publisher --version
+
       - name: Login + publish to registry
         env:
           MCP_PUBLISHER_KEY: ${{ secrets.MCP_PUBLISHER_KEY }}
         run: |
-          npx mcp-publisher login dns --domain blackveilsecurity.com --private-key "$MCP_PUBLISHER_KEY"
-          npx mcp-publisher publish
+          mcp-publisher login dns --domain blackveilsecurity.com --private-key "$MCP_PUBLISHER_KEY"
+          mcp-publisher publish
