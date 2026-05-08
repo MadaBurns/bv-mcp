@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
 Exposes 51 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
-**Version**: 2.10.9 — keep `SERVER_VERSION` (`src/lib/server-version.ts`), `version` (`package.json`, `package-lock.json`), `version` AND `packages[0].version` (`server.json` — known foot-gun, both fields), and the `[X.Y.Z]` heading in `CHANGELOG.md` in sync. Listed on the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.blackveilsecurity/dns`.
+**Version**: 2.10.10 — keep `SERVER_VERSION` (`src/lib/server-version.ts`), `version` (`package.json`, `package-lock.json`), `version` AND `packages[0].version` (`server.json` — known foot-gun, both fields), and the `[X.Y.Z]` heading in `CHANGELOG.md` in sync. Listed on the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.blackveilsecurity/dns`.
 
 ## Commands
 
@@ -278,8 +278,8 @@ All scoring parameters configurable via `SCORING_CONFIG` env var (JSON). Support
 
 ### Key rules
 
-- **SSRF**: `config.ts` defines blocked IPs/TLDs; `sanitize.ts` enforces. `global_fetch_strictly_public` compat flag. All outbound fetches use `redirect: 'manual'`
-- **Auth**: Optional `BV_API_KEY`, constant-time XOR. Token extracted from `Authorization: Bearer <token>` header first, then `?api_key=` query param as fallback (enables Smithery and URL-only clients). Tier-auth cascades: KV cache → bv-web service binding → static fallback. Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner tier has unlimited rate limits but requires client IP in `OWNER_ALLOW_IPS` — mismatched IPs downgrade to `partner`. **Paid OAuth tier mapping** (from bv-web Stripe subscriptions): `pro`/`business` → `developer` tier (500 scans/day), `enterprise` → `enterprise` tier (10,000 scans/day). See also: **Paid OAuth Tiers** section below.
+- **SSRF**: `config.ts` defines blocked IPs/TLDs; `sanitize.ts` enforces. `global_fetch_strictly_public` compat flag. All outbound fetches use `redirect: 'manual'`. **Outbound fetches to attacker-controlled URLs (BIMI `l=`/`a=` tags from TXT records, HTTP `Location:` redirect targets that the worker then follows) MUST use `safeFetch` from `src/lib/safe-fetch.ts`** — wraps `fetch` with `validateOutboundUrl()` (https-only, no userinfo, hostname → `validateDomain`). Fetches to a URL whose hostname is already validated upstream (e.g. `https://${validatedDomain}/.well-known/...` like MTA-STS or DANE-HTTPS) may use raw `fetch` provided redirects are not followed (manual mode + early-return on 3xx). Added v2.10.10 (H2/H3).
+- **Auth**: Optional `BV_API_KEY`, constant-time XOR. Token extracted from `Authorization: Bearer <token>` header first, then `?api_key=` query param as fallback (enables Smithery and URL-only clients). Tier-auth cascades: KV cache → bv-web service binding → static fallback. Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner tier has unlimited rate limits but requires client IP in `OWNER_ALLOW_IPS` — mismatched IPs downgrade to `partner` on **every** request, including OAuth-JWT-bearing requests (v2.10.10 closed an M1 finding where the IP gate only fired at consent time). The OAuth JWT branch validates `claims.tier` against a narrower `JwtIssuableTierSchema = z.enum(['owner','developer','enterprise'])` — defense in depth against a future minting regression that quietly stores `tier: 'partner'`. **Paid OAuth tier mapping** (from bv-web Stripe subscriptions): `pro`/`business` → `developer` tier (500 scans/day), `enterprise` → `enterprise` tier (10,000 scans/day). See also: **Paid OAuth Tiers** section below.
 - **Rate limiting**: 50 req/min, 300 req/hr per IP (unauthenticated). Authenticated users bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_lookalikes`/`check_shadow_domains`: 20/day per IP with 60-min caching
 - **Per-tool quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts`. Global cap 500k/day (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via `QuotaCoordinator` DO
 - **Content-Type**: POST requires `application/json`; missing allowed for compat; non-JSON → 415
@@ -325,7 +325,11 @@ All tool arguments validated via Zod schemas (`src/schemas/tool-args.ts`) before
 
 ### Internal routes
 
-`/internal/*` guarded by `cf-connecting-ip` detection (pure helper `isPublicInternetRequest()` in `src/internal.ts`). Cloudflare sets this on public requests; service binding calls don't carry it. Public requests → 404. Batch endpoint validates tool names (`/^[a-z_]+$/`, max 30 chars) and allowlists arg keys. `/internal/trial-keys/*` additionally requires `BV_WEB_INTERNAL_KEY` bearer (defense-in-depth — these routes mint API credentials so the network guard alone is insufficient).
+`/internal/*` guarded by `cf-connecting-ip` detection (pure helper `isPublicInternetRequest()` in `src/internal.ts`). Cloudflare sets this on public requests; service binding calls don't carry it. Public requests → 404. Batch endpoint validates tool names (`/^[a-z_]+$/`, max 30 chars) and allowlists arg keys. `/internal/tools/call` enforces `MAX_REQUEST_BODY_BYTES` (10 KB; mirrors public `/mcp`) before JSON parse (v2.10.10).
+
+**Defense-in-depth bearer auth (v2.10.10):**
+- `/internal/trial-keys/*` and `/internal/oauth/grants` → strict gate: 503 if `BV_WEB_INTERNAL_KEY` is unset, 401 on missing/wrong bearer (these routes mint credentials).
+- `/internal/tools/*` and `/internal/analytics/*` → `internalLenientAuthGate`, *opt-in* via `REQUIRE_INTERNAL_AUTH=true`. Default off so deployments don't break bv-web's existing service binding (which doesn't currently attach `Authorization` to `/tools/call`). When opted-in: 503 if `BV_WEB_INTERNAL_KEY` is also missing, 401 on missing/wrong bearer, pass-through on success. Rollout: deploy bv-mcp 2.10.10 → wire bv-web's bvMcpClient to send the bearer → flip the flag.
 
 ### Fuzzing detection (v2.10.6+)
 
