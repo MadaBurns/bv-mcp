@@ -455,6 +455,29 @@ export function resetGlobalDailyLimit(): void {
 	globalDayCount = 0;
 }
 
+/**
+ * Test-only helper. Removes every `rl:*` key from the given KV namespace —
+ * complement to `resetAllRateLimits()` which only clears the per-isolate
+ * Map. Call from `beforeEach` in test files that exercise the public
+ * rate-limit code path; without it the 60s minute-window keys can bleed
+ * across tests on slow CI workers (#96).
+ *
+ * Fail-soft: returns silently on KV errors. Test isolation must never
+ * reject the surrounding beforeEach.
+ */
+export async function resetAllRateLimitsKv(kv: KVNamespace): Promise<void> {
+	try {
+		let cursor: string | undefined;
+		do {
+			const list = await kv.list({ prefix: 'rl:', cursor });
+			await Promise.all(list.keys.map((k) => kv.delete(k.name)));
+			cursor = list.list_complete ? undefined : list.cursor;
+		} while (cursor);
+	} catch {
+		// Best-effort — surfaced via test flake if the helper truly fails.
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Per-tier concurrency limits (best-effort per-isolate fairness)
 // ---------------------------------------------------------------------------
