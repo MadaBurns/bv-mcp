@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.12] - 2026-05-09
+
+### Fixed
+- **Analytics gap: `scan_domain` now emits `cacheStatus` blob.** Surfaced while building out the analytics drilldowns: the cache-effectiveness query reported `scan_domain` at **0 hits / 0 misses / 325,680 total** because the orchestrator's `tool_call` event left `blob8 = 'n/a'`. `tools/scan-domain.ts` returns `{ ...cached, cached: true }` on a top-level `cache:<domain>` hit but `handlers/tools.ts` wasn't threading that flag to `logToolSuccess`. Now passes `cacheStatus: result.cached ? 'hit' : 'miss'` from the dispatch case. `force_refresh: true` correctly reports `'miss'`. PR #101.
+
+### Test
+- New `test/scan-domain-cache-status.test.ts` (3 cases, RED→GREEN): cold call → `'miss'`, second call → `'hit'`, `force_refresh` → `'miss'`.
+
 ## [2.10.11] - 2026-05-09
 
 Maintenance release — folds in the post-v2.10.10 work that wasn't yet shipped to production. No public API or behavior changes for normal callers; one prod-side change (removed temporary telemetry hook).
