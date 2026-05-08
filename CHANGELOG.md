@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.11] - 2026-05-09
+
+Maintenance release — folds in the post-v2.10.10 work that wasn't yet shipped to production. No public API or behavior changes for normal callers; one prod-side change (removed temporary telemetry hook).
+
+### Changed
+- **Removed temporary `logExplainFindingRejection` telemetry hook** (`src/handlers/tool-args.ts`). 30-day analytics review showed `explain_finding` at 0 errors / 17 calls — the 27% rate that motivated the spike (2026-04-25) has fully resolved. Closed as Category C ("expected noise"). Closes [#77](https://github.com/MadaBurns/bv-mcp/issues/77).
+- **Tightened `.gitleaks.toml`**: added path allowlists for `^test/`, `^packages/[^/]+/test/`, and `.github/CODEOWNERS`; added regex allowlist for `support@smithery.ai` (public business contact) and the `oldmail@retail.com` brochure narrative example. `customer-name` rule literal restored to `tenant-example` after the 2026-05-08 history rewrite mutated it. `phone-number` rule allowlists `^chaos-test-.*\.py$` for the pre-`scripts/chaos/` root location. `gitleaks detect` against full history now reports **0 findings** (was 103).
+- **`docs/MARKETING-BROCHURE.md`**: replaced fictional `oldmail@retail.com` example with `oldmail@example.com` (clearly fictional, allowlisted).
+
+### Fixed
+- **CI rate-limit flake**: `test/index.spec.ts:1238` and `:1484` flaked on slow CI workers because `resetAllRateLimits()` only cleared the per-isolate `Map` while `rl:*` keys in the `RATE_LIMIT` KV namespace persisted with their 60s TTL across tests. New `resetAllRateLimitsKv(kv: KVNamespace)` helper paginates `kv.list({ prefix: 'rl:' })` and deletes every match (fail-soft). Wired into the existing `beforeEach`. Closes [#96](https://github.com/MadaBurns/bv-mcp/issues/96).
+
+### Operational — history rewrite (no source-code impact)
+On 2026-05-08 we ran `git filter-repo` twice across all 1,933+ commits and 82 tags:
+
+1. **PII / dead-key scrub**: replaced `tenant-example` → `tenant-example`, `internal-doh.example.com` → `internal-doh.example.com`, and 3 dead BV API keys (already revoked in prod) → `*_REDACTED_*`. Removed `.playwright-mcp/` browser-test snapshots and 2 internal docs (`docs/enterprise-architecture.md`, `docs/smithery-docs-nav.md`).
+2. **OSS hygiene**: removed 6 internal-only docs from all history (`docs/architecture.md`, `docs/AS-BUILT.md`, `docs/phase8-golive.md`, `OAUTH_LOCAL_DEBUG.md`, `MCP.md`, `GEMINI.md`). Replaced one stale ref in `.github/instructions/scan-orchestration.instructions.md`. Added drift catchers to `.gitignore` (`/BENCHMARK_*.md`, `/CAPACITY_*.md`, `/Tenant-*.md`, `/*-Call-Prep.md`, `/AS-BUILT.md`, `/phase*-golive.md`, `/MCP.md`, `/GEMINI.md`).
+
+Both rewrites force-pushed `main` and 82 tags. Anyone with a local clone needs:
+```
+git fetch origin --prune --prune-tags --tags --force && git reset --hard origin/main
+```
+GitHub-managed `refs/pull/*` retain pre-rewrite blobs (only visible via `git clone --mirror`); not reachable via normal `git clone`. See [#37](https://github.com/MadaBurns/bv-mcp/issues/37) for the announcement comment.
+
+### Test infra
+- **`.dev/analytics-30d.mjs`**: now auto-loads `CF_ANALYTICS_KEY` from `.dev.vars` (fallback chain: `CF_ANALYTICS_TOKEN` env → `CF_ANALYTICS_KEY` env → `.dev.vars` line). Added 3 query sections (session lifecycle by client type, error rate by client × tool, cache hit% by tool) and a `TOOL=` filter for per-tool drilldown. Internal-only (gitignored) — no public-surface change.
+
 ## [2.10.10] - 2026-05-08
 
 ### Security / Hardening — full-codebase audit, 10 findings closed (0 critical, 3 high, 4 medium, 3 low)
