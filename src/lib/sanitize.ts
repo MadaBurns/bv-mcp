@@ -200,6 +200,39 @@ export function sanitizeDomain(input: string): string {
 }
 
 /**
+ * Validate that a fully-formed URL targets an HTTPS hostname safe to fetch.
+ * Used to gate outbound fetches that target attacker-controlled URLs (BIMI
+ * `l=` and `a=` tags from DNS TXT records, HTTP redirect Location targets,
+ * etc.). Rejects:
+ *   - non-https schemes (http://, file://, data:, javascript:, etc.)
+ *   - URLs with userinfo (e.g. `https://attacker@internal/`)
+ *   - hostnames that fail validateDomain (IP literals, reserved TLDs,
+ *     DNS rebinding services, malformed labels, ...)
+ *
+ * Mitigates SSRF: even with `global_fetch_strictly_public` blocking RFC1918
+ * destinations at the runtime layer, this gate prevents Cloudflare-internal
+ * hostnames and userinfo-spoofed targets from being reached.
+ */
+export function validateOutboundUrl(input: string): ValidationResult {
+	if (!input || typeof input !== 'string') {
+		return { valid: false, error: 'URL is required' };
+	}
+	let url: URL;
+	try {
+		url = new URL(input);
+	} catch {
+		return { valid: false, error: 'URL is malformed' };
+	}
+	if (url.protocol !== 'https:') {
+		return { valid: false, error: `URL must use https (got "${url.protocol}")` };
+	}
+	if (url.username || url.password) {
+		return { valid: false, error: 'URL must not contain userinfo' };
+	}
+	return validateDomain(url.hostname);
+}
+
+/**
  * Sanitize arbitrary text input for safe logging/display.
  * Removes control characters except newlines and tabs, and truncates length.
  */
