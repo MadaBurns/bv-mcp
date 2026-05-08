@@ -14,6 +14,12 @@ description = "Real email address (not example/test domain)"
 regex = '''[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}'''
 keywords = ["@"]
 [rules.allowlist]
+# Test fixtures and clearly-fictional domains live in these paths.
+paths = [
+  '''^test/''',
+  '''/test/''',
+  '''^packages/[^/]+/test/''',
+]
 regexTarget = "match"
 regexes = [
   '''@([a-zA-Z0-9.\-]+\.)?example\.(com|org|net)''',
@@ -24,6 +30,8 @@ regexes = [
   '''@(dmarcian|valimail|agari|dmarcadvisors)\.com''',        # Known DMARC vendor domains in test fixtures
   '''@(internal-company|thirdparty|yourdomain)\.com''',       # Test/placeholder domains
   '''mailto:[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]''', # mailto: in DMARC/TLSRPT test records
+  '''support@smithery\.ai''',                                  # Smithery's public business contact
+  '''oldmail@retail\.com''',                                   # Fictional narrative example in older docs/MARKETING-BROCHURE.md commits
 ]
 
 [[rules]]
@@ -78,6 +86,7 @@ paths = [
   '''scripts/tranco-deep-.*\.json$''',     # Numeric IDs in scan artifacts
   '''scripts/phase\d+-.*\.json$''',
   '''scripts/chaos/''',                    # Test sentinels (e.g. 1234567890 placeholders)
+  '''^chaos-test-.*\.py$''',                # Old root-level path before scripts/chaos/ reshuffle
   '''crates/[^/]+/Cargo\.lock$''',         # Rust deps include numeric versions/hashes
   '''crates/[^/]+/target/''',              # Rust build artifacts (gitignored locally; safety net)
   '''docs/.*\.md$''',                      # Phone-number-shaped numerics in docs (timestamps, hashes)
@@ -115,14 +124,23 @@ keywords = ["harlan"]
 [[rules]]
 id = "customer-name"
 description = "Customer/tenant name leaked"
-regex = '''(?i)\bredacted-tenant\b'''
-keywords = ["redacted-tenant"]
+# History was scrubbed of csc-global on 2026-05-08 via filter-repo --replace-text;
+# this rule keeps the literal `csc-global` pattern so future commits attempting
+# to reintroduce the name are caught by the pre-commit hook.
+regex = '''(?i)\bcsc-global\b'''
+keywords = ["csc-global"]
 
 [[rules]]
 id = "internal-org-team"
 description = "Internal GitHub organization team name leaked"
 regex = '''@blackveil-security/'''
 keywords = ["blackveil-security"]
+[rules.allowlist]
+# CODEOWNERS legitimately requires GitHub team handles to function.
+paths = [
+  '''^\.github/CODEOWNERS$''',
+  '''/\.github/CODEOWNERS$''',
+]
 
 [[rules]]
 id = "enterprise-architecture"
