@@ -246,7 +246,7 @@ Scan Results:
 Attack Path:
   1. Attacker registers discontinued provider domain
   2. Attacker sets MX to IP relinquished by provider
-  3. Attacker receives all mail sent to oldmail@retail.com
+  3. Attacker receives all mail sent to oldmail@example.com
   4. Attacker can access customer communications, reset passwords
 
 Remediation:
