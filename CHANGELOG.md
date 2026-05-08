@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.10] - 2026-05-08
+
+### Security / Hardening — full-codebase audit, 10 findings closed (0 critical, 3 high, 4 medium, 3 low)
+
+**HIGH**
+- **SSRF: BIMI logo URL fetched without host validation (H2).** The `l=` and `a=` tag values come from a TXT record at `default._bimi.<domain>` and are entirely attacker-controlled. Pre-fix only `startsWith('https://')` + `endsWith('.svg')` were checked, leaving Cloudflare-internal hostnames and userinfo-spoofed URLs (`https://attacker@internal/...`) reachable despite the runtime `global_fetch_strictly_public` flag. Added `validateOutboundUrl()` in `src/lib/sanitize.ts` and `safeFetch` wrapper in `src/lib/safe-fetch.ts`; `src/tools/check-bimi.ts` now passes `safeFetch` instead of raw `fetch`. The package's `validateBimiSvg()` calls the wrapper transparently — blocked URLs surface as the existing "BIMI logo fetch failed" finding rather than an unhandled exception.
+- **SSRF: HTTP redirect follower didn't validate redirect targets (H3).** Both `src/tools/check-http-security.ts` `fetchWithRedirects()` and the package-level `followRedirects()` only checked the redirect's scheme. An attacker controlling a domain's HTTPS response could redirect to any HTTPS URL, including CF-internal hostnames. Initial fetch (to `https://<validated-domain>`) keeps raw `fetch`; every redirect target now goes through `safeFetch`. Same fix in the package — embedders that pass raw `fetch` are documented as responsible for their own SSRF protection.
+- **Internal `/tools/*` and `/analytics/*` lacked defense-in-depth bearer auth (H1).** Pre-fix the only gate was `isPublicInternetRequest()` (cf-connecting-ip absence). A misconfigured upstream that forwarded the header would expose the entire surface — `/tools/batch` accepts up to 8,000 DoH lookups per call without rate limiting, and `/analytics/*` leaked per-key telemetry. Added `internalLenientAuthGate` as an *opt-in* check: enabled only when `REQUIRE_INTERNAL_AUTH=true` AND `BV_WEB_INTERNAL_KEY` is set. Default off so deploying 2.10.10 doesn't break the existing bv-web service binding (verified against bv-web's `bv-mcp-client.ts`, which doesn't currently send `Authorization` on `/internal/tools/call`). Rollout: ship 2.10.10 → update bv-web's service client to attach `Bearer ${BV_WEB_INTERNAL_KEY}` → deploy bv-web → flip `REQUIRE_INTERNAL_AUTH=true` on bv-mcp.
+
+**MEDIUM**
+- **Owner-tier OAuth JWTs bypassed `OWNER_ALLOW_IPS` for the full 90-day TTL (M1).** The IP gate was only enforced once at `/oauth/authorize` consent. Anyone briefly on an allowlisted IP (compromised dev box, shared VPN, ephemeral cloud instance) could mint a token usable from any subsequent IP for 90 days, with no revocation route reachable from the public surface. The JWT branch in `src/lib/tier-auth.ts` now re-checks `OWNER_ALLOW_IPS` for `claims.tier === 'owner'`, downgrading to `partner` on mismatch — mirrors the existing `BV_API_KEY` path. Empty/unset allowlist preserves backward compatibility for self-hosted dev installs.
+- **`get_provider_insights.provider` had no max length (M2).** `z.string().min(1)` only — capped only by the 10 KB body limit, inconsistent with the `.max(200)` on every other string field including the sibling `generate_dkim_config.provider`. Added `.max(200)`.
+- **`/internal/tools/call` had no body-size limit (M3).** `c.req.json()` was called with no pre-parse guard; `/internal/tools/batch` (correctly) caps at 256 KB. A service-binding caller could force the Worker to materialize an arbitrarily large payload before Zod rejected it. Now reads via `c.req.text()` and rejects with HTTP 413 above `MAX_REQUEST_BODY_BYTES` (10 KB, mirrors public `/mcp`).
+- **Fuzzing alert fan-out: no per-tick dedup or cap (M4).** `handleFuzzingScan` ran every 15 min and re-alerted every flagged principal each tick. A sustained fuzzer (or rotating-IP attacker) drove repeat alerts that would hit Slack incoming-webhook rate limits. Added `fuzz:alerted:<principalId>` KV marker (1 h TTL) and `MAX_ALERTS_PER_TICK = 10` ceiling — converts the failure mode from O(N principals × 4 ticks/h) to O(min(N, 10) × 1 alert/h).
+
+**LOW**
+- **JWT tier claim accepted full 6-tier enum (L1).** `TierSchema.safeParse(claims.tier)` accepted `free | agent | developer | enterprise | partner | owner`, but minting paths only produce `owner | developer | enterprise`. Tightened to `JwtIssuableTierSchema = z.enum(['owner', 'developer', 'enterprise'])` so a future regression in `putCode` that quietly stores `tier: 'partner'` becomes a schema failure rather than a silent privilege grant.
+- **OAuth authorize echoed ZodError messages on 400 (L2).** `src/oauth/authorize.ts` returned `Invalid authorization request: ${err.message}` from both GET and POST handlers, leaking schema field names and constraint descriptions to unauthenticated callers before `redirect_uri` was validated. `register.ts` and `token.ts` both use a static string already (per their own JSDoc); `authorize.ts` was the missed sibling. Now returns `'Invalid authorization request'` verbatim.
+- **`cf-connecting-ip` not redacted in unhandled-exception logs (L3).** `SENSITIVE_KEY_PATTERN` used `^ip$` (anchored) — only matched the bare key `"ip"`, not `"cf-connecting-ip"`. The global error handler at `src/index.ts:235` would log client IPs in cleartext on unhandled Worker exceptions. Pattern updated to `(^ip$|cf-connecting-ip|...)`.
+
+### Added
+- `src/lib/sanitize.ts` — `validateOutboundUrl(url)` boundary check (https-only, no userinfo, hostname → `validateDomain`).
+- `src/lib/safe-fetch.ts` — fetch wrapper that runs validateOutboundUrl on the destination before delegating to `fetch`. Throws `TypeError` on a blocked target so callers' existing network-error handlers absorb it cleanly.
+- `src/internal.ts` — `internalLenientAuthGate` middleware applied to `/tools/*` and `/analytics/*`.
+- Tests (TDD red → green for every finding):
+  - `test/validate-outbound-url.test.ts`, `test/safe-fetch.test.ts` (H2/H3 helpers)
+  - `test/internal-tools-analytics-auth.test.ts` (H1 gate behavior)
+  - `test/tier-auth-owner-jwt-ip.test.ts` (M1 IP-rebind regression)
+  - `test/tier-auth-jwt-enum.test.ts` (L1 tightened enum, full owner/developer/enterprise allow + free/agent/partner/nonsense reject)
+  - `test/internal-tools-call-body-limit.test.ts` (M3 413 + small-body regression guard)
+  - `test/fuzzing-alert-dedup.test.ts` (M4 cooldown + cap)
+  - `test/log-cf-ip-redaction.test.ts` (L3 redaction)
+  - `test/oauth/authorize-zod-leak.test.ts` (L2 generic message)
+  - `test/schemas/tool-args.spec.ts` — provider max-length cases (M2)
+
+### Changed
+- `src/lib/tier-auth.ts` JWT branch: tier validated against narrower `JwtIssuableTierSchema`; owner-tier IP re-check now applied. Removed unused `TierSchema` import.
+- `src/oauth/authorize.ts` — both GET and POST 400 paths return static `'Invalid authorization request'`.
+- `src/lib/log.ts` — `SENSITIVE_KEY_PATTERN` extended to redact `cf-connecting-ip`.
+- `src/scheduled.ts` — `handleFuzzingScan` adds per-principal cooldown marker + per-tick cap.
+- `src/internal.ts` — `/tools/call` reads body via `c.req.text()` and enforces `MAX_REQUEST_BODY_BYTES`; lenient auth gate registered before route handlers (Hono middleware-order requirement).
+- `src/schemas/tool-args.ts` — `GetProviderInsightsArgs.provider` adds `.max(200)`.
+- `src/tools/check-bimi.ts`, `src/tools/check-http-security.ts` — pass `safeFetch` to package-level checks.
+- `packages/dns-checks/src/checks/check-http-security.ts` — `followRedirects` JSDoc documents the SSRF contract for embedders.
+
+### Operational
+- All 207 test files pass (2,662 tests). Typecheck + ESLint clean.
+
 ## [2.10.9] - 2026-05-08
 
 ### Security / Hardening
