@@ -143,6 +143,14 @@ describe('GetProviderInsightsArgs', () => {
 		const result = GetProviderInsightsArgs.parse({ provider: 'google workspace', profile: 'enterprise_mail' });
 		expect(result.provider).toBe('google workspace');
 	});
+	// M2: cap unbounded provider field at 200 chars to match generate_dkim_config
+	// and avoid feeding near-10KB strings to downstream regex/string ops.
+	it('rejects provider > 200 chars', () => {
+		expect(() => GetProviderInsightsArgs.parse({ provider: 'x'.repeat(201) })).toThrow();
+	});
+	it('accepts provider exactly 200 chars', () => {
+		expect(() => GetProviderInsightsArgs.parse({ provider: 'x'.repeat(200) })).not.toThrow();
+	});
 });
 
 describe('TOOL_SCHEMA_MAP', () => {
