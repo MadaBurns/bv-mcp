@@ -35,7 +35,7 @@ import { handleToolsCall } from './handlers/tools';
 import { isAuthorizedRequest } from './lib/auth';
 import { createAnalyticsClient } from './lib/analytics';
 import { parseScoringConfigCached } from './lib/scoring-config';
-import { OAUTH_CODE_TTL_SECONDS, parseCacheTtl } from './lib/config';
+import { OAUTH_CODE_TTL_SECONDS, MAX_REQUEST_BODY_BYTES, parseCacheTtl } from './lib/config';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
 import { InternalOAuthGrantRequestSchema } from './schemas/oauth';
@@ -72,6 +72,8 @@ type InternalEnv = {
 	CF_ACCOUNT_ID?: string;
 	CF_ANALYTICS_TOKEN?: string;
 	BV_WEB_INTERNAL_KEY?: string;
+	/** Opt-in flag for the H1 defense-in-depth bearer gate on /tools/* and /analytics/*. */
+	REQUIRE_INTERNAL_AUTH?: string;
 };
 
 export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
@@ -104,6 +106,46 @@ internalRoutes.use('*', async (c, next) => {
 });
 
 /**
+ * Defense-in-depth gate for /tools/* and /analytics/*. Unlike trialKeysAuthGate
+ * (which 503s on unset key because trial-keys mint credentials), this gate is
+ * *opt-in*: it activates only when REQUIRE_INTERNAL_AUTH === 'true' AND
+ * BV_WEB_INTERNAL_KEY is set. Default off so deploying H1 doesn't 401 the
+ * existing bv-web → bv-mcp service binding (which doesn't currently send an
+ * Authorization header on /tools/call).
+ *
+ * Rollout:
+ *   1. Ship bv-mcp 2.10.10 with the gate code present but REQUIRE_INTERNAL_AUTH unset.
+ *   2. Update bv-web's service client to attach `Authorization: Bearer ${BV_WEB_INTERNAL_KEY}`.
+ *   3. Deploy bv-web; verify in prod.
+ *   4. Set REQUIRE_INTERNAL_AUTH=true on bv-mcp; redeploy.
+ *
+ * H1 finding (2026-05-08 security audit): without this, /tools/batch could
+ * issue up to 8,000 DoH lookups per call without rate limiting, and the
+ * analytics routes leaked per-key telemetry to anyone bypassing the network
+ * guard.
+ *
+ * Registered BEFORE the route handlers below — Hono middleware applies only to
+ * routes registered after the .use() call.
+ */
+const internalLenientAuthGate: import('hono').MiddlewareHandler<{ Bindings: InternalEnv }> = async (c, next) => {
+	if (c.env.REQUIRE_INTERNAL_AUTH !== 'true') {
+		// Gate not opted in — rely on the network guard (cf-connecting-ip) alone.
+		return next();
+	}
+	const expected = c.env.BV_WEB_INTERNAL_KEY;
+	if (!expected) {
+		// Misconfig: opt-in flag set but no key — fail closed rather than fail open.
+		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
+	}
+	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {
+		return c.json({ error: 'unauthorized' }, 401, { 'Cache-Control': 'no-store' });
+	}
+	return next();
+};
+internalRoutes.use('/tools/*', internalLenientAuthGate);
+internalRoutes.use('/analytics/*', internalLenientAuthGate);
+
+/**
  * POST /internal/tools/call
  *
  * Direct tool invocation without MCP protocol overhead.
@@ -112,10 +154,18 @@ internalRoutes.use('*', async (c, next) => {
  * Response body: { "content": McpContent[], "isError"?: boolean }
  */
 internalRoutes.post('/tools/call', async (c) => {
+	// Body-size guard before JSON parse: prevents a service-binding caller (or an
+	// attacker who bypasses the network guard) from forcing the Worker to
+	// materialize an arbitrarily large payload in memory before Zod rejects it.
+	// Mirrors the public /mcp limit (MAX_REQUEST_BODY_BYTES = 10 KB).
+	const raw = await c.req.text();
+	if (raw.length > MAX_REQUEST_BODY_BYTES) {
+		return c.json({ content: [{ type: 'text', text: `Request body exceeds maximum of ${MAX_REQUEST_BODY_BYTES} bytes` }], isError: true }, 413);
+	}
+
 	let body: { name: string; arguments?: Record<string, unknown> };
 	try {
-		const raw = await c.req.json();
-		body = InternalToolCallSchema.parse(raw);
+		body = InternalToolCallSchema.parse(JSON.parse(raw));
 	} catch (err) {
 		if (err instanceof ZodError) {
 			return c.json({ content: [{ type: 'text', text: `Invalid ${err.issues[0].path.join('.')}: ${err.issues[0].message}` }], isError: true }, 400);
