@@ -22,6 +22,13 @@ const MAX_REDIRECT_HOPS = 3;
  *
  * Handles Cloudflare Workers opaque redirect responses (status 0) and standard
  * 3xx redirects. Only follows HTTPS redirects (no protocol downgrade).
+ *
+ * SSRF note (H3 fix, 2026-05-08): the redirect target hostname is attacker-
+ * controlled (it's whatever the origin's `Location:` header says). Callers must
+ * pass a `fetchFn` that validates the destination before issuing the request —
+ * the bv-mcp Worker passes `safeFetch` which gates the URL via
+ * validateOutboundUrl(). Embedders that pass raw `fetch` are responsible for
+ * their own SSRF protection.
  */
 async function followRedirects(
 	response: Response,
@@ -54,6 +61,9 @@ async function followRedirects(
 				signal: AbortSignal.timeout(timeoutMs),
 			});
 		} catch {
+			// Includes SSRF rejection from a safeFetch wrapper — fall out of the
+			// redirect loop and let analysis run with whatever headers we already
+			// have, treating the hostile redirect target as a network failure.
 			break;
 		}
 	}

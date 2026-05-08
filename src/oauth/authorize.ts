@@ -107,8 +107,9 @@ export async function handleAuthorizeGet(c: Context): Promise<Response> {
 	let parsed;
 	try {
 		parsed = AuthorizeQuerySchema.parse(q);
-	} catch (err) {
-		return new Response(`Invalid authorization request: ${(err as Error).message}`, { status: 400 });
+	} catch {
+		// Static description — never echo caller-controlled validation text (mirrors token.ts/register.ts).
+		return new Response('Invalid authorization request', { status: 400 });
 	}
 	const kv = (c.env as { SESSION_STORE: KVNamespace }).SESSION_STORE;
 	const client = await getClient(kv, parsed.client_id);
@@ -220,8 +221,9 @@ export async function handleAuthorizePost(c: Context): Promise<Response> {
 	let parsed;
 	try {
 		parsed = AuthorizeQuerySchema.parse(q);
-	} catch (err) {
-		return new Response(`Invalid authorization request: ${(err as Error).message}`, { status: 400 });
+	} catch {
+		// Static description — never echo caller-controlled validation text (mirrors token.ts/register.ts).
+		return new Response('Invalid authorization request', { status: 400 });
 	}
 
 	const client = await getClient(kv, parsed.client_id);

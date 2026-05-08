@@ -120,7 +120,7 @@ export const GetBenchmarkArgs = z.object({
 
 /** get_provider_insights */
 export const GetProviderInsightsArgs = z.object({
-	provider: z.string().min(1).describe('Provider (e.g., "google workspace").'),
+	provider: z.string().min(1).max(200).describe('Provider (e.g., "google workspace").'),
 	profile: BenchmarkProfileSchema.optional().describe('Profile (default "mail_enabled").'),
 	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 }).passthrough();

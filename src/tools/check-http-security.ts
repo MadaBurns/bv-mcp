@@ -15,6 +15,7 @@ import { checkHTTPSecurity } from '@blackveil/dns-checks';
 import type { CheckResult } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
+import { safeFetch } from '../lib/safe-fetch';
 
 /** User-Agent for outbound probes — matches the package's scanner UA. */
 const SCANNER_USER_AGENT = 'Mozilla/5.0 (compatible; BlackVeilDNSScanner/1.0; +https://blackveilsecurity.com)';
@@ -94,6 +95,10 @@ function detectCdnProvider(headers: Headers): string | null {
  * dual-fetch probe ahead of the package call.
  */
 async function fetchWithRedirects(url: string, timeoutMs: number): Promise<Response> {
+	// Initial fetch goes to https://<domain> where <domain> is already validated
+	// upstream. Use raw fetch to keep the cost off the validation path. Subsequent
+	// redirect targets ARE attacker-controlled (Location header) and go via
+	// safeFetch (H3 fix from 2026-05-08 security audit).
 	let response = await fetch(url, {
 		method: 'HEAD',
 		redirect: 'manual',
@@ -121,13 +126,17 @@ async function fetchWithRedirects(url: string, timeoutMs: number): Promise<Respo
 		if (!nextUrl.startsWith('https://')) break;
 
 		try {
-			response = await fetch(nextUrl, {
+			response = await safeFetch(nextUrl, {
 				method: 'HEAD',
 				redirect: 'manual',
 				headers: { 'User-Agent': SCANNER_USER_AGENT },
 				signal: AbortSignal.timeout(timeoutMs),
 			});
 		} catch {
+			// safeFetch throws TypeError on a blocked target (SSRF protection); fall
+			// out of the redirect loop and let analysis run with whatever headers we
+			// already collected. Treat exactly like a network error — it's a hostile
+			// redirect destination, not a real failure.
 			break;
 		}
 	}
@@ -294,9 +303,10 @@ async function checkHttpSecurityInner(domain: string): Promise<CheckResult> {
 				headers: dualResult.headers,
 			});
 		}
-		// Dual-fetch unusable — delegate to the real fetch so the package
-		// can run its own error handling and GET fallback.
-		const response = await fetch(input, init);
+		// Dual-fetch unusable — delegate to safeFetch so the package's GET
+		// fallback (and any redirect target it follows via its own fetchFn)
+		// is protected against SSRF redirect targets (H3 fix, 2026-05-08).
+		const response = await safeFetch(input, init);
 		capturedHeaders = response.headers;
 		return response;
 	};
