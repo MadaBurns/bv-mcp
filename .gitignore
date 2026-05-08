@@ -89,6 +89,22 @@ plan-*.md
 .github/agents/
 .github/prompts/
 
+# Internal reports / call prep — never commit (drift catchers)
+/BENCHMARK_REPORT.md
+/BENCHMARK_*.md
+/CAPACITY_ANALYSIS.md
+/CAPACITY_*.md
+/Tenant-*.md
+/*-Call-Prep.md
+/AS-BUILT.md
+/phase*-golive.md
+/OAUTH_LOCAL_DEBUG.md
+/MCP.md
+/GEMINI.md
+/docs/architecture.md
+/docs/AS-BUILT.md
+/docs/phase*-golive.md
+
 # Dev output files
 *.out
 out.txt
