@@ -2,7 +2,7 @@ import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloud
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import worker from '../src';
 import { resetQuotaCoordinatorState } from '../src/lib/quota-coordinator';
-import { resetAllRateLimits } from '../src/lib/rate-limiter';
+import { resetAllRateLimits, resetAllRateLimitsKv } from '../src/lib/rate-limiter';
 import { resetLegacySseState } from '../src/lib/legacy-sse';
 import { resetSessions } from '../src/lib/session';
 import { ACTIVE_SESSIONS } from '../src/lib/session-memory';
@@ -84,6 +84,7 @@ describe('DNS Security MCP Server', () => {
 		resetSessions();
 		resetLegacySseState();
 		await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
+		await resetAllRateLimitsKv(env.RATE_LIMIT);
 	});
 
 		afterEach(() => {
