@@ -266,7 +266,13 @@ export async function handleToolsCall(
 					const result = await scanDomain(validDomain, scanCacheKV, scanOptions);
 					logResult = result.score.grade;
 					logDetails = result;
-					logToolSuccess({ ...ctx(), status: result.score.overall >= 50 ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
+					// scanDomain sets `cached: true` only when the top-level cache:<domain>
+					// key returned a hit. Threading that into the analytics emit so
+					// `tool_call.blob8` reflects the orchestrator-level cache hit/miss
+					// (was 'n/a' for every scan_domain call before — drowned the leaf
+					// tools' real hit-rate signal in the .dev/analytics-30d.mjs report).
+					const cacheStatus: 'hit' | 'miss' = result.cached ? 'hit' : 'miss';
+					logToolSuccess({ ...ctx(), status: result.score.overall >= 50 ? 'pass' : 'fail', logResult, logDetails, severity: 'info', cacheStatus });
 					const structured = buildStructuredScanResult(result);
 					return { content: buildToolContent(formatScanReport(result, effectiveFormat), structured, effectiveFormat) };
 				}
