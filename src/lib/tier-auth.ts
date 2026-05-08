@@ -17,7 +17,15 @@ import { resolveTrialKey } from './trial-keys';
 import { verifyJwt } from '../oauth/jwt';
 import { resolveIssuer } from '../oauth/discovery';
 import { isRevoked } from '../oauth/storage';
-import { TierSchema } from '../schemas/primitives';
+import { z } from 'zod';
+
+/**
+ * JWT-issuable tiers. The `/oauth/token` minting paths can only produce these
+ * three values (owner via legacy consent, developer/enterprise via paid Stripe
+ * entitlement). Verification is locked to this narrower set as defense-in-depth
+ * against a future minting regression that quietly stores e.g. tier=partner.
+ */
+const JwtIssuableTierSchema = z.enum(['owner', 'developer', 'enterprise']);
 
 export interface TierAuthResult {
 	authenticated: boolean;
@@ -65,9 +73,14 @@ export async function resolveTier(
 	// 0. OAuth 2.1 Bearer JWT path — runs FIRST so a valid access token short-circuits before
 	// any KV / service-binding work. Shape check (3 dot-separated segments) is a cheap gate that
 	// lets a non-JWT bearer (e.g. static BV_API_KEY) skip straight to the legacy flow without
-	// paying a signing-key lookup. OWNER_ALLOW_IPS is NOT re-checked here — it was enforced at
-	// the /oauth/authorize consent step (Phase 6 amendment), so minting the JWT already
-	// required a permitted IP. The jti revocation lookup is defense-in-depth.
+	// paying a signing-key lookup. The jti revocation lookup is defense-in-depth.
+	//
+	// OWNER_ALLOW_IPS is re-checked here for owner-tier claims (M1 fix). Previously the gate
+	// was only enforced once at /oauth/authorize consent; that meant anyone briefly on an
+	// allowlisted IP could mint a 90-day JWT usable from any subsequent IP. We now mirror the
+	// BV_API_KEY path: when OWNER_ALLOW_IPS is configured and the requesting clientIp isn't in
+	// it, downgrade to 'partner' tier. Empty/unset allowlist preserves backward compat for
+	// self-hosted/dev installations that don't IP-gate their owner.
 	if (env.OAUTH_SIGNING_SECRET && env.SESSION_STORE && token.split('.').length === 3) {
 		try {
 			const issuer = resolveIssuer(requestUrl, env.OAUTH_ISSUER);
@@ -77,12 +90,19 @@ export async function resolveTier(
 				audience: `${issuer}/mcp`,
 				clockSkewSeconds: OAUTH_JWT_CLOCK_SKEW_SECONDS,
 			});
-			const tierResult = TierSchema.safeParse(claims.tier);
+			const tierResult = JwtIssuableTierSchema.safeParse(claims.tier);
 			if (typeof claims.sub === 'string' && tierResult.success) {
 				if (await isRevoked(env.SESSION_STORE, claims.jti)) {
 					return { authenticated: false };
 				}
-				return { authenticated: true, tier: tierResult.data };
+				let resolvedTier: McpApiKeyTier = tierResult.data;
+				if (resolvedTier === 'owner') {
+					const allowed = parseOwnerAllowIps(env.OWNER_ALLOW_IPS);
+					if (allowed.length > 0 && (!clientIp || !allowed.includes(clientIp))) {
+						resolvedTier = 'partner';
+					}
+				}
+				return { authenticated: true, tier: resolvedTier };
 			}
 			// JWT verified but payload is not a recognized MCP tier — fall through so static key
 			// path still has a chance for legacy operators with unusual three-segment keys.

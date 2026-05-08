@@ -168,9 +168,29 @@ async function sendFuzzingAlert(webhookUrl: string, payload: import('./schemas/a
 }
 
 /**
+ * Per-principal alert suppression window. A principal who trips the threshold
+ * gets one alert; further alerts are silenced for FUZZ_ALERT_COOLDOWN_SECONDS
+ * to prevent the cron job from re-firing every 15 min while the same fuzz
+ * keys are still in their 10-min window. Empirical sustained attacks
+ * therefore generate ~1 alert/hour rather than ~4 alerts/hour.
+ */
+const FUZZ_ALERT_COOLDOWN_SECONDS = 60 * 60;
+
+/**
+ * Hard ceiling on outbound webhook calls per cron tick. Caps amplification
+ * when many principals trip simultaneously (e.g., distributed/rotating-IP
+ * attack) and protects against Slack incoming-webhook rate limits.
+ */
+const MAX_ALERTS_PER_TICK = 10;
+
+/**
  * Fuzzing-detection scan: lists every principal with recent fuzz events in
  * RATE_LIMIT KV, scores their sliding window against FUZZ_THRESHOLDS, and posts
  * a `fuzzing_suspected` alert to ALERT_WEBHOOK_URL when the verdict trips.
+ *
+ * M4 fix (2026-05-08): per-principal dedup via `fuzz:alerted:<principalId>` KV
+ * marker (1h TTL) and a per-tick cap of MAX_ALERTS_PER_TICK to bound outbound
+ * webhook fan-out under sustained or distributed attack.
  *
  * Designed to fail-soft: KV unavailable or webhook 500 must not throw.
  * See docs/plans/2026-05-07-fuzzing-detection-tdd-plan.md.
@@ -204,11 +224,34 @@ export async function handleFuzzingScan(env: ScheduledEnv): Promise<void> {
 		return;
 	}
 
+	let alertsSent = 0;
 	for (const principalId of principals) {
+		if (alertsSent >= MAX_ALERTS_PER_TICK) {
+			logEvent({
+				timestamp: new Date().toISOString(),
+				category: 'scheduled',
+				severity: 'warn',
+				details: { message: 'fuzz_scan_alert_cap_reached', cap: MAX_ALERTS_PER_TICK, remaining: principals.size - alertsSent },
+			});
+			break;
+		}
 		try {
 			const events = await readWindow(env.RATE_LIMIT, principalId, nowSec, FUZZ_THRESHOLDS.windowSeconds);
 			const verdict = scoreWindow(events, FUZZ_THRESHOLDS);
 			if (!verdict.suspected) continue;
+
+			// Per-principal cooldown: skip if we've alerted on this principal within
+			// the suppression window. Fail-soft on KV errors — logging an alert is
+			// preferable to silently swallowing on a transient KV blip.
+			const cooldownKey = `fuzz:alerted:${principalId}`;
+			let alreadyAlerted = false;
+			try {
+				alreadyAlerted = (await env.RATE_LIMIT.get(cooldownKey)) !== null;
+			} catch {
+				// KV down — proceed with alert (fail-loud rather than silent).
+			}
+			if (alreadyAlerted) continue;
+
 			// principalIdHash invariant: 16 hex chars. The recorder writes either keyHash
 			// (already 16 hex from tier-auth) or ipHash (`i_<hex>` from analytics).
 			// Strip the `i_` prefix and pad/trim to 16 hex chars to satisfy the schema.
@@ -217,6 +260,16 @@ export async function handleFuzzingScan(env: ScheduledEnv): Promise<void> {
 			const principalIdHash = rawHash.padEnd(16, '0').slice(0, 16);
 			const payload = buildFuzzingAlertPayload(verdict, { principalKind, principalIdHash, observedAt });
 			await sendFuzzingAlert(env.ALERT_WEBHOOK_URL, payload);
+			alertsSent++;
+
+			// Mark suppression AFTER successful dispatch attempt. sendFuzzingAlert is
+			// itself fail-soft so a webhook 500 still increments the cooldown — that's
+			// intentional, retrying every 15 min during an outage isn't useful.
+			try {
+				await env.RATE_LIMIT.put(cooldownKey, '1', { expirationTtl: FUZZ_ALERT_COOLDOWN_SECONDS });
+			} catch {
+				// KV write failed — next tick will alert again, acceptable degradation.
+			}
 		} catch (err) {
 			logError(err instanceof Error ? err : String(err), {
 				severity: 'warn',
