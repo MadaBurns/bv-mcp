@@ -24,9 +24,10 @@ export type LogEvent = {
 const REDACTED = '[redacted]';
 const MAX_LOG_STRING_LENGTH = 256;
 const MAX_ERROR_STRING_LENGTH = 1024;
-const SENSITIVE_KEY_PATTERN = /(^ip$|cf-connecting-ip|authorization|mcp-session-id|session|token|api[-_]?key|secret|password|cookie|rawbody)/i;
+export const SENSITIVE_KEY_PATTERN =
+	/(^ip$|cf-connecting-ip|authorization|mcp-session-id|session|token|api[-_]?key|secret|password|cookie|rawbody)/i;
 
-function isSensitiveKey(key: string): boolean {
+export function isSensitiveKey(key: string): boolean {
 	return !/^has[A-Z]/.test(key) && SENSITIVE_KEY_PATTERN.test(key);
 }
 
@@ -34,7 +35,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function sanitizeString(value: string, maxLength = MAX_LOG_STRING_LENGTH): string {
+export function sanitizeString(value: string, maxLength = MAX_LOG_STRING_LENGTH): string {
 	// Strip control characters (except tab) to prevent log injection via newlines/ANSI sequences
 	const stripped = value.replace(/[\x00-\x08\x0a-\x1f\x7f]/g, ' ');
 	if (stripped.length <= maxLength) return stripped;
