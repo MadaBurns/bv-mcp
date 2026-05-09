@@ -763,6 +763,7 @@ app.all('*', (c) => {
 
 import { handleScheduled, handleDailyDigest, handleFuzzingScan } from './scheduled';
 import type { ScheduledEnv } from './scheduled';
+import { handleScanQueue, type ScanQueueConsumerEnv } from './tenant/queue-consumer';
 
 export default {
 	fetch: (req: Request, env: Record<string, unknown>, ctx: ExecutionContext) => app.fetch(req, env, ctx),
@@ -773,5 +774,13 @@ export default {
 			ctx.waitUntil(handleScheduled(env as ScheduledEnv));
 			ctx.waitUntil(handleFuzzingScan(env as ScheduledEnv));
 		}
+	},
+	/**
+	 * Phase 2 scanner-queue consumer. Routes `BV_SCANNER_QUEUE` deliveries to
+	 * `handleScanQueue`. Per-message ack/retry with idempotency + DLQ-after-3.
+	 * See `src/tenant/queue-consumer.ts` for the full processing contract.
+	 */
+	queue: async (batch: MessageBatch<unknown>, env: Record<string, unknown>, ctx: ExecutionContext) => {
+		await handleScanQueue(batch, env as ScanQueueConsumerEnv, ctx);
 	},
 };
