@@ -15,11 +15,11 @@
  *   - findings  per-scan findings, FK to scans, indexed by (domain, severity)
  *   - alerts    monitoring alerts, partial-indexed on triggered_at WHERE resolved_at IS NULL
  *
- * TODO(csc-d1-schemas): no `drizzle.config.*` exists yet. When added, the
- * generated migration must include the `idx_alerts_active` partial index
- * (`WHERE resolved_at IS NULL`) — drizzle-kit emits partial-index `where`
- * clauses but that's worth an audit test. R2 archival of cold scans (>90d)
- * is described in §3.2 storage table but lives outside the schema.
+ * Migration: `src/csc/db/migrations/tenant/0000_*.sql` (generated via
+ * `npm run csc:migrate:tenant`). The same SQL is applied to every per-tenant
+ * D1 by the orchestrator's tenant-provisioning script. R2 archival of cold
+ * scans (>90d) is described in `CSC-Scalable-Architecture-Design.md` §3.2
+ * but lives outside this schema.
  */
 
 import { index, integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';

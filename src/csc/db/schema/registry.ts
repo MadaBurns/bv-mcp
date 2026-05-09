@@ -10,9 +10,9 @@
  * and billing events — never customer scan data (that lives per-tenant in
  * `./tenant.ts`).
  *
- * TODO(csc-d1-schemas): no `drizzle.config.*` exists yet. Once added, the
- * generated migration must produce identical SQL to the spec, including the
- * `idx_billing_lookup` composite index. Audit-test the SQL diff at that time.
+ * Migration: `src/csc/db/migrations/registry/0000_*.sql` (generated via
+ * `npm run csc:migrate:registry`). Apply on the shared registry D1 with
+ * `wrangler d1 migrations apply --remote <CSC_REGISTRY_DB>` once provisioned.
  */
 
 import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';

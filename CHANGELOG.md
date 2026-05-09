@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.15] - 2026-05-09
+
+### Added
+- **Drizzle migrations for CSC D1 schemas** — closes the TODO from PR #105. Two migrations:
+  - `src/csc/db/migrations/registry/0000_minor_skaar.sql` — shared registry tables (`super_tenants`, `sub_tenants`, `tenant_keys`, `billing_events`) + `idx_billing_lookup` composite index.
+  - `src/csc/db/migrations/tenant/0000_clear_clea.sql` — per-sub-tenant tables (`domains`, `scans`, `findings`, `alerts`) + indexes including the `idx_alerts_active` partial index (`WHERE resolved_at IS NULL`).
+- **`drizzle-kit ^0.31.10` devDep** + two drizzle configs (`src/csc/db/drizzle.{registry,tenant}.config.ts`) targeting `d1-http` driver.
+- **`npm run csc:migrate`** (and per-DB variants) regenerates the SQL from the schema files.
+
+### Changed
+- Removed `TODO(csc-d1-schemas)` comments from `src/csc/db/schema/{registry,tenant}.ts` — now point at the generated migration paths.
+
+### Operational
+- 0 changes to existing source. Migrations are new artifacts; no production deploy semantics change.
+
 ## [2.10.14] - 2026-05-09
 
 ### Fixed
