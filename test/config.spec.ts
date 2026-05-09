@@ -11,6 +11,7 @@ import {
 	DNS_TIMEOUT_MS,
 	INFLIGHT_CLEANUP_MS,
 	GLOBAL_DAILY_TOOL_LIMIT,
+	SCAN_TIMEOUT_MS,
 } from '../src/lib/config';
 import type { McpApiKeyTier } from '../src/lib/config';
 
@@ -168,16 +169,19 @@ describe('parseGlobalDailyLimit', () => {
 });
 
 describe('parseScanTimeout', () => {
-	it('returns 12000 when env is undefined', () => {
-		expect(parseScanTimeout(undefined)).toBe(12000);
+	// Tests reference SCAN_TIMEOUT_MS directly so a future bump of the default
+	// (e.g. 12000 → 15000 in v2.10.14 to cover observed prod p50) is a single
+	// source of truth instead of a multi-site update.
+	it('returns SCAN_TIMEOUT_MS default when env is undefined', () => {
+		expect(parseScanTimeout(undefined)).toBe(SCAN_TIMEOUT_MS);
 	});
 
 	it('parses valid value', () => {
 		expect(parseScanTimeout('20000')).toBe(20000);
 	});
 
-	it('clamps to minimum of 5000', () => {
-		expect(parseScanTimeout('2000')).toBe(12000);
+	it('clamps to minimum of 5000 (returns default for sub-floor input)', () => {
+		expect(parseScanTimeout('2000')).toBe(SCAN_TIMEOUT_MS);
 	});
 
 	it('clamps to maximum of 30000', () => {
@@ -185,7 +189,7 @@ describe('parseScanTimeout', () => {
 	});
 
 	it('returns default for non-numeric input', () => {
-		expect(parseScanTimeout('slow')).toBe(12000);
+		expect(parseScanTimeout('slow')).toBe(SCAN_TIMEOUT_MS);
 	});
 });
 

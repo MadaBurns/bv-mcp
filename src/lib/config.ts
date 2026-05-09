@@ -242,8 +242,13 @@ export const TRIAL_KEY_CACHE_TTL = 60;
 // Runtime-configurable limit parsers (env var overrides, no redeploy needed)
 // ---------------------------------------------------------------------------
 
-/** Default scan-level timeout (ms). */
-export const SCAN_TIMEOUT_MS = 12_000;
+/** Default scan-level timeout (ms). 15s leaves ~20% headroom over the
+ * production-observed scan_domain p50 (12.5s, last 7d analytics). The prior
+ * 12s value was below p50 — roughly half of cold scans were running into the
+ * timeout and returning partial results. Operator can override up to 30s via
+ * `SCAN_TIMEOUT_MS` env var (`parseScanTimeout` clamps to [5000, 30000]).
+ * Wall-clock; bundled Worker CPU ceiling is 30s, so this is comfortably under. */
+export const SCAN_TIMEOUT_MS = 15_000;
 
 /** Default per-check timeout (ms). */
 export const PER_CHECK_TIMEOUT_MS = 8_000;
