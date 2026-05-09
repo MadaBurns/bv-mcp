@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.14] - 2026-05-09
+
+### Fixed
+- **Default `SCAN_TIMEOUT_MS` raised 12s → 15s.** Production analytics over the last 7 days showed `scan_domain` p50 latency at 12,473 ms — fractionally above the prior 12s default — so roughly half of cold scans were racing the wall-clock timeout and returning partial results before the orchestrator finished its 16 leaf checks. 15s gives ~20% headroom over p50 and is comfortably under the bundled Workers CPU ceiling of 30s. Operator override up to 30s remains via the `SCAN_TIMEOUT_MS` env var.
+
+### Added
+- **`test/audits/csc-capacity-readiness.audit.test.ts`** — 7 invariants codifying the CSC-class capacity envelope: quota (`partner.scan_domain >= 2.5M`), quota-alias parity, scan timeout >= observed p50, per-check < scan timeout, and throughput projections that 2.5M-domain audits complete inside the 24h SLO. Tripped CI on the prior 12s timeout — the catch that motivated this PR.
+
+### Changed
+- **`test/config.spec.ts`** — `parseScanTimeout` assertions now reference the `SCAN_TIMEOUT_MS` constant instead of hardcoded literals so future bumps are a single-source-of-truth update.
+
+### Operational
+- `.gitignore`: added `reports/csc-calibration-*.json` and `/scripts/csc/` patterns for capacity-calibration tooling kept local-only.
+
 ## [2.10.13] - 2026-05-09
 
 CSC Global enterprise enablement — Phase 0 + start of Phase 1. No public-API behavior change for existing tools; adds quota headroom and the foundation for a multi-tenant orchestrator. Built TDD-first across 4 parallel agents in worktree isolation.
