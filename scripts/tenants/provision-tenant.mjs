@@ -168,7 +168,7 @@ export function usageText() {
  * Throws on non-zero exit. Returns `{ id, name }`.
  */
 export function createTenantD1(deps, dbName) {
-	const out = deps.runCmd('wrangler', ['d1', 'create', dbName, '--json'], { stdio: 'pipe' });
+	const out = deps.runCmd('wrangler', ['d1', 'create', dbName], { stdio: 'pipe' });
 	const text = typeof out === 'string' ? out : out?.toString?.('utf8') ?? '';
 	const parsed = parseWranglerJsonOutput(text);
 	if (!parsed?.uuid && !parsed?.id) {
@@ -217,14 +217,36 @@ export function executeRegistrySql(deps, registryBinding, sql) {
 export function parseWranglerJsonOutput(text) {
 	if (!text) return null;
 	try {
-		return JSON.parse(text);
+		const parsed = JSON.parse(text);
+		if (parsed.d1_databases?.[0]) return parsed.d1_databases[0];
+		return parsed;
 	} catch {
 		// Some wrangler versions wrap JSON in non-JSON banner lines. Find the
 		// first `{` or `[` and try to parse from there.
 		const i = text.search(/[\[{]/);
 		if (i === -1) return null;
 		try {
-			return JSON.parse(text.slice(i));
+			// Try parsing the slice, but wrangler might append text after the JSON.
+			// We try to find the balancing closing brace/bracket.
+			let end = text.length;
+			const stack = [];
+			for (let j = i; j < text.length; j++) {
+				if (text[j] === '{' || text[j] === '[') stack.push(text[j]);
+				if (text[j] === '}' || text[j] === ']') {
+					const top = stack.pop();
+					if (stack.length === 0) {
+						end = j + 1;
+						break;
+					}
+				}
+			}
+			const snippet = text.slice(i, end);
+			const parsed = JSON.parse(snippet);
+			if (parsed.d1_databases?.[0]) {
+				const d = parsed.d1_databases[0];
+				return { ...d, id: d.database_id ?? d.id, name: d.database_name ?? d.name };
+			}
+			return parsed;
 		} catch {
 			return null;
 		}
