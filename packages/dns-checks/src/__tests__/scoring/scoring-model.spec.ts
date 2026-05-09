@@ -26,7 +26,7 @@ describe('scoring-model', () => {
 
 describe('CATEGORY_TIERS', () => {
 	it('classifies all 23 categories into tiers', () => {
-		expect(Object.keys(CATEGORY_TIERS)).toHaveLength(23);
+		expect(Object.keys(CATEGORY_TIERS)).toHaveLength(24);
 	});
 
 	it('has 5 core categories', () => {
@@ -41,6 +41,6 @@ describe('CATEGORY_TIERS', () => {
 
 	it('has 7 hardening categories', () => {
 		const hardening = Object.entries(CATEGORY_TIERS).filter(([, t]) => t === 'hardening');
-		expect(hardening).toHaveLength(7);
+		expect(hardening).toHaveLength(8);
 	});
 });
