@@ -39,6 +39,25 @@ export const LABEL_REGEX = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/i;
 /** Hard limit on incoming JSON-RPC request body size (bytes). */
 export const MAX_REQUEST_BODY_BYTES = 10_240;
 
+/**
+ * Hard limit on /internal/tools/batch and /internal/tenant/scan body size (bytes).
+ *
+ * Set to 256 KB so a service-binding caller can submit ~500 domains in a single
+ * scan dispatch. Mirrors the existing local constant in `src/internal.ts`
+ * (`BATCH_MAX_BODY_BYTES`); promoted here so the Tenant routes share the cap.
+ */
+export const MAX_INTERNAL_BATCH_BODY_BYTES = 262_144;
+
+/**
+ * Hard limit on /internal/tenant/portfolio body size (bytes).
+ *
+ * Larger than the batch cap because portfolio uploads carry up to 10K domains
+ * per request (Tenant-Scalable-Architecture-Design.md §4.1). 10K × ~30 chars +
+ * JSON framing ≈ 350 KB; 512 KB gives headroom for longer FQDNs without
+ * forcing Tenant's portal to chunk uploads.
+ */
+export const MAX_Tenant_PORTFOLIO_BODY_BYTES = 524_288;
+
 /** Timeout for outbound HTTPS fetches (SSL, MTA-STS policy, etc.). */
 export const HTTPS_TIMEOUT_MS = 4_000;
 
