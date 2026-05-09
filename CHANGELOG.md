@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.15] - 2026-05-09
+
+### Added
+- **Drizzle migrations for Tenant D1 schemas** — closes the TODO from PR #105. Two migrations:
+  - `src/tenant/db/migrations/registry/0000_minor_skaar.sql` — shared registry tables (`super_tenants`, `sub_tenants`, `tenant_keys`, `billing_events`) + `idx_billing_lookup` composite index.
+  - `src/tenant/db/migrations/tenant/0000_clear_clea.sql` — per-sub-tenant tables (`domains`, `scans`, `findings`, `alerts`) + indexes including the `idx_alerts_active` partial index (`WHERE resolved_at IS NULL`).
+- **`drizzle-kit ^0.31.10` devDep** + two drizzle configs (`src/tenant/db/drizzle.{registry,tenant}.config.ts`) targeting `d1-http` driver.
+- **`npm run tenant:migrate`** (and per-DB variants) regenerates the SQL from the schema files.
+
+### Changed
+- Removed `TODO(tenant-d1-schemas)` comments from `src/tenant/db/schema/{registry,tenant}.ts` — now point at the generated migration paths.
+
+### Operational
+- 0 changes to existing source. Migrations are new artifacts; no production deploy semantics change.
+
 ## [2.10.14] - 2026-05-09
 
 ### Fixed
