@@ -4,8 +4,8 @@
  * Zod schema for cross-tenant audit-log events.
  *
  * Source of truth for the input contract of `recordAuditEvent()`
- * (`src/tenant/audit.ts`) and the persisted `audit_events` table
- * (`src/tenant/db/schema/registry.ts`).
+ * (`src/tenants/audit.ts`) and the persisted `audit_events` table
+ * (`src/tenants/db/schema/registry.ts`).
  *
  * `actorTier` reuses the same six-value enum as `lib/auth.ts` rather than
  * importing `TierSchema` from `primitives.ts` — the audit log records
