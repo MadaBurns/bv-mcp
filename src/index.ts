@@ -763,8 +763,8 @@ app.all('*', (c) => {
 
 import { handleScheduled, handleDailyDigest, handleFuzzingScan } from './scheduled';
 import type { ScheduledEnv } from './scheduled';
-import { handleScanQueue, type ScanQueueConsumerEnv } from './tenant/queue-consumer';
-import { handleCscCycleAlerts, handleCscWeeklyRescan, type CscScheduledEnv } from './tenant/scheduled-handlers';
+import { handleScanQueue, type ScanQueueConsumerEnv } from './tenants/queue-consumer';
+import { handleTenantCycleAlerts, handleTenantWeeklyRescan, type TenantScheduledEnv } from './tenants/scheduled-handlers';
 
 export default {
 	fetch: (req: Request, env: Record<string, unknown>, ctx: ExecutionContext) => app.fetch(req, env, ctx),
@@ -775,17 +775,17 @@ export default {
 			ctx.waitUntil(handleDailyDigest(env as ScheduledEnv));
 		} else if (event.cron === '0 2 * * 0') {
 			// Weekly Tenant rescan dispatch — Sunday 02:00 UTC.
-			ctx.waitUntil(handleCscWeeklyRescan(env as CscScheduledEnv, ctx));
+			ctx.waitUntil(handleTenantWeeklyRescan(env as TenantScheduledEnv, ctx));
 		} else {
 			ctx.waitUntil(handleScheduled(env as ScheduledEnv));
 			ctx.waitUntil(handleFuzzingScan(env as ScheduledEnv));
-			ctx.waitUntil(handleCscCycleAlerts(env as CscScheduledEnv, ctx));
+			ctx.waitUntil(handleTenantCycleAlerts(env as TenantScheduledEnv, ctx));
 		}
 	},
 	/**
 	 * Phase 2 scanner-queue consumer. Routes `BV_SCANNER_QUEUE` deliveries to
 	 * `handleScanQueue`. Per-message ack/retry with idempotency + DLQ-after-3.
-	 * See `src/tenant/queue-consumer.ts` for the full processing contract.
+	 * See `src/tenants/queue-consumer.ts` for the full processing contract.
 	 */
 	queue: async (batch: MessageBatch<unknown>, env: Record<string, unknown>, ctx: ExecutionContext) => {
 		await handleScanQueue(batch, env as ScanQueueConsumerEnv, ctx);
