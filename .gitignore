@@ -130,6 +130,17 @@ generate_*.py
 reports/csc-readiness-proof.html
 reports/csc-calibration-*.json
 reports/csc-*.json
+reports/repo-audit-*.html
+
+# Phase-rollout artifacts (kept locally for ops history, not for OSS distribution)
+/phase*-monitoring.json
+/scripts/phase*-*.mjs
+/scripts/phase*-results.json
+/scripts/phase*-*.json
+
+# Internal commercial / integration docs
+/docs/MARKETING-BROCHURE.md
+/docs/oauth-stripe-integration.md
 scripts/chaos/csc-scale-chaos.py
 reports/scan-manifest.json
 reports/scale-audit-log.txt
