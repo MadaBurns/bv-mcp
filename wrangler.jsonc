@@ -60,6 +60,33 @@
   // "services": [
   //   { "binding": "BV_CERTSTREAM", "service": "bv-certstream-worker" }
   // ],
+  // Phase 2 scanner queue (Tenant-Scalable-Architecture-Design.md §2.2).
+  //
+  // POST /internal/tenant/scan with `mode: "queue"` enqueues one message per
+  // domain onto `BV_SCANNER_QUEUE`. The exported `queue` handler in
+  // src/index.ts dispatches to handleScanQueue (src/tenant/queue-consumer.ts).
+  //
+  // Create the queue once per account:
+  //   npx wrangler queues create bv-scanner-queue
+  //
+  // Then add the producer + consumer blocks below to .dev/wrangler.deploy.jsonc
+  // (NOT this committed file — vitest-pool-workers asserts that referenced
+  // queues exist remotely when the Worker config declares them, and CI lacks
+  // the credentials to provision):
+  //
+  // "queues": {
+  //   "producers": [
+  //     { "binding": "BV_SCANNER_QUEUE", "queue": "bv-scanner-queue" }
+  //   ],
+  //   "consumers": [
+  //     {
+  //       "queue": "bv-scanner-queue",
+  //       "max_batch_size": 100,
+  //       "max_batch_timeout": 5,
+  //       "max_retries": 3
+  //     }
+  //   ]
+  // },
   // Optional auth: leave empty for open mode.
   // Set owner auth as a secret (`npx wrangler secret put BV_API_KEY`);
   // do not declare BV_API_KEY here or deploys will publish an empty plain var.
