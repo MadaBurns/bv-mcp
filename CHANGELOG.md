@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.16] - 2026-05-09
+
+### Changed
+- **Untracked 7 internal artifacts** (forward-only — not history-rewritten). Files kept locally and gitignored going forward; older tags ≤ v2.10.15 still contain them. All 7 were cleaned of secrets in the v2.10.8 history rewrite — no leak risk in older tags.
+  - `phase8-monitoring.json` — phase rollout monitoring artifact
+  - `scripts/phase7-validation.mjs`, `scripts/phase8-monitor.mjs`, `scripts/phase7-results.json` — internal phase rollout scripts/data
+  - `reports/repo-audit-2026-04-06.html` — one-off internal audit
+  - `docs/oauth-stripe-integration.md` — bv-web Stripe pairing details (kept private; self-hosters can ask)
+  - `docs/MARKETING-BROCHURE.md` — commercial framing (better placed elsewhere than the OSS repo)
+
+### Fixed
+- **`npm audit` clears 4 moderate vulns** added when v2.10.15 introduced `drizzle-kit` as a devDep. drizzle-kit transitively pulled `@esbuild-kit/core-utils` which pinned `esbuild ~0.18.20` (GHSA-67mh-4wv8-2f99 — dev-server CVE). Added `overrides.esbuild: ^0.25.0` to force a non-vulnerable version. drizzle-kit only uses esbuild for build-time codegen so the dev-server CVE didn't apply to our usage, but the audit gate flagged it. `npm audit` now reports 0 vulnerabilities.
+
+### Operational
+- `.gitignore` patterns added: `/phase*-monitoring.json`, `/scripts/phase*-*.{mjs,json}`, `/docs/MARKETING-BROCHURE.md`, `/docs/oauth-stripe-integration.md`, `reports/repo-audit-*.html` so these can't accidentally re-stage.
+
 ## [2.10.15] - 2026-05-09
 
 ### Added
