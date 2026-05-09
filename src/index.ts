@@ -764,15 +764,22 @@ app.all('*', (c) => {
 import { handleScheduled, handleDailyDigest, handleFuzzingScan } from './scheduled';
 import type { ScheduledEnv } from './scheduled';
 import { handleScanQueue, type ScanQueueConsumerEnv } from './tenant/queue-consumer';
+import { handleBrandAuditCycleAlerts, handleBrandAuditWeeklyRescan, type BrandAuditScheduledEnv } from './tenant/scheduled-handlers';
 
 export default {
 	fetch: (req: Request, env: Record<string, unknown>, ctx: ExecutionContext) => app.fetch(req, env, ctx),
 	scheduled: async (event: ScheduledEvent, env: Record<string, unknown>, ctx: ExecutionContext) => {
+		// Each handler is dispatched via its own waitUntil so a failure in one
+		// (e.g. Tenant alert sweep throws) cannot mask the others' analytics outcome.
 		if (event.cron === '0 8 * * *') {
 			ctx.waitUntil(handleDailyDigest(env as ScheduledEnv));
+		} else if (event.cron === '0 2 * * 0') {
+			// Weekly Tenant rescan dispatch — Sunday 02:00 UTC.
+			ctx.waitUntil(handleBrandAuditWeeklyRescan(env as BrandAuditScheduledEnv, ctx));
 		} else {
 			ctx.waitUntil(handleScheduled(env as ScheduledEnv));
 			ctx.waitUntil(handleFuzzingScan(env as ScheduledEnv));
+			ctx.waitUntil(handleBrandAuditCycleAlerts(env as BrandAuditScheduledEnv, ctx));
 		}
 	},
 	/**
