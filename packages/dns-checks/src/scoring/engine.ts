@@ -49,6 +49,7 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	dane_https: { importance: 2 },
 	svcb_https: { importance: 1 },
 	subdomailing: { importance: 3 },
+	brand_discovery: { importance: 0 },
 };
 
 /** Core-tier importance weights (SPF, DMARC, DKIM, DNSSEC, SSL). Used by the three-tier scoring formula. */

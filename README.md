@@ -82,7 +82,7 @@ Transport support:
 ## Tools
 
 ```
-  51 MCP tools · 7 prompts · 6 resources
+  52 MCP tools · 7 prompts · 6 resources
 
   Email Auth           Infrastructure        Brand & Threats       Meta
  ────────────         ────────────────       ─────────────────    ──────────────────────
@@ -103,6 +103,10 @@ Transport support:
                                               map_compliance       validate_fix
                                               simulate_attack_paths
                                               analyze_drift
+
+  Discovery
+ ──────────────
+  discover_brand_domains   (Phase-4 brand portfolio aggregator)
 
   + check_subdomain_takeover (internal — runs inside scan_domain)
 ```
