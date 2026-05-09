@@ -176,6 +176,40 @@ export const CheckFastFluxArgs = z.object({
 	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 }).passthrough();
 
+/** Brand-discovery signal kinds (case-insensitive). */
+const DiscoverSignalSchema = z
+	.string()
+	.transform((v) => v.toLowerCase().trim())
+	.pipe(z.enum(['san', 'ns', 'dmarc_rua', 'dkim_key_reuse']));
+
+/** discover_brand_domains — seed + optional signal set + candidate seed list. */
+export const DiscoverBrandDomainsArgs = z.object({
+	domain: DomainSchema.describe('Seed domain whose brand portfolio to expand (e.g., example.com).'),
+	signals: z
+		.array(DiscoverSignalSchema)
+		.min(1)
+		.max(4)
+		.optional()
+		.describe('Signal modules to invoke. Defaults to all four (san, ns, dmarc_rua, dkim_key_reuse).'),
+	candidate_domains: z
+		.array(z.string().min(1).max(253))
+		.max(200)
+		.optional()
+		.describe('Optional candidate domains to test (used by ns and dkim_key_reuse signals). Max 200.'),
+	dkim_selectors: z
+		.array(z.string().min(1).max(63))
+		.max(50)
+		.optional()
+		.describe('Optional DKIM selectors to probe. Defaults to a built-in common-selector list.'),
+	min_confidence: z
+		.number()
+		.min(0)
+		.max(1)
+		.optional()
+		.describe('Drop candidates whose combined confidence falls below this threshold (0-1, default 0.5).'),
+	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+}).passthrough();
+
 /**
  * Map of every tool name to its Zod argument schema.
  * Used for runtime validation in tools.ts and for inputSchema generation.
@@ -232,4 +266,5 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	check_nsec_walkability: BaseDomainArgs,
 	check_dnssec_chain: BaseDomainArgs,
 	check_fast_flux: CheckFastFluxArgs,
+	discover_brand_domains: DiscoverBrandDomainsArgs,
 };

@@ -204,6 +204,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_nsec_walkability: 30,
 	check_dnssec_chain: 30,
 	check_fast_flux: 10,
+	discover_brand_domains: 5,
 };
 
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
