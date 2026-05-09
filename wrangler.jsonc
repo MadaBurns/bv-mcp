@@ -37,9 +37,9 @@
   // Requires CF_ACCOUNT_ID, CF_ANALYTICS_TOKEN, and ALERT_WEBHOOK_URL
   // to be set for alerts to fire. Without them, the handlers are no-ops.
   "triggers": {
-    // 15-min: analytics anomalies + fuzzing scan + Tenant cycle-alert sweep.
+    // 15-min: analytics anomalies + fuzzing scan + tenant cycle-alert sweep.
     // Daily 08:00 UTC: per-tier usage digest.
-    // Weekly Sun 02:00 UTC: Tenant weekly rescan dispatch (handleBrandAuditWeeklyRescan).
+    // Weekly Sun 02:00 UTC: tenant weekly rescan dispatch (handleTenantWeeklyRescan).
     "crons": ["*/15 * * * *", "0 8 * * *", "0 2 * * 0"]
   },
   // KV namespaces — required for production (cross-isolate sessions, caching,
@@ -63,11 +63,11 @@
   // "services": [
   //   { "binding": "BV_CERTSTREAM", "service": "bv-certstream-worker" }
   // ],
-  // Phase 2 scanner queue (Tenant-Scalable-Architecture-Design.md §2.2).
+  // Phase 2 scanner queue (tenant-Scalable-Architecture-Design.md §2.2).
   //
-  // POST /internal/tenant/scan with `mode: "queue"` enqueues one message per
+  // POST /internal/tenants/scan with `mode: "queue"` enqueues one message per
   // domain onto `BV_SCANNER_QUEUE`. The exported `queue` handler in
-  // src/index.ts dispatches to handleScanQueue (src/tenant/queue-consumer.ts).
+  // src/index.ts dispatches to handleScanQueue (src/tenants/queue-consumer.ts).
   //
   // Create the queue once per account:
   //   npx wrangler queues create bv-scanner-queue
