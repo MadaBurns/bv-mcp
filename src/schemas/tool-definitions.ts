@@ -21,10 +21,11 @@ import {
 	AnalyzeDriftArgs,
 	GenerateRolloutPlanArgs,
 	CheckFastFluxArgs,
+	DiscoverBrandDomainsArgs,
 	TOOL_SCHEMA_MAP,
 } from './tool-args';
 
-export type ToolGroup = 'email_auth' | 'infrastructure' | 'brand_threats' | 'dns_hygiene' | 'intelligence' | 'remediation' | 'meta';
+export type ToolGroup = 'email_auth' | 'infrastructure' | 'brand_threats' | 'dns_hygiene' | 'intelligence' | 'remediation' | 'meta' | 'discovery';
 export type ToolTier = 'core' | 'protective' | 'hardening';
 
 export interface McpTool {
@@ -421,6 +422,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 			'Detect fast-flux DNS behavior by performing multiple rounds of A/AAAA queries with delays. Compares IP answer sets and TTLs across rounds to identify rotating infrastructure.',
 		schema: CheckFastFluxArgs,
 		group: 'intelligence',
+		scanIncluded: false,
+	},
+	discover_brand_domains: {
+		description:
+			"Find a brand's hidden domain portfolio by aggregating four discovery signals (TLS SAN co-ownership via crt.sh, NS-record correlation, DMARC RUA address mining, DKIM key reuse). Returns ranked candidate domains with combined-confidence scoring.",
+		schema: DiscoverBrandDomainsArgs,
+		group: 'discovery',
 		scanIncluded: false,
 	},
 };
