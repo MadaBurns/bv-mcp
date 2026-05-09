@@ -8,6 +8,7 @@ build/
 out/
 *.tgz
 *.wasm
+crates/bv-wasm-core/pkg/
 
 # IDE
 .idea/
