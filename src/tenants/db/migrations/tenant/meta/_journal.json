@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1778296780784,
+      "tag": "0000_clear_clea",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1778329286706,
+      "tag": "0001_clumsy_master_mold",
+      "breakpoints": true
+    }
+  ]
+}
