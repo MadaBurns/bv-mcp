@@ -50,6 +50,7 @@ import { checkRdapLookup } from '../tools/check-rdap-lookup';
 import { checkNsecWalkability } from '../tools/check-nsec-walkability';
 import { checkDnssecChain } from '../tools/check-dnssec-chain';
 import { checkFastFlux } from '../tools/check-fast-flux';
+import { discoverBrandDomains } from '../tools/discover-brand-domains';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -158,6 +159,23 @@ const TOOL_REGISTRY: Record<
 	check_nsec_walkability: { cacheKey: () => 'nsec_walkability', execute: (d, _args, ro) => checkNsecWalkability(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	check_dnssec_chain: { cacheKey: () => 'dnssec_chain', execute: (d, _args, ro) => checkDnssecChain(d, buildDnsOptions(ro)) },
 	check_fast_flux: { cacheKey: () => 'fast_flux', execute: (d, args, ro) => checkFastFlux(d, (args.rounds as number | undefined) ?? 3, buildDnsOptions(ro)) },
+	discover_brand_domains: {
+		cacheKey: (args) => {
+			const signals = (args.signals as string[] | undefined)?.slice().sort().join(',') ?? 'all';
+			const minConf = typeof args.min_confidence === 'number' ? args.min_confidence : 0.5;
+			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
+			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
+			return `discover_brand:${signals}:c${candHash}:m${minConf}`;
+		},
+		execute: (d, args) =>
+			discoverBrandDomains(d, {
+				signals: args.signals as Parameters<typeof discoverBrandDomains>[1] extends infer O ? (O extends { signals?: infer S } ? S : undefined) : undefined,
+				candidate_domains: args.candidate_domains as string[] | undefined,
+				dkim_selectors: args.dkim_selectors as string[] | undefined,
+				min_confidence: args.min_confidence as number | undefined,
+			}),
+		cacheTtlSeconds: 3600,
+	},
 };
 
 /** Known interactive LLM client types that benefit from compact output. */
