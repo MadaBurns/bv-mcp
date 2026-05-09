@@ -69,7 +69,8 @@ export type CheckCategory =
 	| 'zone_hygiene'
 	| 'dane_https'
 	| 'svcb_https'
-	| 'subdomailing';
+	| 'subdomailing'
+	| 'brand_discovery';
 
 /** Three-tier classification for check categories: core (critical baseline), protective (active risk mitigation), hardening (advanced posture). */
 export type CategoryTier = 'core' | 'protective' | 'hardening';
@@ -99,6 +100,7 @@ export const CATEGORY_TIERS: Record<CheckCategory, CategoryTier> = {
 	dane_https: 'protective',
 	svcb_https: 'protective',
 	subdomailing: 'protective',
+	brand_discovery: 'hardening',
 };
 
 export interface Finding {
@@ -157,6 +159,7 @@ export const CATEGORY_DISPLAY_WEIGHTS: Record<CheckCategory, number> = {
 	dane_https: 0,
 	svcb_https: 0,
 	subdomailing: 0.05,
+	brand_discovery: 0,
 };
 
 /** Severity penalty multipliers applied to the category score */

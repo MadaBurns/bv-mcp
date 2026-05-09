@@ -10,7 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { TOOLS } from '../src/handlers/tool-schemas';
 import type { ToolGroup, ToolTier } from '../src/handlers/tool-schemas';
 
-const VALID_GROUPS: ToolGroup[] = ['email_auth', 'infrastructure', 'brand_threats', 'dns_hygiene', 'intelligence', 'remediation', 'meta'];
+const VALID_GROUPS: ToolGroup[] = ['email_auth', 'infrastructure', 'brand_threats', 'dns_hygiene', 'intelligence', 'remediation', 'meta', 'discovery'];
 const VALID_TIERS: ToolTier[] = ['core', 'protective', 'hardening'];
 
 /** Tools included in scan_domain parallel orchestration (excludes check_subdomain_takeover which is internal). */
@@ -37,11 +37,12 @@ const NON_SCAN_TOOL_NAMES = new Set([
 	'check_nsec_walkability',
 	'check_dnssec_chain',
 	'check_fast_flux',
+	'discover_brand_domains',
 ]);
 
 describe('tool-schemas metadata', () => {
-	it('exports exactly 42 tools', () => {
-		expect(TOOLS).toHaveLength(51);
+	it('exports exactly 52 tools', () => {
+		expect(TOOLS).toHaveLength(52);
 	});
 
 	it('all tool names are unique', () => {

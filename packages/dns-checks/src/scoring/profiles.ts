@@ -55,6 +55,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		mx_reputation: { importance: 0 },
 		srv: { importance: 0 },
 		zone_hygiene: { importance: 0 },
+		brand_discovery: { importance: 0 },
 	},
 	enterprise_mail: {
 		// Core (sum=63)
@@ -83,6 +84,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		mx_reputation: { importance: 0 },
 		srv: { importance: 0 },
 		zone_hygiene: { importance: 0 },
+		brand_discovery: { importance: 0 },
 	},
 	non_mail: {
 		// Core (sum=29)
@@ -111,6 +113,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		mx_reputation: { importance: 0 },
 		srv: { importance: 0 },
 		zone_hygiene: { importance: 0 },
+		brand_discovery: { importance: 0 },
 	},
 	web_only: {
 		// Core (sum=28)
@@ -139,6 +142,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		mx_reputation: { importance: 0 },
 		srv: { importance: 0 },
 		zone_hygiene: { importance: 0 },
+		brand_discovery: { importance: 0 },
 	},
 	minimal: {
 		// Core (sum=15)
@@ -167,6 +171,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		mx_reputation: { importance: 0 },
 		srv: { importance: 0 },
 		zone_hygiene: { importance: 0 },
+		brand_discovery: { importance: 0 },
 	},
 };
 

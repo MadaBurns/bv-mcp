@@ -556,6 +556,34 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 			'Deploy NSEC3 with at least algorithm 1 (SHA-1) and consider using salt. RFC 9276 recommends 0 iterations with no salt as the minimum.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc5155', 'https://datatracker.ietf.org/doc/html/rfc9276'],
 	},
+	BRAND_DISCOVERY_INFO: {
+		title: 'Candidate Brand Domain Surfaced',
+		severity: 'info',
+		explanation:
+			'A discovery signal (TLS SAN co-ownership, NS-record overlap, DMARC RUA addressee, or DKIM key reuse) suggests this domain is part of the same brand portfolio as the seed.',
+		recommendation:
+			'Add the candidate to the customer\'s known portfolio after confirming ownership via the registrar account or a side-channel. Schedule a security scan once it is confirmed in scope.',
+		references: [
+			'https://crt.sh',
+			'https://datatracker.ietf.org/doc/html/rfc7489',
+			'https://datatracker.ietf.org/doc/html/rfc6376',
+		],
+	},
+	BRAND_DISCOVERY_LOW: {
+		title: 'High-Confidence Brand Domain Match',
+		severity: 'low',
+		explanation:
+			'Multiple independent discovery signals corroborate that this domain shares operational ownership with the seed (combined confidence ≥ 0.85). Examples include matching DKIM public keys plus shared NS pools, or SAN co-issuance plus DMARC RUA reuse.',
+		impact:
+			'Without expanding the security scope to include this domain, deficiencies (DMARC, DKIM, certificate hygiene) on it can still be exploited to spoof or attack the parent brand.',
+		recommendation:
+			'Verify ownership with the registrar account holder. If owned, run a full scan and apply the customer\'s baseline hardening policy. If not owned but using shared mail/cert infrastructure, audit the shared-tenant boundary.',
+		references: [
+			'https://crt.sh',
+			'https://datatracker.ietf.org/doc/html/rfc6376',
+			'https://datatracker.ietf.org/doc/html/rfc7489',
+		],
+	},
 };
 
 export const DEFAULT_EXPLANATION: ExplanationTemplate = {
@@ -580,6 +608,7 @@ export const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
 	subdomailing: 'SUBDOMAILING',
 	dane_https: 'DANE_HTTPS',
 	svcb_https: 'SVCB_HTTPS',
+	brand_discovery: 'BRAND_DISCOVERY',
 };
 
 export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
