@@ -75,10 +75,10 @@
 		"cf-typegen": "wrangler types",
 		"lint": "eslint .",
 		"lint:fix": "eslint . --fix",
-		"tenant:migrate:registry": "drizzle-kit generate --config=src/tenant/db/drizzle.registry.config.ts",
-		"tenant:migrate:tenant": "drizzle-kit generate --config=src/tenant/db/drizzle.tenant.config.ts",
-		"tenant:migrate": "npm run tenant:migrate:registry && npm run tenant:migrate:tenant",
-		"tenant:provision": "node scripts/tenant/provision-tenant.mjs",
+		"tenants:migrate:registry": "drizzle-kit generate --config=src/tenants/db/drizzle.registry.config.ts",
+		"tenants:migrate:tenant": "drizzle-kit generate --config=src/tenants/db/drizzle.tenant.config.ts",
+		"tenants:migrate": "npm run tenants:migrate:registry && npm run tenants:migrate:tenant",
+		"tenants:provision": "node scripts/tenant/provision-tenant.mjs",
 		"build:wasm": "cd crates/bv-wasm-core && wasm-pack build --target web"
 	},
 	"devDependencies": {
