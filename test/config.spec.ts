@@ -69,7 +69,7 @@ describe('partner tier', () => {
 	it('has per-tool daily limits', () => {
 		const partnerLimits = TIER_TOOL_DAILY_LIMITS.partner;
 		expect(partnerLimits).toBeDefined();
-		expect(partnerLimits!.scan_domain).toBe(100_000);
+		expect(partnerLimits!.scan_domain).toBe(2_500_000);
 		expect(partnerLimits!.check_spf).toBe(500_000);
 		expect(partnerLimits!.check_lookalikes).toBe(50_000);
 	});

@@ -124,8 +124,8 @@ export const TIER_DAILY_LIMITS: Record<McpApiKeyTier, number> = {
  */
 export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string, number>>> = {
 	partner: {
-		scan_domain: 100_000,
-		scan: 100_000,
+		scan_domain: 2_500_000,
+		scan: 2_500_000,
 		compare_baseline: 100_000,
 		check_spf: 500_000,
 		check_dmarc: 500_000,
