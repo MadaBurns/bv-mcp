@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // Tenant capacity calibration runner.
-// Gitignored (per `/scripts/tenant/` in .gitignore) — internal tool only.
+// Gitignored (per `/scripts/tenants/` in .gitignore) — internal tool only.
 //
 // Hits PRODUCTION /internal/tools/batch with N domains, measures throughput,
 // and writes a JSON proof artifact.
 //
 // Usage:
-//   node scripts/tenant/calibrate.mjs --domains=200 --concurrency=25 --batches=4
-//   node scripts/tenant/calibrate.mjs --domains=2000 --concurrency=50 --batches=20
+//   node scripts/tenants/calibrate.mjs --domains=200 --concurrency=25 --batches=4
+//   node scripts/tenants/calibrate.mjs --domains=2000 --concurrency=50 --batches=20
 //
 // Reads BV_API_KEY from .dev.vars (NOT a Tenant tenant token — uses the owner key).
 // Output: a single JSON object on stdout + writes `reports/tenant-calibration-<timestamp>.json`.
