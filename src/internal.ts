@@ -31,7 +31,7 @@
 
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
-import { brand-auditRoutes } from './tenant/routes';
+import { tenantRoutes } from './tenants/routes';
 import { handleToolsCall } from './handlers/tools';
 import { isAuthorizedRequest } from './lib/auth';
 import { createAnalyticsClient } from './lib/analytics';
@@ -145,12 +145,12 @@ const internalLenientAuthGate: import('hono').MiddlewareHandler<{ Bindings: Inte
 };
 internalRoutes.use('/tools/*', internalLenientAuthGate);
 internalRoutes.use('/analytics/*', internalLenientAuthGate);
-internalRoutes.use('/tenant/*', internalLenientAuthGate);
+internalRoutes.use('/tenants/*', internalLenientAuthGate);
 
-// Tenant orchestrator routes (per Tenant-Scalable-Architecture-Design.md §4.1).
+// Tenant orchestrator routes (per tenant-Scalable-Architecture-Design.md §4.1).
 // Mounted AFTER `internalLenientAuthGate` is registered so the gate covers
-// `/tenant/*` for callers that opted in via REQUIRE_INTERNAL_AUTH=true.
-internalRoutes.route('/tenant', brand-auditRoutes);
+// `/tenants/*` for callers that opted in via REQUIRE_INTERNAL_AUTH=true.
+internalRoutes.route('/tenants', tenantRoutes);
 
 /**
  * POST /internal/tools/call
