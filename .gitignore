@@ -96,7 +96,7 @@ plan-*.md
 /CAPACITY_*.md
 /Tenant-*.md
 /*-Call-Prep.md
-/scripts/tenant/
+/scripts/tenant/calibrate.mjs
 /AS-BUILT.md
 /phase*-golive.md
 /OAUTH_LOCAL_DEBUG.md
