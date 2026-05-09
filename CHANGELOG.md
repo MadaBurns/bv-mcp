@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.10.13] - 2026-05-09
+
+tenant-example enterprise enablement — Phase 0 + start of Phase 1. No public-API behavior change for existing tools; adds quota headroom and the foundation for a multi-tenant orchestrator. Built TDD-first across 4 parallel agents in worktree isolation.
+
+### Changed
+- **`partner.scan_domain` daily quota raised 100K → 2.5M** (PR #102). Tenant's headline customer has 2.5M-domain portfolios; the prior cap blocked one-shot audits. Same change to the `scan` alias. Audit test `test/audits/tenant-scale-quota.audit.test.ts` locks the floor against future regression.
+
+### Added
+- **`src/tenant/adapters/`** — tenant-prefix-stamping adapters for D1/R2/KV (PR #103). Wrap each Cloudflare binding with a thin proxy that auto-stamps the tenant prefix on every read/write — call sites never need `WHERE tenant_id = ?` filtering. Adopted from the `webitte-hosting/emdash` pattern. Cross-tenant access via these adapters is impossible by construction. 17 unit tests covering prefix validation, key prefixing, list scoping, traversal rejection.
+- **`src/tenant/discovery/san-correlator.ts`** — Subject Alternative Name (SAN) cert correlator (PR #104). Tier-1 signal in the brand-domain-discovery pipeline: query crt.sh for a seed domain, extract every SAN from the matched certs, filter to sibling domains (not seed, not subdomain), validate. Adopted from `bit4woo/teemo`. 10 unit tests including rate-limit/timeout/error paths and 5MB body cap with content-length pre-flight.
+- **`src/tenant/db/schema/{registry,tenant}.ts`** — Drizzle schemas for the multi-tenant orchestrator (PR #105). Two databases: shared registry (super_tenants, sub_tenants, tenant_keys, billing_events) and per-sub-tenant (domains, scans, findings, alerts). Indexes for billing-lookup, scan-by-domain-time, scan-by-cycle, finding-by-domain-severity, and a partial alerts-active index. 46 unit tests using `getTableConfig` for structural assertions. **Migration generation deferred** — `drizzle-kit` is not yet a dependency; explicit `TODO(tenant-d1-schemas)` left in both files for the follow-up.
+
+### Total
+- **+76 unit tests** (17 + 10 + 46 + 3)
+- **+17 source files** under `src/tenant/`
+- **0 changes to existing source files** apart from the quota constant
+
 ## [2.10.12] - 2026-05-09
 
 ### Fixed
