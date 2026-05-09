@@ -40,7 +40,7 @@
     // 15-min: analytics anomalies + fuzzing scan + tenant cycle-alert sweep.
     // Daily 08:00 UTC: per-tier usage digest.
     // Weekly Sun 02:00 UTC: tenant weekly rescan dispatch (handleTenantWeeklyRescan).
-    "crons": ["*/15 * * * *", "0 8 * * *", "0 2 * * 0"]
+    "crons": ["*/15 * * * *", "0 8 * * *", "0 2 * * SUN"]
   },
   // KV namespaces — required for production (cross-isolate sessions, caching,
   // rate limiting). Without these, Workers fall back to in-memory stores which
