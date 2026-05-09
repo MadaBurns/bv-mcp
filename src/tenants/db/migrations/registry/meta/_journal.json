@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1778296780215,
+      "tag": "0000_minor_skaar",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1778322158640,
+      "tag": "0001_wet_warhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1778329285961,
+      "tag": "0002_big_speedball",
+      "breakpoints": true
+    }
+  ]
+}
