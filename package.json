@@ -78,6 +78,7 @@
 		"tenant:migrate:registry": "drizzle-kit generate --config=src/tenant/db/drizzle.registry.config.ts",
 		"tenant:migrate:tenant": "drizzle-kit generate --config=src/tenant/db/drizzle.tenant.config.ts",
 		"tenant:migrate": "npm run tenant:migrate:registry && npm run tenant:migrate:tenant",
+		"tenant:provision": "node scripts/tenant/provision-tenant.mjs",
 		"build:wasm": "cd crates/bv-wasm-core && wasm-pack build --target web"
 	},
 	"devDependencies": {
