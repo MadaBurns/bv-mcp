@@ -7,7 +7,7 @@
  * NS-record correlation, DMARC RUA mining, DKIM key reuse) into a single
  * candidate list with multi-signal corroborated confidence scoring.
  *
- * The four signal modules already live under `src/tenant/discovery/*` and each
+ * The four signal modules already live under `src/tenants/discovery/*` and each
  * exposes its own typed result. This wrapper:
  *   1. Runs the requested signals in parallel via `Promise.allSettled`,
  *      so one failing signal doesn't kill the whole tool call.
@@ -38,7 +38,7 @@ import {
 	type NsCorrelationResult,
 	type DmarcRuaResult,
 	type DkimKeyReuseResult,
-} from '../tenant/discovery';
+} from '../tenants/discovery';
 import type { OutputFormat } from '../handlers/tool-args';
 import { buildCheckResult, createFinding, type CheckResult, type Finding, type Severity } from '../lib/scoring';
 import { sanitizeOutputText } from '../lib/output-sanitize';

@@ -1,0 +1,788 @@
+// SPDX-License-Identifier: BUSL-1.1
+
+/**
+ * Tenant orchestrator routes.
+ *
+ * Mounted by `src/internal.ts` under `/internal/tenants/*`. All three routes share:
+ *   - the existing `/internal` network guard (cf-connecting-ip absence)
+ *   - the existing `internalLenientAuthGate` (REQUIRE_INTERNAL_AUTH=true → bearer)
+ *   - the `X-Tenant` header → `resolveTenant()` lookup against the shared
+ *     registry D1 (`TENANT_REGISTRY_DB` binding)
+ *
+ * Per tenant-Scalable-Architecture-Design.md §4.1 the orchestrator's job is to
+ * accept portfolio uploads, dispatch chunked batch scans, and serve cycle
+ * reports. Heavy lifting (DoH, scoring) stays in `handleToolsCall`.
+ */
+
+import { Hono } from 'hono';
+import { drizzle } from 'drizzle-orm/d1';
+import { ZodError } from 'zod';
+import { handleToolsCall } from '../handlers/tools';
+import { createAnalyticsClient, hashForAnalytics, hashIpForAnalytics } from '../lib/analytics';
+import { parseScoringConfigCached } from '../lib/scoring-config';
+import { MAX_TENANT_PORTFOLIO_BODY_BYTES, MAX_INTERNAL_BATCH_BODY_BYTES, parseCacheTtl } from '../lib/config';
+import { validateDomain, sanitizeDomain } from '../lib/sanitize';
+import {
+	PortfolioRequestSchema,
+	ScanRequestSchema,
+	ReportParamsSchema,
+	TENANT_ID_REGEX,
+	type ScanQueueMessage,
+} from '../schemas/tenant-internal';
+import { resolveTenant, type ResolverEnv } from './tenant-resolver';
+import { recordAuditEvent } from './audit';
+import { checkAndRecord, PER_TENANT_QUOTAS, type RateLimitBucket } from './per-tenant-rate-limit';
+import * as registrySchema from './db/schema/registry';
+import type { AuditEvent } from '../schemas/audit';
+import type { CheckResult } from '../lib/scoring';
+
+/**
+ * Minimal `Queue<T>` shape — Cloudflare's runtime types pin this to the
+ * declared message body type. We type it locally so the producer compiles
+ * without dragging in the full ambient definitions.
+ */
+type ScanQueueProducer = {
+	send(message: ScanQueueMessage, options?: { contentType?: 'json' }): Promise<void>;
+};
+
+type TenantEnv = ResolverEnv & {
+	SCAN_CACHE?: KVNamespace;
+	/** Per-tenant rate limiter state — same KV as the public per-IP limiter. */
+	RATE_LIMIT?: KVNamespace;
+	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
+	MCP_ANALYTICS?: AnalyticsEngineDataset;
+	PROVIDER_SIGNATURES_URL?: string;
+	PROVIDER_SIGNATURES_ALLOWED_HOSTS?: string;
+	PROVIDER_SIGNATURES_SHA256?: string;
+	SCORING_CONFIG?: string;
+	CACHE_TTL_SECONDS?: string;
+	BV_DOH_ENDPOINT?: string;
+	BV_DOH_TOKEN?: string;
+	BV_SCANNER_QUEUE?: ScanQueueProducer;
+};
+
+export const tenantRoutes = new Hono<{ Bindings: TenantEnv }>();
+
+const DEFAULT_SCAN_CONCURRENCY = 10;
+const PORTFOLIO_UPSERT_SQL =
+	'INSERT INTO domains (domain, source, added_at) VALUES (?, ?, ?) ' +
+	'ON CONFLICT(domain) DO UPDATE SET source = excluded.source';
+const PORTFOLIO_PROBE_SQL = 'SELECT domain FROM domains WHERE domain = ? LIMIT 1';
+const SCANS_INSERT_SQL =
+	'INSERT INTO scans (id, domain, scan_at, score, grade, maturity_stage, finding_count, result_json, cycle_id) ' +
+	'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
+const FINDINGS_INSERT_SQL =
+	'INSERT INTO findings (id, scan_id, domain, category, severity, title, detail, metadata) ' +
+	'VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
+const REPORT_SCANS_SQL = 'SELECT score, grade FROM scans WHERE cycle_id = ?';
+const REPORT_FINDINGS_SQL =
+	'SELECT category, severity, COUNT(*) as count FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE cycle_id = ?) GROUP BY category, severity';
+
+/** Translate Zod errors to "Invalid <field>: <msg>" — matches SAFE_ERROR_PREFIXES. */
+function zodToError(err: ZodError): string {
+	const issue = err.issues[0];
+	return `Invalid ${issue.path.join('.') || 'request'}: ${issue.message}`;
+}
+
+/** Pull X-Tenant from the Hono request and validate against the regex. */
+function extractTenantHeader(c: { req: { header(name: string): string | undefined } }): string | { error: string } {
+	const raw = c.req.header('x-tenant');
+	if (!raw) return { error: 'Missing required header: X-Tenant' };
+	if (!TENANT_ID_REGEX.test(raw)) return { error: 'Invalid tenant identifier' };
+	return raw;
+}
+
+/** UUIDv4 generation via Web Crypto. Workers runtime exposes randomUUID. */
+function newCycleId(): string {
+	return crypto.randomUUID();
+}
+
+/** Generate a per-row id (scans, findings). */
+function newRowId(): string {
+	return crypto.randomUUID();
+}
+
+/**
+ * Dispatch an audit event for a Tenant orchestrator action via ctx.waitUntil so
+ * the audit insert never blocks the response. Caller supplies the event body
+ * minus the actor / network metadata, which we derive from the request.
+ *
+ * actorTier defaults to 'partner' (the bv-web service binding identity); when
+ * paid OAuth tier propagation lands, this will become claim-driven.
+ *
+ * Phase 6 hardening: every 4xx/5xx return path now also dispatches an audit
+ * event (outcome `'denied'` or `'error'`) so security posture analytics
+ * reflect rejected traffic, not only successful upserts/scans/reads.
+ */
+type AuditPartial = Omit<AuditEvent, 'actorPrincipal' | 'actorTier' | 'ipHash' | 'cfRay'>;
+
+type TenantRequestCtx = {
+	req: { header(name: string): string | undefined };
+	env: { TENANT_REGISTRY_DB?: D1Database };
+	executionCtx: { waitUntil(promise: Promise<unknown>): void };
+};
+
+function dispatchAudit(c: TenantRequestCtx, partial: AuditPartial): void {
+	const registryD1 = c.env.TENANT_REGISTRY_DB;
+	if (!registryD1) return;
+	const bearer = (c.req.header('authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+	const ip = c.req.header('cf-connecting-ip');
+	const event: AuditEvent = {
+		...partial,
+		actorPrincipal: bearer ? hashForAnalytics(bearer) : 'anonymous',
+		actorTier: 'partner',
+		ipHash: ip ? hashIpForAnalytics(ip) : undefined,
+		cfRay: c.req.header('cf-ray') ?? undefined,
+	};
+	const db = drizzle(registryD1, { schema: registrySchema });
+	// Cast to a structural ExecutionContext for Drizzle's API; the only method we
+	// rely on at runtime is waitUntil, which both shapes provide.
+	c.executionCtx.waitUntil(recordAuditEvent(db, event, c.executionCtx as ExecutionContext));
+}
+
+/**
+ * Bound the resourceId we put in the audit row. Tenant headers, cycle ids,
+ * and similar fields can be attacker-controlled before validation succeeds —
+ * keeping them ≤64 chars matches the AuditEventSchema cap and prevents an
+ * attacker from spamming megabyte rows into `audit_events` via header abuse.
+ */
+function safeResourceId(raw: string | undefined): string {
+	if (!raw) return '<unknown>';
+	const s = String(raw).slice(0, 64);
+	return s.length > 0 ? s : '<unknown>';
+}
+
+/**
+ * Run the per-tenant rate limiter if `RATE_LIMIT` KV is bound. Returns
+ * `allowed: true` with full quota when KV is unavailable so a misconfigured
+ * deployment doesn't 429 every legitimate call.
+ *
+ * Tier resolution follows `ResolvedTenant.tier` (additive on the resolver) —
+ * defaults to `'default'` until bv-web wires up the override path.
+ */
+async function maybeRateLimit(
+	c: { env: { RATE_LIMIT?: KVNamespace } },
+	subTenantId: string,
+	bucket: RateLimitBucket,
+	tier: string,
+): Promise<{ allowed: boolean; remaining: number; resetAt: number }> {
+	const kv = c.env.RATE_LIMIT;
+	if (!kv) {
+		// Limiter is opt-in via the binding — keep behavior identical to pre-Phase-6
+		// when unbound (e.g. local `wrangler dev`).
+		const safeTier = (tier as keyof typeof PER_TENANT_QUOTAS) in PER_TENANT_QUOTAS ? (tier as keyof typeof PER_TENANT_QUOTAS) : 'default';
+		const q = PER_TENANT_QUOTAS[safeTier];
+		const fakeReset = Date.now() + 60_000;
+		// Pull a representative quota for the bucket so callers can still
+		// surface a meaningful Retry-After if they ever hit a synthetic deny.
+		const remaining = bucket === 'scans:day' ? q.scansPerDay : bucket === 'portfolio:min' ? q.portfolioPerMin : q.reportsPerMin;
+		return { allowed: true, remaining, resetAt: fakeReset };
+	}
+	const safeTier = (tier as keyof typeof PER_TENANT_QUOTAS) in PER_TENANT_QUOTAS ? (tier as keyof typeof PER_TENANT_QUOTAS) : 'default';
+	return checkAndRecord(kv, subTenantId, bucket, safeTier);
+}
+
+/** Build the 429 response with `Retry-After` set to seconds-until-reset. */
+function rateLimited(
+	c: {
+		json(body: unknown, status: number, headers?: Record<string, string>): Response;
+	},
+	resetAt: number,
+): Response {
+	const retryAfterSeconds = Math.max(1, Math.ceil((resetAt - Date.now()) / 1000));
+	return c.json(
+		{ error: 'Rate limit exceeded', retry_after: retryAfterSeconds },
+		429,
+		{ 'Retry-After': String(retryAfterSeconds) },
+	);
+}
+
+// ─── POST /internal/tenants/portfolio ──────────────────────────────────────────
+
+tenantRoutes.post('/portfolio', async (c) => {
+	try {
+		const raw = await c.req.text();
+		if (raw.length > MAX_TENANT_PORTFOLIO_BODY_BYTES) {
+			// Tenant header has not been read yet — resourceId is `<unknown>`.
+			dispatchAudit(c, {
+				action: 'portfolio.upsert',
+				resourceType: 'sub_tenant',
+				resourceId: '<unknown>',
+				outcome: 'denied',
+				blob: { reason: 'body_too_large', byteLength: raw.length, maxBytes: MAX_TENANT_PORTFOLIO_BODY_BYTES },
+			});
+			return c.json({ error: `Request body exceeds maximum of ${MAX_TENANT_PORTFOLIO_BODY_BYTES} bytes` }, 413);
+		}
+
+		const tenantOrErr = extractTenantHeader(c);
+		if (typeof tenantOrErr !== 'string') {
+			const headerRaw = c.req.header('x-tenant');
+			dispatchAudit(c, {
+				action: 'portfolio.upsert',
+				resourceType: 'sub_tenant',
+				resourceId: safeResourceId(headerRaw),
+				outcome: 'denied',
+				blob: { reason: 'invalid_tenant_header', error: tenantOrErr.error },
+			});
+			return c.json({ error: tenantOrErr.error }, 400);
+		}
+
+		let body: { domains: string[] };
+		try {
+			body = PortfolioRequestSchema.parse(JSON.parse(raw)) as { domains: string[] };
+		} catch (err) {
+			const errMsg = err instanceof ZodError ? zodToError(err) : 'Invalid request body';
+			dispatchAudit(c, {
+				action: 'portfolio.upsert',
+				resourceType: 'sub_tenant',
+				resourceId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'invalid_body', error: errMsg },
+			});
+			return c.json({ error: errMsg }, 400);
+		}
+
+		// Domain shape validated by Zod; semantic validation (SSRF / blocklist) here.
+		const sanitized: string[] = [];
+		for (const d of body.domains) {
+			const v = validateDomain(d);
+			if (!v.valid) {
+				dispatchAudit(c, {
+					action: 'portfolio.upsert',
+					resourceType: 'sub_tenant',
+					resourceId: safeResourceId(tenantOrErr),
+					outcome: 'denied',
+					blob: { reason: 'invalid_domain', error: v.error ?? 'rejected' },
+				});
+				return c.json({ error: `Invalid domain: ${v.error ?? 'rejected'}` }, 400);
+			}
+			const s = sanitizeDomain(d);
+			if (!s) {
+				dispatchAudit(c, {
+					action: 'portfolio.upsert',
+					resourceType: 'sub_tenant',
+					resourceId: safeResourceId(tenantOrErr),
+					outcome: 'denied',
+					blob: { reason: 'invalid_domain_after_sanitize' },
+				});
+				return c.json({ error: `Invalid domain: ${d}` }, 400);
+			}
+			sanitized.push(s);
+		}
+
+		let tenant;
+		try {
+			tenant = await resolveTenant(c.env, tenantOrErr);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : 'Tenant not found';
+			const status = msg.startsWith('Tenant not found') ? 404 : 400;
+			const errMsg = status === 404 ? msg : msg.startsWith('Invalid') ? msg : 'Invalid tenant identifier';
+			dispatchAudit(c, {
+				action: 'portfolio.upsert',
+				resourceType: 'sub_tenant',
+				resourceId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: status === 404 ? 'tenant_not_found' : 'tenant_lookup_failed', error: errMsg },
+			});
+			return c.json({ error: errMsg }, status);
+		}
+
+		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
+		if (!tenantDb) {
+			// Should be caught by resolveTenant, but defense-in-depth.
+			dispatchAudit(c, {
+				action: 'portfolio.upsert',
+				resourceType: 'sub_tenant',
+				resourceId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'tenant_db_binding_missing' },
+			});
+			return c.json({ error: `Tenant not found: ${tenantOrErr}` }, 404);
+		}
+
+		// Per-tenant rate limit. Audit on rejection, then 429 with Retry-After.
+		const rl = await maybeRateLimit(c, tenant.subTenantId, 'portfolio:min', tenant.tier);
+		if (!rl.allowed) {
+			dispatchAudit(c, {
+				action: 'portfolio.upsert',
+				resourceType: 'sub_tenant',
+				resourceId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'rate_limit_exceeded', bucket: 'portfolio:min', tier: tenant.tier },
+			});
+			return rateLimited(c, rl.resetAt);
+		}
+
+		let inserted = 0;
+		let updated = 0;
+		let skipped = 0;
+		const now = Date.now();
+		for (const domain of sanitized) {
+			try {
+				const existing = await tenantDb.prepare(PORTFOLIO_PROBE_SQL).bind(domain).first<{ domain: string }>();
+				await tenantDb.prepare(PORTFOLIO_UPSERT_SQL).bind(domain, 'api', now).run();
+				if (existing) updated += 1;
+				else inserted += 1;
+			} catch {
+				skipped += 1;
+			}
+		}
+
+		dispatchAudit(c, {
+			action: 'portfolio.upsert',
+			resourceType: 'sub_tenant',
+			resourceId: tenantOrErr,
+			outcome: 'success',
+			blob: { inserted, updated, skipped, total: sanitized.length },
+		});
+
+		return c.json({ inserted, updated, skipped, total: sanitized.length });
+	} catch (err) {
+		const message = err instanceof Error ? err.message.slice(0, 256) : 'unknown';
+		dispatchAudit(c, {
+			action: 'portfolio.upsert',
+			resourceType: 'sub_tenant',
+			resourceId: safeResourceId(c.req.header('x-tenant')),
+			outcome: 'error',
+			blob: { reason: 'unhandled_exception', message },
+		});
+		return c.json({ error: 'Internal error' }, 500);
+	}
+});
+
+// ─── POST /internal/tenants/scan ───────────────────────────────────────────────
+
+tenantRoutes.post('/scan', async (c) => {
+	try {
+		const raw = await c.req.text();
+		if (raw.length > MAX_INTERNAL_BATCH_BODY_BYTES) {
+			dispatchAudit(c, {
+				action: 'scan.start',
+				resourceType: 'cycle',
+				resourceId: '<unknown>',
+				subTenantId: safeResourceId(c.req.header('x-tenant')),
+				outcome: 'denied',
+				blob: { reason: 'body_too_large', byteLength: raw.length, maxBytes: MAX_INTERNAL_BATCH_BODY_BYTES },
+			});
+			return c.json({ error: `Request body exceeds maximum of ${MAX_INTERNAL_BATCH_BODY_BYTES} bytes` }, 413);
+		}
+
+		const tenantOrErr = extractTenantHeader(c);
+		if (typeof tenantOrErr !== 'string') {
+			const headerRaw = c.req.header('x-tenant');
+			dispatchAudit(c, {
+				action: 'scan.start',
+				resourceType: 'cycle',
+				resourceId: '<unknown>',
+				subTenantId: safeResourceId(headerRaw),
+				outcome: 'denied',
+				blob: { reason: 'invalid_tenant_header', error: tenantOrErr.error },
+			});
+			return c.json({ error: tenantOrErr.error }, 400);
+		}
+
+		let body: { cycle_id?: string; domain_ids?: string[]; domains?: string[]; concurrency?: number; mode?: 'sync' | 'queue' };
+		try {
+			body = ScanRequestSchema.parse(JSON.parse(raw)) as typeof body;
+		} catch (err) {
+			const errMsg = err instanceof ZodError ? zodToError(err) : 'Invalid request body';
+			dispatchAudit(c, {
+				action: 'scan.start',
+				resourceType: 'cycle',
+				resourceId: '<unknown>',
+				subTenantId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'invalid_body', error: errMsg },
+			});
+			return c.json({ error: errMsg }, 400);
+		}
+
+		let tenant;
+		try {
+			tenant = await resolveTenant(c.env, tenantOrErr);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : 'Tenant not found';
+			const status = msg.startsWith('Tenant not found') ? 404 : 400;
+			const errMsg = status === 404 ? msg : msg.startsWith('Invalid') ? msg : 'Invalid tenant identifier';
+			dispatchAudit(c, {
+				action: 'scan.start',
+				resourceType: 'cycle',
+				resourceId: '<unknown>',
+				subTenantId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: status === 404 ? 'tenant_not_found' : 'tenant_lookup_failed', error: errMsg },
+			});
+			return c.json({ error: errMsg }, status);
+		}
+
+		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
+		if (!tenantDb) {
+			dispatchAudit(c, {
+				action: 'scan.start',
+				resourceType: 'cycle',
+				resourceId: '<unknown>',
+				subTenantId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'tenant_db_binding_missing' },
+			});
+			return c.json({ error: `Tenant not found: ${tenantOrErr}` }, 404);
+		}
+
+		// Per-tenant rate limit. `scans:day` because /scan is the heavy workload.
+		const rl = await maybeRateLimit(c, tenant.subTenantId, 'scans:day', tenant.tier);
+		if (!rl.allowed) {
+			dispatchAudit(c, {
+				action: 'scan.start',
+				resourceType: 'cycle',
+				resourceId: '<unknown>',
+				subTenantId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'rate_limit_exceeded', bucket: 'scans:day', tier: tenant.tier },
+			});
+			return rateLimited(c, rl.resetAt);
+		}
+
+		// Resolve target domains:
+		//   1. domain_ids → portfolio-enrolled IDs only (DB-verified; rejects unenrolled)
+		//   2. domains    → explicit ad-hoc scan list (validateDomain still runs; does
+		//                   NOT require portfolio enrollment — by design)
+		//   3. neither    → full active portfolio
+		let targets: string[] = [];
+		if (body.domain_ids && body.domain_ids.length > 0) {
+			// Enforce portfolio enrollment so a tenant can't burn quota on arbitrary
+			// strings dressed as IDs. validateDomain() runs below regardless.
+			const placeholders = body.domain_ids.map(() => '?').join(',');
+			const enrolledRows = await tenantDb
+				.prepare(`SELECT domain FROM domains WHERE domain IN (${placeholders})`)
+				.bind(...body.domain_ids)
+				.all<{ domain: string }>();
+			const enrolledSet = new Set((enrolledRows.results ?? []).map((r) => r.domain));
+			targets = body.domain_ids.filter((d) => enrolledSet.has(d));
+			if (targets.length === 0) {
+				const requested = body.domain_ids.length;
+				dispatchAudit(c, {
+					action: 'scan.start',
+					resourceType: 'cycle',
+					resourceId: '<unknown>',
+					subTenantId: safeResourceId(tenantOrErr),
+					outcome: 'denied',
+					blob: { reason: 'unenrolled_domain_ids', unenrolled_count: requested },
+				});
+				return c.json({ error: 'Invalid domain_ids: none enrolled in tenant portfolio' }, 400);
+			}
+		} else if (body.domains && body.domains.length > 0) {
+			targets = body.domains;
+		} else {
+			const rows = await tenantDb.prepare('SELECT domain FROM domains WHERE watch = 1').all<{ domain: string }>();
+			targets = (rows.results ?? []).map((r) => r.domain);
+		}
+
+	// Validate / sanitize.
+	const validated: string[] = [];
+	for (const d of targets) {
+		const v = validateDomain(d);
+		if (!v.valid) continue;
+		const s = sanitizeDomain(d);
+		if (s) validated.push(s);
+	}
+
+	const cycleId = body.cycle_id ?? newCycleId();
+	const concurrency = body.concurrency ?? DEFAULT_SCAN_CONCURRENCY;
+	const startedAt = Date.now();
+
+	// Phase 2 fast-path: enqueue one message per domain and return 202.
+	// Validation has already run above, so the producer never burns queue
+	// space on bad input. The consumer (handleScanQueue) is responsible for
+	// running the actual scan + persisting rows.
+	if (body.mode === 'queue') {
+		if (!c.env.BV_SCANNER_QUEUE) {
+			dispatchAudit(c, {
+				action: 'scan.start',
+				resourceType: 'cycle',
+				resourceId: cycleId,
+				subTenantId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'queue_binding_missing' },
+			});
+			return c.json({ error: 'Invalid mode: queue dispatch is not configured on this deployment' }, 400);
+		}
+		let queued = 0;
+		for (const domain of validated) {
+			try {
+				await c.env.BV_SCANNER_QUEUE.send(
+					{
+						cycle_id: cycleId,
+						sub_tenant_id: tenant.subTenantId,
+						domain,
+					},
+					{ contentType: 'json' },
+				);
+				queued += 1;
+			} catch {
+				// Per-message send failures are logged elsewhere; surface aggregate
+				// shortfall in the response so the caller can decide to retry.
+			}
+		}
+		return c.json(
+			{
+				cycle_id: cycleId,
+				total: validated.length,
+				queued,
+				started_at: startedAt,
+			},
+			202,
+		);
+	}
+
+	const cacheTtlSeconds = parseCacheTtl(c.env.CACHE_TTL_SECONDS);
+	const runtimeBase = {
+		providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
+		providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS?.split(',')
+			.map((h) => h.trim())
+			.filter(Boolean),
+		providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
+		analytics: createAnalyticsClient(c.env.MCP_ANALYTICS),
+		profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+		waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+		scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
+		cacheTtlSeconds,
+		secondaryDoh: c.env.BV_DOH_ENDPOINT ? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN } : undefined,
+	};
+
+	let completed = 0;
+	let errored = 0;
+
+	for (let i = 0; i < validated.length; i += concurrency) {
+		const chunk = validated.slice(i, i + concurrency);
+		const settled = await Promise.allSettled(
+			chunk.map(async (domain) => {
+				let captured: CheckResult | null = null;
+				const result = await handleToolsCall(
+					{ name: 'scan_domain', arguments: { domain } },
+					c.env.SCAN_CACHE,
+					{
+						...runtimeBase,
+						resultCapture: (r) => {
+							captured = r;
+						},
+					},
+				);
+				return { domain, result, captured: captured as CheckResult | null };
+			}),
+		);
+
+		for (const s of settled) {
+			if (s.status === 'rejected') {
+				errored += 1;
+				continue;
+			}
+			const { domain, result, captured } = s.value;
+			if (result.isError) {
+				errored += 1;
+				continue;
+			}
+			completed += 1;
+
+			// Persist to per-tenant D1. Failures here count as scan-recording errors
+			// but don't fail the whole cycle (consistent with §7.1 partial-result
+			// design — D1 write failures get re-enqueued elsewhere).
+			try {
+				const scanId = newRowId();
+				const score = captured?.score ?? null;
+				const grade = (captured as unknown as { grade?: string } | null)?.grade ?? null;
+				const findingCount = captured?.findings?.length ?? 0;
+				await tenantDb
+					.prepare(SCANS_INSERT_SQL)
+					.bind(scanId, domain, Date.now(), score, grade, null, findingCount, captured ? JSON.stringify(captured) : null, cycleId)
+					.run();
+
+				if (captured?.findings) {
+					for (const f of captured.findings) {
+						await tenantDb
+							.prepare(FINDINGS_INSERT_SQL)
+							.bind(
+								newRowId(),
+								scanId,
+								domain,
+								f.category ?? 'unknown',
+								f.severity ?? 'info',
+								f.title ?? '',
+								f.detail ?? null,
+								f.metadata ? JSON.stringify(f.metadata) : null,
+							)
+							.run();
+					}
+				}
+			} catch {
+				// Persistence failure — logged via analytics elsewhere; don't fail
+				// the cycle on a single row error.
+			}
+		}
+	}
+
+		dispatchAudit(c, {
+			action: 'scan.start',
+			resourceType: 'cycle',
+			resourceId: cycleId,
+			subTenantId: tenantOrErr,
+			outcome: 'success',
+			blob: { total: validated.length, completed, errored },
+		});
+
+		return c.json({
+			cycle_id: cycleId,
+			total: validated.length,
+			completed,
+			errored,
+			started_at: startedAt,
+			finished_at: Date.now(),
+		});
+	} catch (err) {
+		const message = err instanceof Error ? err.message.slice(0, 256) : 'unknown';
+		dispatchAudit(c, {
+			action: 'scan.start',
+			resourceType: 'cycle',
+			resourceId: '<unknown>',
+			subTenantId: safeResourceId(c.req.header('x-tenant')),
+			outcome: 'error',
+			blob: { reason: 'unhandled_exception', message },
+		});
+		return c.json({ error: 'Internal error' }, 500);
+	}
+});
+
+// ─── GET /internal/tenants/report/:cycle_id ────────────────────────────────────
+
+tenantRoutes.get('/report/:cycle_id', async (c) => {
+	try {
+		const tenantOrErr = extractTenantHeader(c);
+		if (typeof tenantOrErr !== 'string') {
+			const headerRaw = c.req.header('x-tenant');
+			dispatchAudit(c, {
+				action: 'report.read',
+				resourceType: 'cycle',
+				resourceId: safeResourceId(c.req.param('cycle_id')),
+				subTenantId: safeResourceId(headerRaw),
+				outcome: 'denied',
+				blob: { reason: 'invalid_tenant_header', error: tenantOrErr.error },
+			});
+			return c.json({ error: tenantOrErr.error }, 400);
+		}
+
+		let params: { cycle_id: string };
+		try {
+			params = ReportParamsSchema.parse({ cycle_id: c.req.param('cycle_id') });
+		} catch (err) {
+			const errMsg = err instanceof ZodError ? zodToError(err) : 'Invalid cycle_id';
+			dispatchAudit(c, {
+				action: 'report.read',
+				resourceType: 'cycle',
+				resourceId: safeResourceId(c.req.param('cycle_id')),
+				subTenantId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'invalid_cycle_id', error: errMsg },
+			});
+			return c.json({ error: errMsg }, 400);
+		}
+
+		let tenant;
+		try {
+			tenant = await resolveTenant(c.env, tenantOrErr);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : 'Tenant not found';
+			const status = msg.startsWith('Tenant not found') ? 404 : 400;
+			const errMsg = status === 404 ? msg : msg.startsWith('Invalid') ? msg : 'Invalid tenant identifier';
+			dispatchAudit(c, {
+				action: 'report.read',
+				resourceType: 'cycle',
+				resourceId: params.cycle_id,
+				subTenantId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: status === 404 ? 'tenant_not_found' : 'tenant_lookup_failed', error: errMsg },
+			});
+			return c.json({ error: errMsg }, status);
+		}
+
+		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
+		if (!tenantDb) {
+			dispatchAudit(c, {
+				action: 'report.read',
+				resourceType: 'cycle',
+				resourceId: params.cycle_id,
+				subTenantId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'tenant_db_binding_missing' },
+			});
+			return c.json({ error: `Tenant not found: ${tenantOrErr}` }, 404);
+		}
+
+		// Per-tenant rate limit. `reports:min` is dashboard-style read traffic.
+		const rl = await maybeRateLimit(c, tenant.subTenantId, 'reports:min', tenant.tier);
+		if (!rl.allowed) {
+			dispatchAudit(c, {
+				action: 'report.read',
+				resourceType: 'cycle',
+				resourceId: params.cycle_id,
+				subTenantId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'rate_limit_exceeded', bucket: 'reports:min', tier: tenant.tier },
+			});
+			return rateLimited(c, rl.resetAt);
+		}
+
+		const scans = await tenantDb
+			.prepare(REPORT_SCANS_SQL)
+			.bind(params.cycle_id)
+			.all<{ score: number | null; grade: string | null }>();
+		const findings = await tenantDb
+			.prepare(REPORT_FINDINGS_SQL)
+			.bind(params.cycle_id)
+			.all<{ category: string; severity: string; count: number }>();
+
+		const scanRows = scans.results ?? [];
+		const findingRows = findings.results ?? [];
+
+		const scoreSum = scanRows.reduce((acc, r) => acc + (r.score ?? 0), 0);
+		const meanScore = scanRows.length > 0 ? scoreSum / scanRows.length : 0;
+		const gradeDist: Record<string, number> = {};
+		for (const r of scanRows) {
+			const g = r.grade ?? 'unknown';
+			gradeDist[g] = (gradeDist[g] ?? 0) + 1;
+		}
+		const severityCounts: Record<string, number> = {};
+		for (const f of findingRows) {
+			severityCounts[f.severity] = (severityCounts[f.severity] ?? 0) + Number(f.count ?? 0);
+		}
+
+		dispatchAudit(c, {
+			action: 'report.read',
+			resourceType: 'cycle',
+			resourceId: params.cycle_id,
+			subTenantId: tenantOrErr,
+			outcome: 'success',
+			blob: { domains: scanRows.length },
+		});
+
+		return c.json({
+			cycle_id: params.cycle_id,
+			summary: {
+				domains: scanRows.length,
+				mean_score: meanScore,
+				grade_dist: gradeDist,
+				severity_counts: severityCounts,
+			},
+			findings_by_category: findingRows,
+		});
+	} catch (err) {
+		const message = err instanceof Error ? err.message.slice(0, 256) : 'unknown';
+		dispatchAudit(c, {
+			action: 'report.read',
+			resourceType: 'cycle',
+			resourceId: safeResourceId(c.req.param('cycle_id')),
+			subTenantId: safeResourceId(c.req.header('x-tenant')),
+			outcome: 'error',
+			blob: { reason: 'unhandled_exception', message },
+		});
+		return c.json({ error: 'Internal error' }, 500);
+	}
+});

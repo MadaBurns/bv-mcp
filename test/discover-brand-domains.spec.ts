@@ -16,7 +16,7 @@ import type {
 	NsCorrelationResult,
 	DmarcRuaResult,
 	DkimKeyReuseResult,
-} from '../src/tenant/discovery';
+} from '../src/tenants/discovery';
 import type { DiscoverBrandDomainsDeps } from '../src/tools/discover-brand-domains';
 
 function okSan(coOwned: string[]): SanCorrelationResult {
