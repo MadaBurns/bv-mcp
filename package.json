@@ -5,7 +5,8 @@
   "scripts": {
     "build": "tsup",
     "deploy:prod": "node scripts/inject-private-config.cjs && npx wrangler deploy --minify --config wrangler.production.jsonc",
-    "test": "vitest"
+    "test": "vitest",
+    "generate-report": "bash scripts/generate-report.sh"
   },
   "dependencies": {
     "hono": "^4.0.0",
