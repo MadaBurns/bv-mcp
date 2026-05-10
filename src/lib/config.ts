@@ -167,6 +167,7 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		check_zone_hygiene: 500_000,
 		check_subdomailing: 500_000,
 		explain_finding: 500_000,
+		discover_brand_domains: 50_000,
 	},
 };
 

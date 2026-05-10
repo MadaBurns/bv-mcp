@@ -26,9 +26,12 @@ import {
 	PortfolioRequestSchema,
 	ScanRequestSchema,
 	ReportParamsSchema,
+	DiscoveryRequestSchema,
 	TENANT_ID_REGEX,
 	type ScanQueueMessage,
 } from '../schemas/tenant-internal';
+import { discoverBrandDomains } from '../tools/discover-brand-domains';
+import { computeFingerprint, fingerprintsDiffer } from './dns-fingerprint';
 import { resolveTenant, type ResolverEnv } from './tenant-resolver';
 import { recordAuditEvent } from './audit';
 import { checkAndRecord, PER_TENANT_QUOTAS, type RateLimitBucket } from './per-tenant-rate-limit';
@@ -381,7 +384,7 @@ tenantRoutes.post('/scan', async (c) => {
 			return c.json({ error: tenantOrErr.error }, 400);
 		}
 
-		let body: { cycle_id?: string; domain_ids?: string[]; domains?: string[]; concurrency?: number; mode?: 'sync' | 'queue' };
+		let body: { cycle_id?: string; domain_ids?: string[]; domains?: string[]; concurrency?: number; force_refresh?: boolean; mode?: 'sync' | 'queue' };
 		try {
 			body = ScanRequestSchema.parse(JSON.parse(raw)) as typeof body;
 		} catch (err) {
@@ -514,6 +517,7 @@ tenantRoutes.post('/scan', async (c) => {
 						cycle_id: cycleId,
 						sub_tenant_id: tenant.subTenantId,
 						domain,
+						force_refresh: body.force_refresh,
 					},
 					{ contentType: 'json' },
 				);
@@ -556,6 +560,39 @@ tenantRoutes.post('/scan', async (c) => {
 		const chunk = validated.slice(i, i + concurrency);
 		const settled = await Promise.allSettled(
 			chunk.map(async (domain) => {
+				// Phase 6: Fingerprint pre-flight
+				if (!body.force_refresh) {
+					try {
+						// Look up the last scan and fingerprint for this domain
+						const lastScan = await tenantDb
+							.prepare('SELECT result_json, scan_at FROM scans WHERE domain = ? ORDER BY scan_at DESC LIMIT 1')
+							.bind(domain)
+							.first<{ result_json: string; scan_at: number }>();
+
+						if (lastScan && lastScan.result_json) {
+							const domainRow = await tenantDb
+								.prepare('SELECT fingerprint FROM domains WHERE domain = ?')
+								.bind(domain)
+								.first<{ fingerprint: string | null }>();
+
+							const now = Date.now();
+							const oneDayMs = 24 * 3600 * 1000;
+							const isRecent = now - lastScan.scan_at < oneDayMs;
+
+							if (isRecent) {
+								const fp = await computeFingerprint(domain);
+								if (fp.kind === 'ok' && !fingerprintsDiffer(fp.fingerprint, domainRow?.fingerprint)) {
+									const captured = JSON.parse(lastScan.result_json) as CheckResult;
+									// Return the cached result as if it were a fresh scan, but skip handleToolsCall
+									return { domain, result: { isError: false }, captured, skippedByFingerprint: true };
+								}
+							}
+						}
+					} catch {
+						// Fingerprint pre-flight is best-effort. Fall through to full scan on error.
+					}
+				}
+
 				let captured: CheckResult | null = null;
 				const result = await handleToolsCall(
 					{ name: 'scan_domain', arguments: { domain } },
@@ -567,7 +604,7 @@ tenantRoutes.post('/scan', async (c) => {
 						},
 					},
 				);
-				return { domain, result, captured: captured as CheckResult | null };
+				return { domain, result, captured: captured as CheckResult | null, skippedByFingerprint: false };
 			}),
 		);
 
@@ -576,12 +613,15 @@ tenantRoutes.post('/scan', async (c) => {
 				errored += 1;
 				continue;
 			}
-			const { domain, result, captured } = s.value;
+			const { domain, result, captured, skippedByFingerprint } = s.value as { domain: string; result: any; captured: CheckResult | null; skippedByFingerprint: boolean };
 			if (result.isError) {
 				errored += 1;
 				continue;
 			}
 			completed += 1;
+
+			// Skip persistence if we reused an existing scan result for the same cycle
+			if (skippedByFingerprint) continue;
 
 			// Persist to per-tenant D1. Failures here count as scan-recording errors
 			// but don't fail the whole cycle (consistent with §7.1 partial-result
@@ -644,6 +684,192 @@ tenantRoutes.post('/scan', async (c) => {
 			resourceType: 'cycle',
 			resourceId: '<unknown>',
 			subTenantId: safeResourceId(c.req.header('x-tenant')),
+			outcome: 'error',
+			blob: { reason: 'unhandled_exception', message },
+		});
+		return c.json({ error: 'Internal error' }, 500);
+	}
+});
+
+// ─── POST /internal/tenants/discover ──────────────────────────────────────────
+
+tenantRoutes.post('/discover', async (c) => {
+	try {
+		const raw = await c.req.text();
+		if (raw.length > MAX_INTERNAL_BATCH_BODY_BYTES) {
+			dispatchAudit(c, {
+				action: 'discovery.start',
+				resourceType: 'sub_tenant',
+				resourceId: '<unknown>',
+				outcome: 'denied',
+				blob: { reason: 'body_too_large', byteLength: raw.length, maxBytes: MAX_INTERNAL_BATCH_BODY_BYTES },
+			});
+			return c.json({ error: `Request body exceeds maximum of ${MAX_INTERNAL_BATCH_BODY_BYTES} bytes` }, 413);
+		}
+
+		const tenantOrErr = extractTenantHeader(c);
+		if (typeof tenantOrErr !== 'string') {
+			const headerRaw = c.req.header('x-tenant');
+			dispatchAudit(c, {
+				action: 'discovery.start',
+				resourceType: 'sub_tenant',
+				resourceId: '<unknown>',
+				outcome: 'denied',
+				blob: { reason: 'invalid_tenant_header', error: tenantOrErr.error },
+			});
+			return c.json({ error: tenantOrErr.error }, 400);
+		}
+
+		let body: {
+			seed_domains?: string[];
+			signals?: Array<'san' | 'ns' | 'dmarc_rua' | 'dkim_key_reuse'>;
+			min_confidence?: number;
+			auto_import?: boolean;
+		};
+		try {
+			body = DiscoveryRequestSchema.parse(JSON.parse(raw)) as typeof body;
+		} catch (err) {
+			const errMsg = err instanceof ZodError ? zodToError(err) : 'Invalid request body';
+			dispatchAudit(c, {
+				action: 'discovery.start',
+				resourceType: 'sub_tenant',
+				resourceId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'invalid_body', error: errMsg },
+			});
+			return c.json({ error: errMsg }, 400);
+		}
+
+		let tenant;
+		try {
+			tenant = await resolveTenant(c.env, tenantOrErr);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : 'Tenant not found';
+			const status = msg.startsWith('Tenant not found') ? 404 : 400;
+			const errMsg = status === 404 ? msg : msg.startsWith('Invalid') ? msg : 'Invalid tenant identifier';
+			dispatchAudit(c, {
+				action: 'discovery.start',
+				resourceType: 'sub_tenant',
+				resourceId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: status === 404 ? 'tenant_not_found' : 'tenant_lookup_failed', error: errMsg },
+			});
+			return c.json({ error: errMsg }, status);
+		}
+
+		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
+		if (!tenantDb) {
+			dispatchAudit(c, {
+				action: 'discovery.start',
+				resourceType: 'sub_tenant',
+				resourceId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'tenant_db_binding_missing' },
+			});
+			return c.json({ error: `Tenant not found: ${tenantOrErr}` }, 404);
+		}
+
+		// Per-tenant rate limit. Discovery uses `reports:min` as it's a metadata-heavy
+		// but typically less frequent operation than /scan.
+		const rl = await maybeRateLimit(c, tenant.subTenantId, 'reports:min', tenant.tier);
+		if (!rl.allowed) {
+			dispatchAudit(c, {
+				action: 'discovery.start',
+				resourceType: 'sub_tenant',
+				resourceId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'rate_limit_exceeded', bucket: 'reports:min', tier: tenant.tier },
+			});
+			return rateLimited(c, rl.resetAt);
+		}
+
+		let seeds: string[] = [];
+		if (body.seed_domains && body.seed_domains.length > 0) {
+			seeds = body.seed_domains;
+		} else {
+			const rows = await tenantDb
+				.prepare('SELECT domain FROM domains WHERE watch = 1 LIMIT 10')
+				.all<{ domain: string }>();
+			seeds = (rows.results ?? []).map((r) => r.domain);
+		}
+
+		if (seeds.length === 0) {
+			return c.json({ error: 'No seed domains provided or enrolled in portfolio' }, 400);
+		}
+
+		const signals = body.signals;
+		const minConfidence = body.min_confidence ?? 0.5;
+		const results: CheckResult[] = [];
+
+		// For now, run discovery for each seed.
+		// Future: optimize brand-discovery orchestrator to take a seed set.
+		for (const domain of seeds) {
+			try {
+				const result = await discoverBrandDomains(domain, {
+					signals,
+					min_confidence: minConfidence,
+				});
+				results.push(result);
+			} catch {
+				// Single seed failure — skip.
+			}
+		}
+
+		// Aggregate candidates across all seeds.
+		const candidatesMap = new Map<string, { domain: string; confidence: number; signals: string[] }>();
+		for (const res of results) {
+			for (const f of res.findings) {
+				const cand = f.metadata?.candidate as string | undefined;
+				if (!cand) continue;
+				const existing = candidatesMap.get(cand);
+				const conf = (f.metadata?.combinedConfidence as number) ?? 0;
+				const sigs = (f.metadata?.signals as string[]) ?? [];
+				if (!existing || conf > existing.confidence) {
+					candidatesMap.set(cand, { domain: cand, confidence: conf, signals: sigs });
+				}
+			}
+		}
+
+		const candidates = Array.from(candidatesMap.values()).sort((a, b) => b.confidence - a.confidence);
+
+		let imported = 0;
+		if (body.auto_import) {
+			const now = Date.now();
+			for (const cand of candidates) {
+				if (cand.confidence >= 0.85) {
+					try {
+						const existing = await tenantDb.prepare(PORTFOLIO_PROBE_SQL).bind(cand.domain).first<{ domain: string }>();
+						if (!existing) {
+							// Insert with a 'discovery' source tag so the UI can highlight them.
+							await tenantDb.prepare(PORTFOLIO_UPSERT_SQL).bind(cand.domain, 'discovery', now).run();
+							imported += 1;
+						}
+					} catch {
+						// Skip on DB error.
+					}
+				}
+			}
+		}
+
+		dispatchAudit(c, {
+			action: 'discovery.start',
+			resourceType: 'sub_tenant',
+			resourceId: tenantOrErr,
+			outcome: 'success',
+			blob: { seeds: seeds.length, candidates: candidates.length, imported },
+		});
+
+		return c.json({
+			seeds: seeds.length,
+			candidates,
+			imported,
+		});
+	} catch (err) {
+		const message = err instanceof Error ? err.message.slice(0, 256) : 'unknown';
+		dispatchAudit(c, {
+			action: 'discovery.start',
+			resourceType: 'sub_tenant',
+			resourceId: safeResourceId(c.req.header('x-tenant')),
 			outcome: 'error',
 			blob: { reason: 'unhandled_exception', message },
 		});
