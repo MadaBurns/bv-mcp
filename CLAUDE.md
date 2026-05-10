@@ -514,10 +514,16 @@ Then update the apex TXT in Cloudflare DNS, wait for propagation across resolver
 ## Deployment
 
 ```bash
-npm run deploy:private     # uses .dev/wrangler.deploy.jsonc
+npm run deploy:prod                    # Securely inject private bindings and deploy to production
 ```
 
-**First-time**: Create KV namespaces (`RATE_LIMIT`, `SCAN_CACHE`, `SESSION_STORE`), copy `wrangler.jsonc` to `.dev/wrangler.deploy.jsonc` with real IDs. KV required for production — without it, sessions are per-isolate (intermittent 404s).
+**Production Injection Workflow**:
+To maintain the public/private architectural split, this repository uses an automated injection build process:
+1.  **Public Engine**: All engine source code is OSS-safe and contains no production secrets.
+2.  **Private Layer**: Sensitive configuration is kept in `.dev/wrangler.deploy.jsonc` (gitignored).
+3.  **Automation**: `npm run deploy:prod` executes `scripts/inject-private-config.cjs`. This merges the public `wrangler.jsonc` with the private `.dev/wrangler.deploy.jsonc` into `wrangler.production.jsonc` immediately before deployment.
+4.  **Mandate**: Never hardcode production endpoints, secrets, or internal service bindings in `wrangler.jsonc`. Use local overrides in the private configuration file.
+
 
 ## Bindings
 
