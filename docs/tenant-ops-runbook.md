@@ -188,6 +188,4 @@ near-real-time. Analytics dashboards: see `src/lib/analytics-queries.ts`.
   the old manually.
 - **No bv-web admin UI yet** — Phase 5 lives in the bv-web repo. Use
   wrangler CLI + this runbook.
-- **Phase 6 fingerprint pre-flight is opt-in** — set `watch=1` on a
-  domain row to enable. Default is `1`, but importing legacy data via
-  bulk insert may bypass the default.
+- **Phase 6 fingerprint pre-flight is always active** — manual and queued scans via `POST /internal/tenants/scan` automatically skip execution if the domain's DNS fingerprint is unchanged and a scan exists from the last 24h. Use `force_refresh: true` in the API to bypass it.
