@@ -30,6 +30,7 @@ import { createAnalyticsClient } from '../lib/analytics';
 import { parseScoringConfigCached } from '../lib/scoring-config';
 import { parseCacheTtl } from '../lib/config';
 import { ScanQueueMessageSchema, type ScanQueueMessage } from '../schemas/tenant-internal';
+import { streamScanResult } from '../lib/hooks/analytics-stream';
 import { resolveTenant, type ResolverEnv } from './tenant-resolver';
 import type { CheckResult } from '../lib/scoring';
 
@@ -277,6 +278,13 @@ export async function processScanMessage(
 
 	try {
 		await persistScan(tenantDb, parsed, captured as CheckResult | null);
+		ctx.waitUntil(streamScanResult(env, {
+			domain: parsed.domain,
+			grade: (captured as unknown as { grade?: string } | null)?.grade ?? null,
+			score: captured?.score ?? null,
+			sub_tenant_id: parsed.sub_tenant_id,
+			cycle_id: parsed.cycle_id
+		}));
 	} catch {
 		// Persistence failure is transient (D1 contention, throttling). Retry.
 		if (isLastAttempt) {
