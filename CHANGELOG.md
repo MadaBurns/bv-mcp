@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.11.0] - 2026-05-11
+
+### Added
+- **Multi-Tenant Brand Discovery (Phase 4)**: `POST /internal/tenants/discover` endpoint added. Supports multi-signal discovery (SAN, NS, RUA, DKIM) and auto-import of high-confidence candidates (≥ 0.85) to the tenant's portfolio.
+- **Fingerprint Pre-flight Optimization (Phase 6)**: `POST /internal/tenants/scan` now performs a lightweight DNS fingerprint check before full execution. If the fingerprint matches the last known state and the scan is < 24h old, the cached result is reused, significantly reducing Worker CPU and D1 load. Use `force_refresh: true` to bypass.
+- **Multi-Tenant Hammer Suite**: Added `scripts/chaos/tenant-chaos-v3.py` and Vitest integration tests to verify orchestrator efficiency, D1 contention handling, and audit-logging at scale.
+
+### Fixed
+- **Analytics Hook Regressions**: Resolved a test-suite crash caused by the missing `BV_WEB` service binding and restored integration coverage for queue consumer analytics.
+
+## [2.10.18] - 2026-05-11
+
+### Fixed
+- **OAuth Re-Authorization Retry Logic**: Added logic to seamlessly retry OAuth re-authorizations after `403` failures to prevent token drift.
+
 ## [2.10.17] - 2026-05-10
 
 ## [2.10.16] - 2026-05-09
