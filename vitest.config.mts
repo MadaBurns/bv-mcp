@@ -8,6 +8,11 @@ export default defineConfig({
 			wrangler: { configPath: './wrangler.jsonc' },
 			miniflare: {
 				kvNamespaces: ['SESSION_STORE', 'RATE_LIMIT'],
+				serviceBindings: {
+					BV_WEB: async (req: Request) => {
+						return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+					},
+				},
 				bindings: {
 					ENABLE_OAUTH: 'true',
 					ENABLE_OWNER_OAUTH: 'true',

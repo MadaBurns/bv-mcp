@@ -245,26 +245,64 @@ export async function processScanMessage(
 
 	let captured: CheckResult | null = null;
 	try {
-		const result = await withTimeout(
-			handleToolsCall(
-				{ name: 'scan_domain', arguments: { domain: parsed.domain } },
-				env.SCAN_CACHE,
-				{
-					...runtimeOptions,
-					resultCapture: (r) => {
-						captured = r;
-					},
-				},
-			),
-			QUEUE_MESSAGE_TIMEOUT_MS,
-		);
-		if (result.isError) {
-			if (isLastAttempt) {
-				await writeDlqRow(tenantDb, parsed, 'queue_dlq');
-				await incrementCompletedTotalIfTracked(env, parsed.cycle_id);
-				return 'ack';
+		// Phase 6: Fingerprint pre-flight
+		if (!parsed.force_refresh) {
+			try {
+				const lastScan = await tenantDb
+					.prepare('SELECT result_json, scan_at FROM scans WHERE domain = ? ORDER BY scan_at DESC LIMIT 1')
+					.bind(parsed.domain)
+					.first<{ result_json: string; scan_at: number }>();
+
+				if (lastScan && lastScan.result_json) {
+					const domainRow = await tenantDb
+						.prepare('SELECT fingerprint FROM domains WHERE domain = ?')
+						.bind(parsed.domain)
+						.first<{ fingerprint: string | null }>();
+
+					const now = Date.now();
+					const oneDayMs = 24 * 3600 * 1000;
+					const isRecent = now - lastScan.scan_at < oneDayMs;
+
+					if (isRecent) {
+						const { computeFingerprint, fingerprintsDiffer } = await import('./dns-fingerprint');
+						const fp = await computeFingerprint(parsed.domain);
+						if (fp.kind === 'ok' && !fingerprintsDiffer(fp.fingerprint, domainRow?.fingerprint)) {
+							// Successfully skipped full scan.
+							// Note: We don't re-persist the scan row for the new cycle_id here
+							// to keep the cycle consistent with the skip logic.
+							// But wait, the cycle alert sweep needs a scan row for THIS cycle_id
+							// to find the findings. So we DO need to persist it.
+							captured = JSON.parse(lastScan.result_json) as CheckResult;
+						}
+					}
+				}
+			} catch {
+				// Fingerprint pre-flight is best-effort.
 			}
-			return 'retry';
+		}
+
+		if (!captured) {
+			const result = await withTimeout(
+				handleToolsCall(
+					{ name: 'scan_domain', arguments: { domain: parsed.domain } },
+					env.SCAN_CACHE,
+					{
+						...runtimeOptions,
+						resultCapture: (r) => {
+							captured = r;
+						},
+					},
+				),
+				QUEUE_MESSAGE_TIMEOUT_MS,
+			);
+			if (result.isError) {
+				if (isLastAttempt) {
+					await writeDlqRow(tenantDb, parsed, 'queue_dlq');
+					await incrementCompletedTotalIfTracked(env, parsed.cycle_id);
+					return 'ack';
+				}
+				return 'retry';
+			}
 		}
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : 'queue_error';

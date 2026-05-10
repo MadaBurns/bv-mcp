@@ -60,6 +60,10 @@ export const ScanRequestSchema = z
 		domains: z.array(z.string().min(1).max(253)).max(MAX_PORTFOLIO_DOMAINS).optional(),
 		concurrency: z.number().int().min(1).max(50).optional(),
 		/**
+		 * If true, bypasses the Phase 6 fingerprint pre-flight and forces a cold scan.
+		 */
+		force_refresh: z.boolean().optional(),
+		/**
 		 * Phase 2 dispatch mode. Defaults to `sync` (the original inline scan path).
 		 * `queue` enqueues one BV_SCANNER_QUEUE message per target domain and
 		 * returns 202 immediately — the caller polls /report/:cycle_id later.
@@ -76,6 +80,31 @@ export const ReportParamsSchema = z.object({
 });
 
 export type ReportParams = z.infer<typeof ReportParamsSchema>;
+
+/** POST /internal/tenants/discover request body. */
+export const DiscoveryRequestSchema = z
+	.object({
+		seed_domains: z.array(z.string().min(1).max(253)).min(1).max(500).optional(),
+		signals: z
+			.array(
+				z
+					.string()
+					.transform((v) => v.toLowerCase().trim())
+					.pipe(z.enum(['san', 'ns', 'dmarc_rua', 'dkim_key_reuse'])),
+			)
+			.min(1)
+			.max(4)
+			.optional(),
+		min_confidence: z.number().min(0).max(1).optional(),
+		/**
+		 * If true, automatically adds discovered candidates with confidence >= 0.85
+		 * to the tenant's domains table.
+		 */
+		auto_import: z.boolean().optional(),
+	})
+	.passthrough();
+
+export type DiscoveryRequest = z.infer<typeof DiscoveryRequestSchema>;
 
 /**
  * Scanner-queue message body (Phase 2).
@@ -106,6 +135,7 @@ export const ScanQueueMessageSchema = z
 		cycle_id: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/),
 		sub_tenant_id: z.string().regex(TENANT_ID_REGEX),
 		domain: z.string().min(1).max(253),
+		force_refresh: z.boolean().optional(),
 		runtime_options: ScanQueueRuntimeOptionsSchema.optional(),
 	})
 	.strict();
