@@ -1,6 +1,6 @@
 {
   "name": "bv-dns-security-mcp",
-  "version": "2.10.17",
+  "version": "2.10.18",
   "type": "module",
   "scripts": {
     "build": "tsup",
