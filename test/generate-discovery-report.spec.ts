@@ -114,8 +114,8 @@ describe('Automated Report Generation', () => {
         let md = `<style>
   body {
     font-family: 'Manrope', ui-sans-serif, system-ui, sans-serif;
-    background-color: oklch(0 0 0); /* Obsidian */
-    color: oklch(1 0 0);
+    background-color: #000000; /* Obsidian */
+    color: #ffffff;
     line-height: 1.7;
     font-weight: 300;
     letter-spacing: 0.025em;
@@ -124,20 +124,20 @@ describe('Automated Report Generation', () => {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-bottom: 1px solid oklch(0.25 0 0); /* Obsidian Border */
+    border-bottom: 1px solid #404040; /* Obsidian Border */
     padding-bottom: 24px;
     margin-bottom: 40px;
   }
   .header-info {
     text-align: right;
-    color: oklch(0.75 0 0); /* text-secondary */
+    color: #bfbfbf; /* text-secondary */
     font-size: 0.875rem;
     font-family: 'JetBrains Mono', ui-monospace, monospace;
     letter-spacing: -0.015em;
   }
   h1, h2, h3, h4 {
     font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
-    color: oklch(1 0 0);
+    color: #ffffff;
     letter-spacing: -0.015em;
     -webkit-font-smoothing: antialiased;
   }
@@ -149,7 +149,7 @@ describe('Automated Report Generation', () => {
   h2 {
     font-weight: 800; /* Extrabold */
     line-height: 1.1;
-    border-bottom: 1px solid oklch(0.12 0 0); /* Obsidian Elevated */
+    border-bottom: 1px solid #1f1f1f; /* Obsidian Elevated */
     padding-bottom: 8px;
     margin-top: 48px;
     font-size: 1.5rem;
@@ -163,16 +163,16 @@ describe('Automated Report Generation', () => {
     border-collapse: collapse;
     margin: 24px 0;
     font-size: 0.875rem;
-    background-color: oklch(0.1 0 0); /* Obsidian Surface */
+    background-color: #1a1a1a; /* Obsidian Surface */
     border-radius: 0.5rem;
     overflow: hidden;
   }
   th {
-    background-color: oklch(0.12 0 0); /* Obsidian Elevated */
-    color: oklch(0.75 0 0);
+    background-color: #1f1f1f; /* Obsidian Elevated */
+    color: #bfbfbf;
     text-align: left;
     padding: 12px 16px;
-    border-bottom: 1px solid oklch(0.25 0 0);
+    border-bottom: 1px solid #404040;
     font-weight: 600;
     font-family: 'Space Grotesk', sans-serif;
     letter-spacing: 0.05em;
@@ -181,25 +181,25 @@ describe('Automated Report Generation', () => {
   }
   td {
     padding: 12px 16px;
-    border-bottom: 1px solid oklch(0.12 0 0);
-    color: oklch(1 0 0);
+    border-bottom: 1px solid #1f1f1f;
+    color: #ffffff;
   }
-  .status-pass { color: oklch(0.87 0.29 155); font-weight: 600; } /* Mint */
-  .status-warn { color: oklch(0.82 0.17 75); font-weight: 600; }
-  .status-fail { color: oklch(0.65 0.22 25); font-weight: 600; }
+  .status-pass { color: #00FF9D; font-weight: 600; } /* Mint */
+  .status-warn { color: #FFB300; font-weight: 600; }
+  .status-fail { color: #FF3B30; font-weight: 600; }
   .evidence { 
     font-family: 'JetBrains Mono', ui-monospace, monospace; 
     font-size: 0.75rem; 
-    color: oklch(0.75 0 0); 
-    background: oklch(0.1 0 0); 
+    color: #bfbfbf; 
+    background: #1a1a1a; 
     padding: 2px 6px; 
     border-radius: 4px; 
-    border: 1px solid oklch(0.25 0 0); 
+    border: 1px solid #404040; 
     letter-spacing: -0.015em;
   }
   .revenue-box {
-    background-color: oklch(0.1 0 0);
-    border-left: 4px solid oklch(0.87 0.29 155); /* Mint Accent */
+    background-color: #1a1a1a;
+    border-left: 4px solid #00FF9D; /* Mint Accent */
     padding: 24px;
     margin: 32px 0;
     border-radius: 0 0.5rem 0.5rem 0;
@@ -315,10 +315,10 @@ Based on the discovery of ${shadowIt.length} high-value Shadow IT domains, the f
     </tr>
     <tr>
       <td colspan="2" style="text-align: right; font-weight: bold; font-size: 16px;">Total Identified ARR Opportunity:</td>
-      <td style="font-weight: bold; font-size: 16px; color: oklch(0.87 0.29 155);">$${arrOpportunity.toLocaleString()} / yr</td>
+      <td style="font-weight: bold; font-size: 16px; color: #00FF9D;">$${arrOpportunity.toLocaleString()} / yr</td>
     </tr>
   </table>
-  <p style="font-size: 12px; margin-top: 10px; color: oklch(0.75 0 0);"><em>* Note: This represents the opportunity from a single discovery run on a small subset of candidate domains. A full portfolio scan typically yields 10x-50x more candidates.</em></p>
+  <p style="font-size: 12px; margin-top: 10px; color: #bfbfbf;"><em>* Note: This represents the opportunity from a single discovery run on a small subset of candidate domains. A full portfolio scan typically yields 10x-50x more candidates.</em></p>
 </div>
 
 ## Strategic Recommendations
