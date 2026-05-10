@@ -788,6 +788,7 @@ export default {
 	 * See `src/tenants/queue-consumer.ts` for the full processing contract.
 	 */
 	queue: async (batch: MessageBatch<unknown>, env: Record<string, unknown>, ctx: ExecutionContext) => {
+		console.log(`Received queue batch with ${batch.messages.length} messages.`);
 		await handleScanQueue(batch, env as ScanQueueConsumerEnv, ctx);
 	},
 };
