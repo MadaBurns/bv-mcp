@@ -1,35 +1,35 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "com.blackveilsecurity/dns",
-  "description": "DNS & email security scanner — 51 tools for SPF, DMARC, DKIM, DNSSEC, SSL, and more.",
-  "repository": {
-    "url": "https://github.com/MadaBurns/bv-mcp",
-    "source": "github"
-  },
-  "version": "2.10.16",
-  "packages": [
-    {
-      "registryType": "npm",
-      "identifier": "blackveil-dns",
-      "version": "2.10.16",
-      "transport": {
-        "type": "stdio"
-      },
-      "environmentVariables": [
-        {
-          "description": "Blackveil API key (optional — free tier works without)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": true,
-          "name": "BV_API_KEY"
-        }
-      ]
-    }
-  ],
-  "remotes": [
-    {
-      "type": "streamable-http",
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp"
-    }
-  ]
+	"$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+	"name": "com.blackveilsecurity/dns",
+	"description": "DNS & email security scanner — 51 tools for SPF, DMARC, DKIM, DNSSEC, SSL, and more.",
+	"repository": {
+		"url": "https://github.com/MadaBurns/bv-mcp",
+		"source": "github"
+	},
+	"version": "2.10.19",
+	"packages": [
+		{
+			"registryType": "npm",
+			"identifier": "blackveil-dns",
+			"version": "2.10.19",
+			"transport": {
+				"type": "stdio"
+			},
+			"environmentVariables": [
+				{
+					"description": "Blackveil API key (optional — free tier works without)",
+					"isRequired": false,
+					"format": "string",
+					"isSecret": true,
+					"name": "BV_API_KEY"
+				}
+			]
+		}
+	],
+	"remotes": [
+		{
+			"type": "streamable-http",
+			"url": "https://dns-mcp.blackveilsecurity.com/mcp"
+		}
+	]
 }
