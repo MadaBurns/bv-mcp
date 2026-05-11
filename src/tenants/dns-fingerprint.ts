@@ -3,9 +3,8 @@
 /**
  * DNS fingerprint primitive for Tenant continuous-monitoring (Phase-3 foundation).
  *
- * Source of truth: `tenant-Scalable-Architecture-Design.md` §4.2 — the weekly
- * monitoring cron computes a stable hash of a domain's DNS posture so the
- * full `scan_domain` can be skipped when nothing has changed. Empirically
+ * The weekly monitoring cron computes a stable hash of a domain's DNS posture
+ * so the full `scan_domain` can be skipped when nothing has changed. Empirically
  * ~80% of weekly re-scans on stable portfolios hit this fast path.
  *
  * Module is intentionally **runtime-agnostic**: no `cloudflare:workers`, no
