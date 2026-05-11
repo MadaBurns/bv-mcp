@@ -53,7 +53,6 @@
   "vars": {
     "ENABLE_OAUTH": "true",
     "ENABLE_OWNER_OAUTH": "false",
-    "OAUTH_SIGNING_SECRET": "",
     "PROVIDER_SIGNATURES_URL": "",
     "CF_ACCOUNT_ID": "",
     "ALERT_WEBHOOK_URL": "",
