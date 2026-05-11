@@ -167,7 +167,7 @@ describe('executeMcpRequest — global daily rate limit', () => {
 
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
-		expect(result.httpStatus).toBe(200);
+		expect(result.httpStatus).toBe(429);
 		const payload = result.payload as { error: { code: number; message: string } };
 		expect(payload.error.code).toBe(-32029);
 		expect(payload.error.message).toContain('Service capacity reached');
@@ -272,7 +272,7 @@ describe('executeMcpRequest — per-IP rate limiting', () => {
 
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
-		expect(result.httpStatus).toBe(200);
+		expect(result.httpStatus).toBe(429);
 		const payload = result.payload as { error: { code: number; message: string } };
 		expect(payload.error.code).toBe(-32029);
 		expect(payload.error.message).toContain('Rate limit exceeded');
@@ -359,7 +359,7 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
-		expect(result.httpStatus).toBe(200);
+		expect(result.httpStatus).toBe(429);
 		const payload = result.payload as { error: { code: number; message: string } };
 		expect(payload.error.code).toBe(-32029);
 		expect(payload.error.message).toContain('check_lookalikes');
@@ -449,7 +449,7 @@ describe('executeMcpRequest — authenticated tier daily limits', () => {
 
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
-		expect(result.httpStatus).toBe(200);
+		expect(result.httpStatus).toBe(429);
 		const payload = result.payload as { error: { code: number; message: string } };
 		expect(payload.error.code).toBe(-32029);
 		expect(payload.error.message).toContain('developer');
@@ -790,7 +790,7 @@ describe('executeMcpRequest — concurrency limiting', () => {
 
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
-		expect(result.httpStatus).toBe(200);
+		expect(result.httpStatus).toBe(429);
 		const payload = result.payload as { error: { code: number; message: string } };
 		expect(payload.error.code).toBe(-32029);
 		expect(payload.error.message).toContain('free');
@@ -895,7 +895,7 @@ describe('executeMcpRequest — dispatch result propagation', () => {
 				kind: 'early-error',
 				payload: { jsonrpc: '2.0', id: 17, error: { code: -32029, message: 'Rate limit exceeded. Session creation rate limited' } },
 				headers: { 'retry-after': '30' },
-				status: 200,
+				status: 429,
 			}),
 		}));
 
@@ -909,7 +909,7 @@ describe('executeMcpRequest — dispatch result propagation', () => {
 
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
-		expect(result.httpStatus).toBe(200);
+		expect(result.httpStatus).toBe(429);
 		expect(result.useErrorEnvelope).toBe(true);
 		const payload = result.payload as { error: { code: number } };
 		expect(payload.error.code).toBe(-32029);
@@ -1166,7 +1166,7 @@ describe('executeMcpRequest — control-plane rate limiting', () => {
 				Response.json(
 					{ jsonrpc: '2.0', id: 26, error: { code: -32029, message: 'Rate limit exceeded. Retry after 2s' } },
 					{
-						status: 200,
+						status: 429,
 						headers: { 'retry-after': '2', 'x-ratelimit-limit': '60', 'x-ratelimit-remaining': '0' },
 					},
 				),
@@ -1184,7 +1184,7 @@ describe('executeMcpRequest — control-plane rate limiting', () => {
 
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
-		expect(result.httpStatus).toBe(200);
+		expect(result.httpStatus).toBe(429);
 		expect(result.useErrorEnvelope).toBe(true);
 		const payload = result.payload as { error: { code: number } };
 		expect(payload.error.code).toBe(-32029);
