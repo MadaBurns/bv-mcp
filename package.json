@@ -29,7 +29,7 @@
 },
 "devDependencies": {
 "@cloudflare/vitest-pool-workers": "^0.15.2",
-"@cloudflare/workers-types": "4.20260506.1",
+"@cloudflare/workers-types": "4.20260511.1",
 "@types/punycode": "^2.1.4",
 "drizzle-kit": "^0.31.10",
 "eslint": "9.39.3",
