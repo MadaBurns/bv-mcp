@@ -14,11 +14,13 @@
 ],
 "scripts": {
 "build": "tsup",
+"build:wasm": "cd crates/bv-wasm-core && wasm-pack build --target web",
 "deploy:prod": "node scripts/inject-private-config.cjs && npx wrangler deploy --minify --config wrangler.production.jsonc",
 "test": "vitest",
 "typecheck": "tsc --noEmit",
 "lint": "eslint .",
 "lint:fix": "eslint . --fix",
+"validate:internal-deps": "node scripts/maintenance/validate-internal-deps.mjs",
 "generate-report": "bash scripts/generate-report.sh"
 },
 "dependencies": {
