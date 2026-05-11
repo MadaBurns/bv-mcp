@@ -118,6 +118,17 @@ export async function verifyJwt(token: string, opts: JwtVerifyOptions): Promise<
 		throw new Error('malformed token payload');
 	}
 
+	// Defense-in-depth: validate claim types BEFORE comparisons. Signature already proved the
+	// token wasn't forged externally, but a future signing-path bug that omitted `exp` would
+	// otherwise produce never-expiring tokens (`undefined <= n - skew` is `false`). Same goes
+	// for the string claims — comparing `undefined !== 'something'` is `true`, so missing iss
+	// or aud already fails closed, but explicit typeof checks make the contract obvious.
+	if (typeof claims.exp !== 'number' || !Number.isFinite(claims.exp)) throw new Error('malformed token payload');
+	if (typeof claims.iss !== 'string') throw new Error('malformed token payload');
+	if (typeof claims.aud !== 'string') throw new Error('malformed token payload');
+	if (typeof claims.sub !== 'string') throw new Error('malformed token payload');
+	if (typeof claims.jti !== 'string') throw new Error('malformed token payload');
+
 	const now = opts.now ?? Math.floor(Date.now() / 1000);
 	const skew = opts.clockSkewSeconds ?? 30;
 	if (claims.exp <= now - skew) throw new Error('token expired');
