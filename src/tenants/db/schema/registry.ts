@@ -4,8 +4,6 @@
  * Drizzle ORM schema for the **shared registry D1** that fronts the Tenant
  * super-tenant / sub-tenant model.
  *
- * Source of truth: `tenant-Scalable-Architecture-Design.md` §3.1.
- *
  * One DB across all super-tenants. Stores tenant metadata, API key hashes,
  * and billing events — never customer scan data (that lives per-tenant in
  * `./tenant.ts`).
@@ -72,7 +70,7 @@ export const billingEvents = sqliteTable(
 );
 
 /**
- * Cross-tenant security/compliance audit log (tenant-Scalable-Architecture-Design.md §6).
+ * Cross-tenant security/compliance audit log.
  *
  * Append-only ledger of every security-relevant action — tenant CRUD, scan
  * lifecycle, cross-tenant access decisions, auth outcomes. Never holds raw IPs
@@ -112,7 +110,7 @@ export const auditEvents = sqliteTable(
 );
 
 /**
- * tenant cycle tracking (Phase 3 — `tenant-Scalable-Architecture-Design.md` §4.2).
+ * Tenant cycle tracking.
  *
  * One row per (sub_tenant, weekly-rescan run). The cron dispatcher
  * (`handleTenantWeeklyRescan` in `src/tenants/scheduled-handlers.ts`) inserts the
