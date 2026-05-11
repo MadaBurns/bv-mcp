@@ -19,6 +19,14 @@ export async function handleRegister(c: Context): Promise<Response> {
 	if (!ct.toLowerCase().includes('application/json')) {
 		return c.json({ error: 'invalid_request', error_description: 'Content-Type must be application/json' }, 415);
 	}
+	// Pre-check Content-Length so we reject oversized bodies BEFORE materializing them into a
+	// string. Without this, an attacker could force the worker to allocate an arbitrarily large
+	// buffer before the 4 KB cap fired. Header may be missing on chunked transfers, in which
+	// case we fall through to the post-read length check as a backstop.
+	const declared = Number(c.req.header('content-length') ?? '');
+	if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+		return c.json({ error: 'invalid_request', error_description: 'Body exceeds 4 KB' }, 413);
+	}
 	const raw = await c.req.raw.clone().text();
 	if (new TextEncoder().encode(raw).byteLength > MAX_BODY_BYTES) {
 		return c.json({ error: 'invalid_request', error_description: 'Body exceeds 4 KB' }, 413);
@@ -33,7 +41,8 @@ export async function handleRegister(c: Context): Promise<Response> {
 
 	for (const uri of parsed.redirect_uris) {
 		if (!OAUTH_REDIRECT_URI_ALLOWLIST.some((re) => re.test(uri))) {
-			return c.json({ error: 'invalid_redirect_uri', error_description: `redirect_uri not allowed: ${uri}` }, 400);
+			// Static description — never echo caller-controlled validation text (matches token.ts/authorize.ts).
+			return c.json({ error: 'invalid_redirect_uri', error_description: 'redirect_uri not allowed' }, 400);
 		}
 	}
 
