@@ -9,9 +9,9 @@
  *   - the `X-Tenant` header → `resolveTenant()` lookup against the shared
  *     registry D1 (`TENANT_REGISTRY_DB` binding)
  *
- * Per tenant-Scalable-Architecture-Design.md §4.1 the orchestrator's job is to
- * accept portfolio uploads, dispatch chunked batch scans, and serve cycle
- * reports. Heavy lifting (DoH, scoring) stays in `handleToolsCall`.
+ * The orchestrator accepts portfolio uploads, dispatches chunked batch scans,
+ * and serves cycle reports. Heavy lifting (DoH, scoring) stays in
+ * `handleToolsCall`.
  */
 
 import { Hono } from 'hono';
@@ -581,7 +581,7 @@ tenantRoutes.post('/scan', async (c) => {
 
 							if (isRecent) {
 								const fp = await computeFingerprint(domain);
-								if (fp.kind === 'ok' && !fingerprintsDiffer(fp.fingerprint, domainRow?.fingerprint)) {
+								if (fp.kind === 'ok' && !fingerprintsDiffer(fp.fingerprint, domainRow?.fingerprint ?? null)) {
 									const captured = JSON.parse(lastScan.result_json) as CheckResult;
 									// Return the cached result as if it were a fresh scan, but skip handleToolsCall
 									return { domain, result: { isError: false }, captured, skippedByFingerprint: true };
@@ -613,7 +613,7 @@ tenantRoutes.post('/scan', async (c) => {
 				errored += 1;
 				continue;
 			}
-			const { domain, result, captured, skippedByFingerprint } = s.value as { domain: string; result: any; captured: CheckResult | null; skippedByFingerprint: boolean };
+			const { domain, result, captured, skippedByFingerprint } = s.value as { domain: string; result: { isError: boolean }; captured: CheckResult | null; skippedByFingerprint: boolean };
 			if (result.isError) {
 				errored += 1;
 				continue;
@@ -713,7 +713,7 @@ tenantRoutes.post('/discover', async (c) => {
 			dispatchAudit(c, {
 				action: 'discovery.start',
 				resourceType: 'sub_tenant',
-				resourceId: '<unknown>',
+				resourceId: safeResourceId(headerRaw),
 				outcome: 'denied',
 				blob: { reason: 'invalid_tenant_header', error: tenantOrErr.error },
 			});

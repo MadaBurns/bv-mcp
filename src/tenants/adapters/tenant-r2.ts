@@ -1,10 +1,9 @@
 /**
  * Tenant-prefix-stamping adapter for Cloudflare R2.
  *
- * Per tenant-Scalable-Architecture-Design.md §2.3: every read/write is
- * auto-stamped with `<prefix>/` so a bug in tenant code can't read another
- * tenant's objects. `list({ prefix: 'foo' })` is composed as
- * `<tenantPrefix>/foo`.
+ * Every read/write is auto-stamped with `<prefix>/` so a bug in tenant code
+ * can't read another tenant's objects. `list({ prefix: 'foo' })` is composed
+ * as `<tenantPrefix>/foo`.
  *
  * Path-traversal guard: keys containing `..` segments are rejected before
  * any I/O. Prefix must be a single safe identifier — slashes are not

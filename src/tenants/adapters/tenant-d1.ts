@@ -1,10 +1,9 @@
 /**
  * Tenant-prefix-stamping adapter for Cloudflare D1.
  *
- * Per tenant-Scalable-Architecture-Design.md §2.3: each tenant Worker has a
- * `TENANT_PREFIX` env injected by the platform deployer. Adapters auto-stamp
- * tenant scoping so callers don't have to thread `tenant_id` through every
- * call.
+ * Each tenant Worker has a `TENANT_PREFIX` env injected by the platform
+ * deployer. Adapters auto-stamp tenant scoping so callers don't have to thread
+ * `tenant_id` through every call.
  *
  * Per-tenant D1 binding is itself isolated (one DB per sub-tenant), so
  * `prepare(sql)` is passed through unchanged. The adapter only adds tenant

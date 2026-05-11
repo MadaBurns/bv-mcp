@@ -3,8 +3,6 @@
 /**
  * Drizzle ORM schema for the **per-sub-tenant D1**.
  *
- * Source of truth: `tenant-Scalable-Architecture-Design.md` §3.2.
- *
  * One database per sub-tenant. Cloudflare's binding model enforces isolation
  * at the platform layer — a bug in one tenant's path can't read another
  * tenant's rows because the binding itself points at a different physical DB.
@@ -18,8 +16,7 @@
  * Migration: `src/tenants/db/migrations/tenant/0000_*.sql` (generated via
  * `npm run tenants:migrate:tenant`). The same SQL is applied to every per-tenant
  * D1 by the orchestrator's tenant-provisioning script. R2 archival of cold
- * scans (>90d) is described in `tenant-Scalable-Architecture-Design.md` §3.2
- * but lives outside this schema.
+ * scans (>90d) lives outside this schema.
  */
 
 import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';

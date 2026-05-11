@@ -5,7 +5,7 @@
  * (`audit_events` table in the shared registry D1, defined in
  * `src/tenants/db/schema/registry.ts`).
  *
- * Architectural notes (tenant-Scalable-Architecture-Design.md §6, §7):
+ * Architectural invariants:
  *  - Audit failure must NEVER fail the originating request — the auth/authz
  *    decision has already happened by the time we write. We catch + log, never
  *    throw. This module is the canonical place that fail-soft happens.

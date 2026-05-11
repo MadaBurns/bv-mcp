@@ -18,7 +18,7 @@ describe('Analytics Pipeline', () => {
             cycle_id: 'cycle-123'
         };
 
-        const result = await streamAnalyticsEvent(mockEnv.BV_WEB as any, payload);
+        const result = await streamAnalyticsEvent(mockEnv.BV_WEB as Parameters<typeof streamAnalyticsEvent>[0], payload);
         
         expect(result).toBe(true);
         expect(mockEnv.BV_WEB.fetch).toHaveBeenCalledWith(

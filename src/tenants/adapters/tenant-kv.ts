@@ -1,10 +1,10 @@
 /**
  * Tenant-prefix-stamping adapter for Cloudflare KV.
  *
- * Per tenant-Scalable-Architecture-Design.md §2.3: KV bindings are typically
- * SHARED across tenants (rate-limit, session, scan-cache). The adapter
- * auto-stamps `<prefix>:` on every read/write so two tenants can't collide
- * on the same key (e.g. both writing `cache:example.com:check:spf`).
+ * KV bindings are typically SHARED across tenants (rate-limit, session,
+ * scan-cache). The adapter auto-stamps `<prefix>:` on every read/write so two
+ * tenants can't collide on the same key (e.g. both writing
+ * `cache:example.com:check:spf`).
  *
  * Colon separator matches existing KV key conventions in this repo
  * (`cache:<domain>:check:<name>`, `fuzz:p:<id>:e:<bucket>:<kind>`, etc.).

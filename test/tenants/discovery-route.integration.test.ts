@@ -17,7 +17,7 @@ type TestEnv = typeof env & {
 };
 
 function makeMockD1(rowsBySql: Record<string, unknown[]> = {}) {
-	const calls: any[] = [];
+	const calls: Array<{ sql: string; binds: unknown[] }> = [];
 	const db: D1Database = {
 		prepare(sql: string) {
 			let binds: unknown[] = [];
@@ -75,7 +75,7 @@ describe('Tenant Discovery Route Integration', () => {
 		await waitOnExecutionContext(ctx);
 
 		expect(res.status).toBe(400);
-		const body = await res.json() as any;
+		const body = await res.json() as { error: string };
 		expect(body.error).toContain('Invalid signals');
 	});
 
@@ -101,7 +101,7 @@ describe('Tenant Discovery Route Integration', () => {
 				{ metadata: { summary: true } }
 			]
 		};
-		const discoverSpy = vi.spyOn(discovery, 'discoverBrandDomains').mockResolvedValue(mockResult as any);
+		const discoverSpy = vi.spyOn(discovery, 'discoverBrandDomains').mockResolvedValue(mockResult as unknown as Awaited<ReturnType<typeof discovery.discoverBrandDomains>>);
 
 		const req = new Request('https://api.blackveil.local/internal/tenants/discover', {
 			method: 'POST',
@@ -118,7 +118,7 @@ describe('Tenant Discovery Route Integration', () => {
 		await waitOnExecutionContext(ctx);
 
 		expect(res.status).toBe(200);
-		const body = await res.json() as any;
+		const body = await res.json() as { seeds: number; candidates: Array<{ domain: string }>; imported: number };
 		expect(body.seeds).toBe(1);
 		expect(body.candidates).toHaveLength(1);
 		expect(body.candidates[0].domain).toBe('candidate.com');

@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * Tenant Phase 3 cron orchestration — wires the existing Wave C primitives
- * (DNS fingerprint, cycle-diff alerts, scanner queue producer) into two
- * scheduled handlers driven by Cloudflare Cron Triggers.
- *
- * Source of truth: `tenant-Scalable-Architecture-Design.md` §4.2 (continuous
- * monitoring) + §7.1 (failure modes).
+ * Tenant cron orchestration — wires the DNS fingerprint, cycle-diff alerts,
+ * and scanner queue producer primitives into two scheduled handlers driven by
+ * Cloudflare Cron Triggers.
  *
  * Handlers:
  *   - {@link handleTenantWeeklyRescan} — Sunday 02:00 UTC. Enumerates active

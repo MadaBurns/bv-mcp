@@ -20,7 +20,7 @@ type TestEnv = typeof env & {
 };
 
 function makeMockD1(rowsBySql: Record<string, unknown[]> = {}) {
-	const calls: any[] = [];
+	const calls: Array<{ sql: string; binds: unknown[] }> = [];
 	const db: D1Database = {
 		prepare(sql: string) {
 			let binds: unknown[] = [];
@@ -82,8 +82,8 @@ describe('Phase 6 Fingerprint Pre-flight Integration', () => {
 			domain: 'test.com',
 			fingerprint: 'match',
 			capturedAt: Date.now(),
-			records: {} as any
-		});
+			records: {}
+		} as unknown as Awaited<ReturnType<typeof dnsFingerprint.computeFingerprint>>);
 
 		const req = new Request('https://api.blackveil.local/internal/tenants/scan', {
 			method: 'POST',
@@ -100,7 +100,7 @@ describe('Phase 6 Fingerprint Pre-flight Integration', () => {
 		await waitOnExecutionContext(ctx);
 
 		expect(res.status).toBe(200);
-		const body = await res.json() as any;
+		const body = await res.json() as { completed: number };
 		expect(body.completed).toBe(1);
 		
 		// Full scan should NOT be called
@@ -125,7 +125,7 @@ describe('Phase 6 Fingerprint Pre-flight Integration', () => {
 		e.TENANT_REGISTRY_DB = registry.db;
 		e[TEST_TENANT_BINDING] = tenant.db;
 
-		vi.mocked(handleToolsCall).mockResolvedValue({ isError: false, result: {} } as any);
+		vi.mocked(handleToolsCall).mockResolvedValue({ isError: false, result: {} } as unknown as Awaited<ReturnType<typeof handleToolsCall>>);
 
 		const req = new Request('https://api.blackveil.local/internal/tenants/scan', {
 			method: 'POST',

@@ -7,7 +7,12 @@
  * In OSS builds, this returns null/noop, ensuring no internal 
  * service bindings are required.
  */
-export async function streamScanResult(env: any, payload: any): Promise<void> {
+interface AnalyticsHookEnv {
+    BV_WEB?: { fetch: (input: RequestInfo, init?: RequestInit) => Promise<Response> };
+    [key: string]: unknown;
+}
+
+export async function streamScanResult(env: AnalyticsHookEnv, payload: unknown): Promise<void> {
     // Check if the internal binding exists at runtime
     if (env.BV_WEB && typeof env.BV_WEB.fetch === 'function') {
         try {
