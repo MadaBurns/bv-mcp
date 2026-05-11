@@ -17,7 +17,7 @@ type TestEnv = typeof env & {
  * Mock D1 that records calls and can simulate latency/contention.
  */
 function makeHammerMockD1(name: string) {
-	const calls: any[] = [];
+	const calls: Array<{ db: string; sql: string; binds: unknown[] }> = [];
 	const db: D1Database = {
 		prepare(sql: string) {
 			let binds: unknown[] = [];
@@ -31,24 +31,24 @@ function makeHammerMockD1(name: string) {
 					// Simulate slight D1 latency (5-10ms)
 					await new Promise(r => setTimeout(r, 5 + Math.random() * 5));
 					if (sql.includes('sub_tenants')) {
-						return { id: name.replace('TENANT_DB_', '').toLowerCase(), active: 1, d1_db_id: 'fake-id' } as any;
+						return { id: name.replace('TENANT_DB_', '').toLowerCase(), active: 1, d1_db_id: 'fake-id' } as unknown as T;
 					}
 					return null;
 				},
 				async all<T = unknown>() {
 					calls.push({ db: name, sql, binds });
 					await new Promise(r => setTimeout(r, 5 + Math.random() * 5));
-					return { results: [], success: true, meta: {} } as any;
+					return { results: [], success: true, meta: {} } as unknown as D1Result<T>;
 				},
 				async run() {
 					calls.push({ db: name, sql, binds });
 					await new Promise(r => setTimeout(r, 5 + Math.random() * 5));
-					return { success: true, meta: {} } as any;
+					return { success: true, meta: {} } as unknown as D1Response;
 				},
 			};
-			return stmt as any;
+			return stmt as unknown as D1PreparedStatement;
 		},
-	} as any;
+	} as unknown as D1Database;
 	return { db, calls };
 }
 
@@ -68,7 +68,7 @@ describe('Multi-Tenant Hammer — Orchestrator Stress Test', () => {
 
 		// Setup 5 mock tenants
 		const tenants = ['tenant-a', 'tenant-b', 'tenant-c', 'tenant-d', 'tenant-e'];
-		const tenantMocks: Record<string, any> = {};
+		const tenantMocks: Record<string, ReturnType<typeof makeHammerMockD1>> = {};
 		
 		for (const id of tenants) {
 			const binding = `TENANT_DB_${id.toUpperCase().replace('-', '_')}`;
@@ -128,8 +128,6 @@ describe('Multi-Tenant Hammer — Orchestrator Stress Test', () => {
 		const auditCalls = registry.calls.filter(c => c.sql.includes('audit_events'));
 		expect(auditCalls.length).toBe(requests.length);
 		
-		const auditedTenants = new Set(auditCalls.map(c => c.binds[2])); // sub_tenant_id is usually at a specific index
-		// Note: We'd need to check the exact schema for the index, but let's check content
 		const auditBinds = auditCalls.map(c => JSON.stringify(c.binds));
 		for (const id of tenants) {
 			expect(auditBinds.some(b => b.includes(id))).toBe(true);

@@ -42,7 +42,7 @@ function brokenRegistry(): D1Database {
 		async first<T = unknown>(): Promise<T | null> {
 			throw new Error('registry_offline');
 		},
-		async all<T = unknown>() {
+		async all<_T = unknown>() {
 			throw new Error('registry_offline');
 		},
 		async run() {

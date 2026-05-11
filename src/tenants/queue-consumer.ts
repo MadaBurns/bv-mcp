@@ -211,7 +211,7 @@ export async function processScanMessage(
 	}
 
 	// Idempotency probe — survives retries and re-deliveries without producing
-	// duplicate scan rows (tenant-Scalable-Architecture-Design.md §7.1).
+	// duplicate scan rows.
 	try {
 		const existing = await tenantDb
 			.prepare(SCAN_PROBE_BY_DOMAIN_SQL)
@@ -266,7 +266,7 @@ export async function processScanMessage(
 					if (isRecent) {
 						const { computeFingerprint, fingerprintsDiffer } = await import('./dns-fingerprint');
 						const fp = await computeFingerprint(parsed.domain);
-						if (fp.kind === 'ok' && !fingerprintsDiffer(fp.fingerprint, domainRow?.fingerprint)) {
+						if (fp.kind === 'ok' && !fingerprintsDiffer(fp.fingerprint, domainRow?.fingerprint ?? null)) {
 							// Successfully skipped full scan.
 							// Note: We don't re-persist the scan row for the new cycle_id here
 							// to keep the cycle consistent with the skip logic.
