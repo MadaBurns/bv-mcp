@@ -1,11 +1,14 @@
 {
   "name": "bv-dns-security-mcp",
-  "version": "2.10.18",
+  "version": "2.10.19",
   "type": "module",
   "scripts": {
     "build": "tsup",
     "deploy:prod": "node scripts/inject-private-config.cjs && npx wrangler deploy --minify --config wrangler.production.jsonc",
     "test": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "generate-report": "bash scripts/generate-report.sh"
   },
   "dependencies": {
