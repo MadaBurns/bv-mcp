@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.10.19] - 2026-05-12
+
+### Fixed
+- **OAuth dynamic-client-registration hardening** (`src/oauth/register.ts`):
+  - Stop echoing caller-controlled `redirect_uri` in `invalid_redirect_uri` error descriptions. Static description now matches the convention already enforced in `token.ts` and `authorize.ts`.
+  - Pre-check `Content-Length` header before reading the request body so the 4 KB cap rejects oversized payloads before materializing them into memory (post-read length check retained as backstop for chunked transfers).
+- **OAuth JWT verification defense-in-depth** (`src/oauth/jwt.ts`): validate `typeof` of `exp`, `iss`, `aud`, `sub`, `jti` claims after signature verification and before comparisons. Defends against a future signing-path regression that could produce tokens with a missing/non-numeric `exp` (which would otherwise be accepted as never-expiring).
+
 ## [2.11.0] - 2026-05-11
 
 ### Added
