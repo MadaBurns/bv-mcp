@@ -22,10 +22,10 @@ describe('Queue-Consumer Analytics Integration', () => {
             dbBinding: 'TENANT_DB_TENANT_1',
             tier: 'default'
         };
-        vi.mocked(tenantResolver.resolveTenant).mockResolvedValue(mockTenant as any);
-        
+        vi.mocked(tenantResolver.resolveTenant).mockResolvedValue(mockTenant as unknown as Awaited<ReturnType<typeof tenantResolver.resolveTenant>>);
+
         const mockScanResult = { isError: false, result: {} };
-        vi.mocked(handleToolsCall).mockResolvedValue(mockScanResult as any);
+        vi.mocked(handleToolsCall).mockResolvedValue(mockScanResult as unknown as Awaited<ReturnType<typeof handleToolsCall>>);
 
         const mockDb = {
             prepare: vi.fn().mockReturnValue({
@@ -53,7 +53,7 @@ describe('Queue-Consumer Analytics Integration', () => {
             waitUntil: vi.fn()
         };
 
-        const outcome = await processScanMessage(payload, 1, mockEnv as any, ctx);
+        const outcome = await processScanMessage(payload, 1, mockEnv as unknown as Parameters<typeof processScanMessage>[2], ctx);
         
         expect(outcome).toBe('ack');
         expect(streamSpy).toHaveBeenCalledWith(mockEnv, expect.objectContaining({

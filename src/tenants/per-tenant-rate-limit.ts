@@ -3,11 +3,10 @@
 /**
  * Per-tenant rate limiter for `/internal/tenants/*`.
  *
- * Phase 6 hardening (tenant-Scalable-Architecture-Design.md §6): the public per-IP
- * limiter in `src/lib/rate-limiter.ts` doesn't apply to the internal Tenant
- * surface (service-binding traffic carries no `cf-connecting-ip`). Without a
- * tenant-scoped cap, one runaway customer could exhaust the worker for
- * everyone else.
+ * The public per-IP limiter in `src/lib/rate-limiter.ts` doesn't apply to the
+ * internal Tenant surface (service-binding traffic carries no `cf-connecting-ip`).
+ * Without a tenant-scoped cap, one runaway customer could exhaust the worker
+ * for everyone else.
  *
  * Implementation
  * --------------
