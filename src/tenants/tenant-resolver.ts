@@ -3,10 +3,10 @@
 /**
  * Resolve a `sub_tenant_id` to a per-tenant D1 binding + namespace prefixes.
  *
- * Per tenant-Scalable-Architecture-Design.md §2.3 / §3.1: each sub-tenant has its
- * own D1 database, declared in `wrangler.jsonc` with a deterministic binding
- * name. The shared registry D1 (`TENANT_REGISTRY_DB` binding) keeps the metadata
- * row that confirms the tenant exists and is active.
+ * Each sub-tenant has its own D1 database, declared in `wrangler.jsonc` with a
+ * deterministic binding name. The shared registry D1 (`TENANT_REGISTRY_DB`
+ * binding) keeps the metadata row that confirms the tenant exists and is
+ * active.
  *
  * Binding name convention:
  *   sub_tenant_id `tenant-1` →  `TENANT_DB_Tenant_ACME_CORP`
