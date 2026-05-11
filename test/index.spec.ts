@@ -336,7 +336,7 @@ describe('DNS Security MCP Server', () => {
 			}
 
 			expect(lastResponse).toBeDefined();
-			expect(lastResponse!.status).toBe(200);
+			expect(lastResponse!.status).toBe(429);
 			expect(lastResponse!.headers.get('retry-after')).toBeTruthy();
 		});
 	});
@@ -1254,7 +1254,7 @@ describe('DNS Security MCP Server', () => {
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(blockedRequest, env, ctx);
 			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(200);
+			expect(response.status).toBe(429);
 		});
 
 		it('unauthenticated scan_domain requests are capped at 75/day', async () => {
@@ -1303,7 +1303,7 @@ describe('DNS Security MCP Server', () => {
 			const ctx = createExecutionContext();
 			const blockedResponse = await worker.fetch(blockedRequest, env, ctx);
 			await waitOnExecutionContext(ctx);
-			expect(blockedResponse.status).toBe(200);
+			expect(blockedResponse.status).toBe(429);
 			expect(blockedResponse.headers.get('x-quota-limit')).toBe('75');
 			expect(blockedResponse.headers.get('x-quota-remaining')).toBe('0');
 
