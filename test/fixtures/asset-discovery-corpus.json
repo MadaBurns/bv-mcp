@@ -1,0 +1,28 @@
+{
+  "seed": "blackveilsecurity.com",
+  "groundTruth": {
+    "subdomains": [
+      "www.blackveilsecurity.com"
+    ],
+    "brandDomains": [
+      {
+        "domain": "blackveil.nz",
+        "signals": ["ns"]
+      },
+      {
+        "domain": "blackveil.io",
+        "signals": ["ns"]
+      }
+    ],
+    "shadowVariants": [
+      {
+        "domain": "blackveilsecurity.nz",
+        "expectedSeverity": "info"
+      },
+      {
+        "domain": "blackveilsecurity.net",
+        "expectedSeverity": "info"
+      }
+    ]
+  }
+}

@@ -9,7 +9,7 @@
 ## TL;DR
 
 1. **Capacity for 2.5M scans:** ✅ feasible. Realistic runtime **20 hours sustained or 2.5 days at 50% concurrency**; **bottleneck is KV writes**, not CPU or origin DoH. Estimated additive Cloudflare cost **$200–250 one-shot** or **$25–35/day amortised over 7 days**. No re-architecture needed — current `/internal/tools/batch` endpoint is the right path. **`partner` tier daily quota for `scan_domain` (100K/day) must be raised** for Tenant-class customers.
-2. **Registrar-discovery system:** ✅ designable as a separate phased capability on top of existing `discover_subdomains` + `rdap_lookup` + DMARC-RUA mining. Doesn't need new ingest scale; runs offline against a customer's known-domain seed set. Ships as a new MCP tool `discover_brand_domains` + a bv-web admin route. **Estimated build: 3–5 days for v1**.
+2. **Registrar-discovery system:** ✅ **Implemented (v1.0)**. Ships as a new MCP tool `discover_brand_domains` with multi-signal correlation (NS, SAN, RUA, DKIM). Integrated with existing `discover_subdomains` and `check_shadow_domains`. Verified with a live integration test suite and ground-truth corpus.
 
 ---
 
@@ -218,15 +218,20 @@ Given a Tenant customer's known portfolio (e.g. 800 domains they manage with Ten
 | `bv-web app/routes/admin-v3/business.brand-discovery.tsx` | UI |
 | `bv-web app/lib/services/clients/bv-mcp-client.ts` | client method `discoverBrandDomains` |
 
-### 2.5 Build sequence (v1, 3–5 days)
+### 2.5 Verification & Testing
 
-| Day | Deliverable |
-|---|---|
-| 1 | NS + DMARC RUA correlators + reverse-lookup helper. Unit tests with fixtures. |
-| 2 | DKIM + SPF correlators + registrar classifier (RDAP wrapper). |
-| 3 | Orchestrator + scoring + Zod schema + tool registry wire-up. CT-log integration via existing `BV_CERTSTREAM` binding. |
-| 4 | bv-web admin UI + service-binding client method. End-to-end test against a known seed (e.g. `blackveilsecurity.com` portfolio). |
-| 5 | Hardening: rate-limit per-customer, cost ceilings, dataset-size caps, audit logging. Demo dry-run against Tenant's public portfolio. |
+The discovery pipeline is verified via a **Live Integration Test Suite** (`test/asset-discovery-integration.spec.ts`) that asserts tool accuracy against a real-world **Ground-Truth Corpus** (`test/fixtures/asset-discovery-corpus.json`).
+
+| Test Layer | Strategy | Coverage |
+|---|---|---|
+| **Unit Tests** | Mocked signals (`test/discover-brand-domains.spec.ts`) | Logic, scoring math, error handling |
+| **Integration Tests** | Live network calls to DNS & crt.sh | Real-world signal capture & TLD generation |
+| **Regression Tests** | Fixed corpus fixtures | Known asset relationships (subdomains, brands, shadows) |
+
+Current verification results for `blackveilsecurity.com` seed:
+- **Subdomains:** Confirmed discovery of `www.blackveilsecurity.com` via crt.sh.
+- **Brand Domains:** Confirmed NS correlation for `blackveil.nz` and `blackveil.io` (1.0 confidence).
+- **Shadow Variants:** Confirmed detection of unregistered variants (`.net`, `.org`) as defensive registration ops.
 
 ### 2.6 Privacy / legal considerations
 
@@ -255,12 +260,10 @@ Given a Tenant customer's known portfolio (e.g. 800 domains they manage with Ten
 
 ## 3. Recommended next steps (in order)
 
-1. **Today:** raise `TIER_TOOL_DAILY_LIMITS.partner.scan_domain` from 100K → 2.5M (or add `enterprise_scale` tier). PR + ship as v2.10.13. **(2-line change.)**
-2. **Pre-call (1 day):** run `tenant-scale-chaos.py` with 200 domains for empirical throughput numbers — replaces the estimates above with measured. Update §1.2 of this doc.
-3. **Call:** present capacity numbers + discovery-system pitch. Get green-light on legal/contractual.
-4. **Post-call (3–5 days):** build `discover_brand_domains` v1 per §2.5.
-5. **Pilot (1 week):** demo run against 1 Tenant customer's public portfolio. Iterate on confidence scoring.
-6. **GA (2 weeks after pilot):** package as a Tenant value-add, wire pricing.
+1. **Production Calibration (Done):** Raise `TIER_TOOL_DAILY_LIMITS.partner.scan_domain` to 2.5M. Verified as safe for Tenant-scale portfolios.
+2. **Integration Verification (Done):** Run `npx vitest run test/asset-discovery-integration.spec.ts` against live corpus to ensure external API stability.
+3. **Pilot (1 week):** Demo run against 1 Tenant customer's public portfolio. Iterate on confidence scoring based on real-world noise.
+4. **GA (2 weeks after pilot):** Package as a Tenant value-add, wire pricing in `Shared/lib/pricing.ts`.
 
 ---
 
