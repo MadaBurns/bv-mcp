@@ -9,6 +9,14 @@
 	"engines": {
 		"node": ">=22.0.0"
 	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/MadaBurns/bv-mcp.git"
+	},
+	"bugs": {
+		"url": "https://github.com/MadaBurns/bv-mcp/issues"
+	},
+	"homepage": "https://github.com/MadaBurns/bv-mcp#readme",
 	"workspaces": [
 		"packages/*"
 	],
