@@ -4,25 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [2.10.19] - 2026-05-12
-
-### Fixed
-- **OAuth dynamic-client-registration hardening** (`src/oauth/register.ts`):
-  - Stop echoing caller-controlled `redirect_uri` in `invalid_redirect_uri` error descriptions. Static description now matches the convention already enforced in `token.ts` and `authorize.ts`.
-  - Pre-check `Content-Length` header before reading the request body so the 4 KB cap rejects oversized payloads before materializing them into memory (post-read length check retained as backstop for chunked transfers).
-- **OAuth JWT verification defense-in-depth** (`src/oauth/jwt.ts`): validate `typeof` of `exp`, `iss`, `aud`, `sub`, `jti` claims after signature verification and before comparisons. Defends against a future signing-path regression that could produce tokens with a missing/non-numeric `exp` (which would otherwise be accepted as never-expiring).
-
-## [2.11.0] - 2026-05-11
+## [2.12.0] - 2026-05-12
 
 ### Added
 - **Multi-Tenant Brand Discovery (Phase 4)**: `POST /internal/tenants/discover` endpoint added. Supports multi-signal discovery (SAN, NS, RUA, DKIM) and auto-import of high-confidence candidates (≥ 0.85) to the tenant's portfolio.
 - **Fingerprint Pre-flight Optimization (Phase 6)**: `POST /internal/tenants/scan` now performs a lightweight DNS fingerprint check before full execution. If the fingerprint matches the last known state and the scan is < 24h old, the cached result is reused, significantly reducing Worker CPU and D1 load. Use `force_refresh: true` to bypass.
 - **Multi-Tenant Hammer Suite**: Added `scripts/chaos/tenant-chaos-v3.py` and Vitest integration tests to verify orchestrator efficiency, D1 contention handling, and audit-logging at scale.
 
+### Changed
+- **Tightened Free Tier Quotas**: Significantly reduced daily limits for unauthenticated users to protect platform resources and encourage API key registration (e.g., `scan_domain` reduced from 75/day to 5/day; `batch_scan` from 20/day to 1/day).
+- **Protocol Compliance**: Aligned rate-limited responses with standard HTTP patterns by returning **HTTP 429 (Too Many Requests)** instead of HTTP 200. This includes global caps, per-IP minute/hour limits, and tiered daily quotas.
+
 ### Fixed
+- **Production Config Injection**: Fixed `scripts/inject-private-config.cjs` to ensure `kv_namespaces`, `d1_databases`, and `analytics_engine_datasets` are correctly merged from private deployment configs into `wrangler.production.jsonc`.
+- **CI Dependency Conflicts**: Resolved a peer dependency conflict between `wrangler` and `@cloudflare/workers-types` by pinning the latter to `4.20260511.1`.
+- **Restored Build Scripts**: Restored missing `build:wasm` and `validate:internal-deps` scripts to `package.json` to fix CI Contract workflow failures.
 - **Analytics Hook Regressions**: Resolved a test-suite crash caused by the missing `BV_WEB` service binding and restored integration coverage for queue consumer analytics.
 
-## [2.10.18] - 2026-05-11
+## [2.10.19] - 2026-05-12
 
 ### Fixed
 - **OAuth Re-Authorization Retry Logic**: Added logic to seamlessly retry OAuth re-authorizations after `403` failures to prevent token drift.
