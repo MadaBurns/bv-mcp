@@ -4,7 +4,7 @@ Chaos / load test for bv-mcp v2.1.10
 Runs 200+ parallel scans against production, verifying:
 - Session lifecycle (create, use, revive, tombstone)
 - All major tool endpoints
-- Rate limit behaviour (HTTP 200 + JSON-RPC error, not HTTP 429)
+- Rate limit behaviour (HTTP 429 + JSON-RPC error)
 - Concurrent scan throughput
 - No 5xx responses
 """
@@ -390,3 +390,4 @@ if __name__ == "__main__":
         sys.exit(1)
     else:
         print("\n✓ PASS")
+"\n✓ PASS")
