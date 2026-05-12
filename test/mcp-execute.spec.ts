@@ -339,7 +339,7 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 					allowed: false,
 					retryAfterMs: 50_000,
 					remaining: 0,
-					limit: 20,
+					limit: 5,
 				}),
 			};
 		});
@@ -363,9 +363,9 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 		const payload = result.payload as { error: { code: number; message: string } };
 		expect(payload.error.code).toBe(-32029);
 		expect(payload.error.message).toContain('check_lookalikes');
-		expect(payload.error.message).toContain('20');
+		expect(payload.error.message).toContain('5');
 		// x-quota headers should be present
-		expect(result.headers['x-quota-limit']).toBe('20');
+		expect(result.headers['x-quota-limit']).toBe("5");
 		expect(result.headers['x-quota-remaining']).toBe('0');
 		expect(result.headers['x-quota-tier']).toBe('free');
 	});
@@ -764,7 +764,7 @@ describe('executeMcpRequest — concurrency limiting', () => {
 				...actual,
 				checkGlobalDailyLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 499_999, limit: 500_000 }),
 				checkRateLimit: vi.fn().mockResolvedValue({ allowed: true, minuteRemaining: 49, hourRemaining: 299 }),
-				checkToolDailyRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 74, limit: 75 }),
+				checkToolDailyRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, limit: 5 }),
 				acquireConcurrencySlot: vi.fn().mockReturnValue({
 					allowed: false,
 					retryAfterMs: 1000,
@@ -807,7 +807,7 @@ describe('executeMcpRequest — concurrency limiting', () => {
 				...actual,
 				checkGlobalDailyLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 499_999, limit: 500_000 }),
 				checkRateLimit: vi.fn().mockResolvedValue({ allowed: true, minuteRemaining: 49, hourRemaining: 299 }),
-				checkToolDailyRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 74, limit: 75 }),
+				checkToolDailyRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, limit: 5 }),
 				acquireConcurrencySlot: vi.fn().mockReturnValue({ allowed: true, active: 1, limit: 3 }),
 				releaseConcurrencySlot: releaseSpy,
 			};
