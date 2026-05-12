@@ -148,3 +148,6 @@ reports/repo-audit-*.html
 scripts/chaos/tenant-scale-chaos.py
 reports/scan-manifest.json
 reports/scale-audit-log.txt
+
+# Internal partnership / sales notes
+CSC.md
