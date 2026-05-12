@@ -1,6 +1,6 @@
 {
 	"name": "blackveil-dns",
-	"version": "2.12.0",
+	"version": "2.12.1",
 	"license": "BUSL-1.1",
 	"type": "module",
 	"bin": {
@@ -13,6 +13,7 @@
 		"type": "git",
 		"url": "git+https://github.com/MadaBurns/bv-mcp.git"
 	},
+	"mcpName": "com.blackveilsecurity/dns",
 	"bugs": {
 		"url": "https://github.com/MadaBurns/bv-mcp/issues"
 	},
