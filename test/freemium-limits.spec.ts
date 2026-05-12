@@ -17,7 +17,7 @@ describe('Freemium Model - Limits and Tiers', () => {
 	});
 
 	it('applies Free tier limits to unauthenticated users', async () => {
-		// We can't easily hit 75 requests in a unit test without mocking KV.
+		// We can't easily hit 5 requests in a unit test without mocking KV.
 		// So we'll verify the headers that reflect the quota.
 		
 		const initReq = new Request('http://example.com/mcp', {

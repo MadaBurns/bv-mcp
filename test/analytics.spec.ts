@@ -71,7 +71,7 @@ describe('createAnalyticsClient', () => {
 		client.emitRateLimitEvent({
 			limitType: 'daily_tool',
 			toolName: 'scan_domain',
-			limit: 75,
+			limit: 5,
 			remaining: 0,
 			...ctx,
 		});
@@ -79,7 +79,7 @@ describe('createAnalyticsClient', () => {
 		expect(point.indexes).toEqual(['rate_limit']);
 		expect(point.blobs[0]).toBe('daily_tool');
 		expect(point.blobs[1]).toBe('scan_domain');
-		expect(point.doubles).toEqual([75, 0]);
+		expect(point.doubles).toEqual([5, 0]);
 	});
 
 	it('emitSessionEvent writes session index', () => {
