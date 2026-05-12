@@ -329,31 +329,31 @@ describe('rate-limit chaos tests', () => {
 	// Edge case: config consistency
 	// -----------------------------------------------------------------------
 	describe('config consistency', () => {
-		it('all check_* tools in config have the same daily limit (200)', () => {
+		it('all check_* tools in config have the same daily limit (25)', () => {
 			const checkTools = Object.entries(FREE_TOOL_DAILY_LIMITS).filter(
 				([name]) => name.startsWith('check_') && name !== 'check_lookalikes' && name !== 'check_shadow_domains' && name !== 'check_mx_reputation' && name !== 'check_resolver_consistency' && name !== 'check_dbl' && name !== 'check_rbl' && name !== 'check_nsec_walkability' && name !== 'check_dnssec_chain' && name !== 'check_fast_flux',
 			);
 			for (const [name, limit] of checkTools) {
-				expect(limit, `${name} should have limit 200`).toBe(200);
+				expect(limit, `${name} should have limit 25`).toBe(25);
 			}
 		});
 
 		it('check_lookalikes has a lower limit than other checks', () => {
-			expect(FREE_TOOL_DAILY_LIMITS['check_lookalikes']).toBe(20);
+			expect(FREE_TOOL_DAILY_LIMITS['check_lookalikes']).toBe(5);
 			expect(FREE_TOOL_DAILY_LIMITS['check_lookalikes']).toBeLessThan(
 				FREE_TOOL_DAILY_LIMITS['check_spf'],
 			);
 		});
 
 		it('compare_baseline has a lower limit than individual checks', () => {
-			expect(FREE_TOOL_DAILY_LIMITS['compare_baseline']).toBe(150);
+			expect(FREE_TOOL_DAILY_LIMITS['compare_baseline']).toBe(10);
 			expect(FREE_TOOL_DAILY_LIMITS['compare_baseline']).toBeLessThan(
 				FREE_TOOL_DAILY_LIMITS['check_spf'],
 			);
 		});
 
 		it('scan_domain limit is lower than individual check limits', () => {
-			expect(FREE_TOOL_DAILY_LIMITS['scan_domain']).toBe(75);
+			expect(FREE_TOOL_DAILY_LIMITS['scan_domain']).toBe(5);
 			expect(FREE_TOOL_DAILY_LIMITS['scan_domain']).toBeLessThan(
 				FREE_TOOL_DAILY_LIMITS['check_spf'],
 			);
