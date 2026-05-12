@@ -1,23 +1,23 @@
 {
 	"$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
 	"name": "com.blackveilsecurity/dns",
-	"description": "DNS & email security scanner — 51 tools for SPF, DMARC, DKIM, DNSSEC, SSL, and more.",
+	"description": "DNS & email security scanner \u2014 51 tools for SPF, DMARC, DKIM, DNSSEC, SSL, and more.",
 	"repository": {
 		"url": "https://github.com/MadaBurns/bv-mcp",
 		"source": "github"
 	},
-	"version": "2.12.0",
+	"version": "2.13.0",
 	"packages": [
 		{
 			"registryType": "npm",
 			"identifier": "blackveil-dns",
-			"version": "2.12.0",
+			"version": "2.13.0",
 			"transport": {
 				"type": "stdio"
 			},
 			"environmentVariables": [
 				{
-					"description": "Blackveil API key (optional — free tier works without)",
+					"description": "Blackveil API key (optional \u2014 free tier works without)",
 					"isRequired": false,
 					"format": "string",
 					"isSecret": true,
