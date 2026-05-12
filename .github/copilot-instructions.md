@@ -37,7 +37,7 @@
 ## Project Conventions
 - Keep versions synchronized between package.json version and src/lib/server-version.ts SERVER_VERSION.
 - Error messages intended for clients must start with safe prefixes (for example: Missing required, Invalid, Domain validation failed, Resource not found).
-- Rate limiting for MCP should return HTTP 200 with JSON-RPC error code -32029 (not HTTP 429).
+- Rate limiting for MCP should return HTTP 429 with JSON-RPC error code -32029.
 - Respect output format behavior:
   - format=compact for interactive clients
   - format=full for non-interactive clients
