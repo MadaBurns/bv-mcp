@@ -14,7 +14,7 @@ applyTo: test/**/*.spec.ts
   - `cache:<domain>`
   - `cache:<domain>:check:<name>`
 - Keep assertions aligned with MCP behavior:
-  - Rate-limit responses are HTTP 200 with JSON-RPC error code `-32029`.
+  - Rate-limit responses are HTTP 429 with JSON-RPC error code `-32029`.
   - Client-safe error text should use approved safe prefixes.
   - Tools in `format=full` (default for non-interactive) return 2 content items (text + structured JSON). Assert `toHaveLength(2)` for success paths, `toHaveLength(1)` for compact mode.
 

@@ -308,7 +308,7 @@ When a user purchases a plan on bv-web and authenticates via OAuth, their token 
 
 **Implementation**: Tier resolution in `src/oauth/entitlements.ts` queries bv-web service binding `api/internal/mcp/oauth/authorize`, which validates the Stripe subscription and returns `tier` claim. Mapping logic in bv-web: `app/lib/services/mcp/oauth-entitlements.server.ts` (lines 60–66) defines `PLAN_TO_MCP_TIER`.
 
-**Static API Keys**: The `agent` tier (200 scans/day, 5 concurrent) is only for static API key authentication, not OAuth. OAuth credentials always resolve to `developer` or `enterprise` tiers.
+**Static API Keys**: The `agent` tier (500 scans/day, 5 concurrent) is only for static API key authentication, not OAuth. OAuth credentials always resolve to `developer` or `enterprise` tiers.
 
 ### Input validation
 

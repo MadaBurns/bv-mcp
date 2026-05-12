@@ -56,7 +56,7 @@ That's it. All 44 tools are available instantly.
 
 ### Free Tier (default)
 
-No API key needed. 75 scans/day, 200 checks/day, 50 req/min.
+No API key needed. 5 scans/day, 25 checks/day, 50 req/min.
 
 ### With API Key
 

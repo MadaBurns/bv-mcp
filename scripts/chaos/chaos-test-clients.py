@@ -252,7 +252,7 @@ def test_session_lifecycle():
 def test_format_autodetect():
     print("\n=== 2. Format Auto-Detection (scan_domain) ===")
 
-    # scan_domain is free-tier callable (75/day per IP). Run on both auth modes.
+    # scan_domain is free-tier callable (5/day per IP). Run on both auth modes.
     auth_mode = "bearer" if API_KEY else "none"
     SCAN_DOMAIN = "cloudflare.com"
     SCAN_ARGS   = {"domain": SCAN_DOMAIN}  # no explicit format — auto-detect
@@ -303,7 +303,7 @@ def test_format_autodetect():
 def test_format_override():
     print("\n=== 3. Format Explicit Override (compact/full) ===")
 
-    # scan_domain is free-tier callable (75/day per IP). Run on both auth modes.
+    # scan_domain is free-tier callable (5/day per IP). Run on both auth modes.
     auth_mode = "bearer" if API_KEY else "none"
 
     # Non-interactive client forced to compact: should get no STRUCTURED_RESULT
