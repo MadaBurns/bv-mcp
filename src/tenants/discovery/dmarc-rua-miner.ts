@@ -20,7 +20,7 @@
 
 import { queryDns } from '../../lib/dns-transport';
 import type { DohResponse } from '../../lib/dns-types';
-import { validateDomain } from '../../lib/sanitize';
+import { validateDomain, isSubdomainOf } from '../../lib/sanitize';
 
 /** Function signature for an injectable DNS-over-HTTPS query. */
 export type DnsQueryFn = (name: string, type: 'TXT' | string) => Promise<DohResponse>;
@@ -163,7 +163,7 @@ export async function mineDmarcRua(seedDomain: string, options: DmarcRuaOptions 
 		seenDomains.add(domain);
 		let classification: RuaClassification;
 		let confidence: number;
-		if (domain === seedLower) {
+		if (isSubdomainOf(domain, seedLower)) {
 			classification = 'self';
 			confidence = 0;
 		} else if (KNOWN_DMARC_PROCESSORS.has(domain)) {
