@@ -186,6 +186,20 @@ describe('discoverBrandDomains', () => {
 		await expect(discoverBrandDomains('not a domain!', {}, makeDeps())).rejects.toThrow(/Domain validation failed/);
 	});
 
+	it('skips candidates that are subdomains of the seed domain', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		// Signal module incorrectly reports a subdomain of the seed as a candidate
+		const deps = makeDeps({
+			correlateSans: vi.fn().mockResolvedValue(okSan(['dmarc.example.com', 'other.com'])),
+		});
+		const result = await discoverBrandDomains('example.com', { signals: ['san'] }, deps);
+		const candidates = result.findings.filter((f) => f.metadata?.candidate);
+		
+		// dmarc.example.com should be skipped, other.com should remain
+		expect(candidates).toHaveLength(1);
+		expect(candidates[0].metadata?.candidate).toBe('other.com');
+	});
+
 	it('format=compact omits emoji icons in formatter', async () => {
 		const { formatDiscoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const result = {

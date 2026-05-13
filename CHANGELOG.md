@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.14.0] - 2026-05-13
+
+### Fixed
+- **Shadow Domain Subdomain False Positive**: Updated the shadow domain discovery logic to correctly identify organizational subdomains (e.g., `dmarc.amazon.com`) as internal assets rather than "Shadow IT". Implemented a new `isSubdomainOf` utility and integrated it into `mineDmarcRua`, `discoverBrandDomains`, and the standard DMARC authorization check.
+- **Dependency Hardening**: Remediated four moderate severity vulnerabilities in `esbuild` (GHSA-67mh-4wv8-2f99) by implementing surgical `overrides` in `package.json`. Outdated loaders used by `drizzle-kit` are now forced to use a non-vulnerable version (0.25.12+), achieving a clean security audit without breaking dev-server isolation.
+
+### Verified
+- **Platform Tiers & Plan Limits**: Empirically verified all six platform tiers (Free, Agent, Developer, Enterprise, Partner, Owner). Confirmed that daily tool quotas, tool-specific overrides, and concurrency limits are strictly enforced at the MCP execution layer.
+- **OWASP Top 10 Audit**: Completed a full codebase security audit. Confirmed robust protections against SQL injection, XSS, SSRF, and authentication failures.
+
 ## [2.12.0] - 2026-05-12
 
 ### Added

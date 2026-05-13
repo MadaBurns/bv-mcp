@@ -67,4 +67,22 @@ describe('checkDMARC', () => {
 		const result = await checkDMARC('example.com', queryDNS);
 		expect(result.findings.some((f) => f.title === 'Invalid DMARC percentage value')).toBe(true);
 	});
+
+	it('does not flag subdomain RUA as unauthorized (e.g. dmarc.example.com for example.com)', async () => {
+		const queryDNS = createMockDNS({
+			'_dmarc.example.com': ['v=DMARC1; p=reject; rua=mailto:dmarc@dmarc.example.com'],
+		});
+		const result = await checkDMARC('example.com', queryDNS);
+		// Should NOT have "Third-party aggregate reporting not authorized"
+		expect(result.findings.some((f) => f.title === 'Third-party aggregate reporting not authorized')).toBe(false);
+	});
+
+	it('flags true third-party RUA as unauthorized if TXT record missing', async () => {
+		const queryDNS = createMockDNS({
+			'_dmarc.example.com': ['v=DMARC1; p=reject; rua=mailto:dmarc@otherbrand.com'],
+			'example.com._report._dmarc.otherbrand.com': [], // missing auth
+		});
+		const result = await checkDMARC('example.com', queryDNS);
+		expect(result.findings.some((f) => f.title === 'Third-party aggregate reporting not authorized')).toBe(true);
+	});
 });
