@@ -42,6 +42,7 @@ import {
 import type { OutputFormat } from '../handlers/tool-args';
 import { buildCheckResult, createFinding, type CheckResult, type Finding, type Severity } from '../lib/scoring';
 import { sanitizeOutputText } from '../lib/output-sanitize';
+import { isSubdomainOf } from '../lib/sanitize';
 
 /** All supported signal kinds. */
 export type DiscoverSignal = 'san' | 'ns' | 'dmarc_rua' | 'dkim_key_reuse';
@@ -281,8 +282,8 @@ export async function discoverBrandDomains(
 	const candidateFindings: Finding[] = [];
 	const surviving: Array<{ domain: string; combined: number; signals: DiscoverSignal[]; sources: Record<string, unknown> }> = [];
 	for (const entry of aggregator.values()) {
-		// Drop the seed if it accidentally appears (e.g. self-referenced rua=).
-		if (entry.domain === seedDomain.trim().toLowerCase().replace(/\.$/, '')) continue;
+		// Drop the seed or its subdomains if they accidentally appear (e.g. self-referenced rua=).
+		if (isSubdomainOf(entry.domain, seedDomain)) continue;
 		const perSignal = Array.from(entry.perSignalConfidence.entries());
 		const combined = round4(combineConfidences(perSignal.map(([, c]) => c)));
 		if (combined < minConfidence) continue;
