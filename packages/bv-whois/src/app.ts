@@ -38,9 +38,21 @@ export function buildApp(deps: LookupDeps): Hono {
 			return c.json({ error: 'Request body too large' }, 413);
 		}
 
+		// Read body as text so we can enforce the size cap even when Content-Length
+		// is absent (chunked transfer encoding can otherwise bypass the header check).
+		let bodyText: string;
+		try {
+			bodyText = await c.req.text();
+		} catch {
+			return c.json({ error: 'Invalid request body' }, 400);
+		}
+		if (bodyText.length > MAX_BODY_BYTES) {
+			return c.json({ error: 'Request body too large' }, 413);
+		}
+
 		let raw: unknown;
 		try {
-			raw = await c.req.json();
+			raw = JSON.parse(bodyText);
 		} catch {
 			return c.json({ error: 'Invalid JSON' }, 400);
 		}
