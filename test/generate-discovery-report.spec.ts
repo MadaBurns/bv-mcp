@@ -384,7 +384,7 @@ Based on the discovery of ${shadowIt.length} high-value Shadow IT domains, the f
         });
 
         const reportsDir = join(__dirname, '../reports');
-        try { mkdirSync(reportsDir, { recursive: true }); } catch (e) {}
+        try { mkdirSync(reportsDir, { recursive: true }); } catch {}
         
         const filePath = join(reportsDir, `${target}-discovery-report.pdf`);
         writeFileSync(filePath, pdfBuffer);
