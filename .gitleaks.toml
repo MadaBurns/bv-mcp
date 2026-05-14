@@ -65,6 +65,7 @@ regexes = [
 paths = [
   '''test/''',
   '''packages/[^/]+/test/''',          # Sub-package fixtures
+  '''/__tests__/''',                   # Vitest/Jest-style colocated test dirs (e.g. packages/dns-checks/src/__tests__/)
   '''src/tools/.*-analysis\.ts$''',    # Analysis modules contain IP examples in JSDoc
   '''src/lib/ip-utils\.ts$''',         # IP utility module contains example IPs in JSDoc
   '''docs/.*\.md$''',                  # IPv4 examples in RFC / explanation context (per-rule, not global)
@@ -84,6 +85,7 @@ keywords = ["phone", "tel", "mobile", "cell", "fax"]
 paths = [
   '''test/''',
   '''packages/[^/]+/test/''',
+  '''/__tests__/''',                       # Vitest/Jest-style colocated test dirs
   '''scripts/tranco-deep-.*\.json$''',     # Numeric IDs in scan artifacts
   '''scripts/phase\d+-.*\.json$''',
   '''scripts/chaos/''',                    # Test sentinels (e.g. 1234567890 placeholders)

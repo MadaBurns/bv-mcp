@@ -1,0 +1,76 @@
+Domain Name: google.us
+Registry Domain ID: D775573-US
+Registrar WHOIS Server: whois.markmonitor.com
+Registrar URL: www.markmonitor.com
+Updated Date: 2026-03-22T11:00:47Z
+Creation Date: 2002-04-19T23:16:01Z
+Registry Expiry Date: 2027-04-18T23:59:59Z
+Registrar: MarkMonitor, Inc.
+Registrar IANA ID: 292
+Registrar Abuse Contact Email: registry.admin@markmonitor.com
+Registrar Abuse Contact Phone: +1.2083895740
+Domain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited
+Domain Status: clientUpdateProhibited https://icann.org/epp#clientUpdateProhibited
+Domain Status: clientDeleteProhibited https://icann.org/epp#clientDeleteProhibited
+Domain Status: serverUpdateProhibited https://icann.org/epp#serverUpdateProhibited
+Domain Status: serverDeleteProhibited https://icann.org/epp#serverDeleteProhibited
+Domain Status: serverTransferProhibited https://icann.org/epp#serverTransferProhibited
+Registry Registrant ID: C37454483-US
+Registrant Name: Google LLC
+Registrant Organization: Google LLC
+Registrant Street: 1600 Amphitheatre Parkway
+Registrant Street:
+Registrant Street:
+Registrant City: Mountain View
+Registrant State/Province: CA
+Registrant Postal Code: 94043
+Registrant Country: US
+Registrant Phone: +1.6502530000
+Registrant Phone Ext:
+Registrant Fax: +1.6502530001
+Registrant Fax Ext:
+Registrant Email: dns-admin@google.com
+Registrant Application Purpose: P1
+Registrant Nexus Category: C21
+Registry Admin ID: CDFBE947B22B94123B51A662F42C37C75-GDREG
+Admin Name: Colm Buckley
+Admin Organization: Google LLC
+Admin Street: 1600 Amphitheatre Parkway
+Admin Street:
+Admin Street:
+Admin City: Mountain View
+Admin State/Province: CA
+Admin Postal Code: 94043
+Admin Country: US
+Admin Phone: +1.6502530000
+Admin Phone Ext:
+Admin Fax: +1.6502530001
+Admin Fax Ext:
+Admin Email: dns-admin@google.com
+Admin Application Purpose: P1
+Admin Nexus Category: C21
+Registry Tech ID: CDFBE947B22B94123B51A662F42C37C75-GDREG
+Tech Name: Colm Buckley
+Tech Organization: Google LLC
+Tech Street: 1600 Amphitheatre Parkway
+Tech Street:
+Tech Street:
+Tech City: Mountain View
+Tech State/Province: CA
+Tech Postal Code: 94043
+Tech Country: US
+Tech Phone: +1.6502530000
+Tech Phone Ext:
+Tech Fax: +1.6502530001
+Tech Fax Ext:
+Tech Email: dns-admin@google.com
+Tech Application Purpose: P1
+Tech Nexus Category: C21
+Name Server: ns1.google.com
+Name Server: ns2.google.com
+Name Server: ns3.google.com
+Name Server: ns4.google.com
+DNSSEC: unsigned
+URL of the ICANN Whois Inaccuracy Complaint Form: https://www.icann.org/wicf/
+>>> Last update of WHOIS database: 2026-05-14T11:11:28Z <<<
+
