@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.15.0] - 2026-05-15
+
+### Added
+- **WHOIS fallback via bv-whois shim Worker (PR #116)**: Resolves the "17 of 44 candidates return Unknown registrar" gap exposed by the CSC audit — ccTLDs `.me/.de/.co/.us/.sh/.io` don't have public RDAP servers. Self-hosted WHOIS-over-TCP/43 shim Worker with KV-backed referral cache (7-day TTL, 15 hardcoded fast-path TLDs, live IANA fallback) and Hono `POST /lookup` route. Service-binding wired into `check-rdap-lookup` via new `BV_WHOIS` binding (mirrors `BV_CERTSTREAM` pattern); fallback fires at all 3 RDAP failure paths and fails open if the binding throws. New `metadata.registrarSource: rdap | whois | redacted | notfound | unknown` field surfaces provenance per finding.
+- **`@blackveil/dns-checks/whois` sub-export**: Pure parser primitives (`parseWhoisResponse`, `parseIanaReferral`, `MAX_RESPONSE_BYTES`) usable from both bv-mcp and bv-whois without code duplication. 26 parser unit tests against real captured registry fixtures.
+- **`packages/bv-whois/` workspace**: 6 source files (transport / resolver / lookup / app / index + Hono router) with 34 tests covering TCP transport, SSRF host validation, IANA referral cache, response-size cap, body-length enforcement (defends against chunked-encoding bypass), and Zod-validated request/response shapes.
+
+### Fixed
+- **CSC brand audit RDAP extraction (PR #114)**: Extraction matched on `f.title.includes('Registrar')` but the actual finding title is `'Registration details'` — every candidate came back with `registrar: 'Unknown'`. Fixed to extract from structured `f.metadata.registrar`. Also corrected the classification baseline: was hardcoded `CSC`, now uses each target's own registrar family with MarkMonitor / Com Laude / SafeNames variant normalization. Classification shifted from `0 consolidated / 47 shadow-IT` (largely incorrect) to `23 consolidated / 17 sprawl / 4 impersonation`.
+- **CLAUDE.md drift (PR #115)**: Version reference, tool count, missing source-layout entries (`src/tenants/`, `src/oauth/`, several `src/lib/` modules), missing CI/CD workflows, `deploy:private` → `deploy:prod` (the former doesn't exist in `package.json`), `npm run dev` → `npx wrangler dev`. Trimmed redundant sections.
+
+### Security
+- **Closed 3 self-review findings before merging WHOIS feature**:
+  - Octal IPv4 bypass in `validateHost` (e.g. `0177.0.0.1` → 127.0.0.1 via legacy octal parsing): reject any hostname whose every label is purely numeric.
+  - Body-size cap bypass in `POST /lookup`: read body as text and enforce `MAX_BODY_BYTES` on actual length (Content-Length-only checks bypassable via chunked encoding).
+  - Unvalidated shim response shape: Zod-validate `WhoisFallbackPayload` from `bv-whois` instead of casting; malformed payload → `source: 'error'`.
+- Residual risk acknowledged: DNS rebinding (validateHost runs before DNS resolution). Mitigated by trust model — WHOIS server hostnames come only from the hardcoded TLD→server map or IANA referrals, both trusted sources.
+
+### Changed
+- `.gitleaks.toml` allowlist paths for `real-ipv4-address` and `phone-number` rules include `/__tests__/` (Vitest/Jest-style colocated test dirs) — consistent with the `real-email-address` rule's existing allowlist. Captured IANA contact data in test fixtures no longer trips false positives.
+- Default `vitest.config.mts` excludes `scripts/csc-*.spec.ts` — calibration specs that use `fs.readFileSync` belong in the node-env `vitest.calibration.config.mts`.
+
 ## [2.14.2] - 2026-05-14
 
 ### Fixed
