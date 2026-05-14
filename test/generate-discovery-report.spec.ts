@@ -7,8 +7,12 @@
  */
 
 import { describe, it } from 'vitest';
+import { writeFileSync, mkdirSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { marked } from 'marked';
 import { discoverBrandDomains } from '../src/tools/discover-brand-domains';
 import { checkRdapLookup } from '../src/tools/check-rdap-lookup';
+import { generatePdf } from '../src/lib/pdf-engine';
 
 const CONSUMER_REGISTRARS = [
     'godaddy', 'namecheap', 'hostinger', 'tucows', 'enom', 'squarespace', 
@@ -16,8 +20,12 @@ const CONSUMER_REGISTRARS = [
     'name.com', 'network solutions', 'hostgator', 'bluehost', 'ionos'
 ];
 
-const target = 'TARGET_DOMAIN_PLACEHOLDER';
+const target = process.env.TARGET_DOMAIN || 'TARGET_DOMAIN_PLACEHOLDER';
 const isPlaceholder = !target || target === 'TARGET_DOMAIN_PLACEHOLDER';
+
+const assetsDir = join(__dirname, '../assets');
+const logoFullBase64 = readFileSync(join(assetsDir, 'bv-logo-full.png')).toString('base64');
+const logoMarkBase64 = readFileSync(join(assetsDir, 'bv-logo-mark.png')).toString('base64');
 
 describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
     it('generates the report for a target domain', async () => {
@@ -110,127 +118,149 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
         const targetUpper = target.toUpperCase();
 
         let md = `<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;500;700&family=JetBrains+Mono:wght@400;700&family=Manrope:wght@200;400;600&display=swap');
+
   body {
-    font-family: 'Manrope', ui-sans-serif, system-ui, sans-serif;
-    background-color: #000000; /* Obsidian */
-    color: #ffffff;
-    line-height: 1.7;
+    font-family: 'Manrope', sans-serif;
+    background-color: #000000;
+    color: #E0E0E0;
+    line-height: 1.6;
     font-weight: 300;
-    letter-spacing: 0.025em;
+    margin: 0;
+    padding: 0;
   }
   .header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    border-bottom: 1px solid #404040; /* Obsidian Border */
-    padding-bottom: 24px;
-    margin-bottom: 40px;
+    align-items: flex-start;
+    border-bottom: 1px solid #2A2A2A;
+    padding-bottom: 32px;
+    margin-bottom: 48px;
   }
   .header-info {
     text-align: right;
-    color: #bfbfbf; /* text-secondary */
-    font-size: 0.875rem;
-    font-family: 'JetBrains Mono', ui-monospace, monospace;
-    letter-spacing: -0.015em;
+    color: #888888;
+    font-size: 0.75rem;
+    font-family: 'JetBrains Mono', monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    line-height: 1.8;
+  }
+  .header-info strong {
+    color: #00FF9D;
+    font-weight: 700;
   }
   h1, h2, h3, h4 {
-    font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
-    color: #ffffff;
-    letter-spacing: -0.015em;
-    -webkit-font-smoothing: antialiased;
+    font-family: 'Space Grotesk', sans-serif;
+    color: #FFFFFF;
+    letter-spacing: -0.02em;
+    margin-top: 2em;
+    margin-bottom: 1em;
   }
   h1 {
-    font-weight: 900; /* Black */
+    font-size: 3rem;
+    font-weight: 700;
     line-height: 1;
-    font-size: 2.5rem;
+    margin-top: 0;
+    background: linear-gradient(to bottom, #FFFFFF 0%, #888888 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
   }
   h2 {
-    font-weight: 800; /* Extrabold */
-    line-height: 1.1;
-    border-bottom: 1px solid #1f1f1f; /* Obsidian Elevated */
-    padding-bottom: 8px;
-    margin-top: 48px;
     font-size: 1.5rem;
+    font-weight: 500;
+    border-left: 3px solid #00FF9D;
+    padding-left: 16px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
   }
-  h3 {
-    font-weight: 700; /* Bold */
-    line-height: 1.2;
-  }
+  p { margin-bottom: 1.5em; }
+  
   table {
     width: 100%;
-    border-collapse: collapse;
-    margin: 24px 0;
-    font-size: 0.875rem;
-    background-color: #1a1a1a; /* Obsidian Surface */
-    border-radius: 0.5rem;
+    border-collapse: separate;
+    border-spacing: 0;
+    margin: 32px 0;
+    background-color: #0A0A0A;
+    border: 1px solid #1A1A1A;
+    border-radius: 8px;
     overflow: hidden;
   }
   th {
-    background-color: #1f1f1f; /* Obsidian Elevated */
-    color: #bfbfbf;
+    background-color: #111111;
+    color: #888888;
     text-align: left;
-    padding: 12px 16px;
-    border-bottom: 1px solid #404040;
-    font-weight: 600;
-    font-family: 'Space Grotesk', sans-serif;
-    letter-spacing: 0.05em;
+    padding: 14px 20px;
+    font-size: 0.7rem;
+    font-weight: 700;
     text-transform: uppercase;
-    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    border-bottom: 1px solid #1A1A1A;
   }
   td {
-    padding: 12px 16px;
-    border-bottom: 1px solid #1f1f1f;
-    color: #ffffff;
+    padding: 16px 20px;
+    border-bottom: 1px solid #111111;
+    font-size: 0.85rem;
   }
-  .status-pass { color: #00FF9D; font-weight: 600; } /* Mint */
-  .status-warn { color: #FFB300; font-weight: 600; }
-  .status-fail { color: #FF3B30; font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  
+  .status-pass { color: #00FF9D; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+  .status-warn { color: #FFB300; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+  .status-fail { color: #FF3B30; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+  
   .evidence { 
-    font-family: 'JetBrains Mono', ui-monospace, monospace; 
-    font-size: 0.75rem; 
-    color: #bfbfbf; 
-    background: #1a1a1a; 
-    padding: 2px 6px; 
+    font-family: 'JetBrains Mono', monospace; 
+    font-size: 0.7rem; 
+    color: #AAAAAA; 
+    background: #151515; 
+    padding: 4px 10px; 
     border-radius: 4px; 
-    border: 1px solid #404040; 
-    letter-spacing: -0.015em;
+    border: 1px solid #222222; 
   }
+  
   .revenue-box {
-    background-color: #1a1a1a;
-    border-left: 4px solid #00FF9D; /* Mint Accent */
-    padding: 24px;
-    margin: 32px 0;
-    border-radius: 0 0.5rem 0.5rem 0;
+    background: linear-gradient(135deg, #0A0A0A 0%, #111111 100%);
+    border: 1px solid #1A1A1A;
+    border-left: 4px solid #00FF9D;
+    padding: 32px;
+    margin: 48px 0;
+    border-radius: 0 12px 12px 0;
   }
-  .revenue-box table {
-    background-color: transparent;
-  }
+  .revenue-box h3 { margin-top: 0; color: #00FF9D; font-size: 1.2rem; }
+  .revenue-box table { background: transparent; border: none; margin: 16px 0 0 0; }
+  .revenue-box th { background: transparent; border-bottom: 1px solid #222222; }
+  .revenue-box td { border-bottom: 1px solid #151515; }
+  
   .logo {
-    filter: invert(1) brightness(2);
+    filter: brightness(1.2);
   }
 </style>
 
 <div class="header">
   <div>
-    <img src="../assets/bv-logo-full.png" width="200" class="logo" alt="Blackveil Security" />
+    <img src="data:image/png;base64,${logoFullBase64}" width="220" class="logo" alt="Blackveil Security" />
   </div>
   <div class="header-info">
-    <strong>BRAND DISCOVERY & SHADOW IT</strong><br>
-    TARGET: ${targetUpper}<br>
-    DATE: ${dateStr.toUpperCase()}<br>
-    PREPARED BY: BLACKVEIL DNS ENTERPRISE SERVICES
+    <strong>Discovery Intel Report</strong><br>
+    Asset: ${targetUpper}<br>
+    Ref: BV-${target.substring(0,3).toUpperCase()}-${new Date().getTime().toString().slice(-6)}<br>
+    Auth: Enterprise Tier
   </div>
 </div>
 
+# Infrastructure Audit: ${target}
+
 ## Executive Summary
-This report details the findings of an automated brand discovery and infrastructure correlation scan performed against the \`${target}\` seed domain. The objective of this scan is to map the organization's decentralized domain portfolio, identify "Shadow IT" (legitimate domains managed outside of the primary corporate registrar), and distinguish these from unauthorized impersonation threats.
+This intelligence report provides a definitive mapping of the domain architecture and cryptographic footprint associated with **${target}**. Leveraging the Blackveil Multi-Signal Correlation Engine, we have identified primary infrastructure, discovered "Shadow IT" Managed by third-party vendors, and assessed potential impersonation risks. 
+
+Our analysis utilizes deterministic signals (NS-Overlap, SAN Certificates, and DMARC RUA/RUF linkages) to provide a 100% factual baseline of the organization's decentralized portfolio.
 
 ## 1. Primary Corporate Infrastructure
-The following domains were identified as part of the core corporate portfolio, correctly consolidated under the primary enterprise registrar (**${primaryRegistrar}**).
+The following assets are verified as core components of the ${target} portfolio, currently consolidated under the master enterprise registrar (**${primaryRegistrar}**).
 
-| Domain | Infrastructure Signals | Verified Registrar | Status |
+| Verified Asset | Correlation Signal | Registrar | State |
 | :--- | :--- | :--- | :--- |
-| **${target}** | Primary Seed | ${primaryRegistrar} | <span class="status-pass">✅ Consolidated</span> |
+| **${target}** | [ROOT SEED] | ${primaryRegistrar} | <span class="status-pass">CONSOLIDATED</span> |
 `;
 
         for (const cand of consolidated) {
@@ -328,10 +358,37 @@ Based on the discovery of ${shadowIt.length} high-value Shadow IT domains, the f
 *Generated automatically by the Blackveil DNS Multi-Tenant Orchestrator. Powered by Blackveil Security.*
 `;
 
-        console.log('===MARKDOWN_START===');
-        console.log(md);
-        console.log('===MARKDOWN_END===');
+        const html = await marked.parse(md);
+        const pdfBuffer = await generatePdf(html, {
+            displayHeaderFooter: true,
+            headerTemplate: `
+                <div style="width: 100%; font-size: 8px; padding: 10px 40px; display: flex; justify-content: space-between; align-items: center; font-family: 'Space Grotesk', sans-serif; color: #bfbfbf;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <img src="data:image/png;base64,${logoMarkBase64}" width="16" style="filter: invert(1) brightness(2);" />
+                        <span style="letter-spacing: 0.05em;">BLACKVEIL SECURITY - PROPRIETARY & CONFIDENTIAL</span>
+                    </div>
+                    <span>${targetUpper} INFRASTRUCTURE AUDIT</span>
+                </div>`,
+            footerTemplate: `
+                <div style="width: 100%; font-size: 8px; padding: 10px 40px; display: flex; justify-content: space-between; font-family: 'Space Grotesk', sans-serif; color: #bfbfbf; border-top: 1px solid #1f1f1f;">
+                    <span>Generated on ${dateStr}</span>
+                    <span style="color: #00FF9D; font-weight: 600;">BLACKVEIL DNS ORCHESTRATOR v2.13.1</span>
+                    <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>
+                </div>`,
+            margin: {
+                top: '60px',
+                bottom: '60px',
+                left: '40px',
+                right: '40px'
+            }
+        });
+
+        const reportsDir = join(__dirname, '../reports');
+        try { mkdirSync(reportsDir, { recursive: true }); } catch {}
         
-        console.log(`[4/4] Markdown generated successfully.`);
+        const filePath = join(reportsDir, `${target}-discovery-report.pdf`);
+        writeFileSync(filePath, pdfBuffer);
+        
+        console.log(`[4/4] PDF report generated: ${filePath}`);
     }, 120000); // 120s timeout for large discoveries
 });

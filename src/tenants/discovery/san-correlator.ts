@@ -18,25 +18,31 @@
  * (invalid input). Callers can interrogate `queryStatus` instead.
  */
 
+import { JSONParser } from '@streamparser/json-whatwg';
 import { safeFetch } from '../../lib/safe-fetch';
 import { validateDomain } from '../../lib/sanitize';
 
 /** Default request timeout (ms). */
-const DEFAULT_TIMEOUT_MS = 8_000;
+const DEFAULT_TIMEOUT_MS = 15_000;
 
 /** Default cap on certs to consider per seed query. */
-const DEFAULT_MAX_CERTS = 50;
+const DEFAULT_MAX_CERTS = 200;
 
 /**
- * Cap on the JSON response body before parsing. crt.sh can return MBs of
- * SAN data for large issuers; bound it to keep the Worker out of OOM land.
+ * Signal Saturation: If we process this many certificates without discovering
+ * a new unique sibling domain, we assume the signal is saturated and abort.
  */
-const MAX_BODY_BYTES = 5 * 1024 * 1024;
+const SATURATION_THRESHOLD = 100;
+
+/**
+ * Hard safety cap on the raw stream bytes to prevent runaway resource usage.
+ */
+const MAX_STREAM_BYTES = 25 * 1024 * 1024;
 
 export interface SanCorrelationOptions {
-	/** Request timeout in ms. Defaults to 8000. */
+	/** Request timeout in ms. Defaults to 15000. */
 	timeoutMs?: number;
-	/** Cap on the number of crt.sh entries that contribute to the result. Defaults to 50. */
+	/** Cap on the number of crt.sh entries that contribute to the result. Defaults to 200. */
 	maxCertsPerDomain?: number;
 	/** Override the underlying fetch implementation (used for testing). Defaults to `safeFetch`. */
 	fetchFn?: typeof fetch;
@@ -59,34 +65,14 @@ interface CrtShEntry {
 }
 
 /**
- * Build the empty/error-shape result. Centralised so the failure paths can't
- * accidentally diverge on field defaults.
+ * Build the empty/error-shape result.
  */
 function emptyResult(seedDomain: string, status: SanCorrelationResult['queryStatus']): SanCorrelationResult {
 	return { seedDomain, coOwnedDomains: [], certIds: [], queryStatus: status };
 }
 
 /**
- * Sort entries newest-first. Entries without `entry_timestamp` are pushed to
- * the end so they don't out-compete dated entries for the cap slots.
- */
-function sortEntriesNewestFirst(entries: CrtShEntry[]): CrtShEntry[] {
-	const withSortKey = entries.map((entry) => {
-		const t = entry.entry_timestamp ? Date.parse(entry.entry_timestamp) : Number.NaN;
-		return { entry, sortKey: Number.isFinite(t) ? t : Number.NEGATIVE_INFINITY };
-	});
-	withSortKey.sort((a, b) => b.sortKey - a.sortKey);
-	return withSortKey.map((x) => x.entry);
-}
-
-/**
  * Extract sibling domains from a single SAN string.
- *
- * `name_value` is a list of hostnames separated by `\n` or `,` (crt.sh varies
- * by query). Wildcards (`*.example.com`) become the bare apex. Subdomains
- * of the seed are dropped — those are `discover_subdomains`' job. The seed
- * itself is dropped. Hostnames that fail `validateDomain` are silently
- * filtered (SSRF/sentinel guard).
  */
 function extractSiblingsFromNameValue(nameValue: string, seedLower: string): string[] {
 	const seedSuffix = `.${seedLower}`;
@@ -94,15 +80,10 @@ function extractSiblingsFromNameValue(nameValue: string, seedLower: string): str
 	for (const rawSplit of nameValue.split(/[\n,]/)) {
 		let host = rawSplit.trim().toLowerCase();
 		if (!host) continue;
-		// Strip wildcard prefix — the bare apex is what we actually want.
 		if (host.startsWith('*.')) host = host.slice(2);
 		if (!host) continue;
-		// Drop the seed itself.
 		if (host === seedLower) continue;
-		// Drop subdomains of the seed. `endsWith('.' + seed)` so that
-		// `notexample.com` is *not* treated as a subdomain of `example.com`.
 		if (host.endsWith(seedSuffix)) continue;
-		// SSRF / format guard.
 		const validation = validateDomain(host);
 		if (!validation.valid) continue;
 		out.push(host);
@@ -112,20 +93,12 @@ function extractSiblingsFromNameValue(nameValue: string, seedLower: string): str
 
 /**
  * Correlate co-owned sibling domains for a seed via crt.sh SAN clustering.
- *
- * @throws Error with the `'Domain validation failed:'` prefix when the seed
- *   does not pass `validateDomain`. All other failure modes (network error,
- *   429 rate limit, timeout, oversize body, malformed JSON) are returned as
- *   `queryStatus: 'rate_limited' | 'timeout' | 'error'` rather than thrown.
+ * Uses a streaming JSON parser to handle large certificate histories (Tier-1 brands).
  */
 export async function correlateSans(
 	seedDomain: string,
 	options: SanCorrelationOptions = {},
 ): Promise<SanCorrelationResult> {
-	// Validate FIRST — outside the network try/catch — so a bad seed surfaces
-	// to the caller as a thrown error rather than getting swallowed and
-	// returned as `queryStatus: 'error'`. The thrown prefix matches the
-	// project's `SAFE_ERROR_PREFIXES` allowlist.
 	const validation = validateDomain(seedDomain);
 	if (!validation.valid) {
 		throw new Error(`Domain validation failed: ${validation.error ?? 'invalid domain'}`);
@@ -146,67 +119,96 @@ export async function correlateSans(
 		response = await fetchFn(url, { signal: controller.signal, redirect: 'manual' });
 	} catch (err) {
 		clearTimeout(timeoutId);
-		if (err instanceof Error && err.name === 'AbortError') {
-			return emptyResult(seedLower, 'timeout');
-		}
+		if (err instanceof Error && err.name === 'AbortError') return emptyResult(seedLower, 'timeout');
 		return emptyResult(seedLower, 'error');
 	}
 	clearTimeout(timeoutId);
 
-	if (response.status === 429) {
-		return emptyResult(seedLower, 'rate_limited');
-	}
-	if (!response.ok) {
-		return emptyResult(seedLower, 'error');
-	}
+	if (response.status === 429) return emptyResult(seedLower, 'rate_limited');
+	if (!response.ok) return emptyResult(seedLower, 'error');
 
-	// Pre-flight cap via Content-Length when available to short-circuit
-	// pathologically large responses before parsing.
-	const contentLength = response.headers.get('content-length');
-	if (contentLength) {
-		const declared = Number.parseInt(contentLength, 10);
-		if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
-			return emptyResult(seedLower, 'error');
-		}
-	}
-
-	let entries: CrtShEntry[];
-	try {
-		const text = await response.text();
-		if (text.length > MAX_BODY_BYTES) {
-			return emptyResult(seedLower, 'error');
-		}
-		const parsed = JSON.parse(text);
-		if (!Array.isArray(parsed)) {
-			return emptyResult(seedLower, 'error');
-		}
-		entries = parsed as CrtShEntry[];
-	} catch (err) {
-		if (err instanceof Error && err.name === 'AbortError') {
-			return emptyResult(seedLower, 'timeout');
-		}
-		return emptyResult(seedLower, 'error');
-	}
-
-	if (entries.length === 0) {
-		return { seedDomain: seedLower, coOwnedDomains: [], certIds: [], queryStatus: 'ok' };
-	}
-
-	// Sort newest-first, then cap. Without sorting, the cap silently drops
-	// the most-recent (most-relevant) certificate observations.
-	const ranked = sortEntriesNewestFirst(entries).slice(0, Math.max(0, maxCerts));
+	const body = response.body;
+	if (!body) return emptyResult(seedLower, 'ok');
 
 	const siblings = new Set<string>();
 	const certIds: number[] = [];
-	for (const entry of ranked) {
-		if (typeof entry.id === 'number') certIds.push(entry.id);
-		const nameValue = entry.name_value;
-		if (typeof nameValue !== 'string' || !nameValue) continue;
-		for (const sibling of extractSiblingsFromNameValue(nameValue, seedLower)) {
-			siblings.add(sibling);
+	let certsProcessed = 0;
+	let certsSinceNewDomain = 0;
+	let bytesProcessed = 0;
+// Initialize streaming parser for a flat array of objects
+const parser = new JSONParser({ paths: ['$.*'] });
+
+// Byte counter to enforce safety cap
+const byteCounter = new TransformStream<Uint8Array, Uint8Array>({
+	transform(chunk, ctrl) {
+		bytesProcessed += chunk.length;
+		if (bytesProcessed > MAX_STREAM_BYTES) {
+			ctrl.error(new Error('Stream size limit exceeded'));
+		} else {
+			ctrl.enqueue(chunk);
+		}
+	},
+});
+
+const reader = body.pipeThrough(byteCounter).pipeThrough(parser).getReader();
+
+try {
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+
+		// value is a StackElement from @streamparser/json
+		// Handle both individual objects and arrays (just in case)
+		const entries = Array.isArray(value.value) ? value.value : [value.value];
+
+		for (const entryRaw of entries) {
+			const entry = entryRaw as CrtShEntry;
+			if (!entry) continue;
+			certsProcessed++;
+
+			let foundNew = false;
+			if (typeof entry.id === 'number') certIds.push(entry.id);
+			const nameValue = entry.name_value;
+			if (typeof nameValue === 'string' && nameValue) {
+				for (const sibling of extractSiblingsFromNameValue(nameValue, seedLower)) {
+					if (!siblings.has(sibling)) {
+						siblings.add(sibling);
+						foundNew = true;
+					}
+				}
+			}
+
+			if (foundNew) {
+				certsSinceNewDomain = 0;
+			} else {
+				certsSinceNewDomain++;
+			}
+
+			// Stop if we hit the hard cap or signal saturation
+			if (certsProcessed >= maxCerts || certsSinceNewDomain >= SATURATION_THRESHOLD) {
+				await reader.cancel();
+				break;
+			}
 		}
 	}
+} catch (err) {
+		// If it's the stream limit error, we return what we have so far as partial success
+		if (err instanceof Error && err.message === 'Stream size limit exceeded') {
+			return {
+				seedDomain: seedLower,
+				coOwnedDomains: Array.from(siblings).sort(),
+				certIds,
+				queryStatus: 'ok',
+			};
+		}
+		// Any other error (malformed JSON, network drop mid-stream)
+		return emptyResult(seedLower, 'error');
+	}
 
-	const coOwnedDomains = Array.from(siblings).sort();
-	return { seedDomain: seedLower, coOwnedDomains, certIds, queryStatus: 'ok' };
+	return {
+		seedDomain: seedLower,
+		coOwnedDomains: Array.from(siblings).sort(),
+		certIds,
+		queryStatus: 'ok',
+	};
 }

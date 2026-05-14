@@ -29,5 +29,9 @@ export default defineConfig({
 	test: {
 		testTimeout: 15_000,
 		exclude: ['node_modules/**', '.claude/**', '.worktrees/**'],
+		poolMatchGlobs: [
+			['test/pdf-engine.spec.ts', 'forks'],
+			['test/generate-discovery-report.spec.ts', 'forks'],
+		],
 	},
 });
