@@ -8,7 +8,12 @@ import { checkShadowDomains } from '../src/tools/check-shadow-domains';
 const corpus = {
 	seed: "blackveilsecurity.com",
 	groundTruth: {
-		subdomains: ["www.blackveilsecurity.com"],
+		// dns-mcp.* is the production MCP endpoint with a current CT-logged cert,
+		// so it's a stable ground-truth anchor for the live crt.sh check. www.*
+		// was used previously but isn't a literal SAN — only the wildcard
+		// *.blackveilsecurity.com covers it, and discoverSubdomains doesn't
+		// expand wildcards into synthetic literals.
+		subdomains: ["dns-mcp.blackveilsecurity.com"],
 		brandDomains: [
 			{ domain: "blackveil.nz", signals: ["ns"] },
 			{ domain: "blackveil.io", signals: ["ns"] }
