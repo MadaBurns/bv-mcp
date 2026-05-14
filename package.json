@@ -34,6 +34,7 @@
 	},
 	"dependencies": {
 		"@blackveil/dns-checks": "^1.0.4",
+		"@streamparser/json-whatwg": "^0.0.22",
 		"drizzle-orm": "0.45.2",
 		"marked": "^18.0.3",
 		"punycode": "^2.3.1",
