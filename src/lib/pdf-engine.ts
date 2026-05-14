@@ -1,11 +1,20 @@
 // SPDX-License-Identifier: BUSL-1.1
 /**
  * src/lib/pdf-engine.ts
- * 
- * Enterprise PDF generation service using Playwright.
+ *
+ * Enterprise PDF generation service using Playwright. Test-only — runs in
+ * Node via Vitest's `forks` pool (see `poolMatchGlobs` in vitest.config.mts),
+ * never in the Cloudflare Worker runtime. The project tsconfig pins
+ * `types: ["@cloudflare/workers-types"]` so Node's `Buffer` global isn't
+ * visible; the local `declare` below scopes the type to just this file
+ * rather than adding `@types/node` to the whole project.
  */
 
 import { chromium } from 'playwright';
+
+// Node-only global; defined at runtime in the Vitest `forks` pool. Typed as
+// `Uint8Array` here so consumers see a Web-standard return type.
+declare const Buffer: { from(input: ArrayBuffer | Uint8Array): Uint8Array };
 
 export interface PdfOptions {
 	format?: 'A4' | 'Letter';
@@ -24,7 +33,7 @@ export interface PdfOptions {
 /**
  * Generate a PDF buffer from an HTML string.
  */
-export async function generatePdf(html: string, options: PdfOptions = {}): Promise<Buffer> {
+export async function generatePdf(html: string, options: PdfOptions = {}): Promise<Uint8Array> {
 	const browser = await chromium.launch({ headless: true });
 	try {
 		const context = await browser.newContext();
