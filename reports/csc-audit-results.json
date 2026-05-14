@@ -37,41 +37,41 @@
         "registrar": "MarkMonitor Inc.",
         "evidence": "NS",
         "confidence": 1
-      }
-    ],
-    "shadowIt": [
-      {
-        "domain": "google.co",
-        "registrar": "Unknown",
-        "evidence": "NS",
-        "confidence": 1
       },
       {
-        "domain": "google.de",
-        "registrar": "Unknown",
+        "domain": "google.co",
+        "registrar": "MarkMonitor, Inc.",
         "evidence": "NS",
         "confidence": 1
       },
       {
         "domain": "google.io",
-        "registrar": "Unknown",
+        "registrar": "MarkMonitor Inc.",
         "evidence": "NS",
         "confidence": 1
       },
       {
         "domain": "google.me",
-        "registrar": "Unknown",
+        "registrar": "MarkMonitor Inc.",
         "evidence": "NS",
         "confidence": 1
       },
       {
         "domain": "google.sh",
-        "registrar": "Unknown",
+        "registrar": "MarkMonitor Inc.",
         "evidence": "NS",
         "confidence": 1
       },
       {
         "domain": "google.us",
+        "registrar": "MarkMonitor, Inc.",
+        "evidence": "NS",
+        "confidence": 1
+      }
+    ],
+    "shadowIt": [
+      {
+        "domain": "google.de",
         "registrar": "Unknown",
         "evidence": "NS",
         "confidence": 1
@@ -135,6 +135,24 @@
         "registrar": "Nom-IQ Limited t/a Com Laude",
         "evidence": "NS",
         "confidence": 1
+      },
+      {
+        "domain": "apple.co",
+        "registrar": "Nom-iq Ltd. dba COM LAUDE",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "apple.me",
+        "registrar": "Nom-iq Ltd. dba COM LAUDE",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "apple.us",
+        "registrar": "Nom-iq Ltd. dba COM LAUDE",
+        "evidence": "NS",
+        "confidence": 1
       }
     ],
     "shadowIt": [
@@ -145,25 +163,7 @@
         "confidence": 1
       },
       {
-        "domain": "apple.co",
-        "registrar": "Unknown",
-        "evidence": "NS",
-        "confidence": 1
-      },
-      {
         "domain": "apple.de",
-        "registrar": "Unknown",
-        "evidence": "NS",
-        "confidence": 1
-      },
-      {
-        "domain": "apple.me",
-        "registrar": "Unknown",
-        "evidence": "NS",
-        "confidence": 1
-      },
-      {
-        "domain": "apple.us",
         "registrar": "Unknown",
         "evidence": "NS",
         "confidence": 1
@@ -222,23 +222,23 @@
         "registrar": "MARKMONITOR Inc.",
         "evidence": "NS",
         "confidence": 1
-      }
-    ],
-    "shadowIt": [
-      {
-        "domain": "paypal.co",
-        "registrar": "Unknown",
-        "evidence": "NS",
-        "confidence": 1
       },
       {
-        "domain": "paypal.de",
-        "registrar": "Unknown",
+        "domain": "paypal.co",
+        "registrar": "MarkMonitor, Inc.",
         "evidence": "NS",
         "confidence": 1
       },
       {
         "domain": "paypal.me",
+        "registrar": "MarkMonitor Inc.",
+        "evidence": "NS",
+        "confidence": 1
+      }
+    ],
+    "shadowIt": [
+      {
+        "domain": "paypal.de",
         "registrar": "Unknown",
         "evidence": "NS",
         "confidence": 1
@@ -266,22 +266,21 @@
         "registrar": "Safenames Ltd",
         "evidence": "NS",
         "confidence": 1
-      }
-    ],
-    "shadowIt": [
+      },
       {
         "domain": "stripe.me",
-        "registrar": "Unknown",
+        "registrar": "SafeNames Ltd.",
         "evidence": "NS",
         "confidence": 1
       },
       {
         "domain": "stripe.sh",
-        "registrar": "Unknown",
+        "registrar": "SafeNames Ltd.",
         "evidence": "NS",
         "confidence": 1
       }
     ],
+    "shadowIt": [],
     "impersonation": []
   },
   {
@@ -304,7 +303,7 @@
       },
       {
         "domain": "walmart.io",
-        "registrar": "Unknown",
+        "registrar": "MarkMonitor Inc.",
         "evidence": "NS",
         "confidence": 0.5
       },
@@ -318,16 +317,16 @@
   },
   {
     "target": "github.com",
-    "consolidated": [],
-    "shadowIt": [],
-    "impersonation": [
+    "consolidated": [
       {
         "domain": "github.me",
-        "registrar": "Unknown",
+        "registrar": "MarkMonitor Inc.",
         "evidence": "NS",
         "confidence": 0.5
       }
-    ]
+    ],
+    "shadowIt": [],
+    "impersonation": []
   },
   {
     "target": "blackveilsecurity.com",

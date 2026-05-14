@@ -17,6 +17,25 @@ import { describe, it } from 'vitest';
 import { readFileSync, writeFileSync } from 'fs';
 import { checkRdapLookup } from '../src/tools/check-rdap-lookup';
 
+/**
+ * Production-shaped Fetcher that targets the live bv-whois shim Worker. This is
+ * what the `BV_WHOIS` service binding does at runtime; in node env we just hit
+ * the public URL so the audit exercises the same end-to-end fallback path.
+ */
+const LIVE_WHOIS_BINDING: { fetch: typeof fetch } = {
+	async fetch(input: RequestInfo, init?: RequestInit) {
+		// Rewrite the "internal" hostname (https://bv-whois/lookup) to the live shim.
+		const req = typeof input === 'string' ? new Request(input, init) : input;
+		const path = new URL(req.url).pathname;
+		const target = `https://bv-whois.bv-edge.workers.dev${path}`;
+		return fetch(target, {
+			method: req.method,
+			headers: req.headers,
+			body: req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.clone().text(),
+		});
+	},
+};
+
 const TARGETS = [
 	'google.com', 'amazon.com', 'microsoft.com', 'apple.com', 'disney.com',
 	'nike.com', 'paypal.com', 'stripe.com', 'walmart.com', 'github.com',
@@ -48,7 +67,7 @@ interface TargetResult { target: string; consolidated: Candidate[]; shadowIt: Ca
 
 async function lookupRegistrar(domain: string): Promise<string> {
 	try {
-		const rdap = await checkRdapLookup(domain);
+		const rdap = await checkRdapLookup(domain, { whoisBinding: LIVE_WHOIS_BINDING });
 		const rFind = rdap.findings.find(
 			f => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0,
 		);
