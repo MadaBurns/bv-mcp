@@ -105,6 +105,13 @@ export interface DiscoverBrandDomainsOptions {
 	candidate_domains?: string[];
 	dkim_selectors?: string[];
 	min_confidence?: number;
+	/**
+	 * Optional bv-certstream-worker service binding. Threaded into the SAN
+	 * correlator's primary path — sidesteps crt.sh per-IP throttling and
+	 * benefits from the worker's cache when available. Falls back to direct
+	 * crt.sh (with retry) if the binding fails.
+	 */
+	certstream?: { fetch: typeof fetch };
 }
 
 /** Combine independent-event confidences: P(any signal correct). */
@@ -239,7 +246,9 @@ export async function discoverBrandDomains(
 
 	if (signals.includes('san')) {
 		jobs.push(async () => {
-			const out = await runSignal<SanCorrelationResult>(() => d.correlateSans(seedDomain));
+			const out = await runSignal<SanCorrelationResult>(() =>
+				d.correlateSans(seedDomain, options.certstream ? { certstream: options.certstream } : {}),
+			);
 			if (!out.ok) {
 				signalStatus.san = { status: 'failed', error: out.error };
 				return;

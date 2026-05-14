@@ -168,12 +168,13 @@ const TOOL_REGISTRY: Record<
 			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
 			return `discover_brand:${signals}:c${candHash}:m${minConf}`;
 		},
-		execute: (d, args) =>
+		execute: (d, args, ro) =>
 			discoverBrandDomains(d, {
 				signals: args.signals as Parameters<typeof discoverBrandDomains>[1] extends infer O ? (O extends { signals?: infer S } ? S : undefined) : undefined,
 				candidate_domains: args.candidate_domains as string[] | undefined,
 				dkim_selectors: args.dkim_selectors as string[] | undefined,
 				min_confidence: args.min_confidence as number | undefined,
+				certstream: ro?.certstream,
 			}),
 		cacheTtlSeconds: 3600,
 	},
