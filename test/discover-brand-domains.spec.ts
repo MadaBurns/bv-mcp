@@ -62,23 +62,23 @@ function makeDeps(overrides: Partial<DiscoverBrandDomainsDeps> = {}): DiscoverBr
 }
 
 describe('discoverBrandDomains', () => {
-	it('returns a candidate from a single SAN signal (happy path)', async () => {
+	it('filters a single-SAN candidate (SAN default 0.1 < default min_confidence 0.5)', async () => {
+		// SAN was lowered from 0.7 to 0.1 as part of the "Zero False Positive"
+		// mandate: SAN co-tenancy on multi-tenant CDNs is too noisy to surface alone.
+		// A single SAN observation can no longer cross the 0.5 confidence threshold.
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const deps = makeDeps({ correlateSans: vi.fn().mockResolvedValue(okSan(['sister.com'])) });
 		const result = await discoverBrandDomains('example.com', { signals: ['san'] }, deps);
 
 		expect(result.category).toBe('brand_discovery');
 		const candidates = result.findings.filter((f) => f.metadata?.candidate);
-		expect(candidates).toHaveLength(1);
-		expect(candidates[0].metadata?.candidate).toBe('sister.com');
-		expect(candidates[0].metadata?.combinedConfidence).toBeCloseTo(0.7, 2); // SAN default = 0.7
-		expect(candidates[0].metadata?.signals).toEqual(['san']);
+		expect(candidates).toHaveLength(0);
 	});
 
 	it('aggregates multi-signal candidates with combined-confidence math', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
-		// Same candidate reported by SAN (0.7) AND DKIM (0.95).
-		// combined = 1 - (1-0.7) * (1-0.95) = 1 - 0.3*0.05 = 1 - 0.015 = 0.985
+		// Same candidate reported by SAN (0.1) AND DKIM (0.95).
+		// combined = 1 - (1-0.1) * (1-0.95) = 1 - 0.9*0.05 = 1 - 0.045 = 0.955
 		const deps = makeDeps({
 			correlateSans: vi.fn().mockResolvedValue(okSan(['sister.com'])),
 			detectDkimKeyReuse: vi.fn().mockResolvedValue(okDkim(['sister.com'])),
@@ -91,21 +91,24 @@ describe('discoverBrandDomains', () => {
 		const candidates = result.findings.filter((f) => f.metadata?.candidate);
 		expect(candidates).toHaveLength(1);
 		expect(candidates[0].metadata?.candidate).toBe('sister.com');
-		expect(candidates[0].metadata?.combinedConfidence).toBeCloseTo(0.985, 3);
+		expect(candidates[0].metadata?.combinedConfidence).toBeCloseTo(0.955, 3);
 		expect((candidates[0].metadata?.signals as string[]).sort()).toEqual(['dkim_key_reuse', 'san']);
-		// High-confidence => severity 'low' (auto-include candidate)
+		// 0.955 > AUTO_INCLUDE_THRESHOLD (0.85) => severity 'low'
 		expect(candidates[0].severity).toBe('low');
 	});
 
-	it('drops candidates below min_confidence', async () => {
+	it('drops candidates whose corroborated confidence falls below min_confidence', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
-		// NS partial overlap = 0.4, below default 0.5 threshold
+		// Two-signal SAN(0.1)+NS(0.3) combines to 1 - (0.9*0.7) = 0.37, below default 0.5.
+		// Needs two signals because post-v2.14.0 the corroboration gate would
+		// short-circuit a single-signal NS candidate before min_confidence is checked.
 		const deps = makeDeps({
-			correlateNs: vi.fn().mockResolvedValue(okNs([{ domain: 'weak.com', confidence: 0.4 }])),
+			correlateSans: vi.fn().mockResolvedValue(okSan(['weak.com'])),
+			correlateNs: vi.fn().mockResolvedValue(okNs([{ domain: 'weak.com', confidence: 0.3 }])),
 		});
 		const result = await discoverBrandDomains(
 			'example.com',
-			{ signals: ['ns'], candidate_domains: ['weak.com'] },
+			{ signals: ['san', 'ns'], candidate_domains: ['weak.com'] },
 			deps,
 		);
 		const candidates = result.findings.filter((f) => f.metadata?.candidate);
@@ -114,12 +117,16 @@ describe('discoverBrandDomains', () => {
 
 	it('keeps candidates at or above an explicit min_confidence', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		// Two-signal NS(0.6)+DMARC(0.6) combines to 0.84, above explicit min_confidence 0.5.
+		// (Post-v2.14.0 corroboration gate filters single-signal NS, so the test must
+		// supply two signals to exercise the min_confidence threshold itself.)
 		const deps = makeDeps({
 			correlateNs: vi.fn().mockResolvedValue(okNs([{ domain: 'partner.com', confidence: 0.6 }])),
+			mineDmarcRua: vi.fn().mockResolvedValue(okRua(['partner.com'])),
 		});
 		const result = await discoverBrandDomains(
 			'example.com',
-			{ signals: ['ns'], candidate_domains: ['partner.com'], min_confidence: 0.5 },
+			{ signals: ['ns', 'dmarc_rua'], candidate_domains: ['partner.com'], min_confidence: 0.5 },
 			deps,
 		);
 		const candidates = result.findings.filter((f) => f.metadata?.candidate);
@@ -144,16 +151,21 @@ describe('discoverBrandDomains', () => {
 
 	it('sorts candidates descending by combined confidence', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		// low.com gets SAN(0.1)+DMARC(0.6) = 1 - (0.9*0.4) = 0.64
+		// high.com gets SAN(0.1)+DKIM(0.95) = 1 - (0.9*0.05) = 0.955
+		// Both above 0.5 threshold; high.com should sort first.
 		const deps = makeDeps({
 			correlateSans: vi.fn().mockResolvedValue(okSan(['low.com', 'high.com'])),
+			mineDmarcRua: vi.fn().mockResolvedValue(okRua(['low.com'])),
 			detectDkimKeyReuse: vi.fn().mockResolvedValue(okDkim(['high.com'])),
 		});
 		const result = await discoverBrandDomains(
 			'example.com',
-			{ signals: ['san', 'dkim_key_reuse'], candidate_domains: ['high.com', 'low.com'] },
+			{ signals: ['san', 'dmarc_rua', 'dkim_key_reuse'], candidate_domains: ['high.com', 'low.com'] },
 			deps,
 		);
 		const candidates = result.findings.filter((f) => f.metadata?.candidate);
+		expect(candidates).toHaveLength(2);
 		expect(candidates[0].metadata?.candidate).toBe('high.com');
 		expect(candidates[1].metadata?.candidate).toBe('low.com');
 		expect(
@@ -188,13 +200,20 @@ describe('discoverBrandDomains', () => {
 
 	it('skips candidates that are subdomains of the seed domain', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
-		// Signal module incorrectly reports a subdomain of the seed as a candidate
+		// SAN reports both seed-subdomain AND a true sibling; DKIM corroborates only the sibling.
+		// Subdomain filter must drop `dmarc.example.com`; corroboration gate must keep `other.com`
+		// (single-SAN at 0.1 would otherwise be filtered post-v2.14.0).
 		const deps = makeDeps({
 			correlateSans: vi.fn().mockResolvedValue(okSan(['dmarc.example.com', 'other.com'])),
+			detectDkimKeyReuse: vi.fn().mockResolvedValue(okDkim(['other.com'])),
 		});
-		const result = await discoverBrandDomains('example.com', { signals: ['san'] }, deps);
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ signals: ['san', 'dkim_key_reuse'], candidate_domains: ['other.com'] },
+			deps,
+		);
 		const candidates = result.findings.filter((f) => f.metadata?.candidate);
-		
+
 		// dmarc.example.com should be skipped, other.com should remain
 		expect(candidates).toHaveLength(1);
 		expect(candidates[0].metadata?.candidate).toBe('other.com');
