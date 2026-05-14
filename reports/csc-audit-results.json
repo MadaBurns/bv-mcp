@@ -1,0 +1,345 @@
+[
+  {
+    "target": "google.com",
+    "consolidated": [
+      {
+        "domain": "google.biz",
+        "registrar": "MarkMonitor, Inc.",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "google.ca",
+        "registrar": "MarkMonitor International Canada Ltd.",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "google.fr",
+        "registrar": "MARKMONITOR Inc.",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "google.info",
+        "registrar": "MarkMonitor Inc.",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "google.net",
+        "registrar": "MarkMonitor Inc.",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "google.org",
+        "registrar": "MarkMonitor Inc.",
+        "evidence": "NS",
+        "confidence": 1
+      }
+    ],
+    "shadowIt": [
+      {
+        "domain": "google.co",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "google.de",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "google.io",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "google.me",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "google.sh",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "google.us",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      }
+    ],
+    "impersonation": []
+  },
+  {
+    "target": "amazon.com",
+    "consolidated": [],
+    "shadowIt": [],
+    "impersonation": []
+  },
+  {
+    "target": "microsoft.com",
+    "consolidated": [],
+    "shadowIt": [],
+    "impersonation": []
+  },
+  {
+    "target": "apple.com",
+    "consolidated": [
+      {
+        "domain": "apple.ai",
+        "registrar": "Nom-iq Ltd. dba COM LAUDE",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "apple.app",
+        "registrar": "Nom-IQ Limited dba Com Laude",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "apple.biz",
+        "registrar": "Nom-iq Ltd. dba COM LAUDE",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "apple.fr",
+        "registrar": "COM LAUDE (NOM IQ LIMITED)",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "apple.info",
+        "registrar": "Nom-iq Ltd. dba COM LAUDE",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "apple.net",
+        "registrar": "Nom-iq Ltd. dba COM LAUDE",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "apple.uk",
+        "registrar": "Nom-IQ Limited t/a Com Laude",
+        "evidence": "NS",
+        "confidence": 1
+      }
+    ],
+    "shadowIt": [
+      {
+        "domain": "apple.ca",
+        "registrar": "Tucows.com Co.",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "apple.co",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "apple.de",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "apple.me",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "apple.us",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      }
+    ],
+    "impersonation": []
+  },
+  {
+    "target": "disney.com",
+    "consolidated": [
+      {
+        "domain": "disney.org",
+        "registrar": "CSC Corporate Domains, Inc.",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "maildisney.com",
+        "registrar": "CSC Corporate Domains, Inc.",
+        "evidence": "MARKOV GEN, NS",
+        "confidence": 1
+      }
+    ],
+    "shadowIt": [],
+    "impersonation": []
+  },
+  {
+    "target": "nike.com",
+    "consolidated": [],
+    "shadowIt": [],
+    "impersonation": []
+  },
+  {
+    "target": "paypal.com",
+    "consolidated": [
+      {
+        "domain": "paypal.ai",
+        "registrar": "MarkMonitor Inc.",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "paypal.biz",
+        "registrar": "MarkMonitor, Inc.",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "paypal.ca",
+        "registrar": "MarkMonitor International Canada Ltd.",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "paypal.fr",
+        "registrar": "MARKMONITOR Inc.",
+        "evidence": "NS",
+        "confidence": 1
+      }
+    ],
+    "shadowIt": [
+      {
+        "domain": "paypal.co",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "paypal.de",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "paypal.me",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      }
+    ],
+    "impersonation": []
+  },
+  {
+    "target": "stripe.com",
+    "consolidated": [
+      {
+        "domain": "stripe.fr",
+        "registrar": "SAFENAMES LTD",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "stripe.net",
+        "registrar": "SafeNames Ltd.",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "stripe.uk",
+        "registrar": "Safenames Ltd",
+        "evidence": "NS",
+        "confidence": 1
+      }
+    ],
+    "shadowIt": [
+      {
+        "domain": "stripe.me",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      },
+      {
+        "domain": "stripe.sh",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 1
+      }
+    ],
+    "impersonation": []
+  },
+  {
+    "target": "walmart.com",
+    "consolidated": [],
+    "shadowIt": [
+      {
+        "domain": "walmart.ca",
+        "registrar": "MarkMonitor International Canada Ltd.",
+        "evidence": "NS",
+        "confidence": 1
+      }
+    ],
+    "impersonation": [
+      {
+        "domain": "walmart.app",
+        "registrar": "MarkMonitor Inc.",
+        "evidence": "NS",
+        "confidence": 0.5
+      },
+      {
+        "domain": "walmart.io",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 0.5
+      },
+      {
+        "domain": "walmart.org",
+        "registrar": "MarkMonitor Inc.",
+        "evidence": "NS",
+        "confidence": 0.5
+      }
+    ]
+  },
+  {
+    "target": "github.com",
+    "consolidated": [],
+    "shadowIt": [],
+    "impersonation": [
+      {
+        "domain": "github.me",
+        "registrar": "Unknown",
+        "evidence": "NS",
+        "confidence": 0.5
+      }
+    ]
+  },
+  {
+    "target": "blackveilsecurity.com",
+    "consolidated": [
+      {
+        "domain": "blackveilsecurity.ai",
+        "registrar": "Cloudflare, Inc",
+        "evidence": "DMARC RUA, NS",
+        "confidence": 1
+      }
+    ],
+    "shadowIt": [],
+    "impersonation": []
+  }
+]

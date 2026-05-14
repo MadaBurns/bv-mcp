@@ -1,0 +1,28 @@
+{
+  "raw": {
+    "google.com": "MarkMonitor Inc.",
+    "amazon.com": "MarkMonitor Inc.",
+    "microsoft.com": "MarkMonitor Inc.",
+    "apple.com": "Nom-iq Ltd. dba COM LAUDE",
+    "disney.com": "CSC Corporate Domains, Inc.",
+    "nike.com": "MarkMonitor Inc.",
+    "paypal.com": "MarkMonitor Inc.",
+    "stripe.com": "SafeNames Ltd.",
+    "walmart.com": "CSC Corporate Domains, Inc.",
+    "github.com": "MarkMonitor Inc.",
+    "blackveilsecurity.com": "Cloudflare, Inc."
+  },
+  "family": {
+    "google.com": "MarkMonitor",
+    "amazon.com": "MarkMonitor",
+    "microsoft.com": "MarkMonitor",
+    "apple.com": "Com Laude",
+    "disney.com": "CSC",
+    "nike.com": "MarkMonitor",
+    "paypal.com": "MarkMonitor",
+    "stripe.com": "SafeNames",
+    "walmart.com": "CSC",
+    "github.com": "MarkMonitor",
+    "blackveilsecurity.com": "Cloudflare"
+  }
+}
