@@ -13,6 +13,8 @@ export interface SocketLike {
 	writable: WritableStream<Uint8Array>;
 	readable: ReadableStream<Uint8Array>;
 	close(): Promise<void>;
+	/** Promise that resolves when the TCP handshake completes (or rejects on connection failure). */
+	opened?: Promise<unknown>;
 }
 
 /** Pluggable socket factory — production uses `cloudflare:sockets`. */
@@ -87,12 +89,23 @@ export async function whoisQuery(
 
 	const socket = await factory.connect({ hostname: server, port: WHOIS_PORT });
 
-	// Fire-and-await the write, but don't let it pin the whole budget.
+	// Wait for the TCP handshake to complete before writing. cloudflare:sockets'
+	// `connect()` returns a Socket immediately but the connection isn't actually
+	// open yet.
+	if (socket.opened) {
+		await socket.opened;
+	}
+
+	// Write the query AND complete the write before starting to read.
+	// `cloudflare:sockets` has no half-close: calling `writer.close()` closes
+	// the entire socket. We must NOT call it — the WHOIS server signals
+	// end-of-response by closing its side, which gives us EOF on read.
+	// 100-domain chaos run with the previous async-write-fire-and-forget pattern
+	// produced 98/98 zero-byte reads because the read loop started before the
+	// write flushed and the socket closure raced the data.
 	const writer = socket.writable.getWriter();
-	const writePromise = (async () => {
-		await writer.write(new TextEncoder().encode(`${query}\r\n`));
-		await writer.close();
-	})().catch(() => { /* socket errors will surface on read */ });
+	await writer.write(new TextEncoder().encode(`${query}\r\n`));
+	writer.releaseLock();
 
 	const reader = socket.readable.getReader();
 	const decoder = new TextDecoder();
@@ -128,7 +141,6 @@ export async function whoisQuery(
 	} finally {
 		try { reader.releaseLock(); } catch { /* ignore */ }
 		try { await socket.close(); } catch { /* ignore */ }
-		await writePromise;
 	}
 
 	const full = chunks.join('');
