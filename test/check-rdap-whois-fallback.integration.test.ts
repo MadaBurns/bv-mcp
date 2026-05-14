@@ -127,4 +127,18 @@ describe('checkRdapLookup WHOIS fallback', () => {
 		const reg = result.findings.find(f => f.metadata?.registrarSource);
 		expect(reg?.metadata?.registrarSource ?? 'unknown').toBe('unknown');
 	});
+
+	it('treats malformed shim payload as unknown (Zod-validates the response shape)', async () => {
+		mockIanaAndRdap(EMPTY_BOOTSTRAP);
+		const whoisBinding = {
+			fetch: vi.fn(async () =>
+				new Response(JSON.stringify({ registrar: { evil: '<script>' }, source: 'arbitrary' }), { status: 200 }),
+			),
+		};
+
+		const result = await (await freshChecker())('example.me', { whoisBinding });
+
+		const reg = result.findings.find(f => f.metadata?.registrarSource);
+		expect(reg?.metadata?.registrarSource).toBe('unknown');
+	});
 });
