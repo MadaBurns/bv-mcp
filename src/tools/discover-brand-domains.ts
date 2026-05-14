@@ -194,7 +194,7 @@ export async function discoverBrandDomains(
 	options: DiscoverBrandDomainsOptions = {},
 	deps?: DiscoverBrandDomainsDeps,
 ): Promise<CheckResult> {
-	const d = deps ?? defaultDeps();
+	const d: DiscoverBrandDomainsDeps = { ...defaultDeps(), ...(deps ?? {}) };
 	const signals = (options.signals && options.signals.length > 0 ? options.signals : ALL_SIGNALS).slice();
 	const candidateDomains = options.candidate_domains ?? [];
 	const dkimSelectors = options.dkim_selectors;
