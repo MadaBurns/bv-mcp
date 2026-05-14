@@ -53,6 +53,17 @@ describe('lookupRegistrar', () => {
 		expect(result).toEqual<WhoisLookupResult>({ registrar: null, source: 'redacted' });
 	});
 
+	it('short-circuits .de domains to source=redacted without any whoisQuery (DENIC blocks CF egress + always-redacted by law)', async () => {
+		const kv = makeKV();
+		const whoisQuery = vi.fn();
+		const deps: LookupDeps = { kv: kv as never, whoisQuery };
+
+		const result = await lookupRegistrar('example.de', deps);
+
+		expect(result).toEqual<WhoisLookupResult>({ registrar: null, source: 'redacted' });
+		expect(whoisQuery).not.toHaveBeenCalled();
+	});
+
 	it('returns source=notfound when registry says no match', async () => {
 		const kv = makeKV();
 		const deps: LookupDeps = {
