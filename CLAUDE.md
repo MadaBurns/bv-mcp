@@ -539,6 +539,7 @@ To maintain the public/private architectural split, this repository uses an auto
 | `BV_DOH_ENDPOINT` | var | Custom secondary DoH URL (fallback: Google) |
 | `BV_DOH_TOKEN` | Secret | Auth for bv-dns (`X-BV-Token` header) |
 | `BV_CERTSTREAM` | Service | CT log subdomain cache (optional, falls back to crt.sh) |
+| `BV_WHOIS` | Service | WHOIS-over-TCP/43 shim Worker (`bv-whois`) — optional; `check_rdap_lookup` falls back to RDAP-only when unset. KV-cached IANA referrals, 15 hardcoded fast-path TLDs. v2.15.0+ |
 | `SCORING_CONFIG` | var | JSON scoring overrides (optional) |
 | `CF_ACCOUNT_ID` | var | Cloudflare account ID (alerting) |
 | `CF_ANALYTICS_TOKEN` | Secret | Analytics Engine read token (alerting) |
