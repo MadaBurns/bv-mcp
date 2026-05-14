@@ -111,6 +111,37 @@ describe('whoisQuery', () => {
 		).rejects.toThrow(/invalid|numeric/i);
 	});
 
+	it('does NOT call writer.close() — regression: 100-domain chaos run showed 98/98 zero-byte reads', async () => {
+		// cloudflare:sockets has no half-close: calling `writer.close()` shuts down the
+		// entire socket and the server never sees our query before the FIN. The prior
+		// async-fire-and-forget pattern called writer.close() and produced 100% empty reads.
+		// Invariant: our transport must release the writer's lock, not close it.
+		let writerCloseCalled = false;
+
+		const factory: SocketFactory = {
+			async connect() {
+				return {
+					writable: new WritableStream({
+						write() {},
+						close() { writerCloseCalled = true; },
+					}),
+					readable: new ReadableStream({
+						start(controller) {
+							controller.enqueue(new TextEncoder().encode('Registrar: TestReg\n'));
+							controller.close();
+						},
+					}),
+					close: () => Promise.resolve(),
+				};
+			},
+		};
+
+		const result = await whoisQuery('whois.example.com', 'q', { socketFactory: factory });
+
+		expect(writerCloseCalled).toBe(false);
+		expect(result).toContain('Registrar: TestReg');
+	});
+
 	it('concatenates multi-chunk reads into a single response string', async () => {
 		const factory: SocketFactory = {
 			async connect() {
