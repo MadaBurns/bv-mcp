@@ -8,7 +8,7 @@ const domains = ['amazon.com', 'apple.com', 'google.com', 'microsoft.com', 'bran
 const BrandAudit_GLOBAL = 'brand-audit corporate domains';
 
 async function auditDomain(target) {
-    console.log(\`Audit starting for \${target}...\`);
+    console.log(`Audit starting for ${target}...`);
     try {
         const result = await discoverBrandDomains(target, { min_confidence: 0.1 });
         const candidates = result.findings
@@ -19,7 +19,7 @@ async function auditDomain(target) {
                 signals: f.metadata.signals
             }));
 
-        console.log(\`Found \${candidates.length} candidates for \${target}.\`);
+        console.log(`Found ${candidates.length} candidates for ${target}.`);
         
         const rdapResults = [];
         for (const cand of candidates) {
@@ -44,10 +44,10 @@ async function auditDomain(target) {
             impersonation
         };
 
-        writeFileSync(\`reports/\${target}-fresh-discovery.json\`, JSON.stringify(report, null, 2));
-        console.log(\`Report saved for \${target}.\`);
+        writeFileSync(`reports/${target}-fresh-discovery.json`, JSON.stringify(report, null, 2));
+        console.log(`Report saved for ${target}.`);
     } catch (e) {
-        console.error(\`Failed audit for \${target}: \${e.message}\`);
+        console.error(`Failed audit for ${target}: ${e.message}`);
     }
 }
 
