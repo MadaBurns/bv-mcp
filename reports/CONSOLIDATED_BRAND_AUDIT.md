@@ -2,12 +2,13 @@
 
 **Generated:** 2026-05-14  
 **Scope:** 11 targets, lookalike TLD variants discovered via SAN / NS / DMARC RUA / DKIM key reuse signals  
-**Classification:** same-registrar-family-as-target = consolidated; different-or-unknown + high confidence = shadow IT / sprawl; low confidence = impersonation.
+**Classification:** same-registrar-family-as-target = consolidated; different registrar + high confidence = shadow IT / sprawl; registry refuses to disclose (e.g. DENIC) = indeterminate; low confidence = impersonation.
 
 ## Headline
 
 - **36** consolidated (same registrar as target, centrally managed)
-- **5** shadow IT / provider sprawl (high-confidence brand signal on a different or unknown registrar)
+- **2** shadow IT / provider sprawl (high-confidence brand signal on a different registrar)
+- **3** indeterminate (registry redacts registrar by policy — e.g. DENIC)
 - **3** likely impersonation / low-confidence noise
 
 ### Premise check: how many targets actually use CSC?
@@ -30,7 +31,7 @@
 
 ## Per-target detail
 
-### google.com — primary: MarkMonitor (2 registrar families across portfolio)
+### google.com — primary: MarkMonitor (1 registrar families across portfolio)
 
 **Consolidated** (same registrar family as target):
 
@@ -48,11 +49,11 @@
 | `google.sh` | MarkMonitor Inc. | NS | 1 |
 | `google.us` | MarkMonitor, Inc. | NS | 1 |
 
-**Shadow IT / Provider Sprawl** (high-confidence, different registrar):
+**Indeterminate** (registry refuses to disclose registrar — registrar may still be the same family):
 
-| Domain | Registrar | Evidence | Confidence |
+| Domain | Source | Evidence | Confidence |
 |---|---|---|---:|
-| `google.de` | Unknown | NS | 1 |
+| `google.de` | redacted | NS | 1 |
 
 ### amazon.com — primary: MarkMonitor (1 registrar families across portfolio)
 
@@ -62,7 +63,7 @@ _No candidate domains surfaced by discovery signals._
 
 _No candidate domains surfaced by discovery signals._
 
-### apple.com — primary: Com Laude (3 registrar families across portfolio)
+### apple.com — primary: Com Laude (2 registrar families across portfolio)
 
 **Consolidated** (same registrar family as target):
 
@@ -84,7 +85,12 @@ _No candidate domains surfaced by discovery signals._
 | Domain | Registrar | Evidence | Confidence |
 |---|---|---|---:|
 | `apple.ca` | Tucows.com Co. | NS | 1 |
-| `apple.de` | Unknown | NS | 1 |
+
+**Indeterminate** (registry refuses to disclose registrar — registrar may still be the same family):
+
+| Domain | Source | Evidence | Confidence |
+|---|---|---|---:|
+| `apple.de` | redacted | NS | 1 |
 
 ### disney.com — primary: CSC (1 registrar families across portfolio)
 
@@ -99,7 +105,7 @@ _No candidate domains surfaced by discovery signals._
 
 _No candidate domains surfaced by discovery signals._
 
-### paypal.com — primary: MarkMonitor (2 registrar families across portfolio)
+### paypal.com — primary: MarkMonitor (1 registrar families across portfolio)
 
 **Consolidated** (same registrar family as target):
 
@@ -112,11 +118,11 @@ _No candidate domains surfaced by discovery signals._
 | `paypal.co` | MarkMonitor, Inc. | NS | 1 |
 | `paypal.me` | MarkMonitor Inc. | NS | 1 |
 
-**Shadow IT / Provider Sprawl** (high-confidence, different registrar):
+**Indeterminate** (registry refuses to disclose registrar — registrar may still be the same family):
 
-| Domain | Registrar | Evidence | Confidence |
+| Domain | Source | Evidence | Confidence |
 |---|---|---|---:|
-| `paypal.de` | Unknown | NS | 1 |
+| `paypal.de` | redacted | NS | 1 |
 
 ### stripe.com — primary: SafeNames (1 registrar families across portfolio)
 
@@ -186,8 +192,8 @@ Across all 44 candidate domains:
 
 ## Methodology notes & caveats
 
-- **17 of 44 candidates returned `Unknown` registrar** — all ccTLDs (`.me/.de/.co/.us/.sh/.io`) where RDAP either lacks a server or returned 404. These get bucketed as shadow IT by default. Manual WHOIS would resolve them.
-- **MarkMonitor appears under 4 legal entities** (`Inc.`, `MARKMONITOR Inc.`, `MarkMonitor, Inc.`, `MarkMonitor International Canada Ltd.`) — normalized to one family.
-- **Com Laude appears under 4 string variants** (`Nom-iq Ltd. dba COM LAUDE`, `COM LAUDE (NOM IQ LIMITED)`, etc.) — normalized to one family.
+- **ccTLDs without RDAP** (`.me/.co/.us/.sh/.io/.uk/.fr/.ca/...`) resolved via the bv-whois shim Worker (WHOIS-over-TCP/43 with IANA referral cache).
+- **`.de` (DENIC) is short-circuited as redacted** — German law (BDSG) requires the registry to withhold the registrar field, and DENIC blocks Cloudflare Workers' egress IPs at port 43. The shim returns `source: redacted` instantly without contacting the network.
+- **MarkMonitor / Com Laude / SafeNames** each appear under multiple string variants (case, regional subsidiary, dba); normalized to one family per provider.
 - **Confidence threshold for shadow IT = 0.7** matches the original spec. Defensive registrations at conf=0.5 (e.g., `walmart.app/io/org`) fall into the impersonation bucket despite being likely Walmart-owned. Threshold tuning is a follow-up.
 - **Candidate set is `<base>.<TLD>` for 15 hardcoded TLDs.** Subdomains under target (e.g., `mail.apple.com`) come from discovery signals separately.
