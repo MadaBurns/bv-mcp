@@ -12,6 +12,12 @@ export default defineConfig({
 					BV_WEB: async (_req: Request) => {
 						return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
 					},
+					// Stub: real shim is bv-whois Worker. Tests that exercise the fallback
+					// inject their own Fetcher via checkRdapLookup options; this stub just
+					// keeps the runtime startup green when the binding is unused.
+					BV_WHOIS: async (_req: Request) => {
+						return new Response(JSON.stringify({ registrar: null, source: 'error' }), { status: 200 });
+					},
 				},
 				bindings: {
 					ENABLE_OAUTH: 'true',
