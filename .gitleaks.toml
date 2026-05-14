@@ -19,6 +19,7 @@ paths = [
   '''^test/''',
   '''/test/''',
   '''^packages/[^/]+/test/''',
+  '''/__tests__/''',  # Vitest/Jest-style colocated test dirs (e.g. packages/dns-checks/src/__tests__/)
 ]
 regexTarget = "match"
 regexes = [
