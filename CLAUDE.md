@@ -5,9 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What is this?
 
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
-Exposes 51 tools via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
+Exposes ~53 tools (`TOOL_DEFS` in `src/schemas/tool-definitions.ts` is the source of truth) via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
 An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
-**Version**: 2.10.16 — keep `SERVER_VERSION` (`src/lib/server-version.ts`), `version` (`package.json`, `package-lock.json`), `version` AND `packages[0].version` (`server.json` — known foot-gun, both fields), and the `[X.Y.Z]` heading in `CHANGELOG.md` in sync. Listed on the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.blackveilsecurity/dns`.
+**Version sync**: when bumping, keep `SERVER_VERSION` (`src/lib/server-version.ts`), `version` (`package.json`, `package-lock.json`), `version` AND `packages[0].version` (`server.json` — known foot-gun, both fields), and the `[X.Y.Z]` heading in `CHANGELOG.md` in sync. Listed on the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.blackveilsecurity/dns`.
 
 ## Commands
 
@@ -17,7 +17,7 @@ npm test                               # Vitest + Istanbul coverage (Workers run
 npx vitest run test/check-spf.spec.ts  # Run a single test file
 python3 scripts/chaos/chaos-test-clients.py          # Chaos test: all 9 client types (v2.1.17+)
 npm run build                          # tsup build (npm package + stdio CLI bundle)
-npm run dev                            # Local dev at localhost:8787
+npx wrangler dev                       # Local dev at localhost:8787
 npm run typecheck                      # tsc --noEmit
 npm run lint                           # ESLint
 npm run lint:fix                       # ESLint with auto-fix
@@ -102,6 +102,12 @@ src/tools/                — Individual DNS checks + orchestrator
   provider-guides.ts      — Static provider detection rules and fix guide guides
   txt-hygiene-analysis.ts — Shared TXT verification patterns and SPF cross-reference
 
+src/oauth/                — OAuth 2.1 issuer (discovery, dynamic registration, authorize, token, JWT, KV-backed storage)
+src/tenants/              — Multi-tenant subsystem (production-live): tenant-resolver, per-tenant-rate-limit,
+                            queue-consumer, dns-fingerprint, routes, audit, analytics-stream, scheduled-handlers;
+                            sub-dirs db/, discovery/, monitoring/, alerts/, adapters/
+src/types/env.d.ts        — Worker bindings type augmentation
+
 src/lib/                  — Shared infrastructure
   scoring.ts              — Re-export facade for scoring subsystem
   scoring-model.ts        — Types (Finding, CheckResult, ScanScore) + buildCheckResult/createFinding
@@ -112,6 +118,7 @@ src/lib/                  — Shared infrastructure
   profile-accumulator.ts  — Durable Object for per-profile telemetry (SQLite-backed)
   dns.ts                  — DNS-over-HTTPS facade; queryTxtRecords concatenates per RFC 7208 §3.3, unescapes RFC 1035 §5.1 (max 2 passes)
   sanitize.ts             — Domain validation, SSRF protection (imports `punycode/` — trailing slash = npm package)
+  safe-fetch.ts           — `safeFetch` wrapper enforcing `validateOutboundUrl` (required for attacker-controlled URLs)
   config.ts               — SSRF constants, DNS tuning, rate limit quotas
   session.ts              — KV + in-memory session management with dual-write
   cache.ts                — KV + in-memory TTL cache, INFLIGHT dedup, cacheSetDeferred()
@@ -119,7 +126,13 @@ src/lib/                  — Shared infrastructure
   json-rpc.ts             — JSON-RPC 2.0 types, error codes, response builders
   auth.ts                 — Bearer token validation (constant-time XOR)
   analytics.ts            — Analytics Engine integration (fail-open, 4 event types)
+  analytics-queries.ts    — Pre-built queries for scheduled alerting
+  client-detection.ts     — User-agent → client-type classification (analytics + format auto-detect)
+  fuzzing-detector.ts     — Pure `classifyError` + sliding-window `scoreWindow` (no I/O)
+  fuzzing-counter.ts      — KV-backed sliding-window counter (RATE_LIMIT namespace)
   log.ts                  — Structured JSON logging with sanitization
+  db/schema.ts            — Drizzle schema (tenants)
+  hooks/analytics-stream.ts — Analytics stream hook
 
 test/                     — Specs are flat by source file (e.g. test/check-spf.spec.ts ↔ src/tools/check-spf.ts).
                             The 6-layer test pyramid (Unit → Integration → Contract → Audit → E2E → Chaos)
@@ -145,21 +158,12 @@ packages/dns-checks/     — @blackveil/dns-checks (runtime-agnostic core librar
 
 ```
 
-### Packages & Releases
+### Layering: where to add code
 
-**Layered Architecture**: The project uses a layered design separating runtime-agnostic business logic from infrastructure concerns:
+- **`packages/dns-checks/`** (`@blackveil/dns-checks`): runtime-agnostic core. No Cloudflare dependencies. Holds the 16 core check functions and the generic scoring engine. Add here if the logic could run outside Workers.
+- **`src/tools/`**: MCP protocol wrappers + orchestration that need Workers features (KV, DO, service bindings). Depends on `@blackveil/dns-checks` via npm — releases must maintain backward compatibility.
 
-- **`packages/dns-checks/`** (`@blackveil/dns-checks`): Runtime-agnostic core library containing DNS validation logic. No Cloudflare dependencies. Contains 16 core check functions (SPF, DMARC, DKIM, etc.) and scoring engine. Published as separate npm package for reuse in other environments.
-
-- **`src/tools/`**: MCP protocol wrappers with Cloudflare infrastructure. Contains 51 MCP tools including the 16 check wrappers plus orchestration tools (scan_domain, explain_finding, etc.). Depends on `@blackveil/dns-checks` package.
-
-**When to Add to Each Layer**:
-- **dns-checks package**: New DNS validation logic, scoring algorithms, or check implementations that could be reused outside Cloudflare Workers
-- **src/tools layer**: MCP API endpoints, orchestration logic, or tools that require Cloudflare-specific features (KV, Durable Objects, service bindings)
-
-**Release Coordination**: Both packages are published together via CI/CD on version tags. The main package depends on `@blackveil/dns-checks` via npm, so releases must maintain backward compatibility. Version numbers are synchronized in `package.json` and `src/lib/server-version.ts`.
-
-**Deployment Strategy**: Cloudflare Workers deployment publishes the main package. The dns-checks package is consumed via npm dependency, not bundled. Service bindings allow live updates without downstream npm installs.
+Both packages publish together from `publish.yml` on version tags. The dns-checks package is consumed via npm dependency, not bundled.
 
 ### Request flow
 
@@ -279,7 +283,7 @@ All scoring parameters configurable via `SCORING_CONFIG` env var (JSON). Support
 ### Key rules
 
 - **SSRF**: `config.ts` defines blocked IPs/TLDs; `sanitize.ts` enforces. `global_fetch_strictly_public` compat flag. All outbound fetches use `redirect: 'manual'`. **Outbound fetches to attacker-controlled URLs (BIMI `l=`/`a=` tags from TXT records, HTTP `Location:` redirect targets that the worker then follows) MUST use `safeFetch` from `src/lib/safe-fetch.ts`** — wraps `fetch` with `validateOutboundUrl()` (https-only, no userinfo, hostname → `validateDomain`). Fetches to a URL whose hostname is already validated upstream (e.g. `https://${validatedDomain}/.well-known/...` like MTA-STS or DANE-HTTPS) may use raw `fetch` provided redirects are not followed (manual mode + early-return on 3xx). Added v2.10.10 (H2/H3).
-- **Auth**: Optional `BV_API_KEY`, constant-time XOR. Token extracted from `Authorization: Bearer <token>` header first, then `?api_key=` query param as fallback (enables Smithery and URL-only clients). Tier-auth cascades: KV cache → bv-web service binding → static fallback. Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner tier has unlimited rate limits but requires client IP in `OWNER_ALLOW_IPS` — mismatched IPs downgrade to `partner` on **every** request, including OAuth-JWT-bearing requests (v2.10.10 closed an M1 finding where the IP gate only fired at consent time). The OAuth JWT branch validates `claims.tier` against a narrower `JwtIssuableTierSchema = z.enum(['owner','developer','enterprise'])` — defense in depth against a future minting regression that quietly stores `tier: 'partner'`. **Paid OAuth tier mapping** (from bv-web Stripe subscriptions): `pro`/`business` → `developer` tier (500 scans/day), `enterprise` → `enterprise` tier (10,000 scans/day). See also: **Paid OAuth Tiers** section below.
+- **Auth**: Optional `BV_API_KEY`, constant-time XOR. Token from `Authorization: Bearer <token>` first, then `?api_key=` query fallback (Smithery, URL-only clients). Tier resolution cascades: KV cache → bv-web service binding → static fallback. Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. **Owner-tier IP gate**: requires client IP in `OWNER_ALLOW_IPS`; mismatch downgrades to `partner` on every request (including OAuth-JWT-bearing). OAuth JWT branch validates `claims.tier` against `JwtIssuableTierSchema = z.enum(['owner','developer','enterprise'])` — defense in depth against a minting regression. Paid OAuth tier mapping detailed below.
 - **Rate limiting**: 50 req/min, 300 req/hr per IP (unauthenticated). Authenticated users bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_lookalikes`/`check_shadow_domains`: 20/day per IP with 60-min caching
 - **Per-tool quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts`. Global cap 500k/day (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via `QuotaCoordinator` DO
 - **Content-Type**: POST requires `application/json`; missing allowed for compat; non-JSON → 415
@@ -327,32 +331,19 @@ All tool arguments validated via Zod schemas (`src/schemas/tool-args.ts`) before
 
 `/internal/*` guarded by `cf-connecting-ip` detection (pure helper `isPublicInternetRequest()` in `src/internal.ts`). Cloudflare sets this on public requests; service binding calls don't carry it. Public requests → 404. Batch endpoint validates tool names (`/^[a-z_]+$/`, max 30 chars) and allowlists arg keys. `/internal/tools/call` enforces `MAX_REQUEST_BODY_BYTES` (10 KB; mirrors public `/mcp`) before JSON parse (v2.10.10).
 
-**Defense-in-depth bearer auth (v2.10.10):**
-- `/internal/trial-keys/*` and `/internal/oauth/grants` → strict gate: 503 if `BV_WEB_INTERNAL_KEY` is unset, 401 on missing/wrong bearer (these routes mint credentials).
-- `/internal/tools/*` and `/internal/analytics/*` → `internalLenientAuthGate`, *opt-in* via `REQUIRE_INTERNAL_AUTH=true`. Default off so deployments don't break bv-web's existing service binding (which doesn't currently attach `Authorization` to `/tools/call`). When opted-in: 503 if `BV_WEB_INTERNAL_KEY` is also missing, 401 on missing/wrong bearer, pass-through on success. Rollout: deploy bv-mcp 2.10.10 → wire bv-web's bvMcpClient to send the bearer → flip the flag.
+**Defense-in-depth bearer auth:**
+- `/internal/trial-keys/*` and `/internal/oauth/grants` (credential-minting) → strict gate: 503 if `BV_WEB_INTERNAL_KEY` unset, 401 on missing/wrong bearer.
+- `/internal/tools/*` and `/internal/analytics/*` → `internalLenientAuthGate`, opt-in via `REQUIRE_INTERNAL_AUTH=true`. Default off so bv-web's existing unbeared service binding keeps working; flip after wiring `Authorization` upstream.
 
-### Fuzzing detection (v2.10.6+)
+### Fuzzing detection
 
-Pattern-based detection for adversarial enumeration of the MCP surface, emitted as `fuzzing_suspected` alerts via `ALERT_WEBHOOK_URL` from the existing 15-min cron.
+Pattern-based detection for adversarial enumeration; emits `fuzzing_suspected` alerts via `ALERT_WEBHOOK_URL` from the 15-min cron.
 
-**Tracked patterns:**
-- `unknown_tool` — repeated MCP `isError: true` "Unknown tool:" responses, OR JSON-RPC `-32601` from `tools/call`
-- `unknown_method` — repeated JSON-RPC `-32601` from top-level dispatch
-- `zod_arg` — repeated `-32602` errors with `'Invalid …'` description (argument fuzzing on valid tools)
-- `auth_fail` — bursts of HTTP 401 from one IP
+**Patterns:** `unknown_tool` (MCP `isError` "Unknown tool:" OR `tools/call` `-32601`), `unknown_method` (top-level `-32601`), `zod_arg` (`-32602` "Invalid …"), `auth_fail` (HTTP 401 bursts per IP).
 
-**Architecture:**
-- `src/lib/fuzzing-detector.ts` — pure `classifyError` + sliding-window `scoreWindow` (no I/O, fully unit-tested)
-- `src/lib/fuzzing-counter.ts` — KV-backed sliding-window counter on `RATE_LIMIT` namespace (key shape `fuzz:p:<principalId>:e:<bucketEpoch10s>:<kind>`); fail-soft on KV errors so the request path stays green
-- `src/schemas/alerting.ts` — `FuzzingAlertSchema` (Zod contract); refuses to include raw IP — only the truncated 16-hex hash
-- `handleFuzzingScan` in `src/scheduled.ts` — lists principals with recent fuzz events, scores against `FUZZ_THRESHOLDS`, posts via `sendFuzzingAlert`
-- Wire-up in `src/mcp/execute.ts` — `recordFuzzEvent` (JSON-RPC errors) + `recordMcpToolErrorIfUnknownTool` (MCP-content errors)
+**Files:** `lib/fuzzing-detector.ts` (pure classifier + sliding-window scorer), `lib/fuzzing-counter.ts` (KV-backed counter on `RATE_LIMIT`, fail-soft), `schemas/alerting.ts` (Zod contract — only 16-hex hash, never raw IP), `handleFuzzingScan` in `scheduled.ts`, wire-up in `mcp/execute.ts`.
 
-**Principal identification:** `keyHash` for authenticated traffic, `ipHash` for anonymous (FNV-1a of cf-connecting-ip with `i_` prefix from `analytics.ts`). Raw IPs never appear in alerts.
-
-**Thresholds:** `FUZZ_THRESHOLDS` in `src/lib/config.ts` is the **single source of truth** — enforced by `test/audits/fuzzing-config.audit.test.ts`. v1 defaults are 3× the plan values to stay silent for one week of baseline collection before lowering.
-
-**Fail-soft invariants** (covered by `test/chaos/fuzzing-degradation.chaos.test.ts`): KV down → `recordEvent` swallows; webhook 500 → next tick retries; 9 errors + 100 successes → verdict still clean (no false positive bound).
+**Principal**: `keyHash` for authenticated, `ipHash` for anonymous (FNV-1a of cf-connecting-ip, `i_` prefix). **Thresholds**: `FUZZ_THRESHOLDS` in `lib/config.ts` (single source of truth, enforced by `test/audits/fuzzing-config.audit.test.ts`). **Fail-soft invariants** are covered by `test/chaos/fuzzing-degradation.chaos.test.ts`.
 
 ## Adding a New Tool
 
@@ -404,10 +395,14 @@ Smithery registry metadata (configSchema, scanCredentials) is updated via `PUT /
 ## CI/CD
 
 - `ci.yml`: typecheck + lint + test on PRs and `main` pushes
-- `security.yml`: Gitleaks + `npm audit` (**required checks**)
-- `repo-hygiene.yml`: blocks tracked generated files, verifies `.gitignore`, flags large blobs. Reusable — called by `blackveil-dns-action`, `bv-claude-dns`, and `bv-vibesdk` via `workflow_call`
+- `ci-contract.yml`: Zod contract tests on PRs (required check)
+- `security.yml`: Gitleaks + `npm audit` (required checks)
+- `repo-hygiene.yml`: blocks tracked generated files, verifies `.gitignore`, flags large blobs. Reusable — called by `blackveil-dns-action`, `bv-claude-dns`, `bv-vibesdk` via `workflow_call`
 - `dns-security.yml`: weekly DNS scan of blackveilsecurity.com
-- `auto-deploy-main.yml.disabled`: **currently disabled** (renamed from `.yml`). When active, deploys `main` to Cloudflare after `CI`, `CI Contract`, `Security`, and `Repo Hygiene` all pass for the same commit. Re-enable: upload `CLOUDFLARE_API_TOKEN` to GH `production` env, then `git mv auto-deploy-main.yml.disabled auto-deploy-main.yml`.
+- `deploy-hook.yml`: webhook/manual-dispatch deploy to Cloudflare (active production path; supports `dry_run`)
+- `triage-issues.yml`: auto-label/triage on new issues
+- `publish.yml`: tagged-release pipeline (npm + Cloudflare + MCP Registry + GH Release)
+- `auto-deploy-main.yml.disabled`: disabled. Re-enable: upload `CLOUDFLARE_API_TOKEN` to GH `production` env, then `git mv auto-deploy-main.yml.disabled auto-deploy-main.yml`.
 - `.gitleaks.toml`: custom rules; allowlists for test fixtures
 
 **Branch protection** (configured 2026-05-07):
@@ -416,7 +411,7 @@ Smithery registry metadata (configSchema, scanCredentials) is updated via `PUT /
 - No required PR reviews; admin-merge permitted for trivial CI/doc changes (full code changes go through normal PR cycle)
 - Direct pushes to `main` blocked except by admin
 
-**Deploy mode**: bv-mcp currently operates in **manual-deploy mode** — `npm run deploy:private` (uses operator's wrangler OAuth, no GH secret needed) is the active path. `auto-deploy-main.yml` is disabled because `CLOUDFLARE_API_TOKEN` is intentionally absent from the GH `production` environment; the v2.10.6 fail-fast guards would otherwise turn every main push red. Tagged releases use the manual fallback below; `publish.yml` is still active but will fail-fast on tag pushes until secrets are restored.
+**Deploy mode**: bv-mcp currently operates in manual-deploy mode — `npm run deploy:prod` (uses operator's wrangler OAuth, no GH secret needed) is the active path. `auto-deploy-main.yml` is disabled because `CLOUDFLARE_API_TOKEN` is intentionally absent from the GH `production` environment; the v2.10.6 fail-fast guards would otherwise turn every main push red. Tagged releases use the manual fallback below; `publish.yml` is still active but will fail-fast on tag pushes until secrets are restored.
 
 ### Release workflow (`publish.yml`)
 
@@ -437,15 +432,13 @@ git tag v2.6.8 && git push origin v2.6.8
 
 Pipeline: validate (test/typecheck/lint/audit) → sync version to tag (no-op when pre-bumped) → npm publish (provenance) → Cloudflare Workers deploy → MCP Registry publish (`server.json`) → GitHub Release with changelog.
 
-npm and Cloudflare deploy run in parallel after the sync step. Requires `NPM_TOKEN` and `CLOUDFLARE_API_TOKEN` secrets in the `production` environment — without them, those steps log warnings and skip. A manual `npm run deploy:private` replaces the Cloudflare deploy step when the secret is absent.
+npm and Cloudflare deploy run in parallel after the sync step. Requires `NPM_TOKEN` and `CLOUDFLARE_API_TOKEN` secrets in the `production` environment — without them, those steps fail-fast. A manual `npm run deploy:prod` replaces the Cloudflare deploy step when the secret is absent.
 
-**Alternative fix (not yet implemented)**: configure a `RELEASE_TOKEN` repo secret with a personal access token that has "bypass branch protection" permission. The workflow's checkout step already prefers `RELEASE_TOKEN` over `GITHUB_TOKEN`. With that secret in place, the auto-bump push would succeed and the pre-bump step becomes optional.
+**Service binding consumers** (e.g., bv-web): no action required on bv-mcp release. Cloudflare service bindings are live-linked — deploying bv-mcp automatically exposes the new version on the next request. No npm install, version pin, or downstream CI trigger needed.
 
-**Service binding consumers** (e.g., bv-web): no action required on bv-mcp release. Cloudflare service bindings are live-linked — deploying bv-mcp automatically makes the new version available to all consumers on the next request. No npm install, no version pinning, no downstream CI trigger needed.
+**Workflow security**: all `${{ }}` expressions pass via `env:` variables, never interpolated directly in `run:` blocks. Only controlled inputs (tag name, secrets, job outputs) — no user-supplied text.
 
-**Workflow security**: all `${{ }}` expressions are passed via `env:` variables, never interpolated directly in `run:` blocks. Only controlled inputs used (tag name, secrets, job outputs) — no user-supplied text (issue titles, PR bodies, commit messages).
-
-**Workflow secret-check audit** (`test/audits/workflow-secret-check.audit.test.ts`, v2.10.7+): scans every `.github/workflows/*.yml` and asserts (a) no workflow uses the warn-and-skip anti-pattern (`echo skip=true >> "$GITHUB_ENV"`) and (b) every `[ -z "$*_TOKEN" ]` guard ends with `exit 1` within 10 lines. v2.10.2-v2.10.6 silently dropped off npm + Cloudflare because publish.yml warn-and-skipped on missing `NPM_TOKEN`/`CLOUDFLARE_API_TOKEN`/`MCP_REGISTRY_TOKEN`; this audit makes that regression a red CI signal.
+**Workflow secret-check audit** (`test/audits/workflow-secret-check.audit.test.ts`): asserts no workflow uses warn-and-skip on missing secrets, and every `[ -z "$*_TOKEN" ]` guard ends with `exit 1`. Codifies the v2.10.2–v2.10.6 silent prod-stale incident.
 
 ### Manual release fallback
 
@@ -460,7 +453,7 @@ NPM_CONFIG_USERCONFIG=/tmp/.npmrc-bv npm publish --access public
 rm /tmp/.npmrc-bv
 
 # 2. Cloudflare Workers — uses local wrangler OAuth (no secret needed)
-npm run deploy:private
+npm run deploy:prod
 
 # 3. MCP Registry — DNS-based auth (see "MCP Registry DNS auth" below)
 # `mcp-publisher` is a Go binary, NOT an npm package. Install via homebrew
