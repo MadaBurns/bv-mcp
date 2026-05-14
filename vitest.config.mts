@@ -28,7 +28,14 @@ export default defineConfig({
 	],
 	test: {
 		testTimeout: 15_000,
-		exclude: ['node_modules/**', '.claude/**', '.worktrees/**'],
+		exclude: [
+			'node_modules/**',
+			'.claude/**',
+			'.worktrees/**',
+			// BrandAudit audit calibration specs are run via vitest.calibration.config.mts
+			// (node env, can read fs). Excluding from the default workers-pool run.
+			'scripts/brand-audit-*.spec.ts',
+		],
 		poolMatchGlobs: [
 			['test/pdf-engine.spec.ts', 'forks'],
 			['test/generate-discovery-report.spec.ts', 'forks'],
