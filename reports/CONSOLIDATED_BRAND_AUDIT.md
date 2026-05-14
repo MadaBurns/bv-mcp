@@ -6,9 +6,9 @@
 
 ## Headline
 
-- **23** consolidated (same registrar as target, centrally managed)
-- **17** shadow IT / provider sprawl (high-confidence brand signal on a different or unknown registrar)
-- **4** likely impersonation / low-confidence noise
+- **36** consolidated (same registrar as target, centrally managed)
+- **5** shadow IT / provider sprawl (high-confidence brand signal on a different or unknown registrar)
+- **3** likely impersonation / low-confidence noise
 
 ### Premise check: how many targets actually use BrandAudit?
 
@@ -42,17 +42,17 @@
 | `google.info` | MarkMonitor Inc. | NS | 1 |
 | `google.net` | MarkMonitor Inc. | NS | 1 |
 | `google.org` | MarkMonitor Inc. | NS | 1 |
+| `google.co` | MarkMonitor, Inc. | NS | 1 |
+| `google.io` | MarkMonitor Inc. | NS | 1 |
+| `google.me` | MarkMonitor Inc. | NS | 1 |
+| `google.sh` | MarkMonitor Inc. | NS | 1 |
+| `google.us` | MarkMonitor, Inc. | NS | 1 |
 
 **Shadow IT / Provider Sprawl** (high-confidence, different registrar):
 
 | Domain | Registrar | Evidence | Confidence |
 |---|---|---|---:|
-| `google.co` | Unknown | NS | 1 |
 | `google.de` | Unknown | NS | 1 |
-| `google.io` | Unknown | NS | 1 |
-| `google.me` | Unknown | NS | 1 |
-| `google.sh` | Unknown | NS | 1 |
-| `google.us` | Unknown | NS | 1 |
 
 ### amazon.com — primary: MarkMonitor (1 registrar families across portfolio)
 
@@ -75,16 +75,16 @@ _No candidate domains surfaced by discovery signals._
 | `apple.info` | Nom-iq Ltd. dba COM LAUDE | NS | 1 |
 | `apple.net` | Nom-iq Ltd. dba COM LAUDE | NS | 1 |
 | `apple.uk` | Nom-IQ Limited t/a Com Laude | NS | 1 |
+| `apple.co` | Nom-iq Ltd. dba COM LAUDE | NS | 1 |
+| `apple.me` | Nom-iq Ltd. dba COM LAUDE | NS | 1 |
+| `apple.us` | Nom-iq Ltd. dba COM LAUDE | NS | 1 |
 
 **Shadow IT / Provider Sprawl** (high-confidence, different registrar):
 
 | Domain | Registrar | Evidence | Confidence |
 |---|---|---|---:|
 | `apple.ca` | Tucows.com Co. | NS | 1 |
-| `apple.co` | Unknown | NS | 1 |
 | `apple.de` | Unknown | NS | 1 |
-| `apple.me` | Unknown | NS | 1 |
-| `apple.us` | Unknown | NS | 1 |
 
 ### disney.com — primary: BrandAudit (1 registrar families across portfolio)
 
@@ -109,16 +109,16 @@ _No candidate domains surfaced by discovery signals._
 | `paypal.biz` | MarkMonitor, Inc. | NS | 1 |
 | `paypal.ca` | MarkMonitor International Canada Ltd. | NS | 1 |
 | `paypal.fr` | MARKMONITOR Inc. | NS | 1 |
+| `paypal.co` | MarkMonitor, Inc. | NS | 1 |
+| `paypal.me` | MarkMonitor Inc. | NS | 1 |
 
 **Shadow IT / Provider Sprawl** (high-confidence, different registrar):
 
 | Domain | Registrar | Evidence | Confidence |
 |---|---|---|---:|
-| `paypal.co` | Unknown | NS | 1 |
 | `paypal.de` | Unknown | NS | 1 |
-| `paypal.me` | Unknown | NS | 1 |
 
-### stripe.com — primary: SafeNames (2 registrar families across portfolio)
+### stripe.com — primary: SafeNames (1 registrar families across portfolio)
 
 **Consolidated** (same registrar family as target):
 
@@ -127,15 +127,10 @@ _No candidate domains surfaced by discovery signals._
 | `stripe.fr` | SAFENAMES LTD | NS | 1 |
 | `stripe.net` | SafeNames Ltd. | NS | 1 |
 | `stripe.uk` | Safenames Ltd | NS | 1 |
+| `stripe.me` | SafeNames Ltd. | NS | 1 |
+| `stripe.sh` | SafeNames Ltd. | NS | 1 |
 
-**Shadow IT / Provider Sprawl** (high-confidence, different registrar):
-
-| Domain | Registrar | Evidence | Confidence |
-|---|---|---|---:|
-| `stripe.me` | Unknown | NS | 1 |
-| `stripe.sh` | Unknown | NS | 1 |
-
-### walmart.com — primary: BrandAudit (3 registrar families across portfolio)
+### walmart.com — primary: BrandAudit (2 registrar families across portfolio)
 
 **Shadow IT / Provider Sprawl** (high-confidence, different registrar):
 
@@ -148,16 +143,16 @@ _No candidate domains surfaced by discovery signals._
 | Domain | Registrar | Evidence | Confidence |
 |---|---|---|---:|
 | `walmart.app` | MarkMonitor Inc. | NS | 0.5 |
-| `walmart.io` | Unknown | NS | 0.5 |
+| `walmart.io` | MarkMonitor Inc. | NS | 0.5 |
 | `walmart.org` | MarkMonitor Inc. | NS | 0.5 |
 
-### github.com — primary: MarkMonitor (2 registrar families across portfolio)
+### github.com — primary: MarkMonitor (1 registrar families across portfolio)
 
-**Impersonation / Low Confidence**:
+**Consolidated** (same registrar family as target):
 
 | Domain | Registrar | Evidence | Confidence |
 |---|---|---|---:|
-| `github.me` | Unknown | NS | 0.5 |
+| `github.me` | MarkMonitor Inc. | NS | 0.5 |
 
 ### blackveilsecurity.com — primary: Cloudflare (1 registrar families across portfolio)
 
@@ -173,11 +168,12 @@ Across all 44 candidate domains:
 
 | Registrar | Candidates |
 |---|---:|
-| Unknown | 17 |
-| MarkMonitor Inc. | 6 |
-| Nom-iq Ltd. dba COM LAUDE | 4 |
+| MarkMonitor Inc. | 12 |
+| Nom-iq Ltd. dba COM LAUDE | 7 |
+| MarkMonitor, Inc. | 5 |
 | MarkMonitor International Canada Ltd. | 3 |
-| MarkMonitor, Inc. | 2 |
+| Unknown | 3 |
+| SafeNames Ltd. | 3 |
 | MARKMONITOR Inc. | 2 |
 | BrandAudit Corporate Domains, Inc. | 2 |
 | Nom-IQ Limited dba Com Laude | 1 |
@@ -185,7 +181,6 @@ Across all 44 candidate domains:
 | Nom-IQ Limited t/a Com Laude | 1 |
 | Tucows.com Co. | 1 |
 | SAFENAMES LTD | 1 |
-| SafeNames Ltd. | 1 |
 | Safenames Ltd | 1 |
 | Cloudflare, Inc | 1 |
 
