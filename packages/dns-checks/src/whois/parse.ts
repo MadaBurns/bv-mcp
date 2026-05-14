@@ -22,7 +22,9 @@ export interface WhoisParseResult {
  * Parse a WHOIS response into a structured result.
  *
  * Heuristics:
- *  - Prefer `Registrar:` over `Sponsoring Registrar:` (modern ICANN template wins).
+ *  - Prefer `Registrar: <value>` (modern ICANN single-line template).
+ *  - Then Nominet's `Registrar:` label-only followed by indented value on the next line.
+ *  - Then `Sponsoring Registrar:` (legacy alias).
  *  - Treat `% No match`, `No match for domain`, or similar as not-found.
  *  - Treat DENIC's plaintext disclosure-blocked notice as redacted.
  *  - Only consider the first MAX_RESPONSE_BYTES (defense against flood).
@@ -38,19 +40,34 @@ export function parseWhoisResponse(input: string): WhoisParseResult {
 	let registrar: string | null = null;
 	let sponsoring: string | null = null;
 
-	for (const rawLine of truncated.split('\n')) {
-		const line = rawLine.replace(/\r$/, '');
-		const trimmed = line.replace(/^\s+/, '');
+	const lines = truncated.split('\n');
+	for (let i = 0; i < lines.length; i++) {
+		const trimmed = lines[i].replace(/\r$/, '').replace(/^\s+/, '');
 
+		// Modern ICANN: `Registrar: <value>`
 		const regMatch = trimmed.match(/^Registrar:\s*(.+?)\s*$/i);
 		if (regMatch && !registrar) {
-			registrar = regMatch[1];
+			registrar = stripNominetTag(regMatch[1]);
+			continue;
+		}
+
+		// Nominet-style: `Registrar:` (label only) — value is on the next non-empty line.
+		// Anchor strictly on `/^Registrar:\s*$/i` so partial labels like `Last Registrar Update:`
+		// don't false-match (they have text before the colon and fail the leading-anchor).
+		if (!registrar && /^Registrar:\s*$/i.test(trimmed)) {
+			for (let j = i + 1; j < lines.length; j++) {
+				const nextRaw = lines[j].replace(/\r$/, '');
+				const next = nextRaw.replace(/^\s+/, '').replace(/\s+$/, '');
+				if (next.length === 0) continue;
+				registrar = stripNominetTag(next);
+				break;
+			}
 			continue;
 		}
 
 		const sponMatch = trimmed.match(/^Sponsoring Registrar:\s*(.+?)\s*$/i);
 		if (sponMatch && !sponsoring) {
-			sponsoring = sponMatch[1];
+			sponsoring = stripNominetTag(sponMatch[1]);
 		}
 	}
 
@@ -61,6 +78,15 @@ export function parseWhoisResponse(input: string): WhoisParseResult {
 		notFound: notFound && !resolved,
 		redacted: !resolved && denicRedacted,
 	};
+}
+
+/**
+ * Nominet appends a registrar tag like ` [Tag = MARKMONITOR]` to the registrar
+ * name; it's not part of the legal name. Other registries don't use this.
+ * No-op when no tag is present.
+ */
+function stripNominetTag(value: string): string {
+	return value.replace(/\s*\[Tag\s*=\s*[^\]]*\]\s*$/i, '').trim();
 }
 
 /**
