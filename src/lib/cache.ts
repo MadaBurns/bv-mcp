@@ -207,9 +207,13 @@ export async function cacheSet(key: string, value: unknown, kv?: KVNamespace, tt
  * @param kv - Optional KV namespace for persistent caching
  * @param ttlSeconds - Cache TTL in seconds (default: 300 = 5 minutes)
  * @param skipCache - When true, bypass cache lookup and always execute the function (result is still cached)
+ * @param shouldCache - Optional predicate. When provided and returns false for the computed
+ *   result, the result is NOT written to KV / in-memory cache. Sentinel cleanup still runs.
+ *   Used to suppress caching of partial results (e.g. lookalike timeouts) without the
+ *   put-then-delete anti-pattern. See bv-web 2026-05-14 analytics remediation (cluster F5).
  * @returns The cached or freshly computed result
  */
-export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: KVNamespace, ttlSeconds?: number, skipCache?: boolean): Promise<T> {
+export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: KVNamespace, ttlSeconds?: number, skipCache?: boolean, shouldCache?: (result: T) => boolean): Promise<T> {
 	if (!skipCache) {
 		const cached = await cacheGet<T>(key, kv);
 		if (cached !== undefined) return cached;
@@ -241,8 +245,12 @@ export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: K
 	const cleanup = setTimeout(() => INFLIGHT.delete(key), INFLIGHT_CLEANUP_MS);
 	const promise = run()
 		.then(async (result) => {
-			await cacheSet(key, result, kv, ttlSeconds);
-			// Clean up sentinel
+			// Only persist if the caller's predicate accepts the result.
+			// Default (no predicate) is to cache everything.
+			if (!shouldCache || shouldCache(result)) {
+				await cacheSet(key, result, kv, ttlSeconds);
+			}
+			// Clean up sentinel regardless — we still claimed the computation slot.
 			if (kv) {
 				try { await kv.delete(`${key}:computing`); } catch { /* best-effort */ }
 			}
@@ -272,6 +280,9 @@ export interface CacheResult<T> {
 /**
  * Like `runWithCache`, but returns cache hit/miss metadata alongside the result.
  * Used where callers need to report cache status (e.g. analytics).
+ *
+ * @param shouldCache - Optional predicate. When provided and returns false, the
+ *   freshly-computed result is NOT written to KV. See {@link runWithCache} for context.
  */
 export async function runWithCacheTracked<T>(
 	key: string,
@@ -279,13 +290,14 @@ export async function runWithCacheTracked<T>(
 	kv?: KVNamespace,
 	ttlSeconds?: number,
 	skipCache?: boolean,
+	shouldCache?: (result: T) => boolean,
 ): Promise<CacheResult<T>> {
 	if (!skipCache) {
 		const cached = await cacheGet<T>(key, kv);
 		if (cached !== undefined) return { data: cached, cacheStatus: 'hit' };
 	}
 
-	const data = await runWithCache(key, run, kv, ttlSeconds, true);
+	const data = await runWithCache(key, run, kv, ttlSeconds, true, shouldCache);
 	return { data, cacheStatus: 'miss' };
 }
 
