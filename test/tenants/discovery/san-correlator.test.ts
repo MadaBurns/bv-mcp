@@ -106,7 +106,7 @@ describe('correlateSans', () => {
 
 	it('returns rate_limited status on 429 without throwing', async () => {
 		const fetchFn = vi.fn().mockResolvedValue(new Response('rate', { status: 429 })) as unknown as typeof fetch;
-		const result = await correlateSans('foo.com', { fetchFn });
+		const result = await correlateSans('foo.com', { fetchFn, maxRetries: 0 });
 		expect(result.queryStatus).toBe('rate_limited');
 		expect(result.coOwnedDomains).toEqual([]);
 	});
@@ -115,14 +115,14 @@ describe('correlateSans', () => {
 		const abortErr = new Error('aborted');
 		abortErr.name = 'AbortError';
 		const fetchFn = vi.fn().mockRejectedValue(abortErr) as unknown as typeof fetch;
-		const result = await correlateSans('foo.com', { fetchFn });
+		const result = await correlateSans('foo.com', { fetchFn, maxRetries: 0 });
 		expect(result.queryStatus).toBe('timeout');
 		expect(result.coOwnedDomains).toEqual([]);
 	});
 
 	it('returns error status on a generic network failure without throwing', async () => {
 		const fetchFn = vi.fn().mockRejectedValue(new TypeError('network down')) as unknown as typeof fetch;
-		const result = await correlateSans('foo.com', { fetchFn });
+		const result = await correlateSans('foo.com', { fetchFn, maxRetries: 0 });
 		expect(result.queryStatus).toBe('error');
 		expect(result.coOwnedDomains).toEqual([]);
 	});
@@ -143,5 +143,100 @@ describe('correlateSans', () => {
 		const result = await correlateSans('foo.com', { fetchFn });
 		expect(result.queryStatus).toBe('ok');
 		expect(result.coOwnedDomains).toEqual(['bar.com']);
+	});
+
+	it('retries on transient error and surfaces eventual success', async () => {
+		const okResponse = jsonResponse([{ id: 1, name_value: 'foo.com\nbar.com' }]);
+		const fetchFn = vi
+			.fn<typeof fetch>()
+			.mockRejectedValueOnce(new TypeError('network down'))
+			.mockResolvedValueOnce(new Response('boom', { status: 503 }))
+			.mockResolvedValueOnce(okResponse);
+		const sleepFn = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
+		const result = await correlateSans('foo.com', { fetchFn, sleepFn, maxRetries: 2, initialBackoffMs: 1 });
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coOwnedDomains).toEqual(['bar.com']);
+		expect(fetchFn).toHaveBeenCalledTimes(3);
+		expect(sleepFn).toHaveBeenCalledTimes(2);
+	});
+
+	it('retries on rate_limited (429) before giving up', async () => {
+		const fetchFn = vi
+			.fn<typeof fetch>()
+			.mockResolvedValue(new Response('rate', { status: 429 }));
+		const sleepFn = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
+		const result = await correlateSans('foo.com', { fetchFn, sleepFn, maxRetries: 2, initialBackoffMs: 1 });
+		expect(result.queryStatus).toBe('rate_limited');
+		expect(fetchFn).toHaveBeenCalledTimes(3);
+		expect(sleepFn).toHaveBeenCalledTimes(2);
+	});
+
+	it('returns last attempt status after exhausting retries', async () => {
+		const fetchFn = vi
+			.fn<typeof fetch>()
+			.mockRejectedValueOnce(new TypeError('first'))
+			.mockResolvedValueOnce(new Response('rate', { status: 429 }))
+			.mockRejectedValueOnce(new TypeError('third'));
+		const sleepFn = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
+		const result = await correlateSans('foo.com', { fetchFn, sleepFn, maxRetries: 2, initialBackoffMs: 1 });
+		// Last attempt rejected → 'error' status
+		expect(result.queryStatus).toBe('error');
+		expect(fetchFn).toHaveBeenCalledTimes(3);
+	});
+
+	it('uses bv-certstream service binding when provided and returns siblings', async () => {
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(
+			Response.json({
+				domain: 'foo.com',
+				names: ['bar.com', 'baz.com', '*.foo.com', 'foo.com', 'shop.foo.com', 'not a domain', 'alpha.com'],
+				certificateCount: 5,
+				timedOut: false,
+				cached: true,
+			}),
+		);
+		const directFetch = vi.fn() as unknown as typeof fetch;
+		const result = await correlateSans('foo.com', {
+			certstream: { fetch: csFetch },
+			fetchFn: directFetch,
+			maxRetries: 0,
+		});
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coOwnedDomains).toEqual(['alpha.com', 'bar.com', 'baz.com']);
+		expect(csFetch).toHaveBeenCalledTimes(1);
+		const callUrl = (csFetch.mock.calls[0][0] as string);
+		expect(callUrl).toContain('/sans?domain=foo.com');
+		// Direct crt.sh fallback must not have been invoked.
+		expect(directFetch).not.toHaveBeenCalled();
+	});
+
+	it('falls back to direct crt.sh when certstream binding fails', async () => {
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response('boom', { status: 503 }));
+		const directFetch = mockFetchOk([{ id: 7, name_value: 'foo.com\nfallback-sibling.com' }]);
+		const sleepFn = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
+		const result = await correlateSans('foo.com', {
+			certstream: { fetch: csFetch },
+			fetchFn: directFetch,
+			sleepFn,
+			maxRetries: 0,
+		});
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coOwnedDomains).toEqual(['fallback-sibling.com']);
+		expect(csFetch).toHaveBeenCalledTimes(1);
+		expect(directFetch).toHaveBeenCalledTimes(1);
+	});
+
+	it('falls back when certstream response sets error or timedOut', async () => {
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(
+			Response.json({ domain: 'foo.com', names: [], certificateCount: 0, timedOut: true, cached: false }),
+		);
+		const directFetch = mockFetchOk([{ id: 1, name_value: 'foo.com\nrecovered.com' }]);
+		const result = await correlateSans('foo.com', {
+			certstream: { fetch: csFetch },
+			fetchFn: directFetch,
+			maxRetries: 0,
+		});
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coOwnedDomains).toEqual(['recovered.com']);
+		expect(directFetch).toHaveBeenCalledTimes(1);
 	});
 });
