@@ -42,6 +42,7 @@ export interface DispatchMcpMethodOptions {
 	authTier?: string;
 	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
+	whoisBinding?: { fetch: typeof fetch };
 }
 
 export type DispatchMcpMethodResult =
@@ -151,6 +152,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				authTier: options.authTier,
 				keyHash: options.keyHash,
 				certstream: options.certstream,
+				whoisBinding: options.whoisBinding,
 			});
 
 			return {

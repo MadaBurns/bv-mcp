@@ -65,6 +65,10 @@
     {
       "binding": "BV_WEB",
       "service": "blackveil-web"
+    },
+    {
+      "binding": "BV_WHOIS",
+      "service": "bv-whois"
     }
   ]
 }

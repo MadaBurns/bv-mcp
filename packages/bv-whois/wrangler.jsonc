@@ -1,0 +1,20 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "bv-whois",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-04-22",
+	"compatibility_flags": [
+		"global_fetch_strictly_public",
+		"nodejs_compat"
+	],
+	"upload_source_maps": true,
+	"kv_namespaces": [
+		{
+			"binding": "WHOIS_CACHE",
+			"id": "e87e50ee6c184d93bb298a1267ed5f58"
+		}
+	],
+	"observability": {
+		"enabled": true
+	}
+}

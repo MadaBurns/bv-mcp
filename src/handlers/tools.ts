@@ -95,6 +95,7 @@ interface ToolRuntimeOptions {
 	authTier?: string;
 	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
+	whoisBinding?: { fetch: typeof fetch };
 }
 
 /** Build QueryDnsOptions for individual check calls from runtime options. */
@@ -155,7 +156,7 @@ const TOOL_REGISTRY: Record<
 	check_dbl: { cacheKey: () => 'dbl', execute: (d, _args, ro) => checkDbl(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	check_rbl: { cacheKey: () => 'rbl', execute: (d, _args, ro) => checkRbl(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	cymru_asn: { cacheKey: () => 'asn', execute: (d, _args, ro) => checkCymruAsn(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
-	rdap_lookup: { cacheKey: () => 'rdap', execute: (d) => checkRdapLookup(d), cacheTtlSeconds: 3600 },
+	rdap_lookup: { cacheKey: () => 'rdap', execute: (d, _args, ro) => checkRdapLookup(d, { whoisBinding: ro?.whoisBinding }), cacheTtlSeconds: 3600 },
 	check_nsec_walkability: { cacheKey: () => 'nsec_walkability', execute: (d, _args, ro) => checkNsecWalkability(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	check_dnssec_chain: { cacheKey: () => 'dnssec_chain', execute: (d, _args, ro) => checkDnssecChain(d, buildDnsOptions(ro)) },
 	check_fast_flux: { cacheKey: () => 'fast_flux', execute: (d, args, ro) => checkFastFlux(d, (args.rounds as number | undefined) ?? 3, buildDnsOptions(ro)) },
