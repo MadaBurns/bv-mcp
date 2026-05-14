@@ -19,6 +19,7 @@
 import { queryDns } from '../../lib/dns-transport';
 import type { DohResponse } from '../../lib/dns-types';
 import { validateDomain } from '../../lib/sanitize';
+import { isSharedNsHost } from './shared-ns-hosts';
 
 /** Function signature for an injectable DNS-over-HTTPS query. */
 export type DnsQueryFn = (name: string, type: 'NS' | 'TXT' | string) => Promise<DohResponse>;
@@ -137,10 +138,20 @@ export async function correlateNs(
 			if (seedNsSet.has(ns)) shared.push(ns);
 		}
 		if (shared.length === 0) continue;
+
+		// Slice 6 — multi-tenant NS filter (LR-2 defense in depth).
+		// Parking services / shared-tenant DNS providers publish the same NS
+		// hostnames across many unrelated customers. Their overlap is operational
+		// plumbing, not ownership evidence — exclude them from the confidence
+		// math. Hyperscale managed DNS (Cloudflare, Route 53, GCP) assigns unique
+		// NS per account, so those remain ownership-bearing.
+		const ownershipBearingShared = shared.filter((ns) => !isSharedNsHost(ns));
+		if (ownershipBearingShared.length === 0) continue;
+
 		coOwned.push({
 			domain: candidate,
 			sharedNs: shared.sort(),
-			confidence: round2(shared.length / seedNsSet.size),
+			confidence: round2(ownershipBearingShared.length / seedNsSet.size),
 		});
 	}
 
