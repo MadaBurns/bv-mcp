@@ -200,6 +200,17 @@ export function sanitizeDomain(input: string): string {
 }
 
 /**
+ * Check whether a discovered domain is the same as or a subdomain of a seed domain.
+ * Used to filter out same-organization assets from shadow-IT discovery.
+ * Both inputs are normalized (lowercased, trailing dots stripped).
+ */
+export function isSubdomainOf(discovered: string, seed: string): boolean {
+	const d = discovered.toLowerCase().replace(/\.$/, '');
+	const s = seed.toLowerCase().replace(/\.$/, '');
+	return d === s || d.endsWith(`.${s}`);
+}
+
+/**
  * Validate that a fully-formed URL targets an HTTPS hostname safe to fetch.
  * Used to gate outbound fetches that target attacker-controlled URLs (BIMI
  * `l=` and `a=` tags from DNS TXT records, HTTP redirect Location targets,

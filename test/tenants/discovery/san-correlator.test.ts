@@ -22,9 +22,11 @@ interface CrtShFixtureEntry {
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
 	const text = JSON.stringify(body);
-	return new Response(text, {
+	const encoder = new TextEncoder();
+	const uint8 = encoder.encode(text);
+	return new Response(uint8, {
 		status: 200,
-		headers: { 'content-type': 'application/json', 'content-length': String(text.length) },
+		headers: { 'content-type': 'application/json', 'content-length': String(uint8.length) },
 		...init,
 	});
 }
@@ -68,17 +70,34 @@ describe('correlateSans', () => {
 		for (let i = 0; i < 100; i++) {
 			entries.push({
 				id: i,
-				name_value: `foo.com\nsibling${i}.com`,
-				entry_timestamp: new Date(2026, 0, 1, 0, 0, i).toISOString(),
+				name_value: `foo.com\nsibling${String(i).padStart(3, '0')}.com`,
 			});
 		}
 		const fetchFn = mockFetchOk(entries);
 		const result = await correlateSans('foo.com', { fetchFn, maxCertsPerDomain: 10 });
 		expect(result.queryStatus).toBe('ok');
-		// Most-recent first ⇒ siblings 90..99 (10 items)
+		// Streaming processes first 10 entries from the "server" response.
 		expect(result.coOwnedDomains.length).toBe(10);
-		const sortedExpected = Array.from({ length: 10 }, (_, k) => `sibling${90 + k}.com`).sort();
-		expect(result.coOwnedDomains).toEqual(sortedExpected);
+		const expected = Array.from({ length: 10 }, (_, k) => `sibling${String(k).padStart(3, '0')}.com`).sort();
+		expect(result.coOwnedDomains).toEqual(expected);
+	});
+
+	it('aborts early on signal saturation', async () => {
+		const entries: CrtShFixtureEntry[] = [];
+		// 1. Initial discovery
+		entries.push({ id: 1, name_value: 'foo.com\nsibling.com' });
+		// 2. 101 redundant entries (saturation threshold is 100)
+		for (let i = 0; i < 101; i++) {
+			entries.push({ id: i + 2, name_value: 'foo.com\nsibling.com' });
+		}
+		// 3. This one should NOT be reached
+		entries.push({ id: 999, name_value: 'foo.com\nnever-found.com' });
+
+		const fetchFn = mockFetchOk(entries);
+		const result = await correlateSans('foo.com', { fetchFn, maxCertsPerDomain: 500 });
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coOwnedDomains).toEqual(['sibling.com']);
+		expect(result.coOwnedDomains).not.toContain('never-found.com');
 	});
 
 	it('throws on invalid seed input with the expected error prefix', async () => {

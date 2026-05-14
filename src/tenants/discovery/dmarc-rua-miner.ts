@@ -20,23 +20,21 @@
 
 import { queryDns } from '../../lib/dns-transport';
 import type { DohResponse } from '../../lib/dns-types';
-import { validateDomain } from '../../lib/sanitize';
+import { validateDomain, isSubdomainOf } from '../../lib/sanitize';
 
 /** Function signature for an injectable DNS-over-HTTPS query. */
 export type DnsQueryFn = (name: string, type: 'TXT' | string) => Promise<DohResponse>;
 
 /**
- * Well-known DMARC report processors. A rua/ruf addressee at one of these
- * domains is operational plumbing, not an ownership signal.
+ * Hosts the miner classifies as `processor` (confidence 0) — a rua/ruf
+ * addressee at one of these is operational plumbing, not an ownership
+ * signal. Sourced from the shared INFRASTRUCTURE_PROVIDERS allowlist so
+ * a vendor added there automatically stops surfacing as `related @ 0.6`
+ * here. Consistency enforced by
+ * `test/audits/dmarc-rua-processor-consistency.audit.test.ts`.
  */
-const KNOWN_DMARC_PROCESSORS = new Set<string>([
-	'dmarcian.com',
-	'valimail.com',
-	'agari.com',
-	'easydmarc.com',
-	'postmarkapp.com',
-	'mxtoolbox.com',
-]);
+export { INFRASTRUCTURE_PROVIDERS as KNOWN_DMARC_PROCESSORS } from './infrastructure-providers';
+import { INFRASTRUCTURE_PROVIDERS } from './infrastructure-providers';
 
 export interface DmarcRuaOptions {
 	/**
@@ -163,10 +161,10 @@ export async function mineDmarcRua(seedDomain: string, options: DmarcRuaOptions 
 		seenDomains.add(domain);
 		let classification: RuaClassification;
 		let confidence: number;
-		if (domain === seedLower) {
+		if (isSubdomainOf(domain, seedLower)) {
 			classification = 'self';
 			confidence = 0;
-		} else if (KNOWN_DMARC_PROCESSORS.has(domain)) {
+		} else if (INFRASTRUCTURE_PROVIDERS.has(domain)) {
 			classification = 'processor';
 			confidence = 0;
 		} else {

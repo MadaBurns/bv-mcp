@@ -42,3 +42,14 @@ export function createFinding(
 ): Finding {
 	return { category, title, severity, detail: sanitizeDnsData(detail), ...(metadata ? { metadata } : {}) };
 }
+
+/**
+ * Check whether a discovered domain is the same as or a subdomain of a seed domain.
+ * Used to filter out same-organization assets from shadow-IT discovery.
+ * Both inputs are normalized (lowercased, trailing dots stripped).
+ */
+export function isSubdomainOf(discovered: string, seed: string): boolean {
+	const d = discovered.toLowerCase().replace(/\.$/, '');
+	const s = seed.toLowerCase().replace(/\.$/, '');
+	return d === s || d.endsWith(`.${s}`);
+}

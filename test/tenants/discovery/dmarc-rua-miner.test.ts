@@ -166,6 +166,17 @@ describe('mineDmarcRua', () => {
 		]);
 	});
 
+	it('classifies subdomains of the seed as self (e.g. dmarc.amazon.com for amazon.com)', async () => {
+		const dnsQuery = vi.fn(async () =>
+			txtResponse(['v=DMARC1; p=reject; rua=mailto:reports@dmarc.foo.com']),
+		);
+		const result = await mineDmarcRua('foo.com', { dnsQuery });
+		expect(result.queryStatus).toBe('ok');
+		expect(result.ruaDomains).toEqual([
+			{ domain: 'dmarc.foo.com', classification: 'self', confidence: 0 },
+		]);
+	});
+
 	it('throws on invalid seed input with the expected error prefix', async () => {
 		await expect(mineDmarcRua('not a domain')).rejects.toThrow(/^Domain validation failed:/);
 	});
