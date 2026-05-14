@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.14.2] - 2026-05-14
+
+### Fixed
+- **SCAN_CACHE put-then-delete anti-pattern (Cluster F5, bv-web 2026-05-14 analytics)**: `bv-dns-security-mcp-SCAN_CACHE` was showing 27M puts paired with 13M deletes over a 7-day window. Root cause: `runWithCacheTracked` cached every result, then partial results (e.g. lookalike-timeout fallbacks) were immediately `kv.delete()`'d at the callsite in `src/handlers/tools.ts`. Added optional `shouldCache?: (result: T) => boolean` predicate to `runWithCache` + `runWithCacheTracked`; callsite passes `(r) => !r.partial` so partial results skip the put entirely. Side benefit: closes a sub-ms consistency window where a partial result could leak to a concurrent reader between put and delete. (PR #113)
+
 ## [2.14.1] - 2026-05-14
 
 ### Changed
