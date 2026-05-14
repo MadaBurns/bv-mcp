@@ -6,9 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [2.14.0] - 2026-05-13
 
+### Added
+- **Brand-discovery corroboration gate**: A candidate must be corroborated by ≥2 distinct signals OR be a single near-deterministic signal (`dkim_key_reuse`). Closes the LR-1..LR-3 leakage paths from the v2.14.0 "Zero False Positive" precision audit — single-signal `dmarc_rua@0.6` no longer surfaces unknown third-party aggregators (LR-1), single-signal NS no longer surfaces commodity-DNS / parking co-tenants (LR-2), and the `INFRASTRUCTURE_PROVIDERS` allowlist expanded 11 → 57 entries to cover known TLD-variant evasions like `cloudflare.io` / `salesforce.io` / `hubapi.com` and user-named gaps like `outlook.com` / `amazonses.com` / `mailgun.org` (LR-3).
+- **Caller-asserted domain bypass**: Domains the operator passes in `candidate_domains` bypass the corroboration gate even at single-signal NS — the explicit listing IS the second corroboration. Restores discovery of real co-owned brand domains that share NS but lack DKIM key reuse (e.g. `blackveil.nz` / `blackveil.io` alongside `blackveil.com`).
+- **Slice 6 — multi-tenant NS filter** (`src/tenants/discovery/shared-ns-hosts.ts`): Parking services and registrar-default NS providers (Sedo, ParkingCrew, GoDaddy `domaincontrol.com`, Namecheap `registrar-servers.com`) are filtered inside `ns-correlator.ts` before the confidence math. Hyperscale managed DNS (Cloudflare, Route 53, GCP) remains ownership-bearing because those providers assign unique NS hostnames per account.
+- **Streaming crt.sh SAN parser**: Large-issuer brands return MB-scale crt.sh JSON; the SAN correlator now parses incrementally via `@streamparser/json-whatwg` and stops once the signal plateaus (100 redundant certs without a new sibling). Raises `maxCerts` cap to 200, timeout to 15s, byte ceiling to 25 MB.
+- **Markov lookalike generator** (`src/tools/markov-generator.ts`): New trigram model seeds the active NS / DKIM signals with up to 20 generated candidates. Single-signal `markov_gen` is intentionally below the corroboration gate — it's a seed, not a verdict.
+- **Shared infrastructure-providers module** (`src/tenants/discovery/infrastructure-providers.ts`): Single source of truth for the allowlist consumed by both the orchestrator filter and the dmarc-rua miner. Two-allowlist divergence is now structurally impossible; consistency enforced by `test/audits/dmarc-rua-processor-consistency.audit.test.ts`.
+
 ### Fixed
 - **Shadow Domain Subdomain False Positive**: Updated the shadow domain discovery logic to correctly identify organizational subdomains (e.g., `dmarc.amazon.com`) as internal assets rather than "Shadow IT". Implemented a new `isSubdomainOf` utility and integrated it into `mineDmarcRua`, `discoverBrandDomains`, and the standard DMARC authorization check.
-- **Dependency Hardening**: Remediated four moderate severity vulnerabilities in `esbuild` (GHSA-67mh-4wv8-2f99) by implementing surgical `overrides` in `package.json`. Outdated loaders used by `drizzle-kit` are now forced to use a non-vulnerable version (0.25.12+), achieving a clean security audit without breaking dev-server isolation.
+- **Dead constant drift**: `DEFAULT_SIGNAL_CONFIDENCE.dmarc_rua` aligned from `0.8` → `0.6` to match the miner's actual emission for `related` classification (LR-5).
+- **Dependency Hardening**: Remediated four moderate severity vulnerabilities in `esbuild` (GHSA-67mh-4wv8-2f99) via a path-scoped `overrides` entry on `@esbuild-kit/core-utils` (drizzle-kit's transitive holding the vulnerable version). `npm audit`: 0 vulnerabilities.
+
+### Tests
+- New pinning tests for the corroboration gate (`test/discover-brand-domains-corroboration.test.ts`) and confidence math (`test/discover-brand-domains-math.test.ts`, locking the `san+markov < 0.5` invariant).
+- New audit-layer regression nets: `test/audits/infrastructure-providers.audit.test.ts` (19 MUST_MATCH rows + negative controls), `test/audits/shared-ns-hosts.audit.test.ts` (12 MUST_MATCH parking + 6 MUST_NOT_MATCH hyperscale), `test/audits/discovery-signal-defaults.audit.test.ts` (default vs miner-emission consistency).
 
 ### Verified
 - **Platform Tiers & Plan Limits**: Empirically verified all six platform tiers (Free, Agent, Developer, Enterprise, Partner, Owner). Confirmed that daily tool quotas, tool-specific overrides, and concurrency limits are strictly enforced at the MCP execution layer.
