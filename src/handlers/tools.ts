@@ -2,7 +2,7 @@
 
 import type { CheckResult } from '../lib/scoring';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
-import { runWithCacheTracked, cacheDelete } from '../lib/cache';
+import { runWithCacheTracked } from '../lib/cache';
 import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { checkSpf } from '../tools/check-spf';
 import { checkDmarc } from '../tools/check-dmarc';
@@ -258,11 +258,17 @@ export async function handleToolsCall(
 			if (registeredTool) {
 				const checkName = registeredTool.cacheKey(validatedArgs);
 				const cacheKey = `cache:${validDomain}:check:${checkName}`;
-				const { data: result, cacheStatus } = await runWithCacheTracked(cacheKey, () => registeredTool.execute(validDomain, validatedArgs, runtimeOptions), scanCacheKV, registeredTool.cacheTtlSeconds);
-				// Don't cache partial results (e.g. lookalike timeout) — evict what runWithCacheTracked just stored
-				if (result.partial) {
-					await cacheDelete(cacheKey, scanCacheKV);
-				}
+				// Don't cache partial results (e.g. lookalike timeout). The predicate skips the
+				// kv.put entirely instead of the old put-then-delete anti-pattern that drove
+				// ~13M wasted SCAN_CACHE writes/week (bv-web 2026-05-14 analytics, cluster F5).
+				const { data: result, cacheStatus } = await runWithCacheTracked(
+					cacheKey,
+					() => registeredTool.execute(validDomain, validatedArgs, runtimeOptions),
+					scanCacheKV,
+					registeredTool.cacheTtlSeconds,
+					/* skipCache */ undefined,
+					(r) => !r.partial,
+				);
 				runtimeOptions?.resultCapture?.(result);
 				logResult = result.passed ? 'pass' : 'fail';
 				logDetails = result;
