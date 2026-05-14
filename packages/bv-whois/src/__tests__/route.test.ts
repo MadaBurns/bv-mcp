@@ -111,6 +111,21 @@ describe('POST /lookup', () => {
 
 		expect(res.status).toBe(413);
 	});
+
+	it('rejects oversized body even when content-length header is absent', async () => {
+		const kv = makeKV();
+		const app = buildApp({ kv: kv as never, whoisQuery: vi.fn() });
+
+		const oversize = JSON.stringify({ domain: 'x'.repeat(2000) + '.com' });
+		// Omit content-length to simulate chunked encoding bypass attempt.
+		const res = await app.request('/lookup', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: oversize,
+		});
+
+		expect(res.status).toBe(413);
+	});
 });
 
 describe('GET /health', () => {

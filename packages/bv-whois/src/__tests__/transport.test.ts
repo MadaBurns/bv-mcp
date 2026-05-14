@@ -103,6 +103,14 @@ describe('whoisQuery', () => {
 		).rejects.toThrow(/invalid|blocked|private/i);
 	});
 
+	it('rejects all-numeric label forms that could route to private IPs via octal/numeric parsing', async () => {
+		const { factory } = makeFakeSocket('ok');
+
+		await expect(
+			whoisQuery('0177.0.0.1', 'q', { socketFactory: factory })
+		).rejects.toThrow(/invalid|numeric/i);
+	});
+
 	it('concatenates multi-chunk reads into a single response string', async () => {
 		const factory: SocketFactory = {
 			async connect() {
