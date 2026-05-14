@@ -30,8 +30,10 @@ describe('MarkovGenerator', () => {
 		it('handles multiple samples and can generate hybrids', () => {
 			const model = trainTrigramModel(['google', 'goggle']);
 			const result = generateFromModel(model, 3, 10);
-			// Possible: google, goggle, gogle, googgle (if bigram)
-			expect(['google', 'goggle', 'gogle']).toContain(result);
+			// Possible: google, goggle, gogle, googgle (if bigram). The
+			// generator is non-deterministic — all four outputs occur in
+			// practice depending on which trigram transition the RNG picks.
+			expect(['google', 'goggle', 'gogle', 'googgle']).toContain(result);
 		});
 	});
 
