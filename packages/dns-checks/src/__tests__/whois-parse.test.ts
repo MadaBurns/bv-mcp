@@ -90,6 +90,34 @@ Registrar: NewRegistrar Inc.
 		expect(parseWhoisResponse(synthetic).registrar).toBe('TrimmedReg, Inc.');
 	});
 
+	it('extracts registrar from Nominet .uk indented format (label and value on separate lines)', () => {
+		// Nominet returns:  "    Registrar:\n        Markmonitor Inc. [Tag = MARKMONITOR]\n        URL: ..."
+		const result = parseWhoisResponse(fixture('registry-google.co.uk.txt'));
+		expect(result.registrar).toBe('Markmonitor Inc.');
+	});
+
+	it('strips [Tag = ...] suffix from Nominet registrar value', () => {
+		// Nominet appends a registrar tag in square brackets that isn't part of the legal name.
+		const synthetic = `
+    Registrar:
+        Acme Corp. [Tag = ACME]
+        URL: https://acme.example
+`;
+		expect(parseWhoisResponse(synthetic).registrar).toBe('Acme Corp.');
+	});
+
+	it('does not falsely match unrelated indented lines as Nominet-format registrar', () => {
+		// "Last Registrar" is a different field that happens to have "Registrar" in its label;
+		// the bare-label rule (regex: /^Registrar:\s*$/) ensures we don't pick up text after the colon.
+		const synthetic = `
+    Last Registrar Update:
+        Some date
+    Whatever:
+        nope
+`;
+		expect(parseWhoisResponse(synthetic).registrar).toBeNull();
+	});
+
 	it('handles empty input gracefully', () => {
 		const result = parseWhoisResponse('');
 		expect(result.registrar).toBeNull();
