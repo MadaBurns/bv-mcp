@@ -13,17 +13,19 @@ lines.push('# Brand Audit: Shadow IT & Provider Sprawl');
 lines.push('');
 lines.push(`**Generated:** ${dateStr}  `);
 lines.push('**Scope:** 11 targets, lookalike TLD variants discovered via SAN / NS / DMARC RUA / DKIM key reuse signals  ');
-lines.push('**Classification:** same-registrar-family-as-target = consolidated; different-or-unknown + high confidence = shadow IT / sprawl; low confidence = impersonation.');
+lines.push('**Classification:** same-registrar-family-as-target = consolidated; different registrar + high confidence = shadow IT / sprawl; registry refuses to disclose (e.g. DENIC) = indeterminate; low confidence = impersonation.');
 lines.push('');
 
 // Aggregate sprawl: how many distinct registrar families exist across each target's domains
 lines.push('## Headline');
 lines.push('');
-let totalConsolidated = 0, totalShadow = 0, totalImp = 0;
+let totalConsolidated = 0, totalShadow = 0, totalIndet = 0, totalImp = 0;
 const sprawlPerTarget = {};
 for (const t of results) {
+	const indet = t.indeterminate ?? [];
 	totalConsolidated += t.consolidated.length;
 	totalShadow += t.shadowIt.length;
+	totalIndet += indet.length;
 	totalImp += t.impersonation.length;
 	const families = new Set();
 	families.add(targetRegs.family[t.target]);
@@ -41,7 +43,8 @@ for (const t of results) {
 	sprawlPerTarget[t.target] = families;
 }
 lines.push(`- **${totalConsolidated}** consolidated (same registrar as target, centrally managed)`);
-lines.push(`- **${totalShadow}** shadow IT / provider sprawl (high-confidence brand signal on a different or unknown registrar)`);
+lines.push(`- **${totalShadow}** shadow IT / provider sprawl (high-confidence brand signal on a different registrar)`);
+lines.push(`- **${totalIndet}** indeterminate (registry redacts registrar by policy — e.g. DENIC)`);
 lines.push(`- **${totalImp}** likely impersonation / low-confidence noise`);
 lines.push('');
 lines.push('### Premise check: how many targets actually use BrandAudit?');
@@ -88,6 +91,18 @@ for (const t of results) {
 		lines.push('');
 	}
 
+	const indet = t.indeterminate ?? [];
+	if (indet.length > 0) {
+		lines.push('**Indeterminate** (registry refuses to disclose registrar — registrar may still be the same family):');
+		lines.push('');
+		lines.push('| Domain | Source | Evidence | Confidence |');
+		lines.push('|---|---|---|---:|');
+		for (const c of indet) {
+			lines.push(`| \`${c.domain}\` | ${c.source ?? 'redacted'} | ${c.evidence} | ${c.confidence} |`);
+		}
+		lines.push('');
+	}
+
 	if (t.impersonation.length > 0) {
 		lines.push('**Impersonation / Low Confidence**:');
 		lines.push('');
@@ -99,7 +114,7 @@ for (const t of results) {
 		lines.push('');
 	}
 
-	if (t.consolidated.length === 0 && t.shadowIt.length === 0 && t.impersonation.length === 0) {
+	if (t.consolidated.length === 0 && t.shadowIt.length === 0 && indet.length === 0 && t.impersonation.length === 0) {
 		lines.push('_No candidate domains surfaced by discovery signals._');
 		lines.push('');
 	}
@@ -112,7 +127,7 @@ lines.push('Across all 44 candidate domains:');
 lines.push('');
 const tally = {};
 for (const t of results) {
-	for (const c of [...t.consolidated, ...t.shadowIt, ...t.impersonation]) {
+	for (const c of [...t.consolidated, ...t.shadowIt, ...(t.indeterminate ?? []), ...t.impersonation]) {
 		const reg = c.registrar || 'Unknown';
 		tally[reg] = (tally[reg] || 0) + 1;
 	}
@@ -127,9 +142,9 @@ lines.push('');
 
 lines.push('## Methodology notes & caveats');
 lines.push('');
-lines.push('- **17 of 44 candidates returned `Unknown` registrar** — all ccTLDs (`.me/.de/.co/.us/.sh/.io`) where RDAP either lacks a server or returned 404. These get bucketed as shadow IT by default. Manual WHOIS would resolve them.');
-lines.push('- **MarkMonitor appears under 4 legal entities** (`Inc.`, `MARKMONITOR Inc.`, `MarkMonitor, Inc.`, `MarkMonitor International Canada Ltd.`) — normalized to one family.');
-lines.push('- **Com Laude appears under 4 string variants** (`Nom-iq Ltd. dba COM LAUDE`, `COM LAUDE (NOM IQ LIMITED)`, etc.) — normalized to one family.');
+lines.push('- **ccTLDs without RDAP** (`.me/.co/.us/.sh/.io/.uk/.fr/.ca/...`) resolved via the bv-whois shim Worker (WHOIS-over-TCP/43 with IANA referral cache).');
+lines.push('- **`.de` (DENIC) is short-circuited as redacted** — German law (BDSG) requires the registry to withhold the registrar field, and DENIC blocks Cloudflare Workers\' egress IPs at port 43. The shim returns `source: redacted` instantly without contacting the network.');
+lines.push('- **MarkMonitor / Com Laude / SafeNames** each appear under multiple string variants (case, regional subsidiary, dba); normalized to one family per provider.');
 lines.push('- **Confidence threshold for shadow IT = 0.7** matches the original spec. Defensive registrations at conf=0.5 (e.g., `walmart.app/io/org`) fall into the impersonation bucket despite being likely Walmart-owned. Threshold tuning is a follow-up.');
 lines.push('- **Candidate set is `<base>.<TLD>` for 15 hardcoded TLDs.** Subdomains under target (e.g., `mail.apple.com`) come from discovery signals separately.');
 
