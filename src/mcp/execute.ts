@@ -72,6 +72,7 @@ export interface ExecuteMcpRequestOptions {
 	/** FNV-1a hash of cf-connecting-ip (`i_` prefix) for per-IP analytics filtering. */
 	ipHash?: string;
 	certstream?: { fetch: typeof fetch };
+	whoisBinding?: { fetch: typeof fetch };
 }
 
 function getDomainFromParams(params: Record<string, unknown> | undefined): string | undefined {
@@ -541,6 +542,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			clientType: options.clientType,
 			authTier: options.authTier,
 			certstream: options.certstream,
+			whoisBinding: options.whoisBinding,
 		}).then((dispatchResult) => {
 			if (dispatchResult.kind === 'early-error') {
 				return dispatchResult.payload;
@@ -611,6 +613,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			clientType: options.clientType,
 			authTier: options.authTier,
 			certstream: options.certstream,
+			whoisBinding: options.whoisBinding,
 		});
 
 		if (dispatchResult.kind === 'early-error') {
