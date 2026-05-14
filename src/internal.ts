@@ -70,6 +70,7 @@ type InternalEnv = {
 	CACHE_TTL_SECONDS?: string;
 	BV_DOH_ENDPOINT?: string;
 	BV_DOH_TOKEN?: string;
+	BV_WHOIS?: Fetcher;
 	CF_ACCOUNT_ID?: string;
 	CF_ANALYTICS_TOKEN?: string;
 	BV_WEB_INTERNAL_KEY?: string;
@@ -204,6 +205,7 @@ internalRoutes.post('/tools/call', async (c) => {
 			secondaryDoh: c.env.BV_DOH_ENDPOINT
 				? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN }
 				: undefined,
+			whoisBinding: c.env.BV_WHOIS,
 			...(wantStructured ? { resultCapture: (r: import('./lib/scoring-model').CheckResult) => { capturedResult = r; } } : {}),
 		},
 	);
@@ -380,6 +382,7 @@ internalRoutes.post('/tools/batch', async (c) => {
 						secondaryDoh: c.env.BV_DOH_ENDPOINT
 							? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN }
 							: undefined,
+						whoisBinding: c.env.BV_WHOIS,
 						...(wantStructured ? { resultCapture: (r: import('./lib/scoring-model').CheckResult) => { capturedResult = r; } } : {}),
 					},
 				);

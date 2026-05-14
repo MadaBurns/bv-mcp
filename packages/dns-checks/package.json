@@ -14,6 +14,10 @@
 		"./scoring": {
 			"import": "./dist/scoring/index.js",
 			"types": "./dist/scoring/index.d.ts"
+		},
+		"./whois": {
+			"import": "./dist/whois/index.js",
+			"types": "./dist/whois/index.d.ts"
 		}
 	},
 	"files": [
