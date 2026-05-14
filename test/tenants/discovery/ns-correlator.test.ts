@@ -183,4 +183,60 @@ describe('correlateNs', () => {
 		expect(result.queryStatus).toBe('ok');
 		expect(result.coOwnedDomains).toEqual([]);
 	});
+
+	// Slice 6 — multi-tenant NS filter (LR-2 defense in depth).
+	// The orchestrator gate already filters single-signal NS, but in two-signal
+	// scenarios a parking-NS overlap could otherwise inflate combined confidence.
+
+	it('drops a candidate whose shared NS are entirely parking-service hosts', async () => {
+		// Both zones parked on Sedo with the same NS pair — operational plumbing,
+		// not ownership evidence. Expect the candidate to be filtered entirely.
+		const dnsQuery = dnsQueryFromMap({
+			'parked-a.com': ['ns1.sedoparking.com.', 'ns2.sedoparking.com.'],
+			'parked-b.com': ['ns1.sedoparking.com.', 'ns2.sedoparking.com.'],
+		});
+		const result = await correlateNs('parked-a.com', { dnsQuery, candidateDomains: ['parked-b.com'] });
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coOwnedDomains).toHaveLength(0);
+	});
+
+	it('drops a candidate whose shared NS are entirely GoDaddy domaincontrol.com hosts', async () => {
+		// GoDaddy's default `domaincontrol.com` NS pair is published across
+		// hundreds of thousands of unrelated customer zones.
+		const dnsQuery = dnsQueryFromMap({
+			'foo.com': ['ns01.domaincontrol.com.', 'ns02.domaincontrol.com.'],
+			'unrelated.com': ['ns01.domaincontrol.com.', 'ns02.domaincontrol.com.'],
+		});
+		const result = await correlateNs('foo.com', { dnsQuery, candidateDomains: ['unrelated.com'] });
+		expect(result.coOwnedDomains).toHaveLength(0);
+	});
+
+	it('discounts confidence when only some shared NS are parking', async () => {
+		// seed: [ns1.sedoparking.com, ns1.cloudflare-acme.example]
+		// cand: [ns1.sedoparking.com, ns1.cloudflare-acme.example]
+		// raw overlap = 2/2 = 1.0; parking-discounted = 1/2 = 0.5.
+		const dnsQuery = dnsQueryFromMap({
+			'mixed-a.com': ['ns1.sedoparking.com.', 'alice.ns.cloudflare.com.'],
+			'mixed-b.com': ['ns1.sedoparking.com.', 'alice.ns.cloudflare.com.'],
+		});
+		const result = await correlateNs('mixed-a.com', { dnsQuery, candidateDomains: ['mixed-b.com'] });
+		expect(result.coOwnedDomains).toHaveLength(1);
+		// Only the cloudflare NS counts toward confidence; sharedNs retained for transparency.
+		expect(result.coOwnedDomains[0].confidence).toBeCloseTo(0.5, 2);
+		expect(result.coOwnedDomains[0].sharedNs).toEqual(
+			['alice.ns.cloudflare.com', 'ns1.sedoparking.com'],
+		);
+	});
+
+	it('keeps a candidate whose shared NS are all genuine hyperscale-DNS hostnames', async () => {
+		// Cloudflare assigns unique NS hostnames per account, so this overlap
+		// IS ownership evidence and must not be suppressed.
+		const dnsQuery = dnsQueryFromMap({
+			'real-a.com': ['alice.ns.cloudflare.com.', 'bob.ns.cloudflare.com.'],
+			'real-b.com': ['alice.ns.cloudflare.com.', 'bob.ns.cloudflare.com.'],
+		});
+		const result = await correlateNs('real-a.com', { dnsQuery, candidateDomains: ['real-b.com'] });
+		expect(result.coOwnedDomains).toHaveLength(1);
+		expect(result.coOwnedDomains[0].confidence).toBeCloseTo(1.0, 2);
+	});
 });
