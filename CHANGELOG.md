@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.16.0] - 2026-05-15
+
+### Added
+- **bv-certstream `/sans` integration for SAN-sibling discovery**: `discover_brand_domains`'s SAN signal (`correlateSans`) now prefers the `BV_CERTSTREAM` service binding when present, falling back to direct crt.sh on failure. Mirrors the existing `/enumerate` pattern used by `discoverSubdomains` but with a distinct `/sans?domain=X` endpoint — different crt.sh query shape (`?q=X` apex vs `?q=%.X` subdomain) and different consumer-side filter (siblings keep cross-brand names; subdomains strip them). Threaded `certstream` through `DiscoverBrandDomainsOptions` and the `discover_brand_domains` tool registry. Routes traffic through Cloudflare egress (less IP-throttled than direct user-side calls) with the worker's 30s timeout cap (vs bv-mcp's 15s). Companion worker change: `bv-web/cloudflare/certstream-worker` (`/sans` route + `queryCrtShSans` handler).
+
+### Fixed
+- **SAN-correlator silently dropped tier-1 brand candidates under crt.sh throttling**: `correlateSans` was single-shot — one fetch attempt, error/timeout/429 silently returned an empty SAN bucket. Surfaced by the CSC brand audit where amazon.com, microsoft.com, nike.com returned **zero candidates** despite high-confidence brand asserts; investigation showed `signalStatus.san: 'error'` for all three while ns/dmarc_rua/dkim_key_reuse succeeded. crt.sh is heavily IP-throttled and intermittently 5xx's on tier-1 brand queries (verified: direct `curl --max-time 20` to crt.sh timed out for 4 of 5 sampled brands during the audit run). Added jittered exponential-backoff retry (default 2 retries, 500ms base × 2^attempt with ±50% jitter) inside `correlateSans` — only on transient `error`/`rate_limited`/`timeout` results; partial-success (stream cap hit) is `ok` and not retried. New `maxRetries`/`initialBackoffMs`/`sleepFn` options for test override.
+
 ## [2.15.0] - 2026-05-15
 
 ### Added
