@@ -79,22 +79,45 @@ describe('discoverBrandDomains — corroboration gate', () => {
 		expect(candidates).toHaveLength(0);
 	});
 
-	it('LR-2: filters a single-signal ns candidate even at confidence 1.0', async () => {
+	it('LR-2: filters an unsolicited single-signal ns candidate even at confidence 1.0', async () => {
 		// ns-correlator emits confidence = sharedNs.size / seedNs.size.
 		// Two unrelated zones parked on identical NS pairs (parkingcrew,
 		// sedoparking, shared GoDaddy / DreamHost NS) score 1.0 today. Without
 		// corroboration that's a false-positive shadow IT finding.
+		// "Unsolicited" = caller did NOT list the domain in candidate_domains;
+		// caller-asserted ownership bypasses the gate (covered separately).
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const deps = makeDeps({
 			correlateNs: vi.fn().mockResolvedValue(okNs([{ domain: 'parked-elsewhere.com', confidence: 1.0 }])),
 		});
 		const result = await discoverBrandDomains(
 			'example.com',
-			{ signals: ['ns'], candidate_domains: ['parked-elsewhere.com'] },
+			{ signals: ['ns'] },
 			deps,
 		);
 		const candidates = result.findings.filter((f) => f.metadata?.candidate);
 		expect(candidates).toHaveLength(0);
+	});
+
+	it('caller-asserted single-signal ns candidate bypasses the corroboration gate', async () => {
+		// candidate_domains is the operator saying "this is one of mine, please
+		// confirm via signals." When NS confirms, that's enough corroboration
+		// (the caller's listing IS the second source). This preserves real
+		// brand-discovery for co-owned zones (e.g. brand.com + brand.io on the
+		// same NS) that would otherwise be filtered by the LR-2 gate.
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const deps = makeDeps({
+			correlateNs: vi.fn().mockResolvedValue(okNs([{ domain: 'asserted-brand.io', confidence: 1.0 }])),
+		});
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ signals: ['ns'], candidate_domains: ['asserted-brand.io'], min_confidence: 0.1 },
+			deps,
+		);
+		const candidates = result.findings.filter((f) => f.metadata?.candidate);
+		expect(candidates).toHaveLength(1);
+		expect(candidates[0].metadata?.candidate).toBe('asserted-brand.io');
+		expect(candidates[0].metadata?.signals).toEqual(['ns']);
 	});
 
 	it('surfaces a single-signal dkim_key_reuse candidate (near-deterministic exception)', async () => {

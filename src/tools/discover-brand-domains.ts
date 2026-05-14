@@ -197,6 +197,13 @@ export async function discoverBrandDomains(
 	const d: DiscoverBrandDomainsDeps = { ...defaultDeps(), ...(deps ?? {}) };
 	const signals = (options.signals && options.signals.length > 0 ? options.signals : ALL_SIGNALS).slice();
 	const candidateDomains = options.candidate_domains ?? [];
+	// Caller-asserted ownership: bypass the corroboration gate for these.
+	// One signal hit is enough when the caller has already named the domain
+	// — see the gate below. Unsolicited single-signal discoveries still get
+	// dropped per LR-1/LR-2.
+	const callerAssertedDomains = new Set(
+		candidateDomains.map((dom) => dom.trim().toLowerCase().replace(/\.$/, '')),
+	);
 	const dkimSelectors = options.dkim_selectors;
 	const minConfidence = typeof options.min_confidence === 'number'
 		? Math.max(0, Math.min(1, options.min_confidence))
@@ -340,7 +347,16 @@ export async function discoverBrandDomains(
 		// signals OR be a single near-deterministic signal. Filters single-signal
 		// markov_gen, san, dmarc_rua, and ns (LR-1, LR-2 in the v2.14.0 audit) —
 		// only single-signal dkim_key_reuse is permitted through this gate.
-		if (signalKinds.length === 1 && !NEAR_DETERMINISTIC_SIGNALS.has(signalKinds[0])) continue;
+		// Exception: caller-asserted domains (passed via `candidate_domains`)
+		// bypass the gate when at least one signal corroborates them — the
+		// caller's explicit listing IS the second corroboration.
+		if (
+			!callerAssertedDomains.has(entry.domain) &&
+			signalKinds.length === 1 &&
+			!NEAR_DETERMINISTIC_SIGNALS.has(signalKinds[0])
+		) {
+			continue;
+		}
 
 		const combined = round4(combineConfidences(perSignal.map(([, c]) => c)));
 		if (combined < minConfidence) continue;
