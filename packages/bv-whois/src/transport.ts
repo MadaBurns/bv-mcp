@@ -62,6 +62,12 @@ function validateHost(hostname: string): void {
 	if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i.test(hostname)) {
 		throw new Error(`Invalid hostname: ${hostname}`);
 	}
+	// Reject all-numeric forms (octal/numeric IPv4 bypass — e.g. "0177.0.0.1" passes
+	// the IPv4 dotted check above because labels are 4 digits, but routes to 127.0.0.1).
+	const labels = lower.split('.');
+	if (labels.every(label => /^[0-9]+$/.test(label))) {
+		throw new Error(`Invalid hostname: ${hostname} (all-numeric labels not allowed)`);
+	}
 }
 
 /**
