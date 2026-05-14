@@ -167,13 +167,79 @@ function findEvent(events: RdapEvent[] | undefined, action: string): RdapEvent |
 	return events.find((e) => e.eventAction === action) ?? null;
 }
 
+/** Minimal Fetcher shape — matches Cloudflare service binding. */
+interface FetcherLike {
+	fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
+}
+
+interface WhoisFallbackPayload {
+	registrar: string | null;
+	source: 'whois' | 'redacted' | 'notfound' | 'error';
+}
+
 /**
- * Look up domain registration data via RDAP.
+ * Call the bv-whois shim Worker via service binding. Returns the structured
+ * result, or { registrar: null, source: 'error' } on any failure (fail-soft).
+ */
+async function fetchWhoisRegistrar(domain: string, binding: FetcherLike | undefined): Promise<WhoisFallbackPayload | null> {
+	if (!binding) return null;
+	try {
+		const resp = await binding.fetch('https://bv-whois/lookup', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ domain }),
+		});
+		if (!resp.ok) return { registrar: null, source: 'error' };
+		return (await resp.json()) as WhoisFallbackPayload;
+	} catch {
+		return { registrar: null, source: 'error' };
+	}
+}
+
+/**
+ * Map a WHOIS-fallback payload to the `registrarSource` value used in finding metadata.
+ * Returns 'unknown' when the fallback was unavailable or failed.
+ */
+function whoisSourceToRegistrarSource(w: WhoisFallbackPayload | null): 'whois' | 'redacted' | 'notfound' | 'unknown' {
+	if (!w) return 'unknown';
+	if (w.source === 'whois' && w.registrar) return 'whois';
+	if (w.source === 'redacted') return 'redacted';
+	if (w.source === 'notfound') return 'notfound';
+	return 'unknown';
+}
+
+/**
+ * Emit a Registration details finding carrying the WHOIS-sourced registrar
+ * (or marking the source as unknown / redacted / notfound). Used by the
+ * RDAP-failure code paths to surface fallback data with provenance metadata.
+ */
+function buildWhoisFallbackFinding(domain: string, w: WhoisFallbackPayload | null) {
+	const registrarSource = whoisSourceToRegistrarSource(w);
+	const registrar = w?.registrar ?? null;
+	const detailParts: string[] = [];
+	if (registrar) detailParts.push(`Registrar: ${registrar}`);
+	detailParts.push(`Source: ${registrarSource}`);
+	return createFinding(CATEGORY, 'Registration details', 'info', detailParts.join('. ') + '.', {
+		domain,
+		registrar,
+		registrarSource,
+	});
+}
+
+export interface RdapCheckOptions {
+	/** Service binding to bv-whois shim Worker — enables WHOIS fallback for non-RDAP TLDs. */
+	whoisBinding?: FetcherLike;
+}
+
+/**
+ * Look up domain registration data via RDAP, falling back to WHOIS (via the
+ * BV_WHOIS service binding) when RDAP can't answer.
  *
  * @param domain - The domain to look up
+ * @param options - Optional fallback bindings
  * @returns CheckResult with registration findings
  */
-export async function checkRdapLookup(domain: string): Promise<CheckResult> {
+export async function checkRdapLookup(domain: string, options: RdapCheckOptions = {}): Promise<CheckResult> {
 	const findings: ReturnType<typeof createFinding>[] = [];
 
 	// Extract TLD
@@ -189,6 +255,8 @@ export async function checkRdapLookup(domain: string): Promise<CheckResult> {
 				tld,
 			}),
 		);
+		const whois = await fetchWhoisRegistrar(domain, options.whoisBinding);
+		findings.push(buildWhoisFallbackFinding(domain, whois));
 		return buildCheckResult(CATEGORY, findings) as CheckResult;
 	}
 
@@ -210,6 +278,8 @@ export async function checkRdapLookup(domain: string): Promise<CheckResult> {
 					httpStatus: resp.status,
 				}),
 			);
+			const whois = await fetchWhoisRegistrar(domain, options.whoisBinding);
+			findings.push(buildWhoisFallbackFinding(domain, whois));
 			return buildCheckResult(CATEGORY, findings) as CheckResult;
 		}
 
@@ -222,6 +292,8 @@ export async function checkRdapLookup(domain: string): Promise<CheckResult> {
 				error: message,
 			}),
 		);
+		const whois = await fetchWhoisRegistrar(domain, options.whoisBinding);
+		findings.push(buildWhoisFallbackFinding(domain, whois));
 		return buildCheckResult(CATEGORY, findings) as CheckResult;
 	}
 
@@ -264,6 +336,7 @@ export async function checkRdapLookup(domain: string): Promise<CheckResult> {
 	const metadata: Record<string, unknown> = {
 		domain,
 		registrar: registrarName,
+		registrarSource: registrarName ? 'rdap' : 'unknown',
 		registrant: registrantName,
 		registrantCountry,
 		creationDate: registrationEvent?.eventDate ?? null,
