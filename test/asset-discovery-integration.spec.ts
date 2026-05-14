@@ -38,7 +38,14 @@ describe('Asset Discovery Integration (Live)', () => {
 		}
 	}, 30000); // Higher timeout for live network
 
-	it('should discover expected brand domains via NS correlation', async () => {
+	// LR-2 (PR #111) intentionally filters single-signal NS candidates because
+	// commodity-DNS / parking co-tenants on the same nameserver are ambient
+	// noise — they cannot be distinguished from a true brand-affiliated apex
+	// without a second corroborating signal. blackveil.nz / blackveil.io
+	// would each return a 1.0-confidence NS match but no second signal in a
+	// live test, so they're dropped by the NEAR_DETERMINISTIC_SIGNALS gate.
+	// The new policy is pinned by test/discover-brand-domains-corroboration.test.ts.
+	it.skip('should discover expected brand domains via NS correlation (legacy single-signal — see LR-2)', async () => {
 		// For NS signal to work, we must provide candidates to correlate
 		const result = await discoverBrandDomains(corpus.seed, {
 			signals: ['ns'],
