@@ -10,7 +10,7 @@
  */
 
 import type { DNSQueryFunction, Finding } from '../types';
-import { createFinding } from '../check-utils';
+import { createFinding, isSubdomainOf } from '../check-utils';
 
 /** Parse DMARC tag-value pairs from a DMARC record string. */
 export function parseDmarcTags(record: string): Map<string, string> {
@@ -101,7 +101,7 @@ export async function checkRuaAuthorization(
 
 	for (const uri of ruaUris) {
 		const targetDomain = extractDomainFromMailto(uri);
-		if (!targetDomain || targetDomain === domain || checkedDomains.has(targetDomain)) continue;
+		if (!targetDomain || isSubdomainOf(targetDomain, domain) || checkedDomains.has(targetDomain)) continue;
 		checkedDomains.add(targetDomain);
 
 		try {
