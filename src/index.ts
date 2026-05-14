@@ -89,6 +89,7 @@ type BvMcpEnv = {
 	BV_DOH_ENDPOINT?: string;
 	BV_DOH_TOKEN?: string;
 	BV_CERTSTREAM?: Fetcher;
+	BV_WHOIS?: Fetcher;
 	REQUIRE_AUTH?: string;
 	ENABLE_OAUTH?: string;
 	ENABLE_OWNER_OAUTH?: string;
@@ -379,6 +380,7 @@ app.post('/mcp', async (c) => {
 					secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 					secondaryDohToken: c.env.BV_DOH_TOKEN,
 					certstream: c.env.BV_CERTSTREAM,
+					whoisBinding: c.env.BV_WHOIS,
 					country,
 					clientType,
 					authTier,
@@ -442,6 +444,7 @@ app.post('/mcp', async (c) => {
 		secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 		secondaryDohToken: c.env.BV_DOH_TOKEN,
 		certstream: c.env.BV_CERTSTREAM,
+		whoisBinding: c.env.BV_WHOIS,
 		country,
 		clientType,
 		authTier,
@@ -582,6 +585,7 @@ app.post('/mcp/messages', async (c) => {
 				secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 				secondaryDohToken: c.env.BV_DOH_TOKEN,
 				certstream: c.env.BV_CERTSTREAM,
+				whoisBinding: c.env.BV_WHOIS,
 				country,
 				clientType,
 				authTier,
