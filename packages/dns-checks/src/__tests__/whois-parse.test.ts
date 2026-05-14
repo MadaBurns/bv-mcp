@@ -5,13 +5,19 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
-import { join } from 'path';
 
 import { parseWhoisResponse, parseIanaReferral } from '../whois';
+import { WHOIS_FIXTURES } from './fixtures/whois';
 
-const FIXTURE_DIR = join(import.meta.dirname, 'fixtures/whois');
-const fixture = (name: string) => readFileSync(join(FIXTURE_DIR, name), 'utf8');
+// Fixtures live as .txt files for human inspection + are also baked into a TS
+// module via packages/dns-checks/scripts/regen-whois-fixtures.mjs so the parser
+// tests run pool-agnostic (workers runtime has no fs access to the workspace).
+const fixture = (filename: string): string => {
+	const key = filename.replace(/[-.]/g, '_') as keyof typeof WHOIS_FIXTURES;
+	const value = WHOIS_FIXTURES[key];
+	if (!value) throw new Error(`Unknown fixture: ${filename}`);
+	return value;
+};
 
 describe('parseWhoisResponse', () => {
 	it('extracts registrar from Verisign thin .com response (leading whitespace)', () => {
