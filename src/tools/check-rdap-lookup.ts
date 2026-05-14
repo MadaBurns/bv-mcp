@@ -172,10 +172,13 @@ interface FetcherLike {
 	fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
 }
 
-interface WhoisFallbackPayload {
-	registrar: string | null;
-	source: 'whois' | 'redacted' | 'notfound' | 'error';
-}
+import { z } from 'zod';
+
+const WhoisFallbackPayloadSchema = z.object({
+	registrar: z.string().max(256).nullable(),
+	source: z.enum(['whois', 'redacted', 'notfound', 'error']),
+});
+type WhoisFallbackPayload = z.infer<typeof WhoisFallbackPayloadSchema>;
 
 /**
  * Call the bv-whois shim Worker via service binding. Returns the structured
@@ -190,7 +193,10 @@ async function fetchWhoisRegistrar(domain: string, binding: FetcherLike | undefi
 			body: JSON.stringify({ domain }),
 		});
 		if (!resp.ok) return { registrar: null, source: 'error' };
-		return (await resp.json()) as WhoisFallbackPayload;
+		const raw = await resp.json();
+		const parsed = WhoisFallbackPayloadSchema.safeParse(raw);
+		if (!parsed.success) return { registrar: null, source: 'error' };
+		return parsed.data;
 	} catch {
 		return { registrar: null, source: 'error' };
 	}
