@@ -43,9 +43,10 @@ import type { OutputFormat } from '../handlers/tool-args';
 import { buildCheckResult, createFinding, type CheckResult, type Finding, type Severity } from '../lib/scoring';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isSubdomainOf } from '../lib/sanitize';
+import { generateMarkovLookalikes } from './markov-generator';
 
 /** All supported signal kinds. */
-export type DiscoverSignal = 'san' | 'ns' | 'dmarc_rua' | 'dkim_key_reuse';
+export type DiscoverSignal = 'san' | 'ns' | 'dmarc_rua' | 'dkim_key_reuse' | 'markov_gen';
 
 /** Default signal set used when the caller omits `signals`. */
 const ALL_SIGNALS: DiscoverSignal[] = ['san', 'ns', 'dmarc_rua', 'dkim_key_reuse'];
@@ -55,14 +56,27 @@ const DEFAULT_MIN_CONFIDENCE = 0.5;
 
 /** Default per-signal confidence used when the underlying module doesn't supply one. */
 const DEFAULT_SIGNAL_CONFIDENCE: Record<DiscoverSignal, number> = {
-	san: 0.7, // SAN co-ownership — strong but not deterministic (see san-correlator.ts comments)
-	ns: 0.8, // NS overlap — confidence comes from the module itself; this is the fallback
-	dmarc_rua: 0.6, // matches `dmarc-rua-miner.ts` fixed value for `related` classification
-	dkim_key_reuse: 0.95, // matches `dkim-key-reuse.ts` KEY_REUSE_CONFIDENCE
+	san: 0.1, // SAN co-ownership — speculative; multi-tenant CDN risk
+	ns: 0.9, // NS overlap — very strong organization signal (module always overrides with shared/seedNs ratio)
+	dmarc_rua: 0.6, // DMARC RUA `related` — module always supplies; matches dmarc-rua-miner emission
+	dkim_key_reuse: 0.95, // DKIM key reuse — near-deterministic (module always overrides)
+	markov_gen: 0.01, // speculative generation — purely a candidate seed, provides no weight on its own
 };
 
 /** Threshold above which a candidate is considered auto-include rather than review. */
 const AUTO_INCLUDE_THRESHOLD = 0.85;
+
+/**
+ * Signals strong enough to surface a candidate by themselves. Every other
+ * signal must be corroborated by ≥1 distinct signal to clear the gate.
+ *
+ * Why only dkim_key_reuse: shared DKIM private keys are near-deterministic
+ * ownership evidence — a third party cannot publish a matching `_domainkey`
+ * TXT without operator access. SAN co-tenancy is multi-tenant CDN noise,
+ * DMARC RUA can name unknown third-party aggregators, NS overlap collapses
+ * on commodity DNS/parking hosts. Those all need corroboration.
+ */
+const NEAR_DETERMINISTIC_SIGNALS: ReadonlySet<DiscoverSignal> = new Set(['dkim_key_reuse']);
 
 /** Per-candidate aggregation state during collection. */
 interface CandidateAggregator {
@@ -82,6 +96,7 @@ export interface DiscoverBrandDomainsDeps {
 	correlateNs: typeof defaultCorrelateNs;
 	mineDmarcRua: typeof defaultMineDmarcRua;
 	detectDkimKeyReuse: typeof defaultDetectDkimKeyReuse;
+	generateMarkovLookalikes: typeof generateMarkovLookalikes;
 }
 
 /** Tool args shape — the Zod schema lives in `src/schemas/tool-args.ts`. */
@@ -93,7 +108,7 @@ export interface DiscoverBrandDomainsOptions {
 }
 
 /** Combine independent-event confidences: P(any signal correct). */
-function combineConfidences(values: number[]): number {
+export function combineConfidences(values: number[]): number {
 	if (values.length === 0) return 0;
 	let product = 1;
 	for (const v of values) {
@@ -104,9 +119,12 @@ function combineConfidences(values: number[]): number {
 }
 
 /** Round to 4 decimals for stable test/log output. */
-function round4(n: number): number {
+export function round4(n: number): number {
 	return Math.round(n * 10_000) / 10_000;
 }
+
+/** Per-signal default confidences (exported for regression-lock tests). */
+export { DEFAULT_SIGNAL_CONFIDENCE };
 
 /** Default deps wiring used when the caller doesn't inject. */
 function defaultDeps(): DiscoverBrandDomainsDeps {
@@ -115,6 +133,7 @@ function defaultDeps(): DiscoverBrandDomainsDeps {
 		correlateNs: defaultCorrelateNs,
 		mineDmarcRua: defaultMineDmarcRua,
 		detectDkimKeyReuse: defaultDetectDkimKeyReuse,
+		generateMarkovLookalikes: generateMarkovLookalikes,
 	};
 }
 
@@ -152,6 +171,17 @@ async function runSignal<R>(fn: () => Promise<R>): Promise<SignalOutcome<R>> {
 	}
 }
 
+// Infrastructure-provider allowlist + match helpers live in a shared module so
+// the dmarc-rua miner can consume the same source of truth. Re-exported here
+// so existing test imports (test/audits/infrastructure-providers.audit.test.ts)
+// keep working.
+export {
+	INFRASTRUCTURE_PROVIDERS,
+	registeredApex,
+	isInfrastructureProvider,
+} from '../tenants/discovery/infrastructure-providers';
+import { isInfrastructureProvider } from '../tenants/discovery/infrastructure-providers';
+
 /**
  * Orchestrate brand-domain discovery across the four phase-4 signals.
  *
@@ -172,6 +202,11 @@ export async function discoverBrandDomains(
 		? Math.max(0, Math.min(1, options.min_confidence))
 		: DEFAULT_MIN_CONFIDENCE;
 
+	// Generate Markov lookalikes and merge with candidate_domains.
+	// These serve as a "seed pool" for the active signals (ns, dkim).
+	const markovCandidates = d.generateMarkovLookalikes(seedDomain, 20);
+	const mergedCandidates = Array.from(new Set([...candidateDomains, ...markovCandidates]));
+
 	// Pre-validate seed via the SAN correlator's strict guard. correlateSans
 	// throws on invalid input (programmer error) — we let that escape.
 	// We don't want to call it just for validation when 'san' isn't requested,
@@ -184,6 +219,14 @@ export async function discoverBrandDomains(
 
 	type Job = () => Promise<void>;
 	const aggregator = new Map<string, CandidateAggregator>();
+
+	// Seed the aggregator with markov candidates.
+	for (const mc of markovCandidates) {
+		addObservation(aggregator, mc, 'markov_gen', DEFAULT_SIGNAL_CONFIDENCE.markov_gen, {
+			strategy: 'trigram_markov',
+		});
+	}
+
 	const signalStatus: Record<string, { status: string; error?: string }> = {};
 	const jobs: Job[] = [];
 
@@ -206,7 +249,7 @@ export async function discoverBrandDomains(
 
 	if (signals.includes('ns')) {
 		jobs.push(async () => {
-			const out = await runSignal<NsCorrelationResult>(() => d.correlateNs(seedDomain, { candidateDomains }));
+			const out = await runSignal<NsCorrelationResult>(() => d.correlateNs(seedDomain, { candidateDomains: mergedCandidates }));
 			if (!out.ok) {
 				signalStatus.ns = { status: 'failed', error: out.error };
 				return;
@@ -241,7 +284,7 @@ export async function discoverBrandDomains(
 	if (signals.includes('dkim_key_reuse')) {
 		jobs.push(async () => {
 			const out = await runSignal<DkimKeyReuseResult>(() =>
-				d.detectDkimKeyReuse(seedDomain, candidateDomains, dkimSelectors ? { selectors: dkimSelectors } : {}),
+				d.detectDkimKeyReuse(seedDomain, mergedCandidates, dkimSelectors ? { selectors: dkimSelectors } : {}),
 			);
 			if (!out.ok) {
 				signalStatus.dkim_key_reuse = { status: 'failed', error: out.error };
@@ -281,13 +324,27 @@ export async function discoverBrandDomains(
 	// Build candidate findings.
 	const candidateFindings: Finding[] = [];
 	const surviving: Array<{ domain: string; combined: number; signals: DiscoverSignal[]; sources: Record<string, unknown> }> = [];
+
 	for (const entry of aggregator.values()) {
 		// Drop the seed or its subdomains if they accidentally appear (e.g. self-referenced rua=).
 		if (isSubdomainOf(entry.domain, seedDomain)) continue;
+
+		// DROPPED: Multi-tenant infrastructure providers are not shadow IT.
+		if (isInfrastructureProvider(entry.domain)) continue;
+
 		const perSignal = Array.from(entry.perSignalConfidence.entries());
+		
+		const signalKinds = perSignal.map(([k]) => k).sort() as DiscoverSignal[];
+
+		// Corroboration Requirement: a candidate must be corroborated by ≥2 distinct
+		// signals OR be a single near-deterministic signal. Filters single-signal
+		// markov_gen, san, dmarc_rua, and ns (LR-1, LR-2 in the v2.14.0 audit) —
+		// only single-signal dkim_key_reuse is permitted through this gate.
+		if (signalKinds.length === 1 && !NEAR_DETERMINISTIC_SIGNALS.has(signalKinds[0])) continue;
+
 		const combined = round4(combineConfidences(perSignal.map(([, c]) => c)));
 		if (combined < minConfidence) continue;
-		const signalKinds = perSignal.map(([k]) => k).sort() as DiscoverSignal[];
+		
 		surviving.push({ domain: entry.domain, combined, signals: signalKinds, sources: entry.sources });
 	}
 
