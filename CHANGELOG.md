@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.14.1] - 2026-05-14
+
+### Changed
+- **CI tooling only — no runtime changes**: `@cloudflare/vitest-pool-workers` bumped 0.15.2 → 0.16.4. Added `test.dangerouslyIgnoreUnhandledErrors: true` to `vitest.config.mts` to suppress miniflare's pool-teardown WebSocket-disconnect events that vitest was reporting as 2 file-level errors even when 3103/3103 test assertions passed — the events come from workerd's communication WebSocket on shutdown, not from any test code. Force-set `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` across all seven active workflows to silence the Node 20 deprecation warning while keeping action pins at v4 (avoids breaking-change risk from a major bump).
+- **CHANGELOG backfilled for 2.14.0**: The 2.14.0 release commit was written before PR #111's discovery-precision fixes landed and only mentioned the Shadow Domain fix + esbuild override. The full 2.14.0 entry now reflects what actually shipped — corroboration gate, expanded infrastructure-providers allowlist, caller-asserted bypass, Slice 6 multi-tenant NS filter, streaming crt.sh SAN parser, Markov generator, shared infrastructure-providers module.
+
 ## [2.14.0] - 2026-05-13
 
 ### Added
