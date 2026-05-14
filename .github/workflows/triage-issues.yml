@@ -7,6 +7,9 @@ on:
 permissions:
   issues: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   flag-promotional:
     runs-on: ubuntu-latest
