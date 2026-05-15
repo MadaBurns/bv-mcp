@@ -21,7 +21,7 @@ import {
     type CandidateInput,
     type RegistrarSource,
     type Classification,
-} from './lib/brand-classification';
+} from '../src/lib/brand-classification';
 
 /**
  * Production-shaped Fetcher that targets the live bv-whois shim Worker.

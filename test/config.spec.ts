@@ -89,8 +89,13 @@ describe('partner tier', () => {
 		expect(limit).toBe(100_000); // flat tier limit
 	});
 
-	it('enterprise tier has no per-tool overrides', () => {
-		expect(TIER_TOOL_DAILY_LIMITS.enterprise).toBeUndefined();
+	it('per-tier brand_audit_single overrides match BRAND_AUDIT_QUOTAS', () => {
+		// brand_audit_single is gated per-tier — free=0 via FREE_TOOL_DAILY_LIMITS,
+		// agent=0/developer=50/partner=200/enterprise=500 via per-tool overrides.
+		expect(TIER_TOOL_DAILY_LIMITS.agent?.brand_audit_single).toBe(0);
+		expect(TIER_TOOL_DAILY_LIMITS.developer?.brand_audit_single).toBe(50);
+		expect(TIER_TOOL_DAILY_LIMITS.partner?.brand_audit_single).toBe(200);
+		expect(TIER_TOOL_DAILY_LIMITS.enterprise?.brand_audit_single).toBe(500);
 	});
 });
 

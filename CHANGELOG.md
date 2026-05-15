@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.18.0] - 2026-05-15
+
+### Added
+- **`brand_audit_single` MCP tool** — synchronous one-target brand-portfolio audit. Composes `discoverBrandDomains` (all 8 signals) → parallel `checkRdapLookup` (concurrency=10) → `classifyCandidate` and emits a `CheckResult` with one finding per candidate plus a summary. Candidates land in one of four buckets (`consolidated` / `shadowIt` / `indeterminate` / `impersonation`) with severity mapped accordingly (info / medium / low / high). Cached 1h. Phase 1 of the brand-audit MCP suite — the sync sibling of the future async `brand_audit_batch_start` queue path. Findings emit under the existing `brand_discovery` CheckCategory (no scoring-union expansion) — the bucket lives in `metadata.bucket`, so production scan_domain scores are unchanged.
+- **`src/lib/brand-audit-quota.ts`** — per-tier monthly target quotas (`BRAND_AUDIT_QUOTAS`) — Phase 1 building block. Free/agent=0, developer=50, partner=200, enterprise=500, owner=unlimited. Counter aligned to UTC calendar month, stored on `RATE_LIMIT` KV with `brand_audit:` prefix; fail-open on KV errors. Runtime enforcement is split: the existing per-tool daily quota system (`FREE_TOOL_DAILY_LIMITS.brand_audit_single = 0`, `TIER_TOOL_DAILY_LIMITS.agent.brand_audit_single = 0`) gates free + agent immediately; the full monthly enforcement helper (`enforceBrandAuditQuota`) wires into the dispatcher in Phase 2 alongside the async batch path.
+- **`src/lib/brand-audit-markdown.ts`** — compact Markdown formatter for `brand_audit_single` results, mirroring the `format-report` pattern (sanitized output, bucket-grouped sections, quota / missingControl branches).
+
+### Changed
+- **`src/lib/brand-classification.ts`** — moved from `scripts/lib/brand-classification.ts` (and `.test.ts`) into production source so `brand_audit_single` can compose it. 32 existing classifier tests remained green throughout the move. The `scripts/csc-brand-audit.spec.ts` import path updated to `../src/lib/brand-classification`.
+
 ## [2.17.0] - 2026-05-15
 
 ### Added
