@@ -59,3 +59,4 @@ export const BrandAuditWatchWebhookPayloadSchema = z.object({
 
 export type BrandAuditWatchWebhookPayload = z.infer<typeof BrandAuditWatchWebhookPayloadSchema>;
 export type BrandAuditWatchDiffEntry = z.infer<typeof BrandAuditWatchDiffEntrySchema>;
+export type BrandAuditBucket = z.infer<typeof BrandAuditBucketSchema>;
