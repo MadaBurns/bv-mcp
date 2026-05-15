@@ -33,6 +33,9 @@ function inject() {
     if (privateConfig.analytics_engine_datasets) {
         publicConfig.analytics_engine_datasets = privateConfig.analytics_engine_datasets;
     }
+    if (privateConfig.r2_buckets) {
+        publicConfig.r2_buckets = privateConfig.r2_buckets;
+    }
     
     fs.writeFileSync('wrangler.production.jsonc', JSON.stringify(publicConfig, null, 2));
     console.log("Successfully generated wrangler.production.jsonc with injected private configuration.");
