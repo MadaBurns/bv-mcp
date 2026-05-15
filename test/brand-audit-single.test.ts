@@ -282,4 +282,140 @@ describe('brandAuditSingle', () => {
 		expect(summary?.metadata?.truncatedAt).toBeUndefined();
 		expect(summary?.metadata?.discoveredTotal).toBe(1);
 	});
+
+	describe('shadowIt + impersonation classifier branches', () => {
+		/**
+		 * Build a discovery CheckResult where the candidate finding carries
+		 * the new evidence fields the classifier reads (sharedTxtVerifications,
+		 * sharedMxPlatform, lookalikeScore). These ride on the candidate
+		 * finding's metadata; the orchestrator must surface them into
+		 * `CandidateInput`.
+		 */
+		function discoveryWithExtras(
+			seed: string,
+			extras: {
+				domain: string;
+				signals: string[];
+				conf: number;
+				sharedTxtVerifications?: string[];
+				sharedMxPlatform?: string | null;
+				lookalikeScore?: number;
+			},
+		): CheckResult {
+			const f: Finding = {
+				category: 'brand_discovery',
+				title: `Discovered candidate: ${extras.domain}`,
+				severity: 'info',
+				detail: `Found via ${extras.signals.length} signal(s)`,
+				metadata: {
+					candidate: extras.domain,
+					signals: extras.signals,
+					combinedConfidence: extras.conf,
+					sources: {},
+					sharedTxtVerifications: extras.sharedTxtVerifications ?? [],
+					sharedMxPlatform: extras.sharedMxPlatform ?? null,
+					lookalikeScore: extras.lookalikeScore ?? 0,
+				},
+			};
+			return {
+				category: 'brand_discovery',
+				score: 100,
+				findings: [summaryFinding(seed, 1), f],
+			};
+		}
+
+		it('shadowIt — candidate on disjoint provider but shares a TXT verification token (google-site-verification)', async () => {
+			const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+			const rdapSpy = vi.fn().mockImplementation((domain: string) => {
+				if (domain === 'example.com') return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Example Inc.'));
+				// shop.example-shop.com — Shopify-hosted, different registrar, no NS overlap
+				return Promise.resolve(rdapResult('Namecheap, Inc.', 'rdap', 'Third Party LLC'));
+			});
+			const deps = makeDeps({
+				discoverBrandDomains: vi.fn().mockResolvedValue(
+					discoveryWithExtras('example.com', {
+						domain: 'example-shop.com',
+						signals: ['markov_gen'],
+						conf: 0.55,
+						sharedTxtVerifications: ['google-site-verification=abc123'],
+					}),
+				),
+				checkRdapLookup: rdapSpy,
+			});
+			const result = await brandAuditSingle('example.com', { min_confidence: 0.4 }, deps);
+			const cand = result.findings.find((f) => f.metadata?.candidate === 'example-shop.com');
+			expect(cand?.metadata?.bucket).toBe('shadowIt');
+		});
+
+		it('shadowIt — candidate MX points at the same mail platform as target', async () => {
+			const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+			const rdapSpy = vi.fn().mockImplementation((domain: string) => {
+				if (domain === 'example.com') return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Example Inc.'));
+				return Promise.resolve(rdapResult('GoDaddy.com, LLC', 'rdap', 'Third Party LLC'));
+			});
+			const deps = makeDeps({
+				discoverBrandDomains: vi.fn().mockResolvedValue(
+					discoveryWithExtras('example.com', {
+						domain: 'example-mail.net',
+						signals: ['markov_gen'],
+						conf: 0.55,
+						sharedMxPlatform: 'google_workspace',
+					}),
+				),
+				checkRdapLookup: rdapSpy,
+			});
+			const result = await brandAuditSingle('example.com', { min_confidence: 0.4 }, deps);
+			const cand = result.findings.find((f) => f.metadata?.candidate === 'example-mail.net');
+			expect(cand?.metadata?.bucket).toBe('shadowIt');
+		});
+
+		it('impersonation — typosquat, registrar mismatch, no shared signal, lookalike ≥0.85', async () => {
+			const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+			const rdapSpy = vi.fn().mockImplementation((domain: string) => {
+				if (domain === 'example.com') return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Example Inc.'));
+				return Promise.resolve(rdapResult('Namecheap, Inc.', 'rdap', 'Privacy Service'));
+			});
+			const deps = makeDeps({
+				discoverBrandDomains: vi.fn().mockResolvedValue(
+					discoveryWithExtras('example.com', {
+						domain: 'examp1e.com',
+						signals: ['markov_gen'],
+						conf: 0.55, // medium — Rule 7 would otherwise catch as indeterminate
+						sharedTxtVerifications: [],
+						sharedMxPlatform: null,
+						lookalikeScore: 0.92,
+					}),
+				),
+				checkRdapLookup: rdapSpy,
+			});
+			const result = await brandAuditSingle('example.com', { min_confidence: 0.4 }, deps);
+			const cand = result.findings.find((f) => f.metadata?.candidate === 'examp1e.com');
+			expect(cand?.metadata?.bucket).toBe('impersonation');
+		});
+
+		it('NOT impersonation — typosquat but registrar family matches brand (defensive registration)', async () => {
+			const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+			const rdapSpy = vi.fn().mockImplementation((domain: string) => {
+				// Both target and candidate on MarkMonitor — defensive typosquat registration.
+				return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Example Inc.'));
+			});
+			const deps = makeDeps({
+				discoverBrandDomains: vi.fn().mockResolvedValue(
+					discoveryWithExtras('example.com', {
+						domain: 'examp1e.com',
+						signals: ['markov_gen'],
+						conf: 0.55,
+						sharedTxtVerifications: [],
+						sharedMxPlatform: null,
+						lookalikeScore: 0.92,
+					}),
+				),
+				checkRdapLookup: rdapSpy,
+			});
+			const result = await brandAuditSingle('example.com', { min_confidence: 0.4 }, deps);
+			const cand = result.findings.find((f) => f.metadata?.candidate === 'examp1e.com');
+			expect(cand?.metadata?.bucket).not.toBe('impersonation');
+			expect(['consolidated', 'indeterminate']).toContain(cand?.metadata?.bucket);
+		});
+	});
 });

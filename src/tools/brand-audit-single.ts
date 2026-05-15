@@ -221,6 +221,17 @@ export async function brandAuditSingle(
 		const confidence = (f.metadata!.combinedConfidence as number) ?? 0;
 		const lookup = lookups[i];
 
+		// Surface the cross-channel evidence fields the classifier reads for the
+		// shadowIt / impersonation branches. The discoverer emits these on the
+		// candidate finding's metadata; callers that don't yet populate them get
+		// the safe defaults ([], null, 0) and the new branches simply don't fire.
+		const md = f.metadata!;
+		const sharedTxtVerifications = Array.isArray(md.sharedTxtVerifications)
+			? (md.sharedTxtVerifications as string[])
+			: [];
+		const sharedMxPlatform = typeof md.sharedMxPlatform === 'string' ? (md.sharedMxPlatform as string) : null;
+		const lookalikeScore = typeof md.lookalikeScore === 'number' ? (md.lookalikeScore as number) : 0;
+
 		const candidate: CandidateInput = {
 			domain,
 			confidence,
@@ -228,6 +239,9 @@ export async function brandAuditSingle(
 			registrar: lookup.registrar,
 			registrarSource: lookup.registrarSource,
 			registrant: lookup.registrant,
+			sharedTxtVerifications,
+			sharedMxPlatform,
+			lookalikeScore,
 		};
 		const classification: Classification = classifyCandidate(candidate, targetCtx);
 		bucketCounts[classification.bucket]++;
