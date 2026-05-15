@@ -108,6 +108,10 @@ interface ToolRuntimeOptions {
 	rateLimitKv?: KVNamespace;
 	/** principalId of the calling user — required for enforceBrandAuditQuota. Key hash for auth, IP hash for unauth. */
 	principalId?: string;
+	/** R2 bucket binding for brand-audit PDF reports. v2.20.0+; used by brand_audit_get_report to mint signed URLs. */
+	brandReportsR2?: R2Bucket;
+	/** Service binding to bv-browser-renderer Worker. v2.20.0+; used by brand_audit_pdf_consumer at queue time, not by request-path tools. */
+	browserRenderer?: { fetch: typeof fetch };
 }
 
 /** Build QueryDnsOptions for individual check calls from runtime options. */
@@ -283,7 +287,7 @@ const TOOL_REGISTRY: Record<
 			return brandAuditGetReport(
 				{ auditId: String(args.auditId ?? ''), target: args.target as string | undefined },
 				principalId,
-				{ db },
+				{ db, bucket: ro?.brandReportsR2 as { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> } | undefined },
 			);
 		},
 		cacheTtlSeconds: 60,

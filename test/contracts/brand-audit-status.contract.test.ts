@@ -60,6 +60,8 @@ const GetReportTargetSummarySchema = z.object({
 	status: StatusEnum,
 	result: z.unknown(),
 	error: z.string().nullable(),
+	pdfUrl: z.string().nullable(),
+	pdfPending: z.boolean(),
 });
 
 const GetReportAggregateSummarySchema = z.object({

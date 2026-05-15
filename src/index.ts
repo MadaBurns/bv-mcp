@@ -769,6 +769,7 @@ import { handleScheduled, handleDailyDigest, handleFuzzingScan } from './schedul
 import type { ScheduledEnv } from './scheduled';
 import { handleScanQueue, type ScanQueueConsumerEnv } from './tenants/queue-consumer';
 import { handleBrandAuditQueue, type BrandAuditConsumerDeps } from './queue/brand-audit-consumer';
+import { handleBrandAuditPdfQueue, type BrandAuditPdfConsumerDeps } from './queue/brand-audit-pdf-consumer';
 import { handleTenantCycleAlerts, handleTenantWeeklyRescan, type TenantScheduledEnv } from './tenants/scheduled-handlers';
 
 export default {
@@ -795,15 +796,31 @@ export default {
 	queue: async (batch: MessageBatch<unknown>, env: Record<string, unknown>, ctx: ExecutionContext) => {
 		logEvent({ timestamp: new Date().toISOString(), category: 'queue', result: 'batch_received', severity: 'info', details: { queue: batch.queue, messageCount: batch.messages.length } });
 		if (batch.queue === 'brand-audit-queue') {
-			const db = (env as Record<string, unknown>).BRAND_AUDIT_DB as D1Database | undefined;
+			const e = env as Record<string, unknown>;
+			const db = e.BRAND_AUDIT_DB as D1Database | undefined;
 			if (!db) {
 				// Binding missing — ack every message to avoid hot-looping. Operator
 				// must provision per docs/provisioning/brand-audit-bindings.md.
 				for (const m of batch.messages) m.ack();
 				return;
 			}
-			const deps: BrandAuditConsumerDeps = { db };
+			const pdfQueue = e.BRAND_AUDIT_PDF_QUEUE as BrandAuditConsumerDeps['pdfQueue'] | undefined;
+			const deps: BrandAuditConsumerDeps = { db, pdfQueue };
 			await handleBrandAuditQueue(batch, deps);
+			return;
+		}
+		if (batch.queue === 'brand-audit-pdf-queue') {
+			const e = env as Record<string, unknown>;
+			const db = e.BRAND_AUDIT_DB as D1Database | undefined;
+			const bucket = e.BRAND_REPORTS as R2Bucket | undefined;
+			const renderer = e.BV_BROWSER_RENDERER as { fetch: typeof fetch } | undefined;
+			if (!db || !bucket || !renderer) {
+				// One or more required bindings missing — ack to avoid hot-looping.
+				for (const m of batch.messages) m.ack();
+				return;
+			}
+			const deps: BrandAuditPdfConsumerDeps = { db, bucket, renderer, serverVersion: SERVER_VERSION };
+			await handleBrandAuditPdfQueue(batch, deps);
 			return;
 		}
 		await handleScanQueue(batch, env as ScanQueueConsumerEnv, ctx);
