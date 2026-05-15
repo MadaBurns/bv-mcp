@@ -308,3 +308,100 @@ export async function handleDailyDigest(env: ScheduledEnv): Promise<void> {
 		});
 	}
 }
+
+// ----------------------------------------------------------------------------
+// Phase 4 (v2.21.0): brand-audit watch scheduler
+// ----------------------------------------------------------------------------
+
+/**
+ * Cap on watches enumerated per cron tick. Prevents a runaway-growth scenario
+ * where 10k+ watches drain the worker's wall-clock budget. Watches not picked
+ * up this tick get a fair-share opportunity the next time the cron fires
+ * (every 15 min).
+ */
+export const MAX_WATCHES_PER_TICK = 100;
+
+/** Interval → due-after milliseconds. Used to filter `last_run_at`. */
+const INTERVAL_MS: Record<'daily' | 'weekly' | 'monthly', number> = {
+	daily: 24 * 60 * 60 * 1000,
+	weekly: 7 * 24 * 60 * 60 * 1000,
+	monthly: 30 * 24 * 60 * 60 * 1000,
+};
+
+interface DueWatchRow {
+	id: string;
+	owner_id: string;
+	domain: string;
+	interval: 'daily' | 'weekly' | 'monthly';
+	webhook_url: string | null;
+	last_run_at: number | null;
+	last_classification_hash: string | null;
+}
+
+interface BrandAuditWatchEnv {
+	BRAND_AUDIT_DB?: D1Database;
+	BRAND_AUDIT_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+}
+
+/**
+ * Enumerate active brand-audit watches whose `last_run_at` is older than their
+ * interval (or null), enqueue a fresh `brand_audit_batch_start` for each, and
+ * bump `last_run_at` so they don't re-fire in the next tick.
+ *
+ * The handler does NOT compute classification-hash diffs here — that's done
+ * downstream when the audit completes and the consumer compares the new
+ * classification fingerprint to `last_classification_hash`. v2.21.0 ships the
+ * enqueue side; the diff-and-webhook delivery side is the next slice on the
+ * Phase-4 work-list.
+ */
+export async function handleBrandAuditWatches(
+	env: Record<string, unknown>,
+	_ctx: ExecutionContext,
+): Promise<void> {
+	const e = env as BrandAuditWatchEnv;
+	if (!e.BRAND_AUDIT_DB || !e.BRAND_AUDIT_QUEUE) return;
+	const now = Date.now();
+
+	let rows: DueWatchRow[] = [];
+	try {
+		const result = await e.BRAND_AUDIT_DB
+			.prepare(
+				'SELECT id, owner_id, domain, interval, webhook_url, last_run_at, last_classification_hash FROM brand_audit_watches WHERE active = 1 ORDER BY last_run_at ASC NULLS FIRST LIMIT ?',
+			)
+			.bind(MAX_WATCHES_PER_TICK)
+			.all<DueWatchRow>();
+		rows = result.results ?? [];
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'error',
+			category: 'scheduled',
+			details: { message: 'brand-audit watch enumeration failed' },
+		});
+		return;
+	}
+
+	for (const row of rows) {
+		const interval = INTERVAL_MS[row.interval];
+		if (row.last_run_at !== null && now - row.last_run_at < interval) {
+			continue;
+		}
+		try {
+			const auditId = crypto.randomUUID();
+			// One-target batch — every watch is single-domain.
+			await e.BRAND_AUDIT_QUEUE.send(
+				{ auditId, target: row.domain, format: 'json', watchId: row.id, ownerId: row.owner_id },
+				{ contentType: 'json' },
+			);
+			await e.BRAND_AUDIT_DB
+				.prepare('UPDATE brand_audit_watches SET last_run_at = ? WHERE id = ?')
+				.bind(now, row.id)
+				.run();
+		} catch (err) {
+			logError(err instanceof Error ? err : String(err), {
+				severity: 'warn',
+				category: 'scheduled',
+				details: { message: 'brand-audit watch enqueue failed', watchId: row.id },
+			});
+		}
+	}
+}
