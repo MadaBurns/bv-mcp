@@ -96,6 +96,12 @@ type BvMcpEnv = {
 	BV_WEB_OAUTH_CONSENT_URL?: string;
 	OAUTH_ISSUER?: string;
 	OAUTH_SIGNING_SECRET?: string;
+	BV_INTERNAL_DEV_KEY?: string;
+	BRAND_AUDIT_DB?: D1Database;
+	BRAND_AUDIT_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	BRAND_AUDIT_PDF_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	BRAND_REPORTS?: R2Bucket;
+	BV_BROWSER_RENDERER?: Fetcher;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -381,6 +387,11 @@ app.post('/mcp', async (c) => {
 					secondaryDohToken: c.env.BV_DOH_TOKEN,
 					certstream: c.env.BV_CERTSTREAM,
 					whoisBinding: c.env.BV_WHOIS,
+					brandAuditDb: c.env.BRAND_AUDIT_DB,
+					brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
+					brandReportsR2: c.env.BRAND_REPORTS,
+					browserRenderer: c.env.BV_BROWSER_RENDERER,
+					principalId: keyHash ?? ipHash,
 					country,
 					clientType,
 					authTier,
@@ -445,6 +456,11 @@ app.post('/mcp', async (c) => {
 		secondaryDohToken: c.env.BV_DOH_TOKEN,
 		certstream: c.env.BV_CERTSTREAM,
 		whoisBinding: c.env.BV_WHOIS,
+		brandAuditDb: c.env.BRAND_AUDIT_DB,
+		brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
+		brandReportsR2: c.env.BRAND_REPORTS,
+		browserRenderer: c.env.BV_BROWSER_RENDERER,
+		principalId: keyHash ?? ipHash,
 		country,
 		clientType,
 		authTier,
@@ -586,6 +602,11 @@ app.post('/mcp/messages', async (c) => {
 				secondaryDohToken: c.env.BV_DOH_TOKEN,
 				certstream: c.env.BV_CERTSTREAM,
 				whoisBinding: c.env.BV_WHOIS,
+				brandAuditDb: c.env.BRAND_AUDIT_DB,
+				brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
+				brandReportsR2: c.env.BRAND_REPORTS,
+				browserRenderer: c.env.BV_BROWSER_RENDERER,
+				principalId: keyHash ?? ipHash,
 				country,
 				clientType,
 				authTier,

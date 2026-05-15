@@ -73,6 +73,16 @@ export interface ExecuteMcpRequestOptions {
 	ipHash?: string;
 	certstream?: { fetch: typeof fetch };
 	whoisBinding?: { fetch: typeof fetch };
+	/** D1 binding for the brand-audit DB. v2.21.2+. */
+	brandAuditDb?: D1Database;
+	/** Cloudflare Queue producer for brand-audit batch path. v2.21.2+. */
+	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	/** R2 bucket binding for brand-audit PDF reports. v2.21.2+. */
+	brandReportsR2?: R2Bucket;
+	/** Service binding to bv-browser-renderer Worker. v2.21.2+. */
+	browserRenderer?: { fetch: typeof fetch };
+	/** principalId for the calling user — required by enforceBrandAuditQuota and IDOR-cache fix. v2.21.2+. */
+	principalId?: string;
 }
 
 function getDomainFromParams(params: Record<string, unknown> | undefined): string | undefined {
@@ -543,6 +553,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			authTier: options.authTier,
 			certstream: options.certstream,
 			whoisBinding: options.whoisBinding,
+			brandAuditDb: options.brandAuditDb,
+			brandAuditQueue: options.brandAuditQueue,
+			brandReportsR2: options.brandReportsR2,
+			browserRenderer: options.browserRenderer,
+			principalId: options.principalId,
 		}).then((dispatchResult) => {
 			if (dispatchResult.kind === 'early-error') {
 				return dispatchResult.payload;
@@ -614,6 +629,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			authTier: options.authTier,
 			certstream: options.certstream,
 			whoisBinding: options.whoisBinding,
+			brandAuditDb: options.brandAuditDb,
+			brandAuditQueue: options.brandAuditQueue,
+			brandReportsR2: options.brandReportsR2,
+			browserRenderer: options.browserRenderer,
+			principalId: options.principalId,
 		});
 
 		if (dispatchResult.kind === 'early-error') {

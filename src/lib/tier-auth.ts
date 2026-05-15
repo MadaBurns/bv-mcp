@@ -57,6 +57,7 @@ export async function resolveTier(
 	token: string | null,
 	env: {
 		BV_API_KEY?: string;
+		BV_INTERNAL_DEV_KEY?: string;
 		OWNER_ALLOW_IPS?: string;
 		RATE_LIMIT?: KVNamespace;
 		BV_WEB?: Fetcher;
@@ -225,6 +226,27 @@ export async function resolveTier(
 			// limits but not unlimited). If OWNER_ALLOW_IPS is unset, empty, or whitespace-
 			// only, owner is unrestricted (backward compat for self-hosted/dev where
 			// there's no IP filtering).
+			const allowed = parseOwnerAllowIps(env.OWNER_ALLOW_IPS);
+			if (allowed.length > 0 && (!clientIp || !allowed.includes(clientIp))) {
+				return { authenticated: true, tier: 'partner', keyHash };
+			}
+			return { authenticated: true, tier: 'owner', keyHash };
+		}
+	}
+
+	// 5. Parallel internal-dev key (v2.21.2+). Same owner-tier semantics as
+	// BV_API_KEY but a separate secret so rotating one doesn't invalidate the
+	// other. Use case: internal load tests, bulk Tranco scans, ops scripts —
+	// any time we want a key for "us only" without touching the customer-
+	// facing BV_API_KEY. Subject to the same OWNER_ALLOW_IPS gate.
+	if (env.BV_INTERNAL_DEV_KEY) {
+		const a = tokenRaw;
+		const b = await hashTokenRaw(env.BV_INTERNAL_DEV_KEY);
+		let mismatch = 0;
+		for (let i = 0; i < a.byteLength; i++) {
+			mismatch |= a[i] ^ b[i];
+		}
+		if (mismatch === 0) {
 			const allowed = parseOwnerAllowIps(env.OWNER_ALLOW_IPS);
 			if (allowed.length > 0 && (!clientIp || !allowed.includes(clientIp))) {
 				return { authenticated: true, tier: 'partner', keyHash };
