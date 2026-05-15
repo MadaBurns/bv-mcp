@@ -26,6 +26,7 @@ import {
 	BrandAuditBatchStartArgs,
 	BrandAuditStatusArgs,
 	BrandAuditGetReportArgs,
+	BrandAuditWatchArgs,
 	TOOL_SCHEMA_MAP,
 } from './tool-args';
 
@@ -460,6 +461,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		description:
 			"Fetch the result JSON for a completed brand audit. With `target` set, returns the per-target CheckResult; without, returns the audit-level aggregate. Returns notReady when polling against an in-flight audit. Phase 3 will add R2 signed-URL PDF retrieval; this v2.19.0 version returns inline JSON only.",
 		schema: BrandAuditGetReportArgs,
+		group: 'discovery',
+		scanIncluded: false,
+	},
+	brand_audit_watch: {
+		description:
+			"Register, list, or delete recurring brand-audit watches. Watches run on a daily/weekly/monthly cadence via the scheduled cron tick — each run enqueues a fresh brand_audit_batch_start and (when configured) POSTs a diff webhook on classification drift. Owner-scoped; per-principal cap of 20 active watches. Phase 4 (v2.21.0+).",
+		schema: BrandAuditWatchArgs,
 		group: 'discovery',
 		scanIncluded: false,
 	},

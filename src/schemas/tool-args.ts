@@ -270,6 +270,15 @@ export const BrandAuditGetReportArgs = z.object({
 		.describe('Specific target domain. Omit for audit-level aggregate.'),
 }).passthrough();
 
+/** brand_audit_watch — register/list/delete recurring brand-audit watches. */
+export const BrandAuditWatchArgs = z.object({
+	action: z.enum(['register', 'list', 'delete']).describe("Action: 'register' creates a new watch, 'list' returns the caller's watches, 'delete' removes one."),
+	domain: DomainSchema.optional().describe('Domain to watch. Required for action=register.'),
+	interval: z.enum(['daily', 'weekly', 'monthly']).optional().describe('Recurrence interval. Required for action=register.'),
+	webhook_url: z.string().url().max(2048).optional().describe('Optional webhook URL — POSTed on classification drift. Re-validated for SSRF at both register and delivery time.'),
+	watchId: z.string().min(1).max(64).optional().describe('Watch ID returned by action=register. Required for action=delete.'),
+}).passthrough();
+
 /**
  * Map of every tool name to its Zod argument schema.
  * Used for runtime validation in tools.ts and for inputSchema generation.
@@ -331,4 +340,5 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	brand_audit_batch_start: BrandAuditBatchStartArgs,
 	brand_audit_status: BrandAuditStatusArgs,
 	brand_audit_get_report: BrandAuditGetReportArgs,
+	brand_audit_watch: BrandAuditWatchArgs,
 };

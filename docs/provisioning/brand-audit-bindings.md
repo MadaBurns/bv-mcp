@@ -110,6 +110,21 @@ CREATE TABLE IF NOT EXISTS brand_audit_targets (
   completed_at INTEGER,
   PRIMARY KEY (audit_id, target)
 );
+
+-- Phase 4 (v2.21.0) — recurring monitor watches
+CREATE TABLE IF NOT EXISTS brand_audit_watches (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  interval TEXT NOT NULL CHECK (interval IN ('daily','weekly','monthly')),
+  webhook_url TEXT,
+  last_run_at INTEGER,
+  last_classification_hash TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_brand_audit_watches_owner ON brand_audit_watches(owner_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_brand_audit_watches_due ON brand_audit_watches(active, last_run_at);
 ```
 
 Apply via:

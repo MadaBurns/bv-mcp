@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.21.0] - 2026-05-15
+
+### Added — Brand audit Phase 4: scheduled monitoring + monthly quota enforcement
+
+- **`brand_audit_watch` MCP tool** — register / list / delete recurring brand-audit watches. Single tool with an `action` discriminator. Owner-scoped (cross-owner deletes surface as `notFound`, never `accessDenied`). Per-principal cap of 20 active watches. Webhook URL re-validated via `validateOutboundUrl` at both register and delivery time (SSRF defense).
+- **`brand_audit_watches` D1 table** (`src/lib/db/brand-audit-schema.ts`) — id, owner_id, domain, interval (daily/weekly/monthly), webhook_url, last_run_at, last_classification_hash, active, created_at. Indexed on `(owner_id, created_at)` and `(active, last_run_at)`.
+- **`handleBrandAuditWatches`** (`src/scheduled.ts`) — cron handler that enumerates active watches whose `last_run_at` is older than their interval, enqueues a fresh `brand_audit_batch_start` per due watch, bumps `last_run_at`. Bounded per-tick by `MAX_WATCHES_PER_TICK = 100`. Fails soft on D1 errors (logged + skipped, doesn't crash the cron tick). Wired into the existing `*/15 * * * *` cron in `src/index.ts`.
+- **`src/schemas/brand-audit-watch-webhook.ts`** — published Zod schema for the diff webhook payload (`{ schemaVersion, watchId, auditId, target, interval, detectedAt, previousHash, currentHash, changes: { added, removed, modified } }`). Locked here so downstream consumers (customer receivers, bv-web alert UI) have a wire-format contract that requires a `schemaVersion` bump to change.
+
+### Changed — Monthly brand-audit quota enforcement (carryover from Phase 1)
+- **`enforceBrandAuditQuota` is now actually called at runtime.** The helper + `BRAND_AUDIT_QUOTAS` constant shipped in v2.18.0 as a Phase-1 building block; v2.19.0 documented it as a deferred wiring task. v2.21.0 closes that gap: the dispatcher constructs a closure binding `principalId + authTier + rateLimitKv` and passes it as the `enforceQuota` dep into `brand_audit_single` and `brand_audit_batch_start`. The daily caps via `TIER_TOOL_DAILY_LIMITS` continue as a first-line check; the monthly UTC-window cap (`BRAND_AUDIT_QUOTAS`) now applies on top — free/agent=0, developer=50/mo, partner=200/mo, enterprise=500/mo, owner=unlimited.
+
+### Tests
+- `test/brand-audit-watch.integration.test.ts` — 7 unit tests (register happy path, SSRF webhook rejection, no-webhook register, watch-limit cap, list, delete, cross-owner notFound).
+- `test/scheduled/brand-audit-cron.spec.ts` — 5 cron-handler tests (missing DB no-op, due watches enqueued, watch cap is bounded, missing queue fails soft, D1 enumeration failure fails soft).
+- `test/contracts/brand-audit-watch-webhook.contract.test.ts` — 7 contract tests covering required fields, `schemaVersion` lock, hash format validation, bucket enum, required collections.
+- `test/audits/brand-audit-watch-webhook.audit.test.ts` — 3 audit tests asserting the schema covers every documented field.
+- Tool-count assertion cascade 56 → 57 across `test/{tool-metadata,tool-schemas,handlers-tools,index,schemas/tool-args,schemas/tool-definitions}.spec.ts`; `NON_SCAN_TOOL_NAMES` gets the new `brand_audit_watch` entry.
+
+### Operator action required (deploy)
+- **Schema apply**: `wrangler d1 execute brand-audit-v1 --remote --command "<paste brand_audit_watches CREATE TABLE>"` (full SQL inline in `docs/provisioning/brand-audit-bindings.md`).
+- **No new bindings**: watches reuse `BRAND_AUDIT_DB` + `BRAND_AUDIT_QUEUE` from v2.19.0. The existing `*/15 * * * *` cron in `wrangler.jsonc` already covers the new handler.
+- **Quota visibility**: the monthly enforcement now actually meters. Customers on `developer` who burned 50 audits in one day will be blocked for the remainder of the calendar month (UTC reset). Communicate the change before flipping.
+
 ## [2.20.0] - 2026-05-15
 
 ### Added — Brand audit Phase 3: PDF rendering via BV_BROWSER_RENDERER + R2

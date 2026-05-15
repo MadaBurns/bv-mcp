@@ -765,7 +765,7 @@ app.all('*', (c) => {
 	return c.text('Not found', 404);
 });
 
-import { handleScheduled, handleDailyDigest, handleFuzzingScan } from './scheduled';
+import { handleScheduled, handleDailyDigest, handleFuzzingScan, handleBrandAuditWatches } from './scheduled';
 import type { ScheduledEnv } from './scheduled';
 import { handleScanQueue, type ScanQueueConsumerEnv } from './tenants/queue-consumer';
 import { handleBrandAuditQueue, type BrandAuditConsumerDeps } from './queue/brand-audit-consumer';
@@ -786,6 +786,7 @@ export default {
 			ctx.waitUntil(handleScheduled(env as ScheduledEnv));
 			ctx.waitUntil(handleFuzzingScan(env as ScheduledEnv));
 			ctx.waitUntil(handleTenantCycleAlerts(env as TenantScheduledEnv, ctx));
+			ctx.waitUntil(handleBrandAuditWatches(env, ctx));
 		}
 	},
 	/**

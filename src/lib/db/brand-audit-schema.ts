@@ -76,3 +76,43 @@ export type BrandAuditRow = typeof brandAudits.$inferSelect;
 export type BrandAuditInsert = typeof brandAudits.$inferInsert;
 export type BrandAuditTargetRow = typeof brandAuditTargets.$inferSelect;
 export type BrandAuditTargetInsert = typeof brandAuditTargets.$inferInsert;
+
+/** Recurring monitor interval for `brand_audit_watches`. */
+export type BrandAuditWatchInterval = 'daily' | 'weekly' | 'monthly';
+
+/**
+ * Recurring brand-audit watches (v2.21.0+).
+ *
+ * One row per (owner, domain, interval) tuple. The scheduled cron tick
+ * enumerates active watches whose `last_run_at` is older than their interval,
+ * enqueues a fresh `brand_audit_batch_start`, and on completion compares the
+ * new classification fingerprint to `last_classification_hash`. On drift,
+ * POSTs a diff webhook to `webhook_url` (validated for SSRF at register time
+ * AND at delivery time — see lib/safe-fetch.ts).
+ *
+ * `last_classification_hash` is a SHA-256 of the sorted (target, bucket)
+ * tuples. Any change in candidate set, bucket assignment, or registrar
+ * ownership of the seed counts as drift.
+ */
+export const brandAuditWatches = sqliteTable(
+	'brand_audit_watches',
+	{
+		id: text('id').primaryKey(),
+		owner_id: text('owner_id').notNull(),
+		domain: text('domain').notNull(),
+		interval: text('interval', { enum: ['daily', 'weekly', 'monthly'] as const }).notNull(),
+		/** Optional webhook URL — when null, drift is logged but not delivered externally. */
+		webhook_url: text('webhook_url'),
+		/** Epoch ms of most recent enqueue, used for `due-now` filtering on cron ticks. */
+		last_run_at: integer('last_run_at'),
+		/** SHA-256 hex of the sorted candidate list from the most recent completed run. */
+		last_classification_hash: text('last_classification_hash'),
+		/** 1=active, 0=paused. Deletion is via the watch tool, not soft-delete here. */
+		active: integer('active', { mode: 'boolean' }).notNull().default(true),
+		created_at: integer('created_at').notNull(),
+	},
+	(t) => [index('idx_brand_audit_watches_owner').on(t.owner_id, t.created_at), index('idx_brand_audit_watches_due').on(t.active, t.last_run_at)],
+);
+
+export type BrandAuditWatchRow = typeof brandAuditWatches.$inferSelect;
+export type BrandAuditWatchInsert = typeof brandAuditWatches.$inferInsert;
