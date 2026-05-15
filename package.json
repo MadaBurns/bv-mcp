@@ -52,7 +52,7 @@
 		"tsup": "8.5.0",
 		"typescript": "5.9.3",
 		"typescript-eslint": "8.56.0",
-		"vitest": "4.1.2",
+		"vitest": "4.1.6",
 		"wrangler": "^4.90.0"
 	},
 	"overrides": {
