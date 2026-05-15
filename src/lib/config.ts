@@ -168,6 +168,16 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		check_subdomailing: 500_000,
 		explain_finding: 500_000,
 		discover_brand_domains: 50_000,
+		brand_audit_single: 200,
+	},
+	developer: {
+		brand_audit_single: 50,
+	},
+	enterprise: {
+		brand_audit_single: 500,
+	},
+	agent: {
+		brand_audit_single: 0,
 	},
 };
 
@@ -225,6 +235,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_dnssec_chain: 10,
 	check_fast_flux: 3,
 	discover_brand_domains: 1,
+	brand_audit_single: 0,
 };
 
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */

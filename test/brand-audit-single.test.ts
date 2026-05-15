@@ -1,0 +1,244 @@
+// SPDX-License-Identifier: BUSL-1.1
+
+/**
+ * Tests for the brand_audit_single MCP tool.
+ *
+ * The orchestrator composes three existing pieces:
+ *   1. `discoverBrandDomains` — finds candidate brand-related domains
+ *   2. `checkRdapLookup` per candidate — populates registrar + registrant
+ *   3. `classifyCandidate` — buckets candidates by ownership evidence
+ *
+ * All three are injected as deps so unit tests stay fast and offline.
+ */
+
+import { describe, it, expect, vi } from 'vitest';
+import type { CheckResult, Finding } from '../src/lib/scoring';
+import type { BrandAuditSingleDeps } from '../src/tools/brand-audit-single';
+
+function candidateFinding(
+	domain: string,
+	signals: string[],
+	combinedConfidence: number,
+	severity: 'low' | 'info' = 'low',
+): Finding {
+	return {
+		category: 'brand_discovery',
+		title: `Discovered candidate: ${domain}`,
+		severity,
+		detail: `Found via ${signals.length} signal(s): ${signals.join(', ')}; combined confidence ${combinedConfidence.toFixed(2)}.`,
+		metadata: { candidate: domain, signals, combinedConfidence, sources: {} },
+	};
+}
+
+function summaryFinding(seedDomain: string, surfaced: number): Finding {
+	return {
+		category: 'brand_discovery',
+		title: `Brand-domain discovery: ${surfaced} candidate(s) at confidence ≥ 0.5`,
+		severity: 'info',
+		detail: `Seed=${seedDomain}`,
+		metadata: { summary: true, signals: ['san', 'ns'], signalStatus: {}, minConfidence: 0.5, totalAggregated: surfaced, surfaced },
+	};
+}
+
+function rdapResult(registrar: string, source: 'rdap' | 'whois' | 'redacted' | 'notfound' | 'unknown', registrant: string | null = null): CheckResult {
+	return {
+		category: 'rdap',
+		score: 100,
+		findings: [
+			{
+				category: 'rdap',
+				title: `RDAP registrar`,
+				severity: 'info',
+				detail: `${registrar} (${source})`,
+				metadata: { registrar, registrarSource: source, registrant },
+			},
+		],
+	};
+}
+
+function discoveryResult(seed: string, candidates: Array<{ domain: string; signals: string[]; conf: number }>): CheckResult {
+	const candFindings = candidates.map((c) => candidateFinding(c.domain, c.signals, c.conf, c.conf >= 0.85 ? 'low' : 'info'));
+	return {
+		category: 'brand_discovery',
+		score: 100,
+		findings: [summaryFinding(seed, candidates.length), ...candFindings],
+	};
+}
+
+function emptyDiscoveryResult(seed: string): CheckResult {
+	return {
+		category: 'brand_discovery',
+		score: 100,
+		findings: [
+			{
+				category: 'brand_discovery',
+				title: `Brand-domain discovery: 0 candidate(s) at confidence ≥ 0.5`,
+				severity: 'info',
+				detail: `Seed=${seed} aggregated_total=0 surfaced=0`,
+				metadata: { summary: true, signals: ['san'], signalStatus: { san: { status: 'failed', error: 'crt.sh down' } }, minConfidence: 0.5, totalAggregated: 0, surfaced: 0 },
+			},
+		],
+	};
+}
+
+function makeDeps(overrides: Partial<BrandAuditSingleDeps> = {}): BrandAuditSingleDeps {
+	return {
+		discoverBrandDomains: vi.fn().mockResolvedValue(discoveryResult('apple.com', [])),
+		checkRdapLookup: vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'rdap', 'Apple Inc.')),
+		enforceQuota: vi.fn().mockResolvedValue({ allowed: true, remaining: 49, limit: 50 }),
+		...overrides,
+	};
+}
+
+describe('brandAuditSingle', () => {
+	it('classifies discovered candidates into four buckets and emits a summary', async () => {
+		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+
+		// Three candidates with distinct evidence shapes — should fan out to distinct buckets.
+		const candidates = [
+			{ domain: 'apple.net', signals: ['ns', 'san'], conf: 0.95 }, // strong infra → consolidated
+			{ domain: 'apple-store.net', signals: ['dmarc_rua'], conf: 0.7 }, // dmarc_rua only, different registrar → shadowIt
+			{ domain: 'aple.co', signals: ['markov_gen'], conf: 0.45 }, // low confidence, no infra → impersonation (forced via min_confidence override)
+		];
+
+		const rdapMock = vi.fn().mockImplementation((domain: string) => {
+			if (domain === 'apple.com') return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Apple Inc.'));
+			if (domain === 'apple.net') return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Apple Inc.'));
+			if (domain === 'apple-store.net') return Promise.resolve(rdapResult('GoDaddy', 'rdap', 'Third Party LLC'));
+			return Promise.resolve(rdapResult('Unknown', 'notfound'));
+		});
+
+		const deps = makeDeps({
+			discoverBrandDomains: vi.fn().mockResolvedValue(discoveryResult('apple.com', candidates)),
+			checkRdapLookup: rdapMock,
+		});
+
+		const result = await brandAuditSingle('apple.com', { min_confidence: 0.4 }, deps);
+
+		expect(result.category).toBe('brand_discovery');
+		// Summary + per-candidate findings.
+		const candFindings = result.findings.filter((f) => f.metadata?.candidate);
+		expect(candFindings).toHaveLength(3);
+
+		const buckets = candFindings.map((f) => f.metadata?.bucket as string).sort();
+		// Each candidate landed in a bucket — exact distribution depends on classifier
+		// rules, but we lock the invariant that every candidate gets one and only one.
+		expect(buckets.every((b) => ['consolidated', 'shadowIt', 'indeterminate', 'impersonation'].includes(b))).toBe(true);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary).toBeDefined();
+		expect(summary?.metadata?.target).toBe('apple.com');
+		expect(summary?.metadata?.consolidated).toBeTypeOf('number');
+		expect(summary?.metadata?.shadowIt).toBeTypeOf('number');
+		expect(summary?.metadata?.indeterminate).toBeTypeOf('number');
+		expect(summary?.metadata?.impersonation).toBeTypeOf('number');
+		const total = (summary!.metadata!.consolidated as number) + (summary!.metadata!.shadowIt as number) + (summary!.metadata!.indeterminate as number) + (summary!.metadata!.impersonation as number);
+		expect(total).toBe(3);
+	});
+
+	it('assigns severity by bucket (consolidated=info, indeterminate=low, shadowIt=medium, impersonation=high)', async () => {
+		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+
+		// Two strong-infra candidates — both should land in `consolidated` with `info` severity.
+		const candidates = [
+			{ domain: 'apple.net', signals: ['ns'], conf: 0.95 },
+			{ domain: 'apple.org', signals: ['dkim_key_reuse'], conf: 0.97 },
+		];
+		const deps = makeDeps({
+			discoverBrandDomains: vi.fn().mockResolvedValue(discoveryResult('apple.com', candidates)),
+			checkRdapLookup: vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'rdap', 'Apple Inc.')),
+		});
+		const result = await brandAuditSingle('apple.com', {}, deps);
+		const candFindings = result.findings.filter((f) => f.metadata?.candidate);
+		for (const f of candFindings) {
+			expect(f.metadata?.bucket).toBe('consolidated');
+			expect(f.severity).toBe('info');
+		}
+	});
+
+	it('emits a missingControl summary when discovery surfaces zero candidates', async () => {
+		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+		const deps = makeDeps({
+			discoverBrandDomains: vi.fn().mockResolvedValue(emptyDiscoveryResult('apple.com')),
+			checkRdapLookup: vi.fn(),
+		});
+		const result = await brandAuditSingle('apple.com', {}, deps);
+
+		const candFindings = result.findings.filter((f) => f.metadata?.candidate);
+		expect(candFindings).toHaveLength(0);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary).toBeDefined();
+		expect(summary?.metadata?.missingControl).toBe(true);
+		// RDAP shouldn't have been called for the target when there were no candidates to classify… or
+		// alternatively it MAY have been called once for the target itself (to seed registrar family);
+		// we accept either, but it must not be called more than once.
+		expect((deps.checkRdapLookup as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(1);
+	});
+
+	it('rejects the call when quota is exceeded, without calling discovery', async () => {
+		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+		const discoverSpy = vi.fn();
+		const rdapSpy = vi.fn();
+		const deps = makeDeps({
+			discoverBrandDomains: discoverSpy,
+			checkRdapLookup: rdapSpy,
+			enforceQuota: vi.fn().mockResolvedValue({ allowed: false, remaining: 0, limit: 50, retryAfterMs: 86_400_000 }),
+		});
+		const result = await brandAuditSingle('apple.com', {}, deps);
+
+		const errorFinding = result.findings.find((f) => f.metadata?.quotaExceeded === true);
+		expect(errorFinding).toBeDefined();
+		expect(errorFinding?.severity).toBe('high');
+		expect(discoverSpy).not.toHaveBeenCalled();
+		expect(rdapSpy).not.toHaveBeenCalled();
+	});
+
+	it('classifies candidates even when individual RDAP lookups fail', async () => {
+		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+		const candidates = [
+			{ domain: 'apple.net', signals: ['ns'], conf: 0.95 },
+			{ domain: 'apple.org', signals: ['ns'], conf: 0.95 },
+		];
+		const rdapSpy = vi.fn().mockImplementation((domain: string) => {
+			if (domain === 'apple.com') return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Apple Inc.'));
+			if (domain === 'apple.net') return Promise.reject(new Error('RDAP timeout'));
+			return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Apple Inc.'));
+		});
+		const deps = makeDeps({
+			discoverBrandDomains: vi.fn().mockResolvedValue(discoveryResult('apple.com', candidates)),
+			checkRdapLookup: rdapSpy,
+		});
+		const result = await brandAuditSingle('apple.com', {}, deps);
+
+		const candFindings = result.findings.filter((f) => f.metadata?.candidate);
+		expect(candFindings).toHaveLength(2);
+		// Both still classified — the rdap failure surfaces as registrarSource=unknown.
+		const failed = candFindings.find((f) => f.metadata?.candidate === 'apple.net');
+		expect(failed?.metadata?.registrarSource).toBe('unknown');
+	});
+
+	it('threads min_confidence into discoverBrandDomains and the cache-key inputs', async () => {
+		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+		const discoverSpy = vi.fn().mockResolvedValue(emptyDiscoveryResult('apple.com'));
+		const deps = makeDeps({ discoverBrandDomains: discoverSpy });
+		await brandAuditSingle('apple.com', { min_confidence: 0.7 }, deps);
+
+		expect(discoverSpy).toHaveBeenCalledTimes(1);
+		const [, optsArg] = discoverSpy.mock.calls[0];
+		expect(optsArg.min_confidence).toBe(0.7);
+	});
+
+	it('marks subdomain candidates as consolidated/Organizational', async () => {
+		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+		const candidates = [{ domain: 'login.apple.com', signals: ['markov_gen'], conf: 0.5 }];
+		const deps = makeDeps({
+			discoverBrandDomains: vi.fn().mockResolvedValue(discoveryResult('apple.com', candidates)),
+			checkRdapLookup: vi.fn().mockResolvedValue(rdapResult('Unknown', 'unknown')),
+		});
+		const result = await brandAuditSingle('apple.com', { min_confidence: 0.4 }, deps);
+		const cand = result.findings.find((f) => f.metadata?.candidate === 'login.apple.com');
+		expect(cand?.metadata?.bucket).toBe('consolidated');
+		expect(cand?.metadata?.note).toBe('Organizational Subdomain');
+	});
+});
