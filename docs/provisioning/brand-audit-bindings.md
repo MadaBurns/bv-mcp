@@ -1,8 +1,9 @@
-# Brand-Audit Bindings (v2.19.0+)
+# Brand-Audit Bindings (v2.19.0 + Phase-3 v2.20.0)
 
 The `brand_audit_batch_start` async path needs production-only resources: one D1
-database, one Cloudflare Queue, and one R2 bucket (R2 actually consumed by Phase
-3 PDF rendering — declared now for forward-compat).
+database, two Cloudflare Queues (primary `brand-audit-queue` and the v2.20.0
+PDF render queue `brand-audit-pdf-queue`), one R2 bucket, and one service
+binding to `bv-browser-renderer` (Phase 3, v2.20.0+).
 
 These bindings live in `.dev/wrangler.deploy.jsonc` (gitignored) and are merged
 into `wrangler.production.jsonc` at deploy time by `scripts/inject-private-config.cjs`.
@@ -15,11 +16,18 @@ bindings (KV, D1, queues, R2) — see CLAUDE.md "Production Injection Workflow".
 # D1 — single global database, not per-tenant
 npx wrangler d1 create brand-audit-v1
 
-# Queue
+# Primary queue (Phase 2)
 npx wrangler queues create brand-audit-queue
 
-# R2 (forward-compat; only Phase 3 PDF rendering writes to it)
+# PDF render queue (Phase 3, v2.20.0+ — separate so PDF render doesn't gate audit completion)
+npx wrangler queues create brand-audit-pdf-queue
+
+# R2 — Phase 3 PDF rendering writes to this bucket
 npx wrangler r2 bucket create bv-brand-reports
+
+# BV_BROWSER_RENDERER service binding (Phase 3) — no provisioning command;
+# the bv-browser-renderer Worker must already be deployed in the same account.
+# Wire it in .dev/wrangler.deploy.jsonc under `services:`.
 ```
 
 Capture the D1 `database_id` from the create-output and insert below.
@@ -41,7 +49,8 @@ Add to the existing private deploy config under the same shape as `BV_SCANNER_QU
   "queues": {
     "producers": [
       // ... existing BV_SCANNER_QUEUE entry ...
-      { "binding": "BRAND_AUDIT_QUEUE", "queue": "brand-audit-queue" }
+      { "binding": "BRAND_AUDIT_QUEUE", "queue": "brand-audit-queue" },
+      { "binding": "BRAND_AUDIT_PDF_QUEUE", "queue": "brand-audit-pdf-queue" }
     ],
     "consumers": [
       // ... existing bv-scanner-queue consumer ...
@@ -50,11 +59,21 @@ Add to the existing private deploy config under the same shape as `BV_SCANNER_QU
         "max_batch_size": 5,
         "max_batch_timeout": 30,
         "max_retries": 3
+      },
+      {
+        "queue": "brand-audit-pdf-queue",
+        "max_batch_size": 1,
+        "max_batch_timeout": 30,
+        "max_retries": 3
       }
     ]
   },
   "r2_buckets": [
     { "binding": "BRAND_REPORTS", "bucket_name": "bv-brand-reports" }
+  ],
+  "services": [
+    // ... existing BV_WEB, BV_WHOIS, BV_CERTSTREAM entries ...
+    { "binding": "BV_BROWSER_RENDERER", "service": "bv-browser-renderer" }
   ]
 }
 ```
