@@ -28,6 +28,27 @@ export interface CandidateInput {
 	registrarSource?: RegistrarSource;
 	/** Registrant organization (from RDAP entities). null when redacted/unavailable. */
 	registrant?: string | null;
+	/**
+	 * TXT verification tokens (e.g. `google-site-verification=...`, `MS=ms12345`)
+	 * present on BOTH the candidate and the target. Sharing such a token is
+	 * deterministic evidence that the same operator controls both zones — even
+	 * when DNS / certs / DKIM are hosted disjointly (shopify, marketing SaaS).
+	 * Empty/undefined → no shared TXT signal. Driver of the shadowIt branch.
+	 */
+	sharedTxtVerifications?: string[];
+	/**
+	 * Identifier for a mail platform when the candidate's MX RR set points at
+	 * the same provider as the target (e.g. `google_workspace`, `m365`, `proofpoint`).
+	 * null/undefined → no shared MX platform. Driver of the shadowIt branch.
+	 */
+	sharedMxPlatform?: string | null;
+	/**
+	 * Visual / string-similarity score against the target's effective domain
+	 * label, in [0, 1]. Typosquat candidates have ≥0.85. Together with a
+	 * registrar-family mismatch (and no shared infrastructure) this signals
+	 * impersonation. Defaults to 0 (i.e. not a lookalike) when omitted.
+	 */
+	lookalikeScore?: number;
 }
 
 export interface TargetContext {
@@ -56,6 +77,14 @@ const SHADOW_IT_CONFIDENCE_THRESHOLD = 0.7;
 
 /** Confidence threshold above which a candidate without strong signals is indeterminate rather than impersonation. */
 const INDETERMINATE_CONFIDENCE_THRESHOLD = 0.5;
+
+/**
+ * Lookalike-similarity threshold at which a candidate is plausibly a typosquat.
+ * Combined with a registrar-family mismatch and no shared-infra evidence, this
+ * tips a candidate into the impersonation bucket. Calibrated against the
+ * empirical BrandAudit brand-audit set (`reports/brand-audit-audit-results.json`).
+ */
+const IMPERSONATION_LOOKALIKE_THRESHOLD = 0.85;
 
 /**
  * Normalize a registrant organization string for cross-domain comparison.
@@ -103,6 +132,57 @@ export function isSubdomainOf(candidate: string, target: string): boolean {
 
 function hasStrongInfraSignal(signals: string[]): string[] {
 	return signals.filter((s) => STRONG_INFRA_SIGNALS.has(s));
+}
+
+/**
+ * Pure shadowIt predicate: candidate is plausibly operated by the brand but
+ * sits on disjoint DNS/cert infrastructure, with cross-channel evidence
+ * (shared TXT verification token, shared mail platform) pointing back at
+ * the target. Strong-infra signals (san/ns/dkim_key_reuse) are handled by
+ * the earlier consolidated rules — this branch fires only when those are
+ * absent.
+ *
+ * Returns the reason strings that drove the match (empty when no match).
+ */
+export function isShadowIt(c: CandidateInput): string[] {
+	const reasons: string[] = [];
+	const sharedTxt = c.sharedTxtVerifications ?? [];
+	if (sharedTxt.length > 0) {
+		reasons.push(`shared TXT verification token(s): ${sharedTxt.join(', ')}`);
+	}
+	if (c.sharedMxPlatform) {
+		reasons.push(`shared MX platform (${c.sharedMxPlatform})`);
+	}
+	return reasons;
+}
+
+/**
+ * Pure impersonation predicate: candidate looks like a typosquat (string
+ * similarity ≥ IMPERSONATION_LOOKALIKE_THRESHOLD), the registrar family does
+ * NOT match the target's (rules out defensive registration), and there is no
+ * shared-infrastructure evidence whatsoever. Caller must have already
+ * eliminated consolidated and shadowIt branches.
+ */
+export function isImpersonation(c: CandidateInput, t: TargetContext): string[] {
+	const score = c.lookalikeScore ?? 0;
+	if (score < IMPERSONATION_LOOKALIKE_THRESHOLD) return [];
+
+	// Registrar-family mismatch — same family signals defensive registration, not impersonation.
+	const candFamily = normalizeRegistrar(c.registrar);
+	const sameFamily = candFamily !== 'Unknown' && t.registrarFamily !== 'Unknown' && candFamily === t.registrarFamily;
+	if (sameFamily) return [];
+
+	// No shared cross-channel signal — those should have already routed to shadowIt;
+	// belt-and-braces here so the predicate is callable in isolation.
+	const sharedTxt = (c.sharedTxtVerifications ?? []).length > 0;
+	const sharedMx = !!c.sharedMxPlatform;
+	if (sharedTxt || sharedMx) return [];
+
+	return [
+		`lookalike score ${score.toFixed(2)} ≥ ${IMPERSONATION_LOOKALIKE_THRESHOLD}`,
+		`registrar mismatch (candidate=${candFamily || 'Unknown'}, target=${t.registrarFamily || 'Unknown'})`,
+		'no shared infrastructure signal',
+	];
 }
 
 function signalLabel(s: string): string {
@@ -164,6 +244,26 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 	) {
 		reasons.push(`shared registrar family (${candFamily}) + ${c.signals.length} corroborating signals`);
 		return { bucket: 'consolidated', confidenceTier: tier, reasons };
+	}
+
+	// Rule 4.5: Cross-channel shadowIt — disjoint provider but shared TXT verification
+	// token or shared MX platform pointing back at the target. Must beat Rule 5
+	// (redacted → indeterminate) and Rule 4.6 (impersonation), per the task spec:
+	// a typosquat with shared evidence is more interesting as shadowIt.
+	const shadowReasons = isShadowIt(c);
+	if (shadowReasons.length > 0) {
+		reasons.push(...shadowReasons);
+		return { bucket: 'shadowIt', confidenceTier: tier, reasons };
+	}
+
+	// Rule 4.6: Impersonation — lookalike score ≥ threshold + registrar family
+	// mismatch + no shared-infrastructure signal. Fires before Rules 5/7 so a
+	// clearly typosquatted domain doesn't disappear into indeterminate when the
+	// candidate's RDAP is redacted.
+	const impersonationReasons = isImpersonation(c, t);
+	if (impersonationReasons.length > 0) {
+		reasons.push(...impersonationReasons);
+		return { bucket: 'impersonation', confidenceTier: tier, reasons };
 	}
 
 	// Rule 5: Registrar source is redacted or notfound → can't determine ownership.
