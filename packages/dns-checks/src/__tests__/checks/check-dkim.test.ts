@@ -51,4 +51,12 @@ describe('checkDKIM', () => {
 		const result = await checkDKIM('example.com', queryDNS);
 		expect(result.findings.some((f) => f.title.includes('testing mode'))).toBe(true);
 	});
+
+	it('detects Cloudflare Email Routing DKIM selector (cf2024-1)', async () => {
+		const queryDNS = createMockDNS({
+			'cf2024-1._domainkey.example.com': ['v=DKIM1; k=rsa; p=' + 'A'.repeat(600)],
+		});
+		const result = await checkDKIM('example.com', queryDNS);
+		expect(result.findings.some((f) => f.title === 'DKIM configured')).toBe(true);
+	});
 });
