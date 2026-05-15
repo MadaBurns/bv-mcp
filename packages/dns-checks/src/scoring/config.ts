@@ -108,6 +108,7 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
 	providerDkimConfidence: {
 		amazonses: 0.8, sendgrid: 0.8, mailgun: 0.8, postmark: 0.8,
 		google: 0.9, microsoft365: 0.9, proofpoint: 0.6, mimecast: 0.6,
+		cloudflare: 0.9, // Cloudflare Email Routing
 	},
 	thresholds: {
 		emailBonusImportance: 8,
