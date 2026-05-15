@@ -221,6 +221,23 @@ export const DiscoverBrandDomainsArgs = z.object({
 	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 }).passthrough();
 
+/** Brand-audit output mode — JSON, Markdown, or both. Distinct from FormatSchema's `full|compact`. */
+export const BrandAuditFormatSchema = z
+	.union([z.literal('json'), z.literal('markdown'), z.literal('both')])
+	.describe('Output mode: json (CheckResult only), markdown (compact summary), both.');
+
+/** brand_audit_single — sync brand-portfolio audit for one target. */
+export const BrandAuditSingleArgs = z.object({
+	domain: DomainSchema.describe('Target domain to audit (e.g., apple.com).'),
+	format: BrandAuditFormatSchema.optional().describe('Inline output mode. Defaults to "both".'),
+	min_confidence: z
+		.number()
+		.min(0)
+		.max(1)
+		.optional()
+		.describe('Drop candidates whose combined confidence falls below this threshold (0-1, default 0.5).'),
+}).passthrough();
+
 /**
  * Map of every tool name to its Zod argument schema.
  * Used for runtime validation in tools.ts and for inputSchema generation.
@@ -278,4 +295,5 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	check_dnssec_chain: BaseDomainArgs,
 	check_fast_flux: CheckFastFluxArgs,
 	discover_brand_domains: DiscoverBrandDomainsArgs,
+	brand_audit_single: BrandAuditSingleArgs,
 };
