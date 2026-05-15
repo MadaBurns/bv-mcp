@@ -34,10 +34,18 @@ import {
 	correlateNs as defaultCorrelateNs,
 	mineDmarcRua as defaultMineDmarcRua,
 	detectDkimKeyReuse as defaultDetectDkimKeyReuse,
+	detectHttpRedirect as defaultDetectHttpRedirect,
+	detectMxOverlap as defaultDetectMxOverlap,
+	detectSpfInclude as defaultDetectSpfInclude,
+	detectCnameAlignment as defaultDetectCnameAlignment,
 	type SanCorrelationResult,
 	type NsCorrelationResult,
 	type DmarcRuaResult,
 	type DkimKeyReuseResult,
+	type HttpRedirectResult,
+	type MxOverlapResult,
+	type SpfIncludeResult,
+	type CnameAlignmentResult,
 } from '../tenants/discovery';
 import type { OutputFormat } from '../handlers/tool-args';
 import { buildCheckResult, createFinding, type CheckResult, type Finding, type Severity } from '../lib/scoring';
@@ -46,10 +54,28 @@ import { isSubdomainOf } from '../lib/sanitize';
 import { generateMarkovLookalikes } from './markov-generator';
 
 /** All supported signal kinds. */
-export type DiscoverSignal = 'san' | 'ns' | 'dmarc_rua' | 'dkim_key_reuse' | 'markov_gen';
+export type DiscoverSignal =
+	| 'san'
+	| 'ns'
+	| 'dmarc_rua'
+	| 'dkim_key_reuse'
+	| 'http_redirect'
+	| 'mx_overlap'
+	| 'spf_include'
+	| 'cname_alignment'
+	| 'markov_gen';
 
 /** Default signal set used when the caller omits `signals`. */
-const ALL_SIGNALS: DiscoverSignal[] = ['san', 'ns', 'dmarc_rua', 'dkim_key_reuse'];
+const ALL_SIGNALS: DiscoverSignal[] = [
+	'san',
+	'ns',
+	'dmarc_rua',
+	'dkim_key_reuse',
+	'http_redirect',
+	'mx_overlap',
+	'spf_include',
+	'cname_alignment',
+];
 
 /** Default cutoff: a candidate must reach this combined-confidence to surface. */
 const DEFAULT_MIN_CONFIDENCE = 0.5;
@@ -60,6 +86,10 @@ const DEFAULT_SIGNAL_CONFIDENCE: Record<DiscoverSignal, number> = {
 	ns: 0.9, // NS overlap — very strong organization signal (module always overrides with shared/seedNs ratio)
 	dmarc_rua: 0.6, // DMARC RUA `related` — module always supplies; matches dmarc-rua-miner emission
 	dkim_key_reuse: 0.95, // DKIM key reuse — near-deterministic (module always overrides)
+	http_redirect: 0.95, // HTTP redirect terminating at seed apex — near-deterministic operational ownership
+	mx_overlap: 0.7, // MX hostname overlap — module supplies per-overlap-kind confidence
+	spf_include: 0.85, // Candidate SPF `include:` of seed-rooted policy — near-deterministic
+	cname_alignment: 0.9, // CNAME chain terminating at seed apex/edge — near-deterministic
 	markov_gen: 0.01, // speculative generation — purely a candidate seed, provides no weight on its own
 };
 
@@ -76,7 +106,12 @@ const AUTO_INCLUDE_THRESHOLD = 0.85;
  * DMARC RUA can name unknown third-party aggregators, NS overlap collapses
  * on commodity DNS/parking hosts. Those all need corroboration.
  */
-const NEAR_DETERMINISTIC_SIGNALS: ReadonlySet<DiscoverSignal> = new Set(['dkim_key_reuse']);
+const NEAR_DETERMINISTIC_SIGNALS: ReadonlySet<DiscoverSignal> = new Set([
+	'dkim_key_reuse',
+	'http_redirect',
+	'spf_include',
+	'cname_alignment',
+]);
 
 /** Per-candidate aggregation state during collection. */
 interface CandidateAggregator {
@@ -96,6 +131,10 @@ export interface DiscoverBrandDomainsDeps {
 	correlateNs: typeof defaultCorrelateNs;
 	mineDmarcRua: typeof defaultMineDmarcRua;
 	detectDkimKeyReuse: typeof defaultDetectDkimKeyReuse;
+	detectHttpRedirect: typeof defaultDetectHttpRedirect;
+	detectMxOverlap: typeof defaultDetectMxOverlap;
+	detectSpfInclude: typeof defaultDetectSpfInclude;
+	detectCnameAlignment: typeof defaultDetectCnameAlignment;
 	generateMarkovLookalikes: typeof generateMarkovLookalikes;
 }
 
@@ -140,6 +179,10 @@ function defaultDeps(): DiscoverBrandDomainsDeps {
 		correlateNs: defaultCorrelateNs,
 		mineDmarcRua: defaultMineDmarcRua,
 		detectDkimKeyReuse: defaultDetectDkimKeyReuse,
+		detectHttpRedirect: defaultDetectHttpRedirect,
+		detectMxOverlap: defaultDetectMxOverlap,
+		detectSpfInclude: defaultDetectSpfInclude,
+		detectCnameAlignment: defaultDetectCnameAlignment,
 		generateMarkovLookalikes: generateMarkovLookalikes,
 	};
 }
@@ -312,6 +355,70 @@ export async function discoverBrandDomains(
 					sharedSelectors: c.sharedSelectors,
 					sharedKeys: c.sharedKeys,
 				});
+			}
+		});
+	}
+
+	if (signals.includes('http_redirect')) {
+		jobs.push(async () => {
+			const out = await runSignal<HttpRedirectResult>(() =>
+				d.detectHttpRedirect(seedDomain, { candidateDomains: mergedCandidates }),
+			);
+			if (!out.ok) {
+				signalStatus.http_redirect = { status: 'failed', error: out.error };
+				return;
+			}
+			signalStatus.http_redirect = { status: out.value.queryStatus };
+			for (const c of out.value.coOwnedDomains) {
+				addObservation(aggregator, c.domain, 'http_redirect', c.confidence, c.evidence);
+			}
+		});
+	}
+
+	if (signals.includes('mx_overlap')) {
+		jobs.push(async () => {
+			const out = await runSignal<MxOverlapResult>(() =>
+				d.detectMxOverlap(seedDomain, { candidateDomains: mergedCandidates }),
+			);
+			if (!out.ok) {
+				signalStatus.mx_overlap = { status: 'failed', error: out.error };
+				return;
+			}
+			signalStatus.mx_overlap = { status: out.value.queryStatus };
+			for (const c of out.value.coOwnedDomains) {
+				addObservation(aggregator, c.domain, 'mx_overlap', c.confidence, c.evidence);
+			}
+		});
+	}
+
+	if (signals.includes('spf_include')) {
+		jobs.push(async () => {
+			const out = await runSignal<SpfIncludeResult>(() =>
+				d.detectSpfInclude(seedDomain, { candidateDomains: mergedCandidates }),
+			);
+			if (!out.ok) {
+				signalStatus.spf_include = { status: 'failed', error: out.error };
+				return;
+			}
+			signalStatus.spf_include = { status: out.value.queryStatus };
+			for (const c of out.value.coOwnedDomains) {
+				addObservation(aggregator, c.domain, 'spf_include', c.confidence, c.evidence);
+			}
+		});
+	}
+
+	if (signals.includes('cname_alignment')) {
+		jobs.push(async () => {
+			const out = await runSignal<CnameAlignmentResult>(() =>
+				d.detectCnameAlignment(seedDomain, { candidateDomains: mergedCandidates }),
+			);
+			if (!out.ok) {
+				signalStatus.cname_alignment = { status: 'failed', error: out.error };
+				return;
+			}
+			signalStatus.cname_alignment = { status: out.value.queryStatus };
+			for (const c of out.value.coOwnedDomains) {
+				addObservation(aggregator, c.domain, 'cname_alignment', c.confidence, c.evidence);
 			}
 		});
 	}
