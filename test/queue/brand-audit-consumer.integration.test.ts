@@ -168,6 +168,61 @@ describe('processBrandAuditMessage', () => {
 		expect(auditFinalize).toBeDefined();
 	});
 
+	it('fans out to the PDF queue on completion when format=both', async () => {
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db } = makeMockD1({
+			target: { status: 'queued', completed_at: null },
+			auditAfter: { completed_targets: 1, total_targets: 3 },
+		});
+		const fakeResult = { category: 'brand_discovery', score: 100, findings: [] };
+		const brandAuditSingle = vi.fn().mockResolvedValue(fakeResult);
+		const pdfSend = vi.fn().mockResolvedValue(undefined);
+
+		await processBrandAuditMessage(
+			{ auditId: 'aud-1', target: 'apple.com', format: 'both' },
+			{ db, brandAuditSingle, now: () => 1_750_000_000_000, pdfQueue: { send: pdfSend } },
+		);
+
+		expect(pdfSend).toHaveBeenCalledTimes(1);
+		const [msg] = pdfSend.mock.calls[0];
+		expect(msg).toMatchObject({ auditId: 'aud-1', target: 'apple.com', format: 'both' });
+	});
+
+	it('does NOT enqueue PDF when format=json', async () => {
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db } = makeMockD1({
+			target: { status: 'queued', completed_at: null },
+			auditAfter: { completed_targets: 1, total_targets: 3 },
+		});
+		const fakeResult = { category: 'brand_discovery', score: 100, findings: [] };
+		const brandAuditSingle = vi.fn().mockResolvedValue(fakeResult);
+		const pdfSend = vi.fn();
+
+		await processBrandAuditMessage(
+			{ auditId: 'aud-1', target: 'apple.com', format: 'json' },
+			{ db, brandAuditSingle, now: () => 1_750_000_000_000, pdfQueue: { send: pdfSend } },
+		);
+
+		expect(pdfSend).not.toHaveBeenCalled();
+	});
+
+	it('does NOT enqueue PDF when target failed (only on completed)', async () => {
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db } = makeMockD1({
+			target: { status: 'queued', completed_at: null },
+			auditAfter: { completed_targets: 1, total_targets: 3 },
+		});
+		const brandAuditSingle = vi.fn().mockRejectedValue(new Error('oops'));
+		const pdfSend = vi.fn();
+
+		await processBrandAuditMessage(
+			{ auditId: 'aud-1', target: 'apple.com', format: 'both' },
+			{ db, brandAuditSingle, now: () => 1_750_000_000_000, pdfQueue: { send: pdfSend } },
+		);
+
+		expect(pdfSend).not.toHaveBeenCalled();
+	});
+
 	it('signals retry on a transient D1 update failure (no double-counting)', async () => {
 		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
 		const { db } = makeMockD1({
