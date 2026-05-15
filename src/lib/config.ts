@@ -172,24 +172,28 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		brand_audit_batch_start: 200,
 		brand_audit_status: 10_000,
 		brand_audit_get_report: 10_000,
+		brand_audit_watch: 100,
 	},
 	developer: {
 		brand_audit_single: 50,
 		brand_audit_batch_start: 50,
 		brand_audit_status: 5_000,
 		brand_audit_get_report: 5_000,
+		brand_audit_watch: 20,
 	},
 	enterprise: {
 		brand_audit_single: 500,
 		brand_audit_batch_start: 500,
 		brand_audit_status: 25_000,
 		brand_audit_get_report: 25_000,
+		brand_audit_watch: 100,
 	},
 	agent: {
 		brand_audit_single: 0,
 		brand_audit_batch_start: 0,
 		brand_audit_status: 0,
 		brand_audit_get_report: 0,
+		brand_audit_watch: 0,
 	},
 };
 
@@ -251,6 +255,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	brand_audit_batch_start: 0,
 	brand_audit_status: 0,
 	brand_audit_get_report: 0,
+	brand_audit_watch: 0,
 };
 
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */

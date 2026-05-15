@@ -55,6 +55,7 @@ import { brandAuditSingle } from '../tools/brand-audit-single';
 import { brandAuditBatchStart } from '../tools/brand-audit-batch-start';
 import { brandAuditStatus } from '../tools/brand-audit-status';
 import { brandAuditGetReport } from '../tools/brand-audit-get-report';
+import { brandAuditWatch } from '../tools/brand-audit-watch';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -118,6 +119,29 @@ interface ToolRuntimeOptions {
 function buildDnsOptions(runtimeOptions?: ToolRuntimeOptions): QueryDnsOptions | undefined {
 	if (!runtimeOptions?.secondaryDoh) return undefined;
 	return { secondaryDoh: runtimeOptions.secondaryDoh };
+}
+
+/**
+ * Construct a closure that calls `enforceBrandAuditQuota` with the principal +
+ * tier bound from `ToolRuntimeOptions`. Returns `undefined` when the required
+ * bindings/principal aren't present — the tool then falls back to its own
+ * graceful path (no enforcement, equivalent to v2.18.0–v2.20.0 behavior).
+ *
+ * Wired in v2.21.0 to bring the `BRAND_AUDIT_QUOTAS` monthly window helper
+ * (shipped as a Phase-1 building block) online at request time. The daily
+ * caps via `TIER_TOOL_DAILY_LIMITS` continue to gate brand_audit_single /
+ * brand_audit_batch_start as a first-line check; the monthly enforcement
+ * applies on top.
+ */
+function buildMonthlyEnforceQuota(ro?: ToolRuntimeOptions): ((count: number) => Promise<{ allowed: boolean; remaining?: number; limit?: number; retryAfterMs?: number }>) | undefined {
+	if (!ro?.rateLimitKv || !ro.principalId || !ro.authTier) return undefined;
+	const tier = ro.authTier as import('../lib/config').McpApiKeyTier;
+	const kv = ro.rateLimitKv;
+	const principalId = ro.principalId;
+	return async (count: number) => {
+		const { enforceBrandAuditQuota } = await import('../lib/brand-audit-quota');
+		return enforceBrandAuditQuota({ kv, principalId, tier, count });
+	};
 }
 
 async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOptions): Promise<CheckResult> {
@@ -208,6 +232,7 @@ const TOOL_REGISTRY: Record<
 			}, {
 				certstream: ro?.certstream,
 				whoisBinding: ro?.whoisBinding,
+				enforceQuota: buildMonthlyEnforceQuota(ro),
 			}),
 		cacheTtlSeconds: 3600,
 	},
@@ -238,7 +263,7 @@ const TOOL_REGISTRY: Record<
 					min_confidence: args.min_confidence as number | undefined,
 				},
 				principalId,
-				{ db, queue },
+				{ db, queue, enforceQuota: buildMonthlyEnforceQuota(ro) },
 			);
 		},
 		cacheTtlSeconds: 0,
@@ -291,6 +316,38 @@ const TOOL_REGISTRY: Record<
 			);
 		},
 		cacheTtlSeconds: 60,
+	},
+	brand_audit_watch: {
+		// Mutating tool — random UUID keeps every call a cache-miss.
+		cacheKey: () => `__nocache__:brand_audit_watch:${crypto.randomUUID()}`,
+		execute: async (_domain, args, ro) => {
+			const db = ro?.brandAuditDb;
+			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
+			if (!db) {
+				const { buildCheckResult, createFinding } = await import('../lib/scoring');
+				return buildCheckResult('brand_discovery', [
+					createFinding(
+						'brand_discovery',
+						'Brand audit watch unavailable',
+						'high',
+						'BRAND_AUDIT_DB binding is not provisioned.',
+						{ unprovisioned: true },
+					),
+				]);
+			}
+			return brandAuditWatch(
+				{
+					action: args.action as 'register' | 'list' | 'delete',
+					domain: args.domain as string | undefined,
+					interval: args.interval as 'daily' | 'weekly' | 'monthly' | undefined,
+					webhook_url: args.webhook_url as string | undefined,
+					watchId: args.watchId as string | undefined,
+				},
+				principalId,
+				{ db },
+			);
+		},
+		cacheTtlSeconds: 0,
 	},
 };
 
