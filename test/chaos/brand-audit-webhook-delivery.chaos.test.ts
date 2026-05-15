@@ -212,6 +212,36 @@ describe('chaos: brand-audit watch webhook delivery', () => {
 		expect(hashUpdate).toBeUndefined();
 	});
 
+	it('first-ever delivery (no prior hash, no prior result) populates `added` with the full current candidate set', async () => {
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const fakeResult = makeBrandAuditResult([
+			{ domain: 'apple.net', bucket: 'consolidated' },
+			{ domain: 'apple.org', bucket: 'shadowIt' },
+		]);
+		const { db } = makeMockD1({
+			target: { status: 'queued', completed_at: null },
+			auditAfter: { completed_targets: 1, total_targets: 1 },
+			watch: { id: 'w-1', owner_id: 'owner-1', domain: 'apple.com', interval: 'weekly', webhook_url: 'https://hooks.example.com/x', last_classification_hash: null },
+			// No priorResult — first-ever delivery for this watch.
+		});
+		const deliverWebhook = vi.fn().mockResolvedValue(true);
+		const brandAuditSingle = vi.fn().mockResolvedValue(fakeResult);
+
+		await processBrandAuditMessage(
+			{ auditId: 'aud-1', target: 'apple.com', format: 'json', watchId: 'w-1', ownerId: 'owner-1' },
+			{ db, brandAuditSingle, now: () => 1_750_000_000_000, deliverWebhook },
+		);
+
+		expect(deliverWebhook).toHaveBeenCalledTimes(1);
+		const [, payload] = deliverWebhook.mock.calls[0];
+		const typed = payload as { previousHash: string | null; changes: { added: Array<{ domain: string }>; removed: unknown[]; modified: unknown[] } };
+		expect(typed.previousHash).toBeNull();
+		// On first delivery, `added` carries the entire current candidate set.
+		expect(typed.changes.added.map((c) => c.domain).sort()).toEqual(['apple.net', 'apple.org']);
+		expect(typed.changes.removed).toEqual([]);
+		expect(typed.changes.modified).toEqual([]);
+	});
+
 	it('webhook delivery throws → audit still completes cleanly (best-effort posture)', async () => {
 		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
 		const fakeResult = makeBrandAuditResult([{ domain: 'a.com', bucket: 'consolidated' }]);

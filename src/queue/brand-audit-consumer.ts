@@ -358,9 +358,12 @@ async function deliverWatchWebhookIfShifted(args: DeliverWatchWebhookArgs): Prom
 		}
 	}
 
-	const diff = previousResult
-		? computeDiff(previousResult, args.current)
-		: { added: [], removed: [], modified: [] };
+	// First-ever delivery: previousResult is null. We diff against an empty
+	// baseline so `added` is populated with the full current candidate set —
+	// otherwise customers receive a useless empty payload on watch registration
+	// and have to call brand_audit_get_report to recover the actual state.
+	const baseline: CheckResult = previousResult ?? { category: 'brand_discovery', score: 100, findings: [] };
+	const diff = computeDiff(baseline, args.current);
 
 	const payload = {
 		schemaVersion: 1 as const,

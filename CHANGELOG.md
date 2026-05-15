@@ -39,6 +39,10 @@ v2.21.0 shipped the cron enqueue half of the watch loop and the webhook payload 
 ### Operator action required (deploy)
 - None. Watches registered against v2.21.0 will start receiving webhooks on the next cron-driven drift after deploying v2.21.1.
 
+### Known follow-ups (v2.21.2+)
+- **Wrong-baseline diff under ad-hoc activity**: the prior-result lookup picks the most recent completed audit by this owner for this target — not the previous *watch tick's* audit. If the same owner runs `brand_audit_single('apple.com')` ad-hoc between two watch ticks, that ad-hoc result becomes the "prior" baseline. Diff is then computed against the wrong audit and can mislead. Fix: add `last_audit_id` to `brand_audit_watches` + look up by exact audit_id.
+- **No HMAC on webhook payloads**: receiver can't verify a delivery came from Blackveil. Standard practice is `X-Blackveil-Signature: hmac-sha256(secret, body)`. Same gap exists on the legacy `ALERT_WEBHOOK_URL`, so it's not a regression. Bundle both with the wrong-baseline fix.
+
 ## [2.21.0] - 2026-05-15
 
 ### Added — Brand audit Phase 4: scheduled monitoring + monthly quota enforcement
