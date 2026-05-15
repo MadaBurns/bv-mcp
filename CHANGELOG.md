@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.21.1] - 2026-05-15
+
+### Completed — Phase 4 follow-up: watch diff + webhook delivery
+
+v2.21.0 shipped the cron enqueue half of the watch loop and the webhook payload contract, but left the diff-and-deliver half as a follow-up. v2.21.1 closes that gap — when a watch-originated audit completes, the consumer now computes the classification fingerprint, compares it to the watch's `last_classification_hash`, and (when shifted + a `webhook_url` is configured) POSTs the diff payload via `safeFetch`.
+
+### Added
+- **`src/lib/brand-audit-classification-diff.ts`** — pure helpers: `computeClassificationHash(result) → string` (SHA-256 hex of sorted (domain, bucket) tuples; order-independent, summary-row-independent) and `computeDiff(previous, current) → { added, removed, modified }`. Both Worker-runtime-safe, no I/O.
+- **`BrandAuditQueueMessageSchema`** gains optional `watchId` + `ownerId` fields — already produced by the v2.21.0 cron handler; v2.21.1 makes the consumer parse and consume them.
+- **`BrandAuditConsumerDeps.deliverWebhook`** — injectable webhook deliverer (production default: `safeFetch`-wrapped POST returning `boolean`). Lets the consumer remain offline-testable.
+- **Webhook delivery wiring in `processBrandAuditMessage`** — after a watch-originated target completes:
+  1. Look up the watch row (defense in depth: confirm `message.ownerId === watch.owner_id`)
+  2. Compute the new classification hash
+  3. If hash matches `last_classification_hash`, no-op
+  4. Otherwise persist the new hash **before** any delivery attempt (idempotency: redelivery of the same completed message can't re-fire)
+  5. If `webhook_url` is set, fetch the prior CheckResult to compute the actual diff, then POST the `BrandAuditWatchWebhookPayloadSchema`-shaped payload
+- **`src/schemas/brand-audit-watch-webhook.ts`** now exports the `BrandAuditBucket` type alongside the existing schema, so the diff module can reference it cleanly.
+
+### Tests
+- `test/brand-audit-classification-diff.test.ts` — 10 unit tests covering hash determinism (order-independence, summary-row ignoring) and diff branches (added/removed/modified, all-three-mix, empty-diff).
+- `test/chaos/brand-audit-webhook-delivery.chaos.test.ts` — 6 chaos invariants:
+  - Webhook 500 → audit completion is unaffected (target still completes)
+  - Hash persisted **before** delivery → idempotent under redelivery
+  - No `webhook_url` → drift detected, hash persisted, no fetch attempted
+  - Cross-owner spoof (`message.ownerId != watch.owner_id`) → no hash update, no fetch
+  - Same classification (no drift) → no fetch, no hash update
+  - Delivery throws → audit still completes cleanly (fail-soft)
+
+### Changed
+- No new tools. No new bindings. No new schema migrations. Purely wiring + tests on top of v2.21.0.
+- No tool-count cascade — tool surface stays at 57.
+
+### Operator action required (deploy)
+- None. Watches registered against v2.21.0 will start receiving webhooks on the next cron-driven drift after deploying v2.21.1.
+
+### Known follow-ups (v2.21.2+)
+- **Wrong-baseline diff under ad-hoc activity**: the prior-result lookup picks the most recent completed audit by this owner for this target — not the previous *watch tick's* audit. If the same owner runs `brand_audit_single('apple.com')` ad-hoc between two watch ticks, that ad-hoc result becomes the "prior" baseline. Diff is then computed against the wrong audit and can mislead. Fix: add `last_audit_id` to `brand_audit_watches` + look up by exact audit_id.
+- **No HMAC on webhook payloads**: receiver can't verify a delivery came from Blackveil. Standard practice is `X-Blackveil-Signature: hmac-sha256(secret, body)`. Same gap exists on the legacy `ALERT_WEBHOOK_URL`, so it's not a regression. Bundle both with the wrong-baseline fix.
+
 ## [2.21.0] - 2026-05-15
 
 ### Added — Brand audit Phase 4: scheduled monitoring + monthly quota enforcement
