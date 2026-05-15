@@ -38,11 +38,12 @@ const NON_SCAN_TOOL_NAMES = new Set([
 	'check_dnssec_chain',
 	'check_fast_flux',
 	'discover_brand_domains',
+	'brand_audit_single',
 ]);
 
 describe('tool-schemas metadata', () => {
-	it('exports exactly 52 tools', () => {
-		expect(TOOLS).toHaveLength(52);
+	it('exports exactly 53 tools', () => {
+		expect(TOOLS).toHaveLength(53);
 	});
 
 	it('all tool names are unique', () => {
