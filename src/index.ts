@@ -768,6 +768,7 @@ app.all('*', (c) => {
 import { handleScheduled, handleDailyDigest, handleFuzzingScan } from './scheduled';
 import type { ScheduledEnv } from './scheduled';
 import { handleScanQueue, type ScanQueueConsumerEnv } from './tenants/queue-consumer';
+import { handleBrandAuditQueue, type BrandAuditConsumerDeps } from './queue/brand-audit-consumer';
 import { handleTenantCycleAlerts, handleTenantWeeklyRescan, type TenantScheduledEnv } from './tenants/scheduled-handlers';
 
 export default {
@@ -787,12 +788,24 @@ export default {
 		}
 	},
 	/**
-	 * Phase 2 scanner-queue consumer. Routes `BV_SCANNER_QUEUE` deliveries to
-	 * `handleScanQueue`. Per-message ack/retry with idempotency + DLQ-after-3.
-	 * See `src/tenants/queue-consumer.ts` for the full processing contract.
+	 * Queue consumer dispatch. Routes by `batch.queue` since both
+	 * `bv-scanner-queue` (tenant scans) and `brand-audit-queue` (brand-audit
+	 * async path, v2.19.0+) share the same Worker entrypoint.
 	 */
 	queue: async (batch: MessageBatch<unknown>, env: Record<string, unknown>, ctx: ExecutionContext) => {
-		console.log(`Received queue batch with ${batch.messages.length} messages.`);
+		logEvent({ timestamp: new Date().toISOString(), category: 'queue', result: 'batch_received', severity: 'info', details: { queue: batch.queue, messageCount: batch.messages.length } });
+		if (batch.queue === 'brand-audit-queue') {
+			const db = (env as Record<string, unknown>).BRAND_AUDIT_DB as D1Database | undefined;
+			if (!db) {
+				// Binding missing — ack every message to avoid hot-looping. Operator
+				// must provision per docs/provisioning/brand-audit-bindings.md.
+				for (const m of batch.messages) m.ack();
+				return;
+			}
+			const deps: BrandAuditConsumerDeps = { db };
+			await handleBrandAuditQueue(batch, deps);
+			return;
+		}
 		await handleScanQueue(batch, env as ScanQueueConsumerEnv, ctx);
 	},
 };

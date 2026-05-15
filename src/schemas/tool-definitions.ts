@@ -23,6 +23,9 @@ import {
 	CheckFastFluxArgs,
 	DiscoverBrandDomainsArgs,
 	BrandAuditSingleArgs,
+	BrandAuditBatchStartArgs,
+	BrandAuditStatusArgs,
+	BrandAuditGetReportArgs,
 	TOOL_SCHEMA_MAP,
 } from './tool-args';
 
@@ -436,6 +439,27 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		description:
 			"Run a full brand audit on a single target: discover brand-related domains via all 8 discovery signals, look up registrar + registrant for each candidate, and classify each into one of four buckets (consolidated, shadowIt, indeterminate, impersonation). Returns a per-candidate classification with summary counts. Gated tier-wide by monthly BRAND_AUDIT_QUOTAS (free/agent=0, developer=50, partner=200, enterprise=500, owner=unlimited).",
 		schema: BrandAuditSingleArgs,
+		group: 'discovery',
+		scanIncluded: false,
+	},
+	brand_audit_batch_start: {
+		description:
+			"Enqueue an async brand audit across up to 50 target domains. Returns { auditId, queuedAt, targetCount, etaSeconds } immediately; poll with brand_audit_status and fetch results with brand_audit_get_report once complete. Each target consumes 1 unit of the monthly BRAND_AUDIT_QUOTAS budget (consumed atomically at enqueue — partial-failure batches don't refund).",
+		schema: BrandAuditBatchStartArgs,
+		group: 'discovery',
+		scanIncluded: false,
+	},
+	brand_audit_status: {
+		description:
+			"Poll the status of an enqueued brand audit. Returns audit-level status (queued | running | completed | failed), progress 'N/M', and per-target statuses. Owner-scoped — auditIds owned by other principals surface as notFound.",
+		schema: BrandAuditStatusArgs,
+		group: 'discovery',
+		scanIncluded: false,
+	},
+	brand_audit_get_report: {
+		description:
+			"Fetch the result JSON for a completed brand audit. With `target` set, returns the per-target CheckResult; without, returns the audit-level aggregate. Returns notReady when polling against an in-flight audit. Phase 3 will add R2 signed-URL PDF retrieval; this v2.19.0 version returns inline JSON only.",
+		schema: BrandAuditGetReportArgs,
 		group: 'discovery',
 		scanIncluded: false,
 	},
