@@ -52,6 +52,7 @@ import { buildCheckResult, createFinding, type CheckResult, type Finding, type S
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isSubdomainOf } from '../lib/sanitize';
 import { generateMarkovLookalikes } from './markov-generator';
+import { generateCctldVariants } from '../lib/brand-cctld-seeder';
 
 /** All supported signal kinds. */
 export type DiscoverSignal =
@@ -259,10 +260,12 @@ export async function discoverBrandDomains(
 		? Math.max(0, Math.min(1, options.min_confidence))
 		: DEFAULT_MIN_CONFIDENCE;
 
-	// Generate Markov lookalikes and merge with candidate_domains.
-	// These serve as a "seed pool" for the active signals (ns, dkim).
+	// Generate Markov lookalikes + ccTLD variants of the seed apex.
+	// Markov-only seeding kept the seed TLD and missed big-brand ccTLD portfolios
+	// (amazon.de, microsoft.uk, nike.fr, …). ccTLD variants close that gap.
 	const markovCandidates = d.generateMarkovLookalikes(seedDomain, 20);
-	const mergedCandidates = Array.from(new Set([...candidateDomains, ...markovCandidates]));
+	const cctldCandidates = generateCctldVariants(seedDomain);
+	const mergedCandidates = Array.from(new Set([...candidateDomains, ...markovCandidates, ...cctldCandidates]));
 
 	// Pre-validate seed via the SAN correlator's strict guard. correlateSans
 	// throws on invalid input (programmer error) — we let that escape.
@@ -281,6 +284,13 @@ export async function discoverBrandDomains(
 	for (const mc of markovCandidates) {
 		addObservation(aggregator, mc, 'markov_gen', DEFAULT_SIGNAL_CONFIDENCE.markov_gen, {
 			strategy: 'trigram_markov',
+		});
+	}
+	// Seed ccTLD variants so single-signal NS-overlap matches can clear the
+	// corroboration gate (markov_gen + ns = 2 distinct signal kinds).
+	for (const cc of cctldCandidates) {
+		addObservation(aggregator, cc, 'markov_gen', DEFAULT_SIGNAL_CONFIDENCE.markov_gen, {
+			strategy: 'cctld_variant',
 		});
 	}
 
