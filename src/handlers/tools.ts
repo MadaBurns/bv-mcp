@@ -51,6 +51,7 @@ import { checkNsecWalkability } from '../tools/check-nsec-walkability';
 import { checkDnssecChain } from '../tools/check-dnssec-chain';
 import { checkFastFlux } from '../tools/check-fast-flux';
 import { discoverBrandDomains } from '../tools/discover-brand-domains';
+import { brandAuditSingle } from '../tools/brand-audit-single';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -175,6 +176,22 @@ const TOOL_REGISTRY: Record<
 				dkim_selectors: args.dkim_selectors as string[] | undefined,
 				min_confidence: args.min_confidence as number | undefined,
 				certstream: ro?.certstream,
+			}),
+		cacheTtlSeconds: 3600,
+	},
+	brand_audit_single: {
+		cacheKey: (args) => {
+			const minConf = typeof args.min_confidence === 'number' ? args.min_confidence : 0.5;
+			const fmt = typeof args.format === 'string' ? args.format : 'both';
+			return `brand_audit_single:${fmt}:m${minConf}`;
+		},
+		execute: (d, args, ro) =>
+			brandAuditSingle(d, {
+				format: args.format as 'json' | 'markdown' | 'both' | undefined,
+				min_confidence: args.min_confidence as number | undefined,
+			}, {
+				certstream: ro?.certstream,
+				whoisBinding: ro?.whoisBinding,
 			}),
 		cacheTtlSeconds: 3600,
 	},
