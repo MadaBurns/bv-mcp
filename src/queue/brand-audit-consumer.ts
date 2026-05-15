@@ -39,6 +39,10 @@ export const BrandAuditQueueMessageSchema = z.object({
 	target: z.string().min(1).max(253),
 	format: z.enum(['json', 'markdown', 'both']),
 	min_confidence: z.number().min(0).max(1).optional(),
+	/** Set when the message originated from the watch cron — drives post-completion diff/webhook. */
+	watchId: z.string().min(1).max(64).optional(),
+	/** Bound at enqueue time so the consumer doesn't need a D1 round-trip to look up the watch's owner. */
+	ownerId: z.string().min(1).max(128).optional(),
 });
 
 export type BrandAuditQueueMessage = z.infer<typeof BrandAuditQueueMessageSchema>;
@@ -57,6 +61,14 @@ export interface BrandAuditConsumerDeps {
 	 * succeeds; PDF rendering just doesn't happen.
 	 */
 	pdfQueue?: { send(message: { auditId: string; target: string; format: 'json' | 'markdown' | 'both' }, options?: { contentType?: 'json' }): Promise<void> };
+	/**
+	 * Optional webhook delivery function. When set + the message carries a
+	 * watchId + the new classification differs from the watch's previous
+	 * `last_classification_hash`, the consumer POSTs the diff payload here.
+	 * Returns true on 2xx delivery, false on failure (never throws).
+	 * Defaults to a `safeFetch`-wrapped POST in production.
+	 */
+	deliverWebhook?: (url: string, payload: unknown) => Promise<boolean>;
 }
 
 interface TargetStatusRow {
@@ -180,6 +192,28 @@ export async function processBrandAuditMessage(
 		}
 	}
 
+	// 4b. Watch webhook delivery (v2.21.1+). When this message originated from
+	// the cron watch handler (carries watchId), compute the classification hash
+	// vs the watch's `last_classification_hash` and POST a diff webhook if
+	// shifted. Best-effort — webhook failure does NOT mark the audit failed;
+	// just logged-and-skipped so customers can re-derive from get-report.
+	if (finalStatus === 'completed' && result !== null && message.watchId) {
+		try {
+			await deliverWatchWebhookIfShifted({
+				db: deps.db,
+				watchId: message.watchId,
+				auditId: message.auditId,
+				target: message.target,
+				ownerId: message.ownerId ?? null,
+				current: result,
+				now,
+				deliverWebhook: deps.deliverWebhook ?? defaultDeliverWebhook,
+			});
+		} catch {
+			// Same fail-soft posture as PDF fanout.
+		}
+	}
+
 	// 5. Counter tick — bump completed_targets and check finalization.
 	try {
 		await deps.db
@@ -231,5 +265,134 @@ export async function handleBrandAuditQueue(
 		} else {
 			message.ack();
 		}
+	}
+}
+
+// ----------------------------------------------------------------------------
+// v2.21.1: watch webhook delivery on classification drift
+// ----------------------------------------------------------------------------
+
+interface DeliverWatchWebhookArgs {
+	db: D1Database;
+	watchId: string;
+	auditId: string;
+	target: string;
+	ownerId: string | null;
+	current: CheckResult;
+	now: number;
+	deliverWebhook: (url: string, payload: unknown) => Promise<boolean>;
+}
+
+interface WatchSlim {
+	id: string;
+	owner_id: string;
+	domain: string;
+	interval: 'daily' | 'weekly' | 'monthly';
+	webhook_url: string | null;
+	last_classification_hash: string | null;
+}
+
+/**
+ * Compute the new classification hash, compare to the watch row's previous
+ * value, and (if shifted) POST a diff webhook + persist the new hash.
+ *
+ * Fail-soft throughout: any D1 read/write failure or non-2xx webhook response
+ * is swallowed by the caller's `try {} catch {}`. Customers can re-derive the
+ * current state by calling `brand_audit_get_report` directly — webhook is
+ * convenience, not the durability boundary.
+ */
+async function deliverWatchWebhookIfShifted(args: DeliverWatchWebhookArgs): Promise<void> {
+	const watch = (await args.db
+		.prepare(
+			'SELECT id, owner_id, domain, interval, webhook_url, last_classification_hash FROM brand_audit_watches WHERE id = ? LIMIT 1',
+		)
+		.bind(args.watchId)
+		.first()) as WatchSlim | null;
+	if (!watch) return;
+
+	// Defense in depth: confirm the message's ownerId matches the watch row's
+	// owner. If they diverge, drop — something is wrong upstream.
+	if (args.ownerId !== null && watch.owner_id !== args.ownerId) return;
+
+	const { computeClassificationHash, computeDiff } = await import('../lib/brand-audit-classification-diff');
+	const currentHash = await computeClassificationHash(args.current);
+
+	// No drift → just persist the (possibly-first) hash so future ticks have a baseline.
+	if (watch.last_classification_hash === currentHash) {
+		return;
+	}
+
+	// Stamp the new hash immediately — even if the webhook fails downstream,
+	// we don't want to re-fire on every redelivery of the same completed message.
+	await args.db
+		.prepare('UPDATE brand_audit_watches SET last_classification_hash = ? WHERE id = ?')
+		.bind(currentHash, args.watchId)
+		.run();
+
+	if (!watch.webhook_url) {
+		// Logging-only watch — drift detected but no delivery target.
+		return;
+	}
+
+	// Fetch the previous CheckResult if we had a prior hash, so we can compute
+	// the actual diff (added/removed/modified). On first-ever delivery
+	// (previous_hash null), we can't compute a meaningful diff — send the
+	// current state as a one-shot "initial classification" event.
+	let previousResult: CheckResult | null = null;
+	if (watch.last_classification_hash !== null) {
+		// Look up the prior audit_id for this watch — the most recent completed
+		// brand_audits row whose owner+target match. Cap the search by created_at
+		// to avoid scanning the whole table.
+		const prior = (await args.db
+			.prepare(
+				"SELECT result_json FROM brand_audit_targets WHERE target = ? AND audit_id IN (SELECT id FROM brand_audits WHERE owner_id = ? AND id != ? AND status = 'completed' ORDER BY created_at DESC LIMIT 1) LIMIT 1",
+			)
+			.bind(args.target, watch.owner_id, args.auditId)
+			.first()) as { result_json: string | null } | null;
+		if (prior?.result_json) {
+			try {
+				previousResult = JSON.parse(prior.result_json) as CheckResult;
+			} catch {
+				previousResult = null;
+			}
+		}
+	}
+
+	const diff = previousResult
+		? computeDiff(previousResult, args.current)
+		: { added: [], removed: [], modified: [] };
+
+	const payload = {
+		schemaVersion: 1 as const,
+		watchId: args.watchId,
+		auditId: args.auditId,
+		target: args.target,
+		interval: watch.interval,
+		detectedAt: args.now,
+		previousHash: watch.last_classification_hash,
+		currentHash,
+		changes: diff,
+	};
+
+	await args.deliverWebhook(watch.webhook_url, payload);
+}
+
+/**
+ * Default webhook deliverer — uses safeFetch (SSRF-validated). Returns true
+ * on 2xx, false on any non-2xx or thrown error. Never throws — caller relies
+ * on the boolean.
+ */
+async function defaultDeliverWebhook(url: string, payload: unknown): Promise<boolean> {
+	try {
+		const { safeFetch } = await import('../lib/safe-fetch');
+		const res = await safeFetch(url, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(payload),
+			redirect: 'manual',
+		});
+		return res.ok;
+	} catch {
+		return false;
 	}
 }
