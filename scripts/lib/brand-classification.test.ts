@@ -1,0 +1,336 @@
+// SPDX-License-Identifier: BUSL-1.1
+/**
+ * Unit tests for the brand-audit classification module.
+ *
+ * TDD-first: these tests define the desired behaviour. The classifier
+ * (`brand-classification.ts`) must satisfy each rule below.
+ *
+ * Rules in priority order (first match wins):
+ *   1. Subdomain of target → consolidated, 'Organizational Subdomain'
+ *   2. Strong infra signal (san | ns | dkim_key_reuse) → consolidated
+ *   3. DMARC RUA reports to target's domain → consolidated
+ *   4. Same registrar family AND ≥2 corroborating signals → consolidated
+ *   5. Registrar source is redacted/notfound AND no strong signals → indeterminate
+ *   6. High confidence (≥0.85) + dmarc_rua-only signal (no infra share) → shadowIt
+ *   7. Medium confidence (0.5–0.85), no strong signals → indeterminate
+ *   8. Low confidence (<0.5), no strong signals → impersonation
+ */
+
+import { describe, it, expect } from 'vitest';
+import {
+	classifyCandidate,
+	confidenceTier,
+	isSubdomainOf,
+	normalizeRegistrar,
+	type CandidateInput,
+	type TargetContext,
+} from './brand-classification';
+
+function target(overrides: Partial<TargetContext> = {}): TargetContext {
+	return {
+		domain: 'apple.com',
+		registrar: 'MarkMonitor Inc.',
+		registrarFamily: 'MarkMonitor',
+		...overrides,
+	};
+}
+
+function candidate(overrides: Partial<CandidateInput> = {}): CandidateInput {
+	return {
+		domain: 'apple.net',
+		confidence: 0.5,
+		signals: [],
+		registrar: 'Unknown',
+		registrarSource: 'unknown',
+		...overrides,
+	};
+}
+
+describe('normalizeRegistrar', () => {
+	it('collapses MarkMonitor variants', () => {
+		expect(normalizeRegistrar('MarkMonitor Inc.')).toBe('MarkMonitor');
+		expect(normalizeRegistrar('markmonitor international canada ltd.')).toBe('MarkMonitor');
+	});
+
+	it('collapses Com Laude / NomIQ variants', () => {
+		expect(normalizeRegistrar('Com Laude')).toBe('Com Laude');
+		expect(normalizeRegistrar('Nom-IQ Ltd. dba Com Laude')).toBe('Com Laude');
+	});
+
+	it('returns Unknown for empty / Unknown', () => {
+		expect(normalizeRegistrar('')).toBe('Unknown');
+		expect(normalizeRegistrar('Unknown')).toBe('Unknown');
+	});
+
+	it('preserves unrecognized registrars trimmed', () => {
+		expect(normalizeRegistrar('  Random Registrar Ltd.  ')).toBe('Random Registrar Ltd.');
+	});
+});
+
+describe('confidenceTier', () => {
+	it('high tier for >= 0.85', () => {
+		expect(confidenceTier(0.85)).toBe('high');
+		expect(confidenceTier(0.95)).toBe('high');
+		expect(confidenceTier(1)).toBe('high');
+	});
+
+	it('medium tier for 0.5–0.85', () => {
+		expect(confidenceTier(0.5)).toBe('medium');
+		expect(confidenceTier(0.84)).toBe('medium');
+	});
+
+	it('low tier for < 0.5', () => {
+		expect(confidenceTier(0)).toBe('low');
+		expect(confidenceTier(0.49)).toBe('low');
+	});
+});
+
+describe('isSubdomainOf', () => {
+	it('exact match returns true', () => {
+		expect(isSubdomainOf('apple.com', 'apple.com')).toBe(true);
+	});
+
+	it('subdomain returns true', () => {
+		expect(isSubdomainOf('dmarc.apple.com', 'apple.com')).toBe(true);
+		expect(isSubdomainOf('mail.dmarc.apple.com', 'apple.com')).toBe(true);
+	});
+
+	it('sibling domain returns false', () => {
+		expect(isSubdomainOf('apple.net', 'apple.com')).toBe(false);
+		expect(isSubdomainOf('badapple.com', 'apple.com')).toBe(false);
+	});
+});
+
+describe('classifyCandidate', () => {
+	describe('Rule 1: subdomain of target', () => {
+		it('subdomain → consolidated with Organizational Subdomain note', () => {
+			const c = candidate({ domain: 'dmarc.apple.com', confidence: 0.5 });
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.note).toBe('Organizational Subdomain');
+		});
+
+		it('subdomain wins even when registrar is Unknown', () => {
+			const c = candidate({ domain: 'dmarc.apple.com', registrar: 'Unknown' });
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+		});
+
+		it('subdomain wins even when confidence is very low', () => {
+			const c = candidate({ domain: 'mail.apple.com', confidence: 0.01 });
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+		});
+	});
+
+	describe('Rule 2: strong infra signal (san | ns | dkim_key_reuse)', () => {
+		it('SAN signal → consolidated regardless of registrar mismatch', () => {
+			const c = candidate({
+				domain: 'apple.io',
+				signals: ['san'],
+				confidence: 0.95,
+				registrar: 'Tucows.com Co.',
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.reasons.join(' ')).toMatch(/SAN/i);
+		});
+
+		it('NS signal → consolidated', () => {
+			const c = candidate({ domain: 'apple.de', signals: ['ns'], confidence: 0.9 });
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.reasons.join(' ')).toMatch(/NS/i);
+		});
+
+		it('DKIM key reuse → consolidated', () => {
+			const c = candidate({ domain: 'apple.fr', signals: ['dkim_key_reuse'], confidence: 0.8 });
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.reasons.join(' ')).toMatch(/DKIM/i);
+		});
+
+		it('strong signal wins even when registrarSource is redacted', () => {
+			const c = candidate({
+				domain: 'apple.de',
+				signals: ['san'],
+				confidence: 0.95,
+				registrarSource: 'redacted',
+			});
+			expect(classifyCandidate(c, target()).bucket).toBe('consolidated');
+		});
+	});
+
+	describe('Rule 3: DMARC RUA signal alone is consolidation evidence', () => {
+		it('high-confidence dmarc_rua alone → consolidated', () => {
+			const c = candidate({ domain: 'apple.es', signals: ['dmarc_rua'], confidence: 0.95 });
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.reasons.join(' ')).toMatch(/DMARC/i);
+		});
+
+		it('low-confidence dmarc_rua does NOT consolidate alone', () => {
+			const c = candidate({ domain: 'apple.es', signals: ['dmarc_rua'], confidence: 0.3 });
+			expect(classifyCandidate(c, target()).bucket).not.toBe('consolidated');
+		});
+	});
+
+	describe('Rule 4: same registrar family + ≥2 corroborating signals', () => {
+		it('matching family + 2 signals → consolidated', () => {
+			const c = candidate({
+				domain: 'apple.uk',
+				signals: ['markov_gen', 'dmarc_rua'],
+				confidence: 0.6,
+				registrar: 'MarkMonitor Inc.',
+				registrarSource: 'rdap',
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.reasons.join(' ')).toMatch(/registrar family/i);
+		});
+
+		it('matching family + only 1 signal does NOT consolidate (MarkMonitor manages many brands)', () => {
+			const c = candidate({
+				domain: 'apple.uk',
+				signals: ['markov_gen'],
+				confidence: 0.3,
+				registrar: 'MarkMonitor Inc.',
+				registrarSource: 'rdap',
+			});
+			expect(classifyCandidate(c, target()).bucket).not.toBe('consolidated');
+		});
+
+		it('both Unknown registrar → does NOT consolidate even with multiple signals', () => {
+			const c = candidate({
+				domain: 'apple.kr',
+				signals: ['markov_gen', 'dmarc_rua'],
+				confidence: 0.5,
+				registrar: 'Unknown',
+				registrarSource: 'unknown',
+			});
+			const t = target({ registrarFamily: 'Unknown', registrar: 'Unknown' });
+			expect(classifyCandidate(c, t).bucket).not.toBe('consolidated');
+		});
+	});
+
+	describe('Rule 5: redacted / notfound → indeterminate when no strong signals', () => {
+		it('redacted source + no strong signals → indeterminate', () => {
+			const c = candidate({
+				domain: 'apple.de',
+				signals: ['markov_gen'],
+				confidence: 0.6,
+				registrar: 'Unknown',
+				registrarSource: 'redacted',
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('indeterminate');
+		});
+
+		it('notfound source + no strong signals → indeterminate', () => {
+			const c = candidate({
+				domain: 'apple.kp',
+				signals: [],
+				confidence: 0.6,
+				registrar: 'Unknown',
+				registrarSource: 'notfound',
+			});
+			expect(classifyCandidate(c, target()).bucket).toBe('indeterminate');
+		});
+	});
+
+	describe('Rule 6: high-confidence non-infra signal → shadowIt', () => {
+		it('high confidence + only dmarc_rua + different registrar → shadowIt', () => {
+			// Edge case: candidate REPORTS DMARC to seed but doesn't share certs/NS/DKIM.
+			// Could be a 3rd-party operator (legitimate sprawl) or noise — flag for review.
+			const c = candidate({
+				domain: 'apple-partner.com',
+				signals: ['dmarc_rua'],
+				confidence: 0.78,
+				registrar: 'GoDaddy.com, LLC',
+				registrarSource: 'rdap',
+			});
+			expect(classifyCandidate(c, target()).bucket).toBe('shadowIt');
+		});
+	});
+
+	describe('Rule 7: medium confidence + no strong signals → indeterminate', () => {
+		it('medium confidence + only markov_gen → indeterminate', () => {
+			const c = candidate({
+				domain: 'apple-shop.com',
+				signals: ['markov_gen'],
+				confidence: 0.55,
+				registrar: 'GoDaddy.com, LLC',
+				registrarSource: 'rdap',
+			});
+			expect(classifyCandidate(c, target()).bucket).toBe('indeterminate');
+		});
+	});
+
+	describe('Rule 8: low confidence + no strong signals → impersonation', () => {
+		it('low confidence → impersonation', () => {
+			const c = candidate({
+				domain: 'apple-fake.xyz',
+				signals: ['markov_gen'],
+				confidence: 0.15,
+				registrar: 'Namecheap, Inc.',
+				registrarSource: 'rdap',
+			});
+			expect(classifyCandidate(c, target()).bucket).toBe('impersonation');
+		});
+	});
+
+	describe('Confidence tier metadata', () => {
+		it('tier matches the candidate combined confidence', () => {
+			expect(classifyCandidate(candidate({ confidence: 0.95 }), target()).confidenceTier).toBe('high');
+			expect(classifyCandidate(candidate({ confidence: 0.6 }), target()).confidenceTier).toBe('medium');
+			expect(classifyCandidate(candidate({ confidence: 0.2 }), target()).confidenceTier).toBe('low');
+		});
+	});
+
+	describe('Signal 4: registrant organization match', () => {
+		it('exact registrant org match → consolidated, regardless of registrar family', () => {
+			const c = candidate({
+				domain: 'apple.uk',
+				signals: ['markov_gen'],
+				confidence: 0.3,
+				registrar: 'Different Registrar Ltd.',
+				registrant: 'Apple Inc.',
+			});
+			const t = target({ registrant: 'Apple Inc.' });
+			const result = classifyCandidate(c, t);
+			expect(result.bucket).toBe('consolidated');
+			expect(result.reasons.join(' ')).toMatch(/registrant/i);
+		});
+
+		it('normalized registrant match (Inc/Ltd/Corp variants)', () => {
+			const c = candidate({ domain: 'apple.it', registrant: 'apple, inc' });
+			const t = target({ registrant: 'Apple Inc.' });
+			expect(classifyCandidate(c, t).bucket).toBe('consolidated');
+		});
+
+		it('different registrants → no consolidation boost', () => {
+			const c = candidate({
+				domain: 'apple-not.com',
+				signals: ['markov_gen'],
+				confidence: 0.3,
+				registrant: 'Someone Else LLC',
+			});
+			const t = target({ registrant: 'Apple Inc.' });
+			expect(classifyCandidate(c, t).bucket).not.toBe('consolidated');
+		});
+
+		it('redacted (null) registrant on candidate → no registrant rule fires (falls through to other rules)', () => {
+			const c = candidate({
+				domain: 'apple.de',
+				signals: ['markov_gen'],
+				confidence: 0.6,
+				registrar: 'Unknown',
+				registrarSource: 'redacted',
+				registrant: null,
+			});
+			const t = target({ registrant: 'Apple Inc.' });
+			// Falls through to Rule 5 (redacted source → indeterminate)
+			expect(classifyCandidate(c, t).bucket).toBe('indeterminate');
+		});
+	});
+});

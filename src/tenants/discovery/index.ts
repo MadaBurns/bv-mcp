@@ -29,3 +29,15 @@ export type {
 	DkimKeyReuseResult,
 	DkimCoOwnedCandidate,
 } from './dkim-key-reuse';
+
+export { detectHttpRedirect } from './http-redirect-detector';
+export type { HttpRedirectOptions, HttpRedirectResult } from './http-redirect-detector';
+
+export { detectMxOverlap } from './mx-overlap-detector';
+export type { MxOverlapOptions, MxOverlapResult } from './mx-overlap-detector';
+
+export { detectSpfInclude } from './spf-include-detector';
+export type { SpfIncludeOptions, SpfIncludeResult } from './spf-include-detector';
+
+export { detectCnameAlignment } from './cname-alignment-detector';
+export type { CnameAlignmentOptions, CnameAlignmentResult } from './cname-alignment-detector';

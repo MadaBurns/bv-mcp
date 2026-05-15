@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.17.0] - 2026-05-15
+
+### Added
+- **Four new brand-discovery signals** for `discover_brand_domains`: `http_redirect`, `mx_overlap`, `spf_include`, `cname_alignment`. Targets the defensive-portfolio gap that SAN/NS/DKIM/DMARC don't see for tier-1 brands — when amazon/microsoft/nike's alt-TLD assets don't share certs/NS/DKIM/DMARC with the seed, these signals catch them via operational DNS/HTTP behavior instead. `http_redirect` follows up to 3 HTTP redirects from `https://<candidate>/` and consolidates when the chain terminates at the seed's apex or a subdomain (default conf 0.95, near-deterministic). `mx_overlap` compares MX RRsets, with shared-SaaS multi-tenant downgrade and tenant-prefix matching (default conf 0.7, bumped to 0.9 on full candidate-side alignment under seed apex). `spf_include` walks the SPF include graph (RFC 7208 §4.6.4 10-lookup cap) and consolidates when any include is seed-rooted (default conf 0.85). `cname_alignment` walks CNAME chains up to 5 hops and consolidates when the chain terminates at the seed apex (conf 0.9) or a known CDN edge alias like `<seed>.akadns.net` / `<seed>.edgesuite.net` (conf 0.6). All four detectors are pure modules in `src/tenants/discovery/` with the `Detector(seed, { candidateDomains, ... }) → { coOwnedDomains, queryStatus }` shape. 33 new unit tests.
+- **Brand-classification module** (`scripts/lib/brand-classification.ts`): pure classifier extracted from inline spec logic. 8 ordered rules — subdomain check first; registrant-organization match (new Rule 1.5); strong infra signal (`san`/`ns`/`dkim_key_reuse`); high-confidence `dmarc_rua`; matching registrar family + ≥2 corroborating signals; redacted/notfound source → indeterminate; high-confidence non-infra signal → shadowIt; medium-confidence → indeterminate; low-confidence → impersonation. 32 unit tests covering each rule + edge cases.
+- **4th `indeterminate` bucket** in `brand-audit-brand-audit.spec.ts` output JSON + PDF template. Routes candidates whose registrar source is `redacted` (DENIC `.de`, etc.) or `notfound` separately from shadowIt/impersonation so genuine "can't determine" cases aren't mis-classified.
+- **Expanded ccTLD coverage**: `brand-audit-brand-audit.spec.ts` `TLDS` list grew 15 → 40 entries (added `.jp`, `.kr`, `.cn`, `.tw`, `.in`, `.au`, `.nz`, `.za`, `.br`, `.mx`, `.cl`, `.ar`, `.es`, `.it`, `.nl`, `.be`, `.ch`, `.at`, `.pl`, `.cz`, `.se`, `.no`, `.dk`, `.fi`, `.ie`, `.ru`, `.tr`). Tier-1 brand defensive portfolios are global; the prior 15-TLD list silently dropped half their assets from caller-asserted candidate pools.
+
+### Changed
+- `brand-audit-brand-audit.spec.ts` now opts into all 8 discovery signals (4 existing + 4 new).
+- Registrar lookup threads `registrant` organization from RDAP `entities[].vcardArray` through to the classifier; Rule 1.5 (registrant match) consolidates candidates whose registrant normalizes to the same string as the seed's, regardless of registrar family. Matters because MarkMonitor / BrandAudit / Com Laude manage many brands — registrar family is too coarse, but the registrant column distinguishes Apple Inc. from Google LLC.
+- `brand-audit-brand-audit.spec.ts` `INFRASTRUCTURE_DOMAINS` inline Set deleted; spec now imports `isInfrastructureProvider` from `src/tenants/discovery/infrastructure-providers.ts` (50+ vendors vs the stale 28-entry inline list).
+- Registrar lookups parallelized inside each target (concurrency=10) — the WHOIS fallback's per-candidate TCP/43 round-trips were turning every tier-1 target into a ~13 min run; concurrency brings each target back under 2 min.
+
+### Fixed
+- `lookupRegistrar` in `brand-audit-brand-audit.spec.ts` was reading `registrar` from one finding and `registrarSource` from a different finding (whichever came first). When RDAP returned empty registrar AND WHOIS subsequently filled in `redacted`, source would be picked from the RDAP finding (`unknown`) instead of the WHOIS finding (`redacted`) — silently breaking the indeterminate-bucket rule. Fixed to read both fields from the same finding (preferring the one with a populated registrar; falling back to the last source-carrying finding).
+- Subdomain check now runs first in the classifier — was previously after the registrar-family check, so a subdomain of the target with a coincidental registrar-family match was bucketed as consolidated but lost the `'Organizational Subdomain'` forensic note.
+
 ## [2.16.0] - 2026-05-15
 
 ### Added
