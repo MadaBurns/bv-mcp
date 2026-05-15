@@ -28,7 +28,7 @@
 
 import { z } from 'zod';
 import { brandAuditSingle as defaultBrandAuditSingle } from '../tools/brand-audit-single';
-import type { CheckResult } from '../lib/scoring';
+import type { CheckResult, Finding } from '../lib/scoring';
 
 /** Cloudflare Queues redelivery budget: keep messages alive for at most 5 min total. */
 export const BRAND_AUDIT_MESSAGE_TIMEOUT_MS = 300_000;
@@ -362,8 +362,13 @@ async function deliverWatchWebhookIfShifted(args: DeliverWatchWebhookArgs): Prom
 	// baseline so `added` is populated with the full current candidate set —
 	// otherwise customers receive a useless empty payload on watch registration
 	// and have to call brand_audit_get_report to recover the actual state.
-	const baseline: CheckResult = previousResult ?? { category: 'brand_discovery', score: 100, findings: [] };
-	const diff = computeDiff(baseline, args.current);
+	const emptyBaseline: CheckResult = {
+		category: 'brand_discovery',
+		passed: true,
+		score: 100,
+		findings: [] as Finding[],
+	};
+	const diff = computeDiff(previousResult ?? emptyBaseline, args.current);
 
 	const payload = {
 		schemaVersion: 1 as const,
