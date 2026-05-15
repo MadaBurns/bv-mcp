@@ -43,6 +43,11 @@ export interface DispatchMcpMethodOptions {
 	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
 	whoisBinding?: { fetch: typeof fetch };
+	brandAuditDb?: D1Database;
+	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	brandReportsR2?: R2Bucket;
+	browserRenderer?: { fetch: typeof fetch };
+	principalId?: string;
 }
 
 export type DispatchMcpMethodResult =
@@ -153,6 +158,12 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				keyHash: options.keyHash,
 				certstream: options.certstream,
 				whoisBinding: options.whoisBinding,
+				brandAuditDb: options.brandAuditDb,
+				brandAuditQueue: options.brandAuditQueue,
+				brandReportsR2: options.brandReportsR2,
+				browserRenderer: options.browserRenderer,
+				principalId: options.principalId,
+				rateLimitKv: options.rateLimitKv,
 			});
 
 			return {
