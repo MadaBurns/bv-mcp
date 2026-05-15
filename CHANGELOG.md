@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.20.0] - 2026-05-15
+
+### Added — Brand audit Phase 3: PDF rendering via BV_BROWSER_RENDERER + R2
+
+- **`src/lib/brand-audit-html-template.ts`** — pure, Worker-runtime-safe HTML template extracted from `scripts/csc-brand-audit.spec.ts`. Single function `renderBrandAuditHtml(input) → string`. Same input always produces same output (no Date.now, no random IDs — date is an injected parameter so tests can lock it). XML-escapes every user-controlled interpolation (defense against unescaped script/CSS in registrar/domain strings). Dark Blackveil palette + Google Fonts, mirroring the existing report styling.
+- **`src/lib/brand-audit-pdf.ts`** — `renderBrandAuditPdf(result, target, options)` wraps the template + posts to `BV_BROWSER_RENDERER` service binding (`POST /pdf`, JSON body `{ html }`, returns PDF bytes). Throws `browser_renderer_failed: <status>` on non-2xx so the consumer can map cleanly to a retry verdict.
+- **`src/lib/r2-signed-url.ts`** — `generateR2SignedUrl(bucket, key, ttlSeconds=604800)` mints time-limited signed URLs via the R2 binding's `createSignedUrl`. 7-day default. Path-traversal guard rejects empty / oversize / `..`-containing / leading-`/` keys before signing.
+- **`src/queue/brand-audit-pdf-consumer.ts`** — separate Cloudflare Queue consumer (`brand-audit-pdf-queue`, `max_batch_size=1` since Browser Rendering is single-request). For each `{ auditId, target, format }` message: idempotency check (skip if `pdf_r2_key` already set), reads `result_json` from D1, renders PDF, writes R2 at `audits/{auditId}/{target}.pdf`, updates `brand_audit_targets.pdf_r2_key`. Transient renderer/R2 failures → retry. Decoupled from the primary brand-audit-queue so audit `completed` doesn't wait for PDF render.
+- **`brand-audit-consumer` fanout** — on per-target completion AND `format ∈ {markdown, both}` AND `BRAND_AUDIT_PDF_QUEUE` bound, sends a follow-up `{ auditId, target, format }` to the PDF queue. Best-effort: a send failure is swallowed (PDF is enrichment, not the durability boundary).
+- **`brand_audit_get_report` PDF URL surface** — when `target.pdf_r2_key` is set AND `BRAND_REPORTS` R2 binding is wired, the response summary now carries `pdfUrl: string` (7-day signed). When the target is complete but PDF still pending, surfaces `pdfPending: true`. When `format=json` (no PDF requested), `pdfPending: true` indefinitely — clients shouldn't poll for a PDF that won't be rendered. CHANGELOG note: the per-target contract schema gained `pdfUrl: string | null` and `pdfPending: boolean`.
+- **`src/index.ts` queue dispatch** — third route added for `batch.queue === 'brand-audit-pdf-queue'`. Routes to `handleBrandAuditPdfQueue` with `BRAND_AUDIT_DB`, `BRAND_REPORTS`, `BV_BROWSER_RENDERER` deps. Missing bindings → ack-all (no hot loop) until operator provisions per the runbook.
+- **`docs/provisioning/brand-audit-bindings.md`** — extended with the new PDF queue + R2 + `BV_BROWSER_RENDERER` service binding declarations.
+
+### Changed
+- **`ToolRuntimeOptions`** extended with `brandReportsR2?: R2Bucket` and `browserRenderer?: Fetcher` for downstream wiring.
+- **`brand_audit_get_report` per-target response contract** — added `pdfUrl: string | null` and `pdfPending: boolean` (locked in `test/contracts/brand-audit-status.contract.test.ts`).
+
+### Operator action required (deploy)
+- **New resources**: `wrangler queues create brand-audit-pdf-queue`. R2 bucket `bv-brand-reports` was declared in v2.19.0 ops doc but only Phase 3 actually writes to it — provision it now if you haven't.
+- **`BV_BROWSER_RENDERER` service binding**: the `bv-browser-renderer` Worker must already be deployed in the account. Wire it in `.dev/wrangler.deploy.jsonc` per the updated provisioning doc.
+- **Until provisioned**: PDF rendering is a no-op — the primary brand-audit flow still works, but `pdfUrl` will be `null` and `pdfPending` will read `true` after completion. No 500s, no hot loops.
+
 ## [2.19.0] - 2026-05-15
 
 ### Added — Brand audit Phase 2: async batch via queue + D1 state
