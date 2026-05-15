@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.19.0] - 2026-05-15
+
+### Added — Brand audit Phase 2: async batch via queue + D1 state
+- **`brand_audit_batch_start` MCP tool** — async producer for up to 50 targets per call. Validates + deduplicates the domain list, writes the parent `brand_audits` row to D1, enqueues one `{ auditId, target, format, min_confidence? }` message per target to `BRAND_AUDIT_QUEUE`. Returns `{ auditId, queuedAt, targetCount, etaSeconds, format, targets }` immediately so the caller can poll instead of holding a multi-minute connection open. **Quota model in v2.19.0 is daily** via `TIER_TOOL_DAILY_LIMITS` (developer=50/day, partner=200/day, enterprise=500/day; free/agent=0). The `BRAND_AUDIT_QUOTAS` constant + `enforceBrandAuditQuota` helper (shipped in v2.18.0 as a Phase-1 building block) describe a monthly window and remain a Phase 4 follow-up — the orchestrator accepts an injectable `enforceQuota` dep already, but the dispatcher wires only the daily gate today.
+- **`brand_audit_status` MCP tool** — read-only D1 lookup that returns audit-level status, progress (`'N/M'`), and per-target statuses. Owner-scoped (someone else's auditId surfaces as `notFound`, never `accessDenied` — ID-enumeration defense). 10s cache to absorb tight polling loops without lying about progress.
+- **`brand_audit_get_report` MCP tool** — fetches the result JSON for a completed audit. With `target` set, returns the per-target `CheckResult`; without, returns the audit-level aggregate. Returns `notReady` when polling against an in-flight audit. 60s cache. Phase 3 will add R2 signed-URL PDF retrieval; this v2.19.0 version returns inline JSON only.
+- **`src/queue/brand-audit-consumer.ts`** — Cloudflare Queue consumer. For each `{ auditId, target }` message: idempotency check (SELECT status FROM brand_audit_targets — duplicate delivery of a completed/failed target acks without re-running brandAuditSingle, preserving budget under at-least-once delivery), status flip → `'running'`, run `brandAuditSingle`, persist result_json + final status, atomic counter tick. Marks audit `completed` when `completed_targets === total_targets`. Per-message timeout `BRAND_AUDIT_MESSAGE_TIMEOUT_MS = 300_000` (5 min, distinct from the scan-queue's 20s). Wire-format validated by Zod (`BrandAuditQueueMessageSchema`) as defense in depth.
+- **D1 schema** (`src/lib/db/brand-audit-schema.ts`) — two tables: `brand_audits` (parent, status state-machine, total/completed counters, format, aggregate `results_json`) + `brand_audit_targets` (children, composite PK on `audit_id+target`, per-target `result_json` + `pdf_r2_key` for Phase 3). Index on `(owner_id, created_at)` for owner audit-list queries.
+- **`docs/provisioning/brand-audit-bindings.md`** — operator runbook for one-time provisioning: `wrangler d1 create brand-audit-v1`, `wrangler queues create brand-audit-queue`, schema apply via `wrangler d1 execute --file=-`, plus the `.dev/wrangler.deploy.jsonc` snippet (private binding declarations).
+- **Per-tier daily overrides** for the three new tools in `TIER_TOOL_DAILY_LIMITS` matching `BRAND_AUDIT_QUOTAS` (free/agent=0, developer=50 batch + 5000 polls, partner=200/10000, enterprise=500/25000). Free/agent blocked by `FREE_TOOL_DAILY_LIMITS.brand_audit_{*}=0`.
+- **Chaos test** (`test/chaos/brand-audit-consumer.chaos.test.ts`) — locks the idempotency invariant: a duplicate delivery of a terminal-state target row must ack without re-running brandAuditSingle and without mutating D1.
+- **Contract test** (`test/contracts/brand-audit-status.contract.test.ts`) — Zod-validated response shapes for batch-start, status, and get-report (target + aggregate modes).
+
+### Changed
+- **`brand_audit_single` candidate-fanout cap** (`src/tools/brand-audit-single.ts`) — applies the 5-line defensive cap flagged in the v2.18.0 security audit. Discovery output is sliced to `MAX_CANDIDATES_PER_AUDIT = 200`; the summary now carries `{ truncated: boolean, truncatedAt: number, discoveredTotal: number }` so callers can detect a capped audit. Bounds outbound RDAP fanout regardless of how wide discovery's SAN/NS coverage grows.
+- **Queue dispatch** (`src/index.ts`) — the Worker's `queue:` handler now routes by `batch.queue` between `bv-scanner-queue` (tenant scans) and `brand-audit-queue` (Phase 2). Existing scanner-queue path unchanged. Switched the existing `console.log` to structured `logEvent` per project logging convention.
+- **`ToolRuntimeOptions`** (`src/handlers/tools.ts`) — plumbing-only: added `brandAuditDb?: D1Database`, `brandAuditQueue?: BrandAuditQueueProducer`, `rateLimitKv?: KVNamespace`, `principalId?: string` for the three new tools.
+
+### Operator action required (deploy)
+- Provision `brand-audit-v1` D1, `brand-audit-queue` queue, and `bv-brand-reports` R2 bucket per `docs/provisioning/brand-audit-bindings.md`. Apply the schema (SQL inlined in the doc). Add the binding declarations to `.dev/wrangler.deploy.jsonc`. Then `npm run deploy:prod`. **Until these are provisioned, the three new tools return a `{ unprovisioned: true }` error finding rather than 500-ing**, so the surface is safe to ship before infrastructure is in place.
+
 ## [2.18.0] - 2026-05-15
 
 ### Added
