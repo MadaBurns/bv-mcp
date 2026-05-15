@@ -38,6 +38,13 @@ export interface BrandAuditHtmlInput {
 	/** Optional inline base64 PNG/SVG. Omit for an unbranded report. */
 	logoBase64?: string;
 	logoMimeType?: 'image/png' | 'image/svg+xml';
+	/**
+	 * Buckets whose classifier branch actually fired during this audit. Used by
+	 * the template to distinguish empty-because-nothing-matched from
+	 * empty-because-not-run. Omitting it preserves prior behavior — every empty
+	 * bucket is treated as `empty-verified` (back-compat).
+	 */
+	bucketsExercised?: ReadonlySet<BrandAuditBucket>;
 }
 
 /**
@@ -126,7 +133,16 @@ function citationLinks(r: BrandCandidateRow): string {
 		.join(' ');
 }
 
-function renderTableSection(title: string, rows: BrandCandidateRow[], emptyMessage: string, badgeClass: string, columnLabel: string, columnValue: (r: BrandCandidateRow) => string): string {
+function renderTableSection(
+	title: string,
+	bucket: BrandAuditBucket,
+	rows: BrandCandidateRow[],
+	emptyMessage: string,
+	badgeClass: string,
+	columnLabel: string,
+	columnValue: (r: BrandCandidateRow) => string,
+	emptyState: 'empty-verified' | 'not-run' | null,
+): string {
 	const body = rows.length === 0
 		? `<tr><td colspan="4" style="text-align:center; color:#444">${esc(emptyMessage)}</td></tr>`
 		: rows.map((r) => {
@@ -141,9 +157,14 @@ function renderTableSection(title: string, rows: BrandCandidateRow[], emptyMessa
 			</tr>`;
 		}).join('');
 
+	// `data-bucket` always emitted (machine-readable bucket identity); `data-state`
+	// emitted only for empty buckets so reviewers can tell apart "checked, nothing
+	// found" (empty-verified) from "code path didn't fire" (not-run).
+	const stateAttr = rows.length === 0 && emptyState ? ` data-state="${emptyState}"` : '';
+
 	return `<div class="section">
 		<h2>${esc(title)}</h2>
-		<table>
+		<table data-bucket="${bucket}"${stateAttr}>
 			<thead><tr><th>Domain</th><th>Registrar</th><th>${esc(columnLabel)}</th><th>Sources</th></tr></thead>
 			<tbody>${body}</tbody>
 		</table>
@@ -168,6 +189,15 @@ export function renderBrandAuditHtml(input: BrandAuditHtmlInput): string {
 	const signalSummary = (r: BrandCandidateRow): string => {
 		if (r.signals.length === 0) return `${r.combinedConfidence.toFixed(2)}`;
 		return `${r.signals.slice(0, 2).join(', ')} · ${r.combinedConfidence.toFixed(2)}`;
+	};
+
+	// Back-compat: when `bucketsExercised` is omitted, every empty bucket is
+	// treated as `empty-verified` (matches the pre-transparency behavior of
+	// "we always assumed we ran the classifier"). When it's provided,
+	// membership decides — missing => `not-run`.
+	const stateFor = (bucket: BrandAuditBucket): 'empty-verified' | 'not-run' => {
+		if (!input.bucketsExercised) return 'empty-verified';
+		return input.bucketsExercised.has(bucket) ? 'empty-verified' : 'not-run';
 	};
 
 	return `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Brand Audit — ${esc(target)}</title>
@@ -200,10 +230,10 @@ td:last-child { border-right: 1px solid #111111; border-radius: 0 4px 4px 0; col
 <div>${logoTag}<h1>${esc(target.toUpperCase())}</h1><div class="subtitle">Discovery Intel Report</div></div>
 <div class="header-info"><strong>Project:</strong> Brand Audit<br/><strong>Status:</strong> Automated<br/><strong>Date:</strong> ${esc(dateLabel)}</div>
 </div>
-${renderTableSection('Consolidated Infrastructure', by.consolidated, 'Zero internal assets detected.', 'badge-high', 'Signal Strength', signalSummary)}
-${renderTableSection('Shadow IT Portfolio', by.shadowIt, 'Zero Shadow IT assets detected.', 'badge-med', 'Risk Level', () => 'High Confidence Match')}
-${renderTableSection('Indeterminate', by.indeterminate, 'Zero indeterminate candidates.', 'badge-gray', 'Reason', reasonOrInsufficient)}
-${renderTableSection('Impersonation Vectors', by.impersonation, 'Zero impersonation risks detected.', 'badge-low', 'Signal Origin', signalSummary)}
+${renderTableSection('Consolidated Infrastructure', 'consolidated', by.consolidated, 'Zero internal assets detected.', 'badge-high', 'Signal Strength', signalSummary, stateFor('consolidated'))}
+${renderTableSection('Shadow IT Portfolio', 'shadowIt', by.shadowIt, 'Zero Shadow IT assets detected.', 'badge-med', 'Risk Level', () => 'High Confidence Match', stateFor('shadowIt'))}
+${renderTableSection('Indeterminate', 'indeterminate', by.indeterminate, 'Zero indeterminate candidates.', 'badge-gray', 'Reason', reasonOrInsufficient, stateFor('indeterminate'))}
+${renderTableSection('Impersonation Vectors', 'impersonation', by.impersonation, 'Zero impersonation risks detected.', 'badge-low', 'Signal Origin', signalSummary, stateFor('impersonation'))}
 <div class="footer"><div>&copy; ${new Date(input.dateIso).getFullYear()} Blackveil Security</div><div>Deep Intelligence Engine v${esc(input.serverVersion)}</div><div>Ref: ${refHex}</div></div>
 </body></html>`;
 }
