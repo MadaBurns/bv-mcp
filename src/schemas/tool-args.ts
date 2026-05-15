@@ -180,7 +180,18 @@ export const CheckFastFluxArgs = z.object({
 const DiscoverSignalSchema = z
 	.string()
 	.transform((v) => v.toLowerCase().trim())
-	.pipe(z.enum(['san', 'ns', 'dmarc_rua', 'dkim_key_reuse']));
+	.pipe(
+		z.enum([
+			'san',
+			'ns',
+			'dmarc_rua',
+			'dkim_key_reuse',
+			'http_redirect',
+			'mx_overlap',
+			'spf_include',
+			'cname_alignment',
+		]),
+	);
 
 /** discover_brand_domains — seed + optional signal set + candidate seed list. */
 export const DiscoverBrandDomainsArgs = z.object({
@@ -188,9 +199,9 @@ export const DiscoverBrandDomainsArgs = z.object({
 	signals: z
 		.array(DiscoverSignalSchema)
 		.min(1)
-		.max(4)
+		.max(8)
 		.optional()
-		.describe('Signal modules to invoke. Defaults to all four (san, ns, dmarc_rua, dkim_key_reuse).'),
+		.describe('Signal modules to invoke. Defaults to all 8 (san, ns, dmarc_rua, dkim_key_reuse, http_redirect, mx_overlap, spf_include, cname_alignment).'),
 	candidate_domains: z
 		.array(z.string().min(1).max(253))
 		.max(200)

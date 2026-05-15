@@ -14,6 +14,34 @@ import { homedir } from 'os';
 import { discoverBrandDomains } from '../src/tools/discover-brand-domains';
 import { checkRdapLookup } from '../src/tools/check-rdap-lookup';
 import { generatePdf } from '../src/lib/pdf-engine';
+import { isInfrastructureProvider } from '../src/tenants/discovery/infrastructure-providers';
+import {
+    classifyCandidate,
+    normalizeRegistrar,
+    type CandidateInput,
+    type RegistrarSource,
+    type Classification,
+} from './lib/brand-classification';
+
+/**
+ * Production-shaped Fetcher that targets the live bv-whois shim Worker.
+ * Mirrors what the `BV_WHOIS` service binding does at runtime; in node env
+ * we hit the public URL so the audit exercises the same end-to-end fallback
+ * path. Without this, ccTLDs without public RDAP (`.de`, `.me`, `.co`, `.io`,
+ * `.sh`, `.us`) come back as "Unknown" registrar.
+ */
+const LIVE_WHOIS_BINDING: { fetch: typeof fetch } = {
+    async fetch(input: RequestInfo, init?: RequestInit) {
+        const req = typeof input === 'string' ? new Request(input, init) : input;
+        const path = new URL(req.url).pathname;
+        const target = `https://bv-whois.bv-edge.workers.dev${path}`;
+        return fetch(target, {
+            method: req.method,
+            headers: req.headers,
+            body: req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.clone().text(),
+        });
+    },
+};
 
 const TARGET_DOMAINS = [
     'google.com', 'amazon.com', 'microsoft.com', 'apple.com', 'disney.com', 
@@ -21,78 +49,86 @@ const TARGET_DOMAINS = [
     'blackveilsecurity.com'
 ];
 
-// Normalize registrar strings to a stable family name so MarkMonitor / Com Laude / SafeNames
-// variants (case, punctuation, regional subsidiaries) collapse to one family per provider.
-function normalizeRegistrar(raw: string): string {
-    if (!raw || raw === 'Unknown') return 'Unknown';
-    const lower = raw.toLowerCase();
-    if (/markmonitor/.test(lower)) return 'MarkMonitor';
-    if (/com\s*laude|nom[ -]?iq/.test(lower)) return 'Com Laude';
-    if (/safenames/.test(lower)) return 'SafeNames';
-    if (/csc\s*corporate|csc\s*global|corporate domains/.test(lower)) return 'CSC';
-    if (/cloudflare/.test(lower)) return 'Cloudflare';
-    if (/tucows/.test(lower)) return 'Tucows';
-    if (/godaddy/.test(lower)) return 'GoDaddy';
-    if (/namecheap/.test(lower)) return 'Namecheap';
-    if (/network solutions|networksolutions/.test(lower)) return 'Network Solutions';
-    if (/gandi/.test(lower)) return 'Gandi';
-    return raw.trim();
+interface RegistrarLookup {
+    registrar: string;
+    source: RegistrarSource;
+    registrant: string | null;
 }
 
-async function lookupRegistrar(domain: string): Promise<string> {
+/** Look up a domain's registrar + registrant via RDAP + bv-whois fallback,
+ * returning the raw registrar string, the lookup `source`, and (when RDAP
+ * exposes it) the registrant organization. `registrant` drives the
+ * classifier's Rule 1.5 — direct cross-domain ownership match independent
+ * of registrar family. */
+async function lookupRegistrar(domain: string): Promise<RegistrarLookup> {
     try {
-        const rdap = await checkRdapLookup(domain);
-        const rFind = rdap.findings.find(
+        const rdap = await checkRdapLookup(domain, { whoisBinding: LIVE_WHOIS_BINDING });
+        const populatedFind = rdap.findings.find(
             f => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0,
         );
-        return rFind ? (rFind.metadata!.registrar as string) : 'Unknown';
+        const registrantFind = rdap.findings.find(
+            f => typeof f.metadata?.registrant === 'string' && (f.metadata.registrant as string).length > 0,
+        );
+        const registrant = (registrantFind?.metadata?.registrant as string | undefined) ?? null;
+
+        if (populatedFind) {
+            const source = (populatedFind.metadata?.registrarSource as RegistrarSource | undefined) ?? 'unknown';
+            return { registrar: populatedFind.metadata!.registrar as string, source, registrant };
+        }
+        const lastWithSource = [...rdap.findings].reverse().find(
+            f => typeof f.metadata?.registrarSource === 'string',
+        );
+        const source = (lastWithSource?.metadata?.registrarSource as RegistrarSource | undefined) ?? 'unknown';
+        return { registrar: 'Unknown', source, registrant };
     } catch {
-        return 'Unknown';
+        return { registrar: 'Unknown', source: 'unknown', registrant: null };
     }
 }
 
-const INFRASTRUCTURE_DOMAINS = new Set([
-    'agari.com', 'proofpoint.com', 'valimail.com', 'ondmarc.com', 'mimecast.com',
-    'salesforce.com', 'google.com', 'outlook.com', 'protection.outlook.com',
-    'sendgrid.net', 'mandrillapp.com', 'zendesk.com', 'postmarkapp.com',
-    'stspg-customer.com', 'brevo.com', 'amazonses.com', 'mcsv.net',
-    'hubspotemail.net', 'mktomail.com', 'pphosted.com', 'firebasemail.com',
-    'freshdesk.com', 'messagelabs.com', 'atlassian.net', 'xero.com',
-    'marketo.com', 'constantcontact.com', 'mailchimp.com', 'intercom.io'
-]);
-
-const TLDS = ['.net', '.org', '.co', '.io', '.sh', '.ai', '.biz', '.info', '.me', '.us', '.ca', '.uk', '.de', '.fr', '.app'];
-
-function isSubdomainOf(cand: string, target: string) {
-    if (cand === target) return true;
-    return cand.endsWith('.' + target);
-}
-
-function isInfrastructure(cand: string) {
-    const lower = cand.toLowerCase();
-    for (const infra of INFRASTRUCTURE_DOMAINS) {
-        if (lower === infra || lower.endsWith('.' + infra)) return true;
-    }
-    return false;
-}
+// Expanded ccTLD coverage — tier-1 brands typically register defensively across
+// 30+ country TLDs. The earlier 15-TLD list missed many real branded ccTLDs
+// (`.jp`, `.kr`, `.cn`, `.br`, `.au`, `.nz`, `.in`, etc.) and silently dropped
+// them from the caller-asserted candidate pool.
+const TLDS = [
+    '.net', '.org', '.co', '.io', '.sh', '.ai', '.biz', '.info', '.me', '.us',
+    '.ca', '.uk', '.de', '.fr', '.app',
+    '.jp', '.kr', '.cn', '.tw', '.in', '.au', '.nz', '.za',
+    '.br', '.mx', '.cl', '.ar',
+    '.es', '.it', '.nl', '.be', '.ch', '.at', '.pl', '.cz', '.se', '.no', '.dk', '.fi', '.ie',
+    '.ru', '.tr',
+];
 
 const assetsDir = join(import.meta.dirname, '../assets');
 const logoFullBase64 = readFileSync(join(assetsDir, 'bv-logo-full.png')).toString('base64');
+
+interface BucketEntry {
+    domain: string;
+    registrar: string;
+    registrarSource: RegistrarSource;
+    evidence: string;
+    confidence: number;
+    confidenceTier: Classification['confidenceTier'];
+    reasons: string[];
+    note?: string;
+}
 
 async function runAudit(target: string) {
     console.log(`\n>>> Starting Deep Intelligence Audit for: ${target}`);
 
     // Establish the target's own registrar as the consolidation baseline (per-target).
-    const targetRegistrarRaw = await lookupRegistrar(target);
-    const targetFamily = normalizeRegistrar(targetRegistrarRaw);
-    console.log(`    Target registrar: ${targetFamily} (${targetRegistrarRaw})`);
+    const targetLookup = await lookupRegistrar(target);
+    const targetFamily = normalizeRegistrar(targetLookup.registrar);
+    console.log(`    Target registrar: ${targetFamily} (${targetLookup.registrar}, src=${targetLookup.source})`);
 
     const base = target.split('.')[0];
     const candidateDomains = TLDS.map(tld => base + tld);
 
     const discovery = await discoverBrandDomains(target, {
         min_confidence: 0.1,
-        signals: ['san', 'ns', 'dmarc_rua', 'dkim_key_reuse'],
+        // v2.17.0: 8 signals total. The 4 new ones (http_redirect / mx_overlap /
+        // spf_include / cname_alignment) target the defensive-portfolio gap that
+        // SAN/NS/DKIM/DMARC don't see for tier-1 brands.
+        signals: ['san', 'ns', 'dmarc_rua', 'dkim_key_reuse', 'http_redirect', 'mx_overlap', 'spf_include', 'cname_alignment'],
         candidate_domains: candidateDomains
     });
 
@@ -103,8 +139,11 @@ async function runAudit(target: string) {
             const conf = f.metadata.combinedConfidence as number;
             const sigs = f.metadata.signals as string[];
 
-            if (isInfrastructure(cand)) continue;
-            
+            // Use the source-of-truth infrastructure-provider allowlist from src/
+            // (`isInfrastructureProvider` covers ~50 vendors including modern ones
+            // like Klaviyo, Brevo, ZeptoMail; was duplicated/stale in this spec).
+            if (isInfrastructureProvider(cand)) continue;
+
             if (!candidateMap.has(cand) || conf > candidateMap.get(cand)!.confidence) {
                 candidateMap.set(cand, { domain: cand, confidence: conf, signals: sigs });
             }
@@ -112,26 +151,57 @@ async function runAudit(target: string) {
     }
     const candidates = Array.from(candidateMap.values()).sort((a, b) => b.confidence - a.confidence);
 
-    const consolidated = [];
-    const shadowIt = [];
-    const impersonation = [];
+    // Parallel registrar lookups, concurrency-capped to avoid hammering bv-whois.
+    // Sequential per-candidate lookups make every target into a ~13min run because
+    // each ccTLD round-trips TCP/43 to the shim Worker. Concurrency=10 brings each
+    // target back under a minute without overloading the WHOIS shim.
+    const CONCURRENCY = 10;
+    const lookupsByDomain = new Map<string, RegistrarLookup>();
+    for (let i = 0; i < candidates.length; i += CONCURRENCY) {
+        const batch = candidates.slice(i, i + CONCURRENCY);
+        const results = await Promise.all(batch.map(c => lookupRegistrar(c.domain)));
+        batch.forEach((c, idx) => lookupsByDomain.set(c.domain, results[idx]));
+    }
+
+    const consolidated: BucketEntry[] = [];
+    const shadowIt: BucketEntry[] = [];
+    const indeterminate: BucketEntry[] = [];
+    const impersonation: BucketEntry[] = [];
 
     for (const cand of candidates) {
-        const registrar = await lookupRegistrar(cand.domain);
-        const candFamily = normalizeRegistrar(registrar);
-        const evidence = cand.signals.map(s => s.toUpperCase().replace(/_/g, ' ')).join(', ');
-        const entry = { domain: cand.domain, registrar, evidence, confidence: cand.confidence };
+        const lookup = lookupsByDomain.get(cand.domain) ?? { registrar: 'Unknown', source: 'unknown' as const, registrant: null };
+        const input: CandidateInput = {
+            domain: cand.domain,
+            confidence: cand.confidence,
+            signals: cand.signals,
+            registrar: lookup.registrar,
+            registrarSource: lookup.source,
+            registrant: lookup.registrant,
+        };
+        const result = classifyCandidate(input, {
+            domain: target,
+            registrar: targetLookup.registrar,
+            registrarFamily: targetFamily,
+            registrant: targetLookup.registrant,
+        });
 
-        // Same registrar family as target (and not Unknown==Unknown coincidence) → consolidated
-        if (candFamily !== 'Unknown' && targetFamily !== 'Unknown' && candFamily === targetFamily) {
-            consolidated.push(entry);
-        } else if (isSubdomainOf(cand.domain, target)) {
-            consolidated.push({ ...entry, note: 'Organizational Subdomain' });
-        } else if (cand.confidence >= 0.7) {
-            // High-confidence brand signal on a different/unknown registrar = provider sprawl / shadow IT
-            shadowIt.push(entry);
-        } else {
-            impersonation.push(entry);
+        const evidence = cand.signals.map(s => s.toUpperCase().replace(/_/g, ' ')).join(', ');
+        const entry: BucketEntry = {
+            domain: cand.domain,
+            registrar: lookup.registrar,
+            registrarSource: lookup.source,
+            evidence,
+            confidence: cand.confidence,
+            confidenceTier: result.confidenceTier,
+            reasons: result.reasons,
+            ...(result.note ? { note: result.note } : {}),
+        };
+
+        switch (result.bucket) {
+            case 'consolidated': consolidated.push(entry); break;
+            case 'shadowIt': shadowIt.push(entry); break;
+            case 'indeterminate': indeterminate.push(entry); break;
+            case 'impersonation': impersonation.push(entry); break;
         }
     }
 
@@ -267,6 +337,7 @@ async function runAudit(target: string) {
             .badge-high { background: rgba(0, 255, 157, 0.1); color: #00FF9D; border: 1px solid rgba(0, 255, 157, 0.2); }
             .badge-med { background: rgba(255, 204, 0, 0.1); color: #FFCC00; border: 1px solid rgba(255, 204, 0, 0.2); }
             .badge-low { background: rgba(255, 77, 77, 0.1); color: #FF4D4D; border: 1px solid rgba(255, 77, 77, 0.2); }
+            .badge-gray { background: rgba(180, 180, 180, 0.06); color: #999999; border: 1px solid rgba(180, 180, 180, 0.18); }
 
             .footer {
                 margin-top: 120px;
@@ -327,6 +398,21 @@ async function runAudit(target: string) {
         </div>
 
         <div class="section">
+            <h2>Indeterminate</h2>
+            <table>
+                <thead><tr><th>Domain</th><th>Registrar</th><th>Reason</th></tr></thead>
+                <tbody>
+                    ${indeterminate.map(r => `<tr>
+                        <td>${r.domain}</td>
+                        <td>${r.registrar}${r.registrarSource === 'redacted' || r.registrarSource === 'notfound' ? ` <span class="badge badge-gray">${r.registrarSource}</span>` : ''}</td>
+                        <td><span class="badge badge-gray">${r.reasons[0] ?? 'insufficient evidence'}</span></td>
+                    </tr>`).join('')}
+                    ${indeterminate.length === 0 ? '<tr><td colspan="3" style="text-align:center; color:#444">Zero indeterminate candidates.</td></tr>' : ''}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section">
             <h2>Impersonation Vectors</h2>
             <table>
                 <thead><tr><th>Domain</th><th>Registrar</th><th>Signal Origin</th></tr></thead>
@@ -353,7 +439,7 @@ async function runAudit(target: string) {
     const pdfBuffer = await generatePdf(html);
     const desktopPath = join(homedir(), 'Desktop', `${target}-discovery-report.pdf`);
     writeFileSync(desktopPath, pdfBuffer);
-    return { target, consolidated, shadowIt, impersonation };
+    return { target, consolidated, shadowIt, indeterminate, impersonation };
 }
 
 describe('CSC Brand Audit Batch', () => {
