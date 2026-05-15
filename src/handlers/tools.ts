@@ -415,7 +415,11 @@ export async function handleToolsCall(
 		const validatedArgs = validateToolArgs(name, args);
 		// Extract and validate domain for tools that need it
 		// (skip for explain_finding, get_benchmark, get_provider_insights which don't require a domain)
-		const DOMAIN_OPTIONAL_TOOLS = new Set(['explain_finding', 'get_benchmark', 'get_provider_insights', 'batch_scan', 'compare_domains']);
+		const DOMAIN_OPTIONAL_TOOLS = new Set([
+			'explain_finding', 'get_benchmark', 'get_provider_insights', 'batch_scan', 'compare_domains',
+			// v2.21+ brand-audit tools — take `domains[]`, `auditId`, or `action` instead of `domain`.
+			'brand_audit_batch_start', 'brand_audit_status', 'brand_audit_get_report', 'brand_audit_watch',
+		]);
 		if (!DOMAIN_OPTIONAL_TOOLS.has(name)) {
 			domain = extractAndValidateDomain(validatedArgs);
 		}
