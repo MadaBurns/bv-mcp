@@ -13,7 +13,7 @@
  * against ID enumeration.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import type { BrandAuditStatusDeps } from '../src/tools/brand-audit-status';
 
 interface D1Call {

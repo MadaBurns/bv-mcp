@@ -14,7 +14,6 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { BrandAuditGetReportDeps } from '../src/tools/brand-audit-get-report';
 
 interface RowMap {
 	audit?: Record<string, unknown> | null;
