@@ -52,6 +52,9 @@ import { checkDnssecChain } from '../tools/check-dnssec-chain';
 import { checkFastFlux } from '../tools/check-fast-flux';
 import { discoverBrandDomains } from '../tools/discover-brand-domains';
 import { brandAuditSingle } from '../tools/brand-audit-single';
+import { brandAuditBatchStart } from '../tools/brand-audit-batch-start';
+import { brandAuditStatus } from '../tools/brand-audit-status';
+import { brandAuditGetReport } from '../tools/brand-audit-get-report';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -97,6 +100,14 @@ interface ToolRuntimeOptions {
 	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
 	whoisBinding?: { fetch: typeof fetch };
+	/** D1 binding for the brand-audit DB. Used by brand_audit_{batch_start,status,get_report}. Undefined if the operator hasn't provisioned brand-audit-v1 yet (see docs/provisioning/brand-audit-bindings.md). */
+	brandAuditDb?: D1Database;
+	/** Cloudflare Queue producer for the brand-audit batch path. Undefined if unprovisioned. */
+	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	/** RATE_LIMIT KV — also used by enforceBrandAuditQuota for the per-tier monthly window. */
+	rateLimitKv?: KVNamespace;
+	/** principalId of the calling user — required for enforceBrandAuditQuota. Key hash for auth, IP hash for unauth. */
+	principalId?: string;
 }
 
 /** Build QueryDnsOptions for individual check calls from runtime options. */
@@ -121,7 +132,8 @@ async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOption
 const TOOL_REGISTRY: Record<
 	string,
 	{
-		cacheKey: (args: Record<string, unknown>) => string;
+		/** cacheKey may consult runtimeOptions to bind principal (defense against owner-scoped IDOR via cache). */
+		cacheKey: (args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => string;
 		execute: (domain: string, args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => Promise<CheckResult>;
 		cacheTtlSeconds?: number;
 	}
@@ -194,6 +206,87 @@ const TOOL_REGISTRY: Record<
 				whoisBinding: ro?.whoisBinding,
 			}),
 		cacheTtlSeconds: 3600,
+	},
+	brand_audit_batch_start: {
+		// Async producer — not cacheable. Each invocation enqueues fresh work.
+		// Random UUID keeps every call a cache-miss; brief KV write churn is the cost.
+		cacheKey: () => `__nocache__:brand_audit_batch_start:${crypto.randomUUID()}`,
+		execute: async (_domain, args, ro) => {
+			const db = ro?.brandAuditDb;
+			const queue = ro?.brandAuditQueue;
+			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
+			if (!db || !queue) {
+				const { buildCheckResult, createFinding } = await import('../lib/scoring');
+				return buildCheckResult('brand_discovery', [
+					createFinding(
+						'brand_discovery',
+						'Brand audit batch unavailable',
+						'high',
+						'BRAND_AUDIT_DB or BRAND_AUDIT_QUEUE binding is not provisioned. See docs/provisioning/brand-audit-bindings.md.',
+						{ unprovisioned: true },
+					),
+				]);
+			}
+			return brandAuditBatchStart(
+				args.domains as string[],
+				{
+					format: args.format as 'json' | 'markdown' | 'both' | undefined,
+					min_confidence: args.min_confidence as number | undefined,
+				},
+				principalId,
+				{ db, queue },
+			);
+		},
+		cacheTtlSeconds: 0,
+	},
+	brand_audit_status: {
+		// Owner-scoped read — cacheKey MUST bind principalId, else Owner B sees Owner A's
+		// cached status for the same auditId (IDOR-via-cache). Short TTL on top.
+		cacheKey: (args, ro) => `brand_audit_status:${ro?.principalId ?? ro?.keyHash ?? 'anon'}:${String(args.auditId ?? '')}`,
+		execute: async (_domain, args, ro) => {
+			const db = ro?.brandAuditDb;
+			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
+			if (!db) {
+				const { buildCheckResult, createFinding } = await import('../lib/scoring');
+				return buildCheckResult('brand_discovery', [
+					createFinding(
+						'brand_discovery',
+						'Brand audit status unavailable',
+						'high',
+						'BRAND_AUDIT_DB binding is not provisioned.',
+						{ unprovisioned: true },
+					),
+				]);
+			}
+			return brandAuditStatus(String(args.auditId ?? ''), principalId, { db });
+		},
+		cacheTtlSeconds: 10,
+	},
+	brand_audit_get_report: {
+		// Same owner-scoped IDOR defense as brand_audit_status — bind principalId.
+		cacheKey: (args, ro) => `brand_audit_report:${ro?.principalId ?? ro?.keyHash ?? 'anon'}:${String(args.auditId ?? '')}:${String(args.target ?? '')}`,
+		execute: async (_domain, args, ro) => {
+			const db = ro?.brandAuditDb;
+			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
+			if (!db) {
+				const { buildCheckResult, createFinding } = await import('../lib/scoring');
+				return buildCheckResult('brand_discovery', [
+					createFinding(
+						'brand_discovery',
+						'Brand audit get-report unavailable',
+						'high',
+						'BRAND_AUDIT_DB binding is not provisioned.',
+						{ unprovisioned: true },
+					),
+				]);
+			}
+			return brandAuditGetReport(
+				{ auditId: String(args.auditId ?? ''), target: args.target as string | undefined },
+				principalId,
+				{ db },
+			);
+		},
+		cacheTtlSeconds: 60,
 	},
 };
 
@@ -275,7 +368,7 @@ export async function handleToolsCall(
 			// Dispatch to the appropriate tool — check registry first, then special cases
 			const registeredTool = TOOL_REGISTRY[name];
 			if (registeredTool) {
-				const checkName = registeredTool.cacheKey(validatedArgs);
+				const checkName = registeredTool.cacheKey(validatedArgs, runtimeOptions);
 				const cacheKey = `cache:${validDomain}:check:${checkName}`;
 				// Don't cache partial results (e.g. lookalike timeout). The predicate skips the
 				// kv.put entirely instead of the old put-then-delete anti-pattern that drove

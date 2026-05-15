@@ -46,6 +46,16 @@ const CATEGORY = 'brand_discovery';
 /** Concurrency cap for parallel RDAP lookups across candidates. */
 const RDAP_CONCURRENCY = 10;
 
+/**
+ * Defensive cap on per-audit candidate count. A pathological discovery output
+ * (e.g. a seed that triggers wide crt.sh SAN matches on a multi-tenant CDN)
+ * could otherwise fan out to thousands of RDAP fetches. 200 comfortably
+ * accommodates the tier-1 brand baseline (~40 candidates per CLAUDE.md's
+ * Known Constraints) with 5× headroom; over that, the consumer ack()s with
+ * `truncated: true` rather than spending Workers CPU + outbound budget.
+ */
+const MAX_CANDIDATES_PER_AUDIT = 200;
+
 const BUCKET_SEVERITY: Record<Bucket, Severity> = {
 	consolidated: 'info',
 	indeterminate: 'low',
@@ -161,7 +171,9 @@ export async function brandAuditSingle(
 	};
 
 	const discovery = await discover(seedDomain, discoveryOpts);
-	const candidateFindings = discovery.findings.filter((f) => typeof f.metadata?.candidate === 'string');
+	const allCandidateFindings = discovery.findings.filter((f) => typeof f.metadata?.candidate === 'string');
+	const truncated = allCandidateFindings.length > MAX_CANDIDATES_PER_AUDIT;
+	const candidateFindings = truncated ? allCandidateFindings.slice(0, MAX_CANDIDATES_PER_AUDIT) : allCandidateFindings;
 
 	// Look up the target's own registrar first — drives Rule 4 (same registrar family corroboration).
 	const targetLookup = await safeRegistrarLookup(seedDomain, deps);
@@ -262,6 +274,9 @@ export async function brandAuditSingle(
 			targetRegistrarSource: targetLookup.registrarSource,
 			targetRegistrant: targetLookup.registrant,
 			minConfidence: options.min_confidence ?? 0.5,
+			truncated,
+			truncatedAt: truncated ? MAX_CANDIDATES_PER_AUDIT : undefined,
+			discoveredTotal: allCandidateFindings.length,
 		},
 	);
 

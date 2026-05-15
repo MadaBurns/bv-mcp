@@ -238,6 +238,38 @@ export const BrandAuditSingleArgs = z.object({
 		.describe('Drop candidates whose combined confidence falls below this threshold (0-1, default 0.5).'),
 }).passthrough();
 
+/** brand_audit_batch_start — enqueue async brand audits for up to 50 targets. */
+export const BrandAuditBatchStartArgs = z.object({
+	domains: z
+		.array(z.string().min(1).max(253))
+		.min(1)
+		.max(50)
+		.describe('Domains to audit (max 50 per batch). Duplicates are merged.'),
+	format: BrandAuditFormatSchema.optional().describe('Inline output mode. Defaults to "both".'),
+	min_confidence: z
+		.number()
+		.min(0)
+		.max(1)
+		.optional()
+		.describe('Drop candidates whose combined confidence falls below this threshold (0-1, default 0.5).'),
+}).passthrough();
+
+/** brand_audit_status — poll status of an enqueued audit. */
+export const BrandAuditStatusArgs = z.object({
+	auditId: z.string().min(1).max(64).describe('Audit ID returned by brand_audit_batch_start.'),
+}).passthrough();
+
+/** brand_audit_get_report — fetch result JSON for an audit or single target. */
+export const BrandAuditGetReportArgs = z.object({
+	auditId: z.string().min(1).max(64).describe('Audit ID returned by brand_audit_batch_start.'),
+	target: z
+		.string()
+		.min(1)
+		.max(253)
+		.optional()
+		.describe('Specific target domain. Omit for audit-level aggregate.'),
+}).passthrough();
+
 /**
  * Map of every tool name to its Zod argument schema.
  * Used for runtime validation in tools.ts and for inputSchema generation.
@@ -296,4 +328,7 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	check_fast_flux: CheckFastFluxArgs,
 	discover_brand_domains: DiscoverBrandDomainsArgs,
 	brand_audit_single: BrandAuditSingleArgs,
+	brand_audit_batch_start: BrandAuditBatchStartArgs,
+	brand_audit_status: BrandAuditStatusArgs,
+	brand_audit_get_report: BrandAuditGetReportArgs,
 };

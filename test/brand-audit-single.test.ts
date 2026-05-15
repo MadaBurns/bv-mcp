@@ -241,4 +241,45 @@ describe('brandAuditSingle', () => {
 		expect(cand?.metadata?.bucket).toBe('consolidated');
 		expect(cand?.metadata?.note).toBe('Organizational Subdomain');
 	});
+
+	it('caps candidate fanout at 200 and marks summary.truncated when discovery returns more', async () => {
+		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+		// 250 candidates — over the 200 cap.
+		const oversized = Array.from({ length: 250 }, (_, i) => ({
+			domain: `cand-${i}.example.com`,
+			signals: ['ns'],
+			conf: 0.95,
+		}));
+		const rdapSpy = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'rdap', 'Apple Inc.'));
+		const deps = makeDeps({
+			discoverBrandDomains: vi.fn().mockResolvedValue(discoveryResult('apple.com', oversized)),
+			checkRdapLookup: rdapSpy,
+		});
+		const result = await brandAuditSingle('apple.com', {}, deps);
+
+		const candFindings = result.findings.filter((f) => f.metadata?.candidate);
+		expect(candFindings).toHaveLength(200);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary?.metadata?.truncated).toBe(true);
+		expect(summary?.metadata?.truncatedAt).toBe(200);
+		expect(summary?.metadata?.discoveredTotal).toBe(250);
+
+		// Crucially: RDAP only fanned out to the capped candidate set, not all 250.
+		// (1 call for the target + 200 for capped candidates = 201.)
+		expect(rdapSpy.mock.calls.length).toBeLessThanOrEqual(201);
+	});
+
+	it('passes summary.truncated=false when discovery stays under the cap', async () => {
+		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+		const candidates = [{ domain: 'apple.net', signals: ['ns'], conf: 0.95 }];
+		const deps = makeDeps({
+			discoverBrandDomains: vi.fn().mockResolvedValue(discoveryResult('apple.com', candidates)),
+		});
+		const result = await brandAuditSingle('apple.com', {}, deps);
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary?.metadata?.truncated).toBe(false);
+		expect(summary?.metadata?.truncatedAt).toBeUndefined();
+		expect(summary?.metadata?.discoveredTotal).toBe(1);
+	});
 });
