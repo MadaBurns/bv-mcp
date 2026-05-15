@@ -22,6 +22,7 @@ import {
 	GenerateRolloutPlanArgs,
 	CheckFastFluxArgs,
 	DiscoverBrandDomainsArgs,
+	BrandAuditSingleArgs,
 	TOOL_SCHEMA_MAP,
 } from './tool-args';
 
@@ -428,6 +429,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		description:
 			"Find a brand's hidden domain portfolio by aggregating four discovery signals (TLS SAN co-ownership via crt.sh, NS-record correlation, DMARC RUA address mining, DKIM key reuse). Returns ranked candidate domains with combined-confidence scoring.",
 		schema: DiscoverBrandDomainsArgs,
+		group: 'discovery',
+		scanIncluded: false,
+	},
+	brand_audit_single: {
+		description:
+			"Run a full brand audit on a single target: discover brand-related domains via all 8 discovery signals, look up registrar + registrant for each candidate, and classify each into one of four buckets (consolidated, shadowIt, indeterminate, impersonation). Returns a per-candidate classification with summary counts. Gated tier-wide by monthly BRAND_AUDIT_QUOTAS (free/agent=0, developer=50, partner=200, enterprise=500, owner=unlimited).",
+		schema: BrandAuditSingleArgs,
 		group: 'discovery',
 		scanIncluded: false,
 	},
