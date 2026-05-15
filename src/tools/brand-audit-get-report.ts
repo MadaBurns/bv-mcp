@@ -30,6 +30,10 @@ export interface BrandAuditGetReportArgs {
 
 export interface BrandAuditGetReportDeps {
 	db: D1Database;
+	/** R2 bucket for brand-audit PDFs. When omitted, get-report falls back to inline JSON. */
+	bucket?: { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> };
+	/** TTL for the signed URL — defaults to 7 days, override for tests. */
+	signedUrlTtlSeconds?: number;
 }
 
 interface AuditRowSlim {
@@ -45,6 +49,7 @@ interface TargetRowSlim {
 	target: string;
 	status: BrandAuditStatus;
 	result_json: string | null;
+	pdf_r2_key: string | null;
 	error: string | null;
 	completed_at: number | null;
 }
@@ -88,7 +93,7 @@ export async function brandAuditGetReport(
 	if (target) {
 		const targetRow = (await deps.db
 			.prepare(
-				'SELECT audit_id, target, status, result_json, error, completed_at FROM brand_audit_targets WHERE audit_id = ? AND target = ? LIMIT 1',
+				'SELECT audit_id, target, status, result_json, pdf_r2_key, error, completed_at FROM brand_audit_targets WHERE audit_id = ? AND target = ? LIMIT 1',
 			)
 			.bind(auditId, target.trim().toLowerCase())
 			.first()) as TargetRowSlim | null;
@@ -106,6 +111,32 @@ export async function brandAuditGetReport(
 		}
 
 		const parsed = safeParse(targetRow.result_json);
+
+		// PDF URL: when the PDF queue consumer has populated pdf_r2_key AND we
+		// have an R2 binding wired, mint a 7-day signed URL. Otherwise surface
+		// `pdfPending: true` so the caller knows to poll again.
+		let pdfUrl: string | null = null;
+		let pdfPending = false;
+		if (targetRow.pdf_r2_key) {
+			if (deps.bucket && typeof deps.bucket.createSignedUrl === 'function') {
+				try {
+					const { generateR2SignedUrl } = await import('../lib/r2-signed-url');
+					pdfUrl = await generateR2SignedUrl(
+						deps.bucket as { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> },
+						targetRow.pdf_r2_key,
+						deps.signedUrlTtlSeconds,
+					);
+				} catch {
+					// R2 binding present but signing failed — fall back to inline JSON.
+					pdfUrl = null;
+				}
+			}
+		} else if (targetRow.status === 'completed') {
+			// Result is ready but PDF hasn't been rendered yet. May be format=json
+			// (no PDF requested) OR the PDF queue is still processing.
+			pdfPending = true;
+		}
+
 		return buildCheckResult(CATEGORY, [
 			createFinding(
 				CATEGORY,
@@ -119,6 +150,8 @@ export async function brandAuditGetReport(
 					status: targetRow.status,
 					result: parsed,
 					error: targetRow.error,
+					pdfUrl,
+					pdfPending,
 				},
 			),
 		]);

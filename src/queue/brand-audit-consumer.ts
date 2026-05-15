@@ -49,6 +49,14 @@ export interface BrandAuditConsumerDeps {
 	brandAuditSingle?: (target: string, options: { format?: 'json' | 'markdown' | 'both'; min_confidence?: number }) => Promise<CheckResult>;
 	/** Clock override for tests. */
 	now?: () => number;
+	/**
+	 * Optional fanout to the PDF render queue. When present AND the message
+	 * requested a PDF (`format ∈ {markdown, both}`), the consumer enqueues a
+	 * follow-up `{ auditId, target, format }` after persisting the result.
+	 * Absent in dev / unprovisioned environments — primary completion still
+	 * succeeds; PDF rendering just doesn't happen.
+	 */
+	pdfQueue?: { send(message: { auditId: string; target: string; format: 'json' | 'markdown' | 'both' }, options?: { contentType?: 'json' }): Promise<void> };
 }
 
 interface TargetStatusRow {
@@ -154,6 +162,22 @@ export async function processBrandAuditMessage(
 			.run();
 	} catch {
 		return 'retry';
+	}
+
+	// 4a. Fanout: enqueue PDF render when one was requested AND the target
+	// completed (don't bother on `failed`). Best-effort — if the PDF queue
+	// binding is unavailable or send throws, we swallow and proceed; the
+	// primary completion is the durability boundary, not PDF render.
+	if (finalStatus === 'completed' && deps.pdfQueue && (message.format === 'markdown' || message.format === 'both')) {
+		try {
+			await deps.pdfQueue.send(
+				{ auditId: message.auditId, target: message.target, format: message.format },
+				{ contentType: 'json' },
+			);
+		} catch {
+			// swallow — PDF rendering is enrichment, not part of the
+			// audit's durability contract
+		}
 	}
 
 	// 5. Counter tick — bump completed_targets and check finalization.
