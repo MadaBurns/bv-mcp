@@ -215,6 +215,8 @@ Resolution: `extractFormat(args)` in `tool-args.ts` → explicit param wins → 
 - MCP server key name is `"blackveil-dns"` across all configs — keep consistent
 - `tools/call` accepts `scan` as alias for `scan_domain`
 - SSRF config constants live in `src/lib/config.ts`, not `sanitize.ts`
+- **`CheckResult` literal construction**: when building one inline (tests, fallbacks, baselines for diff helpers), include both `passed: boolean` AND `findings: [] as Finding[]` — bare `findings: []` infers `never[]` and breaks CI typecheck after a dns-checks DTS rebuild even when local cached `.d.ts` typecheck passes
+- **`.spec.ts` semantics in this repo**: unit/integration test (Vitest), NOT Playwright E2E despite the global testing-methodology mapping. The `test-methodology-lint.sh` hook may flag `.spec.ts` as `layer=e2e` — for new mock-D1 integration files prefer `*.integration.test.ts`; for pure unit prefer `*.test.ts`
 
 ### Error surfacing convention
 
@@ -360,6 +362,9 @@ Pattern-based detection for adversarial enumeration; emits `fuzzing_suspected` a
 11. If part of `scan_domain`, add to parallel orchestration in `scan-domain.ts` (static import)
 12. Add `test/check-<name>.spec.ts` using `dns-mock` helper pattern
 13. Update README tools table
+14. **If the tool doesn't take a `domain` arg** (uses `domains[]`, `auditId`, `action`, etc.), add to `DOMAIN_OPTIONAL_TOOLS` in `src/handlers/tools.ts` — else every call returns "Missing required parameter: domain" (silent 400 against prod until live-tested)
+15. **Bump `toHaveLength(N)` in 6 specs**: `test/{tool-metadata,tool-schemas,handlers-tools,index,schemas/tool-args,schemas/tool-definitions}.spec.ts`. Also add tool name to `NON_SCAN_TOOL_NAMES` set in `test/tool-schemas.spec.ts`
+16. **If you add a new `ToolRuntimeOptions` field** for a binding, extend `BvMcpEnv` type AND populate the field at all 3 construction sites in `src/index.ts` (search `certstream: c.env.BV_CERTSTREAM`) — declaration without wiring silently leaves `ro.<field>` undefined and the tool returns `{ unprovisioned: true }` even when the binding exists on the deployed worker
 
 ## Testing
 
@@ -370,6 +375,7 @@ Pattern-based detection for adversarial enumeration; emits `fuzzing_suspected` a
 - `tsconfig.json` `types` must be under `compilerOptions` — Vitest pool requires this
 - Config: `vitest.config.mts` (not `.ts`) — 15s timeout, `isolatedStorage: false`
 - TXT mocking: `mockTxtRecords()` adds quotes; pass unquoted. For backslash escaping, use `createDohResponse()` directly
+- **Known flake**: full-suite runs (~3300 tests) ending with `workerd/api/web-socket.c++:828: disconnected: WebSocket peer disconnected` + ~10 "failures" are vitest-pool teardown noise under load, NOT real failures — re-run the named spec files in isolation to confirm green before bisecting
 
 ### Pre-commit hook
 
@@ -410,6 +416,8 @@ Smithery registry metadata (configSchema, scanCredentials) is updated via `PUT /
 - `allow_force_pushes: false`, `allow_deletions: false`
 - No required PR reviews; admin-merge permitted for trivial CI/doc changes (full code changes go through normal PR cycle)
 - Direct pushes to `main` blocked except by admin
+- **`dns-scan` is NOT a required check** and routinely stays `pending` for hours. PRs with `mergeStateStatus: UNSTABLE` (all 4 required checks green, dns-scan still pending) ARE mergeable — `gh pr merge <N> --squash` succeeds. Don't wait on it.
+- `wrangler d1 execute --remote --file=-` does NOT accept stdin redirect (rejects with "Unable to read SQL text file '-'"). Write SQL to a real file path (e.g. `/tmp/schema.sql`) and pass that.
 
 **Deploy mode**: bv-mcp currently operates in manual-deploy mode — `npm run deploy:prod` (uses operator's wrangler OAuth, no GH secret needed) is the active path. `auto-deploy-main.yml` is disabled because `CLOUDFLARE_API_TOKEN` is intentionally absent from the GH `production` environment; the v2.10.6 fail-fast guards would otherwise turn every main push red. Tagged releases use the manual fallback below; `publish.yml` is still active but will fail-fast on tag pushes until secrets are restored.
 
