@@ -1,582 +1,332 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code working in this repo.
 
 ## What is this?
 
 Blackveil DNS — open-source DNS & email security scanner, built as a Cloudflare Worker.
-Exposes ~53 tools (`TOOL_DEFS` in `src/schemas/tool-definitions.ts` is the source of truth) via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`.
-An additional check (`check_subdomain_takeover`) runs only inside `scan_domain` and is not directly callable by clients.
-**Version sync**: when bumping, keep `SERVER_VERSION` (`src/lib/server-version.ts`), `version` (`package.json`, `package-lock.json`), `version` AND `packages[0].version` (`server.json` — known foot-gun, both fields), and the `[X.Y.Z]` heading in `CHANGELOG.md` in sync. Listed on the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.blackveilsecurity/dns`.
+~53 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
+
+**Version sync** when bumping: `SERVER_VERSION` (`src/lib/server-version.ts`), `version` in `package.json` + `package-lock.json`, `version` AND `packages[0].version` in `server.json` (both fields — foot-gun), and `[X.Y.Z]` heading in `CHANGELOG.md`.
 
 ## Commands
 
 ```bash
-npm install                            # Install deps (includes workspace packages)
-npm test                               # Vitest + Istanbul coverage (Workers runtime)
-npx vitest run test/check-spf.spec.ts  # Run a single test file
-python3 scripts/chaos/chaos-test-clients.py          # Chaos test: all 9 client types (v2.1.17+)
-npm run build                          # tsup build (npm package + stdio CLI bundle)
-npx wrangler dev                       # Local dev at localhost:8787
-npm run typecheck                      # tsc --noEmit
-npm run lint                           # ESLint
-npm run lint:fix                       # ESLint with auto-fix
-git config core.hooksPath .githooks    # Enable pre-commit hooks (one-time setup)
+npm install
+npm test                                    # Vitest in Workers runtime
+npx vitest run test/check-spf.spec.ts       # Single spec
+npm run build                               # tsup (npm pkg + stdio CLI)
+npx wrangler dev                            # localhost:8787
+npm run typecheck                           # tsc --noEmit
+npm run lint[:fix]
+npm run deploy:prod                         # Inject private bindings + deploy
+git config core.hooksPath .githooks         # One-time hook setup
 ```
 
 ## Tech
 
-- **Runtime**: Cloudflare Workers — no Node.js APIs (only `fetch`, `crypto`, Web APIs)
-- **Framework**: Hono v4
-- **Chaos Testing**: Python-based multi-client/multi-session validation
-- **TypeScript**: strict, ES2024 target, Bundler resolution, `isolatedModules: true`
-- **Testing**: Vitest + `@cloudflare/vitest-pool-workers` (tests execute inside Workers runtime)
-- **Linter**: ESLint + typescript-eslint
+- **Runtime**: Cloudflare Workers — no Node.js APIs (`fetch`, `crypto`, Web only)
+- **Framework**: Hono v4 · **TypeScript**: strict, ES2024, Bundler resolution, `isolatedModules`
+- **Testing**: Vitest + `@cloudflare/vitest-pool-workers` (tests run inside Workers runtime)
+- **Tooling Node**: 22+ (Wrangler 4.87+ hard-fails on <22)
 - **Formatter**: Prettier (tabs, single quotes, semi, 140 width)
-- **Package manager**: npm
-- **Tooling Node.js**: Node 22+ for CI/dev/deploy workflows because Wrangler 4.87+ hard-fails on Node <22
+- **Package mgr**: npm
 
 ## Architecture
 
-### Monorepo structure
+### Monorepo
 
-npm workspace monorepo. Root is a Cloudflare Worker; `packages/dns-checks` (`@blackveil/dns-checks`) is a separately publishable runtime-agnostic package.
+npm workspace. Root = Cloudflare Worker. `packages/dns-checks` (`@blackveil/dns-checks`) is the runtime-agnostic core, published separately and consumed via npm.
 
-**Entrypoints**: `src/index.ts` (Worker/Hono app), `src/package.ts` (npm package → `dist/index.js`), `src/stdio.ts` (CLI → `dist/stdio.js` with `cloudflare:workers` shim), `src/internal.ts` (service binding routes), `src/scheduled.ts` (Cron Trigger alerting).
+**Entrypoints**: `src/index.ts` (Worker/Hono), `src/package.ts` (npm), `src/stdio.ts` (CLI), `src/internal.ts` (service binding), `src/scheduled.ts` (cron).
 
-```bash
-npm -w packages/dns-checks run build      # Build sub-package
-npm -w packages/dns-checks run test       # Test sub-package
-npm -w packages/dns-checks run typecheck  # Typecheck sub-package
-```
-
-### Source layout
+### Source layout (orientation only)
 
 ```
-src/index.ts              — Hono app, HTTP routes, middleware wiring
-src/package.ts            — npm package entrypoint
-src/internal.ts           — Internal service binding routes (no MCP overhead)
-src/stdio.ts              — Native stdio MCP transport (CLI)
-src/scheduled.ts          — Cron Trigger handler for analytics alerting
-
-src/mcp/                  — MCP protocol layer
-  execute.ts              — Transport-neutral shared executor (validation, rate limiting, dispatch, analytics)
-  dispatch.ts             — JSON-RPC method → handler routing
-  request.ts              — Body parsing, JSON-RPC validation (batch support), Content-Type validation
-  route-gates.ts          — Pre-dispatch guards (rate limits, session validation)
-
-src/schemas/              — Centralized Zod validation schemas
-  primitives.ts           — Shared schemas: Domain, SessionId, enums (Profile, Format, Grade, Tier)
-  tool-args.ts            — Per-tool argument Zod schemas + TOOL_SCHEMA_MAP
-  tool-definitions.ts     — TOOLS array with inputSchema derived from Zod via z.toJSONSchema()
-  json-rpc.ts             — JSON-RPC 2.0 request/batch validation
-  internal.ts             — Internal route request body schemas
-  dns.ts                  — DoH response + parsed record type schemas (CAA, TLSA, MX, SRV)
-  session.ts              — Session KV record schema
-  auth.ts                 — Tier cache entry + service binding response schemas
-
-src/handlers/             — MCP method handlers
-  tools.ts                — tools/list + tools/call dispatch
-  tool-schemas.ts         — Re-exports TOOLS/McpTool from schemas/tool-definitions.ts
-  tool-args.ts            — Domain extraction, Zod validation dispatch, format resolution
-  tool-formatters.ts      — mcpError/mcpText/formatCheckResult helpers
-  tool-execution.ts       — Tool logging helpers
-  resources.ts            — resources/list + resources/read
-  prompts.ts              — prompts/list + prompts/get
-
-src/tools/                — Individual DNS checks + orchestrator
-  check-*.ts              — Individual checks (SPF, DMARC, DKIM, MX, SSL, BIMI, etc.)
-  *-analysis.ts           — Analysis helpers extracted from check modules
-  scan-domain.ts          — Parallel orchestrator → ScanScore + MaturityStage
-  scan/                   — Scan sub-helpers (format-report, post-processing, maturity-staging)
-  explain-finding-data.ts — Static explanation generator
-  explain-finding.ts      — Static explanation generator
-  resolve-spf-chain.ts    — Recursive SPF include tree with lookup counting
-  discover-subdomains.ts  — CT log subdomain discovery (certstream binding + crt.sh fallback)
-  map-supply-chain.ts     — Third-party dependency graph (SPF/NS/TXT/SRV/CAA correlation)
-  map-compliance.ts       — Compliance framework mapping (NIST/PCI/SOC2/CIS)
-  simulate-attack-paths.ts — Attack path enumeration from DNS posture
-  analyze-drift.ts        — Baseline comparison with drift classification
-  validate-fix.ts         — Targeted re-check with fix verdict
-  generate-rollout-plan.ts — Phased DMARC enforcement timeline
-  provider-guides.ts      — Static provider detection rules and fix guide guides
-  txt-hygiene-analysis.ts — Shared TXT verification patterns and SPF cross-reference
-
-src/oauth/                — OAuth 2.1 issuer (discovery, dynamic registration, authorize, token, JWT, KV-backed storage)
-src/tenants/              — Multi-tenant subsystem (production-live): tenant-resolver, per-tenant-rate-limit,
-                            queue-consumer, dns-fingerprint, routes, audit, analytics-stream, scheduled-handlers;
-                            sub-dirs db/, discovery/, monitoring/, alerts/, adapters/
-src/types/env.d.ts        — Worker bindings type augmentation
-
-src/lib/                  — Shared infrastructure
-  scoring.ts              — Re-export facade for scoring subsystem
-  scoring-model.ts        — Types (Finding, CheckResult, ScanScore) + buildCheckResult/createFinding
-  scoring-engine.ts       — IMPORTANCE_WEIGHTS, computeScanScore, scoreToGrade (bridge to generic engine)
-  scoring-config.ts       — Runtime scoring configuration (ScoringConfig type, defaults, parser)
-  context-profiles.ts     — DomainProfile, DomainContext, PROFILE_WEIGHTS, detectDomainContext
-  adaptive-weights.ts     — EMA-based adaptive weight computation
-  profile-accumulator.ts  — Durable Object for per-profile telemetry (SQLite-backed)
-  dns.ts                  — DNS-over-HTTPS facade; queryTxtRecords concatenates per RFC 7208 §3.3, unescapes RFC 1035 §5.1 (max 2 passes)
-  sanitize.ts             — Domain validation, SSRF protection (imports `punycode/` — trailing slash = npm package)
-  safe-fetch.ts           — `safeFetch` wrapper enforcing `validateOutboundUrl` (required for attacker-controlled URLs)
-  config.ts               — SSRF constants, DNS tuning, rate limit quotas
-  session.ts              — KV + in-memory session management with dual-write
-  cache.ts                — KV + in-memory TTL cache, INFLIGHT dedup, cacheSetDeferred()
-  rate-limiter.ts         — KV + in-memory per-IP rate limiting; withIpKvLock() for serialization
-  json-rpc.ts             — JSON-RPC 2.0 types, error codes, response builders
-  auth.ts                 — Bearer token validation (constant-time XOR)
-  analytics.ts            — Analytics Engine integration (fail-open, 4 event types)
-  analytics-queries.ts    — Pre-built queries for scheduled alerting
-  client-detection.ts     — User-agent → client-type classification (analytics + format auto-detect)
-  fuzzing-detector.ts     — Pure `classifyError` + sliding-window `scoreWindow` (no I/O)
-  fuzzing-counter.ts      — KV-backed sliding-window counter (RATE_LIMIT namespace)
-  log.ts                  — Structured JSON logging with sanitization
-  db/schema.ts            — Drizzle schema (tenants)
-  hooks/analytics-stream.ts — Analytics stream hook
-
-test/                     — Specs are flat by source file (e.g. test/check-spf.spec.ts ↔ src/tools/check-spf.ts).
-                            The 6-layer test pyramid (Unit → Integration → Contract → Audit → E2E → Chaos)
-                            is methodology, not directory layout — most tests live at the top level and a
-                            spec's layer is conveyed by filename suffix (.spec.ts, .integration.test.ts,
-                            .audit.test.ts, .contract.test.ts, .chaos.test.ts).
-test/helpers/             — Shared test fixtures (dns-mock.ts: setupFetchMock, mockTxtRecords, ...)
-test/schemas/             — Unit tests for Zod schemas in src/schemas/
-test/oauth/               — OAuth flow specs (authorize, token, PKCE, JWT, entitlements, e2e)
-test/audits/              — Audit-layer tests (config drift, workflow regressions, tool quota coverage)
-test/contracts/           — Contract tests for cross-service Zod payloads (e.g. fuzzing alert webhook)
-test/chaos/               — Chaos-layer fail-soft invariant tests (KV down, webhook 500, etc.)
-
-packages/dns-checks/     — @blackveil/dns-checks (runtime-agnostic core library)
-  src/scoring/           — Generic scoring engine
-    generic.ts           — String-keyed three-tier scoring implementation
-    engine.ts            — computeScanScore bridge and scoring defaults
-    model.ts             — Finding/CheckResult types and missing-control rules
-    profiles.ts          — DomainProfile weight sets and context detection
-    config.ts            — ScoringConfig parser and defaults
-  src/checks/            — Individual check implementations (SPF, DMARC, etc.)
-  src/schemas/           — Zod schemas for all check results and findings
-
+src/mcp/         — Protocol: execute, dispatch, request parsing, route gates
+src/schemas/     — Zod schemas: primitives, tool-args + TOOL_SCHEMA_MAP, tool-definitions, json-rpc, internal, dns, session, auth
+src/handlers/    — tools/list+call, resources, prompts, tool-args/-formatters
+src/tools/       — check-*, scan-domain, scan/ helpers, discover-subdomains, map-*, analyze-drift, etc.
+src/oauth/       — OAuth 2.1 issuer (discovery, register, authorize, token, JWT, KV storage)
+src/tenants/     — Multi-tenant subsystem (production-live)
+src/lib/         — scoring (model/engine/config), context-profiles, adaptive-weights, dns, sanitize, safe-fetch,
+                   cache, session, rate-limiter, json-rpc, auth, analytics, client-detection, fuzzing-*, log,
+                   db/schema (Drizzle)
+test/            — Flat by source file. Pyramid layer = filename suffix (.spec.ts, .integration.test.ts,
+                   .audit.test.ts, .contract.test.ts, .chaos.test.ts). Subdirs: helpers/, schemas/, oauth/,
+                   audits/, contracts/, chaos/
+packages/dns-checks/  — Runtime-agnostic core: scoring/ + checks/ + schemas/
 ```
 
-### Layering: where to add code
+### Layering
 
-- **`packages/dns-checks/`** (`@blackveil/dns-checks`): runtime-agnostic core. No Cloudflare dependencies. Holds the 16 core check functions and the generic scoring engine. Add here if the logic could run outside Workers.
-- **`src/tools/`**: MCP protocol wrappers + orchestration that need Workers features (KV, DO, service bindings). Depends on `@blackveil/dns-checks` via npm — releases must maintain backward compatibility.
+- **`packages/dns-checks/`**: runtime-agnostic core. No Cloudflare deps. Add here if logic could run outside Workers.
+- **`src/tools/`**: MCP wrappers + orchestration needing Workers features (KV, DO, bindings). Depends on `@blackveil/dns-checks` via npm — keep backward compat.
 
-Both packages publish together from `publish.yml` on version tags. The dns-checks package is consumed via npm dependency, not bundled.
+Both publish together from `publish.yml` on version tags.
 
 ### Request flow
 
-**Streamable HTTP**: `POST /mcp → Origin check → Auth → Body parse → JSON-RPC validate → mcp/execute.ts → handlers/tools.ts → src/tools/check-*.ts → lib/dns.ts → Cloudflare DoH (empty → bv-dns → Google fallback)`
-
-**Native stdio**: `stdin (JSON-RPC) → src/stdio.ts → mcp/execute.ts → handlers/tools.ts → stdout`
-
-**Legacy HTTP+SSE** (deprecated): `GET /mcp/sse → SSE bootstrap; POST /mcp/messages?sessionId=... → mcp/execute.ts → SSE stream`
-
-**Internal service binding**: `POST /internal/tools/call → guard (reject public) → handlers/tools.ts → JSON (no MCP framing)`
-`POST /internal/tools/batch → validate/sanitize → concurrent chunks → JSON: { results, summary }`
+- **Streamable HTTP**: `POST /mcp → Origin → Auth → Body → JSON-RPC validate → mcp/execute → handlers/tools → src/tools/check-* → lib/dns → DoH (empty → bv-dns → Google)`
+- **Stdio**: `stdin → src/stdio → mcp/execute → handlers/tools → stdout`
+- **Internal binding**: `POST /internal/tools/{call,batch} → guard (reject public) → handlers/tools → JSON (no MCP framing)`
+- **Legacy SSE** (deprecated): `GET /mcp/sse` bootstrap; `POST /mcp/messages?sessionId=...`
 
 ### scan_domain orchestration
 
-Runs **16 checks** in parallel via `Promise.allSettled`. Each has cache key `cache:<domain>:check:<name>`, plus top-level `cache:<domain>`. Results cached 5 min (respects `cacheTtlSeconds` override). `force_refresh` propagates via `skipCache` in `runWithCache()`.
+16 checks in parallel via `Promise.allSettled`. Cache keys: `cache:<domain>:check:<name>` + top-level `cache:<domain>`. 5 min TTL (overridable via `cacheTtlSeconds`). `force_refresh` → `skipCache` in `runWithCache()`.
 
-**Maturity staging**: `computeMaturityStage()` classifies 0-4 (Unprotected → Hardened). Stage 3 doesn't require DKIM. Stage 4 hardening signals: CAA, DKIM-discovered, BIMI, DANE, MTA-STS strict. `capMaturityStage()` caps by score: F (<50) → max Stage 2, D/D+ (<63) → max Stage 3.
+**Maturity staging**: `computeMaturityStage()` 0–4 (Unprotected → Hardened). Stage 3 doesn't require DKIM; Stage 4 hardening: CAA, DKIM-discovered, BIMI, DANE, MTA-STS strict. Score caps stage: F → ≤2, D/D+ → ≤3.
 
-**Partial results on timeout**: 12s scan timeout preserves completed checks; missing get timeout findings. Per-check timeouts 8s. Scan context skips secondary DNS confirmation for speed.
+**Timeouts**: scan 12s preserves partial results; per-check 8s.
 
-**Post-processing adjustments**:
-- **Non-mail**: No MX → queries parent DMARC `sp=`/`p=` → downgrades email-auth findings to `info`
-- **No-send**: SPF `noSendPolicy` metadata → downgrades DKIM/MTA-STS/BIMI missing-record findings to `info`
-- **BIMI**: Rewritten for non-mail domains
+**Post-processing**:
+- Non-mail (no MX): parent DMARC `sp=`/`p=` → downgrade email-auth findings to `info`
+- No-send (SPF `noSendPolicy`): downgrade DKIM/MTA-STS/BIMI missing-record findings to `info`
+- BIMI rewritten for non-mail domains
 
-**Structured output**: Returns (1) human-readable text via `formatScanReport()`, (2) for non-interactive clients only, `<!-- STRUCTURED_RESULT ... -->` JSON block. Omitted for known LLM IDE clients to reduce context.
+**Output**: human-readable text + (non-interactive clients only) `<!-- STRUCTURED_RESULT ... -->` JSON. Omitted for LLM IDE clients.
 
 ### Output format control
 
-All tools accept optional `format` parameter (`full` | `compact`). Auto-detected from client type: interactive LLM clients → `compact`, non-interactive/unknown → `full`.
-
-**Compact mode** strips emoji icons, impact narratives, and verbose sections across all formatters. **Full mode** includes emoji severity icons, multi-line findings, and structured JSON blocks.
-
-Resolution: `extractFormat(args)` in `tool-args.ts` → explicit param wins → else `resolveFormat()` auto-detects from `clientType`. `OutputFormat` type exported from `tool-args.ts`.
+`format` param (`full` | `compact`). Auto-detected from client type: interactive LLM → `compact`, else `full`. Compact strips emoji icons, impact narratives, verbose sections. Resolution in `extractFormat(args)` (tool-args.ts) → explicit wins, else `resolveFormat()` from `clientType`.
 
 ## Conventions
 
-- **Zod schemas**: All input validation uses centralized schemas in `src/schemas/`. Tool `inputSchema` (MCP tools/list) derived from Zod via `z.toJSONSchema()` (Zod v4 built-in). Runtime validation via `validateToolArgs()` in `tool-args.ts`. Schemas use `.passthrough()` (no property stripping) and `.transform().pipe()` for case-insensitive enum normalization.
-- `createFinding()` + `buildCheckResult()` from `lib/scoring-model.ts` (re-exported via `lib/scoring.ts`) — never construct findings manually. `createFinding()` auto-sanitizes `detail` via `sanitizeDnsData()`
-- `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs — runs after Zod shape validation for SSRF/blocklist protection
-- `mcpError()` / `mcpText()` from `handlers/tool-formatters.ts` for MCP response formatting
-- `cacheGet()` / `cacheSet()` / `cacheSetDeferred()` / `runWithCache()` from `lib/cache.ts`; `cacheSetDeferred()` wraps in `ctx.waitUntil()`; `runWithCache()` accepts `skipCache` for `force_refresh`
-- JSDoc (`/** */`) on exported functions; `import type { ... }` for type-only imports
-- All tool functions return `Promise<CheckResult>` (follow `check-spf.ts` pattern) and accept optional `dnsOptions?: QueryDnsOptions`
-- **DNS-failure resilience**: wrappers around `@blackveil/dns-checks` that are called directly by clients (not just from `scan_domain`'s `safeCheck`) should catch top-level DNS errors and return a `CheckResult` with a `missingControl: true` finding instead of throwing. Follow `check-spf.ts` as the reference — it distinguishes `errorKind: 'timeout' | 'dns_error'` based on regex match of the error message. Inside `scan_domain`, `safeCheck()` already handles this for you; the pattern matters for direct `tools/call` invocations where error rates get counted against the tool in analytics.
-- **Total-budget caps**: tools that spawn multiple sequential external fetches (e.g. `check_http_security` does dual-fetch + WAF body + package probe) should wrap the whole thing in a single `Promise.race` against a `TOTAL_BUDGET_MS` timer so package-internal sequentiality can't compound into a Worker-CPU-ceiling outage. Current caps: `check_http_security` = 10s.
-- **`batch_scan` budget**: `batch-scan.ts` enforces `budgetMs` (default 25s) + `concurrency` (default 3) with per-domain `Promise.race` timeouts. Items that exhaust the budget return `error: 'batch_budget_exceeded'`. Both options are exposed via `BatchScanOptions` for tests; production callers should use defaults.
-- `check_mx` is dynamically imported in `handlers/tools.ts` (for test mock isolation)
-- MCP server key name is `"blackveil-dns"` across all configs — keep consistent
-- `tools/call` accepts `scan` as alias for `scan_domain`
-- SSRF config constants live in `src/lib/config.ts`, not `sanitize.ts`
-- **`CheckResult` literal construction**: when building one inline (tests, fallbacks, baselines for diff helpers), include both `passed: boolean` AND `findings: [] as Finding[]` — bare `findings: []` infers `never[]` and breaks CI typecheck after a dns-checks DTS rebuild even when local cached `.d.ts` typecheck passes
-- **`.spec.ts` semantics in this repo**: unit/integration test (Vitest), NOT Playwright E2E despite the global testing-methodology mapping. The `test-methodology-lint.sh` hook may flag `.spec.ts` as `layer=e2e` — for new mock-D1 integration files prefer `*.integration.test.ts`; for pure unit prefer `*.test.ts`
+- **Zod**: Centralized in `src/schemas/`. Tool `inputSchema` derived via `z.toJSONSchema()` (Zod v4). Runtime: `validateToolArgs()`. Use `.passthrough()` and `.transform().pipe()` for case-insensitive enum normalization.
+- `createFinding()` + `buildCheckResult()` from `lib/scoring-model.ts` (re-exported via `lib/scoring.ts`) — never construct findings manually. `createFinding()` auto-sanitizes `detail`.
+- `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs (after Zod) — SSRF/blocklist.
+- `mcpError()` / `mcpText()` from `handlers/tool-formatters.ts`.
+- `cacheGet/Set/SetDeferred/runWithCache` from `lib/cache.ts`. `cacheSetDeferred` wraps in `ctx.waitUntil()`.
+- JSDoc on exports; `import type { ... }` for type-only.
+- Tool functions: `Promise<CheckResult>` + optional `dnsOptions?: QueryDnsOptions`. Follow `check-spf.ts`.
+- **DNS-failure resilience**: tools called directly (not just via `scan_domain`'s `safeCheck`) should catch top-level DNS errors and return `missingControl: true` instead of throwing. `check-spf.ts` is the reference (`errorKind: 'timeout' | 'dns_error'`).
+- **Total-budget caps**: tools with multiple sequential external fetches wrap in `Promise.race` vs `TOTAL_BUDGET_MS`. `check_http_security` = 10s.
+- **`batch_scan`**: `budgetMs` default 25s, `concurrency` default 3, per-domain `Promise.race`. Exceeded → `error: 'batch_budget_exceeded'`.
+- `check_mx` is **dynamically imported** in `handlers/tools.ts` (mock isolation).
+- MCP server key `"blackveil-dns"` everywhere. `tools/call` accepts `scan` as alias for `scan_domain`. SSRF constants live in `lib/config.ts`.
+- **`CheckResult` literal**: include both `passed: boolean` AND `findings: [] as Finding[]` — bare `findings: []` infers `never[]` and breaks CI after dns-checks DTS rebuild.
+- **`.spec.ts` in this repo** = Vitest unit/integration, NOT Playwright E2E. For new mock-D1 integration files prefer `*.integration.test.ts`.
 
-### Error surfacing convention
+### Error surfacing
 
-`sanitizeErrorMessage()` in `lib/json-rpc.ts` controls which error messages reach clients. Only messages starting with these `SAFE_ERROR_PREFIXES` pass through:
-- `'Missing required'` — missing tool arguments
-- `'Invalid'` — validation failures (format, selector, check name)
-- `'Domain '` — domain validation errors (e.g., `'Domain validation failed: ...'`, `'Domain uses a DNS rebinding service...'`)
-- `'Resource not found'` — unknown resources
-- `'Rate limit exceeded'` — quota/rate limit errors
+`sanitizeErrorMessage()` in `lib/json-rpc.ts` allowlists prefixes:
+- `'Missing required'`, `'Invalid'`, `'Domain '`, `'Resource not found'`, `'Rate limit exceeded'`
 
-All other errors return a generic fallback message. New validation errors that need to reach clients **must start with one of these exact prefixes**.
-
-**Rate limit errors**: Use HTTP 200 with JSON-RPC error body (`code: -32029`), not HTTP 429 — follows MCP spec. `retry-after` header still set.
+Anything else → generic fallback. New client-visible errors must start with one of these. Rate limit: HTTP 200 + JSON-RPC `code: -32029` (MCP spec) — not 429. `retry-after` header still set.
 
 ## Scoring
 
-`computeScanScore()` uses a three-tier category model. `CATEGORY_DISPLAY_WEIGHTS` exists for display only, unused in scoring.
+Three-tier model (`computeScanScore`). `CATEGORY_DISPLAY_WEIGHTS` is display-only.
 
-### Three-Tier Category Model
+**Core (70%)**: DMARC 16, DKIM 10, SPF 10, DNSSEC 8, SSL 8.
+**Protective (20%)**: Subdomain Takeover 4, HTTP Security 3, MTA-STS 3, MX 2, CAA 2, NS 2, Lookalikes 2, Shadow Domains 2.
+**Hardening (10%)**: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene (~1.4 pts each, bonus-only).
 
-**Core (70%)** — Direct, exploitable risk:
+Override via `SCORING_CONFIG` env (JSON; `weights`, `profileWeights`, `thresholds`, `grades`, `baselineFailureRates`). Parsed via `parseScoringConfigCached()` (memoized).
 
-| Category | Weight |
-|----------|--------|
-| DMARC | 16 |
-| DKIM | 10 |
-| SPF | 10 |
-| DNSSEC | 8 |
-| SSL | 8 |
+### Rules
 
-> Production may override code defaults via `SCORING_CONFIG` env var in `.dev/wrangler.deploy.jsonc`.
+- **Email bonus**: SPF ≥57, DKIM not deterministically missing, DMARC present → +5/+3/+2 by DMARC score.
+- **SPF trust-surface**: shared-platform findings informational; elevated only when weak DMARC/relaxed alignment corroborates.
+- **SPF `~all`**: downgraded to `info` when DMARC `p=quarantine|reject` (RFC 7489 §10.1). `pct=` parsed.
+- **Confidence gate**: `scoreIndicatesMissingControl()` fires only for `deterministic`/`verified`. Heuristic DKIM "not found" doesn't zero category.
+- **Provider-informed DKIM**: provider detected + probing empty → HIGH → MEDIUM.
+- **Severity penalties**: C −40, H −25, M −15, L −5, Info 0.
+- **`passed`**: `score >= 50 && !hasMissingControl`. Missing control → score zeroed. Checks using `missingControl: true`: CAA, DNSSEC, HTTP Security, MTA-STS, MX, SVCB-HTTPS, NS, Zone Hygiene, BIMI, DANE, TLS-RPT.
+- **Grades**: A+ 92+, A 87–91, B+ 82–86, B 76–81, C+ 70–75, C 63–69, D+ 56–62, D 50–55, F <50.
 
-**Protective (20%)** — Active defenses: Subdomain Takeover (4), HTTP Security (3), MTA-STS (3), MX (2), CAA (2), NS (2), Lookalikes (2), Shadow Domains (2).
+### Profiles
 
-**Hardening (10%)** — Bonus-only: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene. ~1.4 pts each. Never subtracts.
+Five: `mail_enabled` (default), `enterprise_mail`, `non_mail`, `web_only`, `minimal`. Defined in `lib/context-profiles.ts`. **Phase 1**: `auto` uses `mail_enabled` weights; explicit `profile` activates different weights + cache keys.
 
-### Scoring rules
+### Adaptive weights
 
-- **Email bonus**: SPF ≥57, DKIM not deterministically missing, DMARC present → +5/+3/+2 pts based on DMARC score
-- **SPF trust-surface**: Shared-platform findings informational by default; elevated to medium/high only when weak DMARC/relaxed alignment corroborates
-- **SPF `~all` soft-fail**: `~all` findings downgraded to `info` when the domain has an enforcing DMARC policy (`p=quarantine` or `p=reject`). RFC 7489 §10.1 recommends `~all` when DMARC enforces — flagging it as a risk in that context is a false positive. `pct=<100` is also parsed from the DMARC record before making this determination
-- **Confidence gate**: `scoreIndicatesMissingControl()` only fires for `deterministic`/`verified` confidence. Heuristic DKIM "not found" doesn't zero category
-- **Provider-informed DKIM**: Known DKIM-signing provider detected but probing finds nothing → HIGH downgraded to MEDIUM
-- **Severity penalties**: Critical −40, High −25, Medium −15, Low −5, Info 0
-- **`passed` flag**: `score >= 50 && !hasMissingControl`. Missing control → score zeroed. Checks using `missingControl: true`: CAA, DNSSEC, HTTP Security, MTA-STS, MX, SVCB-HTTPS, NS, Zone Hygiene, BIMI, DANE, TLS-RPT
-- **Grades**: A+ (92+), A (87–91), B+ (82–86), B (76–81), C+ (70–75), C (63–69), D+ (56–62), D (50–55), F (<50)
-
-### Scoring Profiles
-
-Five profiles: `mail_enabled` (default), `enterprise_mail`, `non_mail`, `web_only`, `minimal`. Defined in `src/lib/context-profiles.ts`.
-
-**Phase 1 (current):** `auto` mode uses `mail_enabled` weights. Only explicit `profile` parameter activates different weights and cache keys (`cache:<domain>:profile:<profile>`).
-
-**Detection priority:** `non_mail`/`web_only` (no MX) → `mail_enabled` (MX DNS failure fallback) → `enterprise_mail` (MX + known provider + hardening) → `mail_enabled` (default) → `minimal` (>50% failed override).
-
-### Adaptive Weights
-
-EMA-based system adjusting weights per profile+provider using `ProfileAccumulator` DO telemetry. Maturity-gated blending (`MATURITY_THRESHOLD = 200` samples). Falls back to static weights if DO unavailable. `PROFILE_ACCUMULATOR` binding threaded from `index.ts` → `dispatch.ts` → `handlers/tools.ts` → `scanDomain()`. Telemetry sent via `waitUntil()` (non-blocking).
-
-### Runtime Scoring Configuration
-
-All scoring parameters configurable via `SCORING_CONFIG` env var (JSON). Supports `weights`, `profileWeights`, `thresholds`, `grades`, `baselineFailureRates`. Parsed via `parseScoringConfigCached()` (memoized per isolate). Invalid values fall back to defaults silently. Types in `src/lib/scoring-config.ts`.
+EMA per profile+provider via `ProfileAccumulator` DO. Maturity-gated blending (`MATURITY_THRESHOLD = 200`). Falls back to static if DO unavailable. `PROFILE_ACCUMULATOR` threaded `index.ts → dispatch.ts → handlers/tools.ts → scanDomain()`. Telemetry sent via `waitUntil()`.
 
 ## Security
 
-### Key rules
-
-- **SSRF**: `config.ts` defines blocked IPs/TLDs; `sanitize.ts` enforces. `global_fetch_strictly_public` compat flag. All outbound fetches use `redirect: 'manual'`. **Outbound fetches to attacker-controlled URLs (BIMI `l=`/`a=` tags from TXT records, HTTP `Location:` redirect targets that the worker then follows) MUST use `safeFetch` from `src/lib/safe-fetch.ts`** — wraps `fetch` with `validateOutboundUrl()` (https-only, no userinfo, hostname → `validateDomain`). Fetches to a URL whose hostname is already validated upstream (e.g. `https://${validatedDomain}/.well-known/...` like MTA-STS or DANE-HTTPS) may use raw `fetch` provided redirects are not followed (manual mode + early-return on 3xx). Added v2.10.10 (H2/H3).
-- **Auth**: Optional `BV_API_KEY`, constant-time XOR. Token from `Authorization: Bearer <token>` first, then `?api_key=` query fallback (Smithery, URL-only clients). Tier resolution cascades: KV cache → bv-web service binding → static fallback. Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. **Owner-tier IP gate**: requires client IP in `OWNER_ALLOW_IPS`; mismatch downgrades to `partner` on every request (including OAuth-JWT-bearing). OAuth JWT branch validates `claims.tier` against `JwtIssuableTierSchema = z.enum(['owner','developer','enterprise'])` — defense in depth against a minting regression. Paid OAuth tier mapping detailed below.
-- **Rate limiting**: 50 req/min, 300 req/hr per IP (unauthenticated). Authenticated users bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_lookalikes`/`check_shadow_domains`: 20/day per IP with 60-min caching
-- **Per-tool quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts`. Global cap 500k/day (`GLOBAL_DAILY_TOOL_LIMIT`). Distributed via `QuotaCoordinator` DO
-- **Content-Type**: POST requires `application/json`; missing allowed for compat; non-JSON → 415
-- **Body limit**: 10 KB on `/mcp`
-- **IP sourcing**: Only `cf-connecting-ip` — never `x-forwarded-for`
-- **Error sanitization**: Only known prefixes surface; unexpected → generic. Unknown JSON-RPC methods get static `'Method not found'`
-- **Origin validation**: MCP spec-compliant; rejects unauthorized browser `Origin`; configurable via `ALLOWED_ORIGINS`
+- **SSRF**: blocked IPs/TLDs in `config.ts`; enforced by `sanitize.ts`. All outbound `redirect: 'manual'`. **Attacker-controlled URLs** (BIMI `l=`/`a=`, redirect `Location:` targets the worker follows) MUST use `safeFetch` (`lib/safe-fetch.ts`). Fetches to URLs whose hostname is already validated (e.g. `https://${validatedDomain}/.well-known/...`) may use raw `fetch` with manual redirects.
+- **Auth**: Static `BV_API_KEY` (constant-time XOR). Token from `Authorization: Bearer` first, then `?api_key=` (Smithery fallback). Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner-tier IP gate: client IP must be in `OWNER_ALLOW_IPS` else downgrade to `partner` (including OAuth JWT path). OAuth JWT validates `claims.tier` against `JwtIssuableTierSchema = z.enum(['owner','developer','enterprise'])`.
+- **Rate limits**: 50/min, 300/hr per IP (unauthenticated). Authenticated bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_lookalikes`/`check_shadow_domains`: 20/day per IP + 60-min cache.
+- **Per-tool quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts`. Global cap `GLOBAL_DAILY_TOOL_LIMIT` 500k/day via `QuotaCoordinator` DO.
+- **Body**: 10 KB on `/mcp`. **IP source**: `cf-connecting-ip` only (never `x-forwarded-for`).
+- **Origin**: MCP-compliant rejection of unauthorized browser `Origin`; `ALLOWED_ORIGINS` configurable.
 
 ### Sessions
 
-Idle TTL 2 hours, sliding refresh, KV + in-memory dual-write. Missing → 400; expired → 404 (triggers re-init). Creation rate-limited 30/min per IP. Session IDs: exactly 64 lowercase hex chars. `DELETE /mcp` accepts ID via `Mcp-Session-Id` header only. `SESSION_CREATE_BY_IP` capped at 5000 IPs (LRU). `LEGACY_STREAMS` capped at 500 (two-phase eviction).
+Idle TTL 2h, sliding refresh, KV + in-memory dual-write. Missing → 400; expired → 404. Creation rate-limited 30/min per IP. IDs: exactly 64 lowercase hex. `DELETE /mcp` accepts `Mcp-Session-Id` header only. `SESSION_CREATE_BY_IP` LRU-capped 5000; `LEGACY_STREAMS` capped 500.
 
-### Paid OAuth Tiers
+### Paid OAuth tiers
 
-When a user purchases a plan on bv-web and authenticates via OAuth, their token carries a tier claim that maps to rate limits in bv-mcp:
+bv-web plan → OAuth tier claim → bv-mcp limits:
 
-| bv-web Plan | OAuth Tier | Scans/Day | Concurrent Tools | Support |
+| Plan | Tier | Scans/day | Concurrent | Support |
 |---|---|---|---|---|
-| free (unauthenticated) | (none) | 50 | 3 | Community |
-| starter | (none) | 50 | 3 | Community |
-| pro | developer | 500 | 10 | Business |
-| business | developer | 500 | 10 | Business |
-| MCP Developer ($39/mo) | developer | 500 | 10 | 48h |
-| enterprise | enterprise | 10,000 | 25 | Enterprise |
-| MCP Enterprise ($199/mo) | enterprise | 10,000 | 25 | 4h |
+| free / starter | (none) | 50 | 3 | Community |
+| pro / business / MCP Developer | developer | 500 | 10 | Business / 48h |
+| enterprise / MCP Enterprise | enterprise | 10,000 | 25 | Enterprise / 4h |
 
-**Implementation**: Tier resolution in `src/oauth/entitlements.ts` queries bv-web service binding `api/internal/mcp/oauth/authorize`, which validates the Stripe subscription and returns `tier` claim. Mapping logic in bv-web: `app/lib/services/mcp/oauth-entitlements.server.ts` (lines 60–66) defines `PLAN_TO_MCP_TIER`.
-
-**Static API Keys**: The `agent` tier (500 scans/day, 5 concurrent) is only for static API key authentication, not OAuth. OAuth credentials always resolve to `developer` or `enterprise` tiers.
-
-### Input validation
-
-All tool arguments validated via Zod schemas (`src/schemas/tool-args.ts`) before dispatch. `validateToolArgs()` runs the schema `.parse()` and translates `ZodError` to prefixed error messages. Array params (`include_providers`, `mx_hosts`) validated per-element for type, length (≤253), content. `record_type` validated against allowlist. Use `'Invalid'` prefix for validation errors. Enum schemas use `.transform().pipe()` for case-insensitive normalization (e.g., `"COMPACT"` → `"compact"`).
-
-### Output sanitization
-
-- SVG badges: XML-escape + hex regex for color
-- DoH responses: schema-validated before casting
-- Finding details: `sanitizeDnsData()` in `createFinding()` strips HTML/markdown injection
-- `unescapeDnsTxt()` capped at 2 iterations
-- Response body limits: 64 KB for tool checks, 1 MB for provider signatures
-- Log sanitization: IPs redacted via `SENSITIVE_KEY_PATTERN`; control chars stripped via `sanitizeString()`
+Resolution in `src/oauth/entitlements.ts` via bv-web service binding `api/internal/mcp/oauth/authorize`. Mapping defined in bv-web `app/lib/services/mcp/oauth-entitlements.server.ts`. Static API keys never resolve `developer`/`enterprise` from OAuth — they map to `agent` (500/day, 5 concurrent).
 
 ### Internal routes
 
-`/internal/*` guarded by `cf-connecting-ip` detection (pure helper `isPublicInternetRequest()` in `src/internal.ts`). Cloudflare sets this on public requests; service binding calls don't carry it. Public requests → 404. Batch endpoint validates tool names (`/^[a-z_]+$/`, max 30 chars) and allowlists arg keys. `/internal/tools/call` enforces `MAX_REQUEST_BODY_BYTES` (10 KB; mirrors public `/mcp`) before JSON parse (v2.10.10).
+`/internal/*` guarded by `cf-connecting-ip` presence (`isPublicInternetRequest()` in `src/internal.ts`). Public requests → 404. Batch endpoint: tool names `/^[a-z_]+$/` max 30 chars, arg keys allowlisted. `/internal/tools/call` enforces 10 KB body limit pre-parse.
 
-**Defense-in-depth bearer auth:**
-- `/internal/trial-keys/*` and `/internal/oauth/grants` (credential-minting) → strict gate: 503 if `BV_WEB_INTERNAL_KEY` unset, 401 on missing/wrong bearer.
-- `/internal/tools/*` and `/internal/analytics/*` → `internalLenientAuthGate`, opt-in via `REQUIRE_INTERNAL_AUTH=true`. Default off so bv-web's existing unbeared service binding keeps working; flip after wiring `Authorization` upstream.
+**Bearer auth (defense-in-depth)**:
+- `/internal/trial-keys/*`, `/internal/oauth/grants` (credential-minting) → strict gate: 503 if `BV_WEB_INTERNAL_KEY` unset, 401 on missing/wrong bearer.
+- `/internal/tools/*`, `/internal/analytics/*` → `internalLenientAuthGate`, opt-in via `REQUIRE_INTERNAL_AUTH=true`.
 
 ### Fuzzing detection
 
-Pattern-based detection for adversarial enumeration; emits `fuzzing_suspected` alerts via `ALERT_WEBHOOK_URL` from the 15-min cron.
-
-**Patterns:** `unknown_tool` (MCP `isError` "Unknown tool:" OR `tools/call` `-32601`), `unknown_method` (top-level `-32601`), `zod_arg` (`-32602` "Invalid …"), `auth_fail` (HTTP 401 bursts per IP).
-
-**Files:** `lib/fuzzing-detector.ts` (pure classifier + sliding-window scorer), `lib/fuzzing-counter.ts` (KV-backed counter on `RATE_LIMIT`, fail-soft), `schemas/alerting.ts` (Zod contract — only 16-hex hash, never raw IP), `handleFuzzingScan` in `scheduled.ts`, wire-up in `mcp/execute.ts`.
-
-**Principal**: `keyHash` for authenticated, `ipHash` for anonymous (FNV-1a of cf-connecting-ip, `i_` prefix). **Thresholds**: `FUZZ_THRESHOLDS` in `lib/config.ts` (single source of truth, enforced by `test/audits/fuzzing-config.audit.test.ts`). **Fail-soft invariants** are covered by `test/chaos/fuzzing-degradation.chaos.test.ts`.
+Pattern-based, emits `fuzzing_suspected` to `ALERT_WEBHOOK_URL` from 15-min cron. Patterns: `unknown_tool`, `unknown_method`, `zod_arg`, `auth_fail`. Files: `lib/fuzzing-detector.ts` (pure), `lib/fuzzing-counter.ts` (KV `RATE_LIMIT`, fail-soft), `schemas/alerting.ts`, `handleFuzzingScan` in `scheduled.ts`. Principal: `keyHash` (auth) or `ipHash` (FNV-1a `i_` prefix). Thresholds: `FUZZ_THRESHOLDS` in `lib/config.ts` (audit-enforced).
 
 ## Adding a New Tool
 
-1. Create `src/tools/check-<name>.ts` → export async fn returning `CheckResult`
-2. Add `CheckCategory` to union in `src/lib/scoring-model.ts` + `CATEGORY_DISPLAY_WEIGHTS`
-3. Add to `IMPORTANCE_WEIGHTS` in `src/lib/scoring-engine.ts`
+1. `src/tools/check-<name>.ts` → async fn returning `CheckResult`
+2. Add `CheckCategory` to `lib/scoring-model.ts` + `CATEGORY_DISPLAY_WEIGHTS`
+3. Add to `IMPORTANCE_WEIGHTS` in `lib/scoring-engine.ts`
 4. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 5), baselineFailureRates in `scoring-config.ts`
-5. Add to all 5 `PROFILE_WEIGHTS` maps in `context-profiles.ts`
-6. Add Zod schema to `src/schemas/tool-args.ts` (or use `BaseDomainArgs` if domain-only) + add to `TOOL_SCHEMA_MAP`
-7. Add tool entry to `TOOL_DEFS` in `src/schemas/tool-definitions.ts` (name, description, schema, group, tier, scanIncluded)
-8. Add to `TOOL_REGISTRY` in `handlers/tools.ts` (import + cacheKey + execute)
-9. Add to `FREE_TOOL_DAILY_LIMITS` in `config.ts`
-10. Add explanation templates in `explain-finding-data.ts`
-11. If part of `scan_domain`, add to parallel orchestration in `scan-domain.ts` (static import)
-12. Add `test/check-<name>.spec.ts` using `dns-mock` helper pattern
+5. Add to all 5 `PROFILE_WEIGHTS` in `context-profiles.ts`
+6. Add Zod schema to `schemas/tool-args.ts` + `TOOL_SCHEMA_MAP`
+7. Tool entry in `TOOL_DEFS` in `schemas/tool-definitions.ts`
+8. `TOOL_REGISTRY` in `handlers/tools.ts` (import + cacheKey + execute)
+9. `FREE_TOOL_DAILY_LIMITS` in `config.ts`
+10. Explanation templates in `explain-finding-data.ts`
+11. If in `scan_domain`: add to parallel orchestration in `scan-domain.ts` (static import)
+12. `test/check-<name>.spec.ts` using `dns-mock` helper
 13. Update README tools table
-14. **If the tool doesn't take a `domain` arg** (uses `domains[]`, `auditId`, `action`, etc.), add to `DOMAIN_OPTIONAL_TOOLS` in `src/handlers/tools.ts` — else every call returns "Missing required parameter: domain" (silent 400 against prod until live-tested)
-15. **Bump `toHaveLength(N)` in 6 specs**: `test/{tool-metadata,tool-schemas,handlers-tools,index,schemas/tool-args,schemas/tool-definitions}.spec.ts`. Also add tool name to `NON_SCAN_TOOL_NAMES` set in `test/tool-schemas.spec.ts`
-16. **If you add a new `ToolRuntimeOptions` field** for a binding, extend `BvMcpEnv` type AND populate the field at all 3 construction sites in `src/index.ts` (search `certstream: c.env.BV_CERTSTREAM`) — declaration without wiring silently leaves `ro.<field>` undefined and the tool returns `{ unprovisioned: true }` even when the binding exists on the deployed worker
+14. **If no `domain` arg** (uses `domains[]`, `auditId`, etc.): add to `DOMAIN_OPTIONAL_TOOLS` in `handlers/tools.ts` — else every call returns "Missing required parameter: domain"
+15. **Bump `toHaveLength(N)`** in 6 specs: `test/{tool-metadata,tool-schemas,handlers-tools,index,schemas/tool-args,schemas/tool-definitions}.spec.ts`. Also add to `NON_SCAN_TOOL_NAMES` in `tool-schemas.spec.ts`
+16. **New `ToolRuntimeOptions` field** for a binding: extend `BvMcpEnv` AND populate at all 3 construction sites in `src/index.ts` — declaration without wiring silently leaves `ro.<field>` undefined and tool returns `{ unprovisioned: true }`
 
 ## Testing
 
-- DNS mocked via `test/helpers/dns-mock.ts` — `setupFetchMock()`, `mockTxtRecords()`, `createDohResponse()`, `mockFetchResponse()`, `mockFetchError()`
-- Each spec must call `restore()` in `afterEach`
-- **Dynamic imports required** in test functions for mock isolation — `const { checkSpf } = await import('../src/tools/check-spf')`
+- DNS mocked via `test/helpers/dns-mock.ts`: `setupFetchMock`, `mockTxtRecords`, `createDohResponse`, `mockFetchResponse`, `mockFetchError`
+- Each spec: `restore()` in `afterEach`
+- **Dynamic imports required** inside test fns for mock isolation: `const { checkSpf } = await import('../src/tools/check-spf')`
 - Clear scan cache between cases: both `cache:<domain>:check:<name>` and `cache:<domain>`
-- `tsconfig.json` `types` must be under `compilerOptions` — Vitest pool requires this
-- Config: `vitest.config.mts` (not `.ts`) — 15s timeout, `isolatedStorage: false`
-- TXT mocking: `mockTxtRecords()` adds quotes; pass unquoted. For backslash escaping, use `createDohResponse()` directly
-- **Known flake**: full-suite runs (~3300 tests) ending with `workerd/api/web-socket.c++:828: disconnected: WebSocket peer disconnected` + ~10 "failures" are vitest-pool teardown noise under load, NOT real failures — re-run the named spec files in isolation to confirm green before bisecting
+- `tsconfig.json` `types` must be under `compilerOptions`
+- Config: `vitest.config.mts` — 15s timeout, `isolatedStorage: false`
+- TXT mocking: `mockTxtRecords()` adds quotes (pass unquoted); for backslash escaping, use `createDohResponse()` directly
+- **Known flake**: full-suite (~3300 tests) ending with `workerd ... WebSocket peer disconnected` + ~10 "failures" is pool-teardown noise, not real. Re-run named specs in isolation to confirm.
 
-### Pre-commit hook
+### Pre-commit (`.githooks/pre-commit`)
 
-`.githooks/pre-commit` has three gates:
-1. **Blocked paths**: internal docs (`docs/plans/`, `docs/code-review/`, `docs/superpowers/`), `.dev/`, `*.env*`
-2. **Generated files**: blocks staging of `*.pyc`, `__pycache__/`, `worker-configuration.d.ts`, `*.wasm`, `*.sqlite`, `*.db` — even with `git add -f`
-3. **IP leakage**: regex patterns from `.githooks/blocked-patterns` catch internal infrastructure references
-
-Public docs (`docs/client-setup.md`, `docs/scoring.md`, etc.) are committable. Override with `--no-verify`.
-
-## MCP Registry
-
-Listed as `com.blackveilsecurity/dns` on the [MCP Registry](https://registry.modelcontextprotocol.io). `server.json` at the repo root is the registry manifest (pushed by `publish.yml` on version tags). `package.json` includes `mcpName: "com.blackveilsecurity/dns"` for registry resolution.
-
-## Smithery
-
-The server is listed on Smithery at `MadaBurns/bv-mcp` (proxy URL: `https://bv-mcp--madaburns.run.tools`).
-
-`smithery.yaml` configures the external HTTP server entry: `url` template points to `dns-mcp.blackveilsecurity.com/mcp` with an optional `{{#if apiKey}}?api_key={{apiKey}}{{/if}}` suffix. The `configSchema` `apiKey` property uses `x-to: {query: api_key}` so Smithery Connect injects it as a query parameter.
-
-Smithery registry metadata (configSchema, scanCredentials) is updated via `PUT /servers/{ns}/{server}/releases` API using the `SMITHERY_API_KEY` in `.dev/.env.testing`. The `smithery.yaml` `configSchema` is the source of truth for the open-source repo; the registry entry is pushed separately on release.
+Three gates: (1) blocked paths (`docs/plans/`, `docs/code-review/`, `docs/superpowers/`, `.dev/`, `*.env*`); (2) generated files (`*.pyc`, `__pycache__/`, `worker-configuration.d.ts`, `*.wasm`, `*.sqlite`, `*.db`) — even with `git add -f`; (3) IP-leakage regexes from `.githooks/blocked-patterns`. Public docs (`docs/client-setup.md`, `docs/scoring.md`) committable. Override with `--no-verify`.
 
 ## CI/CD
 
-- `ci.yml`: typecheck + lint + test on PRs and `main` pushes
-- `ci-contract.yml`: Zod contract tests on PRs (required check)
-- `security.yml`: Gitleaks + `npm audit` (required checks)
-- `repo-hygiene.yml`: blocks tracked generated files, verifies `.gitignore`, flags large blobs. Reusable — called by `blackveil-dns-action`, `bv-claude-dns`, `bv-vibesdk` via `workflow_call`
-- `dns-security.yml`: weekly DNS scan of blackveilsecurity.com
-- `deploy-hook.yml`: webhook/manual-dispatch deploy to Cloudflare (active production path; supports `dry_run`)
-- `triage-issues.yml`: auto-label/triage on new issues
-- `publish.yml`: tagged-release pipeline (npm + Cloudflare + MCP Registry + GH Release)
-- `auto-deploy-main.yml.disabled`: disabled. Re-enable: upload `CLOUDFLARE_API_TOKEN` to GH `production` env, then `git mv auto-deploy-main.yml.disabled auto-deploy-main.yml`.
-- `.gitleaks.toml`: custom rules; allowlists for test fixtures
+Workflows: `ci.yml`, `ci-contract.yml` (Zod contracts, required), `security.yml` (Gitleaks + npm audit, required), `repo-hygiene.yml` (reusable, called by other repos), `dns-security.yml` (weekly), `deploy-hook.yml` (active deploy path), `publish.yml` (tagged-release pipeline), `triage-issues.yml`, `.gitleaks.toml`.
 
-**Branch protection** (configured 2026-05-07):
-- Required status checks: `build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`
-- `allow_force_pushes: false`, `allow_deletions: false`
-- No required PR reviews; admin-merge permitted for trivial CI/doc changes (full code changes go through normal PR cycle)
-- Direct pushes to `main` blocked except by admin
-- **`dns-scan` is NOT a required check** and routinely stays `pending` for hours. PRs with `mergeStateStatus: UNSTABLE` (all 4 required checks green, dns-scan still pending) ARE mergeable — `gh pr merge <N> --squash` succeeds. Don't wait on it.
-- `wrangler d1 execute --remote --file=-` does NOT accept stdin redirect (rejects with "Unable to read SQL text file '-'"). Write SQL to a real file path (e.g. `/tmp/schema.sql`) and pass that.
+**Branch protection** (2026-05-07): required checks = `build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`. No required reviews; admin merge OK for trivial CI/doc. Direct pushes to `main` blocked except by admin. **`dns-scan` is NOT required** and stays pending for hours; `mergeStateStatus: UNSTABLE` is mergeable — `gh pr merge <N> --squash` works.
 
-**Deploy mode**: bv-mcp currently operates in manual-deploy mode — `npm run deploy:prod` (uses operator's wrangler OAuth, no GH secret needed) is the active path. `auto-deploy-main.yml` is disabled because `CLOUDFLARE_API_TOKEN` is intentionally absent from the GH `production` environment; the v2.10.6 fail-fast guards would otherwise turn every main push red. Tagged releases use the manual fallback below; `publish.yml` is still active but will fail-fast on tag pushes until secrets are restored.
+**Deploy mode**: manual via `npm run deploy:prod` (operator's wrangler OAuth). `auto-deploy-main.yml` disabled because `CLOUDFLARE_API_TOKEN` is intentionally absent from GH `production` env. Tagged releases use manual fallback below until secrets restored.
 
-### Release workflow (`publish.yml`)
+### Release (`publish.yml`)
 
-**Important**: `main` has branch protection requiring 4 status checks for direct pushes (`build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`). The workflow's "Sync version to tag" step tries to push an auto-bump commit and **will be rejected by branch protection**. To avoid this, **always pre-bump the version locally before tagging**:
+**Pre-bump locally before tagging** to avoid the workflow's auto-bump push being rejected by branch protection:
 
 ```bash
-# 1. Update CHANGELOG.md with the new version entry under [Unreleased]
-# 2. Bump package.json + package-lock.json + SERVER_VERSION in one commit
-npm version 2.6.8 --no-git-tag-version --allow-same-version
-sed -i '' "s/export const SERVER_VERSION = '.*'/export const SERVER_VERSION = '2.6.8'/" src/lib/server-version.ts
-git add package.json package-lock.json src/lib/server-version.ts CHANGELOG.md
-git commit -m "chore: bump version to 2.6.8"
-git push origin main
-
-# 3. Tag and push — workflow will find version already matches and skip the auto-bump push
-git tag v2.6.8 && git push origin v2.6.8
+npm version <X.Y.Z> --no-git-tag-version --allow-same-version
+sed -i '' "s/export const SERVER_VERSION = '.*'/export const SERVER_VERSION = '<X.Y.Z>'/" src/lib/server-version.ts
+# Update CHANGELOG.md + server.json (both version fields)
+git commit -am "chore: bump version to <X.Y.Z>" && git push origin main
+git tag v<X.Y.Z> && git push origin v<X.Y.Z>
 ```
 
-Pipeline: validate (test/typecheck/lint/audit) → sync version to tag (no-op when pre-bumped) → npm publish (provenance) → Cloudflare Workers deploy → MCP Registry publish (`server.json`) → GitHub Release with changelog.
+Pipeline: validate → version-sync (no-op if pre-bumped) → npm publish (provenance) || Cloudflare deploy → MCP Registry → GH Release. Requires `NPM_TOKEN`, `CLOUDFLARE_API_TOKEN`, `MCP_REGISTRY_TOKEN` in `production` env — fail-fast if absent. `wrangler d1 execute --remote --file=-` does NOT accept stdin; pass a real path.
 
-npm and Cloudflare deploy run in parallel after the sync step. Requires `NPM_TOKEN` and `CLOUDFLARE_API_TOKEN` secrets in the `production` environment — without them, those steps fail-fast. A manual `npm run deploy:prod` replaces the Cloudflare deploy step when the secret is absent.
-
-**Service binding consumers** (e.g., bv-web): no action required on bv-mcp release. Cloudflare service bindings are live-linked — deploying bv-mcp automatically exposes the new version on the next request. No npm install, version pin, or downstream CI trigger needed.
-
-**Workflow security**: all `${{ }}` expressions pass via `env:` variables, never interpolated directly in `run:` blocks. Only controlled inputs (tag name, secrets, job outputs) — no user-supplied text.
-
-**Workflow secret-check audit** (`test/audits/workflow-secret-check.audit.test.ts`): asserts no workflow uses warn-and-skip on missing secrets, and every `[ -z "$*_TOKEN" ]` guard ends with `exit 1`. Codifies the v2.10.2–v2.10.6 silent prod-stale incident.
+**Workflow secret-check audit** (`test/audits/workflow-secret-check.audit.test.ts`): every `[ -z "$*_TOKEN" ]` guard must `exit 1`; no warn-and-skip. Codifies v2.10.2–v2.10.6 silent prod-stale.
 
 ### Manual release fallback
 
-When the `production` GitHub environment is missing `NPM_TOKEN`/`CLOUDFLARE_API_TOKEN`/`MCP_REGISTRY_TOKEN`, the corresponding `publish.yml` jobs fail-fast (intentional — silent skips drove the v2.10.2-v2.10.6 prod-stale incident). Until those secrets are restored, ship each tagged release manually from local:
+When secrets absent, ship locally:
 
 ```bash
-# 1. npm — uses NPM_KEY from .dev.vars (Automation-type token, bypasses 2FA)
+# npm — uses NPM_KEY from .dev.vars (Automation, bypasses 2FA)
 npm -w packages/dns-checks run build && npm run build
 NPM_TOKEN=$(grep '^NPM_KEY=' .dev.vars | cut -d= -f2-)
 echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > /tmp/.npmrc-bv && chmod 600 /tmp/.npmrc-bv
-NPM_CONFIG_USERCONFIG=/tmp/.npmrc-bv npm publish --access public
-rm /tmp/.npmrc-bv
+NPM_CONFIG_USERCONFIG=/tmp/.npmrc-bv npm publish --access public && rm /tmp/.npmrc-bv
 
-# 2. Cloudflare Workers — uses local wrangler OAuth (no secret needed)
+# Cloudflare — uses local wrangler OAuth
 npm run deploy:prod
 
-# 3. MCP Registry — DNS-based auth (see "MCP Registry DNS auth" below)
-# `mcp-publisher` is a Go binary, NOT an npm package. Install via homebrew
-# (`brew install mcp-publisher`) or download from
-# https://github.com/modelcontextprotocol/registry/releases — `npx
-# mcp-publisher` will 404 on the npm registry.
+# MCP Registry — DNS auth, mcp-publisher is a Go binary (brew install mcp-publisher)
 mcp-publisher login dns --domain blackveilsecurity.com --private-key <ed25519-hex>
 mcp-publisher publish
-
-# 4. Verify
-curl -s "https://registry.npmjs.org/-/package/blackveil-dns/dist-tags"
-npx wrangler deployments list --name bv-dns-security-mcp | tail -5
-curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=blackveil"
-curl -s https://dns-mcp.blackveilsecurity.com/health
 ```
 
-**`server.json` has TWO version fields** — top-level `version` and `packages[0].version` — both must match the tag. The npm-only auto-bump in publish.yml only touches `package.json`, not `server.json`, so update it manually before publishing to the registry.
+**`server.json` has TWO version fields** — top-level `version` and `packages[0].version`. Both must match the tag.
 
-**Approving gated deploys via API** (rather than dashboard clicks):
+**Approving gated deploys via API** (env id `12532483134`):
 ```bash
 RUN_ID=$(gh run list --workflow 253147675 --limit 1 --json databaseId -q '.[0].databaseId')
 gh api -X POST /repos/MadaBurns/bv-mcp/actions/runs/$RUN_ID/pending_deployments \
-  -F 'environment_ids[]=12532483134' -f state=approved -f comment="Approving v2.x.y"
+  -F 'environment_ids[]=12532483134' -f state=approved -f comment="Approving"
 ```
-The production environment id is `12532483134`. Required secrets to add (will eliminate the manual fallback above): `NPM_TOKEN` (Automation-type granular token), `CLOUDFLARE_API_TOKEN` (Workers Edit + Account Read), `MCP_REGISTRY_TOKEN` (or refresh DNS-auth JWT — operationally simpler is to use `github-oidc` login from the Action runner once configured).
 
 ### MCP Registry DNS auth
 
-The `com.blackveilsecurity/*` namespace is gated by **DNS ownership proof** at the apex `blackveilsecurity.com` TXT:
-```
-v=MCPv1; k=ed25519; p=<base64-ed25519-public-key>
-```
-
-**Generating a fresh keypair** (when the private key is lost):
-```bash
-node -e 'const {generateKeyPairSync}=require("crypto"); const {publicKey,privateKey}=generateKeyPairSync("ed25519"); console.log("priv-hex:", privateKey.export({type:"pkcs8",format:"der"}).subarray(-32).toString("hex")); console.log("pub-b64:", publicKey.export({type:"spki",format:"der"}).subarray(-32).toString("base64"))'
-```
-Then update the apex TXT in Cloudflare DNS, wait for propagation across resolvers, and login + publish. **Cloudflare MCP does NOT expose DNS CRUD** — only Workers/D1/KV/R2 — so use the dashboard or a CF API token with `Zone:DNS:Edit`. Save the private key to your password manager *and* `.dev.vars` (suggested name `MCP_PUBLISHER_KEY`) so the next rotation is one command, not a recovery.
+Namespace `com.blackveilsecurity/*` gated by apex TXT `v=MCPv1; k=ed25519; p=<base64-ed25519-pubkey>`. If private key lost, generate new keypair (Node `generateKeyPairSync('ed25519')`), update Cloudflare apex TXT (Cloudflare MCP can't edit DNS — use dashboard or API token with `Zone:DNS:Edit`), then `mcp-publisher login + publish`. Save private key to password manager AND `.dev.vars` (e.g. `MCP_PUBLISHER_KEY`).
 
 ## Service Binding Integration
 
-`/internal/tools/call` accepts plain JSON `{ name, arguments }`, returns `{ content, isError? }`. `/internal/tools/batch` runs same tool across multiple domains (max 500, concurrency 1-50, 256 KB body limit). `?format=structured` returns raw `CheckResult` per domain.
+`/internal/tools/call` accepts `{ name, arguments }` → `{ content, isError? }`. `/internal/tools/batch` runs one tool across many domains (max 500, concurrency 1–50, 256 KB body). `?format=structured` returns raw `CheckResult` per domain.
 
 | Layer | Public `/mcp` | Internal `/internal/*` |
-|-------|:---:|:---:|
-| CORS, Origin, Auth, Rate limiting, Sessions, JSON-RPC, Body limit | Yes | No |
-| Tool execution, Caching, Analytics, SSRF protection | Yes | Yes |
-
-**Consumers**: companion web app (batch scanner → batch endpoint, individual pages → call endpoint).
+|---|:---:|:---:|
+| CORS, Origin, Auth, Rate limiting, Sessions, JSON-RPC, Body limit | ✓ | — |
+| Tool execution, Caching, Analytics, SSRF | ✓ | ✓ |
 
 ## Deployment
 
-```bash
-npm run deploy:prod                    # Securely inject private bindings and deploy to production
-```
+`npm run deploy:prod` runs `scripts/inject-private-config.cjs`, merging public `wrangler.jsonc` with private `.dev/wrangler.deploy.jsonc` → `wrangler.production.jsonc` immediately before deploy.
 
-**Production Injection Workflow**:
-To maintain the public/private architectural split, this repository uses an automated injection build process:
-1.  **Public Engine**: All engine source code is OSS-safe and contains no production secrets.
-2.  **Private Layer**: Sensitive configuration is kept in `.dev/wrangler.deploy.jsonc` (gitignored).
-3.  **Automation**: `npm run deploy:prod` executes `scripts/inject-private-config.cjs`. This merges the public `wrangler.jsonc` with the private `.dev/wrangler.deploy.jsonc` into `wrangler.production.jsonc` immediately before deployment.
-4.  **Mandate**: Never hardcode production endpoints, secrets, or internal service bindings in `wrangler.jsonc`. Use local overrides in the private configuration file.
-
+**Mandate**: never hardcode prod endpoints/secrets/internal bindings in `wrangler.jsonc` — use private overrides. The inject script must enumerate every binding kind (vars, kv_namespaces, r2_buckets, services, durable_objects, queues, d1_databases, analytics_engine_datasets) — silent drops here have shipped misconfigured deploys.
 
 ## Bindings
 
 | Binding | Type | Purpose |
-|---------|------|---------|
-| `BV_API_KEY` | Secret | Static bearer auth — resolves as `owner` tier |
-| `ENABLE_OAUTH` | var | Set to `true` to expose OAuth discovery/register/authorize/token routes. Defaults disabled so clients do not auto-open owner-key browser consent. |
-| `ENABLE_OWNER_OAUTH` | var | Set to `true` only for operator/admin deployments that should render the legacy owner `BV_API_KEY` consent page. Defaults disabled; paid customer OAuth uses bv-web/Stripe entitlements instead. |
-| `OWNER_ALLOW_IPS` | var | Comma-separated IPs allowed for `owner` tier (key + wrong IP → `partner`). Also enforced at `/oauth/authorize` consent step. |
-| `OAUTH_SIGNING_SECRET` | Secret | HS256 signing key (≥32 bytes). Upload via `wrangler secret put`. **Required when `ENABLE_OAUTH=true`** — v2.10.9 added a route-layer gate (`oauthAvailability` in `src/index.ts`) that returns `service_unavailable` 503 from every OAuth route (`/.well-known/oauth-*`, `/oauth/{register,authorize,token}`) until the secret is set. The inner `/oauth/token` 500 path is preserved as defense in depth. Pre-v2.10.9 the failure surfaced only after user consent; the v2.10.8 incident drove the hardening. Codified by `test/chaos/oauth-misconfiguration.chaos.test.ts` and `test/audits/oauth-readiness-gate.audit.test.ts`. |
-| `OAUTH_ISSUER` | var | Optional issuer override (e.g. `https://dns-mcp.blackveilsecurity.com`). Falls back to request Host — set in prod to harden against Host-header spoofing of discovery metadata. |
-| `ALLOWED_ORIGINS` | var | Comma-separated allowed Origins |
-| `RATE_LIMIT` | KV | Per-IP rate counters (**required prod**) |
-| `SCAN_CACHE` | KV | 5-min TTL result cache (**required prod**) |
-| `SESSION_STORE` | KV | Cross-isolate sessions (**required prod**) |
+|---|---|---|
+| `BV_API_KEY` | Secret | Static bearer auth → `owner` tier |
+| `ENABLE_OAUTH` | var | `true` to expose OAuth routes |
+| `ENABLE_OWNER_OAUTH` | var | Owner consent page (operator deploys only) |
+| `OWNER_ALLOW_IPS` | var | IPs allowed for `owner`; mismatch → `partner` |
+| `OAUTH_SIGNING_SECRET` | Secret | HS256 ≥32 bytes. Required when `ENABLE_OAUTH=true` (`oauthAvailability` gate returns 503 until set) |
+| `OAUTH_ISSUER` | var | Optional override; falls back to Host (set in prod against Host spoofing) |
+| `ALLOWED_ORIGINS` | var | Allowed Origins (CSV) |
+| `RATE_LIMIT` / `SCAN_CACHE` / `SESSION_STORE` | KV | Required in prod |
 | `QUOTA_COORDINATOR` | DO | Distributed rate limiting |
-| `PROFILE_ACCUMULATOR` | DO | Adaptive weight telemetry (optional) |
-| `MCP_ANALYTICS` | Analytics Engine | Telemetry (fail-open, optional) |
-| `PROVIDER_SIGNATURES_URL` | var | Runtime provider signatures URL |
-| `BV_DOH_ENDPOINT` | var | Custom secondary DoH URL (fallback: Google) |
-| `BV_DOH_TOKEN` | Secret | Auth for bv-dns (`X-BV-Token` header) |
-| `BV_CERTSTREAM` | Service | CT log access via bv-certstream-worker. Two endpoints consumed: `/enumerate?domain=X` for subdomain discovery (`discover_subdomains`, scan path); `/sans?domain=X` (v2.16.0+) for cross-brand SAN sibling discovery (`discover_brand_domains` via `correlateSans`). Optional — direct-crt.sh fallback runs in both paths if binding is unset or fails. The SAN path's fallback has jittered exponential-backoff retry (default 2 retries). |
-| `BV_WHOIS` | Service | WHOIS-over-TCP/43 shim Worker (`bv-whois`) — optional; `check_rdap_lookup` falls back to RDAP-only when unset. KV-cached IANA referrals, 15 hardcoded fast-path TLDs. v2.15.0+ |
-| `SCORING_CONFIG` | var | JSON scoring overrides (optional) |
-| `CF_ACCOUNT_ID` | var | Cloudflare account ID (alerting) |
-| `CF_ANALYTICS_TOKEN` | Secret | Analytics Engine read token (alerting) |
-| `ALERT_WEBHOOK_URL` | var | Slack/Discord webhook (optional) |
-| `ALERT_*_THRESHOLD` | var | Error/P95/rate-limit triggers |
-| `ALERT_LOOKBACK_MINUTES` | var | Alerting query window (default: 15) |
+| `PROFILE_ACCUMULATOR` | DO | Adaptive weights (optional) |
+| `MCP_ANALYTICS` | Analytics Engine | Telemetry (fail-open) |
+| `PROVIDER_SIGNATURES_URL` | var | Provider signatures source |
+| `BV_DOH_ENDPOINT` / `BV_DOH_TOKEN` | var / Secret | Custom secondary DoH (`X-BV-Token`) |
+| `BV_CERTSTREAM` | Service | CT logs: `/enumerate` (discover_subdomains, scan) + `/sans` (brand SAN siblings). Direct-crt.sh fallback w/ jittered backoff |
+| `BV_WHOIS` | Service | WHOIS/43 shim; optional, RDAP-only fallback. KV-cached IANA referrals |
+| `SCORING_CONFIG` | var | JSON scoring overrides |
+| `CF_ACCOUNT_ID` / `CF_ANALYTICS_TOKEN` | var / Secret | Alerting query auth |
+| `ALERT_WEBHOOK_URL` / `ALERT_*_THRESHOLD` / `ALERT_LOOKBACK_MINUTES` | var | Cron alerts |
 
-## Analytics & Observability
+## Analytics
 
-Four event types: `mcp_request`, `tool_call`, `rate_limit`, `session`. Pre-built queries in `analytics-queries.ts`. Scheduled handler (`scheduled.ts`) runs every 15 min via Cron Trigger for anomaly alerts (also runs `handleFuzzingScan` on the same tick — see Fuzzing detection section). All alerting optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
+Four event types: `mcp_request`, `tool_call`, `rate_limit`, `session`. Queries in `analytics-queries.ts`. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan`. Optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
 
-**Blob layout** — keep in sync if adding new dimensions:
-- `mcp_request`: blob1=method, blob2=transport, blob3=status, blob4=auth-flag, blob5=jsonrpc-flag, blob6=country, blob7=clientType, blob8=authTier, blob9=sessionHash, blob10=keyHash, **blob11=ipHash** (added v2.10.4 — FNV-1a of cf-connecting-ip with `i_` prefix; lossy for privacy, equal IPs hash equally so a defender can hash client-side and filter)
-- `tool_call`: blob1=toolName, blob2=status, blob3=isError, blob4=domainFingerprint, blob5=country, blob6=clientType, blob7=authTier, blob8=cacheStatus, blob9=keyHash, **blob10=ipHash**
-- `rate_limit`: blob1=limitType, blob2=toolName, blob3=country, blob4=authTier
-- `session`: blob1=action, blob2=country, blob3=clientType, blob4=authTier, blob5=method, blob6=keyHash
+**Blob layout** (keep in sync when adding dimensions):
+- `mcp_request`: method, transport, status, auth-flag, jsonrpc-flag, country, clientType, authTier, sessionHash, keyHash, **ipHash** (blob11; FNV-1a `i_` prefix — lossy, equal IPs hash equally)
+- `tool_call`: toolName, status, isError, domainFingerprint, country, clientType, authTier, cacheStatus, keyHash, **ipHash** (blob10)
+- `rate_limit`: limitType, toolName, country, authTier
+- `session`: action, country, clientType, authTier, method, keyHash
 
-**Per-IP investigation** (after v2.10.4):
-```
-IP=<addr> CF_ANALYTICS_TOKEN=... node .dev/analytics-30d.mjs 30
-```
-Hashes the IP locally so it never leaves the operator's machine, then filters by `blob11`/`blob10`.
+**Per-IP investigation**: `IP=<addr> CF_ANALYTICS_TOKEN=... node .dev/analytics-30d.mjs 30` — hashes locally; filter by `blob11`/`blob10`.
 
-Client detection (`client-detection.ts`): `claude_mobile`, `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `bv_load_test`, `unknown`. Used for analytics + format auto-detection, never security. `bv_load_test` matches `bv-{load,chaos,tranco}-{test,scan}` UAs emitted by internal scripts (`scripts/tranco-scan.mjs`, `scripts/tranco-deep-scan.mjs`) and is classified as non-interactive (`full` format) — it exists to keep internal load traffic out of the real-client `unknown` bucket.
+Client detection (`client-detection.ts`): `claude_mobile`, `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `bv_load_test`, `unknown`. For analytics + format auto-detection, never security. `bv_load_test` matches `bv-{load,chaos,tranco}-{test,scan}` UAs — non-interactive.
 
 ## False Positive Reduction
 
-- **MX Reputation**: Shared provider IPs (Google, M365, etc.) → DNSBL findings downgraded to `info`
-- **Lookalikes**: Shared NS with primary domain → downgraded to `info` (defensive registration)
-- **Shadow Domains**: Shared NS (≥2 overlap) → severity downgraded with ownership signal
-- **TXT Hygiene**: Record accumulation tiered (25+→medium, 15-24→low); duplicate verifications consolidated
-- **Non-mail SPF** (`check_mx`): No MX → verifies `v=spf1 -all`; missing SPF→medium, non-reject→low
+- **MX Reputation**: shared provider IPs (Google, M365) → DNSBL findings → `info`
+- **Lookalikes**: shared NS with primary → `info` (defensive registration)
+- **Shadow Domains**: shared NS (≥2 overlap) → severity downgrade with ownership signal
+- **TXT Hygiene**: record accumulation tiered (25+ → medium, 15–24 → low); duplicate verifications consolidated
+- **Non-mail SPF** (`check_mx`): no MX → verifies `v=spf1 -all`; missing SPF → medium, non-reject → low
