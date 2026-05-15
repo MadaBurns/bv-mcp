@@ -26,6 +26,7 @@ const COMMON_SELECTORS = [
 	'dkim',
 	'amazonses', // Amazon SES
 	'zoho', // Zoho Mail
+	'cf2024-1', // Cloudflare Email Routing
 ];
 
 /**
@@ -147,8 +148,7 @@ export async function checkDKIM(
 										? 'below recommended'
 										: 'strong';
 						const descriptions: Record<string, string> = {
-							critical:
-								`DKIM RSA key for "${result.selector}" is ${severityMsg} (~${keyAnalysis.bits} bits). Upgrade to 2048-bit RSA or use Ed25519 for better security.`,
+							critical: `DKIM RSA key for "${result.selector}" is ${severityMsg} (~${keyAnalysis.bits} bits). Upgrade to 2048-bit RSA or use Ed25519 for better security.`,
 							high: `DKIM RSA key for "${result.selector}" is ${severityMsg} (${keyAnalysis.bits} bits). Consider upgrading to 2048-bit RSA or Ed25519.`,
 							medium: `DKIM RSA key for "${result.selector}" is ${severityMsg} (${keyAnalysis.bits} bits). Major providers recommend 4096-bit RSA or Ed25519.`,
 							info: `DKIM RSA key for "${result.selector}" is strong (${keyAnalysis.bits} bits).`,
@@ -190,7 +190,10 @@ export async function checkDKIM(
 				// If only sha1 is listed (no sha256), the key cannot verify modern DKIM signatures.
 				const hashTag = getDkimTagValue(record, 'h');
 				if (hashTag) {
-					const hashAlgs = hashTag.split(':').map((h) => h.trim().toLowerCase()).filter(Boolean);
+					const hashAlgs = hashTag
+						.split(':')
+						.map((h) => h.trim().toLowerCase())
+						.filter(Boolean);
 					if (hashAlgs.length > 0 && !hashAlgs.includes('sha256') && hashAlgs.includes('sha1')) {
 						findings.push(
 							createFinding(
