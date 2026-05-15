@@ -82,9 +82,53 @@ export function candidatesFromCheckResult(result: CheckResult): BrandCandidateRo
 	return rows;
 }
 
+/**
+ * Build third-party verification links per candidate. Each signal in
+ * `r.signals` maps to one or more public, auditable sources a reviewer can
+ * re-run by hand to confirm the claim. Domain-level links (crt.sh, RDAP)
+ * always render so reviewers have a baseline to spot-check from. Signal
+ * names match `src/tools/brand-audit-single.ts` classification output —
+ * keep this map in sync.
+ */
+function citationLinks(r: BrandCandidateRow): string {
+	const domain = encodeURIComponent(r.domain);
+	const items: Array<{ href: string; label: string }> = [];
+	items.push({ href: `https://crt.sh/?q=${domain}`, label: 'crt.sh' });
+	items.push({ href: `https://rdap.org/domain/${domain}`, label: 'rdap' });
+
+	const seen = new Set<string>();
+	for (const s of r.signals) {
+		const key = s.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+
+		if (key.includes('san') || key.includes('cert')) {
+			items.push({ href: `https://crt.sh/?q=${domain}&exclude=expired`, label: 'cert' });
+		} else if (key.startsWith('ns_') || key === 'ns_overlap' || key === 'ns_match') {
+			items.push({ href: `https://dns.google/resolve?name=${domain}&type=NS`, label: 'ns' });
+		} else if (key.includes('dkim')) {
+			items.push({ href: `https://dns.google/resolve?name=default._domainkey.${domain}&type=TXT`, label: 'dkim' });
+		} else if (key.includes('dmarc')) {
+			items.push({ href: `https://dns.google/resolve?name=_dmarc.${domain}&type=TXT`, label: 'dmarc' });
+		} else if (key.includes('spf') || key.includes('txt')) {
+			items.push({ href: `https://dns.google/resolve?name=${domain}&type=TXT`, label: 'spf' });
+		} else if (key.startsWith('mx_') || key.includes('mail')) {
+			items.push({ href: `https://dns.google/resolve?name=${domain}&type=MX`, label: 'mx' });
+		} else if (key.includes('caa')) {
+			items.push({ href: `https://dns.google/resolve?name=${domain}&type=CAA`, label: 'caa' });
+		} else if (key.includes('registrar') || key.includes('rdap') || key.includes('whois')) {
+			items.push({ href: `https://rdap.org/domain/${domain}`, label: 'whois' });
+		}
+	}
+
+	return items
+		.map((it) => `<a class="cite" href="${esc(it.href)}" target="_blank" rel="noopener">${esc(it.label)}</a>`)
+		.join(' ');
+}
+
 function renderTableSection(title: string, rows: BrandCandidateRow[], emptyMessage: string, badgeClass: string, columnLabel: string, columnValue: (r: BrandCandidateRow) => string): string {
 	const body = rows.length === 0
-		? `<tr><td colspan="3" style="text-align:center; color:#444">${esc(emptyMessage)}</td></tr>`
+		? `<tr><td colspan="4" style="text-align:center; color:#444">${esc(emptyMessage)}</td></tr>`
 		: rows.map((r) => {
 			const sourceBadge = r.registrarSource === 'redacted' || r.registrarSource === 'notfound'
 				? ` <span class="badge badge-gray">${esc(r.registrarSource)}</span>`
@@ -93,13 +137,14 @@ function renderTableSection(title: string, rows: BrandCandidateRow[], emptyMessa
 				<td>${esc(r.domain)}</td>
 				<td>${esc(r.registrar)}${sourceBadge}</td>
 				<td><span class="badge ${badgeClass}">${esc(columnValue(r))}</span></td>
+				<td class="sources">${citationLinks(r)}</td>
 			</tr>`;
 		}).join('');
 
 	return `<div class="section">
 		<h2>${esc(title)}</h2>
 		<table>
-			<thead><tr><th>Domain</th><th>Registrar</th><th>${esc(columnLabel)}</th></tr></thead>
+			<thead><tr><th>Domain</th><th>Registrar</th><th>${esc(columnLabel)}</th><th>Sources</th></tr></thead>
 			<tbody>${body}</tbody>
 		</table>
 	</div>`;
@@ -147,6 +192,8 @@ td:last-child { border-right: 1px solid #111111; border-radius: 0 4px 4px 0; col
 .badge-med { background: rgba(255, 204, 0, 0.1); color: #FFCC00; border: 1px solid rgba(255, 204, 0, 0.2); }
 .badge-low { background: rgba(255, 77, 77, 0.1); color: #FF4D4D; border: 1px solid rgba(255, 77, 77, 0.2); }
 .badge-gray { background: rgba(180, 180, 180, 0.06); color: #999999; border: 1px solid rgba(180, 180, 180, 0.18); }
+.sources { font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; }
+.cite { display: inline-block; margin-right: 6px; padding: 2px 6px; border-radius: 2px; color: #00FF9D; background: rgba(0, 255, 157, 0.05); border: 1px solid rgba(0, 255, 157, 0.15); text-decoration: none; text-transform: uppercase; letter-spacing: 0.05em; }
 .footer { margin-top: 120px; padding-top: 32px; border-top: 1px solid #1A1A1A; display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #444444; text-transform: uppercase; letter-spacing: 0.05em; }
 </style></head><body>
 <div class="header">
