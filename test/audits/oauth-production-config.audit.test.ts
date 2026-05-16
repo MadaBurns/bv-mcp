@@ -10,6 +10,13 @@ const deployWorkflowSource = (
 		eager: true,
 	}) as Record<string, string>
 )['../../.github/workflows/deploy-hook.yml'];
+const releaseWorkflowSource = (
+	import.meta.glob('../../.github/workflows/publish.yml', {
+		query: '?raw',
+		import: 'default',
+		eager: true,
+	}) as Record<string, string>
+)['../../.github/workflows/publish.yml'];
 
 const config = JSON.parse(wranglerSource) as {
 	vars?: Record<string, string>;
@@ -45,7 +52,9 @@ describe('production OAuth configuration audit', () => {
 	});
 
 	it('deployment verification probes OAuth token health and customer-consent redirect', () => {
-		expect(deployWorkflowSource).toContain('python3 scripts/oauth/prod-probe.py --mode=smoke');
-		expect(deployWorkflowSource).toContain('python3 scripts/oauth/prod-probe.py --mode=redirect');
+		for (const workflowSource of [deployWorkflowSource, releaseWorkflowSource]) {
+			expect(workflowSource).toContain('python3 scripts/oauth/prod-probe.py --mode=smoke');
+			expect(workflowSource).toContain('python3 scripts/oauth/prod-probe.py --mode=redirect');
+		}
 	});
 });
