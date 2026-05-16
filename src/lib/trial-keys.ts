@@ -17,6 +17,8 @@ import { TRIAL_DEFAULT_EXPIRES_DAYS, TRIAL_DEFAULT_MAX_USES, TRIAL_DEFAULT_TIER 
 import { TrialKeyRecordSchema } from '../schemas/auth';
 import type { TrialKeyRecord } from '../schemas/auth';
 
+const TRIAL_KEY_TIERS: ReadonlySet<McpApiKeyTier> = new Set(['free', 'agent', 'developer', 'enterprise', 'partner']);
+
 // ---------------------------------------------------------------------------
 // Hashing (mirrors tier-auth.ts pattern)
 // ---------------------------------------------------------------------------
@@ -62,6 +64,10 @@ export async function createTrialKey(
 	const tier = opts.tier ?? TRIAL_DEFAULT_TIER;
 	const expiresInDays = opts.expiresInDays ?? TRIAL_DEFAULT_EXPIRES_DAYS;
 	const maxUses = opts.maxUses ?? TRIAL_DEFAULT_MAX_USES;
+
+	if (!TRIAL_KEY_TIERS.has(tier)) {
+		throw new Error('Trial keys cannot use owner tier');
+	}
 
 	// Generate 32 crypto-random bytes → 64-char hex key
 	const bytes = new Uint8Array(32);

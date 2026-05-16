@@ -40,6 +40,15 @@ async function hashTokenRaw(token: string): Promise<Uint8Array> {
 	return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
 }
 
+function applyOwnerIpGate(tier: McpApiKeyTier, ownerAllowIps: string | undefined, clientIp: string | undefined): McpApiKeyTier {
+	if (tier !== 'owner') return tier;
+	const allowed = parseOwnerAllowIps(ownerAllowIps);
+	if (allowed.length > 0 && (!clientIp || !allowed.includes(clientIp))) {
+		return 'partner';
+	}
+	return 'owner';
+}
+
 /**
  * Resolve a bearer token to its API key tier.
  *
@@ -96,13 +105,7 @@ export async function resolveTier(
 				if (await isRevoked(env.SESSION_STORE, claims.jti)) {
 					return { authenticated: false };
 				}
-				let resolvedTier: McpApiKeyTier = tierResult.data;
-				if (resolvedTier === 'owner') {
-					const allowed = parseOwnerAllowIps(env.OWNER_ALLOW_IPS);
-					if (allowed.length > 0 && (!clientIp || !allowed.includes(clientIp))) {
-						resolvedTier = 'partner';
-					}
-				}
+				const resolvedTier = applyOwnerIpGate(tierResult.data, env.OWNER_ALLOW_IPS, clientIp);
 				return { authenticated: true, tier: resolvedTier };
 			}
 			// JWT verified but payload is not a recognized MCP tier — fall through so static key
@@ -129,7 +132,8 @@ export async function resolveTier(
 					await env.RATE_LIMIT.delete(`tier:${keyHash}`);
 				} else {
 					if (cacheResult.data.revokedAt) return { authenticated: false };
-					return { authenticated: true, tier: cacheResult.data.tier, keyHash };
+					const resolvedTier = applyOwnerIpGate(cacheResult.data.tier, env.OWNER_ALLOW_IPS, clientIp);
+					return { authenticated: true, tier: resolvedTier, keyHash };
 				}
 			}
 		} catch {
@@ -157,7 +161,8 @@ export async function resolveTier(
 					JSON.stringify({ tier: trialResult.tier, revokedAt: null }),
 					{ expirationTtl: TRIAL_KEY_CACHE_TTL },
 				);
-				return { authenticated: true, tier: trialResult.tier, keyHash };
+				const resolvedTier = applyOwnerIpGate(trialResult.tier, env.OWNER_ALLOW_IPS, clientIp);
+				return { authenticated: true, tier: resolvedTier, keyHash };
 			}
 		} catch {
 			// Trial lookup failed, fall through
@@ -192,7 +197,8 @@ export async function resolveTier(
 								{ expirationTtl: TIER_KV_CACHE_TTL },
 							);
 						}
-						return { authenticated: true, tier: data.tier, keyHash };
+						const resolvedTier = applyOwnerIpGate(data.tier, env.OWNER_ALLOW_IPS, clientIp);
+						return { authenticated: true, tier: resolvedTier, keyHash };
 					}
 					// Null tier = revoked or unknown key — cache negative result to avoid
 					// repeated service binding calls within the TTL window
@@ -226,11 +232,8 @@ export async function resolveTier(
 			// limits but not unlimited). If OWNER_ALLOW_IPS is unset, empty, or whitespace-
 			// only, owner is unrestricted (backward compat for self-hosted/dev where
 			// there's no IP filtering).
-			const allowed = parseOwnerAllowIps(env.OWNER_ALLOW_IPS);
-			if (allowed.length > 0 && (!clientIp || !allowed.includes(clientIp))) {
-				return { authenticated: true, tier: 'partner', keyHash };
-			}
-			return { authenticated: true, tier: 'owner', keyHash };
+			const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
+			return { authenticated: true, tier: resolvedTier, keyHash };
 		}
 	}
 
@@ -247,11 +250,8 @@ export async function resolveTier(
 			mismatch |= a[i] ^ b[i];
 		}
 		if (mismatch === 0) {
-			const allowed = parseOwnerAllowIps(env.OWNER_ALLOW_IPS);
-			if (allowed.length > 0 && (!clientIp || !allowed.includes(clientIp))) {
-				return { authenticated: true, tier: 'partner', keyHash };
-			}
-			return { authenticated: true, tier: 'owner', keyHash };
+			const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
+			return { authenticated: true, tier: resolvedTier, keyHash };
 		}
 	}
 
