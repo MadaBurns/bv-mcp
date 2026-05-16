@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.21.3] - 2026-05-17
+
+### Fixed
+- Restored production customer OAuth consent routing by deploying `BV_WEB_OAUTH_CONSENT_URL` for `/oauth/authorize` while keeping legacy owner-key browser consent disabled.
+- Added production redirect probing so `/oauth/authorize` must redirect to the bv-web customer consent URL with OAuth parameters preserved instead of returning `503 OAuth customer login is not configured`.
+
+### Changed
+- Deploy and release workflows now verify OAuth smoke health and customer-consent redirect behavior after Worker deployment.
+- Production OAuth runbook now documents the customer redirect probe and required secrets.
+
+### Tests
+- Added an audit test for production OAuth Worker vars, bv-web service binding, secret hygiene, and deploy/release verification coverage.
+- Added Python unit tests for `scripts/oauth/prod-probe.py --mode=redirect`.
+
 ## [2.21.2] - 2026-05-16
 
 ### Changed
