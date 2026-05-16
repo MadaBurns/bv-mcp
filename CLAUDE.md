@@ -260,11 +260,12 @@ mcp-publisher publish
 
 **`server.json` has TWO version fields** — top-level `version` and `packages[0].version`. Both must match the tag.
 
-**Approving gated deploys via API** (env id `12532483134`):
+**Approving gated deploys via API**:
 ```bash
+ENV_ID=$(gh api /repos/MadaBurns/bv-mcp/environments/production -q '.id')
 RUN_ID=$(gh run list --workflow 253147675 --limit 1 --json databaseId -q '.[0].databaseId')
 gh api -X POST /repos/MadaBurns/bv-mcp/actions/runs/$RUN_ID/pending_deployments \
-  -F 'environment_ids[]=12532483134' -f state=approved -f comment="Approving"
+  -F "environment_ids[]=$ENV_ID" -f state=approved -f comment="Approving"
 ```
 
 ### MCP Registry DNS auth

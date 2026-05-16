@@ -93,6 +93,7 @@ paths = [
   '''crates/[^/]+/Cargo\.lock$''',         # Rust deps include numeric versions/hashes
   '''crates/[^/]+/target/''',              # Rust build artifacts (gitignored locally; safety net)
   '''docs/.*\.md$''',                      # Phone-number-shaped numerics in docs (timestamps, hashes)
+  '''scripts/tenants/sql/''',              # Seed SQL contains Unix timestamps that look phone-shaped
 ]
 
 [[rules]]
@@ -128,10 +129,10 @@ keywords = ["harlan"]
 id = "customer-name"
 description = "Customer/tenant name leaked"
 # History was scrubbed of tenant-example on 2026-05-08 via filter-repo --replace-text;
-# this rule keeps the literal `tenant-example` pattern so future commits attempting
-# to reintroduce the name are caught by the pre-commit hook.
-regex = '''(?i)\bredacted-tenant\b'''
-keywords = ["tenant-example"]
+# these literals catch future commits attempting to reintroduce customer/partner
+# placeholders that belong in private planning docs, not the public repo.
+regex = '''(?i)\b(tenant-example|tenant-example)\b'''
+keywords = ["tenant-example", "tenant-example"]
 
 [[rules]]
 id = "internal-org-team"

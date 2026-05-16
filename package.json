@@ -6,6 +6,11 @@
 	"bin": {
 		"blackveil-dns-mcp": "dist/stdio.js"
 	},
+	"files": [
+		"dist",
+		"LICENSE",
+		"README.md"
+	],
 	"engines": {
 		"node": ">=22.0.0"
 	},
