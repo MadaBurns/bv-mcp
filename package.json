@@ -1,6 +1,6 @@
 {
 	"name": "blackveil-dns",
-	"version": "2.21.1",
+	"version": "2.21.2",
 	"license": "BUSL-1.1",
 	"type": "module",
 	"bin": {
