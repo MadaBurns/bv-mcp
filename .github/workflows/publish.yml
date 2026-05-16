@@ -212,6 +212,11 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
+      - name: Verify OAuth deployment
+        run: |
+          python3 scripts/oauth/prod-probe.py --mode=smoke
+          python3 scripts/oauth/prod-probe.py --mode=redirect
+
   github-release:
     name: Create GitHub Release
     needs: version-bump
