@@ -17,8 +17,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 
 // Hoisted spies so vi.mock factories can read them.
-const brand-auditWeeklyRescanMock = vi.hoisted(() => vi.fn(async (_e: unknown, _c: unknown) => undefined));
-const brand-auditCycleAlertsMock = vi.hoisted(() => vi.fn(async (_e: unknown, _c: unknown) => undefined));
+const brandAuditWeeklyRescanMock = vi.hoisted(() => vi.fn(async (_e: unknown, _c: unknown) => undefined));
+const brandAuditCycleAlertsMock = vi.hoisted(() => vi.fn(async (_e: unknown, _c: unknown) => undefined));
 const fuzzingScanMock = vi.hoisted(() => vi.fn(async (_e: unknown) => undefined));
 const dailyDigestMock = vi.hoisted(() => vi.fn(async (_e: unknown) => undefined));
 const scheduledMock = vi.hoisted(() => vi.fn(async (_e: unknown) => undefined));
@@ -29,8 +29,8 @@ vi.mock('../../src/tenants/scheduled-handlers', async () => {
 	);
 	return {
 		...actual,
-		handleTenantWeeklyRescan: brand-auditWeeklyRescanMock,
-		handleTenantCycleAlerts: brand-auditCycleAlertsMock,
+		handleTenantWeeklyRescan: brandAuditWeeklyRescanMock,
+		handleTenantCycleAlerts: brandAuditCycleAlertsMock,
 	};
 });
 
@@ -45,8 +45,8 @@ vi.mock('../../src/scheduled', async () => {
 });
 
 beforeEach(() => {
-	brand-auditWeeklyRescanMock.mockClear();
-	brand-auditCycleAlertsMock.mockClear();
+	brandAuditWeeklyRescanMock.mockClear();
+	brandAuditCycleAlertsMock.mockClear();
 	fuzzingScanMock.mockClear();
 	dailyDigestMock.mockClear();
 	scheduledMock.mockClear();
@@ -66,8 +66,8 @@ async function runCron(cron: string) {
 describe('worker.scheduled cron dispatch', () => {
 	it('a. weekly cron 0 2 * * 0 → handleTenantWeeklyRescan runs (and only it)', async () => {
 		await runCron('0 2 * * 0');
-		expect(brand-auditWeeklyRescanMock).toHaveBeenCalledTimes(1);
-		expect(brand-auditCycleAlertsMock).not.toHaveBeenCalled();
+		expect(brandAuditWeeklyRescanMock).toHaveBeenCalledTimes(1);
+		expect(brandAuditCycleAlertsMock).not.toHaveBeenCalled();
 		expect(fuzzingScanMock).not.toHaveBeenCalled();
 		expect(scheduledMock).not.toHaveBeenCalled();
 		expect(dailyDigestMock).not.toHaveBeenCalled();
@@ -76,17 +76,17 @@ describe('worker.scheduled cron dispatch', () => {
 	it('b. 15-min cron *\\/15 * * * * → handleFuzzingScan AND handleTenantCycleAlerts both run', async () => {
 		await runCron('*/15 * * * *');
 		expect(fuzzingScanMock).toHaveBeenCalledTimes(1);
-		expect(brand-auditCycleAlertsMock).toHaveBeenCalledTimes(1);
+		expect(brandAuditCycleAlertsMock).toHaveBeenCalledTimes(1);
 		expect(scheduledMock).toHaveBeenCalledTimes(1);
-		expect(brand-auditWeeklyRescanMock).not.toHaveBeenCalled();
+		expect(brandAuditWeeklyRescanMock).not.toHaveBeenCalled();
 		expect(dailyDigestMock).not.toHaveBeenCalled();
 	});
 
 	it('c. 8am cron 0 8 * * * → handleDailyDigest runs; Tenant handlers do NOT', async () => {
 		await runCron('0 8 * * *');
 		expect(dailyDigestMock).toHaveBeenCalledTimes(1);
-		expect(brand-auditWeeklyRescanMock).not.toHaveBeenCalled();
-		expect(brand-auditCycleAlertsMock).not.toHaveBeenCalled();
+		expect(brandAuditWeeklyRescanMock).not.toHaveBeenCalled();
+		expect(brandAuditCycleAlertsMock).not.toHaveBeenCalled();
 		expect(fuzzingScanMock).not.toHaveBeenCalled();
 		expect(scheduledMock).not.toHaveBeenCalled();
 	});
@@ -97,7 +97,7 @@ describe('worker.scheduled cron dispatch', () => {
 		// already been registered before the rejection surfaces. The scheduled
 		// dispatch in `src/index.ts` runs all three statements synchronously,
 		// so all three mocks are observably called.
-		brand-auditCycleAlertsMock.mockImplementationOnce(async () => {
+		brandAuditCycleAlertsMock.mockImplementationOnce(async () => {
 			throw new Error('tenant alert sweep boom');
 		});
 
@@ -112,6 +112,6 @@ describe('worker.scheduled cron dispatch', () => {
 
 		expect(fuzzingScanMock).toHaveBeenCalledTimes(1);
 		expect(scheduledMock).toHaveBeenCalledTimes(1);
-		expect(brand-auditCycleAlertsMock).toHaveBeenCalledTimes(1);
+		expect(brandAuditCycleAlertsMock).toHaveBeenCalledTimes(1);
 	});
 });

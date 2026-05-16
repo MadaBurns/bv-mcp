@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.21.2] - 2026-05-16
+
+### Changed
+- Release hardening only: no public API, runtime tool behavior, bindings, or schema changes.
+- Bumped `@blackveil/dns-checks` workspace metadata to `1.1.3` so the tag-driven release workflow can publish both npm packages without colliding with the already-published `1.1.2` workspace package.
+
+### Tests
+- Added `test/chaos/varied-domain-all-tools.chaos.test.ts`, a deterministic offline chaos matrix that drives every registered MCP tool through `handleToolsCall` across varied domain fixtures and asserts `scan_domain` still covers every `scanIncluded` tool category.
+- Tightened two existing test fixtures so release lint/typecheck stays clean under the current toolchain.
+
 ## [2.21.1] - 2026-05-15
 
 ### Completed — Phase 4 follow-up: watch diff + webhook delivery
@@ -39,7 +49,7 @@ v2.21.0 shipped the cron enqueue half of the watch loop and the webhook payload 
 ### Operator action required (deploy)
 - None. Watches registered against v2.21.0 will start receiving webhooks on the next cron-driven drift after deploying v2.21.1.
 
-### Known follow-ups (v2.21.2+)
+### Known follow-ups (v2.21.3+)
 - **Wrong-baseline diff under ad-hoc activity**: the prior-result lookup picks the most recent completed audit by this owner for this target — not the previous *watch tick's* audit. If the same owner runs `brand_audit_single('apple.com')` ad-hoc between two watch ticks, that ad-hoc result becomes the "prior" baseline. Diff is then computed against the wrong audit and can mislead. Fix: add `last_audit_id` to `brand_audit_watches` + look up by exact audit_id.
 - **No HMAC on webhook payloads**: receiver can't verify a delivery came from Blackveil. Standard practice is `X-Blackveil-Signature: hmac-sha256(secret, body)`. Same gap exists on the legacy `ALERT_WEBHOOK_URL`, so it's not a regression. Bundle both with the wrong-baseline fix.
 
