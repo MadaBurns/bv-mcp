@@ -81,6 +81,15 @@ describe('trial-keys', () => {
 			const result = await createTrialKey(kv, { label: 'A'.repeat(300) });
 			expect(result.record.label.length).toBe(200);
 		});
+
+		it('rejects owner-tier trial keys', async () => {
+			const { createTrialKey } = await import('../src/lib/trial-keys');
+			const kv = createMockKv();
+
+			await expect(createTrialKey(kv, { label: 'Owner Trial', tier: 'owner' })).rejects.toThrow(
+				'Trial keys cannot use owner tier',
+			);
+		});
 	});
 
 	// ---------------------------------------------------------------------------
