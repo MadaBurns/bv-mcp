@@ -1,6 +1,6 @@
 # Contributing to Blackveil DNS
 
-Thanks for your interest in contributing! Blackveil DNS is an open-source DNS & email security scanner exposed as an MCP server.
+Thanks for your interest in contributing! Blackveil DNS is a source-available DNS & email security scanner exposed as an MCP server.
 
 ## Getting Started
 

@@ -94,6 +94,7 @@ plan-*.md
 .github/prompts/
 
 # Internal reports / call prep — never commit (drift catchers)
+/reports/
 /BENCHMARK_REPORT.md
 /BENCHMARK_*.md
 /CAPACITY_ANALYSIS.md
@@ -148,6 +149,7 @@ reports/repo-audit-*.html
 scripts/chaos/tenant-scale-chaos.py
 reports/scan-manifest.json
 reports/scale-audit-log.txt
+scripts/tranco-*.json
 
 # Internal partnership / sales notes
 BrandAudit.md

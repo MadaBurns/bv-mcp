@@ -53,4 +53,4 @@ All checks are **static imports** — no dynamic imports in scan context (unlike
 ## Reference docs
 
 - Scoring model: [docs/scoring.md](../../docs/scoring.md)
-- Request flow: `src/index.ts` (Hono app) → `src/mcp/dispatch.ts` (JSON-RPC routing) → `src/handlers/tools.ts` (TOOL_REGISTRY) → individual checks under `src/tools/`. Trace the imports directly; the standalone architecture-diagram doc was removed in 2026-05-08 to keep this open-source repo focused on customer-facing material.
+- Request flow: `src/index.ts` (Hono app) → `src/mcp/dispatch.ts` (JSON-RPC routing) → `src/handlers/tools.ts` (TOOL_REGISTRY) → individual checks under `src/tools/`. Trace the imports directly; the standalone architecture-diagram doc was removed in 2026-05-08 to keep this source-available repo focused on customer-facing material.

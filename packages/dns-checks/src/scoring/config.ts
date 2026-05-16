@@ -4,7 +4,7 @@
  * Runtime scoring configuration.
  *
  * All scoring weights, thresholds, and tuning constants are configurable
- * via the `SCORING_CONFIG` environment variable (JSON string). The open-source
+ * via the `SCORING_CONFIG` environment variable (JSON string). The source-available
  * codebase ships with reasonable defaults; production deployments can override
  * any subset of values.
  *

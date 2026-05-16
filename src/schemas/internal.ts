@@ -3,6 +3,8 @@
 import { z } from 'zod';
 import { TierSchema, ToolNameSchema } from './primitives';
 
+const TrialKeyTierSchema = TierSchema.exclude(['owner']);
+
 /** POST /internal/tools/call request body. */
 export const InternalToolCallSchema = z.object({
 	name: ToolNameSchema,
@@ -20,7 +22,7 @@ export const BatchRequestSchema = z.object({
 /** POST /internal/trial-keys request body. */
 export const CreateTrialKeyRequestSchema = z.object({
 	label: z.string().min(1).max(200),
-	tier: TierSchema.optional(),
+	tier: TrialKeyTierSchema.optional(),
 	expiresInDays: z.number().int().min(1).max(365).optional(),
 	maxUses: z.number().int().min(1).max(1_000_000).optional(),
 });

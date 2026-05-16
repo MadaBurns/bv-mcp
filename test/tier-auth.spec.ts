@@ -109,6 +109,26 @@ describe('tier-auth KV cache validation', () => {
 		}
 	});
 
+	it('downgrades cached owner tier when the request IP is outside OWNER_ALLOW_IPS', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(JSON.stringify({ tier: 'owner', revokedAt: null })),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+
+		const result = await resolveTier(
+			'cached-owner-key',
+			{ RATE_LIMIT: kv, OWNER_ALLOW_IPS: '203.0.113.10' },
+			'198.51.100.10',
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('partner');
+	});
+
 	it('authenticates a valid tier returned by the bv-web service binding', async () => {
 		const { resolveTier } = await import('../src/lib/tier-auth');
 
@@ -134,6 +154,39 @@ describe('tier-auth KV cache validation', () => {
 		expect(kv.put).toHaveBeenCalledWith(
 			`tier:${result.keyHash}`,
 			JSON.stringify({ tier: 'developer', revokedAt: null }),
+			{ expirationTtl: 300 },
+		);
+	});
+
+	it('downgrades service-bound owner tier when the request IP is outside OWNER_ALLOW_IPS', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockResolvedValue(Response.json({ tier: 'owner' })),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'service-bound-owner-key',
+			{
+				RATE_LIMIT: kv,
+				BV_WEB: bvWeb,
+				BV_WEB_INTERNAL_KEY: 'internal-key',
+				OWNER_ALLOW_IPS: '203.0.113.10',
+			},
+			'198.51.100.10',
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('partner');
+		expect(kv.put).toHaveBeenCalledWith(
+			`tier:${result.keyHash}`,
+			JSON.stringify({ tier: 'owner', revokedAt: null }),
 			{ expirationTtl: 300 },
 		);
 	});
