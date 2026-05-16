@@ -688,8 +688,8 @@ export async function handleToolsCall(
 						return { content: buildToolContent(formatAttackPaths(result, effectiveFormat), result, effectiveFormat) };
 					}
 					default:
-					logToolFailure({ ...ctx(), error: `Unknown tool: ${name}`, args });
-					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all 51 available tools.`);
+						logToolFailure({ ...ctx(), error: `Unknown tool: ${name}`, args });
+						return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all ${TOOLS.length} available tools.`);
 			}
 		};
 

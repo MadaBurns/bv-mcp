@@ -5,7 +5,8 @@
 | Mode | Purpose | Env Vars |
 |------|---------|----------|
 | `--mode=smoke` | POST junk payload to `/oauth/token`; expect 400 `invalid_grant`. Verifies routing and rate-limiting work. | `BV_MCP_BASE` (optional) |
-| `--mode=e2e` | Full OAuth flow: register → authorize → token → `/mcp` with JWT. Verifies end-to-end integration. | `BV_MCP_BASE` (optional), `BV_API_KEY` (required) |
+| `--mode=redirect` | Dynamic registration followed by `GET /oauth/authorize`; expects a 302 to the bv-web customer consent URL with OAuth params preserved. Verifies customer login is configured. | `BV_MCP_BASE` (optional) |
+| `--mode=e2e` | Legacy owner-key OAuth flow: register → authorize → token → `/mcp` with JWT. Use only when `ENABLE_OWNER_OAUTH=true`. | `BV_MCP_BASE` (optional), `BV_API_KEY` (required) |
 
 **Default base URL**: `https://dns-mcp.blackveilsecurity.com`
 
@@ -15,11 +16,28 @@
 # Smoke test (no auth needed)
 python3 scripts/oauth/prod-probe.py --mode=smoke
 
-# End-to-end test (requires owner API key)
+# Customer-consent redirect test (no owner key needed)
+python3 scripts/oauth/prod-probe.py --mode=redirect
+
+# Legacy owner-key end-to-end test (requires ENABLE_OWNER_OAUTH=true and owner API key)
 BV_API_KEY=<key> python3 scripts/oauth/prod-probe.py --mode=e2e
 ```
 
 ---
+
+## Required Production Configuration
+
+Committed Worker vars in `wrangler.jsonc`:
+- `ENABLE_OAUTH=true`
+- `ENABLE_OWNER_OAUTH=false`
+- `BV_WEB_OAUTH_CONSENT_URL=https://www.blackveilsecurity.com/oauth/mcp/consent`
+
+Production Worker secrets:
+- `OAUTH_SIGNING_SECRET` is required for OAuth token signing and route readiness.
+- `BV_WEB_INTERNAL_KEY` is required for trusted bv-web to bv-mcp internal calls.
+- `BV_API_KEY` is optional and only needed for legacy owner/admin probes such as `--mode=e2e`; it is not required for customer OAuth redirect verification.
+
+The production deploy workflow runs both `--mode=smoke` and `--mode=redirect` after `/health` so a missing customer consent URL fails deploy verification instead of surfacing as `503 OAuth customer login is not configured` to users.
 
 ## Secret Rotation Procedure
 
@@ -49,11 +67,17 @@ Generate a new HS256 symmetric signing key, rotate it in production, and verify.
    ```
    Should return `200 OK: got 400 with invalid_grant (expected)`.
 
-5. **Optional: Full e2e test**:
+5. **Customer-consent redirect test**:
+   ```bash
+   python3 scripts/oauth/prod-probe.py --mode=redirect
+   ```
+   Should confirm `/oauth/authorize` redirects to bv-web customer consent.
+
+6. **Optional: Legacy owner-key e2e test**:
    ```bash
    BV_API_KEY=<your_owner_key> python3 scripts/oauth/prod-probe.py --mode=e2e
    ```
-   Verifies the full OAuth flow (register → token → `/mcp`) works end-to-end.
+   Verifies the legacy owner-key OAuth flow (register → token → `/mcp`) works end-to-end when `ENABLE_OWNER_OAUTH=true`.
 
 **Important**: Rotation **immediately invalidates every live JWT** signed with the old secret at the next JWT verify. Schedule rotations during low-traffic windows (e.g., 02:00 UTC). No user-visible outage on `/mcp`; `/oauth/token` endpoints unaffected by JWT verification.
 

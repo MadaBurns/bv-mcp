@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-bv-mcp OAuth production smoke/e2e probe.
+bv-mcp OAuth production smoke/redirect/e2e probe.
 
-Two modes:
+Modes:
   --mode=smoke   → POST junk payload to /oauth/token; expect 4xx (invalid_grant).
                    Verifies routing/rate-limiting works. Not a secret-presence test.
-  --mode=e2e     → Full flow: register → authorize → token → /mcp with JWT.
+  --mode=redirect → register → authorize GET; expect 302 to bv-web customer consent.
+                   Verifies modern customer-login OAuth is configured.
+  --mode=e2e     → Legacy owner-key flow: register → authorize → token → /mcp with JWT.
                    Requires BV_API_KEY environment variable.
 
 Environment:
   BV_MCP_BASE    → Base URL (default: https://dns-mcp.blackveilsecurity.com)
-  BV_API_KEY     → Owner API key (required for --mode=e2e)
+  BV_API_KEY     → Owner API key (required only for legacy --mode=e2e)
 
 Exit codes:
   0  → Expected outcome
@@ -33,6 +35,10 @@ from urllib.error import HTTPError
 
 BASE = os.getenv("BV_MCP_BASE", "https://dns-mcp.blackveilsecurity.com")
 TIMEOUT = 10
+CUSTOMER_CONSENT_URL = "https://www.blackveilsecurity.com/oauth/mcp/consent"
+PROBE_REDIRECT_URI = "https://claude.ai/cb"
+PROBE_SCOPE = "mcp"
+PROBE_STATE = "state123"
 
 
 def base64url(data: bytes) -> str:
@@ -114,6 +120,25 @@ def smoke_mode() -> int:
         return 1
 
 
+def get_json(url: str) -> tuple[int, Optional[dict]]:
+    """GET JSON; return (status_code, parsed_json or None)."""
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "bv-mcp-oauth-probe/1.0"},
+        method="GET",
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=TIMEOUT)
+        body = resp.read().decode("utf-8")
+        return resp.status, json.loads(body)
+    except HTTPError as e:
+        body = e.read().decode("utf-8")
+        try:
+            return e.code, json.loads(body)
+        except ValueError:
+            return e.code, None
+
+
 def post_json(url: str, obj: dict) -> tuple[int, Optional[dict]]:
     """POST JSON; return (status_code, parsed_json or None)."""
     data = json.dumps(obj).encode("utf-8")
@@ -133,6 +158,30 @@ def post_json(url: str, obj: dict) -> tuple[int, Optional[dict]]:
             return e.code, json.loads(body)
         except ValueError:
             return e.code, None
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """urllib handler that exposes 302 responses instead of following them."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def get_no_redirect(url: str) -> tuple[int, str, Optional[str]]:
+    """GET without following redirects; return (status, body_text, Location)."""
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "bv-mcp-oauth-probe/1.0"},
+        method="GET",
+    )
+    opener = urllib.request.build_opener(NoRedirectHandler)
+    try:
+        resp = opener.open(req, timeout=TIMEOUT)
+        body = resp.read().decode("utf-8")
+        return resp.status, body, resp.headers.get("Location")
+    except HTTPError as e:
+        body = e.read().decode("utf-8")
+        return e.code, body, e.headers.get("Location")
 
 
 def post_form(url: str, data: dict) -> tuple[int, Optional[dict], Optional[str]]:
@@ -161,9 +210,115 @@ def post_form(url: str, data: dict) -> tuple[int, Optional[dict], Optional[str]]
         return e.code, parsed, e.headers.get("Location")
 
 
+def redirect_mode() -> int:
+    """
+    Probe modern customer OAuth: discovery → register → authorize GET.
+    Expects /oauth/authorize to 302 to the bv-web customer consent URL with
+    the OAuth request parameters preserved. Does not require BV_API_KEY.
+    """
+    try:
+        status, metadata = get_json(f"{BASE}/.well-known/oauth-authorization-server")
+        if status != 200 or not metadata:
+            print(
+                f"FAIL: discovery returned {status}, expected 200 JSON",
+                file=sys.stderr,
+            )
+            return 1
+
+        authorization_endpoint = metadata.get("authorization_endpoint")
+        registration_endpoint = metadata.get("registration_endpoint")
+        if not isinstance(authorization_endpoint, str) or not authorization_endpoint:
+            print("FAIL: discovery missing authorization_endpoint", file=sys.stderr)
+            return 1
+        if not isinstance(registration_endpoint, str) or not registration_endpoint:
+            print("FAIL: discovery missing registration_endpoint", file=sys.stderr)
+            return 1
+
+        status, reg_data = post_json(
+            registration_endpoint,
+            {
+                "redirect_uris": [PROBE_REDIRECT_URI],
+                "client_name": "bv-mcp-redirect-probe",
+            },
+        )
+        if status != 201 or not reg_data:
+            print(
+                f"FAIL: register returned {status}, expected 201 JSON",
+                file=sys.stderr,
+            )
+            return 1
+        client_id = reg_data.get("client_id")
+        if not isinstance(client_id, str) or not client_id:
+            print("FAIL: register response missing client_id", file=sys.stderr)
+            return 1
+
+        _, challenge = pkce_pair()
+        expected_params = {
+            "client_id": client_id,
+            "redirect_uri": PROBE_REDIRECT_URI,
+            "state": PROBE_STATE,
+            "scope": PROBE_SCOPE,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        }
+        auth_params = {
+            **expected_params,
+            "response_type": "code",
+        }
+        auth_url = f"{authorization_endpoint}?{urllib.parse.urlencode(auth_params)}"
+
+        status, body, location = get_no_redirect(auth_url)
+        if status != 302:
+            detail = body[:200] if body else "no response body"
+            print(
+                f"FAIL: authorize returned {status}, expected 302. Body: {detail}",
+                file=sys.stderr,
+            )
+            return 1
+        if not location:
+            print("FAIL: authorize response missing Location header", file=sys.stderr)
+            return 1
+
+        actual = urllib.parse.urlparse(location)
+        expected = urllib.parse.urlparse(CUSTOMER_CONSENT_URL)
+        if (
+            actual.scheme,
+            actual.netloc,
+            actual.path,
+        ) != (
+            expected.scheme,
+            expected.netloc,
+            expected.path,
+        ):
+            print(
+                f"FAIL: authorize redirected to {actual.scheme}://{actual.netloc}{actual.path}, expected {CUSTOMER_CONSENT_URL}",
+                file=sys.stderr,
+            )
+            return 1
+
+        actual_qs = urllib.parse.parse_qs(actual.query)
+        missing = []
+        for name, expected_value in expected_params.items():
+            if actual_qs.get(name, [None])[0] != expected_value:
+                missing.append(name)
+        if missing:
+            print(
+                f"FAIL: consent redirect missing or changed OAuth params: {', '.join(missing)}",
+                file=sys.stderr,
+            )
+            return 1
+
+        print(f"OK: authorize redirects to customer consent with {len(expected_params)} OAuth params preserved")
+        return 0
+
+    except Exception as e:
+        print(f"FAIL: {e}", file=sys.stderr)
+        return 1
+
+
 def e2e_mode() -> int:
     """
-    Full OAuth flow: register → authorize → token → /mcp.
+    Legacy owner-key OAuth flow: register → authorize → token → /mcp.
     Requires BV_API_KEY.
     """
     api_key = os.getenv("BV_API_KEY")
@@ -307,20 +462,22 @@ def e2e_mode() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="OAuth production smoke/e2e probe",
+        description="OAuth production smoke/redirect/e2e probe",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     parser.add_argument(
         "--mode",
-        choices=["smoke", "e2e"],
+        choices=["smoke", "redirect", "e2e"],
         required=True,
-        help="Probe mode: smoke (routing check) or e2e (full flow)",
+        help="Probe mode: smoke (routing check), redirect (customer consent), or e2e (legacy owner flow)",
     )
     args = parser.parse_args()
 
     if args.mode == "smoke":
         return smoke_mode()
+    elif args.mode == "redirect":
+        return redirect_mode()
     else:
         return e2e_mode()
 
