@@ -297,10 +297,10 @@ v2.21.0 shipped the cron enqueue half of the watch loop and the webhook payload 
 
 ## [2.10.13] - 2026-05-09
 
-redacted-tenant enterprise enablement — Phase 0 + start of Phase 1. No public-API behavior change for existing tools; adds quota headroom and the foundation for a multi-tenant orchestrator. Built TDD-first across 4 parallel agents in worktree isolation.
+Enterprise tenant enablement — Phase 0 + start of Phase 1. No public-API behavior change for existing tools; adds quota headroom and the foundation for a multi-tenant orchestrator. Built TDD-first across 4 parallel agents in worktree isolation.
 
 ### Changed
-- **`partner.scan_domain` daily quota raised 100K → 2.5M** (PR #102). Tenant's headline customer has 2.5M-domain portfolios; the prior cap blocked one-shot audits. Same change to the `scan` alias. Audit test `test/audits/tenant-scale-quota.audit.test.ts` locks the floor against future regression.
+- **`partner.scan_domain` daily quota raised 100K → 2.5M** (PR #102). The target enterprise scale includes 2.5M-domain portfolios; the prior cap blocked one-shot audits. Same change to the `scan` alias. Audit test `test/audits/tenant-scale-quota.audit.test.ts` locks the floor against future regression.
 
 ### Added
 - **`src/tenants/adapters/`** — tenant-prefix-stamping adapters for D1/R2/KV (PR #103). Wrap each Cloudflare binding with a thin proxy that auto-stamps the tenant prefix on every read/write — call sites never need `WHERE tenant_id = ?` filtering. Adopted from the `webitte-hosting/emdash` pattern. Cross-tenant access via these adapters is impossible by construction. 17 unit tests covering prefix validation, key prefixing, list scoping, traversal rejection.
@@ -326,7 +326,7 @@ Maintenance release — folds in the post-v2.10.10 work that wasn't yet shipped 
 
 ### Changed
 - **Removed temporary `logExplainFindingRejection` telemetry hook** (`src/handlers/tool-args.ts`). 30-day analytics review showed `explain_finding` at 0 errors / 17 calls — the 27% rate that motivated the spike (2026-04-25) has fully resolved. Closed as Category C ("expected noise"). Closes [#77](https://github.com/MadaBurns/bv-mcp/issues/77).
-- **Tightened `.gitleaks.toml`**: added path allowlists for `^test/`, `^packages/[^/]+/test/`, and `.github/CODEOWNERS`; added regex allowlist for `support@smithery.ai` (public business contact) and the `oldmail@retail.com` brochure narrative example. `customer-name` rule literal restored to `redacted-tenant` after the 2026-05-08 history rewrite mutated it. `phone-number` rule allowlists `^chaos-test-.*\.py$` for the pre-`scripts/chaos/` root location. `gitleaks detect` against full history now reports **0 findings** (was 103).
+- **Tightened `.gitleaks.toml`**: added path allowlists for `^test/`, `^packages/[^/]+/test/`, and `.github/CODEOWNERS`; added regex allowlist for `support@smithery.ai` (public business contact) and the `oldmail@retail.com` brochure narrative example. `customer-name` rule literal restored after the 2026-05-08 history rewrite mutated it. `phone-number` rule allowlists `^chaos-test-.*\.py$` for the pre-`scripts/chaos/` root location. `gitleaks detect` against full history now reports **0 findings** (was 103).
 - **`docs/MARKETING-BROCHURE.md`**: replaced fictional `oldmail@retail.com` example with `oldmail@example.com` (clearly fictional, allowlisted).
 
 ### Fixed
@@ -335,7 +335,7 @@ Maintenance release — folds in the post-v2.10.10 work that wasn't yet shipped 
 ### Operational — history rewrite (no source-code impact)
 On 2026-05-08 we ran `git filter-repo` twice across all 1,933+ commits and 82 tags:
 
-1. **PII / dead-key scrub**: replaced `redacted-tenant` → `redacted-tenant`, `internal-doh.example.com` → `internal-doh.example.com`, and 3 dead BV API keys (already revoked in prod) → `*_REDACTED_*`. Removed `.playwright-mcp/` browser-test snapshots and 2 internal docs (`docs/enterprise-architecture.md`, `docs/smithery-docs-nav.md`).
+1. **PII / dead-key scrub**: replaced prior customer-name and internal-hostname literals with generic placeholders, and 3 dead BV API keys (already revoked in prod) with `*_REDACTED_*`. Removed `.playwright-mcp/` browser-test snapshots and 2 internal docs (`docs/enterprise-architecture.md`, `docs/smithery-docs-nav.md`).
 2. **OSS hygiene**: removed 6 internal-only docs from all history (`docs/architecture.md`, `docs/AS-BUILT.md`, `docs/phase8-golive.md`, `OAUTH_LOCAL_DEBUG.md`, `MCP.md`, `GEMINI.md`). Replaced one stale ref in `.github/instructions/scan-orchestration.instructions.md`. Added drift catchers to `.gitignore` (`/BENCHMARK_*.md`, `/CAPACITY_*.md`, `/Tenant-*.md`, `/*-Call-Prep.md`, `/AS-BUILT.md`, `/phase*-golive.md`, `/MCP.md`, `/GEMINI.md`).
 
 Both rewrites force-pushed `main` and 82 tags. Anyone with a local clone needs:

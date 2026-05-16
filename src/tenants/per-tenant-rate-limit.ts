@@ -21,9 +21,9 @@
  *   purely a defense in depth — losing it must not cause a request outage.
  *
  * Tier defaults are intentionally generous so the default deployment behaves
- * the same as before this limiter existed for legitimate traffic patterns
- * (redacted-tenant is hitting ~100 portfolio updates/day in benchmarks, ~6 reports
- * /min during dashboard refreshes, ~50k scans/day in steady state).
+ * the same as before this limiter existed for legitimate traffic patterns.
+ * Recent enterprise-scale benchmarks sit around 100 portfolio updates/day,
+ * 6 reports/min during dashboard refreshes, and 50k scans/day in steady state.
  */
 
 export interface PerTenantQuota {

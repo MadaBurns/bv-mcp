@@ -62,7 +62,7 @@ async def run_batch_task(session, batch_id, domains, scenario_name, results):
 
 async def main():
     print(f"🚀 STARTING GLOBAL SCALE CHAOS TEST: {TOTAL_DOMAINS_SIMULATED} REAL-WORLD DOMAINS")
-    print(f"Scenario: Scaling simulation for Tenant Global (2.5M Target)")
+    print(f"Scenario: Scaling simulation for enterprise registrar workload (2.5M target)")
     print("-" * 60)
 
     results = ChaosResult("Global Scale Simulation")
