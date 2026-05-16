@@ -6,12 +6,12 @@
 		"url": "https://github.com/MadaBurns/bv-mcp",
 		"source": "github"
 	},
-	"version": "2.21.3",
+	"version": "2.21.4",
 	"packages": [
 		{
 			"registryType": "npm",
 			"identifier": "blackveil-dns",
-			"version": "2.21.3",
+			"version": "2.21.4",
 			"transport": {
 				"type": "stdio"
 			},

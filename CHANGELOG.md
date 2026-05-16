@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.21.4] - 2026-05-17
+
+### Security
+- Removed tracked internal tenant and commercial planning documents from the public repository.
+- Scrubbed customer-placeholder references from docs, comments, and chaos output.
+- Tightened gitleaks coverage for customer-name placeholders while allowing timestamp-shaped SQL seed values.
+
+### Changed
+- Restricted the root npm package publish surface to `dist`, `LICENSE`, and `README.md` so npm releases do not include repo internals, tests, scripts, workflows, docs, or build caches.
+
+### Tests
+- Added an npm publish-surface audit that fails if the root package allowlist exposes internal repo paths.
+
 ## [2.21.3] - 2026-05-17
 
 ### Fixed
