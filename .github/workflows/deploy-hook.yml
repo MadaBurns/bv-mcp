@@ -114,3 +114,5 @@ jobs:
           else
             echo "Deployment verified — health check returned 200"
           fi
+          python3 scripts/oauth/prod-probe.py --mode=smoke
+          python3 scripts/oauth/prod-probe.py --mode=redirect

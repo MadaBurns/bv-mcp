@@ -53,6 +53,7 @@
   "vars": {
     "ENABLE_OAUTH": "true",
     "ENABLE_OWNER_OAUTH": "false",
+    "BV_WEB_OAUTH_CONSENT_URL": "https://www.blackveilsecurity.com/oauth/mcp/consent",
     "PROVIDER_SIGNATURES_URL": "",
     "CF_ACCOUNT_ID": "",
     "ALERT_WEBHOOK_URL": "",
