@@ -176,6 +176,25 @@ def is_rate_limited(body_text):
         return False
 
 
+def tools_list_available(status, body_text, allow_rate_limited=False):
+    """Validate tools/list without pinning the production registry size."""
+    rate_limited = is_rate_limited(body_text)
+    if allow_rate_limited and rate_limited:
+        return True, "rate-limited"
+
+    try:
+        d = json.loads(body_text)
+    except Exception as e:
+        return False, str(e)
+
+    tools = d.get("result", {}).get("tools")
+    count = len(tools) if isinstance(tools, list) else 0
+    if status == 200 and count > 0:
+        return True, f"{count} tools"
+
+    return False, f"HTTP {status}, tools={count}, rate={rate_limited}"
+
+
 def validate_key():
     """Probe whether _RAW_API_KEY is accepted by the server."""
     global API_KEY
@@ -222,12 +241,8 @@ def test_session_lifecycle():
             body=jsonrpc("tools/list", {}, 2),
             headers=make_headers(ua, session_id=sid, auth="bearer" if API_KEY else "none"),
         )
-        try:
-            d = json.loads(body)
-            count = len(d.get("result", {}).get("tools", []))
-            record(f"1. {name}: tools/list = 52", count == 52, f"got {count}, status={status}")
-        except Exception as e:
-            record(f"1. {name}: tools/list = 52", False, str(e))
+        ok, detail = tools_list_available(status, body)
+        record(f"1. {name}: tools/list returns tools", ok, detail)
 
         # tools/call
         status, body, _ = tool_call(sid, ua, TOOL_CHECK, TOOL_ARGS,
@@ -389,12 +404,8 @@ def test_api_key_param():
         headers=make_headers(ua, auth="none"),
         params=params,
     )
-    try:
-        d = json.loads(body)
-        count = len(d.get("result", {}).get("tools", []))
-        record("4c. tools/list no session + ?api_key= → 52 tools", count == 52, f"got {count}")
-    except Exception as e:
-        record("4c. tools/list no session + ?api_key=", False, str(e))
+    ok, detail = tools_list_available(status, body)
+    record("4c. tools/list no session + ?api_key= → tools returned", ok, detail)
 
     delete_session(sid, ua)
 
@@ -619,15 +630,9 @@ def test_session_edge_cases():
         body=jsonrpc("tools/list", {}, 2),
         headers=make_headers(ua, session_id=fake_sid),
     )
-    try:
-        d = json.loads(body)
-        count = len(d.get("result", {}).get("tools", []))
-        rate = is_rate_limited(body)
-        record("8b. Valid-format unknown session → auto-revival (52 tools or rate-limited)",
-               count == 52 or rate,
-               f"HTTP {status}, tools={count}, rate={rate}")
-    except Exception as e:
-        record("8b. Valid-format unknown session → auto-revival", False, str(e))
+    ok, detail = tools_list_available(status, body, allow_rate_limited=True)
+    record("8b. Valid-format unknown session → auto-revival (tools returned or rate-limited)",
+           ok, detail)
 
     # 8c. Invalid session format → 404
     # Server validates header presence (absent → 400) but any value triggers a KV
@@ -664,13 +669,8 @@ def test_session_edge_cases():
             body=jsonrpc("tools/list", {}, 5),
             headers=make_headers("cursor/0.44.0", session_id=sid2, auth=auth_mode),
         )
-        try:
-            d = json.loads(body)
-            count = len(d.get("result", {}).get("tools", []))
-            record("8e. Different UA on existing session → 52 tools", count == 52,
-                   f"got {count}, status={status}")
-        except Exception as e:
-            record("8e. Different UA on existing session", False, str(e))
+        ok, detail = tools_list_available(status, body)
+        record("8e. Different UA on existing session → tools returned", ok, detail)
         delete_session(sid2, "cursor/0.44.0")
     else:
         record("8e. Different UA on existing session", True, "skipped (rate limited)")
