@@ -395,7 +395,7 @@ describe('brandAuditSingle', () => {
 
 		it('NOT impersonation — typosquat but registrar family matches brand (defensive registration)', async () => {
 			const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
-			const rdapSpy = vi.fn().mockImplementation((domain: string) => {
+			const rdapSpy = vi.fn().mockImplementation((_domain: string) => {
 				// Both target and candidate on MarkMonitor — defensive typosquat registration.
 				return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Example Inc.'));
 			});
