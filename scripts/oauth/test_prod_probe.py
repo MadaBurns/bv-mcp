@@ -59,6 +59,8 @@ class ProdProbeRedirectTest(unittest.TestCase):
                     }),
                 )
             if req.full_url == "https://mcp.example/oauth/register":
+                headers = {name.lower(): value for name, value in req.header_items()}
+                self.assertEqual(headers.get("user-agent"), module.USER_AGENT)
                 return FakeResponse(201, json.dumps({"client_id": "client_123"}))
             self.fail(f"unexpected request to {req.full_url}")
 

@@ -35,6 +35,7 @@ from urllib.error import HTTPError
 
 BASE = os.getenv("BV_MCP_BASE", "https://dns-mcp.blackveilsecurity.com")
 TIMEOUT = 10
+USER_AGENT = "bv-mcp-oauth-probe/1.0"
 CUSTOMER_CONSENT_URL = "https://www.blackveilsecurity.com/oauth/mcp/consent"
 PROBE_REDIRECT_URI = "https://claude.ai/cb"
 PROBE_SCOPE = "mcp"
@@ -124,7 +125,7 @@ def get_json(url: str) -> tuple[int, Optional[dict]]:
     """GET JSON; return (status_code, parsed_json or None)."""
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "bv-mcp-oauth-probe/1.0"},
+        headers={"User-Agent": USER_AGENT},
         method="GET",
     )
     try:
@@ -145,7 +146,7 @@ def post_json(url: str, obj: dict) -> tuple[int, Optional[dict]]:
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
         method="POST",
     )
     try:
@@ -171,7 +172,7 @@ def get_no_redirect(url: str) -> tuple[int, str, Optional[str]]:
     """GET without following redirects; return (status, body_text, Location)."""
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "bv-mcp-oauth-probe/1.0"},
+        headers={"User-Agent": USER_AGENT},
         method="GET",
     )
     opener = urllib.request.build_opener(NoRedirectHandler)
@@ -190,7 +191,7 @@ def post_form(url: str, data: dict) -> tuple[int, Optional[dict], Optional[str]]
     req = urllib.request.Request(
         url,
         data=encoded,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": USER_AGENT},
         method="POST",
     )
     try:
