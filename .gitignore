@@ -6,6 +6,8 @@ node_modules/
 dist/
 build/
 out/
+target/
+crates/*/target/
 *.tgz
 *.wasm
 crates/bv-wasm-core/pkg/
@@ -30,6 +32,8 @@ __pycache__/
 .env.local
 .env.*
 .env.*.local
+!.env.example
+!.devcontainer/.env.example
 .dev.vars
 .npmrc
 .venv/
@@ -131,6 +135,7 @@ generate_*.py
 # Local deploy overrides (real KV IDs, custom domains)
 .dev/
 .mcp.json
+!.mcp.json
 .mcp-registry-key.pem
 reports/tenant-readiness-proof.html
 reports/tenant-calibration-*.json
