@@ -183,12 +183,14 @@ const DiscoverSignalSchema = z
 	.pipe(
 		z.enum([
 			'san',
+			'san_recursive',
 			'ns',
 			'dmarc_rua',
 			'dkim_key_reuse',
 			'http_redirect',
 			'mx_overlap',
 			'spf_include',
+			'spf_include_seed',
 			'cname_alignment',
 		]),
 	);
@@ -199,9 +201,9 @@ export const DiscoverBrandDomainsArgs = z.object({
 	signals: z
 		.array(DiscoverSignalSchema)
 		.min(1)
-		.max(8)
+		.max(10)
 		.optional()
-		.describe('Signal modules to invoke. Defaults to all 8 (san, ns, dmarc_rua, dkim_key_reuse, http_redirect, mx_overlap, spf_include, cname_alignment).'),
+		.describe('Signal modules to invoke. Defaults to all 10 (san, san_recursive, ns, dmarc_rua, dkim_key_reuse, http_redirect, mx_overlap, spf_include, spf_include_seed, cname_alignment).'),
 	candidate_domains: z
 		.array(z.string().min(1).max(253))
 		.max(200)
