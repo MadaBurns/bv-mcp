@@ -214,7 +214,17 @@ for (const path of mcpPaths) {
 
 		// If token was provided but not recognized, or if auth is required and not authenticated, reject
 		if ((token && !tierResult.authenticated) || (c.env.REQUIRE_AUTH === 'true' && !tierResult.authenticated)) {
-			return unauthorizedResponse();
+			const response = unauthorizedResponse();
+			// The global post-next middleware never runs on early returns, so
+			// stamp the deprecation signal here too — clients fixing their auth
+			// header path should see it on 401 (the most common failure mode
+			// for the deprecated `?api_key=` flow).
+			if (apiKeyInQuery) {
+				response.headers.set('Deprecation', 'true');
+				response.headers.set('Sunset', 'Tue, 01 Dec 2026 00:00:00 GMT');
+				response.headers.set('Link', '<https://github.com/MadaBurns/bv-mcp#authentication>; rel="deprecation"; type="text/html"');
+			}
+			return response;
 		}
 
 		return next();
