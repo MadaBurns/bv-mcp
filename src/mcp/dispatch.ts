@@ -93,7 +93,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				// requests with the old session ID get a 404. Old sessions
 				// expire naturally via TTL (2 hours) and are cleaned up by
 				// periodic in-memory pruning + KV expirationTtl.
-				const sessionId = createSessionOnInitialize ? await createSession(options.sessionStore, options.analytics) : options.existingSessionId;
+				const sessionId = createSessionOnInitialize ? await createSession(options.sessionStore, options.analytics, options.waitUntil) : options.existingSessionId;
 				if (createSessionOnInitialize && sessionId) {
 					auditSessionCreated(options.ip, sessionId);
 					options.analytics?.emitSessionEvent({
