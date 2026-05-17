@@ -1,6 +1,6 @@
 name: Auto Deploy Main
 
-# DISABLED 2026-05-07 — operating in manual-deploy mode (`npm run deploy:private`).
+# DISABLED 2026-05-07 — operating in manual-deploy mode (`npm run deploy:prod`).
 # Re-enable: rename this file back to `auto-deploy-main.yml` AFTER uploading
 # `CLOUDFLARE_API_TOKEN` (Workers Edit + Account Read) to the GitHub
 # `production` environment. Without that secret, the deploy job fails fast

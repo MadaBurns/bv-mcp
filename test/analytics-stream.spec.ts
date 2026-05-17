@@ -14,7 +14,7 @@ describe('Analytics Pipeline', () => {
             domain: 'example.com',
             grade: 'A',
             score: 95,
-            sub_tenant_id: 'tenant-pilot-1',
+            sub_tenant_id: 'tenant-example',
             cycle_id: 'cycle-123'
         };
 

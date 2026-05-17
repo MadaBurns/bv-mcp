@@ -1,10 +1,10 @@
 # Project Guidelines
 
 ## Build and Test
-- Install dependencies: npm install
+- Install dependencies: npm ci
 - Build package and CLI bundle: npm run build
 - Build subpackage: npm -w packages/dns-checks run build
-- Run local dev server: npm run dev
+- Run local Worker dev server: npx wrangler dev
 - Run tests (Workers runtime): npm test
 - Run subpackage tests: npm -w packages/dns-checks run test
 - Run single test file: npx vitest run test/check-spf.spec.ts
@@ -14,7 +14,7 @@
 - Lint: npm run lint
 - Auto-fix lint issues: npm run lint:fix
 - Enable pre-commit hooks: git config core.hooksPath .githooks
-- Deploy private worker config: npm run deploy:private
+- Deploy production worker config: npm run deploy:prod
 
 ## Runtime and Code Style
 - Target Cloudflare Workers APIs only. Do not use Node-only APIs in runtime code.
@@ -37,7 +37,7 @@
 ## Project Conventions
 - Keep versions synchronized between package.json version and src/lib/server-version.ts SERVER_VERSION.
 - Error messages intended for clients must start with safe prefixes (for example: Missing required, Invalid, Domain validation failed, Resource not found).
-- Rate limiting for MCP should return HTTP 429 with JSON-RPC error code -32029.
+- Rate limiting for MCP should return HTTP 200 with JSON-RPC error code -32029; `retry-after` may still be set.
 - Respect output format behavior:
   - format=compact for interactive clients
   - format=full for non-interactive clients
@@ -68,6 +68,6 @@
 - Contributor workflow and expectations: CONTRIBUTING.md
 - Client setup and transport details: docs/client-setup.md
 - Scoring model details: docs/scoring.md
-- Enterprise architecture notes: docs/enterprise-architecture.md
+- Tenant operations notes: docs/tenant-ops-runbook.md and docs/provisioning/brand-audit-bindings.md
 - Troubleshooting guide: docs/troubleshooting.md
 - Security policy and disclosure process: SECURITY.md

@@ -185,10 +185,9 @@ paths = [
   '''node_modules/''',
   '''package-lock\.json$''',
   '''\.wrangler/''',
-  '''coverage/''',
-  '''dist/''',                       # Build artifacts
-  '''worker-configuration\.d\.ts$''', # Generated CF types
-  '''\.dev/''',                      # Local deploy overrides (gitignored)
-  '''docs/plans/''',                 # Internal planning docs (gitignored)
-  '''test/audits/no-tracked-secrets\.audit\.test\.ts$''', # Audit test contains regex literals (incl. PEM header)
-]
+	  '''coverage/''',
+	  '''dist/''',                       # Build artifacts
+	  '''worker-configuration\.d\.ts$''', # Generated CF types
+	  '''docs/plans/''',                 # Internal planning docs (gitignored)
+	  '''test/audits/no-tracked-secrets\.audit\.test\.ts$''', # Audit test contains regex literals (incl. PEM header)
+	]
