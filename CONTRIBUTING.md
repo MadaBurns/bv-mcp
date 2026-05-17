@@ -7,9 +7,9 @@ Thanks for your interest in contributing! Blackveil DNS is a source-available DN
 ```bash
 git clone https://github.com/MadaBurns/bv-mcp.git
 cd bv-mcp
-npm install
-npm test           # Run tests (2000+ tests, ~90% coverage)
-npm run dev        # Local dev server at localhost:8787
+npm ci
+npm test           # Run the Vitest suite
+npx wrangler dev   # Local Worker dev server at localhost:8787
 npm run typecheck  # Type-check without emitting
 ```
 
@@ -21,7 +21,7 @@ npm run typecheck  # Type-check without emitting
 - **Tests**: Vitest with `@cloudflare/vitest-pool-workers` (runs inside Workers runtime)
 - **Formatter**: Prettier (tabs, single quotes, semicolons, 140 print width)
 
-Run `npx prettier --write 'src/**/*.ts' 'test/**/*.ts'` before committing.
+Run `npx prettier --write 'src/**/*.ts' 'test/**/*.ts'` before committing large formatting changes.
 
 ## Adding a New Tool
 

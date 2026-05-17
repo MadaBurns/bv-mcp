@@ -455,7 +455,7 @@ Authorization: Bearer bv_Kx8eZ2rdtUPfdzR8e_...
 
 | Client | Recommended Auth Method | Notes |
 |--------|-------------------------|-------|
-| Claude Mobile | Hosted connector URL | OAuth is opt-in; use `?api_key=` if you need authenticated quota |
+| Claude Mobile | Hosted connector URL | Customer OAuth is enabled on the hosted endpoint; use `?api_key=` for static-key quota |
 | Claude Code | `?api_key=` in URL | Simple and native |
 | Smithery | `?api_key=` in URL | Native integration |
 | VS Code / Copilot | `headers` field | Supports secret prompt |
@@ -466,11 +466,11 @@ Authorization: Bearer bv_Kx8eZ2rdtUPfdzR8e_...
 
 ### OAuth 2.1
 
-OAuth is disabled on the hosted endpoint by default so MCP clients do not auto-open a browser asking for the owner API key. Public discovery requires `ENABLE_OAUTH=true`; the legacy owner-key consent page additionally requires `ENABLE_OWNER_OAUTH=true`.
+OAuth is enabled on the hosted production endpoint for the customer-consent flow. Self-hosted operators must set `ENABLE_OAUTH=true` to expose OAuth routes. The legacy owner-key consent page is separately gated by `ENABLE_OWNER_OAUTH=true` and remains disabled in production.
 
 When enabled, the server implements RFC 6749 authorization-code grant with PKCE (S256 only), RFC 7591 dynamic client registration, and RFC 8414 / RFC 9728 discovery. Tokens are HS256 JWTs with a 1-hour TTL. Paid-plan OAuth tokens carry `developer` or `enterprise` tier claims from a validated bv-web/Stripe entitlement; `agent`, `owner`, and `partner` are reserved for static keys and admin flows.
 
-**Discovery endpoints** (no auth, only when `ENABLE_OAUTH=true`):
+**Discovery endpoints** (no auth; available on hosted production and on self-hosted deployments with `ENABLE_OAUTH=true`):
 
 - `GET /.well-known/oauth-authorization-server` — RFC 8414 authorization server metadata (issuer, `/oauth/authorize`, `/oauth/token`, `/oauth/register`, supported grants + PKCE methods).
 - `GET /.well-known/oauth-protected-resource` — RFC 9728 metadata pointing at `/mcp` as the protected resource.
@@ -584,4 +584,4 @@ Example payload:
 | GET / POST | `/oauth/authorize` | Authorization endpoint (consent + code issuance) |
 | POST | `/oauth/token` | Token endpoint (authorization code grant with PKCE) |
 
-OAuth endpoints return `404` unless the operator explicitly sets `ENABLE_OAUTH=true`. The owner API-key consent UI remains disabled unless `ENABLE_OWNER_OAUTH=true`.
+On the hosted endpoint, OAuth routes serve the customer flow. On self-hosted deployments, OAuth endpoints return `404` unless the operator sets `ENABLE_OAUTH=true`. The owner API-key consent UI remains disabled unless `ENABLE_OWNER_OAUTH=true`.
