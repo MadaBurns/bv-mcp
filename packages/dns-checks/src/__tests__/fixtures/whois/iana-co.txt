@@ -1,0 +1,6 @@
+% IANA WHOIS server
+% Synthetic fixture for parser tests.
+domain:       CO
+whois:        whois.co.example
+status:       ACTIVE
+source:       IANA
