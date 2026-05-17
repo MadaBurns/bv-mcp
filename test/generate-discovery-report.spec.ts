@@ -47,8 +47,7 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
         console.log(`Primary Registrar: ${primaryRegistrar}`);
 
         console.log(`[2/4] Running brand discovery...`);
-        const result = await discoverBrandDomains(target, { 
-            signals: ['san', 'ns', 'dmarc_rua', 'dkim_key_reuse'],
+        const result = await discoverBrandDomains(target, {
             min_confidence: 0.1
         });
 

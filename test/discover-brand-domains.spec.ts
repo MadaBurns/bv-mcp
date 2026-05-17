@@ -55,6 +55,12 @@ function makeDeps(overrides: Partial<DiscoverBrandDomainsDeps> = {}): DiscoverBr
 	const okEmpty = { coOwnedDomains: [], queryStatus: 'ok' as const };
 	return {
 		correlateSans: vi.fn().mockResolvedValue(okSan([])),
+		correlateSansRecursive: vi.fn().mockResolvedValue({
+			seedDomain: 'example.com',
+			crossConfirmed: [],
+			probed: [],
+			queryStatus: 'ok' as const,
+		}),
 		correlateNs: vi.fn().mockResolvedValue(okNs([])),
 		mineDmarcRua: vi.fn().mockResolvedValue(okRua([])),
 		detectDkimKeyReuse: vi.fn().mockResolvedValue(okDkim([])),
@@ -141,15 +147,18 @@ describe('discoverBrandDomains', () => {
 
 	it('returns missingControl finding when signal modules all throw (DNS-failure resilience)', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const failing = vi.fn().mockRejectedValue(new Error('DNS error'));
 		const deps = makeDeps({
-			correlateSans: vi.fn().mockRejectedValue(new Error('crt.sh timed out')),
-			correlateNs: vi.fn().mockRejectedValue(new Error('DNS NXDOMAIN')),
-			mineDmarcRua: vi.fn().mockRejectedValue(new Error('DNS error')),
-			detectDkimKeyReuse: vi.fn().mockRejectedValue(new Error('DNS error')),
-			detectHttpRedirect: vi.fn().mockRejectedValue(new Error('fetch failed')),
-			detectMxOverlap: vi.fn().mockRejectedValue(new Error('DNS error')),
-			detectSpfInclude: vi.fn().mockRejectedValue(new Error('DNS error')),
-			detectCnameAlignment: vi.fn().mockRejectedValue(new Error('DNS error')),
+			correlateSans: failing,
+			correlateSansRecursive: failing,
+			correlateNs: failing,
+			mineDmarcRua: failing,
+			detectDkimKeyReuse: failing,
+			detectHttpRedirect: failing,
+			detectMxOverlap: failing,
+			detectSpfInclude: failing,
+			extractSeedSpfIncludes: failing,
+			detectCnameAlignment: failing,
 		});
 		const result = await discoverBrandDomains('example.com', {}, deps);
 		expect(result.category).toBe('brand_discovery');

@@ -312,6 +312,131 @@ async function attemptCorrelation(
  * retry, a single throttle window silently drops the SAN signal for that
  * target. Partial-success (stream cap hit) is `ok` and never retried.
  */
+/** Options for the second-order recursive SAN expansion. */
+export interface SanRecursiveOptions extends SanCorrelationOptions {
+	/** Hard cap on the number of first-order candidates to probe in the second pass. Defaults to 20. */
+	maxCandidates?: number;
+	/** Parallel concurrency limit for second-order crt.sh queries. Defaults to 8. */
+	concurrency?: number;
+	/** Total wall-clock budget for the entire recursive pass (ms). Defaults to 30000. */
+	totalBudgetMs?: number;
+}
+
+/** Per-candidate cross-confirmation outcome from the second-order pass. */
+export interface SanRecursiveCandidate {
+	/** The first-order sibling whose SANs we queried. */
+	candidate: string;
+	/** crt.sh `id` values of the certs that surfaced the seed in the candidate's SAN list. */
+	certIds: number[];
+	/** Final query status for the second-order call. */
+	queryStatus: SanCorrelationResult['queryStatus'];
+}
+
+/** Aggregate result of the recursive SAN expansion. */
+export interface SanRecursiveResult {
+	seedDomain: string;
+	/** Candidates whose own crt.sh SAN listing includes the original seed (cross-confirmation). */
+	crossConfirmed: SanRecursiveCandidate[];
+	/** All candidates probed (whether or not they cross-confirmed) — for telemetry/debug. */
+	probed: string[];
+	queryStatus: 'ok' | 'budget_exceeded' | 'error';
+}
+
+/**
+ * Second-order SAN expansion pass.
+ *
+ * For each first-order sibling, queries crt.sh again with that sibling as the
+ * seed; if the ORIGINAL seed appears in the sibling's SAN list, that's a
+ * cross-cert mutual SAN inclusion — near-deterministic ownership evidence
+ * that a single first-order hit cannot establish on its own.
+ *
+ * Bounded by `maxCandidates` (top-N by shortest registrable apex first —
+ * shorter apex tends to be the canonical brand domain, which has the densest
+ * SAN graph), `concurrency` (parallel crt.sh queries), and `totalBudgetMs`
+ * (wall-clock cap; partial results still returned with `queryStatus:
+ * 'budget_exceeded'`).
+ *
+ * Mutates nothing; never throws on transient failure. Each second-order query
+ * reuses `attemptCertstreamSans` (preferred) → direct crt.sh (fallback) just
+ * like `correlateSans`, so retry/backoff/saturation logic is shared.
+ */
+export async function correlateSansRecursive(
+	seedDomain: string,
+	firstOrderCandidates: readonly string[],
+	options: SanRecursiveOptions = {},
+): Promise<SanRecursiveResult> {
+	const validation = validateDomain(seedDomain);
+	if (!validation.valid) {
+		throw new Error(`Domain validation failed: ${validation.error ?? 'invalid domain'}`);
+	}
+	const seedLower = seedDomain.trim().toLowerCase().replace(/\.$/, '');
+	const maxCandidates = Math.max(0, options.maxCandidates ?? 20);
+	const concurrency = Math.max(1, options.concurrency ?? 8);
+	const totalBudgetMs = Math.max(1, options.totalBudgetMs ?? 30_000);
+
+	// Normalise + dedupe + filter invalid + drop the seed/its subdomains.
+	const seedSuffix = `.${seedLower}`;
+	const normalised = new Set<string>();
+	for (const raw of firstOrderCandidates) {
+		const host = String(raw).trim().toLowerCase().replace(/\.$/, '');
+		if (!host || host === seedLower) continue;
+		if (host.endsWith(seedSuffix)) continue;
+		if (!validateDomain(host).valid) continue;
+		normalised.add(host);
+	}
+	// Sort by shortest registrable apex first (then lexicographic) — shorter
+	// apex domains tend to be canonical brand siblings with the densest SAN
+	// graph (e.g. `github.io` before `githubusercontent-staging-edge.com`).
+	const sorted = Array.from(normalised).sort((a, b) => a.length - b.length || a.localeCompare(b));
+	const probedList = sorted.slice(0, maxCandidates);
+
+	if (probedList.length === 0) {
+		return { seedDomain: seedLower, crossConfirmed: [], probed: [], queryStatus: 'ok' };
+	}
+
+	const deadline = Date.now() + totalBudgetMs;
+	const crossConfirmed: SanRecursiveCandidate[] = [];
+	let budgetExceeded = false;
+
+	let cursor = 0;
+	async function worker(): Promise<void> {
+		while (true) {
+			const idx = cursor++;
+			if (idx >= probedList.length) return;
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) {
+				budgetExceeded = true;
+				return;
+			}
+			const candidate = probedList[idx];
+			// Per-attempt timeout is min(configured, remaining-budget).
+			const perAttemptTimeout = Math.min(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, remaining);
+			const subResult = await correlateSans(candidate, {
+				...options,
+				timeoutMs: perAttemptTimeout,
+			});
+			if (subResult.queryStatus !== 'ok') continue;
+			if (subResult.coOwnedDomains.includes(seedLower)) {
+				crossConfirmed.push({
+					candidate,
+					certIds: subResult.certIds.slice(0, 5),
+					queryStatus: subResult.queryStatus,
+				});
+			}
+		}
+	}
+
+	const workerCount = Math.min(concurrency, probedList.length);
+	await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+	return {
+		seedDomain: seedLower,
+		crossConfirmed,
+		probed: probedList,
+		queryStatus: budgetExceeded ? 'budget_exceeded' : 'ok',
+	};
+}
+
 export async function correlateSans(
 	seedDomain: string,
 	options: SanCorrelationOptions = {},

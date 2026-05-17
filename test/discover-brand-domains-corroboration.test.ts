@@ -57,6 +57,12 @@ function okDkim(domains: string[]): DkimKeyReuseResult {
 function makeDeps(overrides: Partial<DiscoverBrandDomainsDeps> = {}): DiscoverBrandDomainsDeps {
 	return {
 		correlateSans: vi.fn().mockResolvedValue(okSan([])),
+		correlateSansRecursive: vi.fn().mockResolvedValue({
+			seedDomain: 'example.com',
+			crossConfirmed: [],
+			probed: [],
+			queryStatus: 'ok' as const,
+		}),
 		correlateNs: vi.fn().mockResolvedValue(okNs([])),
 		mineDmarcRua: vi.fn().mockResolvedValue(okRua([])),
 		detectDkimKeyReuse: vi.fn().mockResolvedValue(okDkim([])),
