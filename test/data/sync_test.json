@@ -1,1 +1,7 @@
-{"mode": "sync", "domains": ["example.com"], "concurrency": 1}
+{
+  "mode": "sync",
+  "domains": [
+    "tenant-seed-001.example.test"
+  ],
+  "concurrency": 1
+}

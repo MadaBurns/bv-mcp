@@ -1,1 +1,7 @@
-{"mode": "queue", "domains": ["example.com"], "concurrency": 1}
+{
+  "mode": "queue",
+  "domains": [
+    "tenant-seed-001.example.test"
+  ],
+  "concurrency": 1
+}

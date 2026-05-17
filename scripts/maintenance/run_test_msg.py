@@ -1,22 +1,40 @@
 import json
+import os
 import subprocess
+import tempfile
 
-URL = "https://bv-dns-security-mcp.bv-edge.workers.dev"
 
-batch_file = "batch_test.json"
-payload = {
-    "mode": "queue",
-    "domains": ["example.com"],
-    "concurrency": 1
-}
-with open(batch_file, "w") as f:
+def require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise SystemExit(f"Missing required environment variable: {name}")
+    return value
+
+
+BASE_URL = require_env("BV_TENANT_SCAN_BASE_URL").rstrip("/")
+TENANT_ID = require_env("BV_TENANT_ID")
+INTERNAL_KEY = require_env("BV_WEB_INTERNAL_KEY")
+DOMAIN = os.getenv("BV_TEST_DOMAIN", "example.test")
+
+payload = {"mode": "queue", "domains": [DOMAIN], "concurrency": 1}
+
+with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
     json.dump(payload, f)
+    payload_path = f.name
 
 cmd = [
-    "curl", "-s", "-X", "POST", f"{URL}/internal/tenants/scan",
-    "-H", "X-Tenant: tenant-example",
-    "-H", "X-Synthetic-Dispatch: synthetic-force-scan-10k",
-    "-H", "Content-Type: application/json",
-    "-d", f"@{batch_file}"
+    "curl",
+    "-s",
+    "-X",
+    "POST",
+    f"{BASE_URL}/internal/tenants/scan",
+    "-H",
+    f"X-Tenant: {TENANT_ID}",
+    "-H",
+    f"Authorization: Bearer {INTERNAL_KEY}",
+    "-H",
+    "Content-Type: application/json",
+    "-d",
+    f"@{payload_path}",
 ]
 print(subprocess.check_output(cmd, text=True))
