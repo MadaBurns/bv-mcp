@@ -12,6 +12,17 @@ BLOCKED_PATTERNS=(
   "docs/mcp-directory-submissions.md"
   "docs/enterprise-architecture.md"
   ".dev/"
+  ".dev.vars"
+  ".dev.vars."
+  ".worktrees/"
+  ".mcp-registry-key.pem"
+  ".npmrc"
+  "wrangler.production.jsonc"
+  "reports/"
+  ".reports/"
+  "reports"
+  ".reports"
+  "*.pdf"
   "*.env"
   "*.env.*"
 )
@@ -85,7 +96,7 @@ fi
 
 # ─── 2. Gitleaks (secrets + PII) ──────���──────────────────────────────
 if command -v gitleaks &>/dev/null; then
-  gitleaks protect --staged --config .gitleaks.toml --no-banner 2>&1 | head -20
+  gitleaks protect --staged --config .gitleaks.toml --redact=100 --no-banner 2>&1 | head -20
   if [ "${PIPESTATUS[0]}" -ne 0 ]; then
     echo ""
     echo "Gitleaks found secrets or PII in staged changes."

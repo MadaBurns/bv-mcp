@@ -7,7 +7,7 @@ applyTo: src/tools/scan-domain.ts
 
 ## Parallel execution
 
-`scan_domain` runs **16 checks** in parallel via `Promise.allSettled`:
+`scan_domain` runs **17 scan categories** in parallel via `Promise.allSettled`:
 `checkSpf`, `checkDmarc`, `checkDkim`, `checkDnssec`, `checkSsl`, `checkMtaSts`, `checkNs`, `checkCaa`, `checkBimi`, `checkTlsrpt`, `checkSubdomainTakeover`, `checkMx`, `checkHttpSecurity`, `checkDane`, `checkDaneHttps`, `checkSvcbHttps`, `checkSubdomailing`
 
 All checks are **static imports** — no dynamic imports in scan context (unlike `check_mx` in `handlers/tools.ts`).

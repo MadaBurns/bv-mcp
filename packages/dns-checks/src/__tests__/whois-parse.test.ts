@@ -21,37 +21,37 @@ const fixture = (filename: string): string => {
 
 describe('parseWhoisResponse', () => {
 	it('extracts registrar from Verisign thin .com response (leading whitespace)', () => {
-		const result = parseWhoisResponse(fixture('registry-google.com.txt'));
-		expect(result.registrar).toBe('MarkMonitor Inc.');
+		const result = parseWhoisResponse(fixture('registry-example.com.txt'));
+		expect(result.registrar).toBe('Example Registrar Inc.');
 	});
 
 	it('extracts registrar from .me ICANN-template response', () => {
-		const result = parseWhoisResponse(fixture('registry-google.me.txt'));
-		expect(result.registrar).toBe('MarkMonitor Inc.');
+		const result = parseWhoisResponse(fixture('registry-example.me.txt'));
+		expect(result.registrar).toBe('Example Registrar Inc.');
 	});
 
 	it('extracts registrar from .co response', () => {
-		const result = parseWhoisResponse(fixture('registry-google.co.txt'));
-		expect(result.registrar).toBe('MarkMonitor, Inc.');
+		const result = parseWhoisResponse(fixture('registry-example.co.txt'));
+		expect(result.registrar).toBe('Example Registrar, Inc.');
 	});
 
 	it('extracts registrar from .io response', () => {
-		const result = parseWhoisResponse(fixture('registry-google.io.txt'));
-		expect(result.registrar).toBe('MarkMonitor Inc.');
+		const result = parseWhoisResponse(fixture('registry-example.io.txt'));
+		expect(result.registrar).toBe('Example Registrar Inc.');
 	});
 
 	it('extracts registrar from .sh response', () => {
-		const result = parseWhoisResponse(fixture('registry-google.sh.txt'));
-		expect(result.registrar).toBe('MarkMonitor Inc.');
+		const result = parseWhoisResponse(fixture('registry-example.sh.txt'));
+		expect(result.registrar).toBe('Example Registrar Inc.');
 	});
 
 	it('extracts registrar from .us response', () => {
-		const result = parseWhoisResponse(fixture('registry-google.us.txt'));
-		expect(result.registrar).toBe('MarkMonitor, Inc.');
+		const result = parseWhoisResponse(fixture('registry-example.us.txt'));
+		expect(result.registrar).toBe('Example Registrar, Inc.');
 	});
 
 	it('returns redacted=true for DENIC .de privacy-protected response', () => {
-		const result = parseWhoisResponse(fixture('registry-google.de.txt'));
+		const result = parseWhoisResponse(fixture('registry-example.de.txt'));
 		expect(result.registrar).toBeNull();
 		expect(result.redacted).toBe(true);
 	});
@@ -91,9 +91,9 @@ Registrar: NewRegistrar Inc.
 	});
 
 	it('extracts registrar from Nominet .uk indented format (label and value on separate lines)', () => {
-		// Nominet returns:  "    Registrar:\n        Markmonitor Inc. [Tag = MARKMONITOR]\n        URL: ..."
-		const result = parseWhoisResponse(fixture('registry-google.co.uk.txt'));
-		expect(result.registrar).toBe('Markmonitor Inc.');
+		// Nominet returns:  "    Registrar:\n        Example Registrar Ltd. [Tag = EXAMPLE]\n        URL: ..."
+		const result = parseWhoisResponse(fixture('registry-example.co.uk.txt'));
+		expect(result.registrar).toBe('Example Registrar Ltd.');
 	});
 
 	it('strips [Tag = ...] suffix from Nominet registrar value', () => {
@@ -134,31 +134,31 @@ Registrar: NewRegistrar Inc.
 
 describe('parseIanaReferral', () => {
 	it('extracts whois server from .me IANA response', () => {
-		expect(parseIanaReferral(fixture('iana-me.txt'))).toBe('whois.nic.me');
+		expect(parseIanaReferral(fixture('iana-me.txt'))).toBe('whois.me.example');
 	});
 
 	it('extracts whois server from .com IANA response', () => {
-		expect(parseIanaReferral(fixture('iana-com.txt'))).toBe('whois.verisign-grs.com');
+		expect(parseIanaReferral(fixture('iana-com.txt'))).toBe('whois.com.example');
 	});
 
 	it('extracts whois server from .de IANA response', () => {
-		expect(parseIanaReferral(fixture('iana-de.txt'))).toBe('whois.denic.de');
+		expect(parseIanaReferral(fixture('iana-de.txt'))).toBe('whois.de.example');
 	});
 
 	it('extracts whois server from .io IANA response', () => {
-		expect(parseIanaReferral(fixture('iana-io.txt'))).toBe('whois.nic.io');
+		expect(parseIanaReferral(fixture('iana-io.txt'))).toBe('whois.io.example');
 	});
 
 	it('extracts whois server from .co IANA response', () => {
-		expect(parseIanaReferral(fixture('iana-co.txt'))).toBe('whois.registry.co');
+		expect(parseIanaReferral(fixture('iana-co.txt'))).toBe('whois.co.example');
 	});
 
 	it('extracts whois server from .sh IANA response', () => {
-		expect(parseIanaReferral(fixture('iana-sh.txt'))).toBe('whois.nic.sh');
+		expect(parseIanaReferral(fixture('iana-sh.txt'))).toBe('whois.sh.example');
 	});
 
 	it('extracts whois server from .us IANA response', () => {
-		expect(parseIanaReferral(fixture('iana-us.txt'))).toBe('whois.nic.us');
+		expect(parseIanaReferral(fixture('iana-us.txt'))).toBe('whois.us.example');
 	});
 
 	it('returns null for "no data" IANA response', () => {

@@ -9,8 +9,7 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
-[![Tests](https://img.shields.io/badge/Tests-2610-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
-[![Coverage](https://img.shields.io/badge/Coverage-~90%25-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![MCP tools](https://img.shields.io/badge/MCP%20tools-57-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![BUSL-1.1 License](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
@@ -26,7 +25,7 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 
 **Claude Desktop** (one-click install):
 
-Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — all 51 tools available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
+Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — the current 57-tool surface is available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
 
 **Claude Code** (one command):
 
@@ -66,7 +65,7 @@ Transport support:
 
 ## What you get
 
-- **80+ checks across 20 categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, lookalike domains, HTTP security headers, DANE, shadow domains, TXT hygiene, MX reputation, SRV, zone hygiene
+- **57 MCP tools with 17 `scan_domain` categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, subdomailing, and brand discovery
 - **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with score-based capping to prevent inflated labels
 - **Trust surface analysis** — detects shared SaaS platforms (Google, M365, SendGrid) and cross-references DMARC enforcement to determine real exposure
 - **Guided remediation** — `generate_fix_plan` produces provider-aware prioritized actions; record generators output ready-to-publish records; `validate_fix` confirms whether a fix was applied successfully
@@ -82,31 +81,31 @@ Transport support:
 ## Tools
 
 ```
-  52 MCP tools · 7 prompts · 6 resources
+  57 MCP tools · 7 prompts · 6 resources
 
-  Email Auth           Infrastructure        Brand & Threats       Meta
- ────────────         ────────────────       ─────────────────    ──────────────────────
-  check_spf            check_dnssec           check_bimi           scan_domain
-  check_dmarc          check_ns               check_tlsrpt         batch_scan
-  check_dkim           check_caa              check_lookalikes     compare_domains
-  check_mta_sts        check_ssl              check_shadow_domains compare_baseline
-  check_mx             check_http_security                         explain_finding
-  check_mx_reputation  check_dane             Intelligence
-  check_subdomailing   check_dane_https      ──────────────       Remediation
-                       check_svcb_https       get_benchmark       ──────────────
-  DNS Hygiene          check_srv              get_provider_        generate_fix_plan
- ────────────          check_zone_hygiene       insights           generate_spf_record
-  check_txt_hygiene    check_resolver_        assess_spoofability  generate_dmarc_record
-                         consistency          map_supply_chain     generate_dkim_config
-                                              resolve_spf_chain    generate_mta_sts_policy
-                                              discover_subdomains  generate_rollout_plan
-                                              map_compliance       validate_fix
-                                              simulate_attack_paths
-                                              analyze_drift
-
-  Discovery
- ──────────────
-  discover_brand_domains   (Phase-4 brand portfolio aggregator)
+  Email Auth             Infrastructure          Brand & Threats       Meta
+ ─────────────          ──────────────          ───────────────       ───────────────
+  check_mx              check_dnssec            check_bimi            scan_domain
+  check_spf             check_ssl               check_tlsrpt          batch_scan
+  check_dmarc           check_ns                check_lookalikes      compare_domains
+  check_dkim            check_caa               check_shadow_domains  compare_baseline
+  check_mta_sts         check_http_security                           explain_finding
+  check_subdomailing    check_dane
+  check_mx_reputation   check_dane_https        DNS Hygiene           Remediation
+                        check_svcb_https       ─────────────         ───────────────
+  Intelligence          check_srv               check_txt_hygiene     generate_fix_plan
+ ─────────────          check_zone_hygiene                            generate_spf_record
+  get_benchmark         check_resolver_         Discovery             generate_dmarc_record
+  get_provider_           consistency          ─────────────         generate_dkim_config
+    insights                                    discover_brand_       generate_mta_sts_policy
+  assess_spoofability   check_dbl                domains             validate_fix
+  map_supply_chain      check_rbl               brand_audit_single    generate_rollout_plan
+  analyze_drift         cymru_asn               brand_audit_batch_
+  resolve_spf_chain     rdap_lookup               start
+  discover_subdomains   check_nsec_             brand_audit_status
+  map_compliance          walkability           brand_audit_get_
+  simulate_attack_paths check_dnssec_chain        report
+                        check_fast_flux         brand_audit_watch
 
   + check_subdomain_takeover (internal — runs inside scan_domain)
 ```
@@ -146,7 +145,7 @@ Run the chaos tests locally: `python3 scripts/chaos/chaos-test-clients.py`
       │
   ┌───▼──────────────────────┐
   │  Tool Handlers           │
-  │  16 checks in parallel   │
+  │  17 scan categories      │
   └───┬──────────────────────┘
       │
   ┌───▼──────────────────────┐
