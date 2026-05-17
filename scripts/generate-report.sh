@@ -10,6 +10,9 @@ fi
 export TARGET_DOMAIN=$1
 echo "Generating enterprise discovery report for $TARGET_DOMAIN..."
 
+# Remove any prior PDF so we never mistake a stale file for a fresh success.
+rm -f "reports/$TARGET_DOMAIN-discovery-report.pdf"
+
 # Inject the target domain into the test script
 # Use a temporary file for the run to avoid dirtying git state
 SPEC_FILE="test/generate-discovery-report.spec.ts"
