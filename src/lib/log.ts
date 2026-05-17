@@ -9,7 +9,13 @@
 export type LogEvent = {
 	timestamp: string;
 	requestId?: string;
-	ip?: string;
+	/**
+	 * FNV-1a hash of the client IP (`i_` prefix), aligned with the analytics
+	 * `ipHash` dimension. Raw IPs must never appear here — top-level fields
+	 * are NOT routed through `sanitizeLogValue`, so a raw IP would land in
+	 * tail/log storage unredacted. Callers must hash before logging.
+	 */
+	ipHash?: string;
 	tool?: string;
 	domain?: string;
 	severity?: 'info' | 'warn' | 'error';
