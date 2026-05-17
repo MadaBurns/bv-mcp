@@ -13,6 +13,14 @@ import { marked } from 'marked';
 import { discoverBrandDomains } from '../src/tools/discover-brand-domains';
 import { checkRdapLookup } from '../src/tools/check-rdap-lookup';
 import { generatePdf } from '../src/lib/pdf-engine';
+import { SERVER_VERSION } from '../src/lib/server-version';
+import {
+    McpHttpClient,
+    type BrandDiscoveryResult,
+    type RdapResult,
+    type BrandAuditReportEnvelope,
+    type BrandAuditStatusResult,
+} from './helpers/mcp-http-client';
 
 const CONSUMER_REGISTRARS = [
     'godaddy', 'namecheap', 'hostinger', 'tucows', 'enom', 'squarespace', 
@@ -30,113 +38,177 @@ const logoMarkBase64 = readFileSync(join(assetsDir, 'bv-logo-mark.png')).toStrin
 describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
     it('generates the report for a target domain', async () => {
 
-        console.log(`[1/4] Looking up primary registrar for ${target}...`);
+        // Route through the deployed MCP worker when BV_MCP_ENDPOINT is set.
+        // Server-side brand_audit_batch_start runs discovery + RDAP +
+        // classification through the queue consumer (300s/target budget),
+        // which is the only synchronous-tool-budget escape hatch big enough
+        // for tier-1 brands. Local fallback keeps the runner usable in CI.
+        const mcpEndpoint = process.env.BV_MCP_ENDPOINT;
+        const mcpToken = process.env.BV_MCP_TOKEN || process.env.BV_API_KEY;
+        const mcp = mcpEndpoint ? new McpHttpClient(mcpEndpoint, mcpToken) : null;
+        if (mcp) {
+            console.log(`[0/4] Initializing MCP session at ${mcpEndpoint}...`);
+            await mcp.initialize();
+        }
+
         let primaryRegistrar = 'Unknown';
-        try {
-            const rdap = await checkRdapLookup(target);
-            // Registrar is published in finding metadata; the title is
-            // "Registration details", not "...Registrar..." — relying on the
-            // title check silently produced "Unknown" for every brand.
-            const rFind = rdap.findings.find(f => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0);
-            if (rFind) {
-                primaryRegistrar = String(rFind.metadata!.registrar).trim();
-            }
-        } catch (e) {
-            console.warn(`Failed to lookup primary registrar: ${(e as Error).message}`);
-        }
-        console.log(`Primary Registrar: ${primaryRegistrar}`);
+        const consolidated: Array<{ domain: string; evidence: string; registrar: string }> = [];
+        const shadowIt: Array<{ domain: string; evidence: string; registrar: string }> = [];
+        const impersonation: Array<{ domain: string; evidence: string; registrar: string }> = [];
 
-        console.log(`[2/4] Running brand discovery...`);
-        const result = await discoverBrandDomains(target, {
-            min_confidence: 0.1
-        });
-
-        const candidates = new Map<string, { domain: string; confidence: number; signals: string[] }>();
-        for (const finding of result.findings) {
-            if (finding.metadata?.candidate) {
-                const cand = finding.metadata.candidate as string;
-                const conf = finding.metadata.combinedConfidence as number;
-                const sigs = finding.metadata.signals as string[];
-                if (!candidates.has(cand) || conf > (candidates.get(cand)!.confidence)) {
-                    candidates.set(cand, { domain: cand, confidence: conf, signals: sigs });
-                }
-            }
-        }
-
-        const uniqueCandidates = Array.from(candidates.values()).sort((a, b) => b.confidence - a.confidence);
-        console.log(`Discovered ${uniqueCandidates.length} unique candidates.`);
-
-        console.log(`[3/4] Analyzing candidates and generating report...`);
-        
-        const consolidated = [];
-        const shadowIt = [];
-        const impersonation = [];
-
-        const primaryRegLower = primaryRegistrar.toLowerCase();
-        const isPrimaryCore = primaryRegLower !== 'unknown' && primaryRegLower.length > 3;
-
-        // Parallel RDAP lookups with bounded concurrency. Markov-only candidates
-        // are speculative variants — no shared infra to verify, so we skip RDAP
-        // for them entirely (saves significant wall time on brands like apple
-        // that produce dozens of trigram-generated lookalikes).
-        const RDAP_CONCURRENCY = 16;
-        const rdapTargets = uniqueCandidates.filter(c => !(c.signals.length === 1 && c.signals[0] === 'markov_gen'));
-        const candidateRegistrars = new Map<string, string>();
-        for (let i = 0; i < rdapTargets.length; i += RDAP_CONCURRENCY) {
-            const chunk = rdapTargets.slice(i, i + RDAP_CONCURRENCY);
-            const results = await Promise.allSettled(chunk.map(c => checkRdapLookup(c.domain)));
-            results.forEach((r, idx) => {
-                let reg = 'Unknown';
-                if (r.status === 'fulfilled') {
-                    const rFind = r.value.findings.find(f => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0);
-                    if (rFind) reg = String(rFind.metadata!.registrar).trim();
-                }
-                candidateRegistrars.set(chunk[idx].domain, reg);
-            });
-        }
-
-        for (const cand of uniqueCandidates) {
-            const candRegistrar = candidateRegistrars.get(cand.domain) ?? 'Unknown';
-            const candRegLower = candRegistrar.toLowerCase();
-            
-            let isMatch = false;
-            if (isPrimaryCore && candRegLower !== 'unknown') {
-                const words1 = primaryRegLower.split(/[\s,.]+/).filter(w => w.length > 3);
-                const words2 = candRegLower.split(/[\s,.]+/).filter(w => w.length > 3);
-                isMatch = words1.some(w => words2.includes(w));
-            }
-
-            const evidenceString = cand.signals.map(s => {
+        const formatEvidence = (signals: string[]): string =>
+            signals.map(s => {
                 if (s === 'ns') return 'NS Match';
                 if (s === 'san') return 'Cert SAN Match';
+                if (s === 'san_recursive') return 'Recursive SAN';
                 if (s === 'dmarc_rua') return 'DMARC RUA Match';
                 if (s === 'dkim_key_reuse') return 'DKIM Key Match';
+                if (s === 'spf_include') return 'SPF Include';
+                if (s === 'spf_include_seed') return 'SPF Seed Include';
+                if (s === 'mx_overlap') return 'MX Overlap';
+                if (s === 'http_redirect') return 'HTTP Redirect';
+                if (s === 'cname_alignment') return 'CNAME Alignment';
                 if (s === 'markov_gen') return 'Markov Variant';
                 return s.toUpperCase();
-            }).join(', ');
+            }).join(', ') || 'No shared infrastructure';
 
-            const deterministicSignals = cand.signals.filter(s => s === 'ns' || s === 'dkim_key_reuse' || s === 'dmarc_rua');
-            const hasDeterministic = deterministicSignals.length > 0;
-            const onlyMarkov = cand.signals.length === 1 && cand.signals[0] === 'markov_gen';
-            const registrarsKnown = primaryRegLower !== 'unknown' && candRegLower !== 'unknown';
+        if (mcp) {
+            console.log(`[1/4] Enqueueing brand audit for ${target} (queue: 300s/target budget)...`);
+            const startText = await mcp.callToolText('brand_audit_batch_start', {
+                domains: [target],
+                min_confidence: 0.1,
+                format: 'json',
+            });
+            const idMatch = /auditId=([a-f0-9-]{8,})/i.exec(startText);
+            if (!idMatch) throw new Error(`Could not extract auditId from batch_start response: ${startText.slice(0, 200)}`);
+            const auditId = idMatch[1];
+            console.log(`auditId=${auditId}`);
 
-            if (isMatch || (registrarsKnown && candRegLower === primaryRegLower)) {
-                consolidated.push({ domain: cand.domain, evidence: evidenceString, registrar: candRegistrar });
-            } else if (onlyMarkov) {
-                // Speculative trigram-generated variant — by definition no shared
-                // infrastructure, so it's a candidate impersonation regardless of registrar visibility.
-                impersonation.push({ domain: cand.domain, evidence: evidenceString, registrar: candRegistrar });
-            } else if (!registrarsKnown && hasDeterministic) {
-                // Without registrar visibility, fall back to deterministic infra
-                // signals (NS/DKIM/DMARC) — these prove operational linkage even
-                // when WHOIS/RDAP can't confirm registrar.
-                consolidated.push({ domain: cand.domain, evidence: evidenceString, registrar: candRegistrar });
-            } else {
-                const isConsumer = CONSUMER_REGISTRARS.some(r => candRegLower.includes(r));
-                if (isConsumer && cand.confidence < 0.8) {
-                    impersonation.push({ domain: cand.domain, evidence: cand.signals.length === 0 ? 'No shared infrastructure' : evidenceString, registrar: candRegistrar });
+            console.log(`[2/4] Polling brand_audit_status (5s interval, ~3min ETA)...`);
+            const pollDeadline = Date.now() + 270_000;
+            let lastProgress = '';
+            while (true) {
+                const status = await mcp.callToolStructured<BrandAuditStatusResult>('brand_audit_status', { auditId });
+                const summary = status.findings.find(f => f.metadata?.summary === true);
+                const md = summary?.metadata;
+                const progress = md?.progress ?? '?/?';
+                if (progress !== lastProgress) {
+                    console.log(`  status=${md?.status} progress=${progress}`);
+                    lastProgress = progress;
+                }
+                const target0 = md?.targets?.[0];
+                if (md?.status === 'completed' && target0?.status === 'completed') break;
+                if (md?.status === 'failed' || target0?.status === 'failed') {
+                    throw new Error(`brand_audit failed: ${target0?.error ?? 'unknown error'}`);
+                }
+                if (Date.now() > pollDeadline) {
+                    throw new Error(`brand_audit_status polling timed out after 270s (last progress=${progress})`);
+                }
+                await new Promise(r => setTimeout(r, 5_000));
+            }
+
+            console.log(`[3/4] Fetching report and classifying candidates...`);
+            const envelope = await mcp.callToolStructured<BrandAuditReportEnvelope>('brand_audit_get_report', { auditId, target });
+            const wrapperSummary = envelope.findings.find(f => f.metadata?.summary === true);
+            const inner = wrapperSummary?.metadata?.result;
+            if (!inner) throw new Error('brand_audit_get_report missing embedded result');
+
+            const innerSummary = inner.findings.find(f => f.metadata?.summary === true);
+            if (typeof innerSummary?.metadata?.targetRegistrar === 'string') {
+                primaryRegistrar = innerSummary.metadata.targetRegistrar;
+            }
+            console.log(`Primary Registrar: ${primaryRegistrar}`);
+
+            const candidateFindings = inner.findings.filter(f => typeof f.metadata?.candidate === 'string');
+            for (const f of candidateFindings) {
+                const md = f.metadata!;
+                const cand = {
+                    domain: md.candidate as string,
+                    evidence: formatEvidence(md.signals ?? []),
+                    registrar: (md.registrar as string) ?? 'Unknown',
+                };
+                switch (md.bucket) {
+                    case 'consolidated': consolidated.push(cand); break;
+                    case 'impersonation': impersonation.push(cand); break;
+                    case 'shadowIt':
+                    case 'indeterminate':
+                    default:
+                        shadowIt.push(cand); break;
+                }
+            }
+            console.log(`Classified ${candidateFindings.length} candidates: ${consolidated.length} consolidated, ${shadowIt.length} shadowIt+indeterminate, ${impersonation.length} impersonation`);
+        } else {
+            console.log(`[1/4] Looking up primary registrar for ${target} (local)...`);
+            try {
+                const rdap = (await checkRdapLookup(target)) as RdapResult;
+                const rFind = rdap.findings.find(f => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0);
+                if (rFind) primaryRegistrar = String(rFind.metadata!.registrar).trim();
+            } catch (e) {
+                console.warn(`Failed to lookup primary registrar: ${(e as Error).message}`);
+            }
+            console.log(`Primary Registrar: ${primaryRegistrar}`);
+
+            console.log(`[2/4] Running brand discovery (local)...`);
+            const result = (await discoverBrandDomains(target, { min_confidence: 0.1 })) as BrandDiscoveryResult;
+            const candidates = new Map<string, { domain: string; confidence: number; signals: string[] }>();
+            for (const finding of result.findings) {
+                if (finding.metadata?.candidate) {
+                    const cand = finding.metadata.candidate as string;
+                    const conf = finding.metadata.combinedConfidence as number;
+                    const sigs = finding.metadata.signals as string[];
+                    if (!candidates.has(cand) || conf > (candidates.get(cand)!.confidence)) {
+                        candidates.set(cand, { domain: cand, confidence: conf, signals: sigs });
+                    }
+                }
+            }
+            const uniqueCandidates = Array.from(candidates.values()).sort((a, b) => b.confidence - a.confidence);
+            console.log(`Discovered ${uniqueCandidates.length} unique candidates.`);
+
+            console.log(`[3/4] Analyzing candidates (local)...`);
+            const primaryRegLower = primaryRegistrar.toLowerCase();
+            const isPrimaryCore = primaryRegLower !== 'unknown' && primaryRegLower.length > 3;
+            const RDAP_CONCURRENCY = 16;
+            const rdapTargets = uniqueCandidates.filter(c => !(c.signals.length === 1 && c.signals[0] === 'markov_gen'));
+            const candidateRegistrars = new Map<string, string>();
+            for (let i = 0; i < rdapTargets.length; i += RDAP_CONCURRENCY) {
+                const chunk = rdapTargets.slice(i, i + RDAP_CONCURRENCY);
+                const results = await Promise.allSettled(chunk.map(c => checkRdapLookup(c.domain) as Promise<RdapResult>));
+                results.forEach((r, idx) => {
+                    let reg = 'Unknown';
+                    if (r.status === 'fulfilled') {
+                        const rFind = r.value.findings.find(f => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0);
+                        if (rFind) reg = String(rFind.metadata!.registrar).trim();
+                    }
+                    candidateRegistrars.set(chunk[idx].domain, reg);
+                });
+            }
+            for (const cand of uniqueCandidates) {
+                const candRegistrar = candidateRegistrars.get(cand.domain) ?? 'Unknown';
+                const candRegLower = candRegistrar.toLowerCase();
+                let isMatch = false;
+                if (isPrimaryCore && candRegLower !== 'unknown') {
+                    const words1 = primaryRegLower.split(/[\s,.]+/).filter(w => w.length > 3);
+                    const words2 = candRegLower.split(/[\s,.]+/).filter(w => w.length > 3);
+                    isMatch = words1.some(w => words2.includes(w));
+                }
+                const evidence = formatEvidence(cand.signals);
+                const deterministicSignals = cand.signals.filter(s => s === 'ns' || s === 'dkim_key_reuse' || s === 'dmarc_rua');
+                const hasDeterministic = deterministicSignals.length > 0;
+                const onlyMarkov = cand.signals.length === 1 && cand.signals[0] === 'markov_gen';
+                const registrarsKnown = primaryRegLower !== 'unknown' && candRegLower !== 'unknown';
+                if (isMatch || (registrarsKnown && candRegLower === primaryRegLower)) {
+                    consolidated.push({ domain: cand.domain, evidence, registrar: candRegistrar });
+                } else if (onlyMarkov) {
+                    impersonation.push({ domain: cand.domain, evidence, registrar: candRegistrar });
+                } else if (!registrarsKnown && hasDeterministic) {
+                    consolidated.push({ domain: cand.domain, evidence, registrar: candRegistrar });
                 } else {
-                    shadowIt.push({ domain: cand.domain, evidence: evidenceString, registrar: candRegistrar });
+                    const isConsumer = CONSUMER_REGISTRARS.some(r => candRegLower.includes(r));
+                    if (isConsumer && cand.confidence < 0.8) {
+                        impersonation.push({ domain: cand.domain, evidence, registrar: candRegistrar });
+                    } else {
+                        shadowIt.push({ domain: cand.domain, evidence, registrar: candRegistrar });
+                    }
                 }
             }
         }
@@ -399,7 +471,7 @@ Based on the discovery of ${shadowIt.length} high-value Shadow IT domains, the f
             footerTemplate: `
                 <div style="width: 100%; font-size: 8px; padding: 10px 40px; display: flex; justify-content: space-between; font-family: 'Space Grotesk', sans-serif; color: #bfbfbf; border-top: 1px solid #1f1f1f;">
                     <span>Generated on ${dateStr}</span>
-                    <span style="color: #00FF9D; font-weight: 600;">BLACKVEIL DNS ORCHESTRATOR v2.13.1</span>
+                    <span style="color: #00FF9D; font-weight: 600;">BLACKVEIL DNS ORCHESTRATOR v${SERVER_VERSION}</span>
                     <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>
                 </div>`,
             margin: {
