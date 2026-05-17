@@ -7,6 +7,13 @@ if [ -z "$1" ]; then
   exit 1
 fi
 
+# Restrict the argument to DNS-label characters before we feed it into rm/sed.
+# Blocks path traversal, shell metacharacters, and sed-special bytes.
+if ! [[ "$1" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
+  echo "Error: '$1' is not a valid domain (expected lowercase labels separated by '.')." >&2
+  exit 1
+fi
+
 export TARGET_DOMAIN=$1
 echo "Generating enterprise discovery report for $TARGET_DOMAIN..."
 
