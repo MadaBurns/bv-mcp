@@ -1,0 +1,9 @@
+   Domain Name: EXAMPLE.COM
+   Registrar WHOIS Server: whois.example-registrar.test
+   Registrar URL: https://registrar.example
+   Registrar: Example Registrar Inc.
+   Registrar IANA ID: 9999
+   Domain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited
+   Name Server: NS1.EXAMPLE.NET
+   Name Server: NS2.EXAMPLE.NET
+   DNSSEC: unsigned

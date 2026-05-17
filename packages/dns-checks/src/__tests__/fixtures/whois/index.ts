@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Auto-generated from packages/dns-checks/src/__tests__/fixtures/whois/*.txt — do not edit by hand.
+// Regenerate with: node packages/dns-checks/scripts/regen-whois-fixtures.mjs
+
+export const WHOIS_FIXTURES = {
+  "iana_co_txt": "% IANA WHOIS server\n% Synthetic fixture for parser tests.\ndomain:       CO\nwhois:        whois.co.example\nstatus:       ACTIVE\nsource:       IANA\n",
+  "iana_com_txt": "% IANA WHOIS server\n% Synthetic fixture for parser tests.\ndomain:       COM\nwhois:        whois.com.example\nstatus:       ACTIVE\nsource:       IANA\n",
+  "iana_de_txt": "% IANA WHOIS server\n% Synthetic fixture for parser tests.\ndomain:       DE\nwhois:        whois.de.example\nstatus:       ACTIVE\nsource:       IANA\n",
+  "iana_io_txt": "% IANA WHOIS server\n% Synthetic fixture for parser tests.\ndomain:       IO\nwhois:        whois.io.example\nstatus:       ACTIVE\nsource:       IANA\n",
+  "iana_me_txt": "% IANA WHOIS server\n% Synthetic fixture for parser tests.\ndomain:       ME\nwhois:        whois.me.example\nstatus:       ACTIVE\nsource:       IANA\n",
+  "iana_notfound_txt": "% IANA WHOIS server\n% This query returned 0 objects.\n% No data for synthetic-test-tld.\n",
+  "iana_sh_txt": "% IANA WHOIS server\n% Synthetic fixture for parser tests.\ndomain:       SH\nwhois:        whois.sh.example\nstatus:       ACTIVE\nsource:       IANA\n",
+  "iana_us_txt": "% IANA WHOIS server\n% Synthetic fixture for parser tests.\ndomain:       US\nwhois:        whois.us.example\nstatus:       ACTIVE\nsource:       IANA\n",
+  "registry_example_co_txt": "Domain Name: EXAMPLE.CO\nRegistrar WHOIS Server: whois.example-registrar.test\nRegistrar URL: https://registrar.example\nRegistrar: Example Registrar, Inc.\nRegistrar IANA ID: 9999\nDomain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited\nName Server: ns1.example.net\nName Server: ns2.example.net\nDNSSEC: unsigned\n",
+  "registry_example_co_uk_txt": "\r\n    Domain name:\r\n        example.co.uk\r\n\r\n    Data validation:\r\n        Synthetic fixture data.\r\n\r\n    Registrar:\r\n        Example Registrar Ltd. [Tag = EXAMPLE]\r\n        URL: https://registrar.example\r\n\r\n    Registration status:\r\n        Registered until expiry date.\r\n\r\n    Name servers:\r\n        ns1.example.net\r\n        ns2.example.net\r\n\r\n",
+  "registry_example_com_txt": "   Domain Name: EXAMPLE.COM\n   Registrar WHOIS Server: whois.example-registrar.test\n   Registrar URL: https://registrar.example\n   Registrar: Example Registrar Inc.\n   Registrar IANA ID: 9999\n   Domain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited\n   Name Server: NS1.EXAMPLE.NET\n   Name Server: NS2.EXAMPLE.NET\n   DNSSEC: unsigned\n",
+  "registry_example_de_txt": "% The DENIC whois service on port 43 doesn't disclose any information concerning\n% the domain holder, general request and abuse contact.\n\nDomain: example.de\nNserver: ns1.example.net\nNserver: ns2.example.net\nStatus: connect\n",
+  "registry_example_io_txt": "Domain Name: example.io\nRegistrar WHOIS Server: whois.example-registrar.test\nRegistrar URL: https://registrar.example\nRegistrar: Example Registrar Inc.\nRegistrar IANA ID: 9999\nDomain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited\nName Server: ns1.example.net\nName Server: ns2.example.net\nDNSSEC: unsigned\n",
+  "registry_example_me_txt": "Domain Name: example.me\nRegistrar WHOIS Server: whois.example-registrar.test\nRegistrar URL: https://registrar.example\nRegistrar: Example Registrar Inc.\nRegistrar IANA ID: 9999\nDomain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited\nName Server: ns1.example.net\nName Server: ns2.example.net\nDNSSEC: unsigned\n",
+  "registry_example_sh_txt": "Domain Name: example.sh\nRegistrar WHOIS Server: whois.example-registrar.test\nRegistrar URL: https://registrar.example\nRegistrar: Example Registrar Inc.\nRegistrar IANA ID: 9999\nDomain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited\nName Server: ns1.example.net\nName Server: ns2.example.net\nDNSSEC: unsigned\n",
+  "registry_example_us_txt": "Domain Name: example.us\nRegistrar WHOIS Server: whois.example-registrar.test\nRegistrar URL: https://registrar.example\nRegistrar: Example Registrar, Inc.\nRegistrar IANA ID: 9999\nDomain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited\nName Server: ns1.example.net\nName Server: ns2.example.net\nDNSSEC: unsigned\n",
+  "registry_notfound_com_txt": "No match for domain \"NONEXISTENT-EXAMPLE-TEST.COM\".\n",
+} as const;

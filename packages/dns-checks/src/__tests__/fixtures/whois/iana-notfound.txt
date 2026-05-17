@@ -1,0 +1,3 @@
+% IANA WHOIS server
+% This query returned 0 objects.
+% No data for synthetic-test-tld.
