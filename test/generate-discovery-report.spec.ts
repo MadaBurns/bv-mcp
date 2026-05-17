@@ -34,9 +34,12 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
         let primaryRegistrar = 'Unknown';
         try {
             const rdap = await checkRdapLookup(target);
-            const rFind = rdap.findings.find(f => f.title.includes('Registrar'));
+            // Registrar is published in finding metadata; the title is
+            // "Registration details", not "...Registrar..." — relying on the
+            // title check silently produced "Unknown" for every brand.
+            const rFind = rdap.findings.find(f => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0);
             if (rFind) {
-                primaryRegistrar = rFind.detail.replace('Registrar: ', '').trim();
+                primaryRegistrar = String(rFind.metadata!.registrar).trim();
             }
         } catch (e) {
             console.warn(`Failed to lookup primary registrar: ${(e as Error).message}`);
@@ -73,18 +76,28 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
         const primaryRegLower = primaryRegistrar.toLowerCase();
         const isPrimaryCore = primaryRegLower !== 'unknown' && primaryRegLower.length > 3;
 
-        for (const cand of uniqueCandidates) {
-            let candRegistrar = 'Unknown';
-            try {
-                const rdap = await checkRdapLookup(cand.domain);
-                const rFind = rdap.findings.find(f => f.title.includes('Registrar'));
-                if (rFind) {
-                    candRegistrar = rFind.detail.replace('Registrar: ', '').trim();
+        // Parallel RDAP lookups with bounded concurrency. Markov-only candidates
+        // are speculative variants — no shared infra to verify, so we skip RDAP
+        // for them entirely (saves significant wall time on brands like apple
+        // that produce dozens of trigram-generated lookalikes).
+        const RDAP_CONCURRENCY = 16;
+        const rdapTargets = uniqueCandidates.filter(c => !(c.signals.length === 1 && c.signals[0] === 'markov_gen'));
+        const candidateRegistrars = new Map<string, string>();
+        for (let i = 0; i < rdapTargets.length; i += RDAP_CONCURRENCY) {
+            const chunk = rdapTargets.slice(i, i + RDAP_CONCURRENCY);
+            const results = await Promise.allSettled(chunk.map(c => checkRdapLookup(c.domain)));
+            results.forEach((r, idx) => {
+                let reg = 'Unknown';
+                if (r.status === 'fulfilled') {
+                    const rFind = r.value.findings.find(f => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0);
+                    if (rFind) reg = String(rFind.metadata!.registrar).trim();
                 }
-            } catch {
-                // Ignore RDAP failures
-            }
+                candidateRegistrars.set(chunk[idx].domain, reg);
+            });
+        }
 
+        for (const cand of uniqueCandidates) {
+            const candRegistrar = candidateRegistrars.get(cand.domain) ?? 'Unknown';
             const candRegLower = candRegistrar.toLowerCase();
             
             let isMatch = false;
@@ -99,10 +112,25 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
                 if (s === 'san') return 'Cert SAN Match';
                 if (s === 'dmarc_rua') return 'DMARC RUA Match';
                 if (s === 'dkim_key_reuse') return 'DKIM Key Match';
+                if (s === 'markov_gen') return 'Markov Variant';
                 return s.toUpperCase();
             }).join(', ');
 
-            if (isMatch || (candRegLower === primaryRegLower && primaryRegLower !== 'unknown')) {
+            const deterministicSignals = cand.signals.filter(s => s === 'ns' || s === 'dkim_key_reuse' || s === 'dmarc_rua');
+            const hasDeterministic = deterministicSignals.length > 0;
+            const onlyMarkov = cand.signals.length === 1 && cand.signals[0] === 'markov_gen';
+            const registrarsKnown = primaryRegLower !== 'unknown' && candRegLower !== 'unknown';
+
+            if (isMatch || (registrarsKnown && candRegLower === primaryRegLower)) {
+                consolidated.push({ domain: cand.domain, evidence: evidenceString, registrar: candRegistrar });
+            } else if (onlyMarkov) {
+                // Speculative trigram-generated variant — by definition no shared
+                // infrastructure, so it's a candidate impersonation regardless of registrar visibility.
+                impersonation.push({ domain: cand.domain, evidence: evidenceString, registrar: candRegistrar });
+            } else if (!registrarsKnown && hasDeterministic) {
+                // Without registrar visibility, fall back to deterministic infra
+                // signals (NS/DKIM/DMARC) — these prove operational linkage even
+                // when WHOIS/RDAP can't confirm registrar.
                 consolidated.push({ domain: cand.domain, evidence: evidenceString, registrar: candRegistrar });
             } else {
                 const isConsumer = CONSUMER_REGISTRARS.some(r => candRegLower.includes(r));
@@ -390,5 +418,5 @@ Based on the discovery of ${shadowIt.length} high-value Shadow IT domains, the f
         writeFileSync(filePath, pdfBuffer);
         
         console.log(`[4/4] PDF report generated: ${filePath}`);
-    }, 120000); // 120s timeout for large discoveries
+    }, 300000); // 5min timeout for large discoveries (brands like disney can have many candidates)
 });
