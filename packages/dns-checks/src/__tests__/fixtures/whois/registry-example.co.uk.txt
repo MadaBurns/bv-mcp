@@ -1,0 +1,18 @@
+
+    Domain name:
+        example.co.uk
+
+    Data validation:
+        Synthetic fixture data.
+
+    Registrar:
+        Example Registrar Ltd. [Tag = EXAMPLE]
+        URL: https://registrar.example
+
+    Registration status:
+        Registered until expiry date.
+
+    Name servers:
+        ns1.example.net
+        ns2.example.net
+
