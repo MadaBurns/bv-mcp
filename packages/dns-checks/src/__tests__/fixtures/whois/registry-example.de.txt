@@ -1,0 +1,7 @@
+% The DENIC whois service on port 43 doesn't disclose any information concerning
+% the domain holder, general request and abuse contact.
+
+Domain: example.de
+Nserver: ns1.example.net
+Nserver: ns2.example.net
+Status: connect

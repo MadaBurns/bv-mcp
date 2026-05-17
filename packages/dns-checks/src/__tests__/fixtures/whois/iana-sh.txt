@@ -1,0 +1,6 @@
+% IANA WHOIS server
+% Synthetic fixture for parser tests.
+domain:       SH
+whois:        whois.sh.example
+status:       ACTIVE
+source:       IANA
