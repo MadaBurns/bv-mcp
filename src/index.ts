@@ -107,7 +107,7 @@ type BvMcpEnv = {
 import type { TierAuthResult } from './lib/tier-auth';
 import { resolveTier } from './lib/tier-auth';
 
-const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean; tierAuthResult: TierAuthResult } }>();
+const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean; tierAuthResult: TierAuthResult; apiKeyInQuery: boolean } }>();
 const mcpPaths = ['/mcp', '/mcp/messages', '/mcp/sse'] as const;
 
 type OAuthAvailability = 'ready' | 'disabled' | 'misconfigured';
@@ -201,14 +201,16 @@ for (const path of mcpPaths) {
 
 	app.use(path, async (c, next) => {
 		const authHeader = c.req.header('authorization');
-		const token = authHeader?.startsWith('Bearer ')
-			? authHeader.slice(7).trim()
-			: (c.req.query('api_key') ?? null);
+		const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+		const queryToken = bearerToken ? null : (c.req.query('api_key') ?? null);
+		const token = bearerToken ?? queryToken;
+		const apiKeyInQuery = queryToken !== null;
 
 		const clientIp = c.req.header('cf-connecting-ip') ?? undefined;
 		const tierResult = await resolveTier(token, c.env, clientIp, c.req.url);
 		c.set('tierAuthResult', tierResult);
 		c.set('isAuthenticated', tierResult.authenticated);
+		c.set('apiKeyInQuery', apiKeyInQuery);
 
 		// If token was provided but not recognized, or if auth is required and not authenticated, reject
 		if ((token && !tierResult.authenticated) || (c.env.REQUIRE_AUTH === 'true' && !tierResult.authenticated)) {
@@ -228,6 +230,16 @@ app.use('*', async (c, next) => {
 	c.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
 	c.header('Content-Security-Policy', "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; form-action 'self'");
 	c.header('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+
+	// RFC 8594 / draft-ietf-httpapi-deprecation-header: clients still passing the
+	// API key via `?api_key=` (Smithery proxy fallback) get a deprecation signal.
+	// The query form lands in CDN/edge logs whereas `Authorization: Bearer` does
+	// not, so we want to drive clients to the header. Sunset 2026-12-01.
+	if (c.get('apiKeyInQuery')) {
+		c.header('Deprecation', 'true');
+		c.header('Sunset', 'Tue, 01 Dec 2026 00:00:00 GMT');
+		c.header('Link', '<https://github.com/MadaBurns/bv-mcp#authentication>; rel="deprecation"; type="text/html"');
+	}
 });
 
 app.use('*', async (c, next) => {
@@ -328,7 +340,7 @@ app.post('/mcp', async (c) => {
 	if (!parsedRequest.ok) {
 		logError('Parse error: invalid JSON', {
 			severity: 'error',
-			ip,
+			ipHash,
 			details: { bodyLength: bodyReadResult.rawBody!.length, bodyPreviewRedacted: true },
 		});
 		return sseErrorResponse(parsedRequest.payload!, parsedRequest.status!, accept);
@@ -551,7 +563,7 @@ app.post('/mcp/messages', async (c) => {
 	if (!parsedRequest.ok) {
 		logError('Parse error: invalid JSON', {
 			severity: 'error',
-			ip,
+			ipHash,
 			details: { bodyLength: bodyReadResult.rawBody!.length, bodyPreviewRedacted: true },
 		});
 		return Response.json(parsedRequest.payload, { status: parsedRequest.status });
@@ -703,7 +715,11 @@ app.get('/mcp/sse', async (c) => {
 		}
 	}
 
-	const legacySessionId = await createSession(c.env.SESSION_STORE, createAnalyticsClient(c.env.MCP_ANALYTICS));
+	const legacySessionId = await createSession(
+		c.env.SESSION_STORE,
+		createAnalyticsClient(c.env.MCP_ANALYTICS),
+		(p) => c.executionCtx.waitUntil(p),
+	);
 	const endpointUrl = new URL(`/mcp/messages?sessionId=${encodeURIComponent(legacySessionId)}`, c.req.url).toString();
 	return openLegacySseStream(legacySessionId, endpointUrl);
 });

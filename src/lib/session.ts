@@ -137,7 +137,11 @@ export function generateSessionId(): string {
 }
 
 /** Create a new session and return its ID */
-export async function createSession(kv?: KVNamespace, analytics?: AnalyticsClient): Promise<string> {
+export async function createSession(
+	kv?: KVNamespace,
+	analytics?: AnalyticsClient,
+	waitUntil?: (promise: Promise<unknown>) => void,
+): Promise<string> {
 	const id = generateSessionId();
 	const now = Date.now();
 	const record: SessionRecord = { createdAt: now, lastAccessedAt: now };
@@ -146,15 +150,23 @@ export async function createSession(kv?: KVNamespace, analytics?: AnalyticsClien
 	createSessionInMemory(id);
 
 	if (kv) {
-		try {
-			await createSessionKVRecord(id, kv, record);
-		} catch {
+		// In production we hand the KV put to `waitUntil` so the user-visible response
+		// isn't gated on KV write latency (~1s cold). Same-isolate requests are served
+		// from memory; cross-isolate requests catch up once KV settles. Tests / callers
+		// without an execution context fall back to awaiting so timing assertions hold.
+		const kvWrite = createSessionKVRecord(id, kv, record).catch(() => {
 			// Intentional single-isolate degradation: session exists only in this isolate's
 			// memory. Cross-isolate requests will fail to find it, but same-isolate requests
 			// continue working. No retry — KV failures are typically transient and the next
 			// session creation will succeed.
 			logError('[session] KV create failed, in-memory fallback active', { category: 'session' });
 			analytics?.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session' });
+		});
+
+		if (waitUntil) {
+			waitUntil(kvWrite);
+		} else {
+			await kvWrite;
 		}
 	}
 

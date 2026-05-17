@@ -447,7 +447,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 							timestamp: new Date().toISOString(),
 							category: 'session',
 							result: 'recovered',
-							ip: options.ip,
+							ipHash: options.ipHash,
 							details: { method, clientType: options.clientType },
 						});
 					}
@@ -566,7 +566,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			logEvent({
 				timestamp: new Date().toISOString(),
 				requestId: typeof id === 'string' ? id : undefined,
-				ip: options.ip,
+				ipHash: options.ipHash,
 				tool: dispatchResult.logTool,
 				category: dispatchResult.logCategory,
 				result: dispatchResult.logResult,
@@ -656,7 +656,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		logEvent({
 			timestamp: new Date().toISOString(),
 			requestId: typeof id === 'string' ? id : undefined,
-			ip: options.ip,
+			ipHash: options.ipHash,
 			tool: dispatchResult.logTool,
 			category: dispatchResult.logCategory,
 			result: dispatchResult.logResult,
@@ -682,7 +682,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		emitRequestAnalytics(options, method, 'error', true);
 		logError(err instanceof Error ? err : String(err), {
 			severity: 'error',
-			ip: options.ip,
+			ipHash: options.ipHash,
 			requestId: typeof options.body?.id === 'string' ? options.body.id : undefined,
 			tool: typeof options.body?.method === 'string' ? options.body.method : undefined,
 			details: { params: options.body?.params && typeof options.body.params === 'object' ? { keys: Object.keys(options.body.params).sort().slice(0, 25) } : undefined },
