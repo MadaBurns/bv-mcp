@@ -31,20 +31,24 @@
 
 import {
 	correlateSans as defaultCorrelateSans,
+	correlateSansRecursive as defaultCorrelateSansRecursive,
 	correlateNs as defaultCorrelateNs,
 	mineDmarcRua as defaultMineDmarcRua,
 	detectDkimKeyReuse as defaultDetectDkimKeyReuse,
 	detectHttpRedirect as defaultDetectHttpRedirect,
 	detectMxOverlap as defaultDetectMxOverlap,
 	detectSpfInclude as defaultDetectSpfInclude,
+	extractSeedSpfIncludes as defaultExtractSeedSpfIncludes,
 	detectCnameAlignment as defaultDetectCnameAlignment,
 	type SanCorrelationResult,
+	type SanRecursiveResult,
 	type NsCorrelationResult,
 	type DmarcRuaResult,
 	type DkimKeyReuseResult,
 	type HttpRedirectResult,
 	type MxOverlapResult,
 	type SpfIncludeResult,
+	type SeedSpfWalkResult,
 	type CnameAlignmentResult,
 } from '../tenants/discovery';
 import type { OutputFormat } from '../handlers/tool-args';
@@ -57,24 +61,28 @@ import { generateCctldVariants } from '../lib/brand-cctld-seeder';
 /** All supported signal kinds. */
 export type DiscoverSignal =
 	| 'san'
+	| 'san_recursive'
 	| 'ns'
 	| 'dmarc_rua'
 	| 'dkim_key_reuse'
 	| 'http_redirect'
 	| 'mx_overlap'
 	| 'spf_include'
+	| 'spf_include_seed'
 	| 'cname_alignment'
 	| 'markov_gen';
 
 /** Default signal set used when the caller omits `signals`. */
 const ALL_SIGNALS: DiscoverSignal[] = [
 	'san',
+	'san_recursive',
 	'ns',
 	'dmarc_rua',
 	'dkim_key_reuse',
 	'http_redirect',
 	'mx_overlap',
 	'spf_include',
+	'spf_include_seed',
 	'cname_alignment',
 ];
 
@@ -84,12 +92,14 @@ const DEFAULT_MIN_CONFIDENCE = 0.5;
 /** Default per-signal confidence used when the underlying module doesn't supply one. */
 const DEFAULT_SIGNAL_CONFIDENCE: Record<DiscoverSignal, number> = {
 	san: 0.1, // SAN co-ownership — speculative; multi-tenant CDN risk
+	san_recursive: 0.85, // Second-order SAN: candidate's own crt.sh listing also names the seed — near-deterministic mutual cross-cert inclusion
 	ns: 0.9, // NS overlap — very strong organization signal (module always overrides with shared/seedNs ratio)
 	dmarc_rua: 0.6, // DMARC RUA `related` — module always supplies; matches dmarc-rua-miner emission
 	dkim_key_reuse: 0.95, // DKIM key reuse — near-deterministic (module always overrides)
 	http_redirect: 0.95, // HTTP redirect terminating at seed apex — near-deterministic operational ownership
 	mx_overlap: 0.7, // MX hostname overlap — module supplies per-overlap-kind confidence
 	spf_include: 0.85, // Candidate SPF `include:` of seed-rooted policy — near-deterministic
+	spf_include_seed: 0.85, // Forward-discovery: seed's own SPF chain delegates to a different registrable apex — authoritative mail-policy delegation, near-deterministic
 	cname_alignment: 0.9, // CNAME chain terminating at seed apex/edge — near-deterministic
 	markov_gen: 0.01, // speculative generation — purely a candidate seed, provides no weight on its own
 };
@@ -111,7 +121,9 @@ const NEAR_DETERMINISTIC_SIGNALS: ReadonlySet<DiscoverSignal> = new Set([
 	'dkim_key_reuse',
 	'http_redirect',
 	'spf_include',
+	'spf_include_seed',
 	'cname_alignment',
+	'san_recursive',
 ]);
 
 /** Per-candidate aggregation state during collection. */
@@ -129,12 +141,14 @@ interface CandidateAggregator {
  */
 export interface DiscoverBrandDomainsDeps {
 	correlateSans: typeof defaultCorrelateSans;
+	correlateSansRecursive: typeof defaultCorrelateSansRecursive;
 	correlateNs: typeof defaultCorrelateNs;
 	mineDmarcRua: typeof defaultMineDmarcRua;
 	detectDkimKeyReuse: typeof defaultDetectDkimKeyReuse;
 	detectHttpRedirect: typeof defaultDetectHttpRedirect;
 	detectMxOverlap: typeof defaultDetectMxOverlap;
 	detectSpfInclude: typeof defaultDetectSpfInclude;
+	extractSeedSpfIncludes: typeof defaultExtractSeedSpfIncludes;
 	detectCnameAlignment: typeof defaultDetectCnameAlignment;
 	generateMarkovLookalikes: typeof generateMarkovLookalikes;
 }
@@ -177,12 +191,14 @@ export { DEFAULT_SIGNAL_CONFIDENCE };
 function defaultDeps(): DiscoverBrandDomainsDeps {
 	return {
 		correlateSans: defaultCorrelateSans,
+		correlateSansRecursive: defaultCorrelateSansRecursive,
 		correlateNs: defaultCorrelateNs,
 		mineDmarcRua: defaultMineDmarcRua,
 		detectDkimKeyReuse: defaultDetectDkimKeyReuse,
 		detectHttpRedirect: defaultDetectHttpRedirect,
 		detectMxOverlap: defaultDetectMxOverlap,
 		detectSpfInclude: defaultDetectSpfInclude,
+		extractSeedSpfIncludes: defaultExtractSeedSpfIncludes,
 		detectCnameAlignment: defaultDetectCnameAlignment,
 		generateMarkovLookalikes: generateMarkovLookalikes,
 	};
@@ -297,6 +313,9 @@ export async function discoverBrandDomains(
 	const signalStatus: Record<string, { status: string; error?: string }> = {};
 	const jobs: Job[] = [];
 
+	// Captured first-order SAN hits — fed into the second-order recursive pass below.
+	let firstOrderSanCandidates: string[] = [];
+
 	if (signals.includes('san')) {
 		jobs.push(async () => {
 			const out = await runSignal<SanCorrelationResult>(() =>
@@ -307,6 +326,7 @@ export async function discoverBrandDomains(
 				return;
 			}
 			signalStatus.san = { status: out.value.queryStatus };
+			firstOrderSanCandidates = out.value.coOwnedDomains.slice();
 			for (const dom of out.value.coOwnedDomains) {
 				addObservation(aggregator, dom, 'san', DEFAULT_SIGNAL_CONFIDENCE.san, {
 					seed: out.value.seedDomain,
@@ -417,6 +437,29 @@ export async function discoverBrandDomains(
 		});
 	}
 
+	// Forward-discovery: walk the SEED's own SPF chain and surface every
+	// different-apex include/redirect target as a same-organization candidate.
+	// Unlike `spf_include` (corroboration-only — needs a candidate to probe),
+	// this signal MINTS candidates straight from the seed's authoritative
+	// mail policy — the path that unlocks Nike-style brand families whose
+	// regional ccTLD apexes appear only in the seed's `include:` chain.
+	if (signals.includes('spf_include_seed')) {
+		jobs.push(async () => {
+			const out = await runSignal<SeedSpfWalkResult>(() => d.extractSeedSpfIncludes(seedDomain));
+			if (!out.ok) {
+				signalStatus.spf_include_seed = { status: 'failed', error: out.error };
+				return;
+			}
+			signalStatus.spf_include_seed = { status: out.value.queryStatus };
+			for (const c of out.value.candidates) {
+				addObservation(aggregator, c.apex, 'spf_include_seed', c.confidence, {
+					via: c.via,
+					depth: c.depth,
+				});
+			}
+		});
+	}
+
 	if (signals.includes('cname_alignment')) {
 		jobs.push(async () => {
 			const out = await runSignal<CnameAlignmentResult>(() =>
@@ -434,6 +477,45 @@ export async function discoverBrandDomains(
 	}
 
 	await Promise.allSettled(jobs.map((j) => j()));
+
+	// Second-order SAN expansion: for each first-order sibling, re-query crt.sh
+	// and check whether the original seed appears in the candidate's own SAN
+	// listing. Mutual cross-cert inclusion is near-deterministic — single hit
+	// clears the corroboration gate (see NEAR_DETERMINISTIC_SIGNALS).
+	// Skipped when 'san_recursive' isn't requested or first-order yielded no
+	// candidates (nothing to probe).
+	if (signals.includes('san_recursive') && firstOrderSanCandidates.length > 0) {
+		const recursiveOut = await runSignal<SanRecursiveResult>(() =>
+			d.correlateSansRecursive(seedDomain, firstOrderSanCandidates, {
+				certstream: options.certstream,
+				maxCandidates: 20,
+				concurrency: 8,
+				totalBudgetMs: 30_000,
+			}),
+		);
+		if (!recursiveOut.ok) {
+			signalStatus.san_recursive = { status: 'failed', error: recursiveOut.error };
+		} else {
+			signalStatus.san_recursive = { status: recursiveOut.value.queryStatus };
+			for (const cc of recursiveOut.value.crossConfirmed) {
+				addObservation(aggregator, cc.candidate, 'san_recursive', DEFAULT_SIGNAL_CONFIDENCE.san_recursive, {
+					seed: recursiveOut.value.seedDomain,
+					certIds: cc.certIds,
+					probedCount: recursiveOut.value.probed.length,
+				});
+			}
+		}
+	} else if (signals.includes('san_recursive')) {
+		// Requested but no first-order candidates to probe. If first-order SAN
+		// itself failed, propagate failure (its preconditions blew up); else
+		// record an empty-input skip for telemetry. The propagation keeps the
+		// all-failed gate honest when every signal — including san — broke.
+		if (signalStatus.san?.status === 'failed') {
+			signalStatus.san_recursive = { status: 'failed', error: 'first_order_san_failed' };
+		} else {
+			signalStatus.san_recursive = { status: 'skipped_no_first_order' };
+		}
+	}
 
 	// Did every requested signal blow up? If yes, surface a missingControl finding.
 	const allFailed = signals.length > 0 && signals.every((s) => signalStatus[s]?.status === 'failed');
@@ -462,12 +544,15 @@ export async function discoverBrandDomains(
 		// Drop the seed or its subdomains if they accidentally appear (e.g. self-referenced rua=).
 		if (isSubdomainOf(entry.domain, seedDomain)) continue;
 
-		// DROPPED: Multi-tenant infrastructure providers are not shadow IT.
-		if (isInfrastructureProvider(entry.domain)) continue;
-
 		const perSignal = Array.from(entry.perSignalConfidence.entries());
-		
+
 		const signalKinds = perSignal.map(([k]) => k).sort() as DiscoverSignal[];
+
+		// Only suppress infrastructure providers when the *sole* signal is dmarc_rua
+		// (RUA mailboxes are processors, not siblings). Other signals (san, ns,
+		// dkim_key_reuse, http_redirect, ...) legitimately surface brand-owned
+		// infra like outlook.com / azure.com / amazonaws.com.
+		if (isInfrastructureProvider(entry.domain) && signalKinds.every(s => s === 'dmarc_rua')) continue;
 
 		// Corroboration Requirement: a candidate must be corroborated by ≥2 distinct
 		// signals OR be a single near-deterministic signal. Filters single-signal

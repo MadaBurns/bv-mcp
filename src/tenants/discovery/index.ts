@@ -4,8 +4,14 @@
  * Brand-discovery primitives (Phase-4 of the customer-domain expansion roadmap).
  */
 
-export { correlateSans } from './san-correlator';
-export type { SanCorrelationOptions, SanCorrelationResult } from './san-correlator';
+export { correlateSans, correlateSansRecursive } from './san-correlator';
+export type {
+	SanCorrelationOptions,
+	SanCorrelationResult,
+	SanRecursiveOptions,
+	SanRecursiveResult,
+	SanRecursiveCandidate,
+} from './san-correlator';
 
 export { correlateNs } from './ns-correlator';
 export type {
@@ -36,8 +42,14 @@ export type { HttpRedirectOptions, HttpRedirectResult } from './http-redirect-de
 export { detectMxOverlap } from './mx-overlap-detector';
 export type { MxOverlapOptions, MxOverlapResult } from './mx-overlap-detector';
 
-export { detectSpfInclude } from './spf-include-detector';
-export type { SpfIncludeOptions, SpfIncludeResult } from './spf-include-detector';
+export { detectSpfInclude, extractSeedSpfIncludes } from './spf-include-detector';
+export type {
+	SpfIncludeOptions,
+	SpfIncludeResult,
+	ExtractSeedSpfIncludesOptions,
+	SeedSpfIncludeCandidate,
+	SeedSpfWalkResult,
+} from './spf-include-detector';
 
 export { detectCnameAlignment } from './cname-alignment-detector';
 export type { CnameAlignmentOptions, CnameAlignmentResult } from './cname-alignment-detector';
