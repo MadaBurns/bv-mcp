@@ -67,7 +67,7 @@ const RESOURCES: McpResource[] = [
 const RESOURCE_CONTENT: Record<string, string> = {
 	'dns-security://guides/security-checks': `# DNS Security Checks
 
-22 check tools covering **57+ checks** across 20 categories.
+57 MCP tools, including 28 \`check_*\` tools and \`scan_domain\` across 17 scan categories.
 
 ## Tool -> Category Mapping
 
@@ -91,6 +91,14 @@ const RESOURCE_CONTENT: Record<string, string> = {
 | \`check_mx_reputation\` | MX Reputation | DNSBL lookups, PTR/FCrDNS validation |
 | \`check_srv\` | SRV | Service footprint via SRV records |
 | \`check_zone_hygiene\` | Zone Hygiene | SOA consistency, sensitive subdomain detection |
+| \`check_resolver_consistency\` | Resolver Consistency | DNS consistency across public resolvers |
+| \`check_dbl\` | Domain Blocklists | Domain reputation across DBLs |
+| \`check_rbl\` | Realtime Blocklists | MX IP reputation across RBLs |
+| \`cymru_asn\` | ASN Mapping | Team Cymru ASN/prefix attribution |
+| \`rdap_lookup\` | Registration | RDAP registrar/status/domain-age lookup |
+| \`check_nsec_walkability\` | DNSSEC Enumeration | NSEC/NSEC3 walkability risk |
+| \`check_dnssec_chain\` | DNSSEC Chain | DS/DNSKEY chain-of-trust details |
+| \`check_fast_flux\` | Fast Flux | Multi-round A/AAAA rotation and TTL analysis |
 | \`check_bimi\` | BIMI | Record presence, logo URL, VMC |
 | \`check_tlsrpt\` | TLS-RPT | Record presence, reporting URI |
 | \`check_lookalikes\` | Lookalikes | Typosquat detection, DNS + MX probing |
@@ -98,7 +106,8 @@ const RESOURCE_CONTENT: Record<string, string> = {
 
 ## Composite Tools
 
-- **\`scan_domain\`** - 16 checks in parallel, returns score + grade + prioritized findings
+- **\`scan_domain\`** - 17 scan categories in parallel, returns score + grade + prioritized findings
+- **Brand audit tools** - \`discover_brand_domains\`, \`brand_audit_single\`, \`brand_audit_batch_start\`, \`brand_audit_status\`, \`brand_audit_get_report\`, \`brand_audit_watch\`
 - **\`explain_finding\`** - plain-language context + remediation for any finding
 - **\`compare_baseline\`** - pass/fail against minimum security standards
 `,
@@ -110,8 +119,8 @@ Three-tier weighted scoring. Each category starts at 100, reduced by severity pe
 ## Three-Tier Model
 
 **Core (70%):** DMARC (16), DKIM (10), SPF (10), DNSSEC (8), SSL (8)
-**Protective (20%):** Subdomain Takeover (3), HTTP Security (3), MTA-STS (2), MX (2), DANE HTTPS (2), TLS-RPT (1), DANE (1)
-**Hardening (10%):** BIMI, CAA, NS, Lookalikes, Shadow Domains, TXT Hygiene, MX Reputation, SRV, Zone Hygiene, SVCB HTTPS — bonus-only, never subtracts.
+**Protective (20%):** Subdomain Takeover, HTTP Security, MTA-STS, Subdomailing, MX, CAA, NS, Lookalikes, Shadow Domains, DANE HTTPS, SVCB HTTPS
+**Hardening (10%):** BIMI, TLS-RPT, DANE, TXT Hygiene, MX Reputation, SRV, Zone Hygiene — bonus-only, never subtracts.
 
 Email bonus: up to **+5 pts** for strong SPF+DKIM+DMARC.
 

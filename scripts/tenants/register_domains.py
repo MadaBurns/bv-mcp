@@ -1,27 +1,23 @@
-import json
+"""Generate deterministic synthetic tenant registration SQL.
 
-# Read the domains extracted earlier
-with open('domains.json', 'r') as f:
-    content = json.load(f)
+This script intentionally avoids reading customer, scan, or third-party domain
+lists. The committed SQL files are OSS-safe fixtures under the reserved
+example.test namespace.
+"""
 
-domains = []
-for entry in content:
-    for row in entry.get('results', []):
-        if 'domain' in row:
-            domains.append(row['domain'])
-
-# Limit to 500 domains for initial test registration
-unique_domains = sorted(list(set(domains)))[:500]
-
-# Generate a single batch insert statement
 # Note: D1 execute has a character limit, so we chunk into 50s.
+TOTAL_DOMAINS = 500
 CHUNK_SIZE = 50
-for i in range(0, len(unique_domains), CHUNK_SIZE):
-    chunk = unique_domains[i:i + CHUNK_SIZE]
-    values = ", ".join([f"('{d}', 'batch-import', {1778400000})" for d in chunk])
+ADDED_AT = 1778400000
+
+domains = [f"tenant-seed-{i:03d}.example.test" for i in range(1, TOTAL_DOMAINS + 1)]
+
+for i in range(0, len(domains), CHUNK_SIZE):
+    chunk = domains[i:i + CHUNK_SIZE]
+    values = ", ".join([f"('{d}', 'synthetic-batch-import', {ADDED_AT})" for d in chunk])
     sql = f"INSERT OR IGNORE INTO domains (domain, source, added_at) VALUES {values};"
-    
+
     with open(f'register_{i//CHUNK_SIZE}.sql', 'w') as f:
         f.write(sql)
 
-print(f"Generated {len(unique_domains)//CHUNK_SIZE + 1} registration scripts.")
+print(f"Generated {len(domains) // CHUNK_SIZE} synthetic registration scripts.")

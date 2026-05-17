@@ -5,14 +5,14 @@ Guidance for Claude Code working in this repo.
 ## What is this?
 
 Blackveil DNS — source-available DNS & email security scanner, built as a Cloudflare Worker.
-~53 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
+57 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
 
 **Version sync** when bumping: `SERVER_VERSION` (`src/lib/server-version.ts`), `version` in `package.json` + `package-lock.json`, `version` AND `packages[0].version` in `server.json` (both fields — foot-gun), and `[X.Y.Z]` heading in `CHANGELOG.md`.
 
 ## Commands
 
 ```bash
-npm install
+npm ci
 npm test                                    # Vitest in Workers runtime
 npx vitest run test/check-spf.spec.ts       # Single spec
 npm run build                               # tsup (npm pkg + stdio CLI)
@@ -28,7 +28,7 @@ git config core.hooksPath .githooks         # One-time hook setup
 - **Runtime**: Cloudflare Workers — no Node.js APIs (`fetch`, `crypto`, Web only)
 - **Framework**: Hono v4 · **TypeScript**: strict, ES2024, Bundler resolution, `isolatedModules`
 - **Testing**: Vitest + `@cloudflare/vitest-pool-workers` (tests run inside Workers runtime)
-- **Tooling Node**: 22+ (Wrangler 4.87+ hard-fails on <22)
+- **Tooling Node**: 22+ (Wrangler 4.x hard-fails on <22)
 - **Formatter**: Prettier (tabs, single quotes, semi, 140 width)
 - **Package mgr**: npm
 
@@ -74,7 +74,7 @@ Both publish together from `publish.yml` on version tags.
 
 ### scan_domain orchestration
 
-16 checks in parallel via `Promise.allSettled`. Cache keys: `cache:<domain>:check:<name>` + top-level `cache:<domain>`. 5 min TTL (overridable via `cacheTtlSeconds`). `force_refresh` → `skipCache` in `runWithCache()`.
+17 scan categories run in parallel via `Promise.allSettled`: 16 registered scan-included tools plus internal `subdomain_takeover`. Cache keys: `cache:<domain>:check:<name>` + top-level `cache:<domain>`. 5 min TTL (overridable via `cacheTtlSeconds`). `force_refresh` → `skipCache` in `runWithCache()`.
 
 **Maturity staging**: `computeMaturityStage()` 0–4 (Unprotected → Hardened). Stage 3 doesn't require DKIM; Stage 4 hardening: CAA, DKIM-discovered, BIMI, DANE, MTA-STS strict. Score caps stage: F → ≤2, D/D+ → ≤3.
 
@@ -213,7 +213,7 @@ Pattern-based, emits `fuzzing_suspected` to `ALERT_WEBHOOK_URL` from 15-min cron
 
 ### Pre-commit (`.githooks/pre-commit`)
 
-Three gates: (1) blocked paths (`docs/plans/`, `docs/code-review/`, `docs/superpowers/`, `.dev/`, `*.env*`); (2) generated files (`*.pyc`, `__pycache__/`, `worker-configuration.d.ts`, `*.wasm`, `*.sqlite`, `*.db`) — even with `git add -f`; (3) IP-leakage regexes from `.githooks/blocked-patterns`. Public docs (`docs/client-setup.md`, `docs/scoring.md`) committable. Override with `--no-verify`.
+Three gates: (1) blocked paths (`docs/plans/`, `docs/code-review/`, `docs/superpowers/`, `.dev/`, `.dev.vars*`, `.worktrees/`, generated deploy configs, reports, PDFs, `*.env*`); (2) generated files (`*.pyc`, `__pycache__/`, `worker-configuration.d.ts`, `*.wasm`, `*.sqlite`, `*.db`) even with `git add -f`; (3) IP-leakage regexes from ignored local patterns. Public docs (`docs/client-setup.md`, `docs/scoring.md`) are committable when they use placeholders. Override with `--no-verify` only for reviewed false positives.
 
 ## CI/CD
 
@@ -221,7 +221,7 @@ Workflows: `ci.yml`, `ci-contract.yml` (Zod contracts, required), `security.yml`
 
 **Branch protection** (2026-05-07): required checks = `build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`. No required reviews; admin merge OK for trivial CI/doc. Direct pushes to `main` blocked except by admin. **`dns-scan` is NOT required** and stays pending for hours; `mergeStateStatus: UNSTABLE` is mergeable — `gh pr merge <N> --squash` works.
 
-**Deploy mode**: manual via `npm run deploy:prod` (operator's wrangler OAuth). `auto-deploy-main.yml` disabled because `CLOUDFLARE_API_TOKEN` is intentionally absent from GH `production` env. Tagged releases use manual fallback below until secrets restored.
+**Deploy mode**: manual via `npm run deploy:prod` using an authenticated local Wrangler session. `auto-deploy-main.yml` is disabled unless GitHub production secrets are deliberately configured.
 
 ### Release (`publish.yml`)
 
@@ -241,36 +241,27 @@ Pipeline: validate → version-sync (no-op if pre-bumped) → npm publish (prove
 
 ### Manual release fallback
 
-When secrets absent, ship locally:
+When hosted release secrets are unavailable, ship locally with credentials from
+the operator's secret manager. Do not commit `.npmrc`, registry tokens, DNS
+publisher keys, or generated production config.
 
 ```bash
-# npm — uses NPM_KEY from .dev.vars (Automation, bypasses 2FA)
 npm -w packages/dns-checks run build && npm run build
-NPM_TOKEN=$(grep '^NPM_KEY=' .dev.vars | cut -d= -f2-)
-echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > /tmp/.npmrc-bv && chmod 600 /tmp/.npmrc-bv
-NPM_CONFIG_USERCONFIG=/tmp/.npmrc-bv npm publish --access public && rm /tmp/.npmrc-bv
-
-# Cloudflare — uses local wrangler OAuth
+npm publish --access public
 npm run deploy:prod
-
-# MCP Registry — DNS auth, mcp-publisher is a Go binary (brew install mcp-publisher)
-mcp-publisher login dns --domain blackveilsecurity.com --private-key <ed25519-hex>
 mcp-publisher publish
 ```
 
 **`server.json` has TWO version fields** — top-level `version` and `packages[0].version`. Both must match the tag.
 
-**Approving gated deploys via API**:
-```bash
-ENV_ID=$(gh api /repos/MadaBurns/bv-mcp/environments/production -q '.id')
-RUN_ID=$(gh run list --workflow 253147675 --limit 1 --json databaseId -q '.[0].databaseId')
-gh api -X POST /repos/MadaBurns/bv-mcp/actions/runs/$RUN_ID/pending_deployments \
-  -F "environment_ids[]=$ENV_ID" -f state=approved -f comment="Approving"
-```
+Approve gated deploys through GitHub's protected environment UI or an
+operator-only runbook.
 
 ### MCP Registry DNS auth
 
-Namespace `com.blackveilsecurity/*` gated by apex TXT `v=MCPv1; k=ed25519; p=<base64-ed25519-pubkey>`. If private key lost, generate new keypair (Node `generateKeyPairSync('ed25519')`), update Cloudflare apex TXT (Cloudflare MCP can't edit DNS — use dashboard or API token with `Zone:DNS:Edit`), then `mcp-publisher login + publish`. Save private key to password manager AND `.dev.vars` (e.g. `MCP_PUBLISHER_KEY`).
+Namespace `com.blackveilsecurity/*` is gated by the MCP Registry DNS TXT
+record. Keep the private publisher key in an approved secret manager and local
+ignored env only; never commit it or paste it into workflow logs.
 
 ## Service Binding Integration
 
@@ -283,7 +274,9 @@ Namespace `com.blackveilsecurity/*` gated by apex TXT `v=MCPv1; k=ed25519; p=<ba
 
 ## Deployment
 
-`npm run deploy:prod` runs `scripts/inject-private-config.cjs`, merging public `wrangler.jsonc` with private `.dev/wrangler.deploy.jsonc` → `wrangler.production.jsonc` immediately before deploy.
+`npm run deploy:prod` runs `scripts/inject-private-config.cjs`, merging public
+`wrangler.jsonc` with ignored private deploy overrides into generated
+`wrangler.production.jsonc` immediately before deploy.
 
 **Mandate**: never hardcode prod endpoints/secrets/internal bindings in `wrangler.jsonc` — use private overrides. The inject script must enumerate every binding kind (vars, kv_namespaces, r2_buckets, services, durable_objects, queues, d1_databases, analytics_engine_datasets) — silent drops here have shipped misconfigured deploys.
 
@@ -320,7 +313,8 @@ Four event types: `mcp_request`, `tool_call`, `rate_limit`, `session`. Queries i
 - `rate_limit`: limitType, toolName, country, authTier
 - `session`: action, country, clientType, authTier, method, keyHash
 
-**Per-IP investigation**: `IP=<addr> CF_ANALYTICS_TOKEN=... node .dev/analytics-30d.mjs 30` — hashes locally; filter by `blob11`/`blob10`.
+Per-IP investigations belong in operator-only notes. Hash IPs locally and avoid
+committing raw IPs or token-bearing analytics commands.
 
 Client detection (`client-detection.ts`): `claude_mobile`, `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `bv_load_test`, `unknown`. For analytics + format auto-detection, never security. `bv_load_test` matches `bv-{load,chaos,tranco}-{test,scan}` UAs — non-interactive.
 
