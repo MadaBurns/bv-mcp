@@ -20,6 +20,7 @@ const CATEGORY = 'brand_discovery';
 
 export interface BrandAuditStatusDeps {
 	db: D1Database;
+	now?: () => number;
 }
 
 interface BrandAuditRow {
@@ -90,12 +91,25 @@ export async function brandAuditStatus(
 		return errorResult('notFound', `No brand audit found with id ${auditId}.`, { auditId });
 	}
 
+	const now = (deps.now ?? Date.now)();
 	const progress = `${audit.completed_targets}/${audit.total_targets}`;
+	const targetStatusCounts = {
+		queued: targets.filter((t) => t.status === 'queued').length,
+		running: targets.filter((t) => t.status === 'running').length,
+		completed: targets.filter((t) => t.status === 'completed').length,
+		failed: targets.filter((t) => t.status === 'failed').length,
+	};
+	const ageMs = Math.max(0, now - audit.created_at);
+	const updatedAgeMs = Math.max(0, now - audit.updated_at);
+	const warnings: string[] = [];
+	if (targetStatusCounts.queued > 0 && updatedAgeMs > 300_000) {
+		warnings.push(`Audit has ${targetStatusCounts.queued} queued target(s) and has not updated for ${updatedAgeMs}ms.`);
+	}
 	const summary = createFinding(
 		CATEGORY,
 		`Brand audit ${auditId}: ${audit.status} (${progress})`,
 		'info',
-		`status=${audit.status} progress=${progress} format=${audit.format} created=${new Date(audit.created_at).toISOString()}`,
+		`status=${audit.status} progress=${progress} format=${audit.format} created=${new Date(audit.created_at).toISOString()} updatedAgeMs=${updatedAgeMs}`,
 		{
 			summary: true,
 			auditId: audit.id,
@@ -107,6 +121,10 @@ export async function brandAuditStatus(
 			createdAt: audit.created_at,
 			updatedAt: audit.updated_at,
 			completedAt: audit.completed_at,
+			ageMs,
+			updatedAgeMs,
+			targetStatusCounts,
+			warnings,
 			targets: targets.map((t) => ({
 				target: t.target,
 				status: t.status,

@@ -411,7 +411,7 @@ describe('brandAuditSingle', () => {
 			expect(cand?.metadata?.bucket).toBe('shadowIt');
 		});
 
-		it('shadowIt — candidate MX points at the same mail platform as target', async () => {
+		it('indeterminate — candidate only points at the same broad mail platform as target', async () => {
 			const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
 			const rdapSpy = vi.fn().mockImplementation((domain: string) => {
 				if (domain === 'example.com') return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Example Inc.'));
@@ -430,7 +430,7 @@ describe('brandAuditSingle', () => {
 			});
 			const result = await brandAuditSingle('example.com', { min_confidence: 0.4 }, deps);
 			const cand = result.findings.find((f) => f.metadata?.candidate === 'example-mail.net');
-			expect(cand?.metadata?.bucket).toBe('shadowIt');
+			expect(cand?.metadata?.bucket).toBe('indeterminate');
 		});
 
 		it('impersonation — typosquat, registrar mismatch, no shared signal, lookalike ≥0.85', async () => {

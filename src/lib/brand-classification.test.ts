@@ -211,6 +211,60 @@ describe('classifyCandidate', () => {
 			const t = target({ registrarFamily: 'Unknown', registrar: 'Unknown' });
 			expect(classifyCandidate(c, t).bucket).not.toBe('consolidated');
 		});
+
+		it('same IANA registrar ID + 2 signals → consolidated even when registrar names differ', () => {
+			const c = candidate({
+				domain: 'apple.uk',
+				signals: ['markov_gen', 'txt_verification'],
+				confidence: 0.6,
+				registrar: 'Corporation Service Company',
+				registrarIanaId: '299',
+				registrarSource: 'rdap',
+			});
+			const t = target({
+				registrar: 'CSC Corporate Domains, Inc.',
+				registrarFamily: 'BrandAudit',
+				registrarIanaId: '299',
+			});
+
+			const result = classifyCandidate(c, t);
+			expect(result.bucket).toBe('consolidated');
+			expect(result.reasons.join(' ')).toMatch(/registrar family/i);
+		});
+
+		it('different IANA registrar IDs do not consolidate despite similar registrar names', () => {
+			const c = candidate({
+				domain: 'apple.uk',
+				signals: ['markov_gen', 'txt_verification'],
+				confidence: 0.6,
+				registrar: 'Example Corporate Domains LLC',
+				registrarIanaId: '146',
+				registrarSource: 'rdap',
+			});
+			const t = target({
+				registrar: 'CSC Corporate Domains, Inc.',
+				registrarFamily: 'BrandAudit',
+				registrarIanaId: '299',
+			});
+
+			expect(classifyCandidate(c, t).bucket).not.toBe('consolidated');
+		});
+
+		it('absent IANA registrar IDs do not create false positive family matches from weak tokens', () => {
+			const c = candidate({
+				domain: 'apple.uk',
+				signals: ['markov_gen', 'txt_verification'],
+				confidence: 0.6,
+				registrar: 'Example Consumer Domains LLC',
+				registrarSource: 'rdap',
+			});
+			const t = target({
+				registrar: 'Example Corporate Domains Inc.',
+				registrarFamily: 'Example Corporate Domains Inc.',
+			});
+
+			expect(classifyCandidate(c, t).bucket).not.toBe('consolidated');
+		});
 	});
 
 	describe('Rule 5: redacted / notfound → indeterminate when no strong signals', () => {
@@ -250,6 +304,73 @@ describe('classifyCandidate', () => {
 				registrarSource: 'rdap',
 			});
 			expect(classifyCandidate(c, target()).bucket).toBe('shadowIt');
+		});
+
+		it('markov plus broad MX platform alone stays indeterminate instead of ARR-bearing shadowIt', () => {
+			const c = candidate({
+				domain: 'upps.com',
+				signals: ['markov_gen', 'mx_platform'],
+				confidence: 0.5545,
+				registrar: 'GoDaddy.com, LLC',
+				registrarSource: 'rdap',
+				sharedMxPlatform: 'm365',
+				lookalikeScore: 0,
+			});
+			const t = target({
+				domain: 'disney.com',
+				registrar: 'CSC Corporate Domains, Inc.',
+				registrarFamily: 'BrandAudit',
+			});
+
+			expect(classifyCandidate(c, t).bucket).toBe('indeterminate');
+		});
+
+		it('weak-only evidence observations stay indeterminate with a clear ownership-gate reason', () => {
+			const c = candidate({
+				domain: 'upps.com',
+				signals: ['markov_gen', 'mx_platform'],
+				confidence: 0.5545,
+				registrar: 'GoDaddy.com, LLC',
+				registrarSource: 'rdap',
+				sharedMxPlatform: 'm365',
+				evidenceObservations: [
+					{ signal: 'markov_gen' },
+					{ signal: 'mx_platform', metadata: { sharedMxPlatform: 'm365' } },
+				],
+			});
+			const result = classifyCandidate(c, target({ domain: 'disney.com' }));
+
+			expect(result.bucket).toBe('indeterminate');
+			expect(result.reasons.join(' ')).toMatch(/weak evidence did not clear ownership gate/i);
+		});
+
+		it('shared MX platform can become shadowIt when corroborated by strong visual similarity and another signal', () => {
+			const c = candidate({
+				domain: 'examp1e-pay.com',
+				signals: ['markov_gen', 'mx_platform'],
+				confidence: 0.5545,
+				registrar: 'GoDaddy.com, LLC',
+				registrarSource: 'rdap',
+				sharedMxPlatform: 'm365',
+				lookalikeScore: 0.91,
+			});
+			const t = target({ domain: 'example.com', registrarFamily: 'MarkMonitor' });
+
+			expect(classifyCandidate(c, t).bucket).toBe('shadowIt');
+		});
+
+		it('shared MX platform can become shadowIt when the caller explicitly asserted the candidate', () => {
+			const c = candidate({
+				domain: 'example-vendor.net',
+				signals: ['mx_platform'],
+				confidence: 0.55,
+				registrar: 'GoDaddy.com, LLC',
+				registrarSource: 'rdap',
+				sharedMxPlatform: 'm365',
+				callerAsserted: true,
+			});
+
+			expect(classifyCandidate(c, target({ domain: 'example.com' })).bucket).toBe('shadowIt');
 		});
 	});
 

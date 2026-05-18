@@ -17,6 +17,7 @@ import type {
 	DmarcRuaResult,
 	DkimKeyReuseResult,
 } from '../src/tenants/discovery';
+import { createDiscoveryDnsContext } from '../src/tenants/discovery/dns-context';
 import type { DiscoverBrandDomainsDeps } from '../src/tools/discover-brand-domains';
 
 function okSan(coOwned: string[]): SanCorrelationResult {
@@ -84,6 +85,11 @@ function makeDeps(overrides: Partial<DiscoverBrandDomainsDeps> = {}): DiscoverBr
 		}),
 		detectCnameAlignment: vi.fn().mockResolvedValue(okEmpty),
 		generateMarkovLookalikes: vi.fn().mockReturnValue([]),
+		checkLookalikes: vi.fn().mockResolvedValue({
+			category: 'lookalikes',
+			score: 100,
+			findings: [],
+		}),
 		domainLabelSimilarity: vi.fn().mockReturnValue(0),
 		...overrides,
 	};
@@ -203,6 +209,156 @@ describe('discoverBrandDomains', () => {
 		expect(summary?.metadata?.candidateUniverse).toMatchObject({ seeded: expect.any(Number), surfaced: 3 });
 	});
 
+	it('preserves DMARC external authorization metadata on dmarc_rua source notes', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const deps = makeDeps({
+			mineDmarcRua: vi.fn().mockResolvedValue({
+				seedDomain: 'example.com',
+				dmarcPresent: true,
+				ruaUris: ['mailto:reports@reports.example.net'],
+				ruaDomains: [
+					{
+						domain: 'reports.example.net',
+						classification: 'related',
+						externalAuthorization: 'confirmed',
+						confidence: 0.75,
+					},
+				],
+				queryStatus: 'ok',
+			}),
+			detectDkimKeyReuse: vi.fn().mockResolvedValue(okDkim(['reports.example.net'])),
+		});
+
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ signals: ['dmarc_rua', 'dkim_key_reuse'], min_confidence: 0.1 },
+			deps,
+		);
+
+		const candidate = result.findings.find((f) => f.metadata?.candidate === 'reports.example.net');
+		expect(candidate?.metadata?.sources).toMatchObject({
+			dmarc_rua: {
+				classification: 'related',
+				externalAuthorization: 'confirmed',
+			},
+		});
+	});
+
+	it('threads deep candidate-universe provenance and cap drops into the summary', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const deps = makeDeps({
+			correlateNs: vi.fn().mockResolvedValue(okNs([{ domain: 'examplecloud.com', confidence: 1 }])),
+			generateMarkovLookalikes: vi.fn().mockReturnValue(Array.from({ length: 320 }, (_, i) => `candidate-${i}.example.net`)),
+		});
+
+		const result = await discoverBrandDomains(
+			'example.com',
+			{
+				signals: ['ns'],
+				depth: 'deep',
+				min_confidence: 0.1,
+			},
+			deps,
+		);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary?.metadata?.candidateUniverse).toMatchObject({
+			seeded: expect.any(Number),
+			probed: expect.any(Number),
+			sources: expect.objectContaining({ enterprise_affix: expect.any(Number) }),
+			dropped: expect.objectContaining({ cap: expect.any(Number) }),
+		});
+		expect((summary?.metadata?.candidateUniverse as { seeded: number }).seeded).toBeLessThanOrEqual(250);
+	});
+
+	it('feeds DNS-active lookalikes into the active_lookalike candidate provenance source in deep mode', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const deps = makeDeps({
+			checkLookalikes: vi.fn().mockResolvedValue({
+				category: 'lookalikes',
+				score: 80,
+				findings: [
+					{
+						category: 'lookalikes',
+						title: 'Lookalike domain registered: examp1e.com',
+						severity: 'medium',
+						detail: 'synthetic active lookalike',
+						metadata: { lookalikeDomain: 'examp1e.com', hasA: true },
+					},
+				],
+			}),
+			detectDkimKeyReuse: vi.fn().mockResolvedValue(okDkim(['examp1e.com'])),
+		});
+
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ signals: ['dkim_key_reuse'], depth: 'deep', min_confidence: 0.1 },
+			deps,
+		);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		const candidate = result.findings.find((f) => f.metadata?.candidate === 'examp1e.com');
+		expect(summary?.metadata?.candidateUniverse).toMatchObject({
+			sources: expect.objectContaining({ active_lookalike: 1 }),
+		});
+		expect(candidate?.metadata?.candidateSeedSources).toContain('active_lookalike');
+	});
+
+	it('preserves partial first-order SAN candidates and marks the signal partial', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const deps = makeDeps({
+			correlateSans: vi.fn().mockResolvedValue({
+				seedDomain: 'example.com',
+				coOwnedDomains: ['partial-san.example.net'],
+				certIds: [123],
+				queryStatus: 'partial',
+			}),
+			detectDkimKeyReuse: vi.fn().mockResolvedValue(okDkim(['partial-san.example.net'])),
+		});
+
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ signals: ['san', 'dkim_key_reuse'], min_confidence: 0.1 },
+			deps,
+		);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		const candidate = result.findings.find((f) => f.metadata?.candidate === 'partial-san.example.net');
+		expect(summary?.metadata?.signalStatus).toMatchObject({ san: { status: 'partial' } });
+		expect(candidate).toBeDefined();
+	});
+
+	it('marks recursive SAN budget exhaustion as partial while preserving cross-confirmed candidates', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const deps = makeDeps({
+			correlateSans: vi.fn().mockResolvedValue(okSan(['sibling.example.net'])),
+			correlateSansRecursive: vi.fn().mockResolvedValue({
+				seedDomain: 'example.com',
+				crossConfirmed: [
+					{ candidate: 'sibling.example.net', certIds: [321], queryStatus: 'ok' },
+				],
+				probed: ['sibling.example.net', 'later.example.net'],
+				queryStatus: 'budget_exceeded',
+			}),
+		});
+
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ signals: ['san', 'san_recursive'], min_confidence: 0.1 },
+			deps,
+		);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		const candidate = result.findings.find((f) => f.metadata?.candidate === 'sibling.example.net');
+		expect(summary?.metadata?.signalStatus).toMatchObject({
+			san_recursive: { status: 'partial', error: 'budget_exceeded' },
+		});
+		expect(candidate?.metadata?.signals).toContain('san_recursive');
+		expect(candidate?.metadata?.sources).toMatchObject({
+			san_recursive: { certIds: [321], probedCount: 2 },
+		});
+	});
+
 	it('returns missingControl finding when signal modules all throw (DNS-failure resilience)', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const failing = vi.fn().mockRejectedValue(new Error('DNS error'));
@@ -269,6 +425,43 @@ describe('discoverBrandDomains', () => {
 		expect(nsSpy).not.toHaveBeenCalled();
 		expect(ruaSpy).not.toHaveBeenCalled();
 		expect(dkimSpy).not.toHaveBeenCalled();
+	});
+
+	it('shares one audit-scoped DNS context across DNS-backed signals', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const baseQueryCalls: string[] = [];
+		const deps = makeDeps({
+			createDnsContext: vi.fn(() =>
+				createDiscoveryDnsContext({
+					baseQuery: async (name, type) => {
+						baseQueryCalls.push(`${name}:${type}`);
+						return { Status: 0, Answer: [] };
+					},
+				}),
+			),
+			correlateNs: vi.fn(async (_seedDomain, opts) => {
+				await opts.dnsContext!.query('candidate.example.net', 'NS');
+				await opts.dnsContext!.query('candidate.example.net', 'NS');
+				return okNs([]);
+			}),
+			detectSharedMxPlatform: vi.fn(async (_seedDomain, opts) => {
+				await opts.dnsContext!.query('candidate.example.net', 'NS');
+				return {
+					seedDomain: 'example.com',
+					coOwnedDomains: [],
+					queryStatus: 'ok' as const,
+				};
+			}),
+		} as Partial<DiscoverBrandDomainsDeps>);
+
+		await discoverBrandDomains(
+			'example.com',
+			{ depth: 'deep', signals: ['ns', 'mx_platform'], candidate_domains: ['candidate.example.net'] },
+			deps,
+		);
+
+		expect(deps.createDnsContext).toHaveBeenCalledTimes(1);
+		expect(baseQueryCalls).toEqual(['candidate.example.net:NS']);
 	});
 
 	it('throws on invalid seed domain (programmer error)', async () => {

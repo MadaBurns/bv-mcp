@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { queryDns } from '../../lib/dns-transport';
+import { mapConcurrent } from '../../lib/map-concurrent';
+import type { DiscoveryDnsContext } from './dns-context';
 
 type DnsQueryFn = (name: string, type: 'MX') => Promise<{ Answer?: Array<{ data?: string }> }>;
+
+export interface MxPlatformOptions {
+	candidateDomains: string[];
+	dnsQuery?: DnsQueryFn;
+	dnsContext?: DiscoveryDnsContext;
+}
 
 export interface MxPlatformCandidate {
 	domain: string;
@@ -27,9 +35,12 @@ function platform(records: Array<{ data?: string }>): string | null {
 
 export async function detectSharedMxPlatform(
 	seedDomain: string,
-	options: { candidateDomains: string[]; dnsQuery?: DnsQueryFn },
+	options: MxPlatformOptions,
 ): Promise<MxPlatformResult> {
-	const dnsQuery = options.dnsQuery ?? ((name, type) => queryDns(name, type) as Promise<{ Answer?: Array<{ data?: string }> }>);
+	const dnsQuery =
+		options.dnsContext?.query ??
+		options.dnsQuery ??
+		((name, type) => queryDns(name, type) as Promise<{ Answer?: Array<{ data?: string }> }>);
 	let seedPlatform: string | null;
 	try {
 		const seed = await dnsQuery(seedDomain, 'MX');
@@ -39,18 +50,20 @@ export async function detectSharedMxPlatform(
 	}
 	if (!seedPlatform) return { seedDomain, coOwnedDomains: [], queryStatus: 'ok' };
 
-	const coOwnedDomains: MxPlatformCandidate[] = [];
-	let partial = false;
-	for (const domain of options.candidateDomains) {
+	const probed = await mapConcurrent(options.candidateDomains, 6, async (domain): Promise<{ candidate: MxPlatformCandidate | null; failed: boolean }> => {
 		try {
 			const candidate = await dnsQuery(domain, 'MX');
 			if (platform(candidate.Answer ?? []) === seedPlatform) {
-				coOwnedDomains.push({ domain, sharedMxPlatform: seedPlatform, confidence: 0.55 });
+				return { candidate: { domain, sharedMxPlatform: seedPlatform, confidence: 0.55 }, failed: false };
 			}
 		} catch {
-			partial = true;
+			return { candidate: null, failed: true };
 		}
-	}
+		return { candidate: null, failed: false };
+	});
+
+	const coOwnedDomains = probed.flatMap((result) => (result.candidate ? [result.candidate] : []));
+	const partial = probed.some((result) => result.failed);
 
 	return { seedDomain, coOwnedDomains, queryStatus: partial ? 'partial' : 'ok' };
 }

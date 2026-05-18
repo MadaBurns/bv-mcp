@@ -49,6 +49,7 @@ interface RdapVcardProperty {
 interface RdapEntity {
 	objectClassName?: string;
 	roles?: string[];
+	publicIds?: Array<{ type?: string; identifier?: string }>;
 	vcardArray?: ['vcard', RdapVcardProperty[]];
 	entities?: RdapEntity[];
 }
@@ -124,6 +125,15 @@ function extractVcardName(entity: RdapEntity): string | null {
 			return prop[3];
 		}
 	}
+	for (const prop of properties) {
+		if (!Array.isArray(prop) || prop[0] !== 'org') continue;
+		const value = prop[3];
+		if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+		if (Array.isArray(value)) {
+			const joined = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).join(' ');
+			if (joined.length > 0) return joined;
+		}
+	}
 	return null;
 }
 
@@ -161,6 +171,21 @@ function findEntityByRole(entities: RdapEntity[] | undefined, role: string): Rda
 	return null;
 }
 
+function extractRegistrarIanaId(entity: RdapEntity | null): string | null {
+	if (!entity || !Array.isArray(entity.publicIds)) return null;
+	for (const publicId of entity.publicIds) {
+		if (
+			typeof publicId.type === 'string' &&
+			/^IANA Registrar ID$/i.test(publicId.type.trim()) &&
+			typeof publicId.identifier === 'string' &&
+			publicId.identifier.trim().length > 0
+		) {
+			return publicId.identifier.trim();
+		}
+	}
+	return null;
+}
+
 /** Find an event by action name. */
 function findEvent(events: RdapEvent[] | undefined, action: string): RdapEvent | null {
 	if (!Array.isArray(events)) return null;
@@ -176,6 +201,7 @@ import { z } from 'zod';
 
 const WhoisFallbackPayloadSchema = z.object({
 	registrar: z.string().max(256).nullable(),
+	registrarIanaId: z.string().max(64).nullable().optional(),
 	source: z.enum(['whois', 'redacted', 'notfound', 'error']),
 });
 type WhoisFallbackPayload = z.infer<typeof WhoisFallbackPayloadSchema>;
@@ -222,12 +248,14 @@ function whoisSourceToRegistrarSource(w: WhoisFallbackPayload | null): 'whois' |
 function buildWhoisFallbackFinding(domain: string, w: WhoisFallbackPayload | null) {
 	const registrarSource = whoisSourceToRegistrarSource(w);
 	const registrar = w?.registrar ?? null;
+	const registrarIanaId = w?.registrarIanaId ?? null;
 	const detailParts: string[] = [];
 	if (registrar) detailParts.push(`Registrar: ${registrar}`);
 	detailParts.push(`Source: ${registrarSource}`);
 	return createFinding(CATEGORY, 'Registration details', 'info', detailParts.join('. ') + '.', {
 		domain,
 		registrar,
+		registrarIanaId,
 		registrarSource,
 	});
 }
@@ -305,7 +333,15 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 
 	// Parse registrar
 	const registrarEntity = findEntityByRole(rdapData.entities, 'registrar');
-	const registrarName = registrarEntity ? extractVcardName(registrarEntity) : null;
+	let registrarName = registrarEntity ? extractVcardName(registrarEntity) : null;
+	let registrarIanaId = extractRegistrarIanaId(registrarEntity);
+	let registrarSource: 'rdap' | 'whois' | 'redacted' | 'notfound' | 'unknown' = registrarName ? 'rdap' : 'unknown';
+	if (!registrarName) {
+		const whois = await fetchWhoisRegistrar(domain, options.whoisBinding);
+		registrarSource = whoisSourceToRegistrarSource(whois);
+		if (whois?.registrar) registrarName = whois.registrar;
+		if (whois?.registrarIanaId) registrarIanaId = whois.registrarIanaId;
+	}
 
 	// Parse registrant
 	const registrantEntity = findEntityByRole(rdapData.entities, 'registrant');
@@ -342,7 +378,8 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 	const metadata: Record<string, unknown> = {
 		domain,
 		registrar: registrarName,
-		registrarSource: registrarName ? 'rdap' : 'unknown',
+		registrarIanaId,
+		registrarSource,
 		registrant: registrantName,
 		registrantCountry,
 		creationDate: registrationEvent?.eventDate ?? null,

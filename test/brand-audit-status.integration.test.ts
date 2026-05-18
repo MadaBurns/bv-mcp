@@ -91,6 +91,14 @@ describe('brandAuditStatus', () => {
 		expect(summary?.metadata?.completed).toBe(2);
 		expect(summary?.metadata?.total).toBe(3);
 		expect((summary?.metadata?.targets as unknown[])).toHaveLength(3);
+		expect(summary?.metadata?.targetStatusCounts).toEqual({
+			queued: 0,
+			running: 1,
+			completed: 2,
+			failed: 0,
+		});
+		expect(summary?.metadata?.ageMs).toBeTypeOf('number');
+		expect(summary?.metadata?.updatedAgeMs).toBeTypeOf('number');
 	});
 
 	it('returns notFound when auditId is unknown', async () => {

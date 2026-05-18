@@ -76,6 +76,21 @@ the private D1 database using a local SQL file or an operator-only runbook:
 npx wrangler d1 execute <brand-audit-db-name> --remote --file <schema.sql>
 ```
 
+The queue resume store requires this table in the same D1 database:
+
+```sql
+CREATE TABLE IF NOT EXISTS brand_audit_steps (
+  audit_id TEXT NOT NULL REFERENCES brand_audits(id),
+  target TEXT NOT NULL,
+  step TEXT NOT NULL CHECK (step IN ('discovery', 'registrar_enrichment', 'classification')),
+  status TEXT NOT NULL CHECK (status IN ('completed', 'partial', 'failed')),
+  payload_json TEXT,
+  error TEXT,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (audit_id, target, step)
+);
+```
+
 ## Verification
 
 After deployment:

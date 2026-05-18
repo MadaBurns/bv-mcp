@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import type { BrandAuditMetricsSummary } from './brand-audit-metrics';
+
 export type RegistrarCoverageSource = 'rdap' | 'whois' | 'redacted' | 'notfound' | 'unknown';
 
 export interface CandidateUniverseDepth {
@@ -14,6 +16,7 @@ export interface BrandAuditDepthInput {
 	candidateUniverse: CandidateUniverseDepth;
 	signalStatus: Record<string, { status: string; error?: string }>;
 	registrarSources: RegistrarCoverageSource[];
+	performance?: Pick<BrandAuditMetricsSummary, 'steps' | 'stepStatusCounts'>;
 }
 
 export interface BrandAuditDepthSummary {
@@ -62,8 +65,17 @@ export function buildBrandAuditDepthSummary(input: BrandAuditDepthInput): BrandA
 	};
 
 	const warnings: string[] = [];
+	if (signalCoverage.partial > 0 && input.signalStatus.san?.status === 'partial') {
+		warnings.push('SAN signal returned partial results; certificate-derived sibling coverage is incomplete.');
+	}
+	if (signalCoverage.partial > 0 && input.signalStatus.san_recursive?.status === 'partial') {
+		warnings.push('Recursive SAN signal returned partial results; mutual certificate confirmation coverage is incomplete.');
+	}
 	if (signalCoverage.timeout > 0 && input.signalStatus.san?.status === 'timeout') {
 		warnings.push('SAN signal timed out; certificate-derived sibling coverage is incomplete.');
+	}
+	if (input.performance?.steps.some((step) => step.name === 'registrar_enrichment' && step.status === 'partial')) {
+		warnings.push('Registrar enrichment completed partially; ownership classification may require manual review.');
 	}
 	if (registrarCoverage.knownRatio < 0.8) {
 		warnings.push(`Registrar coverage is ${registrarCoverage.knownRatio}; ownership classification may require manual review.`);
