@@ -214,4 +214,26 @@ describe('brandAuditBatchStart', () => {
 		expect(parentInsert?.binds).toContain('markdown');
 		expect((queueSend.mock.calls[0][0] as { format: string }).format).toBe('markdown');
 	});
+
+	it('threads deep-scan inputs through queue messages', async () => {
+		const { brandAuditBatchStart } = await import('../src/tools/brand-audit-batch-start');
+		const queueSend = vi.fn().mockResolvedValue(undefined);
+		const deps = makeDeps({ queue: { send: queueSend } });
+
+		await brandAuditBatchStart(
+			['example.com'],
+			{ depth: 'deep', brand_aliases: ['examplecorp'], candidate_domains: ['example.net'] },
+			'pk',
+			deps,
+		);
+
+		expect(queueSend).toHaveBeenCalledWith(
+			expect.objectContaining({
+				depth: 'deep',
+				brand_aliases: ['examplecorp'],
+				candidate_domains: ['example.net'],
+			}),
+			{ contentType: 'json' },
+		);
+	});
 });
