@@ -375,7 +375,11 @@ export async function discoverBrandDomains(
 	deps?: DiscoverBrandDomainsDeps,
 ): Promise<CheckResult> {
 	const d: DiscoverBrandDomainsDeps = { ...defaultDeps(), ...(deps ?? {}) };
-	const dnsContext: DiscoveryDnsContext = (d.createDnsContext ?? createDiscoveryDnsContext)();
+	// Thread the caller's signal into the dnsContext factory: every probe that
+	// uses `dnsContext.query(...)` then inherits cancellation through Phase 2's
+	// signal-forwarding contract. This is the choke-point that makes most of
+	// the discovery fan-out abortable without per-probe code changes.
+	const dnsContext: DiscoveryDnsContext = (d.createDnsContext ?? createDiscoveryDnsContext)({ signal: options.signal });
 	const signals = (options.signals && options.signals.length > 0 ? options.signals : ALL_SIGNALS).slice();
 	const candidateDomains = options.candidate_domains ?? [];
 	// Caller-asserted ownership: bypass the corroboration gate for these.
@@ -485,7 +489,10 @@ export async function discoverBrandDomains(
 	if (signals.includes('san')) {
 		jobs.push(async () => {
 			const out = await runSignal<SanCorrelationResult>(() =>
-				d.correlateSans(seedDomain, options.certstream ? { certstream: options.certstream } : {}),
+				d.correlateSans(seedDomain, {
+					...(options.certstream ? { certstream: options.certstream } : {}),
+					signal: options.signal,
+				}),
 			);
 			if (!out.ok) {
 				signalStatus.san = { status: 'failed', error: out.error };
@@ -709,6 +716,7 @@ export async function discoverBrandDomains(
 				maxCandidates: 10,
 				concurrency: 4,
 				totalBudgetMs: 15_000,
+				signal: options.signal,
 			}),
 		);
 		if (!recursiveOut.ok) {
