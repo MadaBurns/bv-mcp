@@ -454,4 +454,83 @@ describe('classifyCandidate', () => {
 			expect(classifyCandidate(c, t).bucket).toBe('indeterminate');
 		});
 	});
+
+	// Phase 3 of registrar-coverage-tdd-plan.md — classifier learns the difference
+	// between deterministic 'unknown' states (redacted, notfound) and a transient
+	// failure that should be retried (lookup_failed). The bucket stays
+	// `indeterminate` for both deterministic cases (no new buckets — keeps the
+	// downstream API stable), but `note` differentiates them so analysts and the
+	// retry hook (Phase 2b) can act.
+	describe('Phase 3: registrarSource differentiation', () => {
+		it('lookup_failed (no strong signals, medium confidence) → indeterminate with note=needs_retry', () => {
+			const c = candidate({
+				domain: 'flaky.net',
+				confidence: 0.6,
+				signals: ['markov_gen'],
+				registrar: 'Unknown',
+				registrarSource: 'lookup_failed',
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('indeterminate');
+			expect(result.note).toBe('needs_retry');
+			expect(result.reasons.join(' ').toLowerCase()).toMatch(/retry|lookup/);
+		});
+
+		it('lookup_failed with strong infra signal → consolidated (Rule 2 still wins; retry is moot)', () => {
+			const c = candidate({
+				domain: 'shared-cert.com',
+				signals: ['san'],
+				registrarSource: 'lookup_failed',
+			});
+			expect(classifyCandidate(c, target()).bucket).toBe('consolidated');
+		});
+
+		it('lookup_failed with high lookalike score → impersonation (Rule 4.6 still fires before Rule 5)', () => {
+			const c = candidate({
+				domain: 'appel.com',
+				confidence: 0.4,
+				lookalikeScore: 0.92,
+				registrar: 'Different Registrar Ltd.',
+				registrarSource: 'lookup_failed',
+			});
+			expect(classifyCandidate(c, target()).bucket).toBe('impersonation');
+		});
+
+		it('redacted (no strong signals) → indeterminate with note=redacted (distinguishable from notfound)', () => {
+			const c = candidate({
+				domain: 'apple.de',
+				confidence: 0.6,
+				signals: ['markov_gen'],
+				registrar: 'Unknown',
+				registrarSource: 'redacted',
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('indeterminate');
+			expect(result.note).toBe('redacted');
+		});
+
+		it('notfound (no strong signals) → indeterminate with note=notfound (distinguishable from redacted)', () => {
+			const c = candidate({
+				domain: 'apple-cz.com',
+				confidence: 0.6,
+				signals: ['markov_gen'],
+				registrar: 'Unknown',
+				registrarSource: 'notfound',
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('indeterminate');
+			expect(result.note).toBe('notfound');
+		});
+
+		it('redacted + high lookalike score → impersonation (Rule 4.6 fires before Rule 5)', () => {
+			const c = candidate({
+				domain: 'appel.de',
+				confidence: 0.4,
+				lookalikeScore: 0.92,
+				registrar: 'Unknown',
+				registrarSource: 'redacted',
+			});
+			expect(classifyCandidate(c, target()).bucket).toBe('impersonation');
+		});
+	});
 });

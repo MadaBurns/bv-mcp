@@ -15,7 +15,7 @@ import {
 } from './brand-classification';
 import type { BrandEvidenceObservation } from './brand-evidence';
 import { discoverBrandDomains as defaultDiscoverBrandDomains } from '../tools/discover-brand-domains';
-import { checkRdapLookup as defaultCheckRdapLookup } from '../tools/check-rdap-lookup';
+import { checkRdapLookup as defaultCheckRdapLookup, type RdapCheckOptions } from '../tools/check-rdap-lookup';
 import type { BrandAuditStepStore } from './brand-audit-step-store';
 
 /**
@@ -74,6 +74,14 @@ export interface BrandAuditPipelineOptions {
 	 * reaper to mop up.
 	 */
 	signal?: AbortSignal;
+	/**
+	 * Skip all step-store cache reads — the pipeline re-runs discovery,
+	 * registrar enrichment, and classification fresh. Phase 2b retry messages
+	 * set this so the second pass actually re-fetches RDAP/WHOIS instead of
+	 * reading back the cached lookup_failed result from the first pass.
+	 * Mirrors the `force_refresh` knob in scan-domain's `runWithCache()`.
+	 */
+	force_refresh?: boolean;
 	/** Clock override for deterministic tests. */
 	now?: () => number;
 }
@@ -92,9 +100,11 @@ interface RegistrarLookup {
 	registrarIanaId: string | null;
 	registrarSource: RegistrarSource;
 	registrant: string | null;
+	/** Set iff registrarSource === 'lookup_failed' — stable token identifying *why*. Consumed by the retry path. */
+	registrarFailureReason?: string | null;
 }
 
-type CandidateRegistrarLookupStatus = 'completed' | 'skipped_deadline';
+type CandidateRegistrarLookupStatus = 'completed' | 'skipped_deadline' | 'needs_retry';
 
 interface CandidateRegistrarLookup {
 	candidate: string;
@@ -182,22 +192,33 @@ function extractRegistrar(rdap: CheckResult): RegistrarLookup {
 	if (populated) {
 		const source = (populated.metadata?.registrarSource as RegistrarSource | undefined) ?? 'unknown';
 		const registrarIanaId = typeof populated.metadata?.registrarIanaId === 'string' ? populated.metadata.registrarIanaId : null;
-		return { registrar: populated.metadata!.registrar as string, registrarIanaId, registrarSource: source, registrant };
+		const registrarFailureReason =
+			source === 'lookup_failed' && typeof populated.metadata?.registrarFailureReason === 'string'
+				? populated.metadata.registrarFailureReason
+				: null;
+		return { registrar: populated.metadata!.registrar as string, registrarIanaId, registrarSource: source, registrant, registrarFailureReason };
 	}
 	const lastWithSource = [...rdap.findings].reverse().find((f) => typeof f.metadata?.registrarSource === 'string');
 	const source = (lastWithSource?.metadata?.registrarSource as RegistrarSource | undefined) ?? 'unknown';
 	const registrarIanaId = typeof lastWithSource?.metadata?.registrarIanaId === 'string' ? lastWithSource.metadata.registrarIanaId : null;
-	return { registrar: 'Unknown', registrarIanaId, registrarSource: source, registrant };
+	const registrarFailureReason =
+		source === 'lookup_failed' && typeof lastWithSource?.metadata?.registrarFailureReason === 'string'
+			? lastWithSource.metadata.registrarFailureReason
+			: null;
+	return { registrar: 'Unknown', registrarIanaId, registrarSource: source, registrant, registrarFailureReason };
 }
 
-/** Look up registrar + registrant for `domain` via injected checkRdapLookup; fails soft to Unknown/unknown. */
-async function safeRegistrarLookup(domain: string, deps: BrandAuditPipelineDeps): Promise<RegistrarLookup> {
+/** Look up registrar + registrant for `domain` via injected checkRdapLookup; fails soft to lookup_failed/exception. */
+async function safeRegistrarLookup(domain: string, deps: BrandAuditPipelineDeps, signal?: AbortSignal): Promise<RegistrarLookup> {
 	const rdapFn = deps.checkRdapLookup ?? defaultCheckRdapLookup;
 	try {
-		const result = await rdapFn(domain, deps.whoisBinding ? { whoisBinding: deps.whoisBinding } : {});
+		const opts: RdapCheckOptions = {};
+		if (deps.whoisBinding) opts.whoisBinding = deps.whoisBinding;
+		if (signal) opts.signal = signal;
+		const result = await rdapFn(domain, opts);
 		return extractRegistrar(result);
 	} catch {
-		return { registrar: 'Unknown', registrarIanaId: null, registrarSource: 'unknown', registrant: null };
+		return { registrar: 'Unknown', registrarIanaId: null, registrarSource: 'lookup_failed', registrant: null, registrarFailureReason: 'exception' };
 	}
 }
 
@@ -218,14 +239,25 @@ function hasRegistrarIndependentEvidence(domain: string, seedDomain: string, sig
 }
 
 function isRegistrarSource(value: unknown): value is RegistrarSource {
-	return value === 'rdap' || value === 'whois' || value === 'redacted' || value === 'notfound' || value === 'unknown';
+	return (
+		value === 'rdap' ||
+		value === 'whois' ||
+		value === 'redacted' ||
+		value === 'notfound' ||
+		value === 'lookup_failed' ||
+		value === 'unknown'
+	);
 }
 
 function readRegistrarLookup(value: unknown): RegistrarLookup | null {
 	if (!isRecord(value) || typeof value.registrar !== 'string' || !isRegistrarSource(value.registrarSource)) return null;
 	const registrant = typeof value.registrant === 'string' ? value.registrant : null;
 	const registrarIanaId = typeof value.registrarIanaId === 'string' ? value.registrarIanaId : null;
-	return { registrar: value.registrar, registrarIanaId, registrarSource: value.registrarSource, registrant };
+	const registrarFailureReason =
+		value.registrarSource === 'lookup_failed' && typeof value.registrarFailureReason === 'string'
+			? value.registrarFailureReason
+			: null;
+	return { registrar: value.registrar, registrarIanaId, registrarSource: value.registrarSource, registrant, registrarFailureReason };
 }
 
 function readCompletedRegistrarEnrichment(
@@ -272,11 +304,14 @@ async function lookupCandidateRegistrars(
 	signal?: AbortSignal,
 ): Promise<{ candidates: CandidateRegistrarLookup[]; partial: boolean; skippedCandidates: string[]; rdapQueries: number }> {
 	const aborted = (): boolean => signal?.aborted === true;
+	const statusForLookup = (lookup: RegistrarLookup): CandidateRegistrarLookupStatus =>
+		lookup.registrarSource === 'lookup_failed' ? 'needs_retry' : 'completed';
+
 	if (deadlineMs === undefined && !signal) {
 		const candidates = await mapConcurrent(candidateFindings, RDAP_CONCURRENCY, async (f) => {
 			const candidate = f.metadata!.candidate as string;
-			const lookup = await safeRegistrarLookup(candidate, deps);
-			return { candidate, lookup, status: 'completed' as const };
+			const lookup = await safeRegistrarLookup(candidate, deps, signal);
+			return { candidate, lookup, status: statusForLookup(lookup) };
 		});
 		return { candidates, partial: false, skippedCandidates: [], rdapQueries: candidates.length };
 	}
@@ -292,15 +327,15 @@ async function lookupCandidateRegistrars(
 			candidates.push({ candidate, lookup: unknownRegistrarLookup(), status: 'skipped_deadline' });
 			continue;
 		}
-		const lookup = await safeRegistrarLookup(candidate, deps);
-		candidates.push({ candidate, lookup, status: 'completed' });
+		const lookup = await safeRegistrarLookup(candidate, deps, signal);
+		candidates.push({ candidate, lookup, status: statusForLookup(lookup) });
 	}
 
 	return {
 		candidates,
 		partial,
 		skippedCandidates,
-		rdapQueries: candidates.filter((entry) => entry.status === 'completed').length,
+		rdapQueries: candidates.filter((entry) => entry.status === 'completed' || entry.status === 'needs_retry').length,
 	};
 }
 
@@ -322,6 +357,9 @@ export async function runBrandAuditPipeline(
 	const auditId = options.auditId ?? `local-${seedDomain}`;
 	const stepStore = options.stepStore;
 	const signal = options.signal;
+	// Phase 2b: retry messages set force_refresh so a transient lookup_failed
+	// from the first pass doesn't get served back from the cache.
+	const readCachedStep = options.force_refresh ? null : stepStore;
 	const throwIfAborted = (): void => {
 		if (signal?.aborted) {
 			const reason = (signal as AbortSignal & { reason?: unknown }).reason;
@@ -330,13 +368,13 @@ export async function runBrandAuditPipeline(
 	};
 
 	const cachedClassification = readCompletedPayload<CheckResult>(
-		stepStore ? await stepStore.get(auditId, seedDomain, 'classification') : null,
+		readCachedStep ? await readCachedStep.get(auditId, seedDomain, 'classification') : null,
 	);
 	if (cachedClassification) return cachedClassification;
 
 	throwIfAborted();
 	const cachedDiscovery = readCompletedPayload<CheckResult>(
-		stepStore ? await stepStore.get(auditId, seedDomain, 'discovery') : null,
+		readCachedStep ? await readCachedStep.get(auditId, seedDomain, 'discovery') : null,
 	);
 	let discovery: CheckResult;
 	if (cachedDiscovery) {
@@ -371,7 +409,7 @@ export async function runBrandAuditPipeline(
 
 	const candidateDomains = candidateFindings.map((f) => f.metadata!.candidate as string);
 	const cachedRegistrarEnrichment = readCompletedRegistrarEnrichment(
-		stepStore ? await stepStore.get(auditId, seedDomain, 'registrar_enrichment') : null,
+		readCachedStep ? await readCachedStep.get(auditId, seedDomain, 'registrar_enrichment') : null,
 		candidateDomains,
 	);
 	let registrarEnrichment: RegistrarEnrichmentPayload;
@@ -383,7 +421,7 @@ export async function runBrandAuditPipeline(
 		throwIfAborted();
 		const registrarStartedAtMs = now();
 		// Look up the target's own registrar first — drives Rule 4 (same registrar family corroboration).
-		const targetLookup = await safeRegistrarLookup(seedDomain, deps);
+		const targetLookup = await safeRegistrarLookup(seedDomain, deps, signal);
 		const candidateLookups = await lookupCandidateRegistrars(candidateFindings, deps, options.deadlineMs, now, signal);
 		registrarEnrichment = {
 			targetLookup,
@@ -442,6 +480,9 @@ export async function runBrandAuditPipeline(
 					targetRegistrar: targetLookup.registrar,
 					targetRegistrarIanaId: targetLookup.registrarIanaId,
 					targetRegistrarSource: targetLookup.registrarSource,
+					...(targetLookup.registrarSource === 'lookup_failed' && targetLookup.registrarFailureReason
+						? { targetRegistrarFailureReason: targetLookup.registrarFailureReason }
+						: {}),
 					targetRegistrant: targetLookup.registrant,
 					discoverySignalStatus: discoverySummary?.metadata?.signalStatus,
 					performance,
@@ -526,6 +567,9 @@ export async function runBrandAuditPipeline(
 			registrar: lookup.registrar,
 			registrarIanaId: lookup.registrarIanaId,
 			registrarSource: lookup.registrarSource,
+			...(lookup.registrarSource === 'lookup_failed' && lookup.registrarFailureReason
+				? { registrarFailureReason: lookup.registrarFailureReason }
+				: {}),
 			registrant: lookup.registrant,
 			...(enrichmentEntry?.status ? { registrarEnrichmentStatus: enrichmentEntry.status } : {}),
 		});
@@ -550,6 +594,9 @@ export async function runBrandAuditPipeline(
 			targetRegistrar: targetLookup.registrar,
 			targetRegistrarIanaId: targetLookup.registrarIanaId,
 			targetRegistrarSource: targetLookup.registrarSource,
+			...(targetLookup.registrarSource === 'lookup_failed' && targetLookup.registrarFailureReason
+				? { targetRegistrarFailureReason: targetLookup.registrarFailureReason }
+				: {}),
 			targetRegistrant: targetLookup.registrant,
 			minConfidence: options.min_confidence ?? 0.5,
 			truncated,

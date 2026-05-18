@@ -2,7 +2,7 @@
 
 import type { BrandAuditMetricsSummary } from './brand-audit-metrics';
 
-export type RegistrarCoverageSource = 'rdap' | 'whois' | 'redacted' | 'notfound' | 'unknown';
+export type RegistrarCoverageSource = 'rdap' | 'whois' | 'redacted' | 'notfound' | 'lookup_failed' | 'unknown';
 
 export interface CandidateUniverseDepth {
 	seeded: number;
@@ -57,6 +57,7 @@ export function buildBrandAuditDepthSummary(input: BrandAuditDepthInput): BrandA
 		whois: input.registrarSources.filter((s) => s === 'whois').length,
 		redacted: input.registrarSources.filter((s) => s === 'redacted').length,
 		notfound: input.registrarSources.filter((s) => s === 'notfound').length,
+		lookup_failed: input.registrarSources.filter((s) => s === 'lookup_failed').length,
 		unknown: input.registrarSources.filter((s) => s === 'unknown').length,
 		knownRatio:
 			input.registrarSources.length === 0

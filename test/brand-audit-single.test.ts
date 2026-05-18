@@ -213,9 +213,12 @@ describe('brandAuditSingle', () => {
 
 		const candFindings = result.findings.filter((f) => f.metadata?.candidate);
 		expect(candFindings).toHaveLength(2);
-		// Both still classified — the rdap failure surfaces as registrarSource=unknown.
+		// Both still classified — the rdap failure surfaces as registrarSource=lookup_failed
+		// (transient, retryable) with registrarFailureReason='exception'. Pre-Phase-1 this
+		// collapsed to 'unknown', which masked retryable failures as permanent ones.
 		const failed = candFindings.find((f) => f.metadata?.candidate === 'apple.net');
-		expect(failed?.metadata?.registrarSource).toBe('unknown');
+		expect(failed?.metadata?.registrarSource).toBe('lookup_failed');
+		expect(failed?.metadata?.registrarFailureReason).toBe('exception');
 	});
 
 	it('threads min_confidence into discoverBrandDomains and the cache-key inputs', async () => {

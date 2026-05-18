@@ -60,6 +60,7 @@ describe('buildBrandAuditDepthSummary', () => {
 			whois: 1,
 			redacted: 0,
 			notfound: 0,
+			lookup_failed: 0,
 			unknown: 1,
 			knownRatio: 0.75,
 		});
