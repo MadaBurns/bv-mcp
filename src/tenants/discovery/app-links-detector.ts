@@ -155,11 +155,17 @@ export function parseAssetLinks(raw: unknown): {
 const AASA_PATH = '/.well-known/apple-app-site-association';
 const ASSETLINKS_PATH = '/.well-known/assetlinks.json';
 
+/** Per-fetch wall clock budget — runs inside the 300s consumer cap. */
+const APP_LINKS_FETCH_TIMEOUT_MS = 5000;
+
 async function defaultFetcher(url: string): Promise<{ status: number; body: unknown } | null> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), APP_LINKS_FETCH_TIMEOUT_MS);
 	try {
 		const res = await fetch(url, {
 			redirect: 'manual',
 			headers: { accept: 'application/json' },
+			signal: controller.signal,
 		});
 		let body: unknown = null;
 		try {
@@ -170,6 +176,8 @@ async function defaultFetcher(url: string): Promise<{ status: number; body: unkn
 		return { status: res.status, body };
 	} catch {
 		return null;
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
