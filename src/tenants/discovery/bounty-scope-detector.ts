@@ -222,11 +222,19 @@ const PLATFORM_PARSERS: Record<BountyPlatform, (raw: unknown) => BountyScopeAsse
 	intigriti: parseIntigritiScope,
 };
 
+/** Per-fetch wall clock budget. Discovery orchestrator runs several detectors
+ * back-to-back inside a 300s consumer cap — each external fetch must time out
+ * fast to preserve the budget. */
+const BOUNTY_FETCH_TIMEOUT_MS = 5000;
+
 async function defaultFetcher(url: string): Promise<{ status: number; body: unknown } | null> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), BOUNTY_FETCH_TIMEOUT_MS);
 	try {
 		const res = await fetch(url, {
 			redirect: 'manual',
 			headers: { accept: 'application/json' },
+			signal: controller.signal,
 		});
 		let body: unknown = null;
 		try {
@@ -237,6 +245,8 @@ async function defaultFetcher(url: string): Promise<{ status: number; body: unkn
 		return { status: res.status, body };
 	} catch {
 		return null;
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
