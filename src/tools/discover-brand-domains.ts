@@ -62,6 +62,25 @@ import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isSubdomainOf } from '../lib/sanitize';
 import { generateMarkovLookalikes } from './markov-generator';
 import { buildBrandCandidateUniverse, type BrandAuditDepth, type CandidateSeedSource } from '../lib/brand-candidate-universe';
+import { detectAppLinks } from '../tenants/discovery/app-links-detector';
+import { detectBountyScope, type BountyPlatform } from '../tenants/discovery/bounty-scope-detector';
+
+/**
+ * Built-in bug-bounty program handles for the Phase-5 demo brands. Replace
+ * with a D1-backed lookup once the per-tenant config UI lands. Brands not
+ * listed simply skip the bounty-scope detector — no harm done.
+ */
+const PHASE5_BOUNTY_HANDLES: Record<string, Partial<Record<BountyPlatform, string>>> = {
+	'walmart.com': { hackerone: 'walmart' },
+	'disney.com': { hackerone: 'disney' },
+	'marriott.com': { hackerone: 'marriott' },
+	'bankofamerica.com': { hackerone: 'bankofamerica' },
+	'mastercard.com': { hackerone: 'mastercard' },
+	'paypal.com': { hackerone: 'paypal' },
+	'github.com': { hackerone: 'github' },
+	'shopify.com': { hackerone: 'shopify' },
+	'uber.com': { hackerone: 'uber' },
+};
 import { domainLabelSimilarity as defaultDomainLabelSimilarity } from '../lib/domain-similarity';
 import { checkLookalikes as defaultCheckLookalikes } from './check-lookalikes';
 import { clearsOwnershipGate, type BrandEvidenceObservation } from '../lib/brand-evidence';
@@ -368,9 +387,44 @@ export async function discoverBrandDomains(
 			preSignalStatus.active_lookalike = { status: 'failed', error: activeOut.error };
 		}
 	}
+
+	// Phase-5 ground-truth signals — pull brand-declared domains from app-links
+	// and bug-bounty scopes. These return confidence-1.0 candidates that flow
+	// into the universe alongside caller-supplied ones. Failures are logged in
+	// preSignalStatus and never throw.
+	const groundTruthCandidates: string[] = [];
+	const appLinksOut = await runSignal(() => detectAppLinks(seedDomain));
+	if (appLinksOut.ok) {
+		preSignalStatus.app_links = { status: appLinksOut.value.queryStatus };
+		for (const c of appLinksOut.value.coOwnedDomains) {
+			if (c.domain && c.domain !== seedDomain) groundTruthCandidates.push(c.domain);
+		}
+	} else {
+		preSignalStatus.app_links = { status: 'failed', error: appLinksOut.error };
+	}
+	const bountyHandles = PHASE5_BOUNTY_HANDLES[seedDomain.toLowerCase().replace(/\.$/, '')] ?? {};
+	if (Object.keys(bountyHandles).length > 0) {
+		const bountyOut = await runSignal(() => detectBountyScope(seedDomain, { handles: bountyHandles }));
+		if (bountyOut.ok) {
+			preSignalStatus.bounty_scope = { status: bountyOut.value.queryStatus };
+			for (const c of bountyOut.value.coOwnedDomains) {
+				if (c.domain && c.domain !== seedDomain) groundTruthCandidates.push(c.domain);
+			}
+		} else {
+			preSignalStatus.bounty_scope = { status: 'failed', error: bountyOut.error };
+		}
+	}
+
+	// Ground-truth signals (app-links, bounty-scope) are brand-authoritative —
+	// promote them to caller-asserted so they bypass the corroboration gate
+	// like caller-supplied candidates.
+	for (const dom of groundTruthCandidates) {
+		callerAssertedDomains.add(dom.trim().toLowerCase().replace(/\.$/, ''));
+	}
+
 	const universe = buildBrandCandidateUniverse({
 		seedDomain,
-		candidateDomains,
+		candidateDomains: [...candidateDomains, ...groundTruthCandidates],
 		markovCandidates,
 		activeLookalikes,
 		brandAliases: options.brand_aliases,
