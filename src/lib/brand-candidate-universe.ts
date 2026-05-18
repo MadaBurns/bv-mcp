@@ -139,8 +139,15 @@ const ENTERPRISE_AFFIXES = [
 ];
 
 const ENTERPRISE_AFFIX_TLDS = ['com', 'net', 'org', 'co', 'io', 'app', 'cloud', 'dev', 'support', 'shop'];
-const STANDARD_CANDIDATE_CAP = 120;
-const DEEP_CANDIDATE_CAP = 250;
+// Hard caps reduced from 120/250 (2026-05-19) after walmart audits wedged at
+// the Cloudflare Worker CPU budget. Each candidate is probed by ~12 signal
+// detectors at concurrency 6 through a shared DoH semaphore — 100 candidates
+// × 12 signals = up to 1200 DoH queries plus per-candidate RDAP fan-out.
+// Tier-1 brands (walmart, disney) routinely exceed CPU budget at the prior
+// caps. Universe candidates beyond the cap are dropped with stats.dropped.cap
+// so downstream telemetry surfaces the truncation.
+const STANDARD_CANDIDATE_CAP = 50;
+const DEEP_CANDIDATE_CAP = 150;
 
 function normalizeDomain(domain: string): string | null {
 	const lower = domain.trim().toLowerCase().replace(/\.+$/, '');
@@ -191,7 +198,13 @@ export function buildBrandCandidateUniverse(input: {
 		byDomain.set(normalized, { domain: normalized, sources: [source], reasons: [reason] });
 	}
 
+	// Source priority order (highest signal first) — matters when the cap
+	// truncates: caller_candidate and active_lookalike carry direct human or
+	// DNS-active evidence; tld_sweep / alias_tld_sweep target the brand name
+	// directly; enterprise_affix generates noisy `<brand>+<affix>` permutations
+	// that swamp lower-priority sources; markov is purely speculative.
 	for (const domain of input.candidateDomains ?? []) add(domain, 'caller_candidate', 'caller supplied candidate');
+	for (const domain of input.activeLookalikes ?? []) add(domain, 'active_lookalike', 'active lookalike candidate');
 
 	if (base) {
 		for (const tld of tlds) add(`${base}.${tld}`, 'tld_sweep', `seed label across .${tld}`);
@@ -211,7 +224,6 @@ export function buildBrandCandidateUniverse(input: {
 		}
 	}
 
-	for (const domain of input.activeLookalikes ?? []) add(domain, 'active_lookalike', 'active lookalike candidate');
 	for (const domain of input.markovCandidates ?? []) add(domain, 'markov', 'generated lookalike candidate');
 
 	const sourceCounts: Record<CandidateSeedSource, number> = {
