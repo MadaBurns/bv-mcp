@@ -43,6 +43,9 @@ const ETA_SECONDS_PER_TARGET = 180;
 export interface BrandAuditBatchStartOptions {
 	format?: BrandAuditFormat;
 	min_confidence?: number;
+	depth?: 'standard' | 'deep';
+	brand_aliases?: string[];
+	candidate_domains?: string[];
 }
 
 export type EnforceBrandAuditQuota = (count: number) => Promise<{
@@ -57,6 +60,9 @@ export interface BrandAuditQueueMessage {
 	target: string;
 	format: BrandAuditFormat;
 	min_confidence?: number;
+	depth?: 'standard' | 'deep';
+	brand_aliases?: string[];
+	candidate_domains?: string[];
 }
 
 export interface BrandAuditQueueProducer {
@@ -178,7 +184,15 @@ export async function brandAuditBatchStart(
 	for (const target of targets) {
 		try {
 			await deps.queue.send(
-				{ auditId, target, format, min_confidence: options.min_confidence },
+				{
+					auditId,
+					target,
+					format,
+					min_confidence: options.min_confidence,
+					depth: options.depth,
+					brand_aliases: options.brand_aliases,
+					candidate_domains: options.candidate_domains,
+				},
 				{ contentType: 'json' },
 			);
 			enqueued.push(target);

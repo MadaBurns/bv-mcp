@@ -24,6 +24,7 @@
 import { buildCheckResult, createFinding, type CheckResult, type Finding, type Severity } from '../lib/scoring';
 import { discoverBrandDomains as defaultDiscoverBrandDomains } from './discover-brand-domains';
 import { checkRdapLookup as defaultCheckRdapLookup } from './check-rdap-lookup';
+import { buildBrandAuditDepthSummary, type CandidateUniverseDepth } from '../lib/brand-audit-depth';
 import {
 	classifyCandidate,
 	normalizeRegistrar,
@@ -68,6 +69,12 @@ export interface BrandAuditSingleOptions {
 	format?: 'json' | 'markdown' | 'both';
 	/** Minimum combined confidence threshold passed through to `discoverBrandDomains`. */
 	min_confidence?: number;
+	/** Discovery depth. `deep` expands deterministic candidate seeding. */
+	depth?: 'standard' | 'deep';
+	/** Public brand aliases, product labels, or legal-entity labels to seed. */
+	brand_aliases?: string[];
+	/** Caller-supplied candidate domains to corroborate. */
+	candidate_domains?: string[];
 }
 
 /** Quota-check signature — the orchestrator calls this once per audit with `count=1`. */
@@ -87,6 +94,51 @@ interface RegistrarLookup {
 	registrar: string;
 	registrarSource: RegistrarSource;
 	registrant: string | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function numberRecord(value: unknown): Record<string, number> {
+	if (!isRecord(value)) return {};
+	const out: Record<string, number> = {};
+	for (const [key, raw] of Object.entries(value)) {
+		if (typeof raw === 'number' && Number.isFinite(raw)) out[key] = raw;
+	}
+	return out;
+}
+
+function readDiscoveryCandidateUniverse(value: unknown, surfacedFallback: number): CandidateUniverseDepth {
+	if (!isRecord(value)) {
+		return {
+			seeded: surfacedFallback,
+			probed: surfacedFallback,
+			surfaced: surfacedFallback,
+			dropped: {},
+			sources: {},
+		};
+	}
+	return {
+		seeded: typeof value.seeded === 'number' ? value.seeded : surfacedFallback,
+		probed: typeof value.probed === 'number' ? value.probed : surfacedFallback,
+		surfaced: typeof value.surfaced === 'number' ? value.surfaced : surfacedFallback,
+		dropped: numberRecord(value.dropped),
+		sources: numberRecord(value.sources),
+	};
+}
+
+function readDiscoverySignalStatus(value: unknown): Record<string, { status: string; error?: string }> {
+	if (!isRecord(value)) return {};
+	const out: Record<string, { status: string; error?: string }> = {};
+	for (const [signal, raw] of Object.entries(value)) {
+		if (!isRecord(raw) || typeof raw.status !== 'string') continue;
+		out[signal] = {
+			status: raw.status,
+			...(typeof raw.error === 'string' ? { error: raw.error } : {}),
+		};
+	}
+	return out;
 }
 
 /** Pull registrar + registrant out of a check-rdap-lookup result, mirroring `scripts/brand-audit-brand-audit.spec.ts:lookupRegistrar`. */
@@ -167,11 +219,20 @@ export async function brandAuditSingle(
 	const discover = deps.discoverBrandDomains ?? defaultDiscoverBrandDomains;
 	const discoveryOpts = {
 		min_confidence: options.min_confidence,
+		depth: options.depth,
+		brand_aliases: options.brand_aliases,
+		candidate_domains: options.candidate_domains,
 		certstream: deps.certstream,
 	};
 
 	const discovery = await discover(seedDomain, discoveryOpts);
 	const allCandidateFindings = discovery.findings.filter((f) => typeof f.metadata?.candidate === 'string');
+	const discoverySummary = discovery.findings.find((f) => f.metadata?.summary === true);
+	const discoverySignalStatus = readDiscoverySignalStatus(discoverySummary?.metadata?.signalStatus);
+	const discoveryCandidateUniverse = readDiscoveryCandidateUniverse(
+		discoverySummary?.metadata?.candidateUniverse,
+		allCandidateFindings.length,
+	);
 	const truncated = allCandidateFindings.length > MAX_CANDIDATES_PER_AUDIT;
 	const candidateFindings = truncated ? allCandidateFindings.slice(0, MAX_CANDIDATES_PER_AUDIT) : allCandidateFindings;
 
@@ -185,7 +246,6 @@ export async function brandAuditSingle(
 	};
 
 	if (candidateFindings.length === 0) {
-		const discoverySummary = discovery.findings.find((f) => f.metadata?.summary === true);
 		return buildCheckResult(CATEGORY, [
 			createFinding(
 				CATEGORY,
@@ -204,6 +264,11 @@ export async function brandAuditSingle(
 					targetRegistrarSource: targetLookup.registrarSource,
 					targetRegistrant: targetLookup.registrant,
 					discoverySignalStatus: discoverySummary?.metadata?.signalStatus,
+					depth: buildBrandAuditDepthSummary({
+						candidateUniverse: discoveryCandidateUniverse,
+						signalStatus: discoverySignalStatus,
+						registrarSources: [targetLookup.registrarSource],
+					}),
 				},
 			),
 		]);
@@ -291,6 +356,11 @@ export async function brandAuditSingle(
 			truncated,
 			truncatedAt: truncated ? MAX_CANDIDATES_PER_AUDIT : undefined,
 			discoveredTotal: allCandidateFindings.length,
+			depth: buildBrandAuditDepthSummary({
+				candidateUniverse: discoveryCandidateUniverse,
+				signalStatus: discoverySignalStatus,
+				registrarSources: [targetLookup.registrarSource, ...lookups.map((lookup) => lookup.registrarSource)],
+			}),
 		},
 	);
 

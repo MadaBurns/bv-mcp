@@ -94,6 +94,36 @@ describe('processBrandAuditMessage', () => {
 		expect(auditTick).toBeDefined();
 	});
 
+	it('passes deep-scan inputs from queue message into brandAuditSingle', async () => {
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db } = makeMockD1({
+			target: { status: 'queued', completed_at: null },
+			auditAfter: { completed_targets: 1, total_targets: 1 },
+		});
+		const brandAuditSingle = vi.fn().mockResolvedValue({ category: 'brand_discovery', score: 100, findings: [] });
+
+		await processBrandAuditMessage(
+			{
+				auditId: 'aud-1',
+				target: 'example.com',
+				format: 'json',
+				depth: 'deep',
+				brand_aliases: ['examplecorp'],
+				candidate_domains: ['example.net'],
+			},
+			{ db, brandAuditSingle, now: () => 1_750_000_000_000 },
+		);
+
+		expect(brandAuditSingle).toHaveBeenCalledWith(
+			'example.com',
+			expect.objectContaining({
+				depth: 'deep',
+				brand_aliases: ['examplecorp'],
+				candidate_domains: ['example.net'],
+			}),
+		);
+	});
+
 	it('is idempotent: a duplicate delivery of a completed target ack()s without re-running brandAuditSingle', async () => {
 		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
 		const { db, calls } = makeMockD1({

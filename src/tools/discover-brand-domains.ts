@@ -37,6 +37,8 @@ import {
 	detectDkimKeyReuse as defaultDetectDkimKeyReuse,
 	detectHttpRedirect as defaultDetectHttpRedirect,
 	detectMxOverlap as defaultDetectMxOverlap,
+	detectSharedMxPlatform as defaultDetectSharedMxPlatform,
+	detectSharedTxtVerifications as defaultDetectSharedTxtVerifications,
 	detectSpfInclude as defaultDetectSpfInclude,
 	extractSeedSpfIncludes as defaultExtractSeedSpfIncludes,
 	detectCnameAlignment as defaultDetectCnameAlignment,
@@ -47,8 +49,10 @@ import {
 	type DkimKeyReuseResult,
 	type HttpRedirectResult,
 	type MxOverlapResult,
+	type MxPlatformResult,
 	type SpfIncludeResult,
 	type SeedSpfWalkResult,
+	type TxtVerificationResult,
 	type CnameAlignmentResult,
 } from '../tenants/discovery';
 import type { OutputFormat } from '../handlers/tool-args';
@@ -56,7 +60,8 @@ import { buildCheckResult, createFinding, type CheckResult, type Finding, type S
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isSubdomainOf } from '../lib/sanitize';
 import { generateMarkovLookalikes } from './markov-generator';
-import { generateCctldVariants } from '../lib/brand-cctld-seeder';
+import { buildBrandCandidateUniverse, type BrandAuditDepth, type CandidateSeedSource } from '../lib/brand-candidate-universe';
+import { domainLabelSimilarity as defaultDomainLabelSimilarity } from '../lib/domain-similarity';
 
 /** All supported signal kinds. */
 export type DiscoverSignal =
@@ -67,10 +72,13 @@ export type DiscoverSignal =
 	| 'dkim_key_reuse'
 	| 'http_redirect'
 	| 'mx_overlap'
+	| 'txt_verification'
+	| 'mx_platform'
 	| 'spf_include'
 	| 'spf_include_seed'
 	| 'cname_alignment'
-	| 'markov_gen';
+	| 'markov_gen'
+	| 'active_lookalike';
 
 /** Default signal set used when the caller omits `signals`. */
 const ALL_SIGNALS: DiscoverSignal[] = [
@@ -81,6 +89,8 @@ const ALL_SIGNALS: DiscoverSignal[] = [
 	'dkim_key_reuse',
 	'http_redirect',
 	'mx_overlap',
+	'txt_verification',
+	'mx_platform',
 	'spf_include',
 	'spf_include_seed',
 	'cname_alignment',
@@ -98,10 +108,13 @@ const DEFAULT_SIGNAL_CONFIDENCE: Record<DiscoverSignal, number> = {
 	dkim_key_reuse: 0.95, // DKIM key reuse — near-deterministic (module always overrides)
 	http_redirect: 0.95, // HTTP redirect terminating at seed apex — near-deterministic operational ownership
 	mx_overlap: 0.7, // MX hostname overlap — module supplies per-overlap-kind confidence
+	txt_verification: 0.9, // Shared site/domain verification token — strong account-control evidence
+	mx_platform: 0.55, // Shared mail platform is weak alone but useful when caller/provenance corroborates
 	spf_include: 0.85, // Candidate SPF `include:` of seed-rooted policy — near-deterministic
 	spf_include_seed: 0.85, // Forward-discovery: seed's own SPF chain delegates to a different registrable apex — authoritative mail-policy delegation, near-deterministic
 	cname_alignment: 0.9, // CNAME chain terminating at seed apex/edge — near-deterministic
 	markov_gen: 0.01, // speculative generation — purely a candidate seed, provides no weight on its own
+	active_lookalike: 0.4, // DNS-active lookalike seed, not ownership evidence
 };
 
 /** Threshold above which a candidate is considered auto-include rather than review. */
@@ -120,6 +133,7 @@ const AUTO_INCLUDE_THRESHOLD = 0.85;
 const NEAR_DETERMINISTIC_SIGNALS: ReadonlySet<DiscoverSignal> = new Set([
 	'dkim_key_reuse',
 	'http_redirect',
+	'txt_verification',
 	'spf_include',
 	'spf_include_seed',
 	'cname_alignment',
@@ -133,6 +147,11 @@ interface CandidateAggregator {
 	perSignalConfidence: Map<DiscoverSignal, number>;
 	/** Free-form per-signal source notes — surfaced on the finding's metadata for downstream review. */
 	sources: Record<string, unknown>;
+	candidateSeedSources: CandidateSeedSource[];
+	candidateSeedReasons: string[];
+	sharedTxtVerifications: string[];
+	sharedMxPlatform: string | null;
+	lookalikeScore: number;
 }
 
 /**
@@ -147,18 +166,23 @@ export interface DiscoverBrandDomainsDeps {
 	detectDkimKeyReuse: typeof defaultDetectDkimKeyReuse;
 	detectHttpRedirect: typeof defaultDetectHttpRedirect;
 	detectMxOverlap: typeof defaultDetectMxOverlap;
+	detectSharedTxtVerifications: typeof defaultDetectSharedTxtVerifications;
+	detectSharedMxPlatform: typeof defaultDetectSharedMxPlatform;
 	detectSpfInclude: typeof defaultDetectSpfInclude;
 	extractSeedSpfIncludes: typeof defaultExtractSeedSpfIncludes;
 	detectCnameAlignment: typeof defaultDetectCnameAlignment;
 	generateMarkovLookalikes: typeof generateMarkovLookalikes;
+	domainLabelSimilarity: typeof defaultDomainLabelSimilarity;
 }
 
 /** Tool args shape — the Zod schema lives in `src/schemas/tool-args.ts`. */
 export interface DiscoverBrandDomainsOptions {
 	signals?: DiscoverSignal[];
 	candidate_domains?: string[];
+	brand_aliases?: string[];
 	dkim_selectors?: string[];
 	min_confidence?: number;
+	depth?: BrandAuditDepth;
 	/**
 	 * Optional bv-certstream-worker service binding. Threaded into the SAN
 	 * correlator's primary path — sidesteps crt.sh per-IP throttling and
@@ -197,10 +221,13 @@ function defaultDeps(): DiscoverBrandDomainsDeps {
 		detectDkimKeyReuse: defaultDetectDkimKeyReuse,
 		detectHttpRedirect: defaultDetectHttpRedirect,
 		detectMxOverlap: defaultDetectMxOverlap,
+		detectSharedTxtVerifications: defaultDetectSharedTxtVerifications,
+		detectSharedMxPlatform: defaultDetectSharedMxPlatform,
 		detectSpfInclude: defaultDetectSpfInclude,
 		extractSeedSpfIncludes: defaultExtractSeedSpfIncludes,
 		detectCnameAlignment: defaultDetectCnameAlignment,
 		generateMarkovLookalikes: generateMarkovLookalikes,
+		domainLabelSimilarity: defaultDomainLabelSimilarity,
 	};
 }
 
@@ -216,7 +243,16 @@ function addObservation(
 	if (!lower) return;
 	let entry = agg.get(lower);
 	if (!entry) {
-		entry = { domain: lower, perSignalConfidence: new Map(), sources: {} };
+		entry = {
+			domain: lower,
+			perSignalConfidence: new Map(),
+			sources: {},
+			candidateSeedSources: [],
+			candidateSeedReasons: [],
+			sharedTxtVerifications: [],
+			sharedMxPlatform: null,
+			lookalikeScore: 0,
+		};
 		agg.set(lower, entry);
 	}
 	const existing = entry.perSignalConfidence.get(signal);
@@ -224,6 +260,46 @@ function addObservation(
 		entry.perSignalConfidence.set(signal, confidence);
 	}
 	entry.sources[signal] = sourceNote;
+}
+
+function ensureCandidate(agg: Map<string, CandidateAggregator>, domain: string): CandidateAggregator | null {
+	const lower = domain.trim().toLowerCase().replace(/\.$/, '');
+	if (!lower) return null;
+	let entry = agg.get(lower);
+	if (!entry) {
+		entry = {
+			domain: lower,
+			perSignalConfidence: new Map(),
+			sources: {},
+			candidateSeedSources: [],
+			candidateSeedReasons: [],
+			sharedTxtVerifications: [],
+			sharedMxPlatform: null,
+			lookalikeScore: 0,
+		};
+		agg.set(lower, entry);
+	}
+	return entry;
+}
+
+function addCandidateSeed(
+	agg: Map<string, CandidateAggregator>,
+	domain: string,
+	sources: CandidateSeedSource[],
+	reasons: string[],
+): void {
+	const entry = ensureCandidate(agg, domain);
+	if (!entry) return;
+	for (const source of sources) {
+		if (!entry.candidateSeedSources.includes(source)) entry.candidateSeedSources.push(source);
+	}
+	entry.candidateSeedReasons.push(...reasons);
+	if (sources.some((source) => source !== 'caller_candidate')) {
+		addObservation(agg, domain, 'markov_gen', DEFAULT_SIGNAL_CONFIDENCE.markov_gen, {
+			strategy: 'candidate_seed',
+			sources,
+		});
+	}
 }
 
 /** Run a single signal handler, swallowing errors into a typed status report. */
@@ -276,12 +352,16 @@ export async function discoverBrandDomains(
 		? Math.max(0, Math.min(1, options.min_confidence))
 		: DEFAULT_MIN_CONFIDENCE;
 
-	// Generate Markov lookalikes + ccTLD variants of the seed apex.
-	// Markov-only seeding kept the seed TLD and missed big-brand ccTLD portfolios
-	// (amazon.de, microsoft.uk, nike.fr, …). ccTLD variants close that gap.
-	const markovCandidates = d.generateMarkovLookalikes(seedDomain, 20);
-	const cctldCandidates = generateCctldVariants(seedDomain);
-	const mergedCandidates = Array.from(new Set([...candidateDomains, ...markovCandidates, ...cctldCandidates]));
+	const depth = options.depth ?? 'standard';
+	const markovCandidates = d.generateMarkovLookalikes(seedDomain, depth === 'deep' ? 60 : 20);
+	const universe = buildBrandCandidateUniverse({
+		seedDomain,
+		candidateDomains,
+		markovCandidates,
+		brandAliases: options.brand_aliases,
+		depth,
+	});
+	const mergedCandidates = universe.candidates.map((candidate) => candidate.domain);
 
 	// Pre-validate seed via the SAN correlator's strict guard. correlateSans
 	// throws on invalid input (programmer error) — we let that escape.
@@ -296,18 +376,8 @@ export async function discoverBrandDomains(
 	type Job = () => Promise<void>;
 	const aggregator = new Map<string, CandidateAggregator>();
 
-	// Seed the aggregator with markov candidates.
-	for (const mc of markovCandidates) {
-		addObservation(aggregator, mc, 'markov_gen', DEFAULT_SIGNAL_CONFIDENCE.markov_gen, {
-			strategy: 'trigram_markov',
-		});
-	}
-	// Seed ccTLD variants so single-signal NS-overlap matches can clear the
-	// corroboration gate (markov_gen + ns = 2 distinct signal kinds).
-	for (const cc of cctldCandidates) {
-		addObservation(aggregator, cc, 'markov_gen', DEFAULT_SIGNAL_CONFIDENCE.markov_gen, {
-			strategy: 'cctld_variant',
-		});
+	for (const candidate of universe.candidates) {
+		addCandidateSeed(aggregator, candidate.domain, candidate.sources, candidate.reasons);
 	}
 
 	const signalStatus: Record<string, { status: string; error?: string }> = {};
@@ -417,6 +487,50 @@ export async function discoverBrandDomains(
 			signalStatus.mx_overlap = { status: out.value.queryStatus };
 			for (const c of out.value.coOwnedDomains) {
 				addObservation(aggregator, c.domain, 'mx_overlap', c.confidence, c.evidence);
+			}
+		});
+	}
+
+	if (signals.includes('txt_verification')) {
+		jobs.push(async () => {
+			const out = await runSignal<TxtVerificationResult>(() =>
+				d.detectSharedTxtVerifications(seedDomain, { candidateDomains: mergedCandidates }),
+			);
+			if (!out.ok) {
+				signalStatus.txt_verification = { status: 'failed', error: out.error };
+				return;
+			}
+			signalStatus.txt_verification = { status: out.value.queryStatus };
+			for (const c of out.value.coOwnedDomains) {
+				addObservation(aggregator, c.domain, 'txt_verification', c.confidence, {
+					sharedTxtVerifications: c.sharedTxtVerifications,
+				});
+				const entry = aggregator.get(c.domain.trim().toLowerCase().replace(/\.$/, ''));
+				if (entry) {
+					entry.sharedTxtVerifications = Array.from(
+						new Set([...entry.sharedTxtVerifications, ...c.sharedTxtVerifications]),
+					).sort();
+				}
+			}
+		});
+	}
+
+	if (signals.includes('mx_platform')) {
+		jobs.push(async () => {
+			const out = await runSignal<MxPlatformResult>(() =>
+				d.detectSharedMxPlatform(seedDomain, { candidateDomains: mergedCandidates }),
+			);
+			if (!out.ok) {
+				signalStatus.mx_platform = { status: 'failed', error: out.error };
+				return;
+			}
+			signalStatus.mx_platform = { status: out.value.queryStatus };
+			for (const c of out.value.coOwnedDomains) {
+				addObservation(aggregator, c.domain, 'mx_platform', c.confidence, {
+					sharedMxPlatform: c.sharedMxPlatform,
+				});
+				const entry = aggregator.get(c.domain.trim().toLowerCase().replace(/\.$/, ''));
+				if (entry) entry.sharedMxPlatform = c.sharedMxPlatform;
 			}
 		});
 	}
@@ -538,21 +652,45 @@ export async function discoverBrandDomains(
 
 	// Build candidate findings.
 	const candidateFindings: Finding[] = [];
-	const surviving: Array<{ domain: string; combined: number; signals: DiscoverSignal[]; sources: Record<string, unknown> }> = [];
+	const dropCounts = {
+		seedOrSubdomain: 0,
+		infrastructureProvider: 0,
+		corroborationGate: 0,
+		belowConfidence: 0,
+	};
+	const surviving: Array<{
+		domain: string;
+		combined: number;
+		signals: DiscoverSignal[];
+		sources: Record<string, unknown>;
+		candidateSeedSources: CandidateSeedSource[];
+		candidateSeedReasons: string[];
+		sharedTxtVerifications: string[];
+		sharedMxPlatform: string | null;
+		lookalikeScore: number;
+	}> = [];
 
 	for (const entry of aggregator.values()) {
 		// Drop the seed or its subdomains if they accidentally appear (e.g. self-referenced rua=).
-		if (isSubdomainOf(entry.domain, seedDomain)) continue;
+		if (isSubdomainOf(entry.domain, seedDomain)) {
+			dropCounts.seedOrSubdomain++;
+			continue;
+		}
 
 		const perSignal = Array.from(entry.perSignalConfidence.entries());
 
 		const signalKinds = perSignal.map(([k]) => k).sort() as DiscoverSignal[];
+		const lookalikeScore = round4(d.domainLabelSimilarity(seedDomain, entry.domain));
+		entry.lookalikeScore = lookalikeScore;
 
 		// Only suppress infrastructure providers when the *sole* signal is dmarc_rua
 		// (RUA mailboxes are processors, not siblings). Other signals (san, ns,
 		// dkim_key_reuse, http_redirect, ...) legitimately surface brand-owned
 		// infra like outlook.com / azure.com / amazonaws.com.
-		if (isInfrastructureProvider(entry.domain) && signalKinds.every(s => s === 'dmarc_rua')) continue;
+		if (isInfrastructureProvider(entry.domain) && signalKinds.every((s) => s === 'dmarc_rua')) {
+			dropCounts.infrastructureProvider++;
+			continue;
+		}
 
 		// Corroboration Requirement: a candidate must be corroborated by ≥2 distinct
 		// signals OR be a single near-deterministic signal. Filters single-signal
@@ -566,13 +704,27 @@ export async function discoverBrandDomains(
 			signalKinds.length === 1 &&
 			!NEAR_DETERMINISTIC_SIGNALS.has(signalKinds[0])
 		) {
+			dropCounts.corroborationGate++;
 			continue;
 		}
 
 		const combined = round4(combineConfidences(perSignal.map(([, c]) => c)));
-		if (combined < minConfidence) continue;
+		if (combined < minConfidence) {
+			dropCounts.belowConfidence++;
+			continue;
+		}
 		
-		surviving.push({ domain: entry.domain, combined, signals: signalKinds, sources: entry.sources });
+		surviving.push({
+			domain: entry.domain,
+			combined,
+			signals: signalKinds,
+			sources: entry.sources,
+			candidateSeedSources: entry.candidateSeedSources.slice(),
+			candidateSeedReasons: Array.from(new Set(entry.candidateSeedReasons)),
+			sharedTxtVerifications: entry.sharedTxtVerifications.slice(),
+			sharedMxPlatform: entry.sharedMxPlatform,
+			lookalikeScore,
+		});
 	}
 
 	surviving.sort((a, b) => b.combined - a.combined || a.domain.localeCompare(b.domain));
@@ -590,6 +742,11 @@ export async function discoverBrandDomains(
 					signals: cand.signals,
 					combinedConfidence: cand.combined,
 					sources: cand.sources,
+					candidateSeedSources: cand.candidateSeedSources,
+					candidateSeedReasons: cand.candidateSeedReasons,
+					sharedTxtVerifications: cand.sharedTxtVerifications,
+					sharedMxPlatform: cand.sharedMxPlatform,
+					lookalikeScore: cand.lookalikeScore,
 				},
 			),
 		);
@@ -608,6 +765,13 @@ export async function discoverBrandDomains(
 			minConfidence,
 			totalAggregated: aggregator.size,
 			surfaced: candidateFindings.length,
+			candidateUniverse: {
+				seeded: universe.stats.seeded,
+				probed: mergedCandidates.length,
+				surfaced: candidateFindings.length,
+				dropped: dropCounts,
+				sources: universe.stats.sources,
+			},
 		},
 	);
 

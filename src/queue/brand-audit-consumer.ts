@@ -39,6 +39,9 @@ export const BrandAuditQueueMessageSchema = z.object({
 	target: z.string().min(1).max(253),
 	format: z.enum(['json', 'markdown', 'both']),
 	min_confidence: z.number().min(0).max(1).optional(),
+	depth: z.enum(['standard', 'deep']).optional(),
+	brand_aliases: z.array(z.string().min(2).max(64)).max(20).optional(),
+	candidate_domains: z.array(z.string().min(1).max(253)).max(250).optional(),
 	/** Set when the message originated from the watch cron — drives post-completion diff/webhook. */
 	watchId: z.string().min(1).max(64).optional(),
 	/** Bound at enqueue time so the consumer doesn't need a D1 round-trip to look up the watch's owner. */
@@ -50,7 +53,16 @@ export type BrandAuditQueueMessage = z.infer<typeof BrandAuditQueueMessageSchema
 export interface BrandAuditConsumerDeps {
 	db: D1Database;
 	/** Injectable for tests. */
-	brandAuditSingle?: (target: string, options: { format?: 'json' | 'markdown' | 'both'; min_confidence?: number }) => Promise<CheckResult>;
+	brandAuditSingle?: (
+		target: string,
+		options: {
+			format?: 'json' | 'markdown' | 'both';
+			min_confidence?: number;
+			depth?: 'standard' | 'deep';
+			brand_aliases?: string[];
+			candidate_domains?: string[];
+		},
+	) => Promise<CheckResult>;
 	/** Clock override for tests. */
 	now?: () => number;
 	/**
@@ -147,6 +159,9 @@ export async function processBrandAuditMessage(
 			single(message.target, {
 				format: message.format,
 				min_confidence: message.min_confidence,
+				depth: message.depth,
+				brand_aliases: message.brand_aliases,
+				candidate_domains: message.candidate_domains,
 			}),
 			new Promise<never>((_, reject) =>
 				setTimeout(

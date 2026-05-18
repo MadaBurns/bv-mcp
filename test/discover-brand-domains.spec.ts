@@ -66,8 +66,25 @@ function makeDeps(overrides: Partial<DiscoverBrandDomainsDeps> = {}): DiscoverBr
 		detectDkimKeyReuse: vi.fn().mockResolvedValue(okDkim([])),
 		detectHttpRedirect: vi.fn().mockResolvedValue(okEmpty),
 		detectMxOverlap: vi.fn().mockResolvedValue(okEmpty),
+		detectSharedTxtVerifications: vi.fn().mockResolvedValue({
+			seedDomain: 'example.com',
+			coOwnedDomains: [],
+			queryStatus: 'ok' as const,
+		}),
+		detectSharedMxPlatform: vi.fn().mockResolvedValue({
+			seedDomain: 'example.com',
+			coOwnedDomains: [],
+			queryStatus: 'ok' as const,
+		}),
 		detectSpfInclude: vi.fn().mockResolvedValue(okEmpty),
+		extractSeedSpfIncludes: vi.fn().mockResolvedValue({
+			seedDomain: 'example.com',
+			candidates: [],
+			queryStatus: 'ok' as const,
+		}),
 		detectCnameAlignment: vi.fn().mockResolvedValue(okEmpty),
+		generateMarkovLookalikes: vi.fn().mockReturnValue([]),
+		domainLabelSimilarity: vi.fn().mockReturnValue(0),
 		...overrides,
 	};
 }
@@ -145,6 +162,47 @@ describe('discoverBrandDomains', () => {
 		expect(candidates[0].metadata?.candidate).toBe('partner.com');
 	});
 
+	it('populates candidate seed provenance and classifier enrichment metadata', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const deps = makeDeps({
+			correlateNs: vi.fn().mockResolvedValue(okNs([{ domain: 'example.net', confidence: 1 }])),
+			detectSharedTxtVerifications: vi.fn().mockResolvedValue({
+				seedDomain: 'example.com',
+				coOwnedDomains: [
+					{ domain: 'example-shop.test', sharedTxtVerifications: ['google-site-verification=abc'], confidence: 0.9 },
+				],
+				queryStatus: 'ok',
+			}),
+			detectSharedMxPlatform: vi.fn().mockResolvedValue({
+				seedDomain: 'example.com',
+				coOwnedDomains: [
+					{ domain: 'example-mail.test', sharedMxPlatform: 'google_workspace', confidence: 0.55 },
+				],
+				queryStatus: 'ok',
+			}),
+		});
+
+		const result = await discoverBrandDomains(
+			'example.com',
+			{
+				signals: ['ns', 'txt_verification', 'mx_platform'],
+				candidate_domains: ['example-shop.test', 'example-mail.test'],
+				min_confidence: 0.1,
+			},
+			deps,
+		);
+
+		const shop = result.findings.find((f) => f.metadata?.candidate === 'example-shop.test');
+		const mail = result.findings.find((f) => f.metadata?.candidate === 'example-mail.test');
+		const net = result.findings.find((f) => f.metadata?.candidate === 'example.net');
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+
+		expect(shop?.metadata?.sharedTxtVerifications).toEqual(['google-site-verification=abc']);
+		expect(mail?.metadata?.sharedMxPlatform).toBe('google_workspace');
+		expect(net?.metadata?.candidateSeedSources).toContain('tld_sweep');
+		expect(summary?.metadata?.candidateUniverse).toMatchObject({ seeded: expect.any(Number), surfaced: 3 });
+	});
+
 	it('returns missingControl finding when signal modules all throw (DNS-failure resilience)', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const failing = vi.fn().mockRejectedValue(new Error('DNS error'));
@@ -156,6 +214,8 @@ describe('discoverBrandDomains', () => {
 			detectDkimKeyReuse: failing,
 			detectHttpRedirect: failing,
 			detectMxOverlap: failing,
+			detectSharedTxtVerifications: failing,
+			detectSharedMxPlatform: failing,
 			detectSpfInclude: failing,
 			extractSeedSpfIncludes: failing,
 			detectCnameAlignment: failing,
@@ -198,12 +258,12 @@ describe('discoverBrandDomains', () => {
 		const nsSpy = vi.fn().mockResolvedValue(okNs([]));
 		const ruaSpy = vi.fn().mockResolvedValue(okRua([]));
 		const dkimSpy = vi.fn().mockResolvedValue(okDkim([]));
-		const deps: DiscoverBrandDomainsDeps = {
+		const deps = makeDeps({
 			correlateSans: sanSpy,
 			correlateNs: nsSpy,
 			mineDmarcRua: ruaSpy,
 			detectDkimKeyReuse: dkimSpy,
-		};
+		});
 		await discoverBrandDomains('example.com', { signals: ['san'] }, deps);
 		expect(sanSpy).toHaveBeenCalled();
 		expect(nsSpy).not.toHaveBeenCalled();
