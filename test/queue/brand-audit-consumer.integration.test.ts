@@ -55,7 +55,18 @@ function makeMockD1(opts: MakeMockOpts = {}) {
 				async run() {
 					calls.push({ sql, binds });
 					if (opts.throwOnUpdate && sql.includes('UPDATE')) throw new Error('d1_update_failed');
-					return { success: true, meta: { changes: 1, last_row_id: 0, duration: 0, rows_read: 0, rows_written: 1, size_after: 0 } };
+					// Model the conditional-claim UPDATE: when SQL filters on
+					// `status = 'queued'` but the mocked row isn't queued, return
+					// changes=0 so the consumer sees "another worker already claimed".
+					let changes = 1;
+					if (
+						sql.includes('UPDATE brand_audit_targets') &&
+						sql.includes("status = 'queued'") &&
+						(opts.target?.status ?? 'queued') !== 'queued'
+					) {
+						changes = 0;
+					}
+					return { success: true, meta: { changes, last_row_id: 0, duration: 0, rows_read: 0, rows_written: changes, size_after: 0 } };
 				},
 				async all() {
 					calls.push({ sql, binds });
@@ -96,6 +107,39 @@ describe('processBrandAuditMessage', () => {
 
 		const auditTick = calls.find((c) => c.sql.includes('UPDATE brand_audits') && c.sql.includes('completed_targets'));
 		expect(auditTick).toBeDefined();
+	});
+
+	it('acks without re-running when the row is already running (queue redelivery race)', async () => {
+		// Cloudflare Queues visibility timeout is ~30s but a deep brand audit
+		// runs for ~3min. Without an atomic claim, every redelivery would
+		// re-enter brandAuditSingle while the first invocation is still running,
+		// producing parallel-execution thrash that wedges the audit. The fix:
+		// rely on the conditional `WHERE status = 'queued'` UPDATE to mutually
+		// exclude — only the consumer whose UPDATE matches 1 row may proceed.
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db, calls } = makeMockD1({
+			target: { status: 'running', completed_at: null },
+		});
+		const brandAuditSingle = vi.fn().mockResolvedValue({ category: 'brand_discovery', score: 100, findings: [] });
+
+		const verdict = await processBrandAuditMessage(
+			{ auditId: 'aud-1', target: 'brand-alpha.com', format: 'json' },
+			{ db, brandAuditSingle, now: () => 1_750_000_000_000 },
+		);
+
+		expect(verdict).toBe('ack');
+		expect(brandAuditSingle).not.toHaveBeenCalled();
+		// Conditional claim UPDATE issued, terminal-status UPDATE not.
+		const claimAttempt = calls.find(
+			(c) => c.sql.includes('UPDATE brand_audit_targets') && c.sql.includes("status = 'queued'"),
+		);
+		expect(claimAttempt).toBeDefined();
+		const terminalUpdate = calls.find(
+			(c) =>
+				c.sql.includes('UPDATE brand_audit_targets SET status = ?') &&
+				(c.binds[0] === 'completed' || c.binds[0] === 'failed'),
+		);
+		expect(terminalUpdate).toBeUndefined();
 	});
 
 	it('marks the parent audit running when a queued target starts', async () => {
