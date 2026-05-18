@@ -40,7 +40,7 @@ export async function detectSharedMxPlatform(
 	const dnsQuery =
 		options.dnsContext?.query ??
 		options.dnsQuery ??
-		((name, type) => queryDns(name, type) as Promise<{ Answer?: Array<{ data?: string }> }>);
+		((name: string, type: string) => queryDns(name, type as 'MX') as Promise<{ Answer?: Array<{ data?: string }> }>);
 	let seedPlatform: string | null;
 	try {
 		const seed = await dnsQuery(seedDomain, 'MX');

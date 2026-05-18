@@ -4,7 +4,11 @@ import { queryDns } from '../../lib/dns-transport';
 import type { DohResponse, RecordTypeName } from '../../lib/dns-types';
 import { Semaphore } from '../../lib/semaphore';
 
-export type DiscoveryDnsQuery = (name: string, type: RecordTypeName) => Promise<DohResponse>;
+export type DiscoveryDnsQuery = (
+	name: string,
+	type: RecordTypeName,
+	opts?: { signal?: AbortSignal },
+) => Promise<DohResponse>;
 
 export interface DiscoveryDnsContext {
 	query: DiscoveryDnsQuery;
@@ -14,6 +18,13 @@ export interface DiscoveryDnsContext {
 export interface DiscoveryDnsContextOptions {
 	maxConcurrent?: number;
 	baseQuery?: DiscoveryDnsQuery;
+	/**
+	 * Caller-supplied abort signal forwarded into every `baseQuery` call so the
+	 * underlying `queryDns` → `fetch` chain can be cancelled when the audit
+	 * budget fires. Once the context holds a signal, every probe inherits
+	 * cancellation without per-probe code changes.
+	 */
+	signal?: AbortSignal;
 }
 
 export function createDiscoveryDnsContext(options: DiscoveryDnsContextOptions = {}): DiscoveryDnsContext {
@@ -25,13 +36,21 @@ export function createDiscoveryDnsContext(options: DiscoveryDnsContextOptions = 
 		cacheHits: 0,
 		errors: 0,
 	};
+	const contextSignal = options.signal;
 
 	const baseQuery =
 		options.baseQuery ??
-		((name: string, type: RecordTypeName) => queryDns(name, type, false, { queryCache: transportCache, dnsSemaphore: semaphore }));
+		((name: string, type: RecordTypeName, opts?: { signal?: AbortSignal }) =>
+			queryDns(name, type, false, { queryCache: transportCache, dnsSemaphore: semaphore, signal: opts?.signal }));
 
 	const query: DiscoveryDnsQuery = (name, type) => {
 		counters.queries++;
+		// Fast-fail when the context signal is already aborted — saves a wasted
+		// fetch on every probe call after the audit budget has fired.
+		if (contextSignal?.aborted) {
+			counters.errors++;
+			return Promise.reject(new Error('discovery dns context aborted'));
+		}
 		const normalizedName = normalizeDnsName(name);
 		const cacheKey = `${normalizedName}:${type}`;
 		const existing = discoveryCache.get(cacheKey);
@@ -40,7 +59,8 @@ export function createDiscoveryDnsContext(options: DiscoveryDnsContextOptions = 
 			return existing;
 		}
 
-		const runQuery = options.baseQuery ? () => semaphore.run(() => baseQuery(normalizedName, type)) : () => baseQuery(normalizedName, type);
+		const call = () => baseQuery(normalizedName, type, contextSignal ? { signal: contextSignal } : undefined);
+		const runQuery = options.baseQuery ? () => semaphore.run(call) : call;
 		const promise = runQuery().catch((err) => {
 			counters.errors++;
 			discoveryCache.delete(cacheKey);

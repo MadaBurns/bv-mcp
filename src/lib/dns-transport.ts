@@ -129,6 +129,7 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 	const retries = opts?.retries ?? DNS_RETRIES;
 	const confirmWithSecondaryOnEmpty = opts?.confirmWithSecondaryOnEmpty ?? DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY;
 	const sem = opts?.dnsSemaphore;
+	const callerSignal = opts?.signal;
 	const url = buildDohUrl(DOH_ENDPOINT, domain, type, dnssecCheck);
 
 	/** Optionally run a fetch through the semaphore when one is provided. */
@@ -136,16 +137,34 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 		sem ? sem.run(() => fetch(input, init)) : fetch(input, init);
 
 	for (let attempt = 0; attempt <= retries; attempt++) {
+		// Caller-abort short-circuits before each attempt — don't bother
+		// kicking off a new fetch the caller has already cancelled.
+		if (callerSignal?.aborted) {
+			throw new DnsQueryError(`DNS query aborted by caller`, domain, type);
+		}
+
 		let response: Response;
+		// Compose the per-attempt signal: internal timeout + caller signal.
+		// Either firing aborts the fetch. AbortSignal.any is a standard Web API
+		// available in workerd; falls back gracefully if the caller didn't pass
+		// a signal (timeout alone).
+		const fetchSignal = callerSignal
+			? AbortSignal.any([AbortSignal.timeout(timeoutMs), callerSignal])
+			: AbortSignal.timeout(timeoutMs);
 
 		try {
 			response = await guardedFetch(url, {
 				method: 'GET',
 				headers: { Accept: 'application/dns-json' },
-				signal: AbortSignal.timeout(timeoutMs),
+				signal: fetchSignal,
 				cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true },
 			});
 		} catch (err) {
+			// Caller-supplied abort: propagate immediately, do NOT retry. The
+			// caller's intent is "stop now"; another attempt would defeat that.
+			if (callerSignal?.aborted) {
+				throw new DnsQueryError(`DNS query aborted by caller`, domain, type);
+			}
 			if (err instanceof DOMException && err.name === 'AbortError') {
 				if (attempt < retries) {
 					await retryDelay(attempt);

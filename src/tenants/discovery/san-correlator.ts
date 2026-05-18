@@ -72,6 +72,14 @@ export interface SanCorrelationOptions {
 	 * discovery use different crt.sh query shapes and different result filters.
 	 */
 	certstream?: { fetch: typeof fetch };
+	/**
+	 * Caller-supplied abort signal. Cancels in-flight crt.sh fetches when the
+	 * audit budget fires — the JSON parse for tier-1 brands (walmart-scale)
+	 * is the single largest CPU sink in the orchestrator, so cancelling it
+	 * mid-stream is what lets the consumer's catch handler win the race
+	 * against CF's CPU kill.
+	 */
+	signal?: AbortSignal;
 }
 
 /** Response shape from bv-certstream-worker `/sans` endpoint. */
@@ -221,15 +229,22 @@ async function attemptCorrelation(
 	timeoutMs: number,
 	maxCerts: number,
 	fetchFn: typeof fetch,
+	callerSignal?: AbortSignal,
 ): Promise<SanCorrelationResult> {
+	if (callerSignal?.aborted) return emptyResult(seedLower, 'timeout');
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+	// Compose internal timeout + caller signal. Either firing cancels the fetch
+	// — and critically aborts the streaming JSON parse below before it consumes
+	// the worker's CPU budget chewing through a multi-MB crt.sh response.
+	const fetchSignal = callerSignal ? AbortSignal.any([controller.signal, callerSignal]) : controller.signal;
 
 	let response: Response;
 	try {
-		response = await fetchFn(url, { signal: controller.signal, redirect: 'manual' });
+		response = await fetchFn(url, { signal: fetchSignal, redirect: 'manual' });
 	} catch (err) {
 		clearTimeout(timeoutId);
+		if (callerSignal?.aborted) return emptyResult(seedLower, 'timeout');
 		if (err instanceof Error && err.name === 'AbortError') return emptyResult(seedLower, 'timeout');
 		return emptyResult(seedLower, 'error');
 	}
@@ -416,6 +431,10 @@ export async function correlateSansRecursive(
 	let cursor = 0;
 	async function worker(): Promise<void> {
 		while (true) {
+			if (options.signal?.aborted) {
+				budgetExceeded = true;
+				return;
+			}
 			const idx = cursor++;
 			if (idx >= probedList.length) return;
 			const remaining = deadline - Date.now();
@@ -482,8 +501,12 @@ export async function correlateSans(
 
 	let result: SanCorrelationResult = emptyResult(seedLower, 'error');
 	for (let attempt = 0; attempt <= maxRetries; attempt++) {
-		result = await attemptCorrelation(seedLower, url, timeoutMs, maxCerts, fetchFn);
+		if (options.signal?.aborted) return result;
+		result = await attemptCorrelation(seedLower, url, timeoutMs, maxCerts, fetchFn, options.signal);
 		if (result.queryStatus === 'ok') return result;
+		// Caller-abort during the attempt → do not retry, propagate the
+		// timeout-shaped empty result.
+		if (options.signal?.aborted) return result;
 		if (attempt < maxRetries) {
 			const base = initialBackoffMs * Math.pow(2, attempt);
 			const jitterFactor = 0.5 + Math.random();
