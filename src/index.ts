@@ -853,7 +853,12 @@ export default {
 				return;
 			}
 			const pdfQueue = e.BRAND_AUDIT_PDF_QUEUE as BrandAuditConsumerDeps['pdfQueue'] | undefined;
-			const deps: BrandAuditConsumerDeps = { db, pdfQueue };
+			// Phase 2b: thread the BRAND_AUDIT_QUEUE binding back into the consumer
+			// so the retry-enqueue path can fire. Same binding the producer uses;
+			// the consumer enqueues a `retry_attempt: 1` message back onto itself
+			// when a completed audit has registrar lookup_failed candidates.
+			const brandAuditQueue = e.BRAND_AUDIT_QUEUE as BrandAuditConsumerDeps['brandAuditQueue'] | undefined;
+			const deps: BrandAuditConsumerDeps = { db, pdfQueue, brandAuditQueue };
 			await handleBrandAuditQueue(batch, deps);
 			return;
 		}
