@@ -19,6 +19,7 @@ import { scoreWindow } from './lib/fuzzing-detector';
 import { readWindow } from './lib/fuzzing-counter';
 import { buildFuzzingAlertPayload } from './schemas/alerting';
 import { FUZZ_THRESHOLDS } from './lib/config';
+import { reapStuckBrandAudits } from './lib/brand-audit-reaper';
 
 interface AnomalyRow {
 	total_calls?: number;
@@ -40,6 +41,7 @@ export interface ScheduledEnv {
 	ALERT_RATE_LIMIT_THRESHOLD?: string;
 	ALERT_LOOKBACK_MINUTES?: string;
 	RATE_LIMIT?: KVNamespace;
+	BRAND_AUDIT_DB?: D1Database;
 }
 
 const DEFAULT_ERROR_THRESHOLD = 5;
@@ -49,6 +51,34 @@ const DEFAULT_LOOKBACK_MINUTES = 15;
 
 /** Main scheduled handler — called by Cron Trigger. */
 export async function handleScheduled(env: ScheduledEnv): Promise<void> {
+	// Brand-audit reaper runs unconditionally — it's the backstop for stuck
+	// `running` target rows the consumer's 300s cap doesn't unwedge. Cheap
+	// (one SELECT, often zero matches) and independent of alerting config.
+	if (env.BRAND_AUDIT_DB) {
+		try {
+			const reap = await reapStuckBrandAudits({ db: env.BRAND_AUDIT_DB });
+			if (reap.reapedTargets > 0 || reap.scannedRows > 0) {
+				logEvent({
+					timestamp: new Date().toISOString(),
+					category: 'scheduled',
+					result: 'brand_audit_reaper',
+					severity: reap.skippedOverCap ? 'warn' : 'info',
+					details: {
+						scanned: reap.scannedRows,
+						reaped: reap.reapedTargets,
+						finalized: reap.finalizedAudits,
+						skippedOverCap: reap.skippedOverCap,
+					},
+				});
+			}
+		} catch (err) {
+			logError(err instanceof Error ? err : String(err), {
+				category: 'scheduled',
+				result: 'brand_audit_reaper_failed',
+			});
+		}
+	}
+
 	if (!env.ALERT_WEBHOOK_URL) return;
 	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return;
 
