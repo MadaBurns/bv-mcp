@@ -14,7 +14,11 @@ export type BrandEvidenceSignal =
 	| 'spf_include_seed'
 	| 'cname_alignment'
 	| 'markov_gen'
-	| 'active_lookalike';
+	| 'active_lookalike'
+	// Ground-truth Phase-5 signals — brand-authored declarations that bypass
+	// the downstream signal sweep but still need a tier classification.
+	| 'app_links'
+	| 'bounty_scope';
 
 export type BrandEvidenceTier = 'strong' | 'medium' | 'weak';
 
@@ -36,6 +40,8 @@ const STRONG_SIGNALS: ReadonlySet<BrandEvidenceSignal> = new Set([
 	'spf_include_seed',
 	'cname_alignment',
 	'san_recursive',
+	'app_links',
+	'bounty_scope',
 ]);
 
 const MEDIUM_SIGNALS: ReadonlySet<BrandEvidenceSignal> = new Set([

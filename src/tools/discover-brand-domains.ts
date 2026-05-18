@@ -65,6 +65,25 @@ import { buildBrandCandidateUniverse, type BrandAuditDepth, type CandidateSeedSo
 import { domainLabelSimilarity as defaultDomainLabelSimilarity } from '../lib/domain-similarity';
 import { checkLookalikes as defaultCheckLookalikes } from './check-lookalikes';
 import { clearsOwnershipGate, type BrandEvidenceObservation } from '../lib/brand-evidence';
+import { detectAppLinks } from '../tenants/discovery/app-links-detector';
+import { detectBountyScope, type BountyPlatform } from '../tenants/discovery/bounty-scope-detector';
+
+/**
+ * Built-in bug-bounty program handles for the Phase-5 demo brands. Replace
+ * with a D1-backed tenant config table once the UI lands. Brands not in the
+ * map simply skip the bounty-scope detector; no harm done.
+ */
+const PHASE5_BOUNTY_HANDLES: Record<string, Partial<Record<BountyPlatform, string>>> = {
+	'walmart.com': { hackerone: 'walmart' },
+	'disney.com': { hackerone: 'disney' },
+	'marriott.com': { hackerone: 'marriott' },
+	'bankofamerica.com': { hackerone: 'bankofamerica' },
+	'mastercard.com': { hackerone: 'mastercard' },
+	'paypal.com': { hackerone: 'paypal' },
+	'github.com': { hackerone: 'github' },
+	'shopify.com': { hackerone: 'shopify' },
+	'uber.com': { hackerone: 'uber' },
+};
 
 /** All supported signal kinds. */
 export type DiscoverSignal =
@@ -81,7 +100,13 @@ export type DiscoverSignal =
 	| 'spf_include_seed'
 	| 'cname_alignment'
 	| 'markov_gen'
-	| 'active_lookalike';
+	| 'active_lookalike'
+	// Ground-truth signals (Phase-5): brand-declared scope from
+	// `/.well-known/apple-app-site-association`, `assetlinks.json`, and public
+	// bug-bounty platforms. These bypass the downstream signal sweep — they
+	// don't need NS/SAN/MX corroboration because the brand has authored them.
+	| 'app_links'
+	| 'bounty_scope';
 
 /** Default signal set used when the caller omits `signals`. */
 const ALL_SIGNALS: DiscoverSignal[] = [
@@ -118,6 +143,8 @@ const DEFAULT_SIGNAL_CONFIDENCE: Record<DiscoverSignal, number> = {
 	cname_alignment: 0.9, // CNAME chain terminating at seed apex/edge — near-deterministic
 	markov_gen: 0.01, // speculative generation — purely a candidate seed, provides no weight on its own
 	active_lookalike: 0.4, // DNS-active lookalike seed, not ownership evidence
+	app_links: 1.0, // brand-authored /.well-known files — Apple/Google verify before publication
+	bounty_scope: 1.0, // brand-declared bug-bounty scope — strongest possible ownership signal
 };
 
 /** Threshold above which a candidate is considered auto-include rather than review. */
@@ -376,7 +403,6 @@ export async function discoverBrandDomains(
 		brandAliases: options.brand_aliases,
 		depth,
 	});
-	const mergedCandidates = universe.candidates.map((candidate) => candidate.domain);
 
 	// Pre-validate seed via the SAN correlator's strict guard. correlateSans
 	// throws on invalid input (programmer error) — we let that escape.
@@ -396,6 +422,53 @@ export async function discoverBrandDomains(
 	}
 
 	const signalStatus: Record<string, { status: string; error?: string }> = { ...preSignalStatus };
+
+	// Phase-5 ground-truth signals (app-links + bounty-scope). Their domains
+	// land directly in the aggregator as confidence-1.0 observations and join
+	// `callerAssertedDomains` so the corroboration gate bypasses them. They are
+	// then *excluded* from `mergedCandidates` — the downstream signal sweep
+	// skips probing them entirely, since brand-authored declarations need no
+	// further proof. Previous attempt (commit 8df859a, reverted) added them via
+	// `candidateDomains` instead, blowing the consumer's 300s cap on fan-out.
+	const seedNorm = seedDomain.trim().toLowerCase().replace(/\.$/, '');
+	const groundTruthBypass = new Set<string>();
+
+	const appLinksOut = await runSignal(() => detectAppLinks(seedDomain));
+	if (appLinksOut.ok) {
+		signalStatus.app_links = { status: appLinksOut.value.queryStatus };
+		for (const c of appLinksOut.value.coOwnedDomains) {
+			if (!c.domain || c.domain === seedNorm) continue;
+			addObservation(aggregator, c.domain, 'app_links', DEFAULT_SIGNAL_CONFIDENCE.app_links, c.evidence);
+			callerAssertedDomains.add(c.domain);
+			groundTruthBypass.add(c.domain);
+		}
+	} else {
+		signalStatus.app_links = { status: 'failed', error: appLinksOut.error };
+	}
+
+	const bountyHandles = PHASE5_BOUNTY_HANDLES[seedNorm] ?? {};
+	if (Object.keys(bountyHandles).length > 0) {
+		const bountyOut = await runSignal(() => detectBountyScope(seedDomain, { handles: bountyHandles }));
+		if (bountyOut.ok) {
+			signalStatus.bounty_scope = { status: bountyOut.value.queryStatus };
+			for (const c of bountyOut.value.coOwnedDomains) {
+				if (!c.domain || c.domain === seedNorm) continue;
+				addObservation(aggregator, c.domain, 'bounty_scope', DEFAULT_SIGNAL_CONFIDENCE.bounty_scope, c.evidence);
+				callerAssertedDomains.add(c.domain);
+				groundTruthBypass.add(c.domain);
+			}
+		} else {
+			signalStatus.bounty_scope = { status: 'failed', error: bountyOut.error };
+		}
+	}
+
+	// Universe candidates feed the signal sweep, MINUS the ground-truth
+	// bypass set. Bypassed domains stay in the aggregator (already added
+	// above) but are never sent to the existing 12 signal probes.
+	const mergedCandidates = universe.candidates
+		.map((candidate) => candidate.domain)
+		.filter((d) => !groundTruthBypass.has(d));
+
 	const jobs: Job[] = [];
 
 	// Captured first-order SAN hits — fed into the second-order recursive pass below.

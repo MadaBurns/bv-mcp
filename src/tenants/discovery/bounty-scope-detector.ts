@@ -222,11 +222,20 @@ const PLATFORM_PARSERS: Record<BountyPlatform, (raw: unknown) => BountyScopeAsse
 	intigriti: parseIntigritiScope,
 };
 
+/** Per-fetch wall budget. The detector runs inside the 300s consumer cap
+ * alongside ~12 downstream signal probes — every external fetch here must
+ * time out fast to preserve the budget. A slow / unresponsive bounty
+ * platform loses its scope contribution for this audit but never wedges it. */
+const BOUNTY_FETCH_TIMEOUT_MS = 5000;
+
 async function defaultFetcher(url: string): Promise<{ status: number; body: unknown } | null> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), BOUNTY_FETCH_TIMEOUT_MS);
 	try {
 		const res = await fetch(url, {
 			redirect: 'manual',
 			headers: { accept: 'application/json' },
+			signal: controller.signal,
 		});
 		let body: unknown = null;
 		try {
@@ -237,6 +246,8 @@ async function defaultFetcher(url: string): Promise<{ status: number; body: unkn
 		return { status: res.status, body };
 	} catch {
 		return null;
+	} finally {
+		clearTimeout(timer);
 	}
 }
 

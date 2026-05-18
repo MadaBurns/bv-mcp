@@ -155,11 +155,20 @@ export function parseAssetLinks(raw: unknown): {
 const AASA_PATH = '/.well-known/apple-app-site-association';
 const ASSETLINKS_PATH = '/.well-known/assetlinks.json';
 
+/** Per-fetch wall budget. The detector runs inside the 300s consumer cap
+ * alongside ~12 downstream signal probes — every external fetch here must
+ * time out fast. 404 is the common case for non-app brands; a 5s ceiling on
+ * the others preserves budget for the rest of the audit. */
+const APP_LINKS_FETCH_TIMEOUT_MS = 5000;
+
 async function defaultFetcher(url: string): Promise<{ status: number; body: unknown } | null> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), APP_LINKS_FETCH_TIMEOUT_MS);
 	try {
 		const res = await fetch(url, {
 			redirect: 'manual',
 			headers: { accept: 'application/json' },
+			signal: controller.signal,
 		});
 		let body: unknown = null;
 		try {
@@ -170,6 +179,8 @@ async function defaultFetcher(url: string): Promise<{ status: number; body: unkn
 		return { status: res.status, body };
 	} catch {
 		return null;
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
