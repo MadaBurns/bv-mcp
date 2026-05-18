@@ -55,16 +55,20 @@ function makeMockD1(opts: MakeMockOpts = {}) {
 				async run() {
 					calls.push({ sql, binds });
 					if (opts.throwOnUpdate && sql.includes('UPDATE')) throw new Error('d1_update_failed');
-					// Model the conditional-claim UPDATE: when SQL filters on
-					// `status = 'queued'` but the mocked row isn't queued, return
-					// changes=0 so the consumer sees "another worker already claimed".
+					// Model the conditional-claim UPDATE: the claim now parameterizes
+					// the expected status (third bound arg) — match against the mocked
+					// row's status to return changes=0 when "another worker already claimed".
 					let changes = 1;
-					if (
+					const isClaim =
 						sql.includes('UPDATE brand_audit_targets') &&
-						sql.includes("status = 'queued'") &&
-						(opts.target?.status ?? 'queued') !== 'queued'
-					) {
-						changes = 0;
+						sql.includes('SET status = \'running\' WHERE') &&
+						sql.includes('status = ?');
+					if (isClaim) {
+						const expected = binds[2] as string | undefined;
+						const currentStatus = opts.target?.status ?? 'queued';
+						if (expected && currentStatus !== expected) {
+							changes = 0;
+						}
 					}
 					return { success: true, meta: { changes, last_row_id: 0, duration: 0, rows_read: 0, rows_written: changes, size_after: 0 } };
 				},
@@ -131,7 +135,11 @@ describe('processBrandAuditMessage', () => {
 		expect(brandAuditSingle).not.toHaveBeenCalled();
 		// Conditional claim UPDATE issued, terminal-status UPDATE not.
 		const claimAttempt = calls.find(
-			(c) => c.sql.includes('UPDATE brand_audit_targets') && c.sql.includes("status = 'queued'"),
+			(c) =>
+				c.sql.includes('UPDATE brand_audit_targets') &&
+				c.sql.includes('SET status = \'running\' WHERE') &&
+				c.sql.includes('status = ?') &&
+				c.binds[2] === 'queued',
 		);
 		expect(claimAttempt).toBeDefined();
 		const terminalUpdate = calls.find(

@@ -21,7 +21,7 @@ import { clearsOwnershipGate, type BrandEvidenceObservation } from './brand-evid
 
 export type Bucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation';
 export type ConfidenceTier = 'high' | 'medium' | 'low';
-export type RegistrarSource = 'rdap' | 'whois' | 'redacted' | 'notfound' | 'unknown';
+export type RegistrarSource = 'rdap' | 'whois' | 'redacted' | 'notfound' | 'lookup_failed' | 'unknown';
 
 export interface CandidateInput {
 	domain: string;
@@ -301,11 +301,21 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 		return { bucket: 'impersonation', confidenceTier: tier, reasons };
 	}
 
-	// Rule 5: Registrar source is redacted or notfound → can't determine ownership.
+	// Rule 5: Registrar source is redacted / notfound / lookup_failed → can't
+	// determine ownership from this dimension. Bucket is `indeterminate` for all
+	// three (downstream API stays a 4-value enum), but `note` differentiates so
+	// the retry hook (Phase 2b) and human reviewers can act:
+	//   - lookup_failed → transient; should retry before re-classifying
+	//   - redacted     → registry policy hides registrar; ownership unverifiable
+	//   - notfound     → registry has no record; usually expired / never registered
 	const src = c.registrarSource ?? 'unknown';
+	if (src === 'lookup_failed' && strongSignals.length === 0) {
+		reasons.push('registrar lookup failed transiently — retry pending');
+		return { bucket: 'indeterminate', confidenceTier: tier, note: 'needs_retry', reasons };
+	}
 	if ((src === 'redacted' || src === 'notfound') && strongSignals.length === 0) {
 		reasons.push(`registrar source: ${src}`);
-		return { bucket: 'indeterminate', confidenceTier: tier, reasons };
+		return { bucket: 'indeterminate', confidenceTier: tier, note: src, reasons };
 	}
 
 	// Rule 6: High confidence + dmarc_rua-only on different registrar → genuine sprawl candidate.

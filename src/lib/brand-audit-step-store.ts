@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-export type BrandAuditPipelineStep = 'discovery' | 'registrar_enrichment' | 'classification';
+export type BrandAuditPipelineStep = 'discovery' | 'registrar_enrichment' | 'classification' | 'retry_scheduled';
 export type BrandAuditStepPersistedStatus = 'completed' | 'partial' | 'failed';
 
 export interface BrandAuditStepRecord {

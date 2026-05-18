@@ -74,7 +74,7 @@ describe('checkRdapLookup WHOIS fallback', () => {
 		mockIanaAndRdap(EMPTY_BOOTSTRAP);
 		const whoisBinding = makeWhoisBinding({ registrar: 'WhoisReg', source: 'whois' });
 
-		const result = await (await freshChecker())('example.me', { whoisBinding });
+		const result = await (await freshChecker())('example.fakefaketld', { whoisBinding });
 
 		const reg = result.findings.find(f => f.metadata?.registrarSource);
 		expect(reg?.metadata?.registrarSource).toBe('whois');
@@ -90,14 +90,18 @@ describe('checkRdapLookup WHOIS fallback', () => {
 		expect(reg?.metadata?.registrarSource).toBe('whois');
 	});
 
-	it('records registrarSource=unknown when both RDAP and WHOIS fail', async () => {
+	it('records registrarSource=lookup_failed when RDAP has no server and WHOIS errors', async () => {
 		mockIanaAndRdap(EMPTY_BOOTSTRAP);
 		const whoisBinding = makeWhoisBinding({ registrar: null, source: 'error' });
 
 		const result = await (await freshChecker())('example.fakefaketld', { whoisBinding });
 
-		const reg = result.findings.find(f => f.metadata?.registrarSource);
-		expect(reg?.metadata?.registrarSource).toBe('unknown');
+		// Phase 1 contract: WHOIS error is transient → lookup_failed (not 'unknown'),
+		// which lets the consumer retry path pick this up. registrarFailureReason
+		// pins the cause so the retry policy can target shim flaps specifically.
+		const reg = result.findings.find(f => f.metadata?.registrarSource === 'lookup_failed');
+		expect(reg).toBeDefined();
+		expect(reg!.metadata!.registrarFailureReason).toBe('whois_error');
 	});
 
 	it('records registrarSource=redacted when WHOIS reports DENIC redaction', async () => {
@@ -113,22 +117,25 @@ describe('checkRdapLookup WHOIS fallback', () => {
 	it('omits WHOIS fallback when no binding is provided', async () => {
 		mockIanaAndRdap(EMPTY_BOOTSTRAP);
 
-		const result = await (await freshChecker())('example.me');
+		const result = await (await freshChecker())('example.fakefaketld');
 
 		expect(result.findings.some(f => f.title.includes('No RDAP server'))).toBe(true);
 	});
 
-	it('fails open when whoisBinding throws (returns unknown, not an exception)', async () => {
+	it('fails open when whoisBinding throws (registrarSource=lookup_failed, no exception)', async () => {
 		mockIanaAndRdap(EMPTY_BOOTSTRAP);
 		const whoisBinding = { fetch: vi.fn(async () => { throw new Error('binding down'); }) };
 
-		const result = await (await freshChecker())('example.me', { whoisBinding });
+		const result = await (await freshChecker())('example.fakefaketld', { whoisBinding });
 
-		const reg = result.findings.find(f => f.metadata?.registrarSource);
-		expect(reg?.metadata?.registrarSource ?? 'unknown').toBe('unknown');
+		// Phase 1: shim throwing is the same shape as `source:'error'` — transient,
+		// retryable. Reason='whois_error' pins it.
+		const reg = result.findings.find(f => f.metadata?.registrarSource === 'lookup_failed');
+		expect(reg, 'binding throw should yield lookup_failed').toBeDefined();
+		expect(reg!.metadata!.registrarFailureReason).toBe('whois_error');
 	});
 
-	it('treats malformed shim payload as unknown (Zod-validates the response shape)', async () => {
+	it('treats malformed shim payload as lookup_failed (Zod-validates the response shape)', async () => {
 		mockIanaAndRdap(EMPTY_BOOTSTRAP);
 		const whoisBinding = {
 			fetch: vi.fn(async () =>
@@ -136,9 +143,12 @@ describe('checkRdapLookup WHOIS fallback', () => {
 			),
 		};
 
-		const result = await (await freshChecker())('example.me', { whoisBinding });
+		const result = await (await freshChecker())('example.fakefaketld', { whoisBinding });
 
-		const reg = result.findings.find(f => f.metadata?.registrarSource);
-		expect(reg?.metadata?.registrarSource).toBe('unknown');
+		// Malformed payload → Zod rejects → fetchWhoisRegistrar returns source:'error',
+		// which Phase 1 reconciles as lookup_failed (transient: the shim is misbehaving).
+		const reg = result.findings.find(f => f.metadata?.registrarSource === 'lookup_failed');
+		expect(reg, 'malformed shim payload should yield lookup_failed').toBeDefined();
+		expect(reg!.metadata!.registrarFailureReason).toBe('whois_error');
 	});
 });
