@@ -16,6 +16,9 @@
  *   8. Low confidence + no strong signals → impersonation
  */
 
+import { sameRegistrarFamily } from './registrar-identity';
+import { clearsOwnershipGate, type BrandEvidenceObservation } from './brand-evidence';
+
 export type Bucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation';
 export type ConfidenceTier = 'high' | 'medium' | 'low';
 export type RegistrarSource = 'rdap' | 'whois' | 'redacted' | 'notfound' | 'unknown';
@@ -25,6 +28,7 @@ export interface CandidateInput {
 	confidence: number;
 	signals: string[];
 	registrar: string;
+	registrarIanaId?: string | null;
 	registrarSource?: RegistrarSource;
 	/** Registrant organization (from RDAP entities). null when redacted/unavailable. */
 	registrant?: string | null;
@@ -49,12 +53,17 @@ export interface CandidateInput {
 	 * impersonation. Defaults to 0 (i.e. not a lookalike) when omitted.
 	 */
 	lookalikeScore?: number;
+	/** True when the caller explicitly supplied this candidate for corroboration. */
+	callerAsserted?: boolean;
+	/** Optional normalized evidence observations used to apply shared ownership-gate policy. */
+	evidenceObservations?: BrandEvidenceObservation[];
 }
 
 export interface TargetContext {
 	domain: string;
 	registrar: string;
 	registrarFamily: string;
+	registrarIanaId?: string | null;
 	/** Target's registrant organization (for cross-reference matching). */
 	registrant?: string | null;
 }
@@ -151,7 +160,25 @@ export function isShadowIt(c: CandidateInput): string[] {
 		reasons.push(`shared TXT verification token(s): ${sharedTxt.join(', ')}`);
 	}
 	if (c.sharedMxPlatform) {
-		reasons.push(`shared MX platform (${c.sharedMxPlatform})`);
+		const corroboratedBySignal = c.signals.some((signal) =>
+			signal === 'dmarc_rua' ||
+			signal === 'txt_verification' ||
+			signal === 'ns' ||
+			signal === 'san' ||
+			signal === 'san_recursive' ||
+			signal === 'dkim_key_reuse' ||
+			signal === 'spf_include' ||
+			signal === 'spf_include_seed' ||
+			signal === 'cname_alignment' ||
+			signal === 'http_redirect',
+		);
+		const corroboratedBySimilarity = (c.lookalikeScore ?? 0) >= IMPERSONATION_LOOKALIKE_THRESHOLD && c.signals.length >= 2;
+		const corroboratedByCaller = c.callerAsserted === true;
+		if (corroboratedBySignal || corroboratedBySimilarity || corroboratedByCaller) {
+			reasons.push(`shared MX platform (${c.sharedMxPlatform})`);
+			if (corroboratedByCaller) reasons.push('caller asserted candidate domain');
+			if (corroboratedBySimilarity) reasons.push(`lookalike score ${(c.lookalikeScore ?? 0).toFixed(2)} corroborates weak MX overlap`);
+		}
 	}
 	return reasons;
 }
@@ -169,7 +196,10 @@ export function isImpersonation(c: CandidateInput, t: TargetContext): string[] {
 
 	// Registrar-family mismatch — same family signals defensive registration, not impersonation.
 	const candFamily = normalizeRegistrar(c.registrar);
-	const sameFamily = candFamily !== 'Unknown' && t.registrarFamily !== 'Unknown' && candFamily === t.registrarFamily;
+	const sameFamily = sameRegistrarFamily(
+		{ name: c.registrar, ianaId: c.registrarIanaId },
+		{ name: t.registrar, ianaId: t.registrarIanaId },
+	);
 	if (sameFamily) return [];
 
 	// No shared cross-channel signal — those should have already routed to shadowIt;
@@ -237,9 +267,10 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 	// Rule 4: Same normalized registrar family + ≥2 corroborating signals.
 	const candFamily = normalizeRegistrar(c.registrar);
 	if (
-		candFamily !== 'Unknown' &&
-		t.registrarFamily !== 'Unknown' &&
-		candFamily === t.registrarFamily &&
+		sameRegistrarFamily(
+			{ name: c.registrar, ianaId: c.registrarIanaId },
+			{ name: t.registrar, ianaId: t.registrarIanaId },
+		) &&
 		c.signals.length >= 2
 	) {
 		reasons.push(`shared registrar family (${candFamily}) + ${c.signals.length} corroborating signals`);
@@ -251,6 +282,10 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 	// (redacted → indeterminate) and Rule 4.6 (impersonation), per the task spec:
 	// a typosquat with shared evidence is more interesting as shadowIt.
 	const shadowReasons = isShadowIt(c);
+	if (c.evidenceObservations && !clearsOwnershipGate(c.evidenceObservations, { callerAsserted: c.callerAsserted })) {
+		reasons.push('weak evidence did not clear ownership gate');
+		return { bucket: 'indeterminate', confidenceTier: tier, reasons };
+	}
 	if (shadowReasons.length > 0) {
 		reasons.push(...shadowReasons);
 		return { bucket: 'shadowIt', confidenceTier: tier, reasons };

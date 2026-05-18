@@ -21,11 +21,12 @@
  */
 
 import { queryDns } from '../../lib/dns-transport';
-import type { DohResponse } from '../../lib/dns-types';
+import type { DohResponse, RecordTypeName } from '../../lib/dns-types';
 import { validateDomain } from '../../lib/sanitize';
+import type { DiscoveryDnsContext } from './dns-context';
 
 /** Function signature for an injectable DNS-over-HTTPS query. */
-export type DnsQueryFn = (name: string, type: 'TXT' | string) => Promise<DohResponse>;
+export type DnsQueryFn = (name: string, type: RecordTypeName) => Promise<DohResponse>;
 
 /**
  * Default DKIM selectors probed when the caller doesn't supply a list. Mirrors
@@ -53,6 +54,7 @@ export interface DkimKeyReuseOptions {
 	 * Defaults to the project's `queryDns` facade. Always called with type='TXT'.
 	 */
 	dnsQuery?: DnsQueryFn;
+	dnsContext?: DiscoveryDnsContext;
 	/** Selectors to probe. Defaults to a common-selector list (12 entries). */
 	selectors?: string[];
 }
@@ -172,7 +174,7 @@ export async function detectDkimKeyReuse(
 		throw new Error(`Domain validation failed: ${validation.error ?? 'invalid domain'}`);
 	}
 	const seedLower = normHost(seedDomain);
-	const dnsQuery = options.dnsQuery ?? (queryDns as unknown as DnsQueryFn);
+	const dnsQuery = options.dnsContext?.query ?? options.dnsQuery ?? (queryDns as unknown as DnsQueryFn);
 	const selectors = (options.selectors ?? DEFAULT_SELECTORS).slice();
 
 	// Probe seed across all selectors. seedKeyMap: hash → { selector, raw }

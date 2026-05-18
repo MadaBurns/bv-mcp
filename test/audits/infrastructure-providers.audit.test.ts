@@ -73,6 +73,14 @@ describe('registeredApex', () => {
 		expect(registeredApex('example.com')).toBe('example.com');
 	});
 
+	it('returns the registrable apex for multi-label public suffix hostnames', () => {
+		expect(registeredApex('mail.example.co.uk')).toBe('example.co.uk');
+	});
+
+	it('treats private suffix tenants as registrable apexes', () => {
+		expect(registeredApex('tenant.github.io')).toBe('tenant.github.io');
+	});
+
 	it('strips trailing dot and lowercases', () => {
 		expect(registeredApex('Example.COM.')).toBe('example.com');
 	});

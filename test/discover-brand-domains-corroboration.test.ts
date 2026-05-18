@@ -55,6 +55,7 @@ function okDkim(domains: string[]): DkimKeyReuseResult {
 }
 
 function makeDeps(overrides: Partial<DiscoverBrandDomainsDeps> = {}): DiscoverBrandDomainsDeps {
+	const okEmpty = { coOwnedDomains: [], queryStatus: 'ok' as const };
 	return {
 		correlateSans: vi.fn().mockResolvedValue(okSan([])),
 		correlateSansRecursive: vi.fn().mockResolvedValue({
@@ -66,6 +67,32 @@ function makeDeps(overrides: Partial<DiscoverBrandDomainsDeps> = {}): DiscoverBr
 		correlateNs: vi.fn().mockResolvedValue(okNs([])),
 		mineDmarcRua: vi.fn().mockResolvedValue(okRua([])),
 		detectDkimKeyReuse: vi.fn().mockResolvedValue(okDkim([])),
+		detectHttpRedirect: vi.fn().mockResolvedValue(okEmpty),
+		detectMxOverlap: vi.fn().mockResolvedValue(okEmpty),
+		detectSharedTxtVerifications: vi.fn().mockResolvedValue({
+			seedDomain: 'example.com',
+			coOwnedDomains: [],
+			queryStatus: 'ok' as const,
+		}),
+		detectSharedMxPlatform: vi.fn().mockResolvedValue({
+			seedDomain: 'example.com',
+			coOwnedDomains: [],
+			queryStatus: 'ok' as const,
+		}),
+		detectSpfInclude: vi.fn().mockResolvedValue(okEmpty),
+		extractSeedSpfIncludes: vi.fn().mockResolvedValue({
+			seedDomain: 'example.com',
+			candidates: [],
+			queryStatus: 'ok' as const,
+		}),
+		detectCnameAlignment: vi.fn().mockResolvedValue(okEmpty),
+		generateMarkovLookalikes: vi.fn().mockReturnValue([]),
+		checkLookalikes: vi.fn().mockResolvedValue({
+			category: 'lookalikes',
+			score: 100,
+			findings: [],
+		}),
+		domainLabelSimilarity: vi.fn().mockReturnValue(0),
 		...overrides,
 	};
 }
@@ -164,5 +191,26 @@ describe('discoverBrandDomains — corroboration gate', () => {
 		expect(candidates[0].metadata?.candidate).toBe('sibling.com');
 		expect(candidates[0].metadata?.combinedConfidence).toBeCloseTo(0.64, 2);
 		expect((candidates[0].metadata?.signals as string[]).sort()).toEqual(['dmarc_rua', 'san']);
+	});
+
+	it('filters markov generation corroborated only by broad m365 MX platform', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const deps = makeDeps({
+			generateMarkovLookalikes: vi.fn().mockReturnValue(['upps.com']),
+			detectSharedMxPlatform: vi.fn().mockResolvedValue({
+				seedDomain: 'example.com',
+				coOwnedDomains: [{ domain: 'upps.com', sharedMxPlatform: 'm365', confidence: 0.55 }],
+				queryStatus: 'ok' as const,
+			}),
+		});
+
+		const result = await discoverBrandDomains('example.com', { signals: ['mx_platform'] }, deps);
+
+		const candidates = result.findings.filter((f) => f.metadata?.candidate);
+		expect(candidates).toHaveLength(0);
+		const universe = result.findings.find((f) => f.metadata?.summary)?.metadata?.candidateUniverse as
+			| { dropped?: { corroborationGate?: number } }
+			| undefined;
+		expect(universe?.dropped?.corroborationGate).toBeGreaterThanOrEqual(1);
 	});
 });

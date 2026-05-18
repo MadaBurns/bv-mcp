@@ -30,7 +30,30 @@ describe('buildBrandCandidateUniverse', () => {
 		const standard = buildBrandCandidateUniverse({ seedDomain: 'example.com', depth: 'standard' });
 		const deep = buildBrandCandidateUniverse({ seedDomain: 'example.com', depth: 'deep' });
 
-		expect(deep.candidates.length).toBeGreaterThan(standard.candidates.length);
+		expect(standard.candidates.length).toBeLessThanOrEqual(46);
+		expect(deep.candidates.length).toBeGreaterThan(90);
 		expect(deep.candidates.some((c) => c.domain === 'example.com')).toBe(false);
+	});
+
+	it('deep mode adds conservative enterprise affix seeds with source counts and cap drops', () => {
+		const noisyMarkovList = Array.from({ length: 320 }, (_, i) => `candidate-${i}.example.net`);
+		const universe = buildBrandCandidateUniverse({
+			seedDomain: 'example.com',
+			markovCandidates: noisyMarkovList,
+			depth: 'deep',
+		});
+
+		expect(universe.candidates.length).toBeLessThanOrEqual(250);
+		expect(universe.candidates.map((c) => c.domain)).toEqual(expect.arrayContaining([
+			'examplecloud.com',
+			'exampleid.com',
+			'examplepay.com',
+			'examplesecure.com',
+			'examplesecurity.com',
+			'exampleshop.com',
+			'examplesupport.com',
+		]));
+		expect(universe.stats.sources.enterprise_affix).toBeGreaterThan(0);
+		expect(universe.stats.dropped.cap).toBeGreaterThan(0);
 	});
 });

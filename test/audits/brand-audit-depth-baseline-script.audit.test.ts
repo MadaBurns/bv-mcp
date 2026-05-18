@@ -9,4 +9,10 @@ describe('brand audit depth baseline script safety', () => {
 		expect(source).not.toMatch(/const\s+domains\s*=\s*\[/);
 		expect(source).toContain('process.argv.slice(2)');
 	});
+
+	it('records missing domains in a failures array instead of crashing the whole batch', () => {
+		expect(source).toContain('failures');
+		expect(source).toContain('existsSync');
+		expect(source).toContain('missingReport');
+	});
 });

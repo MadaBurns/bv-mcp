@@ -27,8 +27,9 @@
  */
 
 import { z } from 'zod';
-import { brandAuditSingle as defaultBrandAuditSingle } from '../tools/brand-audit-single';
+import { brandAuditSingle as defaultBrandAuditSingle, type BrandAuditSingleOptions } from '../tools/brand-audit-single';
 import type { CheckResult, Finding } from '../lib/scoring';
+import { BrandAuditStepStoreError, createD1BrandAuditStepStore } from '../lib/brand-audit-step-store';
 
 /** Cloudflare Queues redelivery budget: keep messages alive for at most 5 min total. */
 export const BRAND_AUDIT_MESSAGE_TIMEOUT_MS = 300_000;
@@ -55,13 +56,7 @@ export interface BrandAuditConsumerDeps {
 	/** Injectable for tests. */
 	brandAuditSingle?: (
 		target: string,
-		options: {
-			format?: 'json' | 'markdown' | 'both';
-			min_confidence?: number;
-			depth?: 'standard' | 'deep';
-			brand_aliases?: string[];
-			candidate_domains?: string[];
-		},
+		options: BrandAuditSingleOptions,
 	) => Promise<CheckResult>;
 	/** Clock override for tests. */
 	now?: () => number;
@@ -110,6 +105,7 @@ export async function processBrandAuditMessage(
 	const message = parsed.data;
 	const now = (deps.now ?? Date.now)();
 	const single = deps.brandAuditSingle ?? defaultBrandAuditSingle;
+	const stepStore = createD1BrandAuditStepStore(deps.db, deps.now ?? Date.now);
 
 	// 1. Idempotency check.
 	let existing: TargetStatusRow | null;
@@ -143,6 +139,12 @@ export async function processBrandAuditMessage(
 			)
 			.bind(message.auditId, message.target)
 			.run();
+		await deps.db
+			.prepare(
+				"UPDATE brand_audits SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'",
+			)
+			.bind(now, message.auditId)
+			.run();
 	} catch {
 		return 'retry';
 	}
@@ -157,6 +159,8 @@ export async function processBrandAuditMessage(
 	try {
 		result = await Promise.race([
 			single(message.target, {
+				auditId: message.auditId,
+				stepStore,
 				format: message.format,
 				min_confidence: message.min_confidence,
 				depth: message.depth,
@@ -171,14 +175,24 @@ export async function processBrandAuditMessage(
 			),
 		]);
 	} catch (err) {
+		if (err instanceof BrandAuditStepStoreError) return 'retry';
 		runtimeError = err instanceof Error ? err.message : String(err);
 	}
 
 	// 4. Status flip → 'completed' | 'failed'. Treat D1 write failure here as
 	// retryable (Cloudflare redelivers; idempotency check up top short-circuits).
-	const finalStatus = runtimeError ? 'failed' : 'completed';
-	const resultJson = result ? JSON.stringify(result) : null;
-	const errorString = runtimeError ? sanitizeErrorString(runtimeError) : null;
+	let finalStatus: 'completed' | 'failed' = runtimeError ? 'failed' : 'completed';
+	let resultJson: string | null = null;
+	let errorString = runtimeError ? sanitizeErrorString(runtimeError) : null;
+	if (finalStatus === 'completed' && result) {
+		try {
+			resultJson = JSON.stringify(result);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			finalStatus = 'failed';
+			errorString = sanitizeErrorString(`brand_audit_result_serialization_failed: ${message}`);
+		}
+	}
 
 	try {
 		await deps.db

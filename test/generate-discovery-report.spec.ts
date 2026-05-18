@@ -6,9 +6,9 @@
  * the findings, and generates a fully Blackveil-branded PDF report.
  */
 
-import { describe, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { writeFileSync, mkdirSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { marked } from 'marked';
 import { discoverBrandDomains } from '../src/tools/discover-brand-domains';
 import { checkRdapLookup } from '../src/tools/check-rdap-lookup';
@@ -29,6 +29,11 @@ import {
     type BrandAuditResultLike,
     type DiscoveryReportCandidate,
 } from './helpers/discovery-report-model';
+import {
+    buildBrandAuditBatchStartArgs,
+    buildLocalDiscoveryOptions,
+    parseReportGenerationEnv,
+} from './helpers/report-generation-options';
 
 const CONSUMER_REGISTRARS = [
     'godaddy', 'namecheap', 'hostinger', 'tucows', 'enom', 'squarespace', 
@@ -43,8 +48,47 @@ const assetsDir = join(__dirname, '../assets');
 const logoFullBase64 = readFileSync(join(assetsDir, 'bv-logo-full.png')).toString('base64');
 const logoMarkBase64 = readFileSync(join(assetsDir, 'bv-logo-mark.png')).toString('base64');
 
+describe('report generation option plumbing', () => {
+    it('defaults MCP brand_audit_batch_start requests to deep discovery', () => {
+        const options = parseReportGenerationEnv({ TARGET_DOMAIN: 'example.com' });
+
+        expect(buildBrandAuditBatchStartArgs('example.com', options)).toMatchObject({
+            domains: ['example.com'],
+            min_confidence: 0.1,
+            format: 'json',
+            depth: 'deep',
+        });
+    });
+
+    it('allows standard depth only when explicitly requested', () => {
+        const options = parseReportGenerationEnv({
+            TARGET_DOMAIN: 'example.com',
+            BV_REPORT_DEPTH: 'standard',
+        });
+
+        expect(buildBrandAuditBatchStartArgs('example.com', options).depth).toBe('standard');
+        expect(buildLocalDiscoveryOptions(options).depth).toBe('standard');
+    });
+
+    it('parses comma-separated public brand aliases for MCP and local discovery paths', () => {
+        const options = parseReportGenerationEnv({
+            TARGET_DOMAIN: 'example.com',
+            BV_BRAND_ALIASES: 'Example Corp, example-pay,  ,Example Corp',
+        });
+
+        expect(options.brandAliases).toEqual(['example corp', 'example-pay']);
+        expect(buildBrandAuditBatchStartArgs('example.com', options)).toMatchObject({
+            brand_aliases: ['example corp', 'example-pay'],
+        });
+        expect(buildLocalDiscoveryOptions(options)).toMatchObject({
+            brand_aliases: ['example corp', 'example-pay'],
+        });
+    });
+});
+
 describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
     it('generates the report for a target domain', async () => {
+        const reportOptions = parseReportGenerationEnv(process.env);
 
         // Route through the deployed MCP worker when BV_MCP_ENDPOINT is set.
         // Server-side brand_audit_batch_start runs discovery + RDAP +
@@ -108,38 +152,48 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
         if (mcp) {
             if (existingAuditId) {
                 auditId = existingAuditId;
-                console.log(`[1/4] Reusing completed brand audit ${auditId} for ${target}...`);
+                console.log(`[1/4] Verifying reusable brand audit ${auditId} for ${target}...`);
+                const status = await mcp.callToolStructured<BrandAuditStatusResult>('brand_audit_status', { auditId });
+                const summary = status.findings.find(f => f.metadata?.summary === true);
+                const md = summary?.metadata;
+                const targetStatus = md?.targets?.find((candidateTarget: { target?: string }) => candidateTarget.target === target);
+                if (md?.status !== 'completed' || targetStatus?.status !== 'completed') {
+                    throw new Error(`BV_MCP_AUDIT_ID=${auditId} is not completed for ${target}: parent=${md?.status ?? 'unknown'} target=${targetStatus?.status ?? 'missing'}`);
+                }
+                console.log(`[1/4] Reusing completed brand audit ${auditId} for ${target}.`);
             } else {
-                console.log(`[1/4] Enqueueing brand audit for ${target} (queue: 300s/target budget)...`);
-                const startText = await mcp.callToolText('brand_audit_batch_start', {
-                    domains: [target],
-                    min_confidence: 0.1,
-                    format: 'json',
-                });
+                console.log(`[1/4] Enqueueing brand audit for ${target} (depth=${reportOptions.depthMode}, queue: 300s/target budget)...`);
+                const startText = await mcp.callToolText('brand_audit_batch_start', buildBrandAuditBatchStartArgs(target, reportOptions));
                 const idMatch = /auditId=([a-f0-9-]{8,})/i.exec(startText);
                 if (!idMatch) throw new Error(`Could not extract auditId from batch_start response: ${startText.slice(0, 200)}`);
                 auditId = idMatch[1];
                 console.log(`auditId=${auditId}`);
 
                 console.log(`[2/4] Polling brand_audit_status (5s interval, ~3min ETA)...`);
+                const pollStartedAt = Date.now();
                 const pollDeadline = Date.now() + 270_000;
                 let lastProgress = '';
+                let lastParentStatus = 'unknown';
+                let lastTargetStatus = 'unknown';
                 while (true) {
                     const status = await mcp.callToolStructured<BrandAuditStatusResult>('brand_audit_status', { auditId });
                     const summary = status.findings.find(f => f.metadata?.summary === true);
                     const md = summary?.metadata;
                     const progress = md?.progress ?? '?/?';
+                    const target0 = md?.targets?.[0];
+                    lastParentStatus = String(md?.status ?? 'unknown');
+                    lastTargetStatus = String(target0?.status ?? 'unknown');
                     if (progress !== lastProgress) {
-                        console.log(`  status=${md?.status} progress=${progress}`);
+                        console.log(`  status=${lastParentStatus} target=${lastTargetStatus} progress=${progress}`);
                         lastProgress = progress;
                     }
-                    const target0 = md?.targets?.[0];
                     if (md?.status === 'completed' && target0?.status === 'completed') break;
                     if (md?.status === 'failed' || target0?.status === 'failed') {
                         throw new Error(`brand_audit failed: ${target0?.error ?? 'unknown error'}`);
                     }
                     if (Date.now() > pollDeadline) {
-                        throw new Error(`brand_audit_status polling timed out after 270s (last progress=${progress})`);
+                        const elapsedMs = Date.now() - pollStartedAt;
+                        throw new Error(`brand_audit_status polling timed out after ${elapsedMs}ms auditId=${auditId} parentStatus=${lastParentStatus} targetStatus=${lastTargetStatus} progress=${progress}. Reuse command: BV_MCP_AUDIT_ID=${auditId} npm run generate-report -- ${target}`);
                     }
                     await new Promise(r => setTimeout(r, 5_000));
                 }
@@ -173,7 +227,7 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
             console.log(`Primary Registrar: ${primaryRegistrar}`);
 
             console.log(`[2/4] Running brand discovery (local)...`);
-            const result = (await discoverBrandDomains(target, { min_confidence: 0.1 })) as BrandDiscoveryResult;
+            const result = (await discoverBrandDomains(target, buildLocalDiscoveryOptions(reportOptions))) as BrandDiscoveryResult;
             const discoverySummary = result.findings.find(f => f.metadata?.summary === true);
             const discoveryCandidateUniverse = (discoverySummary?.metadata?.candidateUniverse as CandidateUniverseDepth | undefined) ?? {
                 seeded: 0,
@@ -614,14 +668,19 @@ Based on the discovery of ${arrOpportunity.domainCount} verified high-value Shad
         const reportsDir = join(__dirname, '../reports');
         try { mkdirSync(reportsDir, { recursive: true }); } catch {}
         
-        const filePath = join(reportsDir, `${target}-discovery-report.pdf`);
+        const filePath = process.env.BV_REPORT_PDF_PATH || join(reportsDir, `${target}-discovery-report.pdf`);
+        mkdirSync(dirname(filePath), { recursive: true });
         writeFileSync(filePath, pdfBuffer);
-        const sidecarPath = join(reportsDir, `${target}-discovery-report.json`);
+        const sidecarPath = process.env.BV_REPORT_JSON_PATH || join(reportsDir, `${target}-discovery-report.json`);
+        mkdirSync(dirname(sidecarPath), { recursive: true });
         const sidecar = buildDiscoveryReportSidecar(reportModel, {
             auditId,
             sourceMode,
             generatedAt: generatedAt.toISOString(),
             serverVersion: SERVER_VERSION,
+            runId: reportOptions.runId,
+            requestedAt: reportOptions.requestedAt,
+            depthMode: reportOptions.depthMode,
         });
         writeFileSync(sidecarPath, JSON.stringify(sidecar, null, 2));
         

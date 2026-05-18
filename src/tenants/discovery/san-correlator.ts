@@ -90,7 +90,7 @@ export interface SanCorrelationResult {
 	coOwnedDomains: string[];
 	/** crt.sh `id` values of the certs that produced the matches (capped by maxCertsPerDomain). */
 	certIds: number[];
-	queryStatus: 'ok' | 'rate_limited' | 'timeout' | 'error';
+	queryStatus: 'ok' | 'partial' | 'rate_limited' | 'timeout' | 'error';
 }
 
 /** A single crt.sh JSON response entry (subset we use). */
@@ -125,6 +125,22 @@ function extractSiblingsFromNameValue(nameValue: string, seedLower: string): str
 		out.push(host);
 	}
 	return out;
+}
+
+function filterSiblingNames(names: readonly unknown[], seedLower: string): string[] {
+	const seedSuffix = `.${seedLower}`;
+	const siblings = new Set<string>();
+	for (const raw of names) {
+		let host = String(raw).trim().toLowerCase();
+		if (!host) continue;
+		if (host.startsWith('*.')) host = host.slice(2);
+		if (!host) continue;
+		if (host === seedLower) continue;
+		if (host.endsWith(seedSuffix)) continue;
+		if (!validateDomain(host).valid) continue;
+		siblings.add(host);
+	}
+	return Array.from(siblings).sort();
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -168,28 +184,27 @@ async function attemptCertstreamSans(
 	} catch {
 		return null;
 	}
-	if (data.error || data.timedOut || !Array.isArray(data.names)) return null;
+	if (data.error || !Array.isArray(data.names)) return null;
 
 	// Apply the same sibling filter as the direct crt.sh path: drop the seed,
 	// drop subdomains of the seed, drop wildcards (`*.foo.com` → `foo.com`),
 	// drop invalid hostnames. The worker doesn't pre-filter — sibling-vs-subdomain
 	// semantics live in the consumer.
-	const seedSuffix = `.${seedLower}`;
-	const siblings = new Set<string>();
-	for (const raw of data.names) {
-		let host = String(raw).trim().toLowerCase();
-		if (!host) continue;
-		if (host.startsWith('*.')) host = host.slice(2);
-		if (!host) continue;
-		if (host === seedLower) continue;
-		if (host.endsWith(seedSuffix)) continue;
-		if (!validateDomain(host).valid) continue;
-		siblings.add(host);
+	const siblings = filterSiblingNames(data.names, seedLower);
+	if (data.timedOut) {
+		return siblings.length > 0
+			? {
+					seedDomain: seedLower,
+					coOwnedDomains: siblings,
+					certIds: [],
+					queryStatus: 'partial',
+				}
+			: null;
 	}
 
 	return {
 		seedDomain: seedLower,
-		coOwnedDomains: Array.from(siblings).sort(),
+		coOwnedDomains: siblings,
 		certIds: [],
 		queryStatus: 'ok',
 	};

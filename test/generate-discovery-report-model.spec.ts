@@ -88,7 +88,7 @@ describe('discovery report model', () => {
 		expect(model.buckets.indeterminate.map((c) => c.domain)).toEqual(['review.example']);
 		expect(model.counts).toEqual({ consolidated: 1, shadowIt: 1, indeterminate: 1, impersonation: 1 });
 		expect(model.arrOpportunity.domainCount).toBe(1);
-		expect(model.dataQuality.unknownRegistrarCandidates).toEqual(['review.example']);
+		expect(model.dataQuality.notFoundRegistrarCandidates).toEqual(['review.example']);
 	});
 
 	it('emits an audit sidecar with bucket counts and data-quality gaps', () => {
@@ -124,18 +124,60 @@ describe('discovery report model', () => {
 			generatedAt: '2026-05-18T00:00:00.000Z',
 			serverVersion: '2.21.4',
 			sourceMode: 'mcp',
+			runId: 'run-123',
+			requestedAt: '2026-05-18T00:00:00.000Z',
+			depthMode: 'deep',
 		});
 
+		expect(sidecar.qaSchemaVersion).toBe(1);
 		expect(sidecar.target).toBe('example.com');
 		expect(sidecar.auditId).toBe('aud-123');
+		expect(sidecar.runId).toBe('run-123');
+		expect(sidecar.depthMode).toBe('deep');
+		expect(sidecar.freshness.sameRun).toBe(true);
 		expect(sidecar.counts.indeterminate).toBe(1);
 		expect(sidecar.arrOpportunity.domainCount).toBe(0);
 		expect(sidecar.dataQuality.unknownRegistrarCount).toBe(1);
+		expect(sidecar.dataQuality.registrarSourceCounts).toMatchObject({ unknown: 1 });
 		expect(sidecar.buckets.indeterminate[0]).toMatchObject({
 			domain: 'review.example',
 			registrar: 'Unknown',
 			registrarSource: 'unknown',
 		});
+	});
+
+	it('copies optional performance metrics into the audit sidecar', () => {
+		const model = buildDiscoveryReportModel({
+			target: 'example.com',
+			primaryRegistrar: 'Example Registrar',
+			result: {
+				category: 'brand_discovery',
+				passed: true,
+				score: 100,
+				findings: [],
+			},
+		});
+		const performance = {
+			elapsedMs: 900,
+			steps: [],
+			stepStatusCounts: { completed: 1, partial: 0, failed: 0, skipped: 0 },
+			dns: { queries: 80, cacheHits: 30, errors: 2, cacheHitRatio: 0.38 },
+			rdap: { queries: 20, cacheHits: 5, errors: 1, cacheHitRatio: 0.25 },
+			warnings: [],
+		};
+
+		const sidecar = buildDiscoveryReportSidecar(model, {
+			auditId: null,
+			generatedAt: '2026-05-18T00:00:00.000Z',
+			serverVersion: '2.21.4',
+			sourceMode: 'local',
+			runId: 'run-123',
+			requestedAt: '2026-05-18T00:00:00.000Z',
+			depthMode: 'standard',
+			performance,
+		});
+
+		expect(sidecar.performance).toEqual(performance);
 	});
 
 	it('preserves discovery depth warnings in the audit sidecar', () => {
@@ -177,6 +219,9 @@ describe('discovery report model', () => {
 			generatedAt: '2026-05-18T00:00:00.000Z',
 			serverVersion: '2.21.4',
 			sourceMode: 'mcp',
+			runId: 'run-123',
+			requestedAt: '2026-05-18T00:00:00.000Z',
+			depthMode: 'standard',
 		});
 
 		expect(sidecar.depth?.warnings).toEqual([

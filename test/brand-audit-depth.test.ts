@@ -24,7 +24,7 @@ describe('buildBrandAuditDepthSummary', () => {
 			},
 			signalStatus: {
 				ns: { status: 'ok' },
-				san: { status: 'timeout' },
+				san: { status: 'partial' },
 				txt_verification: { status: 'ok' },
 			},
 			registrarSources: ['rdap', 'rdap', 'whois', 'unknown'],
@@ -50,8 +50,8 @@ describe('buildBrandAuditDepthSummary', () => {
 			requested: 3,
 			ok: 2,
 			failed: 0,
-			partial: 0,
-			timeout: 1,
+			partial: 1,
+			timeout: 0,
 			skipped: 0,
 		});
 		expect(summary.registrarCoverage).toEqual({
@@ -63,6 +63,36 @@ describe('buildBrandAuditDepthSummary', () => {
 			unknown: 1,
 			knownRatio: 0.75,
 		});
-		expect(summary.warnings).toContain('SAN signal timed out; certificate-derived sibling coverage is incomplete.');
+		expect(summary.warnings).toContain('SAN signal returned partial results; certificate-derived sibling coverage is incomplete.');
+	});
+
+	it('warns when registrar enrichment only completed partially', () => {
+		const summary = buildBrandAuditDepthSummary({
+			candidateUniverse: { seeded: 2, probed: 2, surfaced: 2, dropped: {}, sources: {} },
+			signalStatus: {},
+			registrarSources: ['rdap', 'unknown'],
+			performance: {
+				stepStatusCounts: { completed: 2, partial: 1, failed: 0, skipped: 0 },
+				steps: [
+					{ name: 'registrar_enrichment', status: 'partial', startedAtMs: 1000, finishedAtMs: 1100, elapsedMs: 100 },
+				],
+			},
+		});
+
+		expect(summary.warnings).toContain('Registrar enrichment completed partially; ownership classification may require manual review.');
+	});
+
+	it('warns when recursive SAN completed partially', () => {
+		const summary = buildBrandAuditDepthSummary({
+			candidateUniverse: { seeded: 2, probed: 2, surfaced: 1, dropped: {}, sources: {} },
+			signalStatus: {
+				san: { status: 'ok' },
+				san_recursive: { status: 'partial', error: 'budget_exceeded' },
+			},
+			registrarSources: ['rdap'],
+		});
+
+		expect(summary.signalCoverage.partial).toBe(1);
+		expect(summary.warnings).toContain('Recursive SAN signal returned partial results; mutual certificate confirmation coverage is incomplete.');
 	});
 });

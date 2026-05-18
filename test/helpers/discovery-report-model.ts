@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { BrandAuditDepthSummary } from '../../src/lib/brand-audit-depth';
+import type { BrandAuditMetricsSummary } from '../../src/lib/brand-audit-metrics';
 
 type ReportBucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation';
 type SourceMode = 'mcp' | 'local';
@@ -61,16 +62,28 @@ export interface DiscoveryReportModel {
 	dataQuality: {
 		unknownRegistrarCandidates: string[];
 		redactedRegistrarCandidates: string[];
+		notFoundRegistrarCandidates: string[];
 		missingBucketCandidates: string[];
 	};
 	depth: BrandAuditDepthSummary | null;
 }
 
 export interface DiscoveryReportSidecar {
+	qaSchemaVersion: 1;
 	target: string;
 	auditId: string | null;
+	runId: string;
+	requestedAt: string;
 	sourceMode: SourceMode;
 	generatedAt: string;
+	depthMode: 'standard' | 'deep';
+	freshness: {
+		runId: string;
+		requestedAt: string;
+		jsonGeneratedAt: string;
+		pdfGeneratedAt: string;
+		sameRun: boolean;
+	};
 	serverVersion: string;
 	primaryRegistrar: string;
 	counts: Record<ReportBucket, number>;
@@ -80,10 +93,14 @@ export interface DiscoveryReportSidecar {
 		unknownRegistrarCandidates: string[];
 		redactedRegistrarCount: number;
 		redactedRegistrarCandidates: string[];
+		notFoundRegistrarCount: number;
+		notFoundRegistrarCandidates: string[];
+		registrarSourceCounts: Record<string, number>;
 		missingBucketCount: number;
 		missingBucketCandidates: string[];
 	};
 	depth: BrandAuditDepthSummary | null;
+	performance?: BrandAuditMetricsSummary;
 	buckets: Record<ReportBucket, DiscoveryReportCandidate[]>;
 }
 
@@ -161,10 +178,13 @@ export function buildDiscoveryReportModel(input: {
 	const securityMonitoring = counts.shadowIt * 1200;
 	const allCandidates = BUCKETS.flatMap((bucket) => buckets[bucket]);
 	const unknownRegistrarCandidates = allCandidates
-		.filter((candidate) => candidate.registrar === 'Unknown' || candidate.registrarSource === 'unknown' || candidate.registrarSource === 'notfound')
+		.filter((candidate) => candidate.registrar === 'Unknown' || candidate.registrarSource === 'unknown')
 		.map((candidate) => candidate.domain);
 	const redactedRegistrarCandidates = allCandidates
 		.filter((candidate) => candidate.registrarSource === 'redacted')
+		.map((candidate) => candidate.domain);
+	const notFoundRegistrarCandidates = allCandidates
+		.filter((candidate) => candidate.registrarSource === 'notfound')
 		.map((candidate) => candidate.domain);
 	const summary = input.result.findings.find((finding) => finding.metadata?.summary === true);
 
@@ -183,6 +203,7 @@ export function buildDiscoveryReportModel(input: {
 		dataQuality: {
 			unknownRegistrarCandidates,
 			redactedRegistrarCandidates,
+			notFoundRegistrarCandidates,
 			missingBucketCandidates,
 		},
 		depth: depthSummary(summary?.metadata?.depth),
@@ -196,13 +217,39 @@ export function buildDiscoveryReportSidecar(
 		sourceMode: SourceMode;
 		generatedAt: string;
 		serverVersion: string;
+		runId: string;
+		requestedAt: string;
+		depthMode: 'standard' | 'deep';
+		performance?: BrandAuditMetricsSummary;
 	},
 ): DiscoveryReportSidecar {
+	const allCandidates = BUCKETS.flatMap((bucket) => model.buckets[bucket]);
+	const registrarSourceCounts: Record<string, number> = {
+		rdap: 0,
+		whois: 0,
+		redacted: 0,
+		notfound: 0,
+		unknown: 0,
+	};
+	for (const candidate of allCandidates) {
+		registrarSourceCounts[candidate.registrarSource] = (registrarSourceCounts[candidate.registrarSource] ?? 0) + 1;
+	}
 	return {
+		qaSchemaVersion: 1,
 		target: model.target,
 		auditId: options.auditId ?? null,
+		runId: options.runId,
+		requestedAt: options.requestedAt,
 		sourceMode: options.sourceMode,
 		generatedAt: options.generatedAt,
+		depthMode: options.depthMode,
+		freshness: {
+			runId: options.runId,
+			requestedAt: options.requestedAt,
+			jsonGeneratedAt: options.generatedAt,
+			pdfGeneratedAt: options.generatedAt,
+			sameRun: true,
+		},
 		serverVersion: options.serverVersion,
 		primaryRegistrar: model.primaryRegistrar,
 		counts: model.counts,
@@ -212,10 +259,14 @@ export function buildDiscoveryReportSidecar(
 			unknownRegistrarCandidates: model.dataQuality.unknownRegistrarCandidates,
 			redactedRegistrarCount: model.dataQuality.redactedRegistrarCandidates.length,
 			redactedRegistrarCandidates: model.dataQuality.redactedRegistrarCandidates,
+			notFoundRegistrarCount: model.dataQuality.notFoundRegistrarCandidates.length,
+			notFoundRegistrarCandidates: model.dataQuality.notFoundRegistrarCandidates,
+			registrarSourceCounts,
 			missingBucketCount: model.dataQuality.missingBucketCandidates.length,
 			missingBucketCandidates: model.dataQuality.missingBucketCandidates,
 		},
 		depth: model.depth,
+		...(options.performance === undefined ? {} : { performance: options.performance }),
 		buckets: model.buckets,
 	};
 }
