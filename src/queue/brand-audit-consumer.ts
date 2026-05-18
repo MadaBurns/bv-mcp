@@ -131,14 +131,22 @@ export async function processBrandAuditMessage(
 		return 'ack';
 	}
 
-	// 2. Status flip → 'running'.
+	// 2. Atomic claim — flip queued → running. The conditional UPDATE is the
+	// single point of mutual exclusion: only the consumer whose UPDATE matches
+	// 1 row may proceed to run brandAuditSingle. Cloudflare Queues redelivers
+	// every ~30s while our audit budget is 300s, so without this guard 4–10
+	// concurrent consumers all enter the orchestrator on the same target,
+	// contend for D1 / DNS / RDAP, and produce thrashing instead of progress.
+	let claimed = false;
 	try {
-		await deps.db
+		const claim = await deps.db
 			.prepare(
 				"UPDATE brand_audit_targets SET status = 'running' WHERE audit_id = ? AND target = ? AND status = 'queued'",
 			)
 			.bind(message.auditId, message.target)
 			.run();
+		claimed = (claim.meta?.changes ?? 0) > 0;
+		// Parent audit flip is best-effort; safe to no-op when already running.
 		await deps.db
 			.prepare(
 				"UPDATE brand_audits SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'",
@@ -147,6 +155,12 @@ export async function processBrandAuditMessage(
 			.run();
 	} catch {
 		return 'retry';
+	}
+
+	if (!claimed) {
+		// Another consumer already owns this target row. Ack without re-running
+		// to avoid the parallel-execution stampede that wedges the audit.
+		return 'ack';
 	}
 
 	// 3. Run the orchestrator with a hard timeout. Tier-1 brands average ~3 min
