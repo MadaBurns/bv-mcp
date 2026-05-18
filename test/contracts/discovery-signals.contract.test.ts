@@ -29,6 +29,7 @@ import type { SpfIncludeResult } from '../../src/tenants/discovery/spf-include-d
 import type { MxOverlapResult } from '../../src/tenants/discovery/mx-overlap-detector';
 import type { TxtVerificationResult } from '../../src/tenants/discovery/txt-verification-detector';
 import type { CnameAlignmentResult } from '../../src/tenants/discovery/cname-alignment-detector';
+import type { BountyScopeResult } from '../../src/tenants/discovery/bounty-scope-detector';
 
 /** Representative outputs constructed from each detector's exported Result type. */
 function representativeNsResult(): NsCorrelationResult {
@@ -116,6 +117,24 @@ function representativeCnameResult(): CnameAlignmentResult {
 	};
 }
 
+function representativeBountyResult(): BountyScopeResult {
+	return {
+		seedDomain: 'example.com',
+		coOwnedDomains: [
+			{
+				domain: 'app.example.com',
+				confidence: 1,
+				evidence: { platform: 'hackerone', programHandle: 'example', assetType: 'url' },
+			},
+		],
+		queryStatus: 'ok',
+		wildcardScopes: ['example.com'],
+		outOfScopeDomains: [],
+		fetchedPlatforms: ['hackerone'],
+		failedPlatforms: [],
+	};
+}
+
 interface DetectorCase {
 	name: string;
 	build: () => unknown;
@@ -129,6 +148,7 @@ const DETECTOR_CASES: readonly DetectorCase[] = [
 	{ name: 'mx-overlap-detector', build: representativeMxResult },
 	{ name: 'txt-verification-detector', build: representativeTxtResult },
 	{ name: 'cname-alignment-detector', build: representativeCnameResult },
+	{ name: 'bounty-scope-detector', build: representativeBountyResult },
 ];
 
 describe('discovery-signals contract', () => {
