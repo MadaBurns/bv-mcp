@@ -66,6 +66,14 @@ export interface BrandAuditPipelineOptions {
 	stepStore?: BrandAuditStepStore;
 	/** Epoch-ms deadline for returning a partial result before queue/runtime timeout. */
 	deadlineMs?: number;
+	/**
+	 * Abort signal that interrupts the orchestrator at phase boundaries. The
+	 * consumer wires this to a wall-clock timeout (240s of the 300s Worker
+	 * budget) so the pipeline can flip the row to `failed` from this same
+	 * Worker invocation instead of leaving it stuck in `running` for a cron
+	 * reaper to mop up.
+	 */
+	signal?: AbortSignal;
 	/** Clock override for deterministic tests. */
 	now?: () => number;
 }
@@ -261,8 +269,10 @@ async function lookupCandidateRegistrars(
 	deps: BrandAuditPipelineDeps,
 	deadlineMs?: number,
 	now: () => number = Date.now,
+	signal?: AbortSignal,
 ): Promise<{ candidates: CandidateRegistrarLookup[]; partial: boolean; skippedCandidates: string[]; rdapQueries: number }> {
-	if (deadlineMs === undefined) {
+	const aborted = (): boolean => signal?.aborted === true;
+	if (deadlineMs === undefined && !signal) {
 		const candidates = await mapConcurrent(candidateFindings, RDAP_CONCURRENCY, async (f) => {
 			const candidate = f.metadata!.candidate as string;
 			const lookup = await safeRegistrarLookup(candidate, deps);
@@ -276,7 +286,7 @@ async function lookupCandidateRegistrars(
 	let partial = false;
 	for (const finding of candidateFindings) {
 		const candidate = finding.metadata!.candidate as string;
-		if (now() >= deadlineMs) {
+		if (aborted() || (deadlineMs !== undefined && now() >= deadlineMs)) {
 			partial = true;
 			skippedCandidates.push(candidate);
 			candidates.push({ candidate, lookup: unknownRegistrarLookup(), status: 'skipped_deadline' });
@@ -311,12 +321,20 @@ export async function runBrandAuditPipeline(
 	const seedDomain = target.trim().toLowerCase();
 	const auditId = options.auditId ?? `local-${seedDomain}`;
 	const stepStore = options.stepStore;
+	const signal = options.signal;
+	const throwIfAborted = (): void => {
+		if (signal?.aborted) {
+			const reason = (signal as AbortSignal & { reason?: unknown }).reason;
+			throw reason instanceof Error ? reason : new Error(typeof reason === 'string' ? reason : 'aborted');
+		}
+	};
 
 	const cachedClassification = readCompletedPayload<CheckResult>(
 		stepStore ? await stepStore.get(auditId, seedDomain, 'classification') : null,
 	);
 	if (cachedClassification) return cachedClassification;
 
+	throwIfAborted();
 	const cachedDiscovery = readCompletedPayload<CheckResult>(
 		stepStore ? await stepStore.get(auditId, seedDomain, 'discovery') : null,
 	);
@@ -334,8 +352,10 @@ export async function runBrandAuditPipeline(
 			brand_aliases: options.brand_aliases,
 			candidate_domains: options.candidate_domains,
 			certstream: deps.certstream,
+			signal,
 		};
 		discovery = await discover(seedDomain, discoveryOpts);
+		throwIfAborted();
 		await stepStore?.put({ auditId, target: seedDomain, step: 'discovery', status: 'completed', payload: discovery });
 		recordStep(stepTimings, 'discovery', 'completed', discoveryStartedAtMs, now());
 	}
@@ -360,10 +380,11 @@ export async function runBrandAuditPipeline(
 		recordStep(stepTimings, 'registrar_enrichment', 'skipped', skippedAtMs, skippedAtMs);
 		registrarEnrichment = cachedRegistrarEnrichment;
 	} else {
+		throwIfAborted();
 		const registrarStartedAtMs = now();
 		// Look up the target's own registrar first — drives Rule 4 (same registrar family corroboration).
 		const targetLookup = await safeRegistrarLookup(seedDomain, deps);
-		const candidateLookups = await lookupCandidateRegistrars(candidateFindings, deps, options.deadlineMs, now);
+		const candidateLookups = await lookupCandidateRegistrars(candidateFindings, deps, options.deadlineMs, now, signal);
 		registrarEnrichment = {
 			targetLookup,
 			candidates: candidateLookups.candidates,

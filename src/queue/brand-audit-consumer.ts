@@ -31,8 +31,22 @@ import { brandAuditSingle as defaultBrandAuditSingle, type BrandAuditSingleOptio
 import type { CheckResult, Finding } from '../lib/scoring';
 import { BrandAuditStepStoreError, createD1BrandAuditStepStore } from '../lib/brand-audit-step-store';
 
-/** Cloudflare Queues redelivery budget: keep messages alive for at most 5 min total. */
-export const BRAND_AUDIT_MESSAGE_TIMEOUT_MS = 300_000;
+/**
+ * Per-message budget for the orchestrator. The AbortController-driven catch
+ * path commits a `failed` row only when the inner orchestrator is well-behaved
+ * — the abort `setTimeout` macrotask competes with whatever microtasks the
+ * orchestrator generates, and for fan-out-heavy brands (tier-1: walmart,
+ * disney) the microtask queue stays saturated long enough that the worker is
+ * killed before any catch UPDATE can flush. Those rows are recovered by the
+ * cron reaper (`reapStuckBrandAudits`) ~15 min later — see the 2026-05-19
+ * walmart investigation for the trace evidence. Until AbortSignal is plumbed
+ * through `dns-transport`/`safe-fetch` (so in-flight fetches actually cancel),
+ * the reaper is the durability boundary for oversized audits.
+ *
+ * 120s gives well-behaved medium audits room to complete; oversized brands
+ * still wedge until reaper cleanup.
+ */
+export const BRAND_AUDIT_MESSAGE_TIMEOUT_MS = 120_000;
 
 /** Wire format for a brand-audit queue message. Validated on the consumer side as defense in depth. */
 export const BrandAuditQueueMessageSchema = z.object({
@@ -163,11 +177,29 @@ export async function processBrandAuditMessage(
 		return 'ack';
 	}
 
-	// 3. Run the orchestrator with a hard timeout. Tier-1 brands average ~3 min
-	// per target; we cap at BRAND_AUDIT_MESSAGE_TIMEOUT_MS (5 min) so a single
-	// stuck WHOIS / RDAP chain can't ride out the Worker's full retry budget.
-	// On timeout the target row flips to `failed` with a structured error rather
-	// than mysteriously remaining in `running`.
+	// 3. Run the orchestrator under an AbortController-driven budget.
+	//
+	// Two layers of cancellation, chosen for what each CAN guarantee:
+	//
+	//   a. AbortSignal plumbed into runBrandAuditPipeline / discoverBrandDomains
+	//      / registrar enrichment — each phase polls `signal.aborted` and throws
+	//      at its next phase boundary. Best-effort: inner DNS/RDAP fetches don't
+	//      yet accept a signal, so a probe stuck in flight won't unwind via this
+	//      path. (Plumbing AbortSignal into dns-transport / safe-fetch is the
+	//      next slice of work.)
+	//   b. Promise.race against an abort-event rejecter — guarantees the
+	//      consumer's await resolves at the deadline IF the macrotask queue
+	//      can fire. For CPU-saturated audits (tier-1 brands), microtasks from
+	//      pending fetch responses can starve the abort timer; in that case
+	//      the consumer never reaches the catch path and the cron reaper
+	//      (`reapStuckBrandAudits`) cleans the row up at the 15-min threshold.
+	//
+	// `deadlineMs` lets the inner per-candidate RDAP loop poll its own deadline
+	// since it can't observe the AbortSignal across each await.
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => {
+		controller.abort(new Error(`brand_audit_single budget exceeded after ${BRAND_AUDIT_MESSAGE_TIMEOUT_MS}ms`));
+	}, BRAND_AUDIT_MESSAGE_TIMEOUT_MS);
 	let result: CheckResult | null = null;
 	let runtimeError: string | null = null;
 	try {
@@ -180,17 +212,29 @@ export async function processBrandAuditMessage(
 				depth: message.depth,
 				brand_aliases: message.brand_aliases,
 				candidate_domains: message.candidate_domains,
+				signal: controller.signal,
+				deadlineMs: now + BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
 			}),
-			new Promise<never>((_, reject) =>
-				setTimeout(
-					() => reject(new Error(`brand_audit_single timed out after ${BRAND_AUDIT_MESSAGE_TIMEOUT_MS}ms`)),
-					BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
-				),
-			),
+			new Promise<never>((_, reject) => {
+				const onAbort = () => {
+					const reason = (controller.signal as AbortSignal & { reason?: unknown }).reason;
+					reject(reason instanceof Error ? reason : new Error(typeof reason === 'string' ? reason : 'brand_audit_single budget exceeded'));
+				};
+				if (controller.signal.aborted) {
+					onAbort();
+				} else {
+					controller.signal.addEventListener('abort', onAbort, { once: true });
+				}
+			}),
 		]);
 	} catch (err) {
-		if (err instanceof BrandAuditStepStoreError) return 'retry';
+		if (err instanceof BrandAuditStepStoreError) {
+			clearTimeout(timeoutId);
+			return 'retry';
+		}
 		runtimeError = err instanceof Error ? err.message : String(err);
+	} finally {
+		clearTimeout(timeoutId);
 	}
 
 	// 4. Status flip → 'completed' | 'failed'. Treat D1 write failure here as

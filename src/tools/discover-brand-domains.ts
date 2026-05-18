@@ -202,6 +202,14 @@ export interface DiscoverBrandDomainsOptions {
 	 * crt.sh (with retry) if the binding fails.
 	 */
 	certstream?: { fetch: typeof fetch };
+	/**
+	 * Abort signal — checked at major phase boundaries (post-allSettled, before
+	 * recursive SAN expansion) so that a budget-exceeded consumer can interrupt
+	 * the orchestrator before it launches the next expensive step. In-flight
+	 * fetches are not cancelled (DNS transport doesn't accept a signal yet), but
+	 * no NEW work starts after the signal fires.
+	 */
+	signal?: AbortSignal;
 }
 
 /** Combine independent-event confidences: P(any signal correct). */
@@ -683,19 +691,24 @@ export async function discoverBrandDomains(
 
 	await Promise.allSettled(jobs.map((j) => j()));
 
-	// Second-order SAN expansion: for each first-order sibling, re-query crt.sh
-	// and check whether the original seed appears in the candidate's own SAN
-	// listing. Mutual cross-cert inclusion is near-deterministic — single hit
-	// clears the corroboration gate (see NEAR_DETERMINISTIC_SIGNALS).
-	// Skipped when 'san_recursive' isn't requested or first-order yielded no
-	// candidates (nothing to probe).
-	if (signals.includes('san_recursive') && firstOrderSanCandidates.length > 0) {
+	// Budget gate: if the consumer's AbortController has fired while jobs were
+	// in flight, skip the recursive SAN expansion (the most expensive single
+	// step, ~30s) and head straight to the aggregator pass with whatever we
+	// already have. The consumer will flip the row to `failed` once we return.
+	if (options.signal?.aborted) {
+		signalStatus.san_recursive ??= { status: 'skipped_no_first_order' };
+	} else if (signals.includes('san_recursive') && firstOrderSanCandidates.length > 0) {
 		const recursiveOut = await runSignal<SanRecursiveResult>(() =>
 			d.correlateSansRecursive(seedDomain, firstOrderSanCandidates, {
 				certstream: options.certstream,
-				maxCandidates: 20,
-				concurrency: 8,
-				totalBudgetMs: 30_000,
+				// Caps tightened (2026-05-19) to fit Cloudflare Worker CPU budget.
+				// Each candidate triggers a fresh crt.sh fetch (~200KB-2MB JSON parse
+				// for tier-1 brands), so 20 candidates × 8 concurrency was the single
+				// largest CPU sink in the walmart wedge. 10/4/15s keeps headroom for
+				// the remaining 11 signal probes + RDAP enrichment.
+				maxCandidates: 10,
+				concurrency: 4,
+				totalBudgetMs: 15_000,
 			}),
 		);
 		if (!recursiveOut.ok) {

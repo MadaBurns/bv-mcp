@@ -51,9 +51,13 @@ const DEFAULT_LOOKBACK_MINUTES = 15;
 
 /** Main scheduled handler — called by Cron Trigger. */
 export async function handleScheduled(env: ScheduledEnv): Promise<void> {
-	// Brand-audit reaper runs unconditionally — it's the backstop for stuck
-	// `running` target rows the consumer's 300s cap doesn't unwedge. Cheap
-	// (one SELECT, often zero matches) and independent of alerting config.
+	// Brand-audit reaper — safety-net for `running` rows the consumer can't
+	// self-flip. The consumer's catch handler runs an `UPDATE ... status='failed'`
+	// on budget exhaustion, but Cloudflare can kill the worker mid-flight when
+	// the unbudgeted DNS fan-out blows the per-request CPU budget, and the
+	// failure-flip never commits. This cron is the ONLY thing that can
+	// resurrect those rows. Runs every 15 min, idempotent (WHERE status='running'
+	// AND created_at < threshold), bounded MAX_REAP_PER_TICK.
 	if (env.BRAND_AUDIT_DB) {
 		try {
 			const reap = await reapStuckBrandAudits({ db: env.BRAND_AUDIT_DB });
