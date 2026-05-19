@@ -197,6 +197,44 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 		).toBeGreaterThan(80);
 	});
 
+	it('handles non-WinAnsi unicode characters in reasons / metadata without throwing', async () => {
+		// Surfaced 2026-05-19 in production audit 523e6276 (amazon.com): pdf-lib
+		// standard Helvetica uses WinAnsi encoding which cannot encode `≥` (U+2265).
+		// Classifier emits reasons like `lookalike score 0.92 ≥ 0.85` which crashed
+		// drawText, causing the pdf-queue consumer to retry-storm and exhaust
+		// (5 of 9 brands in batch d6cce286 lost their PDFs to this exact bug).
+		// Fix: sanitize text inputs to drawText by mapping common non-WinAnsi
+		// typographic + math chars to ASCII equivalents.
+		const { renderBrandAuditPdf } = await import('../src/lib/brand-audit-pdf-render');
+		const unicode: CheckResult = {
+			category: 'brand_discovery',
+			score: 100,
+			findings: [
+				{
+					category: 'brand_discovery',
+					title: 'unicode',
+					severity: 'info',
+					detail: '',
+					metadata: {
+						candidate: 'fake.example',
+						bucket: 'impersonation',
+						registrar: 'Registrar — Inc.',
+						registrarSource: 'rdap',
+						reasons: ['lookalike score 0.92 ≥ 0.85', 'distance ≤ 2', 'this is … truncated'],
+						signals: ['markov_gen'],
+						combinedConfidence: 0.3,
+					},
+				},
+			],
+		};
+
+		// Before the fix this throws WinAnsi-can't-encode. After, it produces a PDF.
+		const bytes = await renderBrandAuditPdf(unicode, 'example.com', { serverVersion: '2.21.4' });
+		expect(bytes.byteLength).toBeGreaterThan(500);
+		const header = new TextDecoder().decode(bytes.slice(0, 5));
+		expect(header).toBe('%PDF-');
+	});
+
 	it('emits deterministic bytes for a given input (modulo CreationDate)', async () => {
 		const { renderBrandAuditPdf } = await import('../src/lib/brand-audit-pdf-render');
 		const r = makeBrandAuditResult();

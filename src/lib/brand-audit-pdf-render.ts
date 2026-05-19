@@ -62,13 +62,45 @@ function badgeColor(bucket: BrandAuditBucket) {
 }
 
 /**
+ * Map common non-WinAnsi unicode chars to ASCII equivalents. pdf-lib's
+ * standard fonts (Helvetica, Courier) embed via WinAnsi which throws on any
+ * non-encodable codepoint. Classifier reasons like "lookalike score 0.92 ≥ 0.85"
+ * contain ≥ (U+2265) which crashed every render that included impersonation
+ * rationale (5 of 9 brands in batch d6cce286 lost their PDFs to this).
+ * Any chars NOT in this map AND not in WinAnsi get replaced with '?' as a
+ * defensive fallback (last `.replace`).
+ */
+function winAnsiSafe(s: string): string {
+	return s
+		.replace(/≥/g, '>=')
+		.replace(/≤/g, '<=')
+		.replace(/≠/g, '!=')
+		.replace(/≈/g, '~')
+		.replace(/×/g, 'x')
+		.replace(/±/g, '+/-')
+		.replace(/—/g, '--')
+		.replace(/–/g, '-')
+		.replace(/…/g, '...')
+		.replace(/[“”]/g, '"')
+		.replace(/[‘’]/g, "'")
+		.replace(/→/g, '->')
+		.replace(/←/g, '<-')
+		.replace(/✓/g, 'v')
+		.replace(/✗/g, 'x')
+		// Strip any remaining > U+00FF that WinAnsi can't encode.
+		.replace(/[^\x00-\xff]/g, '?');
+}
+
+/**
  * Helper to truncate a string to fit a maximum width when rendered at `size`.
  * pdf-lib's font metric APIs are sync but expensive; for our table layout we
  * use a coarse character-count approximation since fitting is cosmetic.
+ * Truncation marker uses ASCII '...' so the result is WinAnsi-safe.
  */
 function truncate(s: string, maxChars: number): string {
-	if (s.length <= maxChars) return s;
-	return s.slice(0, Math.max(1, maxChars - 1)) + '…';
+	const safe = winAnsiSafe(s);
+	if (safe.length <= maxChars) return safe;
+	return safe.slice(0, Math.max(1, maxChars - 3)) + '...';
 }
 
 interface DrawContext {
@@ -93,7 +125,10 @@ function ensureRoom(ctx: DrawContext, needed: number): void {
 }
 
 function drawText(ctx: DrawContext, text: string, opts: { x: number; size: number; color?: ReturnType<typeof rgb>; font?: PDFFont }): void {
-	ctx.page.drawText(text, {
+	// Defense-in-depth: every drawText goes through winAnsiSafe so any caller
+	// passing unsanitized text (target name, section title literals, callsite
+	// helpers) can't crash the renderer on a stray unicode codepoint.
+	ctx.page.drawText(winAnsiSafe(text), {
 		x: opts.x,
 		y: ctx.cursorY,
 		size: opts.size,
@@ -167,9 +202,9 @@ function drawHeader(ctx: DrawContext, target: string, dateLabel: string): void {
 	// Right-aligned metadata
 	const metaX = PAGE_WIDTH - MARGIN - 180;
 	const metaY = ctx.cursorY + 22;
-	ctx.page.drawText(`Project: Brand Audit`, { x: metaX, y: metaY, size: 8, font: ctx.mono, color: COLOR_DIM });
-	ctx.page.drawText(`Status:  Automated`, { x: metaX, y: metaY - 10, size: 8, font: ctx.mono, color: COLOR_DIM });
-	ctx.page.drawText(`Date:    ${dateLabel}`, { x: metaX, y: metaY - 20, size: 8, font: ctx.mono, color: COLOR_DIM });
+	ctx.page.drawText(winAnsiSafe(`Project: Brand Audit`), { x: metaX, y: metaY, size: 8, font: ctx.mono, color: COLOR_DIM });
+	ctx.page.drawText(winAnsiSafe(`Status:  Automated`), { x: metaX, y: metaY - 10, size: 8, font: ctx.mono, color: COLOR_DIM });
+	ctx.page.drawText(winAnsiSafe(`Date:    ${dateLabel}`), { x: metaX, y: metaY - 20, size: 8, font: ctx.mono, color: COLOR_DIM });
 	ctx.cursorY -= 16;
 	ctx.page.drawRectangle({ x: MARGIN, y: ctx.cursorY, width: CONTENT_WIDTH, height: 0.5, color: COLOR_DIM });
 	ctx.cursorY -= 12;
@@ -180,8 +215,8 @@ function drawFooter(ctx: DrawContext, target: string, serverVersion: string, dat
 	const pages = ctx.doc.getPages();
 	for (const p of pages) {
 		p.drawRectangle({ x: MARGIN, y: MARGIN + 24, width: CONTENT_WIDTH, height: 0.5, color: COLOR_DIM });
-		p.drawText(`bv-mcp brand-audit · ${target} · ${dateLabel}`, { x: MARGIN, y: MARGIN + 8, size: 7, font: ctx.mono, color: COLOR_DIM });
-		p.drawText(`v${serverVersion}`, { x: PAGE_WIDTH - MARGIN - 40, y: MARGIN + 8, size: 7, font: ctx.mono, color: COLOR_DIM });
+		p.drawText(winAnsiSafe(`bv-mcp brand-audit · ${target} · ${dateLabel}`), { x: MARGIN, y: MARGIN + 8, size: 7, font: ctx.mono, color: COLOR_DIM });
+		p.drawText(winAnsiSafe(`v${serverVersion}`), { x: PAGE_WIDTH - MARGIN - 40, y: MARGIN + 8, size: 7, font: ctx.mono, color: COLOR_DIM });
 	}
 }
 
