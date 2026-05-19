@@ -95,7 +95,11 @@ describe('renderBrandAuditPdf', () => {
 			const init = (callArgs[1] ?? {}) as { method?: string; headers?: Record<string, string>; body?: string };
 			expect(init.method).toBe('POST');
 			const body = JSON.parse(init.body ?? '{}') as { html: string; callerId: string };
-			expect(body.callerId, 'renderer requires callerId for rate-limit attribution').toBeTruthy();
+			// callerId must be a member of the renderer's KNOWN_CALLERS set
+			// (bv-web/cloudflare/browser-renderer/src/utils/validation.ts).
+			// Hard-pin to 'intel-gateway' so a future rename can't silently
+			// regress to an unknown caller and 404 every PDF render.
+			expect(body.callerId).toBe('intel-gateway');
 			expect(body.html).toContain('Discovery Intel Report');
 			expect(body.html).toContain('apple.com');
 			expect(body.html).toContain('apple.net');

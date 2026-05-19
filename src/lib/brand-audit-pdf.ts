@@ -64,13 +64,15 @@ export async function renderBrandAuditPdf(
 
 	// Use a relative-ish URL — bv-browser-renderer is a service binding, not a public host.
 	// The URL's origin is ignored when calling a binding's Fetcher; only the path matters.
-	// callerId is required by the renderer for per-caller rate-limit attribution; using
-	// the well-known 'brand-audit' identifier keeps the rate-limit bucket distinct from
-	// other bv-mcp PDF callers (currently none, but the renderer is shared with bv-web).
+	// callerId must be one of the renderer's KNOWN_CALLERS (see bv-web's
+	// browser-renderer/src/utils/validation.ts). `intel-gateway` is the best
+	// semantic fit — brand-audit is an intelligence-gathering surface and shares
+	// the rate-limit bucket with other intel callers. If/when bv-web adds an
+	// explicit `brand-audit` entry to KNOWN_CALLERS, switch to that.
 	const response = await options.renderer.fetch('https://renderer.internal/pdf/html', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ html, callerId: 'brand-audit' }),
+		body: JSON.stringify({ html, callerId: 'intel-gateway' }),
 	});
 
 	if (!response.ok) {
