@@ -197,6 +197,110 @@ describe('detectDkimKeyReuse', () => {
 		expect(result.coOwnedDomains.map((c) => c.domain)).toEqual(['bar.com']);
 	});
 
+	it('caps candidate probing and reports partial coverage when the candidate list is larger than the cap', async () => {
+		const dnsQuery = dnsQueryFromMap({
+			'foo.com': { default: KEY_A },
+			'a.example.com': { default: KEY_A },
+			'b.example.com': { default: KEY_A },
+			'c.example.com': { default: KEY_A },
+		});
+
+		const result = await detectDkimKeyReuse('foo.com', ['a.example.com', 'b.example.com', 'c.example.com'], {
+			dnsQuery,
+			selectors: ['default'],
+			maxCandidates: 2,
+		});
+
+		expect(result.queryStatus).toBe('partial');
+		expect(result.probedCandidates).toBe(2);
+		expect(result.skippedCandidates).toBe(1);
+		expect(result.coOwnedDomains.map((c) => c.domain)).toEqual(['a.example.com', 'b.example.com']);
+		expect(dnsQuery).not.toHaveBeenCalledWith('default._domainkey.c.example.com', 'TXT');
+	});
+
+	it('stops candidate probing when its own time budget is exhausted', async () => {
+		let now = 1_800_000_000_000;
+		const dnsQuery = vi.fn(async (name: string) => {
+			now += 10;
+			const m = name.toLowerCase().match(new RegExp('^([^.]+)\\.' + '_' + 'domainkey\\.(.+)$'));
+			if (!m) return emptyDnsResponse(name);
+			const [, , domain] = m;
+			if (domain === 'foo.com' || domain === 'a.example.com') return txtAnswer(name, `v=DKIM1; k=rsa; p=${KEY_A}`);
+			return txtAnswer(name, `v=DKIM1; k=rsa; p=${KEY_B}`);
+		});
+
+		const result = await detectDkimKeyReuse('foo.com', ['a.example.com', 'b.example.com'], {
+			dnsQuery,
+			selectors: ['default', 'google'],
+			candidateConcurrency: 1,
+			totalBudgetMs: 25,
+			now: () => now,
+		});
+
+		expect(result.queryStatus).toBe('partial');
+		expect(result.budgetExceeded).toBe(true);
+		expect(result.coOwnedDomains.map((c) => c.domain)).toEqual(['a.example.com']);
+		expect((result.probedCandidates ?? 0) + (result.skippedCandidates ?? 0)).toBeLessThanOrEqual(2);
+		expect(dnsQuery).not.toHaveBeenCalledWith('google._domainkey.b.example.com', 'TXT');
+	});
+
+	it('reserves candidate probing time after the seed publishes at least one key', async () => {
+		let now = 1_800_000_000_000;
+		const dnsQuery = vi.fn(async (name: string) => {
+			now += 11;
+			const m = name.toLowerCase().match(new RegExp('^([^.]+)\\.' + '_' + 'domainkey\\.(.+)$'));
+			if (!m) return emptyDnsResponse(name);
+			const [, sel, domain] = m;
+			if (domain === 'foo.com' && sel === 'default') return txtAnswer(name, `v=DKIM1; k=rsa; p=${KEY_A}`);
+			if (domain === 'a.example.com' && sel === 'default') return txtAnswer(name, `v=DKIM1; k=rsa; p=${KEY_A}`);
+			return emptyDnsResponse(name);
+		});
+
+		const result = await detectDkimKeyReuse('foo.com', ['a.example.com', 'b.example.com'], {
+			dnsQuery,
+			selectors: ['default', 'google', 'selector1', 'selector2'],
+			candidateConcurrency: 1,
+			totalBudgetMs: 30,
+			now: () => now,
+		});
+
+		expect(result.queryStatus).toBe('partial');
+		expect(result.budgetExceeded).toBe(true);
+		expect(result.probedCandidates).toBeGreaterThan(0);
+		expect(result.coOwnedDomains.map((c) => c.domain)).toEqual(['a.example.com']);
+		expect(dnsQuery).not.toHaveBeenCalledWith('selector1._domainkey.foo.com', 'TXT');
+	});
+
+	it('probes seed-hit selectors across candidates before spending budget on deeper selector checks', async () => {
+		let now = 1_800_000_000_000;
+		const dnsQuery = vi.fn(async (name: string) => {
+			now += 10;
+			const m = name.toLowerCase().match(new RegExp('^([^.]+)\\.' + '_' + 'domainkey\\.(.+)$'));
+			if (!m) return emptyDnsResponse(name);
+			const [, sel, domain] = m;
+			if (sel !== 'default') return emptyDnsResponse(name);
+			if (domain === 'foo.com' || domain === 'a.example.com' || domain === 'b.example.com') {
+				return txtAnswer(name, `v=DKIM1; k=rsa; p=${KEY_A}`);
+			}
+			return emptyDnsResponse(name);
+		});
+
+		const result = await detectDkimKeyReuse('foo.com', ['a.example.com', 'b.example.com'], {
+			dnsQuery,
+			selectors: ['default', 'google', 'selector1'],
+			candidateConcurrency: 1,
+			totalBudgetMs: 45,
+			now: () => now,
+		});
+
+		expect(result.queryStatus).toBe('partial');
+		expect(result.budgetExceeded).toBe(true);
+		expect(result.probedCandidates).toBe(2);
+		expect(result.coOwnedDomains.map((c) => c.domain)).toEqual(['a.example.com', 'b.example.com']);
+		const queriedNames = dnsQuery.mock.calls.map(([name]) => name);
+		expect(queriedNames.indexOf('default._domainkey.b.example.com')).toBeLessThan(queriedNames.indexOf('google._domainkey.a.example.com'));
+	});
+
 	it('throws on invalid seed input with the expected error prefix', async () => {
 		await expect(detectDkimKeyReuse('not a domain', [])).rejects.toThrow(/^Domain validation failed:/);
 	});

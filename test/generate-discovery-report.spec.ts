@@ -6,12 +6,13 @@
  * the findings, and generates a fully Blackveil-branded PDF report.
  */
 
-import { describe, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { writeFileSync, mkdirSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { marked } from 'marked';
 import { discoverBrandDomains } from '../src/tools/discover-brand-domains';
 import { checkRdapLookup } from '../src/tools/check-rdap-lookup';
+import { buildBrandAuditDepthSummary, type CandidateUniverseDepth } from '../src/lib/brand-audit-depth';
 import { generatePdf } from '../src/lib/pdf-engine';
 import { SERVER_VERSION } from '../src/lib/server-version';
 import {
@@ -21,6 +22,19 @@ import {
     type BrandAuditReportEnvelope,
     type BrandAuditStatusResult,
 } from './helpers/mcp-http-client';
+import {
+    buildDiscoveryReportModel,
+    buildDiscoveryReportSidecar,
+    type BrandAuditFindingLike,
+    type BrandAuditResultLike,
+    type DiscoveryReportCandidate,
+} from './helpers/discovery-report-model';
+import {
+    buildBrandAuditBatchStartArgs,
+    buildLocalDiscoveryOptions,
+    parseReportGenerationEnv,
+} from './helpers/report-generation-options';
+import { fetchBrandAuditReportWithRetry } from './helpers/brand-audit-report-fetch';
 
 const CONSUMER_REGISTRARS = [
     'godaddy', 'namecheap', 'hostinger', 'tucows', 'enom', 'squarespace', 
@@ -35,8 +49,48 @@ const assetsDir = join(__dirname, '../assets');
 const logoFullBase64 = readFileSync(join(assetsDir, 'bv-logo-full.png')).toString('base64');
 const logoMarkBase64 = readFileSync(join(assetsDir, 'bv-logo-mark.png')).toString('base64');
 
+describe('report generation option plumbing', () => {
+    it('defaults MCP brand_audit_batch_start requests to deep discovery', () => {
+        const options = parseReportGenerationEnv({ TARGET_DOMAIN: 'example.com' });
+
+        expect(buildBrandAuditBatchStartArgs('example.com', options)).toMatchObject({
+            domains: ['example.com'],
+            min_confidence: 0.1,
+            format: 'json',
+            depth: 'deep',
+        });
+    });
+
+    it('allows standard depth only when explicitly requested', () => {
+        const options = parseReportGenerationEnv({
+            TARGET_DOMAIN: 'example.com',
+            BV_REPORT_DEPTH: 'standard',
+        });
+
+        expect(buildBrandAuditBatchStartArgs('example.com', options).depth).toBe('standard');
+        expect(buildLocalDiscoveryOptions(options).depth).toBe('standard');
+    });
+
+    it('parses comma-separated public brand aliases for MCP and local discovery paths', () => {
+        const options = parseReportGenerationEnv({
+            TARGET_DOMAIN: 'example.com',
+            BV_BRAND_ALIASES: 'Example Corp, example-pay,  ,Example Corp',
+        });
+
+        expect(options.brandAliases).toEqual(['example corp', 'example-pay']);
+        expect(buildBrandAuditBatchStartArgs('example.com', options)).toMatchObject({
+            brand_aliases: ['example corp', 'example-pay'],
+        });
+        expect(buildLocalDiscoveryOptions(options)).toMatchObject({
+            brand_aliases: ['example corp', 'example-pay'],
+        });
+    });
+
+});
+
 describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
     it('generates the report for a target domain', async () => {
+        const reportOptions = parseReportGenerationEnv(process.env);
 
         // Route through the deployed MCP worker when BV_MCP_ENDPOINT is set.
         // Server-side brand_audit_batch_start runs discovery + RDAP +
@@ -45,6 +99,7 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
         // for tier-1 brands. Local fallback keeps the runner usable in CI.
         const mcpEndpoint = process.env.BV_MCP_ENDPOINT;
         const mcpToken = process.env.BV_MCP_TOKEN || process.env.BV_API_KEY;
+        const existingAuditId = process.env.BV_MCP_AUDIT_ID;
         const mcp = mcpEndpoint ? new McpHttpClient(mcpEndpoint, mcpToken) : null;
         if (mcp) {
             console.log(`[0/4] Initializing MCP session at ${mcpEndpoint}...`);
@@ -52,66 +107,109 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
         }
 
         let primaryRegistrar = 'Unknown';
-        const consolidated: Array<{ domain: string; evidence: string; registrar: string }> = [];
-        const shadowIt: Array<{ domain: string; evidence: string; registrar: string }> = [];
-        const impersonation: Array<{ domain: string; evidence: string; registrar: string }> = [];
+        let primaryRegistrarSource = 'unknown';
+        let auditId: string | null = null;
+        let sourceResult: BrandAuditResultLike | null = null;
+        const sourceMode = mcp ? 'mcp' : 'local';
 
-        const formatEvidence = (signals: string[]): string =>
-            signals.map(s => {
-                if (s === 'ns') return 'NS Match';
-                if (s === 'san') return 'Cert SAN Match';
-                if (s === 'san_recursive') return 'Recursive SAN';
-                if (s === 'dmarc_rua') return 'DMARC RUA Match';
-                if (s === 'dkim_key_reuse') return 'DKIM Key Match';
-                if (s === 'spf_include') return 'SPF Include';
-                if (s === 'spf_include_seed') return 'SPF Seed Include';
-                if (s === 'mx_overlap') return 'MX Overlap';
-                if (s === 'http_redirect') return 'HTTP Redirect';
-                if (s === 'cname_alignment') return 'CNAME Alignment';
-                if (s === 'markov_gen') return 'Markov Variant';
-                return s.toUpperCase();
-            }).join(', ') || 'No shared infrastructure';
+        const lookupRegistrar = (rdap: RdapResult): { registrar: string; registrarSource: string } => {
+            const rFind = rdap.findings.find(f => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0);
+            return {
+                registrar: rFind ? String(rFind.metadata!.registrar).trim() : 'Unknown',
+                registrarSource: typeof rFind?.metadata?.registrarSource === 'string' ? String(rFind.metadata.registrarSource) : 'unknown',
+            };
+        };
+
+        const severityForBucket = (bucket: DiscoveryReportCandidate['bucket']): string => {
+            if (bucket === 'consolidated') return 'info';
+            if (bucket === 'shadowIt') return 'medium';
+            if (bucket === 'indeterminate') return 'low';
+            return 'high';
+        };
+
+        const candidateFinding = (input: {
+            domain: string;
+            bucket: DiscoveryReportCandidate['bucket'];
+            signals: string[];
+            confidence: number;
+            registrar: string;
+            registrarSource: string;
+            reasons: string[];
+        }): BrandAuditFindingLike => ({
+            category: 'brand_discovery',
+            title: `Brand candidate: ${input.domain}`,
+            severity: severityForBucket(input.bucket),
+            detail: input.reasons.join(' — '),
+            metadata: {
+                candidate: input.domain,
+                bucket: input.bucket,
+                signals: input.signals,
+                combinedConfidence: input.confidence,
+                registrar: input.registrar,
+                registrarSource: input.registrarSource,
+                reasons: input.reasons,
+            },
+        });
 
         if (mcp) {
-            console.log(`[1/4] Enqueueing brand audit for ${target} (queue: 300s/target budget)...`);
-            const startText = await mcp.callToolText('brand_audit_batch_start', {
-                domains: [target],
-                min_confidence: 0.1,
-                format: 'json',
-            });
-            const idMatch = /auditId=([a-f0-9-]{8,})/i.exec(startText);
-            if (!idMatch) throw new Error(`Could not extract auditId from batch_start response: ${startText.slice(0, 200)}`);
-            const auditId = idMatch[1];
-            console.log(`auditId=${auditId}`);
-
-            console.log(`[2/4] Polling brand_audit_status (5s interval, ~3min ETA)...`);
-            const pollDeadline = Date.now() + 270_000;
-            let lastProgress = '';
-            while (true) {
+            if (existingAuditId) {
+                auditId = existingAuditId;
+                console.log(`[1/4] Verifying reusable brand audit ${auditId} for ${target}...`);
                 const status = await mcp.callToolStructured<BrandAuditStatusResult>('brand_audit_status', { auditId });
                 const summary = status.findings.find(f => f.metadata?.summary === true);
                 const md = summary?.metadata;
-                const progress = md?.progress ?? '?/?';
-                if (progress !== lastProgress) {
-                    console.log(`  status=${md?.status} progress=${progress}`);
-                    lastProgress = progress;
+                const targetStatus = md?.targets?.find((candidateTarget: { target?: string }) => candidateTarget.target === target);
+                if (md?.status !== 'completed' || targetStatus?.status !== 'completed') {
+                    throw new Error(`BV_MCP_AUDIT_ID=${auditId} is not completed for ${target}: parent=${md?.status ?? 'unknown'} target=${targetStatus?.status ?? 'missing'}`);
                 }
-                const target0 = md?.targets?.[0];
-                if (md?.status === 'completed' && target0?.status === 'completed') break;
-                if (md?.status === 'failed' || target0?.status === 'failed') {
-                    throw new Error(`brand_audit failed: ${target0?.error ?? 'unknown error'}`);
+                console.log(`[1/4] Reusing completed brand audit ${auditId} for ${target}.`);
+            } else {
+                console.log(`[1/4] Enqueueing brand audit for ${target} (depth=${reportOptions.depthMode}, queue: 300s/target budget)...`);
+                const startText = await mcp.callToolText('brand_audit_batch_start', buildBrandAuditBatchStartArgs(target, reportOptions));
+                const idMatch = /auditId=([a-f0-9-]{8,})/i.exec(startText);
+                if (!idMatch) throw new Error(`Could not extract auditId from batch_start response: ${startText.slice(0, 200)}`);
+                auditId = idMatch[1];
+                console.log(`auditId=${auditId}`);
+
+                console.log(`[2/4] Polling brand_audit_status (5s interval, ~3min ETA)...`);
+                const pollStartedAt = Date.now();
+                const pollDeadline = Date.now() + 270_000;
+                let lastProgress = '';
+                let lastParentStatus = 'unknown';
+                let lastTargetStatus = 'unknown';
+                while (true) {
+                    const status = await mcp.callToolStructured<BrandAuditStatusResult>('brand_audit_status', { auditId });
+                    const summary = status.findings.find(f => f.metadata?.summary === true);
+                    const md = summary?.metadata;
+                    const progress = md?.progress ?? '?/?';
+                    const target0 = md?.targets?.[0];
+                    lastParentStatus = String(md?.status ?? 'unknown');
+                    lastTargetStatus = String(target0?.status ?? 'unknown');
+                    if (progress !== lastProgress) {
+                        console.log(`  status=${lastParentStatus} target=${lastTargetStatus} progress=${progress}`);
+                        lastProgress = progress;
+                    }
+                    if (md?.status === 'completed' && target0?.status === 'completed') break;
+                    if (md?.status === 'failed' || target0?.status === 'failed') {
+                        throw new Error(`brand_audit failed: ${target0?.error ?? 'unknown error'}`);
+                    }
+                    if (Date.now() > pollDeadline) {
+                        const elapsedMs = Date.now() - pollStartedAt;
+                        throw new Error(`brand_audit_status polling timed out after ${elapsedMs}ms auditId=${auditId} parentStatus=${lastParentStatus} targetStatus=${lastTargetStatus} progress=${progress}. Reuse command: BV_MCP_AUDIT_ID=${auditId} npm run generate-report -- ${target}`);
+                    }
+                    await new Promise(r => setTimeout(r, 5_000));
                 }
-                if (Date.now() > pollDeadline) {
-                    throw new Error(`brand_audit_status polling timed out after 270s (last progress=${progress})`);
-                }
-                await new Promise(r => setTimeout(r, 5_000));
             }
 
             console.log(`[3/4] Fetching report and classifying candidates...`);
-            const envelope = await mcp.callToolStructured<BrandAuditReportEnvelope>('brand_audit_get_report', { auditId, target });
-            const wrapperSummary = envelope.findings.find(f => f.metadata?.summary === true);
-            const inner = wrapperSummary?.metadata?.result;
-            if (!inner) throw new Error('brand_audit_get_report missing embedded result');
+            const { result: inner } = await fetchBrandAuditReportWithRetry({
+                auditId,
+                target,
+                callTool: (args) => mcp.callToolStructured<BrandAuditReportEnvelope>('brand_audit_get_report', args),
+                onRetry: (attempt) => {
+                    console.log(`  retry ${attempt}/5 for brand_audit_get_report (completed row not readable yet)`);
+                },
+            });
 
             const innerSummary = inner.findings.find(f => f.metadata?.summary === true);
             if (typeof innerSummary?.metadata?.targetRegistrar === 'string') {
@@ -119,37 +217,32 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
             }
             console.log(`Primary Registrar: ${primaryRegistrar}`);
 
-            const candidateFindings = inner.findings.filter(f => typeof f.metadata?.candidate === 'string');
-            for (const f of candidateFindings) {
-                const md = f.metadata!;
-                const cand = {
-                    domain: md.candidate as string,
-                    evidence: formatEvidence(md.signals ?? []),
-                    registrar: (md.registrar as string) ?? 'Unknown',
-                };
-                switch (md.bucket) {
-                    case 'consolidated': consolidated.push(cand); break;
-                    case 'impersonation': impersonation.push(cand); break;
-                    case 'shadowIt':
-                    case 'indeterminate':
-                    default:
-                        shadowIt.push(cand); break;
-                }
-            }
-            console.log(`Classified ${candidateFindings.length} candidates: ${consolidated.length} consolidated, ${shadowIt.length} shadowIt+indeterminate, ${impersonation.length} impersonation`);
+            sourceResult = inner;
+            const preview = buildDiscoveryReportModel({ target, primaryRegistrar, result: inner });
+            console.log(`Classified ${preview.counts.consolidated + preview.counts.shadowIt + preview.counts.indeterminate + preview.counts.impersonation} candidates: ${preview.counts.consolidated} consolidated, ${preview.counts.shadowIt} shadowIt, ${preview.counts.indeterminate} indeterminate, ${preview.counts.impersonation} impersonation`);
         } else {
             console.log(`[1/4] Looking up primary registrar for ${target} (local)...`);
             try {
                 const rdap = (await checkRdapLookup(target)) as RdapResult;
-                const rFind = rdap.findings.find(f => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0);
-                if (rFind) primaryRegistrar = String(rFind.metadata!.registrar).trim();
+                const lookup = lookupRegistrar(rdap);
+                primaryRegistrar = lookup.registrar;
+                primaryRegistrarSource = lookup.registrarSource;
             } catch (e) {
                 console.warn(`Failed to lookup primary registrar: ${(e as Error).message}`);
             }
             console.log(`Primary Registrar: ${primaryRegistrar}`);
 
             console.log(`[2/4] Running brand discovery (local)...`);
-            const result = (await discoverBrandDomains(target, { min_confidence: 0.1 })) as BrandDiscoveryResult;
+            const result = (await discoverBrandDomains(target, buildLocalDiscoveryOptions(reportOptions))) as BrandDiscoveryResult;
+            const discoverySummary = result.findings.find(f => f.metadata?.summary === true);
+            const discoveryCandidateUniverse = (discoverySummary?.metadata?.candidateUniverse as CandidateUniverseDepth | undefined) ?? {
+                seeded: 0,
+                probed: 0,
+                surfaced: 0,
+                dropped: {},
+                sources: {},
+            };
+            const discoverySignalStatus = (discoverySummary?.metadata?.signalStatus as Record<string, { status: string; error?: string }> | undefined) ?? {};
             const candidates = new Map<string, { domain: string; confidence: number; signals: string[] }>();
             for (const finding of result.findings) {
                 if (finding.metadata?.candidate) {
@@ -169,21 +262,22 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
             const isPrimaryCore = primaryRegLower !== 'unknown' && primaryRegLower.length > 3;
             const RDAP_CONCURRENCY = 16;
             const rdapTargets = uniqueCandidates.filter(c => !(c.signals.length === 1 && c.signals[0] === 'markov_gen'));
-            const candidateRegistrars = new Map<string, string>();
+            const candidateRegistrars = new Map<string, { registrar: string; registrarSource: string }>();
             for (let i = 0; i < rdapTargets.length; i += RDAP_CONCURRENCY) {
                 const chunk = rdapTargets.slice(i, i + RDAP_CONCURRENCY);
                 const results = await Promise.allSettled(chunk.map(c => checkRdapLookup(c.domain) as Promise<RdapResult>));
                 results.forEach((r, idx) => {
-                    let reg = 'Unknown';
+                    let lookup = { registrar: 'Unknown', registrarSource: 'unknown' };
                     if (r.status === 'fulfilled') {
-                        const rFind = r.value.findings.find(f => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0);
-                        if (rFind) reg = String(rFind.metadata!.registrar).trim();
+                        lookup = lookupRegistrar(r.value);
                     }
-                    candidateRegistrars.set(chunk[idx].domain, reg);
+                    candidateRegistrars.set(chunk[idx].domain, lookup);
                 });
             }
+            const localFindings: BrandAuditFindingLike[] = [];
             for (const cand of uniqueCandidates) {
-                const candRegistrar = candidateRegistrars.get(cand.domain) ?? 'Unknown';
+                const lookup = candidateRegistrars.get(cand.domain) ?? { registrar: 'Unknown', registrarSource: 'unknown' };
+                const candRegistrar = lookup.registrar;
                 const candRegLower = candRegistrar.toLowerCase();
                 let isMatch = false;
                 if (isPrimaryCore && candRegLower !== 'unknown') {
@@ -191,30 +285,103 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
                     const words2 = candRegLower.split(/[\s,.]+/).filter(w => w.length > 3);
                     isMatch = words1.some(w => words2.includes(w));
                 }
-                const evidence = formatEvidence(cand.signals);
                 const deterministicSignals = cand.signals.filter(s => s === 'ns' || s === 'dkim_key_reuse' || s === 'dmarc_rua');
                 const hasDeterministic = deterministicSignals.length > 0;
                 const onlyMarkov = cand.signals.length === 1 && cand.signals[0] === 'markov_gen';
                 const registrarsKnown = primaryRegLower !== 'unknown' && candRegLower !== 'unknown';
+                let bucket: DiscoveryReportCandidate['bucket'];
+                const reasons: string[] = [];
                 if (isMatch || (registrarsKnown && candRegLower === primaryRegLower)) {
-                    consolidated.push({ domain: cand.domain, evidence, registrar: candRegistrar });
+                    bucket = 'consolidated';
+                    reasons.push('shared registrar family');
                 } else if (onlyMarkov) {
-                    impersonation.push({ domain: cand.domain, evidence, registrar: candRegistrar });
+                    bucket = 'impersonation';
+                    reasons.push('markov-only lookalike');
                 } else if (!registrarsKnown && hasDeterministic) {
-                    consolidated.push({ domain: cand.domain, evidence, registrar: candRegistrar });
+                    bucket = 'consolidated';
+                    reasons.push(`deterministic signal(s) with unavailable registrar: ${deterministicSignals.join(', ')}`);
+                } else if (!registrarsKnown) {
+                    bucket = 'indeterminate';
+                    reasons.push('registrar unavailable and no deterministic ownership signal');
                 } else {
                     const isConsumer = CONSUMER_REGISTRARS.some(r => candRegLower.includes(r));
                     if (isConsumer && cand.confidence < 0.8) {
-                        impersonation.push({ domain: cand.domain, evidence, registrar: candRegistrar });
+                        bucket = 'impersonation';
+                        reasons.push('consumer registrar with sub-threshold confidence');
+                    } else if (!hasDeterministic && cand.confidence < 0.7) {
+                        bucket = 'indeterminate';
+                        reasons.push('non-deterministic evidence below Shadow IT threshold');
                     } else {
-                        shadowIt.push({ domain: cand.domain, evidence, registrar: candRegistrar });
+                        bucket = 'shadowIt';
+                        reasons.push('non-aligned registrar with correlated infrastructure');
                     }
                 }
+                localFindings.push(candidateFinding({
+                    domain: cand.domain,
+                    bucket,
+                    signals: cand.signals,
+                    confidence: cand.confidence,
+                    registrar: candRegistrar,
+                    registrarSource: lookup.registrarSource,
+                    reasons,
+                }));
             }
+            sourceResult = {
+                category: 'brand_discovery',
+                passed: true,
+                score: 100,
+                findings: [
+                    {
+                        category: 'brand_discovery',
+                        title: `Brand audit: ${localFindings.length} candidate(s) classified for ${target}`,
+                        severity: 'info',
+                        detail: `local report fallback classified ${localFindings.length} candidate(s)`,
+                        metadata: {
+                            summary: true,
+                            target,
+                            targetRegistrar: primaryRegistrar,
+                            depth: buildBrandAuditDepthSummary({
+                                candidateUniverse: discoveryCandidateUniverse,
+                                signalStatus: discoverySignalStatus,
+                                registrarSources: [
+                                    primaryRegistrarSource as 'rdap' | 'whois' | 'redacted' | 'notfound' | 'unknown',
+                                    ...uniqueCandidates.map((candidate) =>
+                                        (candidateRegistrars.get(candidate.domain)?.registrarSource ?? 'unknown') as 'rdap' | 'whois' | 'redacted' | 'notfound' | 'unknown',
+                                    ),
+                                ],
+                            }),
+                        },
+                    },
+                    ...localFindings,
+                ],
+            };
         }
 
-        const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+        if (!sourceResult) throw new Error('No discovery result available for report generation.');
+
+        const reportModel = buildDiscoveryReportModel({ target, primaryRegistrar, result: sourceResult });
+        const { consolidated, shadowIt, indeterminate, impersonation } = reportModel.buckets;
+        const generatedAt = new Date();
+        const dateStr = generatedAt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
         const targetUpper = target.toUpperCase();
+        const registrarCell = (cand: DiscoveryReportCandidate): string => cand.registrarSource === 'unknown'
+            ? cand.registrar
+            : `${cand.registrar} (${cand.registrarSource})`;
+        const depth = reportModel.depth;
+        const depthWarnings = depth?.warnings ?? [];
+        const executiveScope = depthWarnings.length > 0
+            ? `This intelligence report maps observed domain architecture and cryptographic footprint associated with **${target}**. Discovery depth warnings are present, so the results should be treated as a coverage-qualified portfolio view rather than a definitive mapping.`
+            : `This intelligence report provides a definitive mapping of the domain architecture and cryptographic footprint associated with **${target}**.`;
+        const discoveryDepthSection = depth
+            ? `
+## Discovery Depth
+This run seeded **${depth.candidateUniverse.seeded}** candidate domain(s), probed **${depth.candidateUniverse.probed}**, and surfaced **${depth.candidateUniverse.surfaced}** for classification. Registrar coverage known ratio: **${Math.round(depth.registrarCoverage.knownRatio * 100)}%**.
+
+${depthWarnings.length > 0
+    ? `Depth warnings:\n${depthWarnings.map(warning => `- ${warning}`).join('\n')}`
+    : 'No discovery-depth warnings were emitted for this run.'}
+`
+            : '';
 
         let md = `<style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;500;700&family=JetBrains+Mono:wght@400;700&family=Manrope:wght@200;400;600&display=swap');
@@ -342,7 +509,7 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
   <div class="header-info">
     <strong>Discovery Intel Report</strong><br>
     Asset: ${targetUpper}<br>
-    Ref: BV-${target.substring(0,3).toUpperCase()}-${new Date().getTime().toString().slice(-6)}<br>
+    Ref: BV-${target.substring(0,3).toUpperCase()}-${generatedAt.getTime().toString().slice(-6)}<br>
     Auth: Enterprise Tier
   </div>
 </div>
@@ -350,9 +517,11 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
 # Infrastructure Audit: ${target}
 
 ## Executive Summary
-This intelligence report provides a definitive mapping of the domain architecture and cryptographic footprint associated with **${target}**. Leveraging the Blackveil Multi-Signal Correlation Engine, we have identified primary infrastructure, discovered "Shadow IT" Managed by third-party vendors, and assessed potential impersonation risks. 
+${executiveScope} Leveraging the Blackveil Multi-Signal Correlation Engine, we have identified primary infrastructure, discovered "Shadow IT" Managed by third-party vendors, and assessed potential impersonation risks.
 
-Our analysis utilizes deterministic signals (NS-Overlap, SAN Certificates, and DMARC RUA/RUF linkages) to provide a 100% factual baseline of the organization's decentralized portfolio.
+Our analysis separates verified infrastructure, Shadow IT opportunities, indeterminate candidates that require manual review, and likely impersonation risk. Registrar gaps are preserved in the JSON sidecar instead of being silently folded into revenue counts.
+
+${discoveryDepthSection}
 
 ## 1. Primary Corporate Infrastructure
 The following assets are verified as core components of the ${target} portfolio, currently consolidated under the master enterprise registrar (**${primaryRegistrar}**).
@@ -363,7 +532,7 @@ The following assets are verified as core components of the ${target} portfolio,
 `;
 
         for (const cand of consolidated) {
-            md += `| **${cand.domain}** | <span class="evidence">${cand.evidence}</span> | ${cand.registrar} | <span class="status-pass">✅ Consolidated</span> |\n`;
+            md += `| **${cand.domain}** | <span class="evidence">${cand.evidence}</span> | ${registrarCell(cand)} | <span class="status-pass">✅ Consolidated</span> |\n`;
         }
 
         if (consolidated.length === 0) {
@@ -383,7 +552,7 @@ The Blackveil engine successfully correlated the following domains to ${target}'
 `;
 
         for (const cand of shadowIt) {
-            md += `| **${cand.domain}** | <span class="evidence">${cand.evidence}</span> | ${cand.registrar} | <span class="status-warn">🟡 Consolidation Target</span> |\n`;
+            md += `| **${cand.domain}** | <span class="evidence">${cand.evidence}</span> | ${registrarCell(cand)} | <span class="status-warn">🟡 Consolidation Target</span> |\n`;
         }
 
         if (shadowIt.length === 0) {
@@ -393,7 +562,26 @@ The Blackveil engine successfully correlated the following domains to ${target}'
         md += `
 ---
 
-## 3. High-Risk Impersonation Threats
+## 3. Indeterminate / Manual Review
+These candidates have incomplete registrar data, redacted ownership metadata, or non-deterministic correlation signals. They are preserved for review but excluded from the revenue projection until ownership is verified.
+
+| Review Domain | Evidence Gap | Verified Registrar | Status |
+| :--- | :--- | :--- | :--- |
+`;
+
+        for (const cand of indeterminate) {
+            const reason = cand.reasons[0] ?? cand.evidence;
+            md += `| **${cand.domain}** | <span class="evidence">${reason}</span> | ${registrarCell(cand)} | <span class="status-warn">Manual Review</span> |\n`;
+        }
+
+        if (indeterminate.length === 0) {
+            md += `| *No indeterminate domains found* | - | - | - |\n`;
+        }
+
+        md += `
+---
+
+## 4. High-Risk Impersonation Threats
 During the analysis, external domains exhibiting high visual similarity (lookalikes) or low confidence signal overlaps were evaluated against the infrastructure correlation engine. The following domains are registered at consumer-grade registrars or exhibit no strong shared infrastructure with ${target}, indicating they are unauthorized and potentially adversarial.
 
 | Threat Domain | Discrepancy Evidence | Verified Registrar | Status |
@@ -401,21 +589,21 @@ During the analysis, external domains exhibiting high visual similarity (lookali
 `;
 
         for (const cand of impersonation) {
-            md += `| **${cand.domain}** | <span class="evidence">${cand.evidence}</span> | ${cand.registrar} | <span class="status-fail">🚨 High Risk (Phishing)</span> |\n`;
+            md += `| **${cand.domain}** | <span class="evidence">${cand.evidence}</span> | ${registrarCell(cand)} | <span class="status-fail">🚨 High Risk (Phishing)</span> |\n`;
         }
 
         if (impersonation.length === 0) {
             md += `| *No high-risk impersonation domains found* | - | - | - |\n`;
         }
 
-        const arrOpportunity = shadowIt.length * (150 + 2000 + 1200);
+        const arrOpportunity = reportModel.arrOpportunity;
 
         md += `
 ---
 
-## 4. Revenue & Consolidation Opportunity
+## 5. Revenue & Consolidation Opportunity
 
-Based on the discovery of ${shadowIt.length} high-value Shadow IT domains, the following is a projection of the immediate revenue opportunity for the primary registrar to consolidate and secure this fragmented infrastructure.
+Based on the discovery of ${arrOpportunity.domainCount} verified high-value Shadow IT domains, the following is a projection of the immediate revenue opportunity for the primary registrar to consolidate and secure this fragmented infrastructure. ${indeterminate.length} indeterminate candidate(s) are excluded until manual review confirms ownership.
 
 <div class="revenue-box">
   <h3>Estimated Annual Recurring Revenue (ARR) Gain</h3>
@@ -426,32 +614,33 @@ Based on the discovery of ${shadowIt.length} high-value Shadow IT domains, the f
       <th>Opportunity Value</th>
     </tr>
     <tr>
-      <td><strong>Domain Transfer & Renewals</strong></td>
-      <td>${shadowIt.length} domains @ $150/yr (Enterprise Tier)</td>
-      <td><strong>$${(shadowIt.length * 150).toLocaleString()} / yr</strong></td>
-    </tr>
-    <tr>
-      <td><strong>Managed Premium DNS</strong></td>
-      <td>${shadowIt.length} domains @ $2,000/yr (UltraDNS SLA match)</td>
-      <td><strong>$${(shadowIt.length * 2000).toLocaleString()} / yr</strong></td>
-    </tr>
-    <tr>
-      <td><strong>Advanced Security Monitoring (Blackveil)</strong></td>
-      <td>${shadowIt.length} domains @ $1,200/yr (Continuous Auditing)</td>
-      <td><strong>$${(shadowIt.length * 1200).toLocaleString()} / yr</strong></td>
-    </tr>
-    <tr>
-      <td colspan="2" style="text-align: right; font-weight: bold; font-size: 16px;">Total Identified ARR Opportunity:</td>
-      <td style="font-weight: bold; font-size: 16px; color: #00FF9D;">$${arrOpportunity.toLocaleString()} / yr</td>
+	      <td><strong>Domain Transfer & Renewals</strong></td>
+	      <td>${arrOpportunity.domainCount} domains @ $150/yr (Enterprise Tier)</td>
+	      <td><strong>$${arrOpportunity.domainRenewals.toLocaleString()} / yr</strong></td>
+	    </tr>
+	    <tr>
+	      <td><strong>Managed Premium DNS</strong></td>
+	      <td>${arrOpportunity.domainCount} domains @ $2,000/yr (UltraDNS SLA match)</td>
+	      <td><strong>$${arrOpportunity.managedDns.toLocaleString()} / yr</strong></td>
+	    </tr>
+	    <tr>
+	      <td><strong>Advanced Security Monitoring (Blackveil)</strong></td>
+	      <td>${arrOpportunity.domainCount} domains @ $1,200/yr (Continuous Auditing)</td>
+	      <td><strong>$${arrOpportunity.securityMonitoring.toLocaleString()} / yr</strong></td>
+	    </tr>
+	    <tr>
+	      <td colspan="2" style="text-align: right; font-weight: bold; font-size: 16px;">Total Identified ARR Opportunity:</td>
+	      <td style="font-weight: bold; font-size: 16px; color: #00FF9D;">$${arrOpportunity.total.toLocaleString()} / yr</td>
     </tr>
   </table>
   <p style="font-size: 12px; margin-top: 10px; color: #bfbfbf;"><em>* Note: This represents the opportunity from a single discovery run on a small subset of candidate domains. A full portfolio scan typically yields 10x-50x more candidates.</em></p>
 </div>
 
 ## Strategic Recommendations
-1. **Portfolio Consolidation:** Present the cryptographic evidence to the ${target} security team to initiate transfer procedures for the ${shadowIt.length} identified domains currently managed by competing registrars, bringing them under the primary master agreement.
-2. **Defensive Action:** Forward the details of the unauthorized lookalike domains to the brand protection and legal teams for immediate takedown or UDRP proceedings.
-3. **Continuous Monitoring:** Enroll the newly discovered Shadow IT domains into the Blackveil automated security scanning tier to ensure compliance with corporate baseline policies (DMARC, DNSSEC, etc.).
+1. **Portfolio Consolidation:** Present the cryptographic evidence to the ${target} security team to initiate transfer procedures for the ${shadowIt.length} verified Shadow IT domains currently managed by competing registrars.
+2. **Manual Review:** Resolve registrar gaps for the ${indeterminate.length} indeterminate candidates before including them in commercial opportunity totals.
+3. **Defensive Action:** Forward the details of the unauthorized lookalike domains to the brand protection and legal teams for immediate takedown or UDRP proceedings.
+4. **Continuous Monitoring:** Enroll the newly discovered Shadow IT domains into the Blackveil automated security scanning tier to ensure compliance with corporate baseline policies (DMARC, DNSSEC, etc.).
 
 ***
 *Generated automatically by the Blackveil DNS Multi-Tenant Orchestrator. Powered by Blackveil Security.*
@@ -485,9 +674,23 @@ Based on the discovery of ${shadowIt.length} high-value Shadow IT domains, the f
         const reportsDir = join(__dirname, '../reports');
         try { mkdirSync(reportsDir, { recursive: true }); } catch {}
         
-        const filePath = join(reportsDir, `${target}-discovery-report.pdf`);
+        const filePath = process.env.BV_REPORT_PDF_PATH || join(reportsDir, `${target}-discovery-report.pdf`);
+        mkdirSync(dirname(filePath), { recursive: true });
         writeFileSync(filePath, pdfBuffer);
+        const sidecarPath = process.env.BV_REPORT_JSON_PATH || join(reportsDir, `${target}-discovery-report.json`);
+        mkdirSync(dirname(sidecarPath), { recursive: true });
+        const sidecar = buildDiscoveryReportSidecar(reportModel, {
+            auditId,
+            sourceMode,
+            generatedAt: generatedAt.toISOString(),
+            serverVersion: SERVER_VERSION,
+            runId: reportOptions.runId,
+            requestedAt: reportOptions.requestedAt,
+            depthMode: reportOptions.depthMode,
+        });
+        writeFileSync(sidecarPath, JSON.stringify(sidecar, null, 2));
         
         console.log(`[4/4] PDF report generated: ${filePath}`);
+        console.log(`[4/4] JSON sidecar generated: ${sidecarPath}`);
     }, 300000); // 5min timeout for large discoveries (brands like disney can have many candidates)
 });

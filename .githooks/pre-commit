@@ -25,6 +25,14 @@ BLOCKED_PATTERNS=(
   "*.pdf"
   "*.env"
   "*.env.*"
+  "*.sqlite"
+  "*.sqlite3"
+  "*.db"
+  "scripts/tranco-*.json"
+  "reports/tenant-readiness-proof.html"
+  "reports/tenant-calibration-*.json"
+  "reports/tenant-*.json"
+  "reports/repo-audit-*.html"
 )
 
 # Generated/compiled files that must never be committed
@@ -104,6 +112,9 @@ if command -v gitleaks &>/dev/null; then
     exit 1
   fi
 fi
+
+# ─── 2b. Repo safety scanner ─────────────────────────────────────────
+node scripts/repo-safety/scan-sensitive-surface.mjs
 
 # ─── 3. IP leakage patterns ─────────��────────────────────────────────
 # Patterns loaded from external file to avoid self-matching.

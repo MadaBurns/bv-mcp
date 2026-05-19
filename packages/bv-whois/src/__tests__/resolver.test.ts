@@ -48,13 +48,17 @@ describe('resolveWhoisServer', () => {
 		expect(whoisQuery).toHaveBeenCalledOnce();
 	});
 
-	it('persists IANA result to KV with the configured TTL', async () => {
+	it('persists IANA result to KV with the configured TTL (Phase 5: JSON envelope)', async () => {
 		const kv = makeMemoryKV();
 		const whoisQuery: WhoisQueryFn = async () => 'whois:        whois.nic.xyz\n';
 
 		await resolveWhoisServer('xyz', { kv: kv as never, whoisQuery });
 
-		expect(kv.put).toHaveBeenCalledWith('iana:xyz', 'whois.nic.xyz', { expirationTtl: IANA_TTL_SECONDS });
+		expect(kv.put).toHaveBeenCalledWith(
+			'iana:xyz',
+			JSON.stringify({ server: 'whois.nic.xyz' }),
+			{ expirationTtl: IANA_TTL_SECONDS },
+		);
 	});
 
 	it('reads from KV cache on subsequent calls without re-querying IANA', async () => {
@@ -78,14 +82,18 @@ describe('resolveWhoisServer', () => {
 		expect(result).toBeNull();
 	});
 
-	it('does not write null IANA results to KV', async () => {
+	it('caches null IANA results to KV (Phase 5: negative cache prevents IANA hammering)', async () => {
 		const kv = makeMemoryKV();
 		const whoisQuery: WhoisQueryFn = async () => '% returned 0 objects\n';
 
 		await resolveWhoisServer('fakefaketld', { kv: kv as never, whoisQuery });
 
-		// Behavior: a subsequent call still has to query IANA (no negative-cache hit).
-		expect(kv.put).not.toHaveBeenCalled();
+		// Phase 5 contract: a null IANA referral now writes a {server:null} envelope
+		// with the shorter 24h TTL. A subsequent call within the TTL skips IANA.
+		expect(kv.put).toHaveBeenCalledTimes(1);
+		const [key, value] = kv.put.mock.calls[0];
+		expect(key).toBe('iana:fakefaketld');
+		expect(JSON.parse(value)).toEqual({ server: null });
 	});
 
 	it('normalizes TLD to lowercase before lookup', async () => {
