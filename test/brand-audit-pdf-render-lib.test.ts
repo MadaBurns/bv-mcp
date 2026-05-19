@@ -146,6 +146,57 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 		expect(parsed.getPageCount()).toBeGreaterThan(0);
 	});
 
+	it('renders per-row reasons text for EVERY candidate (not just the last in each section)', async () => {
+		// Surfaced 2026-05-19 in production marriott/mastercard PDFs: only the
+		// last candidate row before a section break showed its `reasons:` line.
+		// Root cause: the next row's background rectangle was drawn AFTER the
+		// previous row's reasons text and at a y-position that overlapped it,
+		// obscuring all but the last (because there's no "next row" to overdraw).
+		// Fix: background-rect height grows when reasons present so the band
+		// fully contains the reasons line and the next row's band starts BELOW it.
+		//
+		// Test surrogate (pdf-lib applies FlateDecode to text streams so raw-byte
+		// grep won't find content): render the same audit WITH reasons and a
+		// parallel one WITHOUT reasons. The WITH version must be measurably
+		// larger because more drawText operations land in the content stream.
+		// Under the overdraw bug, the only-last-row-shows behavior means
+		// withReasons is barely larger than without; after the fix it's larger
+		// by ~one extra drawText op per row.
+		const { renderBrandAuditPdf } = await import('../src/lib/brand-audit-pdf-render');
+		const makeFindings = (reasons: string[]) =>
+			['first.example', 'second.example', 'third.example', 'fourth.example'].map((domain) => ({
+				category: 'brand_discovery' as const,
+				title: domain,
+				severity: 'info' as const,
+				detail: '',
+				metadata: {
+					candidate: domain,
+					bucket: 'consolidated',
+					registrar: 'X',
+					registrarSource: 'rdap',
+					reasons,
+					signals: ['ns'],
+					combinedConfidence: 0.95,
+				},
+			}));
+		const withReasons: CheckResult = { category: 'brand_discovery', score: 100, findings: makeFindings(['some specific reason text appears here']) };
+		const withoutReasons: CheckResult = { category: 'brand_discovery', score: 100, findings: makeFindings([]) };
+
+		const aBytes = await renderBrandAuditPdf(withReasons, 'example.com', { serverVersion: '2.21.4' });
+		const bBytes = await renderBrandAuditPdf(withoutReasons, 'example.com', { serverVersion: '2.21.4' });
+
+		// Each row's reasons text adds bytes to the compressed content stream.
+		// With the overdraw bug, only ONE row's reasons survived → ~one drawText
+		// worth of delta. Fixed: ALL FOUR rows' reasons survive → ~4x the delta.
+		// A robust assertion: with-vs-without delta must be > 80 bytes (each
+		// drawText op + reasons text is ~20+ bytes compressed).
+		const delta = aBytes.byteLength - bBytes.byteLength;
+		expect(
+			delta,
+			`per-row reasons must persist for all rows (4 in this test). With the overdraw bug, delta is small (~one row's worth). Got delta=${delta} bytes; expected >80 for 4 rows × reasons.`,
+		).toBeGreaterThan(80);
+	});
+
 	it('emits deterministic bytes for a given input (modulo CreationDate)', async () => {
 		const { renderBrandAuditPdf } = await import('../src/lib/brand-audit-pdf-render');
 		const r = makeBrandAuditResult();

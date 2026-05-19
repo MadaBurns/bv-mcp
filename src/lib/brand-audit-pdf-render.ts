@@ -116,9 +116,25 @@ function sectionHeader(ctx: DrawContext, title: string, count: number): void {
 }
 
 function drawCandidateRow(ctx: DrawContext, row: BrandCandidateRow): void {
-	ensureRoom(ctx, ROW_HEIGHT * 2 + 4);
-	// Background bar
-	ctx.page.drawRectangle({ x: MARGIN, y: ctx.cursorY - 4, width: CONTENT_WIDTH, height: ROW_HEIGHT * 2 + 2, color: rgb(0.04, 0.04, 0.04) });
+	const hasReasons = row.reasons.length > 0;
+	// Row has 2 text lines (domain, metadata) + optional 3rd (reasons). Background
+	// rect height must cover ALL of them — the prior 2-line-only height let the
+	// next row's bg overdraw the reasons text (surfaced 2026-05-19 in production
+	// marriott/mastercard PDFs).
+	const textLines = hasReasons ? 3 : 2;
+	const rowBgHeight = ROW_HEIGHT * textLines + 4;
+	const rowSpacing = 4; // gap between rows
+
+	ensureRoom(ctx, rowBgHeight + rowSpacing);
+
+	// Background bar covers all text lines for this row.
+	ctx.page.drawRectangle({
+		x: MARGIN,
+		y: ctx.cursorY - rowBgHeight + ROW_HEIGHT,
+		width: CONTENT_WIDTH,
+		height: rowBgHeight,
+		color: rgb(0.04, 0.04, 0.04),
+	});
 	// Domain (left), confidence (right)
 	drawText(ctx, truncate(row.domain, 60), { x: MARGIN + 8, size: 10, font: ctx.bold });
 	const confText = `${(row.combinedConfidence * 100).toFixed(0)}%`;
@@ -131,11 +147,11 @@ function drawCandidateRow(ctx: DrawContext, row: BrandCandidateRow): void {
 		`signals: ${row.signals.join(', ') || '—'}`,
 	];
 	drawText(ctx, truncate(metaParts.join('  ·  '), 90), { x: MARGIN + 8, size: 8, color: COLOR_DIM, font: ctx.mono });
-	if (row.reasons.length > 0) {
+	if (hasReasons) {
 		ctx.cursorY -= ROW_HEIGHT;
 		drawText(ctx, truncate('reasons: ' + row.reasons.join('; '), 90), { x: MARGIN + 8, size: 8, color: COLOR_DIM });
 	}
-	ctx.cursorY -= ROW_HEIGHT;
+	ctx.cursorY -= ROW_HEIGHT + rowSpacing;
 }
 
 function drawEmptyBucket(ctx: DrawContext, msg: string): void {

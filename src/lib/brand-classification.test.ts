@@ -57,6 +57,18 @@ describe('normalizeRegistrar', () => {
 		expect(normalizeRegistrar('Nom-IQ Ltd. dba Com Laude')).toBe('Com Laude');
 	});
 
+	it('collapses CSC Corporate Domains variants to "CSC" (not the legacy "BrandAudit" placeholder)', () => {
+		// Surfaced 2026-05-19: production PDFs for bankofamerica.com showed
+		// `shared registrar family (BrandAudit) + 3 corroborating signals` when
+		// CSC was the actual registrar. The legacy regex used 'BrandAudit' as a
+		// placeholder name; rename to the real family identifier so analyst
+		// reasons read truthfully.
+		expect(normalizeRegistrar('CSC Corporate Domains, Inc.')).toBe('CSC');
+		expect(normalizeRegistrar('CSC Corporate Domains Inc')).toBe('CSC');
+		expect(normalizeRegistrar('CSC CORPORATE DOMAINS INC.')).toBe('CSC');
+		expect(normalizeRegistrar('CSC Corporate Domains (Canada) Company')).toBe('CSC');
+	});
+
 	it('returns Unknown for empty / Unknown', () => {
 		expect(normalizeRegistrar('')).toBe('Unknown');
 		expect(normalizeRegistrar('Unknown')).toBe('Unknown');
