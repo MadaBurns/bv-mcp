@@ -85,6 +85,27 @@ describe('DomainEvidenceResponseSchema contract (§ 1.2)', () => {
 		expect(parsed.success).toBe(false);
 	});
 
+	it('consumer: accepts unknown threatLevel strings in scoreAlerts (contract spec § 1.2 is z.string())', () => {
+		// Contract § 1.2 declares previousThreatLevel/newThreatLevel as raw `string`,
+		// NOT the closed 5-enum. bv-intelligence's score_alerts may emit legacy values
+		// (e.g. 'unknown') or future values not yet in the enum; we must not fail-parse
+		// the discriminated union on these.
+		const payload = {
+			...producerOkResponse,
+			scoreAlerts: [
+				{
+					createdAt: 1,
+					alertType: 'critical_drop' as const,
+					previousThreatLevel: 'legacy_unknown_value',
+					newThreatLevel: 'future_value',
+					scoreDelta: -10,
+				},
+			],
+		};
+		const parsed = DomainEvidenceResponseSchema.safeParse(payload);
+		expect(parsed.success).toBe(true);
+	});
+
 	it('consumer: rejects unknown alertType enum value', () => {
 		const drifted = {
 			...producerOkResponse,

@@ -54,7 +54,7 @@ import {
  * intentionally avoid importing bv-web types here.
  */
 export interface IntelGatewayBinding {
-	getDomainEvidence(params: { domain: string }): Promise<unknown>;
+	getDomainEvidence(params: { domain: string; includeHistory?: boolean }): Promise<unknown>;
 }
 
 /** Tier 2 observation — declared evidence the seed exists in the GSI corpus. */

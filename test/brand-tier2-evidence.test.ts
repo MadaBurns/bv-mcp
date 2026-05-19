@@ -19,6 +19,20 @@ function makeBinding(response: DomainEvidenceResponse): IntelGatewayBinding {
 }
 
 describe('tier2EvidenceLookup', () => {
+	it('IntelGatewayBinding type accepts includeHistory param (forward-compat with contract § 1.2)', () => {
+		// Contract § 1.2 signature: getDomainEvidence({ domain, includeHistory? })
+		// This is a type-level test — the interface must accept the optional flag so
+		// T7 orchestrator wiring can pass it through without a capability gap.
+		const binding: IntelGatewayBinding = {
+			getDomainEvidence: async ({ domain, includeHistory }) => {
+				expect(typeof domain).toBe('string');
+				expect(typeof includeHistory === 'boolean' || includeHistory === undefined).toBe(true);
+				return { ok: false, error: 'not_in_corpus' };
+			},
+		};
+		expect(binding).toBeDefined();
+	});
+
 	it('emits Tier 2 observation for seed with latestScan + empty scoreAlerts', async () => {
 		const binding = makeBinding({
 			ok: true,
@@ -198,6 +212,39 @@ describe('tier2EvidenceLookup', () => {
 
 		expect(result.observations).toHaveLength(0);
 		expect(result.status).toBe('skipped');
+	});
+
+	it('does not degrade on unknown previousThreatLevel string (contract spec is z.string())', async () => {
+		// Per cross-Worker contract § 1.2, previousThreatLevel/newThreatLevel are declared
+		// as raw `string` (not the 5-enum). bv-intelligence's score_alerts table may emit
+		// legacy/future values like 'unknown' or 'emergency'. The wrapper MUST NOT fail-
+		// parse the discriminated union on such values — it would silently drop ALL evidence.
+		const binding: IntelGatewayBinding = {
+			getDomainEvidence: vi.fn().mockResolvedValue({
+				ok: true,
+				domain: 'example.com',
+				region: 'AMER',
+				latestScan: { capturedAt: 1_779_000_000, score: 85, threatLevel: 'secure' },
+				scanHistory: [],
+				scoreAlerts: [
+					{
+						createdAt: 1_779_000_000,
+						alertType: 'threshold_cross',
+						previousThreatLevel: 'unknown', // legacy/unknown value, NOT in 5-enum
+						newThreatLevel: 'critical',
+						scoreDelta: -50,
+					},
+				],
+			}),
+		};
+
+		const result = await tier2EvidenceLookup('example.com', binding);
+
+		// Must NOT degrade — the Tier 2 seed observation should still emit. The Tier 4
+		// becoming-critical detector uses set-membership and will simply skip rows whose
+		// previousThreatLevel is not in BECOMING_CRITICAL_FROM, which is correct behavior.
+		expect(result.status).toBe('ok');
+		expect(result.observations.some((o) => o.tier === 2)).toBe(true);
 	});
 
 	it('calls the binding with the §1.2 object-arg shape ({ domain })', async () => {

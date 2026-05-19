@@ -33,12 +33,28 @@ export const DomainEvidenceScanSchema = z.object({
 	threatLevel: DomainEvidenceThreatLevelSchema.optional(),
 });
 
-/** A single `score_alerts` row from the apex `bv-intelligence` DB. */
+/**
+ * A single `score_alerts` row from the apex `bv-intelligence` DB.
+ *
+ * Per cross-Worker contract § 1.2, `previousThreatLevel` and `newThreatLevel`
+ * are declared as raw `string` (NOT the closed `DomainEvidenceThreatLevelSchema`
+ * enum). bv-intelligence's `score_alerts` table may emit historical legacy
+ * values (e.g. `'unknown'`) or future bandings not yet in the enum. Tightening
+ * to the enum here would fail-parse the whole discriminated union on any such
+ * row and cause the Tier 2 wrapper to silently drop ALL evidence.
+ *
+ * The wrapper's becoming-critical detection (`BECOMING_CRITICAL_FROM` /
+ * `BECOMING_CRITICAL_TO`) does set-membership matching, which is robust against
+ * unknown strings — non-matching values simply don't trigger the Tier 4 emit,
+ * which is the correct behavior.
+ *
+ * `latestScan.threatLevel` stays enum-tight because business logic depends on it.
+ */
 export const DomainEvidenceScoreAlertSchema = z.object({
 	createdAt: z.number(),
 	alertType: DomainEvidenceAlertTypeSchema,
-	previousThreatLevel: DomainEvidenceThreatLevelSchema,
-	newThreatLevel: DomainEvidenceThreatLevelSchema,
+	previousThreatLevel: z.string(),
+	newThreatLevel: z.string(),
 	scoreDelta: z.number(),
 });
 
