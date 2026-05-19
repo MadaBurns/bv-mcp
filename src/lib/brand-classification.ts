@@ -18,8 +18,20 @@
 
 import { sameRegistrarFamily } from './registrar-identity';
 import { clearsOwnershipGate, type BrandEvidenceObservation } from './brand-evidence';
+import type { BrandDiscoveryTier } from './brand-discovery-tiers';
 
-export type Bucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation';
+/**
+ * Buckets emitted by the classifier.
+ *
+ * - `consolidated`, `shadowIt`, `indeterminate`, `impersonation` — legacy
+ *   Tier-3 classifier outputs, unchanged.
+ * - `impersonationSurface` — Task 8 (brand-discovery first-principles). Emitted
+ *   ONLY when all observations on a candidate carry `tier === 4` (and no
+ *   higher-provenance tier). Mutually exclusive with the Owned buckets:
+ *   a domain with any tier 0/1/2 obs routes to `consolidated`, never to
+ *   `impersonationSurface`. The invariant is pinned by an audit test.
+ */
+export type Bucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation' | 'impersonationSurface';
 export type ConfidenceTier = 'high' | 'medium' | 'low';
 export type RegistrarSource = 'rdap' | 'whois' | 'redacted' | 'notfound' | 'lookup_failed' | 'unknown';
 
@@ -73,7 +85,17 @@ export interface Classification {
 	confidenceTier: ConfidenceTier;
 	note?: string;
 	reasons: string[];
+	/**
+	 * Brand-discovery tier (Task 8). Set only when the candidate routed via the
+	 * tier-aware short-circuit (i.e. at least one observation carried a `tier`
+	 * field). Unset for legacy Tier-3 / classic-mode classification — the
+	 * field's absence is the byte-identical signal that the legacy path ran.
+	 */
+	tier?: BrandDiscoveryTier;
 }
+
+/** Minimum specificityScore for a tier-1 observation to qualify as consolidated evidence. */
+const TIER1_SPECIFICITY_THRESHOLD = 0.5;
 
 /** Strong ownership signals — sharing any of these is near-deterministic operational control evidence. */
 const STRONG_INFRA_SIGNALS = new Set([
@@ -266,6 +288,48 @@ function signalLabel(s: string): string {
 export function classifyCandidate(c: CandidateInput, t: TargetContext): Classification {
 	const tier = confidenceTier(c.confidence);
 	const reasons: string[] = [];
+
+	// Task 8 — brand-discovery tier routing.
+	//
+	// When ANY observation carries a `tier` field, route by tier provenance
+	// BEFORE the legacy classifier rules. Mutual-exclusion rule: Owned tiers
+	// (0/1/2) beat the impersonation surface (4), so a candidate with both a
+	// tier-2 dmarc_rua AND a tier-4 active_lookalike obs routes to
+	// `consolidated`, never to `impersonationSurface`.
+	//
+	// If no observation carries a tier, this block is bypassed entirely and the
+	// legacy Tier-3 rules below execute byte-identically — that's the invariant
+	// the "no tier field" regression test pins.
+	const observations = c.evidenceObservations ?? [];
+	const anyTierTagged = observations.some((o) => o.tier !== undefined);
+	if (anyTierTagged) {
+		const tier0 = observations.find((o) => o.tier === 0);
+		if (tier0) {
+			reasons.push(`tier 0 (tenant-declared) via ${tier0.signal}`);
+			return { bucket: 'consolidated', confidenceTier: tier, reasons, tier: 0 };
+		}
+		const tier1 = observations.find(
+			(o) => o.tier === 1 && (o.specificityScore ?? 0) >= TIER1_SPECIFICITY_THRESHOLD,
+		);
+		if (tier1) {
+			reasons.push(
+				`tier 1 (graph-surfaced) via ${tier1.signal}, specificity=${(tier1.specificityScore ?? 0).toFixed(2)}`,
+			);
+			return { bucket: 'consolidated', confidenceTier: tier, reasons, tier: 1 };
+		}
+		const tier2 = observations.find((o) => o.tier === 2);
+		if (tier2) {
+			reasons.push(`tier 2 (declared/witnessed) via ${tier2.signal}`);
+			return { bucket: 'consolidated', confidenceTier: tier, reasons, tier: 2 };
+		}
+		const onlyTier4 = observations.every((o) => o.tier === 4);
+		if (onlyTier4) {
+			const sample = observations[0];
+			reasons.push(`tier 4 (impersonation surface) via ${sample?.signal ?? 'unknown'}`);
+			return { bucket: 'impersonationSurface', confidenceTier: tier, reasons, tier: 4 };
+		}
+		// Mixed tier 3-only or tier-3-with-tier-4: fall through to legacy rules.
+	}
 
 	// Rule 1: Subdomain of target — DNS managed by parent zone, always organizational.
 	if (isSubdomainOf(c.domain, t.domain)) {

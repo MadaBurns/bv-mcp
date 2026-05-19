@@ -26,6 +26,20 @@ export interface BrandEvidenceObservation {
 	signal: BrandEvidenceSignal;
 	confidence?: number;
 	metadata?: Record<string, unknown>;
+	/**
+	 * Brand-discovery tier (0..4). Optional — populated by the tier-aware
+	 * discovery pipeline (Task 8+). Tier 0/1/2 = owned-portfolio provenance,
+	 * Tier 3 = legacy live signal sweep, Tier 4 = impersonation surface.
+	 * See `src/lib/brand-discovery-tiers.ts` for the canonical assignment.
+	 */
+	tier?: 0 | 1 | 2 | 3 | 4;
+	/**
+	 * Specificity weight in [0, 1] from the signal-graph (`bv-infrastructure-graph`).
+	 * Required for tier-1 observations to qualify as consolidated evidence
+	 * (threshold ≥0.5). Undefined when the observation does not come from the
+	 * signal-graph pipeline.
+	 */
+	specificityScore?: number;
 }
 
 export interface OwnershipGateOptions {
