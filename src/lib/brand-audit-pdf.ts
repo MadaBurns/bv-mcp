@@ -9,11 +9,14 @@
  * Worker is single-request (Browser Rendering doesn't batch), so callers
  * orchestrate one PDF per queue message.
  *
- * Contract with bv-browser-renderer:
- *   POST {origin}/pdf
+ * Contract with bv-browser-renderer (synced 2026-05-19 with the post-evidence-storage
+ * renderer API):
+ *   POST {origin}/pdf/html
  *   Content-Type: application/json
- *   Body: { html: string }
- *   Response (success): 200 application/pdf; body = PDF bytes
+ *   Body: { html: string, callerId: string }
+ *   Response (success): 200 application/json { success: true, url, r2Key, metadata }
+ *     — the renderer stored PDF bytes in its own R2 bucket and returned a signed
+ *     URL. We then `fetch(url)` to obtain the bytes.
  *   Response (failure): non-2xx; body discarded
  *
  * Production note: the renderer dies on Cloudflare-runtime timeouts after ~30s.
@@ -61,16 +64,28 @@ export async function renderBrandAuditPdf(
 
 	// Use a relative-ish URL — bv-browser-renderer is a service binding, not a public host.
 	// The URL's origin is ignored when calling a binding's Fetcher; only the path matters.
-	const response = await options.renderer.fetch('https://renderer.internal/pdf', {
+	// callerId is required by the renderer for per-caller rate-limit attribution; using
+	// the well-known 'brand-audit' identifier keeps the rate-limit bucket distinct from
+	// other bv-mcp PDF callers (currently none, but the renderer is shared with bv-web).
+	const response = await options.renderer.fetch('https://renderer.internal/pdf/html', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ html }),
+		body: JSON.stringify({ html, callerId: 'brand-audit' }),
 	});
 
 	if (!response.ok) {
 		throw new Error(`browser_renderer_failed: ${response.status}`);
 	}
 
-	const buffer = await response.arrayBuffer();
+	// The renderer returns a JSON envelope with a signed R2 URL — fetch the bytes from there.
+	const envelope = (await response.json()) as { success?: boolean; url?: string; error?: { message?: string } };
+	if (!envelope.success || typeof envelope.url !== 'string') {
+		throw new Error(`browser_renderer_no_url: ${envelope.error?.message ?? 'unknown'}`);
+	}
+	const pdfResp = await fetch(envelope.url);
+	if (!pdfResp.ok) {
+		throw new Error(`browser_renderer_pdf_fetch_failed: ${pdfResp.status}`);
+	}
+	const buffer = await pdfResp.arrayBuffer();
 	return new Uint8Array(buffer);
 }
