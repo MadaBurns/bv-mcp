@@ -76,13 +76,56 @@ describe('DomainEvidenceResponseSchema contract (§ 1.2)', () => {
 
 	// --- Consumer (bv-mcp) — drift detection --------------------------------
 
-	it('consumer: rejects unknown threatLevel enum value (producer would have drifted)', () => {
-		const drifted = {
-			...producerOkResponse,
-			latestScan: { capturedAt: 1, score: 1, threatLevel: 'mostly-secure' },
+	it('consumer: accepts open-string latestScan.threatLevel (contract spec § 1.2 is z.string())', () => {
+		// Producer emits open string (defaulting to '' for null DB rows). The earlier
+		// closed-5-enum here caused the whole discriminated union to fail-parse on any
+		// legacy/empty value, silently dropping ALL evidence. Wrapper Set.has() lookups
+		// tolerate unknown strings — non-matching values simply skip the Tier 4 emit.
+		const payload = {
+			ok: true,
+			domain: 'x.com',
+			region: 'AMER',
+			latestScan: {
+				capturedAt: 1_779_000_000,
+				score: 0,
+				threatLevel: '', // empty string from legacy DB row
+			},
+			scanHistory: [],
+			scoreAlerts: [],
 		};
-		const parsed = DomainEvidenceResponseSchema.safeParse(drifted);
-		expect(parsed.success).toBe(false);
+		expect(() => DomainEvidenceResponseSchema.parse(payload)).not.toThrow();
+	});
+
+	it('consumer: accepts open-string scanHistory[].threatLevel', () => {
+		const payload = {
+			ok: true,
+			domain: 'x.com',
+			region: 'AMER',
+			latestScan: null,
+			scanHistory: [{ capturedAt: 1_779_000_000, score: 0, threatLevel: 'legacy_unknown' }],
+			scoreAlerts: [],
+		};
+		expect(() => DomainEvidenceResponseSchema.parse(payload)).not.toThrow();
+	});
+
+	it('consumer: accepts open-string scoreAlerts[].alertType (contract spec § 1.2 is z.string())', () => {
+		const payload = {
+			ok: true,
+			domain: 'x.com',
+			region: 'AMER',
+			latestScan: null,
+			scanHistory: [],
+			scoreAlerts: [
+				{
+					createdAt: 1,
+					alertType: 'future_alert_type',
+					previousThreatLevel: 'low',
+					newThreatLevel: 'critical',
+					scoreDelta: -10,
+				},
+			],
+		};
+		expect(() => DomainEvidenceResponseSchema.parse(payload)).not.toThrow();
 	});
 
 	it('consumer: accepts unknown threatLevel strings in scoreAlerts (contract spec § 1.2 is z.string())', () => {
@@ -106,8 +149,12 @@ describe('DomainEvidenceResponseSchema contract (§ 1.2)', () => {
 		expect(parsed.success).toBe(true);
 	});
 
-	it('consumer: rejects unknown alertType enum value', () => {
-		const drifted = {
+	it('consumer: accepts unknown alertType strings (contract spec § 1.2 is z.string())', () => {
+		// Producer emits open string. Previously the closed 4-enum here caused the
+		// whole discriminated union to fail-parse on legacy/future alertType values,
+		// silently dropping ALL evidence. The wrapper's becoming-critical detector
+		// is unaffected — it inspects previous/newThreatLevel via Set.has(), not alertType.
+		const payload = {
 			...producerOkResponse,
 			scoreAlerts: [
 				{
@@ -119,8 +166,8 @@ describe('DomainEvidenceResponseSchema contract (§ 1.2)', () => {
 				},
 			],
 		};
-		const parsed = DomainEvidenceResponseSchema.safeParse(drifted);
-		expect(parsed.success).toBe(false);
+		const parsed = DomainEvidenceResponseSchema.safeParse(payload);
+		expect(parsed.success).toBe(true);
 	});
 
 	it('consumer: rejects unknown region enum value', () => {

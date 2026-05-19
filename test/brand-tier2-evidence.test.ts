@@ -247,6 +247,26 @@ describe('tier2EvidenceLookup', () => {
 		expect(result.observations.some((o) => o.tier === 2)).toBe(true);
 	});
 
+	it('emits Tier 2 observation when latestScan.threatLevel is an unknown string', async () => {
+		// Per cross-Worker contract § 1.2, latestScan.threatLevel is `string` (open).
+		// Producer may emit legacy/future values like 'legacy_value' from older DB rows.
+		// Wrapper must NOT degrade — the Tier 2 observation should still emit (the
+		// observation's threatLevel field is itself typed as open string).
+		const mockBinding: IntelGatewayBinding = {
+			getDomainEvidence: vi.fn().mockResolvedValue({
+				ok: true,
+				domain: 'example.com',
+				region: 'AMER',
+				latestScan: { capturedAt: 1_779_000_000, score: 50, threatLevel: 'legacy_value' },
+				scanHistory: [],
+				scoreAlerts: [],
+			}),
+		};
+		const result = await tier2EvidenceLookup('example.com', mockBinding);
+		expect(result.status).toBe('ok');
+		expect(result.observations.some((o) => o.tier === 2)).toBe(true);
+	});
+
 	it('calls the binding with the §1.2 object-arg shape ({ domain })', async () => {
 		const binding = makeBinding({
 			ok: true,
