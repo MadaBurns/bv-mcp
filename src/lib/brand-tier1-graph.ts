@@ -4,8 +4,11 @@
  * Tier 1 service-binding wrapper for `bv-infrastructure-graph`.
  *
  * Calls `GET /domain/:domain/related` via the `BV_INFRA_GRAPH` Fetcher binding
- * and converts each shared-signal co-occurrence into a Tier 1 observation
- * weighted by `specificityScore`.
+ * and converts the producer's shared-signal payload into one Tier 1
+ * observation **per candidate domain**, with confidence computed via the
+ * three-term formula documented in
+ *   docs/superpowers/plans/2026-05-20-brand-discovery-first-principles.md
+ * (search "Tier 1 confidence formula").
  *
  * Cross-worker contract: bv-mcp consumer side, producer schema lives in
  * bv-web. See:
@@ -21,8 +24,11 @@
  *   3. Clamp `specificityScore` to [0, 1] on the consumer side as defense vs
  *      producer drift — the schema requires it but we don't depend on validation.
  *   4. No PII logging. The wrapper does not log domain values or auth tokens.
- *   5. Emit ALL co-occurring domains, weighted by specificity. Do not pre-filter
- *      low-specificity entries — downstream gating (T6) decides.
+ *   5. Emit ALL co-occurring domains, weighted by the formula. Do not pre-filter
+ *      low-specificity entries — downstream gating (T6/T8) decides.
+ *   6. Aggregate per candidate: one observation per candidate even when multiple
+ *      shared signals contribute. This matches the design doc and prevents the
+ *      downstream classifier from double-counting evidence.
  */
 
 import {
@@ -35,15 +41,24 @@ import {
 	type FreshnessResponse,
 } from './brand-fingerprint-freshness';
 
-/** Single observation emitted per co-occurring domain. */
+/** Single aggregated observation per co-occurring candidate domain. */
 export interface Tier1Observation {
 	candidate: string;
 	source: 'infra_graph_signal';
 	tier: 1;
 	confidence: number;
+	/** Specificity of the strongest contributing signal (== `maxSpecificity`). */
 	specificityScore: number;
+	/** Signal type of the strongest contributing signal (max specificity). */
 	signalType: string;
+	/** Signal value of the strongest contributing signal (max specificity). */
 	signalValue: string;
+	/** Count of distinct shared signals contributing to this candidate. */
+	numSharedSignals: number;
+	/** Maximum specificity across all contributing signals. */
+	maxSpecificity: number;
+	/** All signal types contributing to this candidate (deduped, input order). */
+	signalTypes: string[];
 }
 
 export type Tier1Status = 'ok' | 'degraded' | 'partial' | 'timeout' | 'skipped';
@@ -76,22 +91,110 @@ function clamp01(n: number): number {
 	return n;
 }
 
-/** Map a parsed producer response into Tier 1 observations. */
+/**
+ * Tier 1 confidence formula — pure helper, exported for unit tests.
+ *
+ * confidence = clamp(0, 1,
+ *   0.15 * num_shared_signals
+ * + 0.50 * max_specificity
+ * + 0.10 * signal_type_weight_bonus)
+ *
+ * `signal_type_weight_bonus` is currently always 0 — see the activation TODO
+ * at the call site in `flattenSharedSignals`.
+ *
+ * Source: docs/superpowers/plans/2026-05-20-brand-discovery-first-principles.md
+ */
+export function computeTier1Confidence(args: {
+	numSharedSignals: number;
+	maxSpecificity: number;
+	// TODO(brand-discovery): activate signal_type_weight_bonus once bv-web amends
+	// cross-Worker contract to include domainCount on SharedSignal. Bonus weights
+	// are documented in 2026-05-20-brand-discovery-first-principles.md (search
+	// "signal_type_weight_bonus"). Until then, conglomerate brands (PepsiCo-style
+	// multi-brand portfolios) will underweight on low-specificity soa_admin
+	// signals.
+	signalTypeWeightBonus: number;
+}): number {
+	const raw =
+		0.15 * args.numSharedSignals +
+		0.5 * args.maxSpecificity +
+		0.1 * args.signalTypeWeightBonus;
+	if (Number.isNaN(raw)) return 0;
+	if (raw < 0) return 0;
+	if (raw > 1) return 1;
+	return raw;
+}
+
+/**
+ * Map a parsed producer response into Tier 1 observations.
+ *
+ * Aggregates per candidate: each candidate appears once even if multiple
+ * shared signals contribute. The strongest-specificity contributor wins for
+ * the singular `signalType`/`signalValue`/`specificityScore` fields, with
+ * input order as a deterministic tie-break.
+ */
 function flattenSharedSignals(signals: readonly SharedSignal[]): Tier1Observation[] {
-	const observations: Tier1Observation[] = [];
+	interface Accumulator {
+		topSignal: SharedSignal;
+		topSpecificity: number;
+		signalTypes: string[]; // dedup, input order
+		seenTypes: Set<string>;
+		count: number;
+	}
+
+	const byCandidate = new Map<string, Accumulator>();
+
 	for (const signal of signals) {
-		const confidence = clamp01(signal.specificityScore);
+		const specificity = clamp01(signal.specificityScore);
 		for (const candidate of signal.coOccurringDomains) {
-			observations.push({
-				candidate,
-				source: 'infra_graph_signal',
-				tier: 1,
-				confidence,
-				specificityScore: confidence,
-				signalType: signal.signalType,
-				signalValue: signal.signalValue,
-			});
+			const existing = byCandidate.get(candidate);
+			if (!existing) {
+				byCandidate.set(candidate, {
+					topSignal: signal,
+					topSpecificity: specificity,
+					signalTypes: [signal.signalType],
+					seenTypes: new Set([signal.signalType]),
+					count: 1,
+				});
+				continue;
+			}
+			existing.count += 1;
+			if (!existing.seenTypes.has(signal.signalType)) {
+				existing.seenTypes.add(signal.signalType);
+				existing.signalTypes.push(signal.signalType);
+			}
+			// Strict `>` keeps input-order tie-break — first encountered wins on ties.
+			if (specificity > existing.topSpecificity) {
+				existing.topSignal = signal;
+				existing.topSpecificity = specificity;
+			}
 		}
+	}
+
+	const observations: Tier1Observation[] = [];
+	for (const [candidate, acc] of byCandidate) {
+		// TODO(brand-discovery): once SharedSignal.domainCount lands in the
+		// producer contract, compute the bonus here from the strongest
+		// contributing signal's (signalType, domainCount). Until then we
+		// pass 0 — see computeTier1Confidence for the bonus rubric.
+		const signalTypeWeightBonus = 0;
+		const confidence = computeTier1Confidence({
+			numSharedSignals: acc.count,
+			maxSpecificity: acc.topSpecificity,
+			signalTypeWeightBonus,
+		});
+		observations.push({
+			candidate,
+			source: 'infra_graph_signal',
+			tier: 1,
+			confidence,
+			specificityScore: acc.topSpecificity,
+			signalType: acc.topSignal.signalType,
+			signalValue: acc.topSignal.signalValue,
+			numSharedSignals: acc.count,
+			maxSpecificity: acc.topSpecificity,
+			signalTypes: acc.signalTypes,
+		});
 	}
 	return observations;
 }

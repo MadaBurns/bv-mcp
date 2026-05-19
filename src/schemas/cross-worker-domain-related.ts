@@ -28,6 +28,11 @@ export const SharedSignalSchema = z
 		signalValue: z.string(),
 		specificityScore: z.number().min(0).max(1),
 		coOccurringDomains: z.array(z.string()),
+		// Forward-compat: producer may emit the size of the cohort sharing
+		// this signal. Used by the Tier 1 confidence formula's
+		// `signal_type_weight_bonus` term (deferred until the producer ships
+		// this field — see brand-tier1-graph.ts).
+		domainCount: z.number().int().min(0).optional(),
 	})
 	.passthrough();
 

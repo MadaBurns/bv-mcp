@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { tier1GraphLookup } from '../src/lib/brand-tier1-graph';
+import { computeTier1Confidence, tier1GraphLookup } from '../src/lib/brand-tier1-graph';
 
 interface MockEnv {
 	BV_WEB_INTERNAL_KEY?: string;
@@ -48,9 +48,37 @@ const baseResponse = {
 	freshness: { perSignalType: {}, overallStaleness: 'fresh' as const },
 };
 
+describe('computeTier1Confidence', () => {
+	it('applies the three-term formula', () => {
+		// 0.15*1 + 0.50*0.9 + 0.10*0 = 0.15 + 0.45 + 0 = 0.60
+		expect(
+			computeTier1Confidence({ numSharedSignals: 1, maxSpecificity: 0.9, signalTypeWeightBonus: 0 }),
+		).toBeCloseTo(0.6, 2);
+		// 0.15*3 + 0.50*0.7 + 0.10*0.3 = 0.45 + 0.35 + 0.03 = 0.83
+		expect(
+			computeTier1Confidence({ numSharedSignals: 3, maxSpecificity: 0.7, signalTypeWeightBonus: 0.3 }),
+		).toBeCloseTo(0.83, 2);
+	});
+
+	it('clamps to [0, 1]', () => {
+		expect(
+			computeTier1Confidence({ numSharedSignals: 100, maxSpecificity: 1, signalTypeWeightBonus: 0 }),
+		).toBe(1);
+		expect(
+			computeTier1Confidence({ numSharedSignals: 0, maxSpecificity: 0, signalTypeWeightBonus: -0.5 }),
+		).toBe(0);
+	});
+
+	it('returns 0 when no signals contribute (defensive)', () => {
+		expect(
+			computeTier1Confidence({ numSharedSignals: 0, maxSpecificity: 0, signalTypeWeightBonus: 0 }),
+		).toBe(0);
+	});
+});
+
 describe('tier1GraphLookup', () => {
 	describe('happy path', () => {
-		it('emits one Tier 1 observation per coOccurringDomain, weighted by specificityScore', async () => {
+		it('emits one Tier 1 observation per candidate with three-term confidence formula', async () => {
 			const mockResponse = {
 				domain: 'example.com',
 				totalRelated: 3,
@@ -80,24 +108,74 @@ describe('tier1GraphLookup', () => {
 
 			expect(result.status).toBe('ok');
 			expect(result.triggerTier3Fallback).toBe(false);
+			// 3 distinct candidates → 3 observations (one per candidate).
 			expect(result.observations).toHaveLength(3);
 
 			const shop = result.observations.find((o) => o.candidate === 'shop.example.net');
+			// 1 signal (cert_fingerprint), max specificity 0.9, bonus 0 (deferred):
+			// 0.15*1 + 0.50*0.9 + 0.10*0 = 0.60
 			expect(shop).toMatchObject({
 				tier: 1,
 				source: 'infra_graph_signal',
-				confidence: 0.9,
 				specificityScore: 0.9,
 				signalType: 'cert_fingerprint',
 				signalValue: 'sha256:abc',
+				numSharedSignals: 1,
+				maxSpecificity: 0.9,
 			});
+			expect(shop?.confidence).toBeCloseTo(0.6, 2);
+			expect(shop?.signalTypes).toEqual(['cert_fingerprint']);
 
 			const login = result.observations.find((o) => o.candidate === 'login.example.net');
-			expect(login?.confidence).toBeLessThan(0.1);
+			// 1 signal (mx), max specificity 0.05, bonus 0:
+			// 0.15*1 + 0.50*0.05 + 0 = 0.175
+			expect(login?.confidence).toBeCloseTo(0.175, 3);
 			expect(login?.signalType).toBe('mx');
 		});
 
-		it('emits ALL co-occurring domains, including low-specificity (no consumer-side filter)', async () => {
+		it('aggregates multiple shared signals per candidate into one observation', async () => {
+			const mockResponse = {
+				...baseResponse,
+				totalRelated: 1,
+				sharedSignals: [
+					{
+						signalType: 'cert_fingerprint',
+						signalValue: 'sha256:abc',
+						specificityScore: 0.9,
+						coOccurringDomains: ['shop.example.net'],
+					},
+					{
+						signalType: 'soa_admin',
+						signalValue: 'admin@example.com',
+						specificityScore: 0.7,
+						coOccurringDomains: ['shop.example.net'],
+					},
+				],
+			};
+
+			const result = await tier1GraphLookup(
+				'example.com',
+				mockBindingReturning(mockResponse),
+				baseEnv,
+			);
+
+			const shop = result.observations.filter((o) => o.candidate === 'shop.example.net');
+			// ONE aggregated observation, not two.
+			expect(shop).toHaveLength(1);
+			// 2 signals, max specificity 0.9, bonus 0:
+			// 0.15*2 + 0.50*0.9 + 0 = 0.75
+			expect(shop[0].confidence).toBeCloseTo(0.75, 2);
+			expect(shop[0].numSharedSignals).toBe(2);
+			expect(shop[0].maxSpecificity).toBe(0.9);
+			// Highest-specificity signal wins for the singular fields.
+			expect(shop[0].signalType).toBe('cert_fingerprint');
+			expect(shop[0].signalValue).toBe('sha256:abc');
+			// Both contributing signal types listed.
+			expect(shop[0].signalTypes).toEqual(expect.arrayContaining(['cert_fingerprint', 'soa_admin']));
+			expect(shop[0].signalTypes).toHaveLength(2);
+		});
+
+		it('emits ALL co-occurring candidates, including low-specificity (no consumer-side filter)', async () => {
 			// Producer-side bug compensation is explicitly NOT this wrapper's job.
 			// Even tiny specificityScore entries (e.g. gmail-shared MX) must surface
 			// so downstream gating (T6) sees the full data.
@@ -169,8 +247,8 @@ describe('tier1GraphLookup', () => {
 		});
 	});
 
-	describe('specificity boundary handling', () => {
-		it('emits confidence === specificityScore when in-range', async () => {
+	describe('specificity input boundary handling', () => {
+		it('applies three-term formula to a single-signal candidate', async () => {
 			const inRange = {
 				...baseResponse,
 				sharedSignals: [
@@ -187,11 +265,14 @@ describe('tier1GraphLookup', () => {
 				mockBindingReturning(inRange),
 				baseEnv,
 			);
-			expect(result.observations[0].confidence).toBe(0.42);
+			// 1 signal, max specificity 0.42, bonus 0:
+			// 0.15*1 + 0.50*0.42 + 0 = 0.36
+			expect(result.observations[0].confidence).toBeCloseTo(0.36, 2);
 			expect(result.observations[0].specificityScore).toBe(0.42);
+			expect(result.observations[0].maxSpecificity).toBe(0.42);
 		});
 
-		it('accepts 0 and 1 as inclusive boundaries', async () => {
+		it('propagates 0 and 1 specificity inputs correctly through the formula', async () => {
 			const inRange = {
 				...baseResponse,
 				sharedSignals: [
@@ -215,15 +296,18 @@ describe('tier1GraphLookup', () => {
 				baseEnv,
 			);
 			expect(result.status).toBe('ok');
-			expect(result.observations.map((o) => o.confidence)).toEqual([0, 1]);
+			// a: 1 signal, max 0 → 0.15*1 + 0.50*0 = 0.15
+			// b: 1 signal, max 1 → 0.15*1 + 0.50*1 = 0.65
+			const a = result.observations.find((o) => o.candidate === 'a.example.net');
+			const b = result.observations.find((o) => o.candidate === 'b.example.net');
+			expect(a?.confidence).toBeCloseTo(0.15, 2);
+			expect(b?.confidence).toBeCloseTo(0.65, 2);
 		});
 
 		it('degrades when producer emits specificityScore > 1 (schema-level guard)', async () => {
 			// Contract is min(0).max(1); a drifted producer emitting 1.7 means
 			// schema validation fails and the wrapper falls back to degraded
-			// rather than silently surfacing out-of-contract data. The
-			// consumer-side clamp is belt-and-braces for any in-range float
-			// drift that slips through.
+			// rather than silently surfacing out-of-contract data.
 			const drifted = {
 				...baseResponse,
 				sharedSignals: [
