@@ -7,7 +7,7 @@
  *
  * Rules in priority order (first match wins):
  *   1. Subdomain of target → consolidated, 'Organizational Subdomain'
- *   2. Strong infra signal (san | ns | dkim_key_reuse) → consolidated
+ *   2. Strong deterministic ownership signal (DKIM, redirect, SPF, CNAME, recursive SAN, app/bounty declarations) → consolidated
  *   3. DMARC RUA reports to target's domain → consolidated
  *   4. Same registrar family AND ≥2 corroborating signals → consolidated
  *   5. Registrar source is redacted/notfound AND no strong signals → indeterminate
@@ -135,24 +135,24 @@ describe('classifyCandidate', () => {
 		});
 	});
 
-	describe('Rule 2: strong infra signal (san | ns | dkim_key_reuse)', () => {
-		it('SAN signal → consolidated regardless of registrar mismatch', () => {
+	describe('Rule 2: deterministic ownership signal', () => {
+		it('SAN signal alone is medium evidence, not an automatic consolidation shortcut', () => {
 			const c = candidate({
 				domain: 'apple.io',
 				signals: ['san'],
-				confidence: 0.95,
+				confidence: 0.64,
 				registrar: 'Tucows.com Co.',
 			});
 			const result = classifyCandidate(c, target());
-			expect(result.bucket).toBe('consolidated');
-			expect(result.reasons.join(' ')).toMatch(/SAN/i);
+			expect(result.bucket).toBe('indeterminate');
+			expect(result.reasons.join(' ')).toMatch(/medium confidence/i);
 		});
 
-		it('NS signal → consolidated', () => {
-			const c = candidate({ domain: 'apple.de', signals: ['ns'], confidence: 0.9 });
+		it('NS signal alone is medium evidence, not an automatic consolidation shortcut', () => {
+			const c = candidate({ domain: 'apple.de', signals: ['ns'], confidence: 0.78 });
 			const result = classifyCandidate(c, target());
-			expect(result.bucket).toBe('consolidated');
-			expect(result.reasons.join(' ')).toMatch(/NS/i);
+			expect(result.bucket).toBe('indeterminate');
+			expect(result.reasons.join(' ')).toMatch(/medium confidence/i);
 		});
 
 		it('DKIM key reuse → consolidated', () => {
@@ -162,10 +162,45 @@ describe('classifyCandidate', () => {
 			expect(result.reasons.join(' ')).toMatch(/DKIM/i);
 		});
 
+		it('HTTP redirect to the seed → consolidated', () => {
+			const c = candidate({
+				domain: 'apple.co',
+				signals: ['http_redirect', 'markov_gen'],
+				confidence: 0.95,
+				registrar: 'Unknown',
+				registrarSource: 'lookup_failed',
+				lookalikeScore: 0.96,
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.reasons.join(' ')).toMatch(/redirect/i);
+		});
+
+		it('CNAME alignment to the seed → consolidated', () => {
+			const c = candidate({ domain: 'appleapp.net', signals: ['cname_alignment'], confidence: 0.9 });
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.reasons.join(' ')).toMatch(/CNAME/i);
+		});
+
+		it('candidate SPF include of seed policy → consolidated', () => {
+			const c = candidate({ domain: 'apple-mail.net', signals: ['spf_include'], confidence: 0.85 });
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.reasons.join(' ')).toMatch(/SPF/i);
+		});
+
+		it('seed SPF delegation to another apex → shadowIt', () => {
+			const c = candidate({ domain: 'vendor-mail.example', signals: ['spf_include_seed'], confidence: 0.85 });
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('shadowIt');
+			expect(result.reasons.join(' ')).toMatch(/SPF/i);
+		});
+
 		it('strong signal wins even when registrarSource is redacted', () => {
 			const c = candidate({
 				domain: 'apple.de',
-				signals: ['san'],
+				signals: ['dkim_key_reuse'],
 				confidence: 0.95,
 				registrarSource: 'redacted',
 			});
@@ -188,11 +223,24 @@ describe('classifyCandidate', () => {
 	});
 
 	describe('Rule 4: same registrar family + ≥2 corroborating signals', () => {
-		it('matching family + 2 signals → consolidated', () => {
+		it('matching family + generated seed plus one real signal does not consolidate', () => {
 			const c = candidate({
 				domain: 'apple.uk',
 				signals: ['markov_gen', 'dmarc_rua'],
 				confidence: 0.6,
+				registrar: 'MarkMonitor Inc.',
+				registrarSource: 'rdap',
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('indeterminate');
+			expect(result.reasons.join(' ')).toMatch(/medium confidence/i);
+		});
+
+		it('matching family + 2 non-generated corroborating signals → consolidated', () => {
+			const c = candidate({
+				domain: 'apple.uk',
+				signals: ['ns', 'dmarc_rua'],
+				confidence: 0.84,
 				registrar: 'MarkMonitor Inc.',
 				registrarSource: 'rdap',
 			});
@@ -227,7 +275,7 @@ describe('classifyCandidate', () => {
 		it('same IANA registrar ID + 2 signals → consolidated even when registrar names differ', () => {
 			const c = candidate({
 				domain: 'apple.uk',
-				signals: ['markov_gen', 'txt_verification'],
+				signals: ['ns', 'mx_overlap'],
 				confidence: 0.6,
 				registrar: 'Corporation Service Company',
 				registrarIanaId: '299',
@@ -235,7 +283,7 @@ describe('classifyCandidate', () => {
 			});
 			const t = target({
 				registrar: 'CSC Corporate Domains, Inc.',
-				registrarFamily: 'BrandAudit',
+				registrarFamily: 'CSC',
 				registrarIanaId: '299',
 			});
 
@@ -247,7 +295,7 @@ describe('classifyCandidate', () => {
 		it('different IANA registrar IDs do not consolidate despite similar registrar names', () => {
 			const c = candidate({
 				domain: 'apple.uk',
-				signals: ['markov_gen', 'txt_verification'],
+				signals: ['ns', 'mx_overlap'],
 				confidence: 0.6,
 				registrar: 'Example Corporate Domains LLC',
 				registrarIanaId: '146',
@@ -255,7 +303,7 @@ describe('classifyCandidate', () => {
 			});
 			const t = target({
 				registrar: 'CSC Corporate Domains, Inc.',
-				registrarFamily: 'BrandAudit',
+				registrarFamily: 'CSC',
 				registrarIanaId: '299',
 			});
 
@@ -265,7 +313,7 @@ describe('classifyCandidate', () => {
 		it('absent IANA registrar IDs do not create false positive family matches from weak tokens', () => {
 			const c = candidate({
 				domain: 'apple.uk',
-				signals: ['markov_gen', 'txt_verification'],
+				signals: ['ns', 'mx_overlap'],
 				confidence: 0.6,
 				registrar: 'Example Consumer Domains LLC',
 				registrarSource: 'rdap',
@@ -331,7 +379,7 @@ describe('classifyCandidate', () => {
 			const t = target({
 				domain: 'disney.com',
 				registrar: 'CSC Corporate Domains, Inc.',
-				registrarFamily: 'BrandAudit',
+				registrarFamily: 'CSC',
 			});
 
 			expect(classifyCandidate(c, t).bucket).toBe('indeterminate');
@@ -356,6 +404,31 @@ describe('classifyCandidate', () => {
 			expect(result.reasons.join(' ')).toMatch(/weak evidence did not clear ownership gate/i);
 		});
 
+		it('same registrar plus generated lookalike, broad MX, and NS stays indeterminate when ownership gate fails', () => {
+			const c = candidate({
+				domain: 'walmart.org',
+				signals: ['active_lookalike', 'mx_platform', 'ns'],
+				confidence: 0.775,
+				registrar: 'MarkMonitor Inc.',
+				registrarSource: 'rdap',
+				sharedMxPlatform: 'm365',
+				evidenceObservations: [
+					{ signal: 'active_lookalike' },
+					{ signal: 'mx_platform', confidence: 0.55, metadata: { sharedMxPlatform: 'm365' } },
+					{ signal: 'ns', confidence: 0.5 },
+				],
+			});
+			const t = target({
+				domain: 'walmart.com',
+				registrar: 'MarkMonitor Inc.',
+				registrarFamily: 'MarkMonitor',
+			});
+			const result = classifyCandidate(c, t);
+
+			expect(result.bucket).toBe('indeterminate');
+			expect(result.reasons.join(' ')).toMatch(/weak evidence did not clear ownership gate/i);
+		});
+
 		it('shared MX platform can become shadowIt when corroborated by strong visual similarity and another signal', () => {
 			const c = candidate({
 				domain: 'examp1e-pay.com',
@@ -363,12 +436,14 @@ describe('classifyCandidate', () => {
 				confidence: 0.5545,
 				registrar: 'GoDaddy.com, LLC',
 				registrarSource: 'rdap',
-				sharedMxPlatform: 'm365',
+				sharedMxPlatform: 'proofpoint',
 				lookalikeScore: 0.91,
 			});
 			const t = target({ domain: 'example.com', registrarFamily: 'MarkMonitor' });
 
-			expect(classifyCandidate(c, t).bucket).toBe('shadowIt');
+			const result = classifyCandidate(c, t);
+			expect(result.bucket).toBe('shadowIt');
+			expect(result.reasons).toContain('lookalike score 0.91 corroborates shared MX platform');
 		});
 
 		it('shared MX platform can become shadowIt when the caller explicitly asserted the candidate', () => {
@@ -488,10 +563,10 @@ describe('classifyCandidate', () => {
 			expect(result.reasons.join(' ').toLowerCase()).toMatch(/retry|lookup/);
 		});
 
-		it('lookup_failed with strong infra signal → consolidated (Rule 2 still wins; retry is moot)', () => {
+		it('lookup_failed with deterministic ownership signal → consolidated (Rule 2 still wins; retry is moot)', () => {
 			const c = candidate({
-				domain: 'shared-cert.com',
-				signals: ['san'],
+				domain: 'redirected.com',
+				signals: ['http_redirect'],
 				registrarSource: 'lookup_failed',
 			});
 			expect(classifyCandidate(c, target()).bucket).toBe('consolidated');

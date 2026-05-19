@@ -195,6 +195,32 @@ function drawEmptyBucket(ctx: DrawContext, msg: string): void {
 	ctx.cursorY -= ROW_HEIGHT + 4;
 }
 
+function depthWarningsFromCheckResult(result: CheckResult): string[] {
+	const summary = result.findings.find((f) => f.metadata?.summary === true);
+	const depth = summary?.metadata?.depth;
+	if (!depth || typeof depth !== 'object' || Array.isArray(depth)) return [];
+	const warnings = (depth as Record<string, unknown>).warnings;
+	return Array.isArray(warnings) ? warnings.filter((warning): warning is string => typeof warning === 'string' && warning.length > 0) : [];
+}
+
+function drawDepthWarnings(ctx: DrawContext, warnings: string[]): void {
+	if (warnings.length === 0) return;
+	const visible = warnings.slice(0, 4);
+	const extraCount = warnings.length - visible.length;
+	ensureRoom(ctx, 26 + (visible.length + (extraCount > 0 ? 1 : 0)) * 11);
+	drawText(ctx, 'DISCOVERY DEPTH WARNINGS', { x: MARGIN, size: 9, color: COLOR_BADGE_MED, font: ctx.mono });
+	ctx.cursorY -= 12;
+	for (const warning of visible) {
+		drawText(ctx, truncate(`- ${warning}`, 110), { x: MARGIN + 8, size: 8, color: COLOR_DIM });
+		ctx.cursorY -= 11;
+	}
+	if (extraCount > 0) {
+		drawText(ctx, `- ${extraCount} additional warning${extraCount === 1 ? '' : 's'} in JSON metadata`, { x: MARGIN + 8, size: 8, color: COLOR_DIM });
+		ctx.cursorY -= 11;
+	}
+	ctx.cursorY -= 6;
+}
+
 function drawHeader(ctx: DrawContext, target: string, dateLabel: string): void {
 	drawText(ctx, target.toUpperCase(), { x: MARGIN, size: 28, font: ctx.bold });
 	ctx.cursorY -= 22;
@@ -231,6 +257,7 @@ export async function renderBrandAuditPdf(result: CheckResult, target: string, o
 	const now = options.now ?? Date.now;
 	const dateLabel = new Date(now()).toISOString().slice(0, 10);
 	const candidates = candidatesFromCheckResult(result);
+	const depthWarnings = depthWarningsFromCheckResult(result);
 
 	const doc = await PDFDocument.create();
 	doc.setCreator('bv-mcp brand-audit');
@@ -251,6 +278,7 @@ export async function renderBrandAuditPdf(result: CheckResult, target: string, o
 	ctx.page.drawRectangle({ x: 0, y: 0, width: PAGE_WIDTH, height: PAGE_HEIGHT, color: COLOR_BG });
 
 	drawHeader(ctx, target, dateLabel);
+	drawDepthWarnings(ctx, depthWarnings);
 
 	for (const { bucket, title } of BUCKET_ORDER) {
 		const rows = candidates.filter((r) => r.bucket === bucket);

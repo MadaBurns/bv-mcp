@@ -56,4 +56,40 @@ describe('buildBrandCandidateUniverse', () => {
 		expect(universe.stats.sources.enterprise_affix).toBeGreaterThan(0);
 		expect(universe.stats.dropped.cap).toBeGreaterThan(0);
 	});
+
+	it('caps after ranking so active lookalikes cannot crowd out exact brand TLDs', () => {
+		const activeLookalikes = Array.from({ length: 220 }, (_, i) => `examp1e-${i}.test`);
+		const universe = buildBrandCandidateUniverse({
+			seedDomain: 'example.com',
+			activeLookalikes,
+			depth: 'deep',
+		});
+		const domains = universe.candidates.map((c) => c.domain);
+
+		expect(domains).toEqual(expect.arrayContaining(['example.net', 'example.org', 'example.ca', 'example.co.uk']));
+		expect(domains).not.toContain('examp1e-219.test');
+		expect(universe.stats.dropped.cap).toBeGreaterThan(0);
+	});
+
+	it('orders retained candidates by probe value, not alphabetically', () => {
+		const universe = buildBrandCandidateUniverse({
+			seedDomain: 'example.com',
+			candidateDomains: ['customer-supplied.example.net'],
+			activeLookalikes: ['aaa-lookalike.test'],
+			markovCandidates: ['aaa-generated.test'],
+			depth: 'standard',
+		});
+
+		expect(universe.candidates.slice(0, 5).map((c) => c.domain)).toEqual([
+			'customer-supplied.example.net',
+			'example.net',
+			'example.org',
+			'example.co',
+			'example.io',
+		]);
+		const activeIndex = universe.candidates.findIndex((c) => c.domain === 'aaa-lookalike.test');
+		const generatedIndex = universe.candidates.findIndex((c) => c.domain === 'aaa-generated.test');
+		expect(activeIndex).toBeGreaterThan(0);
+		expect(generatedIndex).toBeGreaterThan(activeIndex);
+	});
 });

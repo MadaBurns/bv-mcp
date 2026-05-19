@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { buildCheckResult, createFinding, type CheckResult, type Finding, type Severity } from './scoring';
-import { buildBrandAuditDepthSummary, type CandidateUniverseDepth } from './brand-audit-depth';
+import { buildBrandAuditDepthSummary, type BrandAuditDepthInput, type CandidateUniverseDepth } from './brand-audit-depth';
 import { summarizeBrandAuditMetrics, type BrandAuditStepTiming } from './brand-audit-metrics';
 import { mapConcurrent } from './map-concurrent';
 import {
@@ -14,7 +14,10 @@ import {
 	type TargetContext,
 } from './brand-classification';
 import type { BrandEvidenceObservation } from './brand-evidence';
-import { discoverBrandDomains as defaultDiscoverBrandDomains } from '../tools/discover-brand-domains';
+import {
+	discoverBrandDomains as defaultDiscoverBrandDomains,
+	type BrandDiscoveryProgressEvent,
+} from '../tools/discover-brand-domains';
 import { checkRdapLookup as defaultCheckRdapLookup, type RdapCheckOptions } from '../tools/check-rdap-lookup';
 import type { BrandAuditStepStore } from './brand-audit-step-store';
 
@@ -56,6 +59,8 @@ export interface BrandAuditPipelineOptions {
 	min_confidence?: number;
 	/** Discovery depth. `deep` expands deterministic candidate seeding. */
 	depth?: 'standard' | 'deep';
+	/** Planner mode for staged discovery fanout. */
+	planner_mode?: 'off' | 'observe' | 'enforce';
 	/** Public brand aliases, product labels, or legal-entity labels to seed. */
 	brand_aliases?: string[];
 	/** Caller-supplied candidate domains to corroborate. */
@@ -163,6 +168,43 @@ function readDiscoverySignalStatus(value: unknown): Record<string, { status: str
 		};
 	}
 	return out;
+}
+
+function readDiscoveryPlannerEfficiency(value: unknown): BrandAuditDepthInput['plannerEfficiency'] | undefined {
+	if (!isRecord(value) || !isRecord(value.efficiency)) return undefined;
+	const { efficiency } = value;
+	const plannerMode = efficiency.plannerMode;
+	if (plannerMode !== 'off' && plannerMode !== 'observe' && plannerMode !== 'enforce') return undefined;
+	const candidateSignalProbes = efficiency.candidateSignalProbes;
+	const baselineCandidateSignalProbes = efficiency.baselineCandidateSignalProbes;
+	const surfacedCandidates = efficiency.surfacedCandidates;
+	if (
+		typeof candidateSignalProbes !== 'number' ||
+		typeof baselineCandidateSignalProbes !== 'number' ||
+		typeof surfacedCandidates !== 'number'
+	) {
+		return undefined;
+	}
+	const planner = isRecord(value.planner) ? value.planner : null;
+	const wouldProbeBySignal = readNumericRecord(planner?.wouldProbeBySignal);
+	const wouldDropBySignal = readNumericRecord(planner?.wouldDropBySignal);
+	return {
+		mode: plannerMode,
+		candidateSignalProbes,
+		baselineCandidateSignalProbes,
+		surfacedCandidates,
+		...(wouldProbeBySignal ? { wouldProbeBySignal } : {}),
+		...(wouldDropBySignal ? { wouldDropBySignal } : {}),
+	};
+}
+
+function readNumericRecord(value: unknown): Record<string, number> | undefined {
+	if (!isRecord(value)) return undefined;
+	const out: Record<string, number> = {};
+	for (const [key, raw] of Object.entries(value)) {
+		if (typeof raw === 'number' && Number.isFinite(raw)) out[key] = raw;
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function readEvidenceObservations(value: unknown): BrandEvidenceObservation[] | undefined {
@@ -384,13 +426,41 @@ export async function runBrandAuditPipeline(
 	} else {
 		const discoveryStartedAtMs = now();
 		const discover = deps.discoverBrandDomains ?? defaultDiscoverBrandDomains;
+		const discoveryTelemetry: BrandDiscoveryProgressEvent[] = [];
+		let discoveryTelemetryWrite = Promise.resolve();
+		const persistDiscoveryProgress = stepStore
+			? (event: BrandDiscoveryProgressEvent): Promise<void> => {
+					discoveryTelemetry.push(event);
+					const events = discoveryTelemetry.slice();
+					discoveryTelemetryWrite = discoveryTelemetryWrite
+						.catch(() => undefined)
+						.then(() =>
+							stepStore.put({
+								auditId,
+								target: seedDomain,
+								step: 'discovery',
+								status: 'partial',
+								payload: {
+									telemetry: {
+										events,
+										latest: event,
+									},
+								},
+							}),
+						);
+					return discoveryTelemetryWrite;
+				}
+			: undefined;
 		const discoveryOpts = {
 			min_confidence: options.min_confidence,
 			depth: options.depth,
+			planner_mode: options.planner_mode,
 			brand_aliases: options.brand_aliases,
 			candidate_domains: options.candidate_domains,
 			certstream: deps.certstream,
 			signal,
+			deadlineMs: options.deadlineMs,
+			onProgress: persistDiscoveryProgress,
 		};
 		discovery = await discover(seedDomain, discoveryOpts);
 		throwIfAborted();
@@ -404,6 +474,7 @@ export async function runBrandAuditPipeline(
 		discoverySummary?.metadata?.candidateUniverse,
 		allCandidateFindings.length,
 	);
+	const discoveryPlannerEfficiency = readDiscoveryPlannerEfficiency(discoverySummary?.metadata?.discoveryPerformance);
 	const truncated = allCandidateFindings.length > MAX_CANDIDATES_PER_AUDIT;
 	const candidateFindings = truncated ? allCandidateFindings.slice(0, MAX_CANDIDATES_PER_AUDIT) : allCandidateFindings;
 
@@ -491,6 +562,7 @@ export async function runBrandAuditPipeline(
 						signalStatus: discoverySignalStatus,
 						registrarSources: [targetLookup.registrarSource],
 						performance,
+						plannerEfficiency: discoveryPlannerEfficiency,
 					}),
 				},
 			),
@@ -608,6 +680,7 @@ export async function runBrandAuditPipeline(
 				signalStatus: discoverySignalStatus,
 				registrarSources: [targetLookup.registrarSource, ...registrarEnrichment.candidates.map(({ lookup }) => lookup.registrarSource)],
 				performance,
+				plannerEfficiency: discoveryPlannerEfficiency,
 			}),
 		},
 	);

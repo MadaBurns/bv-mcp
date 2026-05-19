@@ -132,6 +132,66 @@ describe('discoverBrandDomains — corroboration gate', () => {
 		expect(candidates).toHaveLength(0);
 	});
 
+	it('filters generated lookalike seeds corroborated only by NS overlap', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const deps = makeDeps({
+			generateMarkovLookalikes: vi.fn().mockReturnValue(['examp1e.com']),
+			correlateNs: vi.fn().mockResolvedValue(okNs([{ domain: 'examp1e.com', confidence: 1.0 }])),
+		});
+
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ signals: ['ns'] },
+			deps,
+		);
+
+		const candidates = result.findings.filter((f) => f.metadata?.candidate);
+		expect(candidates).toHaveLength(0);
+		const universe = result.findings.find((f) => f.metadata?.summary)?.metadata?.candidateUniverse as
+			| { dropped?: { corroborationGate?: number } }
+			| undefined;
+		expect(universe?.dropped?.corroborationGate).toBeGreaterThanOrEqual(1);
+	});
+
+	it('filters active lookalikes corroborated only by broad MX platform plus one NS signal', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const deps = makeDeps({
+			generateMarkovLookalikes: vi.fn().mockReturnValue([]),
+			checkLookalikes: vi.fn().mockResolvedValue({
+				category: 'lookalikes',
+				score: 80,
+				findings: [
+					{
+						category: 'lookalikes',
+						title: 'Lookalike domain registered: examp1e.com',
+						severity: 'medium',
+						detail: 'synthetic active lookalike',
+						metadata: { lookalikeDomain: 'examp1e.com', hasA: true },
+					},
+				],
+			}),
+			correlateNs: vi.fn().mockResolvedValue(okNs([{ domain: 'examp1e.com', confidence: 0.6 }])),
+			detectSharedMxPlatform: vi.fn().mockResolvedValue({
+				seedDomain: 'example.com',
+				coOwnedDomains: [{ domain: 'examp1e.com', sharedMxPlatform: 'm365', confidence: 0.55 }],
+				queryStatus: 'ok' as const,
+			}),
+		});
+
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ signals: ['ns', 'mx_platform'], depth: 'deep', min_confidence: 0.1 },
+			deps,
+		);
+
+		const candidates = result.findings.filter((f) => f.metadata?.candidate);
+		expect(candidates).toHaveLength(0);
+		const universe = result.findings.find((f) => f.metadata?.summary)?.metadata?.candidateUniverse as
+			| { dropped?: { corroborationGate?: number } }
+			| undefined;
+		expect(universe?.dropped?.corroborationGate).toBeGreaterThanOrEqual(1);
+	});
+
 	it('caller-asserted single-signal ns candidate bypasses the corroboration gate', async () => {
 		// candidate_domains is the operator saying "this is one of mine, please
 		// confirm via signals." When NS confirms, that's enough corroboration

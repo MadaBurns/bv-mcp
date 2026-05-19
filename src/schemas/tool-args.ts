@@ -198,6 +198,7 @@ const DiscoverSignalSchema = z
 	);
 
 const BrandAuditDepthSchema = z.enum(['standard', 'deep']);
+const BrandAuditPlannerModeSchema = z.enum(['off', 'observe', 'enforce']);
 
 const BrandAliasesArg = z
 	.array(z.string().min(2).max(64))
@@ -221,6 +222,7 @@ export const DiscoverBrandDomainsArgs = z.object({
 		.optional()
 		.describe('Signal modules to invoke. Defaults to all 12 discovery/enrichment signals.'),
 	depth: BrandAuditDepthSchema.optional().describe('Discovery depth. standard is default; deep expands candidate seeding and enrichment fanout.'),
+	planner_mode: BrandAuditPlannerModeSchema.optional().describe('Planner mode for staged discovery fanout. observe emits metrics; enforce applies candidate-backed signal caps.'),
 	brand_aliases: BrandAliasesArg,
 	candidate_domains: BrandCandidateDomainsArg,
 	dkim_selectors: z
@@ -253,6 +255,7 @@ export const BrandAuditSingleArgs = z.object({
 		.optional()
 		.describe('Drop candidates whose combined confidence falls below this threshold (0-1, default 0.5).'),
 	depth: BrandAuditDepthSchema.optional().describe('Discovery depth. standard is default; deep expands candidate seeding and enrichment fanout.'),
+	planner_mode: BrandAuditPlannerModeSchema.optional().describe('Planner mode for staged discovery fanout. observe emits metrics; enforce applies candidate-backed signal caps.'),
 	brand_aliases: BrandAliasesArg,
 	candidate_domains: BrandCandidateDomainsArg,
 }).passthrough();
@@ -272,6 +275,7 @@ export const BrandAuditBatchStartArgs = z.object({
 		.optional()
 		.describe('Drop candidates whose combined confidence falls below this threshold (0-1, default 0.5).'),
 	depth: BrandAuditDepthSchema.optional().describe('Discovery depth. standard is default; deep expands candidate seeding and enrichment fanout.'),
+	planner_mode: BrandAuditPlannerModeSchema.optional().describe('Planner mode for staged discovery fanout. observe emits metrics; enforce applies candidate-backed signal caps.'),
 	brand_aliases: BrandAliasesArg,
 	candidate_domains: BrandCandidateDomainsArg,
 }).passthrough();
