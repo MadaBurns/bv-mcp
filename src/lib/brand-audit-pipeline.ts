@@ -67,6 +67,13 @@ export interface BrandAuditPipelineOptions {
 	depth?: 'standard' | 'deep';
 	/** Planner mode for staged discovery fanout. */
 	planner_mode?: 'off' | 'observe' | 'enforce';
+	/**
+	 * Discovery mode threaded through to `discoverBrandDomains`. Default
+	 * `'classic'` preserves byte-identical legacy behavior; `'tiered'` enables
+	 * Tier 0/1/2 lookups in front of the legacy sweep (BSL boundary — public
+	 * default never flips).
+	 */
+	discovery_mode?: 'classic' | 'tiered';
 	/** Public brand aliases, product labels, or legal-entity labels to seed. */
 	brand_aliases?: string[];
 	/** Caller-supplied candidate domains to corroborate. */
@@ -461,6 +468,7 @@ export async function runBrandAuditPipeline(
 			min_confidence: options.min_confidence,
 			depth: options.depth,
 			planner_mode: options.planner_mode,
+			discovery_mode: options.discovery_mode,
 			brand_aliases: options.brand_aliases,
 			candidate_domains: options.candidate_domains,
 			certstream: deps.certstream,

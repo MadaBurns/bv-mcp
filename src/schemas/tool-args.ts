@@ -236,6 +236,17 @@ export const DiscoverBrandDomainsArgs = z.object({
 		.max(1)
 		.optional()
 		.describe('Drop candidates whose combined confidence falls below this threshold (0-1, default 0.5).'),
+	discovery_mode: z
+		.enum(['classic', 'tiered'])
+		.default('classic')
+		.describe(
+			'Discovery mode. "classic" (default, BSL-licensed) runs the public signal-sweep pipeline. ' +
+				'"tiered" layers Tier 0 (tenant-declared portfolio), Tier 1 (infrastructure-graph), and ' +
+				'Tier 2 (declared-evidence) lookups in front of the legacy sweep, falling back to Tier 3 ' +
+				'(the existing sweep) only on cache miss / very_stale fingerprint / uncovered caller ' +
+				'candidates. Tiered mode requires private BlackVeil service bindings — BSL self-hosts ' +
+				'should leave this on "classic".',
+		),
 	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 }).passthrough();
 
