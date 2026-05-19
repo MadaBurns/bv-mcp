@@ -118,7 +118,11 @@ export function normalizeRegistrar(raw: string): string {
 	if (/markmonitor/.test(lower)) return 'MarkMonitor';
 	if (/com\s*laude|nom[ -]?iq/.test(lower)) return 'Com Laude';
 	if (/safenames/.test(lower)) return 'SafeNames';
-	if (/brand-audit\s*corporate|brand-audit\s*global|corporate domains/.test(lower)) return 'BrandAudit';
+	// CSC Corporate Domains operates dozens of regional entities (CSC US, CSC
+	// Canada, CSC UK, etc.) all sharing infra. Match the family, not each
+	// regional variant. Legacy regex used 'BrandAudit' as a placeholder name —
+	// see test for the production incident that surfaced this.
+	if (/corporate\s*domains/.test(lower)) return 'CSC';
 	if (/cloudflare/.test(lower)) return 'Cloudflare';
 	if (/tucows/.test(lower)) return 'Tucows';
 	if (/godaddy/.test(lower)) return 'GoDaddy';
