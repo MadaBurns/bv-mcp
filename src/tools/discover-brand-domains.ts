@@ -68,6 +68,40 @@ import { checkLookalikes as defaultCheckLookalikes } from './check-lookalikes';
 import { clearsOwnershipGate, type BrandEvidenceObservation } from '../lib/brand-evidence';
 import { detectAppLinks } from '../tenants/discovery/app-links-detector';
 import { detectBountyScope, type BountyPlatform } from '../tenants/discovery/bounty-scope-detector';
+import type { Tier0Result } from '../lib/brand-tier0-enterprise';
+import type { Tier1Result } from '../lib/brand-tier1-graph';
+import type { Tier2Result } from '../lib/brand-tier2-evidence';
+import { applyOptoutFilter, type OptoutFetcher } from '../lib/brand-optout-enforcement';
+
+/**
+ * Discovery mode flag.
+ *
+ * - `classic` — default. Runs the legacy signal-sweep pipeline byte-identically.
+ *   The only mode supported under BSL — public clones never flip the default.
+ * - `tiered`  — runs Tier 0 (tenant portfolio), Tier 1 (infrastructure-graph),
+ *   Tier 2 (declared evidence) lookups in front of the legacy sweep. Falls
+ *   back to Tier 3 (= legacy sweep) only on a stale fingerprint / cache miss /
+ *   uncovered caller candidates. Requires private BlackVeil service bindings.
+ */
+export type DiscoveryMode = 'classic' | 'tiered';
+
+/** Closed enum of drop reasons emitted by the discovery aggregator. */
+export type DiscoveryDropReason =
+	| 'cap'
+	| 'seedOrSubdomain'
+	| 'infrastructureProvider'
+	| 'corroborationGate'
+	| 'belowConfidence'
+	| 'optOutRedacted';
+
+export const DISCOVERY_DROP_REASONS: readonly DiscoveryDropReason[] = [
+	'cap',
+	'seedOrSubdomain',
+	'infrastructureProvider',
+	'corroborationGate',
+	'belowConfidence',
+	'optOutRedacted',
+] as const;
 
 /**
  * Built-in bug-bounty program handles for the Phase-5 demo brands. Replace
@@ -196,6 +230,14 @@ export interface DiscoverBrandDomainsDeps {
 	checkLookalikes: typeof defaultCheckLookalikes;
 	domainLabelSimilarity: typeof defaultDomainLabelSimilarity;
 	createDnsContext?: typeof createDiscoveryDnsContext;
+	/** Tier 0 lookup (tenant-declared portfolio via bv-enterprise). Tiered mode only. */
+	tier0Lookup?: (domain: string) => Promise<Tier0Result>;
+	/** Tier 1 lookup (bv-infrastructure-graph). Tiered mode only. */
+	tier1Lookup?: (domain: string) => Promise<Tier1Result>;
+	/** Tier 2 lookup (bv-intel-gateway). Tiered mode only. */
+	tier2Lookup?: (domain: string) => Promise<Tier2Result>;
+	/** Opt-out fetcher used by the consumer-side filter. Tiered mode only. */
+	fetchOptouts?: OptoutFetcher;
 }
 
 /** Tool args shape — the Zod schema lives in `src/schemas/tool-args.ts`. */
@@ -208,6 +250,13 @@ export interface DiscoverBrandDomainsOptions {
 	depth?: BrandAuditDepth;
 	planner_mode?: 'off' | 'observe' | 'enforce';
 	planner_caps?: Partial<Record<DiscoverSignal, number>>;
+	/**
+	 * Discovery mode. `'classic'` (default) runs the legacy public pipeline
+	 * byte-identically. `'tiered'` layers Tier 0/1/2 lookups in front and
+	 * conditionally falls back to Tier 3 (= the legacy sweep). BSL boundary:
+	 * the default never flips.
+	 */
+	discovery_mode?: DiscoveryMode;
 	/** Internal clock override for deterministic telemetry tests. */
 	now?: () => number;
 	/** Epoch-ms deadline for returning partial discovery before the caller's queue/runtime budget expires. */
@@ -240,6 +289,20 @@ export interface BrandDiscoveryProgressEvent {
 	detail?: Record<string, unknown>;
 }
 
+interface BrandDiscoveryTiers {
+	tier0Count: number;
+	tier1Count: number;
+	tier2Count: number;
+	tier3Count: number;
+	tier4Count: number;
+	tier0Status: string;
+	tier1Status: string;
+	tier2Status: string;
+	tier3FallbackTriggered: number;
+	tier1Freshness: Record<string, unknown> | null;
+	optOutsFiltered: number;
+}
+
 interface BrandDiscoveryPerformance {
 	elapsedMs: number;
 	phases: BrandDiscoveryProgressEvent[];
@@ -256,6 +319,11 @@ interface BrandDiscoveryPerformance {
 		wouldProbeBySignal: Record<string, number>;
 		wouldDropBySignal: Record<string, number>;
 	};
+	/**
+	 * Per-tier metadata. Present iff `discovery_mode === 'tiered'`. Strict
+	 * invariance in classic mode: the key is omitted entirely (not `{}`).
+	 */
+	tiers?: BrandDiscoveryTiers;
 }
 
 /** Combine independent-event confidences: P(any signal correct). */
@@ -485,6 +553,25 @@ export async function discoverBrandDomains(
 	const candidateBackedSignalProbes: Record<string, number> = {};
 	let candidateBackedSignalBaselineProbes: Record<string, number> = {};
 	let signalPlan: BrandDiscoverySignalPlan = { candidatesBySignal: {}, droppedBySignal: {}, priorityByDomain: {}, guardedByDomain: {} };
+
+	// Tiered discovery state. Populated only when `discovery_mode === 'tiered'`.
+	// In classic mode the entire tiered block is skipped and `tieredState` stays
+	// null, so `discoveryPerformance.tiers` is omitted (strict BSL invariance).
+	const discoveryMode: DiscoveryMode = options.discovery_mode ?? 'classic';
+	interface TieredState {
+		tier0Count: number;
+		tier1Count: number;
+		tier2Count: number;
+		tier4Count: number;
+		tier3Count: number;
+		tier0Status: string;
+		tier1Status: string;
+		tier2Status: string;
+		tier3FallbackTriggered: 0 | 1;
+		tier1Freshness: Record<string, unknown> | null;
+		optOutsFiltered: number;
+	}
+	let tieredState: TieredState | null = null;
 	// Default flipped from 'observe' to 'enforce' after the planner cap-tuning
 	// was validated against production (walmart/bankofamerica/marriott: 44.8%
 	// probe reduction, zero surfaced/bucket regressions) and against a chaos
@@ -505,7 +592,7 @@ export async function discoverBrandDomains(
 		const baselineCandidateSignalProbes = Object.values(candidateBackedSignalBaselineProbes).reduce((sum, count) => sum + count, 0);
 		const surfaced = phaseTimings.find((phase) => phase.name === 'aggregation')?.detail?.surfaced;
 		const surfacedCandidates = typeof surfaced === 'number' ? surfaced : 0;
-		return {
+		const out: BrandDiscoveryPerformance = {
 			elapsedMs: Math.max(0, now() - discoveryStartedAtMs),
 			phases: phaseTimings.slice(),
 			efficiency: {
@@ -525,6 +612,24 @@ export async function discoverBrandDomains(
 				wouldDropBySignal: countDroppedCandidates(signalPlan.droppedBySignal),
 			},
 		};
+		// BSL invariance: attach `tiers` ONLY when tiered mode populated state.
+		// Classic mode leaves the key absent from the object entirely.
+		if (tieredState) {
+			out.tiers = {
+				tier0Count: tieredState.tier0Count,
+				tier1Count: tieredState.tier1Count,
+				tier2Count: tieredState.tier2Count,
+				tier3Count: tieredState.tier3Count,
+				tier4Count: tieredState.tier4Count,
+				tier0Status: tieredState.tier0Status,
+				tier1Status: tieredState.tier1Status,
+				tier2Status: tieredState.tier2Status,
+				tier3FallbackTriggered: tieredState.tier3FallbackTriggered,
+				tier1Freshness: tieredState.tier1Freshness,
+				optOutsFiltered: tieredState.optOutsFiltered,
+			};
+		}
+		return out;
 	};
 	const runTrackedSignal = async <R>(
 		name: DiscoverSignal,
@@ -619,6 +724,216 @@ export async function discoverBrandDomains(
 
 	for (const candidate of universe.candidates) {
 		addCandidateSeed(aggregator, candidate.domain, candidate.sources, candidate.reasons);
+	}
+
+	// ---------------------------------------------------------------------
+	// Tiered discovery (T7) — Tier 0/1/2 run BEFORE the legacy sweep (Tier 3).
+	// Tier 3 only fires conditionally: very_stale freshness, Tier 1 returned
+	// no candidates AND freshness != fresh, or caller_candidates not covered.
+	// Classic mode skips the entire block (strict BSL invariance — public
+	// default never flips).
+	// ---------------------------------------------------------------------
+	const seedNormForTiered = seedDomain.trim().toLowerCase().replace(/\.$/, '');
+	const tieredObservations: Array<{
+		candidate: string;
+		tier: 0 | 1 | 2 | 4;
+		source: string;
+		confidence: number;
+		metadata: Record<string, unknown>;
+	}> = [];
+	let runTier3 = true;
+	if (discoveryMode === 'tiered') {
+		tieredState = {
+			tier0Count: 0,
+			tier1Count: 0,
+			tier2Count: 0,
+			tier4Count: 0,
+			tier3Count: 0,
+			tier0Status: 'skipped',
+			tier1Status: 'skipped',
+			tier2Status: 'skipped',
+			tier3FallbackTriggered: 0,
+			tier1Freshness: null,
+			optOutsFiltered: 0,
+		};
+		const tieredStartedAtMs = await startPhase('tiered_lookup');
+		const tier0Started = now();
+		const tier1Started = now();
+		const tier2Started = now();
+		const [tier0Settled, tier1Settled, tier2Settled] = await Promise.allSettled([
+			d.tier0Lookup
+				? d.tier0Lookup(seedDomain)
+				: Promise.resolve<Tier0Result>({ observations: [], status: 'skipped', optedOut: false }),
+			d.tier1Lookup
+				? d.tier1Lookup(seedDomain)
+				: Promise.resolve<Tier1Result>({ observations: [], status: 'skipped', triggerTier3Fallback: false }),
+			d.tier2Lookup
+				? d.tier2Lookup(seedDomain)
+				: Promise.resolve<Tier2Result>({ observations: [], status: 'skipped' }),
+		]);
+
+		if (tier0Settled.status === 'fulfilled') {
+			const r = tier0Settled.value;
+			tieredState.tier0Status = r.status;
+			for (const obs of r.observations) {
+				tieredObservations.push({
+					candidate: obs.candidate,
+					tier: 0,
+					source: obs.source,
+					confidence: obs.confidence,
+					metadata: { tier: 0, source: obs.source, tenantId: obs.tenantId, registeredAt: obs.registeredAt },
+				});
+			}
+			await finishPhase('tier0_tenant', r.status, tier0Started, {
+				observations: r.observations.length,
+				optedOut: r.optedOut,
+			});
+		} else {
+			tieredState.tier0Status = 'degraded';
+			await finishPhase('tier0_tenant', 'failed', tier0Started, { error: String(tier0Settled.reason) });
+		}
+
+		if (tier1Settled.status === 'fulfilled') {
+			const r = tier1Settled.value;
+			tieredState.tier1Status = r.status;
+			tieredState.tier1Freshness = (r.freshness as unknown as Record<string, unknown>) ?? null;
+			for (const obs of r.observations) {
+				tieredObservations.push({
+					candidate: obs.candidate,
+					tier: 1,
+					source: obs.source,
+					confidence: obs.confidence,
+					metadata: {
+						tier: 1,
+						source: obs.source,
+						specificityScore: obs.specificityScore,
+						signalType: obs.signalType,
+						signalValue: obs.signalValue,
+						numSharedSignals: obs.numSharedSignals,
+						maxSpecificity: obs.maxSpecificity,
+						signalTypes: obs.signalTypes,
+					},
+				});
+			}
+			await finishPhase('tier1_graph', r.status, tier1Started, {
+				observations: r.observations.length,
+				triggerTier3Fallback: r.triggerTier3Fallback,
+			});
+		} else {
+			tieredState.tier1Status = 'degraded';
+			await finishPhase('tier1_graph', 'failed', tier1Started, { error: String(tier1Settled.reason) });
+		}
+
+		if (tier2Settled.status === 'fulfilled') {
+			const r = tier2Settled.value;
+			tieredState.tier2Status = r.status;
+			for (const obs of r.observations) {
+				if (obs.tier === 2) {
+					tieredObservations.push({
+						candidate: obs.candidate,
+						tier: 2,
+						source: obs.source,
+						confidence: obs.confidence,
+						metadata: { tier: 2, source: obs.source, threatLevel: obs.threatLevel, capturedAt: obs.capturedAt },
+					});
+				} else {
+					tieredObservations.push({
+						candidate: obs.candidate,
+						tier: 4,
+						source: obs.source,
+						confidence: obs.confidence,
+						metadata: { tier: 4, source: obs.source, alertType: obs.alertType, transition: obs.transition },
+					});
+				}
+			}
+			await finishPhase('tier2_evidence', r.status, tier2Started, { observations: r.observations.length });
+		} else {
+			tieredState.tier2Status = 'degraded';
+			await finishPhase('tier2_evidence', 'failed', tier2Started, { error: String(tier2Settled.reason) });
+		}
+
+		// Apply consumer-side opt-out filter to ALL surfaced tiered candidates.
+		// 3rd defensive layer: even if both producer-side filters miss an
+		// opted-out apex, bv-mcp redacts it here.
+		if (d.fetchOptouts && tieredObservations.length > 0) {
+			try {
+				const candidatesToCheck = Array.from(new Set(tieredObservations.map((o) => o.candidate)));
+				const optoutResult = await applyOptoutFilter(candidatesToCheck, d.fetchOptouts);
+				const survivors = new Set(optoutResult.filtered.map((c) => c.trim().toLowerCase().replace(/\.$/, '')));
+				const beforeLen = tieredObservations.length;
+				let writeIdx = 0;
+				for (let i = 0; i < tieredObservations.length; i++) {
+					const norm = tieredObservations[i].candidate.trim().toLowerCase().replace(/\.$/, '');
+					if (survivors.has(norm)) {
+						tieredObservations[writeIdx++] = tieredObservations[i];
+					}
+				}
+				tieredObservations.length = writeIdx;
+				tieredState.optOutsFiltered = Math.max(beforeLen - writeIdx, optoutResult.redactedCount);
+			} catch {
+				// Fail-soft: filter unavailable → no redaction, no abort.
+			}
+		}
+
+		// Land tiered observations in the aggregator BEFORE the Tier 3 decision,
+		// so the signal sweep (if it runs) corroborates rather than duplicates.
+		// Tiered candidates are treated as caller-asserted: they came from a
+		// declared/tenant/graph source and bypass the multi-signal corroboration
+		// gate (intended for unsolicited single-signal discoveries).
+		for (const obs of tieredObservations) {
+			callerAssertedDomains.add(obs.candidate.trim().toLowerCase().replace(/\.$/, ''));
+			// Tier observations live on the `markov_gen` signal key (zero
+			// contribution to combined-confidence — the caller-asserted bypass
+			// is what surfaces these). The metadata blob carries the real tier
+			// + source for the T8 classifier to read.
+			addObservation(aggregator, obs.candidate, 'markov_gen', obs.confidence, {
+				tier: obs.tier,
+				source: obs.source,
+				...obs.metadata,
+			});
+		}
+
+		// Tier counts (post-opt-out).
+		for (const obs of tieredObservations) {
+			if (obs.tier === 0) tieredState.tier0Count++;
+			else if (obs.tier === 1) tieredState.tier1Count++;
+			else if (obs.tier === 2) tieredState.tier2Count++;
+			else if (obs.tier === 4) tieredState.tier4Count++;
+		}
+
+		// ---- Tier 3 decision ----
+		// Per the source-of-truth plan §521-524 (and reconciled with the task
+		// description test at "fresh → no Tier 3 fallback"):
+		//   - tier1Freshness === 'very_stale', OR
+		//   - Tier 1 returned no candidates AND tier1Freshness !== 'fresh', OR
+		//   - caller_candidates present and not covered by Tier 0/1/2.
+		const tier1FreshnessStaleness =
+			tieredState.tier1Freshness && typeof tieredState.tier1Freshness.overallStaleness === 'string'
+				? (tieredState.tier1Freshness.overallStaleness as string)
+				: undefined;
+		const tier1Fresh = tier1FreshnessStaleness === 'fresh';
+		const tier1VeryStale = tier1FreshnessStaleness === 'very_stale';
+		const tier1HadCandidates = tieredState.tier1Count > 0;
+		const coveredByTiers = new Set(
+			tieredObservations.map((o) => o.candidate.trim().toLowerCase().replace(/\.$/, '')),
+		);
+		coveredByTiers.add(seedNormForTiered);
+		const callerNorm = candidateDomains
+			.map((dom) => dom.trim().toLowerCase().replace(/\.$/, ''))
+			.filter((dom) => dom.length > 0);
+		const uncoveredCaller = callerNorm.some((dom) => !coveredByTiers.has(dom));
+		const shouldRunTier3 = tier1VeryStale || (!tier1HadCandidates && !tier1Fresh) || uncoveredCaller;
+		runTier3 = shouldRunTier3;
+		tieredState.tier3FallbackTriggered = shouldRunTier3 ? 1 : 0;
+
+		await finishPhase('tiered_lookup', 'completed', tieredStartedAtMs, {
+			tier0Count: tieredState.tier0Count,
+			tier1Count: tieredState.tier1Count,
+			tier2Count: tieredState.tier2Count,
+			tier4Count: tieredState.tier4Count,
+			tier3FallbackTriggered: tieredState.tier3FallbackTriggered,
+			optOutsFiltered: tieredState.optOutsFiltered,
+		});
 	}
 
 	const signalStatus: Record<string, { status: string; error?: string }> = { ...preSignalStatus };
@@ -997,27 +1312,40 @@ export async function discoverBrandDomains(
 		});
 	}
 
-	const signalSweepStartedAtMs = await startPhase('signal_sweep', {
-		signals: jobs.map((job) => job.name),
-		probedCandidates: mergedCandidates.length,
-	});
-	await Promise.allSettled(jobs.map((j) => j.run()));
-	await finishPhase(
-		'signal_sweep',
-		options.signal?.aborted ? 'partial' : 'completed',
-		signalSweepStartedAtMs,
-		{
-			completedSignals: phaseTimings
-				.filter((phase) => jobs.some((job) => job.name === phase.name))
-				.map((phase) => phase.name),
-		},
-	);
+	if (!runTier3) {
+		// Tiered mode decided Tier 3 (= the legacy sweep) isn't needed. Mark
+		// every requested signal as `skipped_tiered` so the allFailed gate
+		// below sees a known-good non-failure outcome, then skip the sweep.
+		for (const s of signals) {
+			signalStatus[s] ??= { status: 'skipped_tiered' };
+		}
+		await recordInstantPhase('signal_sweep', 'skipped_tiered', { reason: 'tier1_fresh_no_uncovered_caller' });
+	} else {
+		const signalSweepStartedAtMs = await startPhase('signal_sweep', {
+			signals: jobs.map((job) => job.name),
+			probedCandidates: mergedCandidates.length,
+		});
+		await Promise.allSettled(jobs.map((j) => j.run()));
+		await finishPhase(
+			'signal_sweep',
+			options.signal?.aborted ? 'partial' : 'completed',
+			signalSweepStartedAtMs,
+			{
+				completedSignals: phaseTimings
+					.filter((phase) => jobs.some((job) => job.name === phase.name))
+					.map((phase) => phase.name),
+			},
+		);
+	}
 
 	// Budget gate: if the consumer's AbortController has fired while jobs were
 	// in flight, skip the recursive SAN expansion (the most expensive single
 	// step, ~30s) and head straight to the aggregator pass with whatever we
 	// already have. The consumer will flip the row to `failed` once we return.
-	if (options.signal?.aborted) {
+	if (!runTier3) {
+		// Tiered mode skipped the sweep entirely → nothing to do for san_recursive.
+		signalStatus.san_recursive ??= { status: 'skipped_tiered' };
+	} else if (options.signal?.aborted) {
 		signalStatus.san_recursive ??= { status: 'skipped_no_first_order' };
 		await recordInstantPhase('san_recursive', 'skipped_aborted');
 	} else if (signals.includes('san_recursive') && firstOrderSanCandidates.length > 0) {
@@ -1208,6 +1536,19 @@ export async function discoverBrandDomains(
 		surfaced: candidateFindings.length,
 		dropped: dropCounts,
 	});
+
+	// Tier 3 count: in tiered mode, count surviving candidates that were NOT
+	// surfaced by Tier 0/1/2. Identified by domain set membership.
+	if (tieredState) {
+		const tieredApex = new Set(
+			tieredObservations.map((o) => o.candidate.trim().toLowerCase().replace(/\.$/, '')),
+		);
+		let tier3Count = 0;
+		for (const cand of surviving) {
+			if (!tieredApex.has(cand.domain)) tier3Count++;
+		}
+		tieredState.tier3Count = tier3Count;
+	}
 
 	// Always emit a summary finding so the formatter has something to print.
 	const summary = createFinding(
