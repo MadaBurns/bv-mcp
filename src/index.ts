@@ -102,6 +102,8 @@ type BvMcpEnv = {
 	BRAND_AUDIT_PDF_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	BRAND_REPORTS?: R2Bucket;
 	BV_BROWSER_RENDERER?: Fetcher;
+	/** ADMIN_API_KEY for bv-browser-renderer's /pdf/html endpoint. Bearer-authed. */
+	BV_BROWSER_RENDERER_KEY?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -872,7 +874,8 @@ export default {
 				for (const m of batch.messages) m.ack();
 				return;
 			}
-			const deps: BrandAuditPdfConsumerDeps = { db, bucket, renderer, serverVersion: SERVER_VERSION };
+			const rendererApiKey = e.BV_BROWSER_RENDERER_KEY as string | undefined;
+			const deps: BrandAuditPdfConsumerDeps = { db, bucket, renderer, rendererApiKey, serverVersion: SERVER_VERSION };
 			await handleBrandAuditPdfQueue(batch, deps);
 			return;
 		}

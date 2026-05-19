@@ -49,9 +49,15 @@ export interface BrandAuditPdfConsumerDeps {
 	bucket: R2Bucket;
 	renderer: BrandAuditRendererBinding;
 	serverVersion: string;
+	/** ADMIN_API_KEY for the renderer's /pdf/html endpoint. Threaded from BV_BROWSER_RENDERER_KEY secret. */
+	rendererApiKey?: string;
 	now?: () => number;
 	/** Injectable renderer fn for tests; defaults to the production wrapper. */
-	renderPdf?: (result: CheckResult, target: string, opts: { renderer: BrandAuditRendererBinding; serverVersion: string; now?: () => number }) => Promise<Uint8Array>;
+	renderPdf?: (
+		result: CheckResult,
+		target: string,
+		opts: { renderer: BrandAuditRendererBinding; serverVersion: string; rendererApiKey?: string; now?: () => number },
+	) => Promise<Uint8Array>;
 }
 
 export async function processBrandAuditPdfMessage(
@@ -108,6 +114,7 @@ export async function processBrandAuditPdfMessage(
 		pdfBytes = await render(parsedResult, message.target, {
 			renderer: deps.renderer,
 			serverVersion: deps.serverVersion,
+			rendererApiKey: deps.rendererApiKey,
 			now: deps.now,
 		});
 	} catch {
