@@ -102,6 +102,8 @@ type BvMcpEnv = {
 	BRAND_AUDIT_PDF_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	BRAND_REPORTS?: R2Bucket;
 	BV_BROWSER_RENDERER?: Fetcher;
+	/** ADMIN_API_KEY for bv-browser-renderer's /pdf/html endpoint. Bearer-authed. */
+	BV_BROWSER_RENDERER_KEY?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -853,7 +855,12 @@ export default {
 				return;
 			}
 			const pdfQueue = e.BRAND_AUDIT_PDF_QUEUE as BrandAuditConsumerDeps['pdfQueue'] | undefined;
-			const deps: BrandAuditConsumerDeps = { db, pdfQueue };
+			// Phase 2b: thread the BRAND_AUDIT_QUEUE binding back into the consumer
+			// so the retry-enqueue path can fire. Same binding the producer uses;
+			// the consumer enqueues a `retry_attempt: 1` message back onto itself
+			// when a completed audit has registrar lookup_failed candidates.
+			const brandAuditQueue = e.BRAND_AUDIT_QUEUE as BrandAuditConsumerDeps['brandAuditQueue'] | undefined;
+			const deps: BrandAuditConsumerDeps = { db, pdfQueue, brandAuditQueue };
 			await handleBrandAuditQueue(batch, deps);
 			return;
 		}
@@ -861,13 +868,14 @@ export default {
 			const e = env as Record<string, unknown>;
 			const db = e.BRAND_AUDIT_DB as D1Database | undefined;
 			const bucket = e.BRAND_REPORTS as R2Bucket | undefined;
-			const renderer = e.BV_BROWSER_RENDERER as { fetch: typeof fetch } | undefined;
-			if (!db || !bucket || !renderer) {
-				// One or more required bindings missing — ack to avoid hot-looping.
+			if (!db || !bucket) {
+				// Required bindings missing — ack to avoid hot-looping.
 				for (const m of batch.messages) m.ack();
 				return;
 			}
-			const deps: BrandAuditPdfConsumerDeps = { db, bucket, renderer, serverVersion: SERVER_VERSION };
+			// Renderer is now in-process (pdf-lib); BV_BROWSER_RENDERER + KEY
+			// no longer required for brand-audit PDF generation.
+			const deps: BrandAuditPdfConsumerDeps = { db, bucket, serverVersion: SERVER_VERSION };
 			await handleBrandAuditPdfQueue(batch, deps);
 			return;
 		}

@@ -1,0 +1,58 @@
+{
+	"forbiddenPaths": [
+		".dev/",
+		".dev.vars",
+		".dev.vars.",
+		".mcp-registry-key.pem",
+		".npmrc",
+		"wrangler.production.jsonc",
+		"reports/",
+		".reports/",
+		"*.pdf",
+		"*.env",
+		"*.env.*",
+		"*.sqlite",
+		"*.sqlite3",
+		"*.db",
+		"scripts/tranco-*.json",
+		"reports/tenant-readiness-proof.html",
+		"reports/tenant-calibration-*.json",
+		"reports/tenant-*.json",
+		"reports/repo-audit-*.html"
+	],
+	"sourceExtensions": [
+		".cjs",
+		".css",
+		".html",
+		".js",
+		".json",
+		".jsonc",
+		".md",
+		".mjs",
+		".py",
+		".sh",
+		".sql",
+		".toml",
+		".ts",
+		".tsx",
+		".yaml",
+		".yml"
+	],
+	"allowedEmailDomains": ["example.com", "example.test", "example.invalid", "blackveilsecurity.com"],
+	"allowedDomainSuffixes": ["example.com", "example.net", "example.org", "example.test", "example.invalid", "localhost", "blackveilsecurity.com"],
+	"allowedInternalHostnames": ["localhost.localdomain", "renderer.internal", "quota.internal"],
+	"allowedPaths": [
+		".gitleaks.toml",
+		"CHANGELOG.md",
+		"package-lock.json",
+		"scripts/repo-safety/scanner-core.mjs",
+		"scripts/pressure-chaos-test.mjs",
+		"test/audits/repo-safety-scanner.audit.test.ts",
+		"test/audits/no-tracked-secrets.audit.test.ts"
+	],
+	"allowedPathPrefixes": [
+		".github/",
+		"test/",
+		"packages/dns-checks/src/__tests__/"
+	]
+}

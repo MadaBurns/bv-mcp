@@ -189,11 +189,28 @@ const DiscoverSignalSchema = z
 			'dkim_key_reuse',
 			'http_redirect',
 			'mx_overlap',
+			'txt_verification',
+			'mx_platform',
 			'spf_include',
 			'spf_include_seed',
 			'cname_alignment',
 		]),
 	);
+
+const BrandAuditDepthSchema = z.enum(['standard', 'deep']);
+const BrandAuditPlannerModeSchema = z.enum(['off', 'observe', 'enforce']);
+
+const BrandAliasesArg = z
+	.array(z.string().min(2).max(64))
+	.max(20)
+	.optional()
+	.describe('Optional public brand aliases to seed, such as product or legal-entity labels.');
+
+const BrandCandidateDomainsArg = z
+	.array(z.string().min(1).max(253))
+	.max(250)
+	.optional()
+	.describe('Optional candidate domains supplied by the caller for corroboration.');
 
 /** discover_brand_domains — seed + optional signal set + candidate seed list. */
 export const DiscoverBrandDomainsArgs = z.object({
@@ -201,14 +218,13 @@ export const DiscoverBrandDomainsArgs = z.object({
 	signals: z
 		.array(DiscoverSignalSchema)
 		.min(1)
-		.max(10)
+		.max(12)
 		.optional()
-		.describe('Signal modules to invoke. Defaults to all 10 (san, san_recursive, ns, dmarc_rua, dkim_key_reuse, http_redirect, mx_overlap, spf_include, spf_include_seed, cname_alignment).'),
-	candidate_domains: z
-		.array(z.string().min(1).max(253))
-		.max(200)
-		.optional()
-		.describe('Optional candidate domains to test (used by ns and dkim_key_reuse signals). Max 200.'),
+		.describe('Signal modules to invoke. Defaults to all 12 discovery/enrichment signals.'),
+	depth: BrandAuditDepthSchema.optional().describe('Discovery depth. standard is default; deep expands candidate seeding and enrichment fanout.'),
+	planner_mode: BrandAuditPlannerModeSchema.optional().describe('Planner mode for staged discovery fanout. observe emits metrics; enforce applies candidate-backed signal caps.'),
+	brand_aliases: BrandAliasesArg,
+	candidate_domains: BrandCandidateDomainsArg,
 	dkim_selectors: z
 		.array(z.string().min(1).max(63))
 		.max(50)
@@ -238,6 +254,10 @@ export const BrandAuditSingleArgs = z.object({
 		.max(1)
 		.optional()
 		.describe('Drop candidates whose combined confidence falls below this threshold (0-1, default 0.5).'),
+	depth: BrandAuditDepthSchema.optional().describe('Discovery depth. standard is default; deep expands candidate seeding and enrichment fanout.'),
+	planner_mode: BrandAuditPlannerModeSchema.optional().describe('Planner mode for staged discovery fanout. observe emits metrics; enforce applies candidate-backed signal caps.'),
+	brand_aliases: BrandAliasesArg,
+	candidate_domains: BrandCandidateDomainsArg,
 }).passthrough();
 
 /** brand_audit_batch_start — enqueue async brand audits for up to 50 targets. */
@@ -254,6 +274,10 @@ export const BrandAuditBatchStartArgs = z.object({
 		.max(1)
 		.optional()
 		.describe('Drop candidates whose combined confidence falls below this threshold (0-1, default 0.5).'),
+	depth: BrandAuditDepthSchema.optional().describe('Discovery depth. standard is default; deep expands candidate seeding and enrichment fanout.'),
+	planner_mode: BrandAuditPlannerModeSchema.optional().describe('Planner mode for staged discovery fanout. observe emits metrics; enforce applies candidate-backed signal caps.'),
+	brand_aliases: BrandAliasesArg,
+	candidate_domains: BrandCandidateDomainsArg,
 }).passthrough();
 
 /** brand_audit_status — poll status of an enqueued audit. */
