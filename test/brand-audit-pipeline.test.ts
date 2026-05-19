@@ -50,6 +50,44 @@ function rdapResult(registrar: string, registrant: string, registrarIanaId: stri
 }
 
 describe('runBrandAuditPipeline', () => {
+	it('persists partial discovery progress before discovery completes', async () => {
+		const stepStore = createMemoryBrandAuditStepStore();
+		const discoverBrandDomains = vi.fn(async (_seed: string, options?: { onProgress?: (event: unknown) => Promise<void> }) => {
+			await options?.onProgress?.({
+				name: 'signal_sweep',
+				status: 'started',
+				startedAtMs: 1_800_000_000_050,
+				detail: { signals: ['ns'], probedCandidates: 2 },
+			});
+			const partial = await stepStore.get('aud-progress', 'example.com', 'discovery');
+			expect(partial?.status).toBe('partial');
+			expect(partial?.payload).toMatchObject({
+				telemetry: {
+					events: [
+						{
+							name: 'signal_sweep',
+							status: 'started',
+							startedAtMs: 1_800_000_000_050,
+							detail: { signals: ['ns'], probedCandidates: 2 },
+						},
+					],
+				},
+			});
+			return discoveryResult('example.com', ['example.net']);
+		});
+		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Example Inc.'));
+
+		await runBrandAuditPipeline(
+			'example.com',
+			{ auditId: 'aud-progress', stepStore },
+			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup },
+		);
+
+		const completed = await stepStore.get('aud-progress', 'example.com', 'discovery');
+		expect(completed?.status).toBe('completed');
+		expect(discoverBrandDomains).toHaveBeenCalled();
+	});
+
 	it('reuses a completed discovery step and continues with RDAP enrichment', async () => {
 		const stepStore = createMemoryBrandAuditStepStore();
 		await stepStore.put({
@@ -150,7 +188,7 @@ describe('runBrandAuditPipeline', () => {
 		const candidate = discovery.findings.find((f) => f.metadata?.candidate === 'example.net');
 		candidate!.metadata = {
 			...candidate!.metadata,
-			signals: ['markov_gen', 'txt_verification'],
+			signals: ['ns', 'mx_overlap'],
 			combinedConfidence: 0.6,
 		};
 		const checkRdapLookup = vi.fn(async (domain: string) => {
@@ -266,6 +304,52 @@ describe('runBrandAuditPipeline', () => {
 			registrar: 'Unknown',
 			registrarSource: 'unknown',
 			registrarEnrichmentStatus: 'skipped_deadline',
+		});
+	});
+
+	it('threads discovery planner efficiency into the depth summary', async () => {
+		const discovery = discoveryResult('example.com', ['example.net']);
+		const summary = discovery.findings.find((finding) => finding.metadata?.summary === true);
+		summary!.metadata = {
+			...summary!.metadata,
+			candidateUniverse: { seeded: 12, probed: 12, surfaced: 1, dropped: {}, sources: {} },
+			signalStatus: { ns: { status: 'ok' } },
+			discoveryPerformance: {
+				efficiency: {
+					candidateSignalProbes: 30,
+					baselineCandidateSignalProbes: 120,
+					surfacedCandidates: 1,
+					probesPerSurfacedCandidate: 30,
+					plannerMode: 'enforce',
+				},
+				planner: {
+					mode: 'enforce',
+					wouldProbeBySignal: { ns: 12, dkim_key_reuse: 8 },
+					wouldDropBySignal: { dkim_key_reuse: 4 },
+				},
+			},
+		};
+		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Example Inc.'));
+
+		const result = await runBrandAuditPipeline(
+			'example.com',
+			{ auditId: 'aud-planner-efficiency' },
+			{ discoverBrandDomains: vi.fn().mockResolvedValue(discovery), checkRdapLookup },
+		);
+		const pipelineSummary = result.findings.find((finding) => finding.metadata?.summary === true);
+
+		expect(pipelineSummary?.metadata?.depth).toMatchObject({
+			plannerEfficiency: {
+				mode: 'enforce',
+				candidateSignalProbes: 30,
+				baselineCandidateSignalProbes: 120,
+				surfacedCandidates: 1,
+				wouldProbeBySignal: { ns: 12, dkim_key_reuse: 8 },
+				wouldDropBySignal: { dkim_key_reuse: 4 },
+			},
+			warnings: expect.arrayContaining([
+				'Discovery planner reduced candidate-backed probes by 75.0%; review recall guard metrics before treating coverage as exhaustive.',
+			]),
 		});
 	});
 

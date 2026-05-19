@@ -116,6 +116,48 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 		expect(parsed.getPageCount()).toBeGreaterThan(0);
 	});
 
+	it('renders discovery depth warnings into the PDF content stream', async () => {
+		const { renderBrandAuditPdf } = await import('../src/lib/brand-audit-pdf-render');
+		const baseSummary = {
+			category: 'brand_discovery' as const,
+			title: 'summary',
+			severity: 'info' as const,
+			detail: '',
+			metadata: { summary: true, target: 'example.com' },
+		};
+		const withWarnings: CheckResult = {
+			category: 'brand_discovery',
+			score: 100,
+			findings: [
+				{
+					...baseSummary,
+					metadata: {
+						summary: true,
+						target: 'example.com',
+						depth: {
+							warnings: [
+								'Candidate universe was truncated by cap (154 candidate(s) dropped); discovery coverage is incomplete.',
+							],
+						},
+					},
+				},
+			],
+		};
+		const withoutWarnings: CheckResult = {
+			category: 'brand_discovery',
+			score: 100,
+			findings: [baseSummary],
+		};
+		const options = { serverVersion: '2.21.4', now: () => new Date('2026-05-19T12:00:00Z').getTime() };
+
+		const aBytes = await renderBrandAuditPdf(withWarnings, 'example.com', options);
+		const bBytes = await renderBrandAuditPdf(withoutWarnings, 'example.com', options);
+
+		expect(aBytes.byteLength - bBytes.byteLength).toBeGreaterThan(40);
+		const parsed = await PDFDocument.load(aBytes);
+		expect(parsed.getPageCount()).toBeGreaterThan(0);
+	});
+
 	it('handles user-controlled strings without breaking the PDF (no lexer escape)', async () => {
 		const { renderBrandAuditPdf } = await import('../src/lib/brand-audit-pdf-render');
 		const malicious: CheckResult = {

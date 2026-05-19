@@ -149,6 +149,17 @@ const ENTERPRISE_AFFIX_TLDS = ['com', 'net', 'org', 'co', 'io', 'app', 'cloud', 
 const STANDARD_CANDIDATE_CAP = 50;
 const DEEP_CANDIDATE_CAP = 150;
 
+const SOURCE_PRIORITY: Record<CandidateSeedSource, number> = {
+	caller_candidate: 0,
+	tld_sweep: 10,
+	alias_tld_sweep: 20,
+	active_lookalike: 30,
+	enterprise_affix: 40,
+	markov: 50,
+};
+
+const TLD_PRIORITY = Array.from(new Set([...STANDARD_TLDS, ...DEEP_ONLY_TLDS]));
+
 function normalizeDomain(domain: string): string | null {
 	const lower = domain.trim().toLowerCase().replace(/\.+$/, '');
 	if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(lower)) return null;
@@ -166,6 +177,23 @@ function normalizeAlias(alias: string): string | null {
 	return lower.length >= 2 ? lower : null;
 }
 
+function sourcePriority(candidate: CandidateSeed): number {
+	return Math.min(...candidate.sources.map((source) => SOURCE_PRIORITY[source]));
+}
+
+function tldPriority(domain: string): number {
+	let best = Number.MAX_SAFE_INTEGER;
+	for (let i = 0; i < TLD_PRIORITY.length; i++) {
+		const tld = TLD_PRIORITY[i];
+		if (domain.endsWith('.' + tld)) best = Math.min(best, i);
+	}
+	return best;
+}
+
+function compareCandidateProbePriority(a: CandidateSeed, b: CandidateSeed): number {
+	return sourcePriority(a) - sourcePriority(b) || tldPriority(a.domain) - tldPriority(b.domain) || a.domain.localeCompare(b.domain);
+}
+
 export function buildBrandCandidateUniverse(input: {
 	seedDomain: string;
 	brandAliases?: string[];
@@ -180,7 +208,6 @@ export function buildBrandCandidateUniverse(input: {
 	const tlds = depth === 'deep' ? [...STANDARD_TLDS, ...DEEP_ONLY_TLDS] : STANDARD_TLDS;
 	const cap = depth === 'deep' ? DEEP_CANDIDATE_CAP : STANDARD_CANDIDATE_CAP;
 	const byDomain = new Map<string, CandidateSeed>();
-	const dropped = { cap: 0 };
 
 	function add(domain: string, source: CandidateSeedSource, reason: string): void {
 		const normalized = normalizeDomain(domain);
@@ -191,18 +218,11 @@ export function buildBrandCandidateUniverse(input: {
 			existing.reasons.push(reason);
 			return;
 		}
-		if (byDomain.size >= cap) {
-			dropped.cap++;
-			return;
-		}
 		byDomain.set(normalized, { domain: normalized, sources: [source], reasons: [reason] });
 	}
 
-	// Source priority order (highest signal first) — matters when the cap
-	// truncates: caller_candidate and active_lookalike carry direct human or
-	// DNS-active evidence; tld_sweep / alias_tld_sweep target the brand name
-	// directly; enterprise_affix generates noisy `<brand>+<affix>` permutations
-	// that swamp lower-priority sources; markov is purely speculative.
+	// Collect first, rank/cap later. Exact brand TLDs must not get crowded out
+	// by noisy active/generated candidates on tier-1 brands.
 	for (const domain of input.candidateDomains ?? []) add(domain, 'caller_candidate', 'caller supplied candidate');
 	for (const domain of input.activeLookalikes ?? []) add(domain, 'active_lookalike', 'active lookalike candidate');
 
@@ -234,7 +254,9 @@ export function buildBrandCandidateUniverse(input: {
 		markov: 0,
 		active_lookalike: 0,
 	};
-	const candidates = Array.from(byDomain.values()).sort((a, b) => a.domain.localeCompare(b.domain));
+	const allCandidates = Array.from(byDomain.values()).sort(compareCandidateProbePriority);
+	const candidates = allCandidates.slice(0, cap);
+	const dropped = { cap: Math.max(0, allCandidates.length - candidates.length) };
 	for (const candidate of candidates) {
 		for (const source of candidate.sources) sourceCounts[source]++;
 	}

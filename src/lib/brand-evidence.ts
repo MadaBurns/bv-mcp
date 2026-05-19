@@ -104,6 +104,8 @@ export function clearsOwnershipGate(
 
 	const tiers = distinct.map((observation) => evidenceTier(observation.signal, observation.metadata));
 	if (tiers.includes('strong')) return true;
-	if (tiers.includes('medium') && distinct.length >= 2) return true;
+	const nonSeed = distinct.filter((observation) => !isSeedObservation(observation));
+	const nonSeedTiers = nonSeed.map((observation) => evidenceTier(observation.signal, observation.metadata));
+	if (nonSeedTiers.filter((tier) => tier === 'medium').length >= 2) return true;
 	return false;
 }

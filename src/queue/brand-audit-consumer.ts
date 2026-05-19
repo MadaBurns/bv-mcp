@@ -56,6 +56,7 @@ export const BrandAuditQueueMessageSchema = z.object({
 	format: z.enum(['json', 'markdown', 'both']),
 	min_confidence: z.number().min(0).max(1).optional(),
 	depth: z.enum(['standard', 'deep']).optional(),
+	planner_mode: z.enum(['off', 'observe', 'enforce']).optional(),
 	brand_aliases: z.array(z.string().min(2).max(64)).max(20).optional(),
 	candidate_domains: z.array(z.string().min(1).max(253)).max(250).optional(),
 	/** Set when the message originated from the watch cron — drives post-completion diff/webhook. */
@@ -247,6 +248,7 @@ export async function processBrandAuditMessage(
 				format: message.format,
 				min_confidence: message.min_confidence,
 				depth: message.depth,
+				planner_mode: message.planner_mode,
 				brand_aliases: message.brand_aliases,
 				candidate_domains: message.candidate_domains,
 				signal: controller.signal,

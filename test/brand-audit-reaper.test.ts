@@ -5,7 +5,7 @@
  * rows the consumer's 300s cap doesn't unwedge.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
 	reapStuckBrandAudits,
 	STUCK_TARGET_THRESHOLD_MS,

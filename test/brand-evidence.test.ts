@@ -21,6 +21,27 @@ describe('brand evidence tier policy', () => {
 		).toBe(false);
 	});
 
+	it('does not let generated lookalike seeds corroborate a single medium ownership signal', () => {
+		expect(
+			clearsOwnershipGate(
+				[
+					{ signal: 'markov_gen' },
+					{ signal: 'ns' },
+				],
+				{ callerAsserted: false },
+			),
+		).toBe(false);
+		expect(
+			clearsOwnershipGate(
+				[
+					{ signal: 'active_lookalike' },
+					{ signal: 'ns' },
+				],
+				{ callerAsserted: false },
+			),
+		).toBe(false);
+	});
+
 	it('lets deterministic TXT verification clear ownership alone', () => {
 		expect(evidenceTier('txt_verification')).toBe('strong');
 		expect(clearsOwnershipGate([{ signal: 'txt_verification' }], { callerAsserted: false })).toBe(true);
@@ -31,7 +52,7 @@ describe('brand evidence tier policy', () => {
 		expect(clearsOwnershipGate([{ signal: 'dkim_key_reuse' }], { callerAsserted: false })).toBe(true);
 	});
 
-	it('lets weak evidence clear only when corroborated by medium or strong evidence', () => {
+	it('does not let one medium signal plus broad weak MX platform clear ownership', () => {
 		expect(
 			clearsOwnershipGate(
 				[
@@ -40,7 +61,7 @@ describe('brand evidence tier policy', () => {
 				],
 				{ callerAsserted: false },
 			),
-		).toBe(true);
+		).toBe(false);
 		expect(
 			clearsOwnershipGate(
 				[
@@ -50,6 +71,18 @@ describe('brand evidence tier policy', () => {
 				{ callerAsserted: false },
 			),
 		).toBe(false);
+	});
+
+	it('lets two medium non-seed signals clear ownership', () => {
+		expect(
+			clearsOwnershipGate(
+				[
+					{ signal: 'mx_platform', metadata: { sharedMxPlatform: 'proofpoint' } },
+					{ signal: 'ns' },
+				],
+				{ callerAsserted: false },
+			),
+		).toBe(true);
 	});
 
 	it('lets caller asserted candidates clear when any real observation exists', () => {

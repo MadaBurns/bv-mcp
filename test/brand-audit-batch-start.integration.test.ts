@@ -222,7 +222,7 @@ describe('brandAuditBatchStart', () => {
 
 		await brandAuditBatchStart(
 			['example.com'],
-			{ depth: 'deep', brand_aliases: ['examplecorp'], candidate_domains: ['example.net'] },
+			{ depth: 'deep', brand_aliases: ['examplecorp'], candidate_domains: ['example.net'], planner_mode: 'enforce' },
 			'pk',
 			deps,
 		);
@@ -232,6 +232,7 @@ describe('brandAuditBatchStart', () => {
 				depth: 'deep',
 				brand_aliases: ['examplecorp'],
 				candidate_domains: ['example.net'],
+				planner_mode: 'enforce',
 			}),
 			{ contentType: 'json' },
 		);

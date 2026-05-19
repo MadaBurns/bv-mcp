@@ -7,11 +7,11 @@
  *
  * Rule order (first match wins):
  *   1. Subdomain of target → consolidated, 'Organizational Subdomain'
- *   2. Strong infra signal (san | ns | dkim_key_reuse) → consolidated
+ *   2. Strong deterministic ownership signal (DKIM, redirect, SPF, CNAME, recursive SAN, app/bounty declarations) → consolidated
  *   3. High-confidence dmarc_rua alone → consolidated
- *   4. Same normalized registrar family + ≥2 corroborating signals → consolidated
+ *   4. Same normalized registrar family + ≥2 non-generated corroborating signals → consolidated
  *   5. Registrar source is redacted/notfound + no strong signals → indeterminate
- *   6. High confidence + dmarc_rua-only on different registrar → shadowIt
+ *   6. High confidence + mail-policy delegation on different registrar → shadowIt
  *   7. Medium confidence + no strong signals → indeterminate
  *   8. Low confidence + no strong signals → impersonation
  */
@@ -75,8 +75,16 @@ export interface Classification {
 	reasons: string[];
 }
 
-/** Strong infrastructure signals — sharing any of these is near-deterministic ownership evidence. */
-const STRONG_INFRA_SIGNALS = new Set(['san', 'ns', 'dkim_key_reuse']);
+/** Strong ownership signals — sharing any of these is near-deterministic operational control evidence. */
+const STRONG_INFRA_SIGNALS = new Set([
+	'san_recursive',
+	'dkim_key_reuse',
+	'http_redirect',
+	'spf_include',
+	'cname_alignment',
+	'app_links',
+	'bounty_scope',
+]);
 
 /** Confidence threshold above which dmarc_rua alone is consolidation evidence. */
 const DMARC_CONSOLIDATION_THRESHOLD = 0.85;
@@ -147,13 +155,20 @@ function hasStrongInfraSignal(signals: string[]): string[] {
 	return signals.filter((s) => STRONG_INFRA_SIGNALS.has(s));
 }
 
+function isGeneratedSeedSignal(signal: string): boolean {
+	return signal === 'markov_gen' || signal === 'active_lookalike';
+}
+
+function nonGeneratedSignals(signals: string[]): string[] {
+	return signals.filter((signal) => !isGeneratedSeedSignal(signal));
+}
+
 /**
  * Pure shadowIt predicate: candidate is plausibly operated by the brand but
  * sits on disjoint DNS/cert infrastructure, with cross-channel evidence
  * (shared TXT verification token, shared mail platform) pointing back at
- * the target. Strong-infra signals (san/ns/dkim_key_reuse) are handled by
- * the earlier consolidated rules — this branch fires only when those are
- * absent.
+ * the target. Deterministic ownership signals are handled by the earlier
+ * consolidated rules — this branch fires only when those are absent.
  *
  * Returns the reason strings that drove the match (empty when no match).
  */
@@ -181,7 +196,7 @@ export function isShadowIt(c: CandidateInput): string[] {
 		if (corroboratedBySignal || corroboratedBySimilarity || corroboratedByCaller) {
 			reasons.push(`shared MX platform (${c.sharedMxPlatform})`);
 			if (corroboratedByCaller) reasons.push('caller asserted candidate domain');
-			if (corroboratedBySimilarity) reasons.push(`lookalike score ${(c.lookalikeScore ?? 0).toFixed(2)} corroborates weak MX overlap`);
+			if (corroboratedBySimilarity) reasons.push(`lookalike score ${(c.lookalikeScore ?? 0).toFixed(2)} corroborates shared MX platform`);
 		}
 	}
 	return reasons;
@@ -227,6 +242,20 @@ function signalLabel(s: string): string {
 			return 'NS overlap';
 		case 'dkim_key_reuse':
 			return 'shared DKIM key';
+		case 'http_redirect':
+			return 'HTTP redirect to target';
+		case 'spf_include':
+			return 'SPF includes target policy';
+		case 'spf_include_seed':
+			return 'seed SPF delegates to candidate';
+		case 'cname_alignment':
+			return 'CNAME alignment';
+		case 'san_recursive':
+			return 'recursive SAN confirmation';
+		case 'app_links':
+			return 'brand app-link declaration';
+		case 'bounty_scope':
+			return 'brand-declared bug bounty scope';
 		case 'dmarc_rua':
 			return 'DMARC RUA reports to target';
 		default:
@@ -255,7 +284,7 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 		return { bucket: 'consolidated', confidenceTier: tier, reasons };
 	}
 
-	// Rule 2: Strong infrastructure signal — SAN co-cert, shared NS, or DKIM key reuse.
+	// Rule 2: Strong deterministic ownership signal.
 	const strongSignals = hasStrongInfraSignal(c.signals);
 	if (strongSignals.length > 0) {
 		reasons.push(...strongSignals.map(signalLabel));
@@ -268,16 +297,22 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 		return { bucket: 'consolidated', confidenceTier: tier, reasons };
 	}
 
-	// Rule 4: Same normalized registrar family + ≥2 corroborating signals.
 	const candFamily = normalizeRegistrar(c.registrar);
+
+	if (c.evidenceObservations && !clearsOwnershipGate(c.evidenceObservations, { callerAsserted: c.callerAsserted })) {
+		reasons.push('weak evidence did not clear ownership gate');
+		return { bucket: 'indeterminate', confidenceTier: tier, reasons };
+	}
+
+	// Rule 4: Same normalized registrar family + ≥2 non-generated corroborating signals.
 	if (
 		sameRegistrarFamily(
 			{ name: c.registrar, ianaId: c.registrarIanaId },
 			{ name: t.registrar, ianaId: t.registrarIanaId },
 		) &&
-		c.signals.length >= 2
+		nonGeneratedSignals(c.signals).length >= 2
 	) {
-		reasons.push(`shared registrar family (${candFamily}) + ${c.signals.length} corroborating signals`);
+		reasons.push(`shared registrar family (${candFamily}) + ${nonGeneratedSignals(c.signals).length} corroborating signals`);
 		return { bucket: 'consolidated', confidenceTier: tier, reasons };
 	}
 
@@ -286,9 +321,9 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 	// (redacted → indeterminate) and Rule 4.6 (impersonation), per the task spec:
 	// a typosquat with shared evidence is more interesting as shadowIt.
 	const shadowReasons = isShadowIt(c);
-	if (c.evidenceObservations && !clearsOwnershipGate(c.evidenceObservations, { callerAsserted: c.callerAsserted })) {
-		reasons.push('weak evidence did not clear ownership gate');
-		return { bucket: 'indeterminate', confidenceTier: tier, reasons };
+	if (c.confidence >= SHADOW_IT_CONFIDENCE_THRESHOLD && c.signals.includes('spf_include_seed')) {
+		reasons.push(signalLabel('spf_include_seed'));
+		return { bucket: 'shadowIt', confidenceTier: tier, reasons };
 	}
 	if (shadowReasons.length > 0) {
 		reasons.push(...shadowReasons);

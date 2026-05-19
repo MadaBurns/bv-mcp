@@ -207,16 +207,18 @@ const TOOL_REGISTRY: Record<
 			const signals = (args.signals as string[] | undefined)?.slice().sort().join(',') ?? 'all';
 			const minConf = typeof args.min_confidence === 'number' ? args.min_confidence : 0.5;
 			const depth = typeof args.depth === 'string' ? args.depth : 'standard';
+			const plannerMode = typeof args.planner_mode === 'string' ? args.planner_mode : 'observe';
 			const aliases = (args.brand_aliases as string[] | undefined) ?? [];
 			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
 			const aliasHash = aliases.length === 0 ? '0' : `${aliases.length}:${aliases.slice().sort().join('|').slice(0, 64)}`;
 			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
-			return `discover_brand:${signals}:d${depth}:a${aliasHash}:c${candHash}:m${minConf}`;
+			return `discover_brand:${signals}:d${depth}:p${plannerMode}:a${aliasHash}:c${candHash}:m${minConf}`;
 		},
 		execute: (d, args, ro) =>
 			discoverBrandDomains(d, {
 				signals: args.signals as Parameters<typeof discoverBrandDomains>[1] extends infer O ? (O extends { signals?: infer S } ? S : undefined) : undefined,
 				depth: args.depth as 'standard' | 'deep' | undefined,
+				planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
 				brand_aliases: args.brand_aliases as string[] | undefined,
 				candidate_domains: args.candidate_domains as string[] | undefined,
 				dkim_selectors: args.dkim_selectors as string[] | undefined,
@@ -230,17 +232,19 @@ const TOOL_REGISTRY: Record<
 			const minConf = typeof args.min_confidence === 'number' ? args.min_confidence : 0.5;
 			const fmt = typeof args.format === 'string' ? args.format : 'both';
 			const depth = typeof args.depth === 'string' ? args.depth : 'standard';
+			const plannerMode = typeof args.planner_mode === 'string' ? args.planner_mode : 'observe';
 			const aliases = (args.brand_aliases as string[] | undefined) ?? [];
 			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
 			const aliasHash = aliases.length === 0 ? '0' : `${aliases.length}:${aliases.slice().sort().join('|').slice(0, 64)}`;
 			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
-			return `brand_audit_single:${fmt}:d${depth}:a${aliasHash}:c${candHash}:m${minConf}`;
+			return `brand_audit_single:${fmt}:d${depth}:p${plannerMode}:a${aliasHash}:c${candHash}:m${minConf}`;
 		},
 		execute: (d, args, ro) =>
 			brandAuditSingle(d, {
 				format: args.format as 'json' | 'markdown' | 'both' | undefined,
 				min_confidence: args.min_confidence as number | undefined,
 				depth: args.depth as 'standard' | 'deep' | undefined,
+				planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
 				brand_aliases: args.brand_aliases as string[] | undefined,
 				candidate_domains: args.candidate_domains as string[] | undefined,
 			}, {
@@ -276,6 +280,7 @@ const TOOL_REGISTRY: Record<
 					format: args.format as 'json' | 'markdown' | 'both' | undefined,
 					min_confidence: args.min_confidence as number | undefined,
 					depth: args.depth as 'standard' | 'deep' | undefined,
+					planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
 					brand_aliases: args.brand_aliases as string[] | undefined,
 					candidate_domains: args.candidate_domains as string[] | undefined,
 				},

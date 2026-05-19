@@ -43,6 +43,7 @@ interface BrandAuditTargetRow {
 	completed_at: number | null;
 	error: string | null;
 	pdf_r2_key: string | null;
+	result_json: string | null;
 }
 
 function errorResult(flag: string, message: string, extra: Record<string, unknown> = {}): CheckResult {
@@ -73,7 +74,7 @@ export async function brandAuditStatus(
 		if (audit && audit.owner_id === ownerId) {
 			const all = await deps.db
 				.prepare(
-					'SELECT audit_id, target, status, created_at, completed_at, error, pdf_r2_key FROM brand_audit_targets WHERE audit_id = ? ORDER BY created_at ASC, target ASC',
+					'SELECT audit_id, target, status, created_at, completed_at, error, pdf_r2_key, result_json FROM brand_audit_targets WHERE audit_id = ? ORDER BY created_at ASC, target ASC',
 				)
 				.bind(auditId)
 				.all<BrandAuditTargetRow>();
@@ -93,11 +94,20 @@ export async function brandAuditStatus(
 
 	const now = (deps.now ?? Date.now)();
 	const progress = `${audit.completed_targets}/${audit.total_targets}`;
+	const renderedTargets = targets.map((t) => {
+		const hasResultJson = typeof t.result_json === 'string' && t.result_json.length > 0;
+		const renderedStatus: BrandAuditStatus = audit.status === 'completed' && t.status !== 'failed' && hasResultJson ? 'completed' : t.status;
+		return {
+			row: t,
+			status: renderedStatus,
+			completedAt: renderedStatus === 'completed' ? t.completed_at ?? audit.completed_at : t.completed_at,
+		};
+	});
 	const targetStatusCounts = {
-		queued: targets.filter((t) => t.status === 'queued').length,
-		running: targets.filter((t) => t.status === 'running').length,
-		completed: targets.filter((t) => t.status === 'completed').length,
-		failed: targets.filter((t) => t.status === 'failed').length,
+		queued: renderedTargets.filter((t) => t.status === 'queued').length,
+		running: renderedTargets.filter((t) => t.status === 'running').length,
+		completed: renderedTargets.filter((t) => t.status === 'completed').length,
+		failed: renderedTargets.filter((t) => t.status === 'failed').length,
 	};
 	const ageMs = Math.max(0, now - audit.created_at);
 	const updatedAgeMs = Math.max(0, now - audit.updated_at);
@@ -125,13 +135,13 @@ export async function brandAuditStatus(
 			updatedAgeMs,
 			targetStatusCounts,
 			warnings,
-			targets: targets.map((t) => ({
-				target: t.target,
-				status: t.status,
-				createdAt: t.created_at,
-				completedAt: t.completed_at,
-				error: t.error,
-				hasPdf: t.pdf_r2_key !== null,
+			targets: renderedTargets.map(({ row, status, completedAt }) => ({
+				target: row.target,
+				status,
+				createdAt: row.created_at,
+				completedAt,
+				error: row.error,
+				hasPdf: row.pdf_r2_key !== null,
 			})),
 		},
 	);

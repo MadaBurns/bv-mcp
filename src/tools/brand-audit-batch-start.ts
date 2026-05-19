@@ -44,6 +44,7 @@ export interface BrandAuditBatchStartOptions {
 	format?: BrandAuditFormat;
 	min_confidence?: number;
 	depth?: 'standard' | 'deep';
+	planner_mode?: 'off' | 'observe' | 'enforce';
 	brand_aliases?: string[];
 	candidate_domains?: string[];
 }
@@ -61,6 +62,7 @@ export interface BrandAuditQueueMessage {
 	format: BrandAuditFormat;
 	min_confidence?: number;
 	depth?: 'standard' | 'deep';
+	planner_mode?: 'off' | 'observe' | 'enforce';
 	brand_aliases?: string[];
 	candidate_domains?: string[];
 }
@@ -190,6 +192,7 @@ export async function brandAuditBatchStart(
 					format,
 					min_confidence: options.min_confidence,
 					depth: options.depth,
+					planner_mode: options.planner_mode,
 					brand_aliases: options.brand_aliases,
 					candidate_domains: options.candidate_domains,
 				},

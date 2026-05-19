@@ -34,6 +34,7 @@ import {
     buildLocalDiscoveryOptions,
     parseReportGenerationEnv,
 } from './helpers/report-generation-options';
+import { fetchBrandAuditReportWithRetry } from './helpers/brand-audit-report-fetch';
 
 const CONSUMER_REGISTRARS = [
     'godaddy', 'namecheap', 'hostinger', 'tucows', 'enom', 'squarespace', 
@@ -84,6 +85,7 @@ describe('report generation option plumbing', () => {
             brand_aliases: ['example corp', 'example-pay'],
         });
     });
+
 });
 
 describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
@@ -200,10 +202,14 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
             }
 
             console.log(`[3/4] Fetching report and classifying candidates...`);
-            const envelope = await mcp.callToolStructured<BrandAuditReportEnvelope>('brand_audit_get_report', { auditId, target });
-            const wrapperSummary = envelope.findings.find(f => f.metadata?.summary === true);
-            const inner = wrapperSummary?.metadata?.result;
-            if (!inner) throw new Error('brand_audit_get_report missing embedded result');
+            const { result: inner } = await fetchBrandAuditReportWithRetry({
+                auditId,
+                target,
+                callTool: (args) => mcp.callToolStructured<BrandAuditReportEnvelope>('brand_audit_get_report', args),
+                onRetry: (attempt) => {
+                    console.log(`  retry ${attempt}/5 for brand_audit_get_report (completed row not readable yet)`);
+                },
+            });
 
             const innerSummary = inner.findings.find(f => f.metadata?.summary === true);
             if (typeof innerSummary?.metadata?.targetRegistrar === 'string') {
