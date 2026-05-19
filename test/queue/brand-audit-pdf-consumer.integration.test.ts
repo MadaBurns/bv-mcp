@@ -87,23 +87,34 @@ describe('processBrandAuditPdfMessage', () => {
 			target: { result_json: JSON.stringify(fakeResult()), pdf_r2_key: null },
 		});
 		const { bucket, writes } = makeMockR2();
+		// 2026-05-19 renderer contract: returns a JSON envelope with a signed URL;
+		// brand-audit-pdf then fetches that URL via globalThis.fetch for the bytes.
+		const SIGNED_URL = 'https://renderer-r2.example/abc.pdf';
 		const renderer = {
-			fetch: vi.fn().mockResolvedValue(new Response(fakePdf(), { status: 200, headers: { 'Content-Type': 'application/pdf' } })),
+			fetch: vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ success: true, url: SIGNED_URL }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+			),
 		};
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = vi.fn().mockResolvedValue(new Response(fakePdf(), { status: 200, headers: { 'Content-Type': 'application/pdf' } })) as never;
 
-		const verdict = await processBrandAuditPdfMessage(
-			{ auditId: 'aud-1', target: 'apple.com', format: 'both' },
-			{ db, bucket, renderer, serverVersion: '2.20.0', now: () => 0 } as BrandAuditPdfConsumerDeps,
-		);
+		try {
+			const verdict = await processBrandAuditPdfMessage(
+				{ auditId: 'aud-1', target: 'apple.com', format: 'both' },
+				{ db, bucket, renderer, serverVersion: '2.20.0', now: () => 0 } as BrandAuditPdfConsumerDeps,
+			);
 
-		expect(verdict).toBe('ack');
-		expect(writes).toHaveLength(1);
-		expect(writes[0].key).toBe('audits/aud-1/apple.com.pdf');
-		expect(writes[0].bytes.byteLength).toBeGreaterThan(0);
+			expect(verdict).toBe('ack');
+			expect(writes).toHaveLength(1);
+			expect(writes[0].key).toBe('audits/aud-1/apple.com.pdf');
+			expect(writes[0].bytes.byteLength).toBeGreaterThan(0);
 
-		const update = calls.find((c) => c.sql.includes('UPDATE brand_audit_targets') && c.sql.includes('pdf_r2_key'));
-		expect(update).toBeDefined();
-		expect(update?.binds).toContain('audits/aud-1/apple.com.pdf');
+			const update = calls.find((c) => c.sql.includes('UPDATE brand_audit_targets') && c.sql.includes('pdf_r2_key'));
+			expect(update).toBeDefined();
+			expect(update?.binds).toContain('audits/aud-1/apple.com.pdf');
+		} finally {
+			globalThis.fetch = realFetch;
+		}
 	});
 
 	it('is idempotent: a duplicate delivery with pdf_r2_key already set ack()s without re-rendering', async () => {
