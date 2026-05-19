@@ -67,7 +67,8 @@
 		"scripts/repo-safety/scanner-core.mjs",
 		"scripts/pressure-chaos-test.mjs",
 		"test/audits/repo-safety-scanner.audit.test.ts",
-		"test/audits/no-tracked-secrets.audit.test.ts"
+		"test/audits/no-tracked-secrets.audit.test.ts",
+		"scripts/repo-safety/policy.json"
 	],
 	"allowedPathPrefixes": [
 		".github/",
