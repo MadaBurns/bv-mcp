@@ -38,9 +38,28 @@
 		".yaml",
 		".yml"
 	],
-	"allowedEmailDomains": ["example.com", "example.test", "example.invalid", "blackveilsecurity.com"],
-	"allowedDomainSuffixes": ["example.com", "example.net", "example.org", "example.test", "example.invalid", "localhost", "blackveilsecurity.com"],
-	"allowedInternalHostnames": ["localhost.localdomain", "renderer.internal", "quota.internal"],
+	"allowedEmailDomains": [
+		"example.com",
+		"example.test",
+		"example.invalid",
+		"blackveilsecurity.com"
+	],
+	"allowedDomainSuffixes": [
+		"example.com",
+		"example.net",
+		"example.org",
+		"example.test",
+		"example.invalid",
+		"localhost",
+		"blackveilsecurity.com"
+	],
+	"allowedInternalHostnames": [
+		"localhost.localdomain",
+		"renderer.internal",
+		"quota.internal",
+		"bv-enterprise.internal.invalid",
+		"placeholder.invalid"
+	],
 	"allowedPaths": [
 		".gitleaks.toml",
 		"CHANGELOG.md",
