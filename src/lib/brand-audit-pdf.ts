@@ -36,6 +36,14 @@ export interface RenderBrandAuditPdfOptions {
 	renderer: BrandAuditRendererBinding;
 	/** Server version for the PDF footer. Threaded from SERVER_VERSION at call time. */
 	serverVersion: string;
+	/**
+	 * Admin API key for the renderer. The renderer's POST /pdf/html requires
+	 * `Authorization: Bearer <ADMIN_API_KEY>` (validateAuth in
+	 * bv-web/cloudflare/browser-renderer/src/router.ts). Threaded from the
+	 * `BV_BROWSER_RENDERER_KEY` wrangler secret. When absent, the renderer
+	 * returns 401 and the consumer retry-loops to exhaustion.
+	 */
+	rendererApiKey?: string;
 	/** Clock override for tests (returns ms since epoch). Defaults to Date.now(). */
 	now?: () => number;
 	/** Optional inline logo. Worker-deployed renderer may instead inject this at fetch time. */
@@ -69,9 +77,11 @@ export async function renderBrandAuditPdf(
 	// semantic fit — brand-audit is an intelligence-gathering surface and shares
 	// the rate-limit bucket with other intel callers. If/when bv-web adds an
 	// explicit `brand-audit` entry to KNOWN_CALLERS, switch to that.
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+	if (options.rendererApiKey) headers.Authorization = `Bearer ${options.rendererApiKey}`;
 	const response = await options.renderer.fetch('https://renderer.internal/pdf/html', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers,
 		body: JSON.stringify({ html, callerId: 'intel-gateway' }),
 	});
 

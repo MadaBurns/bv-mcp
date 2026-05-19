@@ -83,6 +83,7 @@ describe('renderBrandAuditPdf', () => {
 				renderer,
 				now: () => new Date('2026-05-15T00:00:00Z').getTime(),
 				serverVersion: '2.20.0',
+				rendererApiKey: 'test-admin-key',
 			});
 
 			expect(bytes).toBeInstanceOf(Uint8Array);
@@ -94,6 +95,8 @@ describe('renderBrandAuditPdf', () => {
 			expect(url, '/pdf/html endpoint is the correct contract').toMatch(/\/pdf\/html$/);
 			const init = (callArgs[1] ?? {}) as { method?: string; headers?: Record<string, string>; body?: string };
 			expect(init.method).toBe('POST');
+			// Renderer's validateAuth() requires Bearer <ADMIN_API_KEY>.
+			expect(init.headers?.Authorization).toBe('Bearer test-admin-key');
 			const body = JSON.parse(init.body ?? '{}') as { html: string; callerId: string };
 			// callerId must be a member of the renderer's KNOWN_CALLERS set
 			// (bv-web/cloudflare/browser-renderer/src/utils/validation.ts).
