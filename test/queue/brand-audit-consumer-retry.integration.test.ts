@@ -75,9 +75,11 @@ function makeMockD1(initial: { target: AuditTargetRow & { result_json?: string |
 							targetRow.status = 'running';
 							return { success: true, meta: { changes: 1 } };
 						}
-						// Retry-failure preservation path — error-only UPDATE.
-						if (sql.includes('SET error = ?, completed_at = ? WHERE')) {
+						// Retry-failure preservation path — flips status back to
+						// completed, writes error, preserves result_json.
+						if (sql.includes("SET status = 'completed', error = ?, completed_at = ?")) {
 							const [errorVal] = binds as [string | null];
+							targetRow.status = 'completed';
 							targetRow.error = errorVal;
 							return { success: true, meta: { changes: 1 } };
 						}
@@ -254,6 +256,13 @@ describe('processBrandAuditMessage — Phase 2b retry orchestration', () => {
 		// customer's first-pass result. The error column may capture the retry
 		// failure, but result_json stays intact.
 		expect(final.result_json, 'original result_json must survive a retry failure').toBe(originalResultJson);
+		// Bugfix surfaced 2026-05-19 (audit c487486a / brand-theta.com): the atomic
+		// claim flips status completed→running before the retry pipeline runs.
+		// If the retry throws, status MUST be restored to 'completed' — otherwise
+		// the row sits stuck in 'running' indefinitely (until the cron reaper at
+		// 15min) and brand_audit_status reports the audit as still in progress
+		// even though it's logically done.
+		expect(final.status, 'retry failure must flip status back to completed').toBe('completed');
 	});
 
 	it('retry message (retry_attempt=1) skips counter-tick and force_refreshes the orchestrator', async () => {

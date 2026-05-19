@@ -290,11 +290,14 @@ export async function processBrandAuditMessage(
 			// Phase 2b: a retry pass that throws MUST NOT destroy the original
 			// pass's result_json. The first pass already produced a usable result;
 			// the retry was only meant to enrich the lookup_failed rows. So we
-			// record the retry failure in the `error` column and leave status +
-			// result_json as they were.
+			// preserve result_json, record the retry failure in `error`, AND flip
+			// status back to 'completed' (the atomic claim earlier flipped it
+			// completed→running; without restoring it the row sits stuck in
+			// 'running' until the cron reaper sweeps at 15min). Surfaced by audit
+			// c487486a-brand-theta.com on 2026-05-19.
 			await deps.db
 				.prepare(
-					'UPDATE brand_audit_targets SET error = ?, completed_at = ? WHERE audit_id = ? AND target = ?',
+					"UPDATE brand_audit_targets SET status = 'completed', error = ?, completed_at = ? WHERE audit_id = ? AND target = ?",
 				)
 				.bind(errorString, now, message.auditId, message.target)
 				.run();
