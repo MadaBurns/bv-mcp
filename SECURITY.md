@@ -60,6 +60,17 @@ We ask that you allow up to **90 days** from the initial report before public di
 
 We will credit reporters in the security advisory unless you prefer to remain anonymous.
 
+## Exposure Response
+
+If a credential, real customer data, internal infrastructure detail, generated report, or proprietary planning artifact reaches GitHub:
+
+1. Rotate affected credentials and revoke exposed tokens before cleanup work begins.
+2. Remove the data from the current tree, then rewrite Git history for every affected branch or tag.
+3. Open a GitHub Support request to purge cached views, pull request refs, and other retained PR refs that history rewriting cannot remove.
+4. Identify forks made after the exposure and ask fork owners to delete or rewrite the affected fork history.
+5. Treat generated PDFs, reports, CSC outputs, tenant SQL, and `.dev/` material as sensitive even when they contain partial or test-looking data.
+6. Document the incident privately, including rotation evidence, rewritten refs, GitHub Support ticket links, and fork remediation status.
+
 ## Contact
 
 - **Security reports:** [security@blackveilsecurity.com](mailto:security@blackveilsecurity.com)

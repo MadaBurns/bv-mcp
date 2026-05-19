@@ -19,6 +19,7 @@ import { scoreWindow } from './lib/fuzzing-detector';
 import { readWindow } from './lib/fuzzing-counter';
 import { buildFuzzingAlertPayload } from './schemas/alerting';
 import { FUZZ_THRESHOLDS } from './lib/config';
+import { reapStuckBrandAudits } from './lib/brand-audit-reaper';
 
 interface AnomalyRow {
 	total_calls?: number;
@@ -40,6 +41,7 @@ export interface ScheduledEnv {
 	ALERT_RATE_LIMIT_THRESHOLD?: string;
 	ALERT_LOOKBACK_MINUTES?: string;
 	RATE_LIMIT?: KVNamespace;
+	BRAND_AUDIT_DB?: D1Database;
 }
 
 const DEFAULT_ERROR_THRESHOLD = 5;
@@ -49,6 +51,38 @@ const DEFAULT_LOOKBACK_MINUTES = 15;
 
 /** Main scheduled handler — called by Cron Trigger. */
 export async function handleScheduled(env: ScheduledEnv): Promise<void> {
+	// Brand-audit reaper — safety-net for `running` rows the consumer can't
+	// self-flip. The consumer's catch handler runs an `UPDATE ... status='failed'`
+	// on budget exhaustion, but Cloudflare can kill the worker mid-flight when
+	// the unbudgeted DNS fan-out blows the per-request CPU budget, and the
+	// failure-flip never commits. This cron is the ONLY thing that can
+	// resurrect those rows. Runs every 15 min, idempotent (WHERE status='running'
+	// AND created_at < threshold), bounded MAX_REAP_PER_TICK.
+	if (env.BRAND_AUDIT_DB) {
+		try {
+			const reap = await reapStuckBrandAudits({ db: env.BRAND_AUDIT_DB });
+			if (reap.reapedTargets > 0 || reap.scannedRows > 0) {
+				logEvent({
+					timestamp: new Date().toISOString(),
+					category: 'scheduled',
+					result: 'brand_audit_reaper',
+					severity: reap.skippedOverCap ? 'warn' : 'info',
+					details: {
+						scanned: reap.scannedRows,
+						reaped: reap.reapedTargets,
+						finalized: reap.finalizedAudits,
+						skippedOverCap: reap.skippedOverCap,
+					},
+				});
+			}
+		} catch (err) {
+			logError(err instanceof Error ? err : String(err), {
+				category: 'scheduled',
+				result: 'brand_audit_reaper_failed',
+			});
+		}
+	}
+
 	if (!env.ALERT_WEBHOOK_URL) return;
 	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return;
 

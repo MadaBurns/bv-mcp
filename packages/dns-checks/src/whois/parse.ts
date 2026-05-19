@@ -12,6 +12,7 @@ export const MAX_RESPONSE_BYTES = 64 * 1024;
 
 export interface WhoisParseResult {
 	registrar: string | null;
+	registrarIanaId: string | null;
 	/** True when the registry explicitly indicated no record exists. */
 	notFound: boolean;
 	/** True when the registry returned data but redacted the registrar (e.g. DENIC). */
@@ -38,6 +39,9 @@ export function parseWhoisResponse(input: string): WhoisParseResult {
 	const denicRedacted = /denic whois service.*doesn't disclose|disclose any information concerning the domain holder/i.test(truncated);
 
 	let registrar: string | null = null;
+	let registrarName: string | null = null;
+	let registrarOrganization: string | null = null;
+	let registrarIanaId: string | null = null;
 	let sponsoring: string | null = null;
 
 	const lines = truncated.split('\n');
@@ -48,6 +52,24 @@ export function parseWhoisResponse(input: string): WhoisParseResult {
 		const regMatch = trimmed.match(/^Registrar:\s*(.+?)\s*$/i);
 		if (regMatch && !registrar) {
 			registrar = stripNominetTag(regMatch[1]);
+			continue;
+		}
+
+		const regNameMatch = trimmed.match(/^Registrar Name:\s*(.+?)\s*$/i);
+		if (regNameMatch && !registrarName) {
+			registrarName = stripNominetTag(regNameMatch[1]);
+			continue;
+		}
+
+		const regOrgMatch = trimmed.match(/^Registrar Organization:\s*(.+?)\s*$/i);
+		if (regOrgMatch && !registrarOrganization) {
+			registrarOrganization = stripNominetTag(regOrgMatch[1]);
+			continue;
+		}
+
+		const ianaIdMatch = trimmed.match(/^Registrar IANA ID:\s*(\S+)\s*$/i);
+		if (ianaIdMatch && !registrarIanaId) {
+			registrarIanaId = ianaIdMatch[1].trim();
 			continue;
 		}
 
@@ -71,10 +93,11 @@ export function parseWhoisResponse(input: string): WhoisParseResult {
 		}
 	}
 
-	const resolved = registrar ?? sponsoring;
+	const resolved = registrar ?? registrarName ?? sponsoring ?? registrarOrganization;
 
 	return {
 		registrar: resolved,
+		registrarIanaId,
 		notFound: notFound && !resolved,
 		redacted: !resolved && denicRedacted,
 	};

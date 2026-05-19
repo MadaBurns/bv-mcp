@@ -50,6 +50,15 @@ const StatusSummarySchema = z.object({
 	createdAt: z.number().int().nonnegative(),
 	updatedAt: z.number().int().nonnegative(),
 	completedAt: z.number().int().nullable(),
+	ageMs: z.number().int().nonnegative(),
+	updatedAgeMs: z.number().int().nonnegative(),
+	targetStatusCounts: z.object({
+		queued: z.number().int().nonnegative(),
+		running: z.number().int().nonnegative(),
+		completed: z.number().int().nonnegative(),
+		failed: z.number().int().nonnegative(),
+	}),
+	warnings: z.array(z.string()),
 	targets: z.array(StatusTargetSchema),
 });
 

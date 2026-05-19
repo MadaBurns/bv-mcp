@@ -102,15 +102,21 @@ export async function brandAuditGetReport(
 			return errorResult('notFound', `Target ${target} not in audit ${auditId}.`, { auditId, target });
 		}
 
-		if (targetRow.status !== 'completed' && targetRow.status !== 'failed') {
+		const parsed = safeParse(targetRow.result_json);
+		const renderedStatus: BrandAuditStatus =
+			targetRow.status === 'failed'
+				? 'failed'
+				: auditRow.status === 'completed' && parsed !== null
+					? 'completed'
+					: targetRow.status;
+
+		if (renderedStatus !== 'completed' && renderedStatus !== 'failed') {
 			return errorResult(
 				'notReady',
 				`Target ${target} is currently ${targetRow.status}. Poll again with brand_audit_status.`,
 				{ auditId, target, currentStatus: targetRow.status },
 			);
 		}
-
-		const parsed = safeParse(targetRow.result_json);
 
 		// PDF URL: when the PDF queue consumer has populated pdf_r2_key AND we
 		// have an R2 binding wired, mint a 7-day signed URL. Otherwise surface
@@ -131,7 +137,7 @@ export async function brandAuditGetReport(
 					pdfUrl = null;
 				}
 			}
-		} else if (targetRow.status === 'completed') {
+		} else if (renderedStatus === 'completed') {
 			// Result is ready but PDF hasn't been rendered yet. May be format=json
 			// (no PDF requested) OR the PDF queue is still processing.
 			pdfPending = true;
@@ -142,12 +148,12 @@ export async function brandAuditGetReport(
 				CATEGORY,
 				`Brand audit ${auditId} target ${target}: ${targetRow.status}`,
 				'info',
-				`status=${targetRow.status} completedAt=${targetRow.completed_at ? new Date(targetRow.completed_at).toISOString() : '—'}`,
+				`status=${renderedStatus} completedAt=${targetRow.completed_at ? new Date(targetRow.completed_at).toISOString() : '—'}`,
 				{
 					summary: true,
 					auditId,
 					target: targetRow.target,
-					status: targetRow.status,
+					status: renderedStatus,
 					result: parsed,
 					error: targetRow.error,
 					pdfUrl,

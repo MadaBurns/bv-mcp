@@ -89,6 +89,35 @@ describe('brandAuditGetReport', () => {
 		expect(notReady).toBeDefined();
 	});
 
+	it('coalesces completed parent plus target result_json into a readable completed target', async () => {
+		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
+		const fakeResult = { category: 'brand_discovery', score: 100, findings: [] };
+		const { db } = makeMockD1({
+			audit: { id: 'aud-1', owner_id: 'owner-abc', status: 'completed', format: 'json' },
+			target: {
+				audit_id: 'aud-1',
+				target: 'apple.com',
+				status: 'running',
+				result_json: JSON.stringify(fakeResult),
+				error: null,
+				completed_at: null,
+			},
+		});
+
+		const result = await brandAuditGetReport(
+			{ auditId: 'aud-1', target: 'apple.com' },
+			'owner-abc',
+			{ db },
+		);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary?.metadata).toMatchObject({
+			status: 'completed',
+			result: fakeResult,
+		});
+		expect(result.findings.find((f) => f.metadata?.notReady === true)).toBeUndefined();
+	});
+
 	it('returns notFound when target row does not exist for the audit', async () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
 		const { db } = makeMockD1({

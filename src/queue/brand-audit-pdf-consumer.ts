@@ -29,7 +29,7 @@
 
 import { z } from 'zod';
 import type { CheckResult } from '../lib/scoring';
-import { renderBrandAuditPdf as defaultRenderBrandAuditPdf, type BrandAuditRendererBinding } from '../lib/brand-audit-pdf';
+import { renderBrandAuditPdf as defaultRenderBrandAuditPdf } from '../lib/brand-audit-pdf-render';
 
 export const BrandAuditPdfMessageSchema = z.object({
 	auditId: z.string().min(1).max(64),
@@ -47,11 +47,20 @@ interface TargetRowSlim {
 export interface BrandAuditPdfConsumerDeps {
 	db: D1Database;
 	bucket: R2Bucket;
-	renderer: BrandAuditRendererBinding;
 	serverVersion: string;
 	now?: () => number;
-	/** Injectable renderer fn for tests; defaults to the production wrapper. */
-	renderPdf?: (result: CheckResult, target: string, opts: { renderer: BrandAuditRendererBinding; serverVersion: string; now?: () => number }) => Promise<Uint8Array>;
+	/**
+	 * Injectable renderer fn for tests; defaults to the in-process pdf-lib
+	 * renderer (`src/lib/brand-audit-pdf-render.ts`). No browser, no external
+	 * service binding, no auth — pure code path. Replaces the prior
+	 * bv-browser-renderer service binding that hit cascading timeout issues
+	 * during 2026-05-19 brand-audit incident.
+	 */
+	renderPdf?: (
+		result: CheckResult,
+		target: string,
+		opts: { serverVersion: string; now?: () => number },
+	) => Promise<Uint8Array>;
 }
 
 export async function processBrandAuditPdfMessage(
@@ -106,7 +115,6 @@ export async function processBrandAuditPdfMessage(
 	let pdfBytes: Uint8Array;
 	try {
 		pdfBytes = await render(parsedResult, message.target, {
-			renderer: deps.renderer,
 			serverVersion: deps.serverVersion,
 			now: deps.now,
 		});

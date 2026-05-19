@@ -15,6 +15,7 @@ function makeKV() {
 }
 
 const REGISTRAR_RESPONSE = `Domain Name: example.com\nRegistrar: TestRegistrar Inc.\nDomain Status: ok\n`;
+const REGISTRAR_IANA_RESPONSE = `Domain Name: example.com\nRegistrar: TestRegistrar Inc.\nRegistrar IANA ID: 299\nDomain Status: ok\n`;
 const REDACTED_DENIC_RESPONSE = `% The DENIC whois service on port 43 doesn't disclose any information concerning the domain holder.\nDomain: example.de\nStatus: connect\n`;
 const NOT_FOUND_RESPONSE = `No match for domain "no-such-domain.com".\n`;
 
@@ -34,6 +35,27 @@ describe('lookupRegistrar', () => {
 
 		expect(result).toEqual<WhoisLookupResult>({
 			registrar: 'TestRegistrar Inc.',
+			registrarIanaId: null,
+			source: 'whois',
+		});
+	});
+
+	it('returns the parsed registrar IANA ID when available', async () => {
+		const kv = makeKV();
+		const deps: LookupDeps = {
+			kv: kv as never,
+			whoisQuery: vi.fn(async (server: string, query: string): Promise<string> => {
+				if (server === 'whois.iana.org') return 'whois:        whois.nic.example\n';
+				if (server === 'whois.nic.example' && query === 'example.example') return REGISTRAR_IANA_RESPONSE;
+				throw new Error(`unexpected query: ${server} ${query}`);
+			}),
+		};
+
+		const result = await lookupRegistrar('example.example', deps);
+
+		expect(result).toEqual<WhoisLookupResult>({
+			registrar: 'TestRegistrar Inc.',
+			registrarIanaId: '299',
 			source: 'whois',
 		});
 	});
@@ -50,7 +72,7 @@ describe('lookupRegistrar', () => {
 
 		const result = await lookupRegistrar('example.de', deps);
 
-		expect(result).toEqual<WhoisLookupResult>({ registrar: null, source: 'redacted' });
+		expect(result).toEqual<WhoisLookupResult>({ registrar: null, registrarIanaId: null, source: 'redacted' });
 	});
 
 	it('short-circuits .de domains to source=redacted without any whoisQuery (DENIC blocks CF egress + always-redacted by law)', async () => {
@@ -60,7 +82,7 @@ describe('lookupRegistrar', () => {
 
 		const result = await lookupRegistrar('example.de', deps);
 
-		expect(result).toEqual<WhoisLookupResult>({ registrar: null, source: 'redacted' });
+		expect(result).toEqual<WhoisLookupResult>({ registrar: null, registrarIanaId: null, source: 'redacted' });
 		expect(whoisQuery).not.toHaveBeenCalled();
 	});
 
@@ -76,7 +98,7 @@ describe('lookupRegistrar', () => {
 
 		const result = await lookupRegistrar('no-such-domain.com', deps);
 
-		expect(result).toEqual<WhoisLookupResult>({ registrar: null, source: 'notfound' });
+		expect(result).toEqual<WhoisLookupResult>({ registrar: null, registrarIanaId: null, source: 'notfound' });
 	});
 
 	it('returns source=error when registry unreachable', async () => {

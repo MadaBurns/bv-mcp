@@ -44,12 +44,29 @@ jobs:
             '*.sqlite3'
             '*.db'
             'reports/**'
+            'reports/'
+            '.reports/**'
+            '.reports/'
             'scripts/tranco-*.json'
             'wrangler.production.jsonc'
             '.mcp-registry-key.pem'
+            '.npmrc'
+            '.dev/'
+            '.dev/**'
             '.env'
             '.env.*'
+            '*.env.*'
             '.dev.vars'
+            '.dev.vars.*'
+            '*.pdf'
+            '*.env'
+            '*.sqlite'
+            '*.sqlite3'
+            '*.db'
+            'reports/tenant-readiness-proof.html'
+            'reports/tenant-calibration-*.json'
+            'reports/tenant-*.json'
+            'reports/repo-audit-*.html'
             '*.log'
             '.DS_Store'
             'Thumbs.db'
@@ -127,3 +144,16 @@ jobs:
           else
             echo "✓ No large tracked files found."
           fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run repo safety scanner
+        run: npm run audit:repo-safety
+
+      - name: Run public source safety audits
+        run: npm run audit:oss-safety

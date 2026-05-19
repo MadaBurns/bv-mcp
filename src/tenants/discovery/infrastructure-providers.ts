@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import { getRegistrableDomain } from '../../lib/public-suffix';
+
 /**
  * Shared infrastructure-provider allowlist for the brand-discovery subsystem.
  *
@@ -80,17 +82,10 @@ export const INFRASTRUCTURE_PROVIDERS: ReadonlySet<string> = new Set([
 	'zoho.eu',
 ]);
 
-/**
- * Extract the registered 2-label apex from a hostname (`a.b.c.d` → `c.d`).
- * Naive — does NOT consult the Public Suffix List, so `foo.co.uk` returns
- * `co.uk`. None of the INFRASTRUCTURE_PROVIDERS entries use multi-label
- * ccTLDs, so this is safe today. If/when a ccTLD entry is added, swap for
- * a PSL-aware extractor.
- */
+/** Extract the PSL-aware registered apex from a hostname. */
 export function registeredApex(host: string): string {
-	const parts = host.trim().toLowerCase().replace(/\.$/, '').split('.').filter(Boolean);
-	if (parts.length < 2) return parts.join('.');
-	return parts.slice(-2).join('.');
+	const normalizedHost = host.trim().toLowerCase().replace(/\.$/, '');
+	return getRegistrableDomain(host) ?? normalizedHost;
 }
 
 /**

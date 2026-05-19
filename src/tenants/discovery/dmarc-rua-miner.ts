@@ -19,11 +19,12 @@
  */
 
 import { queryDns } from '../../lib/dns-transport';
-import type { DohResponse } from '../../lib/dns-types';
+import type { DohResponse, RecordTypeName } from '../../lib/dns-types';
 import { validateDomain, isSubdomainOf } from '../../lib/sanitize';
+import type { DiscoveryDnsContext } from './dns-context';
 
 /** Function signature for an injectable DNS-over-HTTPS query. */
-export type DnsQueryFn = (name: string, type: 'TXT' | string) => Promise<DohResponse>;
+export type DnsQueryFn = (name: string, type: RecordTypeName) => Promise<DohResponse>;
 
 /**
  * Hosts the miner classifies as `processor` (confidence 0) — a rua/ruf
@@ -42,15 +43,18 @@ export interface DmarcRuaOptions {
 	 * Defaults to the project's `queryDns` facade. Always called with type='TXT'.
 	 */
 	dnsQuery?: DnsQueryFn;
+	dnsContext?: DiscoveryDnsContext;
 }
 
 export type RuaClassification = 'self' | 'processor' | 'related';
+export type DmarcExternalAuthorization = 'same_domain' | 'confirmed' | 'missing' | 'processor';
 
 export interface DmarcRuaDomain {
 	/** Lowercase addressee domain (everything after `@`). */
 	domain: string;
 	classification: RuaClassification;
-	/** 0.6 for `related`; 0 for `self` and `processor`. */
+	externalAuthorization: DmarcExternalAuthorization;
+	/** 0.75 for confirmed related, 0.45 for missing related; 0 for `self` and `processor`. */
 	confidence: number;
 }
 
@@ -116,6 +120,24 @@ function parseMailtoDomain(uri: string): string | null {
 	return domain;
 }
 
+function hasDmarcTxt(resp: DohResponse): boolean {
+	return (resp.Answer ?? []).some((answer) => /^v=DMARC1\b/i.test(unwrapTxt(answer.data ?? '').trim()));
+}
+
+async function checkExternalAuthorization(
+	seedLower: string,
+	domain: string,
+	dnsQuery: DnsQueryFn,
+): Promise<DmarcExternalAuthorization> {
+	const authName = `${seedLower}._report._dmarc.${domain}`;
+	try {
+		const resp = await dnsQuery(authName, 'TXT');
+		return hasDmarcTxt(resp) ? 'confirmed' : 'missing';
+	} catch {
+		return 'missing';
+	}
+}
+
 /**
  * Mine the seed's DMARC record for rua/ruf addressee domains.
  *
@@ -129,7 +151,7 @@ export async function mineDmarcRua(seedDomain: string, options: DmarcRuaOptions 
 		throw new Error(`Domain validation failed: ${validation.error ?? 'invalid domain'}`);
 	}
 	const seedLower = seedDomain.trim().toLowerCase().replace(/\.$/, '');
-	const dnsQuery = options.dnsQuery ?? (queryDns as unknown as DnsQueryFn);
+	const dnsQuery = options.dnsContext?.query ?? options.dnsQuery ?? (queryDns as unknown as DnsQueryFn);
 
 	let resp: DohResponse;
 	try {
@@ -160,18 +182,22 @@ export async function mineDmarcRua(seedDomain: string, options: DmarcRuaOptions 
 		if (seenDomains.has(domain)) continue;
 		seenDomains.add(domain);
 		let classification: RuaClassification;
+		let externalAuthorization: DmarcExternalAuthorization;
 		let confidence: number;
 		if (isSubdomainOf(domain, seedLower)) {
 			classification = 'self';
+			externalAuthorization = 'same_domain';
 			confidence = 0;
 		} else if (INFRASTRUCTURE_PROVIDERS.has(domain)) {
 			classification = 'processor';
+			externalAuthorization = 'processor';
 			confidence = 0;
 		} else {
 			classification = 'related';
-			confidence = 0.6;
+			externalAuthorization = await checkExternalAuthorization(seedLower, domain, dnsQuery);
+			confidence = externalAuthorization === 'confirmed' ? 0.75 : 0.45;
 		}
-		ruaDomains.push({ domain, classification, confidence });
+		ruaDomains.push({ domain, classification, externalAuthorization, confidence });
 	}
 
 	return {

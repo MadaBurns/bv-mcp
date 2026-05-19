@@ -17,12 +17,14 @@
  */
 
 import { queryDns } from '../../lib/dns-transport';
-import type { DohResponse } from '../../lib/dns-types';
+import type { DohResponse, RecordTypeName } from '../../lib/dns-types';
+import { mapConcurrent } from '../../lib/map-concurrent';
 import { validateDomain } from '../../lib/sanitize';
 import { isSharedNsHost } from './shared-ns-hosts';
+import type { DiscoveryDnsContext } from './dns-context';
 
 /** Function signature for an injectable DNS-over-HTTPS query. */
-export type DnsQueryFn = (name: string, type: 'NS' | 'TXT' | string) => Promise<DohResponse>;
+export type DnsQueryFn = (name: string, type: RecordTypeName) => Promise<DohResponse>;
 
 export interface NsCorrelationOptions {
 	/**
@@ -30,6 +32,7 @@ export interface NsCorrelationOptions {
 	 * Defaults to the project's `queryDns` facade. Always called with type='NS'.
 	 */
 	dnsQuery?: DnsQueryFn;
+	dnsContext?: DiscoveryDnsContext;
 	/** Optional candidate domains to test for NS overlap with the seed. */
 	candidateDomains?: string[];
 }
@@ -106,7 +109,7 @@ export async function correlateNs(
 		throw new Error(`Domain validation failed: ${validation.error ?? 'invalid domain'}`);
 	}
 	const seedLower = normHost(seedDomain);
-	const dnsQuery = options.dnsQuery ?? (queryDns as unknown as DnsQueryFn);
+	const dnsQuery = options.dnsContext?.query ?? options.dnsQuery ?? (queryDns as unknown as DnsQueryFn);
 
 	const seedOutcome = await fetchNsSet(seedLower, dnsQuery);
 	if (seedOutcome.kind === 'error' || seedOutcome.set.size === 0) {
@@ -121,23 +124,21 @@ export async function correlateNs(
 	}
 
 	const coOwned: NsCoOwnedCandidate[] = [];
-	let anyFailure = false;
 
-	for (const raw of candidates) {
+	const probed = await mapConcurrent(candidates, 6, async (raw): Promise<{ candidate: NsCoOwnedCandidate | null; failed: boolean }> => {
 		const v = validateDomain(raw ?? '');
-		if (!v.valid) continue;
+		if (!v.valid) return { candidate: null, failed: false };
 		const candidate = normHost(raw);
-		if (candidate === seedLower) continue;
+		if (candidate === seedLower) return { candidate: null, failed: false };
 		const candidateOutcome = await fetchNsSet(candidate, dnsQuery);
 		if (candidateOutcome.kind === 'error') {
-			anyFailure = true;
-			continue;
+			return { candidate: null, failed: true };
 		}
 		const shared: string[] = [];
 		for (const ns of candidateOutcome.set) {
 			if (seedNsSet.has(ns)) shared.push(ns);
 		}
-		if (shared.length === 0) continue;
+		if (shared.length === 0) return { candidate: null, failed: false };
 
 		// Slice 6 — multi-tenant NS filter (LR-2 defense in depth).
 		// Parking services / shared-tenant DNS providers publish the same NS
@@ -146,14 +147,20 @@ export async function correlateNs(
 		// math. Hyperscale managed DNS (Cloudflare, Route 53, GCP) assigns unique
 		// NS per account, so those remain ownership-bearing.
 		const ownershipBearingShared = shared.filter((ns) => !isSharedNsHost(ns));
-		if (ownershipBearingShared.length === 0) continue;
+		if (ownershipBearingShared.length === 0) return { candidate: null, failed: false };
 
-		coOwned.push({
-			domain: candidate,
-			sharedNs: shared.sort(),
-			confidence: round2(ownershipBearingShared.length / seedNsSet.size),
-		});
-	}
+		return {
+			candidate: {
+				domain: candidate,
+				sharedNs: shared.sort(),
+				confidence: round2(ownershipBearingShared.length / seedNsSet.size),
+			},
+			failed: false,
+		};
+	});
+
+	const anyFailure = probed.some((result) => result.failed);
+	coOwned.push(...probed.flatMap((result) => (result.candidate ? [result.candidate] : [])));
 
 	coOwned.sort((a, b) => a.domain.localeCompare(b.domain));
 

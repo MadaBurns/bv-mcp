@@ -1,0 +1,41 @@
+# Phase 6 of registrar-coverage-tdd-plan.md — required RDAP fallback coverage.
+#
+# Every TLD in this list MUST have a hardcoded entry in FALLBACK_RDAP_SERVERS
+# (`src/tools/check-rdap-lookup.ts`). The audit test `rdap-fallback-coverage`
+# enforces it. The fallback exists so a cold-start IANA outage doesn't blackhole
+# RDAP for popular TLDs.
+#
+# Comments and blank lines are ignored. TLDs are case-insensitive, no leading dot.
+# Update both this file AND the fallback map when adding a TLD.
+
+# Verisign-operated
+com
+net
+
+# Public Interest Registry
+org
+
+# Identity Digital
+info
+biz
+us
+tech
+online
+io
+sh
+
+# .CO Internet
+co
+
+# ME Registry
+me
+
+# Identity Digital ccTLD
+ai
+
+# Google Registry
+app
+dev
+
+# XYZ.COM LLC
+xyz

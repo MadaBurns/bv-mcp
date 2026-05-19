@@ -121,6 +121,23 @@ export async function resolveTier(
 		.map((b) => b.toString(16).padStart(2, '0'))
 		.join('');
 
+	// 0. Static internal-dev key short-circuit. The dev key is a hardcoded
+	// "us only" secret (load tests, ops scripts); it must not be subject to
+	// KV-cache staleness or bv-web validate-key fallback — those paths can
+	// quietly demote it to partner-tier and crash benchmarks on the 200/mo
+	// quota. Comparison is constant-time XOR over raw SHA-256 digests.
+	if (env.BV_INTERNAL_DEV_KEY) {
+		const a = tokenRaw;
+		const b = await hashTokenRaw(env.BV_INTERNAL_DEV_KEY);
+		let mismatch = 0;
+		for (let i = 0; i < a.byteLength; i++) {
+			mismatch |= a[i] ^ b[i];
+		}
+		if (mismatch === 0) {
+			return { authenticated: true, tier: 'owner', keyHash };
+		}
+	}
+
 	// 1. Try KV cache
 	if (env.RATE_LIMIT) {
 		try {
@@ -232,24 +249,6 @@ export async function resolveTier(
 			// limits but not unlimited). If OWNER_ALLOW_IPS is unset, empty, or whitespace-
 			// only, owner is unrestricted (backward compat for self-hosted/dev where
 			// there's no IP filtering).
-			const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
-			return { authenticated: true, tier: resolvedTier, keyHash };
-		}
-	}
-
-	// 5. Parallel internal-dev key (v2.21.2+). Same owner-tier semantics as
-	// BV_API_KEY but a separate secret so rotating one doesn't invalidate the
-	// other. Use case: internal load tests, bulk Tranco scans, ops scripts —
-	// any time we want a key for "us only" without touching the customer-
-	// facing BV_API_KEY. Subject to the same OWNER_ALLOW_IPS gate.
-	if (env.BV_INTERNAL_DEV_KEY) {
-		const a = tokenRaw;
-		const b = await hashTokenRaw(env.BV_INTERNAL_DEV_KEY);
-		let mismatch = 0;
-		for (let i = 0; i < a.byteLength; i++) {
-			mismatch |= a[i] ^ b[i];
-		}
-		if (mismatch === 0) {
 			const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
 			return { authenticated: true, tier: resolvedTier, keyHash };
 		}

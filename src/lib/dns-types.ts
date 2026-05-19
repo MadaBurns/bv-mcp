@@ -71,6 +71,14 @@ export interface QueryDnsOptions {
 	secondaryDoh?: SecondaryDohConfig;
 	/** Semaphore for capping concurrent outbound DoH fetches per isolate. */
 	dnsSemaphore?: import('./semaphore').Semaphore;
+	/**
+	 * Caller-supplied abort signal. Combined with the internal per-fetch timeout
+	 * via `AbortSignal.any([...])` so either source can cancel the in-flight
+	 * `fetch`. A caller-abort short-circuits the retry loop (the abort is
+	 * authoritative — the caller doesn't want another attempt), while an
+	 * internal timeout still flows through the existing retry path.
+	 */
+	signal?: AbortSignal;
 }
 
 /**

@@ -239,4 +239,26 @@ describe('correlateSans', () => {
 		expect(result.coOwnedDomains).toEqual(['recovered.com']);
 		expect(directFetch).toHaveBeenCalledTimes(1);
 	});
+
+	it('returns partial certstream SAN names when the service times out after collecting data', async () => {
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(
+			Response.json({
+				domain: 'foo.com',
+				names: ['partial-one.com', 'partial-two.com', 'shop.foo.com'],
+				certificateCount: 50,
+				timedOut: true,
+				cached: false,
+			}),
+		);
+		const directFetch = vi.fn() as unknown as typeof fetch;
+		const result = await correlateSans('foo.com', {
+			certstream: { fetch: csFetch },
+			fetchFn: directFetch,
+			maxRetries: 0,
+		});
+
+		expect(result.queryStatus).toBe('partial');
+		expect(result.coOwnedDomains).toEqual(['partial-one.com', 'partial-two.com']);
+		expect(directFetch).not.toHaveBeenCalled();
+	});
 });
