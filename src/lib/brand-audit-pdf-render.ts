@@ -1,0 +1,219 @@
+// SPDX-License-Identifier: BUSL-1.1
+
+/**
+ * Brand-audit PDF renderer — pure, in-process, no browser.
+ *
+ * Replaces the previous bv-browser-renderer service-binding path that proved
+ * unreliable due to stacked cross-repo timeout layers (safeFetch +
+ * protocolTimeout + page.setContent + page.pdf + Cloudflare server-side limit
+ * — all observable as silent 504s on brand-audit renders during the 2026-05-19
+ * incident). Uses `pdf-lib`, which is Worker-compatible (pure JS, no
+ * Node-specific APIs), so the renderer runs inside the pdf-queue consumer with
+ * zero external dependencies.
+ *
+ * Layout: A4 portrait, four bucket sections (Consolidated / Shadow IT /
+ * Indeterminate / Impersonation), one row per candidate. Uses the same data
+ * shape (`BrandCandidateRow`) the prior HTML template consumed, so
+ * `candidatesFromCheckResult` extraction logic is shared. Multi-page support
+ * via `ensureRoom` — if a row would overflow the current page, a new page is
+ * added before drawing.
+ */
+
+import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
+import type { CheckResult } from './scoring';
+import { candidatesFromCheckResult, type BrandAuditBucket, type BrandCandidateRow } from './brand-audit-html-template';
+
+export interface RenderBrandAuditPdfOptions {
+	/** Server version for the PDF footer. Threaded from SERVER_VERSION at call time. */
+	serverVersion: string;
+	/** Clock override for tests (returns ms since epoch). Defaults to Date.now(). */
+	now?: () => number;
+}
+
+// A4 portrait, points.
+const PAGE_WIDTH = 595;
+const PAGE_HEIGHT = 842;
+const MARGIN = 48;
+const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
+const FOOTER_RESERVE = 60; // bottom padding so footer text never overlaps content
+const ROW_HEIGHT = 14;
+const SECTION_GAP = 24;
+
+const COLOR_TEXT = rgb(0.88, 0.88, 0.88);
+const COLOR_DIM = rgb(0.55, 0.55, 0.55);
+const COLOR_BG = rgb(0, 0, 0);
+const COLOR_ACCENT = rgb(0, 1, 0.62); // #00FF9D
+const COLOR_BADGE_HIGH = rgb(0, 1, 0.62);
+const COLOR_BADGE_MED = rgb(1, 0.8, 0);
+const COLOR_BADGE_LOW = rgb(1, 0.3, 0.3);
+
+const BUCKET_ORDER: Array<{ bucket: BrandAuditBucket; title: string }> = [
+	{ bucket: 'consolidated', title: 'Consolidated Infrastructure' },
+	{ bucket: 'shadowIt', title: 'Shadow IT Portfolio' },
+	{ bucket: 'indeterminate', title: 'Indeterminate' },
+	{ bucket: 'impersonation', title: 'Impersonation Signals' },
+];
+
+function badgeColor(bucket: BrandAuditBucket) {
+	if (bucket === 'consolidated') return COLOR_BADGE_HIGH;
+	if (bucket === 'shadowIt') return COLOR_BADGE_MED;
+	if (bucket === 'impersonation') return COLOR_BADGE_LOW;
+	return COLOR_DIM;
+}
+
+/**
+ * Helper to truncate a string to fit a maximum width when rendered at `size`.
+ * pdf-lib's font metric APIs are sync but expensive; for our table layout we
+ * use a coarse character-count approximation since fitting is cosmetic.
+ */
+function truncate(s: string, maxChars: number): string {
+	if (s.length <= maxChars) return s;
+	return s.slice(0, Math.max(1, maxChars - 1)) + '…';
+}
+
+interface DrawContext {
+	doc: PDFDocument;
+	page: PDFPage;
+	font: PDFFont;
+	mono: PDFFont;
+	bold: PDFFont;
+	cursorY: number;
+}
+
+function newPage(ctx: DrawContext): void {
+	ctx.page = ctx.doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+	ctx.page.drawRectangle({ x: 0, y: 0, width: PAGE_WIDTH, height: PAGE_HEIGHT, color: COLOR_BG });
+	ctx.cursorY = PAGE_HEIGHT - MARGIN;
+}
+
+function ensureRoom(ctx: DrawContext, needed: number): void {
+	if (ctx.cursorY - needed < MARGIN + FOOTER_RESERVE) {
+		newPage(ctx);
+	}
+}
+
+function drawText(ctx: DrawContext, text: string, opts: { x: number; size: number; color?: ReturnType<typeof rgb>; font?: PDFFont }): void {
+	ctx.page.drawText(text, {
+		x: opts.x,
+		y: ctx.cursorY,
+		size: opts.size,
+		font: opts.font ?? ctx.font,
+		color: opts.color ?? COLOR_TEXT,
+	});
+}
+
+function sectionHeader(ctx: DrawContext, title: string, count: number): void {
+	ensureRoom(ctx, 36);
+	ctx.cursorY -= SECTION_GAP;
+	// Accent dot
+	ctx.page.drawRectangle({ x: MARGIN, y: ctx.cursorY + 4, width: 8, height: 8, color: COLOR_ACCENT });
+	drawText(ctx, title, { x: MARGIN + 16, size: 14, font: ctx.bold });
+	drawText(ctx, `${count} candidate${count === 1 ? '' : 's'}`, { x: PAGE_WIDTH - MARGIN - 90, size: 9, color: COLOR_DIM, font: ctx.mono });
+	ctx.cursorY -= 8;
+	// Divider line
+	ctx.page.drawRectangle({ x: MARGIN, y: ctx.cursorY, width: CONTENT_WIDTH, height: 0.5, color: COLOR_DIM });
+	ctx.cursorY -= 16;
+}
+
+function drawCandidateRow(ctx: DrawContext, row: BrandCandidateRow): void {
+	ensureRoom(ctx, ROW_HEIGHT * 2 + 4);
+	// Background bar
+	ctx.page.drawRectangle({ x: MARGIN, y: ctx.cursorY - 4, width: CONTENT_WIDTH, height: ROW_HEIGHT * 2 + 2, color: rgb(0.04, 0.04, 0.04) });
+	// Domain (left), confidence (right)
+	drawText(ctx, truncate(row.domain, 60), { x: MARGIN + 8, size: 10, font: ctx.bold });
+	const confText = `${(row.combinedConfidence * 100).toFixed(0)}%`;
+	drawText(ctx, confText, { x: PAGE_WIDTH - MARGIN - 36, size: 10, color: badgeColor(row.bucket), font: ctx.mono });
+	ctx.cursorY -= ROW_HEIGHT;
+	// Metadata line
+	const metaParts = [
+		`registrar: ${truncate(row.registrar, 30)}`,
+		`source: ${row.registrarSource}`,
+		`signals: ${row.signals.join(', ') || '—'}`,
+	];
+	drawText(ctx, truncate(metaParts.join('  ·  '), 90), { x: MARGIN + 8, size: 8, color: COLOR_DIM, font: ctx.mono });
+	if (row.reasons.length > 0) {
+		ctx.cursorY -= ROW_HEIGHT;
+		drawText(ctx, truncate('reasons: ' + row.reasons.join('; '), 90), { x: MARGIN + 8, size: 8, color: COLOR_DIM });
+	}
+	ctx.cursorY -= ROW_HEIGHT;
+}
+
+function drawEmptyBucket(ctx: DrawContext, msg: string): void {
+	ensureRoom(ctx, ROW_HEIGHT);
+	drawText(ctx, msg, { x: MARGIN + 8, size: 9, color: COLOR_DIM });
+	ctx.cursorY -= ROW_HEIGHT + 4;
+}
+
+function drawHeader(ctx: DrawContext, target: string, dateLabel: string): void {
+	drawText(ctx, target.toUpperCase(), { x: MARGIN, size: 28, font: ctx.bold });
+	ctx.cursorY -= 22;
+	drawText(ctx, 'DISCOVERY INTEL REPORT', { x: MARGIN, size: 10, color: COLOR_ACCENT, font: ctx.mono });
+	// Right-aligned metadata
+	const metaX = PAGE_WIDTH - MARGIN - 180;
+	const metaY = ctx.cursorY + 22;
+	ctx.page.drawText(`Project: Brand Audit`, { x: metaX, y: metaY, size: 8, font: ctx.mono, color: COLOR_DIM });
+	ctx.page.drawText(`Status:  Automated`, { x: metaX, y: metaY - 10, size: 8, font: ctx.mono, color: COLOR_DIM });
+	ctx.page.drawText(`Date:    ${dateLabel}`, { x: metaX, y: metaY - 20, size: 8, font: ctx.mono, color: COLOR_DIM });
+	ctx.cursorY -= 16;
+	ctx.page.drawRectangle({ x: MARGIN, y: ctx.cursorY, width: CONTENT_WIDTH, height: 0.5, color: COLOR_DIM });
+	ctx.cursorY -= 12;
+}
+
+function drawFooter(ctx: DrawContext, target: string, serverVersion: string, dateLabel: string): void {
+	// Footer goes on every page already drawn.
+	const pages = ctx.doc.getPages();
+	for (const p of pages) {
+		p.drawRectangle({ x: MARGIN, y: MARGIN + 24, width: CONTENT_WIDTH, height: 0.5, color: COLOR_DIM });
+		p.drawText(`bv-mcp brand-audit · ${target} · ${dateLabel}`, { x: MARGIN, y: MARGIN + 8, size: 7, font: ctx.mono, color: COLOR_DIM });
+		p.drawText(`v${serverVersion}`, { x: PAGE_WIDTH - MARGIN - 40, y: MARGIN + 8, size: 7, font: ctx.mono, color: COLOR_DIM });
+	}
+}
+
+/**
+ * Render a brand-audit CheckResult to PDF bytes.
+ *
+ * Pure: no I/O, no network. Same return signature as the prior
+ * browser-renderer-backed `renderBrandAuditPdf` so the pdf-queue consumer is
+ * unchanged.
+ */
+export async function renderBrandAuditPdf(result: CheckResult, target: string, options: RenderBrandAuditPdfOptions): Promise<Uint8Array> {
+	const now = options.now ?? Date.now;
+	const dateLabel = new Date(now()).toISOString().slice(0, 10);
+	const candidates = candidatesFromCheckResult(result);
+
+	const doc = await PDFDocument.create();
+	doc.setCreator('bv-mcp brand-audit');
+	doc.setProducer('pdf-lib (bv-mcp)');
+
+	const font = await doc.embedFont(StandardFonts.Helvetica);
+	const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+	const mono = await doc.embedFont(StandardFonts.Courier);
+
+	const ctx: DrawContext = {
+		doc,
+		page: doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]),
+		font,
+		mono,
+		bold,
+		cursorY: PAGE_HEIGHT - MARGIN,
+	};
+	ctx.page.drawRectangle({ x: 0, y: 0, width: PAGE_WIDTH, height: PAGE_HEIGHT, color: COLOR_BG });
+
+	drawHeader(ctx, target, dateLabel);
+
+	for (const { bucket, title } of BUCKET_ORDER) {
+		const rows = candidates.filter((r) => r.bucket === bucket);
+		sectionHeader(ctx, title, rows.length);
+		if (rows.length === 0) {
+			drawEmptyBucket(ctx, 'No candidates in this bucket.');
+		} else {
+			for (const row of rows) {
+				drawCandidateRow(ctx, row);
+			}
+		}
+	}
+
+	drawFooter(ctx, target, options.serverVersion, dateLabel);
+
+	return await doc.save();
+}

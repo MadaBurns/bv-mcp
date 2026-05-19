@@ -868,14 +868,14 @@ export default {
 			const e = env as Record<string, unknown>;
 			const db = e.BRAND_AUDIT_DB as D1Database | undefined;
 			const bucket = e.BRAND_REPORTS as R2Bucket | undefined;
-			const renderer = e.BV_BROWSER_RENDERER as { fetch: typeof fetch } | undefined;
-			if (!db || !bucket || !renderer) {
-				// One or more required bindings missing — ack to avoid hot-looping.
+			if (!db || !bucket) {
+				// Required bindings missing — ack to avoid hot-looping.
 				for (const m of batch.messages) m.ack();
 				return;
 			}
-			const rendererApiKey = e.BV_BROWSER_RENDERER_KEY as string | undefined;
-			const deps: BrandAuditPdfConsumerDeps = { db, bucket, renderer, rendererApiKey, serverVersion: SERVER_VERSION };
+			// Renderer is now in-process (pdf-lib); BV_BROWSER_RENDERER + KEY
+			// no longer required for brand-audit PDF generation.
+			const deps: BrandAuditPdfConsumerDeps = { db, bucket, serverVersion: SERVER_VERSION };
 			await handleBrandAuditPdfQueue(batch, deps);
 			return;
 		}
