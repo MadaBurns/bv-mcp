@@ -38,9 +38,28 @@
 		".yaml",
 		".yml"
 	],
-	"allowedEmailDomains": ["example.com", "example.test", "example.invalid", "blackveilsecurity.com"],
-	"allowedDomainSuffixes": ["example.com", "example.net", "example.org", "example.test", "example.invalid", "localhost", "blackveilsecurity.com"],
-	"allowedInternalHostnames": ["localhost.localdomain", "renderer.internal", "quota.internal"],
+	"allowedEmailDomains": [
+		"example.com",
+		"example.test",
+		"example.invalid",
+		"blackveilsecurity.com"
+	],
+	"allowedDomainSuffixes": [
+		"example.com",
+		"example.net",
+		"example.org",
+		"example.test",
+		"example.invalid",
+		"localhost",
+		"blackveilsecurity.com"
+	],
+	"allowedInternalHostnames": [
+		"localhost.localdomain",
+		"renderer.internal",
+		"quota.internal",
+		"bv-enterprise.internal",
+		"placeholder"
+	],
 	"allowedPaths": [
 		".gitleaks.toml",
 		"CHANGELOG.md",
@@ -48,7 +67,8 @@
 		"scripts/repo-safety/scanner-core.mjs",
 		"scripts/pressure-chaos-test.mjs",
 		"test/audits/repo-safety-scanner.audit.test.ts",
-		"test/audits/no-tracked-secrets.audit.test.ts"
+		"test/audits/no-tracked-secrets.audit.test.ts",
+		"scripts/repo-safety/policy.json"
 	],
 	"allowedPathPrefixes": [
 		".github/",
