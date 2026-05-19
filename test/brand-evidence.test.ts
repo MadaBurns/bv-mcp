@@ -95,4 +95,84 @@ describe('brand evidence tier policy', () => {
 		expect(clearsOwnershipGate([{ signal: 'active_lookalike' }], { callerAsserted: false })).toBe(false);
 		expect(clearsOwnershipGate([{ signal: 'markov_gen' }], { callerAsserted: false })).toBe(false);
 	});
+
+	// T6: tier-aware bypass of N-of-M corroboration. Tier 0/1/2 carry enough
+	// source-side confidence to short-circuit the gate; Tier 3 stays on the
+	// legacy live-signal sweep path.
+	describe('tier-aware ownership gate (T6)', () => {
+		it('returns true for a single tier-0 observation', () => {
+			// Tier 0 = tenant-declared (gold standard). A weak signal name should
+			// not matter — provenance dominates.
+			expect(
+				clearsOwnershipGate(
+					[{ signal: 'mx_platform', confidence: 1.0, tier: 0, metadata: { sharedMxPlatform: 'm365' } }],
+					{ callerAsserted: false },
+				),
+			).toBe(true);
+		});
+
+		it('returns true for a tier-1 observation with specificityScore >= 0.5', () => {
+			expect(
+				clearsOwnershipGate(
+					[{ signal: 'mx_overlap', confidence: 0.7, tier: 1, specificityScore: 0.7 }],
+					{ callerAsserted: false },
+				),
+			).toBe(true);
+		});
+
+		it('does NOT auto-clear for tier-1 with specificityScore < 0.5', () => {
+			// e.g. shared gmail MX, low signal-graph specificity.
+			expect(
+				clearsOwnershipGate(
+					[{ signal: 'mx_platform', confidence: 0.1, tier: 1, specificityScore: 0.1, metadata: { sharedMxPlatform: 'gmail' } }],
+					{ callerAsserted: false },
+				),
+			).toBe(false);
+		});
+
+		it('does NOT auto-clear for tier-1 with missing specificityScore', () => {
+			// Tier 1 requires the specificity threshold to be met explicitly.
+			expect(
+				clearsOwnershipGate(
+					[{ signal: 'mx_platform', confidence: 0.4, tier: 1, metadata: { sharedMxPlatform: 'gmail' } }],
+					{ callerAsserted: false },
+				),
+			).toBe(false);
+		});
+
+		it('returns true for a single tier-2 observation', () => {
+			// Tier 2 = declared/witnessed (e.g. RDAP registrant match). Specificity
+			// is not required.
+			expect(
+				clearsOwnershipGate(
+					[{ signal: 'ns', confidence: 0.95, tier: 2 }],
+					{ callerAsserted: false },
+				),
+			).toBe(true);
+		});
+
+		it('legacy N-of-M gate still applies when observations carry no tier (Tier 3 fallback)', () => {
+			// Two medium non-seed signals without tier metadata should still clear
+			// via the existing rule.
+			expect(
+				clearsOwnershipGate(
+					[
+						{ signal: 'ns' },
+						{ signal: 'mx_overlap' },
+					],
+					{ callerAsserted: false },
+				),
+			).toBe(true);
+		});
+
+		it('legacy N-of-M gate still rejects under-corroborated tierless observations', () => {
+			// A single medium tierless signal should still fail the gate.
+			expect(
+				clearsOwnershipGate(
+					[{ signal: 'ns' }],
+					{ callerAsserted: false },
+				),
+			).toBe(false);
+		});
+	});
 });

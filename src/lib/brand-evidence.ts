@@ -101,6 +101,13 @@ function isSeedObservation(observation: BrandEvidenceObservation): boolean {
 	return observation.signal === 'markov_gen' || observation.signal === 'active_lookalike';
 }
 
+/**
+ * Tier-1 observations only bypass the N-of-M gate when their signal-graph
+ * specificity meets this threshold. Below it (e.g. shared gmail MX), the
+ * observation falls through to the legacy corroboration logic.
+ */
+const TIER_1_SPECIFICITY_THRESHOLD = 0.5;
+
 export function clearsOwnershipGate(
 	observations: BrandEvidenceObservation[],
 	options: OwnershipGateOptions = {},
@@ -111,6 +118,18 @@ export function clearsOwnershipGate(
 	}
 	const distinct = Array.from(unique.values());
 	if (distinct.length === 0) return false;
+
+	// Tier-aware bypass (T6): Tier 0/1/2 observations carry enough source-side
+	// confidence to short-circuit the N-of-M corroboration gate. Tier 3 (the
+	// legacy live-signal sweep) falls through to the historic logic below.
+	for (const observation of distinct) {
+		const { tier, specificityScore } = observation;
+		if (tier === 0) return true;
+		if (tier === 2) return true;
+		if (tier === 1 && typeof specificityScore === 'number' && specificityScore >= TIER_1_SPECIFICITY_THRESHOLD) {
+			return true;
+		}
+	}
 
 	if (options.callerAsserted === true) {
 		return distinct.some((observation) => !isSeedObservation(observation));
