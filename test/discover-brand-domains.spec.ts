@@ -889,3 +889,227 @@ describe('discoverBrandDomains', () => {
 		expect(/[🔵🟡🟠🔴]/.test(compact)).toBe(false);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// T7: tiered discovery_mode tests
+// ---------------------------------------------------------------------------
+
+describe('discoverBrandDomains — discovery_mode=tiered', () => {
+	const FRESH_FRESHNESS = {
+		overallStaleness: 'fresh' as const,
+		oldestSignalAgeMs: 1_000,
+		latestSweepAtMs: 1_800_000_000_000,
+	};
+	const VERY_STALE_FRESHNESS = {
+		overallStaleness: 'very_stale' as const,
+		oldestSignalAgeMs: 60 * 24 * 60 * 60 * 1000,
+		latestSweepAtMs: 1_800_000_000_000 - 60 * 24 * 60 * 60 * 1000,
+	};
+
+	function tier0Empty(): unknown {
+		return { observations: [], status: 'ok', optedOut: false };
+	}
+	function tier0Ok(candidate: string): unknown {
+		return {
+			observations: [{ candidate, source: 'tenant_domains', tier: 0, confidence: 1.0 }],
+			status: 'ok',
+			optedOut: false,
+		};
+	}
+	function tier1Empty(freshness = FRESH_FRESHNESS): unknown {
+		return { observations: [], status: 'ok', triggerTier3Fallback: false, freshness };
+	}
+	function tier1Ok(candidate: string, freshness = FRESH_FRESHNESS): unknown {
+		return {
+			observations: [
+				{
+					candidate,
+					source: 'infra_graph_signal',
+					tier: 1,
+					confidence: 0.8,
+					specificityScore: 0.9,
+					signalType: 'soa_admin',
+					signalValue: 'admin@example.com',
+					numSharedSignals: 1,
+					maxSpecificity: 0.9,
+					signalTypes: ['soa_admin'],
+				},
+			],
+			status: 'ok',
+			triggerTier3Fallback: false,
+			freshness,
+		};
+	}
+	function tier2Empty(): unknown {
+		return { observations: [], status: 'ok' };
+	}
+	void tier1Empty;
+
+	it('emits per-tier counts in discoveryPerformance.tiers when discovery_mode=tiered', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const tieredDeps = {
+			...makeDeps(),
+			tier0Lookup: vi.fn().mockResolvedValue(tier0Ok('tenant-portfolio.example.net')),
+			tier1Lookup: vi.fn().mockResolvedValue(tier1Ok('infra-graph.example.net', FRESH_FRESHNESS)),
+			tier2Lookup: vi.fn().mockResolvedValue({
+				observations: [
+					{ candidate: 'example.com', source: 'gsi_evidence', tier: 2, confidence: 0.9, threatLevel: 'low', capturedAt: 1 },
+					{ candidate: 'example.com', source: 'score_alert_critical_drop', tier: 4, confidence: 0.5, alertType: 'drop', transition: 'low->critical' },
+				],
+				status: 'ok',
+			}),
+		};
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ discovery_mode: 'tiered', signals: ['ns'], candidate_domains: [] },
+			tieredDeps as unknown as DiscoverBrandDomainsDeps,
+		);
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		const tiers = (summary?.metadata?.discoveryPerformance as { tiers?: Record<string, unknown> } | undefined)?.tiers;
+		expect(tiers).toMatchObject({
+			tier0Count: 1,
+			tier1Count: 1,
+			tier2Count: 1,
+			tier4Count: 1,
+			tier3Count: expect.any(Number),
+			tier0Status: 'ok',
+			tier1Status: 'ok',
+			tier2Status: 'ok',
+			tier3FallbackTriggered: expect.any(Number),
+			tier1Freshness: expect.objectContaining({ overallStaleness: 'fresh' }),
+			optOutsFiltered: expect.any(Number),
+		});
+	});
+
+	it('does not trigger tier3 live sweep when tier1 freshness is fresh and returns candidates', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const correlateNs = vi.fn().mockResolvedValue(okNs([]));
+		const tieredDeps = {
+			...makeDeps({ correlateNs }),
+			tier0Lookup: vi.fn().mockResolvedValue(tier0Empty()),
+			tier1Lookup: vi.fn().mockResolvedValue(tier1Ok('related.example.net', FRESH_FRESHNESS)),
+			tier2Lookup: vi.fn().mockResolvedValue(tier2Empty()),
+		};
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ discovery_mode: 'tiered', signals: ['ns'], candidate_domains: [] },
+			tieredDeps as unknown as DiscoverBrandDomainsDeps,
+		);
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		const tiers = (summary?.metadata?.discoveryPerformance as { tiers?: Record<string, unknown> } | undefined)?.tiers;
+		expect(tiers).toBeDefined();
+		expect(tiers?.tier3FallbackTriggered).toBe(0);
+		expect(correlateNs).not.toHaveBeenCalled();
+	});
+
+	it('triggers tier3 fallback when tier1 freshness is very_stale', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const correlateNs = vi.fn().mockResolvedValue(okNs([]));
+		const tieredDeps = {
+			...makeDeps({ correlateNs }),
+			tier0Lookup: vi.fn().mockResolvedValue(tier0Empty()),
+			tier1Lookup: vi.fn().mockResolvedValue({
+				observations: [],
+				status: 'ok',
+				triggerTier3Fallback: true,
+				freshness: VERY_STALE_FRESHNESS,
+			}),
+			tier2Lookup: vi.fn().mockResolvedValue(tier2Empty()),
+		};
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ discovery_mode: 'tiered', signals: ['ns'], candidate_domains: [] },
+			tieredDeps as unknown as DiscoverBrandDomainsDeps,
+		);
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		const tiers = (summary?.metadata?.discoveryPerformance as { tiers?: Record<string, unknown> } | undefined)?.tiers;
+		expect(tiers?.tier3FallbackTriggered).toBe(1);
+		expect(correlateNs).toHaveBeenCalled();
+	});
+
+	it('triggers tier3 fallback when caller_candidates are not covered by tier 0/1/2', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const correlateNs = vi.fn().mockResolvedValue(okNs([]));
+		const tieredDeps = {
+			...makeDeps({ correlateNs }),
+			tier0Lookup: vi.fn().mockResolvedValue(tier0Empty()),
+			tier1Lookup: vi.fn().mockResolvedValue(tier1Ok('covered.example.net', FRESH_FRESHNESS)),
+			tier2Lookup: vi.fn().mockResolvedValue(tier2Empty()),
+		};
+		const result = await discoverBrandDomains(
+			'example.com',
+			{
+				discovery_mode: 'tiered',
+				signals: ['ns'],
+				candidate_domains: ['uncovered.example.net'],
+			},
+			tieredDeps as unknown as DiscoverBrandDomainsDeps,
+		);
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		const tiers = (summary?.metadata?.discoveryPerformance as { tiers?: Record<string, unknown> } | undefined)?.tiers;
+		expect(tiers?.tier3FallbackTriggered).toBe(1);
+		expect(correlateNs).toHaveBeenCalled();
+	});
+
+	it('classic mode does not emit tier counts and runs the legacy pipeline unchanged', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const tier0 = vi.fn();
+		const tier1 = vi.fn();
+		const tier2 = vi.fn();
+		const tieredDeps = {
+			...makeDeps(),
+			tier0Lookup: tier0,
+			tier1Lookup: tier1,
+			tier2Lookup: tier2,
+		};
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ discovery_mode: 'classic', signals: ['ns'] },
+			tieredDeps as unknown as DiscoverBrandDomainsDeps,
+		);
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		const perf = summary?.metadata?.discoveryPerformance as Record<string, unknown> | undefined;
+		expect(perf).toBeDefined();
+		expect(perf && 'tiers' in perf).toBe(false);
+		expect(tier0).not.toHaveBeenCalled();
+		expect(tier1).not.toHaveBeenCalled();
+		expect(tier2).not.toHaveBeenCalled();
+	});
+
+	it('default discovery_mode is "classic" (BSL boundary — never flip the public default)', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const tier0 = vi.fn();
+		const tieredDeps = { ...makeDeps(), tier0Lookup: tier0, tier1Lookup: vi.fn(), tier2Lookup: vi.fn() };
+		await discoverBrandDomains(
+			'example.com',
+			{ signals: ['ns'] },
+			tieredDeps as unknown as DiscoverBrandDomainsDeps,
+		);
+		expect(tier0).not.toHaveBeenCalled();
+	});
+
+	it('applies opt-out filter to all surfaced tier 0/1/2 candidates', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const { __resetOptoutCacheForTests } = await import('../src/lib/brand-optout-enforcement');
+		__resetOptoutCacheForTests();
+		const tieredDeps = {
+			...makeDeps(),
+			tier0Lookup: vi.fn().mockResolvedValue(tier0Ok('opted-out.example.net')),
+			tier1Lookup: vi.fn().mockResolvedValue(tier1Ok('opted-out.example.net', FRESH_FRESHNESS)),
+			tier2Lookup: vi.fn().mockResolvedValue(tier2Empty()),
+			fetchOptouts: vi.fn().mockResolvedValue(new Set(['opted-out.example.net'])),
+		};
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ discovery_mode: 'tiered', signals: ['ns'], candidate_domains: [] },
+			tieredDeps as unknown as DiscoverBrandDomainsDeps,
+		);
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		const tiers = (summary?.metadata?.discoveryPerformance as { tiers?: Record<string, number> } | undefined)?.tiers;
+		expect(tiers?.optOutsFiltered).toBeGreaterThanOrEqual(1);
+		const surfaced = result.findings
+			.filter((f) => f.metadata?.candidate)
+			.map((f) => f.metadata?.candidate as string);
+		expect(surfaced).not.toContain('opted-out.example.net');
+	});
+});
