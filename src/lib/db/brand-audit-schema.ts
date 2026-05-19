@@ -10,6 +10,8 @@
  *   - `brand_audit_targets` — child row per (auditId, target) pair. Holds the
  *     per-target result JSON (full CheckResult from `brandAuditSingle`) and,
  *     once Phase 3 lands, the R2 key for the rendered PDF.
+ *   - `brand_audit_steps` — resumable per-target pipeline step cache used by
+ *     the queue consumer to avoid repeating expensive completed work on retry.
  *
  * `owner_id` stores the caller's principalId — same shape used by
  * `lib/rate-limiter.ts`: an API-key hash for authenticated callers, an IP hash
@@ -17,9 +19,12 @@
  * (quota=0), so in practice owner_id is always a key hash, but the column is
  * permissive to match the existing principalId contract.
  *
- * Provisioning (not committed as a migration file — see CHANGELOG):
+ * Provisioning:
  *   wrangler d1 create brand-audit-v1
- *   wrangler d1 execute brand-audit-v1 --file docs/provisioning/brand-audit-v1.sql --remote
+ *   wrangler d1 execute brand-audit-v1 --remote --file <operator-schema.sql>
+ *
+ * See docs/provisioning/brand-audit-bindings.md for the public-safe binding and
+ * table checklist. Operator schema files may live outside the repository.
  *
  * Status state machine: queued → running → completed | failed.
  * Idempotency: consumer must SELECT status before re-running brandAuditSingle —
@@ -72,10 +77,28 @@ export const brandAuditTargets = sqliteTable(
 	(t) => [primaryKey({ columns: [t.audit_id, t.target] })],
 );
 
+export const brandAuditSteps = sqliteTable(
+	'brand_audit_steps',
+	{
+		audit_id: text('audit_id')
+			.notNull()
+			.references(() => brandAudits.id),
+		target: text('target').notNull(),
+		step: text('step', { enum: ['discovery', 'registrar_enrichment', 'classification'] as const }).notNull(),
+		status: text('status', { enum: ['completed', 'partial', 'failed'] as const }).notNull(),
+		payload_json: text('payload_json'),
+		error: text('error'),
+		updated_at: integer('updated_at').notNull(),
+	},
+	(t) => [primaryKey({ columns: [t.audit_id, t.target, t.step] })],
+);
+
 export type BrandAuditRow = typeof brandAudits.$inferSelect;
 export type BrandAuditInsert = typeof brandAudits.$inferInsert;
 export type BrandAuditTargetRow = typeof brandAuditTargets.$inferSelect;
 export type BrandAuditTargetInsert = typeof brandAuditTargets.$inferInsert;
+export type BrandAuditStepRow = typeof brandAuditSteps.$inferSelect;
+export type BrandAuditStepInsert = typeof brandAuditSteps.$inferInsert;
 
 /** Recurring monitor interval for `brand_audit_watches`. */
 export type BrandAuditWatchInterval = 'daily' | 'weekly' | 'monthly';

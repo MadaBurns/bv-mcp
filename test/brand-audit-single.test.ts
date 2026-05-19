@@ -213,9 +213,12 @@ describe('brandAuditSingle', () => {
 
 		const candFindings = result.findings.filter((f) => f.metadata?.candidate);
 		expect(candFindings).toHaveLength(2);
-		// Both still classified — the rdap failure surfaces as registrarSource=unknown.
+		// Both still classified — the rdap failure surfaces as registrarSource=lookup_failed
+		// (transient, retryable) with registrarFailureReason='exception'. Pre-Phase-1 this
+		// collapsed to 'unknown', which masked retryable failures as permanent ones.
 		const failed = candFindings.find((f) => f.metadata?.candidate === 'apple.net');
-		expect(failed?.metadata?.registrarSource).toBe('unknown');
+		expect(failed?.metadata?.registrarSource).toBe('lookup_failed');
+		expect(failed?.metadata?.registrarFailureReason).toBe('exception');
 	});
 
 	it('threads min_confidence into discoverBrandDomains and the cache-key inputs', async () => {
@@ -227,6 +230,27 @@ describe('brandAuditSingle', () => {
 		expect(discoverSpy).toHaveBeenCalledTimes(1);
 		const [, optsArg] = discoverSpy.mock.calls[0];
 		expect(optsArg.min_confidence).toBe(0.7);
+	});
+
+	it('threads depth, brand_aliases, and candidate_domains into discoverBrandDomains', async () => {
+		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+		const discoverSpy = vi.fn().mockResolvedValue(emptyDiscoveryResult('example.com'));
+		const deps = makeDeps({ discoverBrandDomains: discoverSpy });
+
+		await brandAuditSingle(
+			'example.com',
+			{ depth: 'deep', brand_aliases: ['examplecorp'], candidate_domains: ['example.net'] },
+			deps,
+		);
+
+		expect(discoverSpy).toHaveBeenCalledWith(
+			'example.com',
+			expect.objectContaining({
+				depth: 'deep',
+				brand_aliases: ['examplecorp'],
+				candidate_domains: ['example.net'],
+			}),
+		);
 	});
 
 	it('marks subdomain candidates as consolidated/Organizational', async () => {
@@ -281,6 +305,49 @@ describe('brandAuditSingle', () => {
 		expect(summary?.metadata?.truncated).toBe(false);
 		expect(summary?.metadata?.truncatedAt).toBeUndefined();
 		expect(summary?.metadata?.discoveredTotal).toBe(1);
+	});
+
+	it('includes depth metadata on the summary finding', async () => {
+		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+		const candidates = [{ domain: 'example.net', signals: ['ns'], conf: 0.95 }];
+		const deps = makeDeps({
+			discoverBrandDomains: vi.fn().mockResolvedValue({
+				...discoveryResult('example.com', candidates),
+				findings: [
+					{
+						category: 'brand_discovery',
+						title: 'summary',
+						severity: 'info',
+						detail: '',
+						metadata: {
+							summary: true,
+							signalStatus: { ns: { status: 'ok' } },
+							candidateUniverse: {
+								seeded: 10,
+								probed: 10,
+								surfaced: 1,
+								dropped: { corroborationGate: 7, belowConfidence: 2 },
+								sources: { tld_sweep: 10 },
+							},
+						},
+					},
+					candidateFinding('example.net', ['ns'], 0.95),
+				],
+			}),
+			checkRdapLookup: vi.fn().mockImplementation((domain: string) => {
+				if (domain === 'example.com') return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Example Inc.'));
+				return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Example Inc.'));
+			}),
+		});
+
+		const result = await brandAuditSingle('example.com', {}, deps);
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+
+		expect(summary?.metadata?.depth).toMatchObject({
+			candidateUniverse: { seeded: 10, surfaced: 1 },
+			signalCoverage: { requested: 1, ok: 1 },
+			registrarCoverage: { total: 2, rdap: 2, knownRatio: 1 },
+		});
 	});
 
 	describe('shadowIt + impersonation classifier branches', () => {
@@ -347,7 +414,7 @@ describe('brandAuditSingle', () => {
 			expect(cand?.metadata?.bucket).toBe('shadowIt');
 		});
 
-		it('shadowIt — candidate MX points at the same mail platform as target', async () => {
+		it('indeterminate — candidate only points at the same broad mail platform as target', async () => {
 			const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
 			const rdapSpy = vi.fn().mockImplementation((domain: string) => {
 				if (domain === 'example.com') return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Example Inc.'));
@@ -366,7 +433,7 @@ describe('brandAuditSingle', () => {
 			});
 			const result = await brandAuditSingle('example.com', { min_confidence: 0.4 }, deps);
 			const cand = result.findings.find((f) => f.metadata?.candidate === 'example-mail.net');
-			expect(cand?.metadata?.bucket).toBe('shadowIt');
+			expect(cand?.metadata?.bucket).toBe('indeterminate');
 		});
 
 		it('impersonation — typosquat, registrar mismatch, no shared signal, lookalike ≥0.85', async () => {

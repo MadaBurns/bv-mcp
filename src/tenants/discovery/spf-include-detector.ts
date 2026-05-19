@@ -15,9 +15,11 @@
  */
 
 import { validateDomain } from '../../lib/sanitize';
+import { mapConcurrent } from '../../lib/map-concurrent';
 import { safeFetch } from '../../lib/safe-fetch';
 import { getEffectiveTld, extractBrandName } from '../../lib/public-suffix';
 import { isInfrastructureProvider } from './infrastructure-providers';
+import type { DiscoveryDnsContext } from './dns-context';
 
 const DEFAULT_DOH_URL = 'https://cloudflare-dns.com/dns-query';
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -46,6 +48,7 @@ export interface SpfIncludeOptions {
 	dohFn?: typeof fetch;
 	dohUrl?: string;
 	timeoutMs?: number;
+	dnsContext?: DiscoveryDnsContext;
 }
 
 export interface SpfIncludeResult {
@@ -57,10 +60,14 @@ export interface SpfIncludeResult {
 	queryStatus: 'ok' | 'error';
 }
 
+type SpfIncludeCandidate = SpfIncludeResult['coOwnedDomains'][number];
+
 interface DohResponse {
 	Status: number;
 	Answer?: Array<{ name: string; type: number; TTL: number; data: string }>;
 }
+
+type QueryTxtFn = (name: string) => Promise<string[]>;
 
 async function queryTxt(name: string, dohFn: typeof fetch, dohUrl: string, timeoutMs: number): Promise<string[]> {
 	const url = `${dohUrl}?name=${encodeURIComponent(name)}&type=TXT`;
@@ -83,6 +90,20 @@ async function queryTxt(name: string, dohFn: typeof fetch, dohUrl: string, timeo
 		);
 	} catch {
 		clearTimeout(timeoutId);
+		return [];
+	}
+}
+
+async function queryTxtWithContext(name: string, dnsContext: DiscoveryDnsContext): Promise<string[]> {
+	try {
+		const json = await dnsContext.query(name, 'TXT');
+		if (json.Status !== 0 || !json.Answer) return [];
+		return json.Answer.map((a) =>
+			a.data
+				.replace(/(?:^|\s)"([^"]*)"/g, (_, s: string) => s)
+				.trim(),
+		);
+	} catch {
 		return [];
 	}
 }
@@ -149,9 +170,7 @@ function isSeedRooted(host: string, seed: string): boolean {
 async function findSeedRootedInclude(
 	candidate: string,
 	seed: string,
-	dohFn: typeof fetch,
-	dohUrl: string,
-	timeoutMs: number,
+	queryTxtRecords: QueryTxtFn,
 ): Promise<string | null> {
 	const visited = new Set<string>();
 	const queue: string[] = [candidate];
@@ -163,7 +182,7 @@ async function findSeedRootedInclude(
 		visited.add(target);
 		lookups++;
 
-		const txts = await queryTxt(target, dohFn, dohUrl, timeoutMs);
+		const txts = await queryTxtRecords(target);
 		const spf = pickSpfRecord(txts);
 		if (!spf) continue;
 
@@ -192,27 +211,32 @@ export async function detectSpfInclude(seedDomain: string, options: SpfIncludeOp
 	const dohFn = options.dohFn ?? safeFetch;
 	const dohUrl = options.dohUrl ?? DEFAULT_DOH_URL;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const dnsContext = options.dnsContext;
+	const queryTxtRecords = dnsContext
+		? (name: string) => queryTxtWithContext(name, dnsContext)
+		: (name: string) => queryTxt(name, dohFn, dohUrl, timeoutMs);
 
 	if (options.candidateDomains.length === 0) {
 		return { coOwnedDomains: [], queryStatus: 'ok' };
 	}
 
-	const settled = await Promise.allSettled(
-		options.candidateDomains.map(async (cand) => {
+	const settled = await mapConcurrent(options.candidateDomains, 6, async (cand): Promise<PromiseSettledResult<SpfIncludeCandidate | null>> => {
+		try {
 			const candLower = cand.trim().toLowerCase().replace(/\.$/, '');
-			if (!validateDomain(candLower).valid) return null;
-			const include = await findSeedRootedInclude(candLower, seedLower, dohFn, dohUrl, timeoutMs);
-			if (!include) return null;
+			if (!validateDomain(candLower).valid) return { status: 'fulfilled', value: null };
+			const include = await findSeedRootedInclude(candLower, seedLower, queryTxtRecords);
+			if (!include) return { status: 'fulfilled', value: null };
 			return {
-				domain: candLower,
-				confidence: 0.85,
-				evidence: { include },
+				status: 'fulfilled',
+				value: { domain: candLower, confidence: 0.85, evidence: { include } },
 			};
-		}),
-	);
+		} catch (reason) {
+			return { status: 'rejected', reason };
+		}
+	});
 
 	const coOwnedDomains = settled
-		.filter((r): r is PromiseFulfilledResult<NonNullable<Awaited<typeof settled[number] extends PromiseSettledResult<infer T> ? T : never>>> => r.status === 'fulfilled' && r.value !== null)
+		.filter((r): r is PromiseFulfilledResult<SpfIncludeCandidate> => r.status === 'fulfilled' && r.value !== null)
 		.map((r) => r.value);
 
 	return { coOwnedDomains, queryStatus: 'ok' };
@@ -226,6 +250,7 @@ export interface ExtractSeedSpfIncludesOptions {
 	dohFn?: typeof fetch;
 	dohUrl?: string;
 	timeoutMs?: number;
+	dnsContext?: DiscoveryDnsContext;
 	/** Override the recursion depth cap (default 5; RFC 7208 §4.6.4 caps total lookups at 10). */
 	maxDepth?: number;
 	/** Override the total wall-clock budget for the chain walk (default 8s). */
@@ -283,6 +308,10 @@ export async function extractSeedSpfIncludes(
 	const dohFn = options.dohFn ?? safeFetch;
 	const dohUrl = options.dohUrl ?? DEFAULT_DOH_URL;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const dnsContext = options.dnsContext;
+	const queryTxtRecords = dnsContext
+		? (name: string) => queryTxtWithContext(name, dnsContext)
+		: (name: string) => queryTxt(name, dohFn, dohUrl, timeoutMs);
 	const maxDepth = options.maxDepth ?? MAX_SEED_WALK_DEPTH;
 	const budgetMs = options.budgetMs ?? TOTAL_BUDGET_MS;
 
@@ -310,7 +339,7 @@ export async function extractSeedSpfIncludes(
 			visited.add(target);
 			lookups++;
 
-			const txts = await queryTxt(target, dohFn, dohUrl, timeoutMs);
+			const txts = await queryTxtRecords(target);
 			const spf = pickSpfRecord(txts);
 			if (target === seedLower && spf) seedHadSpf = true;
 			if (!spf) continue;

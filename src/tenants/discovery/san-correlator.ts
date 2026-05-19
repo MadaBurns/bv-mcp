@@ -72,6 +72,14 @@ export interface SanCorrelationOptions {
 	 * discovery use different crt.sh query shapes and different result filters.
 	 */
 	certstream?: { fetch: typeof fetch };
+	/**
+	 * Caller-supplied abort signal. Cancels in-flight crt.sh fetches when the
+	 * audit budget fires — the JSON parse for tier-1 brands (walmart-scale)
+	 * is the single largest CPU sink in the orchestrator, so cancelling it
+	 * mid-stream is what lets the consumer's catch handler win the race
+	 * against CF's CPU kill.
+	 */
+	signal?: AbortSignal;
 }
 
 /** Response shape from bv-certstream-worker `/sans` endpoint. */
@@ -90,7 +98,7 @@ export interface SanCorrelationResult {
 	coOwnedDomains: string[];
 	/** crt.sh `id` values of the certs that produced the matches (capped by maxCertsPerDomain). */
 	certIds: number[];
-	queryStatus: 'ok' | 'rate_limited' | 'timeout' | 'error';
+	queryStatus: 'ok' | 'partial' | 'rate_limited' | 'timeout' | 'error';
 }
 
 /** A single crt.sh JSON response entry (subset we use). */
@@ -125,6 +133,22 @@ function extractSiblingsFromNameValue(nameValue: string, seedLower: string): str
 		out.push(host);
 	}
 	return out;
+}
+
+function filterSiblingNames(names: readonly unknown[], seedLower: string): string[] {
+	const seedSuffix = `.${seedLower}`;
+	const siblings = new Set<string>();
+	for (const raw of names) {
+		let host = String(raw).trim().toLowerCase();
+		if (!host) continue;
+		if (host.startsWith('*.')) host = host.slice(2);
+		if (!host) continue;
+		if (host === seedLower) continue;
+		if (host.endsWith(seedSuffix)) continue;
+		if (!validateDomain(host).valid) continue;
+		siblings.add(host);
+	}
+	return Array.from(siblings).sort();
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -168,28 +192,27 @@ async function attemptCertstreamSans(
 	} catch {
 		return null;
 	}
-	if (data.error || data.timedOut || !Array.isArray(data.names)) return null;
+	if (data.error || !Array.isArray(data.names)) return null;
 
 	// Apply the same sibling filter as the direct crt.sh path: drop the seed,
 	// drop subdomains of the seed, drop wildcards (`*.foo.com` → `foo.com`),
 	// drop invalid hostnames. The worker doesn't pre-filter — sibling-vs-subdomain
 	// semantics live in the consumer.
-	const seedSuffix = `.${seedLower}`;
-	const siblings = new Set<string>();
-	for (const raw of data.names) {
-		let host = String(raw).trim().toLowerCase();
-		if (!host) continue;
-		if (host.startsWith('*.')) host = host.slice(2);
-		if (!host) continue;
-		if (host === seedLower) continue;
-		if (host.endsWith(seedSuffix)) continue;
-		if (!validateDomain(host).valid) continue;
-		siblings.add(host);
+	const siblings = filterSiblingNames(data.names, seedLower);
+	if (data.timedOut) {
+		return siblings.length > 0
+			? {
+					seedDomain: seedLower,
+					coOwnedDomains: siblings,
+					certIds: [],
+					queryStatus: 'partial',
+				}
+			: null;
 	}
 
 	return {
 		seedDomain: seedLower,
-		coOwnedDomains: Array.from(siblings).sort(),
+		coOwnedDomains: siblings,
 		certIds: [],
 		queryStatus: 'ok',
 	};
@@ -206,15 +229,22 @@ async function attemptCorrelation(
 	timeoutMs: number,
 	maxCerts: number,
 	fetchFn: typeof fetch,
+	callerSignal?: AbortSignal,
 ): Promise<SanCorrelationResult> {
+	if (callerSignal?.aborted) return emptyResult(seedLower, 'timeout');
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+	// Compose internal timeout + caller signal. Either firing cancels the fetch
+	// — and critically aborts the streaming JSON parse below before it consumes
+	// the worker's CPU budget chewing through a multi-MB crt.sh response.
+	const fetchSignal = callerSignal ? AbortSignal.any([controller.signal, callerSignal]) : controller.signal;
 
 	let response: Response;
 	try {
-		response = await fetchFn(url, { signal: controller.signal, redirect: 'manual' });
+		response = await fetchFn(url, { signal: fetchSignal, redirect: 'manual' });
 	} catch (err) {
 		clearTimeout(timeoutId);
+		if (callerSignal?.aborted) return emptyResult(seedLower, 'timeout');
 		if (err instanceof Error && err.name === 'AbortError') return emptyResult(seedLower, 'timeout');
 		return emptyResult(seedLower, 'error');
 	}
@@ -401,6 +431,10 @@ export async function correlateSansRecursive(
 	let cursor = 0;
 	async function worker(): Promise<void> {
 		while (true) {
+			if (options.signal?.aborted) {
+				budgetExceeded = true;
+				return;
+			}
 			const idx = cursor++;
 			if (idx >= probedList.length) return;
 			const remaining = deadline - Date.now();
@@ -467,8 +501,12 @@ export async function correlateSans(
 
 	let result: SanCorrelationResult = emptyResult(seedLower, 'error');
 	for (let attempt = 0; attempt <= maxRetries; attempt++) {
-		result = await attemptCorrelation(seedLower, url, timeoutMs, maxCerts, fetchFn);
+		if (options.signal?.aborted) return result;
+		result = await attemptCorrelation(seedLower, url, timeoutMs, maxCerts, fetchFn, options.signal);
 		if (result.queryStatus === 'ok') return result;
+		// Caller-abort during the attempt → do not retry, propagate the
+		// timeout-shaped empty result.
+		if (options.signal?.aborted) return result;
 		if (attempt < maxRetries) {
 			const base = initialBackoffMs * Math.pow(2, attempt);
 			const jitterFactor = 0.5 + Math.random();

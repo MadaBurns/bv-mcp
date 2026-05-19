@@ -76,6 +76,28 @@ the private D1 database using a local SQL file or an operator-only runbook:
 npx wrangler d1 execute <brand-audit-db-name> --remote --file <schema.sql>
 ```
 
+The queue resume store requires this table in the same D1 database:
+
+```sql
+-- Production schema (brand-audit-v1) — verified 2026-05-19. The CHECK constraints
+-- on `step` and `status` are intentionally absent in production; the original
+-- hand-rolled CREATE (from the 2026-05-18 brand_audit_steps migration session)
+-- omitted them, and we rely on the TypeScript / Zod layer for value validation.
+-- Phase-N additions to BrandAuditPipelineStep don't require D1 DDL as long as
+-- this asymmetry persists. If a future operator wants registry-side validation,
+-- ALTER the table to add the CHECK clauses and update this file in lock-step.
+CREATE TABLE IF NOT EXISTS brand_audit_steps (
+  audit_id TEXT NOT NULL REFERENCES brand_audits(id),
+  target TEXT NOT NULL,
+  step TEXT NOT NULL,
+  status TEXT NOT NULL,
+  payload_json TEXT,
+  error TEXT,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (audit_id, target, step)
+);
+```
+
 ## Verification
 
 After deployment:

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Pre-push hook: scan pushed ranges and full tracked repository safety policy.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+if command -v gitleaks &>/dev/null; then
+	while read -r local_ref local_sha remote_ref remote_sha; do
+		[ -z "${local_ref:-}" ] && continue
+		if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+			continue
+		fi
+		if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+			base="$(git merge-base "$local_sha" origin/main 2>/dev/null || git merge-base "$local_sha" main 2>/dev/null || true)"
+			if [ -z "$base" ]; then
+				echo "BLOCKED: unable to compute gitleaks push range for new remote ref $local_ref -> $remote_ref"
+				exit 1
+			fi
+			range="$base..$local_sha"
+		else
+			range="$remote_sha..$local_sha"
+		fi
+		if [ -z "$range" ]; then
+			echo "BLOCKED: unable to compute gitleaks push range for $local_ref -> $remote_ref"
+			exit 1
+		fi
+		gitleaks detect --config .gitleaks.toml --source . --redact=100 --exit-code 1 --no-banner --log-opts="$range"
+	done
+else
+	echo "WARN: gitleaks is not installed; install it to scan pushed commit ranges locally."
+fi
+
+node scripts/repo-safety/scan-sensitive-surface.mjs

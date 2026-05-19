@@ -265,6 +265,65 @@ describe('handleToolsCall - per-tool cache TTL', () => {
 		expect(spfPut).toBeDefined();
 		expect(spfPut![2]).toEqual({ expirationTtl: 300 });
 	});
+
+	it('brand_audit_status is not cached because callers poll mutable queue state', async () => {
+		const mockKV = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const db = {
+			prepare(sql: string) {
+				const stmt = {
+					bind() {
+						return stmt;
+					},
+					async first() {
+						if (sql.includes('FROM brand_audits')) {
+							return {
+								id: 'aud-1',
+								owner_id: 'owner-1',
+								status: 'queued',
+								total_targets: 1,
+								completed_targets: 0,
+								format: 'json',
+								created_at: 1,
+								updated_at: 1,
+								completed_at: null,
+							};
+						}
+						return null;
+					},
+					async all() {
+						return {
+							results: [
+								{
+									audit_id: 'aud-1',
+									target: 'example.com',
+									status: 'queued',
+									created_at: 1,
+									completed_at: null,
+									error: null,
+									pdf_r2_key: null,
+								},
+							],
+						};
+					},
+				};
+				return stmt;
+			},
+		};
+
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		await handleToolsCall(
+			{ name: 'brand_audit_status', arguments: { auditId: 'aud-1' } },
+			mockKV as unknown as KVNamespace,
+			{ brandAuditDb: db as unknown as D1Database, principalId: 'owner-1' },
+		);
+
+		const statusPut = mockKV.put.mock.calls.find((c: unknown[]) => (c[0] as string).includes('brand_audit_status'));
+		expect(statusPut).toBeUndefined();
+	});
 });
 
 // -- handleToolsCall check_dkim selector validation --

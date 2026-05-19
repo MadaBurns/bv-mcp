@@ -1,0 +1,691 @@
+// SPDX-License-Identifier: BUSL-1.1
+
+import { buildCheckResult, createFinding, type CheckResult, type Finding, type Severity } from './scoring';
+import { buildBrandAuditDepthSummary, type BrandAuditDepthInput, type CandidateUniverseDepth } from './brand-audit-depth';
+import { summarizeBrandAuditMetrics, type BrandAuditStepTiming } from './brand-audit-metrics';
+import { mapConcurrent } from './map-concurrent';
+import {
+	classifyCandidate,
+	normalizeRegistrar,
+	type Bucket,
+	type CandidateInput,
+	type Classification,
+	type RegistrarSource,
+	type TargetContext,
+} from './brand-classification';
+import type { BrandEvidenceObservation } from './brand-evidence';
+import {
+	discoverBrandDomains as defaultDiscoverBrandDomains,
+	type BrandDiscoveryProgressEvent,
+} from '../tools/discover-brand-domains';
+import { checkRdapLookup as defaultCheckRdapLookup, type RdapCheckOptions } from '../tools/check-rdap-lookup';
+import type { BrandAuditStepStore } from './brand-audit-step-store';
+
+/**
+ * brand-audit findings emit under the existing `brand_discovery` category to
+ * avoid adding a new CheckCategory to the scoring union. Adding one shifts the
+ * hardening-tier denominator (every domain's perfect-pass score drops by 1)
+ * for zero scoring benefit — this tool's value is the bucket classification,
+ * not a score contribution. The bucket lives in `metadata.bucket`.
+ */
+const CATEGORY = 'brand_discovery';
+
+/** Concurrency cap for parallel RDAP lookups across candidates. */
+const RDAP_CONCURRENCY = 10;
+
+/**
+ * Defensive cap on per-audit candidate count. A pathological discovery output
+ * (e.g. a seed that triggers wide crt.sh SAN matches on a multi-tenant CDN)
+ * could otherwise fan out to thousands of RDAP fetches. 200 comfortably
+ * accommodates the tier-1 brand baseline (~40 candidates per CLAUDE.md's
+ * Known Constraints) with 5× headroom; over that, the consumer ack()s with
+ * `truncated: true` rather than spending Workers CPU + outbound budget.
+ */
+const MAX_CANDIDATES_PER_AUDIT = 200;
+
+const BUCKET_SEVERITY: Record<Bucket, Severity> = {
+	consolidated: 'info',
+	indeterminate: 'low',
+	shadowIt: 'medium',
+	impersonation: 'high',
+};
+
+const STRONG_REGISTRAR_INDEPENDENT_SIGNALS = new Set(['san', 'ns', 'dkim_key_reuse']);
+
+export interface BrandAuditPipelineOptions {
+	/** Output format hint. The orchestrator always returns the full CheckResult; the formatter chooses what to surface. */
+	format?: 'json' | 'markdown' | 'both';
+	/** Minimum combined confidence threshold passed through to `discoverBrandDomains`. */
+	min_confidence?: number;
+	/** Discovery depth. `deep` expands deterministic candidate seeding. */
+	depth?: 'standard' | 'deep';
+	/** Planner mode for staged discovery fanout. */
+	planner_mode?: 'off' | 'observe' | 'enforce';
+	/** Public brand aliases, product labels, or legal-entity labels to seed. */
+	brand_aliases?: string[];
+	/** Caller-supplied candidate domains to corroborate. */
+	candidate_domains?: string[];
+	/** Stable audit identifier used for resumable step persistence. */
+	auditId?: string;
+	/** Optional persisted step store. Omit for one-shot in-memory execution. */
+	stepStore?: BrandAuditStepStore;
+	/** Epoch-ms deadline for returning a partial result before queue/runtime timeout. */
+	deadlineMs?: number;
+	/**
+	 * Abort signal that interrupts the orchestrator at phase boundaries. The
+	 * consumer wires this to a wall-clock timeout (240s of the 300s Worker
+	 * budget) so the pipeline can flip the row to `failed` from this same
+	 * Worker invocation instead of leaving it stuck in `running` for a cron
+	 * reaper to mop up.
+	 */
+	signal?: AbortSignal;
+	/**
+	 * Skip all step-store cache reads — the pipeline re-runs discovery,
+	 * registrar enrichment, and classification fresh. Phase 2b retry messages
+	 * set this so the second pass actually re-fetches RDAP/WHOIS instead of
+	 * reading back the cached lookup_failed result from the first pass.
+	 * Mirrors the `force_refresh` knob in scan-domain's `runWithCache()`.
+	 */
+	force_refresh?: boolean;
+	/** Clock override for deterministic tests. */
+	now?: () => number;
+}
+
+/** Injectable dependencies. Tests pass stubs; production omits these and the module imports win. */
+export interface BrandAuditPipelineDeps {
+	discoverBrandDomains?: typeof defaultDiscoverBrandDomains;
+	checkRdapLookup?: typeof defaultCheckRdapLookup;
+	/** Optional service bindings threaded through to the inner tools. */
+	certstream?: { fetch: typeof fetch };
+	whoisBinding?: { fetch: typeof fetch };
+}
+
+interface RegistrarLookup {
+	registrar: string;
+	registrarIanaId: string | null;
+	registrarSource: RegistrarSource;
+	registrant: string | null;
+	/** Set iff registrarSource === 'lookup_failed' — stable token identifying *why*. Consumed by the retry path. */
+	registrarFailureReason?: string | null;
+}
+
+type CandidateRegistrarLookupStatus = 'completed' | 'skipped_deadline' | 'needs_retry';
+
+interface CandidateRegistrarLookup {
+	candidate: string;
+	lookup: RegistrarLookup;
+	status?: CandidateRegistrarLookupStatus;
+}
+
+interface RegistrarEnrichmentPayload {
+	targetLookup: RegistrarLookup;
+	candidates: CandidateRegistrarLookup[];
+	partial?: boolean;
+	skippedCandidates?: string[];
+	rdapQueries?: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function numberRecord(value: unknown): Record<string, number> {
+	if (!isRecord(value)) return {};
+	const out: Record<string, number> = {};
+	for (const [key, raw] of Object.entries(value)) {
+		if (typeof raw === 'number' && Number.isFinite(raw)) out[key] = raw;
+	}
+	return out;
+}
+
+function readDiscoveryCandidateUniverse(value: unknown, surfacedFallback: number): CandidateUniverseDepth {
+	if (!isRecord(value)) {
+		return {
+			seeded: surfacedFallback,
+			probed: surfacedFallback,
+			surfaced: surfacedFallback,
+			dropped: {},
+			sources: {},
+		};
+	}
+	return {
+		seeded: typeof value.seeded === 'number' ? value.seeded : surfacedFallback,
+		probed: typeof value.probed === 'number' ? value.probed : surfacedFallback,
+		surfaced: typeof value.surfaced === 'number' ? value.surfaced : surfacedFallback,
+		dropped: numberRecord(value.dropped),
+		sources: numberRecord(value.sources),
+	};
+}
+
+function readDiscoverySignalStatus(value: unknown): Record<string, { status: string; error?: string }> {
+	if (!isRecord(value)) return {};
+	const out: Record<string, { status: string; error?: string }> = {};
+	for (const [signal, raw] of Object.entries(value)) {
+		if (!isRecord(raw) || typeof raw.status !== 'string') continue;
+		out[signal] = {
+			status: raw.status,
+			...(typeof raw.error === 'string' ? { error: raw.error } : {}),
+		};
+	}
+	return out;
+}
+
+function readDiscoveryPlannerEfficiency(value: unknown): BrandAuditDepthInput['plannerEfficiency'] | undefined {
+	if (!isRecord(value) || !isRecord(value.efficiency)) return undefined;
+	const { efficiency } = value;
+	const plannerMode = efficiency.plannerMode;
+	if (plannerMode !== 'off' && plannerMode !== 'observe' && plannerMode !== 'enforce') return undefined;
+	const candidateSignalProbes = efficiency.candidateSignalProbes;
+	const baselineCandidateSignalProbes = efficiency.baselineCandidateSignalProbes;
+	const surfacedCandidates = efficiency.surfacedCandidates;
+	if (
+		typeof candidateSignalProbes !== 'number' ||
+		typeof baselineCandidateSignalProbes !== 'number' ||
+		typeof surfacedCandidates !== 'number'
+	) {
+		return undefined;
+	}
+	const planner = isRecord(value.planner) ? value.planner : null;
+	const wouldProbeBySignal = readNumericRecord(planner?.wouldProbeBySignal);
+	const wouldDropBySignal = readNumericRecord(planner?.wouldDropBySignal);
+	return {
+		mode: plannerMode,
+		candidateSignalProbes,
+		baselineCandidateSignalProbes,
+		surfacedCandidates,
+		...(wouldProbeBySignal ? { wouldProbeBySignal } : {}),
+		...(wouldDropBySignal ? { wouldDropBySignal } : {}),
+	};
+}
+
+function readNumericRecord(value: unknown): Record<string, number> | undefined {
+	if (!isRecord(value)) return undefined;
+	const out: Record<string, number> = {};
+	for (const [key, raw] of Object.entries(value)) {
+		if (typeof raw === 'number' && Number.isFinite(raw)) out[key] = raw;
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function readEvidenceObservations(value: unknown): BrandEvidenceObservation[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const observations: BrandEvidenceObservation[] = [];
+	for (const raw of value) {
+		if (!isRecord(raw) || typeof raw.signal !== 'string') continue;
+		observations.push({
+			signal: raw.signal as BrandEvidenceObservation['signal'],
+			...(typeof raw.confidence === 'number' ? { confidence: raw.confidence } : {}),
+			...(isRecord(raw.metadata) ? { metadata: raw.metadata } : {}),
+		});
+	}
+	return observations.length > 0 ? observations : undefined;
+}
+
+/** Pull registrar + registrant out of a check-rdap-lookup result, mirroring `scripts/brand-audit-brand-audit.spec.ts:lookupRegistrar`. */
+function extractRegistrar(rdap: CheckResult): RegistrarLookup {
+	const populated = rdap.findings.find(
+		(f) => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0,
+	);
+	const registrantFinding = rdap.findings.find(
+		(f) => typeof f.metadata?.registrant === 'string' && (f.metadata.registrant as string).length > 0,
+	);
+	const registrant = (registrantFinding?.metadata?.registrant as string | undefined) ?? null;
+
+	if (populated) {
+		const source = (populated.metadata?.registrarSource as RegistrarSource | undefined) ?? 'unknown';
+		const registrarIanaId = typeof populated.metadata?.registrarIanaId === 'string' ? populated.metadata.registrarIanaId : null;
+		const registrarFailureReason =
+			source === 'lookup_failed' && typeof populated.metadata?.registrarFailureReason === 'string'
+				? populated.metadata.registrarFailureReason
+				: null;
+		return { registrar: populated.metadata!.registrar as string, registrarIanaId, registrarSource: source, registrant, registrarFailureReason };
+	}
+	const lastWithSource = [...rdap.findings].reverse().find((f) => typeof f.metadata?.registrarSource === 'string');
+	const source = (lastWithSource?.metadata?.registrarSource as RegistrarSource | undefined) ?? 'unknown';
+	const registrarIanaId = typeof lastWithSource?.metadata?.registrarIanaId === 'string' ? lastWithSource.metadata.registrarIanaId : null;
+	const registrarFailureReason =
+		source === 'lookup_failed' && typeof lastWithSource?.metadata?.registrarFailureReason === 'string'
+			? lastWithSource.metadata.registrarFailureReason
+			: null;
+	return { registrar: 'Unknown', registrarIanaId, registrarSource: source, registrant, registrarFailureReason };
+}
+
+/** Look up registrar + registrant for `domain` via injected checkRdapLookup; fails soft to lookup_failed/exception. */
+async function safeRegistrarLookup(domain: string, deps: BrandAuditPipelineDeps, signal?: AbortSignal): Promise<RegistrarLookup> {
+	const rdapFn = deps.checkRdapLookup ?? defaultCheckRdapLookup;
+	try {
+		const opts: RdapCheckOptions = {};
+		if (deps.whoisBinding) opts.whoisBinding = deps.whoisBinding;
+		if (signal) opts.signal = signal;
+		const result = await rdapFn(domain, opts);
+		return extractRegistrar(result);
+	} catch {
+		return { registrar: 'Unknown', registrarIanaId: null, registrarSource: 'lookup_failed', registrant: null, registrarFailureReason: 'exception' };
+	}
+}
+
+function readCompletedPayload<T>(record: { status: string; payload: unknown } | null): T | null {
+	return record?.status === 'completed' ? (record.payload as T) : null;
+}
+
+function normalizeDomainKey(domain: string): string {
+	return domain.trim().toLowerCase();
+}
+
+function unknownRegistrarLookup(): RegistrarLookup {
+	return { registrar: 'Unknown', registrarIanaId: null, registrarSource: 'unknown', registrant: null };
+}
+
+function hasRegistrarIndependentEvidence(domain: string, seedDomain: string, signals: string[]): boolean {
+	return domain === seedDomain || domain.endsWith(`.${seedDomain}`) || signals.some((signal) => STRONG_REGISTRAR_INDEPENDENT_SIGNALS.has(signal));
+}
+
+function isRegistrarSource(value: unknown): value is RegistrarSource {
+	return (
+		value === 'rdap' ||
+		value === 'whois' ||
+		value === 'redacted' ||
+		value === 'notfound' ||
+		value === 'lookup_failed' ||
+		value === 'unknown'
+	);
+}
+
+function readRegistrarLookup(value: unknown): RegistrarLookup | null {
+	if (!isRecord(value) || typeof value.registrar !== 'string' || !isRegistrarSource(value.registrarSource)) return null;
+	const registrant = typeof value.registrant === 'string' ? value.registrant : null;
+	const registrarIanaId = typeof value.registrarIanaId === 'string' ? value.registrarIanaId : null;
+	const registrarFailureReason =
+		value.registrarSource === 'lookup_failed' && typeof value.registrarFailureReason === 'string'
+			? value.registrarFailureReason
+			: null;
+	return { registrar: value.registrar, registrarIanaId, registrarSource: value.registrarSource, registrant, registrarFailureReason };
+}
+
+function readCompletedRegistrarEnrichment(
+	record: { status: string; payload: unknown } | null,
+	candidateDomains: string[],
+): RegistrarEnrichmentPayload | null {
+	if (record?.status !== 'completed' || !isRecord(record.payload)) return null;
+	const targetLookup = readRegistrarLookup(record.payload.targetLookup);
+	if (!targetLookup || !Array.isArray(record.payload.candidates)) return null;
+
+	const lookupByCandidate = new Map<string, CandidateRegistrarLookup>();
+	for (const raw of record.payload.candidates) {
+		if (!isRecord(raw) || typeof raw.candidate !== 'string') continue;
+		const lookup = readRegistrarLookup(raw.lookup);
+		if (!lookup) continue;
+		lookupByCandidate.set(normalizeDomainKey(raw.candidate), { candidate: raw.candidate, lookup });
+	}
+
+	const candidates: CandidateRegistrarLookup[] = [];
+	for (const candidate of candidateDomains) {
+		const entry = lookupByCandidate.get(normalizeDomainKey(candidate));
+		if (!entry) return null;
+		candidates.push(entry);
+	}
+
+	return { targetLookup, candidates };
+}
+
+function recordStep(
+	steps: BrandAuditStepTiming[],
+	name: string,
+	status: BrandAuditStepTiming['status'],
+	startedAtMs: number,
+	finishedAtMs: number,
+): void {
+	steps.push({ name, status, startedAtMs, finishedAtMs });
+}
+
+async function lookupCandidateRegistrars(
+	candidateFindings: Finding[],
+	deps: BrandAuditPipelineDeps,
+	deadlineMs?: number,
+	now: () => number = Date.now,
+	signal?: AbortSignal,
+): Promise<{ candidates: CandidateRegistrarLookup[]; partial: boolean; skippedCandidates: string[]; rdapQueries: number }> {
+	const aborted = (): boolean => signal?.aborted === true;
+	const statusForLookup = (lookup: RegistrarLookup): CandidateRegistrarLookupStatus =>
+		lookup.registrarSource === 'lookup_failed' ? 'needs_retry' : 'completed';
+
+	if (deadlineMs === undefined && !signal) {
+		const candidates = await mapConcurrent(candidateFindings, RDAP_CONCURRENCY, async (f) => {
+			const candidate = f.metadata!.candidate as string;
+			const lookup = await safeRegistrarLookup(candidate, deps, signal);
+			return { candidate, lookup, status: statusForLookup(lookup) };
+		});
+		return { candidates, partial: false, skippedCandidates: [], rdapQueries: candidates.length };
+	}
+
+	const candidates: CandidateRegistrarLookup[] = [];
+	const skippedCandidates: string[] = [];
+	let partial = false;
+	for (const finding of candidateFindings) {
+		const candidate = finding.metadata!.candidate as string;
+		if (aborted() || (deadlineMs !== undefined && now() >= deadlineMs)) {
+			partial = true;
+			skippedCandidates.push(candidate);
+			candidates.push({ candidate, lookup: unknownRegistrarLookup(), status: 'skipped_deadline' });
+			continue;
+		}
+		const lookup = await safeRegistrarLookup(candidate, deps, signal);
+		candidates.push({ candidate, lookup, status: statusForLookup(lookup) });
+	}
+
+	return {
+		candidates,
+		partial,
+		skippedCandidates,
+		rdapQueries: candidates.filter((entry) => entry.status === 'completed' || entry.status === 'needs_retry').length,
+	};
+}
+
+/**
+ * Run a brand audit on a single target.
+ *
+ * Programmer-error throws (invalid seed domain) propagate from `discoverBrandDomains`.
+ * Discovery failures surface as a `missingControl: true` summary finding with zero candidates.
+ */
+export async function runBrandAuditPipeline(
+	target: string,
+	options: BrandAuditPipelineOptions = {},
+	deps: BrandAuditPipelineDeps = {},
+): Promise<CheckResult> {
+	const now = options.now ?? Date.now;
+	const auditStartedAtMs = now();
+	const stepTimings: BrandAuditStepTiming[] = [];
+	const seedDomain = target.trim().toLowerCase();
+	const auditId = options.auditId ?? `local-${seedDomain}`;
+	const stepStore = options.stepStore;
+	const signal = options.signal;
+	// Phase 2b: retry messages set force_refresh so a transient lookup_failed
+	// from the first pass doesn't get served back from the cache.
+	const readCachedStep = options.force_refresh ? null : stepStore;
+	const throwIfAborted = (): void => {
+		if (signal?.aborted) {
+			const reason = (signal as AbortSignal & { reason?: unknown }).reason;
+			throw reason instanceof Error ? reason : new Error(typeof reason === 'string' ? reason : 'aborted');
+		}
+	};
+
+	const cachedClassification = readCompletedPayload<CheckResult>(
+		readCachedStep ? await readCachedStep.get(auditId, seedDomain, 'classification') : null,
+	);
+	if (cachedClassification) return cachedClassification;
+
+	throwIfAborted();
+	const cachedDiscovery = readCompletedPayload<CheckResult>(
+		readCachedStep ? await readCachedStep.get(auditId, seedDomain, 'discovery') : null,
+	);
+	let discovery: CheckResult;
+	if (cachedDiscovery) {
+		const skippedAtMs = now();
+		recordStep(stepTimings, 'discovery', 'skipped', skippedAtMs, skippedAtMs);
+		discovery = cachedDiscovery;
+	} else {
+		const discoveryStartedAtMs = now();
+		const discover = deps.discoverBrandDomains ?? defaultDiscoverBrandDomains;
+		const discoveryTelemetry: BrandDiscoveryProgressEvent[] = [];
+		let discoveryTelemetryWrite = Promise.resolve();
+		const persistDiscoveryProgress = stepStore
+			? (event: BrandDiscoveryProgressEvent): Promise<void> => {
+					discoveryTelemetry.push(event);
+					const events = discoveryTelemetry.slice();
+					discoveryTelemetryWrite = discoveryTelemetryWrite
+						.catch(() => undefined)
+						.then(() =>
+							stepStore.put({
+								auditId,
+								target: seedDomain,
+								step: 'discovery',
+								status: 'partial',
+								payload: {
+									telemetry: {
+										events,
+										latest: event,
+									},
+								},
+							}),
+						);
+					return discoveryTelemetryWrite;
+				}
+			: undefined;
+		const discoveryOpts = {
+			min_confidence: options.min_confidence,
+			depth: options.depth,
+			planner_mode: options.planner_mode,
+			brand_aliases: options.brand_aliases,
+			candidate_domains: options.candidate_domains,
+			certstream: deps.certstream,
+			signal,
+			deadlineMs: options.deadlineMs,
+			onProgress: persistDiscoveryProgress,
+		};
+		discovery = await discover(seedDomain, discoveryOpts);
+		throwIfAborted();
+		await stepStore?.put({ auditId, target: seedDomain, step: 'discovery', status: 'completed', payload: discovery });
+		recordStep(stepTimings, 'discovery', 'completed', discoveryStartedAtMs, now());
+	}
+	const allCandidateFindings = discovery.findings.filter((f) => typeof f.metadata?.candidate === 'string');
+	const discoverySummary = discovery.findings.find((f) => f.metadata?.summary === true);
+	const discoverySignalStatus = readDiscoverySignalStatus(discoverySummary?.metadata?.signalStatus);
+	const discoveryCandidateUniverse = readDiscoveryCandidateUniverse(
+		discoverySummary?.metadata?.candidateUniverse,
+		allCandidateFindings.length,
+	);
+	const discoveryPlannerEfficiency = readDiscoveryPlannerEfficiency(discoverySummary?.metadata?.discoveryPerformance);
+	const truncated = allCandidateFindings.length > MAX_CANDIDATES_PER_AUDIT;
+	const candidateFindings = truncated ? allCandidateFindings.slice(0, MAX_CANDIDATES_PER_AUDIT) : allCandidateFindings;
+
+	const candidateDomains = candidateFindings.map((f) => f.metadata!.candidate as string);
+	const cachedRegistrarEnrichment = readCompletedRegistrarEnrichment(
+		readCachedStep ? await readCachedStep.get(auditId, seedDomain, 'registrar_enrichment') : null,
+		candidateDomains,
+	);
+	let registrarEnrichment: RegistrarEnrichmentPayload;
+	if (cachedRegistrarEnrichment) {
+		const skippedAtMs = now();
+		recordStep(stepTimings, 'registrar_enrichment', 'skipped', skippedAtMs, skippedAtMs);
+		registrarEnrichment = cachedRegistrarEnrichment;
+	} else {
+		throwIfAborted();
+		const registrarStartedAtMs = now();
+		// Look up the target's own registrar first — drives Rule 4 (same registrar family corroboration).
+		const targetLookup = await safeRegistrarLookup(seedDomain, deps, signal);
+		const candidateLookups = await lookupCandidateRegistrars(candidateFindings, deps, options.deadlineMs, now, signal);
+		registrarEnrichment = {
+			targetLookup,
+			candidates: candidateLookups.candidates,
+			partial: candidateLookups.partial,
+			skippedCandidates: candidateLookups.skippedCandidates,
+			rdapQueries: 1 + candidateLookups.rdapQueries,
+		};
+		await stepStore?.put({
+			auditId,
+			target: seedDomain,
+			step: 'registrar_enrichment',
+			status: candidateLookups.partial ? 'partial' : 'completed',
+			payload: registrarEnrichment,
+		});
+		recordStep(stepTimings, 'registrar_enrichment', candidateLookups.partial ? 'partial' : 'completed', registrarStartedAtMs, now());
+	}
+	const { targetLookup } = registrarEnrichment;
+	const lookupByCandidate = new Map(
+		registrarEnrichment.candidates.map((entry) => [normalizeDomainKey(entry.candidate), entry]),
+	);
+	const buildPerformance = () =>
+		summarizeBrandAuditMetrics({
+			startedAtMs: auditStartedAtMs,
+			finishedAtMs: now(),
+			steps: stepTimings,
+			dns: { queries: 0, cacheHits: 0, errors: 0 },
+			rdap: { queries: registrarEnrichment.rdapQueries ?? 0, cacheHits: 0, errors: 0 },
+		});
+	const targetCtx: TargetContext = {
+		domain: seedDomain,
+		registrar: targetLookup.registrar,
+		registrarFamily: normalizeRegistrar(targetLookup.registrar),
+		registrarIanaId: targetLookup.registrarIanaId,
+		registrant: targetLookup.registrant,
+	};
+
+	if (candidateFindings.length === 0) {
+		const classificationStartedAtMs = now();
+		recordStep(stepTimings, 'classification', 'completed', classificationStartedAtMs, now());
+		const performance = buildPerformance();
+		const result = buildCheckResult(CATEGORY, [
+			createFinding(
+				CATEGORY,
+				`Brand audit: no candidates surfaced for ${seedDomain}`,
+				'info',
+				`Discovery returned 0 candidates at confidence ≥ ${options.min_confidence ?? 0.5}. Discovery signalStatus: ${JSON.stringify(discoverySummary?.metadata?.signalStatus ?? {})}.`,
+				{
+					summary: true,
+					missingControl: true,
+					target: seedDomain,
+					consolidated: 0,
+					shadowIt: 0,
+					indeterminate: 0,
+					impersonation: 0,
+					targetRegistrar: targetLookup.registrar,
+					targetRegistrarIanaId: targetLookup.registrarIanaId,
+					targetRegistrarSource: targetLookup.registrarSource,
+					...(targetLookup.registrarSource === 'lookup_failed' && targetLookup.registrarFailureReason
+						? { targetRegistrarFailureReason: targetLookup.registrarFailureReason }
+						: {}),
+					targetRegistrant: targetLookup.registrant,
+					discoverySignalStatus: discoverySummary?.metadata?.signalStatus,
+					performance,
+					depth: buildBrandAuditDepthSummary({
+						candidateUniverse: discoveryCandidateUniverse,
+						signalStatus: discoverySignalStatus,
+						registrarSources: [targetLookup.registrarSource],
+						performance,
+						plannerEfficiency: discoveryPlannerEfficiency,
+					}),
+				},
+			),
+		]);
+		await stepStore?.put({ auditId, target: seedDomain, step: 'classification', status: 'completed', payload: result });
+		return result;
+	}
+
+	const bucketCounts: Record<Bucket, number> = { consolidated: 0, shadowIt: 0, indeterminate: 0, impersonation: 0 };
+	const classificationStartedAtMs = now();
+	const classifiedFindings: Finding[] = candidateFindings.map((f) => {
+		const domain = f.metadata!.candidate as string;
+		const signals = (f.metadata!.signals as string[]) ?? [];
+		const confidence = (f.metadata!.combinedConfidence as number) ?? 0;
+		const enrichmentEntry = lookupByCandidate.get(normalizeDomainKey(domain));
+		const lookup = enrichmentEntry?.lookup ?? unknownRegistrarLookup();
+
+		// Surface the cross-channel evidence fields the classifier reads for the
+		// shadowIt / impersonation branches. The discoverer emits these on the
+		// candidate finding's metadata; callers that don't yet populate them get
+		// the safe defaults ([], null, 0) and the new branches simply don't fire.
+		const md = f.metadata!;
+		const sharedTxtVerifications = Array.isArray(md.sharedTxtVerifications)
+			? (md.sharedTxtVerifications as string[])
+			: [];
+		const sharedMxPlatform = typeof md.sharedMxPlatform === 'string' ? (md.sharedMxPlatform as string) : null;
+		const lookalikeScore = typeof md.lookalikeScore === 'number' ? (md.lookalikeScore as number) : 0;
+		const callerAsserted = Array.isArray(md.candidateSeedSources) && (md.candidateSeedSources as string[]).includes('caller_candidate');
+		const evidenceObservations = readEvidenceObservations(md.evidenceObservations);
+
+		const candidate: CandidateInput = {
+			domain,
+			confidence,
+			signals,
+			registrar: lookup.registrar,
+			registrarIanaId: lookup.registrarIanaId,
+			registrarSource: lookup.registrarSource,
+			registrant: lookup.registrant,
+			sharedTxtVerifications,
+			sharedMxPlatform,
+			lookalikeScore,
+			callerAsserted,
+			evidenceObservations,
+		};
+		let classification: Classification = classifyCandidate(candidate, targetCtx);
+		if (enrichmentEntry?.status === 'skipped_deadline' && !hasRegistrarIndependentEvidence(domain, seedDomain, signals)) {
+			classification = {
+				bucket: 'indeterminate',
+				confidenceTier: classification.confidenceTier,
+				note: 'Registrar enrichment skipped by deadline',
+				reasons: [...classification.reasons, 'registrar enrichment skipped by deadline'],
+			};
+		}
+		bucketCounts[classification.bucket]++;
+		const severity = BUCKET_SEVERITY[classification.bucket];
+
+		const detailParts = [
+			`bucket=${classification.bucket}`,
+			`confidence=${classification.confidenceTier}`,
+			classification.note ? `note=${classification.note}` : null,
+			`registrar=${lookup.registrar} (${lookup.registrarSource})`,
+			`signals=[${signals.join(', ')}]`,
+			classification.reasons.length > 0 ? `reasons: ${classification.reasons.join('; ')}` : null,
+		].filter((p): p is string => p !== null);
+
+		return createFinding(CATEGORY, `Brand candidate: ${domain}`, severity, detailParts.join(' — '), {
+			candidate: domain,
+			bucket: classification.bucket,
+			confidenceTier: classification.confidenceTier,
+			note: classification.note,
+			reasons: classification.reasons,
+			signals,
+			combinedConfidence: confidence,
+			registrar: lookup.registrar,
+			registrarIanaId: lookup.registrarIanaId,
+			registrarSource: lookup.registrarSource,
+			...(lookup.registrarSource === 'lookup_failed' && lookup.registrarFailureReason
+				? { registrarFailureReason: lookup.registrarFailureReason }
+				: {}),
+			registrant: lookup.registrant,
+			...(enrichmentEntry?.status ? { registrarEnrichmentStatus: enrichmentEntry.status } : {}),
+		});
+	});
+	recordStep(stepTimings, 'classification', 'completed', classificationStartedAtMs, now());
+	const performance = buildPerformance();
+
+	const total = classifiedFindings.length;
+	const summary = createFinding(
+		CATEGORY,
+		`Brand audit: ${total} candidate(s) classified for ${seedDomain}`,
+		'info',
+		`consolidated=${bucketCounts.consolidated} shadowIt=${bucketCounts.shadowIt} indeterminate=${bucketCounts.indeterminate} impersonation=${bucketCounts.impersonation}`,
+		{
+			summary: true,
+			target: seedDomain,
+			total,
+			consolidated: bucketCounts.consolidated,
+			shadowIt: bucketCounts.shadowIt,
+			indeterminate: bucketCounts.indeterminate,
+			impersonation: bucketCounts.impersonation,
+			targetRegistrar: targetLookup.registrar,
+			targetRegistrarIanaId: targetLookup.registrarIanaId,
+			targetRegistrarSource: targetLookup.registrarSource,
+			...(targetLookup.registrarSource === 'lookup_failed' && targetLookup.registrarFailureReason
+				? { targetRegistrarFailureReason: targetLookup.registrarFailureReason }
+				: {}),
+			targetRegistrant: targetLookup.registrant,
+			minConfidence: options.min_confidence ?? 0.5,
+			truncated,
+			truncatedAt: truncated ? MAX_CANDIDATES_PER_AUDIT : undefined,
+			discoveredTotal: allCandidateFindings.length,
+			performance,
+			depth: buildBrandAuditDepthSummary({
+				candidateUniverse: discoveryCandidateUniverse,
+				signalStatus: discoverySignalStatus,
+				registrarSources: [targetLookup.registrarSource, ...registrarEnrichment.candidates.map(({ lookup }) => lookup.registrarSource)],
+				performance,
+				plannerEfficiency: discoveryPlannerEfficiency,
+			}),
+		},
+	);
+
+	const result = buildCheckResult(CATEGORY, [summary, ...classifiedFindings]);
+	await stepStore?.put({ auditId, target: seedDomain, step: 'classification', status: 'completed', payload: result });
+	return result;
+}

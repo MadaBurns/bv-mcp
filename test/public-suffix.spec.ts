@@ -6,7 +6,25 @@ describe('public-suffix', () => {
 		return import('../src/lib/public-suffix');
 	}
 
+	describe('getRegistrableDomain', () => {
+		it('returns the registrable domain for multi-label public suffixes', async () => {
+			const { getRegistrableDomain } = await loadModule();
+			expect(getRegistrableDomain('login.example.co.uk')).toBe('example.co.uk');
+		});
+
+		it('treats private suffix tenants as registrable domains', async () => {
+			const { getRegistrableDomain } = await loadModule();
+			expect(getRegistrableDomain('tenant.github.io')).toBe('tenant.github.io');
+			expect(getRegistrableDomain('service.appspot.com')).toBe('service.appspot.com');
+		});
+	});
+
 	describe('extractBrandName', () => {
+		it('extracts the registrable label from a multi-label public suffix domain', async () => {
+			const { extractBrandName } = await loadModule();
+			expect(extractBrandName('login.example.co.uk')).toBe('example');
+		});
+
 		it('should extract brand from NZ govt domain', async () => {
 			const { extractBrandName } = await loadModule();
 			expect(extractBrandName('tewhatuora.govt.nz')).toBe('tewhatuora');

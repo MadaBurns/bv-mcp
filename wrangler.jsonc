@@ -7,6 +7,9 @@
     "global_fetch_strictly_public"
   ],
   "upload_source_maps": true,
+  "limits": {
+    "cpu_ms": 300000
+  },
   "durable_objects": {
     "bindings": [
       {

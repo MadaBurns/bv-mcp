@@ -431,21 +431,21 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	discover_brand_domains: {
 		description:
-			"Find a brand's hidden domain portfolio by aggregating four discovery signals (TLS SAN co-ownership via crt.sh, NS-record correlation, DMARC RUA address mining, DKIM key reuse). Returns ranked candidate domains with combined-confidence scoring.",
+			"Find a brand's hidden domain portfolio with standard or deep discovery by aggregating certificate, DNS, mail-policy, redirect, TXT verification, MX platform, and candidate-seeding signals. Returns ranked candidate domains with provenance and combined-confidence scoring.",
 		schema: DiscoverBrandDomainsArgs,
 		group: 'discovery',
 		scanIncluded: false,
 	},
 	brand_audit_single: {
 		description:
-			"Run a full brand audit on a single target: discover brand-related domains via all 8 discovery signals, look up registrar + registrant for each candidate, and classify each into one of four buckets (consolidated, shadowIt, indeterminate, impersonation). Returns a per-candidate classification with summary counts. Gated tier-wide by monthly BRAND_AUDIT_QUOTAS (free/agent=0, developer=50, partner=200, enterprise=500, owner=unlimited).",
+			"Run a full brand audit on a single target with optional standard/deep discovery depth, brand aliases, and caller-supplied candidate domains. Discovers brand-related domains, looks up registrar + registrant for each candidate, and classifies each into consolidated, shadowIt, indeterminate, or impersonation. Gated tier-wide by monthly BRAND_AUDIT_QUOTAS (free/agent=0, developer=50, partner=200, enterprise=500, owner=unlimited).",
 		schema: BrandAuditSingleArgs,
 		group: 'discovery',
 		scanIncluded: false,
 	},
 	brand_audit_batch_start: {
 		description:
-			"Enqueue an async brand audit across up to 50 target domains. Returns { auditId, queuedAt, targetCount, etaSeconds } immediately; poll with brand_audit_status and fetch results with brand_audit_get_report once complete. Each target consumes 1 unit of the monthly BRAND_AUDIT_QUOTAS budget (consumed atomically at enqueue — partial-failure batches don't refund).",
+			"Enqueue an async brand audit across up to 50 target domains with optional standard/deep discovery depth, brand aliases, and caller-supplied candidate domains. Returns { auditId, queuedAt, targetCount, etaSeconds } immediately; poll with brand_audit_status and fetch results with brand_audit_get_report once complete. Each target consumes 1 unit of the monthly BRAND_AUDIT_QUOTAS budget.",
 		schema: BrandAuditBatchStartArgs,
 		group: 'discovery',
 		scanIncluded: false,

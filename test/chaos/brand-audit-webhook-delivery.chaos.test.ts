@@ -58,7 +58,7 @@ function makeMockD1(opts: MockDbOpts = {}) {
 				},
 				async run() {
 					calls.push({ sql, binds });
-					return { success: true, meta: {} };
+					return { success: true, meta: { changes: 1 } };
 				},
 				async all() {
 					calls.push({ sql, binds });

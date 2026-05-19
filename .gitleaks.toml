@@ -23,7 +23,7 @@ paths = [
 ]
 regexTarget = "match"
 regexes = [
-  '''@([a-zA-Z0-9.\-]+\.)?example\.(com|org|net)''',
+  '''@([a-zA-Z0-9.\-]+\.)?example\.(com|org|net|test|invalid)''',
   '''@localhost''',
   '''@blackveilsecurity\.com''',
   '''@anthropic\.com''',
@@ -191,4 +191,5 @@ paths = [
 	  '''worker-configuration\.d\.ts$''', # Generated CF types
 	  '''docs/plans/''',                 # Internal planning docs (gitignored)
 	  '''test/audits/no-tracked-secrets\.audit\.test\.ts$''', # Audit test contains regex literals (incl. PEM header)
+	  '''test/audits/repo-safety-scanner\.audit\.test\.ts$''', # Deliberate repo-safety secret-shape fixtures
 	]

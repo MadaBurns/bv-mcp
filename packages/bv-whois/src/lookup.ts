@@ -9,6 +9,7 @@ import { resolveWhoisServer, type KVLike, type WhoisQueryFn } from './resolver';
 
 export interface WhoisLookupResult {
 	registrar: string | null;
+	registrarIanaId: string | null;
 	source: 'whois' | 'redacted' | 'notfound' | 'error';
 }
 
@@ -35,30 +36,30 @@ const ALWAYS_REDACTED_TLDS = new Set<string>(['de']);
  */
 export async function lookupRegistrar(domain: string, deps: LookupDeps): Promise<WhoisLookupResult> {
 	if (typeof domain !== 'string' || !DOMAIN_RE.test(domain)) {
-		return { registrar: null, source: 'error' };
+		return { registrar: null, registrarIanaId: null, source: 'error' };
 	}
 
 	const labels = domain.toLowerCase().split('.');
 	const tld = labels[labels.length - 1];
 
 	if (ALWAYS_REDACTED_TLDS.has(tld)) {
-		return { registrar: null, source: 'redacted' };
+		return { registrar: null, registrarIanaId: null, source: 'redacted' };
 	}
 
 	const server = await resolveWhoisServer(tld, deps);
-	if (!server) return { registrar: null, source: 'error' };
+	if (!server) return { registrar: null, registrarIanaId: null, source: 'error' };
 
 	let response: string;
 	try {
 		response = await deps.whoisQuery(server, domain);
 	} catch {
-		return { registrar: null, source: 'error' };
+		return { registrar: null, registrarIanaId: null, source: 'error' };
 	}
 
 	const parsed = parseWhoisResponse(response);
 
-	if (parsed.registrar) return { registrar: parsed.registrar, source: 'whois' };
-	if (parsed.redacted) return { registrar: null, source: 'redacted' };
-	if (parsed.notFound) return { registrar: null, source: 'notfound' };
-	return { registrar: null, source: 'error' };
+	if (parsed.registrar) return { registrar: parsed.registrar, registrarIanaId: parsed.registrarIanaId ?? null, source: 'whois' };
+	if (parsed.redacted) return { registrar: null, registrarIanaId: null, source: 'redacted' };
+	if (parsed.notFound) return { registrar: null, registrarIanaId: null, source: 'notfound' };
+	return { registrar: null, registrarIanaId: null, source: 'error' };
 }

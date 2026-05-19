@@ -5,7 +5,8 @@ export default defineConfig({
 		testTimeout: 60_000, // Playwright can be slow
 		include: [
 			'test/pdf-engine.spec.ts',
-			'test/generate-discovery-report.spec.ts'
+			'test/generate-discovery-report.spec.ts',
+			'test/audits/brand-report-qa-script.node.test.ts'
 		],
 		environment: 'node',
 		pool: 'forks',

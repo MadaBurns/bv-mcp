@@ -48,7 +48,7 @@ describe('mineDmarcRua', () => {
 		expect(result.dmarcPresent).toBe(true);
 		expect(result.ruaUris).toEqual(['mailto:dmarc@foo.com']);
 		expect(result.ruaDomains).toEqual([
-			{ domain: 'foo.com', classification: 'self', confidence: 0 },
+			{ domain: 'foo.com', classification: 'self', externalAuthorization: 'same_domain', confidence: 0 },
 		]);
 	});
 
@@ -59,26 +59,82 @@ describe('mineDmarcRua', () => {
 		const result = await mineDmarcRua('foo.com', { dnsQuery });
 		expect(result.queryStatus).toBe('ok');
 		expect(result.ruaDomains).toEqual([
-			{ domain: 'dmarcian.com', classification: 'processor', confidence: 0 },
+			{ domain: 'dmarcian.com', classification: 'processor', externalAuthorization: 'processor', confidence: 0 },
 		]);
 	});
 
 	it('classifies an unrelated domain as related with confidence 0.6', async () => {
-		const dnsQuery = vi.fn(async () =>
-			txtResponse(['v=DMARC1; p=reject; rua=mailto:soc@parentbrand.com']),
+		const dnsQuery = vi.fn(async (name: string) =>
+			name === '_dmarc.foo.com'
+				? txtResponse(['v=DMARC1; p=reject; rua=mailto:soc@parentbrand.com'])
+				: emptyDnsResponse(),
 		);
 		const result = await mineDmarcRua('foo.com', { dnsQuery });
 		expect(result.queryStatus).toBe('ok');
 		expect(result.ruaDomains).toEqual([
-			{ domain: 'parentbrand.com', classification: 'related', confidence: 0.6 },
+			{ domain: 'parentbrand.com', classification: 'related', externalAuthorization: 'missing', confidence: 0.45 },
+		]);
+	});
+
+	it('confirms authorized external rua destinations via destination report authorization record', async () => {
+		const queries: string[] = [];
+		const dnsQuery = vi.fn(async (name: string, type: string) => {
+			queries.push(`${name}:${type}`);
+			if (name === '_dmarc.example.com') {
+				return txtResponse(['v=DMARC1; p=reject; rua=mailto:reports@reports.example.net']);
+			}
+			if (name === 'example.com._report._dmarc.reports.example.net') {
+				return txtResponse(['v=DMARC1']);
+			}
+			return emptyDnsResponse();
+		});
+
+		const result = await mineDmarcRua('example.com', { dnsQuery });
+
+		expect(queries).toContain('example.com._report._dmarc.reports.example.net:TXT');
+		expect(result.ruaDomains).toEqual([
+			{ domain: 'reports.example.net', classification: 'related', externalAuthorization: 'confirmed', confidence: 0.75 },
+		]);
+	});
+
+	it('marks missing external rua authorization with lower confidence', async () => {
+		const dnsQuery = vi.fn(async (name: string) => {
+			if (name === '_dmarc.example.com') {
+				return txtResponse(['v=DMARC1; p=reject; rua=mailto:reports@reports.example.net']);
+			}
+			return emptyDnsResponse();
+		});
+
+		const result = await mineDmarcRua('example.com', { dnsQuery });
+
+		expect(result.ruaDomains).toEqual([
+			{ domain: 'reports.example.net', classification: 'related', externalAuthorization: 'missing', confidence: 0.45 },
+		]);
+	});
+
+	it('treats external rua authorization lookup errors as missing authorization', async () => {
+		const dnsQuery = vi.fn(async (name: string) => {
+			if (name === '_dmarc.example.com') {
+				return txtResponse(['v=DMARC1; p=reject; rua=mailto:reports@reports.example.net']);
+			}
+			throw new Error('temporary dns failure');
+		});
+
+		const result = await mineDmarcRua('example.com', { dnsQuery });
+
+		expect(result.queryStatus).toBe('ok');
+		expect(result.ruaDomains).toEqual([
+			{ domain: 'reports.example.net', classification: 'related', externalAuthorization: 'missing', confidence: 0.45 },
 		]);
 	});
 
 	it('parses both rua= and ruf= and classifies each', async () => {
-		const dnsQuery = vi.fn(async () =>
-			txtResponse([
-				'v=DMARC1; p=reject; rua=mailto:reports@dmarcian.com,mailto:soc@parentbrand.com; ruf=mailto:forensics@parentbrand.com',
-			]),
+		const dnsQuery = vi.fn(async (name: string) =>
+			name === '_dmarc.foo.com'
+				? txtResponse([
+					'v=DMARC1; p=reject; rua=mailto:reports@dmarcian.com,mailto:soc@parentbrand.com; ruf=mailto:forensics@parentbrand.com',
+				])
+				: emptyDnsResponse(),
 		);
 		const result = await mineDmarcRua('foo.com', { dnsQuery });
 		expect(result.queryStatus).toBe('ok');
@@ -86,7 +142,7 @@ describe('mineDmarcRua', () => {
 		const byDomain = result.ruaDomains.map((d) => d.domain).sort();
 		expect(byDomain).toEqual(['dmarcian.com', 'parentbrand.com']);
 		const parent = result.ruaDomains.find((d) => d.domain === 'parentbrand.com');
-		expect(parent).toMatchObject({ classification: 'related', confidence: 0.6 });
+		expect(parent).toMatchObject({ classification: 'related', externalAuthorization: 'missing', confidence: 0.45 });
 	});
 
 	it('handles missing DMARC record (no_dmarc status with empty arrays)', async () => {
@@ -162,7 +218,7 @@ describe('mineDmarcRua', () => {
 		const result = await mineDmarcRua('foo.com', { dnsQuery });
 		expect(result.queryStatus).toBe('ok');
 		expect(result.ruaDomains).toEqual([
-			{ domain: 'foo.com', classification: 'self', confidence: 0 },
+			{ domain: 'foo.com', classification: 'self', externalAuthorization: 'same_domain', confidence: 0 },
 		]);
 	});
 
@@ -173,7 +229,7 @@ describe('mineDmarcRua', () => {
 		const result = await mineDmarcRua('foo.com', { dnsQuery });
 		expect(result.queryStatus).toBe('ok');
 		expect(result.ruaDomains).toEqual([
-			{ domain: 'dmarc.foo.com', classification: 'self', confidence: 0 },
+			{ domain: 'dmarc.foo.com', classification: 'self', externalAuthorization: 'same_domain', confidence: 0 },
 		]);
 	});
 

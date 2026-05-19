@@ -42,6 +42,12 @@ export type { HttpRedirectOptions, HttpRedirectResult } from './http-redirect-de
 export { detectMxOverlap } from './mx-overlap-detector';
 export type { MxOverlapOptions, MxOverlapResult } from './mx-overlap-detector';
 
+export { detectSharedTxtVerifications } from './txt-verification-detector';
+export type { TxtVerificationCandidate, TxtVerificationResult } from './txt-verification-detector';
+
+export { detectSharedMxPlatform } from './mx-platform-detector';
+export type { MxPlatformCandidate, MxPlatformResult } from './mx-platform-detector';
+
 export { detectSpfInclude, extractSeedSpfIncludes } from './spf-include-detector';
 export type {
 	SpfIncludeOptions,

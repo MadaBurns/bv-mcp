@@ -28,7 +28,22 @@ describe('POST /lookup', () => {
 		});
 
 		expect(res.status).toBe(200);
-		expect(await res.json()).toEqual({ registrar: 'TestReg Inc.', source: 'whois' });
+		expect(await res.json()).toEqual({ registrar: 'TestReg Inc.', registrarIanaId: null, source: 'whois' });
+	});
+
+	it('returns registrar IANA ID in the JSON response when WHOIS includes it', async () => {
+		const kv = makeKV();
+		const whoisQuery = vi.fn(async () => 'Registrar: TestReg Inc.\nRegistrar IANA ID: 299\n');
+		const app = buildApp({ kv: kv as never, whoisQuery });
+
+		const res = await app.request('/lookup', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ domain: 'example.com' }),
+		});
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ registrar: 'TestReg Inc.', registrarIanaId: '299', source: 'whois' });
 	});
 
 	it('returns 400 when domain field is missing', async () => {
@@ -95,7 +110,7 @@ describe('POST /lookup', () => {
 		});
 
 		expect(res.status).toBe(200);
-		expect(await res.json()).toEqual({ registrar: null, source: 'redacted' });
+		expect(await res.json()).toEqual({ registrar: null, registrarIanaId: null, source: 'redacted' });
 	});
 
 	it('rejects body larger than 1KB', async () => {

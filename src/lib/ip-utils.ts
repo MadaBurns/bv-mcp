@@ -2,7 +2,7 @@
 
 /**
  * Reverse the octets of an IPv4 address.
- * Used for DNSBL and PTR queries (e.g., "192.0.2.1" → "1.2.0.192").
+ * Used for DNSBL and PTR queries (e.g., "192.0.2.1" to "1.2.0.192").
  */
 export function reverseIPv4(ip: string): string {
 	return ip.split('.').reverse().join('.');
@@ -13,7 +13,7 @@ export function reverseIPv4(ip: string): string {
  * reverse the nibbles, and join with dots.
  * Used for Cymru ASN lookups and ip6.arpa PTR queries.
  *
- * @example reverseIPv6("2001:0db8::1") → "nibble-reversed-ip6-arpa-label"
+ * @example reverseIPv6("2001:0db8::1") returns the nibble-reversed ip6.arpa label.
  */
 export function reverseIPv6(ip: string): string {
 	// Expand :: shorthand to full 8 groups

@@ -38,13 +38,13 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
-            RANGE="HEAD~1..HEAD"
-          else
-            RANGE="${BASE_SHA}..${HEAD_SHA}"
+          if [ -z "$BASE_SHA" ] || [ -z "$HEAD_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "::error::Unable to compute an exact gitleaks scan range."
+            exit 1
           fi
+          RANGE="${BASE_SHA}..${HEAD_SHA}"
           echo "Scanning range: $RANGE"
-          gitleaks detect --config=.gitleaks.toml --source=. --redact --verbose --exit-code 1 --no-banner --log-opts="$RANGE"
+          gitleaks detect --config=.gitleaks.toml --source=. --redact=100 --verbose --exit-code 1 --no-banner --log-opts="$RANGE"
 
   dependency-audit:
     name: Dependency audit

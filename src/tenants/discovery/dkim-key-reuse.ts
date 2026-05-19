@@ -21,11 +21,13 @@
  */
 
 import { queryDns } from '../../lib/dns-transport';
-import type { DohResponse } from '../../lib/dns-types';
+import type { DohResponse, RecordTypeName } from '../../lib/dns-types';
+import { mapConcurrent } from '../../lib/map-concurrent';
 import { validateDomain } from '../../lib/sanitize';
+import type { DiscoveryDnsContext } from './dns-context';
 
 /** Function signature for an injectable DNS-over-HTTPS query. */
-export type DnsQueryFn = (name: string, type: 'TXT' | string) => Promise<DohResponse>;
+export type DnsQueryFn = (name: string, type: RecordTypeName) => Promise<DohResponse>;
 
 /**
  * Default DKIM selectors probed when the caller doesn't supply a list. Mirrors
@@ -47,14 +49,30 @@ const DEFAULT_SELECTORS = [
 	'zoho',
 ];
 
+const DEFAULT_MAX_CANDIDATES = 40;
+const DEFAULT_CANDIDATE_CONCURRENCY = 4;
+const DEFAULT_TOTAL_BUDGET_MS = 25_000;
+const DEFAULT_CANDIDATE_BUDGET_RESERVE_MS = 10_000;
+
 export interface DkimKeyReuseOptions {
 	/**
 	 * Override the underlying DNS query implementation (used for testing).
 	 * Defaults to the project's `queryDns` facade. Always called with type='TXT'.
 	 */
 	dnsQuery?: DnsQueryFn;
+	dnsContext?: DiscoveryDnsContext;
 	/** Selectors to probe. Defaults to a common-selector list (12 entries). */
 	selectors?: string[];
+	/** Defensive cap for candidate domains; oversized discovery sets are reported as partial. */
+	maxCandidates?: number;
+	/** Candidate-level concurrency. DNS context still applies its own global semaphore. */
+	candidateConcurrency?: number;
+	/** Wall-clock budget for this detector. Exhaustion returns partial results instead of blocking the whole discovery sweep. */
+	totalBudgetMs?: number;
+	/** Clock override for deterministic budget tests. */
+	now?: () => number;
+	/** Optional caller abort signal checked before starting new probes. */
+	signal?: AbortSignal;
 }
 
 export interface DkimCoOwnedCandidate {
@@ -78,6 +96,12 @@ export interface DkimKeyReuseResult {
 	 * `failed` — every seed-selector probe threw (no usable seed data).
 	 */
 	queryStatus: 'ok' | 'partial' | 'failed';
+	/** Number of candidate domains for which at least one selector probe was attempted. */
+	probedCandidates?: number;
+	/** Candidate domains skipped by cap or detector budget. */
+	skippedCandidates?: number;
+	/** True when this detector stopped early because totalBudgetMs or signal aborted. */
+	budgetExceeded?: boolean;
 }
 
 /** Constant for the confidence assigned to a key-reuse hit. */
@@ -155,6 +179,16 @@ async function probeSelector(domain: string, selector: string, dnsQuery: DnsQuer
 	return { kind: 'ok', p: null };
 }
 
+function boundedPositiveInt(value: number | undefined, fallback: number): number {
+	if (value === undefined || !Number.isFinite(value)) return fallback;
+	return Math.max(1, Math.trunc(value));
+}
+
+function boundedBudgetMs(value: number | undefined): number {
+	if (value === undefined || !Number.isFinite(value)) return DEFAULT_TOTAL_BUDGET_MS;
+	return Math.max(0, Math.trunc(value));
+}
+
 /**
  * Detect DKIM key reuse between a seed domain and candidate domains.
  *
@@ -172,8 +206,27 @@ export async function detectDkimKeyReuse(
 		throw new Error(`Domain validation failed: ${validation.error ?? 'invalid domain'}`);
 	}
 	const seedLower = normHost(seedDomain);
-	const dnsQuery = options.dnsQuery ?? (queryDns as unknown as DnsQueryFn);
+	const dnsQuery = options.dnsContext?.query ?? options.dnsQuery ?? (queryDns as unknown as DnsQueryFn);
 	const selectors = (options.selectors ?? DEFAULT_SELECTORS).slice();
+	const now = options.now ?? Date.now;
+	const totalBudgetMs = boundedBudgetMs(options.totalBudgetMs);
+	const deadlineMs = totalBudgetMs === 0 ? Number.POSITIVE_INFINITY : now() + totalBudgetMs;
+	let budgetExceeded = false;
+	const remainingBudgetMs = (): number => {
+		if (totalBudgetMs === 0) return Number.POSITIVE_INFINITY;
+		return Math.max(0, deadlineMs - now());
+	};
+	const isBudgetExceeded = (): boolean => {
+		if (options.signal?.aborted) {
+			budgetExceeded = true;
+			return true;
+		}
+		if (now() >= deadlineMs) {
+			budgetExceeded = true;
+			return true;
+		}
+		return false;
+	};
 
 	// Probe seed across all selectors. seedKeyMap: hash → { selector, raw }
 	const seedKeyMap = new Map<string, { selectors: Set<string>; raw: string }>();
@@ -182,6 +235,11 @@ export async function detectDkimKeyReuse(
 	const seedSelectorsHit: string[] = [];
 
 	for (const sel of selectors) {
+		if (isBudgetExceeded()) break;
+		if (seedKeyMap.size > 0 && remainingBudgetMs() <= DEFAULT_CANDIDATE_BUDGET_RESERVE_MS) {
+			budgetExceeded = true;
+			break;
+		}
 		const outcome = await probeSelector(seedLower, sel, dnsQuery);
 		if (outcome.kind === 'error') {
 			seedErrors++;
@@ -199,42 +257,115 @@ export async function detectDkimKeyReuse(
 		}
 	}
 
-	if (seedSuccesses === 0 && seedErrors > 0) {
-		return { seedDomain: seedLower, seedSelectors: [], coOwnedDomains: [], queryStatus: 'failed' };
+	if (seedSuccesses === 0 && seedErrors > 0 && !budgetExceeded) {
+		return { seedDomain: seedLower, seedSelectors: [], coOwnedDomains: [], queryStatus: 'failed', probedCandidates: 0, skippedCandidates: 0 };
+	}
+
+	if (seedKeyMap.size === 0) {
+		return {
+			seedDomain: seedLower,
+			seedSelectors: Array.from(new Set(seedSelectorsHit)).sort(),
+			coOwnedDomains: [],
+			queryStatus: seedErrors > 0 || budgetExceeded ? 'partial' : 'ok',
+			probedCandidates: 0,
+			skippedCandidates: 0,
+			...(budgetExceeded ? { budgetExceeded: true } : {}),
+		};
 	}
 
 	let anyError = seedErrors > 0;
 	const coOwned: DkimCoOwnedCandidate[] = [];
-
+	const validCandidates: string[] = [];
 	for (const raw of candidateDomains) {
 		const v = validateDomain(raw ?? '');
 		if (!v.valid) continue;
 		const candidate = normHost(raw);
 		if (candidate === seedLower) continue;
+		validCandidates.push(candidate);
+	}
+	const maxCandidates = boundedPositiveInt(options.maxCandidates, DEFAULT_MAX_CANDIDATES);
+	const candidateSlice = validCandidates.slice(0, maxCandidates);
+	let skippedCandidates = Math.max(0, validCandidates.length - candidateSlice.length);
+	let probedCandidates = 0;
+	const concurrency = boundedPositiveInt(options.candidateConcurrency, DEFAULT_CANDIDATE_CONCURRENCY);
+	const seedHitSelectors = new Set<string>();
+	for (const seedHit of seedKeyMap.values()) {
+		for (const selector of seedHit.selectors) seedHitSelectors.add(selector);
+	}
+	const primarySelectors = selectors.filter((selector) => seedHitSelectors.has(selector));
+	const secondarySelectors = selectors.filter((selector) => !seedHitSelectors.has(selector));
+	type CandidateProbeState = {
+		candidate: string;
+		candidateHadError: boolean;
+		attemptedProbe: boolean;
+		skippedByBudget: boolean;
+		sharedKeyHashes: Set<string>;
+		sharedSelectors: Set<string>;
+	};
+	const candidateStates = new Map<string, CandidateProbeState>();
+	for (const candidate of candidateSlice) {
+		candidateStates.set(candidate, {
+			candidate,
+			candidateHadError: false,
+			attemptedProbe: false,
+			skippedByBudget: false,
+			sharedKeyHashes: new Set<string>(),
+			sharedSelectors: new Set<string>(),
+		});
+	}
 
-		const sharedKeyHashes = new Set<string>();
-		const sharedSelectors = new Set<string>();
-		// pre-populate sharedSelectors with the seed's matching selectors below
-		for (const sel of selectors) {
-			const outcome = await probeSelector(candidate, sel, dnsQuery);
+	const probeCandidateSelectors = async (state: CandidateProbeState, selectorsToProbe: string[]): Promise<void> => {
+		if (state.skippedByBudget) return;
+		for (const sel of selectorsToProbe) {
+			if (isBudgetExceeded()) {
+				if (!state.attemptedProbe) state.skippedByBudget = true;
+				return;
+			}
+			if (!state.attemptedProbe) {
+				state.attemptedProbe = true;
+				probedCandidates++;
+			}
+			const outcome = await probeSelector(state.candidate, sel, dnsQuery);
 			if (outcome.kind === 'error') {
-				anyError = true;
+				state.candidateHadError = true;
 				continue;
 			}
 			if (!outcome.p) continue;
 			const h = await hashKey(outcome.p);
 			const seedHit = seedKeyMap.get(h);
 			if (!seedHit) continue;
-			sharedKeyHashes.add(h);
-			sharedSelectors.add(sel);
-			for (const seedSel of seedHit.selectors) sharedSelectors.add(seedSel);
+			state.sharedKeyHashes.add(h);
+			state.sharedSelectors.add(sel);
+			for (const seedSel of seedHit.selectors) state.sharedSelectors.add(seedSel);
 		}
+	};
 
-		if (sharedKeyHashes.size === 0) continue;
+	await mapConcurrent(candidateSlice, concurrency, async (candidate) => {
+		const state = candidateStates.get(candidate);
+		if (!state) return;
+		await probeCandidateSelectors(state, primarySelectors);
+	});
+
+	if (!isBudgetExceeded() && secondarySelectors.length > 0) {
+		await mapConcurrent(candidateSlice, concurrency, async (candidate) => {
+			const state = candidateStates.get(candidate);
+			if (!state) return;
+			await probeCandidateSelectors(state, secondarySelectors);
+		});
+	}
+
+	for (const result of candidateStates.values()) {
+		if (result.skippedByBudget) {
+			skippedCandidates++;
+		}
+		if (result.candidateHadError) {
+			anyError = true;
+		}
+		if (result.sharedKeyHashes.size === 0) continue;
 		coOwned.push({
-			domain: candidate,
-			sharedKeys: Array.from(sharedKeyHashes).sort(),
-			sharedSelectors: Array.from(sharedSelectors).sort(),
+			domain: result.candidate,
+			sharedKeys: Array.from(result.sharedKeyHashes).sort(),
+			sharedSelectors: Array.from(result.sharedSelectors).sort(),
 			confidence: KEY_REUSE_CONFIDENCE,
 		});
 	}
@@ -245,6 +376,9 @@ export async function detectDkimKeyReuse(
 		seedDomain: seedLower,
 		seedSelectors: Array.from(new Set(seedSelectorsHit)).sort(),
 		coOwnedDomains: coOwned,
-		queryStatus: anyError ? 'partial' : 'ok',
+		queryStatus: anyError || skippedCandidates > 0 || budgetExceeded ? 'partial' : 'ok',
+		probedCandidates,
+		skippedCandidates,
+		...(budgetExceeded ? { budgetExceeded: true } : {}),
 	};
 }

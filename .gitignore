@@ -29,6 +29,8 @@ __pycache__/
 
 # Environment & auth tokens
 .env
+*.env
+*.env.*
 .env.local
 .env.*
 .env.*.local
@@ -48,7 +50,6 @@ coverage/
 docs/plans/
 docs/code-review/
 docs/superpowers/
-docs/github-settings.md
 docs/hn-show-post-draft.md
 docs/mcp-directory-submissions.md
 
@@ -99,6 +100,8 @@ plan-*.md
 
 # Internal reports / call prep — never commit (drift catchers)
 /reports/
+/.csc/
+/.reports/
 /BENCHMARK_REPORT.md
 /BENCHMARK_*.md
 /CAPACITY_ANALYSIS.md
@@ -141,6 +144,7 @@ reports/tenant-readiness-proof.html
 reports/tenant-calibration-*.json
 reports/tenant-*.json
 reports/repo-audit-*.html
+*.pdf
 
 # Phase-rollout artifacts (kept locally for ops history, not for OSS distribution)
 /phase*-monitoring.json

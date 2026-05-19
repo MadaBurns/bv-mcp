@@ -46,6 +46,18 @@ Follow the pattern in `src/tools/check-spf.ts` — use `createFinding()` and `bu
 - Tests that call tool handlers should clear scan cache between cases
 - Dynamic imports are used for mock isolation
 
+## Public Fixtures
+
+Use synthetic fixtures only. There must be no real customer data, real tenant lists, customer emails, public IP literals, internal hostnames, generated reports, PDFs, CSC artifacts, or private Wrangler config in commits.
+
+Safe examples:
+
+- Domains: `tenant-001.example.test`, `mail.example.com`, `service.example.invalid`
+- Emails: `admin@example.test`, `security@example.com`
+- IPs: RFC 5737 ranges such as `192.0.2.10`, `198.51.100.20`, and `203.0.113.30`
+
+Run `npm run audit:repo-safety` and `npm run audit:oss-safety` before opening a PR that changes fixtures, docs, scripts, workflow files, or package publishing metadata.
+
 ## Pull Requests
 
 - Keep PRs focused — one feature or fix per PR

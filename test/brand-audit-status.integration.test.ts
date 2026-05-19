@@ -91,6 +91,93 @@ describe('brandAuditStatus', () => {
 		expect(summary?.metadata?.completed).toBe(2);
 		expect(summary?.metadata?.total).toBe(3);
 		expect((summary?.metadata?.targets as unknown[])).toHaveLength(3);
+		expect(summary?.metadata?.targetStatusCounts).toEqual({
+			queued: 0,
+			running: 1,
+			completed: 2,
+			failed: 0,
+		});
+		expect(summary?.metadata?.ageMs).toBeTypeOf('number');
+		expect(summary?.metadata?.updatedAgeMs).toBeTypeOf('number');
+	});
+
+	it('coalesces a completed parent plus populated target result_json into a completed target status', async () => {
+		const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
+		const { db } = makeMockD1({
+			audit: {
+				id: 'aud-race',
+				owner_id: 'owner-abc',
+				status: 'completed',
+				total_targets: 1,
+				completed_targets: 1,
+				format: 'both',
+				created_at: 1_750_000_000_000,
+				updated_at: 1_750_000_100_000,
+				completed_at: 1_750_000_100_000,
+			},
+			targets: [
+				{
+					audit_id: 'aud-race',
+					target: 'example.com',
+					status: 'running',
+					created_at: 1_750_000_000_000,
+					completed_at: null,
+					error: null,
+					pdf_r2_key: null,
+					result_json: '{"category":"brand_discovery","findings":[]}',
+				},
+			],
+		});
+
+		const result = await brandAuditStatus('aud-race', 'owner-abc', { db });
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary?.metadata?.targetStatusCounts).toEqual({
+			queued: 0,
+			running: 0,
+			completed: 1,
+			failed: 0,
+		});
+		expect(summary?.metadata?.targets).toEqual([
+			expect.objectContaining({ target: 'example.com', status: 'completed' }),
+		]);
+	});
+
+	it('does not coalesce an explicitly failed target even if result_json is present', async () => {
+		const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
+		const { db } = makeMockD1({
+			audit: {
+				id: 'aud-failed',
+				owner_id: 'owner-abc',
+				status: 'completed',
+				total_targets: 1,
+				completed_targets: 1,
+				format: 'json',
+				created_at: 1_750_000_000_000,
+				updated_at: 1_750_000_100_000,
+				completed_at: 1_750_000_100_000,
+			},
+			targets: [
+				{
+					audit_id: 'aud-failed',
+					target: 'example.com',
+					status: 'failed',
+					created_at: 1_750_000_000_000,
+					completed_at: 1_750_000_090_000,
+					error: 'failed',
+					pdf_r2_key: null,
+					result_json: '{"category":"brand_discovery","findings":[]}',
+				},
+			],
+		});
+
+		const result = await brandAuditStatus('aud-failed', 'owner-abc', { db });
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary?.metadata?.targetStatusCounts).toMatchObject({ completed: 0, failed: 1 });
+		expect(summary?.metadata?.targets).toEqual([
+			expect.objectContaining({ target: 'example.com', status: 'failed' }),
+		]);
 	});
 
 	it('returns notFound when auditId is unknown', async () => {

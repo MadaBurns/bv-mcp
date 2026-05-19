@@ -37,6 +37,14 @@ interface SummaryMeta {
 	targetRegistrant?: string | null;
 	total?: number;
 	discoverySignalStatus?: Record<string, { status: string; error?: string }>;
+	depth?: {
+		warnings?: unknown;
+	};
+}
+
+function depthWarnings(meta: Partial<SummaryMeta>): string[] {
+	const warnings = meta.depth?.warnings;
+	return Array.isArray(warnings) ? warnings.filter((warning): warning is string => typeof warning === 'string' && warning.length > 0) : [];
 }
 
 /** Render `result` from `brandAuditSingle()` as a compact Markdown document. */
@@ -55,6 +63,15 @@ export function formatBrandAuditMarkdown(result: CheckResult): string {
 		const registrant = summaryMeta.targetRegistrant ? sanitizeOutputText(summaryMeta.targetRegistrant, 200) : '—';
 		lines.push(`**Target registrar:** ${reg} (${src})  `);
 		lines.push(`**Target registrant:** ${registrant}`);
+		lines.push('');
+	}
+
+	const warnings = depthWarnings(summaryMeta);
+	if (warnings.length > 0) {
+		lines.push('> **Discovery depth warnings:**');
+		for (const warning of warnings) {
+			lines.push(`> - ${sanitizeOutputText(warning, 500)}`);
+		}
 		lines.push('');
 	}
 

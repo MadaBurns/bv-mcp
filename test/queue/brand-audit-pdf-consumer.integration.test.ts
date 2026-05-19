@@ -8,11 +8,15 @@
  *   2. Skips (ack) when result_json is missing (race: parent consumer not yet
  *      flushed, or status='failed')
  *   3. Skips (ack) when pdf_r2_key is already set (idempotency / duplicate delivery)
- *   4. Renders PDF via the injected renderer
+ *   4. Renders PDF via the injected `renderPdf` (pure pdf-lib function by default)
  *   5. Writes to R2 at `audits/{auditId}/{target}.pdf`
  *   6. Updates brand_audit_targets.pdf_r2_key with the object key
  *
- * Mocked: D1 (recording fake), R2 bucket, renderer service.
+ * Post-2026-05-19 redesign: rendering is in-process pdf-lib (no service binding,
+ * no external auth). Tests inject a stub `renderPdf` to keep the consumer
+ * boundary the same shape across the redesign.
+ *
+ * Mocked: D1 (recording fake), R2 bucket, renderPdf stub.
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -87,16 +91,15 @@ describe('processBrandAuditPdfMessage', () => {
 			target: { result_json: JSON.stringify(fakeResult()), pdf_r2_key: null },
 		});
 		const { bucket, writes } = makeMockR2();
-		const renderer = {
-			fetch: vi.fn().mockResolvedValue(new Response(fakePdf(), { status: 200, headers: { 'Content-Type': 'application/pdf' } })),
-		};
+		const renderPdf = vi.fn().mockResolvedValue(fakePdf());
 
 		const verdict = await processBrandAuditPdfMessage(
 			{ auditId: 'aud-1', target: 'apple.com', format: 'both' },
-			{ db, bucket, renderer, serverVersion: '2.20.0', now: () => 0 } as BrandAuditPdfConsumerDeps,
+			{ db, bucket, serverVersion: '2.20.0', now: () => 0, renderPdf } as BrandAuditPdfConsumerDeps,
 		);
 
 		expect(verdict).toBe('ack');
+		expect(renderPdf).toHaveBeenCalledOnce();
 		expect(writes).toHaveLength(1);
 		expect(writes[0].key).toBe('audits/aud-1/apple.com.pdf');
 		expect(writes[0].bytes.byteLength).toBeGreaterThan(0);
@@ -112,15 +115,15 @@ describe('processBrandAuditPdfMessage', () => {
 			target: { result_json: JSON.stringify(fakeResult()), pdf_r2_key: 'audits/aud-1/apple.com.pdf' },
 		});
 		const { bucket, writes } = makeMockR2();
-		const renderer = { fetch: vi.fn() };
+		const renderPdf = vi.fn();
 
 		const verdict = await processBrandAuditPdfMessage(
 			{ auditId: 'aud-1', target: 'apple.com', format: 'both' },
-			{ db, bucket, renderer, serverVersion: '2.20.0', now: () => 0 },
+			{ db, bucket, serverVersion: '2.20.0', now: () => 0, renderPdf },
 		);
 
 		expect(verdict).toBe('ack');
-		expect(renderer.fetch).not.toHaveBeenCalled();
+		expect(renderPdf).not.toHaveBeenCalled();
 		expect(writes).toHaveLength(0);
 	});
 
@@ -130,30 +133,28 @@ describe('processBrandAuditPdfMessage', () => {
 			target: { result_json: null, pdf_r2_key: null },
 		});
 		const { bucket } = makeMockR2();
-		const renderer = { fetch: vi.fn() };
+		const renderPdf = vi.fn();
 
 		const verdict = await processBrandAuditPdfMessage(
 			{ auditId: 'aud-1', target: 'apple.com', format: 'both' },
-			{ db, bucket, renderer, serverVersion: '2.20.0', now: () => 0 },
+			{ db, bucket, serverVersion: '2.20.0', now: () => 0, renderPdf },
 		);
 
 		expect(verdict).toBe('ack');
-		expect(renderer.fetch).not.toHaveBeenCalled();
+		expect(renderPdf).not.toHaveBeenCalled();
 	});
 
-	it('signals retry when renderer responds non-2xx (transient)', async () => {
+	it('signals retry when renderPdf throws (transient infrastructure failure)', async () => {
 		const { processBrandAuditPdfMessage } = await import('../../src/queue/brand-audit-pdf-consumer');
 		const { db } = makeMockD1({
 			target: { result_json: JSON.stringify(fakeResult()), pdf_r2_key: null },
 		});
 		const { bucket } = makeMockR2();
-		const renderer = {
-			fetch: vi.fn().mockResolvedValue(new Response('boom', { status: 502 })),
-		};
+		const renderPdf = vi.fn().mockRejectedValue(new Error('boom'));
 
 		const verdict = await processBrandAuditPdfMessage(
 			{ auditId: 'aud-1', target: 'apple.com', format: 'both' },
-			{ db, bucket, renderer, serverVersion: '2.20.0', now: () => 0 },
+			{ db, bucket, serverVersion: '2.20.0', now: () => 0, renderPdf },
 		);
 
 		expect(verdict).toBe('retry');
@@ -163,14 +164,34 @@ describe('processBrandAuditPdfMessage', () => {
 		const { processBrandAuditPdfMessage } = await import('../../src/queue/brand-audit-pdf-consumer');
 		const { db } = makeMockD1({});
 		const { bucket } = makeMockR2();
-		const renderer = { fetch: vi.fn() };
+		const renderPdf = vi.fn();
 
 		const verdict = await processBrandAuditPdfMessage(
 			{ wrong: 'shape' } as unknown,
-			{ db, bucket, renderer, serverVersion: '2.20.0', now: () => 0 },
+			{ db, bucket, serverVersion: '2.20.0', now: () => 0, renderPdf },
 		);
 
 		expect(verdict).toBe('ack');
-		expect(renderer.fetch).not.toHaveBeenCalled();
+		expect(renderPdf).not.toHaveBeenCalled();
+	});
+
+	it('falls back to the default pdf-lib renderer when no renderPdf is injected', async () => {
+		const { processBrandAuditPdfMessage } = await import('../../src/queue/brand-audit-pdf-consumer');
+		const { db } = makeMockD1({
+			target: { result_json: JSON.stringify(fakeResult()), pdf_r2_key: null },
+		});
+		const { bucket, writes } = makeMockR2();
+
+		const verdict = await processBrandAuditPdfMessage(
+			{ auditId: 'aud-1', target: 'apple.com', format: 'both' },
+			{ db, bucket, serverVersion: '2.20.0', now: () => 0 },
+		);
+
+		expect(verdict).toBe('ack');
+		// Default renderer (pdf-lib) emits a real PDF.
+		expect(writes).toHaveLength(1);
+		expect(writes[0].bytes.byteLength).toBeGreaterThan(500);
+		const header = new TextDecoder().decode(writes[0].bytes.slice(0, 5));
+		expect(header).toBe('%PDF-');
 	});
 });

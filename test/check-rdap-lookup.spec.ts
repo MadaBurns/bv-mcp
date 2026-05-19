@@ -232,4 +232,73 @@ describe('checkRdapLookup', () => {
 		const infoFinding = result.findings.find((f) => f.severity === 'info' && f.title.toLowerCase().includes('registration'));
 		expect(infoFinding).toBeDefined();
 	});
+
+	it('extracts registrar organization from RDAP vcard org when fn is absent', async () => {
+		globalThis.fetch = mockFetchRouter({
+			'data.iana.org/rdap/dns.json': () => makeBootstrap(),
+			'rdap.verisign.com': () => makeRdapResponse({
+				entities: [
+					{
+						objectClassName: 'entity',
+						roles: ['registrar'],
+						vcardArray: ['vcard', [
+							['version', {}, 'text', '4.0'],
+							['org', {}, 'text', 'Synthetic Registrar Org LLC'],
+						]],
+					},
+				],
+			}),
+		});
+
+		const result = await run();
+		const infoFinding = result.findings.find((f) => f.metadata?.registrarSource === 'rdap');
+		expect(infoFinding?.metadata?.registrar).toBe('Synthetic Registrar Org LLC');
+	});
+
+	it('extracts registrar IANA ID from RDAP registrar entity publicIds', async () => {
+		globalThis.fetch = mockFetchRouter({
+			'data.iana.org/rdap/dns.json': () => makeBootstrap(),
+			'rdap.verisign.com': () => makeRdapResponse({
+				entities: [
+					{
+						objectClassName: 'entity',
+						roles: ['registrar'],
+						publicIds: [{ type: 'IANA Registrar ID', identifier: '299' }],
+						vcardArray: ['vcard', [
+							['version', {}, 'text', '4.0'],
+							['fn', {}, 'text', 'Corporation Service Company'],
+						]],
+					},
+				],
+			}),
+		});
+
+		const result = await run();
+		const infoFinding = result.findings.find((f) => f.metadata?.registrarSource === 'rdap');
+		expect(infoFinding?.metadata?.registrar).toBe('Corporation Service Company');
+		expect(infoFinding?.metadata?.registrarIanaId).toBe('299');
+	});
+
+	it('falls back to WHOIS when RDAP succeeds but registrar attribution is unknown', async () => {
+		globalThis.fetch = mockFetchRouter({
+			'data.iana.org/rdap/dns.json': () => makeBootstrap(),
+			'rdap.verisign.com': () => makeRdapResponse({ entities: [] }),
+		});
+		const whoisBinding = {
+			fetch: vi.fn(async () =>
+				new Response(JSON.stringify({ registrar: 'WHOIS Fallback Registrar Inc.', source: 'whois' }), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' },
+				}),
+			),
+		};
+
+		const mod = await import('../src/tools/check-rdap-lookup');
+		mod._resetBootstrapCache();
+		const result = await mod.checkRdapLookup('example.com', { whoisBinding });
+
+		const infoFinding = result.findings.find((f) => f.metadata?.registrarSource === 'whois');
+		expect(infoFinding?.metadata?.registrar).toBe('WHOIS Fallback Registrar Inc.');
+		expect(whoisBinding.fetch).toHaveBeenCalledOnce();
+	});
 });

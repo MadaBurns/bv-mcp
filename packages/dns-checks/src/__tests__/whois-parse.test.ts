@@ -85,6 +85,26 @@ Registrar: NewRegistrar Inc.
 		expect(parseWhoisResponse(synthetic).registrar).toBe('SomeReg Ltd.');
 	});
 
+	it('extracts "Registrar IANA ID:"', () => {
+		const synthetic = `Domain Name: EXAMPLE.TEST\nRegistrar: Example Registrar Inc.\nRegistrar IANA ID: 299\n`;
+		expect(parseWhoisResponse(synthetic).registrarIanaId).toBe('299');
+	});
+
+	it('extracts registrar from "Registrar Name:"', () => {
+		const synthetic = `Domain Name: EXAMPLE.TEST\nRegistrar Name: Registrar Name LLC\n`;
+		expect(parseWhoisResponse(synthetic).registrar).toBe('Registrar Name LLC');
+	});
+
+	it('extracts registrar from "Registrar Organization:"', () => {
+		const synthetic = `Domain Name: EXAMPLE.TEST\nRegistrar Organization: Registrar Org LLC\n`;
+		expect(parseWhoisResponse(synthetic).registrar).toBe('Registrar Org LLC');
+	});
+
+	it('does not treat "Registrar URL:" as the registrar name', () => {
+		const synthetic = `Domain Name: EXAMPLE.TEST\nRegistrar URL: https://registrar.example\n`;
+		expect(parseWhoisResponse(synthetic).registrar).toBeNull();
+	});
+
 	it('strips trailing whitespace and CR characters from registrar value', () => {
 		const synthetic = 'Registrar: TrimmedReg, Inc.   \r\n';
 		expect(parseWhoisResponse(synthetic).registrar).toBe('TrimmedReg, Inc.');
