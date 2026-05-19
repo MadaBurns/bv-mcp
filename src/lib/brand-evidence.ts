@@ -26,6 +26,23 @@ export interface BrandEvidenceObservation {
 	signal: BrandEvidenceSignal;
 	confidence?: number;
 	metadata?: Record<string, unknown>;
+	/**
+	 * First-principles discovery tier (T1.4):
+	 *   0 = tenant-declared (bv-enterprise)
+	 *   1 = infrastructure graph (bv-infrastructure-graph)
+	 *   2 = declared / witnessed evidence (bv-intel-gateway)
+	 *   3 = fingerprint sweep fallback (this worker)
+	 *   4 = becoming-critical candidate
+	 * Absent on legacy fingerprint observations; T6 keys ownership-gate bypass off it.
+	 */
+	tier?: 0 | 1 | 2 | 3 | 4;
+	/**
+	 * Per-signal specificity (Tier 1, infrastructure-graph). Higher → rarer signal
+	 * across the corpus, so a co-occurrence is more meaningful (e.g. unique cert
+	 * fingerprint ~ 0.9; shared `mx.gmail.com` ~ 0.05). Used by T6 to decide
+	 * whether a single Tier-1 observation is strong enough to clear ownership alone.
+	 */
+	specificityScore?: number;
 }
 
 export interface OwnershipGateOptions {
@@ -97,6 +114,21 @@ export function clearsOwnershipGate(
 	}
 	const distinct = Array.from(unique.values());
 	if (distinct.length === 0) return false;
+
+	// T6: tier-based bypass of the legacy N-of-M corroboration gate.
+	// Tier 0 (tenant-declared) and Tier 2 (declared/witnessed evidence) are gold-
+	// standard and auto-clear. Tier 1 (infrastructure-graph) auto-clears only when
+	// the underlying signal is specific enough (>= 0.5) — broad signals like a
+	// shared `mx.gmail.com` carry tier=1 but specificityScore ~ 0.05 and must
+	// still corroborate. Tier 3/4 and untiered observations fall through to the
+	// existing strong-or-N-of-M-medium logic.
+	for (const observation of distinct) {
+		if (observation.tier === 0) return true;
+		if (observation.tier === 2) return true;
+		if (observation.tier === 1 && typeof observation.specificityScore === 'number' && observation.specificityScore >= 0.5) {
+			return true;
+		}
+	}
 
 	if (options.callerAsserted === true) {
 		return distinct.some((observation) => !isSeedObservation(observation));
