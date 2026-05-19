@@ -620,4 +620,125 @@ describe('classifyCandidate', () => {
 			expect(classifyCandidate(c, target()).bucket).toBe('impersonation');
 		});
 	});
+
+	// Task 8 — brand-discovery tier routing.
+	// When `evidenceObservations` carry a `tier` field (0/1/2/4), the classifier
+	// short-circuits BEFORE the legacy rules and routes by tier provenance.
+	// Tier-less observations preserve the existing Tier 3 behaviour byte-identically.
+	describe('brand-discovery tier routing (Task 8)', () => {
+		it('routes tier 0 observation to consolidated with tier=0', () => {
+			const c = candidate({
+				domain: 'apple-sub.example',
+				confidence: 0.4,
+				signals: [],
+				evidenceObservations: [{ signal: 'http_redirect', confidence: 1.0, tier: 0 }],
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.tier).toBe(0);
+		});
+
+		it('routes tier 1 + specificityScore >= 0.5 to consolidated with tier=1', () => {
+			const c = candidate({
+				domain: 'apple-graph.example',
+				confidence: 0.3,
+				signals: [],
+				evidenceObservations: [{ signal: 'ns', confidence: 0.8, tier: 1, specificityScore: 0.9 }],
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.tier).toBe(1);
+		});
+
+		it('falls through to legacy rules when tier 1 obs has specificityScore < 0.5', () => {
+			// Low specificity → not enough confidence to claim graph ownership;
+			// the legacy classifier path takes over and routes by other rules.
+			const c = candidate({
+				domain: 'apple-weakgraph.example',
+				confidence: 0.3,
+				signals: [],
+				registrar: 'Unknown',
+				registrarSource: 'unknown',
+				evidenceObservations: [{ signal: 'ns', confidence: 0.5, tier: 1, specificityScore: 0.2 }],
+			});
+			const result = classifyCandidate(c, target());
+			// With no strong signals and low confidence + unknown registrar, the legacy
+			// Rule 8 path lands on impersonation. The key invariant: tier is NOT set.
+			expect(result.tier).toBeUndefined();
+		});
+
+		it('routes tier 2 observation to consolidated with tier=2', () => {
+			const c = candidate({
+				domain: 'apple-rdap.example',
+				confidence: 0.6,
+				signals: [],
+				evidenceObservations: [{ signal: 'dmarc_rua', confidence: 0.9, tier: 2 }],
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.tier).toBe(2);
+		});
+
+		it('routes only-tier-4 observations to impersonationSurface with tier=4', () => {
+			const c = candidate({
+				domain: 'appel.example',
+				confidence: 0.3,
+				signals: [],
+				registrar: 'Different Reg',
+				lookalikeScore: 0.9,
+				evidenceObservations: [{ signal: 'active_lookalike', confidence: 0.3, tier: 4 }],
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('impersonationSurface');
+			expect(result.tier).toBe(4);
+		});
+
+		it('mutual exclusion: tier 2 + tier 4 together → consolidated (owned wins over impersonation)', () => {
+			const c = candidate({
+				domain: 'apple-mixed.example',
+				confidence: 0.5,
+				signals: [],
+				evidenceObservations: [
+					{ signal: 'dmarc_rua', confidence: 0.9, tier: 2 },
+					{ signal: 'active_lookalike', confidence: 0.3, tier: 4 },
+				],
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.tier).toBe(2);
+		});
+
+		it('mutual exclusion: tier 0 + tier 4 together → consolidated tier=0 (highest provenance wins)', () => {
+			const c = candidate({
+				domain: 'apple-mixed0.example',
+				confidence: 0.5,
+				signals: [],
+				evidenceObservations: [
+					{ signal: 'active_lookalike', confidence: 0.3, tier: 4 },
+					{ signal: 'http_redirect', confidence: 1.0, tier: 0 },
+				],
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.tier).toBe(0);
+		});
+
+		it('preserves legacy classifier output for observations with no tier field (Tier 3 fallback)', () => {
+			// Without any tier-tagged observation, the new routing block is bypassed
+			// entirely and the existing rules apply unchanged. This is the byte-identical
+			// regression guard against the "do not change legacy paths" hard rule.
+			const c = candidate({
+				domain: 'apple.net',
+				confidence: 0.9,
+				signals: ['dkim_key_reuse'],
+				registrar: 'MarkMonitor Inc.',
+				registrarSource: 'rdap',
+				// No evidenceObservations / no tier on them.
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).toBe('consolidated');
+			expect(result.tier).toBeUndefined();
+			expect(result.reasons).toContain('shared DKIM key');
+		});
+	});
 });

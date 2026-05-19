@@ -48,6 +48,12 @@ const BUCKET_SEVERITY: Record<Bucket, Severity> = {
 	indeterminate: 'low',
 	shadowIt: 'medium',
 	impersonation: 'high',
+	// Task 8 — impersonationSurface is emitted only in tier-aware (tiered) mode.
+	// The classic pipeline below does not currently feed tier-tagged observations
+	// to the classifier, so this branch is unreachable today; the entry exists to
+	// keep the exhaustive `Record<Bucket, Severity>` typecheck green now that
+	// `Bucket` includes the impersonation-surface variant.
+	impersonationSurface: 'high',
 };
 
 const STRONG_REGISTRAR_INDEPENDENT_SIGNALS = new Set(['san', 'ns', 'dkim_key_reuse']);
@@ -571,7 +577,15 @@ export async function runBrandAuditPipeline(
 		return result;
 	}
 
-	const bucketCounts: Record<Bucket, number> = { consolidated: 0, shadowIt: 0, indeterminate: 0, impersonation: 0 };
+	const bucketCounts: Record<Bucket, number> = {
+		consolidated: 0,
+		shadowIt: 0,
+		indeterminate: 0,
+		impersonation: 0,
+		// Task 8 — unreachable in classic-mode pipeline (no tier-tagged obs are
+		// produced here); included to satisfy the exhaustive Record typecheck.
+		impersonationSurface: 0,
+	};
 	const classificationStartedAtMs = now();
 	const classifiedFindings: Finding[] = candidateFindings.map((f) => {
 		const domain = f.metadata!.candidate as string;
