@@ -26,6 +26,7 @@ interface MakeMockOpts {
 	target?: { status: string; completed_at: number | null } | null;
 	auditAfter?: { completed_targets: number; total_targets: number } | null;
 	throwOnUpdate?: boolean;
+	throwOnStepStore?: boolean;
 }
 
 function makeMockD1(opts: MakeMockOpts = {}) {
@@ -40,6 +41,9 @@ function makeMockD1(opts: MakeMockOpts = {}) {
 				},
 				async first() {
 					calls.push({ sql, binds });
+					if (opts.throwOnStepStore && sql.includes('brand_audit_steps')) {
+						throw new Error('D1_ERROR: no such table: brand_audit_steps');
+					}
 					if (sql.includes('SELECT status, completed_at FROM brand_audit_targets')) {
 						return opts.target ?? null;
 					}
@@ -51,7 +55,22 @@ function makeMockD1(opts: MakeMockOpts = {}) {
 				async run() {
 					calls.push({ sql, binds });
 					if (opts.throwOnUpdate && sql.includes('UPDATE')) throw new Error('d1_update_failed');
-					return { success: true, meta: { changes: 1, last_row_id: 0, duration: 0, rows_read: 0, rows_written: 1, size_after: 0 } };
+					// Model the conditional-claim UPDATE: the claim now parameterizes
+					// the expected status (third bound arg) — match against the mocked
+					// row's status to return changes=0 when "another worker already claimed".
+					let changes = 1;
+					const isClaim =
+						sql.includes('UPDATE brand_audit_targets') &&
+						sql.includes('SET status = \'running\' WHERE') &&
+						sql.includes('status = ?');
+					if (isClaim) {
+						const expected = binds[2] as string | undefined;
+						const currentStatus = opts.target?.status ?? 'queued';
+						if (expected && currentStatus !== expected) {
+							changes = 0;
+						}
+					}
+					return { success: true, meta: { changes, last_row_id: 0, duration: 0, rows_read: 0, rows_written: changes, size_after: 0 } };
 				},
 				async all() {
 					calls.push({ sql, binds });
@@ -92,6 +111,170 @@ describe('processBrandAuditMessage', () => {
 
 		const auditTick = calls.find((c) => c.sql.includes('UPDATE brand_audits') && c.sql.includes('completed_targets'));
 		expect(auditTick).toBeDefined();
+	});
+
+	it('acks without re-running when the row is already running (queue redelivery race)', async () => {
+		// Cloudflare Queues visibility timeout is ~30s but a deep brand audit
+		// runs for ~3min. Without an atomic claim, every redelivery would
+		// re-enter brandAuditSingle while the first invocation is still running,
+		// producing parallel-execution thrash that wedges the audit. The fix:
+		// rely on the conditional `WHERE status = 'queued'` UPDATE to mutually
+		// exclude — only the consumer whose UPDATE matches 1 row may proceed.
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db, calls } = makeMockD1({
+			target: { status: 'running', completed_at: null },
+		});
+		const brandAuditSingle = vi.fn().mockResolvedValue({ category: 'brand_discovery', score: 100, findings: [] });
+
+		const verdict = await processBrandAuditMessage(
+			{ auditId: 'aud-1', target: 'brand-alpha.com', format: 'json' },
+			{ db, brandAuditSingle, now: () => 1_750_000_000_000 },
+		);
+
+		expect(verdict).toBe('ack');
+		expect(brandAuditSingle).not.toHaveBeenCalled();
+		// Conditional claim UPDATE issued, terminal-status UPDATE not.
+		const claimAttempt = calls.find(
+			(c) =>
+				c.sql.includes('UPDATE brand_audit_targets') &&
+				c.sql.includes('SET status = \'running\' WHERE') &&
+				c.sql.includes('status = ?') &&
+				c.binds[2] === 'queued',
+		);
+		expect(claimAttempt).toBeDefined();
+		const terminalUpdate = calls.find(
+			(c) =>
+				c.sql.includes('UPDATE brand_audit_targets SET status = ?') &&
+				(c.binds[0] === 'completed' || c.binds[0] === 'failed'),
+		);
+		expect(terminalUpdate).toBeUndefined();
+	});
+
+	it('marks the parent audit running when a queued target starts', async () => {
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db, calls } = makeMockD1({
+			target: { status: 'queued', completed_at: null },
+			auditAfter: { completed_targets: 1, total_targets: 3 },
+		});
+		const brandAuditSingle = vi.fn().mockResolvedValue({ category: 'brand_discovery', score: 100, findings: [] });
+
+		await processBrandAuditMessage(
+			{ auditId: 'aud-1', target: 'example.com', format: 'json' },
+			{ db, brandAuditSingle, now: () => 1_750_000_000_000 },
+		);
+
+		const parentRunning = calls.find(
+			(c) => c.sql.includes('UPDATE brand_audits') && c.sql.includes("status = 'running'") && c.binds.includes('aud-1'),
+		);
+		expect(parentRunning).toBeDefined();
+	});
+
+	it('passes deep-scan inputs from queue message into brandAuditSingle', async () => {
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db } = makeMockD1({
+			target: { status: 'queued', completed_at: null },
+			auditAfter: { completed_targets: 1, total_targets: 1 },
+		});
+		const brandAuditSingle = vi.fn().mockResolvedValue({ category: 'brand_discovery', score: 100, findings: [] });
+
+		await processBrandAuditMessage(
+			{
+				auditId: 'aud-1',
+				target: 'example.com',
+				format: 'json',
+				depth: 'deep',
+				brand_aliases: ['examplecorp'],
+				candidate_domains: ['example.net'],
+			},
+			{ db, brandAuditSingle, now: () => 1_750_000_000_000 },
+		);
+
+		expect(brandAuditSingle).toHaveBeenCalledWith(
+			'example.com',
+			expect.objectContaining({
+				depth: 'deep',
+				brand_aliases: ['examplecorp'],
+				candidate_domains: ['example.net'],
+			}),
+		);
+	});
+
+	it('passes auditId and a D1-backed stepStore into brandAuditSingle', async () => {
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db, calls } = makeMockD1({
+			target: { status: 'queued', completed_at: null },
+			auditAfter: { completed_targets: 1, total_targets: 1 },
+		});
+		const brandAuditSingle = vi.fn(async (_target, options) => {
+			expect(options.auditId).toBe('aud-1');
+			expect(options.stepStore).toBeTruthy();
+			await options.stepStore.put({
+				auditId: 'aud-1',
+				target: 'example.com',
+				step: 'discovery',
+				status: 'completed',
+				payload: { resumed: true },
+			});
+			return { category: 'brand_discovery', score: 100, findings: [] };
+		});
+
+		const verdict = await processBrandAuditMessage(
+			{ auditId: 'aud-1', target: 'example.com', format: 'json', min_confidence: 0.7 },
+			{ db, brandAuditSingle, now: () => 1_750_000_000_000 },
+		);
+
+		expect(verdict).toBe('ack');
+		expect(brandAuditSingle).toHaveBeenCalledWith(
+			'example.com',
+			expect.objectContaining({
+				auditId: 'aud-1',
+				format: 'json',
+				min_confidence: 0.7,
+				stepStore: expect.any(Object),
+			}),
+		);
+		expect(calls.some((c) => c.sql.includes('INSERT INTO brand_audit_steps'))).toBe(true);
+	});
+
+	it('retries instead of failing the target when the step-store table is unavailable', async () => {
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db, calls } = makeMockD1({
+			target: { status: 'queued', completed_at: null },
+			auditAfter: { completed_targets: 1, total_targets: 1 },
+			throwOnStepStore: true,
+		});
+		const brandAuditSingle = vi.fn(async (_target, options) => {
+			await options.stepStore?.get('aud-1', 'example.com', 'discovery');
+			return { category: 'brand_discovery', score: 100, findings: [] };
+		});
+
+		const verdict = await processBrandAuditMessage(
+			{ auditId: 'aud-1', target: 'example.com', format: 'json' },
+			{ db, brandAuditSingle, now: () => 1_750_000_000_000 },
+		);
+
+		expect(verdict).toBe('retry');
+		expect(calls.some((c) => c.sql.includes('UPDATE brand_audit_targets') && c.binds[0] === 'failed')).toBe(false);
+	});
+
+	it('marks the target failed without rejecting when the final result cannot be serialized', async () => {
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db, calls } = makeMockD1({
+			target: { status: 'queued', completed_at: null },
+			auditAfter: { completed_targets: 1, total_targets: 1 },
+		});
+		const circular = { category: 'brand_discovery', score: 100, findings: [] as unknown[] } as Record<string, unknown>;
+		circular.self = circular;
+		const brandAuditSingle = vi.fn().mockResolvedValue(circular);
+
+		const verdict = await processBrandAuditMessage(
+			{ auditId: 'aud-1', target: 'example.com', format: 'json' },
+			{ db, brandAuditSingle, now: () => 1_750_000_000_000 },
+		);
+
+		expect(verdict).toBe('ack');
+		const failedUpdate = calls.find((c) => c.sql.includes('UPDATE brand_audit_targets') && c.binds[0] === 'failed');
+		expect(failedUpdate?.binds[2]).toContain('brand_audit_result_serialization_failed');
 	});
 
 	it('is idempotent: a duplicate delivery of a completed target ack()s without re-running brandAuditSingle', async () => {

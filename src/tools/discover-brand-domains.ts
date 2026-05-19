@@ -37,6 +37,8 @@ import {
 	detectDkimKeyReuse as defaultDetectDkimKeyReuse,
 	detectHttpRedirect as defaultDetectHttpRedirect,
 	detectMxOverlap as defaultDetectMxOverlap,
+	detectSharedMxPlatform as defaultDetectSharedMxPlatform,
+	detectSharedTxtVerifications as defaultDetectSharedTxtVerifications,
 	detectSpfInclude as defaultDetectSpfInclude,
 	extractSeedSpfIncludes as defaultExtractSeedSpfIncludes,
 	detectCnameAlignment as defaultDetectCnameAlignment,
@@ -47,16 +49,42 @@ import {
 	type DkimKeyReuseResult,
 	type HttpRedirectResult,
 	type MxOverlapResult,
+	type MxPlatformResult,
 	type SpfIncludeResult,
 	type SeedSpfWalkResult,
+	type TxtVerificationResult,
 	type CnameAlignmentResult,
 } from '../tenants/discovery';
+import { createDiscoveryDnsContext, type DiscoveryDnsContext } from '../tenants/discovery/dns-context';
 import type { OutputFormat } from '../handlers/tool-args';
 import { buildCheckResult, createFinding, type CheckResult, type Finding, type Severity } from '../lib/scoring';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isSubdomainOf } from '../lib/sanitize';
 import { generateMarkovLookalikes } from './markov-generator';
-import { generateCctldVariants } from '../lib/brand-cctld-seeder';
+import { buildBrandCandidateUniverse, type BrandAuditDepth, type CandidateSeedSource } from '../lib/brand-candidate-universe';
+import { planBrandDiscoverySignals, type BrandDiscoverySignalPlan } from '../lib/brand-discovery-planner';
+import { domainLabelSimilarity as defaultDomainLabelSimilarity } from '../lib/domain-similarity';
+import { checkLookalikes as defaultCheckLookalikes } from './check-lookalikes';
+import { clearsOwnershipGate, type BrandEvidenceObservation } from '../lib/brand-evidence';
+import { detectAppLinks } from '../tenants/discovery/app-links-detector';
+import { detectBountyScope, type BountyPlatform } from '../tenants/discovery/bounty-scope-detector';
+
+/**
+ * Built-in bug-bounty program handles for the Phase-5 demo brands. Replace
+ * with a D1-backed tenant config table once the UI lands. Brands not in the
+ * map simply skip the bounty-scope detector; no harm done.
+ */
+const PHASE5_BOUNTY_HANDLES: Record<string, Partial<Record<BountyPlatform, string>>> = {
+	'brand-alpha.com': { hackerone: 'walmart' },
+	'brand-zeta.com': { hackerone: 'disney' },
+	'brand-kappa.com': { hackerone: 'marriott' },
+	'brand-eta.com': { hackerone: 'bankofamerica' },
+	'brand-theta.com': { hackerone: 'mastercard' },
+	'paypal.com': { hackerone: 'paypal' },
+	'github.com': { hackerone: 'github' },
+	'shopify.com': { hackerone: 'shopify' },
+	'brand-lambda.com': { hackerone: 'uber' },
+};
 
 /** All supported signal kinds. */
 export type DiscoverSignal =
@@ -67,10 +95,19 @@ export type DiscoverSignal =
 	| 'dkim_key_reuse'
 	| 'http_redirect'
 	| 'mx_overlap'
+	| 'txt_verification'
+	| 'mx_platform'
 	| 'spf_include'
 	| 'spf_include_seed'
 	| 'cname_alignment'
-	| 'markov_gen';
+	| 'markov_gen'
+	| 'active_lookalike'
+	// Ground-truth signals (Phase-5): brand-declared scope from
+	// `/.well-known/apple-app-site-association`, `assetlinks.json`, and public
+	// bug-bounty platforms. These bypass the downstream signal sweep — they
+	// don't need NS/SAN/MX corroboration because the brand has authored them.
+	| 'app_links'
+	| 'bounty_scope';
 
 /** Default signal set used when the caller omits `signals`. */
 const ALL_SIGNALS: DiscoverSignal[] = [
@@ -81,10 +118,22 @@ const ALL_SIGNALS: DiscoverSignal[] = [
 	'dkim_key_reuse',
 	'http_redirect',
 	'mx_overlap',
+	'txt_verification',
+	'mx_platform',
 	'spf_include',
 	'spf_include_seed',
 	'cname_alignment',
 ];
+
+const CANDIDATE_BACKED_SIGNALS = new Set<DiscoverSignal>([
+	'ns',
+	'dkim_key_reuse',
+	'mx_overlap',
+	'txt_verification',
+	'mx_platform',
+	'spf_include',
+	'cname_alignment',
+]);
 
 /** Default cutoff: a candidate must reach this combined-confidence to surface. */
 const DEFAULT_MIN_CONFIDENCE = 0.5;
@@ -98,33 +147,19 @@ const DEFAULT_SIGNAL_CONFIDENCE: Record<DiscoverSignal, number> = {
 	dkim_key_reuse: 0.95, // DKIM key reuse — near-deterministic (module always overrides)
 	http_redirect: 0.95, // HTTP redirect terminating at seed apex — near-deterministic operational ownership
 	mx_overlap: 0.7, // MX hostname overlap — module supplies per-overlap-kind confidence
+	txt_verification: 0.9, // Shared site/domain verification token — strong account-control evidence
+	mx_platform: 0.55, // Shared mail platform is weak alone but useful when caller/provenance corroborates
 	spf_include: 0.85, // Candidate SPF `include:` of seed-rooted policy — near-deterministic
 	spf_include_seed: 0.85, // Forward-discovery: seed's own SPF chain delegates to a different registrable apex — authoritative mail-policy delegation, near-deterministic
 	cname_alignment: 0.9, // CNAME chain terminating at seed apex/edge — near-deterministic
 	markov_gen: 0.01, // speculative generation — purely a candidate seed, provides no weight on its own
+	active_lookalike: 0.4, // DNS-active lookalike seed, not ownership evidence
+	app_links: 1.0, // brand-authored /.well-known files — Apple/Google verify before publication
+	bounty_scope: 1.0, // brand-declared bug-bounty scope — strongest possible ownership signal
 };
 
 /** Threshold above which a candidate is considered auto-include rather than review. */
 const AUTO_INCLUDE_THRESHOLD = 0.85;
-
-/**
- * Signals strong enough to surface a candidate by themselves. Every other
- * signal must be corroborated by ≥1 distinct signal to clear the gate.
- *
- * Why only dkim_key_reuse: shared DKIM private keys are near-deterministic
- * ownership evidence — a third party cannot publish a matching `_domainkey`
- * TXT without operator access. SAN co-tenancy is multi-tenant CDN noise,
- * DMARC RUA can name unknown third-party aggregators, NS overlap collapses
- * on commodity DNS/parking hosts. Those all need corroboration.
- */
-const NEAR_DETERMINISTIC_SIGNALS: ReadonlySet<DiscoverSignal> = new Set([
-	'dkim_key_reuse',
-	'http_redirect',
-	'spf_include',
-	'spf_include_seed',
-	'cname_alignment',
-	'san_recursive',
-]);
 
 /** Per-candidate aggregation state during collection. */
 interface CandidateAggregator {
@@ -133,6 +168,11 @@ interface CandidateAggregator {
 	perSignalConfidence: Map<DiscoverSignal, number>;
 	/** Free-form per-signal source notes — surfaced on the finding's metadata for downstream review. */
 	sources: Record<string, unknown>;
+	candidateSeedSources: CandidateSeedSource[];
+	candidateSeedReasons: string[];
+	sharedTxtVerifications: string[];
+	sharedMxPlatform: string | null;
+	lookalikeScore: number;
 }
 
 /**
@@ -147,18 +187,33 @@ export interface DiscoverBrandDomainsDeps {
 	detectDkimKeyReuse: typeof defaultDetectDkimKeyReuse;
 	detectHttpRedirect: typeof defaultDetectHttpRedirect;
 	detectMxOverlap: typeof defaultDetectMxOverlap;
+	detectSharedTxtVerifications: typeof defaultDetectSharedTxtVerifications;
+	detectSharedMxPlatform: typeof defaultDetectSharedMxPlatform;
 	detectSpfInclude: typeof defaultDetectSpfInclude;
 	extractSeedSpfIncludes: typeof defaultExtractSeedSpfIncludes;
 	detectCnameAlignment: typeof defaultDetectCnameAlignment;
 	generateMarkovLookalikes: typeof generateMarkovLookalikes;
+	checkLookalikes: typeof defaultCheckLookalikes;
+	domainLabelSimilarity: typeof defaultDomainLabelSimilarity;
+	createDnsContext?: typeof createDiscoveryDnsContext;
 }
 
 /** Tool args shape — the Zod schema lives in `src/schemas/tool-args.ts`. */
 export interface DiscoverBrandDomainsOptions {
 	signals?: DiscoverSignal[];
 	candidate_domains?: string[];
+	brand_aliases?: string[];
 	dkim_selectors?: string[];
 	min_confidence?: number;
+	depth?: BrandAuditDepth;
+	planner_mode?: 'off' | 'observe' | 'enforce';
+	planner_caps?: Partial<Record<DiscoverSignal, number>>;
+	/** Internal clock override for deterministic telemetry tests. */
+	now?: () => number;
+	/** Epoch-ms deadline for returning partial discovery before the caller's queue/runtime budget expires. */
+	deadlineMs?: number;
+	/** Internal progress sink used by the async brand-audit pipeline to persist partial discovery telemetry. */
+	onProgress?: (event: BrandDiscoveryProgressEvent) => void | Promise<void>;
 	/**
 	 * Optional bv-certstream-worker service binding. Threaded into the SAN
 	 * correlator's primary path — sidesteps crt.sh per-IP throttling and
@@ -166,6 +221,41 @@ export interface DiscoverBrandDomainsOptions {
 	 * crt.sh (with retry) if the binding fails.
 	 */
 	certstream?: { fetch: typeof fetch };
+	/**
+	 * Abort signal — checked at major phase boundaries (post-allSettled, before
+	 * recursive SAN expansion) so that a budget-exceeded consumer can interrupt
+	 * the orchestrator before it launches the next expensive step. In-flight
+	 * fetches are not cancelled (DNS transport doesn't accept a signal yet), but
+	 * no NEW work starts after the signal fires.
+	 */
+	signal?: AbortSignal;
+}
+
+export interface BrandDiscoveryProgressEvent {
+	name: string;
+	status: string;
+	startedAtMs: number;
+	finishedAtMs?: number;
+	elapsedMs?: number;
+	detail?: Record<string, unknown>;
+}
+
+interface BrandDiscoveryPerformance {
+	elapsedMs: number;
+	phases: BrandDiscoveryProgressEvent[];
+	efficiency: {
+		candidateSignalProbes: number;
+		baselineCandidateSignalProbes: number;
+		surfacedCandidates: number;
+		probesPerSurfacedCandidate: number;
+		probeReductionRatio: number;
+		plannerMode: 'off' | 'observe' | 'enforce';
+	};
+	planner: {
+		mode: 'off' | 'observe' | 'enforce';
+		wouldProbeBySignal: Record<string, number>;
+		wouldDropBySignal: Record<string, number>;
+	};
 }
 
 /** Combine independent-event confidences: P(any signal correct). */
@@ -197,10 +287,14 @@ function defaultDeps(): DiscoverBrandDomainsDeps {
 		detectDkimKeyReuse: defaultDetectDkimKeyReuse,
 		detectHttpRedirect: defaultDetectHttpRedirect,
 		detectMxOverlap: defaultDetectMxOverlap,
+		detectSharedTxtVerifications: defaultDetectSharedTxtVerifications,
+		detectSharedMxPlatform: defaultDetectSharedMxPlatform,
 		detectSpfInclude: defaultDetectSpfInclude,
 		extractSeedSpfIncludes: defaultExtractSeedSpfIncludes,
 		detectCnameAlignment: defaultDetectCnameAlignment,
 		generateMarkovLookalikes: generateMarkovLookalikes,
+		checkLookalikes: defaultCheckLookalikes,
+		domainLabelSimilarity: defaultDomainLabelSimilarity,
 	};
 }
 
@@ -216,7 +310,16 @@ function addObservation(
 	if (!lower) return;
 	let entry = agg.get(lower);
 	if (!entry) {
-		entry = { domain: lower, perSignalConfidence: new Map(), sources: {} };
+		entry = {
+			domain: lower,
+			perSignalConfidence: new Map(),
+			sources: {},
+			candidateSeedSources: [],
+			candidateSeedReasons: [],
+			sharedTxtVerifications: [],
+			sharedMxPlatform: null,
+			lookalikeScore: 0,
+		};
 		agg.set(lower, entry);
 	}
 	const existing = entry.perSignalConfidence.get(signal);
@@ -224,6 +327,53 @@ function addObservation(
 		entry.perSignalConfidence.set(signal, confidence);
 	}
 	entry.sources[signal] = sourceNote;
+}
+
+function ensureCandidate(agg: Map<string, CandidateAggregator>, domain: string): CandidateAggregator | null {
+	const lower = domain.trim().toLowerCase().replace(/\.$/, '');
+	if (!lower) return null;
+	let entry = agg.get(lower);
+	if (!entry) {
+		entry = {
+			domain: lower,
+			perSignalConfidence: new Map(),
+			sources: {},
+			candidateSeedSources: [],
+			candidateSeedReasons: [],
+			sharedTxtVerifications: [],
+			sharedMxPlatform: null,
+			lookalikeScore: 0,
+		};
+		agg.set(lower, entry);
+	}
+	return entry;
+}
+
+function addCandidateSeed(
+	agg: Map<string, CandidateAggregator>,
+	domain: string,
+	sources: CandidateSeedSource[],
+	reasons: string[],
+): void {
+	const entry = ensureCandidate(agg, domain);
+	if (!entry) return;
+	for (const source of sources) {
+		if (!entry.candidateSeedSources.includes(source)) entry.candidateSeedSources.push(source);
+	}
+	entry.candidateSeedReasons.push(...reasons);
+	if (sources.some((source) => source !== 'caller_candidate')) {
+		if (sources.includes('active_lookalike')) {
+			addObservation(agg, domain, 'active_lookalike', DEFAULT_SIGNAL_CONFIDENCE.active_lookalike, {
+				strategy: 'dns_active_lookalike',
+				sources,
+			});
+		} else {
+			addObservation(agg, domain, 'markov_gen', DEFAULT_SIGNAL_CONFIDENCE.markov_gen, {
+				strategy: 'candidate_seed',
+				sources,
+			});
+		}
+	}
 }
 
 /** Run a single signal handler, swallowing errors into a typed status report. */
@@ -238,6 +388,14 @@ async function runSignal<R>(fn: () => Promise<R>): Promise<SignalOutcome<R>> {
 	}
 }
 
+function signalCouldNotComplete(status: string | undefined): boolean {
+	return status === 'failed' || status === 'error' || status === 'timeout' || status === 'rate_limited';
+}
+
+function isGeneratedSeedSignal(signal: DiscoverSignal): boolean {
+	return signal === 'markov_gen' || signal === 'active_lookalike';
+}
+
 // Infrastructure-provider allowlist + match helpers live in a shared module so
 // the dmarc-rua miner can consume the same source of truth. Re-exported here
 // so existing test imports (test/audits/infrastructure-providers.audit.test.ts)
@@ -248,6 +406,15 @@ export {
 	isInfrastructureProvider,
 } from '../tenants/discovery/infrastructure-providers';
 import { isInfrastructureProvider } from '../tenants/discovery/infrastructure-providers';
+
+function extractActiveLookalikeDomains(result: CheckResult): string[] {
+	const out = new Set<string>();
+	for (const finding of result.findings) {
+		const domain = finding.metadata?.lookalikeDomain;
+		if (typeof domain === 'string' && domain.length > 0) out.add(domain);
+	}
+	return Array.from(out).sort();
+}
 
 /**
  * Orchestrate brand-domain discovery across the four phase-4 signals.
@@ -262,6 +429,131 @@ export async function discoverBrandDomains(
 	deps?: DiscoverBrandDomainsDeps,
 ): Promise<CheckResult> {
 	const d: DiscoverBrandDomainsDeps = { ...defaultDeps(), ...(deps ?? {}) };
+	const now = options.now ?? Date.now;
+	const discoveryStartedAtMs = now();
+	const RECURSIVE_SAN_MIN_DEADLINE_HEADROOM_MS = 70_000;
+	const deadlineRemainingMs = (): number | null => {
+		if (typeof options.deadlineMs !== 'number' || !Number.isFinite(options.deadlineMs)) return null;
+		return Math.max(0, options.deadlineMs - now());
+	};
+	const phaseTimings: BrandDiscoveryProgressEvent[] = [];
+	const emitProgress = async (event: BrandDiscoveryProgressEvent): Promise<void> => {
+		try {
+			await options.onProgress?.(event);
+		} catch {
+			// Discovery telemetry is diagnostic only; never fail the audit because
+			// a progress sink is unavailable or the step cache is missing.
+		}
+	};
+	const startPhase = async (name: string, detail?: Record<string, unknown>): Promise<number> => {
+		const startedAtMs = now();
+		await emitProgress({
+			name,
+			status: 'started',
+			startedAtMs,
+			...(detail ? { detail } : {}),
+		});
+		return startedAtMs;
+	};
+	const finishPhase = async (
+		name: string,
+		status: string,
+		startedAtMs: number,
+		detail?: Record<string, unknown>,
+	): Promise<BrandDiscoveryProgressEvent> => {
+		const finishedAtMs = now();
+		const event: BrandDiscoveryProgressEvent = {
+			name,
+			status,
+			startedAtMs,
+			finishedAtMs,
+			elapsedMs: Math.max(0, finishedAtMs - startedAtMs),
+			...(detail ? { detail } : {}),
+		};
+		phaseTimings.push(event);
+		await emitProgress(event);
+		return event;
+	};
+	const recordInstantPhase = async (
+		name: string,
+		status: string,
+		detail?: Record<string, unknown>,
+	): Promise<void> => {
+		const atMs = now();
+		await finishPhase(name, status, atMs, detail);
+	};
+	const candidateBackedSignalProbes: Record<string, number> = {};
+	let candidateBackedSignalBaselineProbes: Record<string, number> = {};
+	let signalPlan: BrandDiscoverySignalPlan = { candidatesBySignal: {}, droppedBySignal: {}, priorityByDomain: {}, guardedByDomain: {} };
+	// Default flipped from 'observe' to 'enforce' after the planner cap-tuning
+	// was validated against production (walmart/bankofamerica/marriott: 44.8%
+	// probe reduction, zero surfaced/bucket regressions) and against a chaos
+	// suite covering low-yield-signal failure, high-yield-signal failure, and
+	// guarded caller-asserted candidates under aggressive caps. Callers can
+	// still opt out per-request with `planner_mode: 'observe'` or `'off'`.
+	const plannerMode = options.planner_mode ?? 'enforce';
+	const recordCandidateSignalProbes = (signal: DiscoverSignal, candidates: string[]): string[] => {
+		candidateBackedSignalProbes[signal] = candidates.length;
+		return candidates;
+	};
+	const countPlannedCandidates = (candidatesBySignal: BrandDiscoverySignalPlan['candidatesBySignal']): Record<string, number> =>
+		Object.fromEntries(Object.entries(candidatesBySignal).map(([signal, candidates]) => [signal, candidates.length]));
+	const countDroppedCandidates = (droppedBySignal: BrandDiscoverySignalPlan['droppedBySignal']): Record<string, number> =>
+		Object.fromEntries(Object.entries(droppedBySignal).map(([signal, dropped]) => [signal, dropped.length]));
+	const buildDiscoveryPerformance = (): BrandDiscoveryPerformance => {
+		const candidateSignalProbes = Object.values(candidateBackedSignalProbes).reduce((sum, count) => sum + count, 0);
+		const baselineCandidateSignalProbes = Object.values(candidateBackedSignalBaselineProbes).reduce((sum, count) => sum + count, 0);
+		const surfaced = phaseTimings.find((phase) => phase.name === 'aggregation')?.detail?.surfaced;
+		const surfacedCandidates = typeof surfaced === 'number' ? surfaced : 0;
+		return {
+			elapsedMs: Math.max(0, now() - discoveryStartedAtMs),
+			phases: phaseTimings.slice(),
+			efficiency: {
+				candidateSignalProbes,
+				baselineCandidateSignalProbes,
+				surfacedCandidates,
+				probesPerSurfacedCandidate: candidateSignalProbes / Math.max(1, surfacedCandidates),
+				probeReductionRatio:
+					baselineCandidateSignalProbes > 0
+						? 1 - candidateSignalProbes / baselineCandidateSignalProbes
+						: 0,
+				plannerMode,
+			},
+			planner: {
+				mode: plannerMode,
+				wouldProbeBySignal: countPlannedCandidates(signalPlan.candidatesBySignal),
+				wouldDropBySignal: countDroppedCandidates(signalPlan.droppedBySignal),
+			},
+		};
+	};
+	const runTrackedSignal = async <R>(
+		name: DiscoverSignal,
+		fn: () => Promise<R>,
+		statusForValue: (value: R) => string,
+		detailForValue?: (value: R) => Record<string, unknown>,
+	): Promise<SignalOutcome<R>> => {
+		const startedAtMs = now();
+		const out = await runSignal(fn);
+		if (out.ok) {
+			await finishPhase(name, statusForValue(out.value), startedAtMs, detailForValue?.(out.value));
+		} else {
+			await finishPhase(name, 'failed', startedAtMs, { error: out.error });
+		}
+		return out;
+	};
+	// Thread the caller's signal into the dnsContext factory: every probe that
+	// uses `dnsContext.query(...)` then inherits cancellation through Phase 2's
+	// signal-forwarding contract. This is the choke-point that makes most of
+	// the discovery fan-out abortable without per-probe code changes.
+	const createDnsContext = d.createDnsContext ?? createDiscoveryDnsContext;
+	const dnsContext: DiscoveryDnsContext = createDnsContext({ signal: options.signal });
+	let dkimDnsContext: DiscoveryDnsContext | null = null;
+	const getDkimDnsContext = (): DiscoveryDnsContext => {
+		if (!dkimDnsContext) {
+			dkimDnsContext = createDnsContext({ signal: options.signal, maxConcurrent: 4 });
+		}
+		return dkimDnsContext;
+	};
 	const signals = (options.signals && options.signals.length > 0 ? options.signals : ALL_SIGNALS).slice();
 	const candidateDomains = options.candidate_domains ?? [];
 	// Caller-asserted ownership: bypass the corroboration gate for these.
@@ -276,12 +568,38 @@ export async function discoverBrandDomains(
 		? Math.max(0, Math.min(1, options.min_confidence))
 		: DEFAULT_MIN_CONFIDENCE;
 
-	// Generate Markov lookalikes + ccTLD variants of the seed apex.
-	// Markov-only seeding kept the seed TLD and missed big-brand ccTLD portfolios
-	// (amazon.de, microsoft.uk, nike.fr, …). ccTLD variants close that gap.
-	const markovCandidates = d.generateMarkovLookalikes(seedDomain, 20);
-	const cctldCandidates = generateCctldVariants(seedDomain);
-	const mergedCandidates = Array.from(new Set([...candidateDomains, ...markovCandidates, ...cctldCandidates]));
+	const depth = options.depth ?? 'standard';
+	const candidateUniverseStartedAtMs = await startPhase('candidate_universe', { depth });
+	const markovCandidates = d.generateMarkovLookalikes(seedDomain, depth === 'deep' ? 60 : 20);
+	let activeLookalikes: string[] = [];
+	const preSignalStatus: Record<string, { status: string; error?: string }> = {};
+	if (depth === 'deep') {
+		const activeStartedAtMs = await startPhase('active_lookalike');
+		const activeOut = await runSignal<CheckResult>(() => d.checkLookalikes(seedDomain));
+		if (activeOut.ok) {
+			activeLookalikes = extractActiveLookalikeDomains(activeOut.value);
+			preSignalStatus.active_lookalike = { status: activeOut.value.partial ? 'partial' : 'ok' };
+			await finishPhase('active_lookalike', preSignalStatus.active_lookalike.status, activeStartedAtMs, {
+				discovered: activeLookalikes.length,
+			});
+		} else {
+			preSignalStatus.active_lookalike = { status: 'failed', error: activeOut.error };
+			await finishPhase('active_lookalike', 'failed', activeStartedAtMs, { error: activeOut.error });
+		}
+	}
+	const universe = buildBrandCandidateUniverse({
+		seedDomain,
+		candidateDomains,
+		markovCandidates,
+		activeLookalikes,
+		brandAliases: options.brand_aliases,
+		depth,
+	});
+	await finishPhase('candidate_universe', 'completed', candidateUniverseStartedAtMs, {
+		seeded: universe.stats.seeded,
+		dropped: universe.stats.dropped,
+		sources: universe.stats.sources,
+	});
 
 	// Pre-validate seed via the SAN correlator's strict guard. correlateSans
 	// throws on invalid input (programmer error) — we let that escape.
@@ -293,33 +611,117 @@ export async function discoverBrandDomains(
 		throw new Error(`Domain validation failed: ${v.error ?? 'invalid domain'}`);
 	}
 
-	type Job = () => Promise<void>;
+	interface Job {
+		name: DiscoverSignal;
+		run: () => Promise<void>;
+	}
 	const aggregator = new Map<string, CandidateAggregator>();
 
-	// Seed the aggregator with markov candidates.
-	for (const mc of markovCandidates) {
-		addObservation(aggregator, mc, 'markov_gen', DEFAULT_SIGNAL_CONFIDENCE.markov_gen, {
-			strategy: 'trigram_markov',
-		});
-	}
-	// Seed ccTLD variants so single-signal NS-overlap matches can clear the
-	// corroboration gate (markov_gen + ns = 2 distinct signal kinds).
-	for (const cc of cctldCandidates) {
-		addObservation(aggregator, cc, 'markov_gen', DEFAULT_SIGNAL_CONFIDENCE.markov_gen, {
-			strategy: 'cctld_variant',
-		});
+	for (const candidate of universe.candidates) {
+		addCandidateSeed(aggregator, candidate.domain, candidate.sources, candidate.reasons);
 	}
 
-	const signalStatus: Record<string, { status: string; error?: string }> = {};
+	const signalStatus: Record<string, { status: string; error?: string }> = { ...preSignalStatus };
+
+	// Phase-5 ground-truth signals (app-links + bounty-scope). Their domains
+	// land directly in the aggregator as confidence-1.0 observations and join
+	// `callerAssertedDomains` so the corroboration gate bypasses them. They are
+	// then *excluded* from `mergedCandidates` — the downstream signal sweep
+	// skips probing them entirely, since brand-authored declarations need no
+	// further proof. Previous attempt (commit 8df859a, reverted) added them via
+	// `candidateDomains` instead, blowing the consumer's 300s cap on fan-out.
+	const seedNorm = seedDomain.trim().toLowerCase().replace(/\.$/, '');
+	const groundTruthBypass = new Set<string>();
+
+	const appLinksStartedAtMs = await startPhase('app_links');
+	const appLinksOut = await runSignal(() => detectAppLinks(seedDomain));
+	if (appLinksOut.ok) {
+		signalStatus.app_links = { status: appLinksOut.value.queryStatus };
+		for (const c of appLinksOut.value.coOwnedDomains) {
+			if (!c.domain || c.domain === seedNorm) continue;
+			addObservation(aggregator, c.domain, 'app_links', DEFAULT_SIGNAL_CONFIDENCE.app_links, c.evidence);
+			callerAssertedDomains.add(c.domain);
+			groundTruthBypass.add(c.domain);
+		}
+		await finishPhase('app_links', appLinksOut.value.queryStatus, appLinksStartedAtMs, {
+			discovered: appLinksOut.value.coOwnedDomains.length,
+		});
+	} else {
+		signalStatus.app_links = { status: 'failed', error: appLinksOut.error };
+		await finishPhase('app_links', 'failed', appLinksStartedAtMs, { error: appLinksOut.error });
+	}
+
+	const bountyHandles = PHASE5_BOUNTY_HANDLES[seedNorm] ?? {};
+	if (Object.keys(bountyHandles).length > 0) {
+		const bountyStartedAtMs = await startPhase('bounty_scope', { handles: Object.keys(bountyHandles) });
+		const bountyOut = await runSignal(() => detectBountyScope(seedDomain, { handles: bountyHandles }));
+		if (bountyOut.ok) {
+			const failedPlatforms = bountyOut.value.failedPlatforms;
+			signalStatus.bounty_scope = {
+				status: bountyOut.value.queryStatus,
+				...(failedPlatforms.length > 0 ? { error: `failedPlatforms=${failedPlatforms.join(',')}` } : {}),
+			};
+			for (const c of bountyOut.value.coOwnedDomains) {
+				if (!c.domain || c.domain === seedNorm) continue;
+				addObservation(aggregator, c.domain, 'bounty_scope', DEFAULT_SIGNAL_CONFIDENCE.bounty_scope, c.evidence);
+				callerAssertedDomains.add(c.domain);
+				groundTruthBypass.add(c.domain);
+			}
+			await finishPhase('bounty_scope', bountyOut.value.queryStatus, bountyStartedAtMs, {
+				discovered: bountyOut.value.coOwnedDomains.length,
+				fetchedPlatforms: bountyOut.value.fetchedPlatforms,
+				failedPlatforms,
+				wildcardScopes: bountyOut.value.wildcardScopes.length,
+				outOfScopeDomains: bountyOut.value.outOfScopeDomains.length,
+			});
+		} else {
+			signalStatus.bounty_scope = { status: 'failed', error: bountyOut.error };
+			await finishPhase('bounty_scope', 'failed', bountyStartedAtMs, { error: bountyOut.error });
+		}
+	} else {
+		await recordInstantPhase('bounty_scope', 'skipped_no_handles');
+	}
+
+	// Universe candidates feed the signal sweep, MINUS the ground-truth
+	// bypass set. Bypassed domains stay in the aggregator (already added
+	// above) but are never sent to the existing 12 signal probes.
+	const mergedCandidates = universe.candidates
+		.map((candidate) => candidate.domain)
+		.filter((d) => !groundTruthBypass.has(d));
+	candidateBackedSignalBaselineProbes = Object.fromEntries(
+		signals
+			.filter((signal) => CANDIDATE_BACKED_SIGNALS.has(signal))
+			.map((signal) => [signal, mergedCandidates.length]),
+	);
+	if (plannerMode !== 'off') {
+		signalPlan = planBrandDiscoverySignals({
+			depth,
+			candidates: universe.candidates.filter((candidate) => !groundTruthBypass.has(candidate.domain)),
+			signals,
+			caps: options.planner_caps,
+		});
+	}
+	const candidatesForSignal = (signal: DiscoverSignal): string[] => {
+		if (plannerMode !== 'enforce') return mergedCandidates;
+		return signalPlan.candidatesBySignal[signal] ?? mergedCandidates;
+	};
+
 	const jobs: Job[] = [];
 
 	// Captured first-order SAN hits — fed into the second-order recursive pass below.
 	let firstOrderSanCandidates: string[] = [];
 
 	if (signals.includes('san')) {
-		jobs.push(async () => {
-			const out = await runSignal<SanCorrelationResult>(() =>
-				d.correlateSans(seedDomain, options.certstream ? { certstream: options.certstream } : {}),
+		jobs.push({
+			name: 'san',
+			run: async () => {
+			const out = await runTrackedSignal<SanCorrelationResult>('san', () =>
+				d.correlateSans(seedDomain, {
+					...(options.certstream ? { certstream: options.certstream } : {}),
+					signal: options.signal,
+				}),
+				(value) => value.queryStatus,
+				(value) => ({ discovered: value.coOwnedDomains.length, certIds: value.certIds.length }),
 			);
 			if (!out.ok) {
 				signalStatus.san = { status: 'failed', error: out.error };
@@ -333,12 +735,20 @@ export async function discoverBrandDomains(
 					certIds: out.value.certIds.slice(0, 5),
 				});
 			}
+			},
 		});
 	}
 
 	if (signals.includes('ns')) {
-		jobs.push(async () => {
-			const out = await runSignal<NsCorrelationResult>(() => d.correlateNs(seedDomain, { candidateDomains: mergedCandidates }));
+		jobs.push({
+			name: 'ns',
+			run: async () => {
+			const nsCandidates = recordCandidateSignalProbes('ns', candidatesForSignal('ns'));
+			const out = await runTrackedSignal<NsCorrelationResult>('ns', () =>
+				d.correlateNs(seedDomain, { candidateDomains: nsCandidates, dnsContext }),
+				(value) => value.queryStatus,
+				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: nsCandidates.length }),
+			);
 			if (!out.ok) {
 				signalStatus.ns = { status: 'failed', error: out.error };
 				return;
@@ -350,12 +760,18 @@ export async function discoverBrandDomains(
 					nsConfidence: c.confidence,
 				});
 			}
+			},
 		});
 	}
 
 	if (signals.includes('dmarc_rua')) {
-		jobs.push(async () => {
-			const out = await runSignal<DmarcRuaResult>(() => d.mineDmarcRua(seedDomain));
+		jobs.push({
+			name: 'dmarc_rua',
+			run: async () => {
+			const out = await runTrackedSignal<DmarcRuaResult>('dmarc_rua', () => d.mineDmarcRua(seedDomain, { dnsContext }),
+				(value) => value.queryStatus,
+				(value) => ({ ruaDomains: value.ruaDomains.length }),
+			);
 			if (!out.ok) {
 				signalStatus.dmarc_rua = { status: 'failed', error: out.error };
 				return;
@@ -365,15 +781,34 @@ export async function discoverBrandDomains(
 				if (r.classification !== 'related') continue;
 				addObservation(aggregator, r.domain, 'dmarc_rua', r.confidence, {
 					classification: r.classification,
+					externalAuthorization: r.externalAuthorization,
 				});
 			}
+			},
 		});
 	}
 
 	if (signals.includes('dkim_key_reuse')) {
-		jobs.push(async () => {
-			const out = await runSignal<DkimKeyReuseResult>(() =>
-				d.detectDkimKeyReuse(seedDomain, mergedCandidates, dkimSelectors ? { selectors: dkimSelectors } : {}),
+		jobs.push({
+			name: 'dkim_key_reuse',
+			run: async () => {
+			const dkimCandidates = recordCandidateSignalProbes('dkim_key_reuse', candidatesForSignal('dkim_key_reuse'));
+			const out = await runTrackedSignal<DkimKeyReuseResult>('dkim_key_reuse', () =>
+				d.detectDkimKeyReuse(seedDomain, dkimCandidates, {
+					...(dkimSelectors ? { selectors: dkimSelectors } : {}),
+					dnsContext: getDkimDnsContext(),
+					maxCandidates: depth === 'deep' ? 40 : 30,
+					candidateConcurrency: 4,
+					totalBudgetMs: 25_000,
+					signal: options.signal,
+				}),
+				(value) => value.queryStatus,
+				(value) => ({
+					discovered: value.coOwnedDomains.length,
+					probedCandidates: value.probedCandidates ?? dkimCandidates.length,
+					skippedCandidates: value.skippedCandidates ?? 0,
+					budgetExceeded: value.budgetExceeded === true,
+				}),
 			);
 			if (!out.ok) {
 				signalStatus.dkim_key_reuse = { status: 'failed', error: out.error };
@@ -386,13 +821,18 @@ export async function discoverBrandDomains(
 					sharedKeys: c.sharedKeys,
 				});
 			}
+			},
 		});
 	}
 
 	if (signals.includes('http_redirect')) {
-		jobs.push(async () => {
-			const out = await runSignal<HttpRedirectResult>(() =>
+		jobs.push({
+			name: 'http_redirect',
+			run: async () => {
+			const out = await runTrackedSignal<HttpRedirectResult>('http_redirect', () =>
 				d.detectHttpRedirect(seedDomain, { candidateDomains: mergedCandidates }),
+				(value) => value.queryStatus,
+				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: mergedCandidates.length }),
 			);
 			if (!out.ok) {
 				signalStatus.http_redirect = { status: 'failed', error: out.error };
@@ -402,13 +842,19 @@ export async function discoverBrandDomains(
 			for (const c of out.value.coOwnedDomains) {
 				addObservation(aggregator, c.domain, 'http_redirect', c.confidence, c.evidence);
 			}
+			},
 		});
 	}
 
 	if (signals.includes('mx_overlap')) {
-		jobs.push(async () => {
-			const out = await runSignal<MxOverlapResult>(() =>
-				d.detectMxOverlap(seedDomain, { candidateDomains: mergedCandidates }),
+		jobs.push({
+			name: 'mx_overlap',
+			run: async () => {
+			const mxOverlapCandidates = recordCandidateSignalProbes('mx_overlap', candidatesForSignal('mx_overlap'));
+			const out = await runTrackedSignal<MxOverlapResult>('mx_overlap', () =>
+				d.detectMxOverlap(seedDomain, { candidateDomains: mxOverlapCandidates, dnsContext }),
+				(value) => value.queryStatus,
+				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: mxOverlapCandidates.length }),
 			);
 			if (!out.ok) {
 				signalStatus.mx_overlap = { status: 'failed', error: out.error };
@@ -418,13 +864,75 @@ export async function discoverBrandDomains(
 			for (const c of out.value.coOwnedDomains) {
 				addObservation(aggregator, c.domain, 'mx_overlap', c.confidence, c.evidence);
 			}
+			},
+		});
+	}
+
+	if (signals.includes('txt_verification')) {
+		jobs.push({
+			name: 'txt_verification',
+			run: async () => {
+			const txtVerificationCandidates = recordCandidateSignalProbes('txt_verification', candidatesForSignal('txt_verification'));
+			const out = await runTrackedSignal<TxtVerificationResult>('txt_verification', () =>
+				d.detectSharedTxtVerifications(seedDomain, { candidateDomains: txtVerificationCandidates, dnsContext }),
+				(value) => value.queryStatus,
+				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: txtVerificationCandidates.length }),
+			);
+			if (!out.ok) {
+				signalStatus.txt_verification = { status: 'failed', error: out.error };
+				return;
+			}
+			signalStatus.txt_verification = { status: out.value.queryStatus };
+			for (const c of out.value.coOwnedDomains) {
+				addObservation(aggregator, c.domain, 'txt_verification', c.confidence, {
+					sharedTxtVerifications: c.sharedTxtVerifications,
+				});
+				const entry = aggregator.get(c.domain.trim().toLowerCase().replace(/\.$/, ''));
+				if (entry) {
+					entry.sharedTxtVerifications = Array.from(
+						new Set([...entry.sharedTxtVerifications, ...c.sharedTxtVerifications]),
+					).sort();
+				}
+			}
+			},
+		});
+	}
+
+	if (signals.includes('mx_platform')) {
+		jobs.push({
+			name: 'mx_platform',
+			run: async () => {
+			const mxPlatformCandidates = recordCandidateSignalProbes('mx_platform', candidatesForSignal('mx_platform'));
+			const out = await runTrackedSignal<MxPlatformResult>('mx_platform', () =>
+				d.detectSharedMxPlatform(seedDomain, { candidateDomains: mxPlatformCandidates, dnsContext }),
+				(value) => value.queryStatus,
+				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: mxPlatformCandidates.length }),
+			);
+			if (!out.ok) {
+				signalStatus.mx_platform = { status: 'failed', error: out.error };
+				return;
+			}
+			signalStatus.mx_platform = { status: out.value.queryStatus };
+			for (const c of out.value.coOwnedDomains) {
+				addObservation(aggregator, c.domain, 'mx_platform', c.confidence, {
+					sharedMxPlatform: c.sharedMxPlatform,
+				});
+				const entry = aggregator.get(c.domain.trim().toLowerCase().replace(/\.$/, ''));
+				if (entry) entry.sharedMxPlatform = c.sharedMxPlatform;
+			}
+			},
 		});
 	}
 
 	if (signals.includes('spf_include')) {
-		jobs.push(async () => {
-			const out = await runSignal<SpfIncludeResult>(() =>
-				d.detectSpfInclude(seedDomain, { candidateDomains: mergedCandidates }),
+		jobs.push({
+			name: 'spf_include',
+			run: async () => {
+			const spfIncludeCandidates = recordCandidateSignalProbes('spf_include', candidatesForSignal('spf_include'));
+			const out = await runTrackedSignal<SpfIncludeResult>('spf_include', () =>
+				d.detectSpfInclude(seedDomain, { candidateDomains: spfIncludeCandidates, dnsContext }),
+				(value) => value.queryStatus,
+				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: spfIncludeCandidates.length }),
 			);
 			if (!out.ok) {
 				signalStatus.spf_include = { status: 'failed', error: out.error };
@@ -434,6 +942,7 @@ export async function discoverBrandDomains(
 			for (const c of out.value.coOwnedDomains) {
 				addObservation(aggregator, c.domain, 'spf_include', c.confidence, c.evidence);
 			}
+			},
 		});
 	}
 
@@ -444,8 +953,13 @@ export async function discoverBrandDomains(
 	// mail policy — the path that unlocks Nike-style brand families whose
 	// regional ccTLD apexes appear only in the seed's `include:` chain.
 	if (signals.includes('spf_include_seed')) {
-		jobs.push(async () => {
-			const out = await runSignal<SeedSpfWalkResult>(() => d.extractSeedSpfIncludes(seedDomain));
+		jobs.push({
+			name: 'spf_include_seed',
+			run: async () => {
+			const out = await runTrackedSignal<SeedSpfWalkResult>('spf_include_seed', () => d.extractSeedSpfIncludes(seedDomain, { dnsContext }),
+				(value) => value.queryStatus,
+				(value) => ({ candidates: value.candidates.length }),
+			);
 			if (!out.ok) {
 				signalStatus.spf_include_seed = { status: 'failed', error: out.error };
 				return;
@@ -457,13 +971,19 @@ export async function discoverBrandDomains(
 					depth: c.depth,
 				});
 			}
+			},
 		});
 	}
 
 	if (signals.includes('cname_alignment')) {
-		jobs.push(async () => {
-			const out = await runSignal<CnameAlignmentResult>(() =>
-				d.detectCnameAlignment(seedDomain, { candidateDomains: mergedCandidates }),
+		jobs.push({
+			name: 'cname_alignment',
+			run: async () => {
+			const cnameAlignmentCandidates = recordCandidateSignalProbes('cname_alignment', candidatesForSignal('cname_alignment'));
+			const out = await runTrackedSignal<CnameAlignmentResult>('cname_alignment', () =>
+				d.detectCnameAlignment(seedDomain, { candidateDomains: cnameAlignmentCandidates, dnsContext }),
+				(value) => value.queryStatus,
+				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: cnameAlignmentCandidates.length }),
 			);
 			if (!out.ok) {
 				signalStatus.cname_alignment = { status: 'failed', error: out.error };
@@ -473,36 +993,76 @@ export async function discoverBrandDomains(
 			for (const c of out.value.coOwnedDomains) {
 				addObservation(aggregator, c.domain, 'cname_alignment', c.confidence, c.evidence);
 			}
+			},
 		});
 	}
 
-	await Promise.allSettled(jobs.map((j) => j()));
+	const signalSweepStartedAtMs = await startPhase('signal_sweep', {
+		signals: jobs.map((job) => job.name),
+		probedCandidates: mergedCandidates.length,
+	});
+	await Promise.allSettled(jobs.map((j) => j.run()));
+	await finishPhase(
+		'signal_sweep',
+		options.signal?.aborted ? 'partial' : 'completed',
+		signalSweepStartedAtMs,
+		{
+			completedSignals: phaseTimings
+				.filter((phase) => jobs.some((job) => job.name === phase.name))
+				.map((phase) => phase.name),
+		},
+	);
 
-	// Second-order SAN expansion: for each first-order sibling, re-query crt.sh
-	// and check whether the original seed appears in the candidate's own SAN
-	// listing. Mutual cross-cert inclusion is near-deterministic — single hit
-	// clears the corroboration gate (see NEAR_DETERMINISTIC_SIGNALS).
-	// Skipped when 'san_recursive' isn't requested or first-order yielded no
-	// candidates (nothing to probe).
-	if (signals.includes('san_recursive') && firstOrderSanCandidates.length > 0) {
-		const recursiveOut = await runSignal<SanRecursiveResult>(() =>
-			d.correlateSansRecursive(seedDomain, firstOrderSanCandidates, {
-				certstream: options.certstream,
-				maxCandidates: 20,
-				concurrency: 8,
-				totalBudgetMs: 30_000,
-			}),
-		);
-		if (!recursiveOut.ok) {
-			signalStatus.san_recursive = { status: 'failed', error: recursiveOut.error };
+	// Budget gate: if the consumer's AbortController has fired while jobs were
+	// in flight, skip the recursive SAN expansion (the most expensive single
+	// step, ~30s) and head straight to the aggregator pass with whatever we
+	// already have. The consumer will flip the row to `failed` once we return.
+	if (options.signal?.aborted) {
+		signalStatus.san_recursive ??= { status: 'skipped_no_first_order' };
+		await recordInstantPhase('san_recursive', 'skipped_aborted');
+	} else if (signals.includes('san_recursive') && firstOrderSanCandidates.length > 0) {
+		const remainingMs = deadlineRemainingMs();
+		if (remainingMs !== null && remainingMs < RECURSIVE_SAN_MIN_DEADLINE_HEADROOM_MS) {
+			signalStatus.san_recursive = { status: 'skipped_deadline' };
+			await recordInstantPhase('san_recursive', 'skipped_deadline', {
+				remainingMs,
+				requiredHeadroomMs: RECURSIVE_SAN_MIN_DEADLINE_HEADROOM_MS,
+				firstOrderCandidates: firstOrderSanCandidates.length,
+			});
 		} else {
-			signalStatus.san_recursive = { status: recursiveOut.value.queryStatus };
-			for (const cc of recursiveOut.value.crossConfirmed) {
-				addObservation(aggregator, cc.candidate, 'san_recursive', DEFAULT_SIGNAL_CONFIDENCE.san_recursive, {
-					seed: recursiveOut.value.seedDomain,
-					certIds: cc.certIds,
-					probedCount: recursiveOut.value.probed.length,
-				});
+			const recursiveOut = await runTrackedSignal<SanRecursiveResult>('san_recursive', () =>
+				d.correlateSansRecursive(seedDomain, firstOrderSanCandidates, {
+					certstream: options.certstream,
+					// Caps tightened (2026-05-19) to fit Cloudflare Worker CPU budget.
+					// Each candidate triggers a fresh crt.sh fetch (~200KB-2MB JSON parse
+					// for tier-1 brands), so 20 candidates × 8 concurrency was the single
+					// largest CPU sink in the walmart wedge. 10/4/15s keeps headroom for
+					// the remaining 11 signal probes + RDAP enrichment.
+					maxCandidates: 10,
+					concurrency: 4,
+					totalBudgetMs: 15_000,
+					signal: options.signal,
+				}),
+				(value) => (value.queryStatus === 'budget_exceeded' ? 'partial' : value.queryStatus),
+				(value) => ({
+					probed: value.probed.length,
+					crossConfirmed: value.crossConfirmed.length,
+				}),
+			);
+			if (!recursiveOut.ok) {
+				signalStatus.san_recursive = { status: 'failed', error: recursiveOut.error };
+			} else {
+				signalStatus.san_recursive =
+					recursiveOut.value.queryStatus === 'budget_exceeded'
+						? { status: 'partial', error: 'budget_exceeded' }
+						: { status: recursiveOut.value.queryStatus };
+				for (const cc of recursiveOut.value.crossConfirmed) {
+					addObservation(aggregator, cc.candidate, 'san_recursive', DEFAULT_SIGNAL_CONFIDENCE.san_recursive, {
+						seed: recursiveOut.value.seedDomain,
+						certIds: cc.certIds,
+						probedCount: recursiveOut.value.probed.length,
+					});
+				}
 			}
 		}
 	} else if (signals.includes('san_recursive')) {
@@ -512,13 +1072,15 @@ export async function discoverBrandDomains(
 		// all-failed gate honest when every signal — including san — broke.
 		if (signalStatus.san?.status === 'failed') {
 			signalStatus.san_recursive = { status: 'failed', error: 'first_order_san_failed' };
+			await recordInstantPhase('san_recursive', 'failed', { error: 'first_order_san_failed' });
 		} else {
 			signalStatus.san_recursive = { status: 'skipped_no_first_order' };
+			await recordInstantPhase('san_recursive', 'skipped_no_first_order');
 		}
 	}
 
 	// Did every requested signal blow up? If yes, surface a missingControl finding.
-	const allFailed = signals.length > 0 && signals.every((s) => signalStatus[s]?.status === 'failed');
+	const allFailed = signals.length > 0 && signals.every((s) => signalCouldNotComplete(signalStatus[s]?.status));
 	if (allFailed) {
 		return buildCheckResult('brand_discovery', [
 			createFinding(
@@ -531,48 +1093,90 @@ export async function discoverBrandDomains(
 					confidence: 'heuristic',
 					errorKind: 'dns_error',
 					signalStatus,
+					discoveryPerformance: buildDiscoveryPerformance(),
 				},
 			),
 		]);
 	}
 
 	// Build candidate findings.
+	const aggregationStartedAtMs = await startPhase('aggregation', { aggregatedTotal: aggregator.size });
 	const candidateFindings: Finding[] = [];
-	const surviving: Array<{ domain: string; combined: number; signals: DiscoverSignal[]; sources: Record<string, unknown> }> = [];
+	const dropCounts = {
+		cap: universe.stats.dropped.cap,
+		seedOrSubdomain: 0,
+		infrastructureProvider: 0,
+		corroborationGate: 0,
+		belowConfidence: 0,
+	};
+	const surviving: Array<{
+		domain: string;
+		combined: number;
+		signals: DiscoverSignal[];
+		sources: Record<string, unknown>;
+		candidateSeedSources: CandidateSeedSource[];
+		candidateSeedReasons: string[];
+		sharedTxtVerifications: string[];
+		sharedMxPlatform: string | null;
+		lookalikeScore: number;
+		evidenceObservations: BrandEvidenceObservation[];
+	}> = [];
 
 	for (const entry of aggregator.values()) {
 		// Drop the seed or its subdomains if they accidentally appear (e.g. self-referenced rua=).
-		if (isSubdomainOf(entry.domain, seedDomain)) continue;
+		if (isSubdomainOf(entry.domain, seedDomain)) {
+			dropCounts.seedOrSubdomain++;
+			continue;
+		}
 
 		const perSignal = Array.from(entry.perSignalConfidence.entries());
 
 		const signalKinds = perSignal.map(([k]) => k).sort() as DiscoverSignal[];
+		const evidenceObservations = perSignal.map(([signal, confidence]) => ({
+			signal,
+			confidence,
+			metadata: typeof entry.sources[signal] === 'object' && entry.sources[signal] !== null && !Array.isArray(entry.sources[signal])
+				? (entry.sources[signal] as Record<string, unknown>)
+				: undefined,
+		})) satisfies BrandEvidenceObservation[];
+		const lookalikeScore = round4(d.domainLabelSimilarity(seedDomain, entry.domain));
+		entry.lookalikeScore = lookalikeScore;
 
 		// Only suppress infrastructure providers when the *sole* signal is dmarc_rua
 		// (RUA mailboxes are processors, not siblings). Other signals (san, ns,
 		// dkim_key_reuse, http_redirect, ...) legitimately surface brand-owned
 		// infra like outlook.com / azure.com / amazonaws.com.
-		if (isInfrastructureProvider(entry.domain) && signalKinds.every(s => s === 'dmarc_rua')) continue;
-
-		// Corroboration Requirement: a candidate must be corroborated by ≥2 distinct
-		// signals OR be a single near-deterministic signal. Filters single-signal
-		// markov_gen, san, dmarc_rua, and ns (LR-1, LR-2 in the v2.14.0 audit) —
-		// only single-signal dkim_key_reuse is permitted through this gate.
-		// Exception: caller-asserted domains (passed via `candidate_domains`)
-		// bypass the gate when at least one signal corroborates them — the
-		// caller's explicit listing IS the second corroboration.
-		if (
-			!callerAssertedDomains.has(entry.domain) &&
-			signalKinds.length === 1 &&
-			!NEAR_DETERMINISTIC_SIGNALS.has(signalKinds[0])
-		) {
+		if (isInfrastructureProvider(entry.domain) && signalKinds.every((s) => s === 'dmarc_rua')) {
+			dropCounts.infrastructureProvider++;
 			continue;
 		}
 
-		const combined = round4(combineConfidences(perSignal.map(([, c]) => c)));
-		if (combined < minConfidence) continue;
-		
-		surviving.push({ domain: entry.domain, combined, signals: signalKinds, sources: entry.sources });
+		// Corroboration Requirement: delegated to the shared evidence policy so
+		// discovery and classification use the same ownership threshold.
+		if (!clearsOwnershipGate(evidenceObservations, { callerAsserted: callerAssertedDomains.has(entry.domain) })) {
+			dropCounts.corroborationGate++;
+			continue;
+		}
+
+		const scoredSignals = perSignal.filter(([signal]) => !isGeneratedSeedSignal(signal));
+		const combined = round4(combineConfidences(scoredSignals.map(([, c]) => c)));
+		if (combined < minConfidence) {
+			dropCounts.belowConfidence++;
+			continue;
+		}
+
+		surviving.push({
+			domain: entry.domain,
+			combined,
+			signals: signalKinds,
+			sources: entry.sources,
+			candidateSeedSources: entry.candidateSeedSources.slice(),
+			candidateSeedReasons: Array.from(new Set(entry.candidateSeedReasons)),
+			sharedTxtVerifications: entry.sharedTxtVerifications.slice(),
+			sharedMxPlatform: entry.sharedMxPlatform,
+			lookalikeScore,
+			evidenceObservations,
+		});
 	}
 
 	surviving.sort((a, b) => b.combined - a.combined || a.domain.localeCompare(b.domain));
@@ -590,10 +1194,20 @@ export async function discoverBrandDomains(
 					signals: cand.signals,
 					combinedConfidence: cand.combined,
 					sources: cand.sources,
+					candidateSeedSources: cand.candidateSeedSources,
+					candidateSeedReasons: cand.candidateSeedReasons,
+					sharedTxtVerifications: cand.sharedTxtVerifications,
+					sharedMxPlatform: cand.sharedMxPlatform,
+					lookalikeScore: cand.lookalikeScore,
+					evidenceObservations: cand.evidenceObservations,
 				},
 			),
 		);
 	}
+	await finishPhase('aggregation', 'completed', aggregationStartedAtMs, {
+		surfaced: candidateFindings.length,
+		dropped: dropCounts,
+	});
 
 	// Always emit a summary finding so the formatter has something to print.
 	const summary = createFinding(
@@ -608,6 +1222,14 @@ export async function discoverBrandDomains(
 			minConfidence,
 			totalAggregated: aggregator.size,
 			surfaced: candidateFindings.length,
+			discoveryPerformance: buildDiscoveryPerformance(),
+			candidateUniverse: {
+				seeded: universe.stats.seeded,
+				probed: mergedCandidates.length,
+				surfaced: candidateFindings.length,
+				dropped: dropCounts,
+				sources: universe.stats.sources,
+			},
 		},
 	);
 

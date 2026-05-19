@@ -10,7 +10,9 @@
  */
 
 import { validateDomain } from '../../lib/sanitize';
+import { mapConcurrent } from '../../lib/map-concurrent';
 import { safeFetch } from '../../lib/safe-fetch';
+import type { DiscoveryDnsContext } from './dns-context';
 
 const DEFAULT_DOH_URL = 'https://cloudflare-dns.com/dns-query';
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -35,6 +37,7 @@ export interface CnameAlignmentOptions {
 	dohFn?: typeof fetch;
 	dohUrl?: string;
 	timeoutMs?: number;
+	dnsContext?: DiscoveryDnsContext;
 }
 
 export interface CnameAlignmentResult {
@@ -45,6 +48,8 @@ export interface CnameAlignmentResult {
 	}>;
 	queryStatus: 'ok' | 'error';
 }
+
+type CnameAlignmentCandidate = CnameAlignmentResult['coOwnedDomains'][number];
 
 interface DohResponse {
 	Status: number;
@@ -73,6 +78,18 @@ async function queryCname(name: string, dohFn: typeof fetch, dohUrl: string, tim
 	}
 }
 
+async function queryCnameWithContext(name: string, dnsContext: DiscoveryDnsContext): Promise<string | null> {
+	try {
+		const json = await dnsContext.query(name, 'CNAME');
+		if (json.Status !== 0 || !json.Answer || json.Answer.length === 0) return null;
+		const cname = json.Answer[0]?.data;
+		if (!cname) return null;
+		return cname.toLowerCase().replace(/\.$/, '');
+	} catch {
+		return null;
+	}
+}
+
 function isSeedRooted(host: string, seed: string): boolean {
 	const h = host.toLowerCase().replace(/\.$/, '');
 	const s = seed.toLowerCase().replace(/\.$/, '');
@@ -96,9 +113,7 @@ function isSeedEdgeAlias(host: string, seed: string): boolean {
 async function walkChain(
 	start: string,
 	seed: string,
-	dohFn: typeof fetch,
-	dohUrl: string,
-	timeoutMs: number,
+	queryCnameRecord: (name: string) => Promise<string | null>,
 ): Promise<{ chain: string[]; matchType: 'seed-rooted' | 'edge-alias' } | null> {
 	const visited = new Set<string>();
 	const chain: string[] = [start];
@@ -108,7 +123,7 @@ async function walkChain(
 		if (visited.has(current)) return null;
 		visited.add(current);
 
-		const next = await queryCname(current, dohFn, dohUrl, timeoutMs);
+		const next = await queryCnameRecord(current);
 		if (!next) {
 			// Terminal — last hop is `current`. Check if it qualifies.
 			if (chain.length > 1) {
@@ -140,28 +155,37 @@ export async function detectCnameAlignment(
 	const dohFn = options.dohFn ?? safeFetch;
 	const dohUrl = options.dohUrl ?? DEFAULT_DOH_URL;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const dnsContext = options.dnsContext;
+	const queryCnameRecord = dnsContext
+		? (name: string) => queryCnameWithContext(name, dnsContext)
+		: (name: string) => queryCname(name, dohFn, dohUrl, timeoutMs);
 
 	if (options.candidateDomains.length === 0) {
 		return { coOwnedDomains: [], queryStatus: 'ok' };
 	}
 
-	const settled = await Promise.allSettled(
-		options.candidateDomains.map(async (cand) => {
+	const settled = await mapConcurrent(options.candidateDomains, 6, async (cand): Promise<PromiseSettledResult<CnameAlignmentCandidate | null>> => {
+		try {
 			const candLower = cand.trim().toLowerCase().replace(/\.$/, '');
-			if (!validateDomain(candLower).valid) return null;
-			const match = await walkChain(candLower, seedLower, dohFn, dohUrl, timeoutMs);
-			if (!match) return null;
+			if (!validateDomain(candLower).valid) return { status: 'fulfilled', value: null };
+			const match = await walkChain(candLower, seedLower, queryCnameRecord);
+			if (!match) return { status: 'fulfilled', value: null };
 			const confidence = match.matchType === 'seed-rooted' ? 0.9 : 0.6;
 			return {
-				domain: candLower,
-				confidence,
-				evidence: { chain: match.chain, matchType: match.matchType },
+				status: 'fulfilled',
+				value: {
+					domain: candLower,
+					confidence,
+					evidence: { chain: match.chain, matchType: match.matchType },
+				},
 			};
-		}),
-	);
+		} catch (reason) {
+			return { status: 'rejected', reason };
+		}
+	});
 
 	const coOwnedDomains = settled
-		.filter((r): r is PromiseFulfilledResult<NonNullable<Awaited<typeof settled[number] extends PromiseSettledResult<infer T> ? T : never>>> => r.status === 'fulfilled' && r.value !== null)
+		.filter((r): r is PromiseFulfilledResult<CnameAlignmentCandidate> => r.status === 'fulfilled' && r.value !== null)
 		.map((r) => r.value);
 
 	return { coOwnedDomains, queryStatus: 'ok' };

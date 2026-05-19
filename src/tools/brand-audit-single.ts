@@ -21,18 +21,8 @@
  *   impersonation  → high     (low confidence + no infra share — likely typo-squat)
  */
 
-import { buildCheckResult, createFinding, type CheckResult, type Finding, type Severity } from '../lib/scoring';
-import { discoverBrandDomains as defaultDiscoverBrandDomains } from './discover-brand-domains';
-import { checkRdapLookup as defaultCheckRdapLookup } from './check-rdap-lookup';
-import {
-	classifyCandidate,
-	normalizeRegistrar,
-	type Bucket,
-	type CandidateInput,
-	type Classification,
-	type RegistrarSource,
-	type TargetContext,
-} from '../lib/brand-classification';
+import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
+import { runBrandAuditPipeline, type BrandAuditPipelineDeps, type BrandAuditPipelineOptions } from '../lib/brand-audit-pipeline';
 
 /**
  * brand-audit findings emit under the existing `brand_discovery` category to
@@ -43,96 +33,13 @@ import {
  */
 const CATEGORY = 'brand_discovery';
 
-/** Concurrency cap for parallel RDAP lookups across candidates. */
-const RDAP_CONCURRENCY = 10;
-
-/**
- * Defensive cap on per-audit candidate count. A pathological discovery output
- * (e.g. a seed that triggers wide crt.sh SAN matches on a multi-tenant CDN)
- * could otherwise fan out to thousands of RDAP fetches. 200 comfortably
- * accommodates the tier-1 brand baseline (~40 candidates per CLAUDE.md's
- * Known Constraints) with 5× headroom; over that, the consumer ack()s with
- * `truncated: true` rather than spending Workers CPU + outbound budget.
- */
-const MAX_CANDIDATES_PER_AUDIT = 200;
-
-const BUCKET_SEVERITY: Record<Bucket, Severity> = {
-	consolidated: 'info',
-	indeterminate: 'low',
-	shadowIt: 'medium',
-	impersonation: 'high',
-};
-
-export interface BrandAuditSingleOptions {
-	/** Output format hint. The orchestrator always returns the full CheckResult; the formatter chooses what to surface. */
-	format?: 'json' | 'markdown' | 'both';
-	/** Minimum combined confidence threshold passed through to `discoverBrandDomains`. */
-	min_confidence?: number;
-}
+export type BrandAuditSingleOptions = BrandAuditPipelineOptions;
 
 /** Quota-check signature — the orchestrator calls this once per audit with `count=1`. */
 export type EnforceBrandAuditQuota = (count: number) => Promise<{ allowed: boolean; remaining?: number; limit?: number; retryAfterMs?: number }>;
 
-/** Injectable dependencies. Tests pass stubs; production omits these and the module imports win. */
-export interface BrandAuditSingleDeps {
-	discoverBrandDomains?: typeof defaultDiscoverBrandDomains;
-	checkRdapLookup?: typeof defaultCheckRdapLookup;
+export interface BrandAuditSingleDeps extends BrandAuditPipelineDeps {
 	enforceQuota?: EnforceBrandAuditQuota;
-	/** Optional service bindings threaded through to the inner tools. */
-	certstream?: { fetch: typeof fetch };
-	whoisBinding?: { fetch: typeof fetch };
-}
-
-interface RegistrarLookup {
-	registrar: string;
-	registrarSource: RegistrarSource;
-	registrant: string | null;
-}
-
-/** Pull registrar + registrant out of a check-rdap-lookup result, mirroring `scripts/brand-audit-brand-audit.spec.ts:lookupRegistrar`. */
-function extractRegistrar(rdap: CheckResult): RegistrarLookup {
-	const populated = rdap.findings.find(
-		(f) => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0,
-	);
-	const registrantFinding = rdap.findings.find(
-		(f) => typeof f.metadata?.registrant === 'string' && (f.metadata.registrant as string).length > 0,
-	);
-	const registrant = (registrantFinding?.metadata?.registrant as string | undefined) ?? null;
-
-	if (populated) {
-		const source = (populated.metadata?.registrarSource as RegistrarSource | undefined) ?? 'unknown';
-		return { registrar: populated.metadata!.registrar as string, registrarSource: source, registrant };
-	}
-	const lastWithSource = [...rdap.findings].reverse().find((f) => typeof f.metadata?.registrarSource === 'string');
-	const source = (lastWithSource?.metadata?.registrarSource as RegistrarSource | undefined) ?? 'unknown';
-	return { registrar: 'Unknown', registrarSource: source, registrant };
-}
-
-/** Run `fn` over `items` with at most `limit` concurrent in-flight. Order preserved in the returned array. */
-async function mapConcurrent<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
-	const out: R[] = new Array(items.length);
-	let next = 0;
-	async function worker() {
-		while (true) {
-			const i = next++;
-			if (i >= items.length) return;
-			out[i] = await fn(items[i], i);
-		}
-	}
-	const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, () => worker());
-	await Promise.all(workers);
-	return out;
-}
-
-/** Look up registrar + registrant for `domain` via injected checkRdapLookup; fails soft to Unknown/unknown. */
-async function safeRegistrarLookup(domain: string, deps: BrandAuditSingleDeps): Promise<RegistrarLookup> {
-	const rdapFn = deps.checkRdapLookup ?? defaultCheckRdapLookup;
-	try {
-		const result = await rdapFn(domain, deps.whoisBinding ? { whoisBinding: deps.whoisBinding } : {});
-		return extractRegistrar(result);
-	} catch {
-		return { registrar: 'Unknown', registrarSource: 'unknown', registrant: null };
-	}
 }
 
 /**
@@ -163,136 +70,5 @@ export async function brandAuditSingle(
 		}
 	}
 
-	const seedDomain = target.trim().toLowerCase();
-	const discover = deps.discoverBrandDomains ?? defaultDiscoverBrandDomains;
-	const discoveryOpts = {
-		min_confidence: options.min_confidence,
-		certstream: deps.certstream,
-	};
-
-	const discovery = await discover(seedDomain, discoveryOpts);
-	const allCandidateFindings = discovery.findings.filter((f) => typeof f.metadata?.candidate === 'string');
-	const truncated = allCandidateFindings.length > MAX_CANDIDATES_PER_AUDIT;
-	const candidateFindings = truncated ? allCandidateFindings.slice(0, MAX_CANDIDATES_PER_AUDIT) : allCandidateFindings;
-
-	// Look up the target's own registrar first — drives Rule 4 (same registrar family corroboration).
-	const targetLookup = await safeRegistrarLookup(seedDomain, deps);
-	const targetCtx: TargetContext = {
-		domain: seedDomain,
-		registrar: targetLookup.registrar,
-		registrarFamily: normalizeRegistrar(targetLookup.registrar),
-		registrant: targetLookup.registrant,
-	};
-
-	if (candidateFindings.length === 0) {
-		const discoverySummary = discovery.findings.find((f) => f.metadata?.summary === true);
-		return buildCheckResult(CATEGORY, [
-			createFinding(
-				CATEGORY,
-				`Brand audit: no candidates surfaced for ${seedDomain}`,
-				'info',
-				`Discovery returned 0 candidates at confidence ≥ ${options.min_confidence ?? 0.5}. Discovery signalStatus: ${JSON.stringify(discoverySummary?.metadata?.signalStatus ?? {})}.`,
-				{
-					summary: true,
-					missingControl: true,
-					target: seedDomain,
-					consolidated: 0,
-					shadowIt: 0,
-					indeterminate: 0,
-					impersonation: 0,
-					targetRegistrar: targetLookup.registrar,
-					targetRegistrarSource: targetLookup.registrarSource,
-					targetRegistrant: targetLookup.registrant,
-					discoverySignalStatus: discoverySummary?.metadata?.signalStatus,
-				},
-			),
-		]);
-	}
-
-	// Look up registrar for every candidate in parallel (bounded).
-	const lookups = await mapConcurrent(candidateFindings, RDAP_CONCURRENCY, (f) =>
-		safeRegistrarLookup(f.metadata!.candidate as string, deps),
-	);
-
-	const bucketCounts: Record<Bucket, number> = { consolidated: 0, shadowIt: 0, indeterminate: 0, impersonation: 0 };
-	const classifiedFindings: Finding[] = candidateFindings.map((f, i) => {
-		const domain = f.metadata!.candidate as string;
-		const signals = (f.metadata!.signals as string[]) ?? [];
-		const confidence = (f.metadata!.combinedConfidence as number) ?? 0;
-		const lookup = lookups[i];
-
-		// Surface the cross-channel evidence fields the classifier reads for the
-		// shadowIt / impersonation branches. The discoverer emits these on the
-		// candidate finding's metadata; callers that don't yet populate them get
-		// the safe defaults ([], null, 0) and the new branches simply don't fire.
-		const md = f.metadata!;
-		const sharedTxtVerifications = Array.isArray(md.sharedTxtVerifications)
-			? (md.sharedTxtVerifications as string[])
-			: [];
-		const sharedMxPlatform = typeof md.sharedMxPlatform === 'string' ? (md.sharedMxPlatform as string) : null;
-		const lookalikeScore = typeof md.lookalikeScore === 'number' ? (md.lookalikeScore as number) : 0;
-
-		const candidate: CandidateInput = {
-			domain,
-			confidence,
-			signals,
-			registrar: lookup.registrar,
-			registrarSource: lookup.registrarSource,
-			registrant: lookup.registrant,
-			sharedTxtVerifications,
-			sharedMxPlatform,
-			lookalikeScore,
-		};
-		const classification: Classification = classifyCandidate(candidate, targetCtx);
-		bucketCounts[classification.bucket]++;
-		const severity = BUCKET_SEVERITY[classification.bucket];
-
-		const detailParts = [
-			`bucket=${classification.bucket}`,
-			`confidence=${classification.confidenceTier}`,
-			classification.note ? `note=${classification.note}` : null,
-			`registrar=${lookup.registrar} (${lookup.registrarSource})`,
-			`signals=[${signals.join(', ')}]`,
-			classification.reasons.length > 0 ? `reasons: ${classification.reasons.join('; ')}` : null,
-		].filter((p): p is string => p !== null);
-
-		return createFinding(CATEGORY, `Brand candidate: ${domain}`, severity, detailParts.join(' — '), {
-			candidate: domain,
-			bucket: classification.bucket,
-			confidenceTier: classification.confidenceTier,
-			note: classification.note,
-			reasons: classification.reasons,
-			signals,
-			combinedConfidence: confidence,
-			registrar: lookup.registrar,
-			registrarSource: lookup.registrarSource,
-			registrant: lookup.registrant,
-		});
-	});
-
-	const total = classifiedFindings.length;
-	const summary = createFinding(
-		CATEGORY,
-		`Brand audit: ${total} candidate(s) classified for ${seedDomain}`,
-		'info',
-		`consolidated=${bucketCounts.consolidated} shadowIt=${bucketCounts.shadowIt} indeterminate=${bucketCounts.indeterminate} impersonation=${bucketCounts.impersonation}`,
-		{
-			summary: true,
-			target: seedDomain,
-			total,
-			consolidated: bucketCounts.consolidated,
-			shadowIt: bucketCounts.shadowIt,
-			indeterminate: bucketCounts.indeterminate,
-			impersonation: bucketCounts.impersonation,
-			targetRegistrar: targetLookup.registrar,
-			targetRegistrarSource: targetLookup.registrarSource,
-			targetRegistrant: targetLookup.registrant,
-			minConfidence: options.min_confidence ?? 0.5,
-			truncated,
-			truncatedAt: truncated ? MAX_CANDIDATES_PER_AUDIT : undefined,
-			discoveredTotal: allCandidateFindings.length,
-		},
-	);
-
-	return buildCheckResult(CATEGORY, [summary, ...classifiedFindings]);
+	return runBrandAuditPipeline(target, options, deps);
 }

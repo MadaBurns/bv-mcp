@@ -13,7 +13,9 @@
  */
 
 import { validateDomain } from '../../lib/sanitize';
+import { mapConcurrent } from '../../lib/map-concurrent';
 import { safeFetch } from '../../lib/safe-fetch';
+import type { DiscoveryDnsContext } from './dns-context';
 
 const DEFAULT_DOH_URL = 'https://cloudflare-dns.com/dns-query';
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -37,6 +39,7 @@ export interface MxOverlapOptions {
 	dohFn?: typeof fetch;
 	dohUrl?: string;
 	timeoutMs?: number;
+	dnsContext?: DiscoveryDnsContext;
 }
 
 export interface MxOverlapResult {
@@ -47,6 +50,8 @@ export interface MxOverlapResult {
 	}>;
 	queryStatus: 'ok' | 'error';
 }
+
+type MxOverlapCandidate = MxOverlapResult['coOwnedDomains'][number];
 
 interface DohResponse {
 	Status: number;
@@ -75,6 +80,20 @@ async function queryMx(name: string, dohFn: typeof fetch, dohUrl: string, timeou
 			.sort();
 	} catch {
 		clearTimeout(timeoutId);
+		return [];
+	}
+}
+
+async function queryMxWithContext(name: string, dnsContext: DiscoveryDnsContext): Promise<string[]> {
+	try {
+		const json = await dnsContext.query(name, 'MX');
+		if (json.Status !== 0 || !json.Answer) return [];
+		return json.Answer
+			.map((a) => a.data.split(/\s+/).pop() ?? '')
+			.map((h) => h.toLowerCase().replace(/\.$/, ''))
+			.filter((h) => h.length > 0)
+			.sort();
+	} catch {
 		return [];
 	}
 }
@@ -110,26 +129,30 @@ export async function detectMxOverlap(seedDomain: string, options: MxOverlapOpti
 	const dohFn = options.dohFn ?? safeFetch;
 	const dohUrl = options.dohUrl ?? DEFAULT_DOH_URL;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const dnsContext = options.dnsContext;
+	const queryMxRecords = dnsContext
+		? (name: string) => queryMxWithContext(name, dnsContext)
+		: (name: string) => queryMx(name, dohFn, dohUrl, timeoutMs);
 
 	if (options.candidateDomains.length === 0) {
 		return { coOwnedDomains: [], queryStatus: 'ok' };
 	}
 
-	const seedMx = await queryMx(seedLower, dohFn, dohUrl, timeoutMs);
+	const seedMx = await queryMxRecords(seedLower);
 	if (seedMx.length === 0) {
 		return { coOwnedDomains: [], queryStatus: 'ok' };
 	}
 
-	const settled = await Promise.allSettled(
-		options.candidateDomains.map(async (cand) => {
+	const settled = await mapConcurrent(options.candidateDomains, 6, async (cand): Promise<PromiseSettledResult<MxOverlapCandidate | null>> => {
+		try {
 			const candLower = cand.trim().toLowerCase().replace(/\.$/, '');
-			if (!validateDomain(candLower).valid) return null;
-			const candMx = await queryMx(candLower, dohFn, dohUrl, timeoutMs);
-			if (candMx.length === 0) return null;
+			if (!validateDomain(candLower).valid) return { status: 'fulfilled', value: null };
+			const candMx = await queryMxRecords(candLower);
+			if (candMx.length === 0) return { status: 'fulfilled', value: null };
 
 			// Determine overlap class.
 			const matched = candMx.filter((h) => seedMx.includes(h));
-			if (matched.length === 0) return null;
+			if (matched.length === 0) return { status: 'fulfilled', value: null };
 
 			// Strong bump only when the CANDIDATE is fully aligned with seed
 			// (every candidate MX matches a seed MX, and all matched hosts are
@@ -139,17 +162,15 @@ export async function detectMxOverlap(seedDomain: string, options: MxOverlapOpti
 			const candFullyAligned = matched.length === candMx.length;
 			if (allUnderSeed && candFullyAligned) {
 				return {
-					domain: candLower,
-					confidence: 0.9,
-					evidence: { matched, sharedSaas: false },
+					status: 'fulfilled',
+					value: { domain: candLower, confidence: 0.9, evidence: { matched, sharedSaas: false } },
 				};
 			}
 			if (allUnderSeed) {
 				// Partial overlap on seed-rooted MX — still indicative.
 				return {
-					domain: candLower,
-					confidence: 0.7,
-					evidence: { matched, sharedSaas: false },
+					status: 'fulfilled',
+					value: { domain: candLower, confidence: 0.7, evidence: { matched, sharedSaas: false } },
 				};
 			}
 
@@ -166,11 +187,10 @@ export async function detectMxOverlap(seedDomain: string, options: MxOverlapOpti
 					const seedTenant = tenantPrefix(seedHost, suffix);
 					return candTenant === seedTenant;
 				});
-				if (!sameTenant) return null;
+				if (!sameTenant) return { status: 'fulfilled', value: null };
 				return {
-					domain: candLower,
-					confidence: 0.5,
-					evidence: { matched, sharedSaas: true },
+					status: 'fulfilled',
+					value: { domain: candLower, confidence: 0.5, evidence: { matched, sharedSaas: true } },
 				};
 			}
 
@@ -178,15 +198,16 @@ export async function detectMxOverlap(seedDomain: string, options: MxOverlapOpti
 			const overlapRatio = matched.length / Math.max(candMx.length, seedMx.length);
 			const confidence = overlapRatio >= 0.5 ? 0.7 : 0.5;
 			return {
-				domain: candLower,
-				confidence,
-				evidence: { matched, sharedSaas: false },
+				status: 'fulfilled',
+				value: { domain: candLower, confidence, evidence: { matched, sharedSaas: false } },
 			};
-		}),
-	);
+		} catch (reason) {
+			return { status: 'rejected', reason };
+		}
+	});
 
 	const coOwnedDomains = settled
-		.filter((r): r is PromiseFulfilledResult<NonNullable<Awaited<typeof settled[number] extends PromiseSettledResult<infer T> ? T : never>>> => r.status === 'fulfilled' && r.value !== null)
+		.filter((r): r is PromiseFulfilledResult<MxOverlapCandidate> => r.status === 'fulfilled' && r.value !== null)
 		.map((r) => r.value);
 
 	return { coOwnedDomains, queryStatus: 'ok' };

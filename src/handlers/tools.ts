@@ -163,6 +163,7 @@ const TOOL_REGISTRY: Record<
 		/** cacheKey may consult runtimeOptions to bind principal (defense against owner-scoped IDOR via cache). */
 		cacheKey: (args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => string;
 		execute: (domain: string, args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => Promise<CheckResult>;
+		cacheable?: boolean;
 		cacheTtlSeconds?: number;
 	}
 > = {
@@ -205,13 +206,20 @@ const TOOL_REGISTRY: Record<
 		cacheKey: (args) => {
 			const signals = (args.signals as string[] | undefined)?.slice().sort().join(',') ?? 'all';
 			const minConf = typeof args.min_confidence === 'number' ? args.min_confidence : 0.5;
+			const depth = typeof args.depth === 'string' ? args.depth : 'standard';
+			const plannerMode = typeof args.planner_mode === 'string' ? args.planner_mode : 'observe';
+			const aliases = (args.brand_aliases as string[] | undefined) ?? [];
 			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
+			const aliasHash = aliases.length === 0 ? '0' : `${aliases.length}:${aliases.slice().sort().join('|').slice(0, 64)}`;
 			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
-			return `discover_brand:${signals}:c${candHash}:m${minConf}`;
+			return `discover_brand:${signals}:d${depth}:p${plannerMode}:a${aliasHash}:c${candHash}:m${minConf}`;
 		},
 		execute: (d, args, ro) =>
 			discoverBrandDomains(d, {
 				signals: args.signals as Parameters<typeof discoverBrandDomains>[1] extends infer O ? (O extends { signals?: infer S } ? S : undefined) : undefined,
+				depth: args.depth as 'standard' | 'deep' | undefined,
+				planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
+				brand_aliases: args.brand_aliases as string[] | undefined,
 				candidate_domains: args.candidate_domains as string[] | undefined,
 				dkim_selectors: args.dkim_selectors as string[] | undefined,
 				min_confidence: args.min_confidence as number | undefined,
@@ -223,12 +231,22 @@ const TOOL_REGISTRY: Record<
 		cacheKey: (args) => {
 			const minConf = typeof args.min_confidence === 'number' ? args.min_confidence : 0.5;
 			const fmt = typeof args.format === 'string' ? args.format : 'both';
-			return `brand_audit_single:${fmt}:m${minConf}`;
+			const depth = typeof args.depth === 'string' ? args.depth : 'standard';
+			const plannerMode = typeof args.planner_mode === 'string' ? args.planner_mode : 'observe';
+			const aliases = (args.brand_aliases as string[] | undefined) ?? [];
+			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
+			const aliasHash = aliases.length === 0 ? '0' : `${aliases.length}:${aliases.slice().sort().join('|').slice(0, 64)}`;
+			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
+			return `brand_audit_single:${fmt}:d${depth}:p${plannerMode}:a${aliasHash}:c${candHash}:m${minConf}`;
 		},
 		execute: (d, args, ro) =>
 			brandAuditSingle(d, {
 				format: args.format as 'json' | 'markdown' | 'both' | undefined,
 				min_confidence: args.min_confidence as number | undefined,
+				depth: args.depth as 'standard' | 'deep' | undefined,
+				planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
+				brand_aliases: args.brand_aliases as string[] | undefined,
+				candidate_domains: args.candidate_domains as string[] | undefined,
 			}, {
 				certstream: ro?.certstream,
 				whoisBinding: ro?.whoisBinding,
@@ -261,6 +279,10 @@ const TOOL_REGISTRY: Record<
 				{
 					format: args.format as 'json' | 'markdown' | 'both' | undefined,
 					min_confidence: args.min_confidence as number | undefined,
+					depth: args.depth as 'standard' | 'deep' | undefined,
+					planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
+					brand_aliases: args.brand_aliases as string[] | undefined,
+					candidate_domains: args.candidate_domains as string[] | undefined,
 				},
 				principalId,
 				{ db, queue, enforceQuota: buildMonthlyEnforceQuota(ro) },
@@ -269,8 +291,9 @@ const TOOL_REGISTRY: Record<
 		cacheTtlSeconds: 0,
 	},
 	brand_audit_status: {
-		// Owner-scoped read — cacheKey MUST bind principalId, else Owner B sees Owner A's
-		// cached status for the same auditId (IDOR-via-cache). Short TTL on top.
+		// Mutable polling read — do not cache. A stale queued/notReady state can
+		// make report generators time out even after the queue consumer has completed.
+		// Keep owner in the key shape for logging/debug consistency only.
 		cacheKey: (args, ro) => `brand_audit_status:${ro?.principalId ?? ro?.keyHash ?? 'anon'}:${String(args.auditId ?? '')}`,
 		execute: async (_domain, args, ro) => {
 			const db = ro?.brandAuditDb;
@@ -289,10 +312,11 @@ const TOOL_REGISTRY: Record<
 			}
 			return brandAuditStatus(String(args.auditId ?? ''), principalId, { db });
 		},
-		cacheTtlSeconds: 10,
+		cacheable: false,
 	},
 	brand_audit_get_report: {
-		// Same owner-scoped IDOR defense as brand_audit_status — bind principalId.
+		// Mutable read — do not cache. Before completion this can return notReady,
+		// and after completion the PDF sidecar URL/pending state can change.
 		cacheKey: (args, ro) => `brand_audit_report:${ro?.principalId ?? ro?.keyHash ?? 'anon'}:${String(args.auditId ?? '')}:${String(args.target ?? '')}`,
 		execute: async (_domain, args, ro) => {
 			const db = ro?.brandAuditDb;
@@ -315,7 +339,7 @@ const TOOL_REGISTRY: Record<
 				{ db, bucket: ro?.brandReportsR2 as { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> } | undefined },
 			);
 		},
-		cacheTtlSeconds: 60,
+		cacheable: false,
 	},
 	brand_audit_watch: {
 		// Mutating tool — random UUID keeps every call a cache-miss.
@@ -435,17 +459,25 @@ export async function handleToolsCall(
 			if (registeredTool) {
 				const checkName = registeredTool.cacheKey(validatedArgs, runtimeOptions);
 				const cacheKey = `cache:${validDomain}:check:${checkName}`;
-				// Don't cache partial results (e.g. lookalike timeout). The predicate skips the
-				// kv.put entirely instead of the old put-then-delete anti-pattern that drove
-				// ~13M wasted SCAN_CACHE writes/week (bv-web 2026-05-14 analytics, cluster F5).
-				const { data: result, cacheStatus } = await runWithCacheTracked(
-					cacheKey,
-					() => registeredTool.execute(validDomain, validatedArgs, runtimeOptions),
-					scanCacheKV,
-					registeredTool.cacheTtlSeconds,
-					/* skipCache */ undefined,
-					(r) => !r.partial,
-				);
+				let cacheStatus: 'hit' | 'miss' = 'miss';
+				let result: CheckResult;
+				if (registeredTool.cacheable === false) {
+					result = await registeredTool.execute(validDomain, validatedArgs, runtimeOptions);
+				} else {
+					// Don't cache partial results (e.g. lookalike timeout). The predicate skips the
+					// kv.put entirely instead of the old put-then-delete anti-pattern that drove
+					// ~13M wasted SCAN_CACHE writes/week (bv-web 2026-05-14 analytics, cluster F5).
+					const tracked = await runWithCacheTracked(
+						cacheKey,
+						() => registeredTool.execute(validDomain, validatedArgs, runtimeOptions),
+						scanCacheKV,
+						registeredTool.cacheTtlSeconds,
+						/* skipCache */ undefined,
+						(r) => !r.partial,
+					);
+					result = tracked.data;
+					cacheStatus = tracked.cacheStatus;
+				}
 				runtimeOptions?.resultCapture?.(result);
 				logResult = result.passed ? 'pass' : 'fail';
 				logDetails = result;

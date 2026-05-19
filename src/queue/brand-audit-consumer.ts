@@ -27,11 +27,27 @@
  */
 
 import { z } from 'zod';
-import { brandAuditSingle as defaultBrandAuditSingle } from '../tools/brand-audit-single';
+import { brandAuditSingle as defaultBrandAuditSingle, type BrandAuditSingleOptions } from '../tools/brand-audit-single';
 import type { CheckResult, Finding } from '../lib/scoring';
+import { BrandAuditStepStoreError, createD1BrandAuditStepStore } from '../lib/brand-audit-step-store';
+import { decideRetryEnqueue } from '../lib/registrar-retry';
 
-/** Cloudflare Queues redelivery budget: keep messages alive for at most 5 min total. */
-export const BRAND_AUDIT_MESSAGE_TIMEOUT_MS = 300_000;
+/**
+ * Per-message budget for the orchestrator. The AbortController-driven catch
+ * path commits a `failed` row only when the inner orchestrator is well-behaved
+ * — the abort `setTimeout` macrotask competes with whatever microtasks the
+ * orchestrator generates, and for fan-out-heavy brands (tier-1: walmart,
+ * disney) the microtask queue stays saturated long enough that the worker is
+ * killed before any catch UPDATE can flush. Those rows are recovered by the
+ * cron reaper (`reapStuckBrandAudits`) ~15 min later — see the 2026-05-19
+ * walmart investigation for the trace evidence. Until AbortSignal is plumbed
+ * through `dns-transport`/`safe-fetch` (so in-flight fetches actually cancel),
+ * the reaper is the durability boundary for oversized audits.
+ *
+ * 120s gives well-behaved medium audits room to complete; oversized brands
+ * still wedge until reaper cleanup.
+ */
+export const BRAND_AUDIT_MESSAGE_TIMEOUT_MS = 120_000;
 
 /** Wire format for a brand-audit queue message. Validated on the consumer side as defense in depth. */
 export const BrandAuditQueueMessageSchema = z.object({
@@ -39,10 +55,22 @@ export const BrandAuditQueueMessageSchema = z.object({
 	target: z.string().min(1).max(253),
 	format: z.enum(['json', 'markdown', 'both']),
 	min_confidence: z.number().min(0).max(1).optional(),
+	depth: z.enum(['standard', 'deep']).optional(),
+	planner_mode: z.enum(['off', 'observe', 'enforce']).optional(),
+	brand_aliases: z.array(z.string().min(2).max(64)).max(20).optional(),
+	candidate_domains: z.array(z.string().min(1).max(253)).max(250).optional(),
 	/** Set when the message originated from the watch cron — drives post-completion diff/webhook. */
 	watchId: z.string().min(1).max(64).optional(),
 	/** Bound at enqueue time so the consumer doesn't need a D1 round-trip to look up the watch's owner. */
 	ownerId: z.string().min(1).max(128).optional(),
+	/**
+	 * Set when the message is a Phase 2b retry pass — capped at 1 to bound the
+	 * fan-out. retry_attempt=0 (or absent) is the initial enqueue; retry_attempt=1
+	 * is the single retry pass after a transient registrar lookup failure.
+	 * Consumer skips counter-tick + webhook on retry messages and force-refreshes
+	 * the pipeline cache.
+	 */
+	retry_attempt: z.number().int().min(0).max(1).optional(),
 });
 
 export type BrandAuditQueueMessage = z.infer<typeof BrandAuditQueueMessageSchema>;
@@ -50,7 +78,10 @@ export type BrandAuditQueueMessage = z.infer<typeof BrandAuditQueueMessageSchema
 export interface BrandAuditConsumerDeps {
 	db: D1Database;
 	/** Injectable for tests. */
-	brandAuditSingle?: (target: string, options: { format?: 'json' | 'markdown' | 'both'; min_confidence?: number }) => Promise<CheckResult>;
+	brandAuditSingle?: (
+		target: string,
+		options: BrandAuditSingleOptions,
+	) => Promise<CheckResult>;
 	/** Clock override for tests. */
 	now?: () => number;
 	/**
@@ -61,6 +92,14 @@ export interface BrandAuditConsumerDeps {
 	 * succeeds; PDF rendering just doesn't happen.
 	 */
 	pdfQueue?: { send(message: { auditId: string; target: string; format: 'json' | 'markdown' | 'both' }, options?: { contentType?: 'json' }): Promise<void> };
+	/**
+	 * Optional binding for the brand-audit queue itself, used by Phase 2b to
+	 * enqueue a single retry pass when a completed audit has transient
+	 * registrar-lookup failures. When unset, retry detection still runs but
+	 * the enqueue is a no-op (forward-compatible: the queue plumbing can land
+	 * in a later deploy without breaking the consumer).
+	 */
+	brandAuditQueue?: { send(message: BrandAuditQueueMessage, options?: { contentType?: 'json' }): Promise<void> };
 	/**
 	 * Optional webhook delivery function. When set + the message carries a
 	 * watchId + the new classification differs from the watch's previous
@@ -96,8 +135,17 @@ export async function processBrandAuditMessage(
 		return 'ack';
 	}
 	const message = parsed.data;
-	const now = (deps.now ?? Date.now)();
+	// `clock` is the function (re-readable). `messageStartedAt` is a single
+	// snapshot used only for the running-flip + audit-status running UPDATE.
+	// All completed_at writes MUST re-read the clock at the actual time of
+	// the write — otherwise an audit that takes 60s completes with a
+	// completed_at recorded as 60s before the actual finish.
+	// Surfaced by Linus-style review 2026-05-19; see audit cc177a62.
+	const clock = deps.now ?? Date.now;
+	const messageStartedAt = clock();
 	const single = deps.brandAuditSingle ?? defaultBrandAuditSingle;
+	const stepStore = createD1BrandAuditStepStore(deps.db, clock);
+	const isRetry = (message.retry_attempt ?? 0) > 0;
 
 	// 1. Idempotency check.
 	let existing: TargetStatusRow | null;
@@ -118,69 +166,200 @@ export async function processBrandAuditMessage(
 		return 'ack';
 	}
 
-	if (existing.status === 'completed' || existing.status === 'failed') {
-		// Duplicate delivery of a terminal-state row. Ack without re-running.
+	if (existing.status === 'failed') {
+		// Terminal failure — ack without re-running, even on retry messages.
 		return 'ack';
 	}
 
-	// 2. Status flip → 'running'.
+	if (existing.status === 'completed' && !isRetry) {
+		// Duplicate delivery of a completed (non-retry) row. Ack without re-running.
+		return 'ack';
+	}
+
+	// 2. Atomic claim — flip queued → running. The conditional UPDATE is the
+	// single point of mutual exclusion: only the consumer whose UPDATE matches
+	// 1 row may proceed to run brandAuditSingle. Cloudflare Queues redelivers
+	// every ~30s while our audit budget is 300s, so without this guard 4–10
+	// concurrent consumers all enter the orchestrator on the same target,
+	// contend for D1 / DNS / RDAP, and produce thrashing instead of progress.
+	let claimed = false;
 	try {
+		// Phase 2b: retry messages claim from `completed` (since the original pass
+		// already flipped the row); originals still claim from `queued`. The
+		// conditional UPDATE is the per-message mutual exclusion — concurrent
+		// duplicate deliveries of a retry both attempt to flip completed→running;
+		// only the first one to commit wins. fromStatus is parameterized to match
+		// the rest of the file's binding pattern.
+		const fromStatus = isRetry ? 'completed' : 'queued';
+		const claim = await deps.db
+			.prepare(
+				"UPDATE brand_audit_targets SET status = 'running' WHERE audit_id = ? AND target = ? AND status = ?",
+			)
+			.bind(message.auditId, message.target, fromStatus)
+			.run();
+		claimed = (claim.meta?.changes ?? 0) > 0;
+		// Parent audit flip is best-effort; safe to no-op when already running.
 		await deps.db
 			.prepare(
-				"UPDATE brand_audit_targets SET status = 'running' WHERE audit_id = ? AND target = ? AND status = 'queued'",
+				"UPDATE brand_audits SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'",
 			)
-			.bind(message.auditId, message.target)
+			.bind(messageStartedAt, message.auditId)
 			.run();
 	} catch {
 		return 'retry';
 	}
 
-	// 3. Run the orchestrator with a hard timeout. Tier-1 brands average ~3 min
-	// per target; we cap at BRAND_AUDIT_MESSAGE_TIMEOUT_MS (5 min) so a single
-	// stuck WHOIS / RDAP chain can't ride out the Worker's full retry budget.
-	// On timeout the target row flips to `failed` with a structured error rather
-	// than mysteriously remaining in `running`.
+	if (!claimed) {
+		// Another consumer already owns this target row. Ack without re-running
+		// to avoid the parallel-execution stampede that wedges the audit.
+		return 'ack';
+	}
+
+	// 3. Run the orchestrator under an AbortController-driven budget.
+	//
+	// Two layers of cancellation, chosen for what each CAN guarantee:
+	//
+	//   a. AbortSignal plumbed into runBrandAuditPipeline / discoverBrandDomains
+	//      / registrar enrichment — each phase polls `signal.aborted` and throws
+	//      at its next phase boundary. Best-effort: inner DNS/RDAP fetches don't
+	//      yet accept a signal, so a probe stuck in flight won't unwind via this
+	//      path. (Plumbing AbortSignal into dns-transport / safe-fetch is the
+	//      next slice of work.)
+	//   b. Promise.race against an abort-event rejecter — guarantees the
+	//      consumer's await resolves at the deadline IF the macrotask queue
+	//      can fire. For CPU-saturated audits (tier-1 brands), microtasks from
+	//      pending fetch responses can starve the abort timer; in that case
+	//      the consumer never reaches the catch path and the cron reaper
+	//      (`reapStuckBrandAudits`) cleans the row up at the 15-min threshold.
+	//
+	// `deadlineMs` lets the inner per-candidate RDAP loop poll its own deadline
+	// since it can't observe the AbortSignal across each await.
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => {
+		controller.abort(new Error(`brand_audit_single budget exceeded after ${BRAND_AUDIT_MESSAGE_TIMEOUT_MS}ms`));
+	}, BRAND_AUDIT_MESSAGE_TIMEOUT_MS);
 	let result: CheckResult | null = null;
 	let runtimeError: string | null = null;
 	try {
 		result = await Promise.race([
 			single(message.target, {
+				auditId: message.auditId,
+				stepStore,
 				format: message.format,
 				min_confidence: message.min_confidence,
+				depth: message.depth,
+				planner_mode: message.planner_mode,
+				brand_aliases: message.brand_aliases,
+				candidate_domains: message.candidate_domains,
+				signal: controller.signal,
+				deadlineMs: messageStartedAt + BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
+				// Phase 2b: retry messages re-run the pipeline from scratch instead
+				// of reading back the cached lookup_failed result from pass 1.
+				force_refresh: isRetry,
 			}),
-			new Promise<never>((_, reject) =>
-				setTimeout(
-					() => reject(new Error(`brand_audit_single timed out after ${BRAND_AUDIT_MESSAGE_TIMEOUT_MS}ms`)),
-					BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
-				),
-			),
+			new Promise<never>((_, reject) => {
+				const onAbort = () => {
+					const reason = (controller.signal as AbortSignal & { reason?: unknown }).reason;
+					reject(reason instanceof Error ? reason : new Error(typeof reason === 'string' ? reason : 'brand_audit_single budget exceeded'));
+				};
+				if (controller.signal.aborted) {
+					onAbort();
+				} else {
+					controller.signal.addEventListener('abort', onAbort, { once: true });
+				}
+			}),
 		]);
 	} catch (err) {
+		if (err instanceof BrandAuditStepStoreError) {
+			clearTimeout(timeoutId);
+			return 'retry';
+		}
 		runtimeError = err instanceof Error ? err.message : String(err);
+	} finally {
+		clearTimeout(timeoutId);
 	}
 
 	// 4. Status flip → 'completed' | 'failed'. Treat D1 write failure here as
 	// retryable (Cloudflare redelivers; idempotency check up top short-circuits).
-	const finalStatus = runtimeError ? 'failed' : 'completed';
-	const resultJson = result ? JSON.stringify(result) : null;
-	const errorString = runtimeError ? sanitizeErrorString(runtimeError) : null;
+	let finalStatus: 'completed' | 'failed' = runtimeError ? 'failed' : 'completed';
+	let resultJson: string | null = null;
+	let errorString = runtimeError ? sanitizeErrorString(runtimeError) : null;
+	if (finalStatus === 'completed' && result) {
+		try {
+			resultJson = JSON.stringify(result);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			finalStatus = 'failed';
+			errorString = sanitizeErrorString(`brand_audit_result_serialization_failed: ${message}`);
+		}
+	}
 
 	try {
-		await deps.db
-			.prepare(
-				'UPDATE brand_audit_targets SET status = ?, result_json = ?, error = ?, completed_at = ? WHERE audit_id = ? AND target = ?',
-			)
-			.bind(finalStatus, resultJson, errorString, now, message.auditId, message.target)
-			.run();
+		if (isRetry && runtimeError) {
+			// Phase 2b: a retry pass that throws MUST NOT destroy the original
+			// pass's result_json. The first pass already produced a usable result;
+			// the retry was only meant to enrich the lookup_failed rows. So we
+			// preserve result_json, record the retry failure in `error`, AND flip
+			// status back to 'completed' (the atomic claim earlier flipped it
+			// completed→running; without restoring it the row sits stuck in
+			// 'running' until the cron reaper sweeps at 15min). Surfaced by audit
+			// c487486a-brand-theta.com on 2026-05-19.
+			await deps.db
+				.prepare(
+					"UPDATE brand_audit_targets SET status = 'completed', error = ?, completed_at = ? WHERE audit_id = ? AND target = ?",
+				)
+				.bind(errorString, clock(), message.auditId, message.target)
+				.run();
+		} else {
+			await deps.db
+				.prepare(
+					'UPDATE brand_audit_targets SET status = ?, result_json = ?, error = ?, completed_at = ? WHERE audit_id = ? AND target = ?',
+				)
+				.bind(finalStatus, resultJson, errorString, clock(), message.auditId, message.target)
+				.run();
+		}
 	} catch {
 		return 'retry';
 	}
 
-	// 4a. Fanout: enqueue PDF render when one was requested AND the target
+	// 4a. Phase 2b: retry enqueue decision. When the original pass produced
+	// retryable candidates AND a retry hasn't already been scheduled AND we
+	// have the brand-audit queue binding, schedule a single retry pass. The
+	// `retry_scheduled` step-store row is the idempotency token — duplicate
+	// delivery of the primary message produces only one retry enqueue.
+	let retryEnqueued = false;
+	if (finalStatus === 'completed' && result !== null && !isRetry && deps.brandAuditQueue) {
+		const retryPayload = decideRetryEnqueue(result, message);
+		if (retryPayload) {
+			try {
+				const existingRetry = await stepStore.get(message.auditId, message.target, 'retry_scheduled');
+				if (!existingRetry) {
+					await stepStore.put({
+						auditId: message.auditId,
+						target: message.target,
+						step: 'retry_scheduled',
+						status: 'completed',
+						payload: { retry_attempt: 1, scheduledAt: clock() },
+					});
+					await deps.brandAuditQueue.send(retryPayload, { contentType: 'json' });
+					retryEnqueued = true;
+				}
+			} catch {
+				// Best-effort: an enqueue failure leaves the audit terminal at
+				// the (possibly partial) original result. No retry, no webhook
+				// suppression — fall through to deliver the webhook with what we have.
+			}
+		}
+	}
+
+	// 4b. Fanout: enqueue PDF render when one was requested AND the target
 	// completed (don't bother on `failed`). Best-effort — if the PDF queue
 	// binding is unavailable or send throws, we swallow and proceed; the
 	// primary completion is the durability boundary, not PDF render.
-	if (finalStatus === 'completed' && deps.pdfQueue && (message.format === 'markdown' || message.format === 'both')) {
+	// Phase 2b: gate on `!retryEnqueued` so the partial first pass doesn't fire
+	// a stale PDF that the terminal retry pass would immediately supersede.
+	// Same policy as the watch-webhook gate in 4c.
+	if (finalStatus === 'completed' && !retryEnqueued && deps.pdfQueue && (message.format === 'markdown' || message.format === 'both')) {
 		try {
 			await deps.pdfQueue.send(
 				{ auditId: message.auditId, target: message.target, format: message.format },
@@ -192,12 +371,16 @@ export async function processBrandAuditMessage(
 		}
 	}
 
-	// 4b. Watch webhook delivery (v2.21.1+). When this message originated from
+	// 4c. Watch webhook delivery (v2.21.1+). When this message originated from
 	// the cron watch handler (carries watchId), compute the classification hash
 	// vs the watch's `last_classification_hash` and POST a diff webhook if
 	// shifted. Best-effort — webhook failure does NOT mark the audit failed;
 	// just logged-and-skipped so customers can re-derive from get-report.
-	if (finalStatus === 'completed' && result !== null && message.watchId) {
+	//
+	// Phase 2b webhook policy: fire on terminal result only. A retry-pending
+	// result is suppressed because the about-to-arrive retry message will fire
+	// the webhook with the corrected classification.
+	if (finalStatus === 'completed' && result !== null && message.watchId && !retryEnqueued) {
 		try {
 			await deliverWatchWebhookIfShifted({
 				db: deps.db,
@@ -206,7 +389,7 @@ export async function processBrandAuditMessage(
 				target: message.target,
 				ownerId: message.ownerId ?? null,
 				current: result,
-				now,
+				now: clock(),
 				deliverWebhook: deps.deliverWebhook ?? defaultDeliverWebhook,
 			});
 		} catch {
@@ -215,12 +398,19 @@ export async function processBrandAuditMessage(
 	}
 
 	// 5. Counter tick — bump completed_targets and check finalization.
+	// Phase 2b: retry messages skip the counter tick. The original pass already
+	// incremented; bumping again would advance past total_targets and break the
+	// audit-finalized check.
+	if (isRetry) {
+		return 'ack';
+	}
 	try {
+		const tickAt = clock();
 		await deps.db
 			.prepare(
 				'UPDATE brand_audits SET completed_targets = completed_targets + 1, updated_at = ? WHERE id = ?',
 			)
-			.bind(now, message.auditId)
+			.bind(tickAt, message.auditId)
 			.run();
 
 		const counter = (await deps.db
@@ -231,11 +421,12 @@ export async function processBrandAuditMessage(
 			.first()) as AuditCounterRow | null;
 
 		if (counter && counter.completed_targets >= counter.total_targets) {
+			const finalizedAt = clock();
 			await deps.db
 				.prepare(
 					"UPDATE brand_audits SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?",
 				)
-				.bind(now, now, message.auditId)
+				.bind(finalizedAt, finalizedAt, message.auditId)
 				.run();
 		}
 	} catch {
