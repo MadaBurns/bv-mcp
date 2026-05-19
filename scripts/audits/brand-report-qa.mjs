@@ -86,13 +86,35 @@ function validateDomain(domain, options) {
 		if (!isObject(sidecar.dataQuality)) errors.push('missing dataQuality');
 		if (typeof sidecar.depthMode !== 'string') errors.push('missing depthMode');
 		const qaSchemaVersion = sidecar.qaSchemaVersion;
-		if (qaSchemaVersion !== 1 && qaSchemaVersion !== 2) errors.push('unsupported qaSchemaVersion');
+		if (qaSchemaVersion !== 1 && qaSchemaVersion !== 2 && qaSchemaVersion !== 3) errors.push('unsupported qaSchemaVersion');
 		if (qaSchemaVersion >= 2) {
 			if (!isObject(sidecar.performance)) {
 				errors.push('missing performance');
 			} else {
 				if (!isObject(sidecar.performance.stepStatusCounts)) errors.push('missing performance.stepStatusCounts');
 				if (!Array.isArray(sidecar.performance.steps)) errors.push('missing performance.steps');
+			}
+		}
+		if (qaSchemaVersion === 3) {
+			// v3 (tiered-mode) sidecar: must split owned portfolio + impersonation surface.
+			if (!isObject(sidecar.ownedPortfolio)) {
+				errors.push('missing ownedPortfolio');
+			} else {
+				const op = sidecar.ownedPortfolio;
+				if (!Array.isArray(op.tenantDeclared)) errors.push('missing ownedPortfolio.tenantDeclared');
+				if (!Array.isArray(op.graphSurfaced)) errors.push('missing ownedPortfolio.graphSurfaced');
+				if (!Array.isArray(op.declaredEvidence)) errors.push('missing ownedPortfolio.declaredEvidence');
+				if (!isObject(op.inferred)) {
+					errors.push('missing ownedPortfolio.inferred');
+				} else {
+					if (!Array.isArray(op.inferred.consolidated)) errors.push('missing ownedPortfolio.inferred.consolidated');
+					if (!Array.isArray(op.inferred.shadowIt)) errors.push('missing ownedPortfolio.inferred.shadowIt');
+					if (!Array.isArray(op.inferred.indeterminate)) errors.push('missing ownedPortfolio.inferred.indeterminate');
+				}
+			}
+			if (!Array.isArray(sidecar.impersonationSurface)) errors.push('missing impersonationSurface');
+			if (isObject(sidecar.performance) && !isObject(sidecar.performance.tiers)) {
+				errors.push('missing performance.tiers');
 			}
 		}
 		if (!isObject(sidecar.freshness)) {
