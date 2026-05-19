@@ -15,7 +15,7 @@
  * "sociable by default" guidance, while keeping every external boundary stubbed.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 interface AuditTargetRow {
 	status: 'queued' | 'running' | 'completed' | 'failed';
@@ -85,12 +85,14 @@ function makeMockD1(initial: { target: AuditTargetRow & { result_json?: string |
 						}
 						// Final-flip UPDATE — binding order matches the consumer's
 						// SET clause. Track result_json + error so the retry-failure
-						// preservation test can assert on them.
-						const [newStatus, resultJson, errorVal] = binds as [AuditTargetRow['status'], string | null, string | null];
+						// preservation test can assert on them. Capture the consumer's
+						// `now` bind (4th position) so tests can assert it reflects
+						// completion time, not message-start time.
+						const [newStatus, resultJson, errorVal, completedAt] = binds as [AuditTargetRow['status'], string | null, string | null, number];
 						targetRow.status = newStatus;
 						if (resultJson !== undefined) targetRow.result_json = resultJson;
 						if (errorVal !== undefined) targetRow.error = errorVal;
-						targetRow.completed_at = Date.now();
+						targetRow.completed_at = typeof completedAt === 'number' ? completedAt : Date.now();
 						return { success: true, meta: { changes: 1 } };
 					}
 					if (sql.includes('UPDATE brand_audits SET completed_targets')) {
@@ -187,6 +189,44 @@ describe('processBrandAuditMessage — Phase 2b retry orchestration', () => {
 		expect(queue.sent).toHaveLength(1);
 		expect(queue.sent[0].msg).toMatchObject({ auditId: 'aud-1', target: 'example.com', retry_attempt: 1 });
 		expect(webhook.calls, 'webhook suppressed when retry pending — fires on terminal result only').toEqual([]);
+	});
+
+	it('persists completed_at as the actual completion time, not the message-start time', async () => {
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db, getTargetRow } = makeMockD1({ target: { status: 'queued', completed_at: null } });
+
+		// Simulate a 60-second pipeline run. Orchestrator stub awaits 60s of
+		// fake-timer time mid-execution. The consumer's `now` must be re-read
+		// at the final UPDATE, not captured at message-start — otherwise
+		// completed_at is recorded as the message arrival time (T0).
+		const T0 = 1_750_000_000_000;
+		vi.useFakeTimers({ now: T0 });
+
+		// Inject a clock that always returns the current (fake) wall time, so
+		// the consumer's captured-once `now` and fresh-read `clock()` are
+		// distinguishable: the first reads T0, the latter reads T+60s.
+		const orchestrator = {
+			fn: async () => {
+				vi.advanceTimersByTime(60_000);
+				return resultClean;
+			},
+			calls: [] as never[],
+		};
+
+		try {
+			await processBrandAuditMessage(
+				{ auditId: 'aud-1', target: 'example.com', format: 'json' },
+				{ db, brandAuditSingle: orchestrator.fn, now: Date.now },
+			);
+
+			const final = getTargetRow();
+			expect(
+				final.completed_at,
+				'completed_at must reflect actual completion (T+60s), not message arrival (T0). Currently captures `now` once at function entry — fix by re-reading the clock before each completed_at-bearing UPDATE.',
+			).toBe(T0 + 60_000);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('suppresses PDF fanout on the original pass when a retry was enqueued (no double PDF)', async () => {

@@ -134,9 +134,16 @@ export async function processBrandAuditMessage(
 		return 'ack';
 	}
 	const message = parsed.data;
-	const now = (deps.now ?? Date.now)();
+	// `clock` is the function (re-readable). `messageStartedAt` is a single
+	// snapshot used only for the running-flip + audit-status running UPDATE.
+	// All completed_at writes MUST re-read the clock at the actual time of
+	// the write — otherwise an audit that takes 60s completes with a
+	// completed_at recorded as 60s before the actual finish.
+	// Surfaced by Linus-style review 2026-05-19; see audit cc177a62.
+	const clock = deps.now ?? Date.now;
+	const messageStartedAt = clock();
 	const single = deps.brandAuditSingle ?? defaultBrandAuditSingle;
-	const stepStore = createD1BrandAuditStepStore(deps.db, deps.now ?? Date.now);
+	const stepStore = createD1BrandAuditStepStore(deps.db, clock);
 	const isRetry = (message.retry_attempt ?? 0) > 0;
 
 	// 1. Idempotency check.
@@ -195,7 +202,7 @@ export async function processBrandAuditMessage(
 			.prepare(
 				"UPDATE brand_audits SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'",
 			)
-			.bind(now, message.auditId)
+			.bind(messageStartedAt, message.auditId)
 			.run();
 	} catch {
 		return 'retry';
@@ -243,7 +250,7 @@ export async function processBrandAuditMessage(
 				brand_aliases: message.brand_aliases,
 				candidate_domains: message.candidate_domains,
 				signal: controller.signal,
-				deadlineMs: now + BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
+				deadlineMs: messageStartedAt + BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
 				// Phase 2b: retry messages re-run the pipeline from scratch instead
 				// of reading back the cached lookup_failed result from pass 1.
 				force_refresh: isRetry,
@@ -299,14 +306,14 @@ export async function processBrandAuditMessage(
 				.prepare(
 					"UPDATE brand_audit_targets SET status = 'completed', error = ?, completed_at = ? WHERE audit_id = ? AND target = ?",
 				)
-				.bind(errorString, now, message.auditId, message.target)
+				.bind(errorString, clock(), message.auditId, message.target)
 				.run();
 		} else {
 			await deps.db
 				.prepare(
 					'UPDATE brand_audit_targets SET status = ?, result_json = ?, error = ?, completed_at = ? WHERE audit_id = ? AND target = ?',
 				)
-				.bind(finalStatus, resultJson, errorString, now, message.auditId, message.target)
+				.bind(finalStatus, resultJson, errorString, clock(), message.auditId, message.target)
 				.run();
 		}
 	} catch {
@@ -330,7 +337,7 @@ export async function processBrandAuditMessage(
 						target: message.target,
 						step: 'retry_scheduled',
 						status: 'completed',
-						payload: { retry_attempt: 1, scheduledAt: now },
+						payload: { retry_attempt: 1, scheduledAt: clock() },
 					});
 					await deps.brandAuditQueue.send(retryPayload, { contentType: 'json' });
 					retryEnqueued = true;
@@ -380,7 +387,7 @@ export async function processBrandAuditMessage(
 				target: message.target,
 				ownerId: message.ownerId ?? null,
 				current: result,
-				now,
+				now: clock(),
 				deliverWebhook: deps.deliverWebhook ?? defaultDeliverWebhook,
 			});
 		} catch {
@@ -396,11 +403,12 @@ export async function processBrandAuditMessage(
 		return 'ack';
 	}
 	try {
+		const tickAt = clock();
 		await deps.db
 			.prepare(
 				'UPDATE brand_audits SET completed_targets = completed_targets + 1, updated_at = ? WHERE id = ?',
 			)
-			.bind(now, message.auditId)
+			.bind(tickAt, message.auditId)
 			.run();
 
 		const counter = (await deps.db
@@ -411,11 +419,12 @@ export async function processBrandAuditMessage(
 			.first()) as AuditCounterRow | null;
 
 		if (counter && counter.completed_targets >= counter.total_targets) {
+			const finalizedAt = clock();
 			await deps.db
 				.prepare(
 					"UPDATE brand_audits SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?",
 				)
-				.bind(now, now, message.auditId)
+				.bind(finalizedAt, finalizedAt, message.auditId)
 				.run();
 		}
 	} catch {
