@@ -96,4 +96,31 @@ describe('brand discovery: consumer-side opt-out enforcement (cross-pipeline inv
 		expect(result.filtered).toEqual(['kept-apex.example']);
 		expect(result.redactedCount).toBe(4);
 	});
+
+	it('redacts opt-outs that arrive with FQDN trailing-dot drift across tiers', async () => {
+		__resetOptoutCacheForTests();
+
+		// DNS-derived candidates routinely arrive as FQDNs with a trailing dot
+		// (e.g. `example.com.`), while `gsi_domain_optouts` stores apex form
+		// without the trailing dot. The audit invariant must hold across this
+		// drift, regardless of which side carries the dot.
+		const candidates = [
+			'tier0-optout.example.', // candidate-side trailing dot
+			'tier1-optout.example.', // candidate-side trailing dot
+			'tier2-optout.example', // no drift
+			'tier4-optout.example', // opt-out set side carries trailing dot
+			'kept-apex.example',
+		];
+		const optoutSet = new Set<string>([
+			'tier0-optout.example',
+			'tier1-optout.example',
+			'tier2-optout.example',
+			'tier4-optout.example.', // opt-out set side carries trailing dot
+		]);
+
+		const result = await applyOptoutFilter(candidates, async () => optoutSet);
+
+		expect(result.filtered).toEqual(['kept-apex.example']);
+		expect(result.redactedCount).toBe(4);
+	});
 });

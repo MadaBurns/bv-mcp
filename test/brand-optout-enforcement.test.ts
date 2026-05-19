@@ -82,4 +82,18 @@ describe('applyOptoutFilter', () => {
 		expect(result.filtered).toEqual(['kept.com']);
 		expect(result.redactedCount).toBe(2);
 	});
+
+	it('normalises FQDN trailing-dot drift symmetrically', async () => {
+		// Candidate has trailing dot, opt-out set does not
+		const a = await applyOptoutFilter(['opted-out.com.', 'ok.com'], async () => new Set(['opted-out.com']));
+		expect(a.filtered).toEqual(['ok.com']);
+		expect(a.redactedCount).toBe(1);
+
+		__resetOptoutCacheForTests();
+
+		// Opt-out set has trailing dot, candidate does not
+		const b = await applyOptoutFilter(['opted-out.com', 'ok.com'], async () => new Set(['opted-out.com.']));
+		expect(b.filtered).toEqual(['ok.com']);
+		expect(b.redactedCount).toBe(1);
+	});
 });

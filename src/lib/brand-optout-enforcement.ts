@@ -44,7 +44,7 @@ export type OptoutFetcher = () => Promise<Set<string>>;
  * and resilient to trivial input noise.
  */
 function normaliseApex(domain: string): string {
-	return domain.trim().toLowerCase();
+	return domain.trim().toLowerCase().replace(/\.$/, '');
 }
 
 async function loadOptoutSet(fetcher: OptoutFetcher): Promise<ReadonlySet<string>> {
