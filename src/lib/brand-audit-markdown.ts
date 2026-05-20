@@ -15,10 +15,17 @@ import type { CheckResult, Finding } from './scoring';
 import { sanitizeOutputText } from './output-sanitize';
 
 type Bucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation' | 'impersonationSurface';
+type RelationshipType =
+	| 'owned_primary'
+	| 'owned_off_primary_registrar'
+	| 'authorized_vendor_dependency'
+	| 'manual_review'
+	| 'impersonation_risk'
+	| 'impersonation_surface';
 
 const BUCKET_HEADINGS: Record<Bucket, string> = {
 	consolidated: 'Consolidated (owned/operated by the brand)',
-	shadowIt: 'Shadow IT (potentially-related, non-aligned ownership)',
+	shadowIt: 'Registrar Sprawl / Real Shadow IT (owned off-primary registrar)',
 	indeterminate: 'Indeterminate (insufficient evidence — review)',
 	impersonation: 'Impersonation candidates (low confidence, likely typo-squat)',
 	impersonationSurface: 'Impersonation surface (tier-4 lookalikes)',
@@ -48,6 +55,15 @@ interface SummaryMeta {
 function depthWarnings(meta: Partial<SummaryMeta>): string[] {
 	const warnings = meta.depth?.warnings;
 	return Array.isArray(warnings) ? warnings.filter((warning): warning is string => typeof warning === 'string' && warning.length > 0) : [];
+}
+
+function relationshipType(f: Finding): RelationshipType | null {
+	const value = f.metadata?.relationshipType;
+	return typeof value === 'string' ? (value as RelationshipType) : null;
+}
+
+function isVendorDependency(f: Finding): boolean {
+	return relationshipType(f) === 'authorized_vendor_dependency';
 }
 
 /** Render `result` from `brandAuditSingle()` as a compact Markdown document. */
@@ -116,7 +132,7 @@ export function formatBrandAuditMarkdown(result: CheckResult): string {
 	}
 
 	for (const bucket of BUCKET_ORDER) {
-		const items = byBucket[bucket];
+		const items = byBucket[bucket].filter((f) => !isVendorDependency(f));
 		if (items.length === 0) continue;
 		lines.push(`## ${BUCKET_HEADINGS[bucket]} (${items.length})`);
 		lines.push('');
@@ -132,6 +148,8 @@ export function formatBrandAuditMarkdown(result: CheckResult): string {
 		}
 		lines.push('');
 	}
+
+	appendVendorDependencies(lines, result.findings.filter(isVendorDependency));
 
 	// T9 — Tiered mode adds two top-level sections after the legacy buckets:
 	//   `## Owned Portfolio` (four sub-buckets by tier provenance)
@@ -149,15 +167,15 @@ export function formatBrandAuditMarkdown(result: CheckResult): string {
 }
 
 function appendOwnedPortfolio(lines: string[], byBucket: Record<Bucket, Finding[]>): void {
-	const consolidated = byBucket.consolidated;
+	const consolidated = byBucket.consolidated.filter((f) => !isVendorDependency(f));
 	const tenantDeclared = consolidated.filter((f) => f.metadata?.tier === 0);
 	const graphSurfaced = consolidated.filter((f) => f.metadata?.tier === 1);
 	const declaredEvidence = consolidated.filter((f) => f.metadata?.tier === 2);
 	const inferredConsolidated = consolidated.filter(
 		(f) => f.metadata?.tier === undefined || f.metadata?.tier === 3,
 	);
-	const inferredShadowIt = byBucket.shadowIt;
-	const inferredIndeterminate = byBucket.indeterminate;
+	const inferredShadowIt = byBucket.shadowIt.filter((f) => relationshipType(f) === 'owned_off_primary_registrar');
+	const inferredIndeterminate = byBucket.indeterminate.filter((f) => !isVendorDependency(f));
 	const total =
 		tenantDeclared.length +
 		graphSurfaced.length +
@@ -177,6 +195,22 @@ function appendOwnedPortfolio(lines: string[], byBucket: Record<Bucket, Finding[
 	appendPortfolioSubsection(lines, 'Consolidated', inferredConsolidated, '#### ');
 	appendPortfolioSubsection(lines, 'Shadow IT', inferredShadowIt, '#### ');
 	appendPortfolioSubsection(lines, 'Indeterminate', inferredIndeterminate, '#### ');
+}
+
+function appendVendorDependencies(lines: string[], items: Finding[]): void {
+	if (items.length === 0) return;
+	lines.push(`## Authorized Vendor Dependencies (${items.length})`);
+	lines.push('');
+	for (const f of items) {
+		const domain = sanitizeOutputText(String(f.metadata?.candidate ?? ''), 253);
+		const registrar = sanitizeOutputText(String(f.metadata?.registrar ?? 'Unknown'), 100);
+		const source = sanitizeOutputText(String(f.metadata?.registrarSource ?? 'unknown'), 20);
+		const conf = typeof f.metadata?.combinedConfidence === 'number' ? (f.metadata.combinedConfidence as number).toFixed(2) : '—';
+		const signalArr = Array.isArray(f.metadata?.signals) ? (f.metadata!.signals as string[]) : [];
+		const signals = signalArr.length > 0 ? sanitizeOutputText(signalArr.join(', '), 200) : '—';
+		lines.push(`- **${domain}** — registrar: ${registrar} (${source}) · confidence ${conf} · signals: ${signals}`);
+	}
+	lines.push('');
 }
 
 function appendPortfolioSubsection(lines: string[], title: string, items: Finding[], heading = '### '): void {

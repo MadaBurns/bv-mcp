@@ -6,13 +6,31 @@ export interface RegistrarIdentity {
 }
 
 const CORPORATE_SUFFIX_RE = /\b(incorporated|inc|llc|ltd|limited|corp|corporation|company|co|gmbh|plc|ag|bv|nv|sas|sarl|sa|sl)\b\.?$/;
-const UNKNOWN_REGISTRAR_NAMES = new Set(['unknown', 'redacted', 'redacted for privacy', 'not found', 'notfound']);
+const UNKNOWN_REGISTRAR_NAMES = new Set([
+	'unknown',
+	'redacted',
+	'redacted for privacy',
+	'not found',
+	'notfound',
+	'registrar lookup failed',
+	'registrar unavailable',
+	'registrar redacted by registry',
+	'registrar not found in registry',
+]);
 
 const KNOWN_REGISTRAR_FAMILIES: Array<{ family: string; patterns: RegExp[] }> = [
 	{ family: 'markmonitor', patterns: [/^markmonitor(?:\b|$)/] },
 	{ family: 'com laude', patterns: [/(?:^|\b)com\s+laude(?:\b|$)/, /^nom\s*iq(?:\b|$)/] },
 	{ family: 'safenames', patterns: [/^safenames(?:\b|$)/] },
-	{ family: 'csc corporate domains', patterns: [/^csc corporate domains$/, /^corporation service company$/] },
+	{
+		family: 'csc corporate domains',
+		patterns: [
+			/^csc\s+corporate\s+domains(?:\b|$)/,
+			/^csc\s+corp\s+domains(?:\b|$)/,
+			/^csc\s+digital\s+brand\s+services?(?:\b|$)/,
+			/^corporation\s+service(?:\s+company)?$/,
+		],
+	},
 	{ family: 'cloudflare', patterns: [/^cloudflare(?:\b|$)/] },
 	{ family: 'tucows', patterns: [/^tucows(?:\b|$)/] },
 	{ family: 'godaddy', patterns: [/^godaddy(?:\b|$)/] },
@@ -26,6 +44,8 @@ export function normalizeRegistrarIdentity(raw: string | null | undefined): stri
 	let normalized = raw
 		.toLowerCase()
 		.trim()
+		.replace(/^name\s*:\s*/, '')
+		.replace(/https?:\/\/\S+/g, ' ')
 		.replace(/&/g, ' and ')
 		.replace(/[.,'"‘’“”()]/g, ' ')
 		.replace(/\s+/g, ' ')
@@ -56,7 +76,7 @@ function knownFamily(normalizedName: string | null): string | null {
 export function sameRegistrarFamily(left: RegistrarIdentity, right: RegistrarIdentity): boolean {
 	const leftIanaId = normalizeIanaId(left.ianaId);
 	const rightIanaId = normalizeIanaId(right.ianaId);
-	if (leftIanaId && rightIanaId) return leftIanaId === rightIanaId;
+	if (leftIanaId && rightIanaId && leftIanaId === rightIanaId) return true;
 
 	const leftName = normalizeRegistrarIdentity(left.name);
 	const rightName = normalizeRegistrarIdentity(right.name);

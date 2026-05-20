@@ -28,7 +28,23 @@ const DOMAIN_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-
  *      reads and can't distinguish `redacted` from `error` over the wire anyway;
  *   3. Saves a 1-2s TCP round-trip per query.
  */
-const ALWAYS_REDACTED_TLDS = new Set<string>(['de']);
+const ALWAYS_REDACTED_TLDS = new Set<string>([
+	'de',
+	// These registries either publish registrant/technical records without
+	// registrar attribution or do not operate a public WHOIS referral. Treat the
+	// registrar field as policy-unavailable, not transiently failed.
+	'ch',
+	'eg',
+	'es',
+	'gr',
+	'hu',
+	'jp',
+	'lu',
+	'ph',
+	'pt',
+	'sa',
+	'vn',
+]);
 
 /**
  * Look up the registrar for a single domain via WHOIS.

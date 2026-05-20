@@ -95,6 +95,38 @@ Registrar: NewRegistrar Inc.
 		expect(parseWhoisResponse(synthetic).registrar).toBe('Registrar Name LLC');
 	});
 
+	it('extracts registrar from Korean "Authorized Agency:"', () => {
+		const synthetic = `Domain Name: example.kr\nAuthorized Agency           : Whois Corp.(http://whois.co.kr)\n`;
+		expect(parseWhoisResponse(synthetic).registrar).toBe('Whois Corp.(http://whois.co.kr)');
+	});
+
+	it('extracts registrar from Italian Registrar section organization', () => {
+		const synthetic = `Domain: example.it\nRegistrar\n  Organization:     Hogan Lovells (Paris) LLP\n  Name:             ANCHOVY-REG\n`;
+		expect(parseWhoisResponse(synthetic).registrar).toBe('Hogan Lovells (Paris) LLP');
+	});
+
+	it('extracts registrar from Turkish Registrar section organization name', () => {
+		const synthetic = `** Domain Name: nike.tr
+
+** Registrar:
+NIC Handle		: ogv40
+Organization Name	: ODTU GELISTIRME VAKFI BILGI TEKNOLOJILERI SAN. VE TIC. A.S.
+Address			: Mustafa Kemal Mahallesi
+`;
+		expect(parseWhoisResponse(synthetic).registrar).toBe('ODTU GELISTIRME VAKFI BILGI TEKNOLOJILERI SAN. VE TIC. A.S.');
+	});
+
+	it('treats registry port-43 access blocks as redacted registrar data', () => {
+		for (const synthetic of [
+			'Requests of this client are not permitted. Please use https://www.nic.ch/whois/ for queries.',
+			'The IP address used to perform the query is not authorised or has exceeded the established limit for queries.',
+		]) {
+			const parsed = parseWhoisResponse(synthetic);
+			expect(parsed.registrar).toBeNull();
+			expect(parsed.redacted).toBe(true);
+		}
+	});
+
 	it('extracts registrar from "Registrar Organization:"', () => {
 		const synthetic = `Domain Name: EXAMPLE.TEST\nRegistrar Organization: Registrar Org LLC\n`;
 		expect(parseWhoisResponse(synthetic).registrar).toBe('Registrar Org LLC');

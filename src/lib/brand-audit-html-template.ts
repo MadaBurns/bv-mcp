@@ -19,15 +19,33 @@
 import type { CheckResult } from './scoring';
 
 export type BrandAuditBucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation';
+export type BrandRelationshipType =
+	| 'owned_primary'
+	| 'owned_off_primary_registrar'
+	| 'authorized_vendor_dependency'
+	| 'manual_review'
+	| 'impersonation_risk'
+	| 'impersonation_surface';
 
 export interface BrandCandidateRow {
 	domain: string;
 	bucket: BrandAuditBucket;
+	relationshipType: BrandRelationshipType;
 	registrar: string;
 	registrarSource: string;
 	reasons: string[];
 	signals: string[];
 	combinedConfidence: number;
+}
+
+function relationshipTypeFor(bucket: BrandAuditBucket, raw: unknown): BrandRelationshipType {
+	if (raw === 'owned_primary' || raw === 'owned_off_primary_registrar' || raw === 'authorized_vendor_dependency' || raw === 'manual_review' || raw === 'impersonation_risk' || raw === 'impersonation_surface') {
+		return raw;
+	}
+	if (bucket === 'shadowIt') return 'owned_off_primary_registrar';
+	if (bucket === 'consolidated') return 'owned_primary';
+	if (bucket === 'impersonation') return 'impersonation_risk';
+	return 'manual_review';
 }
 
 export interface BrandAuditHtmlInput {
@@ -76,9 +94,11 @@ export function candidatesFromCheckResult(result: CheckResult): BrandCandidateRo
 	for (const f of result.findings) {
 		const m = f.metadata;
 		if (!m || typeof m.candidate !== 'string' || typeof m.bucket !== 'string') continue;
+		const bucket = m.bucket as BrandAuditBucket;
 		rows.push({
 			domain: m.candidate as string,
-			bucket: m.bucket as BrandAuditBucket,
+			bucket,
+			relationshipType: relationshipTypeFor(bucket, m.relationshipType),
 			registrar: typeof m.registrar === 'string' ? m.registrar : 'Unknown',
 			registrarSource: typeof m.registrarSource === 'string' ? m.registrarSource : 'unknown',
 			reasons: Array.isArray(m.reasons) ? (m.reasons as string[]) : [],
@@ -233,7 +253,7 @@ td:last-child { border-right: 1px solid #111111; border-radius: 0 4px 4px 0; col
 <div class="header-info"><strong>Project:</strong> Brand Audit<br/><strong>Status:</strong> Automated<br/><strong>Date:</strong> ${esc(dateLabel)}</div>
 </div>
 ${renderTableSection('Consolidated Infrastructure', 'consolidated', by.consolidated, 'Zero internal assets detected.', 'badge-high', 'Signal Strength', signalSummary, stateFor('consolidated'))}
-${renderTableSection('Shadow IT Portfolio', 'shadowIt', by.shadowIt, 'Zero Shadow IT assets detected.', 'badge-med', 'Risk Level', () => 'High Confidence Match', stateFor('shadowIt'))}
+${renderTableSection('Registrar Sprawl / Real Shadow IT', 'shadowIt', by.shadowIt, 'Zero off-primary owned domains detected.', 'badge-med', 'Risk Level', () => 'Owned Off-Registrar', stateFor('shadowIt'))}
 ${renderTableSection('Indeterminate', 'indeterminate', by.indeterminate, 'Zero indeterminate candidates.', 'badge-gray', 'Reason', reasonOrInsufficient, stateFor('indeterminate'))}
 ${renderTableSection('Impersonation Vectors', 'impersonation', by.impersonation, 'Zero impersonation risks detected.', 'badge-low', 'Signal Origin', signalSummary, stateFor('impersonation'))}
 <div class="footer"><div>&copy; ${new Date(input.dateIso).getFullYear()} Blackveil Security</div><div>Deep Intelligence Engine v${esc(input.serverVersion)}</div><div>Ref: ${refHex}</div></div>
