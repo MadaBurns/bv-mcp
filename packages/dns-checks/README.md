@@ -35,6 +35,8 @@ const score = computeScanScore(checkResults);
 const grade = scoreToGrade(score.overall); // A+, A, B+, etc.
 ```
 
+The scoring registry includes the `authoritative_dns_infra` category used by the MCP worker's authoritative DNS infrastructure profile. In normal mail/web profiles it carries zero scoring weight; when the dedicated profile is selected, it is weighted with DNSSEC, NS, and zone-hygiene evidence.
+
 ## Available Checks
 
 | Check | Function | Standard |
@@ -55,6 +57,8 @@ const grade = scoreToGrade(score.overall); // A+, A, B+, etc.
 | SVCB/HTTPS | `checkSVCBHTTPS` | RFC 9460 |
 | Subdomain Takeover | `checkSubdomainTakeover` | — |
 | HTTP Security | `checkHTTPSecurity` | — |
+
+The MCP server package layers additional worker-only tools on top of this library, including `check_authoritative_dns_infra` and `check_root_server_set`.
 
 ## License
 
