@@ -57,6 +57,7 @@
 		"localhost.localdomain",
 		"renderer.internal",
 		"quota.internal",
+		"infra-probe.internal",
 		"bv-enterprise.internal",
 		"placeholder"
 	],
@@ -68,7 +69,8 @@
 		"scripts/pressure-chaos-test.mjs",
 		"test/audits/repo-safety-scanner.audit.test.ts",
 		"test/audits/no-tracked-secrets.audit.test.ts",
-		"scripts/repo-safety/policy.json"
+		"scripts/repo-safety/policy.json",
+		"src/lib/authoritative-dns-infra/root-hints.ts"
 	],
 	"allowedPathPrefixes": [
 		".github/",
