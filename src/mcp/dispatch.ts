@@ -50,6 +50,10 @@ export interface DispatchMcpMethodOptions {
 	principalId?: string;
 	/** T13 — runtime-default for `discover_brand_domains` discovery_mode. */
 	discoveryModeDefault?: string;
+	/** Tier 0/1/2 lookup closures wrapping the private brand-discovery service bindings. Undefined on BSL self-hosts. */
+	tier0Lookup?: (domain: string) => Promise<import('../lib/brand-tier0-enterprise').Tier0Result>;
+	tier1Lookup?: (domain: string) => Promise<import('../lib/brand-tier1-graph').Tier1Result>;
+	tier2Lookup?: (domain: string) => Promise<import('../lib/brand-tier2-evidence').Tier2Result>;
 }
 
 export type DispatchMcpMethodResult =
@@ -167,6 +171,9 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				discoveryModeDefault: options.discoveryModeDefault,
 				principalId: options.principalId,
 				rateLimitKv: options.rateLimitKv,
+				tier0Lookup: options.tier0Lookup,
+				tier1Lookup: options.tier1Lookup,
+				tier2Lookup: options.tier2Lookup,
 			});
 
 			return {
