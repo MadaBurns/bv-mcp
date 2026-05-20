@@ -679,6 +679,24 @@ Based on the discovery of ${arrOpportunity.domainCount} verified high-value Shad
         writeFileSync(filePath, pdfBuffer);
         const sidecarPath = process.env.BV_REPORT_JSON_PATH || join(reportsDir, `${target}-discovery-report.json`);
         mkdirSync(dirname(sidecarPath), { recursive: true });
+        // Forward pipeline-stamped tiered-mode metadata from the brand_audit
+        // report envelope so the sidecar emits the v3 shape when tiered mode
+        // ran. Pipeline stamps discoveryMode + discoveryPerformance.tiers on
+        // the summary finding only when effectiveDiscoveryMode === 'tiered'.
+        const sourceSummary = sourceResult?.findings?.find?.((f: { metadata?: Record<string, unknown> }) => f.metadata?.summary === true);
+        const summaryMeta = sourceSummary?.metadata as Record<string, unknown> | undefined;
+        // DEBUG: write summary metadata to a file so we can inspect outside vitest stdout capture.
+        try {
+            writeFileSync('/tmp/sidecar-debug.json', JSON.stringify({
+                hasSourceResult: !!sourceResult,
+                summaryKeys: summaryMeta ? Object.keys(summaryMeta) : null,
+                discoveryMode: summaryMeta?.discoveryMode,
+                discoveryPerformance: summaryMeta?.discoveryPerformance,
+                allFindingsCount: sourceResult?.findings?.length,
+            }, null, 2));
+        } catch {}
+        const summaryDiscoveryMode = summaryMeta?.discoveryMode === 'tiered' ? 'tiered' as const : undefined;
+        const summaryTiers = (summaryMeta?.discoveryPerformance as { tiers?: unknown } | undefined)?.tiers;
         const sidecar = buildDiscoveryReportSidecar(reportModel, {
             auditId,
             sourceMode,
@@ -687,6 +705,8 @@ Based on the discovery of ${arrOpportunity.domainCount} verified high-value Shad
             runId: reportOptions.runId,
             requestedAt: reportOptions.requestedAt,
             depthMode: reportOptions.depthMode,
+            ...(summaryDiscoveryMode ? { discoveryMode: summaryDiscoveryMode } : {}),
+            ...(summaryTiers ? { tiers: summaryTiers as Parameters<typeof buildDiscoveryReportSidecar>[1]['tiers'] } : {}),
         });
         writeFileSync(sidecarPath, JSON.stringify(sidecar, null, 2));
         
