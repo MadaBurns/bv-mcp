@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
 import { cloudflareTest } from '@cloudflare/vitest-pool-workers';
+import infraProbeWorker from './src/workers/infra-probe';
 
 export default defineConfig({
 	plugins: [
@@ -18,6 +19,7 @@ export default defineConfig({
 					BV_WHOIS: async (_req: Request) => {
 						return new Response(JSON.stringify({ registrar: null, source: 'error' }), { status: 200 });
 					},
+					BV_INFRA_PROBE: async (req: Request) => infraProbeWorker.fetch(req),
 				},
 				bindings: {
 					ENABLE_OAUTH: 'true',
