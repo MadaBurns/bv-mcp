@@ -126,6 +126,8 @@ type BvMcpEnv = {
 	 */
 	/** Tier 1 — bv-infrastructure-graph (HTTP service binding). */
 	BV_INFRA_GRAPH?: Fetcher;
+	/** Optional raw authoritative DNS/BGP/RPKI/vantage probe binding. */
+	BV_INFRA_PROBE?: Fetcher;
 	/**
 	 * Tier 2 — bv-intel-gateway (Workers RPC binding to a `WorkerEntrypoint`).
 	 * Auth is enforced at the binding level; no Authorization header plumbed.
@@ -445,6 +447,7 @@ app.post('/mcp', async (c) => {
 					secondaryDohToken: c.env.BV_DOH_TOKEN,
 					certstream: c.env.BV_CERTSTREAM,
 					whoisBinding: c.env.BV_WHOIS,
+					infraProbe: c.env.BV_INFRA_PROBE,
 					brandAuditDb: c.env.BRAND_AUDIT_DB,
 					brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 					brandReportsR2: c.env.BRAND_REPORTS,
@@ -516,6 +519,7 @@ app.post('/mcp', async (c) => {
 		secondaryDohToken: c.env.BV_DOH_TOKEN,
 		certstream: c.env.BV_CERTSTREAM,
 		whoisBinding: c.env.BV_WHOIS,
+		infraProbe: c.env.BV_INFRA_PROBE,
 		brandAuditDb: c.env.BRAND_AUDIT_DB,
 		brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 		brandReportsR2: c.env.BRAND_REPORTS,
@@ -664,6 +668,7 @@ app.post('/mcp/messages', async (c) => {
 				secondaryDohToken: c.env.BV_DOH_TOKEN,
 				certstream: c.env.BV_CERTSTREAM,
 				whoisBinding: c.env.BV_WHOIS,
+				infraProbe: c.env.BV_INFRA_PROBE,
 				brandAuditDb: c.env.BRAND_AUDIT_DB,
 				brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 				brandReportsR2: c.env.BRAND_REPORTS,

@@ -21,6 +21,7 @@ import {
 	AnalyzeDriftArgs,
 	GenerateRolloutPlanArgs,
 	CheckFastFluxArgs,
+	RootServerSetArgs,
 	DiscoverBrandDomainsArgs,
 	BrandAuditSingleArgs,
 	BrandAuditBatchStartArgs,
@@ -66,7 +67,7 @@ interface ToolDef {
 }
 
 /** DNS/security acronyms that should be uppercased in human-readable tool titles. */
-const KNOWN_ACRONYMS = new Set(['mx', 'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta', 'sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'http', 'https', 'dane', 'svcb', 'srv', 'txt', 'doh', 'rpm', 'dbl', 'rdap', 'nsec']);
+const KNOWN_ACRONYMS = new Set(['mx', 'spf', 'dmarc', 'dkim', 'dns', 'dnssec', 'ssl', 'mta', 'sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'http', 'https', 'dane', 'svcb', 'srv', 'txt', 'doh', 'rpm', 'dbl', 'rdap', 'nsec']);
 
 /** Convert a snake_case tool name to a human-readable title. e.g. "check_mta_sts" → "Check MTA STS" */
 function toolNameToTitle(name: string): string {
@@ -92,7 +93,7 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 	return jsonSchema as McpTool['inputSchema'];
 }
 
-/** All 51 MCP tool definitions. */
+/** All MCP tool definitions. */
 const TOOL_DEFS: Record<string, ToolDef> = {
 	check_mx: {
 		description: 'Look up MX records for a domain. Shows mail servers, email provider detection, and validates configuration.',
@@ -427,6 +428,22 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 			'Detect fast-flux DNS behavior by performing multiple rounds of A/AAAA queries with delays. Compares IP answer sets and TTLs across rounds to identify rotating infrastructure.',
 		schema: CheckFastFluxArgs,
 		group: 'intelligence',
+		scanIncluded: false,
+	},
+	check_authoritative_dns_infra: {
+		description:
+			'Check authoritative DNS infrastructure posture for a hostname. Uses BV_INFRA_PROBE when available for raw DNS, routing, RPKI, and vantage-point evidence.',
+		schema: BaseDomainArgs,
+		group: 'infrastructure',
+		tier: 'core',
+		scanIncluded: false,
+	},
+	check_root_server_set: {
+		description:
+			'Check the DNS root server set against official root hints, root glue, delegation, serial, and DNSKEY cross-root evidence.',
+		schema: RootServerSetArgs,
+		group: 'infrastructure',
+		tier: 'core',
 		scanIncluded: false,
 	},
 	discover_brand_domains: {

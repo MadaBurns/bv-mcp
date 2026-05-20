@@ -17,8 +17,9 @@ Controls whose absence creates direct, exploitable risk. Missing-control rule ap
 | SPF | 10 |
 | DNSSEC | 7 |
 | SSL | 5 |
+| Authoritative DNS Infrastructure | 0 |
 
-> These are production weights set via `SCORING_CONFIG` env var. Code defaults (when `SCORING_CONFIG` is absent): DMARC 16, DKIM 10, SPF 10, DNSSEC 8, SSL 8.
+> These are production weights set via `SCORING_CONFIG` env var. Code defaults (when `SCORING_CONFIG` is absent): DMARC 16, DKIM 10, SPF 10, DNSSEC 10, SSL 8, Authoritative DNS Infrastructure 0. The authoritative DNS category is core for classification and display, but it is weighted to 0 in normal mail/web profiles so raw infrastructure evidence does not shift ordinary `scan_domain` scores unless the dedicated profile is selected.
 
 **Confidence gate**: `scoreIndicatesMissingControl()` only fires for `deterministic`/`verified` confidence findings. Heuristic "not found" results from selector probing do not zero the category.
 
@@ -42,7 +43,7 @@ Active defenses against known attack vectors. Findings penalize but cannot trigg
 
 Bonus-only defense-in-depth. Each passed category adds ~1.4 points. Never subtracts from the overall score. Uses `result.passed` (not raw score) to determine pass/fail — this means checks with `missingControl: true` metadata or `scoreIndicatesMissingControl()` detection do not contribute hardening bonus even if their numeric score is >= 50.
 
-Categories: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene.
+Categories: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene, Brand Discovery.
 
 **Tool Annotations**: Every tool definition includes `group`, `tier` (`core`, `protective`, or `hardening`), and a `scanIncluded` flag. These annotations align with the category tiers above and are included in `tools/list` responses for structured consumption by MCP clients.
 
@@ -157,7 +158,7 @@ Source: `scoreToGrade()` in `packages/dns-checks/src/scoring/engine.ts` (re-expo
 
 ## Scoring Profiles
 
-`computeScanScore()` accepts an optional `DomainContext` that adapts weights based on detected domain purpose. Five profiles exist:
+`computeScanScore()` accepts an optional `DomainContext` that adapts weights based on detected domain purpose. Six profiles exist:
 
 | Profile | When Detected | Key Differences |
 | --- | --- | --- |
@@ -166,17 +167,32 @@ Source: `scoreToGrade()` in `packages/dns-checks/src/scoring/engine.ts` (re-expo
 | `non_mail` | No MX, no web indicators | Email auth near-zero, DNSSEC/SubdomainTakeover elevated |
 | `web_only` | No MX + CAA or SSL present | Email auth near-zero, SSL elevated |
 | `minimal` | >50% checks failed | Weights spread evenly, lower total |
+| `authoritative_dns_infra` | Explicit infrastructure assessment profile | Mail/web controls are non-scoring; authoritative DNS infra, DNSSEC, NS, and zone hygiene dominate |
 
 - **Email bonus**: only for `mail_enabled` and `enterprise_mail`
 - **Critical gap categories**: `mail_enabled`/`enterprise_mail` use core categories; `non_mail`/`web_only` use `['ssl', 'subdomain_takeover', 'http_security']`; `minimal` uses `['ssl', 'subdomain_takeover']`
+- **Authoritative DNS infra profile**: uses `['authoritative_dns_infra', 'dnssec', 'ns', 'zone_hygiene']` as critical gap categories and disables the email bonus.
 
 ### Phase 1 (Current)
 
 Auto-detection runs and is reported in the structured result (`scoringProfile`, `scoringSignals`), but `auto` mode uses `mail_enabled` weights. Only explicit `profile` parameter values activate different weights and cache keys (`cache:<domain>:profile:<profile>`).
 
-Detection priority: `non_mail`/`web_only` (no MX or Null MX) → `mail_enabled` (MX DNS failure — safe fallback) → `enterprise_mail` (MX + provider + hardening) → `mail_enabled` (MX, default) → `minimal` (>50% failed override).
+Detection priority: `non_mail`/`web_only` (no MX or Null MX) -> `mail_enabled` (MX DNS failure safe fallback) -> `enterprise_mail` (MX + provider + hardening) -> `mail_enabled` (MX, default) -> `minimal` (>50% failed override). The `authoritative_dns_infra` profile is explicit-only.
 
 Source: `src/lib/context-profiles.ts`.
+
+### Authoritative DNS Infrastructure Profile
+
+The `authoritative_dns_infra` category covers hostname and root-server evidence that normal DoH-only scans cannot observe directly: UDP/TCP 53 reachability, AA flag behavior, recursion refusal, zone-transfer refusal, direct DNSSEC material, EDNS0/TCP fallback behavior, abuse-resistance signals, IPv4/IPv6 parity, BGP origin/RPKI state, anycast/vantage evidence, PTR consistency, and root-server set conformance.
+
+Two MCP tools populate this category:
+
+- `check_authoritative_dns_infra` checks a hostname's authoritative DNS infrastructure posture.
+- `check_root_server_set` checks the DNS root-server set against official root hints and, when available, live root evidence.
+
+Both tools return structured partial results when `BV_INFRA_PROBE` is not configured. In that worker-only mode, raw DNS, BGP/RPKI, and vantage-dependent capabilities are marked inconclusive; `check_root_server_set` still returns the embedded official root-server names.
+
+Source: `src/tools/check-authoritative-dns-infra.ts`, `src/tools/check-root-server-set.ts`, and `src/lib/authoritative-dns-infra/`.
 
 ## Maturity Staging
 
@@ -194,7 +210,7 @@ Source: `src/tools/scan/maturity-staging.ts`.
 
 ## Notes on `scan_domain`
 
-`scan_domain` runs checks in parallel and includes non-mail-domain adjustment behavior when no MX records are present. Accepts an optional `profile` parameter (`auto`, `mail_enabled`, `enterprise_mail`, `non_mail`, `web_only`, `minimal`) to control scoring weights.
+`scan_domain` runs checks in parallel and includes non-mail-domain adjustment behavior when no MX records are present. Accepts an optional `profile` parameter (`auto`, `mail_enabled`, `enterprise_mail`, `non_mail`, `web_only`, `minimal`, `authoritative_dns_infra`) to control scoring weights. The `authoritative_dns_infra` profile runs only the authoritative infrastructure checks and merges their findings into one category result.
 
 Source: `src/tools/scan-domain.ts`.
 

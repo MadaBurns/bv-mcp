@@ -73,6 +73,10 @@
     {
       "binding": "BV_WHOIS",
       "service": "bv-whois"
+    },
+    {
+      "binding": "BV_INFRA_PROBE",
+      "service": "bv-infra-probe"
     }
   ]
 }

@@ -25,6 +25,7 @@ const SCAN_DOMAIN_TOOL_NAMES = new Set([
 const NON_SCAN_TOOL_NAMES = new Set([
 	'check_lookalikes', 'check_shadow_domains', 'check_txt_hygiene',
 	'check_mx_reputation', 'check_srv', 'check_zone_hygiene', 'check_resolver_consistency',
+	'check_authoritative_dns_infra', 'check_root_server_set',
 	'scan_domain', 'batch_scan', 'compare_domains', 'compare_baseline', 'generate_fix_plan', 'generate_spf_record',
 	'generate_dmarc_record', 'generate_dkim_config', 'generate_mta_sts_policy',
 	'get_benchmark', 'get_provider_insights', 'assess_spoofability', 'explain_finding',
@@ -46,8 +47,8 @@ const NON_SCAN_TOOL_NAMES = new Set([
 ]);
 
 describe('tool-schemas metadata', () => {
-	it('exports exactly 57 tools', () => {
-		expect(TOOLS).toHaveLength(57);
+	it('exports exactly 59 tools', () => {
+		expect(TOOLS).toHaveLength(59);
 	});
 
 	it('all tool names are unique', () => {
@@ -108,7 +109,7 @@ describe('tool-schemas metadata', () => {
 	});
 
 	it('scan and non-scan tool sets are exhaustive and non-overlapping', () => {
-		// Verify SCAN + NON_SCAN covers all 33 tools with no overlap
+		// Verify SCAN + NON_SCAN covers all tools with no overlap.
 		const allExpected = new Set([...SCAN_DOMAIN_TOOL_NAMES, ...NON_SCAN_TOOL_NAMES]);
 		expect(allExpected.size).toBe(SCAN_DOMAIN_TOOL_NAMES.size + NON_SCAN_TOOL_NAMES.size); // no overlap
 		for (const tool of TOOLS) {

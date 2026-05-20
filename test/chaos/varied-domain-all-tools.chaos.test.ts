@@ -329,6 +329,8 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'check_nsec_walkability', arguments: domainArgs() },
 		{ name: 'check_dnssec_chain', arguments: domainArgs() },
 		{ name: 'check_fast_flux', arguments: { domain: nextDomain(), rounds: 3, format: 'compact' } },
+		{ name: 'check_authoritative_dns_infra', arguments: domainArgs() },
+		{ name: 'check_root_server_set', arguments: { format: 'compact' } },
 		{
 			name: 'discover_brand_domains',
 			arguments: {
