@@ -476,6 +476,26 @@ function specificityFromSource(source: unknown): number | undefined {
 	return typeof specificityScore === 'number' ? specificityScore : undefined;
 }
 
+function graphEvidenceFromObservation(observation: BrandEvidenceObservation | undefined): Record<string, unknown> | undefined {
+	const metadata = observation?.metadata;
+	if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined;
+	const signalTypes = Array.isArray(metadata.signalTypes)
+		? metadata.signalTypes.filter((value): value is string => typeof value === 'string')
+		: [];
+	const numSharedSignals = metadata.numSharedSignals;
+	const maxSpecificity = metadata.maxSpecificity;
+	if (signalTypes.length === 0 || typeof numSharedSignals !== 'number' || typeof maxSpecificity !== 'number') {
+		return undefined;
+	}
+	return {
+		signalTypes,
+		numSharedSignals,
+		maxSpecificity,
+		...(typeof metadata.signalType === 'string' ? { signalType: metadata.signalType } : {}),
+		...(typeof metadata.signalValue === 'string' ? { signalValue: metadata.signalValue } : {}),
+	};
+}
+
 function isTieredSyntheticObservation(signal: DiscoverSignal, source: unknown): boolean {
 	return signal === 'markov_gen' && tierFromSource(source) !== undefined;
 }
@@ -893,15 +913,16 @@ export async function discoverBrandDomains(
 
 		// Land tiered observations in the aggregator BEFORE the Tier 3 decision,
 		// so the signal sweep (if it runs) corroborates rather than duplicates.
-		// Tiered candidates are treated as caller-asserted: they came from a
-		// declared/tenant/graph source and bypass the multi-signal corroboration
-		// gate (intended for unsolicited single-signal discoveries).
+		// Tenant-declared and declared/witnessed evidence stay caller-asserted.
+		// Tier 1 graph candidates must clear the shared graph-quality ownership
+		// gate instead of bypassing corroboration solely because the graph saw them.
 		for (const obs of tieredObservations) {
-			callerAssertedDomains.add(obs.candidate.trim().toLowerCase().replace(/\.$/, ''));
-			// Tier observations live on the `markov_gen` signal key (zero
-			// contribution to combined-confidence — the caller-asserted bypass
-			// is what surfaces these). The metadata blob carries the real tier
-			// + source for the T8 classifier to read.
+			if (obs.tier === 0 || obs.tier === 2) {
+				callerAssertedDomains.add(obs.candidate.trim().toLowerCase().replace(/\.$/, ''));
+			}
+			// Tier observations live on the `markov_gen` signal key. The metadata
+			// blob carries the real tier + source for the ownership gate and T8
+			// classifier to read.
 			addObservation(aggregator, obs.candidate, 'markov_gen', obs.confidence, {
 				tier: obs.tier,
 				source: obs.source,
@@ -1537,6 +1558,7 @@ export async function discoverBrandDomains(
 
 	for (const cand of surviving) {
 		const severity: Severity = cand.combined >= AUTO_INCLUDE_THRESHOLD ? 'low' : 'info';
+		const graphEvidence = graphEvidenceFromObservation(cand.evidenceObservations.find((observation) => observation.tier === 1));
 		candidateFindings.push(
 			createFinding(
 				'brand_discovery',
@@ -1554,6 +1576,7 @@ export async function discoverBrandDomains(
 					sharedMxPlatform: cand.sharedMxPlatform,
 					lookalikeScore: cand.lookalikeScore,
 					evidenceObservations: cand.evidenceObservations,
+					...(graphEvidence ? { graphEvidence } : {}),
 				},
 			),
 		);

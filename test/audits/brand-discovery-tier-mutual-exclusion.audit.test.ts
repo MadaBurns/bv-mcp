@@ -65,7 +65,12 @@ const FIXTURE: readonly FixtureRow[] = [
 	},
 	{
 		name: 'tier 1 specific',
-		observations: [{ signal: 'ns', tier: 1, specificityScore: 0.9 }],
+		observations: [{
+			signal: 'markov_gen',
+			tier: 1,
+			specificityScore: 0.9,
+			metadata: { source: 'infra_graph_signal', signalTypes: ['ns'], numSharedSignals: 1 },
+		}],
 		expectedSurface: 'owned',
 	},
 	{
@@ -90,7 +95,12 @@ const FIXTURE: readonly FixtureRow[] = [
 		name: 'tier 1 specific + tier 4 — owned wins',
 		observations: [
 			{ signal: 'active_lookalike', tier: 4 },
-			{ signal: 'ns', tier: 1, specificityScore: 0.7 },
+			{
+				signal: 'markov_gen',
+				tier: 1,
+				specificityScore: 0.7,
+				metadata: { source: 'infra_graph_signal', signalTypes: ['ns'], numSharedSignals: 1 },
+			},
 		],
 		expectedSurface: 'owned',
 	},
@@ -143,5 +153,43 @@ describe('brand-discovery tier mutual-exclusion invariant (Task 8)', () => {
 			// XOR — exactly one of the two must be true.
 			expect(inOwned !== inImpersonationSurface).toBe(true);
 		}
+	});
+
+	it('does not route weak tier-1 graph-only evidence to consolidated', () => {
+		const candidate = makeCandidate('candidate.example', [
+			{
+				signal: 'markov_gen',
+				tier: 1,
+				specificityScore: 0.63,
+				metadata: {
+					source: 'infra_graph_signal',
+					numSharedSignals: 1,
+					signalTypes: ['soa_admin'],
+				},
+			},
+		]);
+
+		const result = classifyCandidate(candidate, makeTarget());
+
+		expect(result.bucket).toBe('indeterminate');
+	});
+
+	it('routes deterministic tier-1 graph evidence to consolidated', () => {
+		const candidate = makeCandidate('candidate.example', [
+			{
+				signal: 'markov_gen',
+				tier: 1,
+				specificityScore: 0.7,
+				metadata: {
+					source: 'infra_graph_signal',
+					numSharedSignals: 1,
+					signalTypes: ['spf_include'],
+				},
+			},
+		]);
+
+		const result = classifyCandidate(candidate, makeTarget());
+
+		expect(result.bucket).toBe('consolidated');
 	});
 });

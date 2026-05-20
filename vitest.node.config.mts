@@ -6,7 +6,8 @@ export default defineConfig({
 		include: [
 			'test/pdf-engine.spec.ts',
 			'test/generate-discovery-report.spec.ts',
-			'test/audits/brand-report-qa-script.node.test.ts'
+			'test/audits/brand-report-qa-script.node.test.ts',
+			'test/audits/brand-report-quality-audit-script.node.test.ts'
 		],
 		environment: 'node',
 		pool: 'forks',

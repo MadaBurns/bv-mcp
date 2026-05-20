@@ -453,6 +453,47 @@ describe('brand-discovery tiered chaos invariants', () => {
 		expect(owned).toBeGreaterThanOrEqual(1);
 	});
 
+	it('does not surface weak tier-1 graph evidence with only one legacy corroborator as owned portfolio evidence', async () => {
+		const { __resetOptoutCacheForTests } = await import('../../src/lib/brand-optout-enforcement');
+		__resetOptoutCacheForTests();
+		const { discoverBrandDomains } = await import('../../src/tools/discover-brand-domains');
+		const deps = makeTieredDeps({
+			tier0Lookup: () => Promise.resolve(tier0Empty()) as never,
+			tier1Lookup: () => Promise.resolve(tier1Ok('unrelated.example.net', VERY_STALE_FRESHNESS, 'soa_admin')) as never,
+			tier2Lookup: () => Promise.resolve(tier2Empty()) as never,
+			correlateNs: () => Promise.resolve(okNs([{ domain: 'unrelated.example.net', confidence: 0.6 }])),
+		} as unknown as Partial<DiscoverBrandDomainsDeps>);
+
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ discovery_mode: 'tiered', signals: ['ns'], candidate_domains: [], min_confidence: 0.0 },
+			deps,
+		);
+
+		expect(collectAllSurfacedDomains(result)).not.toContain('unrelated.example.net');
+		const tiers = getTiers(result);
+		expect(tiers?.tier1Count).toBe(1);
+	});
+
+	it('surfaces a deterministic graph tier-1 candidate', async () => {
+		const { __resetOptoutCacheForTests } = await import('../../src/lib/brand-optout-enforcement');
+		__resetOptoutCacheForTests();
+		const { discoverBrandDomains } = await import('../../src/tools/discover-brand-domains');
+		const deps = makeTieredDeps({
+			tier0Lookup: () => Promise.resolve(tier0Empty()) as never,
+			tier1Lookup: () => Promise.resolve(tier1Ok('owned.example.net', FRESH_FRESHNESS, 'spf_include')) as never,
+			tier2Lookup: () => Promise.resolve(tier2Empty()) as never,
+		} as unknown as Partial<DiscoverBrandDomainsDeps>);
+
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ discovery_mode: 'tiered', signals: ['ns'], candidate_domains: [], min_confidence: 0.0 },
+			deps,
+		);
+
+		expect(collectAllSurfacedDomains(result)).toContain('owned.example.net');
+	});
+
 	it('10. given candidates flood the universe (>> STANDARD_CANDIDATE_CAP=50), system should truncate via the candidate-universe cap and surface dropped.cap telemetry', async () => {
 		// In-layer noise-budget guard. The plan calls for "10× owned OR > 200"
 		// which lives at the audit-pipeline layer (MAX_CANDIDATES_PER_AUDIT=200,

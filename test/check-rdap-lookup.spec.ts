@@ -279,6 +279,30 @@ describe('checkRdapLookup', () => {
 		expect(infoFinding?.metadata?.registrarIanaId).toBe('299');
 	});
 
+	it('extracts registrar from RDAP entity publicIds even without registrar role', async () => {
+		globalThis.fetch = mockFetchRouter({
+			'data.iana.org/rdap/dns.json': () => makeBootstrap(),
+			'rdap.verisign.com': () => makeRdapResponse({
+				entities: [
+					{
+						objectClassName: 'entity',
+						roles: ['technical'],
+						publicIds: [{ type: 'IANA Registrar ID', identifier: '9999' }],
+						vcardArray: ['vcard', [
+							['version', {}, 'text', '4.0'],
+							['fn', {}, 'text', 'Synthetic PublicId Registrar LLC'],
+						]],
+					},
+				],
+			}),
+		});
+
+		const result = await run();
+		const infoFinding = result.findings.find((f) => f.metadata?.registrarSource === 'rdap');
+		expect(infoFinding?.metadata?.registrar).toBe('Synthetic PublicId Registrar LLC');
+		expect(infoFinding?.metadata?.registrarIanaId).toBe('9999');
+	});
+
 	it('falls back to WHOIS when RDAP succeeds but registrar attribution is unknown', async () => {
 		globalThis.fetch = mockFetchRouter({
 			'data.iana.org/rdap/dns.json': () => makeBootstrap(),
@@ -299,6 +323,59 @@ describe('checkRdapLookup', () => {
 
 		const infoFinding = result.findings.find((f) => f.metadata?.registrarSource === 'whois');
 		expect(infoFinding?.metadata?.registrar).toBe('WHOIS Fallback Registrar Inc.');
+		expect(whoisBinding.fetch).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		['Registrar', 'Synthetic Registrar LLC'],
+		['Registrar Name', 'Synthetic Registrar Name LLC'],
+		['Sponsoring Registrar', 'Synthetic Sponsoring Registrar LLC'],
+		['Registrar Organization', 'Synthetic Registrar Organization LLC'],
+	])('falls back to plain WHOIS %s labels when RDAP has no registrar attribution', async (label, registrar) => {
+		globalThis.fetch = mockFetchRouter({
+			'data.iana.org/rdap/dns.json': () => makeBootstrap(),
+			'rdap.verisign.com': () => makeRdapResponse({ entities: [] }),
+		});
+		const whoisBinding = {
+			fetch: vi.fn(async () =>
+				new Response(`Domain Name: EXAMPLE.COM\n${label}: ${registrar}\nUpdated Date: 2026-01-01T00:00:00Z\n`, {
+					status: 200,
+					headers: { 'Content-Type': 'text/plain' },
+				}),
+			),
+		};
+
+		const mod = await import('../src/tools/check-rdap-lookup');
+		mod._resetBootstrapCache();
+		const result = await mod.checkRdapLookup('example.com', { whoisBinding });
+
+		const infoFinding = result.findings.find((f) => f.metadata?.registrarSource === 'whois');
+		expect(infoFinding?.metadata?.registrar).toBe(registrar);
+		expect(whoisBinding.fetch).toHaveBeenCalledOnce();
+	});
+
+	it('does not treat Registrar URL as a registrar name', async () => {
+		globalThis.fetch = mockFetchRouter({
+			'data.iana.org/rdap/dns.json': () => makeBootstrap(),
+			'rdap.verisign.com': () => makeRdapResponse({ entities: [] }),
+		});
+		const whoisBinding = {
+			fetch: vi.fn(async () =>
+				new Response('Domain Name: EXAMPLE.COM\nRegistrar URL: https://registrar.example.test\n', {
+					status: 200,
+					headers: { 'Content-Type': 'text/plain' },
+				}),
+			),
+		};
+
+		const mod = await import('../src/tools/check-rdap-lookup');
+		mod._resetBootstrapCache();
+		const result = await mod.checkRdapLookup('example.com', { whoisBinding });
+
+		const urlRegistrar = result.findings.find((f) => f.metadata?.registrar === 'https://registrar.example.test');
+		expect(urlRegistrar).toBeUndefined();
+		const fallbackFinding = result.findings.find((f) => f.metadata?.registrarSource === 'lookup_failed');
+		expect(fallbackFinding?.metadata?.registrarFailureReason).toBe('whois_error');
 		expect(whoisBinding.fetch).toHaveBeenCalledOnce();
 	});
 });
