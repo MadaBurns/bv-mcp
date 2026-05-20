@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
+/// <reference types="vite/client" />
 
 /**
  * Unit tests for the Shadow IT (registrar-sprawl) quality invariants.
