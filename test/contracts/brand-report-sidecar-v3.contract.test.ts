@@ -316,6 +316,82 @@ describe('brand-discovery sidecar v3 contract (tiered mode)', () => {
 		expect(sidecar.impersonationSurface[0].scoreAlertContext).toEqual({ alertType: 'newly_active', transition: 'parked->active' });
 	});
 
+	it('preserves tier-1 graph provenance so reports do not show graph evidence as only Markov Variant', () => {
+		const model = buildDiscoveryReportModel({
+			target: 'brand.example',
+			primaryRegistrar: 'Example Registrar',
+			result: {
+				category: 'brand_discovery',
+				findings: [
+					{
+						category: 'brand_discovery',
+						title: 'summary',
+						severity: 'info',
+						detail: 'summary',
+						metadata: { summary: true },
+					},
+					{
+						category: 'brand_discovery',
+						title: 'Brand candidate: owned.example',
+						severity: 'info',
+						detail: 'candidate',
+						metadata: {
+							candidate: 'owned.example',
+							bucket: 'consolidated',
+							tier: 1,
+							signals: ['markov_gen'],
+							combinedConfidence: 0.92,
+							registrar: 'Example Registrar',
+							registrarSource: 'rdap',
+							reasons: ['tier 1 graph evidence'],
+							graphEvidence: {
+								signalTypes: ['spf_include'],
+								numSharedSignals: 1,
+								maxSpecificity: 0.7,
+								signalType: 'spf_include',
+								signalValue: '_spf.brand.example',
+							},
+						},
+					},
+				],
+			},
+		});
+
+		const sidecar = buildDiscoveryReportSidecar(model, {
+			sourceMode: 'mcp',
+			generatedAt: '2026-05-20T00:00:00.000Z',
+			serverVersion: 'test',
+			runId: 'quality-test',
+			requestedAt: '2026-05-20T00:00:00.000Z',
+			depthMode: 'deep',
+			discoveryMode: 'tiered',
+			tiers: {
+				tier0Count: 0,
+				tier1Count: 1,
+				tier2Count: 0,
+				tier3Count: 0,
+				tier4Count: 0,
+				tier0Status: 'ok',
+				tier1Status: 'ok',
+				tier2Status: 'ok',
+				tier3FallbackTriggered: 0,
+				optOutsFiltered: 0,
+			},
+		});
+
+		expect(sidecar.buckets.consolidated[0]).toMatchObject({
+			domain: 'owned.example',
+			evidence: 'Tier 1 Graph: SPF Include; specificity 0.70; shared signals 1 (0.92)',
+			graphEvidence: {
+				signalTypes: ['spf_include'],
+				numSharedSignals: 1,
+				maxSpecificity: 0.7,
+				signalType: 'spf_include',
+				signalValue: '_spf.brand.example',
+			},
+		});
+	});
+
 	it('classic mode (default discoveryMode) emits v1 — sidecar is byte-identical to legacy', () => {
 		const model = buildDiscoveryReportModel({
 			target: 'example.com',

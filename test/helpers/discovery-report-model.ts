@@ -60,6 +60,14 @@ export interface DiscoveryReportCandidate {
 	lookalikeScore?: number;
 	/** Score-alert provenance from tier-2 BV_INTEL_GATEWAY observations. */
 	scoreAlertContext?: { alertType: string; transition: string };
+	/** Tier-1 graph provenance used by report renderers to explain graph-surfaced evidence. */
+	graphEvidence?: {
+		signalTypes: string[];
+		numSharedSignals: number;
+		maxSpecificity: number;
+		signalType?: string;
+		signalValue?: string;
+	};
 }
 
 /**
@@ -197,7 +205,24 @@ export interface DiscoveryReportSidecarV3 extends DiscoveryReportSidecarBase {
 
 export type DiscoveryReportSidecar = DiscoveryReportSidecarV1 | DiscoveryReportSidecarV3;
 
-export function formatEvidence(signals: string[], confidence: number | null = null): string {
+function graphSignalLabel(signalType: string): string {
+	return SIGNAL_LABELS[signalType] ?? signalType.toUpperCase().replace(/_/g, ' ');
+}
+
+export function formatEvidence(
+	signals: string[],
+	confidence: number | null = null,
+	graphEvidence?: DiscoveryReportCandidate['graphEvidence'],
+): string {
+	if (graphEvidence) {
+		const labels = graphEvidence.signalTypes.map(graphSignalLabel);
+		const base = labels.length > 0 ? `Tier 1 Graph: ${labels.join(', ')}` : 'Tier 1 Graph';
+		const specificity = `specificity ${graphEvidence.maxSpecificity.toFixed(2)}`;
+		const sharedSignals = `shared signals ${graphEvidence.numSharedSignals}`;
+		return confidence === null
+			? `${base}; ${specificity}; ${sharedSignals}`
+			: `${base}; ${specificity}; ${sharedSignals} (${confidence.toFixed(2)})`;
+	}
 	const labels = signals.map((signal) => SIGNAL_LABELS[signal] ?? signal.toUpperCase().replace(/_/g, ' '));
 	const base = labels.length > 0 ? labels.join(', ') : 'No shared infrastructure';
 	return confidence === null ? base : `${base} (${confidence.toFixed(2)})`;
@@ -236,6 +261,21 @@ function scoreAlertContext(value: unknown): { alertType: string; transition: str
 	return { alertType: value.alertType, transition: value.transition };
 }
 
+function graphEvidence(value: unknown): DiscoveryReportCandidate['graphEvidence'] | undefined {
+	if (!isRecord(value)) return undefined;
+	const signalTypes = stringArray(value.signalTypes);
+	const numSharedSignals = numberOrNull(value.numSharedSignals);
+	const maxSpecificity = numberOrNull(value.maxSpecificity);
+	if (signalTypes.length === 0 || numSharedSignals === null || maxSpecificity === null) return undefined;
+	return {
+		signalTypes,
+		numSharedSignals,
+		maxSpecificity,
+		...(typeof value.signalType === 'string' ? { signalType: value.signalType } : {}),
+		...(typeof value.signalValue === 'string' ? { signalValue: value.signalValue } : {}),
+	};
+}
+
 export function buildDiscoveryReportModel(input: {
 	target: string;
 	primaryRegistrar: string;
@@ -262,14 +302,15 @@ export function buildDiscoveryReportModel(input: {
 			typeof metadata.registrarSource === 'string' && metadata.registrarSource.length > 0
 				? metadata.registrarSource
 				: 'unknown';
+		const candidateGraphEvidence = graphEvidence(metadata.graphEvidence);
 
 		// `impersonationSurface` is tier-4 only; route it to the dedicated list so
 		// the v1 sidecar's 4-key `buckets` block stays byte-identical.
 		if (rawBucket === 'impersonationSurface') {
 			impersonationSurfaceCandidates.push({
-				domain: metadata.candidate,
-				bucket: 'impersonationSurface',
-				evidence: formatEvidence(signals, combinedConfidence),
+			domain: metadata.candidate,
+			bucket: 'impersonationSurface',
+			evidence: formatEvidence(signals, combinedConfidence, candidateGraphEvidence),
 				registrar,
 				registrarSource,
 				signals,
@@ -280,6 +321,7 @@ export function buildDiscoveryReportModel(input: {
 				...(scoreAlertContext(metadata.scoreAlertContext)
 					? { scoreAlertContext: scoreAlertContext(metadata.scoreAlertContext) }
 					: {}),
+				...(candidateGraphEvidence ? { graphEvidence: candidateGraphEvidence } : {}),
 			});
 			continue;
 		}
@@ -291,7 +333,7 @@ export function buildDiscoveryReportModel(input: {
 		buckets[bucket].push({
 			domain: metadata.candidate,
 			bucket,
-			evidence: formatEvidence(signals, combinedConfidence),
+			evidence: formatEvidence(signals, combinedConfidence, candidateGraphEvidence),
 			registrar,
 			registrarSource,
 			signals,
@@ -299,6 +341,7 @@ export function buildDiscoveryReportModel(input: {
 			reasons: stringArray(metadata.reasons),
 			...(isTier(metadata.tier) ? { tier: metadata.tier } : {}),
 			...(typeof metadata.lookalikeScore === 'number' ? { lookalikeScore: metadata.lookalikeScore } : {}),
+			...(candidateGraphEvidence ? { graphEvidence: candidateGraphEvidence } : {}),
 		});
 	}
 
