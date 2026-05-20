@@ -362,6 +362,7 @@ const TOOL_REGISTRY: Record<
 					planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
 					brand_aliases: args.brand_aliases as string[] | undefined,
 					candidate_domains: args.candidate_domains as string[] | undefined,
+					discovery_mode: args.discovery_mode as 'classic' | 'tiered' | undefined,
 				},
 				principalId,
 				{ db, queue, enforceQuota: buildMonthlyEnforceQuota(ro) },
