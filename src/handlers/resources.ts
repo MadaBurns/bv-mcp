@@ -67,7 +67,7 @@ const RESOURCES: McpResource[] = [
 const RESOURCE_CONTENT: Record<string, string> = {
 	'dns-security://guides/security-checks': `# DNS Security Checks
 
-57 MCP tools, including 28 \`check_*\` tools and \`scan_domain\` across 17 scan categories.
+59 MCP tools, including 30 \`check_*\` tools and \`scan_domain\` across 18 scan categories.
 
 ## Tool -> Category Mapping
 
@@ -99,6 +99,8 @@ const RESOURCE_CONTENT: Record<string, string> = {
 | \`check_nsec_walkability\` | DNSSEC Enumeration | NSEC/NSEC3 walkability risk |
 | \`check_dnssec_chain\` | DNSSEC Chain | DS/DNSKEY chain-of-trust details |
 | \`check_fast_flux\` | Fast Flux | Multi-round A/AAAA rotation and TTL analysis |
+| \`check_authoritative_dns_infra\` | Authoritative DNS Infrastructure | Raw DNS, authoritative behavior, routing, RPKI, and vantage evidence |
+| \`check_root_server_set\` | Authoritative DNS Infrastructure | Root hints, root priming, glue, delegation, DNSKEY, and SOA serial evidence |
 | \`check_bimi\` | BIMI | Record presence, logo URL, VMC |
 | \`check_tlsrpt\` | TLS-RPT | Record presence, reporting URI |
 | \`check_lookalikes\` | Lookalikes | Typosquat detection, DNS + MX probing |
@@ -106,7 +108,7 @@ const RESOURCE_CONTENT: Record<string, string> = {
 
 ## Composite Tools
 
-- **\`scan_domain\`** - 17 scan categories in parallel, returns score + grade + prioritized findings
+- **\`scan_domain\`** - 18 scan categories in parallel, returns score + grade + prioritized findings
 - **Brand audit tools** - \`discover_brand_domains\`, \`brand_audit_single\`, \`brand_audit_batch_start\`, \`brand_audit_status\`, \`brand_audit_get_report\`, \`brand_audit_watch\`
 - **\`explain_finding\`** - plain-language context + remediation for any finding
 - **\`compare_baseline\`** - pass/fail against minimum security standards
@@ -118,7 +120,7 @@ Three-tier weighted scoring. Each category starts at 100, reduced by severity pe
 
 ## Three-Tier Model
 
-**Core (70%):** DMARC (16), DKIM (10), SPF (10), DNSSEC (8), SSL (8)
+**Core (70%):** DMARC (16), DKIM (10), SPF (10), DNSSEC (10), SSL (8), Authoritative DNS Infrastructure (0 in normal profiles)
 **Protective (20%):** Subdomain Takeover, HTTP Security, MTA-STS, Subdomailing, MX, CAA, NS, Lookalikes, Shadow Domains, DANE HTTPS, SVCB HTTPS
 **Hardening (10%):** BIMI, TLS-RPT, DANE, TXT Hygiene, MX Reputation, SRV, Zone Hygiene — bonus-only, never subtracts.
 
