@@ -23,14 +23,14 @@ describe('report generation option helpers', () => {
 		});
 	});
 
-	it('defaults to enforce mode when BV_BRAND_AUDIT_PLANNER_MODE is unset', () => {
-		// Locks in the post-chaos default flip. Reverting to 'observe' here is
-		// a config regression that breaks benchmark reproducibility — keep the
-		// orchestrator default ('enforce') and this helper default aligned.
+	it('defaults to observe mode when BV_BRAND_AUDIT_PLANNER_MODE is unset', () => {
+		// Report generation is recall-first. Enforce remains available for
+		// benchmark runs, but the default must not starve weak reports of
+		// candidate-backed probes.
 		const options = parseReportGenerationEnv({ TARGET_DOMAIN: 'example.com' });
-		expect(options.plannerMode).toBe('enforce');
+		expect(options.plannerMode).toBe('observe');
 		expect(buildBrandAuditBatchStartArgs('example.com', options)).toMatchObject({
-			planner_mode: 'enforce',
+			planner_mode: 'observe',
 		});
 	});
 
