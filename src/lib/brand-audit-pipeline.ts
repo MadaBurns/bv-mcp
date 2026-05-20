@@ -731,6 +731,8 @@ export async function runBrandAuditPipeline(
 						performance,
 						plannerEfficiency: discoveryPlannerEfficiency,
 					}),
+					...(tierStats ? { tiers: tierStats } : {}),
+					...(effectiveDiscoveryMode === 'tiered' ? { discoveryMode: 'tiered' as const } : {}),
 				},
 			),
 		]);

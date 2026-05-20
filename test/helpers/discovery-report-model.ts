@@ -189,6 +189,7 @@ export interface DiscoveryReportSidecarV1 extends DiscoveryReportSidecarBase {
  */
 export interface DiscoveryReportSidecarV3 extends DiscoveryReportSidecarBase {
 	qaSchemaVersion: 3;
+	discoveryMode: 'tiered';
 	ownedPortfolio: DiscoveryReportSidecarV3OwnedPortfolio;
 	impersonationSurface: DiscoveryReportSidecarV3ImpersonationEntry[];
 	performance: BrandAuditMetricsSummary & { tiers: DiscoveryReportSidecarTiers };
@@ -458,6 +459,7 @@ export function buildDiscoveryReportSidecar(
 		const sidecarV3: DiscoveryReportSidecarV3 = {
 			...base,
 			qaSchemaVersion: 3,
+			discoveryMode: 'tiered',
 			ownedPortfolio,
 			impersonationSurface,
 			performance: performanceForV3,

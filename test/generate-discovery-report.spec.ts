@@ -49,6 +49,21 @@ const assetsDir = join(__dirname, '../assets');
 const logoFullBase64 = readFileSync(join(assetsDir, 'bv-logo-full.png')).toString('base64');
 const logoMarkBase64 = readFileSync(join(assetsDir, 'bv-logo-mark.png')).toString('base64');
 
+function extractSummaryTiers(summaryMeta: Record<string, unknown> | undefined): Parameters<typeof buildDiscoveryReportSidecar>[1]['tiers'] | undefined {
+    const topLevelTiers = summaryMeta?.tiers;
+    if (topLevelTiers && typeof topLevelTiers === 'object' && !Array.isArray(topLevelTiers)) {
+        return topLevelTiers as Parameters<typeof buildDiscoveryReportSidecar>[1]['tiers'];
+    }
+    const discoveryPerformance = summaryMeta?.discoveryPerformance;
+    if (discoveryPerformance && typeof discoveryPerformance === 'object' && !Array.isArray(discoveryPerformance)) {
+        const tiers = (discoveryPerformance as { tiers?: unknown }).tiers;
+        if (tiers && typeof tiers === 'object' && !Array.isArray(tiers)) {
+            return tiers as Parameters<typeof buildDiscoveryReportSidecar>[1]['tiers'];
+        }
+    }
+    return undefined;
+}
+
 describe('report generation option plumbing', () => {
     it('defaults MCP brand_audit_batch_start requests to deep discovery', () => {
         const options = parseReportGenerationEnv({ TARGET_DOMAIN: 'example.com' });
@@ -83,6 +98,22 @@ describe('report generation option plumbing', () => {
         });
         expect(buildLocalDiscoveryOptions(options)).toMatchObject({
             brand_aliases: ['example corp', 'example-pay'],
+        });
+    });
+
+    it('extracts tier counters from brand-audit summary metadata', () => {
+        expect(extractSummaryTiers({
+            tiers: {
+                tier0Count: 1,
+                tier1Count: 3,
+                tier2Count: 1,
+                tier3Count: 0,
+                tier4Count: 0,
+            },
+        })).toMatchObject({
+            tier0Count: 1,
+            tier1Count: 3,
+            tier2Count: 1,
         });
     });
 
@@ -681,22 +712,12 @@ Based on the discovery of ${arrOpportunity.domainCount} verified high-value Shad
         mkdirSync(dirname(sidecarPath), { recursive: true });
         // Forward pipeline-stamped tiered-mode metadata from the brand_audit
         // report envelope so the sidecar emits the v3 shape when tiered mode
-        // ran. Pipeline stamps discoveryMode + discoveryPerformance.tiers on
-        // the summary finding only when effectiveDiscoveryMode === 'tiered'.
+        // ran. Pipeline stamps discoveryMode + top-level tiers on the summary
+        // finding only when effectiveDiscoveryMode === 'tiered'.
         const sourceSummary = sourceResult?.findings?.find?.((f: { metadata?: Record<string, unknown> }) => f.metadata?.summary === true);
         const summaryMeta = sourceSummary?.metadata as Record<string, unknown> | undefined;
-        // DEBUG: write summary metadata to a file so we can inspect outside vitest stdout capture.
-        try {
-            writeFileSync('/tmp/sidecar-debug.json', JSON.stringify({
-                hasSourceResult: !!sourceResult,
-                summaryKeys: summaryMeta ? Object.keys(summaryMeta) : null,
-                discoveryMode: summaryMeta?.discoveryMode,
-                discoveryPerformance: summaryMeta?.discoveryPerformance,
-                allFindingsCount: sourceResult?.findings?.length,
-            }, null, 2));
-        } catch {}
         const summaryDiscoveryMode = summaryMeta?.discoveryMode === 'tiered' ? 'tiered' as const : undefined;
-        const summaryTiers = (summaryMeta?.discoveryPerformance as { tiers?: unknown } | undefined)?.tiers;
+        const summaryTiers = extractSummaryTiers(summaryMeta);
         const sidecar = buildDiscoveryReportSidecar(reportModel, {
             auditId,
             sourceMode,

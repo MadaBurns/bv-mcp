@@ -24,6 +24,7 @@ const TierStatusSchema = z.enum(['ok', 'degraded', 'partial', 'timeout', 'skippe
 
 const SidecarV3Schema = z.object({
 	qaSchemaVersion: z.literal(3),
+	discoveryMode: z.literal('tiered'),
 	ownedPortfolio: z.object({
 		tenantDeclared: z.array(z.string()),
 		graphSurfaced: z.array(z.string()),
@@ -289,6 +290,7 @@ describe('brand-discovery sidecar v3 contract (tiered mode)', () => {
 			tiers: TIERED_TIERS,
 		}) as unknown as {
 			qaSchemaVersion: 3;
+			discoveryMode: 'tiered';
 			ownedPortfolio: {
 				tenantDeclared: string[];
 				graphSurfaced: string[];
@@ -299,6 +301,7 @@ describe('brand-discovery sidecar v3 contract (tiered mode)', () => {
 		};
 
 		expect(sidecar.qaSchemaVersion).toBe(3);
+		expect(sidecar.discoveryMode).toBe('tiered');
 		expect(sidecar.ownedPortfolio.tenantDeclared).toEqual(['tenant.example.com']);
 		expect(sidecar.ownedPortfolio.graphSurfaced.sort()).toEqual(['graph-a.example', 'graph-b.example']);
 		expect(sidecar.ownedPortfolio.declaredEvidence).toEqual(['declared.example']);

@@ -70,15 +70,22 @@ function readJson(path) {
 function extractSidecarMetrics(sidecar) {
 	if (!sidecar || typeof sidecar !== 'object') return null;
 	const depth = sidecar.depth ?? null;
+	const counts = sidecar.counts ?? null;
+	const ownedPortfolioTotal =
+		typeof sidecar.ownedPortfolio?.total === 'number'
+			? sidecar.ownedPortfolio.total
+			: typeof counts?.consolidated === 'number' || typeof counts?.shadowIt === 'number' || typeof counts?.indeterminate === 'number'
+				? (counts?.consolidated ?? 0) + (counts?.shadowIt ?? 0) + (counts?.indeterminate ?? 0)
+				: null;
 	return {
 		target: typeof sidecar.target === 'string' ? sidecar.target : null,
 		generatedAt: typeof sidecar.generatedAt === 'string' ? sidecar.generatedAt : null,
-		counts: sidecar.counts ?? null,
-		ownedPortfolioTotal: sidecar.counts?.ownedPortfolioTotal ?? null,
-		consolidated: sidecar.counts?.consolidated ?? null,
-		shadowIt: sidecar.counts?.shadowIt ?? null,
-		impersonation: sidecar.counts?.impersonation ?? null,
-		tierMetadata: sidecar.tierMetadata ?? null,
+		counts,
+		ownedPortfolioTotal,
+		consolidated: counts?.consolidated ?? null,
+		shadowIt: counts?.shadowIt ?? null,
+		impersonation: counts?.impersonation ?? null,
+		tiers: sidecar.performance?.tiers ?? null,
 		discoveryMode: sidecar.discoveryMode ?? null,
 		warnings: Array.isArray(depth?.warnings) ? depth.warnings : [],
 	};

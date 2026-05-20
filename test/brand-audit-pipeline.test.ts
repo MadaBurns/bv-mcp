@@ -33,6 +33,36 @@ function discoveryResult(seedDomain: string, candidates: string[]): CheckResult 
 	};
 }
 
+function tieredEmptyDiscoveryResult(seedDomain: string): CheckResult {
+	return {
+		category: 'brand_discovery',
+		score: 100,
+		findings: [
+			{
+				...summaryFinding(seedDomain, 0),
+				metadata: {
+					...summaryFinding(seedDomain, 0).metadata,
+					discoveryPerformance: {
+						tiers: {
+							tier0Count: 1,
+							tier1Count: 0,
+							tier2Count: 1,
+							tier3Count: 0,
+							tier4Count: 0,
+							tier0Status: 'ok',
+							tier1Status: 'ok',
+							tier2Status: 'ok',
+							tier3FallbackTriggered: 0,
+							tier1Freshness: { overallStaleness: 'fresh' },
+							optOutsFiltered: 0,
+						},
+					},
+				},
+			},
+		],
+	};
+}
+
 function rdapResult(registrar: string, registrant: string, registrarIanaId: string | null = null): CheckResult {
 	return {
 		category: 'rdap',
@@ -475,5 +505,25 @@ describe('runBrandAuditPipeline — T13 BRAND_AUDIT_DISCOVERY_MODE_DEFAULT env o
 
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
 		expect(summary?.metadata?.discoveryMode).toBe('tiered');
+	});
+
+	it('stamps discoveryMode and tiers when env-defaulted tiered run surfaces zero candidates', async () => {
+		const discoverBrandDomains = vi.fn().mockResolvedValue(tieredEmptyDiscoveryResult('example.com'));
+		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Example Inc.'));
+
+		const result = await runBrandAuditPipeline(
+			'example.com',
+			{ env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: 'tiered' } },
+			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup },
+		);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary?.metadata?.missingControl).toBe(true);
+		expect(summary?.metadata?.discoveryMode).toBe('tiered');
+		expect(summary?.metadata?.tiers).toMatchObject({
+			tier0Count: 1,
+			tier1Status: 'ok',
+			tier1Freshness: { overallStaleness: 'fresh' },
+		});
 	});
 });
