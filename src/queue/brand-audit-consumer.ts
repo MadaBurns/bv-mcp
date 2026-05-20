@@ -108,6 +108,16 @@ export interface BrandAuditConsumerDeps {
 	 * Defaults to a `safeFetch`-wrapped POST in production.
 	 */
 	deliverWebhook?: (url: string, payload: unknown) => Promise<boolean>;
+	/**
+	 * T13 — runtime-default for `discover_brand_domains` discovery_mode.
+	 * Sourced from `env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT` at the queue
+	 * dispatch site in `src/index.ts`. Threaded into the pipeline's
+	 * `options.env`. `'tiered'` flips the default for queue-message audits
+	 * that omit `discovery_mode` (which is all of them, since the queue
+	 * message schema doesn't carry it); any other value (including
+	 * undefined) leaves the public schema default (`'classic'`) in charge.
+	 */
+	discoveryModeDefault?: string;
 }
 
 interface TargetStatusRow {
@@ -256,6 +266,12 @@ export async function processBrandAuditMessage(
 				// Phase 2b: retry messages re-run the pipeline from scratch instead
 				// of reading back the cached lookup_failed result from pass 1.
 				force_refresh: isRetry,
+				// T13 — propagate the BlackVeil-production runtime override.
+				// Pipeline only honours it when the caller omits `discovery_mode`;
+				// undefined on BSL self-hosts (schema default `'classic'` wins).
+				...(deps.discoveryModeDefault
+					? { env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: deps.discoveryModeDefault } }
+					: {}),
 			}),
 			new Promise<never>((_, reject) => {
 				const onAbort = () => {

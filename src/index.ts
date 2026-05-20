@@ -104,6 +104,17 @@ type BvMcpEnv = {
 	BV_BROWSER_RENDERER?: Fetcher;
 	/** ADMIN_API_KEY for bv-browser-renderer's /pdf/html endpoint. Bearer-authed. */
 	BV_BROWSER_RENDERER_KEY?: string;
+	/**
+	 * T13 — BlackVeil-production runtime override. When set to "tiered",
+	 * `discover_brand_domains` defaults to tiered mode for callers that omit
+	 * `discovery_mode`. Unset on BSL self-hosts; the public schema default
+	 * (`'classic'`) wins. Wired through `ToolRuntimeOptions.discoveryModeDefault`
+	 * (HTTP `/mcp` request path) and `BrandAuditConsumerDeps.discoveryModeDefault`
+	 * (Cloudflare Queue consumer path) into `runBrandAuditPipeline`'s
+	 * `options.env`. Set only in `.dev/wrangler.deploy.jsonc`; never in the
+	 * public `wrangler.jsonc`.
+	 */
+	BRAND_AUDIT_DISCOVERY_MODE_DEFAULT?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -415,6 +426,7 @@ app.post('/mcp', async (c) => {
 					brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 					brandReportsR2: c.env.BRAND_REPORTS,
 					browserRenderer: c.env.BV_BROWSER_RENDERER,
+					discoveryModeDefault: c.env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT,
 					principalId: keyHash ?? ipHash,
 					country,
 					clientType,
@@ -484,6 +496,7 @@ app.post('/mcp', async (c) => {
 		brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 		brandReportsR2: c.env.BRAND_REPORTS,
 		browserRenderer: c.env.BV_BROWSER_RENDERER,
+		discoveryModeDefault: c.env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT,
 		principalId: keyHash ?? ipHash,
 		country,
 		clientType,
@@ -630,6 +643,7 @@ app.post('/mcp/messages', async (c) => {
 				brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 				brandReportsR2: c.env.BRAND_REPORTS,
 				browserRenderer: c.env.BV_BROWSER_RENDERER,
+				discoveryModeDefault: c.env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT,
 				principalId: keyHash ?? ipHash,
 				country,
 				clientType,
@@ -860,7 +874,14 @@ export default {
 			// the consumer enqueues a `retry_attempt: 1` message back onto itself
 			// when a completed audit has registrar lookup_failed candidates.
 			const brandAuditQueue = e.BRAND_AUDIT_QUEUE as BrandAuditConsumerDeps['brandAuditQueue'] | undefined;
-			const deps: BrandAuditConsumerDeps = { db, pdfQueue, brandAuditQueue };
+			// T13 — thread the BlackVeil-production discovery_mode override
+			// into the consumer so queued audits run in tiered mode by default
+			// when the operator sets `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT=tiered`
+			// in the private overlay. Undefined on BSL self-hosts.
+			const discoveryModeDefault = typeof e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT === 'string'
+				? (e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT as string)
+				: undefined;
+			const deps: BrandAuditConsumerDeps = { db, pdfQueue, brandAuditQueue, discoveryModeDefault };
 			await handleBrandAuditQueue(batch, deps);
 			return;
 		}

@@ -385,3 +385,95 @@ describe('runBrandAuditPipeline', () => {
 		expect(result).toBe(sentinel);
 	});
 });
+
+// ----------------------------------------------------------------------------
+// T13 — BlackVeil-production env-var override for discovery_mode default.
+//
+// The public schema default in `src/schemas/tool-args.ts` stays `'classic'`
+// permanently — BSL self-hosters get classic mode out of the box. BlackVeil's
+// production runtime flips its own default to `'tiered'` via the private
+// wrangler overlay (`.dev/wrangler.deploy.jsonc`) by setting
+// `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: "tiered"`. The pipeline reads that env
+// var via `options.env` and uses `'tiered'` as the *runtime default* — but
+// ONLY when the caller hasn't passed an explicit `discovery_mode`. An
+// explicit caller value always wins.
+//
+// This test pins the BSL boundary: the env-var override is opt-in,
+// caller-overridable, and a no-op unless the env var is exactly `'tiered'`.
+// ----------------------------------------------------------------------------
+describe('runBrandAuditPipeline — T13 BRAND_AUDIT_DISCOVERY_MODE_DEFAULT env override', () => {
+	it('uses tiered mode by default when env says tiered and caller omits discovery_mode', async () => {
+		const discoverBrandDomains = vi.fn().mockResolvedValue(discoveryResult('example.com', ['example.net']));
+		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Example Inc.'));
+
+		await runBrandAuditPipeline(
+			'example.com',
+			{ env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: 'tiered' } },
+			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup },
+		);
+
+		expect(discoverBrandDomains).toHaveBeenCalledOnce();
+		const [, discoveryOpts] = discoverBrandDomains.mock.calls[0]!;
+		expect((discoveryOpts as { discovery_mode?: string }).discovery_mode).toBe('tiered');
+	});
+
+	it('explicit caller discovery_mode wins over env override', async () => {
+		const discoverBrandDomains = vi.fn().mockResolvedValue(discoveryResult('example.com', ['example.net']));
+		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Example Inc.'));
+
+		await runBrandAuditPipeline(
+			'example.com',
+			{ discovery_mode: 'classic', env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: 'tiered' } },
+			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup },
+		);
+
+		const [, discoveryOpts] = discoverBrandDomains.mock.calls[0]!;
+		expect((discoveryOpts as { discovery_mode?: string }).discovery_mode).toBe('classic');
+	});
+
+	it('leaves discovery_mode undefined when env unset (BSL default path)', async () => {
+		const discoverBrandDomains = vi.fn().mockResolvedValue(discoveryResult('example.com', ['example.net']));
+		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Example Inc.'));
+
+		await runBrandAuditPipeline(
+			'example.com',
+			{},
+			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup },
+		);
+
+		const [, discoveryOpts] = discoverBrandDomains.mock.calls[0]!;
+		expect((discoveryOpts as { discovery_mode?: string }).discovery_mode).toBeUndefined();
+	});
+
+	it('ignores env values other than the literal string "tiered"', async () => {
+		const discoverBrandDomains = vi.fn().mockResolvedValue(discoveryResult('example.com', ['example.net']));
+		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Example Inc.'));
+
+		await runBrandAuditPipeline(
+			'example.com',
+			{ env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: 'classic' } },
+			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup },
+		);
+
+		const [, discoveryOpts] = discoverBrandDomains.mock.calls[0]!;
+		expect((discoveryOpts as { discovery_mode?: string }).discovery_mode).toBeUndefined();
+	});
+
+	it('stamps discoveryMode metadata when env-defaulted tiered run surfaces candidates', async () => {
+		// When env-default flips tiered, the summary finding must still carry
+		// `discoveryMode: 'tiered'` — `brand-audit-markdown.ts` reads this field
+		// to drive the v3 sections, and an env-defaulted run must not look any
+		// different from an explicitly-tiered run at the report layer.
+		const discoverBrandDomains = vi.fn().mockResolvedValue(discoveryResult('example.com', ['example.net']));
+		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Example Inc.'));
+
+		const result = await runBrandAuditPipeline(
+			'example.com',
+			{ env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: 'tiered' } },
+			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup },
+		);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary?.metadata?.discoveryMode).toBe('tiered');
+	});
+});

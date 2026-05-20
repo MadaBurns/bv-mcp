@@ -48,6 +48,8 @@ export interface DispatchMcpMethodOptions {
 	brandReportsR2?: R2Bucket;
 	browserRenderer?: { fetch: typeof fetch };
 	principalId?: string;
+	/** T13 — runtime-default for `discover_brand_domains` discovery_mode. */
+	discoveryModeDefault?: string;
 }
 
 export type DispatchMcpMethodResult =
@@ -162,6 +164,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				brandAuditQueue: options.brandAuditQueue,
 				brandReportsR2: options.brandReportsR2,
 				browserRenderer: options.browserRenderer,
+				discoveryModeDefault: options.discoveryModeDefault,
 				principalId: options.principalId,
 				rateLimitKv: options.rateLimitKv,
 			});
