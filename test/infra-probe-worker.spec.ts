@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest';
 import infraProbeWorker from '../src/workers/infra-probe';
 import { ROOT_HINTS, ROOT_SERVER_NAMES } from '../src/lib/authoritative-dns-infra/root-hints';
 
-describe('infra probe worker skeleton', () => {
-	it('returns deterministic authoritative DNS probe evidence', async () => {
+describe('infra probe worker', () => {
+	it('returns official root-hint baseline evidence for known root server hostnames', async () => {
 		const response = await infraProbeWorker.fetch(new Request('https://infra-probe.internal/probe/authoritative-dns', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
@@ -17,11 +17,21 @@ describe('infra probe worker skeleton', () => {
 		expect(body).toMatchObject({
 			hostname: 'a.root-servers.net',
 			reachability: {
-				ipv4: { addresses: [] },
-				ipv6: { addresses: [] },
+				ipv4: { addresses: ['198.41.0.4'] },
+				ipv6: { addresses: ['2001:503:ba3e::2:30'] },
 			},
-			errors: ['raw_authoritative_dns_probe_not_implemented'],
+			rootPriming: {
+				nsNames: ROOT_SERVER_NAMES,
+				matchesOfficialHints: true,
+			},
+			transportParity: {
+				ipv4Ipv6Parity: true,
+			},
+			operationalExposure: {
+				ptrRecords: ['a.root-servers.net'],
+			},
 		});
+		expect(body.errors).toEqual(['live_raw_dns_probe_not_configured']);
 		expect(typeof body.checkedAt).toBe('string');
 	});
 
@@ -38,7 +48,7 @@ describe('infra probe worker skeleton', () => {
 			observedRootServers: ROOT_SERVER_NAMES,
 			parentChildDelegationMatches: true,
 			glueMatchesHints: true,
-			errors: ['raw_root_server_set_probe_not_implemented'],
+			errors: ['live_root_server_set_probe_not_configured'],
 		});
 		expect(typeof body.checkedAt).toBe('string');
 	});
