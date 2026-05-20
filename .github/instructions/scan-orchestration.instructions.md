@@ -7,8 +7,10 @@ applyTo: src/tools/scan-domain.ts
 
 ## Parallel execution
 
-`scan_domain` runs **17 scan categories** in parallel via `Promise.allSettled`:
+`scan_domain` runs the standard mail/web scan categories in parallel via `Promise.allSettled`:
 `checkSpf`, `checkDmarc`, `checkDkim`, `checkDnssec`, `checkSsl`, `checkMtaSts`, `checkNs`, `checkCaa`, `checkBimi`, `checkTlsrpt`, `checkSubdomainTakeover`, `checkMx`, `checkHttpSecurity`, `checkDane`, `checkDaneHttps`, `checkSvcbHttps`, `checkSubdomailing`
+
+When `profile: 'authoritative_dns_infra'` is selected, scan orchestration runs only `checkAuthoritativeDnsInfra` and `checkRootServerSet`, then merges them into the `authoritative_dns_infra` category.
 
 All checks are **static imports** — no dynamic imports in scan context (unlike `check_mx` in `handlers/tools.ts`).
 

@@ -9,7 +9,7 @@ export interface ScanRuntimeOptions {
 	providerSignaturesUrl?: string;
 	providerSignaturesAllowedHosts?: string[];
 	providerSignaturesSha256?: string;
-	profile?: 'mail_enabled' | 'enterprise_mail' | 'non_mail' | 'web_only' | 'minimal' | 'auto';
+	profile?: 'mail_enabled' | 'enterprise_mail' | 'non_mail' | 'web_only' | 'minimal' | 'auto' | 'authoritative_dns_infra';
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('../../lib/scoring-config').ScoringConfig;
@@ -17,6 +17,8 @@ export interface ScanRuntimeOptions {
 	cacheTtlSeconds?: number;
 	/** Custom secondary DoH resolver config (bv-dns). Threaded to scanDns but only active when skipSecondaryConfirmation is false. */
 	secondaryDoh?: import('../../lib/dns-types').SecondaryDohConfig;
+	/** Optional service binding for raw DNS, routing, and vantage-point probes. */
+	infraProbe?: { fetch: typeof fetch };
 	/** Bypass cache and run a fresh scan. Useful for troubleshooting after DNS changes. */
 	forceRefresh?: boolean;
 }

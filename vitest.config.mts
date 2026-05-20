@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
 import { cloudflareTest } from '@cloudflare/vitest-pool-workers';
+import infraProbeWorker from './src/workers/infra-probe';
 
 export default defineConfig({
 	plugins: [
@@ -18,6 +19,7 @@ export default defineConfig({
 					BV_WHOIS: async (_req: Request) => {
 						return new Response(JSON.stringify({ registrar: null, source: 'error' }), { status: 200 });
 					},
+					BV_INFRA_PROBE: async (req: Request) => infraProbeWorker.fetch(req),
 				},
 				bindings: {
 					ENABLE_OAUTH: 'true',
@@ -53,11 +55,9 @@ export default defineConfig({
 		// unhandled errors, even though every test assertion passes (3103/3103).
 		// The errors don't carry an exit code by themselves — they only flip the
 		// suite to red when vitest's Errors count is non-zero. Suppressing
-		// because no userland code can produce "WebSocket peer disconnected" in
-		// this test environment; the events are infra-only. Verified the upgrade
-		// to vitest-pool-workers@0.16.4 (chore/vitest-pool-workers-0-16) did not
-		// fix it — same 251 passed (253) + 2 errors. Tighten with a targeted
-		// `onUnhandledError` filter once miniflare/vitest fix this upstream.
+		// because no userland code can produce these workerd teardown messages in
+		// this test environment; the npm Vitest wrapper keeps the matching raw
+		// stderr line out of user-visible test output.
 		dangerouslyIgnoreUnhandledErrors: true,
 	},
 });

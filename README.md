@@ -9,7 +9,7 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
-[![MCP tools](https://img.shields.io/badge/MCP%20tools-57-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![MCP tools](https://img.shields.io/badge/MCP%20tools-59-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![BUSL-1.1 License](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
@@ -25,7 +25,7 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 
 **Claude Desktop** (one-click install):
 
-Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — the current 57-tool surface is available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
+Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — the current 59-tool surface is available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
 
 **Claude Code** (one command):
 
@@ -65,7 +65,7 @@ Transport support:
 
 ## What you get
 
-- **57 MCP tools with 17 `scan_domain` categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, subdomailing, and brand discovery
+- **59 MCP tools with 18 scoring categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, subdomailing, brand discovery, and authoritative DNS infrastructure
 - **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with score-based capping to prevent inflated labels
 - **Trust surface analysis** — detects shared SaaS platforms (Google, M365, SendGrid) and cross-references DMARC enforcement to determine real exposure
 - **Guided remediation** — `generate_fix_plan` produces provider-aware prioritized actions; record generators output ready-to-publish records; `validate_fix` confirms whether a fix was applied successfully
@@ -81,7 +81,7 @@ Transport support:
 ## Tools
 
 ```
-  57 MCP tools · 7 prompts · 6 resources
+  59 MCP tools · 7 prompts · 6 resources
 
   Email Auth             Infrastructure          Brand & Threats       Meta
  ─────────────          ──────────────          ───────────────       ───────────────
@@ -106,9 +106,20 @@ Transport support:
   map_compliance          walkability           brand_audit_get_
   simulate_attack_paths check_dnssec_chain        report
                         check_fast_flux         brand_audit_watch
+                        check_authoritative_dns_infra
+                        check_root_server_set
 
   + check_subdomain_takeover (internal — runs inside scan_domain)
+  + check_authoritative_dns_infra and check_root_server_set (authoritative DNS infrastructure profile)
 ```
+
+### Authoritative DNS infrastructure
+
+`check_authoritative_dns_infra` scores authoritative DNS hosting behavior for a hostname. It is designed to consume raw UDP/TCP DNS, authoritative AA/RA behavior, zone-transfer refusal, DNSSEC, abuse-resistance, BGP/RPKI, and multi-vantage evidence from the `BV_INFRA_PROBE` service binding when that worker is provisioned.
+
+`check_root_server_set` validates the DNS root-server set against the embedded official root hints. With `BV_INFRA_PROBE`, it also checks live root priming, glue, parent/child delegation, DNSKEY, and SOA serial evidence across roots.
+
+Self-hosted or local deployments without `BV_INFRA_PROBE` still return structured partial results. The worker-only mode records the embedded root hints and marks live raw-DNS, routing, RPKI, and vantage capabilities as inconclusive rather than pretending they ran.
 
 ---
 
@@ -145,7 +156,7 @@ Run the chaos tests locally: `python3 scripts/chaos/chaos-test-clients.py`
       │
   ┌───▼──────────────────────┐
   │  Tool Handlers           │
-  │  17 scan categories      │
+  │  18 scoring categories   │
   └───┬──────────────────────┘
       │
   ┌───▼──────────────────────┐
@@ -160,6 +171,7 @@ Run the chaos tests locally: `python3 scripts/chaos/chaos-test-clients.py`
 ```
 
 - **Generic Scoring Engine**: Runtime-agnostic, string-keyed three-tier scoring with configurable weights
+- **Infra Probe Binding**: Optional `BV_INFRA_PROBE` service binding supplies raw authoritative DNS, root-server, BGP/RPKI, and vantage evidence for the authoritative DNS infrastructure profile
 - **WASM Policy Engine**: High-performance permission and token checks via `bv-wasm-core`
 - **Reliable Sessions**: Hardened tombstone logic prevents race-condition revival of terminated sessions
 - **Adaptive Scoring**: Durable Object telemetry adjusts weights based on real-world distributions
