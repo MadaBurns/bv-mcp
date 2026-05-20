@@ -225,13 +225,99 @@ function readEvidenceObservations(value: unknown): BrandEvidenceObservation[] | 
 	const observations: BrandEvidenceObservation[] = [];
 	for (const raw of value) {
 		if (!isRecord(raw) || typeof raw.signal !== 'string') continue;
+		// Discovery emits per-observation tier + specificityScore INSIDE `metadata`
+		// (see discover-brand-domains.ts:805 — Tier 1 stores them on the obs
+		// metadata blob). The T8 classifier expects them as top-level fields on
+		// the observation. Hoist on read so the tier short-circuit in
+		// `classifyCandidate()` actually fires for tiered-mode runs — without this
+		// hoist, `anyTierTagged` is always false and the `impersonationSurface`
+		// bucket (plus the consolidated tier 0/1/2 routes) never fire from real
+		// pipeline output, only from unit-test fixtures.
+		const md = isRecord(raw.metadata) ? raw.metadata : undefined;
+		const tier =
+			md && (md.tier === 0 || md.tier === 1 || md.tier === 2 || md.tier === 3 || md.tier === 4)
+				? (md.tier as 0 | 1 | 2 | 3 | 4)
+				: undefined;
+		const specificityScore = md && typeof md.specificityScore === 'number' ? md.specificityScore : undefined;
 		observations.push({
 			signal: raw.signal as BrandEvidenceObservation['signal'],
 			...(typeof raw.confidence === 'number' ? { confidence: raw.confidence } : {}),
-			...(isRecord(raw.metadata) ? { metadata: raw.metadata } : {}),
+			...(md ? { metadata: md } : {}),
+			...(tier !== undefined ? { tier } : {}),
+			...(specificityScore !== undefined ? { specificityScore } : {}),
 		});
 	}
 	return observations.length > 0 ? observations : undefined;
+}
+
+/** Per-tier counters + statuses surfaced by tiered-mode discovery. */
+export interface BrandAuditTierStats {
+	tier0Count: number;
+	tier1Count: number;
+	tier2Count: number;
+	tier3Count: number;
+	tier4Count: number;
+	tier0Status: 'ok' | 'degraded' | 'partial' | 'timeout' | 'skipped';
+	tier1Status: 'ok' | 'degraded' | 'partial' | 'timeout' | 'skipped';
+	tier2Status: 'ok' | 'degraded' | 'partial' | 'timeout' | 'skipped';
+	tier3FallbackTriggered: number;
+	tier1Freshness?: { overallStaleness: 'fresh' | 'partial' | 'stale' | 'very_stale' };
+	optOutsFiltered: number;
+}
+
+const TIER_STATUSES = new Set(['ok', 'degraded', 'partial', 'timeout', 'skipped']);
+
+function readTierStatus(value: unknown): BrandAuditTierStats['tier0Status'] {
+	return typeof value === 'string' && TIER_STATUSES.has(value) ? (value as BrandAuditTierStats['tier0Status']) : 'skipped';
+}
+
+/**
+ * Read per-tier stats from the discovery summary's `discoveryPerformance.tiers`
+ * block. Returns undefined when discovery_mode === 'classic' (BSL invariance —
+ * discovery only attaches the tiers block in tiered mode).
+ */
+function readTierStats(value: unknown): BrandAuditTierStats | undefined {
+	if (!isRecord(value) || !isRecord(value.tiers)) return undefined;
+	const t = value.tiers;
+	let tier1Freshness: BrandAuditTierStats['tier1Freshness'];
+	if (
+		isRecord(t.tier1Freshness) &&
+		(t.tier1Freshness.overallStaleness === 'fresh' ||
+			t.tier1Freshness.overallStaleness === 'partial' ||
+			t.tier1Freshness.overallStaleness === 'stale' ||
+			t.tier1Freshness.overallStaleness === 'very_stale')
+	) {
+		tier1Freshness = { overallStaleness: t.tier1Freshness.overallStaleness };
+	}
+	return {
+		tier0Count: typeof t.tier0Count === 'number' ? t.tier0Count : 0,
+		tier1Count: typeof t.tier1Count === 'number' ? t.tier1Count : 0,
+		tier2Count: typeof t.tier2Count === 'number' ? t.tier2Count : 0,
+		tier3Count: typeof t.tier3Count === 'number' ? t.tier3Count : 0,
+		tier4Count: typeof t.tier4Count === 'number' ? t.tier4Count : 0,
+		tier0Status: readTierStatus(t.tier0Status),
+		tier1Status: readTierStatus(t.tier1Status),
+		tier2Status: readTierStatus(t.tier2Status),
+		tier3FallbackTriggered: typeof t.tier3FallbackTriggered === 'number' ? t.tier3FallbackTriggered : 0,
+		...(tier1Freshness ? { tier1Freshness } : {}),
+		optOutsFiltered: typeof t.optOutsFiltered === 'number' ? t.optOutsFiltered : 0,
+	};
+}
+
+/** Pluck `{alertType, transition}` from a tier-4 observation's metadata blob (set by Tier-2 evidence). */
+function scoreAlertContextFromObservations(
+	observations: BrandEvidenceObservation[] | undefined,
+): { alertType: string; transition: string } | undefined {
+	if (!observations) return undefined;
+	for (const obs of observations) {
+		if (obs.tier !== 4) continue;
+		const md = obs.metadata;
+		if (!isRecord(md)) continue;
+		if (typeof md.alertType === 'string' && typeof md.transition === 'string') {
+			return { alertType: md.alertType, transition: md.transition };
+		}
+	}
+	return undefined;
 }
 
 /** Pull registrar + registrant out of a check-rdap-lookup result, mirroring `scripts/brand-audit-brand-audit.spec.ts:lookupRegistrar`. */
@@ -489,6 +575,8 @@ export async function runBrandAuditPipeline(
 		allCandidateFindings.length,
 	);
 	const discoveryPlannerEfficiency = readDiscoveryPlannerEfficiency(discoverySummary?.metadata?.discoveryPerformance);
+	// T9 — per-tier stats from tiered-mode discovery (undefined in classic mode — BSL invariance).
+	const tierStats = readTierStats(discoverySummary?.metadata?.discoveryPerformance);
 	const truncated = allCandidateFindings.length > MAX_CANDIDATES_PER_AUDIT;
 	const candidateFindings = truncated ? allCandidateFindings.slice(0, MAX_CANDIDATES_PER_AUDIT) : allCandidateFindings;
 
@@ -650,6 +738,14 @@ export async function runBrandAuditPipeline(
 			classification.reasons.length > 0 ? `reasons: ${classification.reasons.join('; ')}` : null,
 		].filter((p): p is string => p !== null);
 
+		// T9 — stamp tier provenance + impersonation-surface fields on classified
+		// findings so the v3 sidecar renderer (and bv-web reader) can split the
+		// owned portfolio + render the impersonationSurface[] array without
+		// re-parsing observation metadata. `tier`/`scoreAlertContext` are
+		// undefined in classic-mode runs (classification.tier never set), so the
+		// v1 sidecar block stays byte-identical.
+		const scoreAlertCtx =
+			classification.bucket === 'impersonationSurface' ? scoreAlertContextFromObservations(evidenceObservations) : undefined;
 		return createFinding(CATEGORY, `Brand candidate: ${domain}`, severity, detailParts.join(' — '), {
 			candidate: domain,
 			bucket: classification.bucket,
@@ -666,6 +762,9 @@ export async function runBrandAuditPipeline(
 				: {}),
 			registrant: lookup.registrant,
 			...(enrichmentEntry?.status ? { registrarEnrichmentStatus: enrichmentEntry.status } : {}),
+			...(classification.tier !== undefined ? { tier: classification.tier } : {}),
+			...(lookalikeScore > 0 ? { lookalikeScore } : {}),
+			...(scoreAlertCtx ? { scoreAlertContext: scoreAlertCtx } : {}),
 		});
 	});
 	recordStep(stepTimings, 'classification', 'completed', classificationStartedAtMs, now());
@@ -685,6 +784,7 @@ export async function runBrandAuditPipeline(
 			shadowIt: bucketCounts.shadowIt,
 			indeterminate: bucketCounts.indeterminate,
 			impersonation: bucketCounts.impersonation,
+			...(bucketCounts.impersonationSurface > 0 ? { impersonationSurface: bucketCounts.impersonationSurface } : {}),
 			targetRegistrar: targetLookup.registrar,
 			targetRegistrarIanaId: targetLookup.registrarIanaId,
 			targetRegistrarSource: targetLookup.registrarSource,
@@ -704,6 +804,10 @@ export async function runBrandAuditPipeline(
 				performance,
 				plannerEfficiency: discoveryPlannerEfficiency,
 			}),
+			// T9 — forward per-tier stats only when discovery_mode === 'tiered'
+			// (tierStats === undefined in classic mode — BSL invariance).
+			...(tierStats ? { tiers: tierStats } : {}),
+			...(options.discovery_mode === 'tiered' ? { discoveryMode: 'tiered' as const } : {}),
 		},
 	);
 

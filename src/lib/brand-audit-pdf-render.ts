@@ -203,6 +203,139 @@ function depthWarningsFromCheckResult(result: CheckResult): string[] {
 	return Array.isArray(warnings) ? warnings.filter((warning): warning is string => typeof warning === 'string' && warning.length > 0) : [];
 }
 
+/** Tiered-mode detection — pipeline stamps `discoveryMode: 'tiered'` on summary metadata when running tiered. */
+function isTieredMode(result: CheckResult): boolean {
+	const summary = result.findings.find((f) => f.metadata?.summary === true);
+	return summary?.metadata?.discoveryMode === 'tiered';
+}
+
+/**
+ * Tiered-mode row extraction. `BrandCandidateRow` (the legacy contract with the
+ * HTML template) deliberately doesn't carry tier/lookalikeScore — we read them
+ * straight off the finding metadata here so the legacy PDF path stays
+ * byte-identical and the legacy HTML template doesn't need to change.
+ */
+interface TieredRow extends BrandCandidateRow {
+	tier?: 0 | 1 | 2 | 3 | 4;
+	lookalikeScore?: number;
+	scoreAlertContext?: { alertType: string; transition: string };
+}
+
+function tieredRowsFromCheckResult(result: CheckResult): TieredRow[] {
+	const base = candidatesFromCheckResult(result);
+	const byDomain = new Map<string, BrandCandidateRow>();
+	for (const r of base) byDomain.set(r.domain, r);
+	const out: TieredRow[] = [];
+	for (const f of result.findings) {
+		const m = f.metadata;
+		if (!m || typeof m.candidate !== 'string') continue;
+		// `impersonationSurface` rows are dropped by `candidatesFromCheckResult`
+		// (the legacy extractor pins the type to 4 buckets). Construct the row
+		// from finding metadata directly so the tier-4 section renders.
+		const baseRow: BrandCandidateRow = byDomain.get(m.candidate) ?? {
+			domain: m.candidate as string,
+			bucket: 'impersonationSurface' as unknown as BrandAuditBucket,
+			registrar: typeof m.registrar === 'string' ? m.registrar : 'Unknown',
+			registrarSource: typeof m.registrarSource === 'string' ? m.registrarSource : 'unknown',
+			reasons: Array.isArray(m.reasons) ? (m.reasons as string[]) : [],
+			signals: Array.isArray(m.signals) ? (m.signals as string[]) : [],
+			combinedConfidence: typeof m.combinedConfidence === 'number' ? (m.combinedConfidence as number) : 0,
+		};
+		// Bucket override if the original finding said impersonationSurface but
+		// the legacy extractor coerced/dropped it.
+		const bucket = typeof m.bucket === 'string' ? (m.bucket as BrandAuditBucket | 'impersonationSurface') : baseRow.bucket;
+		const tier =
+			m.tier === 0 || m.tier === 1 || m.tier === 2 || m.tier === 3 || m.tier === 4
+				? (m.tier as 0 | 1 | 2 | 3 | 4)
+				: undefined;
+		const lookalikeScore = typeof m.lookalikeScore === 'number' ? (m.lookalikeScore as number) : undefined;
+		const scoreAlertCtxRaw = m.scoreAlertContext;
+		const scoreAlertContext =
+			scoreAlertCtxRaw && typeof scoreAlertCtxRaw === 'object' && !Array.isArray(scoreAlertCtxRaw) &&
+			typeof (scoreAlertCtxRaw as { alertType?: unknown }).alertType === 'string' &&
+			typeof (scoreAlertCtxRaw as { transition?: unknown }).transition === 'string'
+				? {
+						alertType: (scoreAlertCtxRaw as { alertType: string }).alertType,
+						transition: (scoreAlertCtxRaw as { transition: string }).transition,
+					}
+				: undefined;
+		out.push({
+			...baseRow,
+			bucket: bucket as BrandAuditBucket,
+			...(tier !== undefined ? { tier } : {}),
+			...(lookalikeScore !== undefined ? { lookalikeScore } : {}),
+			...(scoreAlertContext ? { scoreAlertContext } : {}),
+		});
+	}
+	return out;
+}
+
+function drawSubsectionHeader(ctx: DrawContext, title: string, count: number): void {
+	ensureRoom(ctx, 20);
+	drawText(ctx, title, { x: MARGIN + 4, size: 11, font: ctx.bold });
+	drawText(ctx, `${count} candidate${count === 1 ? '' : 's'}`, {
+		x: PAGE_WIDTH - MARGIN - 90,
+		size: 8,
+		color: COLOR_DIM,
+		font: ctx.mono,
+	});
+	ctx.cursorY -= 14;
+}
+
+function drawSubsectionRows(ctx: DrawContext, rows: TieredRow[]): void {
+	if (rows.length === 0) {
+		drawEmptyBucket(ctx, 'No candidates in this tier.');
+		return;
+	}
+	for (const r of rows) {
+		drawCandidateRow(ctx, r);
+	}
+}
+
+function drawOwnedPortfolio(ctx: DrawContext, candidates: TieredRow[]): void {
+	const consolidated = candidates.filter((c) => c.bucket === 'consolidated');
+	const tenantDeclared = consolidated.filter((c) => c.tier === 0);
+	const graphSurfaced = consolidated.filter((c) => c.tier === 1);
+	const declaredEvidence = consolidated.filter((c) => c.tier === 2);
+	const inferredConsolidated = consolidated.filter((c) => c.tier === undefined || c.tier === 3);
+	const inferredShadowIt = candidates.filter((c) => c.bucket === 'shadowIt');
+	const inferredIndeterminate = candidates.filter((c) => c.bucket === 'indeterminate');
+	const total =
+		tenantDeclared.length +
+		graphSurfaced.length +
+		declaredEvidence.length +
+		inferredConsolidated.length +
+		inferredShadowIt.length +
+		inferredIndeterminate.length;
+
+	sectionHeader(ctx, 'Owned Portfolio', total);
+	drawSubsectionHeader(ctx, 'Tenant-declared (tier 0)', tenantDeclared.length);
+	drawSubsectionRows(ctx, tenantDeclared);
+	drawSubsectionHeader(ctx, 'Graph-surfaced (tier 1)', graphSurfaced.length);
+	drawSubsectionRows(ctx, graphSurfaced);
+	drawSubsectionHeader(ctx, 'Declared evidence (tier 2)', declaredEvidence.length);
+	drawSubsectionRows(ctx, declaredEvidence);
+	drawSubsectionHeader(
+		ctx,
+		'Inferred (tier 3)',
+		inferredConsolidated.length + inferredShadowIt.length + inferredIndeterminate.length,
+	);
+	drawSubsectionRows(ctx, [...inferredConsolidated, ...inferredShadowIt, ...inferredIndeterminate]);
+}
+
+function drawImpersonationSurface(ctx: DrawContext, candidates: TieredRow[]): void {
+	// Rows with bucket === 'impersonationSurface' (T8 classifier output in tiered mode).
+	const rows = candidates.filter((c) => (c.bucket as string) === 'impersonationSurface');
+	sectionHeader(ctx, 'Impersonation Surface', rows.length);
+	if (rows.length === 0) {
+		drawEmptyBucket(ctx, 'No tier-4 impersonation candidates surfaced.');
+		return;
+	}
+	for (const r of rows) {
+		drawCandidateRow(ctx, r);
+	}
+}
+
 function drawDepthWarnings(ctx: DrawContext, warnings: string[]): void {
 	if (warnings.length === 0) return;
 	const visible = warnings.slice(0, 4);
@@ -290,6 +423,16 @@ export async function renderBrandAuditPdf(result: CheckResult, target: string, o
 				drawCandidateRow(ctx, row);
 			}
 		}
+	}
+
+	// T9 — Tiered-mode reports append two top-level sections after the legacy
+	// buckets: Owned Portfolio (4 sub-buckets by tier) + Impersonation Surface
+	// (tier-4 lookalikes). Classic-mode runs skip this block — byte-identical
+	// PDF output for `discoveryMode !== 'tiered'`.
+	if (isTieredMode(result)) {
+		const tieredRows = tieredRowsFromCheckResult(result);
+		drawOwnedPortfolio(ctx, tieredRows);
+		drawImpersonationSurface(ctx, tieredRows);
 	}
 
 	drawFooter(ctx, target, options.serverVersion, dateLabel);
