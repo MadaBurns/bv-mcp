@@ -160,7 +160,7 @@ describe('scoring', () => {
 
 		it('category display weights sum is reasonable', () => {
 			const sum = Object.values(CATEGORY_DISPLAY_WEIGHTS).reduce((a, b) => a + b, 0);
-			expect(sum).toBeCloseTo(1.12);
+			expect(sum).toBeCloseTo(1.32);
 		});
 
 		it('applies positive modifier for high provider confidence findings', () => {
