@@ -6,6 +6,7 @@ import {
 	fetchAuthoritativeDnsEvidence,
 	normalizeInfraHostname,
 } from '../lib/authoritative-dns-infra/probe-client';
+import { analyzeAuthoritativeDnsInfraEvidence } from '../lib/authoritative-dns-infra/analyze';
 
 export interface AuthoritativeDnsInfraCheckOptions {
 	infraProbe?: InfraProbeBinding;
@@ -35,6 +36,7 @@ export async function checkAuthoritativeDnsInfra(
 
 	const evidence = await fetchAuthoritativeDnsEvidence(hostname, options.infraProbe);
 	const checkedAt = evidence.checkedAt ?? new Date().toISOString();
+	const analysis = analyzeAuthoritativeDnsInfraEvidence({ ...evidence, hostname });
 
 	return {
 		...buildCheckResult('authoritative_dns_infra', [
@@ -50,7 +52,13 @@ export async function checkAuthoritativeDnsInfra(
 					authoritative: evidence.authoritative,
 				},
 			),
+			...analysis.findings,
 		]),
-		metadata: { evidenceMode: 'infra_probe', hostname, checkedAt },
+		metadata: {
+			evidenceMode: 'infra_probe',
+			hostname,
+			checkedAt,
+			capabilitySummary: analysis.capabilitySummary,
+		},
 	};
 }
