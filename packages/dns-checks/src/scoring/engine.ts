@@ -50,11 +50,12 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	svcb_https: { importance: 1 },
 	subdomailing: { importance: 3 },
 	brand_discovery: { importance: 0 },
+	authoritative_dns_infra: { importance: 0 },
 };
 
 /** Core-tier importance weights (SPF, DMARC, DKIM, DNSSEC, SSL). Used by the three-tier scoring formula. */
 export const CORE_WEIGHTS: Record<string, number> = {
-	dmarc: 16, dkim: 10, spf: 10, dnssec: 8, ssl: 8,
+	dmarc: 16, dkim: 10, spf: 10, dnssec: 8, ssl: 8, authoritative_dns_infra: 0,
 };
 
 /** Protective-tier importance weights. Used by the three-tier scoring formula. */

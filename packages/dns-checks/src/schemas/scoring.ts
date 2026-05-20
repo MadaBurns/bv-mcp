@@ -13,7 +13,7 @@ export const CheckCategorySchema = z.enum([
 	'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa',
 	'subdomain_takeover', 'mx', 'bimi', 'tlsrpt', 'lookalikes', 'shadow_domains',
 	'txt_hygiene', 'http_security', 'dane', 'mx_reputation', 'srv', 'zone_hygiene',
-	'dane_https', 'svcb_https',
+	'dane_https', 'svcb_https', 'subdomailing', 'brand_discovery', 'authoritative_dns_infra',
 ]);
 
 /** Severity levels. */
