@@ -29,7 +29,7 @@ const WHOIS_CONTACT_FIELD_PATTERN =
 	/^\s*(?:phone|fax-no|e-mail|registrant|admin|tech|billing|registrar abuse contact)\b/im;
 const OLD_REAL_FIXTURE_MARKERS = /\b(?:google|markmonitor|verisign)\b/i;
 const PRIVATE_MAINTENANCE_MARKERS =
-	/\b(?:tenant-pilot-\d+|bv-edge\.workers\.dev|X-Synthetic-Dispatch|synthetic-force-scan|tenant-db-example-)\b/i;
+	/\b(?:tenant-pilot-\d+|bv-edge\.workers\.dev|X-Emergency-Dispatch|true-force-scan|tenant-db-tenant-)\b/i;
 
 function rawBody(mod: unknown): string {
 	const body = (mod as { default?: unknown }).default;

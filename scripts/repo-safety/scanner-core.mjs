@@ -23,7 +23,7 @@ const RULES = [
 	},
 	{
 		id: 'tenant-marker',
-		pattern: /\b(?:tenant-pilot-\d+|tenant-db-example-|synthetic-force-scan|X-Synthetic-Dispatch)\b/gi,
+		pattern: /\b(?:tenant-pilot-\d+|tenant-db-tenant-|true-force-scan|X-Emergency-Dispatch)\b/gi,
 	},
 	{ id: 'customer-marker', pattern: /\bCustomer\s+[A-Z][A-Za-z0-9-]*\s+(?:Corp|Inc|LLC|Ltd|Co)\b/g },
 ];

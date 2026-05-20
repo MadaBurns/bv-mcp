@@ -171,13 +171,13 @@ describe('pure helpers', () => {
 	});
 
 	it('tenantDbName prepends tenant-db- prefix', () => {
-		expect(tenantDbName('tenant-1')).toBe('tenant-db-example-1');
+		expect(tenantDbName('tenant-1')).toBe('tenant-db-tenant-1');
 	});
 
 	it('buildBindingStanza emits a JSONC-friendly stanza', () => {
 		const s = buildBindingStanza('tenant-1', 'uuid-123');
 		expect(s).toContain('"binding": "TENANT_DB_TENANT_1"');
-		expect(s).toContain('"database_name": "tenant-db-example-1"');
+		expect(s).toContain('"database_name": "tenant-db-tenant-1"');
 		expect(s).toContain('"database_id": "uuid-123"');
 	});
 
@@ -236,12 +236,12 @@ describe('provisionTenant', () => {
 		const sequence = wranglerCalls.map((c) => `${c.args[0]} ${c.args[1]} ${c.args[2] ?? ''}`.trim());
 		expect(sequence[0]).toContain('d1 execute');
 		expect(sequence[1]).toContain('d1 execute');
-		expect(sequence[2]).toBe('d1 create tenant-db-example-1');
+		expect(sequence[2]).toBe('d1 create tenant-db-tenant-1');
 		expect(sequence[3]).toContain('d1 execute');
 		// Two final inserts: sub_tenants + tenant_keys
 		const allOutput = stdout.join('');
 		expect(allOutput).toContain('TENANT_DB_TENANT_1');
-		expect(allOutput).toContain('tenant-db-example-1');
+		expect(allOutput).toContain('tenant-db-tenant-1');
 		// API key — 64 lowercase hex on its own line (or as a token in a line)
 		expect(allOutput).toMatch(/[0-9a-f]{64}/);
 	});
@@ -289,7 +289,7 @@ describe('provisionTenant', () => {
 			(c) => c.file === 'wrangler' && c.args[0] === 'd1' && c.args[1] === 'delete',
 		);
 		expect(deleteCall).toBeTruthy();
-		expect(deleteCall?.args).toContain('tenant-db-example-1');
+		expect(deleteCall?.args).toContain('tenant-db-tenant-1');
 	});
 
 	it('--dry-run prints commands and never invokes runCmd', async () => {
