@@ -14,6 +14,7 @@ describe('git hook safety coverage', () => {
 		const prePush = hook('pre-push');
 		expect(prePush, '.githooks/pre-push must exist').toBeDefined();
 		expect(prePush).toContain('gitleaks');
+		expect(prePush).toContain('scripts/repo-safety/scan-push-range-sensitive-surface.mjs');
 		expect(prePush).toContain('scripts/repo-safety/scan-sensitive-surface.mjs');
 	});
 
