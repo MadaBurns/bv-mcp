@@ -104,6 +104,24 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 			'https://datatracker.ietf.org/doc/html/rfc7208',
 		],
 	},
+	AUTHORITATIVE_DNS_INFRA_CRITICAL: {
+		title: 'Authoritative DNS Infrastructure Exposure',
+		severity: 'critical',
+		explanation:
+			'Authoritative DNS infrastructure evidence indicates a control failure such as route hijack signals, recursion exposure, missing authoritative response behavior, or unsafe zone-transfer handling.',
+		impact:
+			'Attackers may be able to disrupt or redirect authoritative DNS answers, weakening every service that depends on the affected name.',
+		adverseConsequences:
+			'Resolution outages, traffic interception, cache poisoning, and incident response escalation can occur if authoritative DNS remains exposed.',
+		recommendation:
+			'Review routing announcements, RPKI ROAs, authoritative server configuration, recursion policy, and zone-transfer ACLs. Confirm the issue from multiple vantage points before closing the incident.',
+		references: [
+			'https://www.rfc-editor.org/rfc/rfc1034',
+			'https://www.rfc-editor.org/rfc/rfc1035',
+			'https://www.rfc-editor.org/rfc/rfc8906',
+			'https://datatracker.ietf.org/doc/html/rfc9115',
+		],
+	},
 	SPF_PASS: {
 		title: 'SPF Validated',
 		severity: 'pass',

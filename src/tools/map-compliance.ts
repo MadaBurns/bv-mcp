@@ -66,7 +66,7 @@ const COMPLIANCE_CONTROLS: ComplianceControlDef[] = [
 
 	// SOC 2 (Trust Services Criteria)
 	{ framework: 'soc2', controlId: 'CC6.1', controlName: 'Logical Access Security', categories: ['spf', 'dkim', 'dmarc', 'dnssec'], requirePass: false },
-	{ framework: 'soc2', controlId: 'CC6.6', controlName: 'System Boundary Protection', categories: ['http_security', 'ssl', 'caa'], requirePass: false },
+	{ framework: 'soc2', controlId: 'CC6.6', controlName: 'System Boundary Protection', categories: ['http_security', 'ssl', 'caa', 'authoritative_dns_infra'], requirePass: false },
 	{ framework: 'soc2', controlId: 'CC6.7', controlName: 'Data-in-Transit Encryption', categories: ['ssl', 'mta_sts', 'dane'], requirePass: false },
 	{ framework: 'soc2', controlId: 'CC7.1', controlName: 'Monitoring and Detection', categories: ['tlsrpt', 'dmarc'], requirePass: false },
 	{ framework: 'soc2', controlId: 'CC8.1', controlName: 'Change Management', categories: ['dnssec', 'ns'], requirePass: false },
@@ -75,7 +75,7 @@ const COMPLIANCE_CONTROLS: ComplianceControlDef[] = [
 	{ framework: 'cis_controls', controlId: '9.2', controlName: 'DNS Filtering and Monitoring', categories: ['dnssec', 'ns'], requirePass: false },
 	{ framework: 'cis_controls', controlId: '9.3', controlName: 'Email Security', categories: ['spf', 'dkim', 'dmarc', 'mta_sts'], requirePass: false },
 	{ framework: 'cis_controls', controlId: '3.10', controlName: 'Encrypt Data in Transit', categories: ['ssl', 'mta_sts', 'dane'], requirePass: false },
-	{ framework: 'cis_controls', controlId: '12.1', controlName: 'DNS Infrastructure', categories: ['dnssec', 'ns', 'caa'], requirePass: false },
+	{ framework: 'cis_controls', controlId: '12.1', controlName: 'DNS Infrastructure', categories: ['dnssec', 'ns', 'caa', 'authoritative_dns_infra'], requirePass: false },
 ];
 
 /** All framework keys in stable display order. */

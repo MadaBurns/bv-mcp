@@ -200,6 +200,27 @@ function isDkimKeyWeak(findings: Finding[]): boolean {
 	});
 }
 
+/** Check if authoritative DNS infrastructure has route-leak or hijack evidence. */
+function hasAuthoritativeRouteHijackRisk(findings: Finding[]): boolean {
+	return hasFindings(findings, (f) => {
+		if (f.category !== 'authoritative_dns_infra') return false;
+		if (f.severity !== 'critical' && f.severity !== 'high') return false;
+		const t = f.title.toLowerCase();
+		const d = f.detail.toLowerCase();
+		return t.includes('route leak') || t.includes('hijack') || d.includes('route monitoring');
+	});
+}
+
+/** Check if authoritative servers expose recursion or omit authoritative response behavior. */
+function hasAuthoritativeServiceExposure(findings: Finding[]): boolean {
+	return hasFindings(findings, (f) => {
+		if (f.category !== 'authoritative_dns_infra') return false;
+		if (f.severity !== 'critical' && f.severity !== 'high') return false;
+		const t = f.title.toLowerCase();
+		return t.includes('recursive service exposed') || t.includes('aa flag') || t.includes('zone transfer');
+	});
+}
+
 // ---------------------------------------------------------------------------
 // Attack path definitions
 // ---------------------------------------------------------------------------
@@ -352,6 +373,44 @@ const ATTACK_PATH_DEFINITIONS: AttackPathDefinition[] = [
 		impact: 'Forged emails pass DKIM verification, undermining email authentication chain.',
 		mitigations: ['Rotate to 2048-bit or longer DKIM key'],
 	},
+	{
+		id: 'authoritative_dns_route_hijack',
+		name: 'Authoritative DNS Route Hijack',
+		severity: 'critical',
+		feasibility: 'moderate',
+		condition: (findings) => hasAuthoritativeRouteHijackRisk(findings),
+		prerequisites: ['Authoritative DNS prefix has route-leak or hijack signals'],
+		steps: [
+			'Announce or exploit a competing route for authoritative DNS infrastructure',
+			'Attract resolver traffic for the affected authoritative nameserver',
+			'Return stale, blocked, or attacker-controlled DNS responses',
+		],
+		impact: 'Resolvers can receive incorrect authoritative answers, disrupting or redirecting dependent services.',
+		mitigations: [
+			'Validate BGP origin announcements and RPKI ROAs',
+			'Coordinate with upstreams and route-monitoring providers',
+			'Confirm anycast path health from independent vantage points',
+		],
+	},
+	{
+		id: 'authoritative_dns_service_abuse',
+		name: 'Authoritative DNS Service Abuse',
+		severity: 'high',
+		feasibility: 'moderate',
+		condition: (findings) => hasAuthoritativeServiceExposure(findings),
+		prerequisites: ['Authoritative server exposes recursion, misses AA behavior, or permits transfer probes'],
+		steps: [
+			'Query the authoritative endpoint for recursive resolution or zone-transfer behavior',
+			'Use exposed behavior for amplification, data exposure, or cache-manipulation attempts',
+			'Pivot from DNS infrastructure weakness into broader availability impact',
+		],
+		impact: 'Authoritative DNS infrastructure can be abused or degraded instead of serving only delegated zones.',
+		mitigations: [
+			'Disable recursion on authoritative servers',
+			'Restrict AXFR/IXFR to approved secondaries',
+			'Verify authoritative AA behavior from multiple vantage points',
+		],
+	},
 ];
 
 // ---------------------------------------------------------------------------
@@ -389,10 +448,31 @@ export async function simulateAttackPaths(
 		}
 	}
 
-	// Evaluate each attack path definition against collected findings
+	const feasiblePaths = evaluateAttackPathsFromFindings(allFindings);
+
+	const criticalPaths = feasiblePaths.filter((p) => p.severity === 'critical').length;
+	const highPaths = feasiblePaths.filter((p) => p.severity === 'high').length;
+
+	// Overall risk = most severe feasible path, or low if none
+	let overallRisk: 'critical' | 'high' | 'medium' | 'low' = 'low';
+	if (feasiblePaths.length > 0) {
+		overallRisk = feasiblePaths[0].severity;
+	}
+
+	return {
+		domain,
+		totalPaths: feasiblePaths.length,
+		criticalPaths,
+		highPaths,
+		attackPaths: feasiblePaths,
+		overallRisk,
+	};
+}
+
+export function evaluateAttackPathsFromFindings(findings: Finding[]): AttackPath[] {
 	const feasiblePaths: AttackPath[] = [];
 	for (const def of ATTACK_PATH_DEFINITIONS) {
-		if (def.condition(allFindings)) {
+		if (def.condition(findings)) {
 			feasiblePaths.push({
 				id: def.id,
 				name: def.name,
@@ -412,24 +492,7 @@ export async function simulateAttackPaths(
 		if (sevDiff !== 0) return sevDiff;
 		return FEASIBILITY_ORDER[a.feasibility] - FEASIBILITY_ORDER[b.feasibility];
 	});
-
-	const criticalPaths = feasiblePaths.filter((p) => p.severity === 'critical').length;
-	const highPaths = feasiblePaths.filter((p) => p.severity === 'high').length;
-
-	// Overall risk = most severe feasible path, or low if none
-	let overallRisk: 'critical' | 'high' | 'medium' | 'low' = 'low';
-	if (feasiblePaths.length > 0) {
-		overallRisk = feasiblePaths[0].severity;
-	}
-
-	return {
-		domain,
-		totalPaths: feasiblePaths.length,
-		criticalPaths,
-		highPaths,
-		attackPaths: feasiblePaths,
-		overallRisk,
-	};
+	return feasiblePaths;
 }
 
 // ---------------------------------------------------------------------------

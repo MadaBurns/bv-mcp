@@ -221,6 +221,15 @@ describe('explainFinding', () => {
 		expect(result.title).toBe('Security Check Complete');
 	});
 
+	it('explains authoritative DNS infra critical findings', async () => {
+		const { explainFinding } = await getModule();
+		const result = explainFinding('AUTHORITATIVE_DNS_INFRA', 'critical', 'Route leak or hijack signal observed');
+
+		expect(result.title).toContain('Authoritative DNS Infrastructure');
+		expect(result.impact).toContain('authoritative DNS');
+		expect(result.recommendation).toContain('routing');
+	});
+
 	// SSL — SSL_MEDIUM and SSL_LOW keys exist, so those statuses resolve.
 	it('returns SSL_MEDIUM entry for SSL medium severity', async () => {
 		const { explainFinding } = await getModule();
