@@ -190,11 +190,66 @@ describe('classifyCandidate', () => {
 			expect(result.reasons.join(' ')).toMatch(/SPF/i);
 		});
 
-		it('seed SPF delegation to another apex → shadowIt', () => {
-			const c = candidate({ domain: 'vendor-mail.example', signals: ['spf_include_seed'], confidence: 0.85 });
-			const result = classifyCandidate(c, target());
+		it('seed SPF delegation to a non-brand apex → authorized vendor dependency, not Shadow IT', () => {
+			const c = candidate({
+				domain: 'pphosted.com',
+				signals: ['spf_include_seed'],
+				confidence: 0.85,
+				registrar: 'MarkMonitor Inc.',
+				registrarSource: 'rdap',
+			});
+			const result = classifyCandidate(
+				c,
+				target({
+					domain: 'brand-eta.com',
+					registrar: 'CSC Corporate Domains, Inc.',
+					registrarFamily: 'CSC',
+				}),
+			);
+			expect(result.bucket).toBe('indeterminate');
+			expect((result as { relationshipType?: string }).relationshipType).toBe('authorized_vendor_dependency');
+			expect(result.reasons.join(' ')).toMatch(/vendor dependency/i);
+		});
+
+		it('brand-label domain with ownership signals at a different registrar → real Shadow IT', () => {
+			const c = candidate({
+				domain: 'mastercard.cz',
+				signals: ['markov_gen', 'ns', 'spf_include'],
+				confidence: 1,
+				registrar: 'REG-IPMIRROR',
+				registrarSource: 'rdap',
+			});
+			const result = classifyCandidate(
+				c,
+				target({
+					domain: 'brand-theta.com',
+					registrar: 'CSC Corporate Domains, Inc.',
+					registrarFamily: 'CSC',
+				}),
+			);
 			expect(result.bucket).toBe('shadowIt');
-			expect(result.reasons.join(' ')).toMatch(/SPF/i);
+			expect((result as { relationshipType?: string }).relationshipType).toBe('owned_off_primary_registrar');
+			expect(result.reasons.join(' ')).toMatch(/off-primary registrar/i);
+		});
+
+		it('exact brand ccTLD with strong evidence and non-primary registrar is Shadow IT even if current rules would consolidate it', () => {
+			const c = candidate({
+				domain: 'brand-alpha.ca',
+				signals: ['markov_gen', 'ns', 'spf_include'],
+				confidence: 1,
+				registrar: 'MarkMonitor International Canada Ltd.',
+				registrarSource: 'rdap',
+			});
+			const result = classifyCandidate(
+				c,
+				target({
+					domain: 'brand-alpha.com',
+					registrar: 'CSC Corporate Domains, Inc.',
+					registrarFamily: 'CSC',
+				}),
+			);
+			expect(result.bucket).toBe('shadowIt');
+			expect((result as { relationshipType?: string }).relationshipType).toBe('owned_off_primary_registrar');
 		});
 
 		it('strong signal wins even when registrarSource is redacted', () => {
@@ -353,17 +408,17 @@ describe('classifyCandidate', () => {
 	});
 
 	describe('Rule 6: high-confidence non-infra signal → shadowIt', () => {
-		it('high confidence + only dmarc_rua + different registrar → shadowIt', () => {
-			// Edge case: candidate REPORTS DMARC to seed but doesn't share certs/NS/DKIM.
-			// Could be a 3rd-party operator (legitimate sprawl) or noise — flag for review.
+		it('high confidence + only dmarc_rua on a non-brand apex → authorized vendor dependency, not Shadow IT', () => {
 			const c = candidate({
-				domain: 'apple-partner.com',
+				domain: 'qualtrics.com',
 				signals: ['dmarc_rua'],
 				confidence: 0.78,
-				registrar: 'GoDaddy.com, LLC',
+				registrar: 'EuroDNS S.A.',
 				registrarSource: 'rdap',
 			});
-			expect(classifyCandidate(c, target()).bucket).toBe('shadowIt');
+			const result = classifyCandidate(c, target({ domain: 'stripe.com' }));
+			expect(result.bucket).toBe('indeterminate');
+			expect((result as { relationshipType?: string }).relationshipType).toBe('authorized_vendor_dependency');
 		});
 
 		it('markov plus broad MX platform alone stays indeterminate instead of ARR-bearing shadowIt', () => {
@@ -429,7 +484,7 @@ describe('classifyCandidate', () => {
 			expect(result.reasons.join(' ')).toMatch(/weak evidence did not clear ownership gate/i);
 		});
 
-		it('shared MX platform can become shadowIt when corroborated by strong visual similarity and another signal', () => {
+		it('shared MX platform becomes an authorized vendor dependency when corroborated by visual similarity', () => {
 			const c = candidate({
 				domain: 'examp1e-pay.com',
 				signals: ['markov_gen', 'mx_platform'],
@@ -442,11 +497,12 @@ describe('classifyCandidate', () => {
 			const t = target({ domain: 'example.com', registrarFamily: 'MarkMonitor' });
 
 			const result = classifyCandidate(c, t);
-			expect(result.bucket).toBe('shadowIt');
+			expect(result.bucket).toBe('indeterminate');
+			expect((result as { relationshipType?: string }).relationshipType).toBe('authorized_vendor_dependency');
 			expect(result.reasons).toContain('lookalike score 0.91 corroborates shared MX platform');
 		});
 
-		it('shared MX platform can become shadowIt when the caller explicitly asserted the candidate', () => {
+		it('shared MX platform becomes an authorized vendor dependency when the caller explicitly asserted the candidate', () => {
 			const c = candidate({
 				domain: 'example-vendor.net',
 				signals: ['mx_platform'],
@@ -457,7 +513,56 @@ describe('classifyCandidate', () => {
 				callerAsserted: true,
 			});
 
-			expect(classifyCandidate(c, target({ domain: 'example.com' })).bucket).toBe('shadowIt');
+			const result = classifyCandidate(c, target({ domain: 'example.com' }));
+			expect(result.bucket).toBe('indeterminate');
+			expect((result as { relationshipType?: string }).relationshipType).toBe('authorized_vendor_dependency');
+		});
+
+		it('does not promote shared MX platform to shadowIt when owned-infra signals are also present', () => {
+			const c = candidate({
+				domain: 'walmart.org',
+				signals: ['active_lookalike', 'mx_platform', 'ns'],
+				confidence: 0.775,
+				registrar: 'MarkMonitor Inc.',
+				registrarSource: 'rdap',
+				sharedMxPlatform: 'proofpoint',
+				lookalikeScore: 1,
+			});
+			const result = classifyCandidate(
+				c,
+				target({
+					domain: 'brand-alpha.com',
+					registrar: 'CSC Corporate Domains, Inc.',
+					registrarFamily: 'CSC',
+				}),
+			);
+
+			expect(result.bucket).toBe('indeterminate');
+			expect(result.reasons.join(' ')).not.toMatch(/shared MX platform/i);
+		});
+	});
+
+	describe('Rule 4.6: shared-infra lookalikes', () => {
+		it('does not call a lookalike impersonation when shared infrastructure signals are present', () => {
+			const c = candidate({
+				domain: 'google.co.nz',
+				signals: ['active_lookalike', 'mx_overlap', 'ns'],
+				confidence: 1,
+				lookalikeScore: 1,
+				registrar: 'Unknown',
+				registrarSource: 'unknown',
+			});
+			const result = classifyCandidate(
+				c,
+				target({
+					domain: 'google.com',
+					registrar: 'MarkMonitor Inc.',
+					registrarFamily: 'MarkMonitor',
+				}),
+			);
+
+			expect(result.bucket).toBe('indeterminate');
+			expect(result.reasons.join(' ')).not.toMatch(/no shared infrastructure signal/i);
 		});
 	});
 
@@ -496,7 +601,7 @@ describe('classifyCandidate', () => {
 	});
 
 	describe('Signal 4: registrant organization match', () => {
-		it('exact registrant org match → consolidated, regardless of registrar family', () => {
+		it('exact registrant org match on a brand-label domain at a different registrar → real Shadow IT', () => {
 			const c = candidate({
 				domain: 'apple.uk',
 				signals: ['markov_gen'],
@@ -506,7 +611,8 @@ describe('classifyCandidate', () => {
 			});
 			const t = target({ registrant: 'Apple Inc.' });
 			const result = classifyCandidate(c, t);
-			expect(result.bucket).toBe('consolidated');
+			expect(result.bucket).toBe('shadowIt');
+			expect((result as { relationshipType?: string }).relationshipType).toBe('owned_off_primary_registrar');
 			expect(result.reasons.join(' ')).toMatch(/registrant/i);
 		});
 

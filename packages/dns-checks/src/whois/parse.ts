@@ -36,13 +36,18 @@ export function parseWhoisResponse(input: string): WhoisParseResult {
 	const truncated = input.length > MAX_RESPONSE_BYTES ? input.slice(0, MAX_RESPONSE_BYTES) : input;
 
 	const notFound = /(^|\n)\s*(no match for|not found|no entries found|no data found|domain not found)/i.test(truncated);
-	const denicRedacted = /denic whois service.*doesn't disclose|disclose any information concerning the domain holder/i.test(truncated);
+	const denicRedacted =
+		/denic whois service.*doesn't disclose|disclose any information concerning the domain holder/i.test(truncated) ||
+		/requests of this client are not permitted|ip address used to perform the query\s+is not authorised|exceeded the established limit for\s+queries/i.test(
+			truncated,
+		);
 
 	let registrar: string | null = null;
 	let registrarName: string | null = null;
 	let registrarOrganization: string | null = null;
 	let registrarIanaId: string | null = null;
 	let sponsoring: string | null = null;
+	let authorizedAgency: string | null = null;
 
 	const lines = truncated.split('\n');
 	for (let i = 0; i < lines.length; i++) {
@@ -87,13 +92,41 @@ export function parseWhoisResponse(input: string): WhoisParseResult {
 			continue;
 		}
 
+		if (!registrar && (/^Registrar\s*$/i.test(trimmed) || /^\*\*\s*Registrar:\s*$/i.test(trimmed))) {
+			let sectionOrganization: string | null = null;
+			let sectionName: string | null = null;
+			for (let j = i + 1; j < lines.length; j++) {
+				const next = lines[j].replace(/\r$/, '').replace(/^\s+/, '').replace(/\s+$/, '');
+				if (next.length === 0) break;
+				const orgMatch = next.match(/^Organization(?: Name)?\s*:\s*(.+?)\s*$/i);
+				if (orgMatch && !sectionOrganization) {
+					sectionOrganization = stripNominetTag(orgMatch[1]);
+					continue;
+				}
+				const nameMatch = next.match(/^Name\s*:\s*(.+?)\s*$/i);
+				if (nameMatch && !sectionName) {
+					sectionName = stripNominetTag(nameMatch[1]);
+					continue;
+				}
+				if (/^[A-Za-z][A-Za-z\s]+$/.test(next) && !/^DNSSEC$/i.test(next)) break;
+			}
+			registrar = sectionOrganization ?? sectionName;
+			if (registrar) continue;
+		}
+
 		const sponMatch = trimmed.match(/^Sponsoring Registrar:\s*(.+?)\s*$/i);
 		if (sponMatch && !sponsoring) {
 			sponsoring = stripNominetTag(sponMatch[1]);
+			continue;
+		}
+
+		const authorizedAgencyMatch = trimmed.match(/^Authorized Agency\s*:\s*(.+?)\s*$/i);
+		if (authorizedAgencyMatch && !authorizedAgency) {
+			authorizedAgency = stripNominetTag(authorizedAgencyMatch[1]);
 		}
 	}
 
-	const resolved = registrar ?? registrarName ?? sponsoring ?? registrarOrganization;
+	const resolved = registrar ?? registrarName ?? sponsoring ?? registrarOrganization ?? authorizedAgency;
 
 	return {
 		registrar: resolved,

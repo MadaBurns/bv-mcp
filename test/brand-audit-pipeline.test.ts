@@ -79,6 +79,30 @@ function rdapResult(registrar: string, registrant: string, registrarIanaId: stri
 	};
 }
 
+function rdapUnavailableResult(
+	registrarSource: 'lookup_failed' | 'redacted' | 'notfound' | 'unknown',
+	registrarFailureReason?: string,
+): CheckResult {
+	return {
+		category: 'rdap',
+		score: 100,
+		findings: [
+			{
+				category: 'rdap',
+				title: 'Registration details',
+				severity: 'info',
+				detail: `Source: ${registrarSource}.`,
+				metadata: {
+					registrar: null,
+					registrarIanaId: null,
+					registrarSource,
+					...(registrarFailureReason ? { registrarFailureReason } : {}),
+				},
+			},
+		],
+	};
+}
+
 describe('runBrandAuditPipeline', () => {
 	it('persists partial discovery progress before discovery completes', async () => {
 		const stepStore = createMemoryBrandAuditStepStore();
@@ -331,7 +355,7 @@ describe('runBrandAuditPipeline', () => {
 		});
 		expect(skipped?.metadata).toMatchObject({
 			bucket: 'indeterminate',
-			registrar: 'Unknown',
+			registrar: 'Registrar unavailable',
 			registrarSource: 'unknown',
 			registrarEnrichmentStatus: 'skipped_deadline',
 		});
@@ -413,6 +437,32 @@ describe('runBrandAuditPipeline', () => {
 		expect(discoverBrandDomains).not.toHaveBeenCalled();
 		expect(checkRdapLookup).not.toHaveBeenCalled();
 		expect(result).toBe(sentinel);
+	});
+
+	it.each([
+		['lookup_failed', 'Registrar lookup failed', 'whois_error'],
+		['redacted', 'Registrar redacted by registry', undefined],
+		['notfound', 'Registrar not found in registry', undefined],
+		['unknown', 'Registrar unavailable', undefined],
+	] as const)('uses a specific registrar display label for %s source', async (source, expectedRegistrar, failureReason) => {
+		const discovery = discoveryResult('example.com', ['example.net']);
+		const checkRdapLookup = vi.fn(async (domain: string) => {
+			if (domain === 'example.com') return rdapResult('Example Registrar Inc.', 'Example Inc.');
+			return rdapUnavailableResult(source, failureReason);
+		});
+
+		const result = await runBrandAuditPipeline(
+			'example.com',
+			{ auditId: `aud-registrar-${source}` },
+			{ discoverBrandDomains: vi.fn().mockResolvedValue(discovery), checkRdapLookup },
+		);
+		const candidate = result.findings.find((finding) => finding.metadata?.candidate === 'example.net');
+
+		expect(candidate?.metadata).toMatchObject({
+			registrar: expectedRegistrar,
+			registrarSource: source,
+		});
+		expect(candidate?.metadata?.registrar).not.toBe('Unknown');
 	});
 });
 

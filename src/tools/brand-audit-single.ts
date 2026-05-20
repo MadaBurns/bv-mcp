@@ -10,6 +10,8 @@
  *      and registrant for the classifier.
  *   3. `classifyCandidate` — buckets each candidate into one of:
  *        consolidated | shadowIt | indeterminate | impersonation
+ *      and stamps `relationshipType` so real off-primary registrar sprawl is
+ *      separated from authorized vendor dependencies.
  *
  * Returns a `CheckResult` with one finding per candidate (bucket carried in
  * metadata + severity) plus a summary finding that aggregates per-bucket counts.
@@ -17,7 +19,7 @@
  * Severity-by-bucket mapping (the audit's risk lens, not the discoverer's):
  *   consolidated   → info     (owned/operated by the brand — no action)
  *   indeterminate  → low      (insufficient evidence — review queue)
- *   shadowIt       → medium   (potentially-related, non-aligned ownership)
+ *   shadowIt       → medium   (owned/controlled domain on off-primary registrar)
  *   impersonation  → high     (low confidence + no infra share — likely typo-squat)
  */
 

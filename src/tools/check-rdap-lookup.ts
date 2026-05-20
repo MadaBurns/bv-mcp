@@ -33,10 +33,28 @@ export const FALLBACK_RDAP_SERVERS: Record<string, string> = {
 	us: 'https://rdap.identitydigital.services/rdap/',
 	tech: 'https://rdap.identitydigital.services/rdap/',
 	online: 'https://rdap.identitydigital.services/rdap/',
+	email: 'https://rdap.identitydigital.services/rdap/',
+	global: 'https://rdap.identitydigital.services/rdap/',
+	group: 'https://rdap.identitydigital.services/rdap/',
+	life: 'https://rdap.identitydigital.services/rdap/',
+	live: 'https://rdap.identitydigital.services/rdap/',
+	media: 'https://rdap.identitydigital.services/rdap/',
+	news: 'https://rdap.identitydigital.services/rdap/',
+	services: 'https://rdap.identitydigital.services/rdap/',
+	software: 'https://rdap.identitydigital.services/rdap/',
+	solutions: 'https://rdap.identitydigital.services/rdap/',
+	support: 'https://rdap.identitydigital.services/rdap/',
+	systems: 'https://rdap.identitydigital.services/rdap/',
+	technology: 'https://rdap.identitydigital.services/rdap/',
+	tools: 'https://rdap.identitydigital.services/rdap/',
 	// Identity Digital ccTLDs / TLD operators
 	io: 'https://rdap.identitydigital.services/rdap/',
 	ai: 'https://rdap.nic.ai/',
 	sh: 'https://rdap.identitydigital.services/rdap/',
+	// auDA
+	au: 'https://rdap.cctld.au/rdap/',
+	// Traficom
+	fi: 'https://rdap.fi/rdap/rdap/',
 	// .CO Internet
 	co: 'https://rdap.nic.co/',
 	// ME Registry
@@ -66,6 +84,10 @@ export function _resetBootstrapCache(): void {
 
 /** Timeout for all outbound RDAP fetches (ms). */
 const RDAP_TIMEOUT_MS = 10_000;
+const RDAP_RETRYABLE_HTTP_STATUSES = new Set([429, 503, 504]);
+const RDAP_RETRY_MAX_ATTEMPTS = 2;
+const RDAP_RETRY_DEFAULT_DELAY_MS = 750;
+const RDAP_RETRY_MAX_DELAY_MS = 2_000;
 
 interface RdapEvent {
 	eventAction: string;
@@ -241,6 +263,56 @@ function findEntityByRegistrarIanaId(entities: RdapEntity[] | undefined): RdapEn
 		}
 	}
 	return null;
+}
+
+function parseRetryAfterMs(value: string | null): number {
+	if (!value) return RDAP_RETRY_DEFAULT_DELAY_MS;
+	const seconds = Number(value);
+	if (Number.isFinite(seconds) && seconds >= 0) {
+		return Math.min(seconds * 1000, RDAP_RETRY_MAX_DELAY_MS);
+	}
+	const dateMs = Date.parse(value);
+	if (Number.isFinite(dateMs)) {
+		return Math.min(Math.max(dateMs - Date.now(), 0), RDAP_RETRY_MAX_DELAY_MS);
+	}
+	return RDAP_RETRY_DEFAULT_DELAY_MS;
+}
+
+async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	if (ms <= 0) return;
+	await new Promise<void>((resolve, reject) => {
+		const timeout = setTimeout(resolve, ms);
+		const onAbort = () => {
+			clearTimeout(timeout);
+			reject(signal?.reason instanceof Error ? signal.reason : new Error('aborted'));
+		};
+		if (signal?.aborted) {
+			onAbort();
+			return;
+		}
+		signal?.addEventListener('abort', onAbort, { once: true });
+	});
+}
+
+async function fetchRdapResponse(rdapUrl: string, callerSignal?: AbortSignal): Promise<Response> {
+	let lastResponse: Response | null = null;
+	for (let attempt = 1; attempt <= RDAP_RETRY_MAX_ATTEMPTS; attempt++) {
+		const resp = await fetch(rdapUrl, {
+			redirect: 'manual',
+			signal: composeFetchSignal(callerSignal),
+			headers: { Accept: 'application/rdap+json, application/json' },
+		});
+		if (resp.ok || !RDAP_RETRYABLE_HTTP_STATUSES.has(resp.status) || attempt === RDAP_RETRY_MAX_ATTEMPTS) {
+			return resp;
+		}
+		lastResponse = resp;
+		await sleep(parseRetryAfterMs(resp.headers.get('Retry-After')), callerSignal);
+	}
+	return lastResponse ?? fetch(rdapUrl, {
+		redirect: 'manual',
+		signal: composeFetchSignal(callerSignal),
+		headers: { Accept: 'application/rdap+json, application/json' },
+	});
 }
 
 /** Find an event by action name. */
@@ -447,11 +519,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 	try {
 		const baseUrl = rdapServerUrl.endsWith('/') ? rdapServerUrl : `${rdapServerUrl}/`;
 		const rdapUrl = `${baseUrl}domain/${domain}`;
-		const resp = await fetch(rdapUrl, {
-			redirect: 'manual',
-			signal: composeFetchSignal(callerSignal),
-			headers: { Accept: 'application/rdap+json, application/json' },
-		});
+		const resp = await fetchRdapResponse(rdapUrl, callerSignal);
 
 		if (!resp.ok) {
 			findings.push(
@@ -502,7 +570,11 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 		// RDAP didn't return a registrar entity — that's a structural miss, not a transient
 		// failure. So pass 'unknown' as the RDAP-side outcome (NOT lookup_failed); WHOIS
 		// can still elevate to deterministic answer or 'whois_error'.
-		const outcome = reconcileWithWhois({ source: 'unknown' }, whois);
+		const reconciled = reconcileWithWhois({ source: 'unknown' }, whois);
+		const outcome: RegistrarOutcome =
+			reconciled.source === 'lookup_failed'
+				? { source: 'redacted' }
+				: reconciled;
 		registrarSource = outcome.source;
 		registrarFailureReason = outcome.failureReason;
 		if (whois?.registrar) registrarName = whois.registrar;

@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: BUSL-1.1
 /**
- * Contract: brand-discovery sidecar v3 shape (tiered-mode reports).
+ * Contract: brand-discovery sidecar v4 shape (tiered-mode reports).
  *
- * Brand-discovery task 9 splits the legacy single `buckets` block into
+ * Brand-discovery task 9 split the legacy single `buckets` block into
  * `ownedPortfolio` (tier 0/1/2/3 — what the brand owns) + `impersonationSurface`
  * (tier 4 — what's masquerading). The QA script, the Markdown renderer, the
  * PDF renderer, and the bv-web sidecar reader all parse this shape; locking it
  * here prevents silent drift across renderers.
+ *
+ * v4 adds relationship-level sections so real registrar sprawl
+ * (`owned_off_primary_registrar`) is separated from authorized vendor
+ * dependencies discovered through SPF/DMARC/MX delegation.
  *
  * Classic-mode reports continue to emit `qaSchemaVersion: 1` with the legacy
  * `buckets` block — pinned by the existing model spec, NOT by this contract.
@@ -22,9 +26,22 @@ import type { BrandAuditResultLike } from '../helpers/discovery-report-model';
 
 const TierStatusSchema = z.enum(['ok', 'degraded', 'partial', 'timeout', 'skipped']);
 
-const SidecarV3Schema = z.object({
-	qaSchemaVersion: z.literal(3),
+const CandidateRelationshipSchema = z.object({
+	domain: z.string(),
+	relationshipType: z.enum([
+		'owned_primary',
+		'owned_off_primary_registrar',
+		'authorized_vendor_dependency',
+		'manual_review',
+		'impersonation_risk',
+		'impersonation_surface',
+	]),
+});
+
+const SidecarV4Schema = z.object({
+	qaSchemaVersion: z.literal(4),
 	discoveryMode: z.literal('tiered'),
+	relationshipSchemaVersion: z.literal(1),
 	ownedPortfolio: z.object({
 		tenantDeclared: z.array(z.string()),
 		graphSurfaced: z.array(z.string()),
@@ -35,6 +52,8 @@ const SidecarV3Schema = z.object({
 			indeterminate: z.array(z.string()),
 		}),
 	}),
+	registrarSprawl: z.array(CandidateRelationshipSchema.extend({ relationshipType: z.literal('owned_off_primary_registrar') })),
+	vendorDependencies: z.array(CandidateRelationshipSchema.extend({ relationshipType: z.literal('authorized_vendor_dependency') })),
 	impersonationSurface: z.array(
 		z.object({
 			domain: z.string(),
@@ -88,7 +107,7 @@ function tieredResult(): BrandAuditResultLike {
 					total: 6,
 					consolidated: 4,
 					shadowIt: 1,
-					indeterminate: 1,
+					indeterminate: 2,
 					impersonation: 0,
 					targetRegistrar: 'Example Registrar',
 					targetRegistrarSource: 'rdap',
@@ -175,11 +194,31 @@ function tieredResult(): BrandAuditResultLike {
 				metadata: {
 					candidate: 'shadow.example',
 					bucket: 'shadowIt',
+					relationshipType: 'owned_off_primary_registrar',
 					confidenceTier: 'medium',
 					reasons: ['different registrar, shared infra'],
 					signals: ['san'],
 					combinedConfidence: 0.6,
 					registrar: 'Other Registrar',
+					registrarSource: 'rdap',
+				},
+			},
+			// Authorized vendor dependency — remains in legacy indeterminate bucket
+			// for compatibility, but v4 moves it out of ownedPortfolio.
+			{
+				category: 'brand_discovery',
+				title: 'Brand candidate: vendor.example',
+				severity: 'low',
+				detail: '',
+				metadata: {
+					candidate: 'vendor.example',
+					bucket: 'indeterminate',
+					relationshipType: 'authorized_vendor_dependency',
+					confidenceTier: 'medium',
+					reasons: ['authorized vendor dependency via seed SPF delegation'],
+					signals: ['spf_include_seed'],
+					combinedConfidence: 0.85,
+					registrar: 'Vendor Registrar',
 					registrarSource: 'rdap',
 				},
 			},
@@ -247,8 +286,8 @@ const TIERED_TIERS = {
 	optOutsFiltered: 0,
 };
 
-describe('brand-discovery sidecar v3 contract (tiered mode)', () => {
-	it('emits v3 shape when discoveryMode === "tiered"', () => {
+describe('brand-discovery sidecar v4 contract (tiered mode)', () => {
+	it('emits v4 shape when discoveryMode === "tiered"', () => {
 		const model = buildDiscoveryReportModel({
 			target: 'example.com',
 			primaryRegistrar: 'Example Registrar',
@@ -267,7 +306,7 @@ describe('brand-discovery sidecar v3 contract (tiered mode)', () => {
 			tiers: TIERED_TIERS,
 		});
 
-		const parsed = SidecarV3Schema.safeParse(sidecar);
+		const parsed = SidecarV4Schema.safeParse(sidecar);
 		expect(parsed.success, parsed.success ? '' : JSON.stringify(parsed.error.issues, null, 2)).toBe(true);
 	});
 
@@ -289,24 +328,34 @@ describe('brand-discovery sidecar v3 contract (tiered mode)', () => {
 			performance: TIERED_PERFORMANCE,
 			tiers: TIERED_TIERS,
 		}) as unknown as {
-			qaSchemaVersion: 3;
+			qaSchemaVersion: 4;
 			discoveryMode: 'tiered';
+			relationshipSchemaVersion: 1;
 			ownedPortfolio: {
 				tenantDeclared: string[];
 				graphSurfaced: string[];
 				declaredEvidence: string[];
 				inferred: { consolidated: string[]; shadowIt: string[]; indeterminate: string[] };
 			};
+			registrarSprawl: Array<{ domain: string; relationshipType: string }>;
+			vendorDependencies: Array<{ domain: string; relationshipType: string }>;
 			impersonationSurface: Array<{ domain: string; lookalikeScore: number; scoreAlertContext?: { alertType: string; transition: string } }>;
 		};
 
-		expect(sidecar.qaSchemaVersion).toBe(3);
+		expect(sidecar.qaSchemaVersion).toBe(4);
 		expect(sidecar.discoveryMode).toBe('tiered');
+		expect(sidecar.relationshipSchemaVersion).toBe(1);
 		expect(sidecar.ownedPortfolio.tenantDeclared).toEqual(['tenant.example.com']);
 		expect(sidecar.ownedPortfolio.graphSurfaced.sort()).toEqual(['graph-a.example', 'graph-b.example']);
 		expect(sidecar.ownedPortfolio.declaredEvidence).toEqual(['declared.example']);
 		expect(sidecar.ownedPortfolio.inferred.shadowIt).toEqual(['shadow.example']);
 		expect(sidecar.ownedPortfolio.inferred.indeterminate).toEqual(['maybe.example']);
+		expect(sidecar.registrarSprawl).toEqual([
+			expect.objectContaining({ domain: 'shadow.example', relationshipType: 'owned_off_primary_registrar' }),
+		]);
+		expect(sidecar.vendorDependencies).toEqual([
+			expect.objectContaining({ domain: 'vendor.example', relationshipType: 'authorized_vendor_dependency' }),
+		]);
 		// No inferred-consolidated in this fixture (all consolidated have a tier).
 		expect(sidecar.ownedPortfolio.inferred.consolidated).toEqual([]);
 
@@ -314,6 +363,54 @@ describe('brand-discovery sidecar v3 contract (tiered mode)', () => {
 		expect(sidecar.impersonationSurface[0].domain).toBe('examp1e.com');
 		expect(sidecar.impersonationSurface[0].lookalikeScore).toBe(0.92);
 		expect(sidecar.impersonationSurface[0].scoreAlertContext).toEqual({ alertType: 'newly_active', transition: 'parked->active' });
+	});
+
+	it('guards top-level shape: qaSchemaVersion=4, relationshipSchemaVersion=1, no ambiguous `schemaVersion`, legacy buckets+counts kept', () => {
+		const model = buildDiscoveryReportModel({
+			target: 'example.com',
+			primaryRegistrar: 'Example Registrar',
+			result: tieredResult(),
+		});
+		const sidecar = buildDiscoveryReportSidecar(model, {
+			auditId: 'aud-tiered-2',
+			generatedAt: '2026-05-20T00:00:00.000Z',
+			serverVersion: '2.22.0',
+			sourceMode: 'mcp',
+			runId: 'run-tiered-2',
+			requestedAt: '2026-05-20T00:00:00.000Z',
+			depthMode: 'deep',
+			discoveryMode: 'tiered',
+			performance: TIERED_PERFORMANCE,
+			tiers: TIERED_TIERS,
+		}) as unknown as Record<string, unknown> & {
+			qaSchemaVersion: number;
+			relationshipSchemaVersion: number;
+			buckets: { consolidated: unknown; shadowIt: unknown; indeterminate: unknown; impersonation: unknown };
+			counts: { consolidated: number; shadowIt: number; indeterminate: number; impersonation: number };
+		};
+
+		// Version-field invariants — schema name MUST be `qaSchemaVersion`, never the ambiguous bare `schemaVersion`.
+		expect(sidecar.qaSchemaVersion).toBe(4);
+		expect(sidecar.relationshipSchemaVersion).toBe(1);
+		expect('schemaVersion' in sidecar).toBe(false);
+
+		// Top-level v4 sections.
+		expect(sidecar.registrarSprawl).toBeDefined();
+		expect(sidecar.vendorDependencies).toBeDefined();
+		expect(sidecar.ownedPortfolio).toBeDefined();
+		expect(sidecar.impersonationSurface).toBeDefined();
+
+		// Legacy compat surfaces — bv-web sidecar reader still relies on these.
+		expect(sidecar.buckets).toBeDefined();
+		expect(sidecar.buckets.consolidated).toBeDefined();
+		expect(sidecar.buckets.shadowIt).toBeDefined();
+		expect(sidecar.buckets.indeterminate).toBeDefined();
+		expect(sidecar.buckets.impersonation).toBeDefined();
+		expect(sidecar.counts).toBeDefined();
+		expect(typeof sidecar.counts.consolidated).toBe('number');
+		expect(typeof sidecar.counts.shadowIt).toBe('number');
+		expect(typeof sidecar.counts.indeterminate).toBe('number');
+		expect(typeof sidecar.counts.impersonation).toBe('number');
 	});
 
 	it('preserves tier-1 graph provenance so reports do not show graph evidence as only Markov Variant', () => {

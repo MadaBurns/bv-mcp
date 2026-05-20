@@ -77,6 +77,7 @@ describe('brand-audit bucket coverage lock-in', () => {
 				{
 					domain: 'a.example.com',
 					bucket: 'consolidated',
+					relationshipType: 'owned_primary',
 					registrar: 'X',
 					registrarSource: 'rdap',
 					reasons: ['NS overlap'],

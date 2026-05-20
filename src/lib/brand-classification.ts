@@ -19,6 +19,7 @@
 import { sameRegistrarFamily } from './registrar-identity';
 import { clearsOwnershipGate, clearsTier1GraphEvidence, type BrandEvidenceObservation } from './brand-evidence';
 import type { BrandDiscoveryTier } from './brand-discovery-tiers';
+import { extractBrandName } from './public-suffix';
 
 /**
  * Buckets emitted by the classifier.
@@ -34,6 +35,13 @@ import type { BrandDiscoveryTier } from './brand-discovery-tiers';
 export type Bucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation' | 'impersonationSurface';
 export type ConfidenceTier = 'high' | 'medium' | 'low';
 export type RegistrarSource = 'rdap' | 'whois' | 'redacted' | 'notfound' | 'lookup_failed' | 'unknown';
+export type RelationshipType =
+	| 'owned_primary'
+	| 'owned_off_primary_registrar'
+	| 'authorized_vendor_dependency'
+	| 'manual_review'
+	| 'impersonation_risk'
+	| 'impersonation_surface';
 
 export interface CandidateInput {
 	domain: string;
@@ -83,6 +91,7 @@ export interface TargetContext {
 export interface Classification {
 	bucket: Bucket;
 	confidenceTier: ConfidenceTier;
+	relationshipType: RelationshipType;
 	note?: string;
 	reasons: string[];
 	/**
@@ -103,6 +112,19 @@ const STRONG_INFRA_SIGNALS = new Set([
 	'cname_alignment',
 	'app_links',
 	'bounty_scope',
+]);
+
+const SHARED_INFRA_SIGNALS = new Set([
+	'ns',
+	'mx_overlap',
+	'san',
+	'san_recursive',
+	'spf_include',
+	'spf_include_seed',
+	'txt_verification',
+	'http_redirect',
+	'dkim_key_reuse',
+	'cname_alignment',
 ]);
 
 /** Confidence threshold above which dmarc_rua alone is consolidation evidence. */
@@ -140,7 +162,7 @@ export function normalizeRegistrant(raw: string | null | undefined): string | nu
 }
 
 export function normalizeRegistrar(raw: string): string {
-	if (!raw || raw === 'Unknown') return 'Unknown';
+	if (!raw || raw === 'Unknown' || /^Registrar (lookup failed|unavailable|redacted by registry|not found in registry)$/i.test(raw.trim())) return 'Unknown';
 	const lower = raw.toLowerCase();
 	if (/markmonitor/.test(lower)) return 'MarkMonitor';
 	if (/com\s*laude|nom[ -]?iq/.test(lower)) return 'Com Laude';
@@ -174,12 +196,60 @@ function hasStrongInfraSignal(signals: string[]): string[] {
 	return signals.filter((s) => STRONG_INFRA_SIGNALS.has(s));
 }
 
+function hasSharedInfrastructureSignal(c: CandidateInput): boolean {
+	return c.signals.some((signal) => SHARED_INFRA_SIGNALS.has(signal));
+}
+
 function isGeneratedSeedSignal(signal: string): boolean {
 	return signal === 'markov_gen' || signal === 'active_lookalike';
 }
 
 function nonGeneratedSignals(signals: string[]): string[] {
 	return signals.filter((signal) => !isGeneratedSeedSignal(signal));
+}
+
+function classification(
+	bucket: Bucket,
+	confidenceTier: ConfidenceTier,
+	relationshipType: RelationshipType,
+	reasons: string[],
+	extra: Omit<Partial<Classification>, 'bucket' | 'confidenceTier' | 'relationshipType' | 'reasons'> = {},
+): Classification {
+	return { bucket, confidenceTier, relationshipType, reasons, ...extra };
+}
+
+function knownRegistrar(value: string): boolean {
+	return normalizeRegistrar(value) !== 'Unknown';
+}
+
+function isOffPrimaryRegistrar(c: CandidateInput, t: TargetContext): boolean {
+	if (!knownRegistrar(c.registrar) || !knownRegistrar(t.registrar)) return false;
+	return !sameRegistrarFamily(
+		{ name: c.registrar, ianaId: c.registrarIanaId },
+		{ name: t.registrar, ianaId: t.registrarIanaId },
+	);
+}
+
+function isExactBrandPortfolioDomain(candidateDomain: string, targetDomain: string): boolean {
+	const candidateLabel = extractBrandName(candidateDomain)?.toLowerCase();
+	const targetLabel = extractBrandName(targetDomain)?.toLowerCase();
+	return !!candidateLabel && !!targetLabel && candidateLabel === targetLabel;
+}
+
+function realShadowItClassification(
+	c: CandidateInput,
+	t: TargetContext,
+	tier: ConfidenceTier,
+	reasons: string[],
+	extra: Omit<Partial<Classification>, 'bucket' | 'confidenceTier' | 'relationshipType' | 'reasons'> = {},
+): Classification | null {
+	if (!isOffPrimaryRegistrar(c, t)) return null;
+	reasons.push(`brand-owned domain on off-primary registrar (${normalizeRegistrar(c.registrar)})`);
+	return classification('shadowIt', tier, 'owned_off_primary_registrar', reasons, extra);
+}
+
+function vendorDependency(tier: ConfidenceTier, reasons: string[]): Classification {
+	return classification('indeterminate', tier, 'authorized_vendor_dependency', reasons);
 }
 
 /**
@@ -197,7 +267,7 @@ export function isShadowIt(c: CandidateInput): string[] {
 	if (sharedTxt.length > 0) {
 		reasons.push(`shared TXT verification token(s): ${sharedTxt.join(', ')}`);
 	}
-	if (c.sharedMxPlatform) {
+	if (c.sharedMxPlatform && !hasSharedInfrastructureSignal(c)) {
 		const corroboratedBySignal = c.signals.some((signal) =>
 			signal === 'dmarc_rua' ||
 			signal === 'txt_verification' ||
@@ -244,7 +314,7 @@ export function isImpersonation(c: CandidateInput, t: TargetContext): string[] {
 	// belt-and-braces here so the predicate is callable in isolation.
 	const sharedTxt = (c.sharedTxtVerifications ?? []).length > 0;
 	const sharedMx = !!c.sharedMxPlatform;
-	if (sharedTxt || sharedMx) return [];
+	if (sharedTxt || sharedMx || hasSharedInfrastructureSignal(c)) return [];
 
 	return [
 		`lookalike score ${score.toFixed(2)} ≥ ${IMPERSONATION_LOOKALIKE_THRESHOLD}`,
@@ -303,25 +373,28 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 		const tier0 = observations.find((o) => o.tier === 0);
 		if (tier0) {
 			reasons.push(`tier 0 (tenant-declared) via ${tier0.signal}`);
-			return { bucket: 'consolidated', confidenceTier: tier, reasons, tier: 0 };
+			return realShadowItClassification(c, t, tier, reasons, { tier: 0 }) ??
+				classification('consolidated', tier, 'owned_primary', reasons, { tier: 0 });
 		}
 		const tier1 = observations.find((o) => o.tier === 1 && clearsTier1GraphEvidence(o));
 		if (tier1) {
 			reasons.push(
 				`tier 1 (graph-surfaced) via ${tier1.signal}, specificity=${(tier1.specificityScore ?? 0).toFixed(2)}`,
 			);
-			return { bucket: 'consolidated', confidenceTier: tier, reasons, tier: 1 };
+			return realShadowItClassification(c, t, tier, reasons, { tier: 1 }) ??
+				classification('consolidated', tier, 'owned_primary', reasons, { tier: 1 });
 		}
 		const tier2 = observations.find((o) => o.tier === 2);
 		if (tier2) {
 			reasons.push(`tier 2 (declared/witnessed) via ${tier2.signal}`);
-			return { bucket: 'consolidated', confidenceTier: tier, reasons, tier: 2 };
+			return realShadowItClassification(c, t, tier, reasons, { tier: 2 }) ??
+				classification('consolidated', tier, 'owned_primary', reasons, { tier: 2 });
 		}
 		const onlyTier4 = observations.every((o) => o.tier === 4);
 		if (onlyTier4) {
 			const sample = observations[0];
 			reasons.push(`tier 4 (impersonation surface) via ${sample?.signal ?? 'unknown'}`);
-			return { bucket: 'impersonationSurface', confidenceTier: tier, reasons, tier: 4 };
+			return classification('impersonationSurface', tier, 'impersonation_surface', reasons, { tier: 4 });
 		}
 		// Mixed tier 3-only or tier-3-with-tier-4: fall through to legacy rules.
 	}
@@ -329,7 +402,7 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 	// Rule 1: Subdomain of target — DNS managed by parent zone, always organizational.
 	if (isSubdomainOf(c.domain, t.domain)) {
 		reasons.push('subdomain of target');
-		return { bucket: 'consolidated', confidenceTier: tier, note: 'Organizational Subdomain', reasons };
+		return classification('consolidated', tier, 'owned_primary', reasons, { note: 'Organizational Subdomain' });
 	}
 
 	// Rule 1.5: Registrant organization match — when both sides expose registrant via
@@ -340,27 +413,39 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 	const targetRegistrant = normalizeRegistrant(t.registrant);
 	if (candRegistrant && targetRegistrant && candRegistrant === targetRegistrant) {
 		reasons.push(`registrant match: ${c.registrant}`);
-		return { bucket: 'consolidated', confidenceTier: tier, reasons };
+		return realShadowItClassification(c, t, tier, reasons) ?? classification('consolidated', tier, 'owned_primary', reasons);
 	}
 
 	// Rule 2: Strong deterministic ownership signal.
 	const strongSignals = hasStrongInfraSignal(c.signals);
 	if (strongSignals.length > 0) {
 		reasons.push(...strongSignals.map(signalLabel));
-		return { bucket: 'consolidated', confidenceTier: tier, reasons };
+		if (isExactBrandPortfolioDomain(c.domain, t.domain)) {
+			const realShadow = realShadowItClassification(c, t, tier, reasons);
+			if (realShadow) return realShadow;
+		}
+		return classification('consolidated', tier, 'owned_primary', reasons);
 	}
 
 	// Rule 3: High-confidence DMARC RUA alone — seed receives DMARC reports for this domain.
 	if (c.signals.includes('dmarc_rua') && c.confidence >= DMARC_CONSOLIDATION_THRESHOLD) {
 		reasons.push(signalLabel('dmarc_rua'));
-		return { bucket: 'consolidated', confidenceTier: tier, reasons };
+		if (isExactBrandPortfolioDomain(c.domain, t.domain)) {
+			const realShadow = realShadowItClassification(c, t, tier, reasons);
+			if (realShadow) return realShadow;
+		}
+		if (isOffPrimaryRegistrar(c, t)) {
+			reasons.push('authorized vendor dependency via external DMARC reporting');
+			return vendorDependency(tier, reasons);
+		}
+		return classification('consolidated', tier, 'owned_primary', reasons);
 	}
 
 	const candFamily = normalizeRegistrar(c.registrar);
 
 	if (c.evidenceObservations && !clearsOwnershipGate(c.evidenceObservations, { callerAsserted: c.callerAsserted })) {
 		reasons.push('weak evidence did not clear ownership gate');
-		return { bucket: 'indeterminate', confidenceTier: tier, reasons };
+		return classification('indeterminate', tier, 'manual_review', reasons);
 	}
 
 	// Rule 4: Same normalized registrar family + ≥2 non-generated corroborating signals.
@@ -372,7 +457,7 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 		nonGeneratedSignals(c.signals).length >= 2
 	) {
 		reasons.push(`shared registrar family (${candFamily}) + ${nonGeneratedSignals(c.signals).length} corroborating signals`);
-		return { bucket: 'consolidated', confidenceTier: tier, reasons };
+		return classification('consolidated', tier, 'owned_primary', reasons);
 	}
 
 	// Rule 4.5: Cross-channel shadowIt — disjoint provider but shared TXT verification
@@ -382,11 +467,21 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 	const shadowReasons = isShadowIt(c);
 	if (c.confidence >= SHADOW_IT_CONFIDENCE_THRESHOLD && c.signals.includes('spf_include_seed')) {
 		reasons.push(signalLabel('spf_include_seed'));
-		return { bucket: 'shadowIt', confidenceTier: tier, reasons };
+		if (isExactBrandPortfolioDomain(c.domain, t.domain)) {
+			const realShadow = realShadowItClassification(c, t, tier, reasons);
+			if (realShadow) return realShadow;
+		}
+		reasons.push('authorized vendor dependency via seed SPF delegation');
+		return vendorDependency(tier, reasons);
 	}
 	if (shadowReasons.length > 0) {
 		reasons.push(...shadowReasons);
-		return { bucket: 'shadowIt', confidenceTier: tier, reasons };
+		if (isExactBrandPortfolioDomain(c.domain, t.domain)) {
+			const realShadow = realShadowItClassification(c, t, tier, reasons);
+			if (realShadow) return realShadow;
+		}
+		reasons.push('authorized vendor dependency via shared vendor control signal');
+		return vendorDependency(tier, reasons);
 	}
 
 	// Rule 4.6: Impersonation — lookalike score ≥ threshold + registrar family
@@ -396,7 +491,7 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 	const impersonationReasons = isImpersonation(c, t);
 	if (impersonationReasons.length > 0) {
 		reasons.push(...impersonationReasons);
-		return { bucket: 'impersonation', confidenceTier: tier, reasons };
+		return classification('impersonation', tier, 'impersonation_risk', reasons);
 	}
 
 	// Rule 5: Registrar source is redacted / notfound / lookup_failed → can't
@@ -409,27 +504,32 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 	const src = c.registrarSource ?? 'unknown';
 	if (src === 'lookup_failed' && strongSignals.length === 0) {
 		reasons.push('registrar lookup failed transiently — retry pending');
-		return { bucket: 'indeterminate', confidenceTier: tier, note: 'needs_retry', reasons };
+		return classification('indeterminate', tier, 'manual_review', reasons, { note: 'needs_retry' });
 	}
 	if ((src === 'redacted' || src === 'notfound') && strongSignals.length === 0) {
 		reasons.push(`registrar source: ${src}`);
-		return { bucket: 'indeterminate', confidenceTier: tier, note: src, reasons };
+		return classification('indeterminate', tier, 'manual_review', reasons, { note: src });
 	}
 
 	// Rule 6: High confidence + dmarc_rua-only on different registrar → genuine sprawl candidate.
 	// (Third-party operating on behalf of the brand, or weak coincidence — flag for review.)
 	if (c.confidence >= SHADOW_IT_CONFIDENCE_THRESHOLD && c.signals.includes('dmarc_rua')) {
 		reasons.push(`DMARC RUA on non-aligned registrar (${candFamily})`);
-		return { bucket: 'shadowIt', confidenceTier: tier, reasons };
+		if (isExactBrandPortfolioDomain(c.domain, t.domain)) {
+			const realShadow = realShadowItClassification(c, t, tier, reasons);
+			if (realShadow) return realShadow;
+		}
+		reasons.push('authorized vendor dependency via external DMARC reporting');
+		return vendorDependency(tier, reasons);
 	}
 
 	// Rule 7: Medium confidence + no strong signals → indeterminate (not enough evidence either way).
 	if (c.confidence >= INDETERMINATE_CONFIDENCE_THRESHOLD) {
 		reasons.push('medium confidence, no strong infra signal');
-		return { bucket: 'indeterminate', confidenceTier: tier, reasons };
+		return classification('indeterminate', tier, 'manual_review', reasons);
 	}
 
 	// Rule 8: Low confidence + no strong signals → likely parked / unrelated / impersonation.
 	reasons.push('low confidence, no strong infra signal');
-	return { bucket: 'impersonation', confidenceTier: tier, reasons };
+	return classification('impersonation', tier, 'impersonation_risk', reasons);
 }

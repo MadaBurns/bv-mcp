@@ -21,6 +21,7 @@ const baseInput = {
 const consolidatedRow: BrandCandidateRow = {
 	domain: 'a.example.com',
 	bucket: 'consolidated',
+	relationshipType: 'owned_primary',
 	registrar: 'X',
 	registrarSource: 'rdap',
 	reasons: ['NS overlap'],
@@ -55,6 +56,7 @@ describe('empty-bucket transparency', () => {
 				{
 					domain: 'a.example.com',
 					bucket: 'shadowIt',
+					relationshipType: 'owned_off_primary_registrar',
 					registrar: 'X',
 					registrarSource: 'rdap',
 					reasons: [],
@@ -83,6 +85,7 @@ describe('empty-bucket transparency', () => {
 				{
 					domain: 'a.example.com',
 					bucket: 'consolidated',
+					relationshipType: 'owned_primary',
 					registrar: 'X',
 					registrarSource: 'rdap',
 					reasons: ['NS overlap'],

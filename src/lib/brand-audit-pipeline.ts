@@ -13,6 +13,7 @@ import {
 	type RegistrarSource,
 	type TargetContext,
 } from './brand-classification';
+import { validateSprawlItem } from './sprawl-invariants';
 import type { BrandEvidenceObservation } from './brand-evidence';
 import {
 	discoverBrandDomains as defaultDiscoverBrandDomains,
@@ -159,6 +160,26 @@ interface RegistrarLookup {
 	registrant: string | null;
 	/** Set iff registrarSource === 'lookup_failed' — stable token identifying *why*. Consumed by the retry path. */
 	registrarFailureReason?: string | null;
+}
+
+function registrarDisplayLabel(source: RegistrarSource): string {
+	switch (source) {
+		case 'lookup_failed':
+			return 'Registrar lookup failed';
+		case 'redacted':
+			return 'Registrar redacted by registry';
+		case 'notfound':
+			return 'Registrar not found in registry';
+		case 'unknown':
+			return 'Registrar unavailable';
+		case 'rdap':
+		case 'whois':
+			return 'Registrar unavailable';
+	}
+}
+
+function isMeaningfulRegistrar(value: unknown): value is string {
+	return typeof value === 'string' && value.trim().length > 0 && value.trim().toLowerCase() !== 'unknown';
 }
 
 type CandidateRegistrarLookupStatus = 'completed' | 'skipped_deadline' | 'needs_retry';
@@ -387,7 +408,7 @@ function graphEvidenceFromObservations(
 /** Pull registrar + registrant out of a check-rdap-lookup result, mirroring `scripts/brand-audit-brand-audit.spec.ts:lookupRegistrar`. */
 function extractRegistrar(rdap: CheckResult): RegistrarLookup {
 	const populated = rdap.findings.find(
-		(f) => typeof f.metadata?.registrar === 'string' && (f.metadata.registrar as string).length > 0,
+		(f) => isMeaningfulRegistrar(f.metadata?.registrar),
 	);
 	const registrantFinding = rdap.findings.find(
 		(f) => typeof f.metadata?.registrant === 'string' && (f.metadata.registrant as string).length > 0,
@@ -401,7 +422,7 @@ function extractRegistrar(rdap: CheckResult): RegistrarLookup {
 			source === 'lookup_failed' && typeof populated.metadata?.registrarFailureReason === 'string'
 				? populated.metadata.registrarFailureReason
 				: null;
-		return { registrar: populated.metadata!.registrar as string, registrarIanaId, registrarSource: source, registrant, registrarFailureReason };
+		return { registrar: (populated.metadata!.registrar as string).trim(), registrarIanaId, registrarSource: source, registrant, registrarFailureReason };
 	}
 	const lastWithSource = [...rdap.findings].reverse().find((f) => typeof f.metadata?.registrarSource === 'string');
 	const source = (lastWithSource?.metadata?.registrarSource as RegistrarSource | undefined) ?? 'unknown';
@@ -410,7 +431,7 @@ function extractRegistrar(rdap: CheckResult): RegistrarLookup {
 		source === 'lookup_failed' && typeof lastWithSource?.metadata?.registrarFailureReason === 'string'
 			? lastWithSource.metadata.registrarFailureReason
 			: null;
-	return { registrar: 'Unknown', registrarIanaId, registrarSource: source, registrant, registrarFailureReason };
+	return { registrar: registrarDisplayLabel(source), registrarIanaId, registrarSource: source, registrant, registrarFailureReason };
 }
 
 /** Look up registrar + registrant for `domain` via injected checkRdapLookup; fails soft to lookup_failed/exception. */
@@ -423,7 +444,13 @@ async function safeRegistrarLookup(domain: string, deps: BrandAuditPipelineDeps,
 		const result = await rdapFn(domain, opts);
 		return extractRegistrar(result);
 	} catch {
-		return { registrar: 'Unknown', registrarIanaId: null, registrarSource: 'lookup_failed', registrant: null, registrarFailureReason: 'exception' };
+		return {
+			registrar: registrarDisplayLabel('lookup_failed'),
+			registrarIanaId: null,
+			registrarSource: 'lookup_failed',
+			registrant: null,
+			registrarFailureReason: 'exception',
+		};
 	}
 }
 
@@ -436,7 +463,7 @@ function normalizeDomainKey(domain: string): string {
 }
 
 function unknownRegistrarLookup(): RegistrarLookup {
-	return { registrar: 'Unknown', registrarIanaId: null, registrarSource: 'unknown', registrant: null };
+	return { registrar: registrarDisplayLabel('unknown'), registrarIanaId: null, registrarSource: 'unknown', registrant: null };
 }
 
 function hasRegistrarIndependentEvidence(domain: string, seedDomain: string, signals: string[]): boolean {
@@ -814,9 +841,52 @@ export async function runBrandAuditPipeline(
 			classification = {
 				bucket: 'indeterminate',
 				confidenceTier: classification.confidenceTier,
+				relationshipType: 'manual_review',
 				note: 'Registrar enrichment skipped by deadline',
 				reasons: [...classification.reasons, 'registrar enrichment skipped by deadline'],
 			};
+		}
+		// Sprawl quality gate — if the classifier routed to shadowIt /
+		// owned_off_primary_registrar, the downstream sidecar will materialise this
+		// as a customer-visible "Real Shadow IT" claim with $-denominated ARR math
+		// (test/helpers/discovery-report-model.ts builds registrarSprawl[] +
+		// arrOpportunity from these). The classifier already filters on confidence
+		// and signal mix, but nothing further upstream prevents a regression
+		// (e.g. classifier-threshold drop, signal-counter bug, registrar lookup
+		// degradation) from re-polluting Shadow IT with low-evidence items. Validate
+		// the projected sprawl shape against the documented minimum-quality bar
+		// (`sprawl-invariants.ts`); anything that fails is downgraded to
+		// indeterminate/manual_review the same way enrichment-deadline misses are
+		// handled directly above. The note + reasons trail makes the demotion
+		// debuggable from the report sidecar.
+		if (classification.bucket === 'shadowIt' && classification.relationshipType === 'owned_off_primary_registrar') {
+			const projectedSprawlItem = {
+				domain,
+				bucket: classification.bucket,
+				relationshipType: classification.relationshipType,
+				// `evidence` is materialised downstream by the sidecar formatter; the
+				// pipeline's contract here is the underlying signal/confidence/registrar
+				// inputs. Synthesise a stand-in so the validator's `evidence` check
+				// passes iff there is at least one signal to render — a sprawl claim
+				// with zero signals would already fail the `signals.length >= 2` rule
+				// below, making the stand-in a structural placeholder, not data.
+				evidence: signals.length > 0 ? signals.join(', ') : '',
+				registrar: lookup.registrar,
+				registrarSource: lookup.registrarSource,
+				signals,
+				combinedConfidence: confidence,
+				reasons: classification.reasons,
+			};
+			const sprawlCheck = validateSprawlItem(projectedSprawlItem);
+			if (!sprawlCheck.ok) {
+				classification = {
+					bucket: 'indeterminate',
+					confidenceTier: classification.confidenceTier,
+					relationshipType: 'manual_review',
+					note: `Sprawl invariants failed: ${sprawlCheck.reason}`,
+					reasons: [...classification.reasons, `sprawl invariants failed: ${sprawlCheck.reason}`],
+				};
+			}
 		}
 		bucketCounts[classification.bucket]++;
 		const severity = BUCKET_SEVERITY[classification.bucket];
@@ -824,6 +894,7 @@ export async function runBrandAuditPipeline(
 		const detailParts = [
 			`bucket=${classification.bucket}`,
 			`confidence=${classification.confidenceTier}`,
+			`relationship=${classification.relationshipType}`,
 			classification.note ? `note=${classification.note}` : null,
 			`registrar=${lookup.registrar} (${lookup.registrarSource})`,
 			`signals=[${signals.join(', ')}]`,
@@ -831,7 +902,7 @@ export async function runBrandAuditPipeline(
 		].filter((p): p is string => p !== null);
 
 		// T9 — stamp tier provenance + impersonation-surface fields on classified
-		// findings so the v3 sidecar renderer (and bv-web reader) can split the
+		// findings so the tiered sidecar renderer (and bv-web reader) can split the
 		// owned portfolio + render the impersonationSurface[] array without
 		// re-parsing observation metadata. `tier`/`scoreAlertContext` are
 		// undefined in classic-mode runs (classification.tier never set), so the
@@ -843,6 +914,7 @@ export async function runBrandAuditPipeline(
 			candidate: domain,
 			bucket: classification.bucket,
 			confidenceTier: classification.confidenceTier,
+			relationshipType: classification.relationshipType,
 			note: classification.note,
 			reasons: classification.reasons,
 			signals,

@@ -58,6 +58,82 @@ describe('brand report QA script behavior', () => {
 		}
 	});
 
+	it('accepts qa schema v4 sidecars with relationship sections', () => {
+		const workspace = makeWorkspace();
+		try {
+			writeReportPair(workspace.reportsDir, {
+				qaSchemaVersion: 4,
+				discoveryMode: 'tiered',
+				performance: {
+					stepStatusCounts: { completed: 1, partial: 0, failed: 0, skipped: 0 },
+					steps: [
+						{ name: 'discovery', status: 'completed', startedAtMs: 1000, finishedAtMs: 1100, elapsedMs: 100 },
+					],
+					tiers: {
+						tier0Count: 0,
+						tier1Count: 0,
+						tier2Count: 0,
+						tier3Count: 1,
+						tier4Count: 0,
+						tier0Status: 'ok',
+						tier1Status: 'ok',
+						tier2Status: 'ok',
+						tier3FallbackTriggered: 0,
+						optOutsFiltered: 0,
+					},
+				},
+				relationshipSchemaVersion: 1,
+				ownedPortfolio: {
+					tenantDeclared: [],
+					graphSurfaced: [],
+					declaredEvidence: [],
+					inferred: { consolidated: [], shadowIt: [], indeterminate: [] },
+				},
+				registrarSprawl: [],
+				vendorDependencies: [],
+				impersonationSurface: [],
+			});
+			const result = runQa(workspace.reportsDir, fakePdfinfo(workspace.root, { status: 0, stdout: 'Pages: 2\n' }));
+
+			expect(result.status).toBe(0);
+			expect(result.stdout).toContain('"ok": true');
+		} finally {
+			rmSync(workspace.root, { recursive: true, force: true });
+		}
+	});
+
+	it('rejects qa schema v4 sidecars missing relationship sections', () => {
+		const workspace = makeWorkspace();
+		try {
+			writeReportPair(workspace.reportsDir, {
+				qaSchemaVersion: 4,
+				discoveryMode: 'tiered',
+				performance: {
+					stepStatusCounts: { completed: 1, partial: 0, failed: 0, skipped: 0 },
+					steps: [
+						{ name: 'discovery', status: 'completed', startedAtMs: 1000, finishedAtMs: 1100, elapsedMs: 100 },
+					],
+					tiers: {},
+				},
+				ownedPortfolio: {
+					tenantDeclared: [],
+					graphSurfaced: [],
+					declaredEvidence: [],
+					inferred: { consolidated: [], shadowIt: [], indeterminate: [] },
+				},
+				impersonationSurface: [],
+			});
+			const result = runQa(workspace.reportsDir, fakePdfinfo(workspace.root, { status: 0, stdout: 'Pages: 2\n' }));
+
+			expect(result.status).toBe(1);
+			expect(result.stdout).toContain('missing relationshipSchemaVersion');
+			expect(result.stdout).toContain('missing registrarSprawl');
+			expect(result.stdout).toContain('missing vendorDependencies');
+		} finally {
+			rmSync(workspace.root, { recursive: true, force: true });
+		}
+	});
+
 	it('rejects malformed JSON sidecars and empty PDFs', () => {
 		const workspace = makeWorkspace();
 		try {

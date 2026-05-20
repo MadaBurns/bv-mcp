@@ -455,7 +455,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	brand_audit_single: {
 		description:
-			"Run a full brand audit on a single target with optional standard/deep discovery depth, brand aliases, and caller-supplied candidate domains. Discovers brand-related domains, looks up registrar + registrant for each candidate, and classifies each into consolidated, shadowIt, indeterminate, or impersonation. Gated tier-wide by monthly BRAND_AUDIT_QUOTAS (free/agent=0, developer=50, partner=200, enterprise=500, owner=unlimited).",
+			"Run a full brand audit on a single target with optional standard/deep discovery depth, brand aliases, and caller-supplied candidate domains. Discovers brand-related domains, looks up registrar + registrant for each candidate, and classifies each into consolidated, real registrar-sprawl shadowIt, authorized vendor dependency, indeterminate, or impersonation relationships. Gated tier-wide by monthly BRAND_AUDIT_QUOTAS (free/agent=0, developer=50, partner=200, enterprise=500, owner=unlimited).",
 		schema: BrandAuditSingleArgs,
 		group: 'discovery',
 		scanIncluded: false,

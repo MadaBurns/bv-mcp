@@ -82,6 +82,8 @@ wrangler.production.jsonc
 # Must un-ignore directory first, then re-ignore contents, then whitelist settings
 .claude/*
 !.claude/settings.json
+!.claude/hooks/
+!.claude/hooks/*.sh
 .gemini/
 
 # Workspace

@@ -391,7 +391,7 @@ describe('brandAuditSingle', () => {
 			};
 		}
 
-		it('shadowIt — candidate on disjoint provider but shares a TXT verification token (google-site-verification)', async () => {
+		it('vendor dependency — candidate on disjoint provider but shares a TXT verification token', async () => {
 			const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
 			const rdapSpy = vi.fn().mockImplementation((domain: string) => {
 				if (domain === 'example.com') return Promise.resolve(rdapResult('MarkMonitor Inc.', 'rdap', 'Example Inc.'));
@@ -411,7 +411,8 @@ describe('brandAuditSingle', () => {
 			});
 			const result = await brandAuditSingle('example.com', { min_confidence: 0.4 }, deps);
 			const cand = result.findings.find((f) => f.metadata?.candidate === 'example-shop.com');
-			expect(cand?.metadata?.bucket).toBe('shadowIt');
+			expect(cand?.metadata?.bucket).toBe('indeterminate');
+			expect(cand?.metadata?.relationshipType).toBe('authorized_vendor_dependency');
 		});
 
 		it('indeterminate — candidate only points at the same broad mail platform as target', async () => {

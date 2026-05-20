@@ -23,6 +23,26 @@ tech
 online
 io
 sh
+email
+global
+group
+life
+live
+media
+news
+services
+software
+solutions
+support
+systems
+technology
+tools
+
+# auDA
+au
+
+# Traficom
+fi
 
 # .CO Internet
 co

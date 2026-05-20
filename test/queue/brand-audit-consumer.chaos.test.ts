@@ -64,6 +64,10 @@ describe('processBrandAuditMessage — budget chaos', () => {
 		vi.useRealTimers();
 	});
 
+	it('keeps the queue budget aligned with the report runner target budget', () => {
+		expect(BRAND_AUDIT_MESSAGE_TIMEOUT_MS).toBe(300_000);
+	});
+
 	it('flips the target row to failed from this Worker invocation when the orchestrator exceeds budget', async () => {
 		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
 		const { db, calls } = makeMockD1({ status: 'queued', completed_at: null });

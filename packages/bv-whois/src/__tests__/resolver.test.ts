@@ -34,6 +34,27 @@ describe('resolveWhoisServer', () => {
 		expect(whoisQuery).not.toHaveBeenCalled();
 	});
 
+	it('returns hardcoded ccTLD servers even when stale negative cache entries exist', async () => {
+		const kv = makeMemoryKV();
+		await kv.put('iana:cl', JSON.stringify({ server: null }), { expirationTtl: IANA_TTL_SECONDS });
+		const whoisQuery = vi.fn();
+
+		const result = await resolveWhoisServer('cl', { kv: kv as never, whoisQuery });
+
+		expect(result).toBe('whois.nic.cl');
+		expect(whoisQuery).not.toHaveBeenCalled();
+	});
+
+	it('uses the current TRABIS WHOIS server for .tr', async () => {
+		const kv = makeMemoryKV();
+		const whoisQuery = vi.fn();
+
+		const result = await resolveWhoisServer('tr', { kv: kv as never, whoisQuery });
+
+		expect(result).toBe('whois.trabis.gov.tr');
+		expect(whoisQuery).not.toHaveBeenCalled();
+	});
+
 	it('queries IANA on cache miss for unknown TLD', async () => {
 		const kv = makeMemoryKV();
 		const whoisQuery: WhoisQueryFn = vi.fn(async (server: string, query: string) => {

@@ -66,7 +66,7 @@ describe('brand-discovery tier replay script safety', () => {
 		expect(source).toMatch(/replace\(\s*\/\[\^a-z0-9\.-\]/i);
 	});
 
-	it('extracts owned portfolio and tier metrics from the v3 sidecar shape', () => {
+	it('extracts owned portfolio and tier metrics from the tiered sidecar shape', () => {
 		expect(source).toContain('sidecar.ownedPortfolio?.total');
 		expect(source).toContain('sidecar.performance?.tiers');
 	});
