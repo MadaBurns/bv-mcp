@@ -464,6 +464,22 @@ function isGeneratedSeedSignal(signal: DiscoverSignal): boolean {
 	return signal === 'markov_gen' || signal === 'active_lookalike';
 }
 
+function tierFromSource(source: unknown): 0 | 1 | 2 | 3 | 4 | undefined {
+	if (!source || typeof source !== 'object' || Array.isArray(source)) return undefined;
+	const tier = (source as { tier?: unknown }).tier;
+	return tier === 0 || tier === 1 || tier === 2 || tier === 3 || tier === 4 ? tier : undefined;
+}
+
+function specificityFromSource(source: unknown): number | undefined {
+	if (!source || typeof source !== 'object' || Array.isArray(source)) return undefined;
+	const specificityScore = (source as { specificityScore?: unknown }).specificityScore;
+	return typeof specificityScore === 'number' ? specificityScore : undefined;
+}
+
+function isTieredSyntheticObservation(signal: DiscoverSignal, source: unknown): boolean {
+	return signal === 'markov_gen' && tierFromSource(source) !== undefined;
+}
+
 // Infrastructure-provider allowlist + match helpers live in a shared module so
 // the dmarc-rua miner can consume the same source of truth. Re-exported here
 // so existing test imports (test/audits/infrastructure-providers.audit.test.ts)
@@ -1460,13 +1476,21 @@ export async function discoverBrandDomains(
 		const perSignal = Array.from(entry.perSignalConfidence.entries());
 
 		const signalKinds = perSignal.map(([k]) => k).sort() as DiscoverSignal[];
-		const evidenceObservations = perSignal.map(([signal, confidence]) => ({
-			signal,
-			confidence,
-			metadata: typeof entry.sources[signal] === 'object' && entry.sources[signal] !== null && !Array.isArray(entry.sources[signal])
-				? (entry.sources[signal] as Record<string, unknown>)
-				: undefined,
-		})) satisfies BrandEvidenceObservation[];
+		const evidenceObservations = perSignal.map(([signal, confidence]) => {
+			const source = entry.sources[signal];
+			const metadata = typeof source === 'object' && source !== null && !Array.isArray(source)
+				? (source as Record<string, unknown>)
+				: undefined;
+			const tier = tierFromSource(source);
+			const specificityScore = specificityFromSource(source);
+			return {
+				signal,
+				confidence,
+				...(metadata ? { metadata } : {}),
+				...(tier !== undefined ? { tier } : {}),
+				...(specificityScore !== undefined ? { specificityScore } : {}),
+			};
+		}) satisfies BrandEvidenceObservation[];
 		const lookalikeScore = round4(d.domainLabelSimilarity(seedDomain, entry.domain));
 		entry.lookalikeScore = lookalikeScore;
 
@@ -1486,7 +1510,9 @@ export async function discoverBrandDomains(
 			continue;
 		}
 
-		const scoredSignals = perSignal.filter(([signal]) => !isGeneratedSeedSignal(signal));
+		const scoredSignals = perSignal.filter(
+			([signal]) => !isGeneratedSeedSignal(signal) || isTieredSyntheticObservation(signal, entry.sources[signal]),
+		);
 		const combined = round4(combineConfidences(scoredSignals.map(([, c]) => c)));
 		if (combined < minConfidence) {
 			dropCounts.belowConfidence++;

@@ -1002,6 +1002,35 @@ describe('discoverBrandDomains — discovery_mode=tiered', () => {
 		expect(correlateNs).not.toHaveBeenCalled();
 	});
 
+	it('surfaces high-specificity tier1 observations without tier3 corroboration', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const correlateNs = vi.fn().mockResolvedValue(okNs([]));
+		const tieredDeps = {
+			...makeDeps({ correlateNs }),
+			tier0Lookup: vi.fn().mockResolvedValue(tier0Empty()),
+			tier1Lookup: vi.fn().mockResolvedValue(tier1Ok('infra-graph.example.net', FRESH_FRESHNESS)),
+			tier2Lookup: vi.fn().mockResolvedValue(tier2Empty()),
+		};
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ discovery_mode: 'tiered', signals: ['ns'], candidate_domains: [], min_confidence: 0.1 },
+			tieredDeps as unknown as DiscoverBrandDomainsDeps,
+		);
+
+		const candidate = result.findings.find((f) => f.metadata?.candidate === 'infra-graph.example.net');
+		expect(candidate?.metadata?.combinedConfidence).toBeGreaterThanOrEqual(0.8);
+		expect(candidate?.metadata?.evidenceObservations).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					signal: 'markov_gen',
+					tier: 1,
+					specificityScore: 0.9,
+				}),
+			]),
+		);
+		expect(correlateNs).not.toHaveBeenCalled();
+	});
+
 	it('triggers tier3 fallback when tier1 freshness is very_stale', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const correlateNs = vi.fn().mockResolvedValue(okNs([]));
