@@ -4,7 +4,7 @@ These settings must be configured manually in the GitHub web UI.
 
 ## Repository description
 
-Set to: `Source-available DNS & email security scanner for MCP clients. 57 MCP tools for SPF, DMARC, DKIM, DNSSEC, SSL/TLS, brand audit, and more.`
+Set to: `Source-available DNS & email security scanner for MCP clients. 59 MCP tools for SPF, DMARC, DKIM, DNSSEC, SSL/TLS, brand audit, authoritative DNS infrastructure, and more.`
 
 ## Repository topics
 
@@ -34,6 +34,8 @@ Require branches to be up to date before merge, block force pushes, block branch
 ## Required Checks
 
 The required checks must include gitleaks, the repo safety scanner, OSS fixture safety, npm publish surface audit, and BUSL positioning audit. Do not make workflow edits that remove these gates without replacing them with an equivalent required check.
+
+The paid `MadaBurns/blackveil-dns-action` workflow is intentionally disabled as `.github/workflows/dns-security.yml.disabled`. Do not re-enable it for push, pull request, or scheduled CI/CD unless an operator explicitly accepts the billing surface.
 
 ## Exposure Cleanup
 
