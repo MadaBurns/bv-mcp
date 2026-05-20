@@ -4,6 +4,12 @@ import hygieneWorkflow from '../../.github/workflows/repo-hygiene.yml?raw';
 import packageJsonText from '../../package.json?raw';
 
 const packageJson = JSON.parse(packageJsonText) as { scripts?: Record<string, string> };
+const activeWorkflowModules = import.meta.glob('../../.github/workflows/*.yml', {
+	query: '?raw',
+	import: 'default',
+	eager: true,
+});
+const activeWorkflows = Object.entries(activeWorkflowModules) as Array<[string, string]>;
 
 describe('workflow safety gates', () => {
 	it('security and repo hygiene workflows run on push and pull_request', () => {
@@ -30,5 +36,11 @@ describe('workflow safety gates', () => {
 		expect(packageJson.scripts?.['audit:oss-safety']).toContain('no-tracked-secrets.audit.test.ts');
 		expect(packageJson.scripts?.['audit:oss-safety']).toContain('npm-publish-surface.audit.test.ts');
 		expect(packageJson.scripts?.['audit:oss-safety']).toContain('busl-positioning.audit.test.ts');
+	});
+
+	it('does not run paid DNS scan actions from active CI/CD workflows', () => {
+		for (const [path, body] of activeWorkflows) {
+			expect(body, `${path} must not invoke the paid DNS scan action`).not.toContain('MadaBurns/blackveil-dns-action');
+		}
 	});
 });

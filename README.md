@@ -113,6 +113,14 @@ Transport support:
   + check_authoritative_dns_infra and check_root_server_set (authoritative DNS infrastructure profile)
 ```
 
+### Authoritative DNS infrastructure
+
+`check_authoritative_dns_infra` scores authoritative DNS hosting behavior for a hostname. It is designed to consume raw UDP/TCP DNS, authoritative AA/RA behavior, zone-transfer refusal, DNSSEC, abuse-resistance, BGP/RPKI, and multi-vantage evidence from the `BV_INFRA_PROBE` service binding when that worker is provisioned.
+
+`check_root_server_set` validates the DNS root-server set against the embedded official root hints. With `BV_INFRA_PROBE`, it also checks live root priming, glue, parent/child delegation, DNSKEY, and SOA serial evidence across roots.
+
+Self-hosted or local deployments without `BV_INFRA_PROBE` still return structured partial results. The worker-only mode records the embedded root hints and marks live raw-DNS, routing, RPKI, and vantage capabilities as inconclusive rather than pretending they ran.
+
 ---
 
 ## Quality & Reliability
@@ -163,6 +171,7 @@ Run the chaos tests locally: `python3 scripts/chaos/chaos-test-clients.py`
 ```
 
 - **Generic Scoring Engine**: Runtime-agnostic, string-keyed three-tier scoring with configurable weights
+- **Infra Probe Binding**: Optional `BV_INFRA_PROBE` service binding supplies raw authoritative DNS, root-server, BGP/RPKI, and vantage evidence for the authoritative DNS infrastructure profile
 - **WASM Policy Engine**: High-performance permission and token checks via `bv-wasm-core`
 - **Reliable Sessions**: Hardened tombstone logic prevents race-condition revival of terminated sessions
 - **Adaptive Scoring**: Durable Object telemetry adjusts weights based on real-world distributions

@@ -1,5 +1,10 @@
 name: DNS Security Check
 
+# Disabled intentionally: this workflow invokes the paid
+# MadaBurns/blackveil-dns-action GitHub Action. Keep the hosted CI/CD path on
+# repository-local validation unless an operator deliberately re-enables this
+# file and accepts the billing surface.
+#
 on:
   push:
     branches: [main]
