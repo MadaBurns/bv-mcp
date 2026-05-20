@@ -44,8 +44,10 @@ function commitExists(sha) {
 function rangeForRef(localSha, remoteSha) {
 	if (!localSha || localSha === ZERO_SHA) return null;
 	if (!commitExists(localSha)) return null;
-	if (remoteSha && remoteSha !== ZERO_SHA && commitExists(remoteSha)) return `${remoteSha}..${localSha}`;
-	const base = tryGit(['merge-base', localSha, 'origin/main']) || tryGit(['merge-base', localSha, 'main']);
+	if (remoteSha && remoteSha !== ZERO_SHA) {
+		return commitExists(remoteSha) ? `${remoteSha}..${localSha}` : localSha;
+	}
+	const base = tryGit(['merge-base', localSha, 'origin/main']);
 	return base ? `${base}..${localSha}` : localSha;
 }
 

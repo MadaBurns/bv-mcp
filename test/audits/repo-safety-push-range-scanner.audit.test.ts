@@ -16,6 +16,7 @@ function git(cwd: string, args: string[]): string {
 function makeRepo(): string {
 	const repo = mkdtempSync(join(tmpdir(), 'bv-mcp-push-range-'));
 	git(repo, ['init', '--quiet']);
+	git(repo, ['branch', '-M', 'main']);
 	git(repo, ['config', 'user.email', 'dev@example.test']);
 	git(repo, ['config', 'user.name', 'Repo Safety Test']);
 	return repo;
