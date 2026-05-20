@@ -51,6 +51,7 @@ import { checkNsecWalkability } from '../tools/check-nsec-walkability';
 import { checkDnssecChain } from '../tools/check-dnssec-chain';
 import { checkFastFlux } from '../tools/check-fast-flux';
 import { checkAuthoritativeDnsInfra } from '../tools/check-authoritative-dns-infra';
+import { checkRootServerSet } from '../tools/check-root-server-set';
 import { discoverBrandDomains } from '../tools/discover-brand-domains';
 import { brandAuditSingle } from '../tools/brand-audit-single';
 import { brandAuditBatchStart } from '../tools/brand-audit-batch-start';
@@ -241,6 +242,11 @@ const TOOL_REGISTRY: Record<
 	check_authoritative_dns_infra: {
 		cacheKey: () => 'authoritative_dns_infra',
 		execute: (d, _args, ro) => checkAuthoritativeDnsInfra(d, { infraProbe: ro?.infraProbe }),
+	},
+	check_root_server_set: {
+		cacheKey: () => 'root_server_set',
+		execute: (_d, _args, ro) => checkRootServerSet({ infraProbe: ro?.infraProbe }),
+		cacheable: false,
 	},
 	discover_brand_domains: {
 		cacheKey: (args) => {
@@ -527,6 +533,7 @@ export async function handleToolsCall(
 		// (skip for explain_finding, get_benchmark, get_provider_insights which don't require a domain)
 		const DOMAIN_OPTIONAL_TOOLS = new Set([
 			'explain_finding', 'get_benchmark', 'get_provider_insights', 'batch_scan', 'compare_domains',
+			'check_root_server_set',
 			// v2.21+ brand-audit tools — take `domains[]`, `auditId`, or `action` instead of `domain`.
 			'brand_audit_batch_start', 'brand_audit_status', 'brand_audit_get_report', 'brand_audit_watch',
 		]);
