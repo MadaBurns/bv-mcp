@@ -207,6 +207,11 @@ jobs:
       - name: Build WASM
         run: npm run build:wasm
 
+      - name: Deploy infra probe
+        run: npx wrangler deploy -c wrangler.infra-probe.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
       - name: Deploy
         run: npx wrangler deploy -c wrangler.jsonc
         env:
