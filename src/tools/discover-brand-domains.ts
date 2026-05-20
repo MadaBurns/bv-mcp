@@ -500,6 +500,44 @@ function isTieredSyntheticObservation(signal: DiscoverSignal, source: unknown): 
 	return signal === 'markov_gen' && tierFromSource(source) !== undefined;
 }
 
+const TIER1_GRAPH_SIGNAL_MAP: Partial<Record<string, DiscoverSignal>> = {
+	ns: 'ns',
+	dkim_key_reuse: 'dkim_key_reuse',
+	spf_include: 'spf_include',
+	txt_verification: 'txt_verification',
+	cname_alignment: 'cname_alignment',
+	http_redirect: 'http_redirect',
+	dmarc_rua: 'dmarc_rua',
+	mx_overlap: 'mx_overlap',
+	mx_platform: 'mx_platform',
+	san: 'san',
+	cert_san: 'san',
+};
+
+function graphSignalForTieredObservation(obs: { tier: 0 | 1 | 2 | 4; metadata: Record<string, unknown> }): DiscoverSignal {
+	if (obs.tier !== 1) return 'markov_gen';
+	const raw = typeof obs.metadata.signalType === 'string' ? obs.metadata.signalType.trim().toLowerCase() : '';
+	return TIER1_GRAPH_SIGNAL_MAP[raw] ?? 'markov_gen';
+}
+
+function buildEvidenceObservations(entry: CandidateAggregator): BrandEvidenceObservation[] {
+	return Array.from(entry.perSignalConfidence.entries()).map(([signal, confidence]) => {
+		const source = entry.sources[signal];
+		const metadata = typeof source === 'object' && source !== null && !Array.isArray(source)
+			? (source as Record<string, unknown>)
+			: undefined;
+		const tier = tierFromSource(source);
+		const specificityScore = specificityFromSource(source);
+		return {
+			signal,
+			confidence,
+			...(metadata ? { metadata } : {}),
+			...(tier !== undefined ? { tier } : {}),
+			...(specificityScore !== undefined ? { specificityScore } : {}),
+		};
+	}) satisfies BrandEvidenceObservation[];
+}
+
 // Infrastructure-provider allowlist + match helpers live in a shared module so
 // the dmarc-rua miner can consume the same source of truth. Re-exported here
 // so existing test imports (test/audits/infrastructure-providers.audit.test.ts)
@@ -608,13 +646,9 @@ export async function discoverBrandDomains(
 		optOutsFiltered: number;
 	}
 	let tieredState: TieredState | null = null;
-	// Default flipped from 'observe' to 'enforce' after the planner cap-tuning
-	// was validated against production (walmart/bankofamerica/marriott: 44.8%
-	// probe reduction, zero surfaced/bucket regressions) and against a chaos
-	// suite covering low-yield-signal failure, high-yield-signal failure, and
-	// guarded caller-asserted candidates under aggressive caps. Callers can
-	// still opt out per-request with `planner_mode: 'observe'` or `'off'`.
-	const plannerMode = options.planner_mode ?? 'enforce';
+	// Recall-first default. `enforce` remains caller-selectable for benchmarked
+	// runs, but reports must not implicitly prune candidate-backed probes.
+	const plannerMode = options.planner_mode ?? 'observe';
 	const recordCandidateSignalProbes = (signal: DiscoverSignal, candidates: string[]): string[] => {
 		candidateBackedSignalProbes[signal] = candidates.length;
 		return candidates;
@@ -920,10 +954,9 @@ export async function discoverBrandDomains(
 			if (obs.tier === 0 || obs.tier === 2) {
 				callerAssertedDomains.add(obs.candidate.trim().toLowerCase().replace(/\.$/, ''));
 			}
-			// Tier observations live on the `markov_gen` signal key. The metadata
-			// blob carries the real tier + source for the ownership gate and T8
-			// classifier to read.
-			addObservation(aggregator, obs.candidate, 'markov_gen', obs.confidence, {
+			// Tier 1 graph observations preserve their supported signal type while
+			// retaining graph provenance in metadata for the ownership gate.
+			addObservation(aggregator, obs.candidate, graphSignalForTieredObservation(obs), obs.confidence, {
 				tier: obs.tier,
 				source: obs.source,
 				...obs.metadata,
@@ -938,19 +971,28 @@ export async function discoverBrandDomains(
 			else if (obs.tier === 4) tieredState.tier4Count++;
 		}
 
+		const hasTieredSurfaceableOwnershipCandidate = (): boolean => {
+			for (const entry of aggregator.values()) {
+				if (isSubdomainOf(entry.domain, seedDomain)) continue;
+				const observations = buildEvidenceObservations(entry);
+				const hasTieredOwnershipObservation = observations.some((observation) =>
+					observation.tier === 0 || observation.tier === 1 || observation.tier === 2,
+				);
+				if (!hasTieredOwnershipObservation) continue;
+				if (clearsOwnershipGate(observations, { callerAsserted: callerAssertedDomains.has(entry.domain) })) return true;
+			}
+			return false;
+		};
+
 		// ---- Tier 3 decision ----
-		// Per the source-of-truth plan §521-524 (and reconciled with the task
-		// description test at "fresh → no Tier 3 fallback"):
-		//   - tier1Freshness === 'very_stale', OR
-		//   - Tier 1 returned no candidates AND tier1Freshness !== 'fresh', OR
-		//   - caller_candidates present and not covered by Tier 0/1/2.
+		// Run the legacy live sweep when the tiered pre-pass is stale, when it
+		// did not produce at least one candidate that can clear the ownership
+		// gate, or when caller-supplied candidates remain uncovered.
 		const tier1FreshnessStaleness =
 			tieredState.tier1Freshness && typeof tieredState.tier1Freshness.overallStaleness === 'string'
 				? (tieredState.tier1Freshness.overallStaleness as string)
 				: undefined;
-		const tier1Fresh = tier1FreshnessStaleness === 'fresh';
 		const tier1VeryStale = tier1FreshnessStaleness === 'very_stale';
-		const tier1HadCandidates = tieredState.tier1Count > 0;
 		const coveredByTiers = new Set(
 			tieredObservations.map((o) => o.candidate.trim().toLowerCase().replace(/\.$/, '')),
 		);
@@ -959,7 +1001,8 @@ export async function discoverBrandDomains(
 			.map((dom) => dom.trim().toLowerCase().replace(/\.$/, ''))
 			.filter((dom) => dom.length > 0);
 		const uncoveredCaller = callerNorm.some((dom) => !coveredByTiers.has(dom));
-		const shouldRunTier3 = tier1VeryStale || (!tier1HadCandidates && !tier1Fresh) || uncoveredCaller;
+		const tieredSurfaceable = hasTieredSurfaceableOwnershipCandidate();
+		const shouldRunTier3 = tier1VeryStale || !tieredSurfaceable || uncoveredCaller;
 		runTier3 = shouldRunTier3;
 		tieredState.tier3FallbackTriggered = shouldRunTier3 ? 1 : 0;
 
@@ -969,6 +1012,7 @@ export async function discoverBrandDomains(
 			tier2Count: tieredState.tier2Count,
 			tier4Count: tieredState.tier4Count,
 			tier3FallbackTriggered: tieredState.tier3FallbackTriggered,
+			tieredSurfaceable,
 			optOutsFiltered: tieredState.optOutsFiltered,
 		});
 	}
@@ -1497,21 +1541,7 @@ export async function discoverBrandDomains(
 		const perSignal = Array.from(entry.perSignalConfidence.entries());
 
 		const signalKinds = perSignal.map(([k]) => k).sort() as DiscoverSignal[];
-		const evidenceObservations = perSignal.map(([signal, confidence]) => {
-			const source = entry.sources[signal];
-			const metadata = typeof source === 'object' && source !== null && !Array.isArray(source)
-				? (source as Record<string, unknown>)
-				: undefined;
-			const tier = tierFromSource(source);
-			const specificityScore = specificityFromSource(source);
-			return {
-				signal,
-				confidence,
-				...(metadata ? { metadata } : {}),
-				...(tier !== undefined ? { tier } : {}),
-				...(specificityScore !== undefined ? { specificityScore } : {}),
-			};
-		}) satisfies BrandEvidenceObservation[];
+		const evidenceObservations = buildEvidenceObservations(entry);
 		const lookalikeScore = round4(d.domainLabelSimilarity(seedDomain, entry.domain));
 		entry.lookalikeScore = lookalikeScore;
 

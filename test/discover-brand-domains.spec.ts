@@ -165,6 +165,7 @@ describe('discoverBrandDomains', () => {
 				signals: ['ns', 'mx_platform'],
 				candidate_domains: ['shop.example.net', 'pay.example.net', 'login.example.net'],
 				min_confidence: 0.1,
+				planner_mode: 'enforce',
 			},
 			deps,
 		);
@@ -180,11 +181,9 @@ describe('discoverBrandDomains', () => {
 		});
 	});
 
-	it('defaults plannerMode to "enforce" when caller omits planner_mode', async () => {
-		// Default flipped from 'observe' → 'enforce' after live + chaos validation
-		// (44.8% probe reduction, zero recall regressions on walmart/bofa/marriott
-		// + 3 chaos hypotheses on signal-failure recall held). Locking the default
-		// here so an accidental revert to 'observe' is caught by CI.
+	it('defaults plannerMode to "observe" when caller omits planner_mode', async () => {
+		// Discovery defaults to recall-first observe mode. Enforce is still
+		// caller-selectable, but must not be the implicit mode for reports.
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const result = await discoverBrandDomains(
 			'example.com',
@@ -195,7 +194,7 @@ describe('discoverBrandDomains', () => {
 		);
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
 		const efficiency = (summary?.metadata?.discoveryPerformance as { efficiency?: { plannerMode?: string } } | undefined)?.efficiency;
-		expect(efficiency?.plannerMode).toBe('enforce');
+		expect(efficiency?.plannerMode).toBe('observe');
 	});
 
 	it('surfaces bounty-scope failed platform details in signal status and telemetry', async () => {
@@ -919,7 +918,7 @@ describe('discoverBrandDomains — discovery_mode=tiered', () => {
 	function tier1Empty(freshness = FRESH_FRESHNESS): unknown {
 		return { observations: [], status: 'ok', triggerTier3Fallback: false, freshness };
 	}
-	function tier1Ok(candidate: string, freshness = FRESH_FRESHNESS): unknown {
+	function tier1Ok(candidate: string, freshness = FRESH_FRESHNESS, signalType = 'ns'): unknown {
 		return {
 			observations: [
 				{
@@ -928,11 +927,11 @@ describe('discoverBrandDomains — discovery_mode=tiered', () => {
 					tier: 1,
 					confidence: 0.8,
 					specificityScore: 0.9,
-					signalType: 'soa_admin',
-					signalValue: 'admin@example.com',
+					signalType,
+					signalValue: `${signalType}:synthetic`,
 					numSharedSignals: 1,
 					maxSpecificity: 0.9,
-					signalTypes: ['soa_admin'],
+					signalTypes: [signalType],
 				},
 			],
 			status: 'ok',
@@ -981,7 +980,7 @@ describe('discoverBrandDomains — discovery_mode=tiered', () => {
 		});
 	});
 
-	it('does not trigger tier3 live sweep when tier1 freshness is fresh and returns candidates', async () => {
+	it('does not trigger tier3 live sweep when fresh tier1 returns surfacable deterministic candidates', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const correlateNs = vi.fn().mockResolvedValue(okNs([]));
 		const tieredDeps = {
@@ -1002,7 +1001,7 @@ describe('discoverBrandDomains — discovery_mode=tiered', () => {
 		expect(correlateNs).not.toHaveBeenCalled();
 	});
 
-	it('surfaces high-specificity tier1 observations without tier3 corroboration', async () => {
+	it('surfaces deterministic tier1 observations without tier3 corroboration and preserves the graph signal type', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const correlateNs = vi.fn().mockResolvedValue(okNs([]));
 		const tieredDeps = {
@@ -1022,13 +1021,56 @@ describe('discoverBrandDomains — discovery_mode=tiered', () => {
 		expect(candidate?.metadata?.evidenceObservations).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
-					signal: 'markov_gen',
+					signal: 'ns',
 					tier: 1,
 					specificityScore: 0.9,
 				}),
 			]),
 		);
 		expect(correlateNs).not.toHaveBeenCalled();
+	});
+
+	it('triggers tier3 fallback when fresh tier1 returns no candidates', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const detectDkimKeyReuse = vi.fn().mockResolvedValue(okDkim(['regional-example.net']));
+		const tieredDeps = {
+			...makeDeps({ detectDkimKeyReuse }),
+			tier0Lookup: vi.fn().mockResolvedValue(tier0Empty()),
+			tier1Lookup: vi.fn().mockResolvedValue(tier1Empty(FRESH_FRESHNESS)),
+			tier2Lookup: vi.fn().mockResolvedValue(tier2Empty()),
+		};
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ discovery_mode: 'tiered', signals: ['dkim_key_reuse'], candidate_domains: [], min_confidence: 0.1 },
+			tieredDeps as unknown as DiscoverBrandDomainsDeps,
+		);
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		const tiers = (summary?.metadata?.discoveryPerformance as { tiers?: Record<string, unknown> } | undefined)?.tiers;
+		expect(tiers?.tier3FallbackTriggered).toBe(1);
+		expect(detectDkimKeyReuse).toHaveBeenCalled();
+		expect(result.findings.some((f) => f.metadata?.candidate === 'regional-example.net')).toBe(true);
+	});
+
+	it('triggers tier3 fallback when fresh tier1 graph observations do not clear the ownership gate', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const detectDkimKeyReuse = vi.fn().mockResolvedValue(okDkim(['regional-example.net']));
+		const tieredDeps = {
+			...makeDeps({ detectDkimKeyReuse }),
+			tier0Lookup: vi.fn().mockResolvedValue(tier0Empty()),
+			tier1Lookup: vi.fn().mockResolvedValue(tier1Ok('weak-graph.example.net', FRESH_FRESHNESS, 'soa_admin')),
+			tier2Lookup: vi.fn().mockResolvedValue(tier2Empty()),
+		};
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ discovery_mode: 'tiered', signals: ['dkim_key_reuse'], candidate_domains: [], min_confidence: 0.1 },
+			tieredDeps as unknown as DiscoverBrandDomainsDeps,
+		);
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		const tiers = (summary?.metadata?.discoveryPerformance as { tiers?: Record<string, unknown> } | undefined)?.tiers;
+		expect(tiers?.tier3FallbackTriggered).toBe(1);
+		expect(detectDkimKeyReuse).toHaveBeenCalled();
+		expect(result.findings.some((f) => f.metadata?.candidate === 'regional-example.net')).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.candidate === 'weak-graph.example.net')).toBe(false);
 	});
 
 	it('triggers tier3 fallback when tier1 freshness is very_stale', async () => {

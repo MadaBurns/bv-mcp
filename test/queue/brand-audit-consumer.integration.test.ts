@@ -199,6 +199,27 @@ describe('processBrandAuditMessage', () => {
 		);
 	});
 
+	it('passes the WHOIS service binding into brandAuditSingle deps for queued audits', async () => {
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db } = makeMockD1({
+			target: { status: 'queued', completed_at: null },
+			auditAfter: { completed_targets: 1, total_targets: 1 },
+		});
+		const brandAuditSingle = vi.fn().mockResolvedValue({ category: 'brand_discovery', score: 100, findings: [] });
+		const whoisBinding = { fetch: vi.fn() as unknown as typeof fetch };
+
+		await processBrandAuditMessage(
+			{ auditId: 'aud-1', target: 'example.com', format: 'json' },
+			{ db, brandAuditSingle, whoisBinding, now: () => 1_750_000_000_000 },
+		);
+
+		expect(brandAuditSingle).toHaveBeenCalledWith(
+			'example.com',
+			expect.objectContaining({ auditId: 'aud-1' }),
+			expect.objectContaining({ whoisBinding }),
+		);
+	});
+
 	it('passes auditId and a D1-backed stepStore into brandAuditSingle', async () => {
 		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
 		const { db, calls } = makeMockD1({

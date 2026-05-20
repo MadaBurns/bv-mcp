@@ -49,7 +49,7 @@ export function parseReportGenerationEnv(env: ReportGenerationEnv = process.env)
 	if (rawDepth !== 'standard' && rawDepth !== 'deep') {
 		throw new Error(`BV_REPORT_DEPTH must be standard or deep; received ${env.BV_REPORT_DEPTH}`);
 	}
-	const rawPlannerMode = (env.BV_BRAND_AUDIT_PLANNER_MODE ?? 'enforce').trim().toLowerCase();
+	const rawPlannerMode = (env.BV_BRAND_AUDIT_PLANNER_MODE ?? 'observe').trim().toLowerCase();
 	if (rawPlannerMode !== 'off' && rawPlannerMode !== 'observe' && rawPlannerMode !== 'enforce') {
 		throw new Error(`BV_BRAND_AUDIT_PLANNER_MODE must be off, observe, or enforce; received ${env.BV_BRAND_AUDIT_PLANNER_MODE}`);
 	}

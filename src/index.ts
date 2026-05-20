@@ -911,7 +911,14 @@ export default {
 			// Cloudflare Workers re-bind env per invocation; the request-path
 			// closures constructed in `executeMcpRequest` never reach here.
 			const tierLookups = buildBrandTierLookups(e as BvMcpEnv);
-			const deps: BrandAuditConsumerDeps = { db, pdfQueue, brandAuditQueue, discoveryModeDefault, ...tierLookups };
+			const deps: BrandAuditConsumerDeps = {
+				db,
+				pdfQueue,
+				brandAuditQueue,
+				discoveryModeDefault,
+				whoisBinding: e.BV_WHOIS as Fetcher | undefined,
+				...tierLookups,
+			};
 			await handleBrandAuditQueue(batch, deps);
 			return;
 		}

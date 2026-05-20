@@ -142,6 +142,8 @@ export interface BrandAuditConsumerDeps {
 	tier0Lookup?: (domain: string) => Promise<Tier0Result>;
 	tier1Lookup?: (domain: string) => Promise<Tier1Result>;
 	tier2Lookup?: (domain: string) => Promise<Tier2Result>;
+	/** Optional service binding for registrar WHOIS fallback in queued audits. */
+	whoisBinding?: { fetch: typeof fetch };
 }
 
 interface TargetStatusRow {
@@ -282,8 +284,9 @@ export async function processBrandAuditMessage(
 		...(deps.tier0Lookup ? { tier0Lookup: deps.tier0Lookup } : {}),
 		...(deps.tier1Lookup ? { tier1Lookup: deps.tier1Lookup } : {}),
 		...(deps.tier2Lookup ? { tier2Lookup: deps.tier2Lookup } : {}),
+		...(deps.whoisBinding ? { whoisBinding: deps.whoisBinding } : {}),
 	};
-	const hasSingleDeps = deps.tier0Lookup || deps.tier1Lookup || deps.tier2Lookup;
+	const hasSingleDeps = deps.tier0Lookup || deps.tier1Lookup || deps.tier2Lookup || deps.whoisBinding;
 	const singleOptions: BrandAuditSingleOptions = {
 		auditId: message.auditId,
 		stepStore,
