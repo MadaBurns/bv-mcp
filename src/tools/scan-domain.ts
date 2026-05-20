@@ -49,6 +49,8 @@ import { checkDane } from './check-dane';
 import { checkDaneHttps } from './check-dane-https';
 import { checkSvcbHttps } from './check-svcb-https';
 import { checkSubdomailing } from './check-subdomailing';
+import { checkAuthoritativeDnsInfra } from './check-authoritative-dns-infra';
+import { checkRootServerSet } from './check-root-server-set';
 import { applyScanPostProcessing } from './scan/post-processing';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import { logError } from '../lib/log';
@@ -113,6 +115,51 @@ export interface ScanDomainResult {
  */
 function shouldRetry(result: CheckResult): boolean {
 	return result.checkStatus === 'error' && result.score === 0;
+}
+
+function mergeMetadataArray(results: CheckResult[], key: string): unknown[] {
+	const values: unknown[] = [];
+	for (const result of results) {
+		const value = result.metadata?.[key];
+		if (Array.isArray(value)) values.push(...value);
+	}
+	return [...new Set(values)];
+}
+
+function mergeCapabilitySummary(results: CheckResult[]): Record<string, string[]> {
+	const passed = new Set<string>();
+	const failed = new Set<string>();
+	const inconclusive = new Set<string>();
+	for (const result of results) {
+		const summary = result.metadata?.capabilitySummary as
+			| { passed?: string[]; failed?: string[]; inconclusive?: string[] }
+			| undefined;
+		for (const capability of summary?.passed ?? []) passed.add(capability);
+		for (const capability of summary?.failed ?? []) failed.add(capability);
+		for (const capability of summary?.inconclusive ?? []) inconclusive.add(capability);
+	}
+	return {
+		passed: [...passed],
+		failed: [...failed],
+		inconclusive: [...inconclusive],
+	};
+}
+
+function mergeAuthoritativeDnsInfraResults(results: CheckResult[]): CheckResult {
+	const findings = results.flatMap((result) => result.findings);
+	const merged = buildCheckResult('authoritative_dns_infra', findings);
+	const evidenceModes = new Set(results.map((result) => result.metadata?.evidenceMode));
+	const checkStatus = results.find((result) => result.checkStatus)?.checkStatus;
+	return {
+		...merged,
+		...(results.some((result) => result.partial) ? { partial: true } : {}),
+		...(checkStatus ? { checkStatus } : {}),
+		metadata: {
+			evidenceMode: evidenceModes.size === 1 ? [...evidenceModes][0] : 'mixed',
+			rootServers: mergeMetadataArray(results, 'rootServers'),
+			capabilitySummary: mergeCapabilitySummary(results),
+		},
+	};
 }
 
 /**
@@ -193,9 +240,12 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// Run all checks in parallel with per-check timeouts, wrapped in an
 	// overall scan timeout to guarantee a timely response.
 	// Uses Promise.allSettled so that completed checks are preserved on timeout.
-	const ALL_CHECK_CATEGORIES: CheckCategory[] = [
-		'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'http_security', 'dane', 'mx', 'dane_https', 'svcb_https', 'subdomailing',
-	];
+	const isAuthoritativeInfraProfile = explicitProfile === 'authoritative_dns_infra';
+	const ALL_CHECK_CATEGORIES: CheckCategory[] = isAuthoritativeInfraProfile
+		? ['authoritative_dns_infra']
+		: [
+			'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'http_security', 'dane', 'mx', 'dane_https', 'svcb_https', 'subdomailing',
+		];
 
 	// Skip secondary DNS confirmation in scan context for speed — individual checks
 	// still use secondary confirmation when called directly by users.
@@ -208,7 +258,18 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	const forceRefresh = runtimeOptions?.forceRefresh;
 	const cacheTtl = runtimeOptions?.cacheTtlSeconds;
 
-	const checkPromises = [
+	const checkPromises: Promise<CheckResult>[] = isAuthoritativeInfraProfile ? [
+		Promise.all([
+			safeCheck(
+				'authoritative_dns_infra',
+				() => checkAuthoritativeDnsInfra(domain, { infraProbe: runtimeOptions?.infraProbe }),
+			),
+			safeCheck(
+				'authoritative_dns_infra',
+				() => checkRootServerSet({ infraProbe: runtimeOptions?.infraProbe }),
+			),
+		]).then(mergeAuthoritativeDnsInfraResults),
+	] : [
 		runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain, scanDns)), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain, scanDns)), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain, undefined, scanDns)), kv, cacheTtl, forceRefresh),
@@ -661,4 +722,3 @@ async function safeCheck(category: CheckCategory, fn: () => Promise<CheckResult>
 		return { ...result, score: 0, checkStatus };
 	}
 }
-
