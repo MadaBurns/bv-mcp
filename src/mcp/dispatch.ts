@@ -43,6 +43,7 @@ export interface DispatchMcpMethodOptions {
 	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
 	whoisBinding?: { fetch: typeof fetch };
+	infraProbe?: { fetch: typeof fetch };
 	brandAuditDb?: D1Database;
 	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	brandReportsR2?: R2Bucket;
@@ -164,6 +165,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				keyHash: options.keyHash,
 				certstream: options.certstream,
 				whoisBinding: options.whoisBinding,
+				infraProbe: options.infraProbe,
 				brandAuditDb: options.brandAuditDb,
 				brandAuditQueue: options.brandAuditQueue,
 				brandReportsR2: options.brandReportsR2,
