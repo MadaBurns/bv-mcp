@@ -20,6 +20,9 @@ import {
 } from '../tools/discover-brand-domains';
 import { checkRdapLookup as defaultCheckRdapLookup, type RdapCheckOptions } from '../tools/check-rdap-lookup';
 import type { BrandAuditStepStore } from './brand-audit-step-store';
+import type { Tier0Result } from './brand-tier0-enterprise';
+import type { Tier1Result } from './brand-tier1-graph';
+import type { Tier2Result } from './brand-tier2-evidence';
 
 /**
  * brand-audit findings emit under the existing `brand_discovery` category to
@@ -126,6 +129,27 @@ export interface BrandAuditPipelineDeps {
 	/** Optional service bindings threaded through to the inner tools. */
 	certstream?: { fetch: typeof fetch };
 	whoisBinding?: { fetch: typeof fetch };
+	/**
+	 * Tier 0 (tenant-declared portfolio) lookup closure, wrapping the
+	 * `BV_ENTERPRISE` service binding. Provided at the production seam in
+	 * `src/index.ts`; undefined on BSL self-hosts. Forwarded through to
+	 * `discoverBrandDomains` via its `deps` arg.
+	 */
+	tier0Lookup?: (domain: string) => Promise<Tier0Result>;
+	/**
+	 * Tier 1 (bv-infrastructure-graph) lookup closure, wrapping the
+	 * `BV_INFRA_GRAPH` service binding. Provided at the production seam in
+	 * `src/index.ts`; undefined on BSL self-hosts. Forwarded through to
+	 * `discoverBrandDomains` via its `deps` arg.
+	 */
+	tier1Lookup?: (domain: string) => Promise<Tier1Result>;
+	/**
+	 * Tier 2 (bv-intel-gateway declared-evidence) lookup closure, wrapping the
+	 * `BV_INTEL_GATEWAY` RPC service binding. Provided at the production seam
+	 * in `src/index.ts`; undefined on BSL self-hosts. Forwarded through to
+	 * `discoverBrandDomains` via its `deps` arg.
+	 */
+	tier2Lookup?: (domain: string) => Promise<Tier2Result>;
 }
 
 interface RegistrarLookup {
@@ -586,7 +610,24 @@ export async function runBrandAuditPipeline(
 			deadlineMs: options.deadlineMs,
 			onProgress: persistDiscoveryProgress,
 		};
-		discovery = await discover(seedDomain, discoveryOpts);
+		// Forward tier closures via the 3rd `deps` arg. They're `undefined` on
+		// BSL self-hosts (`tier_Lookup` keys absent from `deps`); the discoverer
+		// falls back to classic-mode behaviour without them. Producing this seam
+		// is the wiring half of T7 — the closures themselves are constructed at
+		// the production binding sites in `src/index.ts`.
+		//
+		// `DiscoverBrandDomainsDeps` declares signal stubs as required; the
+		// runtime tolerates partials (it merges with internal defaults). Existing
+		// callers cast — match that pattern.
+		const hasTierDeps = deps.tier0Lookup || deps.tier1Lookup || deps.tier2Lookup;
+		const discoveryDeps = {
+			...(deps.tier0Lookup ? { tier0Lookup: deps.tier0Lookup } : {}),
+			...(deps.tier1Lookup ? { tier1Lookup: deps.tier1Lookup } : {}),
+			...(deps.tier2Lookup ? { tier2Lookup: deps.tier2Lookup } : {}),
+		} as Parameters<typeof discover>[2];
+		discovery = hasTierDeps
+			? await discover(seedDomain, discoveryOpts, discoveryDeps)
+			: await discover(seedDomain, discoveryOpts);
 		throwIfAborted();
 		await stepStore?.put({ auditId, target: seedDomain, step: 'discovery', status: 'completed', payload: discovery });
 		recordStep(stepTimings, 'discovery', 'completed', discoveryStartedAtMs, now());

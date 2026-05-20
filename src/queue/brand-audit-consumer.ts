@@ -28,9 +28,13 @@
 
 import { z } from 'zod';
 import { brandAuditSingle as defaultBrandAuditSingle, type BrandAuditSingleOptions } from '../tools/brand-audit-single';
+import type { BrandAuditSingleDeps } from '../tools/brand-audit-single';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { BrandAuditStepStoreError, createD1BrandAuditStepStore } from '../lib/brand-audit-step-store';
 import { decideRetryEnqueue } from '../lib/registrar-retry';
+import type { Tier0Result } from '../lib/brand-tier0-enterprise';
+import type { Tier1Result } from '../lib/brand-tier1-graph';
+import type { Tier2Result } from '../lib/brand-tier2-evidence';
 
 /**
  * Per-message budget for the orchestrator. The AbortController-driven catch
@@ -77,10 +81,11 @@ export type BrandAuditQueueMessage = z.infer<typeof BrandAuditQueueMessageSchema
 
 export interface BrandAuditConsumerDeps {
 	db: D1Database;
-	/** Injectable for tests. */
+	/** Injectable for tests. Production default accepts a third `deps` arg (tier closures + service bindings); tests typically omit it. */
 	brandAuditSingle?: (
 		target: string,
 		options: BrandAuditSingleOptions,
+		deps?: BrandAuditSingleDeps,
 	) => Promise<CheckResult>;
 	/** Clock override for tests. */
 	now?: () => number;
@@ -118,6 +123,19 @@ export interface BrandAuditConsumerDeps {
 	 * undefined) leaves the public schema default (`'classic'`) in charge.
 	 */
 	discoveryModeDefault?: string;
+	/**
+	 * Tier 0/1/2 lookup closures wrapping the private brand-discovery service
+	 * bindings. Constructed at the queue dispatch site in `src/index.ts` when
+	 * the bindings (+ `BV_WEB_INTERNAL_KEY` for Tier 0/1) are provisioned.
+	 * Undefined on BSL self-hosts — queued audits then run classic-equivalent.
+	 *
+	 * Required for the queue path because the request-path closures
+	 * constructed in `executeMcpRequest` never reach queue consumers (different
+	 * Worker invocation, different env access pattern).
+	 */
+	tier0Lookup?: (domain: string) => Promise<Tier0Result>;
+	tier1Lookup?: (domain: string) => Promise<Tier1Result>;
+	tier2Lookup?: (domain: string) => Promise<Tier2Result>;
 }
 
 interface TargetStatusRow {
@@ -250,29 +268,42 @@ export async function processBrandAuditMessage(
 	}, BRAND_AUDIT_MESSAGE_TIMEOUT_MS);
 	let result: CheckResult | null = null;
 	let runtimeError: string | null = null;
+	// Tier closures: built once, passed as the 3rd `deps` arg ONLY when at
+	// least one closure is present. Skipping the arg on BSL self-hosts keeps
+	// the existing 2-arg `toHaveBeenCalledWith(...)` test assertions valid —
+	// vitest matches arg count exactly.
+	const singleDeps: BrandAuditSingleDeps = {
+		...(deps.tier0Lookup ? { tier0Lookup: deps.tier0Lookup } : {}),
+		...(deps.tier1Lookup ? { tier1Lookup: deps.tier1Lookup } : {}),
+		...(deps.tier2Lookup ? { tier2Lookup: deps.tier2Lookup } : {}),
+	};
+	const hasSingleDeps = deps.tier0Lookup || deps.tier1Lookup || deps.tier2Lookup;
+	const singleOptions: BrandAuditSingleOptions = {
+		auditId: message.auditId,
+		stepStore,
+		format: message.format,
+		min_confidence: message.min_confidence,
+		depth: message.depth,
+		planner_mode: message.planner_mode,
+		brand_aliases: message.brand_aliases,
+		candidate_domains: message.candidate_domains,
+		signal: controller.signal,
+		deadlineMs: messageStartedAt + BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
+		// Phase 2b: retry messages re-run the pipeline from scratch instead
+		// of reading back the cached lookup_failed result from pass 1.
+		force_refresh: isRetry,
+		// T13 — propagate the BlackVeil-production runtime override.
+		// Pipeline only honours it when the caller omits `discovery_mode`;
+		// undefined on BSL self-hosts (schema default `'classic'` wins).
+		...(deps.discoveryModeDefault
+			? { env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: deps.discoveryModeDefault } }
+			: {}),
+	};
 	try {
 		result = await Promise.race([
-			single(message.target, {
-				auditId: message.auditId,
-				stepStore,
-				format: message.format,
-				min_confidence: message.min_confidence,
-				depth: message.depth,
-				planner_mode: message.planner_mode,
-				brand_aliases: message.brand_aliases,
-				candidate_domains: message.candidate_domains,
-				signal: controller.signal,
-				deadlineMs: messageStartedAt + BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
-				// Phase 2b: retry messages re-run the pipeline from scratch instead
-				// of reading back the cached lookup_failed result from pass 1.
-				force_refresh: isRetry,
-				// T13 — propagate the BlackVeil-production runtime override.
-				// Pipeline only honours it when the caller omits `discovery_mode`;
-				// undefined on BSL self-hosts (schema default `'classic'` wins).
-				...(deps.discoveryModeDefault
-					? { env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: deps.discoveryModeDefault } }
-					: {}),
-			}),
+			hasSingleDeps
+				? single(message.target, singleOptions, singleDeps)
+				: single(message.target, singleOptions),
 			new Promise<never>((_, reject) => {
 				const onAbort = () => {
 					const reason = (controller.signal as AbortSignal & { reason?: unknown }).reason;

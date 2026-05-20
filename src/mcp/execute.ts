@@ -91,6 +91,17 @@ export interface ExecuteMcpRequestOptions {
 	 * which `brand_audit_single` reads.
 	 */
 	discoveryModeDefault?: string;
+	/**
+	 * Tier 0/1/2 lookup closures wrapping the private brand-discovery service
+	 * bindings (`BV_ENTERPRISE`, `BV_INFRA_GRAPH`, `BV_INTEL_GATEWAY`).
+	 * Constructed at the production seam in `src/index.ts` when the bindings
+	 * + `BV_WEB_INTERNAL_KEY` are provisioned. Undefined on BSL self-hosts.
+	 * Threaded into `ToolRuntimeOptions` so `discover_brand_domains` and
+	 * `brand_audit_single` can forward them through to `discoverBrandDomains`.
+	 */
+	tier0Lookup?: (domain: string) => Promise<import('../lib/brand-tier0-enterprise').Tier0Result>;
+	tier1Lookup?: (domain: string) => Promise<import('../lib/brand-tier1-graph').Tier1Result>;
+	tier2Lookup?: (domain: string) => Promise<import('../lib/brand-tier2-evidence').Tier2Result>;
 }
 
 function getDomainFromParams(params: Record<string, unknown> | undefined): string | undefined {
@@ -567,6 +578,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			browserRenderer: options.browserRenderer,
 			discoveryModeDefault: options.discoveryModeDefault,
 			principalId: options.principalId,
+			tier0Lookup: options.tier0Lookup,
+			tier1Lookup: options.tier1Lookup,
+			tier2Lookup: options.tier2Lookup,
 		}).then((dispatchResult) => {
 			if (dispatchResult.kind === 'early-error') {
 				return dispatchResult.payload;
@@ -644,6 +658,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			browserRenderer: options.browserRenderer,
 			discoveryModeDefault: options.discoveryModeDefault,
 			principalId: options.principalId,
+			tier0Lookup: options.tier0Lookup,
+			tier1Lookup: options.tier1Lookup,
+			tier2Lookup: options.tier2Lookup,
 		});
 
 		if (dispatchResult.kind === 'early-error') {

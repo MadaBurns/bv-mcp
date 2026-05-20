@@ -36,6 +36,7 @@ import { handleToolsCall } from './handlers/tools';
 import { isAuthorizedRequest } from './lib/auth';
 import { createAnalyticsClient } from './lib/analytics';
 import { parseScoringConfigCached } from './lib/scoring-config';
+import { buildBrandTierLookups } from './lib/brand-tier-lookups';
 import { OAUTH_CODE_TTL_SECONDS, MAX_REQUEST_BODY_BYTES, parseCacheTtl } from './lib/config';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
@@ -76,6 +77,19 @@ type InternalEnv = {
 	BV_WEB_INTERNAL_KEY?: string;
 	/** Opt-in flag for the H1 defense-in-depth bearer gate on /tools/* and /analytics/*. */
 	REQUIRE_INTERNAL_AUTH?: string;
+	/**
+	 * Brand-discovery cross-Worker service bindings. Operator-deploy only —
+	 * declared in `.dev/wrangler.deploy.jsonc`, never in the public
+	 * `wrangler.jsonc`. Mirrors the `BvMcpEnv` declarations in `src/index.ts`
+	 * so internal callers (`/internal/tools/{call,batch}` — load tests, ops
+	 * scripts, service-binding invocations from bv-web) get the same tiered
+	 * discovery behaviour as the public `/mcp` path.
+	 */
+	BV_INFRA_GRAPH?: Fetcher;
+	BV_INTEL_GATEWAY?: {
+		getDomainEvidence: (params: { domain: string; includeHistory?: boolean }) => Promise<unknown>;
+	};
+	BV_ENTERPRISE?: Fetcher;
 };
 
 export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
@@ -206,6 +220,11 @@ internalRoutes.post('/tools/call', async (c) => {
 				? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN }
 				: undefined,
 			whoisBinding: c.env.BV_WHOIS,
+			// Tier 0/1/2 lookup closures — internal callers (load tests, bv-web
+			// service binding, ops scripts) get the same tiered discovery path as
+			// public `/mcp`. Closures stay `undefined` on BSL self-hosts where
+			// the bindings aren't provisioned.
+			...buildBrandTierLookups(c.env),
 			...(wantStructured ? { resultCapture: (r: import('./lib/scoring-model').CheckResult) => { capturedResult = r; } } : {}),
 		},
 	);
@@ -383,6 +402,10 @@ internalRoutes.post('/tools/batch', async (c) => {
 							? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN }
 							: undefined,
 						whoisBinding: c.env.BV_WHOIS,
+						// Tier 0/1/2 lookup closures — batch invocations of brand tools
+						// from internal callers must also exercise tiered mode when the
+						// bindings are provisioned.
+						...buildBrandTierLookups(c.env),
 						...(wantStructured ? { resultCapture: (r: import('./lib/scoring-model').CheckResult) => { capturedResult = r; } } : {}),
 					},
 				);
