@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.22.0] - 2026-05-21
+
+### Added
+- **Brand-audit report sidecar v4** — `qaSchemaVersion: 4`, `relationshipSchemaVersion: 1`. Clean per-relationship buckets at the top level: `registrarSprawl` (Shadow IT), `vendorDependencies`, `ownedPortfolio`, `impersonationSurface`. Legacy `buckets` and `counts` preserved for backward compatibility.
+- **Shadow IT semantics tightened** — Shadow IT now strictly means "owned brand domains on off-primary registrar infrastructure." Vendor dependencies route to `buckets.indeterminate` and never pollute `buckets.shadowIt`.
+- `src/lib/sprawl-invariants.ts` — pure validator enforcing registrarSprawl item quality (≥2 signals, `combinedConfidence` ≥ 0.5, registrar + registrarSource + evidence required, `relationshipType: 'owned_off_primary_registrar'`). Wired into `runBrandAuditPipeline` to downgrade failing items to `indeterminate`.
+- `.claude/hooks/block-force-push.sh` — replaces the bare-string PreToolUse hook that fired against any stdout containing the phrase "Force push blocked." The new script `jq`-extracts `tool_input.command` and matches anchored `git push --force*` patterns only.
+- bv-whois: hardened lookup + resolver with additional registrar shape parsing; extended RDAP fallback TLD list.
+
+### Tests
+- `src/lib/sprawl-invariants.test.ts` — 36 cases per invariant + sweep over fixture sidecars.
+- `test/audits/sidecar-bucket-separation.audit.test.ts` — vendorDependencies disjoint from `buckets.shadowIt`; `shadowIt` mirrors `registrarSprawl`.
+- `test/audits/sidecar-registrar-labels.audit.test.ts` — no "Unknown registrar" strings; `lookup_failed` only as a numeric counter.
+- `test/contracts/brand-report-sidecar-v3.contract.test.ts` → `…-v4.contract.test.ts` — renamed; asserts `qaSchemaVersion === 4`, `relationshipSchemaVersion === 1`, drift guard against ambiguous top-level `schemaVersion`.
+- `test/audits/pretooluse-hook-scope.node.test.ts` — 13 cases pinning the hook to command-string matching only.
+- `test/audits/private-config-injection.node.test.ts` — ensures `inject-private-config.cjs` preserves public service bindings not overridden by the private overlay.
+
 ## [2.21.5] - 2026-05-20
 
 ### Changed
