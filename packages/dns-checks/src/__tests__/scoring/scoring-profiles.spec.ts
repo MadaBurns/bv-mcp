@@ -301,6 +301,19 @@ describe('scoring-profiles', () => {
 			expect(PROFILE_WEIGHTS.minimal.ssl.importance).toBe(7);
 		});
 
+		it('authoritative_dns_infra treats mail and web controls as non-scoring noise', () => {
+			const p = PROFILE_WEIGHTS.authoritative_dns_infra;
+			expect(p.authoritative_dns_infra.importance).toBe(40);
+			expect(p.dnssec.importance).toBe(20);
+			expect(p.ns.importance).toBe(15);
+			expect(p.zone_hygiene.importance).toBe(10);
+			expect(p.spf.importance).toBe(0);
+			expect(p.dmarc.importance).toBe(0);
+			expect(p.dkim.importance).toBe(0);
+			expect(p.ssl.importance).toBe(0);
+			expect(p.http_security.importance).toBe(0);
+		});
+
 		it('SUBDOMAIN_TAKEOVER is critical for mail_enabled', () => {
 			expect(PROFILE_CRITICAL_CATEGORIES.mail_enabled).toContain('subdomain_takeover');
 		});

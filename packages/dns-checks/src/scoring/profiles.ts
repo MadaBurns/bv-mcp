@@ -13,7 +13,7 @@
 
 import type { CheckCategory, CheckResult } from '../types';
 
-export type DomainProfile = 'mail_enabled' | 'enterprise_mail' | 'non_mail' | 'web_only' | 'minimal';
+export type DomainProfile = 'mail_enabled' | 'enterprise_mail' | 'non_mail' | 'web_only' | 'minimal' | 'authoritative_dns_infra';
 
 export interface DomainContext {
 	profile: DomainProfile;
@@ -56,6 +56,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		srv: { importance: 0 },
 		zone_hygiene: { importance: 0 },
 		brand_discovery: { importance: 0 },
+		authoritative_dns_infra: { importance: 0 },
 	},
 	enterprise_mail: {
 		// Core (sum=63)
@@ -85,6 +86,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		srv: { importance: 0 },
 		zone_hygiene: { importance: 0 },
 		brand_discovery: { importance: 0 },
+		authoritative_dns_infra: { importance: 0 },
 	},
 	non_mail: {
 		// Core (sum=29)
@@ -114,6 +116,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		srv: { importance: 0 },
 		zone_hygiene: { importance: 0 },
 		brand_discovery: { importance: 0 },
+		authoritative_dns_infra: { importance: 0 },
 	},
 	web_only: {
 		// Core (sum=28)
@@ -143,6 +146,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		srv: { importance: 0 },
 		zone_hygiene: { importance: 0 },
 		brand_discovery: { importance: 0 },
+		authoritative_dns_infra: { importance: 0 },
 	},
 	minimal: {
 		// Core (sum=15)
@@ -172,6 +176,37 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		srv: { importance: 0 },
 		zone_hygiene: { importance: 0 },
 		brand_discovery: { importance: 0 },
+		authoritative_dns_infra: { importance: 0 },
+	},
+	authoritative_dns_infra: {
+		// Core
+		spf: { importance: 0 },
+		dmarc: { importance: 0 },
+		dkim: { importance: 0 },
+		dnssec: { importance: 20 },
+		ssl: { importance: 0 },
+		authoritative_dns_infra: { importance: 40 },
+		// Protective
+		subdomain_takeover: { importance: 0 },
+		http_security: { importance: 0 },
+		mta_sts: { importance: 0 },
+		subdomailing: { importance: 0 },
+		mx: { importance: 0 },
+		caa: { importance: 0 },
+		ns: { importance: 15 },
+		lookalikes: { importance: 0 },
+		shadow_domains: { importance: 0 },
+		dane_https: { importance: 0 },
+		svcb_https: { importance: 0 },
+		// Hardening
+		dane: { importance: 0 },
+		bimi: { importance: 0 },
+		tlsrpt: { importance: 0 },
+		txt_hygiene: { importance: 0 },
+		mx_reputation: { importance: 0 },
+		srv: { importance: 0 },
+		zone_hygiene: { importance: 10 },
+		brand_discovery: { importance: 0 },
 	},
 };
 
@@ -184,6 +219,7 @@ export const PROFILE_CRITICAL_CATEGORIES: Record<DomainProfile, CheckCategory[]>
 	non_mail: ['ssl', 'dnssec', 'http_security', 'subdomain_takeover', 'dane_https'],
 	web_only: ['ssl', 'dnssec', 'http_security', 'subdomain_takeover', 'dane_https'],
 	minimal: ['ssl', 'dnssec', 'subdomain_takeover'],
+	authoritative_dns_infra: ['authoritative_dns_infra', 'dnssec', 'ns', 'zone_hygiene'],
 };
 
 /** Whether a profile is eligible for the email bonus. */
@@ -193,6 +229,7 @@ export const PROFILE_EMAIL_BONUS_ELIGIBLE: Record<DomainProfile, boolean> = {
 	non_mail: false,
 	web_only: false,
 	minimal: false,
+	authoritative_dns_infra: false,
 };
 
 /** Known enterprise mail providers detected via MX record patterns. */
