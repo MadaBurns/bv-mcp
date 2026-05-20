@@ -115,6 +115,27 @@ type BvMcpEnv = {
 	 * public `wrangler.jsonc`.
 	 */
 	BRAND_AUDIT_DISCOVERY_MODE_DEFAULT?: string;
+	/**
+	 * Brand-discovery cross-Worker service bindings. Declared ONLY in the
+	 * private overlay (`.dev/wrangler.deploy.jsonc`) — never in the public
+	 * `wrangler.jsonc`. Enforced by
+	 * `test/audits/wrangler-public-no-private-bindings.audit.test.ts`.
+	 *
+	 * BSL self-hosts have all three undefined; the tier-lookup closures are
+	 * never constructed and tiered-mode discovery degrades to classic.
+	 */
+	/** Tier 1 — bv-infrastructure-graph (HTTP service binding). */
+	BV_INFRA_GRAPH?: Fetcher;
+	/**
+	 * Tier 2 — bv-intel-gateway (Workers RPC binding to a `WorkerEntrypoint`).
+	 * Auth is enforced at the binding level; no Authorization header plumbed.
+	 * Matches the consumer-side type at `src/lib/brand-tier2-evidence.ts`.
+	 */
+	BV_INTEL_GATEWAY?: {
+		getDomainEvidence: (params: { domain: string; includeHistory?: boolean }) => Promise<unknown>;
+	};
+	/** Tier 0 — bv-enterprise (HTTP service binding to tenant-portfolio lookup). */
+	BV_ENTERPRISE?: Fetcher;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -122,6 +143,8 @@ import { resolveTier } from './lib/tier-auth';
 
 const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean; tierAuthResult: TierAuthResult; apiKeyInQuery: boolean } }>();
 const mcpPaths = ['/mcp', '/mcp/messages', '/mcp/sse'] as const;
+
+import { buildBrandTierLookups } from './lib/brand-tier-lookups';
 
 type OAuthAvailability = 'ready' | 'disabled' | 'misconfigured';
 
@@ -427,6 +450,7 @@ app.post('/mcp', async (c) => {
 					brandReportsR2: c.env.BRAND_REPORTS,
 					browserRenderer: c.env.BV_BROWSER_RENDERER,
 					discoveryModeDefault: c.env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT,
+					...buildBrandTierLookups(c.env),
 					principalId: keyHash ?? ipHash,
 					country,
 					clientType,
@@ -497,6 +521,7 @@ app.post('/mcp', async (c) => {
 		brandReportsR2: c.env.BRAND_REPORTS,
 		browserRenderer: c.env.BV_BROWSER_RENDERER,
 		discoveryModeDefault: c.env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT,
+		...buildBrandTierLookups(c.env),
 		principalId: keyHash ?? ipHash,
 		country,
 		clientType,
@@ -644,6 +669,7 @@ app.post('/mcp/messages', async (c) => {
 				brandReportsR2: c.env.BRAND_REPORTS,
 				browserRenderer: c.env.BV_BROWSER_RENDERER,
 				discoveryModeDefault: c.env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT,
+				...buildBrandTierLookups(c.env),
 				principalId: keyHash ?? ipHash,
 				country,
 				clientType,
@@ -881,7 +907,11 @@ export default {
 			const discoveryModeDefault = typeof e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT === 'string'
 				? (e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT as string)
 				: undefined;
-			const deps: BrandAuditConsumerDeps = { db, pdfQueue, brandAuditQueue, discoveryModeDefault };
+			// Build tier-lookup closures from the queue Worker invocation's env.
+			// Cloudflare Workers re-bind env per invocation; the request-path
+			// closures constructed in `executeMcpRequest` never reach here.
+			const tierLookups = buildBrandTierLookups(e as BvMcpEnv);
+			const deps: BrandAuditConsumerDeps = { db, pdfQueue, brandAuditQueue, discoveryModeDefault, ...tierLookups };
 			await handleBrandAuditQueue(batch, deps);
 			return;
 		}
