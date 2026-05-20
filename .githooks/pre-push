@@ -22,7 +22,12 @@ range_for_push() {
 		return 0
 	fi
 
-	base="$(git merge-base "$local_sha" origin/main 2>/dev/null || git merge-base "$local_sha" main 2>/dev/null || true)"
+	if [ "$remote_sha" != "$ZERO_SHA" ]; then
+		printf '%s\n' "$local_sha"
+		return 0
+	fi
+
+	base="$(git merge-base "$local_sha" origin/main 2>/dev/null || true)"
 	if [ -n "$base" ]; then
 		printf '%s\n' "$base..$local_sha"
 		return 0
