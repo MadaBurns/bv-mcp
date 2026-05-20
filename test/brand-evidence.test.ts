@@ -111,10 +111,81 @@ describe('brand evidence tier policy', () => {
 			).toBe(true);
 		});
 
-		it('returns true for a tier-1 observation with specificityScore >= 0.5', () => {
+		it('returns true for a tier-1 observation with deterministic graph provenance and specificityScore >= 0.5', () => {
 			expect(
 				clearsOwnershipGate(
-					[{ signal: 'mx_overlap', confidence: 0.7, tier: 1, specificityScore: 0.7 }],
+					[
+						{
+							signal: 'markov_gen',
+							confidence: 0.7,
+							tier: 1,
+							specificityScore: 0.7,
+							metadata: { source: 'infra_graph_signal', signalTypes: ['ns'], numSharedSignals: 1 },
+						},
+					],
+					{ callerAsserted: false },
+				),
+			).toBe(true);
+		});
+
+		it('does NOT auto-clear tier-1 graph observations when the only reportable signal is generated seed metadata', () => {
+			expect(
+				clearsOwnershipGate(
+					[
+						{
+							signal: 'markov_gen',
+							confidence: 0.92,
+							tier: 1,
+							specificityScore: 0.63,
+							metadata: {
+								source: 'infra_graph_signal',
+								numSharedSignals: 1,
+								signalTypes: ['soa_admin'],
+							},
+						},
+					],
+					{ callerAsserted: false },
+				),
+			).toBe(false);
+		});
+
+		it('auto-clears tier-1 graph observations with deterministic graph signal provenance', () => {
+			expect(
+				clearsOwnershipGate(
+					[
+						{
+							signal: 'markov_gen',
+							confidence: 0.92,
+							tier: 1,
+							specificityScore: 0.7,
+							metadata: {
+								source: 'infra_graph_signal',
+								numSharedSignals: 1,
+								signalTypes: ['spf_include'],
+							},
+						},
+					],
+					{ callerAsserted: false },
+				),
+			).toBe(true);
+		});
+
+		it('auto-clears tier-1 graph observations with multiple independent graph signal types and high specificity', () => {
+			expect(
+				clearsOwnershipGate(
+					[
+						{
+							signal: 'markov_gen',
+							confidence: 0.88,
+							tier: 1,
+							specificityScore: 0.82,
+							metadata: {
+								source: 'infra_graph_signal',
+								numSharedSignals: 2,
+								signalTypes: ['soa_admin', 'mx_platform'],
+							},
+						},
+					],
 					{ callerAsserted: false },
 				),
 			).toBe(true);

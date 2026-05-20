@@ -17,7 +17,7 @@
  */
 
 import { sameRegistrarFamily } from './registrar-identity';
-import { clearsOwnershipGate, type BrandEvidenceObservation } from './brand-evidence';
+import { clearsOwnershipGate, clearsTier1GraphEvidence, type BrandEvidenceObservation } from './brand-evidence';
 import type { BrandDiscoveryTier } from './brand-discovery-tiers';
 
 /**
@@ -93,9 +93,6 @@ export interface Classification {
 	 */
 	tier?: BrandDiscoveryTier;
 }
-
-/** Minimum specificityScore for a tier-1 observation to qualify as consolidated evidence. */
-const TIER1_SPECIFICITY_THRESHOLD = 0.5;
 
 /** Strong ownership signals — sharing any of these is near-deterministic operational control evidence. */
 const STRONG_INFRA_SIGNALS = new Set([
@@ -308,9 +305,7 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 			reasons.push(`tier 0 (tenant-declared) via ${tier0.signal}`);
 			return { bucket: 'consolidated', confidenceTier: tier, reasons, tier: 0 };
 		}
-		const tier1 = observations.find(
-			(o) => o.tier === 1 && (o.specificityScore ?? 0) >= TIER1_SPECIFICITY_THRESHOLD,
-		);
+		const tier1 = observations.find((o) => o.tier === 1 && clearsTier1GraphEvidence(o));
 		if (tier1) {
 			reasons.push(
 				`tier 1 (graph-surfaced) via ${tier1.signal}, specificity=${(tier1.specificityScore ?? 0).toFixed(2)}`,

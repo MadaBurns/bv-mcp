@@ -231,6 +231,18 @@ function extractRegistrarIanaId(entity: RdapEntity | null): string | null {
 	return null;
 }
 
+function findEntityByRegistrarIanaId(entities: RdapEntity[] | undefined): RdapEntity | null {
+	if (!Array.isArray(entities)) return null;
+	for (const entity of entities) {
+		if (extractRegistrarIanaId(entity)) return entity;
+		if (Array.isArray(entity.entities)) {
+			const nested = findEntityByRegistrarIanaId(entity.entities);
+			if (nested) return nested;
+		}
+	}
+	return null;
+}
+
 /** Find an event by action name. */
 function findEvent(events: RdapEvent[] | undefined, action: string): RdapEvent | null {
 	if (!Array.isArray(events)) return null;
@@ -251,6 +263,39 @@ const WhoisFallbackPayloadSchema = z.object({
 });
 type WhoisFallbackPayload = z.infer<typeof WhoisFallbackPayloadSchema>;
 
+const WHOIS_REGISTRAR_LABELS = [
+	'Registrar',
+	'Registrar Name',
+	'Sponsoring Registrar',
+	'Registrar Organization',
+] as const;
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function parseStructuredWhoisPayload(body: string): WhoisFallbackPayload | null {
+	const trimmed = body.trim();
+	if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+	try {
+		const parsed = WhoisFallbackPayloadSchema.safeParse(JSON.parse(trimmed));
+		return parsed.success ? parsed.data : { registrar: null, source: 'error' };
+	} catch {
+		return { registrar: null, source: 'error' };
+	}
+}
+
+function extractWhoisRegistrarLabel(body: string): string | null {
+	for (const line of body.split(/\r?\n/)) {
+		for (const label of WHOIS_REGISTRAR_LABELS) {
+			const match = line.match(new RegExp(`^\\s*${escapeRegExp(label)}\\s*:\\s*(.+?)\\s*$`, 'i'));
+			const registrar = match?.[1]?.trim();
+			if (registrar && registrar.length <= 256) return registrar;
+		}
+	}
+	return null;
+}
+
 /**
  * Call the bv-whois shim Worker via service binding. Returns the structured
  * result, or { registrar: null, source: 'error' } on any failure (fail-soft).
@@ -269,10 +314,12 @@ async function fetchWhoisRegistrar(
 			signal: composeFetchSignal(signal),
 		});
 		if (!resp.ok) return { registrar: null, source: 'error' };
-		const raw = await resp.json();
-		const parsed = WhoisFallbackPayloadSchema.safeParse(raw);
-		if (!parsed.success) return { registrar: null, source: 'error' };
-		return parsed.data;
+		const body = await resp.text();
+		const structured = parseStructuredWhoisPayload(body);
+		if (structured) return structured;
+		const registrar = extractWhoisRegistrarLabel(body);
+		if (registrar) return { registrar, source: 'whois' };
+		return { registrar: null, source: 'error' };
 	} catch {
 		return { registrar: null, source: 'error' };
 	}
@@ -441,6 +488,11 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 	const registrarEntity = findEntityByRole(rdapData.entities, 'registrar');
 	let registrarName = registrarEntity ? extractVcardName(registrarEntity) : null;
 	let registrarIanaId = extractRegistrarIanaId(registrarEntity);
+	if (!registrarName) {
+		const publicIdEntity = findEntityByRegistrarIanaId(rdapData.entities);
+		registrarName = publicIdEntity ? extractVcardName(publicIdEntity) : null;
+		registrarIanaId = extractRegistrarIanaId(publicIdEntity);
+	}
 	let registrarSource: RegistrarSourceTag = registrarName ? 'rdap' : 'unknown';
 	let registrarFailureReason: string | undefined;
 	if (!registrarName) {
