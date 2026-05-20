@@ -23,7 +23,7 @@ describe('repo safety scanner helper', () => {
 	});
 
 	it('flags real public IPv4 addresses while allowing documentation ranges', () => {
-		expect(scanTextForSensitiveSurface('src/ip.ts', 'const host = "192.0.2.53";').map((finding) => finding.ruleId)).toContain(
+		expect(scanTextForSensitiveSurface('src/ip.ts', 'const host = "8.8.8.8";').map((finding) => finding.ruleId)).toContain(
 			'public-ipv4',
 		);
 		expect(scanTextForSensitiveSurface('docs/example.md', 'Use 192.0.2.10 or 203.0.113.8 in examples.')).toEqual([]);
