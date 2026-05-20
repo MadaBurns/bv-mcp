@@ -36,7 +36,7 @@ describe('repo safety scanner helper', () => {
 	});
 
 	it('flags real email addresses and customer/tenant markers', () => {
-		const findings = scanTextForSensitiveSurface('docs/private.md', 'Customer Acme Corp uses admin@customer.invalid for tenant-example.');
+		const findings = scanTextForSensitiveSurface('docs/private.md', 'Customer Acme Corp uses admin@customer.invalid for tenant-pilot-1.');
 		expect(findings.map((finding) => finding.ruleId)).toEqual(expect.arrayContaining(['real-email', 'customer-marker', 'tenant-marker']));
 	});
 });
