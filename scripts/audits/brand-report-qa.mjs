@@ -86,7 +86,7 @@ function validateDomain(domain, options) {
 		if (!isObject(sidecar.dataQuality)) errors.push('missing dataQuality');
 		if (typeof sidecar.depthMode !== 'string') errors.push('missing depthMode');
 		const qaSchemaVersion = sidecar.qaSchemaVersion;
-		if (qaSchemaVersion !== 1 && qaSchemaVersion !== 2 && qaSchemaVersion !== 3) errors.push('unsupported qaSchemaVersion');
+		if (qaSchemaVersion !== 1 && qaSchemaVersion !== 2 && qaSchemaVersion !== 3 && qaSchemaVersion !== 4) errors.push('unsupported qaSchemaVersion');
 		if (qaSchemaVersion >= 2) {
 			if (!isObject(sidecar.performance)) {
 				errors.push('missing performance');
@@ -95,8 +95,8 @@ function validateDomain(domain, options) {
 				if (!Array.isArray(sidecar.performance.steps)) errors.push('missing performance.steps');
 			}
 		}
-		if (qaSchemaVersion === 3) {
-			// v3 (tiered-mode) sidecar: must split owned portfolio + impersonation surface.
+		if (qaSchemaVersion === 3 || qaSchemaVersion === 4) {
+			// Tiered-mode sidecar: must split owned portfolio + impersonation surface.
 			if (!isObject(sidecar.ownedPortfolio)) {
 				errors.push('missing ownedPortfolio');
 			} else {
@@ -116,6 +116,11 @@ function validateDomain(domain, options) {
 			if (isObject(sidecar.performance) && !isObject(sidecar.performance.tiers)) {
 				errors.push('missing performance.tiers');
 			}
+		}
+		if (qaSchemaVersion === 4) {
+			if (sidecar.relationshipSchemaVersion !== 1) errors.push('missing relationshipSchemaVersion');
+			if (!Array.isArray(sidecar.registrarSprawl)) errors.push('missing registrarSprawl');
+			if (!Array.isArray(sidecar.vendorDependencies)) errors.push('missing vendorDependencies');
 		}
 		if (!isObject(sidecar.freshness)) {
 			errors.push('missing freshness');

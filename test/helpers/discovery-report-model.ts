@@ -8,6 +8,13 @@ type SourceMode = 'mcp' | 'local';
 type DiscoveryMode = 'classic' | 'tiered';
 type TierStatus = 'ok' | 'degraded' | 'partial' | 'timeout' | 'skipped';
 type DiscoveryTier = 0 | 1 | 2 | 3 | 4;
+type RelationshipType =
+	| 'owned_primary'
+	| 'owned_off_primary_registrar'
+	| 'authorized_vendor_dependency'
+	| 'manual_review'
+	| 'impersonation_risk'
+	| 'impersonation_surface';
 
 const BUCKETS: ReportBucket[] = ['consolidated', 'shadowIt', 'indeterminate', 'impersonation', 'impersonationSurface'];
 const CLASSIC_BUCKETS: Array<Exclude<ReportBucket, 'impersonationSurface'>> = [
@@ -15,6 +22,14 @@ const CLASSIC_BUCKETS: Array<Exclude<ReportBucket, 'impersonationSurface'>> = [
 	'shadowIt',
 	'indeterminate',
 	'impersonation',
+];
+const RELATIONSHIP_TYPES: RelationshipType[] = [
+	'owned_primary',
+	'owned_off_primary_registrar',
+	'authorized_vendor_dependency',
+	'manual_review',
+	'impersonation_risk',
+	'impersonation_surface',
 ];
 const SIGNAL_LABELS: Record<string, string> = {
 	ns: 'NS Match',
@@ -48,6 +63,7 @@ export interface BrandAuditResultLike {
 export interface DiscoveryReportCandidate {
 	domain: string;
 	bucket: ReportBucket;
+	relationshipType: RelationshipType;
 	evidence: string;
 	registrar: string;
 	registrarSource: string;
@@ -84,10 +100,14 @@ export interface DiscoveryReportModel {
 	counts: Record<ClassicReportBucket, number>;
 	/**
 	 * Tier-4 impersonation-surface candidates surfaced by `discovery_mode: 'tiered'`.
-	 * Always present (empty in classic mode) — the v3 sidecar reads from here,
+	 * Always present (empty in classic mode) — the tiered sidecar reads from here,
 	 * the v1 sidecar ignores it (preserves byte-identical legacy output).
 	 */
 	impersonationSurfaceCandidates: DiscoveryReportCandidate[];
+	/** Real owned/controlled domains registered outside the target's primary registrar family. */
+	registrarSprawl: DiscoveryReportCandidate[];
+	/** Authorized external vendor/service domains found through SPF, DMARC, MX, or similar delegation signals. */
+	vendorDependencies: DiscoveryReportCandidate[];
 	arrOpportunity: {
 		domainCount: number;
 		domainRenewals: number;
@@ -104,7 +124,7 @@ export interface DiscoveryReportModel {
 	depth: BrandAuditDepthSummary | null;
 }
 
-export interface DiscoveryReportSidecarV3OwnedPortfolio {
+export interface DiscoveryReportSidecarV4OwnedPortfolio {
 	tenantDeclared: string[];
 	graphSurfaced: string[];
 	declaredEvidence: string[];
@@ -115,7 +135,7 @@ export interface DiscoveryReportSidecarV3OwnedPortfolio {
 	};
 }
 
-export interface DiscoveryReportSidecarV3ImpersonationEntry {
+export interface DiscoveryReportSidecarV4ImpersonationEntry {
 	domain: string;
 	lookalikeScore: number;
 	livenessSignals: string[];
@@ -180,7 +200,7 @@ export interface DiscoveryReportSidecarV1 extends DiscoveryReportSidecarBase {
 }
 
 /**
- * Tiered-mode (v3) sidecar. Splits the legacy single `buckets` block into:
+ * Tiered-mode (v4) sidecar. Splits the legacy single `buckets` block into:
  *
  * - `ownedPortfolio` (tier 0/1/2/3): 4 sub-buckets — tenantDeclared (tier 0),
  *   graphSurfaced (tier 1), declaredEvidence (tier 2), inferred (tier 3, with
@@ -193,17 +213,24 @@ export interface DiscoveryReportSidecarV1 extends DiscoveryReportSidecarBase {
  * tier 0/1/2). `buckets` is preserved for backward-compat readers that haven't
  * migrated yet; they see the classic 4-key shape and can ignore the new keys.
  *
- * Pinned by `test/contracts/brand-report-sidecar-v3.contract.test.ts`.
+ * v4 adds relationship sections (`registrarSprawl`, `vendorDependencies`) so
+ * commercial opportunity math is based on real owned off-primary registrar
+ * domains, not authorized vendor infrastructure.
+ *
+ * Pinned by `test/contracts/brand-report-sidecar-v4.contract.test.ts`.
  */
-export interface DiscoveryReportSidecarV3 extends DiscoveryReportSidecarBase {
-	qaSchemaVersion: 3;
+export interface DiscoveryReportSidecarV4 extends DiscoveryReportSidecarBase {
+	qaSchemaVersion: 4;
 	discoveryMode: 'tiered';
-	ownedPortfolio: DiscoveryReportSidecarV3OwnedPortfolio;
-	impersonationSurface: DiscoveryReportSidecarV3ImpersonationEntry[];
+	relationshipSchemaVersion: 1;
+	ownedPortfolio: DiscoveryReportSidecarV4OwnedPortfolio;
+	registrarSprawl: DiscoveryReportCandidate[];
+	vendorDependencies: DiscoveryReportCandidate[];
+	impersonationSurface: DiscoveryReportSidecarV4ImpersonationEntry[];
 	performance: BrandAuditMetricsSummary & { tiers: DiscoveryReportSidecarTiers };
 }
 
-export type DiscoveryReportSidecar = DiscoveryReportSidecarV1 | DiscoveryReportSidecarV3;
+export type DiscoveryReportSidecar = DiscoveryReportSidecarV1 | DiscoveryReportSidecarV4;
 
 function graphSignalLabel(signalType: string): string {
 	return SIGNAL_LABELS[signalType] ?? signalType.toUpperCase().replace(/_/g, ' ');
@@ -230,6 +257,19 @@ export function formatEvidence(
 
 function isBucket(value: unknown): value is ReportBucket {
 	return typeof value === 'string' && (BUCKETS as string[]).includes(value);
+}
+
+function isRelationshipType(value: unknown): value is RelationshipType {
+	return typeof value === 'string' && (RELATIONSHIP_TYPES as string[]).includes(value);
+}
+
+function relationshipTypeFor(bucket: ReportBucket, raw: unknown): RelationshipType {
+	if (isRelationshipType(raw)) return raw;
+	if (bucket === 'shadowIt') return 'owned_off_primary_registrar';
+	if (bucket === 'consolidated') return 'owned_primary';
+	if (bucket === 'impersonationSurface') return 'impersonation_surface';
+	if (bucket === 'impersonation') return 'impersonation_risk';
+	return 'manual_review';
 }
 
 function stringArray(value: unknown): string[] {
@@ -307,9 +347,11 @@ export function buildDiscoveryReportModel(input: {
 		// `impersonationSurface` is tier-4 only; route it to the dedicated list so
 		// the v1 sidecar's 4-key `buckets` block stays byte-identical.
 		if (rawBucket === 'impersonationSurface') {
+			const relationshipType = relationshipTypeFor('impersonationSurface', metadata.relationshipType);
 			impersonationSurfaceCandidates.push({
 			domain: metadata.candidate,
 			bucket: 'impersonationSurface',
+			relationshipType,
 			evidence: formatEvidence(signals, combinedConfidence, candidateGraphEvidence),
 				registrar,
 				registrarSource,
@@ -329,10 +371,12 @@ export function buildDiscoveryReportModel(input: {
 		const bucket: ClassicReportBucket =
 			isBucket(rawBucket) && rawBucket !== 'impersonationSurface' ? (rawBucket as ClassicReportBucket) : 'indeterminate';
 		if (!isBucket(rawBucket)) missingBucketCandidates.push(metadata.candidate);
+		const relationshipType = relationshipTypeFor(bucket, metadata.relationshipType);
 
 		buckets[bucket].push({
 			domain: metadata.candidate,
 			bucket,
+			relationshipType,
 			evidence: formatEvidence(signals, combinedConfidence, candidateGraphEvidence),
 			registrar,
 			registrarSource,
@@ -351,10 +395,12 @@ export function buildDiscoveryReportModel(input: {
 		indeterminate: buckets.indeterminate.length,
 		impersonation: buckets.impersonation.length,
 	};
-	const domainRenewals = counts.shadowIt * 150;
-	const managedDns = counts.shadowIt * 2000;
-	const securityMonitoring = counts.shadowIt * 1200;
 	const allCandidates = [...CLASSIC_BUCKETS.flatMap((bucket) => buckets[bucket]), ...impersonationSurfaceCandidates];
+	const registrarSprawl = allCandidates.filter((candidate) => candidate.relationshipType === 'owned_off_primary_registrar');
+	const vendorDependencies = allCandidates.filter((candidate) => candidate.relationshipType === 'authorized_vendor_dependency');
+	const domainRenewals = registrarSprawl.length * 150;
+	const managedDns = registrarSprawl.length * 2000;
+	const securityMonitoring = registrarSprawl.length * 1200;
 	const unknownRegistrarCandidates = allCandidates
 		.filter((candidate) => candidate.registrar === 'Unknown' || candidate.registrarSource === 'unknown')
 		.map((candidate) => candidate.domain);
@@ -372,8 +418,10 @@ export function buildDiscoveryReportModel(input: {
 		buckets,
 		counts,
 		impersonationSurfaceCandidates,
+		registrarSprawl,
+		vendorDependencies,
 		arrOpportunity: {
-			domainCount: counts.shadowIt,
+			domainCount: registrarSprawl.length,
 			domainRenewals,
 			managedDns,
 			securityMonitoring,
@@ -402,13 +450,13 @@ export function buildDiscoveryReportSidecar(
 		performance?: BrandAuditMetricsSummary;
 		/**
 		 * Discovery mode threaded through from the pipeline. `'tiered'` emits the
-		 * v3 sidecar (split portfolio + impersonation surface + `performance.tiers`).
+		 * v4 sidecar (split portfolio + impersonation surface + `performance.tiers`).
 		 * `'classic'` (default, omit) emits the v1 sidecar byte-identical with the
 		 * legacy shape.
 		 */
 		discoveryMode?: DiscoveryMode;
 		/**
-		 * Per-tier counters + statuses for the v3 sidecar's `performance.tiers`
+		 * Per-tier counters + statuses for the v4 sidecar's `performance.tiers`
 		 * block. Required when `discoveryMode === 'tiered'`; ignored otherwise.
 		 * Pipeline forwards from `discoveryPerformance.tiers` (only populated in
 		 * tiered mode — BSL invariance).
@@ -464,7 +512,7 @@ export function buildDiscoveryReportSidecar(
 	};
 
 	if (options.discoveryMode === 'tiered') {
-		// v3 sidecar: split owned portfolio + impersonation surface. `performance`
+		// v4 sidecar: split owned portfolio + impersonation surface. `performance`
 		// is required (T9 contract) and gains a `tiers` block.
 		const ownedPortfolio = splitOwnedPortfolio(model);
 		const impersonationSurface = model.impersonationSurfaceCandidates.map((c) => ({
@@ -499,15 +547,18 @@ export function buildDiscoveryReportSidecar(
 					warnings: [],
 					tiers: tiersBlock,
 				};
-		const sidecarV3: DiscoveryReportSidecarV3 = {
+		const sidecarV4: DiscoveryReportSidecarV4 = {
 			...base,
-			qaSchemaVersion: 3,
+			qaSchemaVersion: 4,
 			discoveryMode: 'tiered',
+			relationshipSchemaVersion: 1,
 			ownedPortfolio,
+			registrarSprawl: model.registrarSprawl,
+			vendorDependencies: model.vendorDependencies,
 			impersonationSurface,
 			performance: performanceForV3,
 		};
-		return sidecarV3;
+		return sidecarV4;
 	}
 
 	// v1 (classic) — byte-identical with the legacy shape. No new keys.
@@ -519,13 +570,13 @@ export function buildDiscoveryReportSidecar(
 }
 
 /**
- * Partition `model.buckets` into the v3 four-key ownedPortfolio shape using the
+	 * Partition `model.buckets` into the v4 four-key ownedPortfolio shape using the
  * per-candidate `tier` field stamped by the pipeline. Tiered-mode pipeline
  * stamps `tier ∈ {0,1,2}` on consolidated candidates whose ownership routed via
  * the T8 tier short-circuit; un-tagged consolidated candidates fall through to
  * `inferred.consolidated` (tier-3 legacy classifier path).
  */
-function splitOwnedPortfolio(model: DiscoveryReportModel): DiscoveryReportSidecarV3OwnedPortfolio {
+function splitOwnedPortfolio(model: DiscoveryReportModel): DiscoveryReportSidecarV4OwnedPortfolio {
 	const tenantDeclared: string[] = [];
 	const graphSurfaced: string[] = [];
 	const declaredEvidence: string[] = [];
@@ -540,10 +591,14 @@ function splitOwnedPortfolio(model: DiscoveryReportModel): DiscoveryReportSideca
 		tenantDeclared,
 		graphSurfaced,
 		declaredEvidence,
-		inferred: {
-			consolidated: inferredConsolidated,
-			shadowIt: model.buckets.shadowIt.map((c) => c.domain),
-			indeterminate: model.buckets.indeterminate.map((c) => c.domain),
-		},
-	};
-}
+			inferred: {
+				consolidated: inferredConsolidated,
+				shadowIt: model.buckets.shadowIt
+					.filter((c) => c.relationshipType === 'owned_off_primary_registrar')
+					.map((c) => c.domain),
+				indeterminate: model.buckets.indeterminate
+					.filter((c) => c.relationshipType === 'manual_review')
+					.map((c) => c.domain),
+			},
+		};
+	}

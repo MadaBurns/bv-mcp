@@ -697,6 +697,28 @@ describe('handleToolsCall - caching behaviour', () => {
 		expect(fetchCount).toBeGreaterThan(afterWarm);
 	});
 
+	it('force_refresh: true on registered tools bypasses the leaf tool cache', async () => {
+		IN_MEMORY_CACHE.clear();
+		let fetchCount = 0;
+		globalThis.fetch = vi.fn().mockImplementation(() => {
+			fetchCount++;
+			return Promise.resolve(
+				createDohResponse(
+					[{ name: 'force-refresh-leaf.example.com', type: 16 }],
+					[{ name: 'force-refresh-leaf.example.com', type: 16, TTL: 300, data: '"v=spf1 -all"' }],
+				),
+			);
+		});
+
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		await handleToolsCall({ name: 'check_spf', arguments: { domain: 'force-refresh-leaf.example.com' } });
+		const afterWarm = fetchCount;
+		expect(afterWarm).toBeGreaterThan(0);
+
+		await handleToolsCall({ name: 'check_spf', arguments: { domain: 'force-refresh-leaf.example.com', force_refresh: true } });
+		expect(fetchCount).toBeGreaterThan(afterWarm);
+	});
+
 	it('cacheTtlSeconds override is passed to KV storage as expirationTtl', async () => {
 		mockTxtRecords(['v=spf1 -all']);
 		const mockKV = {

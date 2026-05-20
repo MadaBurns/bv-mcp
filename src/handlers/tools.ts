@@ -565,7 +565,7 @@ export async function handleToolsCall(
 						() => registeredTool.execute(validDomain, validatedArgs, runtimeOptions),
 						scanCacheKV,
 						registeredTool.cacheTtlSeconds,
-						/* skipCache */ undefined,
+						/* skipCache */ extractForceRefresh(validatedArgs),
 						(r) => !r.partial,
 					);
 					result = tracked.data;

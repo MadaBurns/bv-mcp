@@ -74,6 +74,19 @@ const DETERMINISTIC_GRAPH_SIGNAL_TYPES = new Set([
 	'dmarc_rua',
 ]);
 
+const SHARED_INFRA_SIGNALS = new Set([
+	'ns',
+	'mx_overlap',
+	'san',
+	'san_recursive',
+	'spf_include',
+	'spf_include_seed',
+	'txt_verification',
+	'http_redirect',
+	'dkim_key_reuse',
+	'cname_alignment',
+]);
+
 function graphEvidenceClears(candidate) {
 	const evidence = candidate.graphEvidence;
 	if (!isObject(evidence)) return false;
@@ -90,6 +103,28 @@ function hasMissingRegistrar(candidate) {
 	const source = candidate.registrarSource ?? 'unknown';
 	const registrar = candidate.registrar ?? 'Unknown';
 	return source === 'unknown' || source === 'lookup_failed' || source === 'redacted' || source === 'notfound' || registrar === 'Unknown';
+}
+
+function hasSharedInfraSignal(candidate) {
+	const signals = Array.isArray(candidate.signals) ? candidate.signals : [];
+	return signals.some((signal) => SHARED_INFRA_SIGNALS.has(signal));
+}
+
+function hasNoSharedInfraReason(candidate) {
+	const reasons = Array.isArray(candidate.reasons) ? candidate.reasons : [];
+	return reasons.some((reason) => typeof reason === 'string' && /no shared infrastructure signal/i.test(reason));
+}
+
+function hasSharedMxPlatformReason(candidate) {
+	const reasons = Array.isArray(candidate.reasons) ? candidate.reasons : [];
+	return reasons.some((reason) => typeof reason === 'string' && /shared MX platform/i.test(reason));
+}
+
+function isFalseShadowIt(candidate) {
+	if (candidate.bucket !== 'shadowIt') return false;
+	if (typeof candidate.relationshipType === 'string' && candidate.relationshipType !== 'owned_off_primary_registrar') return true;
+	const reasons = Array.isArray(candidate.reasons) ? candidate.reasons : [];
+	return reasons.some((reason) => typeof reason === 'string' && /authorized vendor dependency/i.test(reason));
 }
 
 function pickGrade(current, next) {
@@ -109,15 +144,16 @@ function gradeSidecar(sidecar, file, readError) {
 			notes: [readError ? `invalid JSON: ${readError}` : 'JSON sidecar is not an object'],
 			graphOnlyCandidates: [],
 			missingRegistrarCandidates: [],
+			contradictoryCandidates: [],
 		};
 	}
 
 	const candidates = allCandidates(sidecar);
 	const notes = [];
 	let grade = 'ok';
-	if (sidecar.qaSchemaVersion !== 3 || sidecar.discoveryMode !== 'tiered') {
+	if ((sidecar.qaSchemaVersion !== 3 && sidecar.qaSchemaVersion !== 4) || sidecar.discoveryMode !== 'tiered') {
 		grade = 'bad';
-		notes.push('not tiered v3');
+		notes.push('not tiered v3/v4');
 	}
 	if (candidates.length === 0) {
 		grade = pickGrade(grade, 'weak');
@@ -135,6 +171,23 @@ function gradeSidecar(sidecar, file, readError) {
 	const missingRegistrars = candidates.filter(hasMissingRegistrar);
 	if (missingRegistrars.length > 0) notes.push(`${missingRegistrars.length} missing registrar attribution(s)`);
 
+	const contradictoryCandidates = candidates.filter(
+		(candidate) =>
+			hasSharedInfraSignal(candidate) &&
+			((candidate.bucket === 'impersonation' && hasNoSharedInfraReason(candidate)) ||
+				(candidate.bucket === 'shadowIt' && hasSharedMxPlatformReason(candidate))),
+	);
+	if (contradictoryCandidates.length > 0) {
+		grade = pickGrade(grade, 'bad');
+		notes.push(`${contradictoryCandidates.length} bucket/signal contradiction(s)`);
+	}
+
+	const falseShadowItCandidates = candidates.filter(isFalseShadowIt);
+	if (falseShadowItCandidates.length > 0) {
+		grade = pickGrade(grade, 'bad');
+		notes.push(`${falseShadowItCandidates.length} vendor dependency candidate(s) misbucketed as Shadow IT`);
+	}
+
 	return {
 		domain: typeof sidecar.target === 'string' && sidecar.target.length > 0 ? sidecar.target : file.replace(/-discovery-report\.json$/, ''),
 		file,
@@ -143,6 +196,8 @@ function gradeSidecar(sidecar, file, readError) {
 		notes,
 		graphOnlyCandidates: graphOnly.map((candidate) => candidate.domain).filter((domain) => typeof domain === 'string'),
 		missingRegistrarCandidates: missingRegistrars.map((candidate) => candidate.domain).filter((domain) => typeof domain === 'string'),
+		contradictoryCandidates: contradictoryCandidates.map((candidate) => candidate.domain).filter((domain) => typeof domain === 'string'),
+		falseShadowItCandidates: falseShadowItCandidates.map((candidate) => candidate.domain).filter((domain) => typeof domain === 'string'),
 	};
 }
 

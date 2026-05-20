@@ -29,6 +29,21 @@ function parseJsonc(source) {
     return JSON.parse(out);
 }
 
+function mergeServices(publicServices, privateServices) {
+    const merged = new Map();
+    for (const service of Array.isArray(publicServices) ? publicServices : []) {
+        if (service && typeof service.binding === 'string') {
+            merged.set(service.binding, service);
+        }
+    }
+    for (const service of Array.isArray(privateServices) ? privateServices : []) {
+        if (service && typeof service.binding === 'string') {
+            merged.set(service.binding, service);
+        }
+    }
+    return [...merged.values()];
+}
+
 /**
  * Automates the "Private Injection" process.
  * Merges the public engine build with local private overrides.
@@ -44,8 +59,9 @@ function inject() {
 
     const privateConfig = parseJsonc(fs.readFileSync(privateConfigPath, 'utf8'));
     
-    // Merge Strategy: Private config bindings override public defaults
-    publicConfig.services = privateConfig.services;
+    // Merge Strategy: Private service bindings override public defaults by binding
+    // name, while public service bindings absent from the overlay are retained.
+    publicConfig.services = mergeServices(publicConfig.services, privateConfig.services);
     publicConfig.vars = { ...publicConfig.vars, ...privateConfig.vars };
     if (privateConfig.queues) {
         publicConfig.queues = privateConfig.queues;

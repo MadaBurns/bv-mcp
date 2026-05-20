@@ -86,6 +86,58 @@ describe('lookupRegistrar', () => {
 		expect(whoisQuery).not.toHaveBeenCalled();
 	});
 
+	it('short-circuits registries that do not publish registrar attribution', async () => {
+		const kv = makeKV();
+		const whoisQuery = vi.fn();
+		const deps: LookupDeps = { kv: kv as never, whoisQuery };
+
+		await expect(lookupRegistrar('example.ph', deps)).resolves.toEqual({
+			registrar: null,
+			registrarIanaId: null,
+			source: 'redacted',
+		} satisfies WhoisLookupResult);
+		await expect(lookupRegistrar('example.co.jp', deps)).resolves.toEqual({
+			registrar: null,
+			registrarIanaId: null,
+			source: 'redacted',
+		} satisfies WhoisLookupResult);
+		await expect(lookupRegistrar('example.ch', deps)).resolves.toEqual({
+			registrar: null,
+			registrarIanaId: null,
+			source: 'redacted',
+		} satisfies WhoisLookupResult);
+		await expect(lookupRegistrar('example.pt', deps)).resolves.toEqual({
+			registrar: null,
+			registrarIanaId: null,
+			source: 'redacted',
+		} satisfies WhoisLookupResult);
+		await expect(lookupRegistrar('example.gr', deps)).resolves.toEqual({
+			registrar: null,
+			registrarIanaId: null,
+			source: 'redacted',
+		} satisfies WhoisLookupResult);
+		expect(whoisQuery).not.toHaveBeenCalled();
+	});
+
+	it('parses Korean WHOIS Authorized Agency as the registrar', async () => {
+		const kv = makeKV();
+		const deps: LookupDeps = {
+			kv: kv as never,
+			whoisQuery: vi.fn(async (server: string, query: string): Promise<string> => {
+				if (server === 'whois.kr' && query === 'google.kr') return 'Domain Name: google.kr\nAuthorized Agency           : Whois Corp.(http://whois.co.kr)\n';
+				throw new Error(`unexpected query: ${server} ${query}`);
+			}),
+		};
+
+		const result = await lookupRegistrar('google.kr', deps);
+
+		expect(result).toEqual<WhoisLookupResult>({
+			registrar: 'Whois Corp.(http://whois.co.kr)',
+			registrarIanaId: null,
+			source: 'whois',
+		});
+	});
+
 	it('returns source=notfound when registry says no match', async () => {
 		const kv = makeKV();
 		const deps: LookupDeps = {
