@@ -165,6 +165,15 @@ Run the chaos tests locally: `python3 scripts/chaos/chaos-test-clients.py`
 - **Adaptive Scoring**: Durable Object telemetry adjusts weights based on real-world distributions
 - **Client Awareness**: Automatic response formatting (`compact` vs `full`) based on client `User-Agent`
 
+### Brand-discovery modes (`discover_brand_domains` / `brand_audit_*`)
+
+The `discovery_mode` argument accepts two values:
+
+- **`classic`** (the default everywhere this repo runs out-of-the-box) — the public, BSL-licensed signal-sweep pipeline. Uses only public-internet data sources (DNS, RDAP, CT logs, MX/TXT inspection). This is the only mode supported for self-hosted deployments and the only mode the open test suite covers end-to-end.
+- **`tiered`** — layers a portfolio-aware Tier 0 / infrastructure-graph Tier 1 / declared-evidence Tier 2 pipeline in front of the classic sweep. Tiered mode requires private BlackVeil-internal cross-Worker bindings (`BV_INFRA_GRAPH`, `BV_INTEL_GATEWAY`, `BV_ENTERPRISE`) that are **not packaged with the open distribution** — they live in BlackVeil's production deploy overlay (`.dev/wrangler.deploy.jsonc`) and call into proprietary Workers. Self-hosters cannot enable tiered mode without those bindings.
+
+BlackVeil's hosted production at `dns-mcp.blackveilsecurity.com` flips its runtime default to `tiered` via the env var `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT="tiered"` in the private overlay; the public schema default in `src/schemas/tool-args.ts` stays `'classic'` permanently so anyone building from `main` gets the BSL-licensed behaviour unchanged. An explicit caller-supplied `discovery_mode` always wins over the env default.
+
 ---
 
 ## Client setup
