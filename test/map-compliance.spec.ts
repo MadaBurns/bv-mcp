@@ -37,6 +37,7 @@ function makeAllPassing(): CheckResult[] {
 		makeCheckResult('http_security', true),
 		makeCheckResult('ns', true),
 		makeCheckResult('mx', true),
+		makeCheckResult('authoritative_dns_infra', true),
 	];
 }
 
@@ -103,6 +104,25 @@ describe('evaluateCompliance', () => {
 		// 3 passing, 1 failing → partial
 		const cc61 = report.frameworks.soc2.mappings.find((m) => m.controlId === 'CC6.1');
 		expect(cc61!.status).toBe('partial');
+	});
+
+	it('maps authoritative DNS infra failures into DNS infrastructure controls', () => {
+		const results = [
+			...makeAllPassing(),
+			makeCheckResult('authoritative_dns_infra', false, [
+				{ title: 'Route leak or hijack signal observed', severity: 'critical' },
+			]),
+		];
+
+		const report = evaluateCompliance(results, 'a.root-servers.net', 40, 'F');
+
+		const cisDnsInfra = report.frameworks.cis_controls.mappings.find((m) => m.controlId === '12.1');
+		expect(cisDnsInfra!.status).toBe('partial');
+		expect(cisDnsInfra!.relatedFindings).toContain('Route leak or hijack signal observed');
+
+		const socBoundary = report.frameworks.soc2.mappings.find((m) => m.controlId === 'CC6.6');
+		expect(socBoundary!.status).toBe('partial');
+		expect(socBoundary!.relatedFindings).toContain('Route leak or hijack signal observed');
 	});
 
 	it('should compute partial status for multi-category controls with mixed results', () => {

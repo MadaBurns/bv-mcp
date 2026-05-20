@@ -658,6 +658,23 @@ describe('simulateAttackPaths', () => {
 		return simulateAttackPaths(domain);
 	}
 
+	it('evaluates authoritative infrastructure hijack attack paths from findings', async () => {
+		const { evaluateAttackPathsFromFindings } = await import('../src/tools/simulate-attack-paths');
+		const paths = evaluateAttackPathsFromFindings([
+			{
+				category: 'authoritative_dns_infra',
+				title: 'Route leak or hijack signal observed',
+				severity: 'critical',
+				detail: 'Route monitoring reported leak or hijack signals for a.root-servers.net.',
+			},
+		] as never);
+
+		const routeHijack = paths.find((path) => path.id === 'authoritative_dns_route_hijack');
+		expect(routeHijack).toBeDefined();
+		expect(routeHijack!.severity).toBe('critical');
+		expect(routeHijack!.mitigations).toContain('Validate BGP origin announcements and RPKI ROAs');
+	});
+
 	it('detects email spoofing attack path when SPF/DMARC are missing (critical)', async () => {
 		mockEmailSpoofOnlyDomain();
 		const result = await run();
