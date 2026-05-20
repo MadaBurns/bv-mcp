@@ -36,7 +36,7 @@
 		"lint:fix": "eslint . --fix",
 		"validate:internal-deps": "node scripts/maintenance/validate-internal-deps.mjs",
 		"audit:repo-safety": "node scripts/repo-safety/scan-sensitive-surface.mjs",
-		"audit:oss-safety": "vitest run test/audits/oss-fixture-safety.audit.test.ts test/audits/no-tracked-secrets.audit.test.ts test/audits/npm-publish-surface.audit.test.ts test/audits/busl-positioning.audit.test.ts test/audits/repo-safety-policy.audit.test.ts test/audits/repo-safety-scanner.audit.test.ts test/audits/hook-coverage.audit.test.ts test/audits/workflow-safety-gates.audit.test.ts test/audits/repo-safety-docs.audit.test.ts",
+		"audit:oss-safety": "vitest run test/audits/oss-fixture-safety.audit.test.ts test/audits/no-tracked-secrets.audit.test.ts test/audits/npm-publish-surface.audit.test.ts test/audits/busl-positioning.audit.test.ts test/audits/repo-safety-policy.audit.test.ts test/audits/repo-safety-scanner.audit.test.ts test/audits/hook-coverage.audit.test.ts test/audits/workflow-safety-gates.audit.test.ts test/audits/repo-safety-docs.audit.test.ts && vitest run --config vitest.node.config.mts test/audits/repo-safety-push-range-scanner.audit.test.ts",
 		"generate-report": "bash scripts/generate-report.sh",
 		"report:qa": "node scripts/audits/brand-report-qa.mjs",
 		"report:quality-audit": "node scripts/audits/brand-report-quality-audit.mjs",

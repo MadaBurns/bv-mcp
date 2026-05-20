@@ -5,28 +5,49 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
+ZERO_SHA="0000000000000000000000000000000000000000"
+push_refs="$(cat)"
+
+range_for_push() {
+	local local_sha="$1"
+	local remote_sha="$2"
+	local base
+
+	if [ "$local_sha" = "$ZERO_SHA" ] || ! git cat-file -e "$local_sha^{commit}" 2>/dev/null; then
+		return 1
+	fi
+
+	if [ "$remote_sha" != "$ZERO_SHA" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+		printf '%s\n' "$remote_sha..$local_sha"
+		return 0
+	fi
+
+	base="$(git merge-base "$local_sha" origin/main 2>/dev/null || git merge-base "$local_sha" main 2>/dev/null || true)"
+	if [ -n "$base" ]; then
+		printf '%s\n' "$base..$local_sha"
+		return 0
+	fi
+
+	printf '%s\n' "$local_sha"
+}
+
+if [ -n "$push_refs" ]; then
+	printf '%s\n' "$push_refs" | node scripts/repo-safety/scan-push-range-sensitive-surface.mjs
+fi
+
 if command -v gitleaks &>/dev/null; then
 	while read -r local_ref local_sha remote_ref remote_sha; do
 		[ -z "${local_ref:-}" ] && continue
-		if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+		if [ "$local_sha" = "$ZERO_SHA" ]; then
 			continue
 		fi
-		if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
-			base="$(git merge-base "$local_sha" origin/main 2>/dev/null || git merge-base "$local_sha" main 2>/dev/null || true)"
-			if [ -z "$base" ]; then
-				echo "BLOCKED: unable to compute gitleaks push range for new remote ref $local_ref -> $remote_ref"
-				exit 1
-			fi
-			range="$base..$local_sha"
-		else
-			range="$remote_sha..$local_sha"
-		fi
+		range="$(range_for_push "$local_sha" "$remote_sha" || true)"
 		if [ -z "$range" ]; then
 			echo "BLOCKED: unable to compute gitleaks push range for $local_ref -> $remote_ref"
 			exit 1
 		fi
 		gitleaks detect --config .gitleaks.toml --source . --redact=100 --exit-code 1 --no-banner --log-opts="$range"
-	done
+	done <<< "$push_refs"
 else
 	echo "WARN: gitleaks is not installed; install it to scan pushed commit ranges locally."
 fi
