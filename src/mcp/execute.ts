@@ -73,6 +73,7 @@ export interface ExecuteMcpRequestOptions {
 	ipHash?: string;
 	certstream?: { fetch: typeof fetch };
 	whoisBinding?: { fetch: typeof fetch };
+	infraProbe?: { fetch: typeof fetch };
 	/** D1 binding for the brand-audit DB. v2.21.2+. */
 	brandAuditDb?: D1Database;
 	/** Cloudflare Queue producer for brand-audit batch path. v2.21.2+. */
@@ -572,6 +573,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			authTier: options.authTier,
 			certstream: options.certstream,
 			whoisBinding: options.whoisBinding,
+			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,
 			brandReportsR2: options.brandReportsR2,
@@ -652,6 +654,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			authTier: options.authTier,
 			certstream: options.certstream,
 			whoisBinding: options.whoisBinding,
+			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,
 			brandReportsR2: options.brandReportsR2,

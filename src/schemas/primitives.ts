@@ -27,10 +27,10 @@ export const ToolNameSchema = z.string().min(1).max(30).regex(/^[a-z_]+$/);
 export const SafeLabelSchema = z.string().min(1).max(253);
 
 /** Scoring profile (with auto). Used by scan_domain. Trims and lowercases input. */
-export const ProfileSchema = z.string().transform(s => s.trim().toLowerCase()).pipe(z.enum(['auto', 'mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal']));
+export const ProfileSchema = z.string().transform(s => s.trim().toLowerCase()).pipe(z.enum(['auto', 'mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal', 'authoritative_dns_infra']));
 
 /** Scoring profile (without auto). Used by get_benchmark, get_provider_insights. Trims and lowercases input. */
-export const BenchmarkProfileSchema = z.string().transform(s => s.trim().toLowerCase()).pipe(z.enum(['mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal']));
+export const BenchmarkProfileSchema = z.string().transform(s => s.trim().toLowerCase()).pipe(z.enum(['mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal', 'authoritative_dns_infra']));
 
 /** Output format. Trims and lowercases input before validation. */
 export const FormatSchema = z.string().transform(s => s.trim().toLowerCase()).pipe(z.enum(['full', 'compact']));
