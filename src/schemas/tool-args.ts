@@ -289,6 +289,10 @@ export const BrandAuditBatchStartArgs = z.object({
 	planner_mode: BrandAuditPlannerModeSchema.optional().describe('Planner mode for staged discovery fanout. observe emits metrics; enforce applies candidate-backed signal caps.'),
 	brand_aliases: BrandAliasesArg,
 	candidate_domains: BrandCandidateDomainsArg,
+	discovery_mode: z
+		.enum(['classic', 'tiered'])
+		.optional()
+		.describe('Brand-discovery pipeline mode. classic = legacy sweep; tiered = tenant/graph/evidence wrappers first (BlackVeil-internal).'),
 }).passthrough();
 
 /** brand_audit_status — poll status of an enqueued audit. */
