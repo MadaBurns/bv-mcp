@@ -50,6 +50,7 @@ import { checkRdapLookup } from '../tools/check-rdap-lookup';
 import { checkNsecWalkability } from '../tools/check-nsec-walkability';
 import { checkDnssecChain } from '../tools/check-dnssec-chain';
 import { checkFastFlux } from '../tools/check-fast-flux';
+import { checkAuthoritativeDnsInfra } from '../tools/check-authoritative-dns-infra';
 import { discoverBrandDomains } from '../tools/discover-brand-domains';
 import { brandAuditSingle } from '../tools/brand-audit-single';
 import { brandAuditBatchStart } from '../tools/brand-audit-batch-start';
@@ -101,6 +102,7 @@ interface ToolRuntimeOptions {
 	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
 	whoisBinding?: { fetch: typeof fetch };
+	infraProbe?: { fetch: typeof fetch };
 	/** D1 binding for the brand-audit DB. Used by brand_audit_{batch_start,status,get_report}. Undefined if the operator hasn't provisioned brand-audit-v1 yet (see docs/provisioning/brand-audit-bindings.md). */
 	brandAuditDb?: D1Database;
 	/** Cloudflare Queue producer for the brand-audit batch path. Undefined if unprovisioned. */
@@ -236,6 +238,10 @@ const TOOL_REGISTRY: Record<
 	check_nsec_walkability: { cacheKey: () => 'nsec_walkability', execute: (d, _args, ro) => checkNsecWalkability(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	check_dnssec_chain: { cacheKey: () => 'dnssec_chain', execute: (d, _args, ro) => checkDnssecChain(d, buildDnsOptions(ro)) },
 	check_fast_flux: { cacheKey: () => 'fast_flux', execute: (d, args, ro) => checkFastFlux(d, (args.rounds as number | undefined) ?? 3, buildDnsOptions(ro)) },
+	check_authoritative_dns_infra: {
+		cacheKey: () => 'authoritative_dns_infra',
+		execute: (d, _args, ro) => checkAuthoritativeDnsInfra(d, { infraProbe: ro?.infraProbe }),
+	},
 	discover_brand_domains: {
 		cacheKey: (args) => {
 			const signals = (args.signals as string[] | undefined)?.slice().sort().join(',') ?? 'all';
@@ -603,6 +609,7 @@ export async function handleToolsCall(
 							waitUntil: runtimeOptions?.waitUntil,
 							profileAccumulator: runtimeOptions?.profileAccumulator,
 							secondaryDoh: runtimeOptions?.secondaryDoh,
+							infraProbe: runtimeOptions?.infraProbe,
 						},
 					});
 					const batchText = formatBatchScan(batchResults, effectiveFormat);
@@ -621,6 +628,7 @@ export async function handleToolsCall(
 							waitUntil: runtimeOptions?.waitUntil,
 							profileAccumulator: runtimeOptions?.profileAccumulator,
 							secondaryDoh: runtimeOptions?.secondaryDoh,
+							infraProbe: runtimeOptions?.infraProbe,
 						},
 					});
 					const compareText = formatDomainComparison(compareResults, effectiveFormat);

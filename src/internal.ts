@@ -72,6 +72,7 @@ type InternalEnv = {
 	BV_DOH_ENDPOINT?: string;
 	BV_DOH_TOKEN?: string;
 	BV_WHOIS?: Fetcher;
+	BV_INFRA_PROBE?: Fetcher;
 	CF_ACCOUNT_ID?: string;
 	CF_ANALYTICS_TOKEN?: string;
 	BV_WEB_INTERNAL_KEY?: string;
@@ -220,6 +221,7 @@ internalRoutes.post('/tools/call', async (c) => {
 				? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN }
 				: undefined,
 			whoisBinding: c.env.BV_WHOIS,
+			infraProbe: c.env.BV_INFRA_PROBE,
 			// Tier 0/1/2 lookup closures — internal callers (load tests, bv-web
 			// service binding, ops scripts) get the same tiered discovery path as
 			// public `/mcp`. Closures stay `undefined` on BSL self-hosts where
@@ -402,6 +404,7 @@ internalRoutes.post('/tools/batch', async (c) => {
 							? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN }
 							: undefined,
 						whoisBinding: c.env.BV_WHOIS,
+						infraProbe: c.env.BV_INFRA_PROBE,
 						// Tier 0/1/2 lookup closures — batch invocations of brand tools
 						// from internal callers must also exercise tiered mode when the
 						// bindings are provisioned.
