@@ -83,6 +83,14 @@ export interface ExecuteMcpRequestOptions {
 	browserRenderer?: { fetch: typeof fetch };
 	/** principalId for the calling user — required by enforceBrandAuditQuota and IDOR-cache fix. v2.21.2+. */
 	principalId?: string;
+	/**
+	 * T13 — runtime-default for `discover_brand_domains` discovery_mode.
+	 * Sourced from `env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT`. `'tiered'` flips
+	 * the default; undefined leaves the public schema default (`'classic'`)
+	 * in charge. Threaded into `ToolRuntimeOptions.discoveryModeDefault`
+	 * which `brand_audit_single` reads.
+	 */
+	discoveryModeDefault?: string;
 }
 
 function getDomainFromParams(params: Record<string, unknown> | undefined): string | undefined {
@@ -557,6 +565,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			brandAuditQueue: options.brandAuditQueue,
 			brandReportsR2: options.brandReportsR2,
 			browserRenderer: options.browserRenderer,
+			discoveryModeDefault: options.discoveryModeDefault,
 			principalId: options.principalId,
 		}).then((dispatchResult) => {
 			if (dispatchResult.kind === 'early-error') {
@@ -633,6 +642,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			brandAuditQueue: options.brandAuditQueue,
 			brandReportsR2: options.brandReportsR2,
 			browserRenderer: options.browserRenderer,
+			discoveryModeDefault: options.discoveryModeDefault,
 			principalId: options.principalId,
 		});
 
