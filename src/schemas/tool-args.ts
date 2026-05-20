@@ -55,6 +55,11 @@ export const CheckResolverConsistencyArgs = z.object({
 	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 }).passthrough();
 
+/** check_root_server_set */
+export const RootServerSetArgs = z.object({
+	format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+}).passthrough();
+
 /** generate_spf_record */
 export const GenerateSpfArgs = z.object({
 	domain: DomainSchema.describe('Domain (e.g., example.com)'),
@@ -376,6 +381,8 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	check_nsec_walkability: BaseDomainArgs,
 	check_dnssec_chain: BaseDomainArgs,
 	check_fast_flux: CheckFastFluxArgs,
+	check_authoritative_dns_infra: BaseDomainArgs,
+	check_root_server_set: RootServerSetArgs,
 	discover_brand_domains: DiscoverBrandDomainsArgs,
 	brand_audit_single: BrandAuditSingleArgs,
 	brand_audit_batch_start: BrandAuditBatchStartArgs,
