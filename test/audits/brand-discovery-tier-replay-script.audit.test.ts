@@ -65,4 +65,9 @@ describe('brand-discovery tier replay script safety', () => {
 		// Path-traversal / shell-metachar guard — same hygiene as the planner benchmark.
 		expect(source).toMatch(/replace\(\s*\/\[\^a-z0-9\.-\]/i);
 	});
+
+	it('extracts owned portfolio and tier metrics from the v3 sidecar shape', () => {
+		expect(source).toContain('sidecar.ownedPortfolio?.total');
+		expect(source).toContain('sidecar.performance?.tiers');
+	});
 });
