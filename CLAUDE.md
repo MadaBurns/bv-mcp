@@ -299,6 +299,10 @@ ignored env only; never commit it or paste it into workflow logs.
 | `BV_DOH_ENDPOINT` / `BV_DOH_TOKEN` | var / Secret | Custom secondary DoH (`X-BV-Token`) |
 | `BV_CERTSTREAM` | Service | CT logs: `/enumerate` (discover_subdomains, scan) + `/sans` (brand SAN siblings). Direct-crt.sh fallback w/ jittered backoff |
 | `BV_WHOIS` | Service | WHOIS/43 shim; optional, RDAP-only fallback. KV-cached IANA referrals |
+| `BV_INFRA_GRAPH` | Service | **Operator-deploy only.** Tier-1 infrastructure-graph lookup for `discovery_mode='tiered'`. Not packaged with the public distribution — wired via `.dev/wrangler.deploy.jsonc`. Absent → tiered pipeline falls back to classic sweep |
+| `BV_INTEL_GATEWAY` | Service | **Operator-deploy only.** Tier-2 declared-evidence lookups for `discovery_mode='tiered'`. Private BlackVeil binding; not in public `wrangler.jsonc` |
+| `BV_ENTERPRISE` | Service | **Operator-deploy only.** Tier-0 portfolio + enterprise tenant data for `discovery_mode='tiered'`. Private BlackVeil binding; not in public `wrangler.jsonc` |
+| `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT` | var | **Operator-deploy only.** When set to `"tiered"` (the BlackVeil-production default), flips the runtime default for callers that omit `discovery_mode`. Unset on BSL self-hosts → public schema default `'classic'` wins. Set only in `.dev/wrangler.deploy.jsonc` |
 | `SCORING_CONFIG` | var | JSON scoring overrides |
 | `CF_ACCOUNT_ID` / `CF_ANALYTICS_TOKEN` | var / Secret | Alerting query auth |
 | `ALERT_WEBHOOK_URL` / `ALERT_*_THRESHOLD` / `ALERT_LOOKBACK_MINUTES` | var | Cron alerts |

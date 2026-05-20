@@ -74,6 +74,21 @@ export interface BrandAuditPipelineOptions {
 	 * default never flips).
 	 */
 	discovery_mode?: 'classic' | 'tiered';
+	/**
+	 * T13 — BlackVeil-production runtime environment overrides.
+	 *
+	 * `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT === 'tiered'` flips the *runtime
+	 * default* discovery mode to `'tiered'` when the caller omits
+	 * `discovery_mode`. Unset, missing, or any other value → the public schema
+	 * default (`'classic'`) wins, preserving the BSL boundary for self-hosted
+	 * deployments. The env var is only set in the private wrangler overlay
+	 * (`.dev/wrangler.deploy.jsonc`); the public `wrangler.jsonc` never carries
+	 * it. An explicit caller-supplied `discovery_mode` always wins regardless
+	 * of env.
+	 */
+	env?: {
+		BRAND_AUDIT_DISCOVERY_MODE_DEFAULT?: string;
+	};
 	/** Public brand aliases, product labels, or legal-entity labels to seed. */
 	brand_aliases?: string[];
 	/** Caller-supplied candidate domains to corroborate. */
@@ -501,6 +516,15 @@ export async function runBrandAuditPipeline(
 	// Phase 2b: retry messages set force_refresh so a transient lookup_failed
 	// from the first pass doesn't get served back from the cache.
 	const readCachedStep = options.force_refresh ? null : stepStore;
+	// T13 — resolve the effective discovery mode.
+	// Caller-supplied `discovery_mode` always wins. If the caller omits it,
+	// the BlackVeil-production runtime env (`BRAND_AUDIT_DISCOVERY_MODE_DEFAULT`)
+	// can flip the default to `'tiered'`. Any other env value (including
+	// `undefined`, `'classic'`, or junk) leaves it unset — `discoverBrandDomains`
+	// then falls back to the schema default `'classic'`. BSL self-hosters never
+	// set this var, so they get classic mode regardless.
+	const effectiveDiscoveryMode: 'classic' | 'tiered' | undefined =
+		options.discovery_mode ?? (options.env?.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT === 'tiered' ? 'tiered' : undefined);
 	const throwIfAborted = (): void => {
 		if (signal?.aborted) {
 			const reason = (signal as AbortSignal & { reason?: unknown }).reason;
@@ -554,7 +578,7 @@ export async function runBrandAuditPipeline(
 			min_confidence: options.min_confidence,
 			depth: options.depth,
 			planner_mode: options.planner_mode,
-			discovery_mode: options.discovery_mode,
+			discovery_mode: effectiveDiscoveryMode,
 			brand_aliases: options.brand_aliases,
 			candidate_domains: options.candidate_domains,
 			certstream: deps.certstream,
@@ -806,8 +830,12 @@ export async function runBrandAuditPipeline(
 			}),
 			// T9 — forward per-tier stats only when discovery_mode === 'tiered'
 			// (tierStats === undefined in classic mode — BSL invariance).
+			// T13 — env-defaulted tiered runs must stamp `discoveryMode: 'tiered'`
+			// identically to explicit-tiered runs so `brand-audit-markdown.ts`
+			// (and any other downstream reader keying on this field) treats the
+			// report the same way regardless of how the mode was selected.
 			...(tierStats ? { tiers: tierStats } : {}),
-			...(options.discovery_mode === 'tiered' ? { discoveryMode: 'tiered' as const } : {}),
+			...(effectiveDiscoveryMode === 'tiered' ? { discoveryMode: 'tiered' as const } : {}),
 		},
 	);
 

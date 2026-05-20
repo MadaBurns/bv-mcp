@@ -113,6 +113,15 @@ interface ToolRuntimeOptions {
 	brandReportsR2?: R2Bucket;
 	/** Service binding to bv-browser-renderer Worker. v2.20.0+; used by brand_audit_pdf_consumer at queue time, not by request-path tools. */
 	browserRenderer?: { fetch: typeof fetch };
+	/**
+	 * T13 — runtime-default for `discover_brand_domains` discovery_mode.
+	 * Sourced from `env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT` at the index.ts
+	 * construction sites. Threaded into `brandAuditSingle`'s pipeline
+	 * `options.env`. `'tiered'` flips the default; any other value (including
+	 * undefined) leaves the public schema default (`'classic'`) in charge.
+	 * BSL self-hosters never set this — they get classic mode out of the box.
+	 */
+	discoveryModeDefault?: string;
 }
 
 /** Build QueryDnsOptions for individual check calls from runtime options. */
@@ -245,8 +254,13 @@ const TOOL_REGISTRY: Record<
 				min_confidence: args.min_confidence as number | undefined,
 				depth: args.depth as 'standard' | 'deep' | undefined,
 				planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
+				discovery_mode: args.discovery_mode as 'classic' | 'tiered' | undefined,
 				brand_aliases: args.brand_aliases as string[] | undefined,
 				candidate_domains: args.candidate_domains as string[] | undefined,
+				// T13 — propagate the BlackVeil-production runtime override.
+				// Pipeline only honours it when the caller omits `discovery_mode`;
+				// undefined on BSL self-hosts (schema default `'classic'` wins).
+				...(ro?.discoveryModeDefault ? { env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: ro.discoveryModeDefault } } : {}),
 			}, {
 				certstream: ro?.certstream,
 				whoisBinding: ro?.whoisBinding,

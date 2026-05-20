@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **Brand discovery (BlackVeil production only)**: BlackVeil's hosted runtime at `dns-mcp.blackveilsecurity.com` now defaults `discover_brand_domains` / `brand_audit_*` to `discovery_mode: 'tiered'` when the caller omits the argument. The flip is gated entirely on the env var `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT="tiered"` set in BlackVeil's private deploy overlay (`.dev/wrangler.deploy.jsonc`); the public Zod schema default in `src/schemas/tool-args.ts` stays `'classic'` permanently. **BSL boundary**: anyone building this repo from `main` continues to get classic mode out of the box and does not need the proprietary cross-Worker bindings (`BV_INFRA_GRAPH`, `BV_INTEL_GATEWAY`, `BV_ENTERPRISE`) that tiered mode relies on. An explicit caller-supplied `discovery_mode` always wins over the env default.
+
+### Added
+- `BrandAuditPipelineOptions.env` — narrow runtime-env shim read by `runBrandAuditPipeline` so the BlackVeil-production env var can flip the default without breaking the schema contract for self-hosters.
+- `ToolRuntimeOptions.discoveryModeDefault` and `BrandAuditConsumerDeps.discoveryModeDefault` — runtime-only plumbing from the queue/HTTP dispatch sites in `src/index.ts` through `src/mcp/{execute,dispatch}.ts`, `src/handlers/tools.ts`, and `src/queue/brand-audit-consumer.ts` into the pipeline.
+- README section "Brand-discovery modes" describing the `classic` (BSL self-host default) vs `tiered` (operator-deploy only) split and the deployment story.
+- CLAUDE.md operator-deploy-only binding rows for `BV_INFRA_GRAPH`, `BV_INTEL_GATEWAY`, `BV_ENTERPRISE`, and the `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT` env var.
+
+### Tests
+- 5 new vitest cases in `test/brand-audit-pipeline.test.ts` pinning the env-override semantics: (1) tiered when env says tiered + caller omits; (2) caller wins over env; (3) unset env → undefined (BSL default path); (4) any env value other than the literal `"tiered"` is ignored; (5) env-defaulted tiered runs stamp `discoveryMode: 'tiered'` on the summary finding identically to explicit-tiered runs.
+
 ## [2.21.4] - 2026-05-17
 
 ### Security
