@@ -47,6 +47,12 @@ export interface BrandAuditBatchStartOptions {
 	planner_mode?: 'off' | 'observe' | 'enforce';
 	brand_aliases?: string[];
 	candidate_domains?: string[];
+	/**
+	 * Threaded onto the queue message so the consumer can route discovery
+	 * through the tiered pipeline. Explicit caller value always wins over
+	 * env BRAND_AUDIT_DISCOVERY_MODE_DEFAULT on the consumer side.
+	 */
+	discovery_mode?: 'classic' | 'tiered';
 }
 
 export type EnforceBrandAuditQuota = (count: number) => Promise<{
@@ -65,6 +71,8 @@ export interface BrandAuditQueueMessage {
 	planner_mode?: 'off' | 'observe' | 'enforce';
 	brand_aliases?: string[];
 	candidate_domains?: string[];
+	/** Per-target discovery mode override. Consumer threads to runBrandAuditPipeline. */
+	discovery_mode?: 'classic' | 'tiered';
 }
 
 export interface BrandAuditQueueProducer {
@@ -195,6 +203,7 @@ export async function brandAuditBatchStart(
 					planner_mode: options.planner_mode,
 					brand_aliases: options.brand_aliases,
 					candidate_domains: options.candidate_domains,
+					discovery_mode: options.discovery_mode,
 				},
 				{ contentType: 'json' },
 			);

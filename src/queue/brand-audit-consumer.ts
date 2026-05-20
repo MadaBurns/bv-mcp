@@ -63,6 +63,12 @@ export const BrandAuditQueueMessageSchema = z.object({
 	planner_mode: z.enum(['off', 'observe', 'enforce']).optional(),
 	brand_aliases: z.array(z.string().min(2).max(64)).max(20).optional(),
 	candidate_domains: z.array(z.string().min(1).max(253)).max(250).optional(),
+	/**
+	 * Per-target discovery mode forwarded by brand_audit_batch_start. Explicit
+	 * caller-supplied value wins over deps.discoveryModeDefault in the
+	 * pipeline's effective-mode resolution.
+	 */
+	discovery_mode: z.enum(['classic', 'tiered']).optional(),
 	/** Set when the message originated from the watch cron — drives post-completion diff/webhook. */
 	watchId: z.string().min(1).max(64).optional(),
 	/** Bound at enqueue time so the consumer doesn't need a D1 round-trip to look up the watch's owner. */
@@ -287,6 +293,10 @@ export async function processBrandAuditMessage(
 		planner_mode: message.planner_mode,
 		brand_aliases: message.brand_aliases,
 		candidate_domains: message.candidate_domains,
+		// Explicit per-target discovery mode from the batch_start payload
+		// (the caller's `discovery_mode` arg). Wins over discoveryModeDefault
+		// in the pipeline's effective-mode resolution.
+		discovery_mode: message.discovery_mode,
 		signal: controller.signal,
 		deadlineMs: messageStartedAt + BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
 		// Phase 2b: retry messages re-run the pipeline from scratch instead
