@@ -638,12 +638,20 @@ describe('classifyCandidate', () => {
 			expect(result.tier).toBe(0);
 		});
 
-		it('routes tier 1 + specificityScore >= 0.5 to consolidated with tier=1', () => {
+		it('routes deterministic tier 1 graph evidence to consolidated with tier=1', () => {
 			const c = candidate({
 				domain: 'apple-graph.example',
 				confidence: 0.3,
 				signals: [],
-				evidenceObservations: [{ signal: 'ns', confidence: 0.8, tier: 1, specificityScore: 0.9 }],
+				evidenceObservations: [
+					{
+						signal: 'markov_gen',
+						confidence: 0.8,
+						tier: 1,
+						specificityScore: 0.9,
+						metadata: { source: 'infra_graph_signal', signalTypes: ['ns'], numSharedSignals: 1 },
+					},
+				],
 			});
 			const result = classifyCandidate(c, target());
 			expect(result.bucket).toBe('consolidated');

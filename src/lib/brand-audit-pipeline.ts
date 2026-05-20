@@ -359,6 +359,31 @@ function scoreAlertContextFromObservations(
 	return undefined;
 }
 
+function graphEvidenceFromObservations(
+	observations: BrandEvidenceObservation[] | undefined,
+): { signalTypes: string[]; numSharedSignals: number; maxSpecificity: number; signalType?: string; signalValue?: string } | undefined {
+	if (!observations) return undefined;
+	for (const obs of observations) {
+		if (obs.tier !== 1) continue;
+		const md = obs.metadata;
+		if (!isRecord(md)) continue;
+		const signalTypes = Array.isArray(md.signalTypes)
+			? md.signalTypes.filter((value): value is string => typeof value === 'string')
+			: [];
+		const numSharedSignals = md.numSharedSignals;
+		const maxSpecificity = md.maxSpecificity;
+		if (signalTypes.length === 0 || typeof numSharedSignals !== 'number' || typeof maxSpecificity !== 'number') continue;
+		return {
+			signalTypes,
+			numSharedSignals,
+			maxSpecificity,
+			...(typeof md.signalType === 'string' ? { signalType: md.signalType } : {}),
+			...(typeof md.signalValue === 'string' ? { signalValue: md.signalValue } : {}),
+		};
+	}
+	return undefined;
+}
+
 /** Pull registrar + registrant out of a check-rdap-lookup result, mirroring `scripts/brand-audit-brand-audit.spec.ts:lookupRegistrar`. */
 function extractRegistrar(rdap: CheckResult): RegistrarLookup {
 	const populated = rdap.findings.find(
@@ -813,6 +838,7 @@ export async function runBrandAuditPipeline(
 		// v1 sidecar block stays byte-identical.
 		const scoreAlertCtx =
 			classification.bucket === 'impersonationSurface' ? scoreAlertContextFromObservations(evidenceObservations) : undefined;
+		const graphEvidence = graphEvidenceFromObservations(evidenceObservations);
 		return createFinding(CATEGORY, `Brand candidate: ${domain}`, severity, detailParts.join(' — '), {
 			candidate: domain,
 			bucket: classification.bucket,
@@ -832,6 +858,7 @@ export async function runBrandAuditPipeline(
 			...(classification.tier !== undefined ? { tier: classification.tier } : {}),
 			...(lookalikeScore > 0 ? { lookalikeScore } : {}),
 			...(scoreAlertCtx ? { scoreAlertContext: scoreAlertCtx } : {}),
+			...(graphEvidence ? { graphEvidence } : {}),
 		});
 	});
 	recordStep(stepTimings, 'classification', 'completed', classificationStartedAtMs, now());

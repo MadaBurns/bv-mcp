@@ -107,6 +107,40 @@ function isSeedObservation(observation: BrandEvidenceObservation): boolean {
  * observation falls through to the legacy corroboration logic.
  */
 const TIER_1_SPECIFICITY_THRESHOLD = 0.5;
+const TIER_1_HIGH_SPECIFICITY_THRESHOLD = 0.8;
+
+const DETERMINISTIC_GRAPH_SIGNAL_TYPES = new Set([
+	'ns',
+	'dkim_key_reuse',
+	'spf_include',
+	'txt_verification',
+	'cname_alignment',
+	'cert_fingerprint',
+	'cert_san',
+	'http_redirect',
+	'dmarc_rua',
+]);
+
+function graphSignalTypes(metadata: Record<string, unknown> | undefined): string[] {
+	const raw = metadata?.signalTypes;
+	if (Array.isArray(raw)) return raw.filter((value): value is string => typeof value === 'string');
+	const single = metadata?.signalType;
+	return typeof single === 'string' ? [single] : [];
+}
+
+function graphSharedSignalCount(metadata: Record<string, unknown> | undefined): number {
+	const raw = metadata?.numSharedSignals;
+	return typeof raw === 'number' && Number.isFinite(raw) ? raw : 0;
+}
+
+export function clearsTier1GraphEvidence(observation: BrandEvidenceObservation): boolean {
+	const specificityScore = observation.specificityScore ?? 0;
+	if (specificityScore < TIER_1_SPECIFICITY_THRESHOLD) return false;
+	const types = graphSignalTypes(observation.metadata);
+	if (types.some((type) => DETERMINISTIC_GRAPH_SIGNAL_TYPES.has(type))) return true;
+	const numSharedSignals = graphSharedSignalCount(observation.metadata);
+	return numSharedSignals >= 2 && specificityScore >= TIER_1_HIGH_SPECIFICITY_THRESHOLD;
+}
 
 export function clearsOwnershipGate(
 	observations: BrandEvidenceObservation[],
@@ -123,10 +157,10 @@ export function clearsOwnershipGate(
 	// confidence to short-circuit the N-of-M corroboration gate. Tier 3 (the
 	// legacy live-signal sweep) falls through to the historic logic below.
 	for (const observation of distinct) {
-		const { tier, specificityScore } = observation;
+		const { tier } = observation;
 		if (tier === 0) return true;
 		if (tier === 2) return true;
-		if (tier === 1 && typeof specificityScore === 'number' && specificityScore >= TIER_1_SPECIFICITY_THRESHOLD) {
+		if (tier === 1 && clearsTier1GraphEvidence(observation)) {
 			return true;
 		}
 	}
