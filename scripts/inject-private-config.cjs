@@ -2,19 +2,47 @@ const fs = require('fs');
 const path = require('path');
 
 /**
+ * Strip JSONC comments (// line + /* block) outside string literals, then JSON.parse.
+ * Both wrangler.jsonc and .dev/wrangler.deploy.jsonc use the JSONC format.
+ */
+function parseJsonc(source) {
+    let out = '';
+    let i = 0;
+    let inString = false;
+    let stringQuote = '';
+    while (i < source.length) {
+        const ch = source[i];
+        const next = source[i + 1];
+        if (inString) {
+            out += ch;
+            if (ch === '\\' && i + 1 < source.length) { out += source[i + 1]; i += 2; continue; }
+            if (ch === stringQuote) { inString = false; }
+            i += 1;
+            continue;
+        }
+        if (ch === '"' || ch === '\'') { inString = true; stringQuote = ch; out += ch; i += 1; continue; }
+        if (ch === '/' && next === '/') { while (i < source.length && source[i] !== '\n') i += 1; continue; }
+        if (ch === '/' && next === '*') { i += 2; while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) i += 1; i += 2; continue; }
+        out += ch;
+        i += 1;
+    }
+    return JSON.parse(out);
+}
+
+/**
  * Automates the "Private Injection" process.
  * Merges the public engine build with local private overrides.
  */
 function inject() {
-    const publicConfig = JSON.parse(fs.readFileSync('wrangler.jsonc', 'utf8'));
+    const publicConfig = parseJsonc(fs.readFileSync('wrangler.jsonc', 'utf8'));
     const privateConfigPath = '.dev/wrangler.deploy.jsonc';
-    
+
     if (!fs.existsSync(privateConfigPath)) {
         console.error("Missing .dev/wrangler.deploy.jsonc - skipping injection.");
         return;
     }
-    
-    const privateConfig = JSON.parse(fs.readFileSync(privateConfigPath, 'utf8'));
+
+    const privateConfig = parseJsonc(fs.readFileSync(privateConfigPath, 'utf8'));
     
     // Merge Strategy: Private config bindings override public defaults
     publicConfig.services = privateConfig.services;
