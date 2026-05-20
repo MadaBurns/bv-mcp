@@ -6,17 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.21.5] - 2026-05-20
+
 ### Changed
 - **Brand discovery (BlackVeil production only)**: BlackVeil's hosted runtime at `dns-mcp.blackveilsecurity.com` now defaults `discover_brand_domains` / `brand_audit_*` to `discovery_mode: 'tiered'` when the caller omits the argument. The flip is gated entirely on the env var `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT="tiered"` set in BlackVeil's private deploy overlay (`.dev/wrangler.deploy.jsonc`); the public Zod schema default in `src/schemas/tool-args.ts` stays `'classic'` permanently. **BSL boundary**: anyone building this repo from `main` continues to get classic mode out of the box and does not need the proprietary cross-Worker bindings (`BV_INFRA_GRAPH`, `BV_INTEL_GATEWAY`, `BV_ENTERPRISE`) that tiered mode relies on. An explicit caller-supplied `discovery_mode` always wins over the env default.
+- Added the explicit `authoritative_dns_infra` scoring profile, which weights authoritative DNS infrastructure, DNSSEC, NS, and zone-hygiene evidence while treating ordinary mail/web controls as non-scoring noise.
+- Disabled the paid `MadaBurns/blackveil-dns-action` CI workflow by renaming it to `.github/workflows/dns-security.yml.disabled`; active CI/CD now rejects that paid action path by audit.
 
 ### Added
 - `BrandAuditPipelineOptions.env` — narrow runtime-env shim read by `runBrandAuditPipeline` so the BlackVeil-production env var can flip the default without breaking the schema contract for self-hosters.
 - `ToolRuntimeOptions.discoveryModeDefault` and `BrandAuditConsumerDeps.discoveryModeDefault` — runtime-only plumbing from the queue/HTTP dispatch sites in `src/index.ts` through `src/mcp/{execute,dispatch}.ts`, `src/handlers/tools.ts`, and `src/queue/brand-audit-consumer.ts` into the pipeline.
 - README section "Brand-discovery modes" describing the `classic` (BSL self-host default) vs `tiered` (operator-deploy only) split and the deployment story.
 - CLAUDE.md operator-deploy-only binding rows for `BV_INFRA_GRAPH`, `BV_INTEL_GATEWAY`, `BV_ENTERPRISE`, and the `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT` env var.
+- `check_authoritative_dns_infra` and `check_root_server_set`, bringing the MCP tool surface to 59 tools and adding authoritative DNS infrastructure as the 18th scoring category.
+- `BV_INFRA_PROBE` service-binding support plus an infra-probe worker skeleton for raw authoritative DNS, root-server, BGP/RPKI, and vantage-point evidence.
+- Root-hint baseline evidence for worker-only deployments, so root-server checks return structured partial evidence even without live infra probing.
+- Remediation/explanation content and attack-path integration for authoritative DNS route hijack, recursion exposure, and zone-transfer risk signals.
 
 ### Tests
 - 5 new vitest cases in `test/brand-audit-pipeline.test.ts` pinning the env-override semantics: (1) tiered when env says tiered + caller omits; (2) caller wins over env; (3) unset env → undefined (BSL default path); (4) any env value other than the literal `"tiered"` is ignored; (5) env-defaulted tiered runs stamp `discoveryMode: 'tiered'` on the summary finding identically to explicit-tiered runs.
+- Added authoritative DNS infra coverage, registration, scoring, Wrangler-binding, and root-server-set tests.
+- Added README/docs drift audits for the 59-tool authoritative DNS infrastructure surface.
+- Added an active-workflow audit preventing paid DNS scan actions from running in CI/CD.
+
+### Fixed
+- Filtered benign `workerd/api/web-socket.c++:828: disconnected: WebSocket peer disconnected` teardown noise from Vitest output.
 
 ## [2.21.4] - 2026-05-17
 
