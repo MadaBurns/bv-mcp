@@ -122,6 +122,31 @@ interface ToolRuntimeOptions {
 	 * BSL self-hosters never set this — they get classic mode out of the box.
 	 */
 	discoveryModeDefault?: string;
+	/**
+	 * Tier 0 (tenant-declared portfolio) lookup closure — wraps the
+	 * `BV_ENTERPRISE` service binding. Constructed at the production seam in
+	 * `src/index.ts` when both the binding and `BV_WEB_INTERNAL_KEY` are
+	 * provisioned. Threaded through to `discoverBrandDomains` (direct + via
+	 * `brand_audit_single`'s pipeline). Undefined on BSL self-hosts → tiered
+	 * mode degrades to classic without ever calling bv-enterprise.
+	 */
+	tier0Lookup?: (domain: string) => Promise<import('../lib/brand-tier0-enterprise').Tier0Result>;
+	/**
+	 * Tier 1 (bv-infrastructure-graph) lookup closure — wraps the
+	 * `BV_INFRA_GRAPH` service binding. Constructed at the production seam in
+	 * `src/index.ts` when both the binding and `BV_WEB_INTERNAL_KEY` are
+	 * provisioned. Threaded through to `discoverBrandDomains` (direct + via
+	 * `brand_audit_single`'s pipeline). Undefined on BSL self-hosts.
+	 */
+	tier1Lookup?: (domain: string) => Promise<import('../lib/brand-tier1-graph').Tier1Result>;
+	/**
+	 * Tier 2 (bv-intel-gateway declared-evidence) lookup closure — wraps the
+	 * `BV_INTEL_GATEWAY` RPC service binding. Constructed at the production
+	 * seam in `src/index.ts` when the binding is provisioned. Threaded through
+	 * to `discoverBrandDomains` (direct + via `brand_audit_single`'s pipeline).
+	 * Undefined on BSL self-hosts.
+	 */
+	tier2Lookup?: (domain: string) => Promise<import('../lib/brand-tier2-evidence').Tier2Result>;
 }
 
 /** Build QueryDnsOptions for individual check calls from runtime options. */
@@ -217,36 +242,70 @@ const TOOL_REGISTRY: Record<
 			const minConf = typeof args.min_confidence === 'number' ? args.min_confidence : 0.5;
 			const depth = typeof args.depth === 'string' ? args.depth : 'standard';
 			const plannerMode = typeof args.planner_mode === 'string' ? args.planner_mode : 'observe';
+			// Discovery mode is part of the cache key. `classic` and `tiered`
+			// produce different candidate sets (tiered layers Tier 0/1/2 lookups
+			// in front of the legacy sweep), so a shared cache entry would let
+			// whichever invocation ran first silently win for the next TTL window
+			// — exactly the symptom T7 was trying to fix. Schema default is
+			// `'classic'`.
+			const discoveryMode = typeof args.discovery_mode === 'string' ? args.discovery_mode : 'classic';
 			const aliases = (args.brand_aliases as string[] | undefined) ?? [];
 			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
 			const aliasHash = aliases.length === 0 ? '0' : `${aliases.length}:${aliases.slice().sort().join('|').slice(0, 64)}`;
 			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
-			return `discover_brand:${signals}:d${depth}:p${plannerMode}:a${aliasHash}:c${candHash}:m${minConf}`;
+			return `discover_brand:${signals}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:m${minConf}`;
 		},
 		execute: (d, args, ro) =>
-			discoverBrandDomains(d, {
-				signals: args.signals as Parameters<typeof discoverBrandDomains>[1] extends infer O ? (O extends { signals?: infer S } ? S : undefined) : undefined,
-				depth: args.depth as 'standard' | 'deep' | undefined,
-				planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
-				brand_aliases: args.brand_aliases as string[] | undefined,
-				candidate_domains: args.candidate_domains as string[] | undefined,
-				dkim_selectors: args.dkim_selectors as string[] | undefined,
-				min_confidence: args.min_confidence as number | undefined,
-				certstream: ro?.certstream,
-			}),
+			discoverBrandDomains(
+				d,
+				{
+					signals: args.signals as Parameters<typeof discoverBrandDomains>[1] extends infer O ? (O extends { signals?: infer S } ? S : undefined) : undefined,
+					depth: args.depth as 'standard' | 'deep' | undefined,
+					planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
+					discovery_mode: args.discovery_mode as 'classic' | 'tiered' | undefined,
+					brand_aliases: args.brand_aliases as string[] | undefined,
+					candidate_domains: args.candidate_domains as string[] | undefined,
+					dkim_selectors: args.dkim_selectors as string[] | undefined,
+					min_confidence: args.min_confidence as number | undefined,
+					certstream: ro?.certstream,
+				},
+				// Tier closures forwarded only when present — BSL self-hosts that lack
+				// the bindings pass nothing (the discoverer then sees `undefined`
+				// closures and falls back to classic-mode behaviour).
+				//
+				// `DiscoverBrandDomainsDeps` declares its non-tier signal stubs as
+				// required; the runtime tolerates partials (it merges over its own
+				// `defaultDeps()`). Existing call sites cast — match that pattern.
+				{
+					...(ro?.tier0Lookup ? { tier0Lookup: ro.tier0Lookup } : {}),
+					...(ro?.tier1Lookup ? { tier1Lookup: ro.tier1Lookup } : {}),
+					...(ro?.tier2Lookup ? { tier2Lookup: ro.tier2Lookup } : {}),
+				} as Parameters<typeof discoverBrandDomains>[2],
+			),
 		cacheTtlSeconds: 3600,
 	},
 	brand_audit_single: {
-		cacheKey: (args) => {
+		cacheKey: (args, ro) => {
 			const minConf = typeof args.min_confidence === 'number' ? args.min_confidence : 0.5;
 			const fmt = typeof args.format === 'string' ? args.format : 'both';
 			const depth = typeof args.depth === 'string' ? args.depth : 'standard';
 			const plannerMode = typeof args.planner_mode === 'string' ? args.planner_mode : 'observe';
+			// Discovery mode is part of the cache key — see the discover_brand_domains
+			// cache-key comment above for the poisoning rationale. We hash on the
+			// *effective* mode the pipeline will run: explicit arg wins, otherwise
+			// the env-default (`BRAND_AUDIT_DISCOVERY_MODE_DEFAULT`) flips classic→tiered
+			// on BlackVeil production deploys. Schema default falls back to `classic`.
+			const discoveryMode =
+				typeof args.discovery_mode === 'string'
+					? args.discovery_mode
+					: ro?.discoveryModeDefault === 'tiered'
+						? 'tiered'
+						: 'classic';
 			const aliases = (args.brand_aliases as string[] | undefined) ?? [];
 			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
 			const aliasHash = aliases.length === 0 ? '0' : `${aliases.length}:${aliases.slice().sort().join('|').slice(0, 64)}`;
 			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
-			return `brand_audit_single:${fmt}:d${depth}:p${plannerMode}:a${aliasHash}:c${candHash}:m${minConf}`;
+			return `brand_audit_single:${fmt}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:m${minConf}`;
 		},
 		execute: (d, args, ro) =>
 			brandAuditSingle(d, {
@@ -265,6 +324,12 @@ const TOOL_REGISTRY: Record<
 				certstream: ro?.certstream,
 				whoisBinding: ro?.whoisBinding,
 				enforceQuota: buildMonthlyEnforceQuota(ro),
+				// Tier closures: forwarded through the pipeline → discoverBrandDomains
+				// seam. Undefined on BSL self-hosts → pipeline never calls the
+				// proprietary lookups.
+				...(ro?.tier0Lookup ? { tier0Lookup: ro.tier0Lookup } : {}),
+				...(ro?.tier1Lookup ? { tier1Lookup: ro.tier1Lookup } : {}),
+				...(ro?.tier2Lookup ? { tier2Lookup: ro.tier2Lookup } : {}),
 			}),
 		cacheTtlSeconds: 3600,
 	},
