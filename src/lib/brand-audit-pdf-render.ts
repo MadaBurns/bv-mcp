@@ -49,7 +49,7 @@ const COLOR_BADGE_LOW = rgb(1, 0.3, 0.3);
 
 const BUCKET_ORDER: Array<{ bucket: BrandAuditBucket; title: string }> = [
 	{ bucket: 'consolidated', title: 'Consolidated Infrastructure' },
-	{ bucket: 'shadowIt', title: 'Shadow IT Portfolio' },
+	{ bucket: 'shadowIt', title: 'Registrar Sprawl / Real Shadow IT' },
 	{ bucket: 'indeterminate', title: 'Indeterminate' },
 	{ bucket: 'impersonation', title: 'Impersonation Signals' },
 ];
@@ -235,6 +235,7 @@ function tieredRowsFromCheckResult(result: CheckResult): TieredRow[] {
 		const baseRow: BrandCandidateRow = byDomain.get(m.candidate) ?? {
 			domain: m.candidate as string,
 			bucket: 'impersonationSurface' as unknown as BrandAuditBucket,
+			relationshipType: 'impersonation_surface',
 			registrar: typeof m.registrar === 'string' ? m.registrar : 'Unknown',
 			registrarSource: typeof m.registrarSource === 'string' ? m.registrarSource : 'unknown',
 			reasons: Array.isArray(m.reasons) ? (m.reasons as string[]) : [],
@@ -298,8 +299,8 @@ function drawOwnedPortfolio(ctx: DrawContext, candidates: TieredRow[]): void {
 	const graphSurfaced = consolidated.filter((c) => c.tier === 1);
 	const declaredEvidence = consolidated.filter((c) => c.tier === 2);
 	const inferredConsolidated = consolidated.filter((c) => c.tier === undefined || c.tier === 3);
-	const inferredShadowIt = candidates.filter((c) => c.bucket === 'shadowIt');
-	const inferredIndeterminate = candidates.filter((c) => c.bucket === 'indeterminate');
+	const inferredShadowIt = candidates.filter((c) => c.bucket === 'shadowIt' && c.relationshipType === 'owned_off_primary_registrar');
+	const inferredIndeterminate = candidates.filter((c) => c.bucket === 'indeterminate' && c.relationshipType !== 'authorized_vendor_dependency');
 	const total =
 		tenantDeclared.length +
 		graphSurfaced.length +
@@ -333,6 +334,15 @@ function drawImpersonationSurface(ctx: DrawContext, candidates: TieredRow[]): vo
 	}
 	for (const r of rows) {
 		drawCandidateRow(ctx, r);
+	}
+}
+
+function drawVendorDependencies(ctx: DrawContext, candidates: BrandCandidateRow[]): void {
+	const rows = candidates.filter((c) => c.relationshipType === 'authorized_vendor_dependency');
+	if (rows.length === 0) return;
+	sectionHeader(ctx, 'Authorized Vendor Dependencies', rows.length);
+	for (const row of rows) {
+		drawCandidateRow(ctx, row);
 	}
 }
 
@@ -414,7 +424,7 @@ export async function renderBrandAuditPdf(result: CheckResult, target: string, o
 	drawDepthWarnings(ctx, depthWarnings);
 
 	for (const { bucket, title } of BUCKET_ORDER) {
-		const rows = candidates.filter((r) => r.bucket === bucket);
+		const rows = candidates.filter((r) => r.bucket === bucket && r.relationshipType !== 'authorized_vendor_dependency');
 		sectionHeader(ctx, title, rows.length);
 		if (rows.length === 0) {
 			drawEmptyBucket(ctx, 'No candidates in this bucket.');
@@ -424,6 +434,8 @@ export async function renderBrandAuditPdf(result: CheckResult, target: string, o
 			}
 		}
 	}
+
+	drawVendorDependencies(ctx, candidates);
 
 	// T9 — Tiered-mode reports append two top-level sections after the legacy
 	// buckets: Owned Portfolio (4 sub-buckets by tier) + Impersonation Surface

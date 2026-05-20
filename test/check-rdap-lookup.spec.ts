@@ -89,6 +89,50 @@ describe('checkRdapLookup', () => {
 		expect(infoFinding!.detail).toContain('2020-01-15');
 	});
 
+	it('retries a transient RDAP 429 before falling back to WHOIS', async () => {
+		let rdapAttempts = 0;
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('data.iana.org/rdap/dns.json')) {
+				return Promise.resolve(new Response(JSON.stringify(makeBootstrap([[['global'], ['https://rdap.identitydigital.services/rdap/']]])), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' },
+				}));
+			}
+			if (url.includes('rdap.identitydigital.services')) {
+				rdapAttempts++;
+				if (rdapAttempts === 1) {
+					return Promise.resolve(new Response('Too Many Requests', { status: 429, headers: { 'Retry-After': '0' } }));
+				}
+				return Promise.resolve(new Response(JSON.stringify(makeRdapResponse({
+					ldhName: 'stripe.global',
+					entities: [
+						{
+							objectClassName: 'entity',
+							roles: ['registrar'],
+							vcardArray: ['vcard', [
+								['version', {}, 'text', '4.0'],
+								['fn', {}, 'text', 'SafeNames Ltd.'],
+							]],
+						},
+					],
+				})), {
+					status: 200,
+					headers: { 'Content-Type': 'application/rdap+json' },
+				}));
+			}
+			return Promise.resolve(new Response('Not Found', { status: 404 }));
+		});
+
+		const result = await run('stripe.global');
+
+		expect(rdapAttempts).toBe(2);
+		const infoFinding = result.findings.find((f) => f.severity === 'info' && f.title.toLowerCase().includes('registration'));
+		expect(infoFinding?.metadata?.registrar).toBe('SafeNames Ltd.');
+		expect(infoFinding?.metadata?.registrarSource).toBe('rdap');
+		expect(result.findings.some((f) => f.metadata?.registrarSource === 'lookup_failed')).toBe(false);
+	});
+
 	it('should handle privacy-redacted registrant', async () => {
 		const redactedResponse = makeRdapResponse({
 			entities: [
@@ -374,8 +418,8 @@ describe('checkRdapLookup', () => {
 
 		const urlRegistrar = result.findings.find((f) => f.metadata?.registrar === 'https://registrar.example.test');
 		expect(urlRegistrar).toBeUndefined();
-		const fallbackFinding = result.findings.find((f) => f.metadata?.registrarSource === 'lookup_failed');
-		expect(fallbackFinding?.metadata?.registrarFailureReason).toBe('whois_error');
+		const fallbackFinding = result.findings.find((f) => f.metadata?.registrarSource === 'redacted');
+		expect(fallbackFinding?.metadata?.registrarFailureReason).toBeUndefined();
 		expect(whoisBinding.fetch).toHaveBeenCalledOnce();
 	});
 });

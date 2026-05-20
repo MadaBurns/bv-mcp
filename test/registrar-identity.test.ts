@@ -40,4 +40,49 @@ describe('registrar identity matching', () => {
 	it('strips corporate suffixes without deleting meaningful tokens', () => {
 		expect(normalizeRegistrarIdentity('CSC Corporate Domains, Inc.')).toBe('csc corporate domains');
 	});
+
+	it('matches CSC regional WHOIS display variants as the same registrar family', () => {
+		const target: RegistrarIdentity = { name: 'CSC Corporate Domains, Inc.' };
+		for (const variant of [
+			'CSC Corporate Domains, Inc. ( https://nic.at/registrar/533 )',
+			'Name: CSC CORPORATE DOMAINS INC.',
+			'Name:\tCSC Corporate Domains, Inc.',
+			'CSC Corporate Domains (Canada) Company',
+			'CSC Digital Brand Service, Inc',
+			'CSC Digital Brand Services Malaysia Sdn Bhd',
+			'CSC Corp Domains',
+			'Corporation Service Company',
+		]) {
+			expect(sameRegistrarFamily({ name: variant }, target), variant).toBe(true);
+		}
+		expect(sameRegistrarFamily({ name: 'REG-IPMIRROR' }, target)).toBe(false);
+	});
+
+	it('falls back to registrar-family names when registry-specific registrar IDs differ', () => {
+		expect(
+			sameRegistrarFamily(
+				{ name: 'CSC Corporate Domains, Inc.', ianaId: '9999' },
+				{ name: 'CSC Corporate Domains, Inc.', ianaId: '299' },
+			),
+		).toBe(true);
+
+		expect(
+			sameRegistrarFamily(
+				{ name: 'REG-IPMIRROR', ianaId: '9999' },
+				{ name: 'CSC Corporate Domains, Inc.', ianaId: '299' },
+			),
+		).toBe(false);
+	});
+
+	it('does not treat unavailable registrar labels as registrar families', () => {
+		for (const label of [
+			'Registrar lookup failed',
+			'Registrar unavailable',
+			'Registrar redacted by registry',
+			'Registrar not found in registry',
+		]) {
+			expect(normalizeRegistrarIdentity(label)).toBeNull();
+			expect(sameRegistrarFamily({ name: label }, { name: label })).toBe(false);
+		}
+	});
 });

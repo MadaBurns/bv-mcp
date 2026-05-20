@@ -84,6 +84,8 @@ function extractSidecarMetrics(sidecar) {
 		ownedPortfolioTotal,
 		consolidated: counts?.consolidated ?? null,
 		shadowIt: counts?.shadowIt ?? null,
+		registrarSprawl: Array.isArray(sidecar.registrarSprawl) ? sidecar.registrarSprawl.length : null,
+		vendorDependencies: Array.isArray(sidecar.vendorDependencies) ? sidecar.vendorDependencies.length : null,
 		impersonation: counts?.impersonation ?? null,
 		tiers: sidecar.performance?.tiers ?? null,
 		discoveryMode: sidecar.discoveryMode ?? null,

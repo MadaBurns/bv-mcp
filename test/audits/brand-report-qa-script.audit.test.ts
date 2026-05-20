@@ -16,15 +16,15 @@ describe('brand report QA script safety', () => {
 
 	it('requires performance metadata for qa schema v2 and newer sidecars', () => {
 		expect(source).toContain('const qaSchemaVersion = sidecar.qaSchemaVersion');
-		expect(source).toContain('qaSchemaVersion !== 1 && qaSchemaVersion !== 2 && qaSchemaVersion !== 3');
+		expect(source).toContain('qaSchemaVersion !== 1 && qaSchemaVersion !== 2 && qaSchemaVersion !== 3 && qaSchemaVersion !== 4');
 		expect(source).toContain('qaSchemaVersion >= 2');
 		expect(source).toContain('missing performance');
 		expect(source).toContain('missing performance.stepStatusCounts');
 		expect(source).toContain('missing performance.steps');
 	});
 
-	it('requires the v3 owned-portfolio + impersonation-surface split for qa schema v3 sidecars', () => {
-		expect(source).toContain('qaSchemaVersion === 3');
+	it('requires the tiered owned-portfolio + relationship split for qa schema v3/v4 sidecars', () => {
+		expect(source).toContain('qaSchemaVersion === 3 || qaSchemaVersion === 4');
 		expect(source).toContain('missing ownedPortfolio');
 		expect(source).toContain('missing ownedPortfolio.tenantDeclared');
 		expect(source).toContain('missing ownedPortfolio.graphSurfaced');
@@ -35,5 +35,8 @@ describe('brand report QA script safety', () => {
 		expect(source).toContain('missing ownedPortfolio.inferred.indeterminate');
 		expect(source).toContain('missing impersonationSurface');
 		expect(source).toContain('missing performance.tiers');
+		expect(source).toContain('missing relationshipSchemaVersion');
+		expect(source).toContain('missing registrarSprawl');
+		expect(source).toContain('missing vendorDependencies');
 	});
 });

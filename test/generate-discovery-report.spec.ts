@@ -44,6 +44,9 @@ const CONSUMER_REGISTRARS = [
 
 const target = process.env.TARGET_DOMAIN || 'TARGET_DOMAIN_PLACEHOLDER';
 const isPlaceholder = !target || target === 'TARGET_DOMAIN_PLACEHOLDER';
+const BRAND_AUDIT_QUEUE_TARGET_BUDGET_MS = 300_000;
+const BRAND_AUDIT_POLL_TIMEOUT_MS = 360_000;
+const REPORT_GENERATION_TIMEOUT_MS = 420_000;
 
 const assetsDir = join(__dirname, '../assets');
 const logoFullBase64 = readFileSync(join(assetsDir, 'bv-logo-full.png')).toString('base64');
@@ -115,6 +118,11 @@ describe('report generation option plumbing', () => {
             tier1Count: 3,
             tier2Count: 1,
         });
+    });
+
+    it('waits longer than the queued target budget before timing out report generation', () => {
+        expect(BRAND_AUDIT_POLL_TIMEOUT_MS).toBeGreaterThan(BRAND_AUDIT_QUEUE_TARGET_BUDGET_MS);
+        expect(REPORT_GENERATION_TIMEOUT_MS).toBeGreaterThan(BRAND_AUDIT_POLL_TIMEOUT_MS);
     });
 
 });
@@ -202,9 +210,9 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
                 auditId = idMatch[1];
                 console.log(`auditId=${auditId}`);
 
-                console.log(`[2/4] Polling brand_audit_status (5s interval, ~3min ETA)...`);
+                console.log(`[2/4] Polling brand_audit_status (5s interval, ~5min ETA)...`);
                 const pollStartedAt = Date.now();
-                const pollDeadline = Date.now() + 270_000;
+                const pollDeadline = Date.now() + BRAND_AUDIT_POLL_TIMEOUT_MS;
                 let lastProgress = '';
                 let lastParentStatus = 'unknown';
                 let lastTargetStatus = 'unknown';
@@ -391,7 +399,10 @@ describe.skipIf(isPlaceholder)('Automated Report Generation', () => {
         if (!sourceResult) throw new Error('No discovery result available for report generation.');
 
         const reportModel = buildDiscoveryReportModel({ target, primaryRegistrar, result: sourceResult });
-        const { consolidated, shadowIt, indeterminate, impersonation } = reportModel.buckets;
+        const { consolidated, impersonation } = reportModel.buckets;
+        const registrarSprawl = reportModel.registrarSprawl;
+        const vendorDependencies = reportModel.vendorDependencies;
+        const indeterminate = reportModel.buckets.indeterminate.filter(c => c.relationshipType !== 'authorized_vendor_dependency');
         const generatedAt = new Date();
         const dateStr = generatedAt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
         const targetUpper = target.toUpperCase();
@@ -548,9 +559,9 @@ ${depthWarnings.length > 0
 # Infrastructure Audit: ${target}
 
 ## Executive Summary
-${executiveScope} Leveraging the Blackveil Multi-Signal Correlation Engine, we have identified primary infrastructure, discovered "Shadow IT" Managed by third-party vendors, and assessed potential impersonation risks.
+${executiveScope} Leveraging the Blackveil Multi-Signal Correlation Engine, we have identified primary infrastructure, real registrar-sprawl Shadow IT, authorized vendor dependencies, and potential impersonation risks.
 
-Our analysis separates verified infrastructure, Shadow IT opportunities, indeterminate candidates that require manual review, and likely impersonation risk. Registrar gaps are preserved in the JSON sidecar instead of being silently folded into revenue counts.
+Our analysis separates verified infrastructure, owned domains registered away from the primary registrar, authorized vendor dependencies, indeterminate candidates that require manual review, and likely impersonation risk. Vendor dependencies and registrar gaps are preserved in the JSON sidecar instead of being silently folded into revenue counts.
 
 ${discoveryDepthSection}
 
@@ -573,8 +584,8 @@ The following assets are verified as core components of the ${target} portfolio,
         md += `
 ---
 
-## 2. Discovered Shadow IT / Vendor Sprawl
-The Blackveil engine successfully correlated the following domains to ${target}'s infrastructure (via shared cryptographic keys, DMARC reporting endpoints, and custom nameserver pools). However, WHOIS analysis reveals these domains are registered at a **competing registrar**, indicating portfolio fragmentation and vendor sprawl.
+## 2. Registrar Sprawl / Real Shadow IT
+The Blackveil engine correlated the following domains as likely owned or controlled by ${target}. Registrar analysis shows they are registered outside the primary registrar family (**${primaryRegistrar}**), indicating real portfolio fragmentation.
 
 *These represent immediate consolidation opportunities for the primary registrar.*
 
@@ -582,18 +593,37 @@ The Blackveil engine successfully correlated the following domains to ${target}'
 | :--- | :--- | :--- | :--- |
 `;
 
-        for (const cand of shadowIt) {
+        for (const cand of registrarSprawl) {
             md += `| **${cand.domain}** | <span class="evidence">${cand.evidence}</span> | ${registrarCell(cand)} | <span class="status-warn">🟡 Consolidation Target</span> |\n`;
         }
 
-        if (shadowIt.length === 0) {
-            md += `| *No shadow IT domains found* | - | - | - |\n`;
+        if (registrarSprawl.length === 0) {
+            md += `| *No off-primary owned domains found* | - | - | - |\n`;
         }
 
         md += `
 ---
 
-## 3. Indeterminate / Manual Review
+## 3. Authorized Vendor Dependencies
+These domains are authorized external service dependencies surfaced through delegation signals such as SPF includes, DMARC reporting, or shared mail infrastructure. They are useful security/supply-chain findings but are not registrar-transfer opportunities unless separate ownership evidence exists.
+
+| Vendor Domain | Delegation Evidence | Verified Registrar | Status |
+| :--- | :--- | :--- | :--- |
+`;
+
+        for (const cand of vendorDependencies) {
+            const reason = cand.reasons[0] ?? cand.evidence;
+            md += `| **${cand.domain}** | <span class="evidence">${reason}</span> | ${registrarCell(cand)} | <span class="status-warn">Authorized Vendor</span> |\n`;
+        }
+
+        if (vendorDependencies.length === 0) {
+            md += `| *No authorized vendor dependencies found* | - | - | - |\n`;
+        }
+
+        md += `
+---
+
+## 4. Indeterminate / Manual Review
 These candidates have incomplete registrar data, redacted ownership metadata, or non-deterministic correlation signals. They are preserved for review but excluded from the revenue projection until ownership is verified.
 
 | Review Domain | Evidence Gap | Verified Registrar | Status |
@@ -612,7 +642,7 @@ These candidates have incomplete registrar data, redacted ownership metadata, or
         md += `
 ---
 
-## 4. High-Risk Impersonation Threats
+## 5. High-Risk Impersonation Threats
 During the analysis, external domains exhibiting high visual similarity (lookalikes) or low confidence signal overlaps were evaluated against the infrastructure correlation engine. The following domains are registered at consumer-grade registrars or exhibit no strong shared infrastructure with ${target}, indicating they are unauthorized and potentially adversarial.
 
 | Threat Domain | Discrepancy Evidence | Verified Registrar | Status |
@@ -632,9 +662,9 @@ During the analysis, external domains exhibiting high visual similarity (lookali
         md += `
 ---
 
-## 5. Revenue & Consolidation Opportunity
+## 6. Revenue & Consolidation Opportunity
 
-Based on the discovery of ${arrOpportunity.domainCount} verified high-value Shadow IT domains, the following is a projection of the immediate revenue opportunity for the primary registrar to consolidate and secure this fragmented infrastructure. ${indeterminate.length} indeterminate candidate(s) are excluded until manual review confirms ownership.
+Based on the discovery of ${arrOpportunity.domainCount} verified owned off-primary registrar domain(s), the following is a projection of the immediate revenue opportunity for the primary registrar to consolidate and secure this fragmented infrastructure. ${vendorDependencies.length} authorized vendor dependency candidate(s) and ${indeterminate.length} indeterminate candidate(s) are excluded from transfer economics.
 
 <div class="revenue-box">
   <h3>Estimated Annual Recurring Revenue (ARR) Gain</h3>
@@ -668,10 +698,11 @@ Based on the discovery of ${arrOpportunity.domainCount} verified high-value Shad
 </div>
 
 ## Strategic Recommendations
-1. **Portfolio Consolidation:** Present the cryptographic evidence to the ${target} security team to initiate transfer procedures for the ${shadowIt.length} verified Shadow IT domains currently managed by competing registrars.
+1. **Portfolio Consolidation:** Present the ownership evidence to the ${target} security team to initiate transfer procedures for the ${registrarSprawl.length} verified off-primary registrar domain(s).
 2. **Manual Review:** Resolve registrar gaps for the ${indeterminate.length} indeterminate candidates before including them in commercial opportunity totals.
-3. **Defensive Action:** Forward the details of the unauthorized lookalike domains to the brand protection and legal teams for immediate takedown or UDRP proceedings.
-4. **Continuous Monitoring:** Enroll the newly discovered Shadow IT domains into the Blackveil automated security scanning tier to ensure compliance with corporate baseline policies (DMARC, DNSSEC, etc.).
+3. **Vendor Governance:** Review the ${vendorDependencies.length} authorized vendor dependency candidate(s) with mail/security owners to confirm each delegation is still needed and monitored.
+4. **Defensive Action:** Forward the details of the unauthorized lookalike domains to the brand protection and legal teams for immediate takedown or UDRP proceedings.
+5. **Continuous Monitoring:** Enroll verified registrar-sprawl domains and vendor dependencies into the Blackveil automated security scanning tier to ensure compliance with corporate baseline policies (DMARC, DNSSEC, etc.).
 
 ***
 *Generated automatically by the Blackveil DNS Multi-Tenant Orchestrator. Powered by Blackveil Security.*
@@ -711,7 +742,7 @@ Based on the discovery of ${arrOpportunity.domainCount} verified high-value Shad
         const sidecarPath = process.env.BV_REPORT_JSON_PATH || join(reportsDir, `${target}-discovery-report.json`);
         mkdirSync(dirname(sidecarPath), { recursive: true });
         // Forward pipeline-stamped tiered-mode metadata from the brand_audit
-        // report envelope so the sidecar emits the v3 shape when tiered mode
+        // report envelope so the sidecar emits the v4 shape when tiered mode
         // ran. Pipeline stamps discoveryMode + top-level tiers on the summary
         // finding only when effectiveDiscoveryMode === 'tiered'.
         const sourceSummary = sourceResult?.findings?.find?.((f: { metadata?: Record<string, unknown> }) => f.metadata?.summary === true);
@@ -733,5 +764,5 @@ Based on the discovery of ${arrOpportunity.domainCount} verified high-value Shad
         
         console.log(`[4/4] PDF report generated: ${filePath}`);
         console.log(`[4/4] JSON sidecar generated: ${sidecarPath}`);
-    }, 300000); // 5min timeout for large discoveries (brands like disney can have many candidates)
+    }, REPORT_GENERATION_TIMEOUT_MS); // Large discoveries can use the full queued target budget plus rendering time.
 });

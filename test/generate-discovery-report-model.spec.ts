@@ -4,6 +4,145 @@ import { describe, expect, it } from 'vitest';
 import { buildDiscoveryReportModel, buildDiscoveryReportSidecar } from './helpers/discovery-report-model';
 
 describe('discovery report model', () => {
+	it('splits authorized vendor dependencies from real Shadow IT ARR opportunities', () => {
+		const model = buildDiscoveryReportModel({
+			target: 'brand-eta.com',
+			primaryRegistrar: 'CSC Corporate Domains, Inc.',
+			result: {
+				category: 'brand_discovery',
+				passed: true,
+				score: 100,
+				findings: [
+					{
+						category: 'brand_discovery',
+						title: 'Brand candidate: pphosted.com',
+						severity: 'low',
+						detail: '',
+						metadata: {
+							candidate: 'pphosted.com',
+							bucket: 'indeterminate',
+							relationshipType: 'authorized_vendor_dependency',
+							signals: ['spf_include_seed'],
+							registrar: 'MarkMonitor Inc.',
+							registrarSource: 'rdap',
+							combinedConfidence: 0.85,
+							reasons: ['authorized vendor dependency via seed SPF delegation'],
+						},
+					},
+					{
+						category: 'brand_discovery',
+						title: 'Brand candidate: bankofamerica.ca',
+						severity: 'medium',
+						detail: '',
+						metadata: {
+							candidate: 'bankofamerica.ca',
+							bucket: 'shadowIt',
+							relationshipType: 'owned_off_primary_registrar',
+							signals: ['markov_gen', 'ns', 'spf_include'],
+							registrar: 'MarkMonitor International Canada Ltd.',
+							registrarSource: 'rdap',
+							combinedConfidence: 1,
+							reasons: ['brand-owned domain on off-primary registrar'],
+						},
+					},
+				],
+			},
+		});
+
+		expect(model.buckets.shadowIt.map((c) => c.domain)).toEqual(['bankofamerica.ca']);
+		expect(model.buckets.indeterminate.map((c) => c.domain)).toEqual(['pphosted.com']);
+		expect((model as { vendorDependencies?: Array<{ domain: string }> }).vendorDependencies?.map((c) => c.domain)).toEqual([
+			'pphosted.com',
+		]);
+		expect(model.arrOpportunity.domainCount).toBe(1);
+		expect(model.arrOpportunity.total).toBe(3350);
+	});
+
+	it('emits v4 tiered sidecar relationship sections while preserving legacy buckets', () => {
+		const model = buildDiscoveryReportModel({
+			target: 'brand-eta.com',
+			primaryRegistrar: 'CSC Corporate Domains, Inc.',
+			result: {
+				category: 'brand_discovery',
+				passed: true,
+				score: 100,
+				findings: [
+					{
+						category: 'brand_discovery',
+						title: 'Brand candidate: pphosted.com',
+						severity: 'low',
+						detail: '',
+						metadata: {
+							candidate: 'pphosted.com',
+							bucket: 'indeterminate',
+							relationshipType: 'authorized_vendor_dependency',
+							signals: ['spf_include_seed'],
+							registrar: 'MarkMonitor Inc.',
+							registrarSource: 'rdap',
+							combinedConfidence: 0.85,
+							reasons: ['authorized vendor dependency via seed SPF delegation'],
+						},
+					},
+					{
+						category: 'brand_discovery',
+						title: 'Brand candidate: bankofamerica.ca',
+						severity: 'medium',
+						detail: '',
+						metadata: {
+							candidate: 'bankofamerica.ca',
+							bucket: 'shadowIt',
+							relationshipType: 'owned_off_primary_registrar',
+							signals: ['markov_gen', 'ns', 'spf_include'],
+							registrar: 'MarkMonitor International Canada Ltd.',
+							registrarSource: 'rdap',
+							combinedConfidence: 1,
+							reasons: ['brand-owned domain on off-primary registrar'],
+						},
+					},
+				],
+			},
+		});
+
+		const sidecar = buildDiscoveryReportSidecar(model, {
+			auditId: 'aud-v4-1',
+			generatedAt: '2026-05-21T00:00:00.000Z',
+			serverVersion: '2.22.0',
+			sourceMode: 'mcp',
+			runId: 'run-v4-1',
+			requestedAt: '2026-05-21T00:00:00.000Z',
+			depthMode: 'deep',
+			discoveryMode: 'tiered',
+			tiers: {
+				tier0Count: 0,
+				tier1Count: 0,
+				tier2Count: 0,
+				tier3Count: 2,
+				tier4Count: 0,
+				tier0Status: 'ok',
+				tier1Status: 'ok',
+				tier2Status: 'ok',
+				tier3FallbackTriggered: 0,
+				optOutsFiltered: 0,
+			},
+		}) as unknown as {
+			qaSchemaVersion: number;
+			relationshipSchemaVersion?: number;
+			vendorDependencies?: Array<{ domain: string; relationshipType: string }>;
+			buckets: { shadowIt: Array<{ domain: string }>; indeterminate: Array<{ domain: string }> };
+			ownedPortfolio: { inferred: { shadowIt: string[]; indeterminate: string[] } };
+		};
+
+		expect(sidecar.qaSchemaVersion).toBe(4);
+		expect(sidecar.relationshipSchemaVersion).toBe(1);
+		expect(sidecar.vendorDependencies).toEqual([
+			expect.objectContaining({ domain: 'pphosted.com', relationshipType: 'authorized_vendor_dependency' }),
+		]);
+		expect(sidecar.buckets.shadowIt.map((c) => c.domain)).toEqual(['bankofamerica.ca']);
+		expect(sidecar.buckets.indeterminate.map((c) => c.domain)).toEqual(['pphosted.com']);
+		expect(sidecar.ownedPortfolio.inferred.shadowIt).toEqual(['bankofamerica.ca']);
+		expect(sidecar.ownedPortfolio.inferred.indeterminate).toEqual([]);
+	});
+
 	it('keeps indeterminate candidates out of Shadow IT revenue counts', () => {
 		const model = buildDiscoveryReportModel({
 			target: 'example.com',

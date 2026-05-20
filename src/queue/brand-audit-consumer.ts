@@ -48,10 +48,11 @@ import type { Tier2Result } from '../lib/brand-tier2-evidence';
  * through `dns-transport`/`safe-fetch` (so in-flight fetches actually cancel),
  * the reaper is the durability boundary for oversized audits.
  *
- * 120s gives well-behaved medium audits room to complete; oversized brands
- * still wedge until reaper cleanup.
+ * 300s matches the report-generation runner's per-target poll contract and
+ * gives large tier-1 brands enough room for registrar fallback enrichment.
+ * Oversized audits still return a controlled failure before the 15-min reaper.
  */
-export const BRAND_AUDIT_MESSAGE_TIMEOUT_MS = 120_000;
+export const BRAND_AUDIT_MESSAGE_TIMEOUT_MS = 300_000;
 
 /** Wire format for a brand-audit queue message. Validated on the consumer side as defense in depth. */
 export const BrandAuditQueueMessageSchema = z.object({
