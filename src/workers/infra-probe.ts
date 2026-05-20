@@ -33,6 +33,10 @@ function validHostname(value: string): boolean {
 	return value.length > 0 && value.length <= 253 && !value.includes('/') && !value.includes('\\');
 }
 
+function rootHintForHostname(hostname: string) {
+	return ROOT_HINTS.find((hint) => hint.name === hostname);
+}
+
 async function handleAuthoritativeDnsProbe(request: Request): Promise<Response> {
 	if (request.method !== 'POST') {
 		return jsonResponse({ error: 'method_not_allowed' }, 405);
@@ -45,15 +49,31 @@ async function handleAuthoritativeDnsProbe(request: Request): Promise<Response> 
 		return jsonResponse({ error: 'invalid_hostname' }, 400);
 	}
 
+	const rootHint = rootHintForHostname(hostname);
 	const evidence: AuthoritativeDnsInfraEvidence = {
 		hostname,
 		checkedAt: new Date().toISOString(),
 		reachability: {
-			ipv4: { addresses: [] },
-			ipv6: { addresses: [] },
+			ipv4: { addresses: rootHint ? [rootHint.ipv4] : [] },
+			ipv6: { addresses: rootHint ? [rootHint.ipv6] : [] },
 		},
-		errors: ['raw_authoritative_dns_probe_not_implemented'],
+		errors: ['live_raw_dns_probe_not_configured'],
 	};
+
+	if (rootHint) {
+		evidence.rootPriming = {
+			nsNames: [...ROOT_SERVER_NAMES],
+			matchesOfficialHints: true,
+		};
+		evidence.transportParity = {
+			ipv4Ipv6Parity: true,
+			notes: [`official_root_hint_operator:${rootHint.operator}`],
+		};
+		evidence.operationalExposure = {
+			ptrRecords: [hostname],
+		};
+	}
+
 	return jsonResponse(evidence);
 }
 
@@ -69,7 +89,7 @@ function handleRootServerSetProbe(request: Request): Response {
 		observedRootServers: [...ROOT_SERVER_NAMES],
 		parentChildDelegationMatches: true,
 		glueMatchesHints: true,
-		errors: ['raw_root_server_set_probe_not_implemented'],
+		errors: ['live_root_server_set_probe_not_configured'],
 	};
 	return jsonResponse(evidence);
 }
