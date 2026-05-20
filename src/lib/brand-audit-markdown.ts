@@ -14,13 +14,14 @@
 import type { CheckResult, Finding } from './scoring';
 import { sanitizeOutputText } from './output-sanitize';
 
-type Bucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation';
+type Bucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation' | 'impersonationSurface';
 
 const BUCKET_HEADINGS: Record<Bucket, string> = {
 	consolidated: 'Consolidated (owned/operated by the brand)',
 	shadowIt: 'Shadow IT (potentially-related, non-aligned ownership)',
 	indeterminate: 'Indeterminate (insufficient evidence — review)',
 	impersonation: 'Impersonation candidates (low confidence, likely typo-squat)',
+	impersonationSurface: 'Impersonation surface (tier-4 lookalikes)',
 };
 
 const BUCKET_ORDER: Bucket[] = ['consolidated', 'shadowIt', 'indeterminate', 'impersonation'];
@@ -40,6 +41,8 @@ interface SummaryMeta {
 	depth?: {
 		warnings?: unknown;
 	};
+	/** Pipeline-stamped when `discovery_mode === 'tiered'`. Drives the v3 sections. */
+	discoveryMode?: 'classic' | 'tiered';
 }
 
 function depthWarnings(meta: Partial<SummaryMeta>): string[] {
@@ -100,7 +103,13 @@ export function formatBrandAuditMarkdown(result: CheckResult): string {
 	);
 	lines.push('');
 
-	const byBucket: Record<Bucket, Finding[]> = { consolidated: [], shadowIt: [], indeterminate: [], impersonation: [] };
+	const byBucket: Record<Bucket, Finding[]> = {
+		consolidated: [],
+		shadowIt: [],
+		indeterminate: [],
+		impersonation: [],
+		impersonationSurface: [],
+	};
 	for (const f of result.findings) {
 		const bucket = f.metadata?.bucket as Bucket | undefined;
 		if (bucket && bucket in byBucket) byBucket[bucket].push(f);
@@ -124,5 +133,89 @@ export function formatBrandAuditMarkdown(result: CheckResult): string {
 		lines.push('');
 	}
 
+	// T9 — Tiered mode adds two top-level sections after the legacy buckets:
+	//   `## Owned Portfolio` (four sub-buckets by tier provenance)
+	//   `## Impersonation Surface` (tier-4 lookalikes)
+	//
+	// `discoveryMode === 'tiered'` is pipeline-stamped; in classic mode the
+	// entire block is skipped and the markdown stays byte-identical with the
+	// prior renderer.
+	if (summaryMeta.discoveryMode === 'tiered') {
+		appendOwnedPortfolio(lines, byBucket);
+		appendImpersonationSurface(lines, byBucket.impersonationSurface);
+	}
+
 	return lines.join('\n').trimEnd();
+}
+
+function appendOwnedPortfolio(lines: string[], byBucket: Record<Bucket, Finding[]>): void {
+	const consolidated = byBucket.consolidated;
+	const tenantDeclared = consolidated.filter((f) => f.metadata?.tier === 0);
+	const graphSurfaced = consolidated.filter((f) => f.metadata?.tier === 1);
+	const declaredEvidence = consolidated.filter((f) => f.metadata?.tier === 2);
+	const inferredConsolidated = consolidated.filter(
+		(f) => f.metadata?.tier === undefined || f.metadata?.tier === 3,
+	);
+	const inferredShadowIt = byBucket.shadowIt;
+	const inferredIndeterminate = byBucket.indeterminate;
+	const total =
+		tenantDeclared.length +
+		graphSurfaced.length +
+		declaredEvidence.length +
+		inferredConsolidated.length +
+		inferredShadowIt.length +
+		inferredIndeterminate.length;
+
+	lines.push(`## Owned Portfolio (${total})`);
+	lines.push('');
+	appendPortfolioSubsection(lines, 'Tenant-declared (tier 0)', tenantDeclared);
+	appendPortfolioSubsection(lines, 'Graph-surfaced (tier 1)', graphSurfaced);
+	appendPortfolioSubsection(lines, 'Declared evidence (tier 2)', declaredEvidence);
+	const inferredTotal = inferredConsolidated.length + inferredShadowIt.length + inferredIndeterminate.length;
+	lines.push(`### Inferred (tier 3) — ${inferredTotal}`);
+	lines.push('');
+	appendPortfolioSubsection(lines, 'Consolidated', inferredConsolidated, '#### ');
+	appendPortfolioSubsection(lines, 'Shadow IT', inferredShadowIt, '#### ');
+	appendPortfolioSubsection(lines, 'Indeterminate', inferredIndeterminate, '#### ');
+}
+
+function appendPortfolioSubsection(lines: string[], title: string, items: Finding[], heading = '### '): void {
+	lines.push(`${heading}${title} (${items.length})`);
+	lines.push('');
+	if (items.length === 0) {
+		lines.push('_No candidates in this tier._');
+		lines.push('');
+		return;
+	}
+	for (const f of items) {
+		const domain = sanitizeOutputText(String(f.metadata?.candidate ?? ''), 253);
+		const registrar = sanitizeOutputText(String(f.metadata?.registrar ?? 'Unknown'), 100);
+		const source = sanitizeOutputText(String(f.metadata?.registrarSource ?? 'unknown'), 20);
+		const conf = typeof f.metadata?.combinedConfidence === 'number' ? (f.metadata.combinedConfidence as number).toFixed(2) : '—';
+		lines.push(`- **${domain}** — registrar: ${registrar} (${source}) · confidence ${conf}`);
+	}
+	lines.push('');
+}
+
+function appendImpersonationSurface(lines: string[], items: Finding[]): void {
+	lines.push(`## Impersonation Surface (${items.length})`);
+	lines.push('');
+	if (items.length === 0) {
+		lines.push('_No tier-4 impersonation candidates surfaced._');
+		lines.push('');
+		return;
+	}
+	for (const f of items) {
+		const domain = sanitizeOutputText(String(f.metadata?.candidate ?? ''), 253);
+		const lookalike = typeof f.metadata?.lookalikeScore === 'number' ? (f.metadata.lookalikeScore as number).toFixed(2) : '—';
+		const signalArr = Array.isArray(f.metadata?.signals) ? (f.metadata!.signals as string[]) : [];
+		const signals = signalArr.length > 0 ? sanitizeOutputText(signalArr.join(', '), 200) : '—';
+		const alertCtx = f.metadata?.scoreAlertContext;
+		const alertSuffix =
+			alertCtx && typeof alertCtx === 'object' && 'alertType' in alertCtx && 'transition' in alertCtx
+				? ` · alert: ${sanitizeOutputText(String((alertCtx as { alertType: unknown }).alertType), 50)} (${sanitizeOutputText(String((alertCtx as { transition: unknown }).transition), 50)})`
+				: '';
+		lines.push(`- **${domain}** — lookalike ${lookalike} · signals: ${signals}${alertSuffix}`);
+	}
+	lines.push('');
 }
