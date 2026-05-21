@@ -61,6 +61,8 @@
 		"bv-enterprise.internal",
 		"placeholder"
 	],
+	"_forbiddenClientDomains_NOTE": "Empty until follow-up PR redacts test fixtures and allowlists legitimate marketing mentions. Audit + commit-msg hook still gate the rule via custom policy. To enable repository-wide: populate this array and address scanner findings.",
+	"forbiddenClientDomains": [],
 	"allowedPaths": [
 		".gitleaks.toml",
 		"CHANGELOG.md",
