@@ -122,6 +122,12 @@ export interface BrandAuditPipelineOptions {
 	force_refresh?: boolean;
 	/** Clock override for deterministic tests. */
 	now?: () => number;
+	/**
+	 * Output view mode. `'csc_complement'` triggers CSC enrichment + portfolio
+	 * aggregation and emits a `cscComplement` payload on the returned CheckResult.
+	 * Default `'standard'` — backward-compatible, no change to existing output.
+	 */
+	view?: 'standard' | 'csc_complement';
 }
 
 /** Injectable dependencies. Tests pass stubs; production omits these and the module imports win. */
@@ -1030,5 +1036,29 @@ export async function runBrandAuditPipeline(
 
 	const result = buildCheckResult(CATEGORY, [summary, ...classifiedFindings]);
 	await stepStore?.put({ auditId, target: seedDomain, step: 'classification', status: 'completed', payload: result });
+
+	if (options.view === 'csc_complement') {
+		const { buildCscComplement } = await import('./brand-audit-csc-builder');
+		const cscComplement = await buildCscComplement({
+			seedDomain,
+			primaryRegistrar: targetLookup.registrar,
+			primaryRegistrarSource: targetLookup.registrarSource,
+			primaryRegistrarIanaId: targetLookup.registrarIanaId,
+			classifiedFindings,
+			now,
+		});
+		(result as unknown as { cscComplement: typeof cscComplement }).cscComplement = cscComplement;
+
+		if (stepStore) {
+			await stepStore.put({
+				auditId,
+				target: seedDomain,
+				step: 'csc_complement_fast',
+				status: 'completed',
+				payload: cscComplement,
+			});
+		}
+	}
+
 	return result;
 }
