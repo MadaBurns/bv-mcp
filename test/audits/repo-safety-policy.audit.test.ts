@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import gitignore from '../../.gitignore?raw';
 import preCommit from '../../.githooks/pre-commit?raw';
+import commitMsg from '../../.githooks/commit-msg?raw';
+import prePush from '../../.githooks/pre-push?raw';
 import repoHygiene from '../../.github/workflows/repo-hygiene.yml?raw';
 
 const REPO_SAFETY_FILES = import.meta.glob('/scripts/repo-safety/*', { query: '?raw', eager: true });
@@ -47,5 +49,16 @@ describe('repo safety policy coverage', () => {
 		expect(scanner, 'scripts/repo-safety/scan-sensitive-surface.mjs must exist').toBeDefined();
 		expect(scanner).toContain('policy.json');
 		expect(scanner).toContain('git ls-files');
+	});
+
+	it('scans commit messages before commit and pushed history ranges', () => {
+		const commitMessageScanner = repoSafetyFile('scan-commit-message.mjs');
+		const pushRangeScanner = repoSafetyFile('scan-push-range-sensitive-surface.mjs');
+
+		expect(commitMessageScanner, 'scripts/repo-safety/scan-commit-message.mjs must exist').toBeDefined();
+		expect(commitMessageScanner).toContain('scanCommitMessage');
+		expect(commitMsg).toContain('scan-commit-message.mjs');
+		expect(prePush).toContain('scan-push-range-sensitive-surface.mjs');
+		expect(pushRangeScanner).toContain('scanCommitMessage');
 	});
 });

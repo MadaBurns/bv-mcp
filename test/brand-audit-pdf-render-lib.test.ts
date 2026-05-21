@@ -189,7 +189,7 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 	});
 
 	it('renders per-row reasons text for EVERY candidate (not just the last in each section)', async () => {
-		// Surfaced 2026-05-19 in production marriott/mastercard PDFs: only the
+		// Surfaced 2026-05-19 in production marriott/brandepsilon PDFs: only the
 		// last candidate row before a section break showed its `reasons:` line.
 		// Root cause: the next row's background rectangle was drawn AFTER the
 		// previous row's reasons text and at a y-position that overlapped it,
@@ -240,7 +240,7 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 	});
 
 	it('handles non-WinAnsi unicode characters in reasons / metadata without throwing', async () => {
-		// Surfaced 2026-05-19 in production audit 523e6276 (amazon.com): pdf-lib
+		// Surfaced 2026-05-19 in private regression fixture audit-523e6276 (brand-lambda.example.com): pdf-lib
 		// standard Helvetica uses WinAnsi encoding which cannot encode `≥` (U+2265).
 		// Classifier emits reasons like `lookalike score 0.92 ≥ 0.85` which crashed
 		// drawText, causing the pdf-queue consumer to retry-storm and exhaust

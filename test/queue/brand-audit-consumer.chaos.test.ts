@@ -92,7 +92,7 @@ describe('processBrandAuditMessage — budget chaos', () => {
 		});
 
 		const verdictPromise = processBrandAuditMessage(
-			{ auditId: 'aud-chaos-1', target: 'walmart.com', format: 'json' },
+			{ auditId: 'aud-chaos-1', target: 'brand-alpha.example.com', format: 'json' },
 			{ db, brandAuditSingle, now: () => 1_750_000_000_000 },
 		);
 

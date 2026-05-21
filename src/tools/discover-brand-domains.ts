@@ -109,15 +109,15 @@ export const DISCOVERY_DROP_REASONS: readonly DiscoveryDropReason[] = [
  * map simply skip the bounty-scope detector; no harm done.
  */
 const PHASE5_BOUNTY_HANDLES: Record<string, Partial<Record<BountyPlatform, string>>> = {
-	'walmart.com': { hackerone: 'walmart' },
-	'disney.com': { hackerone: 'disney' },
-	'marriott.com': { hackerone: 'marriott' },
-	'bankofamerica.com': { hackerone: 'bankofamerica' },
-	'mastercard.com': { hackerone: 'mastercard' },
-	'paypal.com': { hackerone: 'paypal' },
+	'brand-alpha.example.com': { hackerone: 'walmart' },
+	'brand-beta.example.com': { hackerone: 'disney' },
+	'brand-gamma.example.com': { hackerone: 'marriott' },
+	'brand-delta.example.com': { hackerone: 'bankofamerica' },
+	'brand-epsilon.example.com': { hackerone: 'brandepsilon' },
+	'brand-eta.example.com': { hackerone: 'paypal' },
 	'github.com': { hackerone: 'github' },
 	'shopify.com': { hackerone: 'shopify' },
-	'uber.com': { hackerone: 'uber' },
+	'brand-iota.example.com': { hackerone: 'uber' },
 };
 
 /** All supported signal kinds. */

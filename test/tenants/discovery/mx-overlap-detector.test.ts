@@ -42,11 +42,11 @@ describe('detectMxOverlap', () => {
 
 	it('both MX hosts under seed apex → bumped to >= 0.9', async () => {
 		const dohFn = mockDoh({
-			'nike.com': ['mx1.nike.com.', 'mx2.nike.com.'],
-			'nike.de': ['mx1.nike.com.', 'mx2.nike.com.'],
+			'brand-zeta.example.com': ['mx1.brand-zeta.example.com.', 'mx2.brand-zeta.example.com.'],
+			'brand-zeta-de.example.net': ['mx1.brand-zeta.example.com.', 'mx2.brand-zeta.example.com.'],
 		});
-		const result = await detectMxOverlap('nike.com', {
-			candidateDomains: ['nike.de'],
+		const result = await detectMxOverlap('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-de.example.net'],
 			dohFn,
 		});
 		expect(result.coOwnedDomains[0].confidence).toBeGreaterThanOrEqual(0.9);
@@ -91,11 +91,11 @@ describe('detectMxOverlap', () => {
 
 	it('no MX on candidate → no signal', async () => {
 		const dohFn = mockDoh({
-			'nike.com': ['mx.nike.com.'],
-			'nike.xyz': [],
+			'brand-zeta.example.com': ['mx.brand-zeta.example.com.'],
+			'brand-zeta-variant.example.net': [],
 		});
-		const result = await detectMxOverlap('nike.com', {
-			candidateDomains: ['nike.xyz'],
+		const result = await detectMxOverlap('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-variant.example.net'],
 			dohFn,
 		});
 		expect(result.coOwnedDomains).toHaveLength(0);
@@ -103,11 +103,11 @@ describe('detectMxOverlap', () => {
 
 	it('no MX on seed → no signal for any candidate', async () => {
 		const dohFn = mockDoh({
-			'nike.com': [],
-			'nike.de': ['mx.nike.com.'],
+			'brand-zeta.example.com': [],
+			'brand-zeta-de.example.net': ['mx.brand-zeta.example.com.'],
 		});
-		const result = await detectMxOverlap('nike.com', {
-			candidateDomains: ['nike.de'],
+		const result = await detectMxOverlap('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-de.example.net'],
 			dohFn,
 		});
 		expect(result.coOwnedDomains).toHaveLength(0);

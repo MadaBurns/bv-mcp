@@ -139,7 +139,7 @@ const ENTERPRISE_AFFIXES = [
 ];
 
 const ENTERPRISE_AFFIX_TLDS = ['com', 'net', 'org', 'co', 'io', 'app', 'cloud', 'dev', 'support', 'shop'];
-// Hard caps reduced from 120/250 (2026-05-19) after walmart audits wedged at
+// Hard caps reduced from 120/250 (2026-05-19) after synthetic brand audits wedged at
 // the Cloudflare Worker CPU budget. Each candidate is probed by ~12 signal
 // detectors at concurrency 6 through a shared DoH semaphore — 100 candidates
 // × 12 signals = up to 1200 DoH queries plus per-candidate RDAP fan-out.
