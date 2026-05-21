@@ -352,9 +352,9 @@ describe('rate-limit chaos tests', () => {
 			);
 		});
 
-		it('scan_domain limit is lower than individual check limits', () => {
-			expect(FREE_TOOL_DAILY_LIMITS['scan_domain']).toBe(5);
-			expect(FREE_TOOL_DAILY_LIMITS['scan_domain']).toBeLessThan(
+		it('scan_domain limit matches individual check limits (2026-05-21: bumped 5 → 25 for Claude.ai unauth UX)', () => {
+			expect(FREE_TOOL_DAILY_LIMITS['scan_domain']).toBe(25);
+			expect(FREE_TOOL_DAILY_LIMITS['scan_domain']).toBeLessThanOrEqual(
 				FREE_TOOL_DAILY_LIMITS['check_spf'],
 			);
 		});
