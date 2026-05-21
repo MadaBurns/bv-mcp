@@ -164,5 +164,17 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 		expect(result.candidates[0].defensive).toBeUndefined();
 		expect(result.candidates[0].mxRecords).toBeUndefined();
 		expect(result.candidates[0].httpRedirectLocation).toBeUndefined();
+
+		// Pins the boundary the test claims to verify: safeFetch must reject the
+		// private-IP URL BEFORE any network call. Without this assertion, the test
+		// passes whether the rejection comes from safeFetch's SSRF gate or from
+		// the mock's catch-all "Unexpected fetch" rejection — i.e. it would still
+		// pass if safeFetch were silently replaced with bare fetch.
+		const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+		const privateIpFetchCalls = fetchMock.mock.calls.filter(([input]) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+			return url.startsWith('https://192.168.1.1');
+		});
+		expect(privateIpFetchCalls).toHaveLength(0);
 	});
 });
