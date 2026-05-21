@@ -144,6 +144,103 @@ describe('brandAuditGetReport', () => {
 		expect(summary?.metadata?.aggregate).toMatchObject({ totalCandidates: 7 });
 	});
 
+	// Dead-zone closure (2026-05-21 brand-zeta.com hang). See
+	// brand-audit-status.integration.test.ts for the full rationale.
+	describe('dead-zone closure for stuck running targets', () => {
+		it('synthesises status=failed for a running target whose deadline has passed', async () => {
+			const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
+			const { BRAND_AUDIT_TARGET_DEADLINE_MS } = await import('../src/lib/brand-audit-reaper');
+			const createdAt = 1_750_000_000_000;
+			const now = createdAt + BRAND_AUDIT_TARGET_DEADLINE_MS + 5_000;
+			const { db } = makeMockD1({
+				audit: { id: 'aud-disney', owner_id: 'owner-abc', status: 'running', format: 'json' },
+				target: {
+					audit_id: 'aud-disney',
+					target: 'brand-zeta.com',
+					status: 'running',
+					result_json: null,
+					error: null,
+					completed_at: null,
+					created_at: createdAt,
+				},
+			});
+
+			const result = await brandAuditGetReport(
+				{ auditId: 'aud-disney', target: 'brand-zeta.com' },
+				'owner-abc',
+				{ db, now: () => now },
+			);
+
+			// No more "notReady" for the duration of the dead zone.
+			expect(result.findings.find((f) => f.metadata?.notReady === true)).toBeUndefined();
+			const summary = result.findings.find((f) => f.metadata?.summary === true);
+			expect(summary?.metadata?.status).toBe('failed');
+			expect(summary?.metadata?.error).toMatch(/stuck/i);
+		});
+
+		it('issues a best-effort UPDATE to persist the synthesised failed status', async () => {
+			const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
+			const { BRAND_AUDIT_TARGET_DEADLINE_MS } = await import('../src/lib/brand-audit-reaper');
+			const createdAt = 1_750_000_000_000;
+			const now = createdAt + BRAND_AUDIT_TARGET_DEADLINE_MS + 5_000;
+			const { db, calls } = makeMockD1({
+				audit: { id: 'aud-disney', owner_id: 'owner-abc', status: 'running', format: 'json' },
+				target: {
+					audit_id: 'aud-disney',
+					target: 'brand-zeta.com',
+					status: 'running',
+					result_json: null,
+					error: null,
+					completed_at: null,
+					created_at: createdAt,
+				},
+			});
+
+			await brandAuditGetReport(
+				{ auditId: 'aud-disney', target: 'brand-zeta.com' },
+				'owner-abc',
+				{ db, now: () => now },
+			);
+
+			const persistFlip = calls.find(
+				(c) =>
+					c.sql.includes('UPDATE brand_audit_targets') &&
+					c.sql.includes("status = 'failed'") &&
+					c.sql.includes("status = 'running'") &&
+					(c.binds as unknown[]).includes('brand-zeta.com'),
+			);
+			expect(persistFlip).toBeDefined();
+		});
+
+		it('does NOT synthesise failed for a running target still within deadline', async () => {
+			const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
+			const { BRAND_AUDIT_TARGET_DEADLINE_MS } = await import('../src/lib/brand-audit-reaper');
+			const createdAt = 1_750_000_000_000;
+			const now = createdAt + BRAND_AUDIT_TARGET_DEADLINE_MS - 60_000;
+			const { db } = makeMockD1({
+				audit: { id: 'aud-inflight', owner_id: 'owner-abc', status: 'running', format: 'json' },
+				target: {
+					audit_id: 'aud-inflight',
+					target: 'example.com',
+					status: 'running',
+					result_json: null,
+					error: null,
+					completed_at: null,
+					created_at: createdAt,
+				},
+			});
+
+			const result = await brandAuditGetReport(
+				{ auditId: 'aud-inflight', target: 'example.com' },
+				'owner-abc',
+				{ db, now: () => now },
+			);
+
+			// Legitimate in-flight audit still returns notReady, not synthesised-failed.
+			expect(result.findings.find((f) => f.metadata?.notReady === true)).toBeDefined();
+		});
+	});
+
 	it('owner-scoping: someone else\'s auditId surfaces as notFound', async () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
 		const { db } = makeMockD1({

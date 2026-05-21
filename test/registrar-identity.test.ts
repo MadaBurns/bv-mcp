@@ -58,6 +58,39 @@ describe('registrar identity matching', () => {
 		expect(sameRegistrarFamily({ name: 'REG-IPMIRROR' }, target)).toBe(false);
 	});
 
+	// Regression: 2026-05 CSC Global sales-meeting verification surfaced false-positive
+	// shadowIt findings on brand-beta.com.au, brand-iota.com.au, brand-mu.com.au because
+	// the registrar display string contained "Corporation Service Company (Aust) Pty Ltd"
+	// — CSC's Australian arm — and the family detector did not collapse it to CSC.
+	it('matches CSC global regional subsidiary registrar strings (Aust Pty Ltd, Digital Brand Services, CSC Global)', () => {
+		const target: RegistrarIdentity = { name: 'CSC Corporate Domains, Inc.' };
+		for (const variant of [
+			'Corporation Service Company (Aust) Pty Ltd',
+			'Corporation Service Company, LLC',
+			'CSC Digital Brand Services Malaysia Sdn Bhd',
+			'CSC Digital Brand Services, Inc.',
+			'CSC Global',
+			'cscglobal.com',
+			'https://cscglobal.com',
+		]) {
+			expect(sameRegistrarFamily({ name: variant }, target), variant).toBe(true);
+		}
+	});
+
+	it('groups two CSC-subsidiary candidates into the same registrar family (consolidated, not shadowIt)', () => {
+		// Two regional CSC subsidiaries observed verbatim in production WHOIS
+		// for brand-beta.com.au, brand-iota.com.au, brand-mu.com.au, etc.
+		const fordAu: RegistrarIdentity = { name: 'Corporation Service Company (Aust) Pty Ltd' };
+		const cscMalaysia: RegistrarIdentity = { name: 'CSC Digital Brand Services Malaysia Sdn Bhd' };
+		const cscUs: RegistrarIdentity = { name: 'CSC Corporate Domains, Inc.' };
+		// All pairwise comparisons must be same-family — this is the
+		// user-visible bug: any pair returning false drives an off-primary-registrar
+		// inference and a shadowIt finding in the brand-audit report.
+		expect(sameRegistrarFamily(fordAu, cscMalaysia)).toBe(true);
+		expect(sameRegistrarFamily(fordAu, cscUs)).toBe(true);
+		expect(sameRegistrarFamily(cscMalaysia, cscUs)).toBe(true);
+	});
+
 	it('falls back to registrar-family names when registry-specific registrar IDs differ', () => {
 		expect(
 			sameRegistrarFamily(

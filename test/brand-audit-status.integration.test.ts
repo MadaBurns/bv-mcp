@@ -82,7 +82,10 @@ describe('brandAuditStatus', () => {
 			],
 		});
 
-		const result = await brandAuditStatus('aud-1', 'owner-abc', { db });
+		// Pin `now` close to created_at so the dead-zone closure (which would
+		// otherwise mark a `running` target older than ~6min as failed) leaves
+		// the row alone — this test asserts the standard rendering path.
+		const result = await brandAuditStatus('aud-1', 'owner-abc', { db, now: () => 1_750_000_060_000 });
 
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
 		expect(summary?.metadata?.auditId).toBe('aud-1');
@@ -129,7 +132,10 @@ describe('brandAuditStatus', () => {
 			],
 		});
 
-		const result = await brandAuditStatus('aud-race', 'owner-abc', { db });
+		// Pin `now` so the legacy `running` target with an older created_at
+		// isn't swept by the dead-zone closure; this case asserts the
+		// completed-parent + result_json coalesce path.
+		const result = await brandAuditStatus('aud-race', 'owner-abc', { db, now: () => 1_750_000_120_000 });
 
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
 		expect(summary?.metadata?.targetStatusCounts).toEqual({
@@ -221,5 +227,223 @@ describe('brandAuditStatus', () => {
 		const result = await brandAuditStatus('', 'owner-abc', makeDeps());
 		const invalid = result.findings.find((f) => f.metadata?.invalidInput === true);
 		expect(invalid).toBeDefined();
+	});
+
+	// Dead-zone closure tests (2026-05-21 brand-zeta.com hang).
+	//
+	// When the consumer's 300s `Promise.race` cap fires but the worker is
+	// killed before the catch UPDATE commits (CPU-saturated tier-1 brands —
+	// brand-zeta.com / brand-alpha.com), the target row stays `status='running'`
+	// indefinitely until the next 15-min cron reaper tick. Customer polling
+	// `brand_audit_status` during the 5–15 min dead zone sees progress 0/1
+	// forever.
+	//
+	// Closure: `brand_audit_status` synthesises `failed` for any `running`
+	// target older than {@link BRAND_AUDIT_TARGET_DEADLINE_MS} (~6 min — the
+	// 300s consumer cap + 60s grace for cap-fire macrotask + D1 flip), AND
+	// issues a best-effort UPDATE so the persisted row catches up. This
+	// closes the customer-perceived dead zone to ~0s because the customer is
+	// the polling agent.
+	describe('dead-zone closure for stuck running targets', () => {
+		it('synthesises status=failed for a running target whose deadline has passed', async () => {
+			const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
+			const { BRAND_AUDIT_TARGET_DEADLINE_MS } = await import('../src/lib/brand-audit-reaper');
+			const createdAt = 1_750_000_000_000;
+			const now = createdAt + BRAND_AUDIT_TARGET_DEADLINE_MS + 5_000; // 5s past deadline
+			const { db } = makeMockD1({
+				audit: {
+					id: 'aud-disney',
+					owner_id: 'owner-abc',
+					status: 'running',
+					total_targets: 1,
+					completed_targets: 0,
+					format: 'json',
+					created_at: createdAt,
+					updated_at: createdAt,
+					completed_at: null,
+				},
+				targets: [
+					{
+						audit_id: 'aud-disney',
+						target: 'brand-zeta.com',
+						status: 'running',
+						created_at: createdAt,
+						completed_at: null,
+						error: null,
+						pdf_r2_key: null,
+						result_json: null,
+					},
+				],
+			});
+
+			const result = await brandAuditStatus('aud-disney', 'owner-abc', { db, now: () => now });
+
+			const summary = result.findings.find((f) => f.metadata?.summary === true);
+			// Customer sees a terminal status now — not "running" forever.
+			expect(summary?.metadata?.targetStatusCounts).toMatchObject({ running: 0, failed: 1 });
+			const targets = summary?.metadata?.targets as Array<{ target: string; status: string; error: string | null }>;
+			expect(targets[0]).toMatchObject({ target: 'brand-zeta.com', status: 'failed' });
+			expect(targets[0].error).toMatch(/deadline|stuck/i);
+		});
+
+		it('issues a best-effort UPDATE to persist the synthesised failed status', async () => {
+			const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
+			const { BRAND_AUDIT_TARGET_DEADLINE_MS } = await import('../src/lib/brand-audit-reaper');
+			const createdAt = 1_750_000_000_000;
+			const now = createdAt + BRAND_AUDIT_TARGET_DEADLINE_MS + 5_000;
+			const { db, calls } = makeMockD1({
+				audit: {
+					id: 'aud-disney',
+					owner_id: 'owner-abc',
+					status: 'running',
+					total_targets: 1,
+					completed_targets: 0,
+					format: 'json',
+					created_at: createdAt,
+					updated_at: createdAt,
+					completed_at: null,
+				},
+				targets: [
+					{
+						audit_id: 'aud-disney',
+						target: 'brand-zeta.com',
+						status: 'running',
+						created_at: createdAt,
+						completed_at: null,
+						error: null,
+						pdf_r2_key: null,
+						result_json: null,
+					},
+				],
+			});
+
+			await brandAuditStatus('aud-disney', 'owner-abc', { db, now: () => now });
+
+			const persistFlip = calls.find(
+				(c) =>
+					c.sql.includes('UPDATE brand_audit_targets') &&
+					c.sql.includes("status = 'failed'") &&
+					c.sql.includes("status = 'running'") &&
+					(c.binds as unknown[]).includes('brand-zeta.com'),
+			);
+			expect(persistFlip).toBeDefined();
+		});
+
+		it('does NOT synthesise failed for a running target still within deadline', async () => {
+			const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
+			const { BRAND_AUDIT_TARGET_DEADLINE_MS } = await import('../src/lib/brand-audit-reaper');
+			const createdAt = 1_750_000_000_000;
+			// 60s inside the deadline — a normal in-flight deep audit at the
+			// 2-minute mark.
+			const now = createdAt + BRAND_AUDIT_TARGET_DEADLINE_MS - 60_000;
+			const { db, calls } = makeMockD1({
+				audit: {
+					id: 'aud-inflight',
+					owner_id: 'owner-abc',
+					status: 'running',
+					total_targets: 1,
+					completed_targets: 0,
+					format: 'json',
+					created_at: createdAt,
+					updated_at: createdAt + 30_000,
+					completed_at: null,
+				},
+				targets: [
+					{
+						audit_id: 'aud-inflight',
+						target: 'example.com',
+						status: 'running',
+						created_at: createdAt,
+						completed_at: null,
+						error: null,
+						pdf_r2_key: null,
+						result_json: null,
+					},
+				],
+			});
+
+			const result = await brandAuditStatus('aud-inflight', 'owner-abc', { db, now: () => now });
+
+			const summary = result.findings.find((f) => f.metadata?.summary === true);
+			expect(summary?.metadata?.targetStatusCounts).toMatchObject({ running: 1, failed: 0 });
+			// No persist flip happens during a normal in-flight audit.
+			const persistFlip = calls.find(
+				(c) =>
+					c.sql.includes('UPDATE brand_audit_targets') &&
+					c.sql.includes("status = 'failed'"),
+			);
+			expect(persistFlip).toBeUndefined();
+		});
+
+		it('swallows D1 write failure on the synthetic flip (read path stays responsive)', async () => {
+			const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
+			const { BRAND_AUDIT_TARGET_DEADLINE_MS } = await import('../src/lib/brand-audit-reaper');
+			const createdAt = 1_750_000_000_000;
+			const now = createdAt + BRAND_AUDIT_TARGET_DEADLINE_MS + 5_000;
+			// Build a custom D1 mock that throws on UPDATE — the read path must
+			// still return a synthesised failed status to the caller.
+			const calls: D1Call[] = [];
+			const db = {
+				prepare(sql: string) {
+					let binds: unknown[] = [];
+					const stmt = {
+						bind(...args: unknown[]) {
+							binds = args;
+							return stmt;
+						},
+						async first() {
+							calls.push({ sql, binds });
+							if (sql.includes('FROM brand_audits')) {
+								return {
+									id: 'aud-disney',
+									owner_id: 'owner-abc',
+									status: 'running',
+									total_targets: 1,
+									completed_targets: 0,
+									format: 'json',
+									created_at: createdAt,
+									updated_at: createdAt,
+									completed_at: null,
+								};
+							}
+							return null;
+						},
+						async all() {
+							calls.push({ sql, binds });
+							if (sql.includes('FROM brand_audit_targets')) {
+								return {
+									results: [
+										{
+											audit_id: 'aud-disney',
+											target: 'brand-zeta.com',
+											status: 'running',
+											created_at: createdAt,
+											completed_at: null,
+											error: null,
+											pdf_r2_key: null,
+											result_json: null,
+										},
+									],
+									success: true,
+									meta: {},
+								};
+							}
+							return { results: [], success: true, meta: {} };
+						},
+						async run() {
+							calls.push({ sql, binds });
+							throw new Error('d1_update_failed');
+						},
+					};
+					return stmt;
+				},
+			} as unknown as D1Database;
+
+			const result = await brandAuditStatus('aud-disney', 'owner-abc', { db, now: () => now });
+
+			const summary = result.findings.find((f) => f.metadata?.summary === true);
+			// Even though persist failed, customer still sees terminal status.
+			expect(summary?.metadata?.targetStatusCounts).toMatchObject({ running: 0, failed: 1 });
+		});
 	});
 });

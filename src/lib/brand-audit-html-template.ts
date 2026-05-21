@@ -36,6 +36,10 @@ export interface BrandCandidateRow {
 	reasons: string[];
 	signals: string[];
 	combinedConfidence: number;
+	/** True when the heuristic in `brand-defensive-registration.ts` flagged this candidate. */
+	defensive?: boolean;
+	/** Discriminated reason token from the same heuristic. */
+	defensiveReason?: 'redirect-to-target' | 'no-mx' | 'parked-ns';
 }
 
 function relationshipTypeFor(bucket: BrandAuditBucket, raw: unknown): BrandRelationshipType {
@@ -95,6 +99,10 @@ export function candidatesFromCheckResult(result: CheckResult): BrandCandidateRo
 		const m = f.metadata;
 		if (!m || typeof m.candidate !== 'string' || typeof m.bucket !== 'string') continue;
 		const bucket = m.bucket as BrandAuditBucket;
+		const defensiveReason =
+			m.defensiveReason === 'redirect-to-target' || m.defensiveReason === 'no-mx' || m.defensiveReason === 'parked-ns'
+				? m.defensiveReason
+				: undefined;
 		rows.push({
 			domain: m.candidate as string,
 			bucket,
@@ -104,6 +112,8 @@ export function candidatesFromCheckResult(result: CheckResult): BrandCandidateRo
 			reasons: Array.isArray(m.reasons) ? (m.reasons as string[]) : [],
 			signals: Array.isArray(m.signals) ? (m.signals as string[]) : [],
 			combinedConfidence: typeof m.combinedConfidence === 'number' ? (m.combinedConfidence as number) : 0,
+			...(m.defensive === true ? { defensive: true } : {}),
+			...(defensiveReason ? { defensiveReason } : {}),
 		});
 	}
 	return rows;
@@ -169,8 +179,14 @@ function renderTableSection(
 			const sourceBadge = r.registrarSource === 'redacted' || r.registrarSource === 'notfound'
 				? ` <span class="badge badge-gray">${esc(r.registrarSource)}</span>`
 				: '';
+			// Defensive-registration label — see `brand-defensive-registration.ts`. The
+			// candidate stays in its classifier-assigned bucket; the badge tells the
+			// reader this is a deliberately-parked typo defence, not operational infra.
+			const defensiveBadge = r.defensive
+				? ` <span class="badge badge-gray" title="${esc(`defensive registration${r.defensiveReason ? ` — ${r.defensiveReason}` : ''}`)}">defensive</span>`
+				: '';
 			return `<tr>
-				<td>${esc(r.domain)}</td>
+				<td>${esc(r.domain)}${defensiveBadge}</td>
 				<td>${esc(r.registrar)}${sourceBadge}</td>
 				<td><span class="badge ${badgeClass}">${esc(columnValue(r))}</span></td>
 				<td class="sources">${citationLinks(r)}</td>

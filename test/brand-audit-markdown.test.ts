@@ -68,6 +68,59 @@ describe('formatBrandAuditMarkdown', () => {
 		expect(markdown.indexOf('pphosted.example')).toBeGreaterThan(markdown.indexOf('## Authorized Vendor Dependencies'));
 	});
 
+	it('annotates defensive registrations with a "(defensive registration)" suffix', () => {
+		const result: CheckResult = {
+			category: 'brand_discovery',
+			score: 100,
+			findings: [
+				{
+					category: 'brand_discovery',
+					title: 'summary',
+					severity: 'info',
+					detail: '',
+					metadata: {
+						summary: true,
+						target: 'brand-theta.com',
+						consolidated: 1,
+						shadowIt: 0,
+						indeterminate: 0,
+						impersonation: 0,
+					},
+				},
+				{
+					category: 'brand_discovery',
+					title: 'Brand candidate: masterard.com',
+					severity: 'info',
+					detail: '',
+					metadata: {
+						candidate: 'masterard.com',
+						bucket: 'consolidated',
+						relationshipType: 'owned_primary',
+						registrar: 'CSC Corporate Domains',
+						registrarSource: 'rdap',
+						reasons: ['shared registrar family (CSC) + 2 corroborating signals'],
+						signals: ['ns', 'san'],
+						combinedConfidence: 0.9,
+						defensive: true,
+						defensiveReason: 'parked-ns',
+					},
+				},
+			],
+		};
+
+		const markdown = formatBrandAuditMarkdown(result);
+
+		// Candidate still belongs in the Consolidated section — we label, not re-bucket.
+		expect(markdown).toContain('## Consolidated (owned/operated by the brand)');
+		expect(markdown).toContain('masterard.com');
+		// And carries the defensive-registration tag inline. The label is wrapped
+		// in markdown italics and includes the reason discriminant; assert the
+		// canonical prefix rather than the exact closing-paren form so the test
+		// is robust to reason-token additions.
+		expect(markdown).toContain('defensive registration');
+		expect(markdown).toContain('parked-ns');
+	});
+
 	it('surfaces discovery depth warnings from the summary metadata', () => {
 		const result: CheckResult = {
 			category: 'brand_discovery',

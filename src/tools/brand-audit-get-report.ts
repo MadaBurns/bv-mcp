@@ -20,6 +20,7 @@
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import type { BrandAuditStatus } from '../lib/db/brand-audit-schema';
+import { BRAND_AUDIT_TARGET_DEADLINE_MS } from '../lib/brand-audit-reaper';
 
 const CATEGORY = 'brand_discovery';
 
@@ -34,6 +35,8 @@ export interface BrandAuditGetReportDeps {
 	bucket?: { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> };
 	/** TTL for the signed URL — defaults to 7 days, override for tests. */
 	signedUrlTtlSeconds?: number;
+	/** Clock override for tests + dead-zone closure. */
+	now?: () => number;
 }
 
 interface AuditRowSlim {
@@ -52,6 +55,7 @@ interface TargetRowSlim {
 	pdf_r2_key: string | null;
 	error: string | null;
 	completed_at: number | null;
+	created_at: number;
 }
 
 function errorResult(flag: string, message: string, extra: Record<string, unknown> = {}): CheckResult {
@@ -93,7 +97,7 @@ export async function brandAuditGetReport(
 	if (target) {
 		const targetRow = (await deps.db
 			.prepare(
-				'SELECT audit_id, target, status, result_json, pdf_r2_key, error, completed_at FROM brand_audit_targets WHERE audit_id = ? AND target = ? LIMIT 1',
+				'SELECT audit_id, target, status, result_json, pdf_r2_key, error, completed_at, created_at FROM brand_audit_targets WHERE audit_id = ? AND target = ? LIMIT 1',
 			)
 			.bind(auditId, target.trim().toLowerCase())
 			.first()) as TargetRowSlim | null;
@@ -102,9 +106,35 @@ export async function brandAuditGetReport(
 			return errorResult('notFound', `Target ${target} not in audit ${auditId}.`, { auditId, target });
 		}
 
+		// Dead-zone closure (2026-05-21 brand-zeta.com hang). A `running` target past
+		// its budget deadline is one the consumer couldn't self-flip — surface
+		// it as terminal-failed here so the customer doesn't get told "poll
+		// again" for the next 15 minutes. Mirrors the closure in
+		// `brand_audit_status`. Best-effort UPDATE persists the flip; failure is
+		// swallowed because the response is the durability contract.
+		const now = (deps.now ?? Date.now)();
+		const isStuck = targetRow.status === 'running' && now - targetRow.created_at > BRAND_AUDIT_TARGET_DEADLINE_MS;
+		if (isStuck) {
+			try {
+				await deps.db
+					.prepare(
+						"UPDATE brand_audit_targets SET status = 'failed', error = ?, completed_at = ? WHERE audit_id = ? AND target = ? AND status = 'running'",
+					)
+					.bind(
+						`read-path: target stuck >${Math.floor(BRAND_AUDIT_TARGET_DEADLINE_MS / 60_000)}min; consumer cap did not flip status`,
+						now,
+						auditId,
+						targetRow.target,
+					)
+					.run();
+			} catch {
+				// Best-effort — next read or reaper tick retries the persistence.
+			}
+		}
+
 		const parsed = safeParse(targetRow.result_json);
 		const renderedStatus: BrandAuditStatus =
-			targetRow.status === 'failed'
+			targetRow.status === 'failed' || isStuck
 				? 'failed'
 				: auditRow.status === 'completed' && parsed !== null
 					? 'completed'
@@ -155,7 +185,9 @@ export async function brandAuditGetReport(
 					target: targetRow.target,
 					status: renderedStatus,
 					result: parsed,
-					error: targetRow.error,
+					error: isStuck
+						? `read-path: target stuck >${Math.floor(BRAND_AUDIT_TARGET_DEADLINE_MS / 60_000)}min; consumer cap did not flip status`
+						: targetRow.error,
 					pdfUrl,
 					pdfPending,
 				},
