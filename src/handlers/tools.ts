@@ -318,7 +318,8 @@ const TOOL_REGISTRY: Record<
 			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
 			const aliasHash = aliases.length === 0 ? '0' : `${aliases.length}:${aliases.slice().sort().join('|').slice(0, 64)}`;
 			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
-			return `brand_audit_single:${fmt}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:m${minConf}`;
+			const view = typeof args.view === 'string' ? args.view : 'standard';
+			return `brand_audit_single:${fmt}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:m${minConf}:vw${view}`;
 		},
 		execute: (d, args, ro) => {
 			const deadlineMs = Date.now() + BRAND_AUDIT_SINGLE_SYNC_HANDOFF_MS;
@@ -330,6 +331,7 @@ const TOOL_REGISTRY: Record<
 				discovery_mode: args.discovery_mode as 'classic' | 'tiered' | undefined,
 				brand_aliases: args.brand_aliases as string[] | undefined,
 				candidate_domains: args.candidate_domains as string[] | undefined,
+				view: args.view as 'standard' | 'csc_complement' | undefined,
 				// T13 — propagate the BlackVeil-production runtime override.
 				// Pipeline only honours it when the caller omits `discovery_mode`;
 				// undefined on BSL self-hosts (schema default `'classic'` wins).
@@ -380,6 +382,7 @@ const TOOL_REGISTRY: Record<
 					brand_aliases: args.brand_aliases as string[] | undefined,
 					candidate_domains: args.candidate_domains as string[] | undefined,
 					discovery_mode: args.discovery_mode as 'classic' | 'tiered' | undefined,
+					view: args.view as 'standard' | 'csc_complement' | undefined,
 				},
 				principalId,
 				{ db, queue, enforceQuota: buildMonthlyEnforceQuota(ro) },

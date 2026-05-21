@@ -33,8 +33,10 @@ describe('view=csc_complement tier gate', () => {
 	it('does not reject view=csc_complement at the gate when authTier is enterprise', async () => {
 		// Mock brandAuditSingle at the module level before importing handleToolsCall.
 		// This short-circuits the tool after the gate passes, avoiding hangs from real discovery.
-		vi.doMock('../src/tools/brand-audit-single', () => ({
-			brandAuditSingle: vi.fn().mockResolvedValue({
+		// Lift the mock function so we can assert it was called with view forwarded.
+		let brandAuditSingleMock: ReturnType<typeof vi.fn>;
+		vi.doMock('../src/tools/brand-audit-single', () => {
+			brandAuditSingleMock = vi.fn().mockResolvedValue({
 				category: 'brand_discovery',
 				score: 100,
 				findings: [
@@ -45,8 +47,9 @@ describe('view=csc_complement tier gate', () => {
 						detail: 'Tool mocked for gate test',
 					},
 				],
-			}),
-		}));
+			});
+			return { brandAuditSingle: brandAuditSingleMock };
+		});
 
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		const result = await handleToolsCall(
@@ -62,6 +65,14 @@ describe('view=csc_complement tier gate', () => {
 			const text = textContent && 'text' in textContent ? textContent.text : '';
 			expect(text).not.toMatch(/^Error: Invalid view:.*requires enterprise tier/);
 		}
+
+		// Forwarding assertion: brandAuditSingle must have been called with view in its options.
+		// This catches the regression where the gate passes but view is dropped before the pipeline.
+		expect(brandAuditSingleMock!).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ view: 'csc_complement' }),
+			expect.anything(),
+		);
 	});
 
 	it('omits view → schema accepts and view is undefined', async () => {

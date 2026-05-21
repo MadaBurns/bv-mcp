@@ -70,6 +70,11 @@ export const BrandAuditQueueMessageSchema = z.object({
 	 * pipeline's effective-mode resolution.
 	 */
 	discovery_mode: z.enum(['classic', 'tiered']).optional(),
+	/**
+	 * Output view mode forwarded by brand_audit_batch_start. Explicit
+	 * caller-supplied value is threaded into runBrandAuditPipeline.
+	 */
+	view: z.enum(['standard', 'csc_complement']).optional(),
 	/** Set when the message originated from the watch cron — drives post-completion diff/webhook. */
 	watchId: z.string().min(1).max(64).optional(),
 	/** Bound at enqueue time so the consumer doesn't need a D1 round-trip to look up the watch's owner. */
@@ -309,6 +314,9 @@ export async function processBrandAuditMessage(
 		// (the caller's `discovery_mode` arg). Wins over discoveryModeDefault
 		// in the pipeline's effective-mode resolution.
 		discovery_mode: message.discovery_mode,
+		// Output view mode from the batch_start payload. Forwarded into the
+		// pipeline so CSC enrichment runs when the caller requested csc_complement.
+		view: message.view,
 		signal: controller.signal,
 		deadlineMs: messageStartedAt + BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
 		// Phase 2b: retry messages re-run the pipeline from scratch instead
