@@ -24,8 +24,8 @@ import { checkSpf } from '../tools/check-spf';
 export const SPF_CANARY_DOMAINS: readonly string[] = [
 	'google.com',
 	'microsoft.com',
-	'brand-eta.example.com',
-	'brand-theta.example.com',
+	'paypal.com',
+	'stripe.com',
 	'anthropic.com',
 	'netflix.com',
 	'apple.com',
