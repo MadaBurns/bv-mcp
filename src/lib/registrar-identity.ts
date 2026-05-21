@@ -38,8 +38,8 @@ const KNOWN_REGISTRAR_FAMILIES: Array<{ family: string; patterns: RegExp[]; rawP
 		// Pty Ltd, etc.) all sharing infrastructure. Collapse every regional
 		// brand string into a single family so the off-primary-registrar
 		// inference does not flag CSC-managed ccTLD registrations as shadowIt.
-		// Regression source: 2026-05 CSC Global sales-meeting verification of
-		// brand-beta.com.au / brand-iota.com.au / brand-mu.com.au.
+		// Regression source: 2026-05 CSC registrar-family fixture verification of
+		// regional-alpha.example.com / regional-beta.example.com / regional-gamma.example.com.
 		family: 'csc corporate domains',
 		patterns: [
 			/^csc\s+corporate\s+domains(?:\b|$)/,
