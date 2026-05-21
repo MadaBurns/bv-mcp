@@ -390,6 +390,15 @@ export async function checkToolDailyRateLimit(
 	kv?: KVNamespace,
 	quotaCoordinator?: DurableObjectNamespace,
 ): Promise<ToolDailyRateLimitResult> {
+	// Unlimited tiers (owner) pass Infinity. JSON.stringify(Infinity) === "null",
+	// which the coordinator validator rejects with HTTP 400 and every KV write
+	// would be wasted bookkeeping for a counter that can never trip. Short-circuit.
+	// NOTE: don't extend this to limit <= 0 — TIER_TOOL_DAILY_LIMITS encodes
+	// "tier blocked from tool" as 0 (e.g. agent + brand_audit_*), which must
+	// flow through the normal counter so the first call denies.
+	if (!Number.isFinite(limit)) {
+		return { allowed: true, remaining: limit, limit };
+	}
 	if (quotaCoordinator) {
 		try {
 			const coordinated = await quotaCoordinatorBreaker.call(
@@ -421,6 +430,12 @@ export async function checkGlobalDailyLimit(
 	kv?: KVNamespace,
 	quotaCoordinator?: DurableObjectNamespace,
 ): Promise<GlobalRateLimitResult> {
+	// Same Infinity/JSON-encoding trap as checkToolDailyRateLimit. A self-host
+	// that disables the global cap by setting it to Infinity would otherwise
+	// 400 every coordinator call.
+	if (!Number.isFinite(limit)) {
+		return { allowed: true, remaining: limit, limit };
+	}
 	if (quotaCoordinator) {
 		try {
 			const coordinated = await quotaCoordinatorBreaker.call(
