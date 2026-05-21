@@ -20,6 +20,7 @@ import { readWindow } from './lib/fuzzing-counter';
 import { buildFuzzingAlertPayload } from './schemas/alerting';
 import { FUZZ_THRESHOLDS } from './lib/config';
 import { reapStuckBrandAudits } from './lib/brand-audit-reaper';
+import { runSpfCanary, shouldAlertOnCanary } from './lib/spf-canary';
 
 interface AnomalyRow {
 	total_calls?: number;
@@ -40,6 +41,7 @@ export interface ScheduledEnv {
 	ALERT_P95_THRESHOLD?: string;
 	ALERT_RATE_LIMIT_THRESHOLD?: string;
 	ALERT_LOOKBACK_MINUTES?: string;
+	ALERT_SPF_NULL_RATE_THRESHOLD?: string;
 	RATE_LIMIT?: KVNamespace;
 	BRAND_AUDIT_DB?: D1Database;
 }
@@ -319,6 +321,10 @@ export async function handleFuzzingScan(env: ScheduledEnv): Promise<void> {
  * Called by a separate daily Cron Trigger (e.g., `0 8 * * *`).
  */
 export async function handleDailyDigest(env: ScheduledEnv): Promise<void> {
+	// SPF canary runs even when analytics are unconfigured — it does its own
+	// outbound DoH probes and depends only on ALERT_WEBHOOK_URL for delivery.
+	await handleSpfCanary(env);
+
 	if (!env.ALERT_WEBHOOK_URL) return;
 	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return;
 
@@ -339,6 +345,69 @@ export async function handleDailyDigest(env: ScheduledEnv): Promise<void> {
 			severity: 'error',
 			category: 'scheduled',
 			details: { message: 'Daily tier digest failed' },
+		});
+	}
+}
+
+/** Default null-rate threshold (15%): with 20 canaries, 3+ nulls trips it. */
+const DEFAULT_SPF_NULL_RATE_THRESHOLD = 0.15;
+
+/**
+ * SPF canary — daily synthetic probe of a curated stable-SPF domain set. When
+ * the null rate breaches `ALERT_SPF_NULL_RATE_THRESHOLD` (default 15%), emits a
+ * webhook alert listing the failing domains so the next responder has a
+ * concrete reproducer instead of a dashboard impression.
+ *
+ * Always logs the canary outcome — even at null=0 — so the absence of an alert
+ * is distinguishable from a silently-skipped run.
+ */
+export async function handleSpfCanary(env: ScheduledEnv): Promise<void> {
+	try {
+		const result = await runSpfCanary();
+		const rawThreshold = env.ALERT_SPF_NULL_RATE_THRESHOLD ? Number(env.ALERT_SPF_NULL_RATE_THRESHOLD) : NaN;
+		const threshold = Number.isFinite(rawThreshold) && rawThreshold > 0 && rawThreshold <= 1
+			? rawThreshold
+			: DEFAULT_SPF_NULL_RATE_THRESHOLD;
+
+		logEvent({
+			timestamp: new Date().toISOString(),
+			category: 'scheduled',
+			result: 'spf_canary',
+			severity: result.nullCount > 0 || result.errorCount > 0 ? 'warn' : 'info',
+			details: {
+				probed: result.totalProbed,
+				nullCount: result.nullCount,
+				errorCount: result.errorCount,
+				nullRatePct: Number((result.nullRate * 100).toFixed(2)),
+				thresholdPct: Number((threshold * 100).toFixed(2)),
+				nullDomains: result.nullDomains,
+				errorDomains: result.errorDomains,
+			},
+		});
+
+		if (!env.ALERT_WEBHOOK_URL) return;
+		if (!shouldAlertOnCanary(result, threshold)) return;
+
+		await sendAlert(
+			env.ALERT_WEBHOOK_URL,
+			buildAlertPayload({
+				title: `SPF canary null rate ${(result.nullRate * 100).toFixed(1)}% (${result.nullCount}/${result.totalProbed})`,
+				severity: result.nullRate >= threshold * 2 ? 'critical' : 'warning',
+				metrics: {
+					probed: result.totalProbed,
+					null_count: result.nullCount,
+					error_count: result.errorCount,
+					null_domains: result.nullDomains.join(', ') || '(none)',
+					error_domains: result.errorDomains.join(', ') || '(none)',
+				},
+				threshold: `spf_null_rate >= ${(threshold * 100).toFixed(0)}%`,
+			}),
+		);
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'error',
+			category: 'scheduled',
+			details: { message: 'SPF canary failed' },
 		});
 	}
 }
