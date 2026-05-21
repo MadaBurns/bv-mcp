@@ -27,9 +27,9 @@ API_KEY = os.environ.get("BV_API_KEY", "")
 
 DOMAINS = [
     "google.com", "cloudflare.com", "github.com", "microsoft.com", "apple.com",
-    "amazon.com", "netflix.com", "stripe.com", "openai.com", "linear.app",
-    "tesla.com", "brand-lambda.com", "spotify.com", "slack.com", "discord.com",
-    "twitch.tv", "reddit.com", "paypal.com", "shopify.com", "zoom.us",
+    "amazon.com", "netflix.com", "brand-theta.example.com", "openai.com", "linear.app",
+    "tesla.com", "brand-iota.example.com", "spotify.com", "slack.com", "discord.com",
+    "twitch.tv", "reddit.com", "brand-eta.example.com", "shopify.com", "zoom.us",
     "atlassian.com", "notion.so", "figma.com", "vercel.com", "netlify.com",
     "heroku.com", "digitalocean.com", "linode.com", "fastly.com", "akamai.com",
     "salesforce.com", "hubspot.com", "zendesk.com", "intercom.com", "mixpanel.com",
@@ -41,7 +41,7 @@ TOOLS_SPOT = [
     ("check_spf",    {"domain": "google.com",    "format": "compact"}),
     ("check_dmarc",  {"domain": "cloudflare.com","format": "compact"}),
     ("check_dkim",   {"domain": "github.com",    "format": "compact", "selector": "google"}),
-    ("check_ns",     {"domain": "stripe.com",    "format": "compact"}),
+    ("check_ns",     {"domain": "brand-theta.example.com",    "format": "compact"}),
     ("check_mx",     {"domain": "microsoft.com", "format": "compact"}),
     ("check_ssl",    {"domain": "netflix.com",   "format": "compact"}),
     ("check_caa",    {"domain": "amazon.com",    "format": "compact"}),

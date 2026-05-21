@@ -3,7 +3,7 @@ import { checkRdapLookup } from './src/tools/check-rdap-lookup.js';
 import { writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
-const domains = ['amazon.com', 'apple.com', 'google.com', 'microsoft.com', 'brand-zeta.com', 'brand-gamma.com', 'paypal.com', 'stripe.com', 'brand-alpha.com', 'github.com'];
+const domains = ['amazon.com', 'apple.com', 'google.com', 'microsoft.com', 'brand-beta.example.com', 'brand-zeta.example.com', 'brand-eta.example.com', 'brand-theta.example.com', 'brand-alpha.example.com', 'github.com'];
 
 const BrandAudit_GLOBAL = 'brand-audit corporate domains';
 

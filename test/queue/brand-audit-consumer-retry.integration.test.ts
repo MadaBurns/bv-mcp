@@ -296,7 +296,7 @@ describe('processBrandAuditMessage — Phase 2b retry orchestration', () => {
 		// customer's first-pass result. The error column may capture the retry
 		// failure, but result_json stays intact.
 		expect(final.result_json, 'original result_json must survive a retry failure').toBe(originalResultJson);
-		// Bugfix surfaced 2026-05-19 (audit c487486a / brand-theta.com): the atomic
+		// Bugfix surfaced 2026-05-19 (audit synthetic-audit / brandepsilon.com): the atomic
 		// claim flips status completed→running before the retry pipeline runs.
 		// If the retry throws, status MUST be restored to 'completed' — otherwise
 		// the row sits stuck in 'running' indefinitely (until the cron reaper at

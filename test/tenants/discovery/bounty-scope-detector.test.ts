@@ -22,12 +22,12 @@ describe('parseHackerOneScope', () => {
 	it('extracts URL assets as concrete domains', () => {
 		const out = parseHackerOneScope({
 			structured_scopes: [
-				{ asset_identifier: 'brand-kappa.com', asset_type: 'URL', eligible_for_submission: true },
+				{ asset_identifier: 'brand-gamma.example.com', asset_type: 'URL', eligible_for_submission: true },
 			],
 		});
 		expect(out).toEqual([
 			expect.objectContaining({
-				domain: 'brand-kappa.com',
+				domain: 'brand-gamma.example.com',
 				assetType: 'url',
 				isWildcard: false,
 				inScope: true,
@@ -39,10 +39,10 @@ describe('parseHackerOneScope', () => {
 	it('marks wildcard scopes', () => {
 		const out = parseHackerOneScope({
 			structured_scopes: [
-				{ asset_identifier: '*.brand-kappa.com', asset_type: 'WILDCARD', eligible_for_submission: true },
+				{ asset_identifier: '*.brand-gamma.example.com', asset_type: 'WILDCARD', eligible_for_submission: true },
 			],
 		});
-		expect(out[0]).toMatchObject({ isWildcard: true, domain: 'brand-kappa.com', assetType: 'wildcard' });
+		expect(out[0]).toMatchObject({ isWildcard: true, domain: 'brand-gamma.example.com', assetType: 'wildcard' });
 	});
 
 	it('flags out-of-scope assets with inScope=false', () => {
@@ -83,16 +83,16 @@ describe('parseHackerOneScope', () => {
 describe('parseBugcrowdScope', () => {
 	it('extracts website targets', () => {
 		const out = parseBugcrowdScope({
-			targets: [{ name: 'brand-kappa.com', category: 'website', in_scope: true }],
+			targets: [{ name: 'brand-gamma.example.com', category: 'website', in_scope: true }],
 		});
-		expect(out[0]).toMatchObject({ domain: 'brand-kappa.com', assetType: 'url', inScope: true, platform: 'bugcrowd' });
+		expect(out[0]).toMatchObject({ domain: 'brand-gamma.example.com', assetType: 'url', inScope: true, platform: 'bugcrowd' });
 	});
 
 	it('handles wildcard website targets', () => {
 		const out = parseBugcrowdScope({
-			targets: [{ name: '*.brand-kappa.com', category: 'website', in_scope: true }],
+			targets: [{ name: '*.brand-gamma.example.com', category: 'website', in_scope: true }],
 		});
-		expect(out[0]).toMatchObject({ isWildcard: true, domain: 'brand-kappa.com', assetType: 'wildcard' });
+		expect(out[0]).toMatchObject({ isWildcard: true, domain: 'brand-gamma.example.com', assetType: 'wildcard' });
 	});
 
 	it('treats mobile category as app_store', () => {
@@ -118,16 +118,16 @@ describe('parseBugcrowdScope', () => {
 describe('parseIntigritiScope', () => {
 	it('extracts endpoint domains', () => {
 		const out = parseIntigritiScope({
-			domains: [{ endpoint: 'https://brand-kappa.com', type: 'url' }],
+			domains: [{ endpoint: 'https://brand-gamma.example.com', type: 'url' }],
 		});
-		expect(out[0]).toMatchObject({ domain: 'brand-kappa.com', assetType: 'url', platform: 'intigriti' });
+		expect(out[0]).toMatchObject({ domain: 'brand-gamma.example.com', assetType: 'url', platform: 'intigriti' });
 	});
 
 	it('extracts wildcard endpoints', () => {
 		const out = parseIntigritiScope({
-			domains: [{ endpoint: '*.brand-kappa.com', type: 'url' }],
+			domains: [{ endpoint: '*.brand-gamma.example.com', type: 'url' }],
 		});
-		expect(out[0]).toMatchObject({ isWildcard: true, domain: 'brand-kappa.com' });
+		expect(out[0]).toMatchObject({ isWildcard: true, domain: 'brand-gamma.example.com' });
 	});
 
 	it('respects tier=out_of_scope', () => {
@@ -153,14 +153,14 @@ describe('detectBountyScope (orchestrator)', () => {
 				status: 200,
 				body: {
 					structured_scopes: [
-						{ asset_identifier: 'brand-kappa.com', asset_type: 'URL', eligible_for_submission: true },
-						{ asset_identifier: '*.brand-kappa.com', asset_type: 'WILDCARD', eligible_for_submission: true },
+						{ asset_identifier: 'brand-gamma.example.com', asset_type: 'URL', eligible_for_submission: true },
+						{ asset_identifier: '*.brand-gamma.example.com', asset_type: 'WILDCARD', eligible_for_submission: true },
 					],
 				},
 			},
 		});
 
-		const result = await detectBountyScope('brand-kappa.com', {
+		const result = await detectBountyScope('brand-gamma.example.com', {
 			handles: { hackerone: 'marriott' },
 			fetcher,
 		});
@@ -168,11 +168,11 @@ describe('detectBountyScope (orchestrator)', () => {
 		expect(result.queryStatus).toBe('ok');
 		expect(result.coOwnedDomains).toHaveLength(1);
 		expect(result.coOwnedDomains[0]).toMatchObject({
-			domain: 'brand-kappa.com',
+			domain: 'brand-gamma.example.com',
 			confidence: 1,
 			evidence: { platform: 'hackerone', programHandle: 'marriott', assetType: 'url' },
 		});
-		expect(result.wildcardScopes).toEqual(['brand-kappa.com']);
+		expect(result.wildcardScopes).toEqual(['brand-gamma.example.com']);
 		expect(result.fetchedPlatforms).toEqual(['hackerone']);
 		expect(result.failedPlatforms).toEqual([]);
 		expect(StrictDiscoverySignalResultSchema.safeParse(result).success).toBe(true);
@@ -182,12 +182,12 @@ describe('detectBountyScope (orchestrator)', () => {
 		const fetcher = fetcherFromMap({
 			'https://hackerone.com/marriott.json': {
 				status: 200,
-				body: { structured_scopes: [{ asset_identifier: 'brand-kappa.com', asset_type: 'URL', eligible_for_submission: true }] },
+				body: { structured_scopes: [{ asset_identifier: 'brand-gamma.example.com', asset_type: 'URL', eligible_for_submission: true }] },
 			},
 			'https://bugcrowd.com/marriott.json': { status: 404, body: null },
 		});
 
-		const result = await detectBountyScope('brand-kappa.com', {
+		const result = await detectBountyScope('brand-gamma.example.com', {
 			handles: { hackerone: 'marriott', bugcrowd: 'marriott' },
 			fetcher,
 		});
@@ -199,7 +199,7 @@ describe('detectBountyScope (orchestrator)', () => {
 
 	it('returns failed when every platform errors', async () => {
 		const fetcher: BountyFetchFn = vi.fn(async () => ({ status: 503, body: null }));
-		const result = await detectBountyScope('brand-kappa.com', {
+		const result = await detectBountyScope('brand-gamma.example.com', {
 			handles: { hackerone: 'marriott', bugcrowd: 'marriott' },
 			fetcher,
 		});
@@ -210,7 +210,7 @@ describe('detectBountyScope (orchestrator)', () => {
 
 	it('returns failed when no handles are supplied (nothing to query)', async () => {
 		const fetcher: BountyFetchFn = vi.fn();
-		const result = await detectBountyScope('brand-kappa.com', { handles: {}, fetcher });
+		const result = await detectBountyScope('brand-gamma.example.com', { handles: {}, fetcher });
 		expect(result.queryStatus).toBe('failed');
 		expect(fetcher).not.toHaveBeenCalled();
 	});
@@ -219,14 +219,14 @@ describe('detectBountyScope (orchestrator)', () => {
 		const fetcher = fetcherFromMap({
 			'https://hackerone.com/marriott.json': {
 				status: 200,
-				body: { structured_scopes: [{ asset_identifier: 'brand-kappa.com', asset_type: 'URL', eligible_for_submission: true }] },
+				body: { structured_scopes: [{ asset_identifier: 'brand-gamma.example.com', asset_type: 'URL', eligible_for_submission: true }] },
 			},
 			'https://bugcrowd.com/marriott.json': {
 				status: 200,
-				body: { targets: [{ name: 'brand-kappa.com', category: 'website', in_scope: true }] },
+				body: { targets: [{ name: 'brand-gamma.example.com', category: 'website', in_scope: true }] },
 			},
 		});
-		const result = await detectBountyScope('brand-kappa.com', {
+		const result = await detectBountyScope('brand-gamma.example.com', {
 			handles: { hackerone: 'marriott', bugcrowd: 'marriott' },
 			fetcher,
 		});
@@ -257,7 +257,7 @@ describe('detectBountyScope (orchestrator)', () => {
 
 	it('never throws on fetcher rejection — surfaces failed', async () => {
 		const fetcher: BountyFetchFn = vi.fn(async () => null);
-		const result = await detectBountyScope('brand-kappa.com', {
+		const result = await detectBountyScope('brand-gamma.example.com', {
 			handles: { hackerone: 'marriott' },
 			fetcher,
 		});

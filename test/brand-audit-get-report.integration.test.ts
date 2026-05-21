@@ -148,7 +148,7 @@ describe('brandAuditGetReport', () => {
 		expect(summary?.metadata?.aggregate).toMatchObject({ totalCandidates: 7 });
 	});
 
-	// Dead-zone closure (2026-05-21 brand-zeta.com hang). See
+	// Dead-zone closure (2026-05-21 brand-beta.example.com hang). See
 	// brand-audit-status.integration.test.ts for the full rationale.
 	describe('dead-zone closure for stuck running targets', () => {
 		it('synthesises status=failed for a running target whose deadline has passed', async () => {
@@ -160,7 +160,7 @@ describe('brandAuditGetReport', () => {
 				audit: { id: 'aud-disney', owner_id: 'owner-abc', status: 'running', format: 'json' },
 				target: {
 					audit_id: 'aud-disney',
-					target: 'brand-zeta.com',
+					target: 'brand-beta.example.com',
 					status: 'running',
 					result_json: null,
 					error: null,
@@ -170,7 +170,7 @@ describe('brandAuditGetReport', () => {
 			});
 
 			const result = await brandAuditGetReport(
-				{ auditId: 'aud-disney', target: 'brand-zeta.com' },
+				{ auditId: 'aud-disney', target: 'brand-beta.example.com' },
 				'owner-abc',
 				{ db, now: () => now },
 			);
@@ -191,7 +191,7 @@ describe('brandAuditGetReport', () => {
 				audit: { id: 'aud-disney', owner_id: 'owner-abc', status: 'running', format: 'json' },
 				target: {
 					audit_id: 'aud-disney',
-					target: 'brand-zeta.com',
+					target: 'brand-beta.example.com',
 					status: 'running',
 					result_json: null,
 					error: null,
@@ -201,7 +201,7 @@ describe('brandAuditGetReport', () => {
 			});
 
 			await brandAuditGetReport(
-				{ auditId: 'aud-disney', target: 'brand-zeta.com' },
+				{ auditId: 'aud-disney', target: 'brand-beta.example.com' },
 				'owner-abc',
 				{ db, now: () => now },
 			);
@@ -211,7 +211,7 @@ describe('brandAuditGetReport', () => {
 					c.sql.includes('UPDATE brand_audit_targets') &&
 					c.sql.includes("status = 'failed'") &&
 					c.sql.includes("status = 'running'") &&
-					(c.binds as unknown[]).includes('brand-zeta.com'),
+					(c.binds as unknown[]).includes('brand-beta.example.com'),
 			);
 			expect(persistFlip).toBeDefined();
 		});

@@ -403,10 +403,10 @@ def test_all_tools():
 def test_concurrent_stress():
     print("\n=== TEST 6: Concurrent Stress — 20 Parallel Scans ===")
     domains = [
-        "google.com", "cloudflare.com", "stripe.com", "github.com", "microsoft.com",
+        "google.com", "cloudflare.com", "brand-theta.example.com", "github.com", "microsoft.com",
         "apple.com", "amazon.com", "netflix.com", "openai.com", "linear.app",
-        "tesla.com", "brand-lambda.com", "spotify.com", "slack.com", "discord.com",
-        "twitch.tv", "reddit.com", "paypal.com", "shopify.com", "zoom.us"
+        "tesla.com", "brand-iota.example.com", "spotify.com", "slack.com", "discord.com",
+        "twitch.tv", "reddit.com", "brand-eta.example.com", "shopify.com", "zoom.us"
     ]
 
     def scan_one(domain):

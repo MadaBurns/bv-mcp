@@ -4,7 +4,7 @@
  * Runtime-agnostic invariants for Shadow IT (a.k.a. registrar-sprawl) items
  * emitted into `reports/*-discovery-report.json#registrarSprawl[]`.
  *
- * A sprawl item is the customer-visible claim "this domain is owned by the
+ * A sprawl item is the user-visible claim "this domain is owned by the
  * brand but registered at an off-primary registrar" — the highest-value output
  * of `brand_audit_single`. The classification pipeline assembles each item from
  * the candidate finding's `metadata` + RDAP/WHOIS registrar enrichment. There

@@ -140,7 +140,7 @@ describe('brandAuditWatch — list', () => {
 		const { brandAuditWatch } = await import('../src/tools/brand-audit-watch');
 		const rows = [
 			{ id: 'w-1', owner_id: 'owner-1', domain: 'apple.com', interval: 'weekly', webhook_url: null, last_run_at: null, last_classification_hash: null, active: 1, created_at: 1 },
-			{ id: 'w-2', owner_id: 'owner-1', domain: 'brand-gamma.com', interval: 'monthly', webhook_url: 'https://hooks.example.com/a', last_run_at: 2, last_classification_hash: 'a'.repeat(64), active: 1, created_at: 2 },
+			{ id: 'w-2', owner_id: 'owner-1', domain: 'brand-zeta.example.com', interval: 'monthly', webhook_url: 'https://hooks.example.com/a', last_run_at: 2, last_classification_hash: 'a'.repeat(64), active: 1, created_at: 2 },
 		];
 		const { db } = makeMockD1({ existing: rows });
 		const deps = makeDeps({ db });
