@@ -547,6 +547,17 @@ export async function handleToolsCall(
 		const _interactive = isInteractiveClient(runtimeOptions?.clientType);
 
 		const executeDispatch = async (): Promise<McpToolResult> => {
+			// Tier gate: csc_complement view requires enterprise or owner tier.
+			if (name === 'brand_audit_single' || name === 'brand_audit_batch_start') {
+				const requestedView = (validatedArgs as { view?: string }).view;
+				if (requestedView === 'csc_complement') {
+					const tier = runtimeOptions?.authTier;
+					if (tier !== 'enterprise' && tier !== 'owner') {
+						return buildToolErrorResult("Invalid view: 'csc_complement' requires enterprise tier");
+					}
+				}
+			}
+
 			// Dispatch to the appropriate tool — check registry first, then special cases
 			const registeredTool = TOOL_REGISTRY[name];
 			if (registeredTool) {
