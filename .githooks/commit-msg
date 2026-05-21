@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Commit-msg hook: block sensitive customer/client names in public history.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+node scripts/repo-safety/scan-commit-message.mjs "$1"
