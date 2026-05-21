@@ -10,6 +10,7 @@ import {
 	reapStuckBrandAudits,
 	STUCK_TARGET_THRESHOLD_MS,
 	MAX_REAP_PER_TICK,
+	BRAND_AUDIT_TARGET_DEADLINE_MS,
 } from '../src/lib/brand-audit-reaper';
 
 interface MockOpts {
@@ -162,6 +163,24 @@ describe('reapStuckBrandAudits', () => {
 		expect(result.reapedTargets).toBe(0);
 		const counterTick = calls.find((c) => c.sql.includes('UPDATE brand_audits SET completed_targets'));
 		expect(counterTick).toBeUndefined();
+	});
+
+	it('uses a 10-minute STUCK_TARGET_THRESHOLD_MS (tightened from 15min after the 2026-05-21 disney dead-zone investigation)', () => {
+		// The consumer cap is 5 min. We previously waited 15min to reap, leaving
+		// a 5–15min dead zone. The read-path piggyback in `brand_audit_status`
+		// now handles polling customers near-instantly; the cron reaper still
+		// catches non-polled audits, but at 10min instead of 15min.
+		expect(STUCK_TARGET_THRESHOLD_MS).toBe(10 * 60 * 1000);
+	});
+
+	it('exposes BRAND_AUDIT_TARGET_DEADLINE_MS for the read-path piggyback (~7min)', () => {
+		// Consumer cap (300s) + 120s grace for queue delivery lag + cap-fire
+		// macrotask + D1 flip. Used by `brand_audit_status` /
+		// `brand_audit_get_report` to synthesise `failed` for targets the
+		// consumer can no longer save. MUST be < STUCK_TARGET_THRESHOLD_MS so
+		// the read path acts before the reaper.
+		expect(BRAND_AUDIT_TARGET_DEADLINE_MS).toBe(7 * 60 * 1000);
+		expect(BRAND_AUDIT_TARGET_DEADLINE_MS).toBeLessThan(STUCK_TARGET_THRESHOLD_MS);
 	});
 
 	it('continues reaping other rows when one flip throws', async () => {
