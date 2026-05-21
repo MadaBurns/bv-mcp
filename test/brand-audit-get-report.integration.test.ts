@@ -18,6 +18,7 @@ import { describe, it, expect } from 'vitest';
 interface RowMap {
 	audit?: Record<string, unknown> | null;
 	target?: Record<string, unknown> | null;
+	targets?: Record<string, unknown>[];
 }
 
 function makeMockD1(rows: RowMap) {
@@ -38,6 +39,9 @@ function makeMockD1(rows: RowMap) {
 				},
 				async all() {
 					calls.push({ sql, binds });
+					if (sql.includes('FROM brand_audit_targets')) {
+						return { results: rows.targets ?? [], success: true, meta: {} };
+					}
 					return { results: [], success: true, meta: {} };
 				},
 				async run() {
@@ -237,6 +241,51 @@ describe('brandAuditGetReport', () => {
 			);
 
 			// Legitimate in-flight audit still returns notReady, not synthesised-failed.
+			expect(result.findings.find((f) => f.metadata?.notReady === true)).toBeDefined();
+		});
+	});
+
+	describe('aggregate-mode dead-zone closure', () => {
+		it('renders status=failed and persists the batch flip when all targets synthesized failed', async () => {
+			const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
+			const { BRAND_AUDIT_TARGET_DEADLINE_MS } = await import('../src/lib/brand-audit-reaper');
+			const createdAt = 1_750_000_000_000;
+			const now = createdAt + BRAND_AUDIT_TARGET_DEADLINE_MS + 10_000;
+			const { db, calls } = makeMockD1({
+				audit: {
+					id: 'aud-deadzone',
+					owner_id: 'owner-abc',
+					status: 'running',
+					results_json: null,
+					format: 'json',
+				},
+				targets: [
+					{ status: 'running', created_at: createdAt },
+					{ status: 'running', created_at: createdAt },
+				],
+			});
+
+			const result = await brandAuditGetReport({ auditId: 'aud-deadzone' }, 'owner-abc', { db, now: () => now });
+			const summary = result.findings.find((f) => f.metadata?.summary === true);
+
+			expect(summary?.metadata?.status).toBe('failed');
+			expect(summary?.metadata?.aggregate).toBeNull();
+			const batchFlip = calls.find(
+				(c) =>
+					c.sql.includes('UPDATE brand_audits') &&
+					(c.binds as unknown[])[0] === 'failed',
+			);
+			expect(batchFlip).toBeDefined();
+		});
+
+		it('still returns notReady when no targets exist yet (audit just queued, consumer not started)', async () => {
+			const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
+			const { db } = makeMockD1({
+				audit: { id: 'aud-fresh', owner_id: 'owner-abc', status: 'queued', results_json: null, format: 'json' },
+				targets: [],
+			});
+
+			const result = await brandAuditGetReport({ auditId: 'aud-fresh' }, 'owner-abc', { db });
 			expect(result.findings.find((f) => f.metadata?.notReady === true)).toBeDefined();
 		});
 	});

@@ -94,7 +94,6 @@ export async function brandAuditStatus(
 	}
 
 	const now = (deps.now ?? Date.now)();
-	const progress = `${audit.completed_targets}/${audit.total_targets}`;
 
 	// Dead-zone closure (2026-05-21 brand-zeta.com hang). A `running` target whose
 	// row is older than BRAND_AUDIT_TARGET_DEADLINE_MS is past the point where
@@ -161,6 +160,39 @@ export async function brandAuditStatus(
 		completed: renderedTargets.filter((t) => t.status === 'completed').length,
 		failed: renderedTargets.filter((t) => t.status === 'failed').length,
 	};
+
+	// Batch-level aggregation (2026-05-21 production fix). When read-path
+	// synthesis has flipped every target out of queued/running, the
+	// `brand_audits` row's `status` and `completed_targets` are stale because
+	// the orchestrator that would have updated them was killed by the same
+	// consumer cap that stranded the targets. Recompute the rendered batch
+	// state and persist (best-effort) so subsequent reads, get_report's
+	// aggregate mode, and the cron reaper all see consistent state. Without
+	// this the customer polling `brand_audit_status` sees per-target failures
+	// inside `targetStatusCounts` but a top-level `status: 'running'` forever.
+	let renderedAuditStatus: BrandAuditStatus = audit.status;
+	let renderedCompletedTargets = audit.completed_targets;
+	let renderedAuditCompletedAt = audit.completed_at;
+	const allTerminal =
+		targets.length > 0 && targetStatusCounts.queued === 0 && targetStatusCounts.running === 0;
+	const batchStillProvisional = audit.status === 'queued' || audit.status === 'running';
+	if (allTerminal && batchStillProvisional) {
+		renderedCompletedTargets = targetStatusCounts.completed;
+		renderedAuditStatus = targetStatusCounts.completed > 0 ? 'completed' : 'failed';
+		renderedAuditCompletedAt = now;
+		try {
+			await deps.db
+				.prepare(
+					"UPDATE brand_audits SET status = ?, completed_targets = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status IN ('queued', 'running')",
+				)
+				.bind(renderedAuditStatus, renderedCompletedTargets, renderedAuditCompletedAt, now, audit.id)
+				.run();
+		} catch {
+			// Best-effort — next reader retries the flip.
+		}
+	}
+
+	const progress = `${renderedCompletedTargets}/${audit.total_targets}`;
 	const ageMs = Math.max(0, now - audit.created_at);
 	const updatedAgeMs = Math.max(0, now - audit.updated_at);
 	const warnings: string[] = [];
@@ -169,20 +201,20 @@ export async function brandAuditStatus(
 	}
 	const summary = createFinding(
 		CATEGORY,
-		`Brand audit ${auditId}: ${audit.status} (${progress})`,
+		`Brand audit ${auditId}: ${renderedAuditStatus} (${progress})`,
 		'info',
-		`status=${audit.status} progress=${progress} format=${audit.format} created=${new Date(audit.created_at).toISOString()} updatedAgeMs=${updatedAgeMs}`,
+		`status=${renderedAuditStatus} progress=${progress} format=${audit.format} created=${new Date(audit.created_at).toISOString()} updatedAgeMs=${updatedAgeMs}`,
 		{
 			summary: true,
 			auditId: audit.id,
-			status: audit.status,
+			status: renderedAuditStatus,
 			progress,
-			completed: audit.completed_targets,
+			completed: renderedCompletedTargets,
 			total: audit.total_targets,
 			format: audit.format,
 			createdAt: audit.created_at,
 			updatedAt: audit.updated_at,
-			completedAt: audit.completed_at,
+			completedAt: renderedAuditCompletedAt,
 			ageMs,
 			updatedAgeMs,
 			targetStatusCounts,
