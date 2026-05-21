@@ -11,15 +11,14 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const range = process.argv[2] ?? '--all';
 
 const basePolicy = JSON.parse(readFileSync(join(scriptDir, 'policy.json'), 'utf8'));
+// Survey-only: extend policy.forbiddenClientDomains with Tier-1 brands that
+// shouldn't gate commits (legitimate marketing/DNS-example usage) but ARE
+// worth surfacing during a history sweep. The gating rule reads policy.json
+// directly and stays narrow.
+const SURVEY_ONLY_DOMAINS = ['amazon.com', 'apple.com', 'github.com', 'google.com', 'microsoft.com'];
 const policy = normalizePolicy({
 	...basePolicy,
-	forbiddenClientDomains: [
-		'amazon.com', 'apple.com', 'brand-eta.com', 'brand-zeta.com',
-		'brand-beta.com', 'brand-beta.com.au', 'github.com', 'google.com',
-		'brand-iota.com', 'brand-kappa.com', 'brand-theta.com',
-		'microsoft.com', 'brand-gamma.com', 'paypal.com', 'stripe.com',
-		'brand-lambda.com', 'brand-mu.com', 'brand-mu.com.au', 'brand-alpha.com',
-	],
+	forbiddenClientDomains: [...(basePolicy.forbiddenClientDomains ?? []), ...SURVEY_ONLY_DOMAINS],
 });
 
 const SEP = '<<<<COMMIT-SEP>>>>';
