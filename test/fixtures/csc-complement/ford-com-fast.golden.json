@@ -1,0 +1,25 @@
+{
+	"viewVersion": 1,
+	"anchor": {
+		"apex": "ford.com",
+		"primaryRegistrar": { "family": "csc corporate domains", "name": "CSC Corporate Domains, Inc.", "ianaId": "299" },
+		"managedByCsc": true
+	},
+	"registrarPortfolio": {
+		"totalApexes": 4,
+		"byFamily": [
+			{ "family": "csc corporate domains", "count": 3, "percent": 75, "exampleApexes": ["ford.com", "ford.com.au", "ford.de"] },
+			{ "family": "godaddy", "count": 1, "percent": 25, "exampleApexes": ["fordcorp.com"] }
+		],
+		"offPortfolioCount": 1,
+		"offPortfolioApexes": ["fordcorp.com"]
+	},
+	"shadowItHighlights": [
+		{ "apex": "fordcorp.com", "registrar": "GoDaddy.com, LLC", "combinedConfidence": 0.8, "reasons": ["off-primary"], "evidence": "TXT verification reuse" }
+	],
+	"defensiveRegistrations": { "count": 0, "examples": [], "enrichmentStatus": "ready" },
+	"postureSnapshot": { "stage": "pending", "apexesScanned": 0, "apexesTotal": 0, "apexes": [], "medianGrade": null, "distribution": {} },
+	"deepScan": { "stage": "pending", "apexesScanned": 0, "apexesTotal": 0, "danglingDns": [], "danglingDnsTotal": 0, "subdomainInventoryByApex": {} },
+	"generatedAt": "2026-05-22T14:32:00Z",
+	"reportId": "csc_rpt_abcdef123"
+}
