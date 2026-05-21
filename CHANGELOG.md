@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.23.0] - 2026-05-21
+
+### Added
+- **CSC registrar family expansion** — `Corporation Service Company`, `CSC Corporate Domains`, `CSC Digital Brand Services`, `CSC Global`, and their regional subsidiaries (AU/CA/Malaysia) now collapse to a single `CSC` family in both `src/lib/registrar-identity.ts` (off-primary gate) and `src/lib/brand-classification.ts` (analyst reason string). Verified against brand-beta.com.au, brand-iota.com.au, brand-mu.com.au — previously false-positively flagged as shadowIt.
+- **Defensive typosquat label** (`src/lib/brand-defensive-registration.ts`) — candidates within Damerau-Levenshtein 2 of the target with minimal operational infrastructure (no MX, parked-NS apex, or HTTP redirect to target) are annotated with `defensive: true` + `defensiveReason`. Surfaces in markdown and PDF rendering. Bucket assignment unchanged. Heuristic abstains in production until candidate MX + HTTP-redirect enrichment is wired through discovery (TODO marked).
+
+### Fixed
+- **Consumer-cap → reaper dead-zone** — audits whose worker hit the 5-min consumer cap previously sat in `running` until the 15-min cron reaper. Read-path piggyback on `brand_audit_status` and `brand_audit_get_report` now synthesises `failed` for running rows past a 7-min deadline (anchored on existing `created_at` column — no schema migration). Cron reaper threshold tightened from 15min → 10min as the safety net for non-polled audits.
+
+### Tests
+- `test/registrar-identity.test.ts` + `src/lib/brand-classification.test.ts` — CSC family normalisation and bucket-level integration assertions.
+- `test/brand-defensive-registration.test.ts` — 22 unit cases (distance, parking NS detection, signal precedence).
+- `test/brand-audit-{status,get-report}.integration.test.ts` — dead-zone closure (synthesised failed, persisted UPDATE, in-deadline negative, D1 write failure swallow).
+
 ## [2.22.0] - 2026-05-21
 
 ### Added
