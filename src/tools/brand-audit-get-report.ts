@@ -195,11 +195,54 @@ export async function brandAuditGetReport(
 		]);
 	}
 
-	if (auditRow.status !== 'completed' && auditRow.status !== 'failed') {
+	// Aggregate-mode dead-zone closure (2026-05-21 production fix). Mirror the
+	// per-target closure: when every target is terminal-via-synthesis but the
+	// orchestrator never wrote the batch row, the audit row's `status` stays
+	// 'running' forever and the customer is told to keep polling. Fetch
+	// targets, decide if the batch is in fact terminal, persist (best-effort)
+	// and treat the audit as terminal in this response. We don't synthesize
+	// `results_json` itself — the orchestrator's aggregate report data is
+	// genuinely lost when it dies mid-flight. The customer can fall back to
+	// per-target gets to recover the data we have.
+	let renderedAuditStatus: BrandAuditStatus = auditRow.status;
+	if (auditRow.status === 'queued' || auditRow.status === 'running') {
+		const now = (deps.now ?? Date.now)();
+		const targetRows = await deps.db
+			.prepare(
+				'SELECT audit_id, target, status, created_at, completed_at FROM brand_audit_targets WHERE audit_id = ?',
+			)
+			.bind(auditId)
+			.all<{ status: BrandAuditStatus; created_at: number; result_json?: string | null }>();
+		const rows = targetRows.results ?? [];
+		const counts = {
+			queued: rows.filter((r) => r.status === 'queued').length,
+			running: rows.filter((r) => r.status === 'running' && now - r.created_at <= BRAND_AUDIT_TARGET_DEADLINE_MS).length,
+			stuck: rows.filter((r) => r.status === 'running' && now - r.created_at > BRAND_AUDIT_TARGET_DEADLINE_MS).length,
+			completed: rows.filter((r) => r.status === 'completed').length,
+			failed: rows.filter((r) => r.status === 'failed').length,
+		};
+		const allTerminal = rows.length > 0 && counts.queued === 0 && counts.running === 0;
+		if (allTerminal) {
+			const completedCount = counts.completed;
+			renderedAuditStatus = completedCount > 0 ? 'completed' : 'failed';
+			try {
+				await deps.db
+					.prepare(
+						"UPDATE brand_audits SET status = ?, completed_targets = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status IN ('queued', 'running')",
+					)
+					.bind(renderedAuditStatus, completedCount, now, now, auditId)
+					.run();
+			} catch {
+				// Best-effort — next reader retries the flip.
+			}
+		}
+	}
+
+	if (renderedAuditStatus !== 'completed' && renderedAuditStatus !== 'failed') {
 		return errorResult(
 			'notReady',
-			`Audit ${auditId} is currently ${auditRow.status}. Poll again with brand_audit_status.`,
-			{ auditId, currentStatus: auditRow.status },
+			`Audit ${auditId} is currently ${renderedAuditStatus}. Poll again with brand_audit_status.`,
+			{ auditId, currentStatus: renderedAuditStatus },
 		);
 	}
 
@@ -207,13 +250,13 @@ export async function brandAuditGetReport(
 	return buildCheckResult(CATEGORY, [
 		createFinding(
 			CATEGORY,
-			`Brand audit ${auditId} aggregate: ${auditRow.status}`,
+			`Brand audit ${auditId} aggregate: ${renderedAuditStatus}`,
 			'info',
-			`status=${auditRow.status} format=${auditRow.format}`,
+			`status=${renderedAuditStatus} format=${auditRow.format}`,
 			{
 				summary: true,
 				auditId,
-				status: auditRow.status,
+				status: renderedAuditStatus,
 				format: auditRow.format,
 				aggregate,
 			},
