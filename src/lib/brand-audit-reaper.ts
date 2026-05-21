@@ -31,8 +31,37 @@
  * cron interval.
  */
 
-/** Targets in `running` longer than this are definitely stuck. */
-export const STUCK_TARGET_THRESHOLD_MS = 15 * 60 * 1000;
+/**
+ * Targets in `running` longer than this are definitely stuck — cron-tick reaper
+ * cutoff. Tightened from 15min → 10min on 2026-05-21 after the brand-zeta.com
+ * dead-zone investigation: the 300s consumer cap, plus generous grace for the
+ * cap-fire macrotask + final D1 flip, plus a couple of cron-tick safety
+ * margins, fits comfortably under 10 minutes. The read-path piggyback in
+ * `brand_audit_status` (see {@link BRAND_AUDIT_TARGET_DEADLINE_MS}) handles
+ * the polling-customer case near-instantly; this constant is the backstop for
+ * audits nobody is polling (cron watches, fire-and-forget enqueues).
+ */
+export const STUCK_TARGET_THRESHOLD_MS = 10 * 60 * 1000;
+
+/**
+ * Per-target running-budget deadline used by the read path
+ * (`brand_audit_status`, `brand_audit_get_report`) to synthesise `failed` for
+ * targets whose consumer could no longer self-flip. Set to the consumer cap
+ * (300s) plus 120s of grace — accounts for:
+ *   1. Cloudflare Queue delivery lag between INSERT (`created_at`) and the
+ *      consumer's running-flip. Typically sub-second in prod, but bursts can
+ *      push 30–60s during redeliveries.
+ *   2. Cap-fire macrotask + D1 catch-handler UPDATE when microtasks are
+ *      partially starved.
+ *
+ * 7 minutes leaves a buffer wide enough that a legitimate 5-minute audit
+ * isn't truncated by a polling read at the cliff. Anything older is the
+ * disney/walmart-class hang where the worker was killed before the catch ran.
+ *
+ * Must remain strictly less than {@link STUCK_TARGET_THRESHOLD_MS} so the read
+ * path closes the dead zone before the cron reaper would.
+ */
+export const BRAND_AUDIT_TARGET_DEADLINE_MS = 7 * 60 * 1000;
 
 /** Hard cap on reaps per cron tick — prevents runaway D1 spend on infra incidents. */
 export const MAX_REAP_PER_TICK = 50;

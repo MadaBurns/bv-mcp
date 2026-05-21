@@ -168,10 +168,19 @@ export function normalizeRegistrar(raw: string): string {
 	if (/com\s*laude|nom[ -]?iq/.test(lower)) return 'Com Laude';
 	if (/safenames/.test(lower)) return 'SafeNames';
 	// CSC Corporate Domains operates dozens of regional entities (CSC US, CSC
-	// Canada, CSC UK, etc.) all sharing infra. Match the family, not each
-	// regional variant. Legacy regex used 'BrandAudit' as a placeholder name —
-	// see test for the production incident that surfaced this.
+	// Canada, CSC UK, CSC Digital Brand Services Malaysia, Corporation Service
+	// Company (Aust) Pty Ltd, etc.) all sharing infra. Match the family, not
+	// each regional variant. Legacy regex used 'BrandAudit' as a placeholder
+	// name — see test for the production incident that surfaced this.
+	// Regression: 2026-05 CSC Global verification of brand-beta.com.au /
+	// brand-iota.com.au / brand-mu.com.au showed the AU subsidiary string
+	// ("Corporation Service Company (Aust) Pty Ltd") slipping through and
+	// driving false-positive shadowIt findings.
 	if (/corporate\s*domains/.test(lower)) return 'CSC';
+	if (/corporation\s+service\s+company/.test(lower)) return 'CSC';
+	if (/csc\s+digital\s+brand\s+services?/.test(lower)) return 'CSC';
+	if (/(?:^|\b)csc\s+global(?:\b|$)/.test(lower)) return 'CSC';
+	if (/(?:^|\b)cscglobal\.com(?:\b|$)/.test(lower)) return 'CSC';
 	if (/cloudflare/.test(lower)) return 'Cloudflare';
 	if (/tucows/.test(lower)) return 'Tucows';
 	if (/godaddy/.test(lower)) return 'GoDaddy';
