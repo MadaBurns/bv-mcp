@@ -1257,14 +1257,14 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(429);
 		});
 
-		it('unauthenticated scan_domain requests are capped at 5/day', async () => {
+		it('unauthenticated scan_domain requests are capped at 25/day', async () => {
 			vi.useFakeTimers();
 			vi.setSystemTime(new Date('2026-03-07T00:00:00Z'));
 
 			try {
 			const sessionId = await initSession();
 
-			for (let i = 0; i < 5; i++) {
+			for (let i = 0; i < 25; i++) {
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
@@ -1304,13 +1304,13 @@ describe('DNS Security MCP Server', () => {
 			const blockedResponse = await worker.fetch(blockedRequest, env, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(blockedResponse.status).toBe(429);
-			expect(blockedResponse.headers.get('x-quota-limit')).toBe('5');
+			expect(blockedResponse.headers.get('x-quota-limit')).toBe('25');
 			expect(blockedResponse.headers.get('x-quota-remaining')).toBe('0');
 
 			const body = (await blockedResponse.json()) as { error: { code: number; message: string } };
 			expect(body.error.code).toBe(-32029);
 			expect(body.error.message).toContain('scan_domain');
-			expect(body.error.message).toContain('5 requests per day');
+			expect(body.error.message).toContain('25 requests per day');
 			} finally {
 				vi.useRealTimers();
 			}

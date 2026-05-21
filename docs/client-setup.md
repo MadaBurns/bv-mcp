@@ -416,7 +416,7 @@ Static API keys (via `?api_key=` or `Authorization: Bearer`) authenticate as a s
 
 | Tier | Quota | Use Case | Source |
 |---|---|---|---|
-| free | 5 scans/day, 3 concurrent | Unauthenticated, public testing | Per-IP rate limit (no key) |
+| free | 25 scans/day, 3 concurrent | Unauthenticated, public testing (e.g. Claude.ai web) | Per-IP rate limit (no key) |
 | **agent** | **500 scans/day, 5 concurrent** | **Team automation, CI/CD scripts** | **`BV_API_KEY` environment variable** |
 | developer | 500 scans/day, 10 concurrent | OAuth + MCP Developer plan | Stripe subscription (bv-web) |
 | enterprise | 10,000 scans/day, 25 concurrent | OAuth + MCP Enterprise plan | Stripe subscription (bv-web) |
