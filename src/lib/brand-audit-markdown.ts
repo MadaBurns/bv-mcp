@@ -70,7 +70,7 @@ function isVendorDependency(f: Finding): boolean {
  * Render a `(defensive registration)` suffix for a candidate finding when
  * the pipeline stamped `metadata.defensive === true`. Defensive candidates
  * are typosquat-shaped domains the brand owns on purpose (e.g.
- * `masterard.com` next to `brand-theta.com`) — without a label customers
+ * `brandepsiln.com` next to `brandepsilon.com`) — without a label customers
  * can't visually distinguish them from operational properties. We label,
  * we never re-bucket.
  */

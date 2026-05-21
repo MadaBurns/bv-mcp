@@ -29,13 +29,13 @@ import {
 
 /**
  * A canonical valid sprawl item — copied from the structural shape of every
- * historic fixture entry (e.g. `reports/brand-theta.com-discovery-report.json#registrarSprawl[0]`).
+ * historic fixture entry (e.g. `reports/brand-epsilon.example.com-discovery-report.json#registrarSprawl[0]`).
  * Tests start from this and mutate one field at a time to keep the failure
  * cause unambiguous.
  */
 function validItem(overrides: Partial<SprawlItemLike> = {}): SprawlItemLike {
 	return {
-		domain: 'mastercard.cz',
+		domain: 'brandepsilon.cz',
 		bucket: 'shadowIt',
 		relationshipType: 'owned_off_primary_registrar',
 		evidence: 'Markov Variant, NS Match, SPF Include (1.00)',

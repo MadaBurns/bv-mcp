@@ -30,15 +30,15 @@ function mockDohCname(byDomain: Record<string, string>): typeof fetch {
 describe('detectCnameAlignment', () => {
 	it('candidate apex CNAMEs to seed apex → consolidated, conf >= 0.9', async () => {
 		const dohFn = mockDohCname({
-			'nike.de': 'brand-gamma.com.',
+			'brand-zeta-de.example.net': 'brand-zeta.example.com.',
 		});
-		const result = await detectCnameAlignment('brand-gamma.com', {
-			candidateDomains: ['nike.de'],
+		const result = await detectCnameAlignment('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-de.example.net'],
 			dohFn,
 		});
 		expect(result.queryStatus).toBe('ok');
 		expect(result.coOwnedDomains).toHaveLength(1);
-		expect(result.coOwnedDomains[0].domain).toBe('nike.de');
+		expect(result.coOwnedDomains[0].domain).toBe('brand-zeta-de.example.net');
 		expect(result.coOwnedDomains[0].confidence).toBeGreaterThanOrEqual(0.9);
 	});
 
@@ -54,13 +54,13 @@ describe('detectCnameAlignment', () => {
 	});
 
 	it('candidate CNAMEs through CDN to seed → consolidated (transitive)', async () => {
-		// nike.de → brand-gamma.com.edgesuite.net → brand-gamma.com (resolves via edge)
+		// brand-zeta-de.example.net → brand-zeta.example.com.edgesuite.net → brand-zeta.example.com (resolves via edge)
 		const dohFn = mockDohCname({
-			'nike.de': 'brand-gamma.com.edgesuite.net.',
-			'brand-gamma.com.edgesuite.net': 'brand-gamma.com.',
+			'brand-zeta-de.example.net': 'brand-zeta.example.com.edgesuite.net.',
+			'brand-zeta.example.com.edgesuite.net': 'brand-zeta.example.com.',
 		});
-		const result = await detectCnameAlignment('brand-gamma.com', {
-			candidateDomains: ['nike.de'],
+		const result = await detectCnameAlignment('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-de.example.net'],
 			dohFn,
 		});
 		expect(result.coOwnedDomains).toHaveLength(1);
@@ -68,10 +68,10 @@ describe('detectCnameAlignment', () => {
 
 	it('candidate CNAMEs to unrelated host → no signal', async () => {
 		const dohFn = mockDohCname({
-			'nike.xyz': 'parked.godaddy.com.',
+			'brand-zeta-variant.example.net': 'parked.godaddy.com.',
 		});
-		const result = await detectCnameAlignment('brand-gamma.com', {
-			candidateDomains: ['nike.xyz'],
+		const result = await detectCnameAlignment('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-variant.example.net'],
 			dohFn,
 		});
 		expect(result.coOwnedDomains).toHaveLength(0);
@@ -79,8 +79,8 @@ describe('detectCnameAlignment', () => {
 
 	it('no CNAME on candidate → no signal', async () => {
 		const dohFn = mockDohCname({});
-		const result = await detectCnameAlignment('brand-gamma.com', {
-			candidateDomains: ['nike.de'],
+		const result = await detectCnameAlignment('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-de.example.net'],
 			dohFn,
 		});
 		expect(result.coOwnedDomains).toHaveLength(0);
@@ -91,7 +91,7 @@ describe('detectCnameAlignment', () => {
 			'a.com': 'b.com.',
 			'b.com': 'a.com.',
 		});
-		const result = await detectCnameAlignment('brand-gamma.com', {
+		const result = await detectCnameAlignment('brand-zeta.example.com', {
 			candidateDomains: ['a.com'],
 			dohFn,
 		});
@@ -99,13 +99,13 @@ describe('detectCnameAlignment', () => {
 		expect(result.coOwnedDomains).toHaveLength(0);
 	});
 
-	it('CNAME to CDN edge with seed-rooted pattern (e.g. brand-gamma.com.akadns.net) → consolidated with medium conf', async () => {
+	it('CNAME to CDN edge with seed-rooted pattern (e.g. brand-zeta.example.com.akadns.net) → consolidated with medium conf', async () => {
 		// Direct edge alias matching seed name — strong heuristic
 		const dohFn = mockDohCname({
-			'nike.de': 'brand-gamma.com.akadns.net.',
+			'brand-zeta-de.example.net': 'brand-zeta.example.com.akadns.net.',
 		});
-		const result = await detectCnameAlignment('brand-gamma.com', {
-			candidateDomains: ['nike.de'],
+		const result = await detectCnameAlignment('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-de.example.net'],
 			dohFn,
 		});
 		expect(result.coOwnedDomains).toHaveLength(1);

@@ -364,7 +364,7 @@ export async function processBrandAuditMessage(
 			// status back to 'completed' (the atomic claim earlier flipped it
 			// completed→running; without restoring it the row sits stuck in
 			// 'running' until the cron reaper sweeps at 15min). Surfaced by audit
-			// c487486a-brand-theta.com on 2026-05-19.
+			// synthetic-audit-brandepsilon.com on 2026-05-19.
 			await deps.db
 				.prepare(
 					"UPDATE brand_audit_targets SET status = 'completed', error = ?, completed_at = ? WHERE audit_id = ? AND target = ?",

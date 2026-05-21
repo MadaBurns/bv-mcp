@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
 	formatFindings,
 	normalizePolicy,
+	scanCommitMessage,
 	scanPathForForbiddenSurface,
 	scanTextForSensitiveSurface,
 	shouldScanFile,
@@ -74,8 +75,12 @@ function blobText(commit, file) {
 	}
 }
 
+function commitMessage(commit) {
+	return git(['log', '-1', '--pretty=format:%s%n%b', commit]);
+}
+
 function scanCommit(commit) {
-	const findings = [];
+	const findings = scanCommitMessage(commitMessage(commit), policy);
 	for (const file of changedFilesForCommit(commit)) {
 		findings.push(...scanPathForForbiddenSurface(file, policy));
 		if (shouldScanFile(file, policy)) {

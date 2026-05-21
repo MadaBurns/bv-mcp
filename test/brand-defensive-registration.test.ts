@@ -3,8 +3,8 @@
 /**
  * Unit tests for the defensive-registration heuristic.
  *
- * Real-world motivation: brand-audit PDF for brand-theta.com shipped
- * `masterard.com` (a defensive typosquat Mastercard owns on purpose) inside
+ * Synthetic regression: brand-audit PDF for brandepsilon.com rendered
+ * `brandepsiln.com` (a defensive typosquat Brand Epsilon owns on purpose) inside
  * the `consolidated` bucket alongside operational properties, with no
  * visual distinction between the two. The heuristic flags candidates that
  * are (a) close in label-distance to the target AND (b) show only minimal
@@ -22,11 +22,11 @@ import {
 
 describe('damerauLevenshtein', () => {
 	it('returns 0 for identical strings', () => {
-		expect(damerauLevenshtein('mastercard', 'mastercard')).toBe(0);
+		expect(damerauLevenshtein('brandepsilon', 'brandepsilon')).toBe(0);
 	});
 
-	it('returns 1 for a single deletion (masterard vs mastercard)', () => {
-		expect(damerauLevenshtein('masterard', 'mastercard')).toBe(1);
+	it('returns 1 for a single deletion (brandepsiln vs brandepsilon)', () => {
+		expect(damerauLevenshtein('brandepsiln', 'brandepsilon')).toBe(1);
 	});
 
 	it('returns 1 for a single insertion (gooogle vs google)', () => {
@@ -39,9 +39,9 @@ describe('damerauLevenshtein', () => {
 		expect(damerauLevenshtein('appel', 'apple')).toBe(1);
 	});
 
-	it('returns 2 for two edits (mstrcrd vs mastercard)', () => {
+	it('returns 2 for two edits (brndepln vs brandepsilon)', () => {
 		// 3 deletions actually; check that distance grows
-		expect(damerauLevenshtein('mstrcrd', 'mastercard')).toBeGreaterThanOrEqual(3);
+		expect(damerauLevenshtein('brndepln', 'brandepsilon')).toBeGreaterThanOrEqual(3);
 	});
 
 	it('handles empty strings', () => {
@@ -51,7 +51,7 @@ describe('damerauLevenshtein', () => {
 	});
 
 	it('large distance for unrelated words', () => {
-		expect(damerauLevenshtein('bigbank', 'mastercard')).toBeGreaterThan(2);
+		expect(damerauLevenshtein('bigbank', 'brandepsilon')).toBeGreaterThan(2);
 	});
 });
 
@@ -83,10 +83,10 @@ describe('isParkingNsHost', () => {
 });
 
 describe('evaluateDefensiveRegistration', () => {
-	it('flags masterard.com vs brand-theta.com when NS is parked (parked-ns)', () => {
+	it('flags brandepsiln.com vs brandepsilon.com when NS is parked (parked-ns)', () => {
 		const result = evaluateDefensiveRegistration({
-			candidateDomain: 'masterard.com',
-			targetDomain: 'brand-theta.com',
+			candidateDomain: 'brandepsiln.com',
+			targetDomain: 'brandepsilon.com',
 			nsHosts: ['ns1.sedoparking.com', 'ns2.sedoparking.com'],
 		});
 		expect(result.defensive).toBe(true);
@@ -94,10 +94,10 @@ describe('evaluateDefensiveRegistration', () => {
 		expect(result.reason).toBe('parked-ns');
 	});
 
-	it('flags masterard.com vs brand-theta.com when MX is absent (no-mx)', () => {
+	it('flags brandepsiln.com vs brandepsilon.com when MX is absent (no-mx)', () => {
 		const result = evaluateDefensiveRegistration({
-			candidateDomain: 'masterard.com',
-			targetDomain: 'brand-theta.com',
+			candidateDomain: 'brandepsiln.com',
+			targetDomain: 'brandepsilon.com',
 			mxRecords: [],
 			nsHosts: ['some.unknown.ns.example'],
 		});
@@ -136,10 +136,10 @@ describe('evaluateDefensiveRegistration', () => {
 		expect(result.reason).toBeUndefined();
 	});
 
-	it('does NOT flag bigbank.com vs brand-theta.com (label distance too high)', () => {
+	it('does NOT flag bigbank.com vs brandepsilon.com (label distance too high)', () => {
 		const result = evaluateDefensiveRegistration({
 			candidateDomain: 'bigbank.com',
-			targetDomain: 'brand-theta.com',
+			targetDomain: 'brandepsilon.com',
 			mxRecords: [],
 			nsHosts: ['ns1.sedoparking.com'],
 		});
@@ -148,11 +148,11 @@ describe('evaluateDefensiveRegistration', () => {
 	});
 
 	it('compares second-level label only, not full TLD', () => {
-		// `mastercard.co.uk` should compare `mastercard` against `mastercard`,
-		// not `mastercard.co.uk` vs `brand-theta.com`.
+		// `brandepsilon.co.uk` should compare `brandepsilon` against `brandepsilon`,
+		// not `brandepsilon.co.uk` vs `brandepsilon.com`.
 		const result = evaluateDefensiveRegistration({
-			candidateDomain: 'mastercard.co.uk',
-			targetDomain: 'brand-theta.com',
+			candidateDomain: 'brandepsilon.co.uk',
+			targetDomain: 'brandepsilon.com',
 			nsHosts: ['ns1.sedoparking.com'],
 		});
 		// Labels are identical → distance 0 ≤ 2 → defensive when minimal infra.
@@ -161,8 +161,8 @@ describe('evaluateDefensiveRegistration', () => {
 
 	it('does NOT flag when no minimal-infra signal supplied (heuristic abstains)', () => {
 		const result = evaluateDefensiveRegistration({
-			candidateDomain: 'masterard.com',
-			targetDomain: 'brand-theta.com',
+			candidateDomain: 'brandepsiln.com',
+			targetDomain: 'brandepsilon.com',
 			// No mxRecords / nsHosts / httpRedirectLocation supplied.
 		});
 		expect(result.defensive).toBe(false);
@@ -181,21 +181,21 @@ describe('evaluateDefensiveRegistration', () => {
 	it('handles invalid candidate / target labels gracefully', () => {
 		const result = evaluateDefensiveRegistration({
 			candidateDomain: '',
-			targetDomain: 'brand-theta.com',
+			targetDomain: 'brandepsilon.com',
 			nsHosts: ['ns1.sedoparking.com'],
 		});
 		expect(result.defensive).toBe(false);
 	});
 
 	it('still flags when distance is exactly 2', () => {
-		// `mstercard` vs `mastercard` — single deletion, distance 1. Pick a
+		// `brandepsil` vs `brandepsilon` — single deletion, distance 1. Pick a
 		// distance-2 case: drop two chars.
 		const result = evaluateDefensiveRegistration({
-			candidateDomain: 'mstrcard.com',
-			targetDomain: 'brand-theta.com',
+			candidateDomain: 'brandepsil.com',
+			targetDomain: 'brandepsilon.com',
 			nsHosts: ['ns1.sedoparking.com'],
 		});
-		// 'mstrcard' vs 'mastercard' — distance 2 (two insertions).
+		// 'brandepsil' vs 'brandepsilon' — distance 2 (two insertions).
 		expect(result.defensive).toBe(true);
 	});
 });

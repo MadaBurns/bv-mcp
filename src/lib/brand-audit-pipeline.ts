@@ -394,7 +394,7 @@ function scoreAlertContextFromObservations(
  *
  * TODO(defensive): wire a candidate MX + HTTP HEAD enrichment pass for
  * label-distance≤2 candidates so the `no-mx` / `redirect-to-target`
- * branches can fire on the customer-visible PDF path. Today only the NS
+ * branches can fire on the user-visible PDF path. Today only the NS
  * route lights up automatically.
  */
 function nsHostsFromObservations(observations: BrandEvidenceObservation[] | undefined): string[] | undefined {
@@ -881,7 +881,7 @@ export async function runBrandAuditPipeline(
 		}
 		// Sprawl quality gate — if the classifier routed to shadowIt /
 		// owned_off_primary_registrar, the downstream sidecar will materialise this
-		// as a customer-visible "Real Shadow IT" claim with $-denominated ARR math
+		// as a user-visible "Real Shadow IT" claim with $-denominated ARR math
 		// (test/helpers/discovery-report-model.ts builds registrarSprawl[] +
 		// arrOpportunity from these). The classifier already filters on confidence
 		// and signal mix, but nothing further upstream prevents a regression
@@ -945,8 +945,8 @@ export async function runBrandAuditPipeline(
 		const graphEvidence = graphEvidenceFromObservations(evidenceObservations);
 		// Defensive-registration label. We do NOT change `classification.bucket`;
 		// this is a metadata annotation the renderers consume to mark close-typo
-		// candidates with minimal infrastructure (e.g. `masterard.com` parked at
-		// sedoparking next to `brand-theta.com`). Pure data-only call — the
+		// candidates with minimal infrastructure (e.g. `brandepsiln.com` parked at
+		// sedoparking next to `brandepsilon.com`). Pure data-only call — the
 		// heuristic abstains when minimal-infra inputs are absent.
 		const candidateNsHosts = nsHostsFromObservations(evidenceObservations);
 		const defensiveResult = evaluateDefensiveRegistration({

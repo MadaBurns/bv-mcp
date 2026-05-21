@@ -124,3 +124,20 @@ export function sameRegistrarFamily(left: RegistrarIdentity, right: RegistrarIde
 
 	return false;
 }
+
+/**
+ * Classify a raw registrar name string into a canonical family identifier.
+ *
+ * Wraps the private `knownFamily()` detector with the same normalization
+ * (`normalizeRegistrarIdentity` + raw-lowercase) used by `sameRegistrarFamily`.
+ * Returns `null` when the input is empty, redacted, or doesn't match any
+ * `KNOWN_REGISTRAR_FAMILIES` entry.
+ *
+ * Used by the registrar-portfolio aggregator to bucket discovered apexes by
+ * registrar family for the CSC-complement view.
+ */
+export function classifyRegistrarFamily(name: string | null | undefined): string | null {
+	const normalized = normalizeRegistrarIdentity(name);
+	const raw = rawLower(name);
+	return knownFamily(normalized, raw);
+}

@@ -36,16 +36,16 @@ function mockDohTxt(byDomain: Record<string, string[]>): typeof fetch {
 describe('extractSeedSpfIncludes', () => {
 	it('Nike-style: surfaces ccTLD sibling apex, dedups self-apex', async () => {
 		const dohFn = mockDohTxt({
-			'brand-gamma.com': ['v=spf1 include:_spf.brand-gamma.com include:spf.nike.eu -all'],
-			'_spf.brand-gamma.com': ['v=spf1 include:_spf.google.com -all'],
-			'spf.nike.eu': ['v=spf1 ip4:192.0.2.1 -all'],
+			'brand-zeta.example.com': ['v=spf1 include:_spf.brand-zeta.example.com include:spf.brand-zeta-eu.example.net -all'],
+			'_spf.brand-zeta.example.com': ['v=spf1 include:_spf.google.com -all'],
+			'spf.brand-zeta-eu.example.net': ['v=spf1 ip4:192.0.2.1 -all'],
 		});
-		const result = await extractSeedSpfIncludes('brand-gamma.com', { dohFn });
+		const result = await extractSeedSpfIncludes('brand-zeta.example.com', { dohFn });
 		expect(result.queryStatus).toBe('ok');
-		// brand-gamma.com is the seed apex → dedup'd. _spf.google.com is shared infra → skipped.
-		// Only nike.eu should surface.
+		// brand-zeta.example.com is the seed apex → dedup'd. _spf.google.com is shared infra → skipped.
+		// Only the different registered apex should surface.
 		const apexes = result.candidates.map((c) => c.apex).sort();
-		expect(apexes).toEqual(['nike.eu']);
+		expect(apexes).toEqual(['example.net']);
 		expect(result.candidates[0].confidence).toBe(0.85);
 		expect(result.candidates[0].depth).toBe(1);
 	});

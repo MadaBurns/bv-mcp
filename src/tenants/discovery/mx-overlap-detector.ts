@@ -5,7 +5,7 @@
  *
  * Compares each caller-asserted candidate's MX RRset against the seed's MX
  * RRset. Confidence depends on the kind of overlap:
- *   - Both endpoints under seed apex (e.g. `mx.brand-gamma.com`) → 0.95
+ *   - Both endpoints under seed apex (e.g. `mx.brand-zeta.example.com`) → 0.95
  *   - Exact hostname overlap on non-shared SaaS → 0.7
  *   - Partial overlap (subset) → 0.5
  *   - Shared multi-tenant SaaS with same tenant string → 0.5

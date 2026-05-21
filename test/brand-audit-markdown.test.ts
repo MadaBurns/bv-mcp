@@ -80,7 +80,7 @@ describe('formatBrandAuditMarkdown', () => {
 					detail: '',
 					metadata: {
 						summary: true,
-						target: 'brand-theta.com',
+						target: 'brandepsilon.com',
 						consolidated: 1,
 						shadowIt: 0,
 						indeterminate: 0,
@@ -89,11 +89,11 @@ describe('formatBrandAuditMarkdown', () => {
 				},
 				{
 					category: 'brand_discovery',
-					title: 'Brand candidate: masterard.com',
+					title: 'Brand candidate: brandepsiln.com',
 					severity: 'info',
 					detail: '',
 					metadata: {
-						candidate: 'masterard.com',
+						candidate: 'brandepsiln.com',
 						bucket: 'consolidated',
 						relationshipType: 'owned_primary',
 						registrar: 'CSC Corporate Domains',
@@ -112,7 +112,7 @@ describe('formatBrandAuditMarkdown', () => {
 
 		// Candidate still belongs in the Consolidated section — we label, not re-bucket.
 		expect(markdown).toContain('## Consolidated (owned/operated by the brand)');
-		expect(markdown).toContain('masterard.com');
+		expect(markdown).toContain('brandepsiln.com');
 		// And carries the defensive-registration tag inline. The label is wrapped
 		// in markdown italics and includes the reason discriminant; assert the
 		// canonical prefix rather than the exact closing-paren form so the test

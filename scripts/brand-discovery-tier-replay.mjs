@@ -35,15 +35,15 @@ const DEFAULT_BRANDS = Object.freeze([
 	'apple.com',
 	'amazon.com',
 	'github.com',
-	'[redacted-domain]',
-	'brand-gamma.com',
-	'brand-zeta.com',
-	'brand-theta.com',
-	'brand-kappa.com',
-	'brand-alpha.com',
+	'brand-eta.example.com',
+	'brand-zeta.example.com',
+	'brand-beta.example.com',
+	'brand-epsilon.example.com',
+	'brand-gamma.example.com',
+	'brand-alpha.example.com',
 	'blackveilsecurity.com',
-	'brand-eta.com',
-	'[redacted-domain]',
+	'brand-delta.example.com',
+	'brand-theta.example.com',
 ]);
 
 /** discovery_mode values, paired per brand. `baseline` → classic downstream. */

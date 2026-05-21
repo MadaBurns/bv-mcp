@@ -6,7 +6,7 @@
  * Walks the CNAME chain starting at each candidate's apex (bounded by
  * MAX_CHAIN_LENGTH) and checks whether any step lands on the seed apex,
  * a subdomain of the seed, or a CDN edge alias that matches a seed-rooted
- * pattern (e.g. `brand-gamma.com.akadns.net` for `brand-gamma.com`'s Akamai tenant).
+ * pattern (e.g. `brand-zeta.example.com.akadns.net` for `brand-zeta.example.com`'s Akamai tenant).
  */
 
 import { validateDomain } from '../../lib/sanitize';

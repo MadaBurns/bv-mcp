@@ -41,10 +41,10 @@ describe('detectSpfInclude', () => {
 
 	it('candidate SPF includes seed.com directly → consolidated', async () => {
 		const dohFn = mockDohTxt({
-			'nike.de': ['v=spf1 include:brand-gamma.com -all'],
+			'brand-zeta-de.example.net': ['v=spf1 include:brand-zeta.example.com -all'],
 		});
-		const result = await detectSpfInclude('brand-gamma.com', {
-			candidateDomains: ['nike.de'],
+		const result = await detectSpfInclude('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-de.example.net'],
 			dohFn,
 		});
 		expect(result.coOwnedDomains).toHaveLength(1);
@@ -65,15 +65,15 @@ describe('detectSpfInclude', () => {
 
 	it('recursive include reaching seed → consolidated (bounded depth)', async () => {
 		const dohFn = mockDohTxt({
-			'nike.fr': ['v=spf1 include:_outbound.nike.fr -all'],
-			'_outbound.nike.fr': ['v=spf1 include:_spf.brand-gamma.com ~all'],
+			'brand-zeta-fr.example.net': ['v=spf1 include:_outbound.brand-zeta-fr.example.net -all'],
+			'_outbound.brand-zeta-fr.example.net': ['v=spf1 include:_spf.brand-zeta.example.com ~all'],
 		});
-		const result = await detectSpfInclude('brand-gamma.com', {
-			candidateDomains: ['nike.fr'],
+		const result = await detectSpfInclude('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-fr.example.net'],
 			dohFn,
 		});
 		expect(result.coOwnedDomains).toHaveLength(1);
-		expect(result.coOwnedDomains[0].domain).toBe('nike.fr');
+		expect(result.coOwnedDomains[0].domain).toBe('brand-zeta-fr.example.net');
 	});
 
 	it('SPF lookup limit respected (RFC 7208 max 10) — does not infinite-loop on cyclic includes', async () => {
@@ -81,7 +81,7 @@ describe('detectSpfInclude', () => {
 			'a.com': ['v=spf1 include:b.com'],
 			'b.com': ['v=spf1 include:a.com'],
 		});
-		const result = await detectSpfInclude('brand-gamma.com', {
+		const result = await detectSpfInclude('brand-zeta.example.com', {
 			candidateDomains: ['a.com'],
 			dohFn,
 		});
@@ -91,7 +91,7 @@ describe('detectSpfInclude', () => {
 
 	it('no SPF record on candidate → no signal', async () => {
 		const dohFn = mockDohTxt({ 'foo.com': [] });
-		const result = await detectSpfInclude('brand-gamma.com', {
+		const result = await detectSpfInclude('brand-zeta.example.com', {
 			candidateDomains: ['foo.com'],
 			dohFn,
 		});

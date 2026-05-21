@@ -12,7 +12,7 @@
  * MUST NOT leak into `buckets.shadowIt`. The legacy `shadowIt` bucket exists
  * solely to mirror the new top-level `registrarSprawl[]`. If those two ever
  * diverge — or a vendor appears in shadowIt — downstream PDF/Markdown rendering
- * and customer-visible categorisation regress to the pre-split shape.
+ * and user-visible categorisation regress to the pre-split shape.
  *
  * Invariants enforced (per file):
  *   1. `vendorDependencies` and `buckets.shadowIt` are disjoint by domain.
