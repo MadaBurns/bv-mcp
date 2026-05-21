@@ -54,8 +54,8 @@ describe('Freemium Model - Limits and Tiers', () => {
 		
 		// Unauthenticated tools/call should return quota headers for the IP
 		expect(toolRes.headers.get('x-quota-tier')).toBe('free');
-		expect(toolRes.headers.get('x-quota-limit')).toBe('5'); // From FREE_TOOL_DAILY_LIMITS.scan_domain
-		expect(parseInt(toolRes.headers.get('x-quota-remaining')!)).toBeLessThan(5);
+		expect(toolRes.headers.get('x-quota-limit')).toBe('25'); // From FREE_TOOL_DAILY_LIMITS.scan_domain
+		expect(parseInt(toolRes.headers.get('x-quota-remaining')!)).toBeLessThan(25);
 	});
 
 	it('applies higher tier limits to authenticated users', async () => {

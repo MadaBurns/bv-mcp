@@ -350,6 +350,40 @@ describe('rate-limiter', () => {
 			const result = await checkToolDailyRateLimit('user1', 'check_spf', 200, undefined, failingDO);
 			expect(result.allowed).toBe(true);
 		});
+
+		// Regression: owner tier passes Infinity; JSON.stringify(Infinity) === "null",
+		// which the coordinator validator rejected as a non-finite number, returning 400
+		// for ~97% of authenticated owner-tier tool calls (chaos run 2026-05-21).
+		it('checkToolDailyRateLimit short-circuits unlimited (Infinity) without touching the DO', async () => {
+			const fetchSpy = vi.fn();
+			const trackedDO = {
+				getByName: () => ({ fetch: fetchSpy }),
+			} as unknown as DurableObjectNamespace;
+			const result = await checkToolDailyRateLimit('owner-key', 'scan_domain', Infinity, undefined, trackedDO);
+			expect(result.allowed).toBe(true);
+			expect(result.limit).toBe(Infinity);
+			expect(fetchSpy).not.toHaveBeenCalled();
+		});
+
+		it('checkGlobalDailyLimit short-circuits unlimited (Infinity) without touching the DO', async () => {
+			const fetchSpy = vi.fn();
+			const trackedDO = {
+				getByName: () => ({ fetch: fetchSpy }),
+			} as unknown as DurableObjectNamespace;
+			const result = await checkGlobalDailyLimit(Infinity, undefined, trackedDO);
+			expect(result.allowed).toBe(true);
+			expect(result.limit).toBe(Infinity);
+			expect(fetchSpy).not.toHaveBeenCalled();
+		});
+
+		// Security guard: TIER_TOOL_DAILY_LIMITS encodes "tier blocked" as 0
+		// (e.g. agent + brand_audit_*). The Infinity short-circuit must not bleed
+		// into limit=0 or it silently grants access to the blocked tier+tool combo.
+		it('checkToolDailyRateLimit denies on first call when limit=0 (blocked tier)', async () => {
+			const result = await checkToolDailyRateLimit('agent-key', 'brand_audit_single', 0);
+			expect(result.allowed).toBe(false);
+			expect(result.limit).toBe(0);
+		});
 	});
 
 	// -----------------------------------------------------------------------
