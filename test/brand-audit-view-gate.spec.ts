@@ -30,12 +30,38 @@ describe('view=csc_complement tier gate', () => {
 		expect(text).toMatch(/^Error: Invalid view: 'csc_complement' requires enterprise tier/);
 	});
 
-	it('accepts view=csc_complement when authTier is enterprise (schema accepts arg)', async () => {
-		// Smoke test only — asserts the Zod schema accepts the arg without error.
-		// Pipeline correctness is covered by Task 6 integration tests.
-		const { BrandAuditSingleArgs } = await import('../src/schemas/tool-args');
-		const args = BrandAuditSingleArgs.parse({ domain: 'example.com', view: 'csc_complement' });
-		expect(args.view).toBe('csc_complement');
+	it('does not reject view=csc_complement at the gate when authTier is enterprise', async () => {
+		// Mock brandAuditSingle at the module level before importing handleToolsCall.
+		// This short-circuits the tool after the gate passes, avoiding hangs from real discovery.
+		vi.doMock('../src/tools/brand-audit-single', () => ({
+			brandAuditSingle: vi.fn().mockResolvedValue({
+				category: 'brand_discovery',
+				score: 100,
+				findings: [
+					{
+						category: 'brand_discovery',
+						title: 'Mocked brand audit',
+						severity: 'info',
+						detail: 'Tool mocked for gate test',
+					},
+				],
+			}),
+		}));
+
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		const result = await handleToolsCall(
+			{ name: 'brand_audit_single', arguments: { domain: 'example.com', view: 'csc_complement' } },
+			undefined,
+			{ authTier: 'enterprise' } as never,
+		);
+
+		// The call may error deeper down (network, missing bindings, etc.) — but if it errors, the
+		// message must NOT be the gate's rejection. The gate must let enterprise through.
+		if (result.isError) {
+			const textContent = result.content[0];
+			const text = textContent && 'text' in textContent ? textContent.text : '';
+			expect(text).not.toMatch(/^Error: Invalid view:.*requires enterprise tier/);
+		}
 	});
 
 	it('omits view → schema accepts and view is undefined', async () => {
