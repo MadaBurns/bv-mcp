@@ -239,4 +239,77 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 
 		expect((result as unknown as { cscComplement?: unknown }).cscComplement).toBeUndefined();
 	});
+
+	it('enqueues a deep_scan message after fast_ready', async () => {
+		setupEnrichmentFetchMock(['ford.co.uk']);
+
+		const enqueued: unknown[] = [];
+		const brandAuditQueue = {
+			send: async (msg: unknown): Promise<void> => {
+				enqueued.push(msg);
+			},
+		};
+
+		const { runBrandAuditPipeline } = await import('../src/lib/brand-audit-pipeline');
+
+		const discoverBrandDomains = async () =>
+			makeDiscoveryResult('ford.com', [{ domain: 'ford.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
+		const checkRdapLookup = async (domain: string) => {
+			if (domain === 'ford.co.uk') return makeRdapResult('GoDaddy.com, LLC');
+			return makeRdapResult('CSC Corporate Domains, Inc.');
+		};
+
+		await runBrandAuditPipeline(
+			'ford.com',
+			{ view: 'csc_complement', auditId: 'audit-1' },
+			{
+				brandAuditQueue,
+				discoverBrandDomains: discoverBrandDomains as never,
+				checkRdapLookup: checkRdapLookup as never,
+			},
+		);
+
+		expect(enqueued.length).toBe(1);
+		expect(enqueued[0]).toMatchObject({ auditId: 'audit-1', target: 'ford.com', phase: 'deep_scan' });
+	});
+
+	it('runs runDeepScanFromStepStore and merges to csc_complement_full', async () => {
+		const stored = new Map<string, unknown>();
+		const stepStore = {
+			get: async (auditId: string, target: string, step: string): Promise<{ status: string; payload: unknown } | null> => {
+				const v = stored.get(`${auditId}:${target}:${step}`);
+				return v ? (v as { status: string; payload: unknown }) : null;
+			},
+			put: async (record: { auditId: string; target: string; step: string; status: string; payload: unknown }): Promise<void> => {
+				stored.set(`${record.auditId}:${record.target}:${record.step}`, { status: record.status, payload: record.payload });
+			},
+		};
+
+		stored.set('a-1:ford.com:csc_complement_fast', {
+			status: 'completed',
+			payload: {
+				viewVersion: 1,
+				anchor: { apex: 'ford.com', primaryRegistrar: { family: 'csc corporate domains', name: 'CSC', ianaId: null }, managedByCsc: true },
+				registrarPortfolio: { totalApexes: 1, byFamily: [{ family: 'csc corporate domains', count: 1, percent: 100, exampleApexes: ['ford.com'] }], offPortfolioCount: 0, offPortfolioApexes: [] },
+				shadowItHighlights: [],
+				defensiveRegistrations: { count: 0, examples: [], enrichmentStatus: 'ready' },
+				postureSnapshot: { stage: 'pending', apexesScanned: 0, apexesTotal: 0, apexes: [], medianGrade: null, distribution: {} },
+				deepScan: { stage: 'pending', apexesScanned: 0, apexesTotal: 0, danglingDns: [], danglingDnsTotal: 0, subdomainInventoryByApex: {} },
+				generatedAt: '2026-05-22T00:00:00Z',
+				reportId: 'csc_rpt_abc',
+			},
+		});
+
+		const internalCall = async (_tool: string, args: { domain: string }): Promise<unknown> => ({
+			content: [],
+			structured: { domain: args.domain, score: 80, grade: 'B+', categoryScores: {}, findings: [], totalSubdomains: 100, subdomains: [] },
+		});
+
+		const { runDeepScanFromStepStore } = await import('../src/lib/brand-audit-csc-deepscan-job');
+		await runDeepScanFromStepStore({ auditId: 'a-1', target: 'ford.com', stepStore: stepStore as never, internalCall });
+
+		const full = stored.get('a-1:ford.com:csc_complement_full') as { status: string; payload: { postureSnapshot: { stage: string } } };
+		expect(full.status).toBe('completed');
+		expect(full.payload.postureSnapshot.stage).toBe('ready');
+	});
 });

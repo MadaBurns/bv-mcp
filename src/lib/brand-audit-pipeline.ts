@@ -158,6 +158,8 @@ export interface BrandAuditPipelineDeps {
 	 * `discoverBrandDomains` via its `deps` arg.
 	 */
 	tier2Lookup?: (domain: string) => Promise<Tier2Result>;
+	/** Optional queue binding for deferring CSC deep-scan. Provided in prod; undefined in tests. */
+	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 }
 
 interface RegistrarLookup {
@@ -1060,6 +1062,13 @@ export async function runBrandAuditPipeline(
 				status: 'completed',
 				payload: cscComplement,
 			});
+		}
+
+		if (deps.brandAuditQueue) {
+			await deps.brandAuditQueue.send(
+				{ auditId, target: seedDomain, phase: 'deep_scan' },
+				{ contentType: 'json' },
+			);
 		}
 	}
 

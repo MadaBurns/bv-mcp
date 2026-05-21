@@ -145,6 +145,14 @@ export interface BrandAuditConsumerDeps {
 	tier2Lookup?: (domain: string) => Promise<Tier2Result>;
 	/** Optional service binding for registrar WHOIS fallback in queued audits. */
 	whoisBinding?: { fetch: typeof fetch };
+	/**
+	 * Optional internal-call closure for the CSC deep-scan queue job.
+	 * Wraps handleToolsCall so the deep-scan orchestrator can invoke scan_domain
+	 * and discover_subdomains without going through HTTP framing. Constructed at
+	 * the queue dispatch site in src/index.ts; undefined on BSL self-hosts where
+	 * SCAN_CACHE or other required bindings are absent.
+	 */
+	internalCall?: (tool: string, args: { domain: string }) => Promise<unknown>;
 }
 
 interface TargetStatusRow {
@@ -511,6 +519,21 @@ export async function handleBrandAuditQueue(
 	deps: BrandAuditConsumerDeps,
 ): Promise<void> {
 	for (const message of batch.messages) {
+		// Phase detection before Zod parse: deep_scan messages don't carry `format`
+		// and would be silently acked as "malformed" by BrandAuditQueueMessageSchema.
+		const rawBody = message.body as Record<string, unknown>;
+		if (typeof rawBody === 'object' && rawBody !== null && rawBody.phase === 'deep_scan') {
+			const { auditId, target } = rawBody as { auditId: string; target: string; phase: string };
+			if (typeof auditId === 'string' && typeof target === 'string' && deps.internalCall) {
+				const { runDeepScanFromStepStore } = await import('../lib/brand-audit-csc-deepscan-job');
+				const stepStore = createD1BrandAuditStepStore(deps.db);
+				await runDeepScanFromStepStore({ auditId, target, stepStore, internalCall: deps.internalCall });
+			}
+			// Ack unconditionally: malformed payload or missing internalCall are not retryable.
+			message.ack();
+			continue;
+		}
+
 		const verdict = await processBrandAuditMessage(message.body, deps);
 		if (verdict === 'retry') {
 			message.retry();
