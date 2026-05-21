@@ -105,6 +105,12 @@ export interface BrandAuditPipelineOptions {
 	/** Epoch-ms deadline for returning a partial result before queue/runtime timeout. */
 	deadlineMs?: number;
 	/**
+	 * Sync MCP calls can choose to return an async-handoff result before the
+	 * global tool timeout. Queue consumers leave this unset so their longer
+	 * budget still records completed/failed rows normally.
+	 */
+	timeoutBehavior?: 'async_handoff';
+	/**
 	 * Abort signal that interrupts the orchestrator at phase boundaries. The
 	 * consumer wires this to a wall-clock timeout (240s of the 300s Worker
 	 * budget) so the pipeline can flip the row to `failed` from this same

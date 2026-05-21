@@ -320,8 +320,9 @@ const TOOL_REGISTRY: Record<
 			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
 			return `brand_audit_single:${fmt}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:m${minConf}`;
 		},
-		execute: (d, args, ro) =>
-			brandAuditSingle(d, {
+		execute: (d, args, ro) => {
+			const deadlineMs = Date.now() + BRAND_AUDIT_SINGLE_SYNC_HANDOFF_MS;
+			return brandAuditSingle(d, {
 				format: args.format as 'json' | 'markdown' | 'both' | undefined,
 				min_confidence: args.min_confidence as number | undefined,
 				depth: args.depth as 'standard' | 'deep' | undefined,
@@ -333,6 +334,8 @@ const TOOL_REGISTRY: Record<
 				// Pipeline only honours it when the caller omits `discovery_mode`;
 				// undefined on BSL self-hosts (schema default `'classic'` wins).
 				...(ro?.discoveryModeDefault ? { env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: ro.discoveryModeDefault } } : {}),
+				deadlineMs,
+				timeoutBehavior: 'async_handoff',
 			}, {
 				certstream: ro?.certstream,
 				whoisBinding: ro?.whoisBinding,
@@ -343,7 +346,8 @@ const TOOL_REGISTRY: Record<
 				...(ro?.tier0Lookup ? { tier0Lookup: ro.tier0Lookup } : {}),
 				...(ro?.tier1Lookup ? { tier1Lookup: ro.tier1Lookup } : {}),
 				...(ro?.tier2Lookup ? { tier2Lookup: ro.tier2Lookup } : {}),
-			}),
+			});
+		},
 		cacheTtlSeconds: 3600,
 	},
 	brand_audit_batch_start: {
@@ -511,6 +515,7 @@ function handleExplainFindingValidationError(
  */
 /** Maximum wall-clock time for any single tool call (ms). */
 const TOOL_CALL_TIMEOUT_MS = 28_000;
+const BRAND_AUDIT_SINGLE_SYNC_HANDOFF_MS = 24_000;
 
 export async function handleToolsCall(
 	params: {
