@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.25.0] - 2026-05-22
+
+### Added
+- `view='csc_complement'` mode on `brand_audit_single` and `brand_audit_batch_start`, gated to OAuth `enterprise`/`owner` tier. Emits a structured `cscComplement` payload (attached to summary finding metadata) with anchor identity, registrar portfolio, shadow-IT highlights, defensive-registration labels (via new per-candidate MX + HTTP enrichment), and a deferred per-apex deep-scan that fills posture + dangling-DNS findings.
+- `brand_audit_status` exposes new `stage` values: `fast_ready`, `deep_ready` (via `findings[].metadata.stage`).
+- `brand_audit_get_report` attaches `cscComplement` payload (full → fast fallback) to summary finding metadata.
+
+### Internal
+- `src/lib/registrar-portfolio.ts` — pure aggregator bucketing candidates by registrar family.
+- `src/lib/brand-audit-csc-enrichment.ts` — per-candidate DoH MX + safeFetch HTTP enrichment feeding `evaluateDefensiveRegistration`.
+- `src/lib/brand-audit-csc-builder.ts` — fast-stage cscComplement payload builder.
+- `src/lib/brand-audit-csc-deepscan.ts` + `brand-audit-csc-deepscan-job.ts` — queue-backed per-apex `scan_domain` + `discover_subdomains` orchestration; phase='deep_scan' messages on BRAND_AUDIT_QUEUE.
+- `src/schemas/brand-audit-csc.ts` — `BrandAuditCscSchema` (v1).
+- `src/lib/registrar-identity.ts` — exported `classifyRegistrarFamily()` helper.
+- `src/queue/brand-audit-consumer.ts` — deep_scan branch with error containment + ack-on-error.
+
 ## [2.24.0] - 2026-05-21
 
 ### Added
