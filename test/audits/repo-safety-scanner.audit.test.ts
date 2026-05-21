@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { scanTextForSensitiveSurface, formatFindings } from '../../scripts/repo-safety/scanner-core.mjs';
+import { scanCommitMessage, scanTextForSensitiveSurface, formatFindings } from '../../scripts/repo-safety/scanner-core.mjs';
+
+const clientDomainPolicy = {
+	forbiddenClientDomains: ['bankofamerica.com', 'ford.com.au', 'marriott.com', 'mastercard.com'],
+};
 
 describe('repo safety scanner helper', () => {
 	it('flags BV key shapes without printing the raw key', () => {
@@ -38,5 +42,24 @@ describe('repo safety scanner helper', () => {
 	it('flags real email addresses and customer/tenant markers', () => {
 		const findings = scanTextForSensitiveSurface('docs/private.md', 'Customer Acme Corp uses admin@customer.invalid for tenant-pilot-1.');
 		expect(findings.map((finding) => finding.ruleId)).toEqual(expect.arrayContaining(['real-email', 'customer-marker', 'tenant-marker']));
+	});
+
+	it('flags real client benchmark domains that belong in private fixtures', () => {
+		const findings = scanTextForSensitiveSurface(
+			'src/example.ts',
+			'const demoTargets = ["marriott.com", "bankofamerica.com", "mastercard.com"];',
+			clientDomainPolicy,
+		);
+
+		expect(findings.map((finding) => finding.ruleId)).toEqual(['client-domain', 'client-domain', 'client-domain']);
+	});
+
+	it('flags sensitive commit-message wording before public pushes', () => {
+		const findings = scanCommitMessage(
+			'Verified against ford.com.au during a CSC pilot brands production audit.',
+			clientDomainPolicy,
+		);
+
+		expect(findings.map((finding) => finding.ruleId)).toEqual(expect.arrayContaining(['client-domain', 'client-context']));
 	});
 });
