@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.24.0] - 2026-05-21
+
+### Added
+- **Daily SPF canary** (`src/lib/spf-canary.ts`, `src/scheduled.ts`) — probes a curated stable-SPF domain set during the daily cron and emits a webhook alert (with failing domains attached) when the null-rate breaches `ALERT_SPF_NULL_RATE_THRESHOLD` (default 15%). Outcome is always logged so silent runs are distinguishable from clean runs. A 189-domain pre-flight on the SPF lookup path found zero false-null SPFs — the canary exists as a tripwire for the next "elevated null SPF" dashboard observation.
+
+### Changed
+- **`scan_domain` free-tier daily limit raised 5 → 25** (`src/lib/config.ts`) — unauthenticated callers now get 25 scans per IP per day instead of 5. Quota headers (`x-quota-limit`) and `-32029` error messages updated accordingly.
+
+### Fixed
+- **Rate-limiter short-circuit on `Infinity` limits** (`src/lib/rate-limiter.ts`) — `checkToolDailyRateLimit` and `checkGlobalDailyLimit` now return early when `limit` is non-finite, before the `QuotaCoordinator` DO call. `JSON.stringify(Infinity)` yielded `"null"`, which hit the `validateQuotaPayload` finite-number guard and returned HTTP 400 on legitimate owner-tier requests. The `limit <= 0` carve-out (e.g. agent-tier brand-audit deny) is preserved.
+
+### Tests
+- `test/lib/spf-canary.spec.ts` — threshold breach, clean run, and DNS-error paths.
+- `test/rate-limiter.spec.ts` — Infinity short-circuit, global-cap Infinity, `limit=0` security guard.
+- `test/index.spec.ts`, `test/freemium-limits.spec.ts` — assertions realigned with the new `scan_domain` cap.
+
+### Dependencies
+- Patch bumps: `hono` 4.12.18 → 4.12.21, `marked` 18.0.3 → 18.0.4, `typescript-eslint` 8.59.3 → 8.59.4, Cloudflare devtools group (3 updates).
+
 ## [2.23.0] - 2026-05-21
 
 ### Added
