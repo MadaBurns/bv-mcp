@@ -42,7 +42,7 @@ API_KEY      = None  # confirmed-working key, set after probe in main()
 # 30 realistic domains an MSP would manage: finance, healthcare, legal, tech, retail
 MSP_PORTFOLIO = [
     # Financial services (high-security, DMARC-enforced)
-    "stripe.com", "braintreepayments.com", "plaid.com",
+    "brand-theta.example.com", "braintreepayments.com", "plaid.com",
     # Healthcare / insurance
     "humana.com", "uhc.com", "cigna.com",
     # Legal / professional services
@@ -63,7 +63,7 @@ MSP_PORTFOLIO = [
 ]
 
 # High-risk clients requiring deeper assessment (financial, healthcare)
-HIGH_RISK_CLIENTS = ["stripe.com", "plaid.com", "humana.com", "uhc.com", "okta.com"]
+HIGH_RISK_CLIENTS = ["brand-theta.example.com", "plaid.com", "humana.com", "uhc.com", "okta.com"]
 
 # New client being onboarded today
 NEW_CLIENT = "freshdesk.com"
@@ -611,7 +611,7 @@ def test_sustained_throughput():
         ("check_spf",   {"domain": "google.com",      "format": "compact"}),
         ("check_dmarc", {"domain": "cloudflare.com",  "format": "compact"}),
         ("check_ns",    {"domain": "github.com",      "format": "compact"}),
-        ("check_mx",    {"domain": "stripe.com",      "format": "compact"}),
+        ("check_mx",    {"domain": "brand-theta.example.com",      "format": "compact"}),
         ("check_ssl",   {"domain": "okta.com",        "format": "compact"}),
         ("check_caa",   {"domain": "salesforce.com",  "format": "compact"}),
     ]

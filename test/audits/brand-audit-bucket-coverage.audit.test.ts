@@ -26,7 +26,7 @@ describe('brand-audit bucket coverage lock-in', () => {
 		// AWS Route 53 TLD spread must collapse to ONE provider
 		expect(normalizeProvider('ns-52.awsdns-52.com')).toBe(normalizeProvider('ns-1234.awsdns-43.co.uk'));
 		// PayPal-style sprawl must be flagged
-		expect(isMultiProvider(['a.ns.paypal.com', 'pdns1.ultradns.net'])).toBe(true);
+		expect(isMultiProvider(['a.ns.brand-eta.example.com', 'pdns1.ultradns.net'])).toBe(true);
 	});
 
 	it('classifier exports isShadowIt + isImpersonation (D1/D2 branches)', async () => {
@@ -37,7 +37,7 @@ describe('brand-audit bucket coverage lock-in', () => {
 
 	it('ccTLD seeder produces ≥20 variants for the three zero-result brands (D4)', async () => {
 		const { generateCctldVariants } = await import('../../src/lib/brand-cctld-seeder');
-		for (const seed of ['amazon.com', 'microsoft.com', 'brand-gamma.com']) {
+		for (const seed of ['amazon.com', 'microsoft.com', 'brand-zeta.example.com']) {
 			const out = generateCctldVariants(seed);
 			expect(out.length).toBeGreaterThanOrEqual(20);
 			// Sanity: emits the ccTLDs that the original Markov-only seeder missed

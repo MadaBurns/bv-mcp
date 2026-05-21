@@ -558,11 +558,11 @@ describe('runBrandAuditPipeline — T13 BRAND_AUDIT_DISCOVERY_MODE_DEFAULT env o
 	});
 
 	it('stamps defensive=true on a classified candidate whose discovery observation carries parking NS', async () => {
-		// `masterard.com` vs `brand-theta.com` — label distance 1, NS at sedoparking.
+		// `brandepsiln.com` vs `brandepsilon.com` — label distance 1, NS at sedoparking.
 		// The pipeline must surface `defensive: true` and the precise reason on
 		// the classified finding's metadata.
-		const discovery = discoveryResult('brand-theta.com', ['masterard.com']);
-		const candidate = discovery.findings.find((f) => f.metadata?.candidate === 'masterard.com');
+		const discovery = discoveryResult('brandepsilon.com', ['brandepsiln.com']);
+		const candidate = discovery.findings.find((f) => f.metadata?.candidate === 'brandepsiln.com');
 		candidate!.metadata = {
 			...candidate!.metadata,
 			signals: ['ns'],
@@ -572,25 +572,25 @@ describe('runBrandAuditPipeline — T13 BRAND_AUDIT_DISCOVERY_MODE_DEFAULT env o
 			],
 		};
 		const checkRdapLookup = vi.fn(async (domain: string) => {
-			if (domain === 'brand-theta.com') return rdapResult('CSC Corporate Domains, Inc.', 'Mastercard Inc.', '299');
-			return rdapResult('CSC Corporate Domains, Inc.', 'Mastercard Inc.', '299');
+			if (domain === 'brandepsilon.com') return rdapResult('CSC Corporate Domains, Inc.', 'Brand Epsilon Inc.', '299');
+			return rdapResult('CSC Corporate Domains, Inc.', 'Brand Epsilon Inc.', '299');
 		});
 
 		const result = await runBrandAuditPipeline(
-			'brand-theta.com',
+			'brandepsilon.com',
 			{ auditId: 'aud-defensive' },
 			{ discoverBrandDomains: vi.fn().mockResolvedValue(discovery), checkRdapLookup },
 		);
-		const finding = result.findings.find((f) => f.metadata?.candidate === 'masterard.com');
+		const finding = result.findings.find((f) => f.metadata?.candidate === 'brandepsiln.com');
 
 		expect(finding?.metadata?.defensive).toBe(true);
 		expect(finding?.metadata?.defensiveReason).toBe('parked-ns');
 	});
 
 	it('does NOT stamp defensive on a candidate that is not label-close to the target', async () => {
-		// `bigbank.com` vs `brand-theta.com` — distance far above the threshold,
+		// `bigbank.com` vs `brandepsilon.com` — distance far above the threshold,
 		// even though the candidate's NS happens to overlap a parking provider.
-		const discovery = discoveryResult('brand-theta.com', ['bigbank.com']);
+		const discovery = discoveryResult('brandepsilon.com', ['bigbank.com']);
 		const candidate = discovery.findings.find((f) => f.metadata?.candidate === 'bigbank.com');
 		candidate!.metadata = {
 			...candidate!.metadata,
@@ -598,10 +598,10 @@ describe('runBrandAuditPipeline — T13 BRAND_AUDIT_DISCOVERY_MODE_DEFAULT env o
 			combinedConfidence: 0.5,
 			evidenceObservations: [{ signal: 'ns', metadata: { sharedNs: ['ns1.sedoparking.com'] } }],
 		};
-		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Mastercard Inc.'));
+		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Brand Epsilon Inc.'));
 
 		const result = await runBrandAuditPipeline(
-			'brand-theta.com',
+			'brandepsilon.com',
 			{ auditId: 'aud-notdefensive' },
 			{ discoverBrandDomains: vi.fn().mockResolvedValue(discovery), checkRdapLookup },
 		);

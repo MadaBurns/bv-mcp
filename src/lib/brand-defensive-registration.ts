@@ -21,8 +21,8 @@
  * per-candidate MX records or HTTP redirect targets, so the heuristic only
  * fires when the discovery pipeline already attached `sharedNs` metadata
  * (the NS-correlator path). Adding a small enrichment pass for typo-close
- * candidates is the production follow-up that turns the brand-theta.com PDF
- * fix on for the customer-visible case.
+ * candidates is the production follow-up that turns the brandepsilon.com PDF
+ * fix on for the user-visible case.
  *
  * Worker-runtime safe — pure string + Set operations, no Node APIs.
  */
@@ -59,9 +59,9 @@ const PARKING_NS_APEXES: ReadonlySet<string> = new Set([
 export type DefensiveReason = 'redirect-to-target' | 'no-mx' | 'parked-ns';
 
 export interface DefensiveRegistrationInput {
-	/** Candidate domain (e.g. `masterard.com`). */
+	/** Candidate domain (e.g. `brandepsiln.com`). */
 	candidateDomain: string;
-	/** Target domain the audit is anchored to (e.g. `brand-theta.com`). */
+	/** Target domain the audit is anchored to (e.g. `brandepsilon.com`). */
 	targetDomain: string;
 	/**
 	 * Candidate's MX records (hostnames only). `undefined` means "unknown
@@ -152,7 +152,7 @@ export function isParkingNsHost(nsHost: string): boolean {
 /**
  * Extract the second-level label from a domain, stripping the eTLD. Wraps
  * `extractBrandName()` from `public-suffix.ts` so the comparison is
- * label-only (`masterard` vs `mastercard`), never against the full TLD.
+ * label-only (`brandepsiln` vs `brandepsilon`), never against the full TLD.
  */
 function brandLabel(domain: string): string | null {
 	const label = extractBrandName(domain);

@@ -106,7 +106,7 @@ export async function brandAuditGetReport(
 			return errorResult('notFound', `Target ${target} not in audit ${auditId}.`, { auditId, target });
 		}
 
-		// Dead-zone closure (2026-05-21 brand-zeta.com hang). A `running` target past
+		// Dead-zone closure (2026-05-21 brand-beta.example.com hang). A `running` target past
 		// its budget deadline is one the consumer couldn't self-flip — surface
 		// it as terminal-failed here so the customer doesn't get told "poll
 		// again" for the next 15 minutes. Mirrors the closure in

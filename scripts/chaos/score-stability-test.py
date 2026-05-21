@@ -23,7 +23,7 @@ API_KEY = os.getenv("BV_API_KEY")
 
 DEFAULT_DOMAINS = [
     "cloudflare.com", "google.com", "github.com", "microsoft.com",
-    "apple.com", "amazon.com", "netflix.com", "stripe.com",
+    "apple.com", "amazon.com", "netflix.com", "brand-theta.example.com",
     "shopify.com", "zoom.us", "slack.com", "dropbox.com",
     "fastly.com", "digitalocean.com", "vercel.com", "gitlab.com",
     "hashicorp.com", "datadog.com", "pagerduty.com", "twilio.com",

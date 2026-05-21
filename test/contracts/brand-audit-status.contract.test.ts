@@ -130,7 +130,7 @@ describe('brand_audit_batch_start response contract', () => {
 			now: () => 1_750_000_000_000,
 		};
 
-		const result = await brandAuditBatchStart(['apple.com', 'brand-gamma.com'], { format: 'both' }, 'owner-x', deps);
+		const result = await brandAuditBatchStart(['apple.com', 'brand-zeta.example.com'], { format: 'both' }, 'owner-x', deps);
 
 		for (const f of result.findings) {
 			expect(FindingSchema.safeParse(f).success).toBe(true);
@@ -157,7 +157,7 @@ describe('brand_audit_status response contract', () => {
 			},
 			targets: [
 				{ audit_id: 'aud-c', target: 'apple.com', status: 'completed', created_at: 1, completed_at: 5, error: null, pdf_r2_key: null },
-				{ audit_id: 'aud-c', target: 'brand-gamma.com', status: 'running', created_at: 1, completed_at: null, error: null, pdf_r2_key: null },
+				{ audit_id: 'aud-c', target: 'brand-zeta.example.com', status: 'running', created_at: 1, completed_at: null, error: null, pdf_r2_key: null },
 			],
 		});
 		const deps: BrandAuditStatusDeps = { db };

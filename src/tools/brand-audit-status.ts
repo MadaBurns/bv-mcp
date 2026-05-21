@@ -95,7 +95,7 @@ export async function brandAuditStatus(
 
 	const now = (deps.now ?? Date.now)();
 
-	// Dead-zone closure (2026-05-21 brand-zeta.com hang). A `running` target whose
+	// Dead-zone closure (2026-05-21 brand-beta.example.com hang). A `running` target whose
 	// row is older than BRAND_AUDIT_TARGET_DEADLINE_MS is past the point where
 	// the consumer could have flipped it itself — its worker was killed before
 	// the catch handler ran (CPU-saturated tier-1 brands starve the abort-fire
