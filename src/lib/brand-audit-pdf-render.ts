@@ -155,7 +155,7 @@ function drawCandidateRow(ctx: DrawContext, row: BrandCandidateRow): void {
 	// Row has 2 text lines (domain, metadata) + optional 3rd (reasons). Background
 	// rect height must cover ALL of them — the prior 2-line-only height let the
 	// next row's bg overdraw the reasons text (surfaced 2026-05-19 in production
-	// marriott/mastercard PDFs).
+	// marriott/brandepsilon PDFs).
 	const textLines = hasReasons ? 3 : 2;
 	const rowBgHeight = ROW_HEIGHT * textLines + 4;
 	const rowSpacing = 4; // gap between rows

@@ -340,7 +340,7 @@ describe('checkTxtHygiene', () => {
 	});
 
 	it('should score enterprise domains with many TXT records in the 50-80 range (not 0)', async () => {
-		// Simulate a stripe.com-like scenario: 31 TXT records with duplicates and stale integrations
+		// Simulate a brand-theta.example.com-like scenario: 31 TXT records with duplicates and stale integrations
 		const records = [
 			'v=spf1 include:_spf.google.com include:sendgrid.net include:mailchimp.com -all',
 			// 6 Google Search Console verifications (duplicates)

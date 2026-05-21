@@ -145,7 +145,7 @@ function parseChainTargets(spf: string): string[] {
 
 /**
  * Return the registrable apex of a hostname using the curated PSL.
- * `_spf.brand-gamma.com` → `brand-gamma.com`; `sub.example.co.uk` → `example.co.uk`.
+ * `_spf.brand-zeta.example.com` → `brand-zeta.example.com`; `sub.example.co.uk` → `example.co.uk`.
  * Returns null when the input is a bare TLD/PSL or otherwise has no
  * registrable label.
  */
@@ -258,7 +258,7 @@ export interface ExtractSeedSpfIncludesOptions {
 }
 
 export interface SeedSpfIncludeCandidate {
-	/** Registrable apex (e.g. `nike.eu`) — never a subdomain. */
+	/** Registrable apex (e.g. `brand-zeta-eu.example.com`) — never a subdomain. */
 	apex: string;
 	/** Constant 0.85 — authoritative mail-policy delegation, near-deterministic. */
 	confidence: number;
@@ -279,8 +279,8 @@ export interface SeedSpfWalkResult {
  * (RFC 7208 §4.6.4) and emit each unique registrable apex that differs from
  * the seed's apex as a same-organization candidate.
  *
- * Rationale: a chain entry like `include:_spf.brand-gamma.com` or
- * `include:spf.nike.eu` is an authoritative delegation — the publisher of the
+ * Rationale: a chain entry like `include:_spf.brand-zeta.example.com` or
+ * `include:spf.brand-zeta-eu.example.com` is an authoritative delegation — the publisher of the
  * seed has explicitly trusted that host to authorize mail egress, so the
  * registrable apex of that host is near-certainly operated by the same
  * organization. Shared SaaS infrastructure providers (Microsoft 365, Google,

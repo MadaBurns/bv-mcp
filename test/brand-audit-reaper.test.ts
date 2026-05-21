@@ -93,14 +93,14 @@ describe('reapStuckBrandAudits', () => {
 
 	it('flips a stuck target to failed and ticks the parent counter', async () => {
 		const { db, calls } = makeMockD1({
-			stuckRows: [{ audit_id: 'aud-1', target: 'brand-alpha.com' }],
+			stuckRows: [{ audit_id: 'aud-1', target: 'brand-alpha.example.com' }],
 			counterByAudit: { 'aud-1': { completed_targets: 1, total_targets: 3 } },
 		});
 		const result = await reapStuckBrandAudits({ db, now: () => NOW });
 		expect(result.reapedTargets).toBe(1);
 		expect(result.finalizedAudits).toBe(0);
 
-		const flip = calls.find((c) => c.sql.includes("status = 'failed'") && c.binds.includes('brand-alpha.com'));
+		const flip = calls.find((c) => c.sql.includes("status = 'failed'") && c.binds.includes('brand-alpha.example.com'));
 		expect(flip).toBeDefined();
 		const counterTick = calls.find((c) => c.sql.includes('UPDATE brand_audits SET completed_targets'));
 		expect(counterTick).toBeDefined();
@@ -108,7 +108,7 @@ describe('reapStuckBrandAudits', () => {
 
 	it('finalizes the parent audit when the reaped target is the last one', async () => {
 		const { db, calls } = makeMockD1({
-			stuckRows: [{ audit_id: 'aud-1', target: 'brand-alpha.com' }],
+			stuckRows: [{ audit_id: 'aud-1', target: 'brand-alpha.example.com' }],
 			counterByAudit: { 'aud-1': { completed_targets: 1, total_targets: 1 } },
 		});
 		const result = await reapStuckBrandAudits({ db, now: () => NOW });
@@ -156,7 +156,7 @@ describe('reapStuckBrandAudits', () => {
 		// Another consumer or reaper already flipped this row terminal between
 		// our SELECT and UPDATE — flipChanges=0 should suppress the counter tick.
 		const { db, calls } = makeMockD1({
-			stuckRows: [{ audit_id: 'aud-1', target: 'brand-alpha.com' }],
+			stuckRows: [{ audit_id: 'aud-1', target: 'brand-alpha.example.com' }],
 			flipChanges: 0,
 		});
 		const result = await reapStuckBrandAudits({ db, now: () => NOW });

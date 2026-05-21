@@ -6,7 +6,7 @@ import { buildDiscoveryReportModel, buildDiscoveryReportSidecar } from './helper
 describe('discovery report model', () => {
 	it('splits authorized vendor dependencies from real Shadow IT ARR opportunities', () => {
 		const model = buildDiscoveryReportModel({
-			target: 'brand-eta.com',
+			target: 'brand-delta.example.com',
 			primaryRegistrar: 'CSC Corporate Domains, Inc.',
 			result: {
 				category: 'brand_discovery',
@@ -60,7 +60,7 @@ describe('discovery report model', () => {
 
 	it('emits v4 tiered sidecar relationship sections while preserving legacy buckets', () => {
 		const model = buildDiscoveryReportModel({
-			target: 'brand-eta.com',
+			target: 'brand-delta.example.com',
 			primaryRegistrar: 'CSC Corporate Domains, Inc.',
 			result: {
 				category: 'brand_discovery',

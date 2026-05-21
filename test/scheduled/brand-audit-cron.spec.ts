@@ -62,7 +62,7 @@ describe('handleBrandAuditWatches', () => {
 		const { handleBrandAuditWatches } = await import('../../src/scheduled');
 		const dueWatches = [
 			{ id: 'w-1', owner_id: 'owner-1', domain: 'apple.com', interval: 'daily', webhook_url: 'https://hooks.example.com/a', last_run_at: null, last_classification_hash: null, active: 1, created_at: 1 },
-			{ id: 'w-2', owner_id: 'owner-2', domain: 'brand-gamma.com', interval: 'weekly', webhook_url: null, last_run_at: null, last_classification_hash: null, active: 1, created_at: 2 },
+			{ id: 'w-2', owner_id: 'owner-2', domain: 'brand-zeta.example.com', interval: 'weekly', webhook_url: null, last_run_at: null, last_classification_hash: null, active: 1, created_at: 2 },
 		];
 		const { db, calls } = makeMockD1({ dueWatches });
 		const queueSend = vi.fn().mockResolvedValue(undefined);

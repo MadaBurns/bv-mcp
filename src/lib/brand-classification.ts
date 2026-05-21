@@ -172,8 +172,8 @@ export function normalizeRegistrar(raw: string): string {
 	// Company (Aust) Pty Ltd, etc.) all sharing infra. Match the family, not
 	// each regional variant. Legacy regex used 'BrandAudit' as a placeholder
 	// name — see test for the production incident that surfaced this.
-	// Regression: 2026-05 CSC Global verification of brand-beta.com.au /
-	// brand-iota.com.au / brand-mu.com.au showed the AU subsidiary string
+	// Regression: 2026-05 CSC Global verification of regional-alpha.example.com /
+	// regional-beta.example.com / regional-gamma.example.com showed the AU subsidiary string
 	// ("Corporation Service Company (Aust) Pty Ltd") slipping through and
 	// driving false-positive shadowIt findings.
 	if (/corporate\s*domains/.test(lower)) return 'CSC';

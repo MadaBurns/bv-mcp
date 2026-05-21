@@ -23,20 +23,20 @@ function mockFetch(responses: Array<{ status: number; location?: string; finalUr
 
 describe('detectHttpRedirect', () => {
 	it('redirect to seed apex → consolidated, conf >= 0.9', async () => {
-		// nike.de → 301 → https://www.brand-gamma.com/de
+		// brand-zeta-de.example.net → 301 → https://www.brand-zeta.example.com/de
 		const fetchFn = mockFetch([
-			{ status: 301, location: 'https://www.brand-gamma.com/de' },
-			{ status: 200, finalUrl: 'https://www.brand-gamma.com/de' },
+			{ status: 301, location: 'https://www.brand-zeta.example.com/de' },
+			{ status: 200, finalUrl: 'https://www.brand-zeta.example.com/de' },
 		]);
-		const result = await detectHttpRedirect('brand-gamma.com', {
-			candidateDomains: ['nike.de'],
+		const result = await detectHttpRedirect('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-de.example.net'],
 			fetchFn,
 		});
 		expect(result.queryStatus).toBe('ok');
 		expect(result.coOwnedDomains).toHaveLength(1);
-		expect(result.coOwnedDomains[0].domain).toBe('nike.de');
+		expect(result.coOwnedDomains[0].domain).toBe('brand-zeta-de.example.net');
 		expect(result.coOwnedDomains[0].confidence).toBeGreaterThanOrEqual(0.9);
-		expect(result.coOwnedDomains[0].evidence.finalUrl).toMatch(/nike\.com/);
+		expect(result.coOwnedDomains[0].evidence.finalUrl).toMatch(/brand-zeta\.example\.com/);
 	});
 
 	it('redirect to subdomain of seed → consolidated', async () => {
@@ -57,8 +57,8 @@ describe('detectHttpRedirect', () => {
 			{ status: 301, location: 'https://parked.godaddy.com/nike-de' },
 			{ status: 200, finalUrl: 'https://parked.godaddy.com/nike-de' },
 		]);
-		const result = await detectHttpRedirect('brand-gamma.com', {
-			candidateDomains: ['nike.de'],
+		const result = await detectHttpRedirect('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-de.example.net'],
 			fetchFn,
 		});
 		expect(result.coOwnedDomains).toHaveLength(0);
@@ -66,18 +66,18 @@ describe('detectHttpRedirect', () => {
 	});
 
 	it('200 OK with no redirect → no signal', async () => {
-		const fetchFn = mockFetch([{ status: 200, finalUrl: 'https://nike.de' }]);
-		const result = await detectHttpRedirect('brand-gamma.com', {
-			candidateDomains: ['nike.de'],
+		const fetchFn = mockFetch([{ status: 200, finalUrl: 'https://brand-zeta-de.example.net' }]);
+		const result = await detectHttpRedirect('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-de.example.net'],
 			fetchFn,
 		});
 		expect(result.coOwnedDomains).toHaveLength(0);
 	});
 
 	it('4xx/5xx → status remains ok; no signal for that candidate', async () => {
-		const fetchFn = mockFetch([{ status: 503, finalUrl: 'https://nike.de' }]);
-		const result = await detectHttpRedirect('brand-gamma.com', {
-			candidateDomains: ['nike.de'],
+		const fetchFn = mockFetch([{ status: 503, finalUrl: 'https://brand-zeta-de.example.net' }]);
+		const result = await detectHttpRedirect('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-de.example.net'],
 			fetchFn,
 		});
 		expect(result.coOwnedDomains).toHaveLength(0);
@@ -86,8 +86,8 @@ describe('detectHttpRedirect', () => {
 
 	it('fetch throw → status records the failure per-candidate, but overall query is ok', async () => {
 		const fetchFn = vi.fn().mockRejectedValue(new TypeError('network down')) as unknown as typeof fetch;
-		const result = await detectHttpRedirect('brand-gamma.com', {
-			candidateDomains: ['nike.de'],
+		const result = await detectHttpRedirect('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-de.example.net'],
 			fetchFn,
 		});
 		expect(result.coOwnedDomains).toHaveLength(0);
@@ -103,8 +103,8 @@ describe('detectHttpRedirect', () => {
 			{ status: 301, location: 'https://d.example/' },
 			{ status: 301, location: 'https://e.example/' },
 		]);
-		const result = await detectHttpRedirect('brand-gamma.com', {
-			candidateDomains: ['nike.xyz'],
+		const result = await detectHttpRedirect('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-variant.example.net'],
 			fetchFn,
 			maxHops: 3,
 		});
@@ -117,22 +117,22 @@ describe('detectHttpRedirect', () => {
 		// Three candidates, mock returns redirect-to-seed for all
 		const fetchFn = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-			if (url.endsWith('.de/') || url.endsWith('.de')) {
-				return new Response('', { status: 301, headers: { Location: 'https://brand-gamma.com/de' } });
+			if (url.includes('brand-zeta-de.example.net')) {
+				return new Response('', { status: 301, headers: { Location: 'https://brand-zeta.example.com/de' } });
 			}
-			if (url.endsWith('.fr/') || url.endsWith('.fr')) {
-				return new Response('', { status: 301, headers: { Location: 'https://brand-gamma.com/fr' } });
+			if (url.includes('brand-zeta-fr.example.net')) {
+				return new Response('', { status: 301, headers: { Location: 'https://brand-zeta.example.com/fr' } });
 			}
-			if (url.endsWith('.uk/') || url.endsWith('.uk')) {
+			if (url.includes('brand-zeta-uk.example.net')) {
 				return new Response('', { status: 301, headers: { Location: 'https://parked.com' } });
 			}
 			return new Response('', { status: 200 });
 		}) as unknown as typeof fetch;
-		const result = await detectHttpRedirect('brand-gamma.com', {
-			candidateDomains: ['nike.de', 'nike.fr', 'nike.uk'],
+		const result = await detectHttpRedirect('brand-zeta.example.com', {
+			candidateDomains: ['brand-zeta-de.example.net', 'brand-zeta-fr.example.net', 'brand-zeta-uk.example.net'],
 			fetchFn,
 		});
-		expect(result.coOwnedDomains.map((d) => d.domain).sort()).toEqual(['nike.de', 'nike.fr']);
+		expect(result.coOwnedDomains.map((d) => d.domain).sort()).toEqual(['brand-zeta-de.example.net', 'brand-zeta-fr.example.net']);
 	});
 
 	it('rejects invalid seed', async () => {
@@ -140,7 +140,7 @@ describe('detectHttpRedirect', () => {
 	});
 
 	it('returns empty for empty candidate list', async () => {
-		const result = await detectHttpRedirect('brand-gamma.com', { candidateDomains: [] });
+		const result = await detectHttpRedirect('brand-zeta.example.com', { candidateDomains: [] });
 		expect(result.coOwnedDomains).toEqual([]);
 		expect(result.queryStatus).toBe('ok');
 	});

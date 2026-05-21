@@ -33,7 +33,7 @@
 
 /**
  * Targets in `running` longer than this are definitely stuck — cron-tick reaper
- * cutoff. Tightened from 15min → 10min on 2026-05-21 after the brand-zeta.com
+ * cutoff. Tightened from 15min → 10min on 2026-05-21 after the brand-beta.example.com
  * dead-zone investigation: the 300s consumer cap, plus generous grace for the
  * cap-fire macrotask + final D1 flip, plus a couple of cron-tick safety
  * margins, fits comfortably under 10 minutes. The read-path piggyback in

@@ -4,7 +4,7 @@
  * Unit tests for ccTLD candidate seeding.
  *
  * Defect: discovery returned 0 candidates for amazon.com / microsoft.com /
- * brand-gamma.com because the Markov generator only varies the BASE and keeps the
+ * brand-zeta.example.com because the Markov generator only varies the BASE and keeps the
  * seed TLD, so the NS-correlator candidate list never includes ccTLD variants
  * the brand actually owns (amazon.de, amazon.co.uk, …). The seeder fills
  * that gap with a deterministic, brand-agnostic allowlist of common ccTLDs.
@@ -41,7 +41,7 @@ describe('generateCctldVariants', () => {
 	it('returns at least 20 variants per seed (enough breadth for big-brand coverage)', () => {
 		expect(generateCctldVariants('amazon.com').length).toBeGreaterThanOrEqual(20);
 		expect(generateCctldVariants('microsoft.com').length).toBeGreaterThanOrEqual(20);
-		expect(generateCctldVariants('brand-gamma.com').length).toBeGreaterThanOrEqual(20);
+		expect(generateCctldVariants('brand-zeta.example.com').length).toBeGreaterThanOrEqual(20);
 	});
 
 	it('returns deduplicated, lowercase, dot-trimmed strings', () => {

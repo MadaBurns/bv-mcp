@@ -78,7 +78,7 @@ describe('brandAuditBatchStart', () => {
 		const deps = makeDeps({ db, queue: { send: queueSend }, enforceQuota });
 
 		const result = await brandAuditBatchStart(
-			['apple.com', 'microsoft.com', 'brand-gamma.com'],
+			['apple.com', 'microsoft.com', 'brand-zeta.example.com'],
 			{},
 			'principal-key-hash-abc',
 			deps,
@@ -101,7 +101,7 @@ describe('brandAuditBatchStart', () => {
 		// 3 queue messages, one per target.
 		expect(queueSend).toHaveBeenCalledTimes(3);
 		const sentTargets = queueSend.mock.calls.map((c) => (c[0] as { target: string }).target).sort();
-		expect(sentTargets).toEqual(['apple.com', 'microsoft.com', 'brand-gamma.com']);
+		expect(sentTargets).toEqual(['apple.com', 'brand-zeta.example.com', 'microsoft.com']);
 	});
 
 	it('refuses when quota is exceeded — no D1 write, no queue send', async () => {
@@ -152,7 +152,7 @@ describe('brandAuditBatchStart', () => {
 		const enforceQuota = vi.fn().mockResolvedValue({ allowed: true, remaining: 49, limit: 50 });
 		const deps = makeDeps({ queue: { send: queueSend }, enforceQuota });
 
-		await brandAuditBatchStart(['apple.com', 'Apple.com', 'apple.com', 'brand-gamma.com'], {}, 'pk', deps);
+		await brandAuditBatchStart(['apple.com', 'Apple.com', 'apple.com', 'brand-zeta.example.com'], {}, 'pk', deps);
 
 		// Dedup + lowercase: 2 unique targets.
 		expect(enforceQuota).toHaveBeenCalledWith(2);
@@ -184,7 +184,7 @@ describe('brandAuditBatchStart', () => {
 		const deps = makeDeps({ db, queue: { send: queueSend } });
 
 		const result = await brandAuditBatchStart(
-			['apple.com', 'microsoft.com', 'brand-gamma.com'],
+			['apple.com', 'microsoft.com', 'brand-zeta.example.com'],
 			{},
 			'pk',
 			deps,

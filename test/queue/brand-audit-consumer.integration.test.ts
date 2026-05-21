@@ -127,7 +127,7 @@ describe('processBrandAuditMessage', () => {
 		const brandAuditSingle = vi.fn().mockResolvedValue({ category: 'brand_discovery', score: 100, findings: [] });
 
 		const verdict = await processBrandAuditMessage(
-			{ auditId: 'aud-1', target: 'brand-alpha.com', format: 'json' },
+			{ auditId: 'aud-1', target: 'brand-alpha.example.com', format: 'json' },
 			{ db, brandAuditSingle, now: () => 1_750_000_000_000 },
 		);
 

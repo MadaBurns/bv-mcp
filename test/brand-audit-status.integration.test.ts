@@ -78,7 +78,7 @@ describe('brandAuditStatus', () => {
 			targets: [
 				{ audit_id: 'aud-1', target: 'apple.com', status: 'completed', created_at: 1_750_000_000_000, completed_at: 1_750_000_030_000, error: null, pdf_r2_key: null },
 				{ audit_id: 'aud-1', target: 'microsoft.com', status: 'completed', created_at: 1_750_000_000_000, completed_at: 1_750_000_050_000, error: null, pdf_r2_key: null },
-				{ audit_id: 'aud-1', target: 'brand-gamma.com', status: 'running', created_at: 1_750_000_000_000, completed_at: null, error: null, pdf_r2_key: null },
+				{ audit_id: 'aud-1', target: 'brand-zeta.example.com', status: 'running', created_at: 1_750_000_000_000, completed_at: null, error: null, pdf_r2_key: null },
 			],
 		});
 
@@ -229,11 +229,11 @@ describe('brandAuditStatus', () => {
 		expect(invalid).toBeDefined();
 	});
 
-	// Dead-zone closure tests (2026-05-21 brand-zeta.com hang).
+	// Dead-zone closure tests (2026-05-21 brand-beta.example.com hang).
 	//
 	// When the consumer's 300s `Promise.race` cap fires but the worker is
 	// killed before the catch UPDATE commits (CPU-saturated tier-1 brands —
-	// brand-zeta.com / brand-alpha.com), the target row stays `status='running'`
+	// brand-beta.example.com / brand-alpha.example.com), the target row stays `status='running'`
 	// indefinitely until the next 15-min cron reaper tick. Customer polling
 	// `brand_audit_status` during the 5–15 min dead zone sees progress 0/1
 	// forever.
@@ -265,7 +265,7 @@ describe('brandAuditStatus', () => {
 				targets: [
 					{
 						audit_id: 'aud-disney',
-						target: 'brand-zeta.com',
+						target: 'brand-beta.example.com',
 						status: 'running',
 						created_at: createdAt,
 						completed_at: null,
@@ -282,7 +282,7 @@ describe('brandAuditStatus', () => {
 			// Customer sees a terminal status now — not "running" forever.
 			expect(summary?.metadata?.targetStatusCounts).toMatchObject({ running: 0, failed: 1 });
 			const targets = summary?.metadata?.targets as Array<{ target: string; status: string; error: string | null }>;
-			expect(targets[0]).toMatchObject({ target: 'brand-zeta.com', status: 'failed' });
+			expect(targets[0]).toMatchObject({ target: 'brand-beta.example.com', status: 'failed' });
 			expect(targets[0].error).toMatch(/deadline|stuck/i);
 		});
 
@@ -306,7 +306,7 @@ describe('brandAuditStatus', () => {
 				targets: [
 					{
 						audit_id: 'aud-disney',
-						target: 'brand-zeta.com',
+						target: 'brand-beta.example.com',
 						status: 'running',
 						created_at: createdAt,
 						completed_at: null,
@@ -324,7 +324,7 @@ describe('brandAuditStatus', () => {
 					c.sql.includes('UPDATE brand_audit_targets') &&
 					c.sql.includes("status = 'failed'") &&
 					c.sql.includes("status = 'running'") &&
-					(c.binds as unknown[]).includes('brand-zeta.com'),
+					(c.binds as unknown[]).includes('brand-beta.example.com'),
 			);
 			expect(persistFlip).toBeDefined();
 		});
@@ -415,7 +415,7 @@ describe('brandAuditStatus', () => {
 									results: [
 										{
 											audit_id: 'aud-disney',
-											target: 'brand-zeta.com',
+											target: 'brand-beta.example.com',
 											status: 'running',
 											created_at: createdAt,
 											completed_at: null,
@@ -473,9 +473,9 @@ describe('brandAuditStatus', () => {
 					completed_at: null,
 				},
 				targets: [
-					{ audit_id: 'aud-deadzone', target: 'brand-beta.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
-					{ audit_id: 'aud-deadzone', target: 'brand-iota.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
-					{ audit_id: 'aud-deadzone', target: 'brand-mu.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
+					{ audit_id: 'aud-deadzone', target: 'primary-alpha.example.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
+					{ audit_id: 'aud-deadzone', target: 'primary-beta.example.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
+					{ audit_id: 'aud-deadzone', target: 'primary-gamma.example.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
 				],
 			});
 
@@ -509,9 +509,9 @@ describe('brandAuditStatus', () => {
 					completed_at: null,
 				},
 				targets: [
-					{ audit_id: 'aud-mixed', target: 'brand-beta.com', status: 'completed', created_at: createdAt, completed_at: createdAt + 60_000, error: null, pdf_r2_key: null, result_json: '{"ok":1}' },
-					{ audit_id: 'aud-mixed', target: 'brand-iota.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
-					{ audit_id: 'aud-mixed', target: 'brand-mu.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
+					{ audit_id: 'aud-mixed', target: 'primary-alpha.example.com', status: 'completed', created_at: createdAt, completed_at: createdAt + 60_000, error: null, pdf_r2_key: null, result_json: '{"ok":1}' },
+					{ audit_id: 'aud-mixed', target: 'primary-beta.example.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
+					{ audit_id: 'aud-mixed', target: 'primary-gamma.example.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
 				],
 			});
 

@@ -207,7 +207,7 @@ describe('discoverBrandDomains', () => {
 		});
 		vi.stubGlobal('fetch', fetchMock);
 		try {
-			const result = await discoverBrandDomains('brand-alpha.com', { signals: [] }, makeDeps());
+			const result = await discoverBrandDomains('brand-alpha.example.com', { signals: [] }, makeDeps());
 			const summary = result.findings.find((f) => f.metadata?.summary === true);
 
 			expect(summary?.metadata?.signalStatus).toMatchObject({

@@ -32,15 +32,15 @@ describe('brand-discovery tier replay script safety', () => {
 			'apple.com',
 			'amazon.com',
 			'github.com',
-			'paypal.com',
-			'brand-gamma.com',
-			'brand-zeta.com',
-			'brand-theta.com',
-			'brand-kappa.com',
-			'brand-alpha.com',
+			'brand-eta.example.com',
+			'brand-zeta.example.com',
+			'brand-beta.example.com',
+			'brand-epsilon.example.com',
+			'brand-gamma.example.com',
+			'brand-alpha.example.com',
 			'blackveilsecurity.com',
-			'brand-eta.com',
-			'stripe.com',
+			'brand-delta.example.com',
+			'brand-theta.example.com',
 		];
 		for (const brand of expectedDefaults) {
 			expect(source).toContain(brand);

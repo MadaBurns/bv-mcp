@@ -36,9 +36,9 @@ describe('summarizeBenchmark', () => {
 	it('pairs observe/enforce rows by domain and computes reduction and surfaced delta', () => {
 		const summary = summarizeBenchmark({
 			rows: [
-				row({ domain: 'brand-alpha.com', mode: 'observe' }),
+				row({ domain: 'brand-alpha.example.com', mode: 'observe' }),
 				row({
-					domain: 'brand-alpha.com',
+					domain: 'brand-alpha.example.com',
 					mode: 'enforce',
 					elapsedMs: 40000,
 					metrics: {
@@ -51,7 +51,7 @@ describe('summarizeBenchmark', () => {
 
 		expect(summary.pairs).toHaveLength(1);
 		const pair = summary.pairs[0];
-		expect(pair.domain).toBe('brand-alpha.com');
+		expect(pair.domain).toBe('brand-alpha.example.com');
 		expect(pair.reductionPct).toBeCloseTo(44.76, 1);
 		expect(pair.reductionMeets40).toBe(true);
 		expect(pair.surfacedDelta).toBe(0);
@@ -89,12 +89,12 @@ describe('summarizeBenchmark', () => {
 	it('aggregates pass counts across multiple domain pairs', () => {
 		const summary = summarizeBenchmark({
 			rows: [
-				row({ domain: 'brand-alpha.com', mode: 'observe' }),
-				row({ domain: 'brand-alpha.com', mode: 'enforce', metrics: { candidateSignalProbes: 580, plannerEfficiency: { mode: 'enforce', candidateSignalProbes: 580, baselineCandidateSignalProbes: 1050, surfacedCandidates: 2 } } }),
-				row({ domain: 'brand-eta.com', mode: 'observe', metrics: { plannerEfficiency: { mode: 'observe', candidateSignalProbes: 1050, baselineCandidateSignalProbes: 1050, surfacedCandidates: 3 } } }),
-				row({ domain: 'brand-eta.com', mode: 'enforce', metrics: { candidateSignalProbes: 580, plannerEfficiency: { mode: 'enforce', candidateSignalProbes: 580, baselineCandidateSignalProbes: 1050, surfacedCandidates: 3 } } }),
-				row({ domain: 'brand-kappa.com', mode: 'observe', metrics: { plannerEfficiency: { mode: 'observe', candidateSignalProbes: 1050, baselineCandidateSignalProbes: 1050, surfacedCandidates: 8 } } }),
-				row({ domain: 'brand-kappa.com', mode: 'enforce', metrics: { candidateSignalProbes: 700, plannerEfficiency: { mode: 'enforce', candidateSignalProbes: 700, baselineCandidateSignalProbes: 1050, surfacedCandidates: 8 } } }),
+				row({ domain: 'brand-alpha.example.com', mode: 'observe' }),
+				row({ domain: 'brand-alpha.example.com', mode: 'enforce', metrics: { candidateSignalProbes: 580, plannerEfficiency: { mode: 'enforce', candidateSignalProbes: 580, baselineCandidateSignalProbes: 1050, surfacedCandidates: 2 } } }),
+				row({ domain: 'brand-delta.example.com', mode: 'observe', metrics: { plannerEfficiency: { mode: 'observe', candidateSignalProbes: 1050, baselineCandidateSignalProbes: 1050, surfacedCandidates: 3 } } }),
+				row({ domain: 'brand-delta.example.com', mode: 'enforce', metrics: { candidateSignalProbes: 580, plannerEfficiency: { mode: 'enforce', candidateSignalProbes: 580, baselineCandidateSignalProbes: 1050, surfacedCandidates: 3 } } }),
+				row({ domain: 'brand-gamma.example.com', mode: 'observe', metrics: { plannerEfficiency: { mode: 'observe', candidateSignalProbes: 1050, baselineCandidateSignalProbes: 1050, surfacedCandidates: 8 } } }),
+				row({ domain: 'brand-gamma.example.com', mode: 'enforce', metrics: { candidateSignalProbes: 700, plannerEfficiency: { mode: 'enforce', candidateSignalProbes: 700, baselineCandidateSignalProbes: 1050, surfacedCandidates: 8 } } }),
 			],
 		});
 
@@ -129,14 +129,14 @@ describe('formatAcceptanceSummary', () => {
 	it('renders a per-domain table and overall acceptance verdict', () => {
 		const summary = summarizeBenchmark({
 			rows: [
-				row({ domain: 'brand-alpha.com', mode: 'observe' }),
-				row({ domain: 'brand-alpha.com', mode: 'enforce', metrics: { candidateSignalProbes: 580, plannerEfficiency: { mode: 'enforce', candidateSignalProbes: 580, baselineCandidateSignalProbes: 1050, surfacedCandidates: 2 } } }),
+				row({ domain: 'brand-alpha.example.com', mode: 'observe' }),
+				row({ domain: 'brand-alpha.example.com', mode: 'enforce', metrics: { candidateSignalProbes: 580, plannerEfficiency: { mode: 'enforce', candidateSignalProbes: 580, baselineCandidateSignalProbes: 1050, surfacedCandidates: 2 } } }),
 			],
 		});
 		const output = formatAcceptanceSummary(summary);
 
 		expect(output).toContain('Acceptance Summary');
-		expect(output).toContain('brand-alpha.com');
+		expect(output).toContain('brand-alpha.example.com');
 		expect(output).toContain('reduction');
 		expect(output).toContain('44.8%');
 		expect(output).toMatch(/surfacedDelta/i);

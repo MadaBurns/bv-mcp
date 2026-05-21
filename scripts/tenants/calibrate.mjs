@@ -57,8 +57,8 @@ const SEED_POOL = [
 	'salesforce.com', 'hubspot.com', 'zendesk.com', 'slack.com', 'okta.com',
 	'cloudflare-eats.com', 'cloudflare-ipfs.com',
 	'nytimes.com', 'bbc.co.uk', 'cnn.com', 'reuters.com', 'theguardian.com',
-	'spotify.com', 'adobe.com', 'zoom.us', 'dropbox.com', 'paypal.com',
-	'stripe.com', 'shopify.com', 'atlassian.com', 'notion.so', 'figma.com',
+	'spotify.com', 'adobe.com', 'zoom.us', 'dropbox.com', 'brand-eta.example.com',
+	'brand-theta.example.com', 'shopify.com', 'atlassian.com', 'notion.so', 'figma.com',
 ];
 
 function buildPortfolio(n) {
