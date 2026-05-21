@@ -446,4 +446,179 @@ describe('brandAuditStatus', () => {
 			expect(summary?.metadata?.targetStatusCounts).toMatchObject({ running: 0, failed: 1 });
 		});
 	});
+
+	describe('batch-level aggregation when read-path synthesizes all targets terminal', () => {
+		// Regression: 2026-05-21 production observation that the per-target
+		// synthesis correctly flipped target rows to `failed` but the response's
+		// top-level `status` / `progress` / `completed` stayed pinned to the
+		// stale `brand_audits` row. Customer saw `status: 'running', progress:
+		// '0/3'` alongside `targetStatusCounts: {failed: 3}` and never exited a
+		// poll loop. These tests pin the aggregation behaviour.
+
+		it('renders top-level status=failed when all synthesized targets failed', async () => {
+			const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
+			const { BRAND_AUDIT_TARGET_DEADLINE_MS } = await import('../src/lib/brand-audit-reaper');
+			const createdAt = 1_750_000_000_000;
+			const now = createdAt + BRAND_AUDIT_TARGET_DEADLINE_MS + 10_000;
+			const { db } = makeMockD1({
+				audit: {
+					id: 'aud-deadzone',
+					owner_id: 'owner-abc',
+					status: 'running',
+					total_targets: 3,
+					completed_targets: 0,
+					format: 'both',
+					created_at: createdAt,
+					updated_at: createdAt,
+					completed_at: null,
+				},
+				targets: [
+					{ audit_id: 'aud-deadzone', target: 'brand-beta.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
+					{ audit_id: 'aud-deadzone', target: 'brand-iota.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
+					{ audit_id: 'aud-deadzone', target: 'brand-mu.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
+				],
+			});
+
+			const result = await brandAuditStatus('aud-deadzone', 'owner-abc', { db, now: () => now });
+			const summary = result.findings.find((f) => f.metadata?.summary === true);
+
+			// The bug allowed `status: 'running', progress: '0/3'` to coexist
+			// with all-failed targetStatusCounts. Pin the corrected behaviour.
+			expect(summary?.metadata?.status).toBe('failed');
+			expect(summary?.metadata?.progress).toBe('0/3');
+			expect(summary?.metadata?.completed).toBe(0);
+			expect(summary?.metadata?.completedAt).toBe(now);
+			expect(summary?.metadata?.targetStatusCounts).toMatchObject({ running: 0, failed: 3 });
+		});
+
+		it('renders top-level status=completed when at least one target completed and the rest synthesized failed', async () => {
+			const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
+			const { BRAND_AUDIT_TARGET_DEADLINE_MS } = await import('../src/lib/brand-audit-reaper');
+			const createdAt = 1_750_000_000_000;
+			const now = createdAt + BRAND_AUDIT_TARGET_DEADLINE_MS + 10_000;
+			const { db } = makeMockD1({
+				audit: {
+					id: 'aud-mixed',
+					owner_id: 'owner-abc',
+					status: 'running',
+					total_targets: 3,
+					completed_targets: 0, // stale — the batch row never got updated
+					format: 'both',
+					created_at: createdAt,
+					updated_at: createdAt,
+					completed_at: null,
+				},
+				targets: [
+					{ audit_id: 'aud-mixed', target: 'brand-beta.com', status: 'completed', created_at: createdAt, completed_at: createdAt + 60_000, error: null, pdf_r2_key: null, result_json: '{"ok":1}' },
+					{ audit_id: 'aud-mixed', target: 'brand-iota.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
+					{ audit_id: 'aud-mixed', target: 'brand-mu.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
+				],
+			});
+
+			const result = await brandAuditStatus('aud-mixed', 'owner-abc', { db, now: () => now });
+			const summary = result.findings.find((f) => f.metadata?.summary === true);
+
+			expect(summary?.metadata?.status).toBe('completed');
+			expect(summary?.metadata?.progress).toBe('1/3');
+			expect(summary?.metadata?.completed).toBe(1);
+			expect(summary?.metadata?.targetStatusCounts).toMatchObject({ completed: 1, failed: 2, running: 0 });
+		});
+
+		it('persists the batch row flip with the correct status + completed_targets', async () => {
+			const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
+			const { BRAND_AUDIT_TARGET_DEADLINE_MS } = await import('../src/lib/brand-audit-reaper');
+			const createdAt = 1_750_000_000_000;
+			const now = createdAt + BRAND_AUDIT_TARGET_DEADLINE_MS + 10_000;
+			const { db, calls } = makeMockD1({
+				audit: {
+					id: 'aud-persist',
+					owner_id: 'owner-abc',
+					status: 'running',
+					total_targets: 2,
+					completed_targets: 0,
+					format: 'json',
+					created_at: createdAt,
+					updated_at: createdAt,
+					completed_at: null,
+				},
+				targets: [
+					{ audit_id: 'aud-persist', target: 'a.com', status: 'completed', created_at: createdAt, completed_at: createdAt + 30_000, error: null, pdf_r2_key: null, result_json: '{"ok":1}' },
+					{ audit_id: 'aud-persist', target: 'b.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
+				],
+			});
+
+			await brandAuditStatus('aud-persist', 'owner-abc', { db, now: () => now });
+
+			const batchFlip = calls.find(
+				(c) =>
+					c.sql.includes('UPDATE brand_audits') &&
+					c.sql.includes("status IN ('queued', 'running')") &&
+					(c.binds as unknown[])[0] === 'completed' &&
+					(c.binds as unknown[])[1] === 1, // completed_targets
+			);
+			expect(batchFlip).toBeDefined();
+			// last bind is auditId
+			expect((batchFlip!.binds as unknown[])[(batchFlip!.binds as unknown[]).length - 1]).toBe('aud-persist');
+		});
+
+		it('does NOT persist a batch flip when targets are still in-flight', async () => {
+			const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
+			const { BRAND_AUDIT_TARGET_DEADLINE_MS } = await import('../src/lib/brand-audit-reaper');
+			const createdAt = 1_750_000_000_000;
+			// All targets within deadline — normal in-flight audit.
+			const now = createdAt + BRAND_AUDIT_TARGET_DEADLINE_MS - 60_000;
+			const { db, calls } = makeMockD1({
+				audit: {
+					id: 'aud-inflight',
+					owner_id: 'owner-abc',
+					status: 'running',
+					total_targets: 2,
+					completed_targets: 0,
+					format: 'json',
+					created_at: createdAt,
+					updated_at: createdAt + 30_000,
+					completed_at: null,
+				},
+				targets: [
+					{ audit_id: 'aud-inflight', target: 'a.com', status: 'running', created_at: createdAt, completed_at: null, error: null, pdf_r2_key: null, result_json: null },
+					{ audit_id: 'aud-inflight', target: 'b.com', status: 'completed', created_at: createdAt, completed_at: createdAt + 30_000, error: null, pdf_r2_key: null, result_json: '{"ok":1}' },
+				],
+			});
+
+			const result = await brandAuditStatus('aud-inflight', 'owner-abc', { db, now: () => now });
+
+			const summary = result.findings.find((f) => f.metadata?.summary === true);
+			expect(summary?.metadata?.status).toBe('running'); // unchanged
+			const batchFlip = calls.find((c) => c.sql.includes('UPDATE brand_audits'));
+			expect(batchFlip).toBeUndefined();
+		});
+
+		it('does not overwrite a batch row already in a terminal status', async () => {
+			const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
+			const { BRAND_AUDIT_TARGET_DEADLINE_MS } = await import('../src/lib/brand-audit-reaper');
+			const createdAt = 1_750_000_000_000;
+			const now = createdAt + BRAND_AUDIT_TARGET_DEADLINE_MS + 60_000;
+			const { db, calls } = makeMockD1({
+				audit: {
+					id: 'aud-terminal',
+					owner_id: 'owner-abc',
+					status: 'completed', // already terminal
+					total_targets: 1,
+					completed_targets: 1,
+					format: 'json',
+					created_at: createdAt,
+					updated_at: createdAt + 60_000,
+					completed_at: createdAt + 60_000,
+				},
+				targets: [
+					{ audit_id: 'aud-terminal', target: 'a.com', status: 'completed', created_at: createdAt, completed_at: createdAt + 60_000, error: null, pdf_r2_key: null, result_json: '{"ok":1}' },
+				],
+			});
+
+			await brandAuditStatus('aud-terminal', 'owner-abc', { db, now: () => now });
+
+			const batchFlip = calls.find((c) => c.sql.includes('UPDATE brand_audits'));
+			expect(batchFlip).toBeUndefined();
+		});
+	});
 });
