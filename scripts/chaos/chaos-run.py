@@ -10,6 +10,7 @@ Runs 200+ parallel scans against production, verifying:
 """
 
 import json
+import os
 import ssl
 import sys
 import time
@@ -20,8 +21,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 import certifi
 
-BASE_URL = "https://dns-mcp.blackveilsecurity.com/mcp"
+BASE_URL = os.environ.get("BV_MCP_ENDPOINT", "https://dns-mcp.blackveilsecurity.com/mcp")
 SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+API_KEY = os.environ.get("BV_API_KEY", "")
 
 DOMAINS = [
     "google.com", "cloudflare.com", "github.com", "microsoft.com", "apple.com",
@@ -57,7 +59,9 @@ def post(payload, session_id=None, timeout=30):
     data = json.dumps(payload).encode()
     req = urllib.request.Request(BASE_URL, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
-    req.add_header("User-Agent", "curl/8.4.0")
+    req.add_header("User-Agent", "bv-chaos-test/1.0")
+    if API_KEY:
+        req.add_header("Authorization", f"Bearer {API_KEY}")
     if session_id:
         req.add_header("Mcp-Session-Id", session_id)
     t0 = time.monotonic()
@@ -390,4 +394,3 @@ if __name__ == "__main__":
         sys.exit(1)
     else:
         print("\n✓ PASS")
-"\n✓ PASS")
