@@ -14,6 +14,7 @@ import {
 	type TargetContext,
 } from './brand-classification';
 import { validateSprawlItem } from './sprawl-invariants';
+import { evaluateDefensiveRegistration } from './brand-defensive-registration';
 import type { BrandEvidenceObservation } from './brand-evidence';
 import {
 	discoverBrandDomains as defaultDiscoverBrandDomains,
@@ -378,6 +379,38 @@ function scoreAlertContextFromObservations(
 		}
 	}
 	return undefined;
+}
+
+/**
+ * Pluck candidate NS hostnames out of evidence observations. The `ns`
+ * signal stores its co-ownership match as `sharedNs: string[]` in
+ * observation metadata (see `discoverBrandDomains` → ns-correlator). When
+ * present we surface it to the defensive-registration heuristic so a
+ * candidate parked on `ns1.sedoparking.com` can be labelled even without
+ * an additional DNS pass.
+ *
+ * Returns undefined when no `ns` observation carries `sharedNs` — the
+ * heuristic then abstains on this signal.
+ *
+ * TODO(defensive): wire a candidate MX + HTTP HEAD enrichment pass for
+ * label-distance≤2 candidates so the `no-mx` / `redirect-to-target`
+ * branches can fire on the customer-visible PDF path. Today only the NS
+ * route lights up automatically.
+ */
+function nsHostsFromObservations(observations: BrandEvidenceObservation[] | undefined): string[] | undefined {
+	if (!observations) return undefined;
+	const hosts: string[] = [];
+	for (const obs of observations) {
+		if (obs.signal !== 'ns') continue;
+		const md = obs.metadata;
+		if (!isRecord(md)) continue;
+		const shared = md.sharedNs;
+		if (!Array.isArray(shared)) continue;
+		for (const ns of shared) {
+			if (typeof ns === 'string' && ns.length > 0) hosts.push(ns);
+		}
+	}
+	return hosts.length > 0 ? hosts : undefined;
 }
 
 function graphEvidenceFromObservations(
@@ -910,6 +943,17 @@ export async function runBrandAuditPipeline(
 		const scoreAlertCtx =
 			classification.bucket === 'impersonationSurface' ? scoreAlertContextFromObservations(evidenceObservations) : undefined;
 		const graphEvidence = graphEvidenceFromObservations(evidenceObservations);
+		// Defensive-registration label. We do NOT change `classification.bucket`;
+		// this is a metadata annotation the renderers consume to mark close-typo
+		// candidates with minimal infrastructure (e.g. `masterard.com` parked at
+		// sedoparking next to `brand-theta.com`). Pure data-only call — the
+		// heuristic abstains when minimal-infra inputs are absent.
+		const candidateNsHosts = nsHostsFromObservations(evidenceObservations);
+		const defensiveResult = evaluateDefensiveRegistration({
+			candidateDomain: domain,
+			targetDomain: seedDomain,
+			...(candidateNsHosts ? { nsHosts: candidateNsHosts } : {}),
+		});
 		return createFinding(CATEGORY, `Brand candidate: ${domain}`, severity, detailParts.join(' — '), {
 			candidate: domain,
 			bucket: classification.bucket,
@@ -931,6 +975,9 @@ export async function runBrandAuditPipeline(
 			...(lookalikeScore > 0 ? { lookalikeScore } : {}),
 			...(scoreAlertCtx ? { scoreAlertContext: scoreAlertCtx } : {}),
 			...(graphEvidence ? { graphEvidence } : {}),
+			...(defensiveResult.defensive
+				? { defensive: true, ...(defensiveResult.reason ? { defensiveReason: defensiveResult.reason } : {}) }
+				: {}),
 		});
 	});
 	recordStep(stepTimings, 'classification', 'completed', classificationStartedAtMs, now());

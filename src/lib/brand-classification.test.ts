@@ -69,6 +69,20 @@ describe('normalizeRegistrar', () => {
 		expect(normalizeRegistrar('CSC Corporate Domains (Canada) Company')).toBe('CSC');
 	});
 
+	it('collapses CSC global subsidiaries (regression: 2026-05 brand-beta.com.au shadowIt FP)', () => {
+		// Real WHOIS strings observed in production brand-audit PDFs for
+		// brand-beta.com.au, brand-iota.com.au, brand-mu.com.au — all flagged as
+		// shadowIt because the family detector did not recognise CSC's regional
+		// arms. Collapse them all to the canonical "CSC" family so analyst
+		// reasons consistently attribute defensive registration to CSC.
+		expect(normalizeRegistrar('Corporation Service Company (Aust) Pty Ltd')).toBe('CSC');
+		expect(normalizeRegistrar('Corporation Service Company, LLC')).toBe('CSC');
+		expect(normalizeRegistrar('CSC Digital Brand Services Malaysia Sdn Bhd')).toBe('CSC');
+		expect(normalizeRegistrar('CSC Digital Brand Services, Inc.')).toBe('CSC');
+		expect(normalizeRegistrar('CSC Global')).toBe('CSC');
+		expect(normalizeRegistrar('cscglobal.com')).toBe('CSC');
+	});
+
 	it('returns Unknown for empty / Unknown', () => {
 		expect(normalizeRegistrar('')).toBe('Unknown');
 		expect(normalizeRegistrar('Unknown')).toBe('Unknown');
@@ -260,6 +274,50 @@ describe('classifyCandidate', () => {
 				registrarSource: 'redacted',
 			});
 			expect(classifyCandidate(c, target()).bucket).toBe('consolidated');
+		});
+
+		// Regression: 2026-05 CSC Global sales-meeting verification.
+		// brand-beta.com.au (CSC Australia: "Corporation Service Company (Aust) Pty Ltd")
+		// was flagged as shadowIt against brand-beta.com (CSC US). Both are CSC. The
+		// off-primary-registrar inference must NOT fire on cross-subsidiary CSC
+		// registrations — that's defensive registration, not shadow IT.
+		it('CSC regional subsidiaries (brand-beta.com.au CSC AU ↔ brand-beta.com CSC US) are NOT shadowIt', () => {
+			const c = candidate({
+				domain: 'brand-beta.com.au',
+				signals: ['markov_gen', 'ns', 'spf_include'],
+				confidence: 1,
+				registrar: 'Corporation Service Company (Aust) Pty Ltd',
+				registrarSource: 'rdap',
+			});
+			const result = classifyCandidate(
+				c,
+				target({
+					domain: 'brand-beta.com',
+					registrar: 'CSC Corporate Domains, Inc.',
+					registrarFamily: 'CSC',
+				}),
+			);
+			expect(result.bucket).not.toBe('shadowIt');
+			expect((result as { relationshipType?: string }).relationshipType).not.toBe('owned_off_primary_registrar');
+		});
+
+		it('two CSC global subsidiaries (CSC Malaysia ↔ CSC US) classify as consolidated, not shadowIt', () => {
+			const c = candidate({
+				domain: 'brand-mu.com.my',
+				signals: ['markov_gen', 'ns', 'spf_include'],
+				confidence: 1,
+				registrar: 'CSC Digital Brand Services Malaysia Sdn Bhd',
+				registrarSource: 'rdap',
+			});
+			const result = classifyCandidate(
+				c,
+				target({
+					domain: 'brand-mu.com',
+					registrar: 'CSC Corporate Domains, Inc.',
+					registrarFamily: 'CSC',
+				}),
+			);
+			expect(result.bucket).not.toBe('shadowIt');
 		});
 	});
 

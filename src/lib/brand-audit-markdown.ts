@@ -66,6 +66,21 @@ function isVendorDependency(f: Finding): boolean {
 	return relationshipType(f) === 'authorized_vendor_dependency';
 }
 
+/**
+ * Render a `(defensive registration)` suffix for a candidate finding when
+ * the pipeline stamped `metadata.defensive === true`. Defensive candidates
+ * are typosquat-shaped domains the brand owns on purpose (e.g.
+ * `masterard.com` next to `brand-theta.com`) — without a label customers
+ * can't visually distinguish them from operational properties. We label,
+ * we never re-bucket.
+ */
+function defensiveSuffix(f: Finding): string {
+	if (f.metadata?.defensive !== true) return '';
+	const reason = typeof f.metadata?.defensiveReason === 'string' ? f.metadata.defensiveReason : undefined;
+	const reasonText = reason ? ` — ${sanitizeOutputText(reason, 40)}` : '';
+	return ` _(defensive registration${reasonText})_`;
+}
+
 /** Render `result` from `brandAuditSingle()` as a compact Markdown document. */
 export function formatBrandAuditMarkdown(result: CheckResult): string {
 	const summary = result.findings.find((f) => f.metadata?.summary === true);
@@ -144,7 +159,8 @@ export function formatBrandAuditMarkdown(result: CheckResult): string {
 			const signalArr = Array.isArray(f.metadata?.signals) ? (f.metadata!.signals as string[]) : [];
 			const signals = signalArr.length > 0 ? sanitizeOutputText(signalArr.join(', '), 200) : '—';
 			const note = f.metadata?.note ? ` _(${sanitizeOutputText(String(f.metadata.note), 100)})_` : '';
-			lines.push(`- **${domain}**${note} — registrar: ${registrar} (${source}) · confidence ${conf} · signals: ${signals}`);
+			const defensive = defensiveSuffix(f);
+			lines.push(`- **${domain}**${note}${defensive} — registrar: ${registrar} (${source}) · confidence ${conf} · signals: ${signals}`);
 		}
 		lines.push('');
 	}
@@ -208,7 +224,8 @@ function appendVendorDependencies(lines: string[], items: Finding[]): void {
 		const conf = typeof f.metadata?.combinedConfidence === 'number' ? (f.metadata.combinedConfidence as number).toFixed(2) : '—';
 		const signalArr = Array.isArray(f.metadata?.signals) ? (f.metadata!.signals as string[]) : [];
 		const signals = signalArr.length > 0 ? sanitizeOutputText(signalArr.join(', '), 200) : '—';
-		lines.push(`- **${domain}** — registrar: ${registrar} (${source}) · confidence ${conf} · signals: ${signals}`);
+		const defensive = defensiveSuffix(f);
+		lines.push(`- **${domain}**${defensive} — registrar: ${registrar} (${source}) · confidence ${conf} · signals: ${signals}`);
 	}
 	lines.push('');
 }
@@ -226,7 +243,8 @@ function appendPortfolioSubsection(lines: string[], title: string, items: Findin
 		const registrar = sanitizeOutputText(String(f.metadata?.registrar ?? 'Unknown'), 100);
 		const source = sanitizeOutputText(String(f.metadata?.registrarSource ?? 'unknown'), 20);
 		const conf = typeof f.metadata?.combinedConfidence === 'number' ? (f.metadata.combinedConfidence as number).toFixed(2) : '—';
-		lines.push(`- **${domain}** — registrar: ${registrar} (${source}) · confidence ${conf}`);
+		const defensive = defensiveSuffix(f);
+		lines.push(`- **${domain}**${defensive} — registrar: ${registrar} (${source}) · confidence ${conf}`);
 	}
 	lines.push('');
 }

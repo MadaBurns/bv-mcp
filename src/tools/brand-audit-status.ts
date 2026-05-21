@@ -15,6 +15,7 @@
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import type { BrandAuditStatus } from '../lib/db/brand-audit-schema';
+import { BRAND_AUDIT_TARGET_DEADLINE_MS } from '../lib/brand-audit-reaper';
 
 const CATEGORY = 'brand_discovery';
 
@@ -94,15 +95,66 @@ export async function brandAuditStatus(
 
 	const now = (deps.now ?? Date.now)();
 	const progress = `${audit.completed_targets}/${audit.total_targets}`;
+
+	// Dead-zone closure (2026-05-21 brand-zeta.com hang). A `running` target whose
+	// row is older than BRAND_AUDIT_TARGET_DEADLINE_MS is past the point where
+	// the consumer could have flipped it itself — its worker was killed before
+	// the catch handler ran (CPU-saturated tier-1 brands starve the abort-fire
+	// macrotask). The cron reaper would catch it eventually, but the customer
+	// polling this endpoint shouldn't have to wait an extra cron tick. We:
+	//   1. Surface it as `failed` in the response so the customer sees terminal
+	//      progress immediately.
+	//   2. Fire a best-effort UPDATE so the next reader (and the reaper) see
+	//      consistent state. Failure is swallowed — the next reaper tick or
+	//      polling read will retry the same flip.
+	const deadZoneTargets: BrandAuditTargetRow[] = [];
 	const renderedTargets = targets.map((t) => {
 		const hasResultJson = typeof t.result_json === 'string' && t.result_json.length > 0;
-		const renderedStatus: BrandAuditStatus = audit.status === 'completed' && t.status !== 'failed' && hasResultJson ? 'completed' : t.status;
+		const isStuck = t.status === 'running' && now - t.created_at > BRAND_AUDIT_TARGET_DEADLINE_MS;
+		if (isStuck) {
+			deadZoneTargets.push(t);
+		}
+		let renderedStatus: BrandAuditStatus = t.status;
+		if (isStuck) {
+			renderedStatus = 'failed';
+		} else if (audit.status === 'completed' && t.status !== 'failed' && hasResultJson) {
+			renderedStatus = 'completed';
+		}
 		return {
 			row: t,
 			status: renderedStatus,
 			completedAt: renderedStatus === 'completed' ? t.completed_at ?? audit.completed_at : t.completed_at,
+			synthesisedError: isStuck
+				? `target stuck >${Math.floor(BRAND_AUDIT_TARGET_DEADLINE_MS / 60_000)}min in running; consumer cap did not flip status (read-path closure)`
+				: null,
 		};
 	});
+
+	// Fire-and-forget persistence of synthesised failures. We await each UPDATE
+	// (single-row D1 writes are sub-50ms typically) so the next read by anyone
+	// — customer, reaper, brand_audit_get_report — observes the corrected
+	// state. We swallow throws because the response payload is the durability
+	// contract for the polling customer; persistence catches up on subsequent
+	// reads / the next reaper tick.
+	if (deadZoneTargets.length > 0) {
+		for (const t of deadZoneTargets) {
+			try {
+				await deps.db
+					.prepare(
+						"UPDATE brand_audit_targets SET status = 'failed', error = ?, completed_at = ? WHERE audit_id = ? AND target = ? AND status = 'running'",
+					)
+					.bind(
+						`read-path: target stuck >${Math.floor(BRAND_AUDIT_TARGET_DEADLINE_MS / 60_000)}min; consumer cap did not flip status`,
+						now,
+						t.audit_id,
+						t.target,
+					)
+					.run();
+			} catch {
+				// Best-effort — see comment above.
+			}
+		}
+	}
 	const targetStatusCounts = {
 		queued: renderedTargets.filter((t) => t.status === 'queued').length,
 		running: renderedTargets.filter((t) => t.status === 'running').length,
@@ -135,12 +187,12 @@ export async function brandAuditStatus(
 			updatedAgeMs,
 			targetStatusCounts,
 			warnings,
-			targets: renderedTargets.map(({ row, status, completedAt }) => ({
+			targets: renderedTargets.map(({ row, status, completedAt, synthesisedError }) => ({
 				target: row.target,
 				status,
 				createdAt: row.created_at,
 				completedAt,
-				error: row.error,
+				error: synthesisedError ?? row.error,
 				hasPdf: row.pdf_r2_key !== null,
 			})),
 		},

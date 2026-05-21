@@ -18,18 +18,43 @@ const UNKNOWN_REGISTRAR_NAMES = new Set([
 	'registrar not found in registry',
 ]);
 
-const KNOWN_REGISTRAR_FAMILIES: Array<{ family: string; patterns: RegExp[] }> = [
+/**
+ * Registrar-family detector entries.
+ *
+ * - `patterns` run against the normalized identifier (lowercased, punctuation
+ *   stripped, corporate suffixes removed) produced by `normalizeRegistrarIdentity`.
+ *   Use anchored regexes to avoid substring false-positives.
+ * - `rawPatterns` run against the raw lowercased input (no normalization).
+ *   Use sparingly — only for cases where normalization deletes the signal,
+ *   e.g. `cscglobal.com` whose URL strip removes the host.
+ */
+const KNOWN_REGISTRAR_FAMILIES: Array<{ family: string; patterns: RegExp[]; rawPatterns?: RegExp[] }> = [
 	{ family: 'markmonitor', patterns: [/^markmonitor(?:\b|$)/] },
 	{ family: 'com laude', patterns: [/(?:^|\b)com\s+laude(?:\b|$)/, /^nom\s*iq(?:\b|$)/] },
 	{ family: 'safenames', patterns: [/^safenames(?:\b|$)/] },
 	{
+		// CSC operates many regional subsidiaries (CSC US, CSC Canada, CSC UK,
+		// CSC Digital Brand Services Malaysia, Corporation Service Company (Aust)
+		// Pty Ltd, etc.) all sharing infrastructure. Collapse every regional
+		// brand string into a single family so the off-primary-registrar
+		// inference does not flag CSC-managed ccTLD registrations as shadowIt.
+		// Regression source: 2026-05 CSC Global sales-meeting verification of
+		// brand-beta.com.au / brand-iota.com.au / brand-mu.com.au.
 		family: 'csc corporate domains',
 		patterns: [
 			/^csc\s+corporate\s+domains(?:\b|$)/,
 			/^csc\s+corp\s+domains(?:\b|$)/,
 			/^csc\s+digital\s+brand\s+services?(?:\b|$)/,
-			/^corporation\s+service(?:\s+company)?$/,
+			/^csc\s+global(?:\b|$)/,
+			// "Corporation Service Company" with any trailing regional qualifier
+			// (e.g. "Aust Pty"); corporate suffixes like Ltd/LLC are already
+			// stripped by normalizeRegistrarIdentity before this regex runs.
+			/^corporation\s+service\s+company(?:\b|$)/,
+			/^corporation\s+service$/,
 		],
+		// cscglobal.com appears verbatim in some WHOIS responses; the URL strip
+		// in normalizeRegistrarIdentity would delete it, so match against raw.
+		rawPatterns: [/(?:^|\b)cscglobal\.com(?:\b|$)/],
 	},
 	{ family: 'cloudflare', patterns: [/^cloudflare(?:\b|$)/] },
 	{ family: 'tucows', patterns: [/^tucows(?:\b|$)/] },
@@ -65,12 +90,19 @@ function normalizeIanaId(value: string | null | undefined): string | null {
 	return normalized.length > 0 ? normalized : null;
 }
 
-function knownFamily(normalizedName: string | null): string | null {
-	if (!normalizedName) return null;
-	for (const { family, patterns } of KNOWN_REGISTRAR_FAMILIES) {
-		if (patterns.some((pattern) => pattern.test(normalizedName))) return family;
+function knownFamily(normalizedName: string | null, rawLowerName: string | null): string | null {
+	if (!normalizedName && !rawLowerName) return null;
+	for (const { family, patterns, rawPatterns } of KNOWN_REGISTRAR_FAMILIES) {
+		if (normalizedName && patterns.some((pattern) => pattern.test(normalizedName))) return family;
+		if (rawLowerName && rawPatterns?.some((pattern) => pattern.test(rawLowerName))) return family;
 	}
 	return null;
+}
+
+function rawLower(raw: string | null | undefined): string | null {
+	if (!raw) return null;
+	const trimmed = raw.toLowerCase().trim();
+	return trimmed.length > 0 ? trimmed : null;
 }
 
 export function sameRegistrarFamily(left: RegistrarIdentity, right: RegistrarIdentity): boolean {
@@ -80,10 +112,15 @@ export function sameRegistrarFamily(left: RegistrarIdentity, right: RegistrarIde
 
 	const leftName = normalizeRegistrarIdentity(left.name);
 	const rightName = normalizeRegistrarIdentity(right.name);
+	const leftRaw = rawLower(left.name);
+	const rightRaw = rawLower(right.name);
+
+	const leftFamily = knownFamily(leftName, leftRaw);
+	const rightFamily = knownFamily(rightName, rightRaw);
+	if (leftFamily && leftFamily === rightFamily) return true;
+
 	if (!leftName || !rightName) return false;
 	if (leftName === rightName) return true;
 
-	const leftFamily = knownFamily(leftName);
-	const rightFamily = knownFamily(rightName);
-	return !!leftFamily && leftFamily === rightFamily;
+	return false;
 }
