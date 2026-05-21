@@ -48,7 +48,7 @@ export interface EnrichOutputCandidate extends EnrichInputCandidate {
 
 export interface EnrichResult {
 	candidates: EnrichOutputCandidate[];
-	enrichmentStatus: 'ready' | 'partial' | 'sparse';
+	enrichmentStatus: 'ready' | 'partial';
 }
 
 export interface EnrichOptions {
@@ -165,7 +165,7 @@ export async function enrichCandidatesForDefensiveDetection(opts: EnrichOptions)
 					httpRedirectLocation,
 					defensive: evaluation.defensive,
 					// Map evaluateDefensiveRegistration's `reason` to our output field `defensiveReason`.
-					defensiveReason: evaluation.reason,
+					...(evaluation.reason ? { defensiveReason: evaluation.reason } : {}),
 				};
 			} catch {
 				anyFailed = true;

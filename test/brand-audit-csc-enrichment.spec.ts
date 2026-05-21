@@ -128,4 +128,41 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 		});
 		expect(result.enrichmentStatus).toBe('partial');
 	});
+
+	it('isolates candidates blocked by safeFetch SSRF gate (unenriched, no crash)', async () => {
+		// Mock only the DoH endpoint (Google DNS is public, not SSRF-blocked).
+		// Let safeFetch's real SSRF gate reject the private-IP HTTP fetch.
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			// Mock only DoH for MX lookup (public endpoint, safe)
+			if (url.includes('dns.google') && url.includes('192.168.1.1') && url.includes('type=MX')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve({ Answer: [] }),
+					headers: new Headers(),
+				});
+			}
+			// For any other URL (including https://192.168.1.1/), return an error to simulate
+			// the real fetch happening — but safeFetch's validateOutboundUrl will throw
+			// before this mock is even invoked for private IPs.
+			return Promise.reject(new Error('Unexpected fetch'));
+		});
+
+		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-csc-enrichment');
+		const result = await enrichCandidatesForDefensiveDetection({
+			target: 'target.com',
+			candidates: [{ domain: '192.168.1.1', combinedConfidence: 0.9 }],
+			budgetMs: 3_000,
+		});
+
+		// safeFetch rejects the HTTP HEAD to 192.168.1.1 (SSRF gate), so fetchHttpRedirect returns undefined,
+		// triggering anyFailed = true and enrichmentStatus = 'partial'.
+		expect(result.enrichmentStatus).toBe('partial');
+		// The candidate is unenriched (no defensive field) because the HTTP fetch was rejected by SSRF gate.
+		// When httpRedirectLocation is undefined, the whole candidate enrichment is skipped (unenriched).
+		expect(result.candidates[0].defensive).toBeUndefined();
+		expect(result.candidates[0].mxRecords).toBeUndefined();
+		expect(result.candidates[0].httpRedirectLocation).toBeUndefined();
+	});
 });
