@@ -934,6 +934,8 @@ export default {
 							: undefined,
 						whoisBinding: queueEnv.BV_WHOIS,
 						infraProbe: queueEnv.BV_INFRA_PROBE,
+						certstream: queueEnv.BV_CERTSTREAM,
+						profileAccumulator: queueEnv.PROFILE_ACCUMULATOR,
 						...buildBrandTierLookups(queueEnv),
 					},
 				);

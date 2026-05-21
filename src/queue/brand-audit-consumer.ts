@@ -525,11 +525,19 @@ export async function handleBrandAuditQueue(
 		if (typeof rawBody === 'object' && rawBody !== null && rawBody.phase === 'deep_scan') {
 			const { auditId, target } = rawBody as { auditId: string; target: string; phase: string };
 			if (typeof auditId === 'string' && typeof target === 'string' && deps.internalCall) {
-				const { runDeepScanFromStepStore } = await import('../lib/brand-audit-csc-deepscan-job');
-				const stepStore = createD1BrandAuditStepStore(deps.db);
-				await runDeepScanFromStepStore({ auditId, target, stepStore, internalCall: deps.internalCall });
+				try {
+					const { runDeepScanFromStepStore } = await import('../lib/brand-audit-csc-deepscan-job');
+					const stepStore = createD1BrandAuditStepStore(deps.db);
+					await runDeepScanFromStepStore({ auditId, target, stepStore, internalCall: deps.internalCall });
+				} catch (err) {
+					// Deep-scan failures are not retryable: the step-store is the durability boundary.
+					// The fast-stage payload is already persisted; brand_audit_get_report falls back to
+					// csc_complement_fast when csc_complement_full is absent. Ack and let the cron reaper
+					// re-enqueue if needed.
+					console.warn('[csc-complement] deep_scan job failed:', err);
+				}
 			}
-			// Ack unconditionally: malformed payload or missing internalCall are not retryable.
+			// Ack unconditionally: malformed payload, missing internalCall, or deep-scan failure are not retryable.
 			message.ack();
 			continue;
 		}
