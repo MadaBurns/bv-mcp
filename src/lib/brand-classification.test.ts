@@ -276,8 +276,8 @@ describe('classifyCandidate', () => {
 			expect(classifyCandidate(c, target()).bucket).toBe('consolidated');
 		});
 
-		// Regression: 2026-05 CSC Global sales-meeting verification.
-		// brand-beta.com.au (CSC Australia: "Corporation Service Company (Aust) Pty Ltd")
+		// Regression: 2026-05 CSC registrar-family fixture verification.
+		// regional-alpha.example.com (CSC Australia: "Corporation Service Company (Aust) Pty Ltd")
 		// was flagged as shadowIt against brand-beta.com (CSC US). Both are CSC. The
 		// off-primary-registrar inference must NOT fire on cross-subsidiary CSC
 		// registrations — that's defensive registration, not shadow IT.

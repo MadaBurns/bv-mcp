@@ -4,6 +4,7 @@ const DEFAULT_POLICY = {
 	allowedEmailDomains: ['example.com', 'example.test', 'example.invalid', 'blackveilsecurity.com'],
 	allowedDomainSuffixes: ['example.com', 'example.net', 'example.org', 'example.test', 'example.invalid', 'localhost', 'blackveilsecurity.com'],
 	allowedInternalHostnames: [],
+	forbiddenClientDomains: [],
 	allowedPaths: [],
 	allowedPathPrefixes: [],
 };
@@ -26,6 +27,7 @@ const RULES = [
 		pattern: /\b(?:tenant-pilot-\d+|tenant-db-tenant-|true-force-scan|X-Emergency-Dispatch)\b/gi,
 	},
 	{ id: 'customer-marker', pattern: /\bCustomer\s+[A-Z][A-Za-z0-9-]*\s+(?:Corp|Inc|LLC|Ltd|Co)\b/g },
+	{ id: 'client-context', pattern: /\b(?:CSC pilot brands|sales-meeting verification|production audit|validation batch)\b/gi },
 ];
 
 const PUBLIC_IPV4_PATTERN = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g;
@@ -40,6 +42,7 @@ export function normalizePolicy(policy = {}) {
 		allowedEmailDomains: policy.allowedEmailDomains ?? DEFAULT_POLICY.allowedEmailDomains,
 		allowedDomainSuffixes: policy.allowedDomainSuffixes ?? DEFAULT_POLICY.allowedDomainSuffixes,
 		allowedInternalHostnames: policy.allowedInternalHostnames ?? DEFAULT_POLICY.allowedInternalHostnames,
+		forbiddenClientDomains: policy.forbiddenClientDomains ?? DEFAULT_POLICY.forbiddenClientDomains,
 		allowedPaths: policy.allowedPaths ?? DEFAULT_POLICY.allowedPaths,
 		allowedPathPrefixes: policy.allowedPathPrefixes ?? DEFAULT_POLICY.allowedPathPrefixes,
 	};
@@ -104,6 +107,11 @@ export function isAllowedInternalHostname(value, policy = DEFAULT_POLICY) {
 	return normalized.allowedInternalHostnames.includes(value.toLowerCase());
 }
 
+function clientDomainPattern(domain) {
+	const escaped = domain.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	return new RegExp(`\\b${escaped}\\b`, 'gi');
+}
+
 function finding(file, text, lineIndex, match, ruleId) {
 	return {
 		file,
@@ -129,6 +137,12 @@ export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY)
 			}
 		}
 
+		for (const domain of normalized.forbiddenClientDomains) {
+			for (const match of line.matchAll(clientDomainPattern(domain))) {
+				findings.push(finding(file, line, lineIndex, match, 'client-domain'));
+			}
+		}
+
 		for (const match of line.matchAll(PUBLIC_IPV4_PATTERN)) {
 			if (!isAllowedIPv4(match[0])) findings.push(finding(file, line, lineIndex, match, 'public-ipv4'));
 		}
@@ -143,6 +157,10 @@ export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY)
 
 export function scanFileContent(file, text, policy = DEFAULT_POLICY) {
 	return [...scanPathForForbiddenSurface(file, policy), ...(shouldScanFile(file, policy) ? scanTextForSensitiveSurface(file, text, policy) : [])];
+}
+
+export function scanCommitMessage(text, policy = DEFAULT_POLICY) {
+	return scanTextForSensitiveSurface('.git/COMMIT_EDITMSG', text, policy);
 }
 
 export function formatFindings(findings) {
