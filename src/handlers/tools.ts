@@ -58,6 +58,7 @@ import { brandAuditBatchStart } from '../tools/brand-audit-batch-start';
 import { brandAuditStatus } from '../tools/brand-audit-status';
 import { brandAuditGetReport } from '../tools/brand-audit-get-report';
 import { brandAuditWatch } from '../tools/brand-audit-watch';
+import { createD1BrandAuditStepStore } from '../lib/brand-audit-step-store';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -402,7 +403,7 @@ const TOOL_REGISTRY: Record<
 					),
 				]);
 			}
-			return brandAuditStatus(String(args.auditId ?? ''), principalId, { db });
+			return brandAuditStatus(String(args.auditId ?? ''), principalId, { db, stepStore: createD1BrandAuditStepStore(db) });
 		},
 		cacheable: false,
 	},
@@ -428,7 +429,7 @@ const TOOL_REGISTRY: Record<
 			return brandAuditGetReport(
 				{ auditId: String(args.auditId ?? ''), target: args.target as string | undefined },
 				principalId,
-				{ db, bucket: ro?.brandReportsR2 as { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> } | undefined },
+				{ db, bucket: ro?.brandReportsR2 as { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> } | undefined, stepStore: createD1BrandAuditStepStore(db) },
 			);
 		},
 		cacheable: false,
