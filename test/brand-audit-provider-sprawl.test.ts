@@ -37,7 +37,7 @@ describe('groupByProvider', () => {
 	});
 	it('returns multiple providers when NS list crosses orgs', () => {
 		expect(
-			groupByProvider(['a.ns.brand-eta.example.com', 'b.ns.brand-eta.example.com', 'pdns1.ultradns.net', 'pdns2.ultradns.com']),
+			groupByProvider(['a.ns.paypal.com', 'b.ns.paypal.com', 'pdns1.ultradns.net', 'pdns2.ultradns.com']),
 		).toEqual({ 'PayPal (in-house)': 2, 'UltraDNS (Vercara)': 2 });
 	});
 	it('deduplicates duplicate nameservers within input', () => {
@@ -51,7 +51,7 @@ describe('isMultiProvider', () => {
 	});
 	it('returns true for paypal-style UltraDNS + in-house', () => {
 		expect(
-			isMultiProvider(['pdns1.ultradns.net', 'pdns2.ultradns.com', 'a.ns.brand-eta.example.com', 'b.ns.brand-eta.example.com']),
+			isMultiProvider(['pdns1.ultradns.net', 'pdns2.ultradns.com', 'a.ns.paypal.com', 'b.ns.paypal.com']),
 		).toBe(true);
 	});
 	it('returns false for single-provider list', () => {
