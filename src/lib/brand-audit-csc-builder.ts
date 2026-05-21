@@ -59,6 +59,19 @@ export interface BuildCscComplementInput {
 	now: () => number;
 }
 
+/**
+ * Build the fast-stage cscComplement payload for a brand audit.
+ *
+ * Constructs the CSC complement view from classified findings by:
+ * 1. Extracting portfolio candidates from finding metadata
+ * 2. Running inline enrichment (MX + HTTP checks) on top-N candidates to determine defensive registration
+ * 3. Aggregating registrar portfolio from detected candidates
+ * 4. Extracting shadow-IT highlights (owned off primary registrar)
+ * 5. Initializing postureSnapshot and deepScan with 'pending' stage (to be filled by deep-scan job)
+ *
+ * @param input - Contains seedDomain, primaryRegistrar, classifiedFindings, and clock function
+ * @returns Populated BrandAuditCsc with anchor, portfolio, defensive registrations, and pending posture/deep-scan stages
+ */
 export async function buildCscComplement(input: BuildCscComplementInput): Promise<BrandAuditCsc> {
 	const { seedDomain, primaryRegistrar, primaryRegistrarSource, primaryRegistrarIanaId, classifiedFindings, now } = input;
 

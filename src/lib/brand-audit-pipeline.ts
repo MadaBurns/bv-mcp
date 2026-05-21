@@ -1047,6 +1047,9 @@ export async function runBrandAuditPipeline(
 			classifiedFindings,
 			now,
 		});
+		// Side-channel attach cscComplement to result to avoid polluting the shared CheckResult type.
+		// Value is also persisted to step-store; consumers reading via brand_audit_get_report validate
+		// against BrandAuditCscSchema at runtime. Type coercion is non-load-bearing downstream.
 		(result as unknown as { cscComplement: typeof cscComplement }).cscComplement = cscComplement;
 
 		if (stepStore) {

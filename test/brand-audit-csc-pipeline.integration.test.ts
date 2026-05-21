@@ -7,10 +7,10 @@ import type { CheckResult, Finding } from '../src/lib/scoring';
 /**
  * Integration test for runBrandAuditPipeline when view='csc_complement'.
  *
- * The CSC branch fires AFTER classification and derives its DiscoveryReportModel
- * from the pipeline's already-classified findings. This means the discovery stub
- * must return a valid CheckResult with candidate findings whose metadata drives
- * the classifier to the expected bucket distribution.
+ * The CSC branch fires AFTER classification and derives its cscComplement payload
+ * from the pipeline's classifiedFindings array. This means the discovery stub must
+ * return a valid CheckResult with candidate findings whose metadata drives the
+ * classifier to the expected bucket distribution.
  *
  * Classification rules used:
  *   - ford.co.uk: signals ['dkim_key_reuse', 'san'], registrar GoDaddy (off-primary).
