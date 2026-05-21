@@ -42,7 +42,8 @@
 		"example.com",
 		"example.test",
 		"example.invalid",
-		"blackveilsecurity.com"
+		"blackveilsecurity.com",
+		"anthropic.com"
 	],
 	"allowedDomainSuffixes": [
 		"example.com",
