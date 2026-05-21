@@ -135,6 +135,13 @@ jobs:
     needs: version-bump
     runs-on: ubuntu-latest
     environment: production
+    # Gated off while the production `NPM_TOKEN` is being rotated. The hosted
+    # token returned 404 on `npm publish` for v2.24.0 (npm reports 404 for
+    # auth-shaped misses). Re-enable by deleting this `if:` line once a fresh
+    # token with publish rights to both `blackveil-dns` and
+    # `@blackveil/dns-checks` is in the production env. Releases are running
+    # via the manual fallback in the meantime.
+    if: false
     steps:
       - name: Check npm token
         env:
@@ -245,6 +252,11 @@ jobs:
     needs: [validate, version-bump]
     runs-on: ubuntu-latest
     environment: production
+    # Gated off in lockstep with publish-npm. The MCP Registry validates that
+    # the npm package version exists before publishing, so this job cascades to
+    # `NPM package 'blackveil-dns' not found (status: 404)` whenever npm is
+    # stale. Re-enable together with publish-npm once `NPM_TOKEN` is rotated.
+    if: false
     steps:
       - name: Check publisher key
         env:
