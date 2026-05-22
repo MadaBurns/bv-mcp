@@ -447,7 +447,30 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 	// Phase 1: Fast NS existence check — filter out unregistered variants
 	const registeredVariants = await filterByNsExistence(variants, dnsOpts);
 
-	// Classify unregistered variants immediately as info findings
+	// Phase 1.5: Fallback A-record check for variants Phase 1 rejected.
+	//
+	// Phase 1's NS query runs with tight PHASE1_DNS_OPTS (timeoutMs=2000, retries=0).
+	// Slow ccTLD authoritative servers — observed empirically on .nl — can exceed
+	// that window, producing an empty NS result that the classifier would otherwise
+	// treat as "unregistered". An A record is independent positive evidence that
+	// the domain is registered, so any variant with A>0 is routed to Phase 2
+	// (with prefetchedNs=[]) instead of being prematurely classified.
+	const candidateUnregistered = variants.filter((v) => !registeredVariants.has(v));
+	if (candidateUnregistered.length > 0) {
+		const aResults = await Promise.allSettled(
+			candidateUnregistered.map(async (variant) => ({
+				variant,
+				hasA: (await queryDnsRecords(variant, 'A', { ...dnsOpts, ...PHASE1_DNS_OPTS })).length > 0,
+			})),
+		);
+		for (const result of aResults) {
+			if (result.status === 'fulfilled' && result.value.hasA) {
+				registeredVariants.set(result.value.variant, []);
+			}
+		}
+	}
+
+	// Classify truly-unregistered variants (no NS AND no A) as info findings.
 	for (const variant of variants) {
 		if (!registeredVariants.has(variant)) {
 			findings.push(
