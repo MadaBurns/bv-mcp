@@ -71,24 +71,26 @@ function badgeColor(bucket: BrandAuditBucket) {
  * defensive fallback (last `.replace`).
  */
 function winAnsiSafe(s: string): string {
-	return s
-		.replace(/≥/g, '>=')
-		.replace(/≤/g, '<=')
-		.replace(/≠/g, '!=')
-		.replace(/≈/g, '~')
-		.replace(/×/g, 'x')
-		.replace(/±/g, '+/-')
-		.replace(/—/g, '--')
-		.replace(/–/g, '-')
-		.replace(/…/g, '...')
-		.replace(/[“”]/g, '"')
-		.replace(/[‘’]/g, "'")
-		.replace(/→/g, '->')
-		.replace(/←/g, '<-')
-		.replace(/✓/g, 'v')
-		.replace(/✗/g, 'x')
-		// Strip any remaining > U+00FF that WinAnsi can't encode.
-		.replace(/[^\x00-\xff]/g, '?');
+	return (
+		s
+			.replace(/≥/g, '>=')
+			.replace(/≤/g, '<=')
+			.replace(/≠/g, '!=')
+			.replace(/≈/g, '~')
+			.replace(/×/g, 'x')
+			.replace(/±/g, '+/-')
+			.replace(/—/g, '--')
+			.replace(/–/g, '-')
+			.replace(/…/g, '...')
+			.replace(/[“”]/g, '"')
+			.replace(/[‘’]/g, "'")
+			.replace(/→/g, '->')
+			.replace(/←/g, '<-')
+			.replace(/✓/g, 'v')
+			.replace(/✗/g, 'x')
+			// Strip any remaining > U+00FF that WinAnsi can't encode.
+			.replace(/[^\x00-\xff]/g, '?')
+	);
 }
 
 /**
@@ -155,7 +157,7 @@ function drawCandidateRow(ctx: DrawContext, row: BrandCandidateRow): void {
 	// Row has 2 text lines (domain, metadata) + optional 3rd (reasons). Background
 	// rect height must cover ALL of them — the prior 2-line-only height let the
 	// next row's bg overdraw the reasons text (surfaced 2026-05-19 in production
-	// marriott/brandepsilon PDFs).
+	// tier-1/brandepsilon PDFs).
 	const textLines = hasReasons ? 3 : 2;
 	const rowBgHeight = ROW_HEIGHT * textLines + 4;
 	const rowSpacing = 4; // gap between rows
@@ -245,14 +247,13 @@ function tieredRowsFromCheckResult(result: CheckResult): TieredRow[] {
 		// Bucket override if the original finding said impersonationSurface but
 		// the legacy extractor coerced/dropped it.
 		const bucket = typeof m.bucket === 'string' ? (m.bucket as BrandAuditBucket | 'impersonationSurface') : baseRow.bucket;
-		const tier =
-			m.tier === 0 || m.tier === 1 || m.tier === 2 || m.tier === 3 || m.tier === 4
-				? (m.tier as 0 | 1 | 2 | 3 | 4)
-				: undefined;
+		const tier = m.tier === 0 || m.tier === 1 || m.tier === 2 || m.tier === 3 || m.tier === 4 ? (m.tier as 0 | 1 | 2 | 3 | 4) : undefined;
 		const lookalikeScore = typeof m.lookalikeScore === 'number' ? (m.lookalikeScore as number) : undefined;
 		const scoreAlertCtxRaw = m.scoreAlertContext;
 		const scoreAlertContext =
-			scoreAlertCtxRaw && typeof scoreAlertCtxRaw === 'object' && !Array.isArray(scoreAlertCtxRaw) &&
+			scoreAlertCtxRaw &&
+			typeof scoreAlertCtxRaw === 'object' &&
+			!Array.isArray(scoreAlertCtxRaw) &&
 			typeof (scoreAlertCtxRaw as { alertType?: unknown }).alertType === 'string' &&
 			typeof (scoreAlertCtxRaw as { transition?: unknown }).transition === 'string'
 				? {
@@ -300,7 +301,9 @@ function drawOwnedPortfolio(ctx: DrawContext, candidates: TieredRow[]): void {
 	const declaredEvidence = consolidated.filter((c) => c.tier === 2);
 	const inferredConsolidated = consolidated.filter((c) => c.tier === undefined || c.tier === 3);
 	const inferredShadowIt = candidates.filter((c) => c.bucket === 'shadowIt' && c.relationshipType === 'owned_off_primary_registrar');
-	const inferredIndeterminate = candidates.filter((c) => c.bucket === 'indeterminate' && c.relationshipType !== 'authorized_vendor_dependency');
+	const inferredIndeterminate = candidates.filter(
+		(c) => c.bucket === 'indeterminate' && c.relationshipType !== 'authorized_vendor_dependency',
+	);
 	const total =
 		tenantDeclared.length +
 		graphSurfaced.length +
@@ -316,11 +319,7 @@ function drawOwnedPortfolio(ctx: DrawContext, candidates: TieredRow[]): void {
 	drawSubsectionRows(ctx, graphSurfaced);
 	drawSubsectionHeader(ctx, 'Declared evidence (tier 2)', declaredEvidence.length);
 	drawSubsectionRows(ctx, declaredEvidence);
-	drawSubsectionHeader(
-		ctx,
-		'Inferred (tier 3)',
-		inferredConsolidated.length + inferredShadowIt.length + inferredIndeterminate.length,
-	);
+	drawSubsectionHeader(ctx, 'Inferred (tier 3)', inferredConsolidated.length + inferredShadowIt.length + inferredIndeterminate.length);
 	drawSubsectionRows(ctx, [...inferredConsolidated, ...inferredShadowIt, ...inferredIndeterminate]);
 }
 
@@ -358,7 +357,11 @@ function drawDepthWarnings(ctx: DrawContext, warnings: string[]): void {
 		ctx.cursorY -= 11;
 	}
 	if (extraCount > 0) {
-		drawText(ctx, `- ${extraCount} additional warning${extraCount === 1 ? '' : 's'} in JSON metadata`, { x: MARGIN + 8, size: 8, color: COLOR_DIM });
+		drawText(ctx, `- ${extraCount} additional warning${extraCount === 1 ? '' : 's'} in JSON metadata`, {
+			x: MARGIN + 8,
+			size: 8,
+			color: COLOR_DIM,
+		});
 		ctx.cursorY -= 11;
 	}
 	ctx.cursorY -= 6;
@@ -384,7 +387,13 @@ function drawFooter(ctx: DrawContext, target: string, serverVersion: string, dat
 	const pages = ctx.doc.getPages();
 	for (const p of pages) {
 		p.drawRectangle({ x: MARGIN, y: MARGIN + 24, width: CONTENT_WIDTH, height: 0.5, color: COLOR_DIM });
-		p.drawText(winAnsiSafe(`bv-mcp brand-audit · ${target} · ${dateLabel}`), { x: MARGIN, y: MARGIN + 8, size: 7, font: ctx.mono, color: COLOR_DIM });
+		p.drawText(winAnsiSafe(`bv-mcp brand-audit · ${target} · ${dateLabel}`), {
+			x: MARGIN,
+			y: MARGIN + 8,
+			size: 7,
+			font: ctx.mono,
+			color: COLOR_DIM,
+		});
 		p.drawText(winAnsiSafe(`v${serverVersion}`), { x: PAGE_WIDTH - MARGIN - 40, y: MARGIN + 8, size: 7, font: ctx.mono, color: COLOR_DIM });
 	}
 }

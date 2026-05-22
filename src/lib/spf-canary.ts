@@ -24,8 +24,8 @@ import { checkSpf } from '../tools/check-spf';
 export const SPF_CANARY_DOMAINS: readonly string[] = [
 	'google.com',
 	'microsoft.com',
-	'[redacted-domain]',
-	'[redacted-domain]',
+	'wikipedia.org',
+	'reddit.com',
 	'anthropic.com',
 	'netflix.com',
 	'apple.com',

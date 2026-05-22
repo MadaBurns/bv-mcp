@@ -74,7 +74,7 @@ export interface SanCorrelationOptions {
 	certstream?: { fetch: typeof fetch };
 	/**
 	 * Caller-supplied abort signal. Cancels in-flight crt.sh fetches when the
-	 * audit budget fires — the JSON parse for tier-1 brands (walmart-scale)
+	 * audit budget fires — the JSON parse for tier-1 brands (mega-portfolio-scale)
 	 * is the single largest CPU sink in the orchestrator, so cancelling it
 	 * mid-stream is what lets the consumer's catch handler win the race
 	 * against CF's CPU kill.
@@ -174,10 +174,7 @@ async function attemptCertstreamSans(
 
 	let response: Response;
 	try {
-		response = await certstream.fetch(
-			`https://certstream/sans?domain=${encodeURIComponent(seedLower)}`,
-			{ signal: controller.signal },
-		);
+		response = await certstream.fetch(`https://certstream/sans?domain=${encodeURIComponent(seedLower)}`, { signal: controller.signal });
 	} catch {
 		clearTimeout(timeoutId);
 		return null;
@@ -471,10 +468,7 @@ export async function correlateSansRecursive(
 	};
 }
 
-export async function correlateSans(
-	seedDomain: string,
-	options: SanCorrelationOptions = {},
-): Promise<SanCorrelationResult> {
+export async function correlateSans(seedDomain: string, options: SanCorrelationOptions = {}): Promise<SanCorrelationResult> {
 	const validation = validateDomain(seedDomain);
 	if (!validation.valid) {
 		throw new Error(`Domain validation failed: ${validation.error ?? 'invalid domain'}`);

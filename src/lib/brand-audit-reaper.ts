@@ -56,7 +56,7 @@ export const STUCK_TARGET_THRESHOLD_MS = 10 * 60 * 1000;
  *
  * 7 minutes leaves a buffer wide enough that a legitimate 5-minute audit
  * isn't truncated by a polling read at the cliff. Anything older is the
- * disney/walmart-class hang where the worker was killed before the catch ran.
+ * tier-1-class hang where the worker was killed before the catch ran.
  *
  * Must remain strictly less than {@link STUCK_TARGET_THRESHOLD_MS} so the read
  * path closes the dead zone before the cron reaper would.
@@ -106,9 +106,7 @@ export async function reapStuckBrandAudits(deps: ReaperDeps): Promise<ReaperResu
 	let stuck: StuckTargetRow[];
 	try {
 		const rows = await deps.db
-			.prepare(
-				'SELECT audit_id, target FROM brand_audit_targets WHERE status = ? AND created_at < ? LIMIT ?',
-			)
+			.prepare('SELECT audit_id, target FROM brand_audit_targets WHERE status = ? AND created_at < ? LIMIT ?')
 			.bind('running', threshold, MAX_REAP_PER_TICK + 1)
 			.all<StuckTargetRow>();
 		stuck = rows.results ?? [];
@@ -163,9 +161,7 @@ async function flipTargetFailed(db: D1Database, row: StuckTargetRow, now: number
 async function bumpAuditCounter(db: D1Database, auditId: string, now: number): Promise<AuditCounterRow | null> {
 	try {
 		await db
-			.prepare(
-				'UPDATE brand_audits SET completed_targets = completed_targets + 1, updated_at = ? WHERE id = ?',
-			)
+			.prepare('UPDATE brand_audits SET completed_targets = completed_targets + 1, updated_at = ? WHERE id = ?')
 			.bind(now, auditId)
 			.run();
 		const counter = (await db
@@ -181,9 +177,7 @@ async function bumpAuditCounter(db: D1Database, auditId: string, now: number): P
 async function finalizeAudit(db: D1Database, auditId: string, now: number): Promise<boolean> {
 	try {
 		const res = await db
-			.prepare(
-				"UPDATE brand_audits SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ? AND status != 'completed'",
-			)
+			.prepare("UPDATE brand_audits SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ? AND status != 'completed'")
 			.bind(now, now, auditId)
 			.run();
 		return (res.meta?.changes ?? 0) > 0;
