@@ -916,12 +916,37 @@ export default {
 			// Cloudflare Workers re-bind env per invocation; the request-path
 			// closures constructed in `executeMcpRequest` never reach here.
 			const tierLookups = buildBrandTierLookups(e as BvMcpEnv);
+			// Build internalCall closure for the CSC deep-scan job. Wraps
+			// handleToolsCall so the job can invoke scan_domain / discover_subdomains
+			// without HTTP framing. Dynamic import keeps the queue cold-start path
+			// unaffected; the import is cached after the first deep-scan message.
+			const queueEnv = e as BvMcpEnv;
+			const internalCall = async (tool: string, args: { domain: string }): Promise<unknown> => {
+				const { handleToolsCall } = await import('./handlers/tools');
+				return handleToolsCall(
+					{ name: tool, arguments: args as Record<string, unknown> },
+					queueEnv.SCAN_CACHE,
+					{
+						providerSignaturesUrl: queueEnv.PROVIDER_SIGNATURES_URL,
+						scoringConfig: parseScoringConfigCached(queueEnv.SCORING_CONFIG),
+						secondaryDoh: queueEnv.BV_DOH_ENDPOINT
+							? { endpoint: queueEnv.BV_DOH_ENDPOINT, token: queueEnv.BV_DOH_TOKEN }
+							: undefined,
+						whoisBinding: queueEnv.BV_WHOIS,
+						infraProbe: queueEnv.BV_INFRA_PROBE,
+						certstream: queueEnv.BV_CERTSTREAM,
+						profileAccumulator: queueEnv.PROFILE_ACCUMULATOR,
+						...buildBrandTierLookups(queueEnv),
+					},
+				);
+			};
 			const deps: BrandAuditConsumerDeps = {
 				db,
 				pdfQueue,
 				brandAuditQueue,
 				discoveryModeDefault,
 				whoisBinding: e.BV_WHOIS as Fetcher | undefined,
+				internalCall,
 				...tierLookups,
 			};
 			await handleBrandAuditQueue(batch, deps);
