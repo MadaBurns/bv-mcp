@@ -67,7 +67,7 @@ const RESOURCES: McpResource[] = [
 const RESOURCE_CONTENT: Record<string, string> = {
 	'dns-security://guides/security-checks': `# DNS Security Checks
 
-59 MCP tools, including 30 \`check_*\` tools and \`scan_domain\` across 18 scan categories.
+60 MCP tools, including 30 \`check_*\` tools and \`scan_domain\` across 18 scan categories.
 
 ## Tool -> Category Mapping
 
