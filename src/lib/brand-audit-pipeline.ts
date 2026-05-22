@@ -16,10 +16,7 @@ import {
 import { validateSprawlItem } from './sprawl-invariants';
 import { evaluateDefensiveRegistration } from './brand-defensive-registration';
 import type { BrandEvidenceObservation } from './brand-evidence';
-import {
-	discoverBrandDomains as defaultDiscoverBrandDomains,
-	type BrandDiscoveryProgressEvent,
-} from '../tools/discover-brand-domains';
+import { discoverBrandDomains as defaultDiscoverBrandDomains, type BrandDiscoveryProgressEvent } from '../tools/discover-brand-domains';
 import { checkRdapLookup as defaultCheckRdapLookup, type RdapCheckOptions } from '../tools/check-rdap-lookup';
 import type { BrandAuditStepStore } from './brand-audit-step-store';
 import type { Tier0Result } from './brand-tier0-enterprise';
@@ -435,9 +432,7 @@ function graphEvidenceFromObservations(
 		if (obs.tier !== 1) continue;
 		const md = obs.metadata;
 		if (!isRecord(md)) continue;
-		const signalTypes = Array.isArray(md.signalTypes)
-			? md.signalTypes.filter((value): value is string => typeof value === 'string')
-			: [];
+		const signalTypes = Array.isArray(md.signalTypes) ? md.signalTypes.filter((value): value is string => typeof value === 'string') : [];
 		const numSharedSignals = md.numSharedSignals;
 		const maxSpecificity = md.maxSpecificity;
 		if (signalTypes.length === 0 || typeof numSharedSignals !== 'number' || typeof maxSpecificity !== 'number') continue;
@@ -454,9 +449,7 @@ function graphEvidenceFromObservations(
 
 /** Pull registrar + registrant out of a check-rdap-lookup result, mirroring `scripts/brand-audit-brand-audit.spec.ts:lookupRegistrar`. */
 function extractRegistrar(rdap: CheckResult): RegistrarLookup {
-	const populated = rdap.findings.find(
-		(f) => isMeaningfulRegistrar(f.metadata?.registrar),
-	);
+	const populated = rdap.findings.find((f) => isMeaningfulRegistrar(f.metadata?.registrar));
 	const registrantFinding = rdap.findings.find(
 		(f) => typeof f.metadata?.registrant === 'string' && (f.metadata.registrant as string).length > 0,
 	);
@@ -469,7 +462,13 @@ function extractRegistrar(rdap: CheckResult): RegistrarLookup {
 			source === 'lookup_failed' && typeof populated.metadata?.registrarFailureReason === 'string'
 				? populated.metadata.registrarFailureReason
 				: null;
-		return { registrar: (populated.metadata!.registrar as string).trim(), registrarIanaId, registrarSource: source, registrant, registrarFailureReason };
+		return {
+			registrar: (populated.metadata!.registrar as string).trim(),
+			registrarIanaId,
+			registrarSource: source,
+			registrant,
+			registrarFailureReason,
+		};
 	}
 	const lastWithSource = [...rdap.findings].reverse().find((f) => typeof f.metadata?.registrarSource === 'string');
 	const source = (lastWithSource?.metadata?.registrarSource as RegistrarSource | undefined) ?? 'unknown';
@@ -514,7 +513,9 @@ function unknownRegistrarLookup(): RegistrarLookup {
 }
 
 function hasRegistrarIndependentEvidence(domain: string, seedDomain: string, signals: string[]): boolean {
-	return domain === seedDomain || domain.endsWith(`.${seedDomain}`) || signals.some((signal) => STRONG_REGISTRAR_INDEPENDENT_SIGNALS.has(signal));
+	return (
+		domain === seedDomain || domain.endsWith(`.${seedDomain}`) || signals.some((signal) => STRONG_REGISTRAR_INDEPENDENT_SIGNALS.has(signal))
+	);
 }
 
 function isRegistrarSource(value: unknown): value is RegistrarSource {
@@ -533,9 +534,7 @@ function readRegistrarLookup(value: unknown): RegistrarLookup | null {
 	const registrant = typeof value.registrant === 'string' ? value.registrant : null;
 	const registrarIanaId = typeof value.registrarIanaId === 'string' ? value.registrarIanaId : null;
 	const registrarFailureReason =
-		value.registrarSource === 'lookup_failed' && typeof value.registrarFailureReason === 'string'
-			? value.registrarFailureReason
-			: null;
+		value.registrarSource === 'lookup_failed' && typeof value.registrarFailureReason === 'string' ? value.registrarFailureReason : null;
 	return { registrar: value.registrar, registrarIanaId, registrarSource: value.registrarSource, registrant, registrarFailureReason };
 }
 
@@ -586,35 +585,30 @@ async function lookupCandidateRegistrars(
 	const statusForLookup = (lookup: RegistrarLookup): CandidateRegistrarLookupStatus =>
 		lookup.registrarSource === 'lookup_failed' ? 'needs_retry' : 'completed';
 
-	if (deadlineMs === undefined && !signal) {
-		const candidates = await mapConcurrent(candidateFindings, RDAP_CONCURRENCY, async (f) => {
-			const candidate = f.metadata!.candidate as string;
-			const lookup = await safeRegistrarLookup(candidate, deps, signal);
-			return { candidate, lookup, status: statusForLookup(lookup) };
-		});
-		return { candidates, partial: false, skippedCandidates: [], rdapQueries: candidates.length };
-	}
-
-	const candidates: CandidateRegistrarLookup[] = [];
+	// Concurrent path — used whether or not a deadline is set. The serial fallback
+	// that lived here caused late candidates in a 40-domain audit to ghost-abort
+	// (RDAP_TIMEOUT_MS × N is far longer than any sane audit deadline). Concurrency
+	// is bounded by RDAP_CONCURRENCY; each task does a per-task deadline check
+	// before issuing the RDAP fetch so skipped slots still surface as
+	// 'skipped_deadline' rather than 'lookup_failed/caller_aborted'.
 	const skippedCandidates: string[] = [];
 	let partial = false;
-	for (const finding of candidateFindings) {
-		const candidate = finding.metadata!.candidate as string;
+	const results = await mapConcurrent(candidateFindings, RDAP_CONCURRENCY, async (f) => {
+		const candidate = f.metadata!.candidate as string;
 		if (aborted() || (deadlineMs !== undefined && now() >= deadlineMs)) {
 			partial = true;
 			skippedCandidates.push(candidate);
-			candidates.push({ candidate, lookup: unknownRegistrarLookup(), status: 'skipped_deadline' });
-			continue;
+			return { candidate, lookup: unknownRegistrarLookup(), status: 'skipped_deadline' as const };
 		}
 		const lookup = await safeRegistrarLookup(candidate, deps, signal);
-		candidates.push({ candidate, lookup, status: statusForLookup(lookup) });
-	}
+		return { candidate, lookup, status: statusForLookup(lookup) };
+	});
 
 	return {
-		candidates,
+		candidates: results,
 		partial,
 		skippedCandidates,
-		rdapQueries: candidates.filter((entry) => entry.status === 'completed' || entry.status === 'needs_retry').length,
+		rdapQueries: results.filter((entry) => entry.status === 'completed' || entry.status === 'needs_retry').length,
 	};
 }
 
@@ -724,9 +718,7 @@ export async function runBrandAuditPipeline(
 			...(deps.tier1Lookup ? { tier1Lookup: deps.tier1Lookup } : {}),
 			...(deps.tier2Lookup ? { tier2Lookup: deps.tier2Lookup } : {}),
 		} as Parameters<typeof discover>[2];
-		discovery = hasTierDeps
-			? await discover(seedDomain, discoveryOpts, discoveryDeps)
-			: await discover(seedDomain, discoveryOpts);
+		discovery = hasTierDeps ? await discover(seedDomain, discoveryOpts, discoveryDeps) : await discover(seedDomain, discoveryOpts);
 		throwIfAborted();
 		await stepStore?.put({ auditId, target: seedDomain, step: 'discovery', status: 'completed', payload: discovery });
 		recordStep(stepTimings, 'discovery', 'completed', discoveryStartedAtMs, now());
@@ -777,9 +769,7 @@ export async function runBrandAuditPipeline(
 		recordStep(stepTimings, 'registrar_enrichment', candidateLookups.partial ? 'partial' : 'completed', registrarStartedAtMs, now());
 	}
 	const { targetLookup } = registrarEnrichment;
-	const lookupByCandidate = new Map(
-		registrarEnrichment.candidates.map((entry) => [normalizeDomainKey(entry.candidate), entry]),
-	);
+	const lookupByCandidate = new Map(registrarEnrichment.candidates.map((entry) => [normalizeDomainKey(entry.candidate), entry]));
 	const buildPerformance = () =>
 		summarizeBrandAuditMetrics({
 			startedAtMs: auditStartedAtMs,
@@ -861,9 +851,7 @@ export async function runBrandAuditPipeline(
 		// candidate finding's metadata; callers that don't yet populate them get
 		// the safe defaults ([], null, 0) and the new branches simply don't fire.
 		const md = f.metadata!;
-		const sharedTxtVerifications = Array.isArray(md.sharedTxtVerifications)
-			? (md.sharedTxtVerifications as string[])
-			: [];
+		const sharedTxtVerifications = Array.isArray(md.sharedTxtVerifications) ? (md.sharedTxtVerifications as string[]) : [];
 		const sharedMxPlatform = typeof md.sharedMxPlatform === 'string' ? (md.sharedMxPlatform as string) : null;
 		const lookalikeScore = typeof md.lookalikeScore === 'number' ? (md.lookalikeScore as number) : 0;
 		const callerAsserted = Array.isArray(md.candidateSeedSources) && (md.candidateSeedSources as string[]).includes('caller_candidate');
@@ -1071,10 +1059,7 @@ export async function runBrandAuditPipeline(
 		}
 
 		if (deps.brandAuditQueue) {
-			await deps.brandAuditQueue.send(
-				{ auditId, target: seedDomain, phase: 'deep_scan' },
-				{ contentType: 'json' },
-			);
+			await deps.brandAuditQueue.send({ auditId, target: seedDomain, phase: 'deep_scan' }, { contentType: 'json' });
 		}
 	}
 
