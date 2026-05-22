@@ -86,6 +86,16 @@ export function parseWhoisResponse(input: string): WhoisParseResult {
 				const nextRaw = lines[j].replace(/\r$/, '');
 				const next = nextRaw.replace(/^\s+/, '').replace(/\s+$/, '');
 				if (next.length === 0) continue;
+				// Reject continuation lines that look like a structured `Label:` or
+				// `Label: value` field (e.g. EURid's `Name: NETIM`, `Organization: ...`,
+				// `Website: ...`). These are sub-fields of a registrar block, not the
+				// registrar name itself. Emitting `Name: NETIM` verbatim as the
+				// registrar is the bug we observed against `anthropic.eu`. The
+				// fallback chain (registrarName / sponsoring / registrarOrganization /
+				// authorizedAgency) still scans the whole response and resolves the
+				// proper value when present elsewhere; when nothing else matches we
+				// correctly return null rather than a half-parsed string.
+				if (/^[A-Za-z][A-Za-z][\w .-]*:/.test(next)) break;
 				registrar = stripNominetTag(next);
 				break;
 			}
