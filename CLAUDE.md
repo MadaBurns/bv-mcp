@@ -81,6 +81,7 @@ Both publish together from `publish.yml` on version tags.
 **Timeouts**: scan 12s preserves partial results; per-check 8s.
 
 **Post-processing**:
+
 - Non-mail (no MX): parent DMARC `sp=`/`p=` → downgrade email-auth findings to `info`
 - No-send (SPF `noSendPolicy`): downgrade DKIM/MTA-STS/BIMI missing-record findings to `info`
 - BIMI rewritten for non-mail domains
@@ -111,6 +112,7 @@ Both publish together from `publish.yml` on version tags.
 ### Error surfacing
 
 `sanitizeErrorMessage()` in `lib/json-rpc.ts` allowlists prefixes:
+
 - `'Missing required'`, `'Invalid'`, `'Domain '`, `'Resource not found'`, `'Rate limit exceeded'`
 
 Anything else → generic fallback. New client-visible errors must start with one of these. Rate limit: HTTP 200 + JSON-RPC `code: -32029` (MCP spec) — not 429. `retry-after` header still set.
@@ -161,11 +163,11 @@ Idle TTL 2h, sliding refresh, KV + in-memory dual-write. Missing → 400; expire
 
 bv-web plan → OAuth tier claim → bv-mcp limits:
 
-| Plan | Tier | Scans/day | Concurrent | Support |
-|---|---|---|---|---|
-| free / starter | (none) | 50 | 3 | Community |
-| pro / business / MCP Developer | developer | 500 | 10 | Business / 48h |
-| enterprise / MCP Enterprise | enterprise | 10,000 | 25 | Enterprise / 4h |
+| Plan                           | Tier       | Scans/day | Concurrent | Support         |
+| ------------------------------ | ---------- | --------- | ---------- | --------------- |
+| free / starter                 | (none)     | 50        | 3          | Community       |
+| pro / business / MCP Developer | developer  | 500       | 10         | Business / 48h  |
+| enterprise / MCP Enterprise    | enterprise | 10,000    | 25         | Enterprise / 4h |
 
 Resolution in `src/oauth/entitlements.ts` via bv-web service binding `api/internal/mcp/oauth/authorize`. Mapping defined in bv-web `app/lib/services/mcp/oauth-entitlements.server.ts`. Static API keys never resolve `developer`/`enterprise` from OAuth — they map to `agent` (500/day, 5 concurrent).
 
@@ -174,6 +176,7 @@ Resolution in `src/oauth/entitlements.ts` via bv-web service binding `api/intern
 `/internal/*` guarded by `cf-connecting-ip` presence (`isPublicInternetRequest()` in `src/internal.ts`). Public requests → 404. Batch endpoint: tool names `/^[a-z_]+$/` max 30 chars, arg keys allowlisted. `/internal/tools/call` enforces 10 KB body limit pre-parse.
 
 **Bearer auth (defense-in-depth)**:
+
 - `/internal/trial-keys/*`, `/internal/oauth/grants` (credential-minting) → strict gate: 503 if `BV_WEB_INTERNAL_KEY` unset, 401 on missing/wrong bearer.
 - `/internal/tools/*`, `/internal/analytics/*` → `internalLenientAuthGate`, opt-in via `REQUIRE_INTERNAL_AUTH=true`.
 
@@ -267,10 +270,10 @@ ignored env only; never commit it or paste it into workflow logs.
 
 `/internal/tools/call` accepts `{ name, arguments }` → `{ content, isError? }`. `/internal/tools/batch` runs one tool across many domains (max 500, concurrency 1–50, 256 KB body). `?format=structured` returns raw `CheckResult` per domain.
 
-| Layer | Public `/mcp` | Internal `/internal/*` |
-|---|:---:|:---:|
-| CORS, Origin, Auth, Rate limiting, Sessions, JSON-RPC, Body limit | ✓ | — |
-| Tool execution, Caching, Analytics, SSRF | ✓ | ✓ |
+| Layer                                                             | Public `/mcp` | Internal `/internal/*` |
+| ----------------------------------------------------------------- | :-----------: | :--------------------: |
+| CORS, Origin, Auth, Rate limiting, Sessions, JSON-RPC, Body limit |       ✓       |           —            |
+| Tool execution, Caching, Analytics, SSRF                          |       ✓       |           ✓            |
 
 ## Deployment
 
@@ -282,36 +285,37 @@ ignored env only; never commit it or paste it into workflow logs.
 
 ## Bindings
 
-| Binding | Type | Purpose |
-|---|---|---|
-| `BV_API_KEY` | Secret | Static bearer auth → `owner` tier |
-| `ENABLE_OAUTH` | var | `true` to expose OAuth routes |
-| `ENABLE_OWNER_OAUTH` | var | Owner consent page (operator deploys only) |
-| `OWNER_ALLOW_IPS` | var | IPs allowed for `owner`; mismatch → `partner` |
-| `OAUTH_SIGNING_SECRET` | Secret | HS256 ≥32 bytes. Required when `ENABLE_OAUTH=true` (`oauthAvailability` gate returns 503 until set) |
-| `OAUTH_ISSUER` | var | Optional override; falls back to Host (set in prod against Host spoofing) |
-| `ALLOWED_ORIGINS` | var | Allowed Origins (CSV) |
-| `RATE_LIMIT` / `SCAN_CACHE` / `SESSION_STORE` | KV | Required in prod |
-| `QUOTA_COORDINATOR` | DO | Distributed rate limiting |
-| `PROFILE_ACCUMULATOR` | DO | Adaptive weights (optional) |
-| `MCP_ANALYTICS` | Analytics Engine | Telemetry (fail-open) |
-| `PROVIDER_SIGNATURES_URL` | var | Provider signatures source |
-| `BV_DOH_ENDPOINT` / `BV_DOH_TOKEN` | var / Secret | Custom secondary DoH (`X-BV-Token`) |
-| `BV_CERTSTREAM` | Service | CT logs: `/enumerate` (discover_subdomains, scan) + `/sans` (brand SAN siblings). Direct-crt.sh fallback w/ jittered backoff |
-| `BV_WHOIS` | Service | WHOIS/43 shim; optional, RDAP-only fallback. KV-cached IANA referrals |
-| `BV_INFRA_GRAPH` | Service | **Operator-deploy only.** Tier-1 infrastructure-graph lookup for `discovery_mode='tiered'`. Not packaged with the public distribution — wired via `.dev/wrangler.deploy.jsonc`. Absent → tiered pipeline falls back to classic sweep |
-| `BV_INTEL_GATEWAY` | Service | **Operator-deploy only.** Tier-2 declared-evidence lookups for `discovery_mode='tiered'`. Private BlackVeil binding; not in public `wrangler.jsonc` |
-| `BV_ENTERPRISE` | Service | **Operator-deploy only.** Tier-0 portfolio + enterprise tenant data for `discovery_mode='tiered'`. Private BlackVeil binding; not in public `wrangler.jsonc` |
-| `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT` | var | **Operator-deploy only.** When set to `"tiered"` (the BlackVeil-production default), flips the runtime default for callers that omit `discovery_mode`. Unset on BSL self-hosts → public schema default `'classic'` wins. Set only in `.dev/wrangler.deploy.jsonc` |
-| `SCORING_CONFIG` | var | JSON scoring overrides |
-| `CF_ACCOUNT_ID` / `CF_ANALYTICS_TOKEN` | var / Secret | Alerting query auth |
-| `ALERT_WEBHOOK_URL` / `ALERT_*_THRESHOLD` / `ALERT_LOOKBACK_MINUTES` | var | Cron alerts |
+| Binding                                                              | Type             | Purpose                                                                                                                                                                                                                                                           |
+| -------------------------------------------------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BV_API_KEY`                                                         | Secret           | Static bearer auth → `owner` tier                                                                                                                                                                                                                                 |
+| `ENABLE_OAUTH`                                                       | var              | `true` to expose OAuth routes                                                                                                                                                                                                                                     |
+| `ENABLE_OWNER_OAUTH`                                                 | var              | Owner consent page (operator deploys only)                                                                                                                                                                                                                        |
+| `OWNER_ALLOW_IPS`                                                    | var              | IPs allowed for `owner`; mismatch → `partner`                                                                                                                                                                                                                     |
+| `OAUTH_SIGNING_SECRET`                                               | Secret           | HS256 ≥32 bytes. Required when `ENABLE_OAUTH=true` (`oauthAvailability` gate returns 503 until set)                                                                                                                                                               |
+| `OAUTH_ISSUER`                                                       | var              | Optional override; falls back to Host (set in prod against Host spoofing)                                                                                                                                                                                         |
+| `ALLOWED_ORIGINS`                                                    | var              | Allowed Origins (CSV)                                                                                                                                                                                                                                             |
+| `RATE_LIMIT` / `SCAN_CACHE` / `SESSION_STORE`                        | KV               | Required in prod                                                                                                                                                                                                                                                  |
+| `QUOTA_COORDINATOR`                                                  | DO               | Distributed rate limiting                                                                                                                                                                                                                                         |
+| `PROFILE_ACCUMULATOR`                                                | DO               | Adaptive weights (optional)                                                                                                                                                                                                                                       |
+| `MCP_ANALYTICS`                                                      | Analytics Engine | Telemetry (fail-open)                                                                                                                                                                                                                                             |
+| `PROVIDER_SIGNATURES_URL`                                            | var              | Provider signatures source                                                                                                                                                                                                                                        |
+| `BV_DOH_ENDPOINT` / `BV_DOH_TOKEN`                                   | var / Secret     | Custom secondary DoH (`X-BV-Token`)                                                                                                                                                                                                                               |
+| `BV_CERTSTREAM`                                                      | Service          | CT logs: `/enumerate` (discover_subdomains, scan) + `/sans` (brand SAN siblings). Direct-crt.sh fallback w/ jittered backoff                                                                                                                                      |
+| `BV_WHOIS`                                                           | Service          | WHOIS/43 shim; optional, RDAP-only fallback. KV-cached IANA referrals                                                                                                                                                                                             |
+| `BV_INFRA_GRAPH`                                                     | Service          | **Operator-deploy only.** Tier-1 infrastructure-graph lookup for `discovery_mode='tiered'`. Not packaged with the public distribution — wired via `.dev/wrangler.deploy.jsonc`. Absent → tiered pipeline falls back to classic sweep                              |
+| `BV_INTEL_GATEWAY`                                                   | Service          | **Operator-deploy only.** Tier-2 declared-evidence lookups for `discovery_mode='tiered'`. Private BlackVeil binding; not in public `wrangler.jsonc`                                                                                                               |
+| `BV_ENTERPRISE`                                                      | Service          | **Operator-deploy only.** Tier-0 portfolio + enterprise tenant data for `discovery_mode='tiered'`. Private BlackVeil binding; not in public `wrangler.jsonc`                                                                                                      |
+| `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT`                                 | var              | **Operator-deploy only.** When set to `"tiered"` (the BlackVeil-production default), flips the runtime default for callers that omit `discovery_mode`. Unset on BSL self-hosts → public schema default `'classic'` wins. Set only in `.dev/wrangler.deploy.jsonc` |
+| `SCORING_CONFIG`                                                     | var              | JSON scoring overrides                                                                                                                                                                                                                                            |
+| `CF_ACCOUNT_ID` / `CF_ANALYTICS_TOKEN`                               | var / Secret     | Alerting query auth                                                                                                                                                                                                                                               |
+| `ALERT_WEBHOOK_URL` / `ALERT_*_THRESHOLD` / `ALERT_LOOKBACK_MINUTES` | var              | Cron alerts                                                                                                                                                                                                                                                       |
 
 ## Analytics
 
 Four event types: `mcp_request`, `tool_call`, `rate_limit`, `session`. Queries in `analytics-queries.ts`. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan`. Optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
 
 **Blob layout** (keep in sync when adding dimensions):
+
 - `mcp_request`: method, transport, status, auth-flag, jsonrpc-flag, country, clientType, authTier, sessionHash, keyHash, **ipHash** (blob11; FNV-1a `i_` prefix — lossy, equal IPs hash equally)
 - `tool_call`: toolName, status, isError, domainFingerprint, country, clientType, authTier, cacheStatus, keyHash, **ipHash** (blob10)
 - `rate_limit`: limitType, toolName, country, authTier
@@ -329,3 +333,4 @@ Client detection (`client-detection.ts`): `claude_mobile`, `claude_code`, `curso
 - **Shadow Domains**: shared NS (≥2 overlap) → severity downgrade with ownership signal
 - **TXT Hygiene**: record accumulation tiered (25+ → medium, 15–24 → low); duplicate verifications consolidated
 - **Non-mail SPF** (`check_mx`): no MX → verifies `v=spf1 -all`; missing SPF → medium, non-reject → low
+- **Subdomain takeover severity**: dangling-CNAME findings whose target hostname embeds a provider-assigned random ID (AWS ELB ID, CloudFront distribution ID, API Gateway ID) downgrade from HIGH to MEDIUM — those represent operational drift rather than active takeover vectors because the namespace label can't be deterministically reclaimed. Implemented in `classifyTargetNamespace()` in `packages/dns-checks/src/checks/subdomain-takeover-analysis.ts`.
