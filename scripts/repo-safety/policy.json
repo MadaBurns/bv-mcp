@@ -38,13 +38,7 @@
 		".yaml",
 		".yml"
 	],
-	"allowedEmailDomains": [
-		"example.com",
-		"example.test",
-		"example.invalid",
-		"blackveilsecurity.com",
-		"anthropic.com"
-	],
+	"allowedEmailDomains": ["example.com", "example.test", "example.invalid", "blackveilsecurity.com", "anthropic.com"],
 	"allowedDomainSuffixes": [
 		"example.com",
 		"example.net",
@@ -62,21 +56,21 @@
 		"bv-enterprise.internal",
 		"placeholder"
 	],
-	"forbiddenClientDomains": [
-		"bankofamerica.com",
-		"disney.com",
-		"ford.com",
-		"ford.com.au",
-		"lockheedmartin.com",
-		"marriott.com",
-		"mastercard.com",
-		"nike.com",
-		"paypal.com",
-		"stripe.com",
-		"uber.com",
-		"verizon.com",
-		"verizon.com.au",
-		"walmart.com"
+	"forbiddenClientDomainsSha256": [
+		"4db297a4c73fa253f97f31b562be9dd9349ad26f93c44ebcd0c2a742426d56ba",
+		"0c9f99ea4d1e717635f3e35a7bdd7bb09672f2e94fe36a73c7677448f9faffe4",
+		"f990f7e144194cd2d403c219b41a07c394dab4b9fc7964b7f2c2b29afcf16990",
+		"6618496ed36097566de119c950f3590fcb9c983419fd917d67108de7d583be30",
+		"b5d41f3f34570aca8c8e0bc2b3239c9ed3532032ab514468c5378ee0903f3748",
+		"458f9c53ba8f671d8c73b49a4617abc2eb93c7fefdee11eadd4a4de23d033f91",
+		"d2df6e8a4ab3e118a8777b97ade0ba94e003bcb8ab8553b984541a0667dae6a9",
+		"67037bf0aa492bd826e82f670f46e6ba1dcba18e6a69209d17725c0f442a1301",
+		"d9bc33bd9d8199dcdc7be674668f18d908adfd3c435c4db09f35221db800ad7a",
+		"1ffda32ad70e3cac6d6a04e2fbb00c062cc12d3a02796149e639c6d9a3e2774b",
+		"29bbd23dd5a92cba0fa162bf42a85331460327414ea31d4f6e1cce6194f760d5",
+		"9f0f1d59232eb5cc8912891f20ac79c3382cb6a6ddaa3219fa6ea580246c1516",
+		"535ec9f5db721c7b882abb6b45b601b5549a33145de2ab97b817c4790e7570f3",
+		"b440031c0ea27cb8f0efb1df3db2857bd54331b529cde6ba7d7641ee94754436"
 	],
 	"allowedPaths": [
 		".gitleaks.toml",
@@ -98,8 +92,6 @@
 		"scripts/repo-safety/scanner-core.mjs",
 		"scripts/repo-safety/scan-branch.mjs",
 		"scripts/repo-safety/scan-commit-history.mjs",
-		"src/lib/spf-canary.ts",
-		"src/lib/brand-audit-provider-sprawl.ts",
 		"test/brand-audit-provider-sprawl.test.ts",
 		"scripts/pressure-chaos-test.mjs",
 		"test/audits/repo-safety-scanner.audit.test.ts",
@@ -107,9 +99,5 @@
 		"scripts/repo-safety/policy.json",
 		"src/lib/authoritative-dns-infra/root-hints.ts"
 	],
-	"allowedPathPrefixes": [
-		".github/",
-		"test/",
-		"packages/dns-checks/src/__tests__/"
-	]
+	"allowedPathPrefixes": [".github/", "test/", "packages/dns-checks/src/__tests__/"]
 }

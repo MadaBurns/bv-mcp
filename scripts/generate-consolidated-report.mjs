@@ -145,7 +145,7 @@ lines.push('');
 lines.push('- **ccTLDs without RDAP** (`.me/.co/.us/.sh/.io/.uk/.fr/.ca/...`) resolved via the bv-whois shim Worker (WHOIS-over-TCP/43 with IANA referral cache).');
 lines.push('- **`.de` (DENIC) is short-circuited as redacted** — German law (BDSG) requires the registry to withhold the registrar field, and DENIC blocks Cloudflare Workers\' egress IPs at port 43. The shim returns `source: redacted` instantly without contacting the network.');
 lines.push('- **MarkMonitor / Com Laude / SafeNames** each appear under multiple string variants (case, regional subsidiary, dba); normalized to one family per provider.');
-lines.push('- **Confidence threshold for shadow IT = 0.7** matches the original spec. Defensive registrations at conf=0.5 (e.g., `walmart.app/io/org`) fall into the impersonation bucket despite being likely Walmart-owned. Threshold tuning is a follow-up.');
+lines.push('- **Confidence threshold for shadow IT = 0.7** matches the original spec. Defensive registrations at conf=0.5 (e.g., `brand-name.app/io/org`) fall into the impersonation bucket despite being likely brand-owned. Threshold tuning is a follow-up.');
 lines.push('- **Candidate set is `<base>.<TLD>` for 15 hardcoded TLDs.** Subdomains under target (e.g., `mail.apple.com`) come from discovery signals separately.');
 
 writeFileSync('reports/CONSOLIDATED_BRAND_AUDIT.md', lines.join('\n'));

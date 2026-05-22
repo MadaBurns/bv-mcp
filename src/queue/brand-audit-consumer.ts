@@ -40,11 +40,11 @@ import type { Tier2Result } from '../lib/brand-tier2-evidence';
  * Per-message budget for the orchestrator. The AbortController-driven catch
  * path commits a `failed` row only when the inner orchestrator is well-behaved
  * — the abort `setTimeout` macrotask competes with whatever microtasks the
- * orchestrator generates, and for fan-out-heavy brands (tier-1: walmart,
- * disney) the microtask queue stays saturated long enough that the worker is
+ * orchestrator generates, and for fan-out-heavy brands (tier-1 portfolios)
+ * the microtask queue stays saturated long enough that the worker is
  * killed before any catch UPDATE can flush. Those rows are recovered by the
  * cron reaper (`reapStuckBrandAudits`) ~15 min later — see the 2026-05-19
- * walmart investigation for the trace evidence. Until AbortSignal is plumbed
+ * tier-1 investigation for the trace evidence. Until AbortSignal is plumbed
  * through `dns-transport`/`safe-fetch` (so in-flight fetches actually cancel),
  * the reaper is the durability boundary for oversized audits.
  *
@@ -94,11 +94,7 @@ export type BrandAuditQueueMessage = z.infer<typeof BrandAuditQueueMessageSchema
 export interface BrandAuditConsumerDeps {
 	db: D1Database;
 	/** Injectable for tests. Production default accepts a third `deps` arg (tier closures + service bindings); tests typically omit it. */
-	brandAuditSingle?: (
-		target: string,
-		options: BrandAuditSingleOptions,
-		deps?: BrandAuditSingleDeps,
-	) => Promise<CheckResult>;
+	brandAuditSingle?: (target: string, options: BrandAuditSingleOptions, deps?: BrandAuditSingleDeps) => Promise<CheckResult>;
 	/** Clock override for tests. */
 	now?: () => number;
 	/**
@@ -108,7 +104,12 @@ export interface BrandAuditConsumerDeps {
 	 * Absent in dev / unprovisioned environments — primary completion still
 	 * succeeds; PDF rendering just doesn't happen.
 	 */
-	pdfQueue?: { send(message: { auditId: string; target: string; format: 'json' | 'markdown' | 'both' }, options?: { contentType?: 'json' }): Promise<void> };
+	pdfQueue?: {
+		send(
+			message: { auditId: string; target: string; format: 'json' | 'markdown' | 'both' },
+			options?: { contentType?: 'json' },
+		): Promise<void>;
+	};
 	/**
 	 * Optional binding for the brand-audit queue itself, used by Phase 2b to
 	 * enqueue a single retry pass when a completed audit has transient
@@ -175,10 +176,7 @@ interface AuditCounterRow {
  *   - `'ack'` — message handled (success, idempotent skip, or unrecoverable error)
  *   - `'retry'` — transient infrastructure failure; Cloudflare should redeliver
  */
-export async function processBrandAuditMessage(
-	rawBody: unknown,
-	deps: BrandAuditConsumerDeps,
-): Promise<'ack' | 'retry'> {
+export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAuditConsumerDeps): Promise<'ack' | 'retry'> {
 	const parsed = BrandAuditQueueMessageSchema.safeParse(rawBody);
 	if (!parsed.success) {
 		// Malformed payload — never recoverable by retry. Drop.
@@ -201,9 +199,7 @@ export async function processBrandAuditMessage(
 	let existing: TargetStatusRow | null;
 	try {
 		existing = (await deps.db
-			.prepare(
-				'SELECT status, completed_at FROM brand_audit_targets WHERE audit_id = ? AND target = ? LIMIT 1',
-			)
+			.prepare('SELECT status, completed_at FROM brand_audit_targets WHERE audit_id = ? AND target = ? LIMIT 1')
 			.bind(message.auditId, message.target)
 			.first()) as TargetStatusRow | null;
 	} catch {
@@ -242,17 +238,13 @@ export async function processBrandAuditMessage(
 		// the rest of the file's binding pattern.
 		const fromStatus = isRetry ? 'completed' : 'queued';
 		const claim = await deps.db
-			.prepare(
-				"UPDATE brand_audit_targets SET status = 'running' WHERE audit_id = ? AND target = ? AND status = ?",
-			)
+			.prepare("UPDATE brand_audit_targets SET status = 'running' WHERE audit_id = ? AND target = ? AND status = ?")
 			.bind(message.auditId, message.target, fromStatus)
 			.run();
 		claimed = (claim.meta?.changes ?? 0) > 0;
 		// Parent audit flip is best-effort; safe to no-op when already running.
 		await deps.db
-			.prepare(
-				"UPDATE brand_audits SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'",
-			)
+			.prepare("UPDATE brand_audits SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'")
 			.bind(messageStartedAt, message.auditId)
 			.run();
 	} catch {
@@ -325,15 +317,11 @@ export async function processBrandAuditMessage(
 		// T13 — propagate the BlackVeil-production runtime override.
 		// Pipeline only honours it when the caller omits `discovery_mode`;
 		// undefined on BSL self-hosts (schema default `'classic'` wins).
-		...(deps.discoveryModeDefault
-			? { env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: deps.discoveryModeDefault } }
-			: {}),
+		...(deps.discoveryModeDefault ? { env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: deps.discoveryModeDefault } } : {}),
 	};
 	try {
 		result = await Promise.race([
-			hasSingleDeps
-				? single(message.target, singleOptions, singleDeps)
-				: single(message.target, singleOptions),
+			hasSingleDeps ? single(message.target, singleOptions, singleDeps) : single(message.target, singleOptions),
 			new Promise<never>((_, reject) => {
 				const onAbort = () => {
 					const reason = (controller.signal as AbortSignal & { reason?: unknown }).reason;
@@ -382,9 +370,7 @@ export async function processBrandAuditMessage(
 			// 'running' until the cron reaper sweeps at 15min). Surfaced by audit
 			// synthetic-audit-brandepsilon.com on 2026-05-19.
 			await deps.db
-				.prepare(
-					"UPDATE brand_audit_targets SET status = 'completed', error = ?, completed_at = ? WHERE audit_id = ? AND target = ?",
-				)
+				.prepare("UPDATE brand_audit_targets SET status = 'completed', error = ?, completed_at = ? WHERE audit_id = ? AND target = ?")
 				.bind(errorString, clock(), message.auditId, message.target)
 				.run();
 		} else {
@@ -438,10 +424,7 @@ export async function processBrandAuditMessage(
 	// Same policy as the watch-webhook gate in 4c.
 	if (finalStatus === 'completed' && !retryEnqueued && deps.pdfQueue && (message.format === 'markdown' || message.format === 'both')) {
 		try {
-			await deps.pdfQueue.send(
-				{ auditId: message.auditId, target: message.target, format: message.format },
-				{ contentType: 'json' },
-			);
+			await deps.pdfQueue.send({ auditId: message.auditId, target: message.target, format: message.format }, { contentType: 'json' });
 		} catch {
 			// swallow — PDF rendering is enrichment, not part of the
 			// audit's durability contract
@@ -484,25 +467,19 @@ export async function processBrandAuditMessage(
 	try {
 		const tickAt = clock();
 		await deps.db
-			.prepare(
-				'UPDATE brand_audits SET completed_targets = completed_targets + 1, updated_at = ? WHERE id = ?',
-			)
+			.prepare('UPDATE brand_audits SET completed_targets = completed_targets + 1, updated_at = ? WHERE id = ?')
 			.bind(tickAt, message.auditId)
 			.run();
 
 		const counter = (await deps.db
-			.prepare(
-				'SELECT completed_targets, total_targets FROM brand_audits WHERE id = ? LIMIT 1',
-			)
+			.prepare('SELECT completed_targets, total_targets FROM brand_audits WHERE id = ? LIMIT 1')
 			.bind(message.auditId)
 			.first()) as AuditCounterRow | null;
 
 		if (counter && counter.completed_targets >= counter.total_targets) {
 			const finalizedAt = clock();
 			await deps.db
-				.prepare(
-					"UPDATE brand_audits SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?",
-				)
+				.prepare("UPDATE brand_audits SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?")
 				.bind(finalizedAt, finalizedAt, message.auditId)
 				.run();
 		}
@@ -522,10 +499,7 @@ function sanitizeErrorString(raw: string): string {
 }
 
 /** Cloudflare Queue consumer entrypoint — fans out to `processBrandAuditMessage` per message. */
-export async function handleBrandAuditQueue(
-	batch: MessageBatch<unknown>,
-	deps: BrandAuditConsumerDeps,
-): Promise<void> {
+export async function handleBrandAuditQueue(batch: MessageBatch<unknown>, deps: BrandAuditConsumerDeps): Promise<void> {
 	for (const message of batch.messages) {
 		// Phase detection before Zod parse: deep_scan messages don't carry `format`
 		// and would be silently acked as "malformed" by BrandAuditQueueMessageSchema.
@@ -594,9 +568,7 @@ interface WatchSlim {
  */
 async function deliverWatchWebhookIfShifted(args: DeliverWatchWebhookArgs): Promise<void> {
 	const watch = (await args.db
-		.prepare(
-			'SELECT id, owner_id, domain, interval, webhook_url, last_classification_hash FROM brand_audit_watches WHERE id = ? LIMIT 1',
-		)
+		.prepare('SELECT id, owner_id, domain, interval, webhook_url, last_classification_hash FROM brand_audit_watches WHERE id = ? LIMIT 1')
 		.bind(args.watchId)
 		.first()) as WatchSlim | null;
 	if (!watch) return;
@@ -615,10 +587,7 @@ async function deliverWatchWebhookIfShifted(args: DeliverWatchWebhookArgs): Prom
 
 	// Stamp the new hash immediately — even if the webhook fails downstream,
 	// we don't want to re-fire on every redelivery of the same completed message.
-	await args.db
-		.prepare('UPDATE brand_audit_watches SET last_classification_hash = ? WHERE id = ?')
-		.bind(currentHash, args.watchId)
-		.run();
+	await args.db.prepare('UPDATE brand_audit_watches SET last_classification_hash = ? WHERE id = ?').bind(currentHash, args.watchId).run();
 
 	if (!watch.webhook_url) {
 		// Logging-only watch — drift detected but no delivery target.
