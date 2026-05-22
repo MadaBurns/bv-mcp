@@ -218,6 +218,46 @@ export function isThirdPartyTakeoverService(cname: string): boolean {
 }
 
 /**
+ * Pattern → severity-impact classification for the CNAME target hostname.
+ *
+ * - `random`: the hostname embeds a provider-assigned ID (load-balancer ID,
+ *   CloudFront distribution ID, API Gateway ID). The namespace label is not
+ *   user-controlled and cannot be deterministically reclaimed by another
+ *   tenant; the dangling-CNAME finding represents operational drift, not an
+ *   active takeover vector.
+ * - `claimable`: the hostname is in a known takeover-prone service AND its
+ *   label is user-chosen (S3 buckets, AzureEdge endpoints, GitHub Pages
+ *   sites, Heroku apps, etc.). A new tenant CAN claim this namespace label
+ *   and serve content at the dangling subdomain.
+ * - `unknown`: pattern not in either bucket — caller should treat as the
+ *   conservative default (HIGH severity).
+ */
+export type TargetClaimability = 'random' | 'claimable' | 'unknown';
+
+const RANDOM_TARGET_PATTERNS: RegExp[] = [
+	// AWS ELB (classic + ALB + NLB): 32+ hex chars + dash + decimal random
+	/^[a-f0-9]{32,}-\d+\.[a-z0-9-]+\.elb\.amazonaws\.com$/i,
+	// CloudFront distribution ID: 12-14 lowercase alphanumeric, no dashes
+	/^[a-z0-9]{12,14}\.cloudfront\.net$/i,
+	// API Gateway ID: exactly 10 alphanumeric chars
+	/^[a-z0-9]{10}\.execute-api\.[a-z0-9-]+\.amazonaws\.com$/i,
+	// Azure Container Apps environment suffix:
+	// <name>.<env-name>-<hex>.<region>.azurecontainerapps.io
+	// The hex suffix on the env name is provider-assigned, even though the
+	// leading <name> isn't.
+	/^[a-z0-9-]+\.[a-z0-9-]+-[a-f0-9]{8}\.[a-z0-9-]+\.azurecontainerapps\.io$/i,
+];
+
+export function classifyTargetNamespace(cname: string): TargetClaimability {
+	const normalized = cname.replace(/\.$/, '').toLowerCase();
+	for (const re of RANDOM_TARGET_PATTERNS) {
+		if (re.test(normalized)) return 'random';
+	}
+	if (isThirdPartyTakeoverService(normalized)) return 'claimable';
+	return 'unknown';
+}
+
+/**
  * Probe an HTTP endpoint for known takeover fingerprints.
  * Returns the matched display-name for the deprovisioned service, or null.
  *
@@ -282,13 +322,24 @@ export async function scanSubdomainForTakeover(
 			try {
 				const targetAddresses = await queryDNS(cname, 'A', { timeout });
 				if (targetAddresses.length === 0) {
+					const claimability = classifyTargetNamespace(cname);
+					const isRandom = claimability === 'random';
+					const severity: 'medium' | 'high' = isRandom ? 'medium' : 'high';
+					const severityRationale = isRandom ? 'random_target_id' : 'claimable_target_name';
+					const detail = isRandom
+						? `Subdomain ${fqdn} points to ${cname}, which does not resolve. The target hostname embeds a provider-assigned random ID (load-balancer / distribution / API-gateway ID), so it is unlikely to be reclaimable by another tenant — this is operational drift rather than an active takeover vector. Verify whether the upstream resource should be re-created or the DNS pointer removed.`
+						: `Subdomain ${fqdn} points to ${cname}, which does not resolve. This is a potential subdomain takeover vector and should be manually validated with authorized claim testing.`;
 					findings.push(
-						createTakeoverFinding(
-							`Dangling CNAME: ${fqdn} → ${cname}`,
-							'high',
-							`Subdomain ${fqdn} points to ${cname}, which does not resolve. This is a potential subdomain takeover vector and should be manually validated with authorized claim testing.`,
-							'potential',
-							['cname_target_unresolved'],
+						createFinding(
+							'subdomain_takeover',
+							isRandom ? `Dangling CNAME (operational drift): ${fqdn} → ${cname}` : `Dangling CNAME: ${fqdn} → ${cname}`,
+							severity,
+							detail,
+							{
+								verificationStatus: 'potential',
+								evidence: ['cname_target_unresolved'],
+								severityRationale,
+							},
 						),
 					);
 					continue;
