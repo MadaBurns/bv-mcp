@@ -109,15 +109,15 @@ export const DISCOVERY_DROP_REASONS: readonly DiscoveryDropReason[] = [
  * map simply skip the bounty-scope detector; no harm done.
  */
 const PHASE5_BOUNTY_HANDLES: Record<string, Partial<Record<BountyPlatform, string>>> = {
-	'brand-alpha.example.com': { hackerone: 'walmart' },
-	'brand-beta.example.com': { hackerone: 'disney' },
-	'brand-gamma.example.com': { hackerone: 'marriott' },
-	'brand-delta.example.com': { hackerone: 'bankofamerica' },
-	'brand-epsilon.example.com': { hackerone: 'brandepsilon' },
-	'brand-eta.example.com': { hackerone: 'paypal' },
+	'brand-alpha.example.com': { hackerone: 'brand-alpha' },
+	'brand-beta.example.com': { hackerone: 'brand-beta' },
+	'brand-gamma.example.com': { hackerone: 'brand-gamma' },
+	'brand-delta.example.com': { hackerone: 'brand-delta' },
+	'brand-epsilon.example.com': { hackerone: 'brand-epsilon' },
+	'brand-eta.example.com': { hackerone: 'brand-eta' },
 	'github.com': { hackerone: 'github' },
 	'shopify.com': { hackerone: 'shopify' },
-	'brand-iota.example.com': { hackerone: 'uber' },
+	'brand-iota.example.com': { hackerone: 'brand-iota' },
 };
 
 /** All supported signal kinds. */
@@ -417,12 +417,7 @@ function ensureCandidate(agg: Map<string, CandidateAggregator>, domain: string):
 	return entry;
 }
 
-function addCandidateSeed(
-	agg: Map<string, CandidateAggregator>,
-	domain: string,
-	sources: CandidateSeedSource[],
-	reasons: string[],
-): void {
+function addCandidateSeed(agg: Map<string, CandidateAggregator>, domain: string, sources: CandidateSeedSource[], reasons: string[]): void {
 	const entry = ensureCandidate(agg, domain);
 	if (!entry) return;
 	for (const source of sources) {
@@ -523,9 +518,8 @@ function graphSignalForTieredObservation(obs: { tier: 0 | 1 | 2 | 4; metadata: R
 function buildEvidenceObservations(entry: CandidateAggregator): BrandEvidenceObservation[] {
 	return Array.from(entry.perSignalConfidence.entries()).map(([signal, confidence]) => {
 		const source = entry.sources[signal];
-		const metadata = typeof source === 'object' && source !== null && !Array.isArray(source)
-			? (source as Record<string, unknown>)
-			: undefined;
+		const metadata =
+			typeof source === 'object' && source !== null && !Array.isArray(source) ? (source as Record<string, unknown>) : undefined;
 		const tier = tierFromSource(source);
 		const specificityScore = specificityFromSource(source);
 		return {
@@ -542,11 +536,7 @@ function buildEvidenceObservations(entry: CandidateAggregator): BrandEvidenceObs
 // the dmarc-rua miner can consume the same source of truth. Re-exported here
 // so existing test imports (test/audits/infrastructure-providers.audit.test.ts)
 // keep working.
-export {
-	INFRASTRUCTURE_PROVIDERS,
-	registeredApex,
-	isInfrastructureProvider,
-} from '../tenants/discovery/infrastructure-providers';
+export { INFRASTRUCTURE_PROVIDERS, registeredApex, isInfrastructureProvider } from '../tenants/discovery/infrastructure-providers';
 import { isInfrastructureProvider } from '../tenants/discovery/infrastructure-providers';
 
 function extractActiveLookalikeDomains(result: CheckResult): string[] {
@@ -616,11 +606,7 @@ export async function discoverBrandDomains(
 		await emitProgress(event);
 		return event;
 	};
-	const recordInstantPhase = async (
-		name: string,
-		status: string,
-		detail?: Record<string, unknown>,
-	): Promise<void> => {
+	const recordInstantPhase = async (name: string, status: string, detail?: Record<string, unknown>): Promise<void> => {
 		const atMs = now();
 		await finishPhase(name, status, atMs, detail);
 	};
@@ -670,10 +656,7 @@ export async function discoverBrandDomains(
 				baselineCandidateSignalProbes,
 				surfacedCandidates,
 				probesPerSurfacedCandidate: candidateSignalProbes / Math.max(1, surfacedCandidates),
-				probeReductionRatio:
-					baselineCandidateSignalProbes > 0
-						? 1 - candidateSignalProbes / baselineCandidateSignalProbes
-						: 0,
+				probeReductionRatio: baselineCandidateSignalProbes > 0 ? 1 - candidateSignalProbes / baselineCandidateSignalProbes : 0,
 				plannerMode,
 			},
 			planner: {
@@ -735,13 +718,10 @@ export async function discoverBrandDomains(
 	// One signal hit is enough when the caller has already named the domain
 	// — see the gate below. Unsolicited single-signal discoveries still get
 	// dropped per LR-1/LR-2.
-	const callerAssertedDomains = new Set(
-		candidateDomains.map((dom) => dom.trim().toLowerCase().replace(/\.$/, '')),
-	);
+	const callerAssertedDomains = new Set(candidateDomains.map((dom) => dom.trim().toLowerCase().replace(/\.$/, '')));
 	const dkimSelectors = options.dkim_selectors;
-	const minConfidence = typeof options.min_confidence === 'number'
-		? Math.max(0, Math.min(1, options.min_confidence))
-		: DEFAULT_MIN_CONFIDENCE;
+	const minConfidence =
+		typeof options.min_confidence === 'number' ? Math.max(0, Math.min(1, options.min_confidence)) : DEFAULT_MIN_CONFIDENCE;
 
 	const depth = options.depth ?? 'standard';
 	const candidateUniverseStartedAtMs = await startPhase('candidate_universe', { depth });
@@ -831,15 +811,11 @@ export async function discoverBrandDomains(
 		const tier1Started = now();
 		const tier2Started = now();
 		const [tier0Settled, tier1Settled, tier2Settled] = await Promise.allSettled([
-			d.tier0Lookup
-				? d.tier0Lookup(seedDomain)
-				: Promise.resolve<Tier0Result>({ observations: [], status: 'skipped', optedOut: false }),
+			d.tier0Lookup ? d.tier0Lookup(seedDomain) : Promise.resolve<Tier0Result>({ observations: [], status: 'skipped', optedOut: false }),
 			d.tier1Lookup
 				? d.tier1Lookup(seedDomain)
 				: Promise.resolve<Tier1Result>({ observations: [], status: 'skipped', triggerTier3Fallback: false }),
-			d.tier2Lookup
-				? d.tier2Lookup(seedDomain)
-				: Promise.resolve<Tier2Result>({ observations: [], status: 'skipped' }),
+			d.tier2Lookup ? d.tier2Lookup(seedDomain) : Promise.resolve<Tier2Result>({ observations: [], status: 'skipped' }),
 		]);
 
 		if (tier0Settled.status === 'fulfilled') {
@@ -975,8 +951,8 @@ export async function discoverBrandDomains(
 			for (const entry of aggregator.values()) {
 				if (isSubdomainOf(entry.domain, seedDomain)) continue;
 				const observations = buildEvidenceObservations(entry);
-				const hasTieredOwnershipObservation = observations.some((observation) =>
-					observation.tier === 0 || observation.tier === 1 || observation.tier === 2,
+				const hasTieredOwnershipObservation = observations.some(
+					(observation) => observation.tier === 0 || observation.tier === 1 || observation.tier === 2,
 				);
 				if (!hasTieredOwnershipObservation) continue;
 				if (clearsOwnershipGate(observations, { callerAsserted: callerAssertedDomains.has(entry.domain) })) return true;
@@ -993,13 +969,9 @@ export async function discoverBrandDomains(
 				? (tieredState.tier1Freshness.overallStaleness as string)
 				: undefined;
 		const tier1VeryStale = tier1FreshnessStaleness === 'very_stale';
-		const coveredByTiers = new Set(
-			tieredObservations.map((o) => o.candidate.trim().toLowerCase().replace(/\.$/, '')),
-		);
+		const coveredByTiers = new Set(tieredObservations.map((o) => o.candidate.trim().toLowerCase().replace(/\.$/, '')));
 		coveredByTiers.add(seedNormForTiered);
-		const callerNorm = candidateDomains
-			.map((dom) => dom.trim().toLowerCase().replace(/\.$/, ''))
-			.filter((dom) => dom.length > 0);
+		const callerNorm = candidateDomains.map((dom) => dom.trim().toLowerCase().replace(/\.$/, '')).filter((dom) => dom.length > 0);
 		const uncoveredCaller = callerNorm.some((dom) => !coveredByTiers.has(dom));
 		const tieredSurfaceable = hasTieredSurfaceableOwnershipCandidate();
 		const shouldRunTier3 = tier1VeryStale || !tieredSurfaceable || uncoveredCaller;
@@ -1081,13 +1053,9 @@ export async function discoverBrandDomains(
 	// Universe candidates feed the signal sweep, MINUS the ground-truth
 	// bypass set. Bypassed domains stay in the aggregator (already added
 	// above) but are never sent to the existing 12 signal probes.
-	const mergedCandidates = universe.candidates
-		.map((candidate) => candidate.domain)
-		.filter((d) => !groundTruthBypass.has(d));
+	const mergedCandidates = universe.candidates.map((candidate) => candidate.domain).filter((d) => !groundTruthBypass.has(d));
 	candidateBackedSignalBaselineProbes = Object.fromEntries(
-		signals
-			.filter((signal) => CANDIDATE_BACKED_SIGNALS.has(signal))
-			.map((signal) => [signal, mergedCandidates.length]),
+		signals.filter((signal) => CANDIDATE_BACKED_SIGNALS.has(signal)).map((signal) => [signal, mergedCandidates.length]),
 	);
 	if (plannerMode !== 'off') {
 		signalPlan = planBrandDiscoverySignals({
@@ -1111,26 +1079,28 @@ export async function discoverBrandDomains(
 		jobs.push({
 			name: 'san',
 			run: async () => {
-			const out = await runTrackedSignal<SanCorrelationResult>('san', () =>
-				d.correlateSans(seedDomain, {
-					...(options.certstream ? { certstream: options.certstream } : {}),
-					signal: options.signal,
-				}),
-				(value) => value.queryStatus,
-				(value) => ({ discovered: value.coOwnedDomains.length, certIds: value.certIds.length }),
-			);
-			if (!out.ok) {
-				signalStatus.san = { status: 'failed', error: out.error };
-				return;
-			}
-			signalStatus.san = { status: out.value.queryStatus };
-			firstOrderSanCandidates = out.value.coOwnedDomains.slice();
-			for (const dom of out.value.coOwnedDomains) {
-				addObservation(aggregator, dom, 'san', DEFAULT_SIGNAL_CONFIDENCE.san, {
-					seed: out.value.seedDomain,
-					certIds: out.value.certIds.slice(0, 5),
-				});
-			}
+				const out = await runTrackedSignal<SanCorrelationResult>(
+					'san',
+					() =>
+						d.correlateSans(seedDomain, {
+							...(options.certstream ? { certstream: options.certstream } : {}),
+							signal: options.signal,
+						}),
+					(value) => value.queryStatus,
+					(value) => ({ discovered: value.coOwnedDomains.length, certIds: value.certIds.length }),
+				);
+				if (!out.ok) {
+					signalStatus.san = { status: 'failed', error: out.error };
+					return;
+				}
+				signalStatus.san = { status: out.value.queryStatus };
+				firstOrderSanCandidates = out.value.coOwnedDomains.slice();
+				for (const dom of out.value.coOwnedDomains) {
+					addObservation(aggregator, dom, 'san', DEFAULT_SIGNAL_CONFIDENCE.san, {
+						seed: out.value.seedDomain,
+						certIds: out.value.certIds.slice(0, 5),
+					});
+				}
 			},
 		});
 	}
@@ -1139,23 +1109,24 @@ export async function discoverBrandDomains(
 		jobs.push({
 			name: 'ns',
 			run: async () => {
-			const nsCandidates = recordCandidateSignalProbes('ns', candidatesForSignal('ns'));
-			const out = await runTrackedSignal<NsCorrelationResult>('ns', () =>
-				d.correlateNs(seedDomain, { candidateDomains: nsCandidates, dnsContext }),
-				(value) => value.queryStatus,
-				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: nsCandidates.length }),
-			);
-			if (!out.ok) {
-				signalStatus.ns = { status: 'failed', error: out.error };
-				return;
-			}
-			signalStatus.ns = { status: out.value.queryStatus };
-			for (const c of out.value.coOwnedDomains) {
-				addObservation(aggregator, c.domain, 'ns', c.confidence, {
-					sharedNs: c.sharedNs,
-					nsConfidence: c.confidence,
-				});
-			}
+				const nsCandidates = recordCandidateSignalProbes('ns', candidatesForSignal('ns'));
+				const out = await runTrackedSignal<NsCorrelationResult>(
+					'ns',
+					() => d.correlateNs(seedDomain, { candidateDomains: nsCandidates, dnsContext }),
+					(value) => value.queryStatus,
+					(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: nsCandidates.length }),
+				);
+				if (!out.ok) {
+					signalStatus.ns = { status: 'failed', error: out.error };
+					return;
+				}
+				signalStatus.ns = { status: out.value.queryStatus };
+				for (const c of out.value.coOwnedDomains) {
+					addObservation(aggregator, c.domain, 'ns', c.confidence, {
+						sharedNs: c.sharedNs,
+						nsConfidence: c.confidence,
+					});
+				}
 			},
 		});
 	}
@@ -1164,22 +1135,24 @@ export async function discoverBrandDomains(
 		jobs.push({
 			name: 'dmarc_rua',
 			run: async () => {
-			const out = await runTrackedSignal<DmarcRuaResult>('dmarc_rua', () => d.mineDmarcRua(seedDomain, { dnsContext }),
-				(value) => value.queryStatus,
-				(value) => ({ ruaDomains: value.ruaDomains.length }),
-			);
-			if (!out.ok) {
-				signalStatus.dmarc_rua = { status: 'failed', error: out.error };
-				return;
-			}
-			signalStatus.dmarc_rua = { status: out.value.queryStatus };
-			for (const r of out.value.ruaDomains) {
-				if (r.classification !== 'related') continue;
-				addObservation(aggregator, r.domain, 'dmarc_rua', r.confidence, {
-					classification: r.classification,
-					externalAuthorization: r.externalAuthorization,
-				});
-			}
+				const out = await runTrackedSignal<DmarcRuaResult>(
+					'dmarc_rua',
+					() => d.mineDmarcRua(seedDomain, { dnsContext }),
+					(value) => value.queryStatus,
+					(value) => ({ ruaDomains: value.ruaDomains.length }),
+				);
+				if (!out.ok) {
+					signalStatus.dmarc_rua = { status: 'failed', error: out.error };
+					return;
+				}
+				signalStatus.dmarc_rua = { status: out.value.queryStatus };
+				for (const r of out.value.ruaDomains) {
+					if (r.classification !== 'related') continue;
+					addObservation(aggregator, r.domain, 'dmarc_rua', r.confidence, {
+						classification: r.classification,
+						externalAuthorization: r.externalAuthorization,
+					});
+				}
 			},
 		});
 	}
@@ -1188,35 +1161,37 @@ export async function discoverBrandDomains(
 		jobs.push({
 			name: 'dkim_key_reuse',
 			run: async () => {
-			const dkimCandidates = recordCandidateSignalProbes('dkim_key_reuse', candidatesForSignal('dkim_key_reuse'));
-			const out = await runTrackedSignal<DkimKeyReuseResult>('dkim_key_reuse', () =>
-				d.detectDkimKeyReuse(seedDomain, dkimCandidates, {
-					...(dkimSelectors ? { selectors: dkimSelectors } : {}),
-					dnsContext: getDkimDnsContext(),
-					maxCandidates: depth === 'deep' ? 40 : 30,
-					candidateConcurrency: 4,
-					totalBudgetMs: 25_000,
-					signal: options.signal,
-				}),
-				(value) => value.queryStatus,
-				(value) => ({
-					discovered: value.coOwnedDomains.length,
-					probedCandidates: value.probedCandidates ?? dkimCandidates.length,
-					skippedCandidates: value.skippedCandidates ?? 0,
-					budgetExceeded: value.budgetExceeded === true,
-				}),
-			);
-			if (!out.ok) {
-				signalStatus.dkim_key_reuse = { status: 'failed', error: out.error };
-				return;
-			}
-			signalStatus.dkim_key_reuse = { status: out.value.queryStatus };
-			for (const c of out.value.coOwnedDomains) {
-				addObservation(aggregator, c.domain, 'dkim_key_reuse', c.confidence, {
-					sharedSelectors: c.sharedSelectors,
-					sharedKeys: c.sharedKeys,
-				});
-			}
+				const dkimCandidates = recordCandidateSignalProbes('dkim_key_reuse', candidatesForSignal('dkim_key_reuse'));
+				const out = await runTrackedSignal<DkimKeyReuseResult>(
+					'dkim_key_reuse',
+					() =>
+						d.detectDkimKeyReuse(seedDomain, dkimCandidates, {
+							...(dkimSelectors ? { selectors: dkimSelectors } : {}),
+							dnsContext: getDkimDnsContext(),
+							maxCandidates: depth === 'deep' ? 40 : 30,
+							candidateConcurrency: 4,
+							totalBudgetMs: 25_000,
+							signal: options.signal,
+						}),
+					(value) => value.queryStatus,
+					(value) => ({
+						discovered: value.coOwnedDomains.length,
+						probedCandidates: value.probedCandidates ?? dkimCandidates.length,
+						skippedCandidates: value.skippedCandidates ?? 0,
+						budgetExceeded: value.budgetExceeded === true,
+					}),
+				);
+				if (!out.ok) {
+					signalStatus.dkim_key_reuse = { status: 'failed', error: out.error };
+					return;
+				}
+				signalStatus.dkim_key_reuse = { status: out.value.queryStatus };
+				for (const c of out.value.coOwnedDomains) {
+					addObservation(aggregator, c.domain, 'dkim_key_reuse', c.confidence, {
+						sharedSelectors: c.sharedSelectors,
+						sharedKeys: c.sharedKeys,
+					});
+				}
 			},
 		});
 	}
@@ -1225,19 +1200,20 @@ export async function discoverBrandDomains(
 		jobs.push({
 			name: 'http_redirect',
 			run: async () => {
-			const out = await runTrackedSignal<HttpRedirectResult>('http_redirect', () =>
-				d.detectHttpRedirect(seedDomain, { candidateDomains: mergedCandidates }),
-				(value) => value.queryStatus,
-				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: mergedCandidates.length }),
-			);
-			if (!out.ok) {
-				signalStatus.http_redirect = { status: 'failed', error: out.error };
-				return;
-			}
-			signalStatus.http_redirect = { status: out.value.queryStatus };
-			for (const c of out.value.coOwnedDomains) {
-				addObservation(aggregator, c.domain, 'http_redirect', c.confidence, c.evidence);
-			}
+				const out = await runTrackedSignal<HttpRedirectResult>(
+					'http_redirect',
+					() => d.detectHttpRedirect(seedDomain, { candidateDomains: mergedCandidates }),
+					(value) => value.queryStatus,
+					(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: mergedCandidates.length }),
+				);
+				if (!out.ok) {
+					signalStatus.http_redirect = { status: 'failed', error: out.error };
+					return;
+				}
+				signalStatus.http_redirect = { status: out.value.queryStatus };
+				for (const c of out.value.coOwnedDomains) {
+					addObservation(aggregator, c.domain, 'http_redirect', c.confidence, c.evidence);
+				}
 			},
 		});
 	}
@@ -1246,20 +1222,21 @@ export async function discoverBrandDomains(
 		jobs.push({
 			name: 'mx_overlap',
 			run: async () => {
-			const mxOverlapCandidates = recordCandidateSignalProbes('mx_overlap', candidatesForSignal('mx_overlap'));
-			const out = await runTrackedSignal<MxOverlapResult>('mx_overlap', () =>
-				d.detectMxOverlap(seedDomain, { candidateDomains: mxOverlapCandidates, dnsContext }),
-				(value) => value.queryStatus,
-				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: mxOverlapCandidates.length }),
-			);
-			if (!out.ok) {
-				signalStatus.mx_overlap = { status: 'failed', error: out.error };
-				return;
-			}
-			signalStatus.mx_overlap = { status: out.value.queryStatus };
-			for (const c of out.value.coOwnedDomains) {
-				addObservation(aggregator, c.domain, 'mx_overlap', c.confidence, c.evidence);
-			}
+				const mxOverlapCandidates = recordCandidateSignalProbes('mx_overlap', candidatesForSignal('mx_overlap'));
+				const out = await runTrackedSignal<MxOverlapResult>(
+					'mx_overlap',
+					() => d.detectMxOverlap(seedDomain, { candidateDomains: mxOverlapCandidates, dnsContext }),
+					(value) => value.queryStatus,
+					(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: mxOverlapCandidates.length }),
+				);
+				if (!out.ok) {
+					signalStatus.mx_overlap = { status: 'failed', error: out.error };
+					return;
+				}
+				signalStatus.mx_overlap = { status: out.value.queryStatus };
+				for (const c of out.value.coOwnedDomains) {
+					addObservation(aggregator, c.domain, 'mx_overlap', c.confidence, c.evidence);
+				}
 			},
 		});
 	}
@@ -1268,28 +1245,27 @@ export async function discoverBrandDomains(
 		jobs.push({
 			name: 'txt_verification',
 			run: async () => {
-			const txtVerificationCandidates = recordCandidateSignalProbes('txt_verification', candidatesForSignal('txt_verification'));
-			const out = await runTrackedSignal<TxtVerificationResult>('txt_verification', () =>
-				d.detectSharedTxtVerifications(seedDomain, { candidateDomains: txtVerificationCandidates, dnsContext }),
-				(value) => value.queryStatus,
-				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: txtVerificationCandidates.length }),
-			);
-			if (!out.ok) {
-				signalStatus.txt_verification = { status: 'failed', error: out.error };
-				return;
-			}
-			signalStatus.txt_verification = { status: out.value.queryStatus };
-			for (const c of out.value.coOwnedDomains) {
-				addObservation(aggregator, c.domain, 'txt_verification', c.confidence, {
-					sharedTxtVerifications: c.sharedTxtVerifications,
-				});
-				const entry = aggregator.get(c.domain.trim().toLowerCase().replace(/\.$/, ''));
-				if (entry) {
-					entry.sharedTxtVerifications = Array.from(
-						new Set([...entry.sharedTxtVerifications, ...c.sharedTxtVerifications]),
-					).sort();
+				const txtVerificationCandidates = recordCandidateSignalProbes('txt_verification', candidatesForSignal('txt_verification'));
+				const out = await runTrackedSignal<TxtVerificationResult>(
+					'txt_verification',
+					() => d.detectSharedTxtVerifications(seedDomain, { candidateDomains: txtVerificationCandidates, dnsContext }),
+					(value) => value.queryStatus,
+					(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: txtVerificationCandidates.length }),
+				);
+				if (!out.ok) {
+					signalStatus.txt_verification = { status: 'failed', error: out.error };
+					return;
 				}
-			}
+				signalStatus.txt_verification = { status: out.value.queryStatus };
+				for (const c of out.value.coOwnedDomains) {
+					addObservation(aggregator, c.domain, 'txt_verification', c.confidence, {
+						sharedTxtVerifications: c.sharedTxtVerifications,
+					});
+					const entry = aggregator.get(c.domain.trim().toLowerCase().replace(/\.$/, ''));
+					if (entry) {
+						entry.sharedTxtVerifications = Array.from(new Set([...entry.sharedTxtVerifications, ...c.sharedTxtVerifications])).sort();
+					}
+				}
 			},
 		});
 	}
@@ -1298,24 +1274,25 @@ export async function discoverBrandDomains(
 		jobs.push({
 			name: 'mx_platform',
 			run: async () => {
-			const mxPlatformCandidates = recordCandidateSignalProbes('mx_platform', candidatesForSignal('mx_platform'));
-			const out = await runTrackedSignal<MxPlatformResult>('mx_platform', () =>
-				d.detectSharedMxPlatform(seedDomain, { candidateDomains: mxPlatformCandidates, dnsContext }),
-				(value) => value.queryStatus,
-				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: mxPlatformCandidates.length }),
-			);
-			if (!out.ok) {
-				signalStatus.mx_platform = { status: 'failed', error: out.error };
-				return;
-			}
-			signalStatus.mx_platform = { status: out.value.queryStatus };
-			for (const c of out.value.coOwnedDomains) {
-				addObservation(aggregator, c.domain, 'mx_platform', c.confidence, {
-					sharedMxPlatform: c.sharedMxPlatform,
-				});
-				const entry = aggregator.get(c.domain.trim().toLowerCase().replace(/\.$/, ''));
-				if (entry) entry.sharedMxPlatform = c.sharedMxPlatform;
-			}
+				const mxPlatformCandidates = recordCandidateSignalProbes('mx_platform', candidatesForSignal('mx_platform'));
+				const out = await runTrackedSignal<MxPlatformResult>(
+					'mx_platform',
+					() => d.detectSharedMxPlatform(seedDomain, { candidateDomains: mxPlatformCandidates, dnsContext }),
+					(value) => value.queryStatus,
+					(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: mxPlatformCandidates.length }),
+				);
+				if (!out.ok) {
+					signalStatus.mx_platform = { status: 'failed', error: out.error };
+					return;
+				}
+				signalStatus.mx_platform = { status: out.value.queryStatus };
+				for (const c of out.value.coOwnedDomains) {
+					addObservation(aggregator, c.domain, 'mx_platform', c.confidence, {
+						sharedMxPlatform: c.sharedMxPlatform,
+					});
+					const entry = aggregator.get(c.domain.trim().toLowerCase().replace(/\.$/, ''));
+					if (entry) entry.sharedMxPlatform = c.sharedMxPlatform;
+				}
 			},
 		});
 	}
@@ -1324,20 +1301,21 @@ export async function discoverBrandDomains(
 		jobs.push({
 			name: 'spf_include',
 			run: async () => {
-			const spfIncludeCandidates = recordCandidateSignalProbes('spf_include', candidatesForSignal('spf_include'));
-			const out = await runTrackedSignal<SpfIncludeResult>('spf_include', () =>
-				d.detectSpfInclude(seedDomain, { candidateDomains: spfIncludeCandidates, dnsContext }),
-				(value) => value.queryStatus,
-				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: spfIncludeCandidates.length }),
-			);
-			if (!out.ok) {
-				signalStatus.spf_include = { status: 'failed', error: out.error };
-				return;
-			}
-			signalStatus.spf_include = { status: out.value.queryStatus };
-			for (const c of out.value.coOwnedDomains) {
-				addObservation(aggregator, c.domain, 'spf_include', c.confidence, c.evidence);
-			}
+				const spfIncludeCandidates = recordCandidateSignalProbes('spf_include', candidatesForSignal('spf_include'));
+				const out = await runTrackedSignal<SpfIncludeResult>(
+					'spf_include',
+					() => d.detectSpfInclude(seedDomain, { candidateDomains: spfIncludeCandidates, dnsContext }),
+					(value) => value.queryStatus,
+					(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: spfIncludeCandidates.length }),
+				);
+				if (!out.ok) {
+					signalStatus.spf_include = { status: 'failed', error: out.error };
+					return;
+				}
+				signalStatus.spf_include = { status: out.value.queryStatus };
+				for (const c of out.value.coOwnedDomains) {
+					addObservation(aggregator, c.domain, 'spf_include', c.confidence, c.evidence);
+				}
 			},
 		});
 	}
@@ -1346,27 +1324,29 @@ export async function discoverBrandDomains(
 	// different-apex include/redirect target as a same-organization candidate.
 	// Unlike `spf_include` (corroboration-only — needs a candidate to probe),
 	// this signal MINTS candidates straight from the seed's authoritative
-	// mail policy — the path that unlocks Nike-style brand families whose
+	// mail policy — the path that unlocks consumer-brand families whose
 	// regional ccTLD apexes appear only in the seed's `include:` chain.
 	if (signals.includes('spf_include_seed')) {
 		jobs.push({
 			name: 'spf_include_seed',
 			run: async () => {
-			const out = await runTrackedSignal<SeedSpfWalkResult>('spf_include_seed', () => d.extractSeedSpfIncludes(seedDomain, { dnsContext }),
-				(value) => value.queryStatus,
-				(value) => ({ candidates: value.candidates.length }),
-			);
-			if (!out.ok) {
-				signalStatus.spf_include_seed = { status: 'failed', error: out.error };
-				return;
-			}
-			signalStatus.spf_include_seed = { status: out.value.queryStatus };
-			for (const c of out.value.candidates) {
-				addObservation(aggregator, c.apex, 'spf_include_seed', c.confidence, {
-					via: c.via,
-					depth: c.depth,
-				});
-			}
+				const out = await runTrackedSignal<SeedSpfWalkResult>(
+					'spf_include_seed',
+					() => d.extractSeedSpfIncludes(seedDomain, { dnsContext }),
+					(value) => value.queryStatus,
+					(value) => ({ candidates: value.candidates.length }),
+				);
+				if (!out.ok) {
+					signalStatus.spf_include_seed = { status: 'failed', error: out.error };
+					return;
+				}
+				signalStatus.spf_include_seed = { status: out.value.queryStatus };
+				for (const c of out.value.candidates) {
+					addObservation(aggregator, c.apex, 'spf_include_seed', c.confidence, {
+						via: c.via,
+						depth: c.depth,
+					});
+				}
 			},
 		});
 	}
@@ -1375,20 +1355,21 @@ export async function discoverBrandDomains(
 		jobs.push({
 			name: 'cname_alignment',
 			run: async () => {
-			const cnameAlignmentCandidates = recordCandidateSignalProbes('cname_alignment', candidatesForSignal('cname_alignment'));
-			const out = await runTrackedSignal<CnameAlignmentResult>('cname_alignment', () =>
-				d.detectCnameAlignment(seedDomain, { candidateDomains: cnameAlignmentCandidates, dnsContext }),
-				(value) => value.queryStatus,
-				(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: cnameAlignmentCandidates.length }),
-			);
-			if (!out.ok) {
-				signalStatus.cname_alignment = { status: 'failed', error: out.error };
-				return;
-			}
-			signalStatus.cname_alignment = { status: out.value.queryStatus };
-			for (const c of out.value.coOwnedDomains) {
-				addObservation(aggregator, c.domain, 'cname_alignment', c.confidence, c.evidence);
-			}
+				const cnameAlignmentCandidates = recordCandidateSignalProbes('cname_alignment', candidatesForSignal('cname_alignment'));
+				const out = await runTrackedSignal<CnameAlignmentResult>(
+					'cname_alignment',
+					() => d.detectCnameAlignment(seedDomain, { candidateDomains: cnameAlignmentCandidates, dnsContext }),
+					(value) => value.queryStatus,
+					(value) => ({ discovered: value.coOwnedDomains.length, probedCandidates: cnameAlignmentCandidates.length }),
+				);
+				if (!out.ok) {
+					signalStatus.cname_alignment = { status: 'failed', error: out.error };
+					return;
+				}
+				signalStatus.cname_alignment = { status: out.value.queryStatus };
+				for (const c of out.value.coOwnedDomains) {
+					addObservation(aggregator, c.domain, 'cname_alignment', c.confidence, c.evidence);
+				}
 			},
 		});
 	}
@@ -1407,16 +1388,9 @@ export async function discoverBrandDomains(
 			probedCandidates: mergedCandidates.length,
 		});
 		await Promise.allSettled(jobs.map((j) => j.run()));
-		await finishPhase(
-			'signal_sweep',
-			options.signal?.aborted ? 'partial' : 'completed',
-			signalSweepStartedAtMs,
-			{
-				completedSignals: phaseTimings
-					.filter((phase) => jobs.some((job) => job.name === phase.name))
-					.map((phase) => phase.name),
-			},
-		);
+		await finishPhase('signal_sweep', options.signal?.aborted ? 'partial' : 'completed', signalSweepStartedAtMs, {
+			completedSignals: phaseTimings.filter((phase) => jobs.some((job) => job.name === phase.name)).map((phase) => phase.name),
+		});
 	}
 
 	// Budget gate: if the consumer's AbortController has fired while jobs were
@@ -1439,19 +1413,21 @@ export async function discoverBrandDomains(
 				firstOrderCandidates: firstOrderSanCandidates.length,
 			});
 		} else {
-			const recursiveOut = await runTrackedSignal<SanRecursiveResult>('san_recursive', () =>
-				d.correlateSansRecursive(seedDomain, firstOrderSanCandidates, {
-					certstream: options.certstream,
-					// Caps tightened (2026-05-19) to fit Cloudflare Worker CPU budget.
-					// Each candidate triggers a fresh crt.sh fetch (~200KB-2MB JSON parse
-					// for tier-1 brands), so 20 candidates × 8 concurrency was the single
-					// largest CPU sink in the walmart wedge. 10/4/15s keeps headroom for
-					// the remaining 11 signal probes + RDAP enrichment.
-					maxCandidates: 10,
-					concurrency: 4,
-					totalBudgetMs: 15_000,
-					signal: options.signal,
-				}),
+			const recursiveOut = await runTrackedSignal<SanRecursiveResult>(
+				'san_recursive',
+				() =>
+					d.correlateSansRecursive(seedDomain, firstOrderSanCandidates, {
+						certstream: options.certstream,
+						// Caps tightened (2026-05-19) to fit Cloudflare Worker CPU budget.
+						// Each candidate triggers a fresh crt.sh fetch (~200KB-2MB JSON parse
+						// for tier-1 brands), so 20 candidates × 8 concurrency was the single
+						// largest CPU sink in the bulk-portfolio wedge. 10/4/15s keeps headroom for
+						// the remaining 11 signal probes + RDAP enrichment.
+						maxCandidates: 10,
+						concurrency: 4,
+						totalBudgetMs: 15_000,
+						signal: options.signal,
+					}),
 				(value) => (value.queryStatus === 'budget_exceeded' ? 'partial' : value.queryStatus),
 				(value) => ({
 					probed: value.probed.length,
@@ -1619,9 +1595,7 @@ export async function discoverBrandDomains(
 	// Tier 3 count: in tiered mode, count surviving candidates that were NOT
 	// surfaced by Tier 0/1/2. Identified by domain set membership.
 	if (tieredState) {
-		const tieredApex = new Set(
-			tieredObservations.map((o) => o.candidate.trim().toLowerCase().replace(/\.$/, '')),
-		);
+		const tieredApex = new Set(tieredObservations.map((o) => o.candidate.trim().toLowerCase().replace(/\.$/, '')));
 		let tier3Count = 0;
 		for (const cand of surviving) {
 			if (!tieredApex.has(cand.domain)) tier3Count++;
@@ -1670,9 +1644,7 @@ export function formatDiscoverBrandDomains(result: CheckResult, format: OutputFo
 		for (const c of candidates) {
 			const conf = c.metadata?.combinedConfidence as number | undefined;
 			const signals = (c.metadata?.signals as string[] | undefined)?.join(',') ?? '';
-			lines.push(
-				`  - ${sanitizeOutputText(c.metadata?.candidate as string, 80)} (conf=${conf?.toFixed(2) ?? '?'}, signals=${signals})`,
-			);
+			lines.push(`  - ${sanitizeOutputText(c.metadata?.candidate as string, 80)} (conf=${conf?.toFixed(2) ?? '?'}, signals=${signals})`);
 		}
 		return lines.join('\n');
 	}

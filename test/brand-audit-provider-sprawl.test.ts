@@ -36,9 +36,10 @@ describe('groupByProvider', () => {
 		});
 	});
 	it('returns multiple providers when NS list crosses orgs', () => {
-		expect(
-			groupByProvider(['a.ns.paypal.com', 'b.ns.paypal.com', 'pdns1.ultradns.net', 'pdns2.ultradns.com']),
-		).toEqual({ 'PayPal (in-house)': 2, 'UltraDNS (Vercara)': 2 });
+		expect(groupByProvider(['a.ns.paypal.com', 'b.ns.paypal.com', 'pdns1.ultradns.net', 'pdns2.ultradns.com'])).toEqual({
+			'paypal.com': 2,
+			'UltraDNS (Vercara)': 2,
+		});
 	});
 	it('deduplicates duplicate nameservers within input', () => {
 		expect(groupByProvider(['ns1.cloudflare.com', 'ns1.cloudflare.com'])).toEqual({ Cloudflare: 1 });
@@ -50,9 +51,7 @@ describe('isMultiProvider', () => {
 		expect(isMultiProvider(['ns-52.awsdns-52.com', 'ns-1234.awsdns-43.co.uk'])).toBe(false);
 	});
 	it('returns true for paypal-style UltraDNS + in-house', () => {
-		expect(
-			isMultiProvider(['pdns1.ultradns.net', 'pdns2.ultradns.com', 'a.ns.paypal.com', 'b.ns.paypal.com']),
-		).toBe(true);
+		expect(isMultiProvider(['pdns1.ultradns.net', 'pdns2.ultradns.com', 'a.ns.paypal.com', 'b.ns.paypal.com'])).toBe(true);
 	});
 	it('returns false for single-provider list', () => {
 		expect(isMultiProvider(['ns1.google.com', 'ns2.google.com', 'ns3.google.com'])).toBe(false);

@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 export type BrandAuditDepth = 'standard' | 'deep';
-export type CandidateSeedSource =
-	| 'caller_candidate'
-	| 'tld_sweep'
-	| 'alias_tld_sweep'
-	| 'enterprise_affix'
-	| 'markov'
-	| 'active_lookalike';
+export type CandidateSeedSource = 'caller_candidate' | 'tld_sweep' | 'alias_tld_sweep' | 'enterprise_affix' | 'markov' | 'active_lookalike';
 
 export interface CandidateSeed {
 	domain: string;
@@ -123,27 +117,14 @@ const DEEP_ONLY_TLDS = [
 	'eg',
 ];
 
-const ENTERPRISE_AFFIXES = [
-	'secure',
-	'security',
-	'id',
-	'cloud',
-	'pay',
-	'shop',
-	'support',
-	'login',
-	'portal',
-	'auth',
-	'corp',
-	'global',
-];
+const ENTERPRISE_AFFIXES = ['secure', 'security', 'id', 'cloud', 'pay', 'shop', 'support', 'login', 'portal', 'auth', 'corp', 'global'];
 
 const ENTERPRISE_AFFIX_TLDS = ['com', 'net', 'org', 'co', 'io', 'app', 'cloud', 'dev', 'support', 'shop'];
 // Hard caps reduced from 120/250 (2026-05-19) after synthetic brand audits wedged at
 // the Cloudflare Worker CPU budget. Each candidate is probed by ~12 signal
 // detectors at concurrency 6 through a shared DoH semaphore — 100 candidates
 // × 12 signals = up to 1200 DoH queries plus per-candidate RDAP fan-out.
-// Tier-1 brands (walmart, disney) routinely exceed CPU budget at the prior
+// Tier-1 brands (mega-portfolio) routinely exceed CPU budget at the prior
 // caps. Universe candidates beyond the cap are dropped with stats.dropped.cap
 // so downstream telemetry surfaces the truncation.
 const STANDARD_CANDIDATE_CAP = 50;
@@ -173,7 +154,10 @@ function seedLabel(seedDomain: string): string | null {
 }
 
 function normalizeAlias(alias: string): string | null {
-	const lower = alias.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+	const lower = alias
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9-]/g, '');
 	return lower.length >= 2 ? lower : null;
 }
 

@@ -27,7 +27,6 @@ const PROVIDER_RULES: readonly ProviderRule[] = [
 	{ test: /\bmarkmonitor\.com$/i, name: 'MarkMonitor' },
 	{ test: /\bgoogle\.com$/i, name: 'Google (in-house)' },
 	{ test: /\bapple\.com$/i, name: 'Apple (in-house)' },
-	{ test: /\bpaypal\.com$/i, name: 'PayPal (in-house)' },
 ];
 
 /**
