@@ -118,9 +118,42 @@ const TAKEOVER_FINGERPRINTS: { service: string; patterns: string[] }[] = [
 	// Azure Front Door / CDN / Storage all surface `<Code>ResourceNotFound</Code>`
 	// when the underlying endpoint is gone. `BlobNotFound` is Azure Blob
 	// specifically. `ContainerNotFound` is Azure Blob container-level.
-	{ service: 'afd.azureedge.net', patterns: ['<Code>ResourceNotFound</Code>', 'ResourceNotFound'] },
-	{ service: 'azureedge.net', patterns: ['<Code>ResourceNotFound</Code>', 'ResourceNotFound', "Our services aren't available right now"] },
-	{ service: 'azurefd.net', patterns: ["Our services aren't available right now", '<Code>ResourceNotFound</Code>'] },
+	// Azure CDN / Front Door deprovisioned endpoints surface ONE of two body
+	// shapes depending on which LB instance answers:
+	//   1. XML  — `<?xml ...?><Error><Code>ResourceNotFound</Code>...`
+	//   2. HTML — generic 404 page whose body references the internal
+	//             `df.onecloud.azure-test.net/Error/UE_404` redirect target and
+	//             carries a `<title>Page not found</title>` element.
+	// Probes against the same FQDN can hit either variant. Both patterns must
+	// be present so the second variant doesn't silently drop the finding.
+	{
+		service: 'afd.azureedge.net',
+		patterns: [
+			'df.onecloud.azure-test.net/Error/UE_404',
+			'<Code>ResourceNotFound</Code>',
+			'<title>Page not found</title>',
+			'ResourceNotFound',
+		],
+	},
+	{
+		service: 'azureedge.net',
+		patterns: [
+			'df.onecloud.azure-test.net/Error/UE_404',
+			'<Code>ResourceNotFound</Code>',
+			'<title>Page not found</title>',
+			'ResourceNotFound',
+			"Our services aren't available right now",
+		],
+	},
+	{
+		service: 'azurefd.net',
+		patterns: [
+			'df.onecloud.azure-test.net/Error/UE_404',
+			'<Code>ResourceNotFound</Code>',
+			'<title>Page not found</title>',
+			"Our services aren't available right now",
+		],
+	},
 	{
 		service: 'azurewebsites.net',
 		patterns: ['<title>404 Web Site not found</title>', '<title>Web App - Unavailable</title>', 'web-app-not-found.html'],

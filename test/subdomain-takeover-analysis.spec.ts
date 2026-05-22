@@ -125,6 +125,39 @@ describe('subdomain-takeover-analysis', () => {
 			const result = await probeHttpFingerprint('cdn.example.com', 'example-assets.azureedge.net', fetchFn);
 			expect(result).toBeNull();
 		});
+
+		describe('Azure CDN / Front Door HTML deprovision-response variant', () => {
+			// Observed against `openaiassets.afd.azureedge.net`: the same FQDN
+			// returns either an XML `ResourceNotFound` body OR an HTML "Page not
+			// found" page referencing `df.onecloud.azure-test.net/Error/UE_404`
+			// depending on which LB instance answers. Pre-fix the HTML variant
+			// silently fell through and the finding was dropped.
+
+			it('matches the HTML "Page not found" variant (no XML ResourceNotFound)', async () => {
+				const htmlBody =
+					'<!DOCTYPE html><html><head><title>Page not found</title></head>' +
+					'<body><p>Reference: df.onecloud.azure-test.net/Error/UE_404</p></body></html>';
+				const fetchFn = fetchReturning(htmlBody);
+				const result = await probeHttpFingerprint('cdn.example.com', 'openaiassets.afd.azureedge.net', fetchFn);
+				expect(result).toBe('Azure Front Door');
+			});
+
+			it('matches the HTML variant against bare azureedge.net (CDN service)', async () => {
+				const htmlBody = '<html><head><title>Page not found</title></head><body></body></html>';
+				const fetchFn = fetchReturning(htmlBody);
+				const result = await probeHttpFingerprint('static.example.com', 'example.azureedge.net', fetchFn);
+				expect(result).toBe('Azure CDN');
+			});
+
+			it('matches the df.onecloud azure-test.net redirect reference alone', async () => {
+				// The internal redirect target string is a robust signal even when
+				// the <title> is rewritten by an intermediate LB.
+				const htmlBody = '<html><body>See df.onecloud.azure-test.net/Error/UE_404</body></html>';
+				const fetchFn = fetchReturning(htmlBody);
+				const result = await probeHttpFingerprint('cdn.example.com', 'openaiassets.afd.azureedge.net', fetchFn);
+				expect(result).toBe('Azure Front Door');
+			});
+		});
 	});
 
 	describe('classifyTargetNamespace', () => {
