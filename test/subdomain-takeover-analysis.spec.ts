@@ -181,4 +181,51 @@ describe('subdomain-takeover-analysis', () => {
 			expect(c('some-random-cname.example.org')).toBe('unknown');
 		});
 	});
+
+	describe('severity refinement by target claimability', () => {
+		it('emits MEDIUM (not HIGH) when CNAME target is an AWS NLB random-ID', async () => {
+			const dns = makeDNS({
+				'models.example.com|CNAME': ['ab74714963781430da5c4d9a29a6ee3c-1355387950.us-east-1.elb.amazonaws.com.'],
+				'ab74714963781430da5c4d9a29a6ee3c-1355387950.us-east-1.elb.amazonaws.com|A': [],
+			});
+			const fetchFn = vi.fn();
+			const findings = await scanSubdomainForTakeover('example.com', 'models', dns, fetchFn);
+			expect(findings).toHaveLength(1);
+			expect(findings[0].severity).toBe('medium');
+			expect(findings[0].metadata?.verificationStatus).toBe('potential');
+			expect(findings[0].metadata?.severityRationale).toBe('random_target_id');
+			expect(findings[0].detail).toContain('operational drift');
+		});
+
+		it('emits MEDIUM when CNAME target is a CloudFront distribution ID', async () => {
+			const dns = makeDNS({
+				'blog.example.com|CNAME': ['d2b532lzynlqb7.cloudfront.net.'],
+				'd2b532lzynlqb7.cloudfront.net|A': [],
+			});
+			const findings = await scanSubdomainForTakeover('example.com', 'blog', dns, vi.fn());
+			expect(findings[0].severity).toBe('medium');
+			expect(findings[0].metadata?.severityRationale).toBe('random_target_id');
+		});
+
+		it('keeps HIGH when CNAME target is a user-chosen S3 bucket name', async () => {
+			const dns = makeDNS({
+				'assets.example.com|CNAME': ['my-company-assets.s3.amazonaws.com.'],
+				'my-company-assets.s3.amazonaws.com|A': [],
+			});
+			const findings = await scanSubdomainForTakeover('example.com', 'assets', dns, vi.fn());
+			expect(findings[0].severity).toBe('high');
+			expect(findings[0].metadata?.severityRationale).toBe('claimable_target_name');
+		});
+
+		it('keeps HIGH (conservative default) when target namespace is unknown', async () => {
+			const dns = makeDNS({
+				'preview.example.com|CNAME': ['cname.vercel-dns.com.'],
+				'cname.vercel-dns.com|A': [],
+			});
+			const findings = await scanSubdomainForTakeover('example.com', 'preview', dns, vi.fn());
+			// vercel-dns.com IS in the takeover-services list → claimable
+			expect(findings[0].severity).toBe('high');
+			expect(findings[0].metadata?.severityRationale).toBe('claimable_target_name');
+		});
+	});
 });

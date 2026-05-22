@@ -322,13 +322,24 @@ export async function scanSubdomainForTakeover(
 			try {
 				const targetAddresses = await queryDNS(cname, 'A', { timeout });
 				if (targetAddresses.length === 0) {
+					const claimability = classifyTargetNamespace(cname);
+					const isRandom = claimability === 'random';
+					const severity: 'medium' | 'high' = isRandom ? 'medium' : 'high';
+					const severityRationale = isRandom ? 'random_target_id' : 'claimable_target_name';
+					const detail = isRandom
+						? `Subdomain ${fqdn} points to ${cname}, which does not resolve. The target hostname embeds a provider-assigned random ID (load-balancer / distribution / API-gateway ID), so it is unlikely to be reclaimable by another tenant — this is operational drift rather than an active takeover vector. Verify whether the upstream resource should be re-created or the DNS pointer removed.`
+						: `Subdomain ${fqdn} points to ${cname}, which does not resolve. This is a potential subdomain takeover vector and should be manually validated with authorized claim testing.`;
 					findings.push(
-						createTakeoverFinding(
-							`Dangling CNAME: ${fqdn} → ${cname}`,
-							'high',
-							`Subdomain ${fqdn} points to ${cname}, which does not resolve. This is a potential subdomain takeover vector and should be manually validated with authorized claim testing.`,
-							'potential',
-							['cname_target_unresolved'],
+						createFinding(
+							'subdomain_takeover',
+							isRandom ? `Dangling CNAME (operational drift): ${fqdn} → ${cname}` : `Dangling CNAME: ${fqdn} → ${cname}`,
+							severity,
+							detail,
+							{
+								verificationStatus: 'potential',
+								evidence: ['cname_target_unresolved'],
+								severityRationale,
+							},
 						),
 					);
 					continue;
