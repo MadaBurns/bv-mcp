@@ -21,6 +21,7 @@ import {
 	AnalyzeDriftArgs,
 	GenerateRolloutPlanArgs,
 	CheckFastFluxArgs,
+	CheckSubdomainTakeoverArgs,
 	RootServerSetArgs,
 	DiscoverBrandDomainsArgs,
 	BrandAuditSingleArgs,
@@ -31,7 +32,15 @@ import {
 	TOOL_SCHEMA_MAP,
 } from './tool-args';
 
-export type ToolGroup = 'email_auth' | 'infrastructure' | 'brand_threats' | 'dns_hygiene' | 'intelligence' | 'remediation' | 'meta' | 'discovery';
+export type ToolGroup =
+	| 'email_auth'
+	| 'infrastructure'
+	| 'brand_threats'
+	| 'dns_hygiene'
+	| 'intelligence'
+	| 'remediation'
+	| 'meta'
+	| 'discovery';
 export type ToolTier = 'core' | 'protective' | 'hardening';
 
 export interface McpTool {
@@ -67,7 +76,32 @@ interface ToolDef {
 }
 
 /** DNS/security acronyms that should be uppercased in human-readable tool titles. */
-const KNOWN_ACRONYMS = new Set(['mx', 'spf', 'dmarc', 'dkim', 'dns', 'dnssec', 'ssl', 'mta', 'sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'http', 'https', 'dane', 'svcb', 'srv', 'txt', 'doh', 'rpm', 'dbl', 'rdap', 'nsec']);
+const KNOWN_ACRONYMS = new Set([
+	'mx',
+	'spf',
+	'dmarc',
+	'dkim',
+	'dns',
+	'dnssec',
+	'ssl',
+	'mta',
+	'sts',
+	'ns',
+	'caa',
+	'bimi',
+	'tlsrpt',
+	'http',
+	'https',
+	'dane',
+	'svcb',
+	'srv',
+	'txt',
+	'doh',
+	'rpm',
+	'dbl',
+	'rdap',
+	'nsec',
+]);
 
 /** Convert a snake_case tool name to a human-readable title. e.g. "check_mta_sts" → "Check MTA STS" */
 function toolNameToTitle(name: string): string {
@@ -216,7 +250,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	scan_domain: {
 		description:
-			'Look up any domain to get a full DNS and email security audit. Use this whenever a user mentions a domain name, asks to check/scan/lookup/analyze a domain, or wants to know about a domain\'s security posture. Returns score, grade, maturity stage, and prioritized findings. Start here for any domain-related question.',
+			"Look up any domain to get a full DNS and email security audit. Use this whenever a user mentions a domain name, asks to check/scan/lookup/analyze a domain, or wants to know about a domain's security posture. Returns score, grade, maturity stage, and prioritized findings. Start here for any domain-related question.",
 		schema: ScanDomainArgs,
 		group: 'meta',
 		scanIncluded: false,
@@ -335,7 +369,8 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: false,
 	},
 	map_supply_chain: {
-		description: 'Map third-party service dependencies from DNS records. Correlates SPF, NS, TXT verifications, SRV services, and CAA to show who can send as you, control your DNS, and what services are integrated.',
+		description:
+			'Map third-party service dependencies from DNS records. Correlates SPF, NS, TXT verifications, SRV services, and CAA to show who can send as you, control your DNS, and what services are integrated.',
 		schema: MapSupplyChainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -359,31 +394,36 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: false,
 	},
 	resolve_spf_chain: {
-		description: 'Trace the full SPF include chain for a domain. Recursively resolves all includes, shows lookup count, tree depth, and flags circular includes or exceeding the 10-lookup limit.',
+		description:
+			'Trace the full SPF include chain for a domain. Recursively resolves all includes, shows lookup count, tree depth, and flags circular includes or exceeding the 10-lookup limit.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	discover_subdomains: {
-		description: 'Find subdomains of a domain using Certificate Transparency logs. Reveals shadow IT, forgotten services, and unauthorized certificate issuance.',
+		description:
+			'Find subdomains of a domain using Certificate Transparency logs. Reveals shadow IT, forgotten services, and unauthorized certificate issuance.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	map_compliance: {
-		description: 'Map scan findings to compliance frameworks: NIST 800-177, PCI DSS 4.0, SOC 2, CIS Controls. Shows pass/fail/partial status per control.',
+		description:
+			'Map scan findings to compliance frameworks: NIST 800-177, PCI DSS 4.0, SOC 2, CIS Controls. Shows pass/fail/partial status per control.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	simulate_attack_paths: {
-		description: 'Analyze current DNS posture and enumerate specific attack paths an adversary could exploit, with severity, feasibility, steps, and mitigations.',
+		description:
+			'Analyze current DNS posture and enumerate specific attack paths an adversary could exploit, with severity, feasibility, steps, and mitigations.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	check_dbl: {
-		description: 'Check domain reputation against DNS-based Domain Block Lists (Spamhaus DBL, URIBL, SURBL). Returns listing status with decoded return codes.',
+		description:
+			'Check domain reputation against DNS-based Domain Block Lists (Spamhaus DBL, URIBL, SURBL). Returns listing status with decoded return codes.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -430,6 +470,14 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'intelligence',
 		scanIncluded: false,
 	},
+	check_subdomain_takeover: {
+		description:
+			'Sweep an explicit subdomain list (or a built-in 15-name list of common labels) for dangling CNAMEs and provider-deprovisioned takeover fingerprints. Pair with discover_subdomains for full-inventory coverage. Detects 16 provider families (AWS S3/CloudFront, Azure Front Door/CDN/Blob/App Service, GCP Cloud Storage, Heroku, GitHub Pages, Vercel, Firebase, Shopify, etc.).',
+		schema: CheckSubdomainTakeoverArgs,
+		group: 'infrastructure',
+		tier: 'protective',
+		scanIncluded: false,
+	},
 	check_authoritative_dns_infra: {
 		description:
 			'Check authoritative DNS infrastructure posture for a hostname. Uses BV_INFRA_PROBE when available for raw DNS, routing, RPKI, and vantage-point evidence.',
@@ -455,14 +503,14 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	brand_audit_single: {
 		description:
-			"Run a full brand audit on a single target with optional standard/deep discovery depth, brand aliases, and caller-supplied candidate domains. Discovers brand-related domains, looks up registrar + registrant for each candidate, and classifies each into consolidated, real registrar-sprawl shadowIt, authorized vendor dependency, indeterminate, or impersonation relationships. Gated tier-wide by monthly BRAND_AUDIT_QUOTAS (free/agent=0, developer=50, partner=200, enterprise=500, owner=unlimited).",
+			'Run a full brand audit on a single target with optional standard/deep discovery depth, brand aliases, and caller-supplied candidate domains. Discovers brand-related domains, looks up registrar + registrant for each candidate, and classifies each into consolidated, real registrar-sprawl shadowIt, authorized vendor dependency, indeterminate, or impersonation relationships. Gated tier-wide by monthly BRAND_AUDIT_QUOTAS (free/agent=0, developer=50, partner=200, enterprise=500, owner=unlimited).',
 		schema: BrandAuditSingleArgs,
 		group: 'discovery',
 		scanIncluded: false,
 	},
 	brand_audit_batch_start: {
 		description:
-			"Enqueue an async brand audit across up to 50 target domains with optional standard/deep discovery depth, brand aliases, and caller-supplied candidate domains. Returns { auditId, queuedAt, targetCount, etaSeconds } immediately; poll with brand_audit_status and fetch results with brand_audit_get_report once complete. Each target consumes 1 unit of the monthly BRAND_AUDIT_QUOTAS budget.",
+			'Enqueue an async brand audit across up to 50 target domains with optional standard/deep discovery depth, brand aliases, and caller-supplied candidate domains. Returns { auditId, queuedAt, targetCount, etaSeconds } immediately; poll with brand_audit_status and fetch results with brand_audit_get_report once complete. Each target consumes 1 unit of the monthly BRAND_AUDIT_QUOTAS budget.',
 		schema: BrandAuditBatchStartArgs,
 		group: 'discovery',
 		scanIncluded: false,
@@ -476,14 +524,14 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	brand_audit_get_report: {
 		description:
-			"Fetch the result JSON for a completed brand audit. With `target` set, returns the per-target CheckResult; without, returns the audit-level aggregate. Returns notReady when polling against an in-flight audit. Phase 3 will add R2 signed-URL PDF retrieval; this v2.19.0 version returns inline JSON only.",
+			'Fetch the result JSON for a completed brand audit. With `target` set, returns the per-target CheckResult; without, returns the audit-level aggregate. Returns notReady when polling against an in-flight audit. Phase 3 will add R2 signed-URL PDF retrieval; this v2.19.0 version returns inline JSON only.',
 		schema: BrandAuditGetReportArgs,
 		group: 'discovery',
 		scanIncluded: false,
 	},
 	brand_audit_watch: {
 		description:
-			"Register, list, or delete recurring brand-audit watches. Watches run on a daily/weekly/monthly cadence via the scheduled cron tick — each run enqueues a fresh brand_audit_batch_start and (when configured) POSTs a diff webhook on classification drift. Owner-scoped; per-principal cap of 20 active watches. Phase 4 (v2.21.0+).",
+			'Register, list, or delete recurring brand-audit watches. Watches run on a daily/weekly/monthly cadence via the scheduled cron tick — each run enqueues a fresh brand_audit_batch_start and (when configured) POSTs a diff webhook on classification drift. Owner-scoped; per-principal cap of 20 active watches. Phase 4 (v2.21.0+).',
 		schema: BrandAuditWatchArgs,
 		group: 'discovery',
 		scanIncluded: false,

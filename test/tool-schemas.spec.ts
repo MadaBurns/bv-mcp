@@ -10,27 +10,70 @@ import { describe, it, expect } from 'vitest';
 import { TOOLS } from '../src/handlers/tool-schemas';
 import type { ToolGroup, ToolTier } from '../src/handlers/tool-schemas';
 
-const VALID_GROUPS: ToolGroup[] = ['email_auth', 'infrastructure', 'brand_threats', 'dns_hygiene', 'intelligence', 'remediation', 'meta', 'discovery'];
+const VALID_GROUPS: ToolGroup[] = [
+	'email_auth',
+	'infrastructure',
+	'brand_threats',
+	'dns_hygiene',
+	'intelligence',
+	'remediation',
+	'meta',
+	'discovery',
+];
 const VALID_TIERS: ToolTier[] = ['core', 'protective', 'hardening'];
 
 /** Tools included in scan_domain parallel orchestration (excludes check_subdomain_takeover which is internal). */
 const SCAN_DOMAIN_TOOL_NAMES = new Set([
-	'check_spf', 'check_dmarc', 'check_dkim', 'check_dnssec', 'check_ssl',
-	'check_mta_sts', 'check_ns', 'check_caa', 'check_bimi', 'check_tlsrpt',
-	'check_http_security', 'check_dane', 'check_dane_https', 'check_svcb_https', 'check_mx',
+	'check_spf',
+	'check_dmarc',
+	'check_dkim',
+	'check_dnssec',
+	'check_ssl',
+	'check_mta_sts',
+	'check_ns',
+	'check_caa',
+	'check_bimi',
+	'check_tlsrpt',
+	'check_http_security',
+	'check_dane',
+	'check_dane_https',
+	'check_svcb_https',
+	'check_mx',
 	'check_subdomailing',
 ]);
 
 /** Tools that are standalone-only or non-scoring orchestration/meta tools. */
 const NON_SCAN_TOOL_NAMES = new Set([
-	'check_lookalikes', 'check_shadow_domains', 'check_txt_hygiene',
-	'check_mx_reputation', 'check_srv', 'check_zone_hygiene', 'check_resolver_consistency',
-	'check_authoritative_dns_infra', 'check_root_server_set',
-	'scan_domain', 'batch_scan', 'compare_domains', 'compare_baseline', 'generate_fix_plan', 'generate_spf_record',
-	'generate_dmarc_record', 'generate_dkim_config', 'generate_mta_sts_policy',
-	'get_benchmark', 'get_provider_insights', 'assess_spoofability', 'explain_finding',
-	'map_supply_chain', 'analyze_drift', 'validate_fix', 'generate_rollout_plan',
-	'resolve_spf_chain', 'discover_subdomains', 'map_compliance', 'simulate_attack_paths',
+	'check_lookalikes',
+	'check_shadow_domains',
+	'check_txt_hygiene',
+	'check_mx_reputation',
+	'check_srv',
+	'check_zone_hygiene',
+	'check_resolver_consistency',
+	'check_authoritative_dns_infra',
+	'check_root_server_set',
+	'scan_domain',
+	'batch_scan',
+	'compare_domains',
+	'compare_baseline',
+	'generate_fix_plan',
+	'generate_spf_record',
+	'generate_dmarc_record',
+	'generate_dkim_config',
+	'generate_mta_sts_policy',
+	'get_benchmark',
+	'get_provider_insights',
+	'assess_spoofability',
+	'explain_finding',
+	'map_supply_chain',
+	'analyze_drift',
+	'validate_fix',
+	'generate_rollout_plan',
+	'resolve_spf_chain',
+	'discover_subdomains',
+	'map_compliance',
+	'simulate_attack_paths',
 	'check_dbl',
 	'check_rbl',
 	'cymru_asn',
@@ -38,6 +81,7 @@ const NON_SCAN_TOOL_NAMES = new Set([
 	'check_nsec_walkability',
 	'check_dnssec_chain',
 	'check_fast_flux',
+	'check_subdomain_takeover',
 	'discover_brand_domains',
 	'brand_audit_single',
 	'brand_audit_batch_start',
@@ -48,7 +92,7 @@ const NON_SCAN_TOOL_NAMES = new Set([
 
 describe('tool-schemas metadata', () => {
 	it('exports exactly 59 tools', () => {
-		expect(TOOLS).toHaveLength(59);
+		expect(TOOLS).toHaveLength(60);
 	});
 
 	it('all tool names are unique', () => {
@@ -93,7 +137,9 @@ describe('tool-schemas metadata', () => {
 	});
 
 	it('all scoring check tools have a tier (except check_resolver_consistency)', () => {
-		const checkTools = TOOLS.filter((t) => t.name.startsWith('check_') && t.name !== 'check_resolver_consistency' && t.group !== 'intelligence');
+		const checkTools = TOOLS.filter(
+			(t) => t.name.startsWith('check_') && t.name !== 'check_resolver_consistency' && t.group !== 'intelligence',
+		);
 		for (const tool of checkTools) {
 			expect(tool.tier, `${tool.name} is a scoring check but is missing a tier`).toBeDefined();
 		}
