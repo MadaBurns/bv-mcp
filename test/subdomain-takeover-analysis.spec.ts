@@ -125,6 +125,99 @@ describe('subdomain-takeover-analysis', () => {
 			const result = await probeHttpFingerprint('cdn.example.com', 'example-assets.azureedge.net', fetchFn);
 			expect(result).toBeNull();
 		});
+
+		describe('Azure CDN / Front Door HTML deprovision-response variant', () => {
+			// Observed against `openaiassets.afd.azureedge.net`: the same FQDN
+			// returns either an XML `ResourceNotFound` body OR an HTML "Page not
+			// found" page referencing `df.onecloud.azure-test.net/Error/UE_404`
+			// depending on which LB instance answers. Pre-fix the HTML variant
+			// silently fell through and the finding was dropped.
+
+			it('matches the HTML "Page not found" variant (no XML ResourceNotFound)', async () => {
+				const htmlBody =
+					'<!DOCTYPE html><html><head><title>Page not found</title></head>' +
+					'<body><p>Reference: df.onecloud.azure-test.net/Error/UE_404</p></body></html>';
+				const fetchFn = fetchReturning(htmlBody);
+				const result = await probeHttpFingerprint('cdn.example.com', 'openaiassets.afd.azureedge.net', fetchFn);
+				expect(result).toBe('Azure Front Door');
+			});
+
+			it('matches the HTML variant against bare azureedge.net (CDN service)', async () => {
+				const htmlBody = '<html><head><title>Page not found</title></head><body></body></html>';
+				const fetchFn = fetchReturning(htmlBody);
+				const result = await probeHttpFingerprint('static.example.com', 'example.azureedge.net', fetchFn);
+				expect(result).toBe('Azure CDN');
+			});
+
+			it('matches the df.onecloud azure-test.net redirect reference alone', async () => {
+				// The internal redirect target string is a robust signal even when
+				// the <title> is rewritten by an intermediate LB.
+				const htmlBody = '<html><body>See df.onecloud.azure-test.net/Error/UE_404</body></html>';
+				const fetchFn = fetchReturning(htmlBody);
+				const result = await probeHttpFingerprint('cdn.example.com', 'openaiassets.afd.azureedge.net', fetchFn);
+				expect(result).toBe('Azure Front Door');
+			});
+		});
+
+		describe('TLS-SNI mismatch as deprovision signal (Fix #3)', () => {
+			// When the upstream cert doesn't cover the SNI hostname, fetch throws
+			// before a body can be inspected. Pre-fix this was swallowed silently;
+			// post-fix it returns a sentinel string so the caller emits a CRITICAL
+			// finding (a healthy endpoint would have a valid cert for itself).
+
+			it('returns the TLS sentinel when fetch throws a cert-altname error (Node/undici style)', async () => {
+				const fetchFn = vi.fn(async () => {
+					throw new Error("Hostname/IP does not match certificate's altnames: " + "Host: app.example.com. is not in the cert's altnames");
+				});
+				const result = await probeHttpFingerprint('app.example.com', 'old-app.herokuapp.com', fetchFn);
+				expect(result).not.toBeNull();
+				expect(result).toContain('TLS');
+			});
+
+			it('returns the TLS sentinel for the workerd-style "subject name matches" wording', async () => {
+				// This is the exact string shape the task brief pinned as the regression test.
+				const fetchFn = vi.fn(async () => {
+					throw new Error('unable to verify the first certificate; ... no alternative certificate subject name matches');
+				});
+				const result = await probeHttpFingerprint('app.example.com', 'old-app.herokuapp.com', fetchFn);
+				expect(result).not.toBeNull();
+				expect(result).toContain('TLS');
+			});
+
+			it('returns the TLS sentinel for ERR_TLS_CERT_ALTNAME_INVALID node-code style', async () => {
+				const fetchFn = vi.fn(async () => {
+					throw new Error('TLS error: ERR_TLS_CERT_ALTNAME_INVALID');
+				});
+				const result = await probeHttpFingerprint('app.example.com', 'old-app.herokuapp.com', fetchFn);
+				expect(result).toContain('TLS');
+			});
+
+			it('still returns null for non-TLS errors (timeout, DNS, connect refused)', async () => {
+				// Generic transport failures are not deprovision evidence — silent skip.
+				for (const msg of ['fetch aborted', 'connect ECONNREFUSED 127.0.0.1:443', 'getaddrinfo ENOTFOUND', 'The operation was aborted.']) {
+					const fetchFn = vi.fn(async () => {
+						throw new Error(msg);
+					});
+					const result = await probeHttpFingerprint('app.example.com', 'old-app.herokuapp.com', fetchFn);
+					expect(result).toBeNull();
+				}
+			});
+
+			it('scanSubdomainForTakeover surfaces the TLS-mismatch path as a CRITICAL finding', async () => {
+				const dns = makeDNS({
+					'gone.example.com|CNAME': ['old-app.herokuapp.com.'],
+					'old-app.herokuapp.com|A': ['54.243.180.1'], // target resolves; cert is the issue
+				});
+				const fetchFn = vi.fn(async () => {
+					throw new Error("Hostname/IP does not match certificate's altnames");
+				});
+				const findings = await scanSubdomainForTakeover('example.com', 'gone', dns, fetchFn);
+				expect(findings).toHaveLength(1);
+				expect(findings[0].severity).toBe('critical');
+				expect(findings[0].title).toContain('TLS');
+				expect(findings[0].metadata?.verificationStatus).toBe('verified');
+			});
+		});
 	});
 
 	describe('classifyTargetNamespace', () => {
