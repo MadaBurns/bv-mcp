@@ -331,7 +331,10 @@ describe('checkShadowDomains', () => {
 		expect(sharedNsFinding).toBeDefined();
 	});
 
-	it('should classify variant as unregistered when it has no NS records (Phase 1 filter)', async () => {
+	it('should classify variant as unregistered only when NS AND A are both empty (Phase 1 + 1.5 filter)', async () => {
+		// Updated semantics: a variant with no NS records is NOT immediately classified as
+		// unregistered. Phase 1.5 checks A as a fallback to avoid the slow-ccTLD false-negative
+		// trap. A variant is only classified as "unregistered" when both NS AND A are empty.
 		const target = 'example.com';
 
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
@@ -343,11 +346,10 @@ describe('checkShadowDomains', () => {
 				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
 			}
 
-			// example.net has MX but NO NS records — should not be detail-probed
+			// example.net is truly unregistered — NS empty, A empty, MX empty (the only state
+			// where the "unregistered" classification should fire).
 			if (name === 'example.net') {
-				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.shadow.com.']));
-				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['192.0.2.1']));
-				if (type === 'TXT' || type === '16') return Promise.resolve(emptyResponse());
+				return Promise.resolve(emptyResponse());
 			}
 			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
 				return Promise.resolve(emptyResponse());
@@ -357,10 +359,6 @@ describe('checkShadowDomains', () => {
 		});
 
 		const result = await run(target);
-		// Without NS, example.net should NOT be critical
-		const critical = result.findings.find((f) => f.severity === 'critical' && f.detail.includes('example.net'));
-		expect(critical).toBeUndefined();
-
 		const unregistered = result.findings.find(
 			(f) => f.severity === 'info' && f.detail.includes('example.net') && /unregistered/i.test(f.title),
 		);
@@ -500,6 +498,42 @@ describe('checkShadowDomains — classification edge cases', () => {
 		// DMARC p=reject present so should NOT be critical
 		const critical = result.findings.find((f) => f.severity === 'critical' && f.detail.includes('example.net'));
 		expect(critical).toBeUndefined();
+	});
+
+	it('should NOT classify a variant as unregistered when NS empty but A resolves (slow-ccTLD safety net)', async () => {
+		// Reproduces the openai.nl false-negative: Phase 1 NS query returns empty (slow .nl
+		// authoritative server exceeds the 2s PHASE1 timeout) but the domain IS registered and
+		// resolves an A record. The classifier must use A as a fallback positive-existence signal
+		// rather than concluding "unregistered".
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			if (name === target && (type === 'MX' || type === '15')) {
+				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(emptyResponse());
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['192.0.2.99']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mailrelay.example.net.']));
+				if (type === 'TXT' || type === '16') return Promise.resolve(emptyResponse());
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(emptyResponse());
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const wronglyUnregistered = result.findings.find(
+			(f) => f.detail.includes('example.net') && /does not appear to be registered/i.test(f.detail),
+		);
+		expect(wronglyUnregistered).toBeUndefined();
 	});
 
 	it('should classify RFC 7505 null MX (MX 0 .) as INFO non-mail, not as spoofable', async () => {
