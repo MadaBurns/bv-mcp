@@ -527,7 +527,7 @@ describe('handleToolsList', () => {
 		const { handleToolsList } = await import('../src/handlers/tools');
 		const result = handleToolsList();
 		expect(Array.isArray(result.tools)).toBe(true);
-		expect(result.tools).toHaveLength(59);
+		expect(result.tools).toHaveLength(60);
 	});
 
 	it('every tool entry has name, description, and inputSchema', async () => {

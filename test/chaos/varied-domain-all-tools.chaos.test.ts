@@ -52,16 +52,18 @@ function apex(domain: string): string {
 }
 
 function textResponse(body: string, status = 200, headers?: Headers): Response {
-	const responseHeaders = headers ?? new Headers({
-		'content-security-policy': "default-src 'self'",
-		'cross-origin-opener-policy': 'same-origin',
-		'cross-origin-resource-policy': 'same-origin',
-		'permissions-policy': 'geolocation=()',
-		'referrer-policy': 'no-referrer',
-		'strict-transport-security': 'max-age=31536000; includeSubDomains',
-		'x-content-type-options': 'nosniff',
-		'x-frame-options': 'DENY',
-	});
+	const responseHeaders =
+		headers ??
+		new Headers({
+			'content-security-policy': "default-src 'self'",
+			'cross-origin-opener-policy': 'same-origin',
+			'cross-origin-resource-policy': 'same-origin',
+			'permissions-policy': 'geolocation=()',
+			'referrer-policy': 'no-referrer',
+			'strict-transport-security': 'max-age=31536000; includeSubDomains',
+			'x-content-type-options': 'nosniff',
+			'x-frame-options': 'DENY',
+		});
 	return {
 		ok: status >= 200 && status < 300,
 		status,
@@ -138,11 +140,20 @@ function dohAnswers(name: string, type: string): Array<{ name: string; type: num
 	}
 	if (type === 'A') {
 		if (
-			/\.(dbl\.spamhaus\.org|multi\.uribl\.com|multi\.surbl\.org|zen\.spamhaus\.org|bl\.spamcop\.net|uceprotect\.net|mailspike\.net|b\.barracudacentral\.org|psbl\.surriel\.com|dnsbl\.sorbs\.net)$/.test(normalized)
+			/\.(dbl\.spamhaus\.org|multi\.uribl\.com|multi\.surbl\.org|zen\.spamhaus\.org|bl\.spamcop\.net|uceprotect\.net|mailspike\.net|b\.barracudacentral\.org|psbl\.surriel\.com|dnsbl\.sorbs\.net)$/.test(
+				normalized,
+			)
 		) {
 			return [];
 		}
-		return [{ name, type: recordType, TTL: normalized.includes('flux') ? 30 : 300, data: normalized.startsWith('mx1.') ? '198.51.100.25' : '192.0.2.10' }];
+		return [
+			{
+				name,
+				type: recordType,
+				TTL: normalized.includes('flux') ? 30 : 300,
+				data: normalized.startsWith('mx1.') ? '198.51.100.25' : '192.0.2.10',
+			},
+		];
 	}
 	if (type === 'AAAA') {
 		return [];
@@ -258,7 +269,7 @@ function makeCertstreamBinding(): { fetch: typeof fetch } {
 function makeWhoisBinding(): { fetch: typeof fetch } {
 	return {
 		fetch: vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-			const body = typeof init?.body === 'string' ? JSON.parse(init.body) as { domain?: string } : {};
+			const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as { domain?: string }) : {};
 			const registrar = body.domain?.includes('brand') ? 'MarkMonitor Inc.' : 'Example Registrar LLC';
 			return jsonResponse({ registrar, source: 'whois' });
 		}) as unknown as typeof fetch,
@@ -298,7 +309,10 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'scan_domain', arguments: { domain: nextDomain(), profile: 'auto', force_refresh: true, format: 'full' } },
 		{ name: 'batch_scan', arguments: { domains: baseDomains.slice(0, 4), force_refresh: true, format: 'compact' } },
 		{ name: 'compare_domains', arguments: { domains: baseDomains.slice(1, 4), format: 'compact' } },
-		{ name: 'compare_baseline', arguments: { domain: nextDomain(), baseline: { grade: 'B', require_spf: true, max_high_findings: 3 }, format: 'compact' } },
+		{
+			name: 'compare_baseline',
+			arguments: { domain: nextDomain(), baseline: { grade: 'B', require_spf: true, max_high_findings: 3 }, format: 'compact' },
+		},
 		{ name: 'check_shadow_domains', arguments: domainArgs() },
 		{ name: 'check_txt_hygiene', arguments: domainArgs() },
 		{ name: 'check_mx_reputation', arguments: domainArgs() },
@@ -306,7 +320,10 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'check_zone_hygiene', arguments: domainArgs() },
 		{ name: 'generate_fix_plan', arguments: domainArgs() },
 		{ name: 'generate_spf_record', arguments: { domain: nextDomain(), include_providers: ['google'], format: 'compact' } },
-		{ name: 'generate_dmarc_record', arguments: { domain: nextDomain(), policy: 'reject', rua_email: 'dmarc@example.com', format: 'compact' } },
+		{
+			name: 'generate_dmarc_record',
+			arguments: { domain: nextDomain(), policy: 'reject', rua_email: 'dmarc@example.com', format: 'compact' },
+		},
 		{ name: 'generate_dkim_config', arguments: { domain: nextDomain(), provider: 'google', format: 'compact' } },
 		{ name: 'generate_mta_sts_policy', arguments: { domain: nextDomain(), mx_hosts: ['mx1.example.com'], format: 'compact' } },
 		{ name: 'get_benchmark', arguments: { profile: 'mail_enabled', format: 'compact' } },
@@ -317,7 +334,10 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'map_supply_chain', arguments: domainArgs() },
 		{ name: 'analyze_drift', arguments: { domain: nextDomain(), baseline: baselineScore, format: 'compact' } },
 		{ name: 'validate_fix', arguments: { domain: nextDomain(), check: 'dmarc', expected: 'v=DMARC1', format: 'compact' } },
-		{ name: 'generate_rollout_plan', arguments: { domain: nextDomain(), target_policy: 'reject', timeline: 'standard', format: 'compact' } },
+		{
+			name: 'generate_rollout_plan',
+			arguments: { domain: nextDomain(), target_policy: 'reject', timeline: 'standard', format: 'compact' },
+		},
 		{ name: 'resolve_spf_chain', arguments: domainArgs() },
 		{ name: 'discover_subdomains', arguments: domainArgs() },
 		{ name: 'map_compliance', arguments: domainArgs() },
@@ -329,6 +349,7 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'check_nsec_walkability', arguments: domainArgs() },
 		{ name: 'check_dnssec_chain', arguments: domainArgs() },
 		{ name: 'check_fast_flux', arguments: { domain: nextDomain(), rounds: 3, format: 'compact' } },
+		{ name: 'check_subdomain_takeover', arguments: { domain: nextDomain(), format: 'compact' } },
 		{ name: 'check_authoritative_dns_infra', arguments: domainArgs() },
 		{ name: 'check_root_server_set', arguments: { format: 'compact' } },
 		{
@@ -343,7 +364,10 @@ function makeToolCases(): ToolCase[] {
 			},
 		},
 		{ name: 'brand_audit_single', arguments: { domain: 'brand-example.net', format: 'json', min_confidence: 1 } },
-		{ name: 'brand_audit_batch_start', arguments: { domains: ['brand-example.net', 'secure.example.com'], format: 'json', min_confidence: 0.9 } },
+		{
+			name: 'brand_audit_batch_start',
+			arguments: { domains: ['brand-example.net', 'secure.example.com'], format: 'json', min_confidence: 0.9 },
+		},
 		{ name: 'brand_audit_status', arguments: { auditId: 'chaos-audit-1' } },
 		{ name: 'brand_audit_get_report', arguments: { auditId: 'chaos-audit-1', target: 'brand-example.net' } },
 		{ name: 'brand_audit_watch', arguments: { action: 'list' } },
@@ -354,7 +378,7 @@ function structuredPayload(result: ToolResult): Record<string, unknown> | null {
 	const block = result.content.find((entry) => entry.type === 'text' && 'text' in entry && entry.text.includes('STRUCTURED_RESULT'));
 	if (!block || !('text' in block)) return null;
 	const match = block.text.match(/<!-- STRUCTURED_RESULT\n(.*)\nSTRUCTURED_RESULT -->/s);
-	return match ? JSON.parse(match[1]) as Record<string, unknown> : null;
+	return match ? (JSON.parse(match[1]) as Record<string, unknown>) : null;
 }
 
 describe('chaos: varied-domain all-tools scanning', () => {
@@ -371,7 +395,9 @@ describe('chaos: varied-domain all-tools scanning', () => {
 
 	it('keeps the all-tools chaos matrix in lockstep with the registry', () => {
 		const registryNames = TOOLS.map((tool) => tool.name).sort();
-		const caseNames = makeToolCases().map((entry) => entry.name).sort();
+		const caseNames = makeToolCases()
+			.map((entry) => entry.name)
+			.sort();
 		expect(caseNames).toEqual(registryNames);
 	});
 
@@ -405,9 +431,12 @@ describe('chaos: varied-domain all-tools scanning', () => {
 		expect(scanPayload?.domain).toBe(scanCase.arguments.domain);
 
 		const statuses = scanPayload?.checkStatuses as Record<string, string>;
-		const expectedScanCategories = TOOLS
-			.filter((tool) => tool.scanIncluded)
-			.map((tool) => tool.name.replace(/^check_/, '').replace(/^cymru_asn$/, 'asn').replace(/^rdap_lookup$/, 'rdap'));
+		const expectedScanCategories = TOOLS.filter((tool) => tool.scanIncluded).map((tool) =>
+			tool.name
+				.replace(/^check_/, '')
+				.replace(/^cymru_asn$/, 'asn')
+				.replace(/^rdap_lookup$/, 'rdap'),
+		);
 		for (const category of expectedScanCategories) {
 			expect(statuses).toHaveProperty(category);
 		}
