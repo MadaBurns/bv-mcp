@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { CheckCategory, CheckResult, CheckStatus, Finding, Severity } from '../types';
-import { CATEGORY_DISPLAY_WEIGHTS, SEVERITY_PENALTIES } from '../types';
+import { CATEGORY_DISPLAY_WEIGHTS, CATEGORY_PENALTY_CAPS, SEVERITY_PENALTIES } from '../types';
 
 export type { CheckCategory, CheckResult, CheckStatus, Finding, Severity };
-export { CATEGORY_DISPLAY_WEIGHTS, SEVERITY_PENALTIES };
+export { CATEGORY_DISPLAY_WEIGHTS, CATEGORY_PENALTY_CAPS, SEVERITY_PENALTIES };
 
 export type { CategoryTier } from '../types';
 export { CATEGORY_TIERS } from '../types';
@@ -66,13 +66,29 @@ function withConfidenceMetadata(finding: Finding): Finding {
 /**
  * Compute the score for a single check category based on its findings.
  * Starts at 100 and deducts points based on finding severities.
+ *
+ * When `category` is supplied and present in `CATEGORY_PENALTY_CAPS`, the
+ * total penalty is capped before clamping — this preserves discriminative
+ * power between "many same-class findings" and "single catastrophic finding"
+ * in categories like `subdomain_takeover` where a single upstream resource
+ * deletion can produce many same-class findings (e.g., one AWS NLB deletion
+ * orphaning 9 subdomains). Categories without a cap retain the legacy
+ * uncapped-then-clamped behavior.
+ *
+ * Backwards-compatible: omitting `category` keeps the original behavior.
  */
-export function computeCategoryScore(findings: Finding[]): number {
-	let score = 100;
+export function computeCategoryScore(findings: Finding[], category?: CheckCategory): number {
+	let penalty = 0;
 	for (const finding of findings) {
-		score -= SEVERITY_PENALTIES[finding.severity];
+		penalty += SEVERITY_PENALTIES[finding.severity];
 	}
-	return Math.max(0, Math.min(100, score));
+	if (category !== undefined) {
+		const cap = CATEGORY_PENALTY_CAPS[category];
+		if (cap !== undefined && penalty > cap) {
+			penalty = cap;
+		}
+	}
+	return Math.max(0, Math.min(100, 100 - penalty));
 }
 
 /** Regex for detecting missing control patterns in finding text. */
@@ -87,9 +103,11 @@ export function scoreIndicatesMissingControl(findings: Finding[]): boolean {
 	return findings.some((f) => {
 		const isMissingPattern = MISSING_CONTROL_REGEX.test(f.detail) || MISSING_CONTROL_REGEX.test(f.title);
 		const confidence = (f.metadata?.confidence as string) ?? inferFindingConfidence(f);
-		return isMissingPattern
-			&& (f.severity === 'critical' || f.severity === 'high')
-			&& (confidence === 'deterministic' || confidence === 'verified');
+		return (
+			isMissingPattern &&
+			(f.severity === 'critical' || f.severity === 'high') &&
+			(confidence === 'deterministic' || confidence === 'verified')
+		);
 	});
 }
 
@@ -101,9 +119,9 @@ export function scoreIndicatesMissingControl(findings: Finding[]): boolean {
  */
 export function buildCheckResult(category: CheckCategory, findings: Finding[]): CheckResult {
 	const normalizedFindings = findings.map(withConfidenceMetadata);
-	const score = computeCategoryScore(normalizedFindings);
-	const hasMissingControl = scoreIndicatesMissingControl(normalizedFindings)
-		|| normalizedFindings.some((f) => f.metadata?.missingControl === true);
+	const score = computeCategoryScore(normalizedFindings, category);
+	const hasMissingControl =
+		scoreIndicatesMissingControl(normalizedFindings) || normalizedFindings.some((f) => f.metadata?.missingControl === true);
 	const passed = score >= 50 && !hasMissingControl;
 	return {
 		category,
