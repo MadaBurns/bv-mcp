@@ -228,4 +228,36 @@ describe('subdomain-takeover-analysis', () => {
 			expect(findings[0].metadata?.severityRationale).toBe('claimable_target_name');
 		});
 	});
+
+	describe('x.ai models cluster regression (TDD plan 2026-05-23)', () => {
+		it('the 9 dangling models.x.ai subdomains all classify as MEDIUM operational drift', async () => {
+			const NLB = 'ab74714963781430da5c4d9a29a6ee3c-1355387950.us-east-1.elb.amazonaws.com';
+			// Full FQDNs — scanSubdomainForTakeover treats any dot-containing
+			// `subdomain` arg as a full FQDN (CT-enumeration call shape).
+			const subdomains = [
+				'aurora-sglang.us-east-1.models.x.ai',
+				'aurora-upsampler-sglang.us-east-1.models.x.ai',
+				'enterprise-api-grok-2-1212.us-east-1.models.x.ai',
+				'grok-3-5-code-0625.us-east-1.models.x.ai',
+				'grok-4-code-0630.us-east-1.models.x.ai',
+				'embedding-10m-0806-enterprise.us-east-1.models.x.ai',
+				'fte5-embedding-0806-api.us-east-1.models.x.ai',
+				'fte5-v2-fast-embedding-0806-api.us-east-1.models.x.ai',
+				'fte5-embedding-250707-api.us-east-1.models.x.ai',
+			];
+			const dnsMap: Record<string, string[]> = { [`${NLB}|A`]: [] };
+			for (const s of subdomains) {
+				dnsMap[`${s}|CNAME`] = [`${NLB}.`];
+			}
+			const dns = makeDNS(dnsMap);
+
+			const findings = (await Promise.all(subdomains.map((s) => scanSubdomainForTakeover('x.ai', s, dns, vi.fn())))).flat();
+
+			expect(findings).toHaveLength(9);
+			for (const f of findings) {
+				expect(f.severity).toBe('medium');
+				expect(f.metadata?.severityRationale).toBe('random_target_id');
+			}
+		});
+	});
 });
