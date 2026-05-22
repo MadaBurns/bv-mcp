@@ -250,7 +250,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_nsec_walkability: 10,
 	check_dnssec_chain: 10,
 	check_fast_flux: 3,
-	check_subdomain_takeover: 10,
+	check_subdomain_takeover: 25,
 	check_authoritative_dns_infra: 25,
 	check_root_server_set: 25,
 	discover_brand_domains: 1,
