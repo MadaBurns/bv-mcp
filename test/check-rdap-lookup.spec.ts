@@ -31,19 +31,25 @@ function makeRdapResponse(overrides: Record<string, unknown> = {}) {
 			{
 				objectClassName: 'entity',
 				roles: ['registrar'],
-				vcardArray: ['vcard', [
-					['version', {}, 'text', '4.0'],
-					['fn', {}, 'text', 'Example Registrar Inc.'],
-				]],
+				vcardArray: [
+					'vcard',
+					[
+						['version', {}, 'text', '4.0'],
+						['fn', {}, 'text', 'Example Registrar Inc.'],
+					],
+				],
 			},
 			{
 				objectClassName: 'entity',
 				roles: ['registrant'],
-				vcardArray: ['vcard', [
-					['version', {}, 'text', '4.0'],
-					['fn', {}, 'text', 'ACME Corporation'],
-					['adr', {}, 'text', ['', '', '123 Main St', 'Springfield', 'IL', '62704', 'US']],
-				]],
+				vcardArray: [
+					'vcard',
+					[
+						['version', {}, 'text', '4.0'],
+						['fn', {}, 'text', 'ACME Corporation'],
+						['adr', {}, 'text', ['', '', '123 Main St', 'Springfield', 'IL', '62704', 'US']],
+					],
+				],
 			},
 		],
 		...overrides,
@@ -56,10 +62,12 @@ function mockFetchRouter(routes: Record<string, () => unknown>) {
 		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 		for (const [pattern, handler] of Object.entries(routes)) {
 			if (url.includes(pattern)) {
-				return Promise.resolve(new Response(JSON.stringify(handler()), {
-					status: 200,
-					headers: { 'Content-Type': 'application/rdap+json' },
-				}));
+				return Promise.resolve(
+					new Response(JSON.stringify(handler()), {
+						status: 200,
+						headers: { 'Content-Type': 'application/rdap+json' },
+					}),
+				);
 			}
 		}
 		return Promise.resolve(new Response('Not Found', { status: 404 }));
@@ -94,32 +102,44 @@ describe('checkRdapLookup', () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 			if (url.includes('data.iana.org/rdap/dns.json')) {
-				return Promise.resolve(new Response(JSON.stringify(makeBootstrap([[['global'], ['https://rdap.identitydigital.services/rdap/']]])), {
-					status: 200,
-					headers: { 'Content-Type': 'application/json' },
-				}));
+				return Promise.resolve(
+					new Response(JSON.stringify(makeBootstrap([[['global'], ['https://rdap.identitydigital.services/rdap/']]])), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				);
 			}
 			if (url.includes('rdap.identitydigital.services')) {
 				rdapAttempts++;
 				if (rdapAttempts === 1) {
 					return Promise.resolve(new Response('Too Many Requests', { status: 429, headers: { 'Retry-After': '0' } }));
 				}
-				return Promise.resolve(new Response(JSON.stringify(makeRdapResponse({
-					ldhName: 'stripe.global',
-					entities: [
+				return Promise.resolve(
+					new Response(
+						JSON.stringify(
+							makeRdapResponse({
+								ldhName: 'stripe.global',
+								entities: [
+									{
+										objectClassName: 'entity',
+										roles: ['registrar'],
+										vcardArray: [
+											'vcard',
+											[
+												['version', {}, 'text', '4.0'],
+												['fn', {}, 'text', 'SafeNames Ltd.'],
+											],
+										],
+									},
+								],
+							}),
+						),
 						{
-							objectClassName: 'entity',
-							roles: ['registrar'],
-							vcardArray: ['vcard', [
-								['version', {}, 'text', '4.0'],
-								['fn', {}, 'text', 'SafeNames Ltd.'],
-							]],
+							status: 200,
+							headers: { 'Content-Type': 'application/rdap+json' },
 						},
-					],
-				})), {
-					status: 200,
-					headers: { 'Content-Type': 'application/rdap+json' },
-				}));
+					),
+				);
 			}
 			return Promise.resolve(new Response('Not Found', { status: 404 }));
 		});
@@ -139,19 +159,25 @@ describe('checkRdapLookup', () => {
 				{
 					objectClassName: 'entity',
 					roles: ['registrar'],
-					vcardArray: ['vcard', [
-						['version', {}, 'text', '4.0'],
-						['fn', {}, 'text', 'Namecheap Inc.'],
-					]],
+					vcardArray: [
+						'vcard',
+						[
+							['version', {}, 'text', '4.0'],
+							['fn', {}, 'text', 'Namecheap Inc.'],
+						],
+					],
 				},
 				{
 					objectClassName: 'entity',
 					roles: ['registrant'],
-					vcardArray: ['vcard', [
-						['version', {}, 'text', '4.0'],
-						['fn', {}, 'text', 'REDACTED FOR PRIVACY'],
-						['adr', {}, 'text', ['', '', 'REDACTED FOR PRIVACY', '', '', '', 'REDACTED FOR PRIVACY']],
-					]],
+					vcardArray: [
+						'vcard',
+						[
+							['version', {}, 'text', '4.0'],
+							['fn', {}, 'text', 'REDACTED FOR PRIVACY'],
+							['adr', {}, 'text', ['', '', 'REDACTED FOR PRIVACY', '', '', '', 'REDACTED FOR PRIVACY']],
+						],
+					],
 				},
 			],
 		});
@@ -196,10 +222,12 @@ describe('checkRdapLookup', () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 			if (url.includes('data.iana.org/rdap/dns.json')) {
-				return Promise.resolve(new Response(JSON.stringify(makeBootstrap()), {
-					status: 200,
-					headers: { 'Content-Type': 'application/json' },
-				}));
+				return Promise.resolve(
+					new Response(JSON.stringify(makeBootstrap()), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				);
 			}
 			// Simulate timeout on RDAP domain lookup
 			return Promise.reject(new DOMException('The operation was aborted', 'AbortError'));
@@ -215,16 +243,20 @@ describe('checkRdapLookup', () => {
 		const fetchSpy = vi.fn().mockImplementation((input: string | URL | Request, _init?: RequestInit) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 			if (url.includes('data.iana.org/rdap/dns.json')) {
-				return Promise.resolve(new Response(JSON.stringify(makeBootstrap()), {
-					status: 200,
-					headers: { 'Content-Type': 'application/json' },
-				}));
+				return Promise.resolve(
+					new Response(JSON.stringify(makeBootstrap()), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				);
 			}
 			if (url.includes('rdap.verisign.com')) {
-				return Promise.resolve(new Response(JSON.stringify(makeRdapResponse()), {
-					status: 200,
-					headers: { 'Content-Type': 'application/rdap+json' },
-				}));
+				return Promise.resolve(
+					new Response(JSON.stringify(makeRdapResponse()), {
+						status: 200,
+						headers: { 'Content-Type': 'application/rdap+json' },
+					}),
+				);
 			}
 			return Promise.resolve(new Response('Not Found', { status: 404 }));
 		});
@@ -280,18 +312,22 @@ describe('checkRdapLookup', () => {
 	it('extracts registrar organization from RDAP vcard org when fn is absent', async () => {
 		globalThis.fetch = mockFetchRouter({
 			'data.iana.org/rdap/dns.json': () => makeBootstrap(),
-			'rdap.verisign.com': () => makeRdapResponse({
-				entities: [
-					{
-						objectClassName: 'entity',
-						roles: ['registrar'],
-						vcardArray: ['vcard', [
-							['version', {}, 'text', '4.0'],
-							['org', {}, 'text', 'Synthetic Registrar Org LLC'],
-						]],
-					},
-				],
-			}),
+			'rdap.verisign.com': () =>
+				makeRdapResponse({
+					entities: [
+						{
+							objectClassName: 'entity',
+							roles: ['registrar'],
+							vcardArray: [
+								'vcard',
+								[
+									['version', {}, 'text', '4.0'],
+									['org', {}, 'text', 'Synthetic Registrar Org LLC'],
+								],
+							],
+						},
+					],
+				}),
 		});
 
 		const result = await run();
@@ -302,19 +338,23 @@ describe('checkRdapLookup', () => {
 	it('extracts registrar IANA ID from RDAP registrar entity publicIds', async () => {
 		globalThis.fetch = mockFetchRouter({
 			'data.iana.org/rdap/dns.json': () => makeBootstrap(),
-			'rdap.verisign.com': () => makeRdapResponse({
-				entities: [
-					{
-						objectClassName: 'entity',
-						roles: ['registrar'],
-						publicIds: [{ type: 'IANA Registrar ID', identifier: '299' }],
-						vcardArray: ['vcard', [
-							['version', {}, 'text', '4.0'],
-							['fn', {}, 'text', 'Corporation Service Company'],
-						]],
-					},
-				],
-			}),
+			'rdap.verisign.com': () =>
+				makeRdapResponse({
+					entities: [
+						{
+							objectClassName: 'entity',
+							roles: ['registrar'],
+							publicIds: [{ type: 'IANA Registrar ID', identifier: '299' }],
+							vcardArray: [
+								'vcard',
+								[
+									['version', {}, 'text', '4.0'],
+									['fn', {}, 'text', 'Corporation Service Company'],
+								],
+							],
+						},
+					],
+				}),
 		});
 
 		const result = await run();
@@ -326,19 +366,23 @@ describe('checkRdapLookup', () => {
 	it('extracts registrar from RDAP entity publicIds even without registrar role', async () => {
 		globalThis.fetch = mockFetchRouter({
 			'data.iana.org/rdap/dns.json': () => makeBootstrap(),
-			'rdap.verisign.com': () => makeRdapResponse({
-				entities: [
-					{
-						objectClassName: 'entity',
-						roles: ['technical'],
-						publicIds: [{ type: 'IANA Registrar ID', identifier: '9999' }],
-						vcardArray: ['vcard', [
-							['version', {}, 'text', '4.0'],
-							['fn', {}, 'text', 'Synthetic PublicId Registrar LLC'],
-						]],
-					},
-				],
-			}),
+			'rdap.verisign.com': () =>
+				makeRdapResponse({
+					entities: [
+						{
+							objectClassName: 'entity',
+							roles: ['technical'],
+							publicIds: [{ type: 'IANA Registrar ID', identifier: '9999' }],
+							vcardArray: [
+								'vcard',
+								[
+									['version', {}, 'text', '4.0'],
+									['fn', {}, 'text', 'Synthetic PublicId Registrar LLC'],
+								],
+							],
+						},
+					],
+				}),
 		});
 
 		const result = await run();
@@ -353,11 +397,12 @@ describe('checkRdapLookup', () => {
 			'rdap.verisign.com': () => makeRdapResponse({ entities: [] }),
 		});
 		const whoisBinding = {
-			fetch: vi.fn(async () =>
-				new Response(JSON.stringify({ registrar: 'WHOIS Fallback Registrar Inc.', source: 'whois' }), {
-					status: 200,
-					headers: { 'Content-Type': 'application/json' },
-				}),
+			fetch: vi.fn(
+				async () =>
+					new Response(JSON.stringify({ registrar: 'WHOIS Fallback Registrar Inc.', source: 'whois' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
 			),
 		};
 
@@ -381,11 +426,12 @@ describe('checkRdapLookup', () => {
 			'rdap.verisign.com': () => makeRdapResponse({ entities: [] }),
 		});
 		const whoisBinding = {
-			fetch: vi.fn(async () =>
-				new Response(`Domain Name: EXAMPLE.COM\n${label}: ${registrar}\nUpdated Date: 2026-01-01T00:00:00Z\n`, {
-					status: 200,
-					headers: { 'Content-Type': 'text/plain' },
-				}),
+			fetch: vi.fn(
+				async () =>
+					new Response(`Domain Name: EXAMPLE.COM\n${label}: ${registrar}\nUpdated Date: 2026-01-01T00:00:00Z\n`, {
+						status: 200,
+						headers: { 'Content-Type': 'text/plain' },
+					}),
 			),
 		};
 
@@ -404,11 +450,12 @@ describe('checkRdapLookup', () => {
 			'rdap.verisign.com': () => makeRdapResponse({ entities: [] }),
 		});
 		const whoisBinding = {
-			fetch: vi.fn(async () =>
-				new Response('Domain Name: EXAMPLE.COM\nRegistrar URL: https://registrar.example.test\n', {
-					status: 200,
-					headers: { 'Content-Type': 'text/plain' },
-				}),
+			fetch: vi.fn(
+				async () =>
+					new Response('Domain Name: EXAMPLE.COM\nRegistrar URL: https://registrar.example.test\n', {
+						status: 200,
+						headers: { 'Content-Type': 'text/plain' },
+					}),
 			),
 		};
 
@@ -421,5 +468,78 @@ describe('checkRdapLookup', () => {
 		const fallbackFinding = result.findings.find((f) => f.metadata?.registrarSource === 'redacted');
 		expect(fallbackFinding?.metadata?.registrarFailureReason).toBeUndefined();
 		expect(whoisBinding.fetch).toHaveBeenCalledOnce();
+	});
+
+	describe('FALLBACK_RDAP_SERVERS', () => {
+		it('.app and .dev point at pubapi.registry.google (not the dead www.registry.google host)', async () => {
+			const { FALLBACK_RDAP_SERVERS } = await import('../src/tools/check-rdap-lookup');
+			expect(FALLBACK_RDAP_SERVERS.app).toBe('https://pubapi.registry.google/rdap/');
+			expect(FALLBACK_RDAP_SERVERS.dev).toBe('https://pubapi.registry.google/rdap/');
+			expect(FALLBACK_RDAP_SERVERS.app).not.toContain('www.registry.google');
+		});
+
+		it('covers the ccTLDs the brand-audit hits most often without bootstrap (.uk, .nl, .de via WHOIS, .ca, .sg, .fr, .jp via WHOIS, .in, .au)', async () => {
+			const { FALLBACK_RDAP_SERVERS } = await import('../src/tools/check-rdap-lookup');
+			// Covered by IANA bootstrap → also pinned in our hardcoded fallback.
+			for (const tld of ['uk', 'nl', 'ca', 'sg', 'fr', 'in', 'au', 'pl', 'no', 'cz']) {
+				expect(FALLBACK_RDAP_SERVERS[tld], `missing fallback for .${tld}`).toMatch(/^https:\/\//);
+			}
+		});
+
+		it('every fallback URL is HTTPS and ends with /', async () => {
+			const { FALLBACK_RDAP_SERVERS } = await import('../src/tools/check-rdap-lookup');
+			for (const [tld, url] of Object.entries(FALLBACK_RDAP_SERVERS)) {
+				expect(url.startsWith('https://'), `.${tld} → ${url} not https`).toBe(true);
+				expect(url.endsWith('/'), `.${tld} → ${url} missing trailing slash`).toBe(true);
+			}
+		});
+	});
+
+	describe('bootstrap in-flight dedup', () => {
+		it('concurrent RDAP calls share a single IANA bootstrap fetch (not N concurrent fetches)', async () => {
+			let bootstrapFetchCount = 0;
+			let resolveBootstrap: (v: Response) => void = () => {};
+			const bootstrapPromise = new Promise<Response>((r) => {
+				resolveBootstrap = r;
+			});
+
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if (url.includes('data.iana.org/rdap/dns.json')) {
+					bootstrapFetchCount++;
+					return bootstrapPromise;
+				}
+				return Promise.resolve(
+					new Response(JSON.stringify(makeRdapResponse()), {
+						status: 200,
+						headers: { 'Content-Type': 'application/rdap+json' },
+					}),
+				);
+			});
+
+			const mod = await import('../src/tools/check-rdap-lookup');
+			mod._resetBootstrapCache();
+
+			// Fire three concurrent lookups before bootstrap resolves
+			const p1 = mod.checkRdapLookup('a.com');
+			const p2 = mod.checkRdapLookup('b.com');
+			const p3 = mod.checkRdapLookup('c.com');
+
+			// Let microtasks flush so all three calls reach fetchBootstrap()
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(bootstrapFetchCount).toBe(1);
+
+			resolveBootstrap(
+				new Response(JSON.stringify(makeBootstrap()), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' },
+				}),
+			);
+
+			await Promise.all([p1, p2, p3]);
+			expect(bootstrapFetchCount).toBe(1);
+		});
 	});
 });
