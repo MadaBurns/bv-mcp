@@ -70,6 +70,11 @@ export const BrandAuditQueueMessageSchema = z.object({
 	 * pipeline's effective-mode resolution.
 	 */
 	discovery_mode: z.enum(['classic', 'tiered']).optional(),
+	/**
+	 * Output view mode forwarded by brand_audit_batch_start. Explicit
+	 * caller-supplied value is threaded into runBrandAuditPipeline.
+	 */
+	view: z.enum(['standard', 'csc_complement']).optional(),
 	/** Set when the message originated from the watch cron — drives post-completion diff/webhook. */
 	watchId: z.string().min(1).max(64).optional(),
 	/** Bound at enqueue time so the consumer doesn't need a D1 round-trip to look up the watch's owner. */
@@ -145,6 +150,14 @@ export interface BrandAuditConsumerDeps {
 	tier2Lookup?: (domain: string) => Promise<Tier2Result>;
 	/** Optional service binding for registrar WHOIS fallback in queued audits. */
 	whoisBinding?: { fetch: typeof fetch };
+	/**
+	 * Optional internal-call closure for the CSC deep-scan queue job.
+	 * Wraps handleToolsCall so the deep-scan orchestrator can invoke scan_domain
+	 * and discover_subdomains without going through HTTP framing. Constructed at
+	 * the queue dispatch site in src/index.ts; undefined on BSL self-hosts where
+	 * SCAN_CACHE or other required bindings are absent.
+	 */
+	internalCall?: (tool: string, args: { domain: string }) => Promise<unknown>;
 }
 
 interface TargetStatusRow {
@@ -301,6 +314,9 @@ export async function processBrandAuditMessage(
 		// (the caller's `discovery_mode` arg). Wins over discoveryModeDefault
 		// in the pipeline's effective-mode resolution.
 		discovery_mode: message.discovery_mode,
+		// Output view mode from the batch_start payload. Forwarded into the
+		// pipeline so CSC enrichment runs when the caller requested csc_complement.
+		view: message.view,
 		signal: controller.signal,
 		deadlineMs: messageStartedAt + BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
 		// Phase 2b: retry messages re-run the pipeline from scratch instead
@@ -511,6 +527,29 @@ export async function handleBrandAuditQueue(
 	deps: BrandAuditConsumerDeps,
 ): Promise<void> {
 	for (const message of batch.messages) {
+		// Phase detection before Zod parse: deep_scan messages don't carry `format`
+		// and would be silently acked as "malformed" by BrandAuditQueueMessageSchema.
+		const rawBody = message.body as Record<string, unknown>;
+		if (typeof rawBody === 'object' && rawBody !== null && rawBody.phase === 'deep_scan') {
+			const { auditId, target } = rawBody as { auditId: string; target: string; phase: string };
+			if (typeof auditId === 'string' && typeof target === 'string' && deps.internalCall) {
+				try {
+					const { runDeepScanFromStepStore } = await import('../lib/brand-audit-csc-deepscan-job');
+					const stepStore = createD1BrandAuditStepStore(deps.db);
+					await runDeepScanFromStepStore({ auditId, target, stepStore, internalCall: deps.internalCall });
+				} catch (err) {
+					// Deep-scan failures are not retryable: the step-store is the durability boundary.
+					// The fast-stage payload is already persisted; brand_audit_get_report falls back to
+					// csc_complement_fast when csc_complement_full is absent. Ack and let the cron reaper
+					// re-enqueue if needed.
+					console.warn('[csc-complement] deep_scan job failed:', err);
+				}
+			}
+			// Ack unconditionally: malformed payload, missing internalCall, or deep-scan failure are not retryable.
+			message.ack();
+			continue;
+		}
+
 		const verdict = await processBrandAuditMessage(message.body, deps);
 		if (verdict === 'retry') {
 			message.retry();

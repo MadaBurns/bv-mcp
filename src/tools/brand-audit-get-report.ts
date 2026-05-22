@@ -21,6 +21,7 @@
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import type { BrandAuditStatus } from '../lib/db/brand-audit-schema';
 import { BRAND_AUDIT_TARGET_DEADLINE_MS } from '../lib/brand-audit-reaper';
+import type { BrandAuditStepStore } from '../lib/brand-audit-step-store';
 
 const CATEGORY = 'brand_discovery';
 
@@ -37,6 +38,8 @@ export interface BrandAuditGetReportDeps {
 	signedUrlTtlSeconds?: number;
 	/** Clock override for tests + dead-zone closure. */
 	now?: () => number;
+	/** Step store for CSC complement pipeline steps. When omitted, cscComplement is not attached. */
+	stepStore?: BrandAuditStepStore;
 }
 
 interface AuditRowSlim {
@@ -173,6 +176,20 @@ export async function brandAuditGetReport(
 			pdfPending = true;
 		}
 
+		// CSC complement: prefer full scan payload; fall back to fast scan. Attach
+		// only when the step-store is provisioned (operator deploys). A missing
+		// stepStore is a no-op — the field is simply absent from the response.
+		let cscComplement: unknown = undefined;
+		if (deps.stepStore) {
+			const normalizedTarget = target.trim().toLowerCase();
+			const fullCsc = await deps.stepStore.get(auditId, normalizedTarget, 'csc_complement_full');
+			const fastCsc = await deps.stepStore.get(auditId, normalizedTarget, 'csc_complement_fast');
+			const cscPayload = (fullCsc?.status === 'completed' ? fullCsc.payload : null) ?? (fastCsc?.status === 'completed' ? fastCsc.payload : null);
+			if (cscPayload !== null && cscPayload !== undefined) {
+				cscComplement = cscPayload;
+			}
+		}
+
 		return buildCheckResult(CATEGORY, [
 			createFinding(
 				CATEGORY,
@@ -190,6 +207,7 @@ export async function brandAuditGetReport(
 						: targetRow.error,
 					pdfUrl,
 					pdfPending,
+					...(cscComplement !== undefined ? { cscComplement } : {}),
 				},
 			),
 		]);

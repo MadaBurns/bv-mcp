@@ -16,12 +16,15 @@
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import type { BrandAuditStatus } from '../lib/db/brand-audit-schema';
 import { BRAND_AUDIT_TARGET_DEADLINE_MS } from '../lib/brand-audit-reaper';
+import type { BrandAuditStepStore } from '../lib/brand-audit-step-store';
 
 const CATEGORY = 'brand_discovery';
 
 export interface BrandAuditStatusDeps {
 	db: D1Database;
 	now?: () => number;
+	/** Step store for CSC complement pipeline steps. When omitted, stage is not reported. */
+	stepStore?: BrandAuditStepStore;
 }
 
 interface BrandAuditRow {
@@ -199,6 +202,29 @@ export async function brandAuditStatus(
 	if (targetStatusCounts.queued > 0 && updatedAgeMs > 300_000) {
 		warnings.push(`Audit has ${targetStatusCounts.queued} queued target(s) and has not updated for ${updatedAgeMs}ms.`);
 	}
+	// CSC complement stage: scan all targets' step-store entries and compute
+	// the coarsest stage that describes the audit's CSC readiness. Strategy:
+	//   deep_ready — at least one target has csc_complement_full completed
+	//   fast_ready — at least one target has csc_complement_fast completed (and no full)
+	// For a single-target audit (the common case) this is unambiguous. For
+	// multi-target audits this represents the most advanced stage reached by
+	// any target, giving callers an early "some data ready" signal without
+	// waiting for all targets to complete deep analysis.
+	let cscStage: 'fast_ready' | 'deep_ready' | undefined;
+	if (deps.stepStore && targets.length > 0) {
+		for (const t of targets) {
+			const fullCsc = await deps.stepStore.get(auditId, t.target, 'csc_complement_full');
+			if (fullCsc?.status === 'completed') {
+				cscStage = 'deep_ready';
+				break; // deep_ready is the highest stage — no need to check further
+			}
+			const fastCsc = await deps.stepStore.get(auditId, t.target, 'csc_complement_fast');
+			if (fastCsc?.status === 'completed') {
+				cscStage = 'fast_ready'; // may be upgraded to deep_ready by a later target
+			}
+		}
+	}
+
 	const summary = createFinding(
 		CATEGORY,
 		`Brand audit ${auditId}: ${renderedAuditStatus} (${progress})`,
@@ -227,6 +253,7 @@ export async function brandAuditStatus(
 				error: synthesisedError ?? row.error,
 				hasPdf: row.pdf_r2_key !== null,
 			})),
+			...(cscStage !== undefined ? { stage: cscStage } : {}),
 		},
 	);
 

@@ -105,6 +105,12 @@ export interface BrandAuditPipelineOptions {
 	/** Epoch-ms deadline for returning a partial result before queue/runtime timeout. */
 	deadlineMs?: number;
 	/**
+	 * Sync MCP calls can choose to return an async-handoff result before the
+	 * global tool timeout. Queue consumers leave this unset so their longer
+	 * budget still records completed/failed rows normally.
+	 */
+	timeoutBehavior?: 'async_handoff';
+	/**
 	 * Abort signal that interrupts the orchestrator at phase boundaries. The
 	 * consumer wires this to a wall-clock timeout (240s of the 300s Worker
 	 * budget) so the pipeline can flip the row to `failed` from this same
@@ -122,6 +128,12 @@ export interface BrandAuditPipelineOptions {
 	force_refresh?: boolean;
 	/** Clock override for deterministic tests. */
 	now?: () => number;
+	/**
+	 * Output view mode. `'csc_complement'` triggers CSC enrichment + portfolio
+	 * aggregation and emits a `cscComplement` payload on the returned CheckResult.
+	 * Default `'standard'` — backward-compatible, no change to existing output.
+	 */
+	view?: 'standard' | 'csc_complement';
 }
 
 /** Injectable dependencies. Tests pass stubs; production omits these and the module imports win. */
@@ -152,6 +164,8 @@ export interface BrandAuditPipelineDeps {
 	 * `discoverBrandDomains` via its `deps` arg.
 	 */
 	tier2Lookup?: (domain: string) => Promise<Tier2Result>;
+	/** Optional queue binding for deferring CSC deep-scan. Provided in prod; undefined in tests. */
+	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 }
 
 interface RegistrarLookup {
@@ -1030,5 +1044,39 @@ export async function runBrandAuditPipeline(
 
 	const result = buildCheckResult(CATEGORY, [summary, ...classifiedFindings]);
 	await stepStore?.put({ auditId, target: seedDomain, step: 'classification', status: 'completed', payload: result });
+
+	if (options.view === 'csc_complement') {
+		const { buildCscComplement } = await import('./brand-audit-csc-builder');
+		const cscComplement = await buildCscComplement({
+			seedDomain,
+			primaryRegistrar: targetLookup.registrar,
+			primaryRegistrarSource: targetLookup.registrarSource,
+			primaryRegistrarIanaId: targetLookup.registrarIanaId,
+			classifiedFindings,
+			now,
+		});
+		// Side-channel attach cscComplement to result to avoid polluting the shared CheckResult type.
+		// Value is also persisted to step-store; consumers reading via brand_audit_get_report validate
+		// against BrandAuditCscSchema at runtime. Type coercion is non-load-bearing downstream.
+		(result as unknown as { cscComplement: typeof cscComplement }).cscComplement = cscComplement;
+
+		if (stepStore) {
+			await stepStore.put({
+				auditId,
+				target: seedDomain,
+				step: 'csc_complement_fast',
+				status: 'completed',
+				payload: cscComplement,
+			});
+		}
+
+		if (deps.brandAuditQueue) {
+			await deps.brandAuditQueue.send(
+				{ auditId, target: seedDomain, phase: 'deep_scan' },
+				{ contentType: 'json' },
+			);
+		}
+	}
+
 	return result;
 }
