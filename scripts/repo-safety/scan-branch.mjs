@@ -16,17 +16,13 @@ if (!ref) {
 const enableClientDomains = process.argv.includes('--with-client-domains');
 
 const basePolicy = JSON.parse(readFileSync(join(scriptDir, 'policy.json'), 'utf8'));
+// Survey-only extension: Tier-1 brands worth surfacing in a sweep but not
+// worth gating (legitimate DNS-example / marketing usage). The base policy's
+// hashed forbidden list still applies — this just widens the survey.
+const SURVEY_ONLY_DOMAINS = ['amazon.com', 'apple.com', 'github.com', 'google.com', 'microsoft.com'];
 const policy = normalizePolicy({
 	...basePolicy,
-	forbiddenClientDomains: enableClientDomains
-		? [
-				'amazon.com', 'apple.com', 'brand-eta.com', 'brand-zeta.com',
-				'brand-beta.com', 'brand-beta.com.au', 'github.com', 'google.com',
-				'brand-iota.com', 'brand-kappa.com', 'brand-theta.com',
-				'microsoft.com', 'brand-gamma.com', 'paypal.com', 'stripe.com',
-				'brand-lambda.com', 'brand-mu.com', 'brand-mu.com.au', 'brand-alpha.com',
-			]
-		: basePolicy.forbiddenClientDomains ?? [],
+	forbiddenClientDomains: enableClientDomains ? SURVEY_ONLY_DOMAINS : (basePolicy.forbiddenClientDomains ?? []),
 });
 
 const files = execFileSync('git', ['ls-tree', '-r', '--name-only', '-z', ref], { encoding: 'utf8' })

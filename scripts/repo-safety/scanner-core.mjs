@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 const DEFAULT_POLICY = {
 	forbiddenPaths: [],
 	sourceExtensions: ['.cjs', '.js', '.json', '.jsonc', '.md', '.mjs', '.py', '.sh', '.sql', '.toml', '.ts', '.tsx', '.yaml', '.yml'],
@@ -5,6 +7,7 @@ const DEFAULT_POLICY = {
 	allowedDomainSuffixes: ['example.com', 'example.net', 'example.org', 'example.test', 'example.invalid', 'localhost', 'blackveilsecurity.com'],
 	allowedInternalHostnames: [],
 	forbiddenClientDomains: [],
+	forbiddenClientDomainsSha256: [],
 	allowedPaths: [],
 	allowedPathPrefixes: [],
 };
@@ -43,6 +46,7 @@ export function normalizePolicy(policy = {}) {
 		allowedDomainSuffixes: policy.allowedDomainSuffixes ?? DEFAULT_POLICY.allowedDomainSuffixes,
 		allowedInternalHostnames: policy.allowedInternalHostnames ?? DEFAULT_POLICY.allowedInternalHostnames,
 		forbiddenClientDomains: policy.forbiddenClientDomains ?? DEFAULT_POLICY.forbiddenClientDomains,
+		forbiddenClientDomainsSha256: policy.forbiddenClientDomainsSha256 ?? DEFAULT_POLICY.forbiddenClientDomainsSha256,
 		allowedPaths: policy.allowedPaths ?? DEFAULT_POLICY.allowedPaths,
 		allowedPathPrefixes: policy.allowedPathPrefixes ?? DEFAULT_POLICY.allowedPathPrefixes,
 	};
@@ -112,6 +116,22 @@ function clientDomainPattern(domain) {
 	return new RegExp(`\\b${escaped}\\b`, 'gi');
 }
 
+// Multi-label hostname candidate, e.g. `foo.bar.example.com`. Used to extract
+// domain-like tokens from text so each can be checked against the hashed
+// forbidden list without storing plaintext names in policy.json.
+const DOMAIN_CANDIDATE_PATTERN = /\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?){1,}\b/gi;
+
+function sha256Hex(value) {
+	return createHash('sha256').update(value.toLowerCase()).digest('hex');
+}
+
+function* tailSuffixes(domain) {
+	const labels = domain.toLowerCase().split('.');
+	for (let i = 0; i < labels.length - 1; i++) {
+		yield labels.slice(i).join('.');
+	}
+}
+
 function finding(file, text, lineIndex, match, ruleId) {
 	return {
 		file,
@@ -140,6 +160,18 @@ export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY)
 		for (const domain of normalized.forbiddenClientDomains) {
 			for (const match of line.matchAll(clientDomainPattern(domain))) {
 				findings.push(finding(file, line, lineIndex, match, 'client-domain'));
+			}
+		}
+
+		if (normalized.forbiddenClientDomainsSha256.length > 0) {
+			const hashes = new Set(normalized.forbiddenClientDomainsSha256);
+			for (const match of line.matchAll(DOMAIN_CANDIDATE_PATTERN)) {
+				for (const suffix of tailSuffixes(match[0])) {
+					if (hashes.has(sha256Hex(suffix))) {
+						findings.push(finding(file, line, lineIndex, match, 'client-domain'));
+						break;
+					}
+				}
 			}
 		}
 

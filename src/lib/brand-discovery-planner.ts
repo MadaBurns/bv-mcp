@@ -26,7 +26,7 @@ export interface BrandDiscoverySignalPlan {
 }
 
 // Per-signal cost tiers. Caps are calibrated against production benchmarks
-// (walmart/bankofamerica/marriott, 150-candidate deep audits):
+// (large-portfolio brands, 150-candidate deep audits):
 //   - High-yield signals (ns/mx_platform/spf_include) accounted for every
 //     surfaced candidate in observed runs; keep them effectively uncapped so
 //     recall is not the lever we trade away.
@@ -94,8 +94,8 @@ export function planBrandDiscoverySignals(options: BrandDiscoveryPlannerOptions)
 		if (!CANDIDATE_BACKED_SIGNALS.has(signal)) continue;
 		const defaultCap =
 			options.depth === 'deep'
-				? DEFAULT_SIGNAL_CAPS[signal] ?? ranked.length
-				: STANDARD_SIGNAL_CAPS[signal] ?? Math.min(40, ranked.length);
+				? (DEFAULT_SIGNAL_CAPS[signal] ?? ranked.length)
+				: (STANDARD_SIGNAL_CAPS[signal] ?? Math.min(40, ranked.length));
 		const cap = Math.max(1, Math.trunc(options.caps?.[signal] ?? defaultCap));
 		// Guarded candidates (caller_candidate / app_links / bounty_scope) always
 		// pass; only the unguarded remainder competes for the residual budget.
@@ -112,13 +112,14 @@ export function planBrandDiscoverySignals(options: BrandDiscoveryPlannerOptions)
 }
 
 function isStandardEligible(candidate: PlannerCandidate): boolean {
-	return candidate.sources.some((source) =>
-		source === 'caller_candidate' ||
-		source === 'app_links' ||
-		source === 'bounty_scope' ||
-		source === 'tld_sweep' ||
-		source === 'alias_tld_sweep' ||
-		source === 'active_lookalike',
+	return candidate.sources.some(
+		(source) =>
+			source === 'caller_candidate' ||
+			source === 'app_links' ||
+			source === 'bounty_scope' ||
+			source === 'tld_sweep' ||
+			source === 'alias_tld_sweep' ||
+			source === 'active_lookalike',
 	);
 }
 
