@@ -170,6 +170,56 @@ Address			: Mustafa Kemal Mahallesi
 		expect(parseWhoisResponse(synthetic).registrar).toBeNull();
 	});
 
+	describe('Nominet-style continuation rejects structured sub-field lines (anthropic.eu regression)', () => {
+		// Bug: bv-whois shim returned `"Name: NETIM"` as the registrar for
+		// `anthropic.eu`. The label-only `Registrar:` branch was grabbing the
+		// next non-empty line verbatim, even when that line itself was a
+		// structured `Label:` field (e.g. EURid's `Name: NETIM`). Fix: reject
+		// continuation lines that look like a structured label-prefixed field
+		// and fall through to the registrar-name / sponsoring / organization
+		// fallback chain.
+
+		it('prefers a real `Registrar: <value>` elsewhere in the response over a structured continuation', () => {
+			// Positive case: a malformed continuation `Name: NETIM` exists but the
+			// modern-ICANN `Registrar: NameSilo, LLC` also appears. Resolver should
+			// emit the real value, not `Name: NETIM`.
+			const synthetic = `
+Domain: example.eu
+Registrar:
+Name: NETIM
+Website: https://www.netim.com
+
+Registrar: NameSilo, LLC
+`;
+			expect(parseWhoisResponse(synthetic).registrar).toBe('NameSilo, LLC');
+		});
+
+		it('returns null when the only registrar-ish line is a structured `Name:` continuation', () => {
+			// Negative case: nothing in the response identifies a usable registrar.
+			// Previously this returned `"Name: NETIM"`. Now it returns null.
+			const synthetic = `
+Domain: example.eu
+Registrar:
+Name: NETIM
+Website: https://www.netim.com
+`;
+			expect(parseWhoisResponse(synthetic).registrar).toBeNull();
+		});
+
+		it('also rejects `Organization:` / `Org:` style continuation lines', () => {
+			const synthetic = `
+Domain: example.eu
+Registrar:
+Organization: SomeRegistrar GmbH
+`;
+			// The Italian section-block branch (line 95+) handles `Registrar` (no
+			// colon) + indented `Organization:` correctly. Here the label has a
+			// colon, so the strict label-only branch fires and the structured
+			// continuation must be rejected.
+			expect(parseWhoisResponse(synthetic).registrar).toBeNull();
+		});
+	});
+
 	it('handles empty input gracefully', () => {
 		const result = parseWhoisResponse('');
 		expect(result.registrar).toBeNull();

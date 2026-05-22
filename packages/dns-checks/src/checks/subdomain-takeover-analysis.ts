@@ -118,9 +118,42 @@ const TAKEOVER_FINGERPRINTS: { service: string; patterns: string[] }[] = [
 	// Azure Front Door / CDN / Storage all surface `<Code>ResourceNotFound</Code>`
 	// when the underlying endpoint is gone. `BlobNotFound` is Azure Blob
 	// specifically. `ContainerNotFound` is Azure Blob container-level.
-	{ service: 'afd.azureedge.net', patterns: ['<Code>ResourceNotFound</Code>', 'ResourceNotFound'] },
-	{ service: 'azureedge.net', patterns: ['<Code>ResourceNotFound</Code>', 'ResourceNotFound', "Our services aren't available right now"] },
-	{ service: 'azurefd.net', patterns: ["Our services aren't available right now", '<Code>ResourceNotFound</Code>'] },
+	// Azure CDN / Front Door deprovisioned endpoints surface ONE of two body
+	// shapes depending on which LB instance answers:
+	//   1. XML  — `<?xml ...?><Error><Code>ResourceNotFound</Code>...`
+	//   2. HTML — generic 404 page whose body references the internal
+	//             `df.onecloud.azure-test.net/Error/UE_404` redirect target and
+	//             carries a `<title>Page not found</title>` element.
+	// Probes against the same FQDN can hit either variant. Both patterns must
+	// be present so the second variant doesn't silently drop the finding.
+	{
+		service: 'afd.azureedge.net',
+		patterns: [
+			'df.onecloud.azure-test.net/Error/UE_404',
+			'<Code>ResourceNotFound</Code>',
+			'<title>Page not found</title>',
+			'ResourceNotFound',
+		],
+	},
+	{
+		service: 'azureedge.net',
+		patterns: [
+			'df.onecloud.azure-test.net/Error/UE_404',
+			'<Code>ResourceNotFound</Code>',
+			'<title>Page not found</title>',
+			'ResourceNotFound',
+			"Our services aren't available right now",
+		],
+	},
+	{
+		service: 'azurefd.net',
+		patterns: [
+			'df.onecloud.azure-test.net/Error/UE_404',
+			'<Code>ResourceNotFound</Code>',
+			'<title>Page not found</title>',
+			"Our services aren't available right now",
+		],
+	},
 	{
 		service: 'azurewebsites.net',
 		patterns: ['<title>404 Web Site not found</title>', '<title>Web App - Unavailable</title>', 'web-app-not-found.html'],
@@ -291,11 +324,58 @@ export async function probeHttpFingerprint(fqdn: string, cname: string, fetchFn:
 				}
 			}
 		}
-	} catch {
-		// Timeout or network error — silently skip.
+	} catch (err) {
+		// TLS-SNI / cert-altname mismatch IS a deprovision signal: a properly
+		// provisioned endpoint serves a certificate whose SAN list includes the
+		// hostname it's being addressed by. When fetch throws a cert-altname
+		// error, the CNAME target is pointing at a cluster that has no
+		// configured certificate for this FQDN — i.e. the upstream tenant has
+		// been torn down. The exact error wording varies by runtime (workerd,
+		// Node 18/20/22, undici), so we match a permissive union of phrases
+		// that all describe the same condition.
+		const message = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
+		if (isTlsCertAltnameMismatch(message)) {
+			return TLS_SNI_MISMATCH_DISPLAY;
+		}
+		// Other transport errors (timeout, DNS, connect refused) are not
+		// deprovision evidence — stay silent.
 	}
 
 	return null;
+}
+
+/**
+ * Sentinel display name returned by {@link probeHttpFingerprint} when the
+ * upstream cert doesn't cover the SNI hostname. Callers treat any non-null
+ * string as a CRITICAL takeover finding; this label flags the underlying
+ * signal type for the operator-visible finding text.
+ */
+export const TLS_SNI_MISMATCH_DISPLAY = 'TLS-SNI mismatch (deprovision signal)';
+
+/**
+ * Detect TLS cert SAN/altname mismatch error strings across runtimes:
+ *   - Node/undici:    `Hostname/IP does not match certificate's altnames: ...`
+ *   - Node code:      `ERR_TLS_CERT_ALTNAME_INVALID`
+ *   - workerd:        `unable to verify ... no alternative certificate subject name matches`
+ *   - OpenSSL-direct: `Hostname mismatch` / `certificate subject name does not match`
+ *
+ * Conservative union: only fire on phrases that uniquely describe a SAN/altname
+ * mismatch. We deliberately do NOT match generic `certificate` strings (which
+ * also appear in expired-cert / self-signed-cert errors that are not a clean
+ * deprovision signal).
+ */
+export function isTlsCertAltnameMismatch(message: string): boolean {
+	if (!message) return false;
+	const lower = message.toLowerCase();
+	return (
+		lower.includes('altname') ||
+		lower.includes('err_tls_cert_altname_invalid') ||
+		lower.includes('certificate subject name') ||
+		lower.includes('subject name matches') ||
+		lower.includes('hostname mismatch') ||
+		lower.includes("doesn't match the certificate") ||
+		lower.includes('does not match the certificate')
+	);
 }
 
 export async function scanSubdomainForTakeover(
