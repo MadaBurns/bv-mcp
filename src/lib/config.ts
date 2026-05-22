@@ -250,6 +250,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_nsec_walkability: 10,
 	check_dnssec_chain: 10,
 	check_fast_flux: 3,
+	check_subdomain_takeover: 25,
 	check_authoritative_dns_infra: 25,
 	check_root_server_set: 25,
 	discover_brand_domains: 1,
@@ -364,7 +365,7 @@ export function parsePerCheckTimeout(envValue?: string): number {
 // ─── OAuth 2.1 (Phase 0 — shared constants) ─────────────────────────────────
 export const OAUTH_CODE_TTL_SECONDS = 60; // KV minimum TTL is 60s; auth codes are short-lived
 export const OAUTH_CLIENT_TTL_SECONDS = 60 * 60 * 24 * 365; // 1 year, refreshed on use
-export const OAUTH_JWT_TTL_SECONDS = 60 * 60 * 24 * 90;     // 90 days
+export const OAUTH_JWT_TTL_SECONDS = 60 * 60 * 24 * 90; // 90 days
 export const OAUTH_JWT_CLOCK_SKEW_SECONDS = 30;
 export const OAUTH_CONSENT_RATE_LIMIT = 5;
 export const OAUTH_CONSENT_RATE_WINDOW_SECONDS = 60 * 15;

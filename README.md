@@ -9,7 +9,7 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
-[![MCP tools](https://img.shields.io/badge/MCP%20tools-59-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![MCP tools](https://img.shields.io/badge/MCP%20tools-60-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![BUSL-1.1 License](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
@@ -25,7 +25,7 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 
 **Claude Desktop** (one-click install):
 
-Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — the current 59-tool surface is available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
+Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — the current 60-tool surface is available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
 
 **Claude Code** (one command):
 
@@ -65,7 +65,7 @@ Transport support:
 
 ## What you get
 
-- **59 MCP tools with 18 scoring categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, subdomailing, brand discovery, and authoritative DNS infrastructure
+- **60 MCP tools with 18 scoring categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, subdomailing, brand discovery, and authoritative DNS infrastructure
 - **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with score-based capping to prevent inflated labels
 - **Trust surface analysis** — detects shared SaaS platforms (Google, M365, SendGrid) and cross-references DMARC enforcement to determine real exposure
 - **Guided remediation** — `generate_fix_plan` produces provider-aware prioritized actions; record generators output ready-to-publish records; `validate_fix` confirms whether a fix was applied successfully
@@ -81,7 +81,7 @@ Transport support:
 ## Tools
 
 ```
-  59 MCP tools · 7 prompts · 6 resources
+  60 MCP tools · 7 prompts · 6 resources
 
   Email Auth             Infrastructure          Brand & Threats       Meta
  ─────────────          ──────────────          ───────────────       ───────────────
@@ -109,7 +109,7 @@ Transport support:
                         check_authoritative_dns_infra
                         check_root_server_set
 
-  + check_subdomain_takeover (internal — runs inside scan_domain)
+  + check_subdomain_takeover (standalone tool + internal — runs inside scan_domain)
   + check_authoritative_dns_infra and check_root_server_set (authoritative DNS infrastructure profile)
 ```
 
@@ -202,14 +202,14 @@ For full hosted setup examples, stdio usage, OAuth setup, and legacy fallback en
 
 ## Pricing
 
-| | **Free** | **Pro** | **Enterprise** |
-|---|---|---|---|
-| **Price** | $0 | $39/mo | [Contact us](https://blackveilsecurity.com) |
-| **Scans/day** | 5 | 500 | 10,000+ |
-| **Checks/day** | 25 | 5,000 | Unlimited |
-| **Rate limit** | 50 req/min | None | None |
-| **API access** | Yes | Yes | Yes |
-| **MCP access** | Yes | Yes | Yes |
+|                | **Free**   | **Pro** | **Enterprise**                              |
+| -------------- | ---------- | ------- | ------------------------------------------- |
+| **Price**      | $0         | $39/mo  | [Contact us](https://blackveilsecurity.com) |
+| **Scans/day**  | 5          | 500     | 10,000+                                     |
+| **Checks/day** | 25         | 5,000   | Unlimited                                   |
+| **Rate limit** | 50 req/min | None    | None                                        |
+| **API access** | Yes        | Yes     | Yes                                         |
+| **MCP access** | Yes        | Yes     | Yes                                         |
 
 ---
 
@@ -217,13 +217,13 @@ For full hosted setup examples, stdio usage, OAuth setup, and legacy fallback en
 
 These demonstrate core functionality — paste any of them into Claude with the Blackveil DNS connector enabled:
 
-| Prompt | What it does |
-|--------|-------------|
-| `Scan blackveilsecurity.com and tell me what needs fixing` | Full security audit — score, grade, prioritized findings |
-| `Compare the email security of google.com and microsoft.com` | Side-by-side comparison of two domains' postures |
-| `Generate a DMARC record for example.com with reject policy` | Produces a ready-to-publish DNS record |
-| `What attack paths exist for example.com?` | Enumerates spoofing, takeover, and hijack vectors |
-| `Map example.com's compliance against NIST 800-177` | Maps findings to compliance framework controls |
+| Prompt                                                       | What it does                                             |
+| ------------------------------------------------------------ | -------------------------------------------------------- |
+| `Scan blackveilsecurity.com and tell me what needs fixing`   | Full security audit — score, grade, prioritized findings |
+| `Compare the email security of google.com and microsoft.com` | Side-by-side comparison of two domains' postures         |
+| `Generate a DMARC record for example.com with reject policy` | Produces a ready-to-publish DNS record                   |
+| `What attack paths exist for example.com?`                   | Enumerates spoofing, takeover, and hijack vectors        |
+| `Map example.com's compliance against NIST 800-177`          | Maps findings to compliance framework controls           |
 
 ---
 
