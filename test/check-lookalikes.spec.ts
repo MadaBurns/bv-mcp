@@ -41,28 +41,13 @@ describe('checkLookalikes', () => {
 			// Make one specific lookalike have MX records
 			if (name === 'twst.com' || name === 'tst.com' || name === 'tes.com' || name === 'testt.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 2 }],
-							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
 				}
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 15 }],
-							[{ name, type: 15, TTL: 300, data: '10 mail.example.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.example.com.' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '192.0.2.1' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
@@ -81,20 +66,10 @@ describe('checkLookalikes', () => {
 			// One lookalike with A record but no MX
 			if (name === 'tst.com' || name === 'tes.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 2 }],
-							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '192.0.2.1' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
@@ -158,20 +133,10 @@ describe('checkLookalikes', () => {
 			// tst.com has A + MX but NO NS records — should be filtered by Phase 1
 			if (name === 'tst.com') {
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 15 }],
-							[{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '192.0.2.1' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
@@ -188,20 +153,10 @@ describe('checkLookalikes', () => {
 			// tst.com has NS + A records (no MX) — should pass Phase 1 and be reported as medium
 			if (name === 'tst.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 2 }],
-							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '192.0.2.1' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
@@ -226,28 +181,13 @@ describe('checkLookalikes - null MX filtering', () => {
 			// Make a lookalike resolve with A + null MX
 			if (name === 'tst.com' || name === 'tes.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 2 }],
-							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
 				}
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 15 }],
-							[{ name, type: 15, TTL: 300, data: '0 .' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '0 .' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '192.0.2.1' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
@@ -263,62 +203,56 @@ describe('checkLookalikes - null MX filtering', () => {
 		expect(mediumFindings.length).toBeGreaterThan(0);
 	});
 
+	it('should not flag legacy null MX (0 localhost.) as mail infrastructure', async () => {
+		// Empirical case: opejai.com (an OpenAI typosquat) declares `MX 0 localhost.`
+		// — the legacy null-MX convention. Before this fix the lookalikes tool reported it
+		// as a HIGH mail-active phishing risk, inflating the count.
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'tst.com' || name === 'tes.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '0 localhost.' }]));
+				}
+				if (type === 'A' || type === '1') {
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const result = await run('test.com');
+		const mxFindings = result.findings.filter((f) => /mail infrastructure/i.test(f.title));
+		expect(mxFindings.length).toBe(0);
+	});
+
 	it('should flag real MX but ignore null MX in mixed responses', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
 
 			if (name === 'testt.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 2 }],
-							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
 				}
 				// This domain has a real MX record → HIGH
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 15 }],
-							[{ name, type: 15, TTL: 300, data: '10 mail.testt.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.testt.com.' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '192.0.2.1' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 				}
 			}
 			if (name === 'tes.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 2 }],
-							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
 				}
 				// This domain has null MX → should NOT be flagged as HIGH
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 15 }],
-							[{ name, type: 15, TTL: 300, data: '0 .' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '0 .' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '2.3.4.5' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '2.3.4.5' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
@@ -326,21 +260,15 @@ describe('checkLookalikes - null MX filtering', () => {
 		const result = await run('test.com');
 
 		// testt.com should produce a HIGH finding (real MX)
-		const testtHigh = result.findings.find(
-			(f) => f.severity === 'high' && f.title.includes('testt.com'),
-		);
+		const testtHigh = result.findings.find((f) => f.severity === 'high' && f.title.includes('testt.com'));
 		expect(testtHigh).toBeDefined();
 
 		// tes.com should produce a MEDIUM finding (A record, no real MX)
-		const tesMedium = result.findings.find(
-			(f) => f.severity === 'medium' && f.title.includes('tes.com'),
-		);
+		const tesMedium = result.findings.find((f) => f.severity === 'medium' && f.title.includes('tes.com'));
 		expect(tesMedium).toBeDefined();
 
 		// tes.com should NOT produce a HIGH finding
-		const tesHigh = result.findings.find(
-			(f) => f.severity === 'high' && f.title.includes('tes.com'),
-		);
+		const tesHigh = result.findings.find((f) => f.severity === 'high' && f.title.includes('tes.com'));
 		expect(tesHigh).toBeUndefined();
 	});
 });
@@ -358,20 +286,10 @@ describe('checkLookalikes - wildcard DNS filtering', () => {
 			// Wildcard: any subdomain of "st.com" resolves (including the canary)
 			if (name.endsWith('.st.com')) {
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '192.0.2.1' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 				}
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 15 }],
-							[{ name, type: 15, TTL: 300, data: '10 mail.parked.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.parked.com.' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
@@ -392,20 +310,10 @@ describe('checkLookalikes - wildcard DNS filtering', () => {
 			// Only the actual dot-insertion domain resolves, canary does NOT
 			if (name === 'te.st.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 2 }],
-							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '5.6.7.8' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '5.6.7.8' }]));
 				}
 			}
 			// Everything else (including canary probes) returns empty
@@ -427,20 +335,10 @@ describe('checkLookalikes - wildcard DNS filtering', () => {
 			// tst.com (character omission, not dot-insertion) resolves
 			if (name === 'tst.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 2 }],
-							[{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '9.8.7.6' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '9.8.7.6' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
@@ -498,20 +396,10 @@ describe('checkLookalikes - shared nameserver detection', () => {
 					);
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '192.0.2.1' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 				}
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 15 }],
-							[{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }]));
 				}
 			}
 
@@ -540,39 +428,19 @@ describe('checkLookalikes - shared nameserver detection', () => {
 
 			// Primary domain NS
 			if (name === 'test.com' && (type === 'NS' || type === '2')) {
-				return Promise.resolve(
-					createDohResponse(
-						[{ name, type: 2 }],
-						[{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com.' }],
-					),
-				);
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com.' }]));
 			}
 
 			// tst.com has DIFFERENT nameservers + MX → should remain HIGH
 			if (name === 'tst.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 2 }],
-							[{ name, type: 2, TTL: 300, data: 'ns1.attacker-dns.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.attacker-dns.com.' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '6.6.6.6' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '6.6.6.6' }]));
 				}
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 15 }],
-							[{ name, type: 15, TTL: 300, data: '10 mail.evil.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.evil.com.' }]));
 				}
 			}
 
@@ -593,31 +461,16 @@ describe('checkLookalikes - shared nameserver detection', () => {
 
 			// Primary domain NS
 			if (name === 'test.com' && (type === 'NS' || type === '2')) {
-				return Promise.resolve(
-					createDohResponse(
-						[{ name, type: 2 }],
-						[{ name, type: 2, TTL: 300, data: 'ns1.example-dns.com.' }],
-					),
-				);
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.example-dns.com.' }]));
 			}
 
 			// tst.com shares NS, has A record but no MX
 			if (name === 'tst.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 2 }],
-							[{ name, type: 2, TTL: 300, data: 'ns1.example-dns.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.example-dns.com.' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '192.0.2.1' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 				}
 			}
 
@@ -640,31 +493,16 @@ describe('checkLookalikes - shared nameserver detection', () => {
 
 			// Primary domain NS with trailing dot and mixed case
 			if (name === 'test.com' && (type === 'NS' || type === '2')) {
-				return Promise.resolve(
-					createDohResponse(
-						[{ name, type: 2 }],
-						[{ name, type: 2, TTL: 300, data: 'NS1.CloudFlare.COM.' }],
-					),
-				);
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'NS1.CloudFlare.COM.' }]));
 			}
 
 			// tst.com has same NS but different casing/trailing dot
 			if (name === 'tst.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 2 }],
-							[{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '192.0.2.1' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 				}
 			}
 
@@ -691,28 +529,13 @@ describe('checkLookalikes - shared nameserver detection', () => {
 			// tst.com has NS + MX
 			if (name === 'tst.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 2 }],
-							[{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com.' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '192.0.2.1' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 				}
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 15 }],
-							[{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }]));
 				}
 			}
 
@@ -758,48 +581,23 @@ describe('checkLookalikes - shared nameserver detection', () => {
 					);
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '192.0.2.1' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 				}
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 15 }],
-							[{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }]));
 				}
 			}
 
 			// testt.com — different NS (attacker) with MX
 			if (name === 'testt.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 2 }],
-							[{ name, type: 2, TTL: 300, data: 'ns1.evil-registrar.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.evil-registrar.com.' }]));
 				}
 				if (type === 'A' || type === '1') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 1 }],
-							[{ name, type: 1, TTL: 300, data: '6.6.6.6' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '6.6.6.6' }]));
 				}
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(
-						createDohResponse(
-							[{ name, type: 15 }],
-							[{ name, type: 15, TTL: 300, data: '10 mail.evil.com.' }],
-						),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.evil.com.' }]));
 				}
 			}
 
@@ -814,9 +612,7 @@ describe('checkLookalikes - shared nameserver detection', () => {
 		expect(tstFinding!.severity).toBe('info');
 
 		// testt.com should be high (different NS)
-		const testtFinding = result.findings.find(
-			(f) => f.severity === 'high' && f.title.includes('testt.com'),
-		);
+		const testtFinding = result.findings.find((f) => f.severity === 'high' && f.title.includes('testt.com'));
 		expect(testtFinding).toBeDefined();
 
 		// Summary should count only 1 (testt.com), not 2

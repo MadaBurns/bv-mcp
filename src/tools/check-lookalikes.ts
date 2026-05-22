@@ -43,12 +43,23 @@ const SHARED_NS_THRESHOLD = 1;
 
 /**
  * Check whether an MX record represents real mail infrastructure.
- * RFC 7505 null MX ("0 .") explicitly means "no mail accepted" and must be excluded.
+ *
+ * RFC 7505 defines the canonical null MX as priority-0 with exchange `.` (root),
+ * meaning "this domain does not accept mail". A legacy convention used by some
+ * operators is `0 localhost.` (or `0 localhost`), which has the same intent —
+ * mail is null-routed to the sender's own localhost and is functionally rejected.
+ * Both patterns must be excluded from the "has mail infrastructure" signal to
+ * avoid false-positive HIGH typosquat findings on domains that have applied the
+ * recommended anti-spoofing posture.
  */
 function isRealMxRecord(data: string): boolean {
-	// Null MX: priority 0, exchange "." — RFC 7505
-	const trimmed = data.trim();
-	return trimmed !== '0 .' && trimmed !== '0\t.';
+	const trimmed = data.trim().toLowerCase();
+	// Format from queryDnsRecords is "<priority> <target>", possibly with trailing dot.
+	const match = trimmed.match(/^(\d+)[\s\t]+(.*?)\.?$/);
+	if (!match) return true;
+	const [, priority, target] = match;
+	if (priority !== '0') return true;
+	return target !== '' && target !== 'localhost';
 }
 
 /**
@@ -56,13 +67,9 @@ function isRealMxRecord(data: string): boolean {
  * Filters out null MX records (RFC 7505) to avoid false positives.
  */
 async function probeLookalike(domain: string): Promise<LookalikeResult> {
-	const [aRecords, mxRecords] = await Promise.allSettled([
-		queryDnsRecords(domain, 'A'),
-		queryDnsRecords(domain, 'MX'),
-	]);
+	const [aRecords, mxRecords] = await Promise.allSettled([queryDnsRecords(domain, 'A'), queryDnsRecords(domain, 'MX')]);
 
-	const realMxRecords =
-		mxRecords.status === 'fulfilled' ? mxRecords.value.filter(isRealMxRecord) : [];
+	const realMxRecords = mxRecords.status === 'fulfilled' ? mxRecords.value.filter(isRealMxRecord) : [];
 
 	return {
 		domain,
@@ -125,10 +132,7 @@ async function filterByNsExistence(domains: string[]): Promise<{ registered: str
 		}),
 	);
 	const registered = results
-		.filter(
-			(r): r is PromiseFulfilledResult<{ domain: string; hasNs: boolean }> =>
-				r.status === 'fulfilled' && r.value.hasNs,
-		)
+		.filter((r): r is PromiseFulfilledResult<{ domain: string; hasNs: boolean }> => r.status === 'fulfilled' && r.value.hasNs)
 		.map((r) => r.value.domain);
 	return { registered, nsMap };
 }
@@ -174,9 +178,7 @@ async function queryPrimaryNs(domain: string): Promise<Set<string>> {
  * Starts at INITIAL_BATCH_SIZE, halves on repeated failures (floor at MIN_BATCH_SIZE),
  * recovers on clean batches.
  */
-async function probeWithAdaptiveBatching(
-	permutations: string[],
-): Promise<PromiseSettledResult<LookalikeResult>[]> {
+async function probeWithAdaptiveBatching(permutations: string[]): Promise<PromiseSettledResult<LookalikeResult>[]> {
 	const allResults: PromiseSettledResult<LookalikeResult>[] = [];
 	let batchSize = INITIAL_BATCH_SIZE;
 	let delayMs = 0;
@@ -266,9 +268,7 @@ async function checkLookalikesCore(domain: string): Promise<CheckResult> {
 	}
 
 	// Detect wildcard DNS on parent domains of dot-insertion permutations
-	const wildcardParents = dotInsertionParents.size > 0
-		? await detectWildcardParents([...dotInsertionParents.keys()])
-		: new Set<string>();
+	const wildcardParents = dotInsertionParents.size > 0 ? await detectWildcardParents([...dotInsertionParents.keys()]) : new Set<string>();
 
 	// Filter out permutations whose parent has wildcard DNS
 	const filteredDotInsertionPerms: string[] = [];
@@ -282,10 +282,7 @@ async function checkLookalikesCore(domain: string): Promise<CheckResult> {
 
 	// Phase 1: Fast NS existence check — filter out unregistered domains
 	// Also query the primary domain's NS for ownership comparison
-	const [nsResult, primaryNs] = await Promise.all([
-		filterByNsExistence(permsToProbe),
-		queryPrimaryNs(domain),
-	]);
+	const [nsResult, primaryNs] = await Promise.all([filterByNsExistence(permsToProbe), queryPrimaryNs(domain)]);
 	const { registered: registeredPerms, nsMap: lookalikeNsMap } = nsResult;
 
 	if (registeredPerms.length === 0) {
