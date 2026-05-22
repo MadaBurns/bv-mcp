@@ -218,6 +218,46 @@ export function isThirdPartyTakeoverService(cname: string): boolean {
 }
 
 /**
+ * Pattern → severity-impact classification for the CNAME target hostname.
+ *
+ * - `random`: the hostname embeds a provider-assigned ID (load-balancer ID,
+ *   CloudFront distribution ID, API Gateway ID). The namespace label is not
+ *   user-controlled and cannot be deterministically reclaimed by another
+ *   tenant; the dangling-CNAME finding represents operational drift, not an
+ *   active takeover vector.
+ * - `claimable`: the hostname is in a known takeover-prone service AND its
+ *   label is user-chosen (S3 buckets, AzureEdge endpoints, GitHub Pages
+ *   sites, Heroku apps, etc.). A new tenant CAN claim this namespace label
+ *   and serve content at the dangling subdomain.
+ * - `unknown`: pattern not in either bucket — caller should treat as the
+ *   conservative default (HIGH severity).
+ */
+export type TargetClaimability = 'random' | 'claimable' | 'unknown';
+
+const RANDOM_TARGET_PATTERNS: RegExp[] = [
+	// AWS ELB (classic + ALB + NLB): 32+ hex chars + dash + decimal random
+	/^[a-f0-9]{32,}-\d+\.[a-z0-9-]+\.elb\.amazonaws\.com$/i,
+	// CloudFront distribution ID: 12-14 lowercase alphanumeric, no dashes
+	/^[a-z0-9]{12,14}\.cloudfront\.net$/i,
+	// API Gateway ID: exactly 10 alphanumeric chars
+	/^[a-z0-9]{10}\.execute-api\.[a-z0-9-]+\.amazonaws\.com$/i,
+	// Azure Container Apps environment suffix:
+	// <name>.<env-name>-<hex>.<region>.azurecontainerapps.io
+	// The hex suffix on the env name is provider-assigned, even though the
+	// leading <name> isn't.
+	/^[a-z0-9-]+\.[a-z0-9-]+-[a-f0-9]{8}\.[a-z0-9-]+\.azurecontainerapps\.io$/i,
+];
+
+export function classifyTargetNamespace(cname: string): TargetClaimability {
+	const normalized = cname.replace(/\.$/, '').toLowerCase();
+	for (const re of RANDOM_TARGET_PATTERNS) {
+		if (re.test(normalized)) return 'random';
+	}
+	if (isThirdPartyTakeoverService(normalized)) return 'claimable';
+	return 'unknown';
+}
+
+/**
  * Probe an HTTP endpoint for known takeover fingerprints.
  * Returns the matched display-name for the deprovisioned service, or null.
  *

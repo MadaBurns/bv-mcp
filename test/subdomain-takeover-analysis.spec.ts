@@ -126,4 +126,59 @@ describe('subdomain-takeover-analysis', () => {
 			expect(result).toBeNull();
 		});
 	});
+
+	describe('classifyTargetNamespace', () => {
+		async function fn() {
+			const m = await import('../packages/dns-checks/src/checks/subdomain-takeover-analysis');
+			return m.classifyTargetNamespace;
+		}
+
+		it('classifies AWS NLB/ALB random-ID targets as "random"', async () => {
+			const c = await fn();
+			expect(c('ab74714963781430da5c4d9a29a6ee3c-1355387950.us-east-1.elb.amazonaws.com')).toBe('random');
+			expect(c('a1234567890abcdef0123456789abcdef-0987654321.eu-west-1.elb.amazonaws.com')).toBe('random');
+		});
+
+		it('classifies CloudFront distribution IDs as "random"', async () => {
+			const c = await fn();
+			expect(c('d2b532lzynlqb7.cloudfront.net')).toBe('random');
+			expect(c('e1abc23def45gh.cloudfront.net')).toBe('random');
+		});
+
+		it('classifies API Gateway IDs as "random"', async () => {
+			const c = await fn();
+			expect(c('a1b2c3d4e5.execute-api.us-east-1.amazonaws.com')).toBe('random');
+		});
+
+		it('classifies Azure Container Apps random-environment IDs as "random"', async () => {
+			const c = await fn();
+			expect(c('chatgpt-slack.jollybeach-2c1b6a13.centralus.azurecontainerapps.io')).toBe('random');
+		});
+
+		it('classifies user-chosen S3 bucket names as "claimable"', async () => {
+			const c = await fn();
+			expect(c('my-company-assets.s3.amazonaws.com')).toBe('claimable');
+			expect(c('staging-bucket.s3.us-east-1.amazonaws.com')).toBe('claimable');
+		});
+
+		it('classifies user-chosen Azure endpoint names as "claimable"', async () => {
+			const c = await fn();
+			expect(c('openaiassets.afd.azureedge.net')).toBe('claimable');
+			expect(c('mystorage.blob.core.windows.net')).toBe('claimable');
+			expect(c('myapp.azurewebsites.net')).toBe('claimable');
+		});
+
+		it('classifies GitHub Pages / Heroku / Vercel as "claimable"', async () => {
+			const c = await fn();
+			expect(c('my-repo.github.io')).toBe('claimable');
+			expect(c('my-app.herokuapp.com')).toBe('claimable');
+			expect(c('preview-abc.vercel.app')).toBe('claimable');
+		});
+
+		it('returns "unknown" for non-takeover-service targets', async () => {
+			const c = await fn();
+			expect(c('lb.internal.example.com')).toBe('unknown');
+			expect(c('some-random-cname.example.org')).toBe('unknown');
+		});
+	});
 });
