@@ -24,6 +24,56 @@ describe('scoring-model', () => {
 	});
 });
 
+describe('CATEGORY_PENALTY_CAPS — subdomain_takeover', () => {
+	const mediums = (n: number) =>
+		Array.from({ length: n }, (_, i) => createFinding('subdomain_takeover', `Dangling CNAME #${i + 1}`, 'medium', 'operational drift'));
+
+	it('1 MEDIUM → unsaturated (no cap hit): 85/100', () => {
+		expect(computeCategoryScore(mediums(1), 'subdomain_takeover')).toBe(85);
+	});
+
+	it('5 MEDIUM = 75 penalty → cap exactly at floor: 25/100', () => {
+		expect(computeCategoryScore(mediums(5), 'subdomain_takeover')).toBe(25);
+	});
+
+	it('9 MEDIUM (x.ai cluster pattern) = 135 raw → capped at 75 → 25/100 (no longer 0)', () => {
+		expect(computeCategoryScore(mediums(9), 'subdomain_takeover')).toBe(25);
+	});
+
+	it('1 CRITICAL = 40 penalty → unsaturated: 60/100 (no cap hit)', () => {
+		const findings = [createFinding('subdomain_takeover', 'Verified takeover', 'critical', 'fingerprint match')];
+		expect(computeCategoryScore(findings, 'subdomain_takeover')).toBe(60);
+	});
+
+	it('1 CRITICAL + 5 MEDIUM = 115 raw → capped at 75 → 25/100', () => {
+		const findings = [createFinding('subdomain_takeover', 'Verified takeover', 'critical', 'fingerprint match'), ...mediums(5)];
+		expect(computeCategoryScore(findings, 'subdomain_takeover')).toBe(25);
+	});
+
+	it('2 CRITICAL = 80 raw → capped at 75 → 25/100', () => {
+		const findings = [
+			createFinding('subdomain_takeover', 'Verified takeover #1', 'critical', 'fingerprint match'),
+			createFinding('subdomain_takeover', 'Verified takeover #2', 'critical', 'fingerprint match'),
+		];
+		expect(computeCategoryScore(findings, 'subdomain_takeover')).toBe(25);
+	});
+
+	it('preserves discriminative power: 9 MEDIUM (25) > 0 (the saturated floor)', () => {
+		const nineMedium = computeCategoryScore(mediums(9), 'subdomain_takeover');
+		expect(nineMedium).toBe(25);
+		expect(nineMedium).toBeGreaterThan(0);
+	});
+
+	it('omitting category retains the original uncapped-then-clamped behavior', () => {
+		expect(computeCategoryScore(mediums(9))).toBe(0);
+	});
+
+	it('non-takeover categories unaffected by the cap (e.g., 9 MEDIUM DMARC saturates to 0)', () => {
+		const findings = Array.from({ length: 9 }, (_, i) => createFinding('dmarc', `Issue ${i + 1}`, 'medium', 'detail'));
+		expect(computeCategoryScore(findings, 'dmarc')).toBe(0);
+	});
+});
+
 describe('CATEGORY_TIERS', () => {
 	it('classifies all categories into tiers', () => {
 		expect(Object.keys(CATEGORY_TIERS)).toHaveLength(25);
