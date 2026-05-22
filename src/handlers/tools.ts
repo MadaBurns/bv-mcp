@@ -58,6 +58,7 @@ import { brandAuditBatchStart } from '../tools/brand-audit-batch-start';
 import { brandAuditStatus } from '../tools/brand-audit-status';
 import { brandAuditGetReport } from '../tools/brand-audit-get-report';
 import { brandAuditWatch } from '../tools/brand-audit-watch';
+import { createD1BrandAuditStepStore } from '../lib/brand-audit-step-store';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
@@ -317,10 +318,12 @@ const TOOL_REGISTRY: Record<
 			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
 			const aliasHash = aliases.length === 0 ? '0' : `${aliases.length}:${aliases.slice().sort().join('|').slice(0, 64)}`;
 			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
-			return `brand_audit_single:${fmt}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:m${minConf}`;
+			const view = typeof args.view === 'string' ? args.view : 'standard';
+			return `brand_audit_single:${fmt}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:m${minConf}:vw${view}`;
 		},
-		execute: (d, args, ro) =>
-			brandAuditSingle(d, {
+		execute: (d, args, ro) => {
+			const deadlineMs = Date.now() + BRAND_AUDIT_SINGLE_SYNC_HANDOFF_MS;
+			return brandAuditSingle(d, {
 				format: args.format as 'json' | 'markdown' | 'both' | undefined,
 				min_confidence: args.min_confidence as number | undefined,
 				depth: args.depth as 'standard' | 'deep' | undefined,
@@ -328,10 +331,13 @@ const TOOL_REGISTRY: Record<
 				discovery_mode: args.discovery_mode as 'classic' | 'tiered' | undefined,
 				brand_aliases: args.brand_aliases as string[] | undefined,
 				candidate_domains: args.candidate_domains as string[] | undefined,
+				view: args.view as 'standard' | 'csc_complement' | undefined,
 				// T13 — propagate the BlackVeil-production runtime override.
 				// Pipeline only honours it when the caller omits `discovery_mode`;
 				// undefined on BSL self-hosts (schema default `'classic'` wins).
 				...(ro?.discoveryModeDefault ? { env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: ro.discoveryModeDefault } } : {}),
+				deadlineMs,
+				timeoutBehavior: 'async_handoff',
 			}, {
 				certstream: ro?.certstream,
 				whoisBinding: ro?.whoisBinding,
@@ -342,7 +348,8 @@ const TOOL_REGISTRY: Record<
 				...(ro?.tier0Lookup ? { tier0Lookup: ro.tier0Lookup } : {}),
 				...(ro?.tier1Lookup ? { tier1Lookup: ro.tier1Lookup } : {}),
 				...(ro?.tier2Lookup ? { tier2Lookup: ro.tier2Lookup } : {}),
-			}),
+			});
+		},
 		cacheTtlSeconds: 3600,
 	},
 	brand_audit_batch_start: {
@@ -375,6 +382,7 @@ const TOOL_REGISTRY: Record<
 					brand_aliases: args.brand_aliases as string[] | undefined,
 					candidate_domains: args.candidate_domains as string[] | undefined,
 					discovery_mode: args.discovery_mode as 'classic' | 'tiered' | undefined,
+					view: args.view as 'standard' | 'csc_complement' | undefined,
 				},
 				principalId,
 				{ db, queue, enforceQuota: buildMonthlyEnforceQuota(ro) },
@@ -402,7 +410,7 @@ const TOOL_REGISTRY: Record<
 					),
 				]);
 			}
-			return brandAuditStatus(String(args.auditId ?? ''), principalId, { db });
+			return brandAuditStatus(String(args.auditId ?? ''), principalId, { db, stepStore: createD1BrandAuditStepStore(db) });
 		},
 		cacheable: false,
 	},
@@ -428,7 +436,7 @@ const TOOL_REGISTRY: Record<
 			return brandAuditGetReport(
 				{ auditId: String(args.auditId ?? ''), target: args.target as string | undefined },
 				principalId,
-				{ db, bucket: ro?.brandReportsR2 as { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> } | undefined },
+				{ db, bucket: ro?.brandReportsR2 as { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> } | undefined, stepStore: createD1BrandAuditStepStore(db) },
 			);
 		},
 		cacheable: false,
@@ -510,6 +518,7 @@ function handleExplainFindingValidationError(
  */
 /** Maximum wall-clock time for any single tool call (ms). */
 const TOOL_CALL_TIMEOUT_MS = 28_000;
+const BRAND_AUDIT_SINGLE_SYNC_HANDOFF_MS = 24_000;
 
 export async function handleToolsCall(
 	params: {
@@ -547,6 +556,17 @@ export async function handleToolsCall(
 		const _interactive = isInteractiveClient(runtimeOptions?.clientType);
 
 		const executeDispatch = async (): Promise<McpToolResult> => {
+			// Tier gate: csc_complement view requires enterprise or owner tier.
+			if (name === 'brand_audit_single' || name === 'brand_audit_batch_start') {
+				const requestedView = (validatedArgs as { view?: string }).view;
+				if (requestedView === 'csc_complement') {
+					const tier = runtimeOptions?.authTier;
+					if (tier !== 'enterprise' && tier !== 'owner') {
+						return buildToolErrorResult("Invalid view: 'csc_complement' requires enterprise tier");
+					}
+				}
+			}
+
 			// Dispatch to the appropriate tool — check registry first, then special cases
 			const registeredTool = TOOL_REGISTRY[name];
 			if (registeredTool) {

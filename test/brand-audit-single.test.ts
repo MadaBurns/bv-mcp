@@ -91,6 +91,47 @@ function makeDeps(overrides: Partial<BrandAuditSingleDeps> = {}): BrandAuditSing
 }
 
 describe('brandAuditSingle', () => {
+	it('returns an async handoff before the sync MCP timeout budget is exhausted', async () => {
+		vi.useFakeTimers();
+		try {
+			const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+			const discoverSpy = vi.fn(
+				() =>
+					new Promise<CheckResult>(() => {
+						// Simulates tiered/deep discovery still running when the sync budget expires.
+					}),
+			);
+			const deps = makeDeps({ discoverBrandDomains: discoverSpy });
+
+			const resultPromise = brandAuditSingle(
+				'example.com',
+				{
+					deadlineMs: 24_000,
+					now: () => 0,
+					timeoutBehavior: 'async_handoff',
+				},
+				deps,
+			);
+			await vi.advanceTimersByTimeAsync(24_000);
+			const result = await resultPromise;
+
+			expect(result.category).toBe('brand_discovery');
+			expect((result as CheckResult & { partial?: boolean }).partial).toBe(true);
+			expect(result.findings[0]).toMatchObject({
+				title: 'Brand audit requires async processing',
+				severity: 'info',
+				metadata: {
+					asyncHandoff: true,
+					timedOut: true,
+					target: 'example.com',
+					recommendedTool: 'brand_audit_batch_start',
+				},
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('classifies discovered candidates into four buckets and emits a summary', async () => {
 		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
 

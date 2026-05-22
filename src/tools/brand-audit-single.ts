@@ -44,6 +44,27 @@ export interface BrandAuditSingleDeps extends BrandAuditPipelineDeps {
 	enforceQuota?: EnforceBrandAuditQuota;
 }
 
+function buildAsyncHandoffResult(target: string, deadlineMs?: number): CheckResult {
+	return {
+		...buildCheckResult(CATEGORY, [
+			createFinding(
+				CATEGORY,
+				'Brand audit requires async processing',
+				'info',
+				'This brand audit exceeded the synchronous MCP response budget. Use brand_audit_batch_start, then poll brand_audit_status and fetch the final report with brand_audit_get_report.',
+				{
+					asyncHandoff: true,
+					timedOut: true,
+					target,
+					recommendedTool: 'brand_audit_batch_start',
+					...(typeof deadlineMs === 'number' ? { deadlineMs } : {}),
+				},
+			),
+		]),
+		partial: true,
+	} as CheckResult;
+}
+
 /**
  * Run a brand audit on a single target.
  *
@@ -69,6 +90,25 @@ export async function brandAuditSingle(
 					{ quotaExceeded: true, target, limit: verdict.limit ?? 0, remaining: verdict.remaining ?? 0, retryAfterMs: verdict.retryAfterMs },
 				),
 			]);
+		}
+	}
+
+	if (options.timeoutBehavior === 'async_handoff' && typeof options.deadlineMs === 'number' && Number.isFinite(options.deadlineMs)) {
+		const now = options.now ?? Date.now;
+		const delayMs = Math.max(0, options.deadlineMs - now());
+		const controller = options.signal ? null : new AbortController();
+		const pipelineOptions = controller ? { ...options, signal: controller.signal } : options;
+		let timeoutId: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<CheckResult>((resolve) => {
+			timeoutId = setTimeout(() => {
+				controller?.abort(new Error('brand_audit_single sync budget exhausted'));
+				resolve(buildAsyncHandoffResult(target, options.deadlineMs));
+			}, delayMs);
+		});
+		try {
+			return await Promise.race([runBrandAuditPipeline(target, pipelineOptions, deps), timeout]);
+		} finally {
+			if (timeoutId) clearTimeout(timeoutId);
 		}
 	}
 

@@ -260,6 +260,9 @@ export const BrandAuditFormatSchema = z
 	.union([z.literal('json'), z.literal('markdown'), z.literal('both')])
 	.describe('Output mode: json (CheckResult only), markdown (compact summary), both.');
 
+/** view selector for brand-audit output mode. */
+export const BrandAuditViewSchema = z.enum(['standard', 'csc_complement']);
+
 /** brand_audit_single — sync brand-portfolio audit for one target. */
 export const BrandAuditSingleArgs = z.object({
 	domain: DomainSchema.describe('Target domain to audit (e.g., apple.com).'),
@@ -274,6 +277,9 @@ export const BrandAuditSingleArgs = z.object({
 	planner_mode: BrandAuditPlannerModeSchema.optional().describe('Planner mode for staged discovery fanout. observe emits metrics; enforce applies candidate-backed signal caps.'),
 	brand_aliases: BrandAliasesArg,
 	candidate_domains: BrandCandidateDomainsArg,
+	view: BrandAuditViewSchema.optional().describe(
+		"Output view mode. 'csc_complement' produces a CSC-tuned payload; requires enterprise tier. Default 'standard'.",
+	),
 }).passthrough();
 
 /** brand_audit_batch_start — enqueue async brand audits for up to 50 targets. */
@@ -298,6 +304,9 @@ export const BrandAuditBatchStartArgs = z.object({
 		.enum(['classic', 'tiered'])
 		.optional()
 		.describe('Brand-discovery pipeline mode. classic = legacy sweep; tiered = tenant/graph/evidence wrappers first (BlackVeil-internal).'),
+	view: BrandAuditViewSchema.optional().describe(
+		"Output view mode. 'csc_complement' produces a CSC-tuned payload; requires enterprise tier. Default 'standard'.",
+	),
 }).passthrough();
 
 /** brand_audit_status — poll status of an enqueued audit. */
