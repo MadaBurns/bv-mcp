@@ -5,6 +5,7 @@ import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
 import { runWithCacheTracked } from '../lib/cache';
 import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { checkSpf } from '../tools/check-spf';
+import { checkSubdomainTakeover } from '../tools/check-subdomain-takeover';
 import { checkDmarc } from '../tools/check-dmarc';
 import { checkDkim } from '../tools/check-dkim';
 import { checkDnssec } from '../tools/check-dnssec';
@@ -31,7 +32,13 @@ import { compareDomains, formatDomainComparison } from '../tools/compare-domains
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
 import { generateFixPlan, formatFixPlan } from '../tools/generate-fix-plan';
-import { generateSpfRecord, generateDmarcRecord, generateDkimConfig, generateMtaStsPolicy, formatGeneratedRecord } from '../tools/generate-records';
+import {
+	generateSpfRecord,
+	generateDmarcRecord,
+	generateDkimConfig,
+	generateMtaStsPolicy,
+	formatGeneratedRecord,
+} from '../tools/generate-records';
 import { getBenchmark, getProviderInsights, formatBenchmark, formatProviderInsights } from '../tools/intelligence';
 import { assessSpoofability, formatSpoofability } from '../tools/assess-spoofability';
 import { checkResolverConsistency, formatResolverConsistency } from '../tools/check-resolver-consistency';
@@ -61,7 +68,20 @@ import { brandAuditWatch } from '../tools/brand-audit-watch';
 import { createD1BrandAuditStepStore } from '../lib/brand-audit-step-store';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
-import { extractAndValidateDomain, extractBaseline, extractDkimSelector, extractExplainFindingArgs, extractForceRefresh, extractFormat, extractIncludeProviders, extractMxHosts, extractRecordType, extractScanProfile, normalizeToolName, validateToolArgs } from './tool-args';
+import {
+	extractAndValidateDomain,
+	extractBaseline,
+	extractDkimSelector,
+	extractExplainFindingArgs,
+	extractForceRefresh,
+	extractFormat,
+	extractIncludeProviders,
+	extractMxHosts,
+	extractRecordType,
+	extractScanProfile,
+	normalizeToolName,
+	validateToolArgs,
+} from './tool-args';
 import type { OutputFormat } from './tool-args';
 import { buildLogContext, logToolFailure, logToolSuccess } from './tool-execution';
 import { formatCheckResult, mcpError, buildToolContent } from './tool-formatters';
@@ -171,7 +191,9 @@ function buildDnsOptions(runtimeOptions?: ToolRuntimeOptions): QueryDnsOptions |
  * brand_audit_batch_start as a first-line check; the monthly enforcement
  * applies on top.
  */
-function buildMonthlyEnforceQuota(ro?: ToolRuntimeOptions): ((count: number) => Promise<{ allowed: boolean; remaining?: number; limit?: number; retryAfterMs?: number }>) | undefined {
+function buildMonthlyEnforceQuota(
+	ro?: ToolRuntimeOptions,
+): ((count: number) => Promise<{ allowed: boolean; remaining?: number; limit?: number; retryAfterMs?: number }>) | undefined {
 	if (!ro?.rateLimitKv || !ro.principalId || !ro.authTier) return undefined;
 	const tier = ro.authTier as import('../lib/config').McpApiKeyTier;
 	const kv = ro.rateLimitKv;
@@ -184,11 +206,15 @@ function buildMonthlyEnforceQuota(ro?: ToolRuntimeOptions): ((count: number) => 
 
 async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOptions): Promise<CheckResult> {
 	const { checkMx } = await import('../tools/check-mx');
-	return checkMx(domain, {
-		providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
-		providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
-		providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
-	}, buildDnsOptions(runtimeOptions));
+	return checkMx(
+		domain,
+		{
+			providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
+			providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
+			providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
+		},
+		buildDnsOptions(runtimeOptions),
+	);
 }
 
 /**
@@ -223,23 +249,53 @@ const TOOL_REGISTRY: Record<
 	check_bimi: { cacheKey: () => 'bimi', execute: (d, _args, ro) => checkBimi(d, buildDnsOptions(ro)) },
 	check_tlsrpt: { cacheKey: () => 'tlsrpt', execute: (d, _args, ro) => checkTlsrpt(d, buildDnsOptions(ro)) },
 	check_lookalikes: { cacheKey: () => 'lookalikes', execute: (d) => checkLookalikes(d), cacheTtlSeconds: 3600 },
-	check_shadow_domains: { cacheKey: () => 'shadow_domains', execute: (d, _args, ro) => checkShadowDomains(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
+	check_shadow_domains: {
+		cacheKey: () => 'shadow_domains',
+		execute: (d, _args, ro) => checkShadowDomains(d, buildDnsOptions(ro)),
+		cacheTtlSeconds: 3600,
+	},
 	check_txt_hygiene: { cacheKey: () => 'txt_hygiene', execute: (d, _args, ro) => checkTxtHygiene(d, buildDnsOptions(ro)) },
 	check_http_security: { cacheKey: () => 'http_security', execute: (d) => checkHttpSecurity(d) },
 	check_dane: { cacheKey: () => 'dane', execute: (d, _args, ro) => checkDane(d, buildDnsOptions(ro)) },
 	check_dane_https: { cacheKey: () => 'dane_https', execute: (d, _args, ro) => checkDaneHttps(d, buildDnsOptions(ro)) },
 	check_svcb_https: { cacheKey: () => 'svcb_https', execute: (d, _args, ro) => checkSvcbHttps(d, buildDnsOptions(ro)) },
-	check_mx_reputation: { cacheKey: () => 'mx_reputation', execute: (d, _args, ro) => checkMxReputation(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
+	check_mx_reputation: {
+		cacheKey: () => 'mx_reputation',
+		execute: (d, _args, ro) => checkMxReputation(d, buildDnsOptions(ro)),
+		cacheTtlSeconds: 3600,
+	},
 	check_srv: { cacheKey: () => 'srv', execute: (d, _args, ro) => checkSrv(d, buildDnsOptions(ro)) },
 	check_zone_hygiene: { cacheKey: () => 'zone_hygiene', execute: (d, _args, ro) => checkZoneHygiene(d, buildDnsOptions(ro)) },
 	check_subdomailing: { cacheKey: () => 'subdomailing', execute: (d, _args, ro) => checkSubdomailing(d, buildDnsOptions(ro)) },
 	check_dbl: { cacheKey: () => 'dbl', execute: (d, _args, ro) => checkDbl(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	check_rbl: { cacheKey: () => 'rbl', execute: (d, _args, ro) => checkRbl(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	cymru_asn: { cacheKey: () => 'asn', execute: (d, _args, ro) => checkCymruAsn(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
-	rdap_lookup: { cacheKey: () => 'rdap', execute: (d, _args, ro) => checkRdapLookup(d, { whoisBinding: ro?.whoisBinding }), cacheTtlSeconds: 3600 },
-	check_nsec_walkability: { cacheKey: () => 'nsec_walkability', execute: (d, _args, ro) => checkNsecWalkability(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
+	rdap_lookup: {
+		cacheKey: () => 'rdap',
+		execute: (d, _args, ro) => checkRdapLookup(d, { whoisBinding: ro?.whoisBinding }),
+		cacheTtlSeconds: 3600,
+	},
+	check_nsec_walkability: {
+		cacheKey: () => 'nsec_walkability',
+		execute: (d, _args, ro) => checkNsecWalkability(d, buildDnsOptions(ro)),
+		cacheTtlSeconds: 3600,
+	},
 	check_dnssec_chain: { cacheKey: () => 'dnssec_chain', execute: (d, _args, ro) => checkDnssecChain(d, buildDnsOptions(ro)) },
-	check_fast_flux: { cacheKey: () => 'fast_flux', execute: (d, args, ro) => checkFastFlux(d, (args.rounds as number | undefined) ?? 3, buildDnsOptions(ro)) },
+	check_fast_flux: {
+		cacheKey: () => 'fast_flux',
+		execute: (d, args, ro) => checkFastFlux(d, (args.rounds as number | undefined) ?? 3, buildDnsOptions(ro)),
+	},
+	check_subdomain_takeover: {
+		cacheKey: (args) => {
+			const subs = Array.isArray(args.subdomains) ? (args.subdomains as string[]) : null;
+			// Cache key folds caller-supplied list size so callers passing CT inventories don't collide with default sweeps.
+			return subs && subs.length > 0 ? `subdomain_takeover:custom:${subs.length}` : 'subdomain_takeover:default';
+		},
+		execute: (d, args, ro) => {
+			const subs = Array.isArray(args.subdomains) ? (args.subdomains as string[]) : undefined;
+			return checkSubdomainTakeover(d, buildDnsOptions(ro), subs ? { subdomains: subs } : undefined);
+		},
+	},
 	check_authoritative_dns_infra: {
 		cacheKey: () => 'authoritative_dns_infra',
 		execute: (d, _args, ro) => checkAuthoritativeDnsInfra(d, { infraProbe: ro?.infraProbe }),
@@ -272,7 +328,11 @@ const TOOL_REGISTRY: Record<
 			discoverBrandDomains(
 				d,
 				{
-					signals: args.signals as Parameters<typeof discoverBrandDomains>[1] extends infer O ? (O extends { signals?: infer S } ? S : undefined) : undefined,
+					signals: args.signals as Parameters<typeof discoverBrandDomains>[1] extends infer O
+						? O extends { signals?: infer S }
+							? S
+							: undefined
+						: undefined,
 					depth: args.depth as 'standard' | 'deep' | undefined,
 					planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
 					discovery_mode: args.discovery_mode as 'classic' | 'tiered' | undefined,
@@ -309,11 +369,7 @@ const TOOL_REGISTRY: Record<
 			// the env-default (`BRAND_AUDIT_DISCOVERY_MODE_DEFAULT`) flips classic→tiered
 			// on BlackVeil production deploys. Schema default falls back to `classic`.
 			const discoveryMode =
-				typeof args.discovery_mode === 'string'
-					? args.discovery_mode
-					: ro?.discoveryModeDefault === 'tiered'
-						? 'tiered'
-						: 'classic';
+				typeof args.discovery_mode === 'string' ? args.discovery_mode : ro?.discoveryModeDefault === 'tiered' ? 'tiered' : 'classic';
 			const aliases = (args.brand_aliases as string[] | undefined) ?? [];
 			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
 			const aliasHash = aliases.length === 0 ? '0' : `${aliases.length}:${aliases.slice().sort().join('|').slice(0, 64)}`;
@@ -323,32 +379,36 @@ const TOOL_REGISTRY: Record<
 		},
 		execute: (d, args, ro) => {
 			const deadlineMs = Date.now() + BRAND_AUDIT_SINGLE_SYNC_HANDOFF_MS;
-			return brandAuditSingle(d, {
-				format: args.format as 'json' | 'markdown' | 'both' | undefined,
-				min_confidence: args.min_confidence as number | undefined,
-				depth: args.depth as 'standard' | 'deep' | undefined,
-				planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
-				discovery_mode: args.discovery_mode as 'classic' | 'tiered' | undefined,
-				brand_aliases: args.brand_aliases as string[] | undefined,
-				candidate_domains: args.candidate_domains as string[] | undefined,
-				view: args.view as 'standard' | 'csc_complement' | undefined,
-				// T13 — propagate the BlackVeil-production runtime override.
-				// Pipeline only honours it when the caller omits `discovery_mode`;
-				// undefined on BSL self-hosts (schema default `'classic'` wins).
-				...(ro?.discoveryModeDefault ? { env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: ro.discoveryModeDefault } } : {}),
-				deadlineMs,
-				timeoutBehavior: 'async_handoff',
-			}, {
-				certstream: ro?.certstream,
-				whoisBinding: ro?.whoisBinding,
-				enforceQuota: buildMonthlyEnforceQuota(ro),
-				// Tier closures: forwarded through the pipeline → discoverBrandDomains
-				// seam. Undefined on BSL self-hosts → pipeline never calls the
-				// proprietary lookups.
-				...(ro?.tier0Lookup ? { tier0Lookup: ro.tier0Lookup } : {}),
-				...(ro?.tier1Lookup ? { tier1Lookup: ro.tier1Lookup } : {}),
-				...(ro?.tier2Lookup ? { tier2Lookup: ro.tier2Lookup } : {}),
-			});
+			return brandAuditSingle(
+				d,
+				{
+					format: args.format as 'json' | 'markdown' | 'both' | undefined,
+					min_confidence: args.min_confidence as number | undefined,
+					depth: args.depth as 'standard' | 'deep' | undefined,
+					planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
+					discovery_mode: args.discovery_mode as 'classic' | 'tiered' | undefined,
+					brand_aliases: args.brand_aliases as string[] | undefined,
+					candidate_domains: args.candidate_domains as string[] | undefined,
+					view: args.view as 'standard' | 'csc_complement' | undefined,
+					// T13 — propagate the BlackVeil-production runtime override.
+					// Pipeline only honours it when the caller omits `discovery_mode`;
+					// undefined on BSL self-hosts (schema default `'classic'` wins).
+					...(ro?.discoveryModeDefault ? { env: { BRAND_AUDIT_DISCOVERY_MODE_DEFAULT: ro.discoveryModeDefault } } : {}),
+					deadlineMs,
+					timeoutBehavior: 'async_handoff',
+				},
+				{
+					certstream: ro?.certstream,
+					whoisBinding: ro?.whoisBinding,
+					enforceQuota: buildMonthlyEnforceQuota(ro),
+					// Tier closures: forwarded through the pipeline → discoverBrandDomains
+					// seam. Undefined on BSL self-hosts → pipeline never calls the
+					// proprietary lookups.
+					...(ro?.tier0Lookup ? { tier0Lookup: ro.tier0Lookup } : {}),
+					...(ro?.tier1Lookup ? { tier1Lookup: ro.tier1Lookup } : {}),
+					...(ro?.tier2Lookup ? { tier2Lookup: ro.tier2Lookup } : {}),
+				},
+			);
 		},
 		cacheTtlSeconds: 3600,
 	},
@@ -401,13 +461,9 @@ const TOOL_REGISTRY: Record<
 			if (!db) {
 				const { buildCheckResult, createFinding } = await import('../lib/scoring');
 				return buildCheckResult('brand_discovery', [
-					createFinding(
-						'brand_discovery',
-						'Brand audit status unavailable',
-						'high',
-						'BRAND_AUDIT_DB binding is not provisioned.',
-						{ unprovisioned: true },
-					),
+					createFinding('brand_discovery', 'Brand audit status unavailable', 'high', 'BRAND_AUDIT_DB binding is not provisioned.', {
+						unprovisioned: true,
+					}),
 				]);
 			}
 			return brandAuditStatus(String(args.auditId ?? ''), principalId, { db, stepStore: createD1BrandAuditStepStore(db) });
@@ -417,27 +473,26 @@ const TOOL_REGISTRY: Record<
 	brand_audit_get_report: {
 		// Mutable read — do not cache. Before completion this can return notReady,
 		// and after completion the PDF sidecar URL/pending state can change.
-		cacheKey: (args, ro) => `brand_audit_report:${ro?.principalId ?? ro?.keyHash ?? 'anon'}:${String(args.auditId ?? '')}:${String(args.target ?? '')}`,
+		cacheKey: (args, ro) =>
+			`brand_audit_report:${ro?.principalId ?? ro?.keyHash ?? 'anon'}:${String(args.auditId ?? '')}:${String(args.target ?? '')}`,
 		execute: async (_domain, args, ro) => {
 			const db = ro?.brandAuditDb;
 			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
 			if (!db) {
 				const { buildCheckResult, createFinding } = await import('../lib/scoring');
 				return buildCheckResult('brand_discovery', [
-					createFinding(
-						'brand_discovery',
-						'Brand audit get-report unavailable',
-						'high',
-						'BRAND_AUDIT_DB binding is not provisioned.',
-						{ unprovisioned: true },
-					),
+					createFinding('brand_discovery', 'Brand audit get-report unavailable', 'high', 'BRAND_AUDIT_DB binding is not provisioned.', {
+						unprovisioned: true,
+					}),
 				]);
 			}
-			return brandAuditGetReport(
-				{ auditId: String(args.auditId ?? ''), target: args.target as string | undefined },
-				principalId,
-				{ db, bucket: ro?.brandReportsR2 as { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> } | undefined, stepStore: createD1BrandAuditStepStore(db) },
-			);
+			return brandAuditGetReport({ auditId: String(args.auditId ?? ''), target: args.target as string | undefined }, principalId, {
+				db,
+				bucket: ro?.brandReportsR2 as
+					| { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> }
+					| undefined,
+				stepStore: createD1BrandAuditStepStore(db),
+			});
 		},
 		cacheable: false,
 	},
@@ -450,13 +505,9 @@ const TOOL_REGISTRY: Record<
 			if (!db) {
 				const { buildCheckResult, createFinding } = await import('../lib/scoring');
 				return buildCheckResult('brand_discovery', [
-					createFinding(
-						'brand_discovery',
-						'Brand audit watch unavailable',
-						'high',
-						'BRAND_AUDIT_DB binding is not provisioned.',
-						{ unprovisioned: true },
-					),
+					createFinding('brand_discovery', 'Brand audit watch unavailable', 'high', 'BRAND_AUDIT_DB binding is not provisioned.', {
+						unprovisioned: true,
+					}),
 				]);
 			}
 			return brandAuditWatch(
@@ -541,10 +592,17 @@ export async function handleToolsCall(
 		// Extract and validate domain for tools that need it
 		// (skip for explain_finding, get_benchmark, get_provider_insights which don't require a domain)
 		const DOMAIN_OPTIONAL_TOOLS = new Set([
-			'explain_finding', 'get_benchmark', 'get_provider_insights', 'batch_scan', 'compare_domains',
+			'explain_finding',
+			'get_benchmark',
+			'get_provider_insights',
+			'batch_scan',
+			'compare_domains',
 			'check_root_server_set',
 			// v2.21+ brand-audit tools — take `domains[]`, `auditId`, or `action` instead of `domain`.
-			'brand_audit_batch_start', 'brand_audit_status', 'brand_audit_get_report', 'brand_audit_watch',
+			'brand_audit_batch_start',
+			'brand_audit_status',
+			'brand_audit_get_report',
+			'brand_audit_watch',
 		]);
 		if (!DOMAIN_OPTIONAL_TOOLS.has(name)) {
 			domain = extractAndValidateDomain(validatedArgs);
@@ -618,7 +676,14 @@ export async function handleToolsCall(
 					// (was 'n/a' for every scan_domain call before — drowned the leaf
 					// tools' real hit-rate signal in the .dev/analytics-30d.mjs report).
 					const cacheStatus: 'hit' | 'miss' = result.cached ? 'hit' : 'miss';
-					logToolSuccess({ ...ctx(), status: result.score.overall >= 50 ? 'pass' : 'fail', logResult, logDetails, severity: 'info', cacheStatus });
+					logToolSuccess({
+						...ctx(),
+						status: result.score.overall >= 50 ? 'pass' : 'fail',
+						logResult,
+						logDetails,
+						severity: 'info',
+						cacheStatus,
+					});
 					const structured = buildStructuredScanResult(result);
 					return { content: buildToolContent(formatScanReport(result, effectiveFormat), structured, effectiveFormat) };
 				}
@@ -640,7 +705,13 @@ export async function handleToolsCall(
 						},
 					});
 					const batchText = formatBatchScan(batchResults, effectiveFormat);
-					logToolSuccess({ ...ctx(), status: 'pass', logResult: `${batchResults.filter((r) => !r.error).length}/${batchResults.length} domains`, logDetails: { totalDomains: batchResults.length }, severity: 'info' });
+					logToolSuccess({
+						...ctx(),
+						status: 'pass',
+						logResult: `${batchResults.filter((r) => !r.error).length}/${batchResults.length} domains`,
+						logDetails: { totalDomains: batchResults.length },
+						severity: 'info',
+					});
 					return { content: buildToolContent(batchText, batchResults, effectiveFormat) };
 				}
 				case 'compare_domains': {
@@ -659,7 +730,13 @@ export async function handleToolsCall(
 						},
 					});
 					const compareText = formatDomainComparison(compareResults, effectiveFormat);
-					logToolSuccess({ ...ctx(), status: 'pass', logResult: `${Object.keys(compareResults.scores).length}/${compareResults.domains.length} domains compared`, logDetails: { totalDomains: compareResults.domains.length, winner: compareResults.winner }, severity: 'info' });
+					logToolSuccess({
+						...ctx(),
+						status: 'pass',
+						logResult: `${Object.keys(compareResults.scores).length}/${compareResults.domains.length} domains compared`,
+						logDetails: { totalDomains: compareResults.domains.length, winner: compareResults.winner },
+						severity: 'info',
+					});
 					return { content: buildToolContent(compareText, compareResults, effectiveFormat) };
 				}
 				case 'compare_baseline': {
@@ -685,7 +762,7 @@ export async function handleToolsCall(
 					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
 				}
 				case 'generate_dmarc_record': {
-					const policy = typeof validatedArgs.policy === 'string' ? validatedArgs.policy as 'none' | 'quarantine' | 'reject' : undefined;
+					const policy = typeof validatedArgs.policy === 'string' ? (validatedArgs.policy as 'none' | 'quarantine' | 'reject') : undefined;
 					const ruaEmail = typeof validatedArgs.rua_email === 'string' ? validatedArgs.rua_email : undefined;
 					const record = await generateDmarcRecord(validDomain, policy, ruaEmail, buildDnsOptions(runtimeOptions));
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
@@ -757,86 +834,90 @@ export async function handleToolsCall(
 					return { content: buildToolContent(formatValidateFix(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'map_supply_chain': {
-						const result = await mapSupplyChain(validDomain, buildDnsOptions(runtimeOptions));
-						logResult = `${result.summary.totalProviders} providers`;
-						logDetails = result;
-						logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-						return { content: buildToolContent(formatSupplyChain(result, effectiveFormat), result, effectiveFormat) };
-					}
-					case 'generate_rollout_plan': {
-						const targetPolicy = typeof validatedArgs.target_policy === 'string'
-							? validatedArgs.target_policy as 'quarantine' | 'reject'
-							: 'reject';
-						const timeline = typeof validatedArgs.timeline === 'string'
-							? validatedArgs.timeline as 'aggressive' | 'standard' | 'conservative'
+					const result = await mapSupplyChain(validDomain, buildDnsOptions(runtimeOptions));
+					logResult = `${result.summary.totalProviders} providers`;
+					logDetails = result;
+					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
+					return { content: buildToolContent(formatSupplyChain(result, effectiveFormat), result, effectiveFormat) };
+				}
+				case 'generate_rollout_plan': {
+					const targetPolicy =
+						typeof validatedArgs.target_policy === 'string' ? (validatedArgs.target_policy as 'quarantine' | 'reject') : 'reject';
+					const timeline =
+						typeof validatedArgs.timeline === 'string'
+							? (validatedArgs.timeline as 'aggressive' | 'standard' | 'conservative')
 							: 'standard';
-						const result = await generateRolloutPlan(validDomain, targetPolicy, timeline, buildDnsOptions(runtimeOptions));
-						logResult = result.atTarget ? 'at_target' : `${result.phases.length} phases`;
-						logDetails = result;
-						logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-						return { content: buildToolContent(formatRolloutPlan(result, effectiveFormat), result, effectiveFormat) };
-					}
-					case 'analyze_drift': {
-						const baselineStr = typeof validatedArgs.baseline === 'string' ? validatedArgs.baseline : '';
+					const result = await generateRolloutPlan(validDomain, targetPolicy, timeline, buildDnsOptions(runtimeOptions));
+					logResult = result.atTarget ? 'at_target' : `${result.phases.length} phases`;
+					logDetails = result;
+					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
+					return { content: buildToolContent(formatRolloutPlan(result, effectiveFormat), result, effectiveFormat) };
+				}
+				case 'analyze_drift': {
+					const baselineStr = typeof validatedArgs.baseline === 'string' ? validatedArgs.baseline : '';
 
-						let baselineScore: import('../lib/scoring-model').ScanScore;
-						if (baselineStr === 'cached') {
-							const cacheKey = `cache:${validDomain}`;
-							const cached = scanCacheKV ? await import('../lib/cache').then((m) => m.cacheGet<import('../tools/scan-domain').ScanDomainResult>(cacheKey, scanCacheKV)) : undefined;
-							if (!cached) {
-								return buildToolErrorResult(`Invalid baseline: no cached scan found for ${validDomain}. Run scan_domain first or provide a baseline JSON.`);
-							}
-							baselineScore = cached.score;
-						} else {
-							try {
-								const parsed = JSON.parse(baselineStr);
-								if (typeof parsed?.overall !== 'number' || typeof parsed?.grade !== 'string' || !Array.isArray(parsed?.findings)) {
-									return buildToolErrorResult('Invalid baseline: JSON must contain overall (number), grade (string), and findings (array).');
-								}
-								baselineScore = parsed;
-							} catch {
-								return buildToolErrorResult('Invalid baseline: could not parse JSON. Provide a valid ScanScore JSON or "cached".');
-							}
+					let baselineScore: import('../lib/scoring-model').ScanScore;
+					if (baselineStr === 'cached') {
+						const cacheKey = `cache:${validDomain}`;
+						const cached = scanCacheKV
+							? await import('../lib/cache').then((m) => m.cacheGet<import('../tools/scan-domain').ScanDomainResult>(cacheKey, scanCacheKV))
+							: undefined;
+						if (!cached) {
+							return buildToolErrorResult(
+								`Invalid baseline: no cached scan found for ${validDomain}. Run scan_domain first or provide a baseline JSON.`,
+							);
 						}
+						baselineScore = cached.score;
+					} else {
+						try {
+							const parsed = JSON.parse(baselineStr);
+							if (typeof parsed?.overall !== 'number' || typeof parsed?.grade !== 'string' || !Array.isArray(parsed?.findings)) {
+								return buildToolErrorResult('Invalid baseline: JSON must contain overall (number), grade (string), and findings (array).');
+							}
+							baselineScore = parsed;
+						} catch {
+							return buildToolErrorResult('Invalid baseline: could not parse JSON. Provide a valid ScanScore JSON or "cached".');
+						}
+					}
 
-						const scanResult = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
-						const drift = computeDrift(validDomain, baselineScore, scanResult.score);
-						logResult = drift.classification;
-						logDetails = drift;
-						logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-						return { content: buildToolContent(formatDriftReport(drift, effectiveFormat), drift, effectiveFormat) };
-					}
-					case 'resolve_spf_chain': {
-						const result = await resolveSpfChain(validDomain, buildDnsOptions(runtimeOptions));
-						logResult = result.overLimit ? 'over_limit' : 'ok';
-						logDetails = { totalLookups: result.totalLookups, maxDepth: result.maxDepth, issues: result.issues.length };
-						logToolSuccess({ ...ctx(), status: result.overLimit ? 'fail' : 'pass', logResult, logDetails, severity: 'info' });
-						return { content: buildToolContent(formatSpfChain(result, effectiveFormat), result, effectiveFormat) };
-					}
-					case 'discover_subdomains': {
-						const result = await discoverSubdomains(validDomain, runtimeOptions?.certstream);
-						logResult = `${result.totalSubdomains} subdomains`;
-						logDetails = { totalSubdomains: result.totalSubdomains, issues: result.issues.length };
-						logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-						return { content: buildToolContent(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat) };
-					}
-					case 'map_compliance': {
-						const result = await mapCompliance(validDomain, scanCacheKV, runtimeOptions);
-						logResult = 'mapped';
-						logDetails = result;
-						logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-						return { content: buildToolContent(formatCompliance(result, effectiveFormat), result, effectiveFormat) };
-					}
-					case 'simulate_attack_paths': {
-						const result = await simulateAttackPaths(validDomain, buildDnsOptions(runtimeOptions));
-						logResult = `${result.totalPaths} paths, risk: ${result.overallRisk}`;
-						logDetails = { totalPaths: result.totalPaths, overallRisk: result.overallRisk };
-						logToolSuccess({ ...ctx(), status: result.overallRisk === 'low' ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
-						return { content: buildToolContent(formatAttackPaths(result, effectiveFormat), result, effectiveFormat) };
-					}
-					default:
-						logToolFailure({ ...ctx(), error: `Unknown tool: ${name}`, args });
-						return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all ${TOOLS.length} available tools.`);
+					const scanResult = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
+					const drift = computeDrift(validDomain, baselineScore, scanResult.score);
+					logResult = drift.classification;
+					logDetails = drift;
+					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
+					return { content: buildToolContent(formatDriftReport(drift, effectiveFormat), drift, effectiveFormat) };
+				}
+				case 'resolve_spf_chain': {
+					const result = await resolveSpfChain(validDomain, buildDnsOptions(runtimeOptions));
+					logResult = result.overLimit ? 'over_limit' : 'ok';
+					logDetails = { totalLookups: result.totalLookups, maxDepth: result.maxDepth, issues: result.issues.length };
+					logToolSuccess({ ...ctx(), status: result.overLimit ? 'fail' : 'pass', logResult, logDetails, severity: 'info' });
+					return { content: buildToolContent(formatSpfChain(result, effectiveFormat), result, effectiveFormat) };
+				}
+				case 'discover_subdomains': {
+					const result = await discoverSubdomains(validDomain, runtimeOptions?.certstream);
+					logResult = `${result.totalSubdomains} subdomains`;
+					logDetails = { totalSubdomains: result.totalSubdomains, issues: result.issues.length };
+					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
+					return { content: buildToolContent(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat) };
+				}
+				case 'map_compliance': {
+					const result = await mapCompliance(validDomain, scanCacheKV, runtimeOptions);
+					logResult = 'mapped';
+					logDetails = result;
+					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
+					return { content: buildToolContent(formatCompliance(result, effectiveFormat), result, effectiveFormat) };
+				}
+				case 'simulate_attack_paths': {
+					const result = await simulateAttackPaths(validDomain, buildDnsOptions(runtimeOptions));
+					logResult = `${result.totalPaths} paths, risk: ${result.overallRisk}`;
+					logDetails = { totalPaths: result.totalPaths, overallRisk: result.overallRisk };
+					logToolSuccess({ ...ctx(), status: result.overallRisk === 'low' ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
+					return { content: buildToolContent(formatAttackPaths(result, effectiveFormat), result, effectiveFormat) };
+				}
+				default:
+					logToolFailure({ ...ctx(), error: `Unknown tool: ${name}`, args });
+					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all ${TOOLS.length} available tools.`);
 			}
 		};
 
@@ -848,11 +929,18 @@ export async function handleToolsCall(
 		if (err instanceof Error && err.message === '__tool_timeout__') {
 			logToolFailure({ ...ctx(), error: 'Tool call timed out', args });
 			return {
-				content: [mcpError(`${name} timed out after ${TOOL_CALL_TIMEOUT_MS / 1000}s. Try a simpler check or retry — cached partial results make retries faster.`)],
+				content: [
+					mcpError(
+						`${name} timed out after ${TOOL_CALL_TIMEOUT_MS / 1000}s. Try a simpler check or retry — cached partial results make retries faster.`,
+					),
+				],
 				isError: true,
 			};
 		}
-		const message = sanitizeErrorMessage(err, `An unexpected error occurred while running ${name}. Retry the request — transient DNS failures are common.`);
+		const message = sanitizeErrorMessage(
+			err,
+			`An unexpected error occurred while running ${name}. Retry the request — transient DNS failures are common.`,
+		);
 		logToolFailure({ ...ctx(), error: err, args });
 		return buildToolErrorResult(message);
 	}
