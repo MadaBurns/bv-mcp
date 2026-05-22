@@ -59,27 +59,41 @@ export const FALLBACK_RDAP_SERVERS: Record<string, string> = {
 	co: 'https://rdap.nic.co/',
 	// ME Registry
 	me: 'https://rdap.nic.me/',
-	// Google Registry
-	app: 'https://www.registry.google/rdap/',
-	dev: 'https://www.registry.google/rdap/',
+	// Google Registry — pubapi is the canonical RDAP endpoint; www.registry.google returns 404.
+	app: 'https://pubapi.registry.google/rdap/',
+	dev: 'https://pubapi.registry.google/rdap/',
 	// XYZ.COM LLC
 	xyz: 'https://rdap.nic.xyz/',
+	// ccTLDs reachable via IANA bootstrap — hardcoded here as failsafe for when
+	// the bootstrap fetch is negative-cached (transient data.iana.org outage).
+	ca: 'https://rdap.ca.fury.ca/rdap/',
+	cz: 'https://rdap.nic.cz/',
+	fr: 'https://rdap.nic.fr/',
+	in: 'https://rdap.nixiregistry.in/rdap/',
+	nl: 'https://rdap.sidn.nl/',
+	no: 'https://rdap.norid.no/',
+	pl: 'https://rdap.dns.pl/',
+	sg: 'https://rdap.sgnic.sg/rdap/',
+	uk: 'https://rdap.nominet.uk/uk/',
 };
 
 /** TTL for a successful IANA bootstrap fetch (6h). */
 const BOOTSTRAP_TTL_MS = 6 * 60 * 60 * 1000;
 
-/** TTL for a failed bootstrap fetch (1m) — short so transient blips recover, long enough to avoid hammering IANA during an outage. */
-const BOOTSTRAP_FAILURE_TTL_MS = 60 * 1000;
+/** TTL for a failed bootstrap fetch (10s) — short so transient blips recover quickly. The hardcoded fallback map covers the common-TLD path during the negative-cache window. */
+const BOOTSTRAP_FAILURE_TTL_MS = 10 * 1000;
 
 /** Module-level bootstrap state (per isolate lifetime). */
 let bootstrapState: { value: Record<string, string>; fetchedAt: number } | null = null;
 let bootstrapFailure: { failedAt: number } | null = null;
+/** In-flight bootstrap fetch — concurrent RDAP calls share a single IANA request. */
+let bootstrapInFlight: Promise<Record<string, string>> | null = null;
 
 /** Reset bootstrap cache — exported for test isolation. */
 export function _resetBootstrapCache(): void {
 	bootstrapState = null;
 	bootstrapFailure = null;
+	bootstrapInFlight = null;
 }
 
 /** Timeout for all outbound RDAP fetches (ms). */
@@ -95,10 +109,10 @@ interface RdapEvent {
 }
 
 interface RdapVcardProperty {
-	0: string;  // property name
-	1: Record<string, unknown>;  // parameters
-	2: string;  // type
-	3: unknown;  // value
+	0: string; // property name
+	1: Record<string, unknown>; // parameters
+	2: string; // type
+	3: unknown; // value
 }
 
 interface RdapEntity {
@@ -130,40 +144,48 @@ async function fetchBootstrap(): Promise<Record<string, string>> {
 	if (bootstrapFailure && now - bootstrapFailure.failedAt < BOOTSTRAP_FAILURE_TTL_MS) {
 		return {};
 	}
+	if (bootstrapInFlight) {
+		return bootstrapInFlight;
+	}
 
-	try {
-		const resp = await fetch(IANA_BOOTSTRAP_URL, {
-			redirect: 'manual',
-			signal: AbortSignal.timeout(RDAP_TIMEOUT_MS),
-			headers: { Accept: 'application/json' },
-		});
-		if (!resp.ok) {
-			bootstrapFailure = { failedAt: now };
-			return {};
-		}
+	bootstrapInFlight = (async () => {
+		try {
+			const resp = await fetch(IANA_BOOTSTRAP_URL, {
+				redirect: 'manual',
+				signal: AbortSignal.timeout(RDAP_TIMEOUT_MS),
+				headers: { Accept: 'application/json' },
+			});
+			if (!resp.ok) {
+				bootstrapFailure = { failedAt: Date.now() };
+				return {};
+			}
 
-		const data = (await resp.json()) as { services?: [string[], string[]][] };
-		const map: Record<string, string> = {};
+			const data = (await resp.json()) as { services?: [string[], string[]][] };
+			const map: Record<string, string> = {};
 
-		if (Array.isArray(data.services)) {
-			for (const [tlds, urls] of data.services) {
-				if (!Array.isArray(tlds) || !Array.isArray(urls) || urls.length === 0) continue;
-				const serverUrl = urls[0];
-				for (const tld of tlds) {
-					if (typeof tld === 'string' && typeof serverUrl === 'string') {
-						map[tld.toLowerCase()] = serverUrl;
+			if (Array.isArray(data.services)) {
+				for (const [tlds, urls] of data.services) {
+					if (!Array.isArray(tlds) || !Array.isArray(urls) || urls.length === 0) continue;
+					const serverUrl = urls[0];
+					for (const tld of tlds) {
+						if (typeof tld === 'string' && typeof serverUrl === 'string') {
+							map[tld.toLowerCase()] = serverUrl;
+						}
 					}
 				}
 			}
-		}
 
-		bootstrapState = { value: map, fetchedAt: now };
-		bootstrapFailure = null;
-		return map;
-	} catch {
-		bootstrapFailure = { failedAt: now };
-		return {};
-	}
+			bootstrapState = { value: map, fetchedAt: Date.now() };
+			bootstrapFailure = null;
+			return map;
+		} catch {
+			bootstrapFailure = { failedAt: Date.now() };
+			return {};
+		} finally {
+			bootstrapInFlight = null;
+		}
+	})();
+	return bootstrapInFlight;
 }
 
 /**
@@ -308,11 +330,14 @@ async function fetchRdapResponse(rdapUrl: string, callerSignal?: AbortSignal): P
 		lastResponse = resp;
 		await sleep(parseRetryAfterMs(resp.headers.get('Retry-After')), callerSignal);
 	}
-	return lastResponse ?? fetch(rdapUrl, {
-		redirect: 'manual',
-		signal: composeFetchSignal(callerSignal),
-		headers: { Accept: 'application/rdap+json, application/json' },
-	});
+	return (
+		lastResponse ??
+		fetch(rdapUrl, {
+			redirect: 'manual',
+			signal: composeFetchSignal(callerSignal),
+			headers: { Accept: 'application/rdap+json, application/json' },
+		})
+	);
 }
 
 /** Find an event by action name. */
@@ -335,12 +360,7 @@ const WhoisFallbackPayloadSchema = z.object({
 });
 type WhoisFallbackPayload = z.infer<typeof WhoisFallbackPayloadSchema>;
 
-const WHOIS_REGISTRAR_LABELS = [
-	'Registrar',
-	'Registrar Name',
-	'Sponsoring Registrar',
-	'Registrar Organization',
-] as const;
+const WHOIS_REGISTRAR_LABELS = ['Registrar', 'Registrar Name', 'Sponsoring Registrar', 'Registrar Organization'] as const;
 
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -417,9 +437,7 @@ function reconcileWithWhois(rdap: RegistrarOutcome, w: WhoisFallbackPayload | nu
 	if (w?.source === 'redacted') return { source: 'redacted' };
 	if (w?.source === 'notfound') return { source: 'notfound' };
 	if (w?.source === 'error') {
-		return rdap.source === 'lookup_failed'
-			? rdap
-			: { source: 'lookup_failed', failureReason: 'whois_error' };
+		return rdap.source === 'lookup_failed' ? rdap : { source: 'lookup_failed', failureReason: 'whois_error' };
 	}
 	// w === null (binding absent): RDAP outcome stands.
 	return rdap;
@@ -502,10 +520,16 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 	const rdapServerUrl = await resolveRdapServer(tld);
 	if (!rdapServerUrl) {
 		findings.push(
-			createFinding(CATEGORY, 'No RDAP server found', 'info', `No RDAP server found for TLD ".${tld}". RDAP data unavailable for this domain.`, {
-				domain,
-				tld,
-			}),
+			createFinding(
+				CATEGORY,
+				'No RDAP server found',
+				'info',
+				`No RDAP server found for TLD ".${tld}". RDAP data unavailable for this domain.`,
+				{
+					domain,
+					tld,
+				},
+			),
 		);
 		// Deterministic: TLD has no RDAP server. Not transient — keep as 'unknown'
 		// (or whichever WHOIS provides). reconcileWithWhois handles the rest.
@@ -523,15 +547,19 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 
 		if (!resp.ok) {
 			findings.push(
-				createFinding(CATEGORY, 'RDAP lookup failed', 'info', `RDAP server returned HTTP ${resp.status} for ${domain}. Registration data unavailable.`, {
-					domain,
-					httpStatus: resp.status,
-				}),
+				createFinding(
+					CATEGORY,
+					'RDAP lookup failed',
+					'info',
+					`RDAP server returned HTTP ${resp.status} for ${domain}. Registration data unavailable.`,
+					{
+						domain,
+						httpStatus: resp.status,
+					},
+				),
 			);
 			const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal);
-			findings.push(
-				buildWhoisFallbackFinding(domain, whois, { source: 'lookup_failed', failureReason: `rdap_http_${resp.status}` }),
-			);
+			findings.push(buildWhoisFallbackFinding(domain, whois, { source: 'lookup_failed', failureReason: `rdap_http_${resp.status}` }));
 			return buildCheckResult(CATEGORY, findings) as CheckResult;
 		}
 
@@ -571,10 +599,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 		// failure. So pass 'unknown' as the RDAP-side outcome (NOT lookup_failed); WHOIS
 		// can still elevate to deterministic answer or 'whois_error'.
 		const reconciled = reconcileWithWhois({ source: 'unknown' }, whois);
-		const outcome: RegistrarOutcome =
-			reconciled.source === 'lookup_failed'
-				? { source: 'redacted' }
-				: reconciled;
+		const outcome: RegistrarOutcome = reconciled.source === 'lookup_failed' ? { source: 'redacted' } : reconciled;
 		registrarSource = outcome.source;
 		registrarFailureReason = outcome.failureReason;
 		if (whois?.registrar) registrarName = whois.registrar;
