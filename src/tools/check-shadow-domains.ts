@@ -32,9 +32,23 @@ export const PHASE1_DNS_OPTS: QueryDnsOptions = {
 
 /** Global ccTLD set always appended. */
 const GLOBAL_TLDS = [
-	'.com', '.net', '.org', '.io', '.ai', '.co',
-	'.de', '.fr', '.nl', '.eu', '.co.uk', '.com.au',
-	'.ca', '.jp', '.in', '.sg', '.za',
+	'.com',
+	'.net',
+	'.org',
+	'.io',
+	'.ai',
+	'.co',
+	'.de',
+	'.fr',
+	'.nl',
+	'.eu',
+	'.co.uk',
+	'.com.au',
+	'.ca',
+	'.jp',
+	'.in',
+	'.sg',
+	'.za',
 ];
 
 /** Regional variant TLD sets by TLD family. */
@@ -102,13 +116,8 @@ export function generateVariants(brand: string, effectiveTld: string, primaryDom
  * Probe a single variant domain for NS, A, MX, SPF, and DMARC records.
  * All 5 DNS queries run in parallel with skipSecondaryConfirmation.
  */
-async function probeVariant(
-	variant: string,
-	dnsOpts: QueryDnsOptions,
-	prefetchedNs?: string[],
-): Promise<VariantProbeResult> {
-	const nsPromise: Promise<string[]> =
-		prefetchedNs !== undefined ? Promise.resolve(prefetchedNs) : queryDnsRecords(variant, 'NS', dnsOpts);
+async function probeVariant(variant: string, dnsOpts: QueryDnsOptions, prefetchedNs?: string[]): Promise<VariantProbeResult> {
+	const nsPromise: Promise<string[]> = prefetchedNs !== undefined ? Promise.resolve(prefetchedNs) : queryDnsRecords(variant, 'NS', dnsOpts);
 
 	const [nsResult, aResult, mxResult, txtResult, dmarcResult] = await Promise.allSettled([
 		nsPromise,
@@ -142,10 +151,7 @@ async function probeVariant(
  * Phase 1: Fast NS existence check for all variants in parallel.
  * Returns a Map of variant -> NS records for registered domains.
  */
-async function filterByNsExistence(
-	variants: string[],
-	dnsOpts: QueryDnsOptions,
-): Promise<Map<string, string[]>> {
+async function filterByNsExistence(variants: string[], dnsOpts: QueryDnsOptions): Promise<Map<string, string[]>> {
 	const registered = new Map<string, string[]>();
 	const results = await Promise.allSettled(
 		variants.map(async (variant) => {
@@ -184,17 +190,44 @@ function sharesNsWithPrimary(variantNs: string[], primaryNs: string[]): boolean 
 }
 
 /**
+ * RFC 7505 null MX detection. After `queryMxRecords`'s trailing-dot strip, the canonical
+ * null-MX target (`MX 0 .`) appears as an empty exchange; the older `MX 0 localhost.`
+ * convention used by some operators for the same intent appears as `'localhost'`. Both
+ * are explicit "this domain does not accept mail" declarations and MUST NOT be treated
+ * as evidence of a mail-active surface. Misclassifying them as "has mail servers"
+ * generates false-positive HIGH/CRITICAL findings on domains that have applied the
+ * recommended anti-spoofing posture for non-mail names.
+ */
+function isNullMxExchange(exchange: string): boolean {
+	const lowered = exchange.toLowerCase();
+	return lowered === '' || lowered === 'localhost';
+}
+
+/**
  * Classify a probed variant into a finding based on risk.
  * When the variant shares nameservers with the primary domain (indicating common ownership),
  * email-auth findings are downgraded one severity level.
  */
 function classifyVariant(probe: VariantProbeResult, primaryMx: string[], primaryNs: string[]): Finding {
 	const { variant, ns, mx, hasSpf, dmarcPolicy } = probe;
-	const hasMx = mx.length > 0;
+	const hasNullMxOnly = mx.length > 0 && mx.every(isNullMxExchange);
+	const hasMx = mx.length > 0 && !hasNullMxOnly;
 	const hasNs = ns.length > 0;
 	const sameOwner = sharesNsWithPrimary(ns, primaryNs);
 	const meta = { variant, ns, mx, hasSpf, dmarcPolicy };
 	const ownerNote = ' Likely same owner based on shared nameservers — still recommended to add DMARC.';
+
+	// RFC 7505 explicit non-mail posture — the domain is doing the right thing for a
+	// non-mail name. Don't pretend it's spoofable.
+	if (hasNullMxOnly) {
+		return createFinding(
+			'shadow_domains',
+			'Shadow domain explicit non-mail (RFC 7505)',
+			'info',
+			`${variant} declares an RFC 7505 null MX (priority 0 to "." or "localhost"), explicitly refusing mail. This is the recommended anti-spoofing posture for non-mail domains.`,
+			meta,
+		);
+	}
 
 	if (hasMx) {
 		if (!hasSpf && dmarcPolicy === null) {
@@ -234,9 +267,7 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], primary
 		if (dmarcPolicy === 'quarantine' || dmarcPolicy === 'reject') {
 			if (!isSameMxInfra(mx, primaryMx)) {
 				// Divergent MX infrastructure → medium
-				const divergentNote = sameOwner
-					? ` Shared nameservers suggest common ownership despite different mail servers.`
-					: '';
+				const divergentNote = sameOwner ? ` Shared nameservers suggest common ownership despite different mail servers.` : '';
 				return createFinding(
 					'shadow_domains',
 					'Shadow domain divergent mail infrastructure',
@@ -258,9 +289,7 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], primary
 
 		// DMARC present with unknown policy — treat as high-ish (SPF but unclear DMARC)
 		if (!isSameMxInfra(mx, primaryMx)) {
-			const divergentNote = sameOwner
-				? ` Shared nameservers suggest common ownership despite different mail servers.`
-				: '';
+			const divergentNote = sameOwner ? ` Shared nameservers suggest common ownership despite different mail servers.` : '';
 			return createFinding(
 				'shadow_domains',
 				'Shadow domain divergent mail infrastructure',
@@ -393,10 +422,7 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 	let primaryNs: string[] = [];
 	let primaryDnsUnavailable = false;
 	try {
-		const [mxResult, nsResult] = await Promise.allSettled([
-			queryMxRecords(domain, dnsOpts),
-			queryDnsRecords(domain, 'NS', dnsOpts),
-		]);
+		const [mxResult, nsResult] = await Promise.allSettled([queryMxRecords(domain, dnsOpts), queryDnsRecords(domain, 'NS', dnsOpts)]);
 		primaryMx = mxResult.status === 'fulfilled' ? mxResult.value.map((r) => r.exchange) : [];
 		primaryNs = nsResult.status === 'fulfilled' ? nsResult.value : [];
 		// If both queries rejected, treat as unavailable
@@ -455,9 +481,7 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 		}
 
 		const batch = registeredList.slice(i, i + batchSize);
-		const batchResults = await Promise.allSettled(
-			batch.map(([variant, ns]) => probeVariant(variant, dnsOpts, ns)),
-		);
+		const batchResults = await Promise.allSettled(batch.map(([variant, ns]) => probeVariant(variant, dnsOpts, ns)));
 
 		let failures = 0;
 		for (const result of batchResults) {

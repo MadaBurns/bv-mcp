@@ -87,9 +87,7 @@ describe('checkShadowDomains', () => {
 
 		const result = await run(target);
 		expect(result.category).toBe('shadow_domains');
-		const critical = result.findings.find(
-			(f) => f.severity === 'critical' && f.detail.includes('example.net'),
-		);
+		const critical = result.findings.find((f) => f.severity === 'critical' && f.detail.includes('example.net'));
 		expect(critical).toBeDefined();
 		expect(critical!.title).toMatch(/fully spoofable/i);
 	});
@@ -120,9 +118,7 @@ describe('checkShadowDomains', () => {
 		});
 
 		const result = await run(target);
-		const high = result.findings.find(
-			(f) => f.severity === 'high' && f.detail.includes('example.net') && /lacks DMARC/i.test(f.title),
-		);
+		const high = result.findings.find((f) => f.severity === 'high' && f.detail.includes('example.net') && /lacks DMARC/i.test(f.title));
 		expect(high).toBeDefined();
 	});
 
@@ -152,9 +148,7 @@ describe('checkShadowDomains', () => {
 		});
 
 		const result = await run(target);
-		const high = result.findings.find(
-			(f) => f.severity === 'high' && f.detail.includes('example.net') && /not enforcing/i.test(f.title),
-		);
+		const high = result.findings.find((f) => f.severity === 'high' && f.detail.includes('example.net') && /not enforcing/i.test(f.title));
 		expect(high).toBeDefined();
 	});
 
@@ -182,9 +176,7 @@ describe('checkShadowDomains', () => {
 		});
 
 		const result = await run(target);
-		const info = result.findings.find(
-			(f) => f.severity === 'info' && f.detail.includes('example.net') && /unregistered/i.test(f.title),
-		);
+		const info = result.findings.find((f) => f.severity === 'info' && f.detail.includes('example.net') && /unregistered/i.test(f.title));
 		expect(info).toBeDefined();
 	});
 
@@ -238,10 +230,7 @@ describe('checkShadowDomains', () => {
 
 		const result = await run(target);
 		// No finding should mention the primary domain in a variant-specific way
-		const primaryFinding = result.findings.find(
-			(f) =>
-				f.metadata?.variant === target,
-		);
+		const primaryFinding = result.findings.find((f) => f.metadata?.variant === target);
 		expect(primaryFinding).toBeUndefined();
 	});
 
@@ -273,9 +262,7 @@ describe('checkShadowDomains', () => {
 		});
 
 		const result = await run(target);
-		const low = result.findings.find(
-			(f) => f.severity === 'low' && f.detail.includes('example.org') && /well-managed/i.test(f.title),
-		);
+		const low = result.findings.find((f) => f.severity === 'low' && f.detail.includes('example.org') && /well-managed/i.test(f.title));
 		expect(low).toBeDefined();
 	});
 
@@ -307,9 +294,7 @@ describe('checkShadowDomains', () => {
 		});
 
 		const result = await run(target);
-		const medium = result.findings.find(
-			(f) => f.severity === 'medium' && f.detail.includes('example.org') && /divergent/i.test(f.title),
-		);
+		const medium = result.findings.find((f) => f.severity === 'medium' && f.detail.includes('example.org') && /divergent/i.test(f.title));
 		expect(medium).toBeDefined();
 	});
 
@@ -342,9 +327,7 @@ describe('checkShadowDomains', () => {
 		});
 
 		const result = await run(target);
-		const sharedNsFinding = result.findings.find(
-			(f) => f.severity === 'info' && /shared.*NS/i.test(f.title),
-		);
+		const sharedNsFinding = result.findings.find((f) => f.severity === 'info' && /shared.*NS/i.test(f.title));
 		expect(sharedNsFinding).toBeDefined();
 	});
 
@@ -375,9 +358,7 @@ describe('checkShadowDomains', () => {
 
 		const result = await run(target);
 		// Without NS, example.net should NOT be critical
-		const critical = result.findings.find(
-			(f) => f.severity === 'critical' && f.detail.includes('example.net'),
-		);
+		const critical = result.findings.find((f) => f.severity === 'critical' && f.detail.includes('example.net'));
 		expect(critical).toBeUndefined();
 
 		const unregistered = result.findings.find(
@@ -517,10 +498,77 @@ describe('checkShadowDomains — classification edge cases', () => {
 
 		const result = await run(target);
 		// DMARC p=reject present so should NOT be critical
-		const critical = result.findings.find(
-			(f) => f.severity === 'critical' && f.detail.includes('example.net'),
-		);
+		const critical = result.findings.find((f) => f.severity === 'critical' && f.detail.includes('example.net'));
 		expect(critical).toBeUndefined();
+	});
+
+	it('should classify RFC 7505 null MX (MX 0 .) as INFO non-mail, not as spoofable', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			if (name === target && (type === 'MX' || type === '15')) {
+				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.registrar.com.']));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['192.0.2.1']));
+				// Null MX per RFC 7505: priority 0, target = root (".")
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['0 .']));
+				if (type === 'TXT' || type === '16') return Promise.resolve(txtRecords(name, ['v=spf1 -all']));
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(emptyResponse()); // no DMARC, irrelevant when null MX
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const nullMxFinding = result.findings.find((f) => f.detail.includes('example.net') && /non-mail|RFC 7505/i.test(f.title));
+		expect(nullMxFinding).toBeDefined();
+		expect(nullMxFinding!.severity).toBe('info');
+		// Must NOT be classified as spoofable or weak-DMARC
+		const spoofable = result.findings.find((f) => f.detail.includes('example.net') && /spoofable|lacks DMARC|not enforcing/i.test(f.title));
+		expect(spoofable).toBeUndefined();
+	});
+
+	it('should classify legacy null MX (MX 0 localhost.) as INFO non-mail', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			if (name === target && (type === 'MX' || type === '15')) {
+				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.registrar.com.']));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['192.0.2.1']));
+				// Legacy null-MX convention: priority 0 → "localhost"
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['0 localhost.']));
+				if (type === 'TXT' || type === '16') return Promise.resolve(txtRecords(name, ['v=spf1 -all']));
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(emptyResponse());
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const nullMxFinding = result.findings.find((f) => f.detail.includes('example.net') && /non-mail|RFC 7505/i.test(f.title));
+		expect(nullMxFinding).toBeDefined();
+		expect(nullMxFinding!.severity).toBe('info');
+		const wrongHigh = result.findings.find((f) => f.detail.includes('example.net') && f.severity !== 'info');
+		expect(wrongHigh).toBeUndefined();
 	});
 
 	it('should treat DMARC with no p= tag as p=none (high severity)', async () => {
@@ -551,9 +599,7 @@ describe('checkShadowDomains — classification edge cases', () => {
 
 		const result = await run(target);
 		// Missing p= tag should default to p=none, classified as high
-		const high = result.findings.find(
-			(f) => f.severity === 'high' && f.detail.includes('example.net') && /not enforcing/i.test(f.title),
-		);
+		const high = result.findings.find((f) => f.severity === 'high' && f.detail.includes('example.net') && /not enforcing/i.test(f.title));
 		expect(high).toBeDefined();
 	});
 
@@ -586,9 +632,7 @@ describe('checkShadowDomains — classification edge cases', () => {
 
 		const result = await run(target);
 		// Should match as same infrastructure (low severity) despite trailing dot difference
-		const low = result.findings.find(
-			(f) => f.severity === 'low' && f.detail.includes('example.org') && /well-managed/i.test(f.title),
-		);
+		const low = result.findings.find((f) => f.severity === 'low' && f.detail.includes('example.org') && /well-managed/i.test(f.title));
 		expect(low).toBeDefined();
 		// Should NOT be medium/divergent
 		const divergent = result.findings.find(
@@ -636,14 +680,10 @@ describe('checkShadowDomains — shared NS severity downgrade', () => {
 
 		const result = await run(target);
 		// Should be downgraded to high (not critical)
-		const critical = result.findings.find(
-			(f) => f.severity === 'critical' && f.detail.includes('example.net'),
-		);
+		const critical = result.findings.find((f) => f.severity === 'critical' && f.detail.includes('example.net'));
 		expect(critical).toBeUndefined();
 
-		const high = result.findings.find(
-			(f) => f.severity === 'high' && f.detail.includes('example.net') && /fully spoofable/i.test(f.title),
-		);
+		const high = result.findings.find((f) => f.severity === 'high' && f.detail.includes('example.net') && /fully spoofable/i.test(f.title));
 		expect(high).toBeDefined();
 		expect(high!.detail).toContain('shared nameservers');
 	});
@@ -677,14 +717,10 @@ describe('checkShadowDomains — shared NS severity downgrade', () => {
 
 		const result = await run(target);
 		// Should be downgraded to medium (not high)
-		const high = result.findings.find(
-			(f) => f.severity === 'high' && f.detail.includes('example.net') && /lacks DMARC/i.test(f.title),
-		);
+		const high = result.findings.find((f) => f.severity === 'high' && f.detail.includes('example.net') && /lacks DMARC/i.test(f.title));
 		expect(high).toBeUndefined();
 
-		const medium = result.findings.find(
-			(f) => f.severity === 'medium' && f.detail.includes('example.net') && /lacks DMARC/i.test(f.title),
-		);
+		const medium = result.findings.find((f) => f.severity === 'medium' && f.detail.includes('example.net') && /lacks DMARC/i.test(f.title));
 		expect(medium).toBeDefined();
 		expect(medium!.detail).toContain('shared nameservers');
 	});
@@ -717,9 +753,7 @@ describe('checkShadowDomains — shared NS severity downgrade', () => {
 		});
 
 		const result = await run(target);
-		const high = result.findings.find(
-			(f) => f.severity === 'high' && f.detail.includes('example.net') && /not enforcing/i.test(f.title),
-		);
+		const high = result.findings.find((f) => f.severity === 'high' && f.detail.includes('example.net') && /not enforcing/i.test(f.title));
 		expect(high).toBeUndefined();
 
 		const medium = result.findings.find(
@@ -780,7 +814,8 @@ describe('checkShadowDomains — shared NS severity downgrade', () => {
 
 			// Variant: DIFFERENT NS, MX + SPF but no DMARC
 			if (name === 'example.net') {
-				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.other-registrar.com.', 'ns2.other-registrar.com.']));
+				if (type === 'NS' || type === '2')
+					return Promise.resolve(nsRecords(name, ['ns1.other-registrar.com.', 'ns2.other-registrar.com.']));
 				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['192.0.2.1']));
 				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.shadow.com.']));
 				if (type === 'TXT' || type === '16') return Promise.resolve(txtRecords(name, ['v=spf1 include:spf.provider.com -all']));
@@ -794,9 +829,7 @@ describe('checkShadowDomains — shared NS severity downgrade', () => {
 
 		const result = await run(target);
 		// Should remain high (not downgraded)
-		const high = result.findings.find(
-			(f) => f.severity === 'high' && f.detail.includes('example.net') && /lacks DMARC/i.test(f.title),
-		);
+		const high = result.findings.find((f) => f.severity === 'high' && f.detail.includes('example.net') && /lacks DMARC/i.test(f.title));
 		expect(high).toBeDefined();
 		expect(high!.detail).not.toContain('shared nameservers');
 	});
