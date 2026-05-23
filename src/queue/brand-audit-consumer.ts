@@ -152,6 +152,14 @@ export interface BrandAuditConsumerDeps {
 	/** Optional service binding for registrar WHOIS fallback in queued audits. */
 	whoisBinding?: { fetch: typeof fetch };
 	/**
+	 * Optional bv-certstream-worker service binding. Threaded into the
+	 * SAN-signal path of `discoverBrandDomains` (via the pipeline) so queued
+	 * audits use the dedicated CT-log binding instead of the public crt.sh
+	 * fallback. The sync MCP path threads `ro.certstream` here; without this
+	 * the queue path silently degraded to crt.sh for every batched audit.
+	 */
+	certstream?: { fetch: typeof fetch };
+	/**
 	 * Optional internal-call closure for the CSC deep-scan queue job.
 	 * Wraps handleToolsCall so the deep-scan orchestrator can invoke scan_domain
 	 * and discover_subdomains without going through HTTP framing. Constructed at
@@ -291,8 +299,9 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 		...(deps.tier1Lookup ? { tier1Lookup: deps.tier1Lookup } : {}),
 		...(deps.tier2Lookup ? { tier2Lookup: deps.tier2Lookup } : {}),
 		...(deps.whoisBinding ? { whoisBinding: deps.whoisBinding } : {}),
+		...(deps.certstream ? { certstream: deps.certstream } : {}),
 	};
-	const hasSingleDeps = deps.tier0Lookup || deps.tier1Lookup || deps.tier2Lookup || deps.whoisBinding;
+	const hasSingleDeps = deps.tier0Lookup || deps.tier1Lookup || deps.tier2Lookup || deps.whoisBinding || deps.certstream;
 	const singleOptions: BrandAuditSingleOptions = {
 		auditId: message.auditId,
 		stepStore,
