@@ -140,7 +140,7 @@ After base weighted scoring and email bonus, `scan_domain` applies a bounded con
 - Overall score modifier range approximately `-5` to `+5`
 - If no provider confidence metadata is present, modifier is `0`
 
-Source: `computeProviderConfidenceModifier()` and `computeScanScore()` in `src/lib/scoring-engine.ts`.
+Source: `computeProviderConfidenceModifier()` and `computeScanScore()` in `packages/dns-checks/src/scoring/engine.ts`.
 
 ## Grades
 
@@ -179,7 +179,7 @@ Auto-detection runs and is reported in the structured result (`scoringProfile`, 
 
 Detection priority: `non_mail`/`web_only` (no MX or Null MX) -> `mail_enabled` (MX DNS failure safe fallback) -> `enterprise_mail` (MX + provider + hardening) -> `mail_enabled` (MX, default) -> `minimal` (>50% failed override). The `authoritative_dns_infra` profile is explicit-only.
 
-Source: `src/lib/context-profiles.ts`.
+Source: `packages/dns-checks/src/scoring/profiles.ts`.
 
 ### Authoritative DNS Infrastructure Profile
 

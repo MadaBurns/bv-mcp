@@ -31,7 +31,7 @@ export interface DispatchMcpMethodOptions {
 	waitUntil?: (promise: Promise<unknown>) => void;
 	createSessionOnInitialize?: boolean;
 	existingSessionId?: string;
-	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
+	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
 	cacheTtlSeconds?: number;
 	/** Custom secondary DoH endpoint URL (bv-dns). */
 	secondaryDohEndpoint?: string;

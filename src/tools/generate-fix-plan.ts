@@ -10,8 +10,8 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import type { CheckResult, Finding, Severity, CheckCategory } from '../lib/scoring-model';
-import { IMPORTANCE_WEIGHTS } from '../lib/scoring-engine';
+import type { CheckResult, Finding, Severity, CheckCategory } from '@blackveil/dns-checks/scoring';
+import { IMPORTANCE_WEIGHTS } from '@blackveil/dns-checks/scoring';
 import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 

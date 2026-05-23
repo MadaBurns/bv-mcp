@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { ScanScore, Finding } from '../src/lib/scoring-model';
+import type { ScanScore, Finding } from '@blackveil/dns-checks/scoring';
 import { computeDrift, classifyDrift } from '../src/tools/analyze-drift';
 
 function makeFinding(category: string, title: string, severity: string): Finding {

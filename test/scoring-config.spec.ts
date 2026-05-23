@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseScoringConfig, DEFAULT_SCORING_CONFIG, toImportanceRecord } from '../src/lib/scoring-config';
+import { parseScoringConfig, DEFAULT_SCORING_CONFIG, toImportanceRecord } from '@blackveil/dns-checks/scoring';
 
 describe('parseScoringConfig', () => {
 	it('returns defaults when input is undefined', () => {

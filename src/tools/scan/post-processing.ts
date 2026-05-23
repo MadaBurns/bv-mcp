@@ -12,7 +12,7 @@ export interface ScanRuntimeOptions {
 	profile?: 'mail_enabled' | 'enterprise_mail' | 'non_mail' | 'web_only' | 'minimal' | 'auto' | 'authoritative_dns_infra';
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
-	scoringConfig?: import('../../lib/scoring-config').ScoringConfig;
+	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
 	/** Override cache TTL in seconds (default: 300). Clamped to [60, 3600]. */
 	cacheTtlSeconds?: number;
 	/** Custom secondary DoH resolver config (bv-dns). Threaded to scanDns but only active when skipSecondaryConfirmation is false. */

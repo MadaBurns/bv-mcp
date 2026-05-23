@@ -1,10 +1,79 @@
 // SPDX-License-Identifier: BUSL-1.1
 import type { Context } from 'hono';
 import { RegisterRequestSchema } from '../schemas/oauth';
-import { OAUTH_REDIRECT_URI_ALLOWLIST } from '../lib/config';
+import { OAUTH_KV_PREFIX, OAUTH_REDIRECT_URI_ALLOWLIST } from '../lib/config';
 import { putClient } from './storage';
 
 const MAX_BODY_BYTES = 4 * 1024;
+
+// Per-IP fixed-window rate limits for Dynamic Client Registration.
+// Legitimate DCR usage is single-digit per IP per day; 10/min absorbs retries
+// without enabling client-id enumeration or KV-write abuse.
+const REGISTER_MINUTE_LIMIT = 10;
+const REGISTER_MINUTE_WINDOW_SECONDS = 60;
+const REGISTER_HOUR_LIMIT = 30;
+const REGISTER_HOUR_WINDOW_SECONDS = 3600;
+
+/**
+ * Per-IP rate-limit check for /oauth/register.
+ *
+ * Uses the same fixed-window KV strategy as tokenRateExceeded in token.ts:
+ * the window's `expiresAt` is pinned on the first write so repeated attempts
+ * cannot extend the lockout. Returns `{ exceeded: true, retryAfterSeconds }` when
+ * the limit is reached.
+ */
+async function registerRateExceeded(kv: KVNamespace, ip: string): Promise<{ exceeded: boolean; retryAfterSeconds: number }> {
+	const nowMs = Date.now();
+
+	// --- minute window ---
+	const minKey = `${OAUTH_KV_PREFIX}reg-rl:min:${ip}`;
+	const minRaw = await kv.get(minKey);
+	let minCount = 0;
+	let minExpiresAt = nowMs + REGISTER_MINUTE_WINDOW_SECONDS * 1000;
+	if (minRaw) {
+		try {
+			const p = JSON.parse(minRaw) as { count?: unknown; expiresAt?: unknown };
+			if (typeof p.expiresAt === 'number' && p.expiresAt > nowMs) {
+				minCount = typeof p.count === 'number' ? p.count : 0;
+				minExpiresAt = p.expiresAt;
+			}
+		} catch {
+			// malformed — fresh window
+		}
+	}
+	if (minCount >= REGISTER_MINUTE_LIMIT) {
+		return { exceeded: true, retryAfterSeconds: Math.max(1, Math.ceil((minExpiresAt - nowMs) / 1000)) };
+	}
+
+	// --- hour window ---
+	const hrKey = `${OAUTH_KV_PREFIX}reg-rl:hr:${ip}`;
+	const hrRaw = await kv.get(hrKey);
+	let hrCount = 0;
+	let hrExpiresAt = nowMs + REGISTER_HOUR_WINDOW_SECONDS * 1000;
+	if (hrRaw) {
+		try {
+			const p = JSON.parse(hrRaw) as { count?: unknown; expiresAt?: unknown };
+			if (typeof p.expiresAt === 'number' && p.expiresAt > nowMs) {
+				hrCount = typeof p.count === 'number' ? p.count : 0;
+				hrExpiresAt = p.expiresAt;
+			}
+		} catch {
+			// malformed — fresh window
+		}
+	}
+	if (hrCount >= REGISTER_HOUR_LIMIT) {
+		return { exceeded: true, retryAfterSeconds: Math.max(1, Math.ceil((hrExpiresAt - nowMs) / 1000)) };
+	}
+
+	// Both limits clear — increment counters.
+	const minTtl = Math.max(60, Math.ceil((minExpiresAt - nowMs) / 1000));
+	const hrTtl = Math.max(60, Math.ceil((hrExpiresAt - nowMs) / 1000));
+	await Promise.all([
+		kv.put(minKey, JSON.stringify({ count: minCount + 1, expiresAt: minExpiresAt }), { expirationTtl: minTtl }),
+		kv.put(hrKey, JSON.stringify({ count: hrCount + 1, expiresAt: hrExpiresAt }), { expirationTtl: hrTtl }),
+	]);
+	return { exceeded: false, retryAfterSeconds: 0 };
+}
 
 /**
  * RFC 7591 Dynamic Client Registration endpoint. Accepts a JSON body describing a client's
@@ -14,7 +83,19 @@ const MAX_BODY_BYTES = 4 * 1024;
  * UUID v4 generated via Web Crypto (`crypto.randomUUID`) — unguessable and globally unique.
  */
 export async function handleRegister(c: Context): Promise<Response> {
-	// TODO(phase-10): add per-IP rate limiting before public exposure
+	const kv = (c.env as { SESSION_STORE: KVNamespace }).SESSION_STORE;
+	const ip = c.req.header('cf-connecting-ip') ?? '0.0.0.0';
+	const rl = await registerRateExceeded(kv, ip);
+	if (rl.exceeded) {
+		return new Response(JSON.stringify({ error: 'too_many_requests', error_description: 'Registration rate limit exceeded' }), {
+			status: 429,
+			headers: {
+				'Content-Type': 'application/json',
+				'retry-after': String(rl.retryAfterSeconds),
+			},
+		});
+	}
+
 	const ct = c.req.header('content-type') ?? '';
 	if (!ct.toLowerCase().includes('application/json')) {
 		return c.json({ error: 'invalid_request', error_description: 'Content-Type must be application/json' }, 415);
@@ -55,7 +136,6 @@ export async function handleRegister(c: Context): Promise<Response> {
 		software_id: parsed.software_id,
 		software_version: parsed.software_version,
 	};
-	const kv = (c.env as { SESSION_STORE: KVNamespace }).SESSION_STORE;
 	await putClient(kv, rec);
 
 	return c.json(
