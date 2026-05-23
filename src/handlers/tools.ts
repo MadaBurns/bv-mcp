@@ -631,6 +631,22 @@ export async function handleToolsCall(
 				}
 			}
 
+			// Tier gate: discovery_mode='tiered' activates the Tier-0/1/2 lookups
+			// against private BV_INFRA_GRAPH, BV_INTEL_GATEWAY, and BV_ENTERPRISE
+			// service bindings (operator-deploy only). Pay-walled at developer
+			// tier or higher to match the premium nature of those data sources.
+			// On BSL self-hosts the bindings are unprovisioned and the pipeline
+			// degrades to classic regardless, so this gate is a no-op there.
+			if (name === 'discover_brand_domains' || name === 'brand_audit_single' || name === 'brand_audit_batch_start') {
+				const requestedMode = (validatedArgs as { discovery_mode?: string }).discovery_mode;
+				if (requestedMode === 'tiered') {
+					const tier = runtimeOptions?.authTier;
+					if (tier !== 'developer' && tier !== 'partner' && tier !== 'enterprise' && tier !== 'owner') {
+						return buildToolErrorResult("Invalid discovery_mode: 'tiered' requires developer tier or higher");
+					}
+				}
+			}
+
 			// Dispatch to the appropriate tool — check registry first, then special cases
 			const registeredTool = TOOL_REGISTRY[name];
 			if (registeredTool) {
