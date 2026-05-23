@@ -140,6 +140,14 @@ export const TIER_DAILY_LIMITS: Record<McpApiKeyTier, number> = {
 /**
  * Per-tool daily limit overrides for specific tiers.
  * When a tier+tool combo exists here, it takes precedence over the flat TIER_DAILY_LIMITS value.
+ *
+ * Note on brand_audit_* daily caps: partner=200, enterprise=500 is intentional
+ * even though partner > enterprise in the generic TIER_DAILY_LIMITS hierarchy.
+ * Brand audits are multi-minute operations metered on a MONTHLY budget
+ * (BRAND_AUDIT_QUOTAS: partner=200/month, enterprise=500/month). The daily
+ * cap mirrors the monthly budget so a customer can't burn their entire
+ * monthly quota in one day — the daily ≤ monthly invariant matters more
+ * than the cross-tier daily ordering for these specific tools.
  */
 export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string, number>>> = {
 	partner: {
