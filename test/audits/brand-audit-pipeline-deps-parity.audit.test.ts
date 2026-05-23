@@ -74,6 +74,35 @@ const REQUIRED_DEPS: Array<{ name: string; queuePattern: RegExp; handlerPattern:
 	},
 ];
 
+/**
+ * Pipeline deps that are deliberately ASYMMETRIC — forwarded by one call site
+ * but intentionally NOT the other. Encoding the asymmetry explicitly so a
+ * future drop in one direction or accidental add in the other gets flagged.
+ *
+ * Currently only `enforceQuota`: the sync `brand_audit_single` handler passes
+ * `buildMonthlyEnforceQuota(ro)` so a single per-request invocation debits the
+ * monthly quota for the principal. `brand_audit_batch_start` already debits
+ * the quota atomically for ALL targets at submission time, so the queue
+ * consumer MUST NOT debit again per-target — that would double-bill
+ * customers against their monthly cap.
+ */
+const INTENTIONALLY_ASYMMETRIC: Array<{
+	name: string;
+	side: 'handler-only' | 'queue-only';
+	presentPattern: RegExp;
+	absentSourceTag: 'queue' | 'handler';
+	rationale: string;
+}> = [
+	{
+		name: 'enforceQuota',
+		side: 'handler-only',
+		presentPattern: /enforceQuota:\s*buildMonthlyEnforceQuota\(ro\)/,
+		absentSourceTag: 'queue',
+		rationale:
+			'brand_audit_batch_start atomically debits the monthly quota for all targets at submission time; queue consumer must not double-bill per-target.',
+	},
+];
+
 describe('brand-audit pipeline deps-surface parity audit', () => {
 	for (const dep of REQUIRED_DEPS) {
 		it(`forwards \`${dep.name}\` from the queue consumer's singleDeps construction`, () => {
@@ -82,6 +111,24 @@ describe('brand-audit pipeline deps-surface parity audit', () => {
 
 		it(`forwards \`${dep.name}\` from the brand_audit_single handler's deps arg`, () => {
 			expect(handlerSource).toMatch(dep.handlerPattern);
+		});
+	}
+
+	for (const dep of INTENTIONALLY_ASYMMETRIC) {
+		const presentSrc = dep.side === 'handler-only' ? handlerSource : queueSource;
+		const absentSrc = dep.absentSourceTag === 'queue' ? queueSource : handlerSource;
+		const presentLabel = dep.side === 'handler-only' ? 'handler' : 'queue consumer';
+		const absentLabel = dep.absentSourceTag;
+
+		it(`\`${dep.name}\` is present on the ${presentLabel} side (${dep.side})`, () => {
+			expect(presentSrc, dep.rationale).toMatch(dep.presentPattern);
+		});
+
+		it(`\`${dep.name}\` is intentionally absent on the ${absentLabel} side (${dep.rationale})`, () => {
+			// Match the name appearing as a deps-property assignment specifically —
+			// substring-grep alone would false-positive on import names, types, etc.
+			const queueAssignmentPattern = new RegExp(`\\b${dep.name}\\s*:\\s*(deps\\.|ro\\.)${dep.name}\\b`);
+			expect(absentSrc).not.toMatch(queueAssignmentPattern);
 		});
 	}
 
