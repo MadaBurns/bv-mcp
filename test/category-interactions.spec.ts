@@ -2,7 +2,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { applyInteractionPenalties, INTERACTION_RULES } from '../src/lib/category-interactions';
-import type { ScanScore, CheckCategory } from '../src/lib/scoring-model';
+import type { ScanScore, CheckCategory } from '@blackveil/dns-checks/scoring';
 
 /** Build a minimal ScanScore with specified category scores. */
 function buildScore(categoryScores: Partial<Record<CheckCategory, number>>, overall = 75): ScanScore {

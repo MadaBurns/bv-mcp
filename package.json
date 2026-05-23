@@ -1,6 +1,6 @@
 {
 	"name": "blackveil-dns",
-	"version": "2.26.0",
+	"version": "2.27.0",
 	"license": "BUSL-1.1",
 	"type": "module",
 	"bin": {
@@ -41,7 +41,13 @@
 		"report:qa": "node scripts/audits/brand-report-qa.mjs",
 		"report:quality-audit": "node scripts/audits/brand-report-quality-audit.mjs",
 		"report:promote": "node scripts/promote-brand-report.mjs",
-		"benchmark:brand-planner": "node scripts/brand-audit-planner-benchmark.mjs"
+		"benchmark:brand-planner": "node scripts/brand-audit-planner-benchmark.mjs",
+		"drizzle:generate:registry": "drizzle-kit generate --config=src/tenants/db/drizzle.registry.config.ts",
+		"drizzle:generate:tenant": "drizzle-kit generate --config=src/tenants/db/drizzle.tenant.config.ts",
+		"drizzle:generate": "npm run drizzle:generate:registry && npm run drizzle:generate:tenant",
+		"drizzle:check:registry": "drizzle-kit check --config=src/tenants/db/drizzle.registry.config.ts",
+		"drizzle:check:tenant": "drizzle-kit check --config=src/tenants/db/drizzle.tenant.config.ts",
+		"drizzle:check": "npm run drizzle:check:registry && npm run drizzle:check:tenant"
 	},
 	"dependencies": {
 		"@blackveil/dns-checks": "^1.0.4",

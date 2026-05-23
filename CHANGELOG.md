@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [2.27.0] - 2026-05-23
+
+### Added
+
+- **Per-IP rate limit on `POST /oauth/register`** (#193) — DCR was publicly reachable (`ENABLE_OAUTH=true`) with no per-IP gate. 10 registrations/min, 30/hr per `cf-connecting-ip`; returns HTTP 429 + `retry-after` header (OAuth 2.1 convention — not MCP JSON-RPC `-32029`). KV fixed-window pattern mirrors `tokenRateExceeded` in `src/oauth/token.ts`. Legitimate first-time DCR usage is single-digit per IP per day, so 10/min absorbs retries without enabling enumeration. Resolves `TODO(phase-10): add per-IP rate limiting before public exposure`.
+
+### Changed
+
+- **Deleted 4 deprecated re-export shims** (#193) — `src/handlers/tool-schemas.ts`, `src/lib/context-profiles.ts`, `src/lib/scoring-engine.ts`, `src/lib/scoring-model.ts`. All callers now import directly from `@blackveil/dns-checks/scoring` or `src/schemas/tool-definitions`. `src/lib/scoring-config.ts` survives trimmed to only the project-local `parseScoringConfigCached` memoized wrapper. New audit `test/audits/deprecated-shim-absence.audit.test.ts` prevents reintroduction.
+- **Drizzle-kit npm scripts wired to existing scoped tenant configs** (#193) — `drizzle:check`, `drizzle:generate`, and `:registry`/`:tenant` variants point at the existing `src/tenants/db/drizzle.{registry,tenant}.config.ts`. Resolves `TODO(tenant-d1-schemas)` comment. No root config added — would have collapsed two physically separate D1 databases.
+- **Contributor docs updated to canonical package paths** (#193) — `CONTRIBUTING.md`, `CLAUDE.md`, `docs/scoring.md`, `.github/instructions/{tools,schemas}.instructions.md`, and `.github/copilot-instructions.md` all now point at `packages/dns-checks/src/scoring/{model,engine,config,profiles}.ts` post-shim deletion. Stops the next contributor being sent to files that don't exist.
+
+### Internal
+
+- `.playwright-mcp/` (ephemeral MCP tool capture dir) and `**/dist.bak/` (stale build snapshots) now gitignored to prevent recurrence.
+
 ## [2.26.0] - 2026-05-23
 
 ### Added
@@ -613,7 +629,7 @@ GitHub-managed `refs/pull/*` retain pre-rewrite blobs (only visible via `git clo
 
 ### Security / Hardening
 
-- **OAuth misconfig fails fast at first RTT, not after consent.** v2.10.8 was deployed to production without `OAUTH_SIGNING_SECRET`. Discovery, register, authorize, and the consent dance all succeeded; only `/oauth/token` failed (500 server_error) — claude.ai surfaced it as the opaque "Couldn't connect" _after_ the user had committed to the consent flow. Root-caused by chaos-walking the live flow.
+- **OAuth misconfig fails fast at first RTT, not after consent.** v2.10.8 was deployed to production without `OAUTH_SIGNING_SECRET`. Discovery, register, authorize, and the consent dance all succeeded; only `/oauth/token` failed (500 server*error) — claude.ai surfaced it as the opaque "Couldn't connect" \_after* the user had committed to the consent flow. Root-caused by chaos-walking the live flow.
 - **`oauthAvailability` three-state gate** added at `src/index.ts`. Every OAuth route (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/oauth/register`, `/oauth/{authorize,token}`) now dispatches through `oauthGuarded`, which returns `503 service_unavailable` (with JSON body per RFC 6749 §5.2) when `ENABLE_OAUTH=true` but `OAUTH_SIGNING_SECRET` is missing or under 32 bytes. `404 Not Found` is reserved for `ENABLE_OAUTH != 'true'` ("feature off"), preserving the semantic distinction OAuth clients can render different UI for.
 - **`OAUTH_SIGNING_SECRET` constant promoted to `src/lib/config.ts`** (`OAUTH_SIGNING_SECRET_MIN_BYTES = 32`) plus an `isValidOAuthSigningSecret(s)` helper, so the route layer and the inner token signer share the same gate. The token-handler 500 path remains as defense in depth — exercised by direct unit tests, no longer reachable from outside the route.
 
