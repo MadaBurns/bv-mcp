@@ -290,10 +290,15 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 	}, BRAND_AUDIT_MESSAGE_TIMEOUT_MS);
 	let result: CheckResult | null = null;
 	let runtimeError: string | null = null;
-	// Tier closures: built once, passed as the 3rd `deps` arg ONLY when at
-	// least one closure is present. Skipping the arg on BSL self-hosts keeps
-	// the existing 2-arg `toHaveBeenCalledWith(...)` test assertions valid —
-	// vitest matches arg count exactly.
+	// Pipeline deps: built once, passed as the 3rd `deps` arg ONLY when at
+	// least one binding-backed field is present (any tier closure, whoisBinding,
+	// or certstream — see hasSingleDeps below). Skipping the arg keeps the
+	// existing 2-arg `toHaveBeenCalledWith(...)` test assertions valid for the
+	// many tests that mock no bindings — vitest matches arg count exactly. The
+	// 3-arg path activates when ANY single binding is provided, including on a
+	// BSL self-host with only BV_CERTSTREAM provisioned. Any new binding-backed
+	// pipeline dep must be added to BOTH the singleDeps spread AND the
+	// hasSingleDeps gate — they must enumerate the same set.
 	const singleDeps: BrandAuditSingleDeps = {
 		...(deps.tier0Lookup ? { tier0Lookup: deps.tier0Lookup } : {}),
 		...(deps.tier1Lookup ? { tier1Lookup: deps.tier1Lookup } : {}),
