@@ -81,4 +81,38 @@ describe('view=csc_complement tier gate', () => {
 		const parsed = BrandAuditSingleArgs.parse({ domain: 'example.com' });
 		expect(parsed.view).toBeUndefined();
 	});
+
+	it('forwards ro.brandAuditQueue into brand_audit_single pipeline deps (CSC deep_scan enqueue)', async () => {
+		// brand-audit-pipeline.ts:1061 only enqueues the {phase:'deep_scan'}
+		// follow-up message when deps.brandAuditQueue is present. The synchronous
+		// brand_audit_single tool runs in the request path, so it must forward
+		// ro.brandAuditQueue (constructed from env.BRAND_AUDIT_QUEUE in
+		// src/index.ts) into the pipeline deps — otherwise sync audits with
+		// view='csc_complement' write only csc_complement_fast and never trigger
+		// the deep-scan job that fills csc_complement_full.
+		let brandAuditSingleMock: ReturnType<typeof vi.fn>;
+		vi.doMock('../src/tools/brand-audit-single', () => {
+			brandAuditSingleMock = vi.fn().mockResolvedValue({
+				category: 'brand_discovery',
+				passed: true,
+				score: 100,
+				findings: [],
+			});
+			return { brandAuditSingle: brandAuditSingleMock };
+		});
+
+		const brandAuditQueue = { send: vi.fn().mockResolvedValue(undefined) };
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		await handleToolsCall(
+			{ name: 'brand_audit_single', arguments: { domain: 'example.com', view: 'csc_complement' } },
+			undefined,
+			{ authTier: 'enterprise', brandAuditQueue } as never,
+		);
+
+		expect(brandAuditSingleMock!).toHaveBeenCalledWith(
+			'example.com',
+			expect.anything(),
+			expect.objectContaining({ brandAuditQueue }),
+		);
+	});
 });

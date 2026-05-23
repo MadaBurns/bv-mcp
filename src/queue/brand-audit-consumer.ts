@@ -300,8 +300,15 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 		...(deps.tier2Lookup ? { tier2Lookup: deps.tier2Lookup } : {}),
 		...(deps.whoisBinding ? { whoisBinding: deps.whoisBinding } : {}),
 		...(deps.certstream ? { certstream: deps.certstream } : {}),
+		// The same brandAuditQueue binding that powers the Phase 2b retry-enqueue
+		// at line 416 doubles as the CSC fast→full deep-scan trigger inside the
+		// pipeline (brand-audit-pipeline.ts:1061). The send() signature there is
+		// `{ send(unknown): Promise<void> }`, narrower than the consumer's
+		// typed-message variant — the runtime shape is identical.
+		...(deps.brandAuditQueue ? { brandAuditQueue: deps.brandAuditQueue } : {}),
 	};
-	const hasSingleDeps = deps.tier0Lookup || deps.tier1Lookup || deps.tier2Lookup || deps.whoisBinding || deps.certstream;
+	const hasSingleDeps =
+		deps.tier0Lookup || deps.tier1Lookup || deps.tier2Lookup || deps.whoisBinding || deps.certstream || deps.brandAuditQueue;
 	const singleOptions: BrandAuditSingleOptions = {
 		auditId: message.auditId,
 		stepStore,
