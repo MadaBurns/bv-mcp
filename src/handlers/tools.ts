@@ -111,7 +111,7 @@ interface ToolRuntimeOptions {
 	analytics?: AnalyticsClient;
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
-	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
+	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
 	/** When provided, receives the raw CheckResult before MCP text formatting. Used by internal structured response mode. */
 	resultCapture?: (result: CheckResult) => void;
 	/** Override cache TTL in seconds for scan results. Threaded to scanDomain. */

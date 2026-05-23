@@ -10,7 +10,7 @@
 
 import type { CheckCategory, ScanScore } from './scoring-model';
 import { scoreToGrade } from '@blackveil/dns-checks/scoring';
-import type { ScoringConfig } from './scoring-config';
+import type { ScoringConfig } from '@blackveil/dns-checks/scoring';
 
 /** A condition that must be met for an interaction rule to fire. */
 interface InteractionCondition {
