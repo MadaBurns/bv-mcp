@@ -946,6 +946,7 @@ export default {
 				brandAuditQueue,
 				discoveryModeDefault,
 				whoisBinding: e.BV_WHOIS as Fetcher | undefined,
+				certstream: e.BV_CERTSTREAM as Fetcher | undefined,
 				internalCall,
 				...tierLookups,
 			};
