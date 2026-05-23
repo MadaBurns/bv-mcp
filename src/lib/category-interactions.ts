@@ -8,9 +8,9 @@
  * Existing compare_baseline CI/CD workflows continue to work identically.
  */
 
-import type { CheckCategory, ScanScore } from './scoring-model';
-import { scoreToGrade } from './scoring-engine';
-import type { ScoringConfig } from './scoring-config';
+import type { CheckCategory, ScanScore } from '@blackveil/dns-checks/scoring';
+import { scoreToGrade } from '@blackveil/dns-checks/scoring';
+import type { ScoringConfig } from '@blackveil/dns-checks/scoring';
 
 /** A condition that must be met for an interaction rule to fire. */
 interface InteractionCondition {

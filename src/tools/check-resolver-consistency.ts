@@ -13,8 +13,8 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import type { CheckResult } from '../lib/scoring-model';
-import { buildCheckResult, createFinding } from '../lib/scoring-model';
+import type { CheckResult } from '@blackveil/dns-checks/scoring';
+import { buildCheckResult, createFinding } from '@blackveil/dns-checks/scoring';
 import { checkMultiResolverConsistency, type ConsistencyResult } from '../lib/dns-multi-resolver';
 import type { RecordTypeName } from '../lib/dns-types';
 

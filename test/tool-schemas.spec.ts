@@ -7,8 +7,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { TOOLS } from '../src/handlers/tool-schemas';
-import type { ToolGroup, ToolTier } from '../src/handlers/tool-schemas';
+import { TOOLS } from '../src/schemas/tool-definitions';
+import type { ToolGroup, ToolTier } from '../src/schemas/tool-definitions';
 
 const VALID_GROUPS: ToolGroup[] = [
 	'email_auth',

@@ -8,7 +8,7 @@
  */
 
 import type { OutputFormat } from '../handlers/tool-args';
-import type { CheckResult, Finding } from '../lib/scoring-model';
+import type { CheckResult, Finding } from '@blackveil/dns-checks/scoring';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { checkDmarc } from './check-dmarc';
 import { checkSpf } from './check-spf';

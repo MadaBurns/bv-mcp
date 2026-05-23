@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCheckResult, CATEGORY_TIERS, computeCategoryScore, createFinding, inferFindingConfidence } from '../src/lib/scoring-model';
+import { buildCheckResult, CATEGORY_TIERS, computeCategoryScore, createFinding, inferFindingConfidence } from '@blackveil/dns-checks/scoring';
 
 describe('scoring-model', () => {
 	it('normalizes confidence metadata when building check results', () => {

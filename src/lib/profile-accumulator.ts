@@ -26,7 +26,7 @@ import {
 	blendWeights,
 } from './adaptive-weights';
 import type { AdaptiveWeightsResponse } from './adaptive-weights';
-import { PROFILE_WEIGHTS } from './context-profiles';
+import { PROFILE_WEIGHTS } from '@blackveil/dns-checks/scoring';
 import * as schema from './db/schema';
 import { profileStats, providerStats, scoreHistogram, providerCohortSummary, trendSnapshots } from './db/schema';
 

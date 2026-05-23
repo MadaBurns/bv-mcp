@@ -28,7 +28,7 @@
 - HTTP entrypoint and middleware: src/index.ts
 - Internal service binding routes: src/internal.ts
 - Shared MCP execution flow: src/mcp/execute.ts and src/mcp/dispatch.ts
-- Tool handlers and schemas: src/handlers/tools.ts and src/handlers/tool-schemas.ts
+- Tool handlers: src/handlers/tools.ts. Tool schema definitions: src/schemas/tool-definitions.ts
 - Individual DNS checks: src/tools/check-*.ts
 - Parallel orchestration and scoring output: src/tools/scan-domain.ts
 - Core DNS/cache/session/rate-limit utilities: src/lib/

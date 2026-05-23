@@ -86,8 +86,8 @@ import type { OutputFormat } from './tool-args';
 import { buildLogContext, logToolFailure, logToolSuccess } from './tool-execution';
 import { formatCheckResult, mcpError, buildToolContent } from './tool-formatters';
 import type { McpContent } from './tool-formatters';
-import { TOOLS } from './tool-schemas';
-import type { McpTool } from './tool-schemas';
+import { TOOLS } from '../schemas/tool-definitions';
+import type { McpTool } from '../schemas/tool-definitions';
 
 /** MCP tools/call result */
 interface McpToolResult {
@@ -111,7 +111,7 @@ interface ToolRuntimeOptions {
 	analytics?: AnalyticsClient;
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
-	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
+	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
 	/** When provided, receives the raw CheckResult before MCP text formatting. Used by internal structured response mode. */
 	resultCapture?: (result: CheckResult) => void;
 	/** Override cache TTL in seconds for scan results. Threaded to scanDomain. */
@@ -894,7 +894,7 @@ export async function handleToolsCall(
 				case 'analyze_drift': {
 					const baselineStr = typeof validatedArgs.baseline === 'string' ? validatedArgs.baseline : '';
 
-					let baselineScore: import('../lib/scoring-model').ScanScore;
+					let baselineScore: import('@blackveil/dns-checks/scoring').ScanScore;
 					if (baselineStr === 'cached') {
 						const cacheKey = `cache:${validDomain}`;
 						const cached = scanCacheKV

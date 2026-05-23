@@ -165,3 +165,10 @@ scripts/tranco-*.json
 # Internal partnership / sales notes
 BrandAudit.md
 /conductor/registrar-commercial-models.md
+
+# MCP Playwright tool — per-session console/page captures (ephemeral)
+.playwright-mcp/
+
+# Stale backup build dirs (no manual snapshots in repo)
+packages/*/dist.bak/
+**/dist.bak/

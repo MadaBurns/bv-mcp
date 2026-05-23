@@ -95,7 +95,7 @@ Both publish together from `publish.yml` on version tags.
 ## Conventions
 
 - **Zod**: Centralized in `src/schemas/`. Tool `inputSchema` derived via `z.toJSONSchema()` (Zod v4). Runtime: `validateToolArgs()`. Use `.passthrough()` and `.transform().pipe()` for case-insensitive enum normalization.
-- `createFinding()` + `buildCheckResult()` from `lib/scoring-model.ts` (re-exported via `lib/scoring.ts`) — never construct findings manually. `createFinding()` auto-sanitizes `detail`.
+- `createFinding()` + `buildCheckResult()` from `@blackveil/dns-checks/scoring` — never construct findings manually. `createFinding()` auto-sanitizes `detail`.
 - `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs (after Zod) — SSRF/blocklist.
 - `mcpError()` / `mcpText()` from `handlers/tool-formatters.ts`.
 - `cacheGet/Set/SetDeferred/runWithCache` from `lib/cache.ts`. `cacheSetDeferred` wraps in `ctx.waitUntil()`.
@@ -140,7 +140,7 @@ Override via `SCORING_CONFIG` env (JSON; `weights`, `profileWeights`, `threshold
 
 ### Profiles
 
-Five: `mail_enabled` (default), `enterprise_mail`, `non_mail`, `web_only`, `minimal`. Defined in `lib/context-profiles.ts`. **Phase 1**: `auto` uses `mail_enabled` weights; explicit `profile` activates different weights + cache keys.
+Five: `mail_enabled` (default), `enterprise_mail`, `non_mail`, `web_only`, `minimal`. Defined in `packages/dns-checks/src/scoring/profiles.ts`. **Phase 1**: `auto` uses `mail_enabled` weights; explicit `profile` activates different weights + cache keys.
 
 ### Adaptive weights
 
@@ -187,10 +187,10 @@ Pattern-based, emits `fuzzing_suspected` to `ALERT_WEBHOOK_URL` from 15-min cron
 ## Adding a New Tool
 
 1. `src/tools/check-<name>.ts` → async fn returning `CheckResult`
-2. Add `CheckCategory` to `lib/scoring-model.ts` + `CATEGORY_DISPLAY_WEIGHTS`
-3. Add to `IMPORTANCE_WEIGHTS` in `lib/scoring-engine.ts`
-4. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 5), baselineFailureRates in `scoring-config.ts`
-5. Add to all 5 `PROFILE_WEIGHTS` in `context-profiles.ts`
+2. Add `CheckCategory` to `packages/dns-checks/src/scoring/model.ts` + `CATEGORY_DISPLAY_WEIGHTS`
+3. Add to `IMPORTANCE_WEIGHTS` in `packages/dns-checks/src/scoring/engine.ts`
+4. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 5), baselineFailureRates in `packages/dns-checks/src/scoring/config.ts`
+5. Add to all 5 `PROFILE_WEIGHTS` in `packages/dns-checks/src/scoring/profiles.ts`
 6. Add Zod schema to `schemas/tool-args.ts` + `TOOL_SCHEMA_MAP`
 7. Tool entry in `TOOL_DEFS` in `schemas/tool-definitions.ts`
 8. `TOOL_REGISTRY` in `handlers/tools.ts` (import + cacheKey + execute)

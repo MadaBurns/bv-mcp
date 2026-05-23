@@ -7,7 +7,7 @@
  */
 
 import type { OutputFormat } from '../handlers/tool-args';
-import type { Finding, ScanScore } from '../lib/scoring-model';
+import type { Finding, ScanScore } from '@blackveil/dns-checks/scoring';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 
 /** Overall drift direction classification. */
