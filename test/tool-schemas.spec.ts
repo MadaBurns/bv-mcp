@@ -91,7 +91,7 @@ const NON_SCAN_TOOL_NAMES = new Set([
 ]);
 
 describe('tool-schemas metadata', () => {
-	it('exports exactly 59 tools', () => {
+	it('exports exactly 60 tools', () => {
 		expect(TOOLS).toHaveLength(60);
 	});
 

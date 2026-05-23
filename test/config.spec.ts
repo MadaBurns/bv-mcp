@@ -8,6 +8,7 @@ import {
 	parsePerCheckTimeout,
 	TIER_DAILY_LIMITS,
 	TIER_TOOL_DAILY_LIMITS,
+	FREE_TOOL_DAILY_LIMITS,
 	DNS_TIMEOUT_MS,
 	INFLIGHT_CLEANUP_MS,
 	GLOBAL_DAILY_TOOL_LIMIT,
@@ -96,6 +97,21 @@ describe('partner tier', () => {
 		expect(TIER_TOOL_DAILY_LIMITS.developer?.brand_audit_single).toBe(50);
 		expect(TIER_TOOL_DAILY_LIMITS.partner?.brand_audit_single).toBe(200);
 		expect(TIER_TOOL_DAILY_LIMITS.enterprise?.brand_audit_single).toBe(500);
+	});
+});
+
+describe('free tier tool quota policy', () => {
+	it('keeps high-cost or private-probe tools on tight free anonymous limits', () => {
+		expect(FREE_TOOL_DAILY_LIMITS.discover_brand_domains).toBe(1);
+		expect(FREE_TOOL_DAILY_LIMITS.check_authoritative_dns_infra).toBe(25);
+		expect(FREE_TOOL_DAILY_LIMITS.check_fast_flux).toBe(3);
+	});
+
+	it('keeps high-query brand-threat tools on bounded free demo limits', () => {
+		expect(FREE_TOOL_DAILY_LIMITS.check_lookalikes).toBe(5);
+		expect(FREE_TOOL_DAILY_LIMITS.check_shadow_domains).toBe(5);
+		expect(FREE_TOOL_DAILY_LIMITS.check_root_server_set).toBe(25);
+		expect(FREE_TOOL_DAILY_LIMITS.check_subdomain_takeover).toBe(25);
 	});
 });
 

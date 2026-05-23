@@ -117,3 +117,33 @@ export function logError(error: Error | string, context?: Partial<LogEvent>): vo
 		...context,
 	});
 }
+
+export interface StructuredLogger {
+	info(message: string, details?: Record<string, unknown>): void;
+	warn(message: string, details?: Record<string, unknown>): void;
+	error(message: string, details?: Record<string, unknown>): void;
+}
+
+export function getLogger(): StructuredLogger {
+	return {
+		info: (message, details) => logEvent({ timestamp: new Date().toISOString(), severity: 'info', category: 'logger', result: message, details }),
+		warn: (message, details) => logEvent({ timestamp: new Date().toISOString(), severity: 'warn', category: 'logger', result: message, details }),
+		error: (message, details) => logError(message, { category: 'logger', details }),
+	};
+}
+
+export function fireAndForget(
+	work: Promise<unknown> | (() => Promise<unknown>),
+	logger: Pick<StructuredLogger, 'warn'>,
+	operation = 'fire_and_forget',
+): Promise<void> {
+	const promise = typeof work === 'function' ? work() : work;
+	return promise
+		.then(() => undefined)
+		.catch((err: unknown) => {
+			logger.warn('Fire-and-forget operation failed', {
+				operation,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		});
+}

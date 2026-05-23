@@ -1,0 +1,128 @@
+<!-- Cover fragment — concatenated into master.html by build-pdf.sh.
+     Do not open standalone; expects pdf-style.css from the enclosing document. -->
+<div class="cover">
+	<div>
+		<div class="cover-mark">BlackVeil Security · 2026-05-23 · Partner-confidential</div>
+		<h1 class="cover-title">BlackVeil DNS<br />DomainSec Complement</h1>
+		<div class="cover-subtitle">AI-Vendor Case Study — OpenAI · Anthropic · x.ai &nbsp;+&nbsp; 22-provider validation cohort</div>
+		<p class="cover-summary">
+			Full 25-category posture grading, two-layer dangling-DNS sweep, brand-impersonation enumeration with mail-presence scoring, and
+			off-primary-registrar discovery — all observed from public DNS, RDAP, WHOIS, and Certificate Transparency. Capability comparison to
+			CSC DomainSec validated against CSC's current product pages on the date this report was prepared.
+		</p>
+
+		<div class="cover-stats">
+			<div class="cover-stat">
+				<div class="cover-stat-num">1</div>
+				<div class="cover-stat-lbl">
+					<strong>CRITICAL</strong> takeover candidate · <code>cdn.openai.com</code> · AFD endpoint reclaimable
+				</div>
+			</div>
+			<div class="cover-stat">
+				<div class="cover-stat-num">21 / 25</div>
+				<div class="cover-stat-lbl">AI / infrastructure providers fully clean across the CT-enumerated cohort sweep (84%)</div>
+			</div>
+			<div class="cover-stat">
+				<div class="cover-stat-num">D · B · C</div>
+				<div class="cover-stat-lbl">OpenAI / Anthropic / x.ai posture grades — all four fully-spoofable apexes grade F</div>
+			</div>
+			<div class="cover-stat">
+				<div class="cover-stat-num">3 / 3</div>
+				<div class="cover-stat-lbl">brief-named registrars (GoDaddy · Network Solutions · Namecheap) across 6 brand-owned apexes</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="cover-meta">
+		<div>
+			<strong>Prepared for</strong><br />
+			Vincent &amp; Ihab — CSC DomainSec partnership
+		</div>
+		<div>
+			<strong>Prepared by</strong><br />
+			Adam · BlackVeil Security · contact@example.com
+		</div>
+		<div>
+			<strong>Methodology</strong><br />
+			Public DNS / RDAP / WHOIS / CT + deployed scanner at dns-mcp.blackveilsecurity.com/mcp
+		</div>
+		<div>
+			<strong>Reproducibility</strong><br />
+			Full verification matrix + re-derivation commands in §03 — discovery clock ~90&nbsp;s end-to-end
+		</div>
+	</div>
+</div>
+
+<div class="section-break"></div>
+
+<section class="toc-page">
+	<h2 style="margin-top: 0">Table of contents</h2>
+	<table>
+		<thead>
+			<tr>
+				<th>§</th>
+				<th>Section</th>
+				<th>What you'll find</th>
+			</tr>
+		</thead>
+		<tbody>
+			<tr>
+				<td>01</td>
+				<td>Exec summary</td>
+				<td>Five headline numbers · capability map vs CSC DomainSec · case study per axis · per-vendor postures</td>
+			</tr>
+			<tr>
+				<td>02 §0</td>
+				<td>Per-apex posture grades</td>
+				<td>12 apexes scored across 25 categories — primary, fully-spoofable, brand-owned third-party</td>
+			</tr>
+			<tr>
+				<td>02 §1</td>
+				<td>Anthropic — the honest negative</td>
+				<td>0 dangling across 129 subdomains; defensible clean-sweep evidence</td>
+			</tr>
+			<tr>
+				<td>02 §2</td>
+				<td>OpenAI CRITICAL</td>
+				<td><code>cdn.openai.com</code> → reclaimable AFD endpoint · Wayback corroboration · MS-Learn citation</td>
+			</tr>
+			<tr>
+				<td>02 §3</td>
+				<td>x.ai cluster</td>
+				<td>9 model-serving endpoints orphaned by one AWS NLB deletion</td>
+			</tr>
+			<tr>
+				<td>02 §4</td>
+				<td><code>grok-4-code-0630</code> disclosure</td>
+				<td>Internal model naming visible in public CT logs — the memorable moment</td>
+			</tr>
+			<tr>
+				<td>02 §5</td>
+				<td>Cohort generalization</td>
+				<td>25 providers swept · 21 fully clean (84%) · 4 outliers</td>
+			</tr>
+			<tr>
+				<td>02 §6</td>
+				<td>Brand impersonation</td>
+				<td>68 lookalikes · 32 mail-active · 25 of 28 verified phishing-ready</td>
+			</tr>
+			<tr>
+				<td>02 §7</td>
+				<td>Off-primary-registrar sprawl</td>
+				<td>All 3 brief-named registrars surfaced · 6 brand-owned apexes · 4 fully-spoofable</td>
+			</tr>
+			<tr>
+				<td>02 §8</td>
+				<td>What CSC partners take</td>
+				<td>Per-vendor takeaways · the line between the two products</td>
+			</tr>
+			<tr>
+				<td>03</td>
+				<td>Provenance &amp; reproducibility</td>
+				<td>Verification matrix · public-tooling commands · honest caveats · evidence artefact paths</td>
+			</tr>
+		</tbody>
+	</table>
+</section>
+
+<div class="section-break"></div>

@@ -35,6 +35,26 @@ const RULES = [
 
 const PUBLIC_IPV4_PATTERN = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g;
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})/gi;
+const ACTIVE_GITHUB_WORKFLOW_PATTERN = /^\.github\/workflows\/[^/]+\.ya?ml$/;
+const GITHUB_ACTIONS_THREAT_RULES = [
+	{
+		id: 'github-actions-megalodon-indicator',
+		pattern: /\b(?:build-system@noreply\.dev|ci-bot@automated\.dev|216\.126\.225\.129|Q0I9Imh0dHA6Ly8yMTYu|Megalodon)\b/gi,
+	},
+	{
+		id: 'github-actions-encoded-shell-exec',
+		pattern: /\b(?:base64\s+(?:--decode|-d)\b.*\|\s*(?:bash|sh|zsh)\b|python(?:3)?\b.*base64.*\b(?:os\.system|subprocess)\b)/gi,
+	},
+	{
+		id: 'github-actions-remote-shell-exec',
+		pattern: /\b(?:(?:curl|wget)\b[^\n|]{0,200}\|\s*(?:env\s+)?(?:bash|sh|zsh)\b|(?:bash|sh|zsh)\s+<\(\s*(?:curl|wget)\b)/gi,
+	},
+	{
+		id: 'github-actions-pull-request-target',
+		pattern: /^\s*pull_request_target\s*:/gim,
+	},
+];
+const ALLOWED_GITHUB_ACTIONS_REMOTE_SHELL_INSTALLERS = [];
 
 export function normalizePolicy(policy = {}) {
 	return {
@@ -142,6 +162,29 @@ function finding(file, text, lineIndex, match, ruleId) {
 	};
 }
 
+export function scanGithubActionsWorkflowForThreats(file, text) {
+	if (!ACTIVE_GITHUB_WORKFLOW_PATTERN.test(file)) return [];
+	const findings = [];
+	const lines = text.split(/\r?\n/);
+
+	lines.forEach((line, lineIndex) => {
+		for (const rule of GITHUB_ACTIONS_THREAT_RULES) {
+			const pattern = new RegExp(rule.pattern.source, rule.pattern.flags);
+			for (const match of line.matchAll(pattern)) {
+				if (
+					rule.id === 'github-actions-remote-shell-exec' &&
+					ALLOWED_GITHUB_ACTIONS_REMOTE_SHELL_INSTALLERS.some((installer) => line.includes(installer))
+				) {
+					continue;
+				}
+				findings.push(finding(file, line, lineIndex, match, rule.id));
+			}
+		}
+	});
+
+	return findings;
+}
+
 export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY) {
 	const normalized = normalizePolicy(policy);
 	if (isAllowedPath(file, normalized)) return [];
@@ -188,7 +231,11 @@ export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY)
 }
 
 export function scanFileContent(file, text, policy = DEFAULT_POLICY) {
-	return [...scanPathForForbiddenSurface(file, policy), ...(shouldScanFile(file, policy) ? scanTextForSensitiveSurface(file, text, policy) : [])];
+	return [
+		...scanPathForForbiddenSurface(file, policy),
+		...scanGithubActionsWorkflowForThreats(file, text),
+		...(shouldScanFile(file, policy) ? scanTextForSensitiveSurface(file, text, policy) : []),
+	];
 }
 
 export function scanCommitMessage(text, policy = DEFAULT_POLICY) {

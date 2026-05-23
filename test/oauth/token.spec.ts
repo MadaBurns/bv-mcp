@@ -61,10 +61,10 @@ async function getAuthCode(cid: string, challenge: string, customEnv: TestEnv = 
 	return new URL(res.headers.get('location') ?? '').searchParams.get('code') ?? '';
 }
 
-async function postToken(body: URLSearchParams, customEnv: TestEnv = authEnv): Promise<Response> {
+async function postToken(body: URLSearchParams, customEnv: TestEnv = authEnv, headers: Record<string, string> = {}): Promise<Response> {
 	const req = new Request<unknown, IncomingRequestCfProperties>('https://example.com/oauth/token', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
 		body: body.toString(),
 	});
 	const ctx = createExecutionContext();
@@ -266,5 +266,28 @@ describe('POST /oauth/token', () => {
 		const payload = (await limited.json()) as Record<string, unknown>;
 		expect(payload.error).toBe('invalid_request');
 		expect(payload.error_description).toBe('Too many token requests');
+	});
+
+	it('ignores x-forwarded-for and rate-limits the shared "unknown" bucket when cf-connecting-ip is absent', async () => {
+		// Security: x-forwarded-for is attacker-controlled. Rotating it must NOT
+		// reset the per-IP rate limit. Without cf-connecting-ip, all requests
+		// share the 'unknown' bucket — so 30 hits from any spoofed XFF + a 31st
+		// from a different spoofed XFF should still 429 (same bucket).
+		const body = new URLSearchParams({
+			grant_type: 'authorization_code',
+			code: 'never-issued',
+			client_id: 'no-such-client',
+			redirect_uri: 'https://claude.ai/cb',
+			code_verifier: 'v'.repeat(43),
+		});
+
+		for (let i = 0; i < 30; i++) {
+			const res = await postToken(body, authEnv, { 'x-forwarded-for': '198.51.100.20' });
+			expect(res.status).not.toBe(429);
+		}
+
+		// Rotating XFF must NOT mint a fresh bucket — all 'unknown' IPs share one.
+		const differentIp = await postToken(body, authEnv, { 'x-forwarded-for': '203.0.113.30' });
+		expect(differentIp.status).toBe(429);
 	});
 });

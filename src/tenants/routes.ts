@@ -4,7 +4,7 @@
  * Tenant orchestrator routes.
  *
  * Mounted by `src/internal.ts` under `/internal/tenants/*`. All three routes share:
- *   - the existing `/internal` network guard (cf-connecting-ip absence)
+ *   - the existing `/internal` network guard (public client-IP header absence)
  *   - the existing `internalLenientAuthGate` (REQUIRE_INTERNAL_AUTH=true → bearer)
  *   - the `X-Tenant` header → `resolveTenant()` lookup against the shared
  *     registry D1 (`TENANT_REGISTRY_DB` binding)
@@ -19,6 +19,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import { ZodError } from 'zod';
 import { handleToolsCall } from '../handlers/tools';
 import { createAnalyticsClient, hashForAnalytics, hashIpForAnalytics } from '../lib/analytics';
+import { resolveClientIpFromHeaderGetter } from '../lib/client-ip';
 import { parseScoringConfigCached } from '../lib/scoring-config';
 import { MAX_TENANT_PORTFOLIO_BODY_BYTES, MAX_INTERNAL_BATCH_BODY_BYTES, parseCacheTtl } from '../lib/config';
 import { validateDomain, sanitizeDomain } from '../lib/sanitize';
@@ -129,12 +130,12 @@ function dispatchAudit(c: TenantRequestCtx, partial: AuditPartial): void {
 	const registryD1 = c.env.TENANT_REGISTRY_DB;
 	if (!registryD1) return;
 	const bearer = (c.req.header('authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
-	const ip = c.req.header('cf-connecting-ip');
+	const ip = resolveClientIpFromHeaderGetter((name) => c.req.header(name));
 	const event: AuditEvent = {
 		...partial,
 		actorPrincipal: bearer ? hashForAnalytics(bearer) : 'anonymous',
 		actorTier: 'partner',
-		ipHash: ip ? hashIpForAnalytics(ip) : undefined,
+		ipHash: ip !== 'unknown' ? hashIpForAnalytics(ip) : undefined,
 		cfRay: c.req.header('cf-ray') ?? undefined,
 	};
 	const db = drizzle(registryD1, { schema: registrySchema });

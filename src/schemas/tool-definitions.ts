@@ -73,6 +73,7 @@ interface ToolDef {
 	group: ToolGroup;
 	tier?: ToolTier;
 	scanIncluded: boolean;
+	mutating?: boolean;
 }
 
 /** DNS/security acronyms that should be uppercased in human-readable tool titles. */
@@ -241,9 +242,9 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		tier: 'protective',
 		scanIncluded: false,
 	},
-	check_subdomailing: {
-		description: 'Detect SubdoMailing risk by analyzing SPF include chain for takeover-vulnerable domains.',
-		schema: BaseDomainArgs,
+		check_subdomailing: {
+			description: 'Detect SubdoMailing risk by analyzing SPF include chain for takeover-vulnerable domains.',
+			schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'protective',
 		scanIncluded: true,
@@ -514,6 +515,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		schema: BrandAuditBatchStartArgs,
 		group: 'discovery',
 		scanIncluded: false,
+		mutating: true,
 	},
 	brand_audit_status: {
 		description:
@@ -535,6 +537,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		schema: BrandAuditWatchArgs,
 		group: 'discovery',
 		scanIncluded: false,
+		mutating: true,
 	},
 };
 
@@ -544,9 +547,9 @@ export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => (
 	inputSchema: toInputSchema(def.schema),
 	annotations: {
 		title: toolNameToTitle(name),
-		readOnlyHint: true,
+		readOnlyHint: !def.mutating,
 		destructiveHint: false,
-		idempotentHint: true,
+		idempotentHint: !def.mutating,
 		openWorldHint: true,
 	},
 	group: def.group,

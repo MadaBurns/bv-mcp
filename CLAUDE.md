@@ -222,7 +222,7 @@ Three gates: (1) blocked paths (`docs/plans/`, `docs/code-review/`, `docs/superp
 
 Workflows: `ci.yml`, `ci-contract.yml` (Zod contracts, required), `security.yml` (Gitleaks + npm audit, required), `repo-hygiene.yml` (reusable, called by other repos), `deploy-hook.yml` (active deploy path), `publish.yml` (tagged-release pipeline), `triage-issues.yml`, `.gitleaks.toml`. `dns-security.yml.disabled` is intentionally disabled because it invokes the paid `MadaBurns/blackveil-dns-action` path.
 
-**Branch protection** (2026-05-07): required checks = `build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`. No required reviews; admin merge OK for trivial CI/doc. Direct pushes to `main` blocked except by admin. **`dns-scan` is NOT required** and stays pending for hours; `mergeStateStatus: UNSTABLE` is mergeable — `gh pr merge <N> --squash` works.
+**Branch protection** (verified 2026-05-22): required checks = `build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`. **1 approving review required** (`dismiss_stale_reviews=true`, `required_conversation_resolution=true`). **`enforce_admins=true`** — admin override is gated; `gh pr merge --admin` alone fails with "1 approving review required." Direct pushes to `main` are blocked; use the PR review path. **`dns-scan` is NOT required** and stays pending for hours; `mergeStateStatus: UNSTABLE` is mergeable once required checks and review are satisfied.
 
 **Deploy mode**: manual via `npm run deploy:prod` using an authenticated local Wrangler session. `auto-deploy-main.yml` is disabled unless GitHub production secrets are deliberately configured.
 

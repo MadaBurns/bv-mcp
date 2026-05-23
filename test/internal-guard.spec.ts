@@ -18,6 +18,10 @@ describe('isPublicInternetRequest', () => {
 		expect(isPublicInternetRequest({ cfConnectingIp: null, host: 'dns-mcp.example.com' })).toBe(false);
 	});
 
+	it('ignores forwarded public IP headers when cf-connecting-ip is absent', () => {
+		expect(isPublicInternetRequest({ cfConnectingIp: null, host: 'dns-mcp.example.com' })).toBe(false);
+	});
+
 	it('returns true even when Host is localhost — Host header must not bypass cf-connecting-ip', () => {
 		// Regression for the removed Host-based bypass. Cloudflare sets cf-connecting-ip
 		// authoritatively; an attacker-supplied Host header is never a reason to skip the gate.
