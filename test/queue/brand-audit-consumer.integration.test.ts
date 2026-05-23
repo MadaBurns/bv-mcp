@@ -247,6 +247,32 @@ describe('processBrandAuditMessage', () => {
 		);
 	});
 
+	it('passes the brandAuditQueue binding into brandAuditSingle deps for queued audits (CSC deep_scan enqueue)', async () => {
+		// The pipeline at brand-audit-pipeline.ts:1061 only enqueues the
+		// {phase:'deep_scan'} message when deps.brandAuditQueue is present.
+		// Without this forwarding, queued view='csc_complement' audits write
+		// csc_complement_fast only — brand_audit_get_report falls back to the
+		// fast payload and the deep-scan-derived enrichment never materializes.
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db } = makeMockD1({
+			target: { status: 'queued', completed_at: null },
+			auditAfter: { completed_targets: 1, total_targets: 1 },
+		});
+		const brandAuditSingle = vi.fn().mockResolvedValue({ category: 'brand_discovery', score: 100, findings: [] });
+		const brandAuditQueue = { send: vi.fn().mockResolvedValue(undefined) };
+
+		await processBrandAuditMessage(
+			{ auditId: 'aud-1', target: 'example.com', format: 'json', view: 'csc_complement' },
+			{ db, brandAuditSingle, brandAuditQueue, now: () => 1_750_000_000_000 },
+		);
+
+		expect(brandAuditSingle).toHaveBeenCalledWith(
+			'example.com',
+			expect.objectContaining({ auditId: 'aud-1' }),
+			expect.objectContaining({ brandAuditQueue }),
+		);
+	});
+
 	it('passes auditId and a D1-backed stepStore into brandAuditSingle', async () => {
 		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
 		const { db, calls } = makeMockD1({

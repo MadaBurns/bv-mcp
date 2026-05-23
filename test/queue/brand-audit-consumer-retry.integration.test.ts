@@ -22,7 +22,11 @@ interface AuditTargetRow {
 	completed_at: number | null;
 }
 
-interface StepKey { auditId: string; target: string; step: string }
+interface StepKey {
+	auditId: string;
+	target: string;
+	step: string;
+}
 function stepKey(k: StepKey): string {
 	return `${k.auditId}\0${k.target}\0${k.step}`;
 }
@@ -62,14 +66,21 @@ function makeMockD1(initial: { target: AuditTargetRow & { result_json?: string |
 				},
 				async run() {
 					if (sql.includes('INSERT INTO brand_audit_steps')) {
-						const [auditId, target, step, status, payload, errorVal] = binds as [string, string, string, string, string | null, string | null];
+						const [auditId, target, step, status, payload, errorVal] = binds as [
+							string,
+							string,
+							string,
+							string,
+							string | null,
+							string | null,
+						];
 						steps.set(stepKey({ auditId, target, step }), { status, payload_json: payload, error: errorVal });
 						return { success: true, meta: { changes: 1 } };
 					}
 					if (sql.includes('UPDATE brand_audit_targets')) {
 						// Atomic claim: parameterized predicate `status = ?` with the
 						// expected value bound as the third arg.
-						if (sql.includes('SET status = \'running\' WHERE audit_id = ? AND target = ? AND status = ?')) {
+						if (sql.includes("SET status = 'running' WHERE audit_id = ? AND target = ? AND status = ?")) {
 							const expected = binds[2] as AuditTargetRow['status'];
 							if (targetRow.status !== expected) return { success: true, meta: { changes: 0 } };
 							targetRow.status = 'running';
@@ -88,7 +99,12 @@ function makeMockD1(initial: { target: AuditTargetRow & { result_json?: string |
 						// preservation test can assert on them. Capture the consumer's
 						// `now` bind (4th position) so tests can assert it reflects
 						// completion time, not message-start time.
-						const [newStatus, resultJson, errorVal, completedAt] = binds as [AuditTargetRow['status'], string | null, string | null, number];
+						const [newStatus, resultJson, errorVal, completedAt] = binds as [
+							AuditTargetRow['status'],
+							string | null,
+							string | null,
+							number,
+						];
 						targetRow.status = newStatus;
 						if (resultJson !== undefined) targetRow.result_json = resultJson;
 						if (errorVal !== undefined) targetRow.error = errorVal;
@@ -101,7 +117,9 @@ function makeMockD1(initial: { target: AuditTargetRow & { result_json?: string |
 					}
 					return { success: true, meta: { changes: 1 } };
 				},
-				async all() { return { results: [], success: true, meta: {} }; },
+				async all() {
+					return { results: [], success: true, meta: {} };
+				},
 			};
 			return stmt;
 		},
@@ -159,7 +177,11 @@ function makeOrchestrator(returnValue: unknown) {
 function makeQueue() {
 	const sent: Array<{ msg: unknown }> = [];
 	return {
-		binding: { async send(msg: unknown) { sent.push({ msg }); } },
+		binding: {
+			async send(msg: unknown) {
+				sent.push({ msg });
+			},
+		},
 		sent,
 	};
 }
@@ -168,7 +190,10 @@ function makeQueue() {
 function makeWebhook() {
 	const calls: Array<{ url: string }> = [];
 	return {
-		fn: async (url: string, _payload: unknown) => { calls.push({ url }); return true; },
+		fn: async (url: string, _payload: unknown) => {
+			calls.push({ url });
+			return true;
+		},
 		calls,
 	};
 }
@@ -235,7 +260,11 @@ describe('processBrandAuditMessage — Phase 2b retry orchestration', () => {
 		const orchestrator = makeOrchestrator(resultWithLookupFailed);
 		const queue = makeQueue();
 		const pdfQueue = { sent: [] as Array<{ msg: unknown }> };
-		const pdfBinding = { async send(msg: unknown) { pdfQueue.sent.push({ msg }); } };
+		const pdfBinding = {
+			async send(msg: unknown) {
+				pdfQueue.sent.push({ msg });
+			},
+		};
 
 		await processBrandAuditMessage(
 			{ auditId: 'aud-1', target: 'example.com', format: 'markdown' },
@@ -281,7 +310,9 @@ describe('processBrandAuditMessage — Phase 2b retry orchestration', () => {
 		});
 
 		const orchestrator = {
-			fn: async () => { throw new Error('retry pass blew up'); },
+			fn: async () => {
+				throw new Error('retry pass blew up');
+			},
 			calls: [] as never[],
 		};
 		const queue = makeQueue();
@@ -321,5 +352,38 @@ describe('processBrandAuditMessage — Phase 2b retry orchestration', () => {
 		expect(orchestrator.calls[0].opts.force_refresh).toBe(true);
 		expect(getCounter().completed_targets, 'retry pass must NOT bump completed_targets').toBe(0);
 		expect(queue.sent, 'retry pass cannot enqueue another retry').toEqual([]);
+	});
+
+	it('retry pass does NOT forward brandAuditQueue into pipeline deps (prevents double CSC deep_scan enqueue)', async () => {
+		// Scenario: primary pass with view='csc_complement' enqueues deep_scan #1
+		// (from brand-audit-pipeline.ts:1061). If the retry pass also forwarded
+		// brandAuditQueue, it would re-enter the CSC branch with force_refresh=true,
+		// re-write csc_complement_fast, and enqueue deep_scan #2 — producing a race
+		// where two runDeepScanFromStepStore workers contend on csc_complement_full
+		// (last-write-wins UPSERT, no MVCC). Gate at the consumer side: the
+		// brandAuditQueue dep is forwarded to the pipeline only on the primary
+		// (non-retry) pass. The consumer's own retry-enqueue path is already
+		// gated on !isRetry at brand-audit-consumer.ts:411, so the consumer
+		// doesn't need brandAuditQueue on retry messages either.
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const { db } = makeMockD1({ target: { status: 'completed', completed_at: 1000 } });
+		const brandAuditSingle = vi.fn().mockResolvedValue({ category: 'brand_discovery', score: 100, findings: [] });
+		const queue = makeQueue();
+
+		await processBrandAuditMessage(
+			{ auditId: 'aud-1', target: 'example.com', format: 'json', view: 'csc_complement', retry_attempt: 1 },
+			{ db, brandAuditSingle, brandAuditQueue: queue.binding, now: () => 1_750_000_000_000 },
+		);
+
+		// brandAuditSingle should have been called. The third arg (deps) MUST NOT
+		// contain brandAuditQueue — otherwise the retry pass would re-enqueue a
+		// deep_scan message that races deep_scan #1 from the primary pass.
+		expect(brandAuditSingle).toHaveBeenCalledOnce();
+		const callArgs = brandAuditSingle.mock.calls[0];
+		// Two-arg form (no deps) is fine — that's the default when no bindings are present.
+		// If the 3-arg form is used, deps must NOT carry brandAuditQueue.
+		if (callArgs.length >= 3) {
+			expect(callArgs[2]).not.toHaveProperty('brandAuditQueue');
+		}
 	});
 });
