@@ -273,6 +273,51 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 		expect(enqueued[0]).toMatchObject({ auditId: 'audit-1', target: 'ford.com', phase: 'deep_scan' });
 	});
 
+	it('does not propagate Queue send failures — deep_scan enqueue is best-effort', async () => {
+		// Before brandAuditQueue was forwarded into pipeline deps, line 1061 was
+		// dead in production. Activating it (PR #186) means a transient Cloudflare
+		// Queues send() rejection — backpressure, regional issue, write-rate cap —
+		// would propagate out of runBrandAuditPipeline. The queue consumer would
+		// catch the throw at processBrandAuditMessage and flip the entire target
+		// row to `failed` even though csc_complement_fast was already persisted.
+		// The sync request path would surface a JSON-RPC error to the client even
+		// though the same fast result is in step-store. Both are user-visible
+		// regressions caused by a transient infrastructure blip.
+		//
+		// Policy: same as pdfQueue.send() at brand-audit-consumer.ts:425-429 —
+		// best-effort, log on failure, never abort the audit.
+		setupEnrichmentFetchMock(['ford.co.uk']);
+
+		const brandAuditQueue = {
+			send: async (): Promise<void> => {
+				throw new Error('queue backpressure');
+			},
+		};
+
+		const { runBrandAuditPipeline } = await import('../src/lib/brand-audit-pipeline');
+
+		const discoverBrandDomains = async () =>
+			makeDiscoveryResult('ford.com', [{ domain: 'ford.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
+		const checkRdapLookup = async (domain: string) => {
+			if (domain === 'ford.co.uk') return makeRdapResult('GoDaddy.com, LLC');
+			return makeRdapResult('CSC Corporate Domains, Inc.');
+		};
+
+		const result = await runBrandAuditPipeline(
+			'ford.com',
+			{ view: 'csc_complement', auditId: 'audit-1' },
+			{
+				brandAuditQueue,
+				discoverBrandDomains: discoverBrandDomains as never,
+				checkRdapLookup: checkRdapLookup as never,
+			},
+		);
+
+		// Pipeline returns normally; csc_complement_fast is attached to the result.
+		expect(result).toBeDefined();
+		expect((result as unknown as { cscComplement?: unknown }).cscComplement).toBeDefined();
+	});
+
 	it('runs runDeepScanFromStepStore and merges to csc_complement_full', async () => {
 		const stored = new Map<string, unknown>();
 		const stepStore = {

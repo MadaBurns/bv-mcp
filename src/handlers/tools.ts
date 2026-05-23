@@ -401,6 +401,12 @@ const TOOL_REGISTRY: Record<
 					certstream: ro?.certstream,
 					whoisBinding: ro?.whoisBinding,
 					enforceQuota: buildMonthlyEnforceQuota(ro),
+					// The brand-audit queue binding doubles as the CSC fast→full
+					// deep-scan trigger in the pipeline (brand-audit-pipeline.ts:1061).
+					// Without it, sync view='csc_complement' audits write only the
+					// fast payload and brand_audit_get_report can never surface the
+					// full enrichment.
+					...(ro?.brandAuditQueue ? { brandAuditQueue: ro.brandAuditQueue } : {}),
 					// Tier closures: forwarded through the pipeline → discoverBrandDomains
 					// seam. Undefined on BSL self-hosts → pipeline never calls the
 					// proprietary lookups.
