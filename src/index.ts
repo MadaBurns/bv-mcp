@@ -42,6 +42,7 @@ import { executeMcpRequest } from './mcp/execute';
 import { parseScoringConfigCached } from './lib/scoring-config';
 import { parseCacheTtl } from './lib/config';
 import { closeLegacyStream, enqueueLegacyMessage, openLegacySseStream } from './lib/legacy-sse';
+import { resolveClientIpFromHeaders, resolveClientIpFromRequestHeaders } from './lib/client-ip';
 import { internalRoutes } from './internal';
 import { buildAuthorizationServerMetadata, buildProtectedResourceMetadata, resolveIssuer } from './oauth/discovery';
 import { handleRegister } from './oauth/register';
@@ -63,9 +64,7 @@ function logAnalyticsBindingStatus(enabled: boolean): void {
 		result: enabled ? 'enabled' : 'disabled',
 		severity: enabled ? 'info' : 'warn',
 		details: {
-			message: enabled
-				? 'Analytics Engine binding detected'
-				: 'Analytics Engine binding missing; telemetry emits are no-op',
+			message: enabled ? 'Analytics Engine binding detected' : 'Analytics Engine binding missing; telemetry emits are no-op',
 		},
 	});
 }
@@ -98,6 +97,9 @@ type BvMcpEnv = {
 	OAUTH_SIGNING_SECRET?: string;
 	BV_INTERNAL_DEV_KEY?: string;
 	BRAND_AUDIT_DB?: D1Database;
+	INTELLIGENCE_DB?: D1Database;
+	MCP_ACCESS_LOG_IP_ENCRYPTION_KEY?: string;
+	MCP_ACCESS_LOG_IP_KEY_VERSION?: string;
 	BRAND_AUDIT_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	BRAND_AUDIT_PDF_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	BRAND_REPORTS?: R2Bucket;
@@ -143,7 +145,10 @@ type BvMcpEnv = {
 import type { TierAuthResult } from './lib/tier-auth';
 import { resolveTier } from './lib/tier-auth';
 
-const app = new Hono<{ Bindings: BvMcpEnv; Variables: { isAuthenticated: boolean; tierAuthResult: TierAuthResult; apiKeyInQuery: boolean } }>();
+const app = new Hono<{
+	Bindings: BvMcpEnv;
+	Variables: { isAuthenticated: boolean; tierAuthResult: TierAuthResult; apiKeyInQuery: boolean };
+}>();
 const mcpPaths = ['/mcp', '/mcp/messages', '/mcp/sse'] as const;
 
 import { buildBrandTierLookups } from './lib/brand-tier-lookups';
@@ -182,6 +187,8 @@ function oauthMisconfiguredResponse(): Response {
 		{ status: 503, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } },
 	);
 }
+
+export { resolveClientIpFromHeaders } from './lib/client-ip';
 
 /**
  * Electron-only URI schemes used by desktop IDE webviews (VS Code, Cursor, Windsurf).
@@ -244,7 +251,8 @@ for (const path of mcpPaths) {
 		const token = bearerToken ?? queryToken;
 		const apiKeyInQuery = queryToken !== null;
 
-		const clientIp = c.req.header('cf-connecting-ip') ?? undefined;
+		const resolvedClientIp = resolveClientIpFromRequestHeaders(c.req.raw.headers);
+		const clientIp = resolvedClientIp === 'unknown' ? undefined : resolvedClientIp;
 		const tierResult = await resolveTier(token, c.env, clientIp, c.req.url);
 		c.set('tierAuthResult', tierResult);
 		c.set('isAuthenticated', tierResult.authenticated);
@@ -276,7 +284,10 @@ app.use('*', async (c, next) => {
 	c.header('X-XSS-Protection', '0');
 	c.header('Referrer-Policy', 'no-referrer');
 	c.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
-	c.header('Content-Security-Policy', "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; form-action 'self'");
+	c.header(
+		'Content-Security-Policy',
+		"default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
+	);
 	c.header('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
 
 	// RFC 8594 / draft-ietf-httpapi-deprecation-header: clients still passing the
@@ -320,13 +331,19 @@ app.get('/badge/:domain', async (c) => {
 		'Cache-Control': 'public, max-age=300',
 	};
 
-	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 	const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
 	if (!rateResult.allowed) {
 		return new Response(errorBadge(), { status: 429, headers: svgHeaders });
 	}
 
-	const toolQuota = await checkToolDailyRateLimit(ip, 'scan_domain', FREE_TOOL_DAILY_LIMITS.scan_domain, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
+	const toolQuota = await checkToolDailyRateLimit(
+		ip,
+		'scan_domain',
+		FREE_TOOL_DAILY_LIMITS.scan_domain,
+		c.env.RATE_LIMIT,
+		c.env.QUOTA_COORDINATOR,
+	);
 	if (!toolQuota.allowed) {
 		return c.text('Rate limit exceeded', 429);
 	}
@@ -361,13 +378,15 @@ app.post('/mcp', async (c) => {
 	logAnalyticsBindingStatus(analytics.enabled);
 	const headersLc = normalizeHeaders(c.req.raw.headers);
 	const accept = headersLc['accept'];
-	const ip = headersLc['cf-connecting-ip'] ?? 'unknown';
+	const ip = resolveClientIpFromHeaders(headersLc);
 	const isAuthenticated = c.get('isAuthenticated');
 	const tierAuthResult = c.get('tierAuthResult');
 
 	// Analytics context enrichment
 	const cfProps = c.req.raw.cf as IncomingRequestCfProperties | undefined;
-	const country = (cfProps?.country as string) ?? 'unknown';
+	// cfProps.country is non-tamperable (set by Cloudflare on the request object);
+	// cf-ipcountry header is only a fallback for non-CF-fronted paths (rare).
+	const country = (cfProps?.country as string) ?? headersLc['cf-ipcountry'] ?? 'unknown';
 	const clientType = detectMcpClient(headersLc['user-agent']);
 	const authTier = tierAuthResult.authenticated ? (tierAuthResult.tier ?? 'free') : 'anon';
 	const keyHash = tierAuthResult.keyHash ? tierAuthResult.keyHash.slice(0, 16) : undefined;
@@ -440,6 +459,9 @@ app.post('/mcp', async (c) => {
 					providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 					analytics,
 					profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+					intelligenceDb: c.env.INTELLIGENCE_DB,
+					ipEncryptionKey: c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
+					ipEncryptionKeyVersion: c.env.MCP_ACCESS_LOG_IP_KEY_VERSION,
 					waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 					scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 					cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
@@ -512,6 +534,9 @@ app.post('/mcp', async (c) => {
 		providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 		analytics,
 		profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+		intelligenceDb: c.env.INTELLIGENCE_DB,
+		ipEncryptionKey: c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
+		ipEncryptionKeyVersion: c.env.MCP_ACCESS_LOG_IP_KEY_VERSION,
 		waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 		scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 		cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
@@ -575,14 +600,16 @@ app.post('/mcp/messages', async (c) => {
 	const analytics = createAnalyticsClient(c.env.MCP_ANALYTICS);
 	logAnalyticsBindingStatus(analytics.enabled);
 	const headersLc = normalizeHeaders(c.req.raw.headers);
-	const ip = headersLc['cf-connecting-ip'] ?? 'unknown';
+	const ip = resolveClientIpFromHeaders(headersLc);
 	const isAuthenticated = c.get('isAuthenticated');
 	const tierAuthResult = c.get('tierAuthResult');
 	const sessionId = c.req.query('sessionId');
 
 	// Analytics context enrichment
 	const cfProps = c.req.raw.cf as IncomingRequestCfProperties | undefined;
-	const country = (cfProps?.country as string) ?? 'unknown';
+	// cfProps.country is non-tamperable (set by Cloudflare on the request object);
+	// cf-ipcountry header is only a fallback for non-CF-fronted paths (rare).
+	const country = (cfProps?.country as string) ?? headersLc['cf-ipcountry'] ?? 'unknown';
 	const clientType = detectMcpClient(headersLc['user-agent']);
 	const authTier = tierAuthResult.authenticated ? (tierAuthResult.tier ?? 'free') : 'anon';
 	const keyHash = tierAuthResult.keyHash ? tierAuthResult.keyHash.slice(0, 16) : undefined;
@@ -602,10 +629,7 @@ app.post('/mcp/messages', async (c) => {
 	// so legacy SSE clients see the error instead of getting 202 with an undeliverable SSE message
 	if (!(await validateSession(sessionId, c.env.SESSION_STORE))) {
 		closeLegacyStream(sessionId);
-		return c.json(
-			jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Not Found: session expired or terminated'),
-			404,
-		);
+		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Not Found: session expired or terminated'), 404);
 	}
 
 	const bodyReadResult = await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES);
@@ -661,6 +685,9 @@ app.post('/mcp/messages', async (c) => {
 				providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 				analytics,
 				profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+				intelligenceDb: c.env.INTELLIGENCE_DB,
+				ipEncryptionKey: c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
+				ipEncryptionKeyVersion: c.env.MCP_ACCESS_LOG_IP_KEY_VERSION,
 				waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 				scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 				cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
@@ -700,7 +727,7 @@ app.get('/mcp', async (c) => {
 	}
 
 	const sessionId = c.req.header('mcp-session-id');
-	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 	const isAuthenticated = c.get('isAuthenticated');
 
 	// SSE notification stream uses control plane rate limiting but is counted
@@ -746,7 +773,7 @@ app.get('/mcp/sse', async (c) => {
 		return new Response('Not Acceptable: Accept must include text/event-stream', { status: 406 });
 	}
 
-	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 	const isAuthenticated = c.get('isAuthenticated');
 	const controlPlaneLimited = await buildControlPlaneRateLimitResponse(
 		ip,
@@ -772,17 +799,15 @@ app.get('/mcp/sse', async (c) => {
 		}
 	}
 
-	const legacySessionId = await createSession(
-		c.env.SESSION_STORE,
-		createAnalyticsClient(c.env.MCP_ANALYTICS),
-		(p) => c.executionCtx.waitUntil(p),
+	const legacySessionId = await createSession(c.env.SESSION_STORE, createAnalyticsClient(c.env.MCP_ANALYTICS), (p) =>
+		c.executionCtx.waitUntil(p),
 	);
 	const endpointUrl = new URL(`/mcp/messages?sessionId=${encodeURIComponent(legacySessionId)}`, c.req.url).toString();
 	return openLegacySseStream(legacySessionId, endpointUrl);
 });
 
 app.delete('/mcp', async (c) => {
-	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 	const isAuthenticated = c.get('isAuthenticated');
 	const controlPlaneLimited = await buildControlPlaneRateLimitResponse(
 		ip,
@@ -838,15 +863,11 @@ function oauthGuarded<T>(c: Context, ready: () => T | Response): T | Response {
 	return ready();
 }
 
-app.on(
-	'GET',
-	['/.well-known/oauth-authorization-server', '/.well-known/oauth-authorization-server/*'],
-	(c) => oauthGuarded(c, () => c.json(buildAuthorizationServerMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER)))),
+app.on('GET', ['/.well-known/oauth-authorization-server', '/.well-known/oauth-authorization-server/*'], (c) =>
+	oauthGuarded(c, () => c.json(buildAuthorizationServerMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER)))),
 );
-app.on(
-	'GET',
-	['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/*'],
-	(c) => oauthGuarded(c, () => c.json(buildProtectedResourceMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER)))),
+app.on('GET', ['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/*'], (c) =>
+	oauthGuarded(c, () => c.json(buildProtectedResourceMetadata(resolveIssuer(c.req.url, c.env.OAUTH_ISSUER)))),
 );
 app.post('/oauth/register', (c) => oauthGuarded(c, () => handleRegister(c)));
 app.get('/oauth/authorize', (c) => oauthGuarded(c, () => handleAuthorizeGet(c)));
@@ -889,7 +910,13 @@ export default {
 	 * async path, v2.19.0+) share the same Worker entrypoint.
 	 */
 	queue: async (batch: MessageBatch<unknown>, env: Record<string, unknown>, ctx: ExecutionContext) => {
-		logEvent({ timestamp: new Date().toISOString(), category: 'queue', result: 'batch_received', severity: 'info', details: { queue: batch.queue, messageCount: batch.messages.length } });
+		logEvent({
+			timestamp: new Date().toISOString(),
+			category: 'queue',
+			result: 'batch_received',
+			severity: 'info',
+			details: { queue: batch.queue, messageCount: batch.messages.length },
+		});
 		if (batch.queue === 'brand-audit-queue') {
 			const e = env as Record<string, unknown>;
 			const db = e.BRAND_AUDIT_DB as D1Database | undefined;
@@ -909,9 +936,8 @@ export default {
 			// into the consumer so queued audits run in tiered mode by default
 			// when the operator sets `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT=tiered`
 			// in the private overlay. Undefined on BSL self-hosts.
-			const discoveryModeDefault = typeof e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT === 'string'
-				? (e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT as string)
-				: undefined;
+			const discoveryModeDefault =
+				typeof e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT === 'string' ? (e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT as string) : undefined;
 			// Build tier-lookup closures from the queue Worker invocation's env.
 			// Cloudflare Workers re-bind env per invocation; the request-path
 			// closures constructed in `executeMcpRequest` never reach here.
@@ -923,22 +949,16 @@ export default {
 			const queueEnv = e as BvMcpEnv;
 			const internalCall = async (tool: string, args: { domain: string }): Promise<unknown> => {
 				const { handleToolsCall } = await import('./handlers/tools');
-				return handleToolsCall(
-					{ name: tool, arguments: args as Record<string, unknown> },
-					queueEnv.SCAN_CACHE,
-					{
-						providerSignaturesUrl: queueEnv.PROVIDER_SIGNATURES_URL,
-						scoringConfig: parseScoringConfigCached(queueEnv.SCORING_CONFIG),
-						secondaryDoh: queueEnv.BV_DOH_ENDPOINT
-							? { endpoint: queueEnv.BV_DOH_ENDPOINT, token: queueEnv.BV_DOH_TOKEN }
-							: undefined,
-						whoisBinding: queueEnv.BV_WHOIS,
-						infraProbe: queueEnv.BV_INFRA_PROBE,
-						certstream: queueEnv.BV_CERTSTREAM,
-						profileAccumulator: queueEnv.PROFILE_ACCUMULATOR,
-						...buildBrandTierLookups(queueEnv),
-					},
-				);
+				return handleToolsCall({ name: tool, arguments: args as Record<string, unknown> }, queueEnv.SCAN_CACHE, {
+					providerSignaturesUrl: queueEnv.PROVIDER_SIGNATURES_URL,
+					scoringConfig: parseScoringConfigCached(queueEnv.SCORING_CONFIG),
+					secondaryDoh: queueEnv.BV_DOH_ENDPOINT ? { endpoint: queueEnv.BV_DOH_ENDPOINT, token: queueEnv.BV_DOH_TOKEN } : undefined,
+					whoisBinding: queueEnv.BV_WHOIS,
+					infraProbe: queueEnv.BV_INFRA_PROBE,
+					certstream: queueEnv.BV_CERTSTREAM,
+					profileAccumulator: queueEnv.PROFILE_ACCUMULATOR,
+					...buildBrandTierLookups(queueEnv),
+				});
 			};
 			const deps: BrandAuditConsumerDeps = {
 				db,

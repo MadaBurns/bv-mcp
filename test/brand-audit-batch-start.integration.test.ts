@@ -146,6 +146,23 @@ describe('brandAuditBatchStart', () => {
 		expect(enforceQuota).not.toHaveBeenCalled();
 	});
 
+	it('rejects invalid targets before quota, D1 writes, or queue sends', async () => {
+		const { brandAuditBatchStart } = await import('../src/tools/brand-audit-batch-start');
+		const { db, calls } = makeMockD1();
+		const enforceQuota = vi.fn();
+		const queueSend = vi.fn();
+		const deps = makeDeps({ db, enforceQuota, queue: { send: queueSend } });
+
+		const result = await brandAuditBatchStart(['apple.com', 'localhost', '127.0.0.1'], {}, 'pk', deps);
+
+		const errorFinding = result.findings.find((f) => f.metadata?.invalidInput === true);
+		expect(errorFinding).toBeDefined();
+		expect(errorFinding?.detail).toContain('localhost');
+		expect(enforceQuota).not.toHaveBeenCalled();
+		expect(calls).toHaveLength(0);
+		expect(queueSend).not.toHaveBeenCalled();
+	});
+
 	it('deduplicates domains before quota check + enqueue', async () => {
 		const { brandAuditBatchStart } = await import('../src/tools/brand-audit-batch-start');
 		const queueSend = vi.fn().mockResolvedValue(undefined);

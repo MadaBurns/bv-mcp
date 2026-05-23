@@ -10,9 +10,7 @@ import { ACTIVE_SESSIONS } from '../src/lib/session-memory';
 const TEST_API_KEY = 'test-api-key';
 
 function parseSseMessage<T>(body: string): T {
-	const dataLine = body
-		.split('\n')
-		.find((line) => line.startsWith('data: '));
+	const dataLine = body.split('\n').find((line) => line.startsWith('data: '));
 	if (!dataLine) throw new Error(`Expected SSE data line in response: ${body}`);
 	return JSON.parse(dataLine.slice('data: '.length)) as T;
 }
@@ -87,9 +85,9 @@ describe('DNS Security MCP Server', () => {
 		await resetAllRateLimitsKv(env.RATE_LIMIT);
 	});
 
-		afterEach(() => {
-			vi.restoreAllMocks();
-		});
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
 
 	describe('POST /mcp - Content-Type validation', () => {
 		it('accepts application/json', async () => {
@@ -1262,10 +1260,31 @@ describe('DNS Security MCP Server', () => {
 			vi.setSystemTime(new Date('2026-03-07T00:00:00Z'));
 
 			try {
-			const sessionId = await initSession();
+				const sessionId = await initSession();
 
-			for (let i = 0; i < 25; i++) {
-				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				for (let i = 0; i < 25; i++) {
+					const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'Mcp-Session-Id': sessionId,
+							'cf-connecting-ip': '203.0.113.77',
+						},
+						body: JSON.stringify({
+							jsonrpc: '2.0',
+							id: i + 200,
+							method: 'tools/call',
+							params: { name: 'scan_domain', arguments: { domain: 'example.com' } },
+						}),
+					});
+					const ctx = createExecutionContext();
+					const response = await worker.fetch(request, env, ctx);
+					await waitOnExecutionContext(ctx);
+					expect(response.status).toBe(200);
+					vi.advanceTimersByTime(61_000);
+				}
+
+				const blockedRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
@@ -1274,46 +1293,51 @@ describe('DNS Security MCP Server', () => {
 					},
 					body: JSON.stringify({
 						jsonrpc: '2.0',
-						id: i + 200,
+						id: 210,
 						method: 'tools/call',
 						params: { name: 'scan_domain', arguments: { domain: 'example.com' } },
 					}),
 				});
 				const ctx = createExecutionContext();
-				const response = await worker.fetch(request, env, ctx);
+				const blockedResponse = await worker.fetch(blockedRequest, env, ctx);
 				await waitOnExecutionContext(ctx);
-				expect(response.status).toBe(200);
-				vi.advanceTimersByTime(61_000);
-			}
+				expect(blockedResponse.status).toBe(429);
+				expect(blockedResponse.headers.get('x-quota-limit')).toBe('25');
+				expect(blockedResponse.headers.get('x-quota-remaining')).toBe('0');
 
-			const blockedRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Mcp-Session-Id': sessionId,
-					'cf-connecting-ip': '203.0.113.77',
-				},
-				body: JSON.stringify({
-					jsonrpc: '2.0',
-					id: 210,
-					method: 'tools/call',
-					params: { name: 'scan_domain', arguments: { domain: 'example.com' } },
-				}),
-			});
-			const ctx = createExecutionContext();
-			const blockedResponse = await worker.fetch(blockedRequest, env, ctx);
-			await waitOnExecutionContext(ctx);
-			expect(blockedResponse.status).toBe(429);
-			expect(blockedResponse.headers.get('x-quota-limit')).toBe('25');
-			expect(blockedResponse.headers.get('x-quota-remaining')).toBe('0');
-
-			const body = (await blockedResponse.json()) as { error: { code: number; message: string } };
-			expect(body.error.code).toBe(-32029);
-			expect(body.error.message).toContain('scan_domain');
-			expect(body.error.message).toContain('25 requests per day');
+				const body = (await blockedResponse.json()) as { error: { code: number; message: string } };
+				expect(body.error.code).toBe(-32029);
+				expect(body.error.message).toContain('scan_domain');
+				expect(body.error.message).toContain('25 requests per day');
 			} finally {
 				vi.useRealTimers();
 			}
+		});
+
+		it('ignores x-forwarded-for and quotas the shared "unknown" bucket when cf-connecting-ip is absent', async () => {
+			// Security: x-forwarded-for is attacker-controlled. Rotating XFF must NOT
+			// mint a fresh per-IP daily-quota bucket. Without cf-connecting-ip, every
+			// request lands in the shared 'unknown' bucket — so 25 hits exhaust the
+			// daily cap and a 26th from a different spoofed XFF still 429s.
+			for (let i = 0; i < 25; i++) {
+				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/badge/example.invalid', {
+					headers: { 'x-forwarded-for': '198.51.100.20' },
+				});
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(request, env, ctx);
+				await waitOnExecutionContext(ctx);
+				expect(response.status).toBe(400);
+			}
+
+			// Rotating XFF must NOT mint a fresh bucket — all 'unknown' IPs share one,
+			// so the 26th request 429s regardless of the spoofed forwarding header.
+			const differentIpRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/badge/example.invalid', {
+				headers: { 'x-forwarded-for': '203.0.113.30' },
+			});
+			const differentIpCtx = createExecutionContext();
+			const differentIpResponse = await worker.fetch(differentIpRequest, env, differentIpCtx);
+			await waitOnExecutionContext(differentIpCtx);
+			expect(differentIpResponse.status).toBe(429);
 		});
 
 		it('authenticated scan_domain requests are not subject to free daily cap', async () => {
@@ -1689,10 +1713,7 @@ describe('DNS Security MCP Server', () => {
 			// Spec-compliant clients probe /.well-known/<type>/<path> derived from the
 			// resource URL, e.g. /.well-known/oauth-protected-resource/mcp. Both the
 			// bare and path-suffixed variants must serve the same metadata document.
-			for (const path of [
-				'/.well-known/oauth-authorization-server/mcp',
-				'/.well-known/oauth-protected-resource/mcp',
-			]) {
+			for (const path of ['/.well-known/oauth-authorization-server/mcp', '/.well-known/oauth-protected-resource/mcp']) {
 				const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com${path}`);
 				const ctx = createExecutionContext();
 				const response = await worker.fetch(request, env, ctx);

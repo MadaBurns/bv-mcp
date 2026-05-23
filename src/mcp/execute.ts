@@ -1,10 +1,22 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { checkRateLimit, checkToolDailyRateLimit, checkGlobalDailyLimit, acquireConcurrencySlot, releaseConcurrencySlot } from '../lib/rate-limiter';
-import { logEvent, logError } from '../lib/log';
+import {
+	checkRateLimit,
+	checkToolDailyRateLimit,
+	checkGlobalDailyLimit,
+	acquireConcurrencySlot,
+	releaseConcurrencySlot,
+} from '../lib/rate-limiter';
+import { fireAndForget, getLogger, logEvent, logError } from '../lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS, sanitizeErrorMessage } from '../lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, validateSessionRequest } from './route-gates';
-import { FREE_TOOL_DAILY_LIMITS, GLOBAL_DAILY_TOOL_LIMIT, TIER_DAILY_LIMITS, TIER_TOOL_DAILY_LIMITS, TIER_CONCURRENT_LIMITS } from '../lib/config';
+import {
+	FREE_TOOL_DAILY_LIMITS,
+	GLOBAL_DAILY_TOOL_LIMIT,
+	TIER_DAILY_LIMITS,
+	TIER_TOOL_DAILY_LIMITS,
+	TIER_CONCURRENT_LIMITS,
+} from '../lib/config';
 import { normalizeToolName } from '../handlers/tool-args';
 import { acceptsSSE } from '../lib/sse';
 import { dispatchMcpMethod } from './dispatch';
@@ -71,6 +83,11 @@ export interface ExecuteMcpRequestOptions {
 	keyHash?: string;
 	/** FNV-1a hash of cf-connecting-ip (`i_` prefix) for per-IP analytics filtering. */
 	ipHash?: string;
+	/** D1 binding for privacy-preserving MCP access logs. */
+	intelligenceDb?: D1Database;
+	/** Base64-encoded AES-GCM key for encrypted abuse-investigation IP evidence. */
+	ipEncryptionKey?: string;
+	ipEncryptionKeyVersion?: string;
 	certstream?: { fetch: typeof fetch };
 	whoisBinding?: { fetch: typeof fetch };
 	infraProbe?: { fetch: typeof fetch };
@@ -109,6 +126,135 @@ function getDomainFromParams(params: Record<string, unknown> | undefined): strin
 	return typeof params === 'object' && params && 'domain' in params ? String(params.domain) : undefined;
 }
 
+function maskIp(ip: string): string {
+	const parts = ip.split('.');
+	if (parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part))) {
+		return `${parts[0]}.${parts[1]}.${parts[2]}.xxx`;
+	}
+	if (ip === 'unknown') return 'unknown';
+	return 'masked';
+}
+
+function extractAccessLogDomain(args: Record<string, unknown> | undefined): string | undefined {
+	if (!args) return undefined;
+	if (typeof args.domain === 'string' && args.domain.length > 0) return args.domain;
+	if (Array.isArray(args.domains)) {
+		return args.domains.find((value): value is string => typeof value === 'string' && value.length > 0);
+	}
+	return undefined;
+}
+
+function getToolCallLogInput(
+	method: string,
+	params: Record<string, unknown> | undefined,
+): { toolName: string; domain: string } | undefined {
+	if (method !== 'tools/call') return undefined;
+	const toolNameRaw = params && typeof params === 'object' && 'name' in params ? params.name : undefined;
+	const argsRaw = params && typeof params === 'object' && 'arguments' in params ? params.arguments : undefined;
+	const args = argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw) ? (argsRaw as Record<string, unknown>) : undefined;
+	const domain = extractAccessLogDomain(args);
+	if (typeof toolNameRaw !== 'string' || !domain) return undefined;
+	return { toolName: normalizeToolName(toolNameRaw), domain };
+}
+
+function base64ToBytes(value: string): Uint8Array {
+	const binary = atob(value);
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i += 1) {
+		bytes[i] = binary.charCodeAt(i);
+	}
+	return bytes;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+	let binary = '';
+	for (const byte of bytes) {
+		binary += String.fromCharCode(byte);
+	}
+	return btoa(binary);
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+	return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+// Module-scoped cache so a mis-configured key logs once, then skips silently
+// instead of throwing on every request. Map key = the base64 env value, so a
+// later config fix (rotated key) gets re-evaluated automatically.
+const encryptionKeyValidationCache = new Map<string, { valid: boolean }>();
+
+function validateEncryptionKeyOnce(keyBase64: string): boolean {
+	const cached = encryptionKeyValidationCache.get(keyBase64);
+	if (cached) return cached.valid;
+	let valid = false;
+	try {
+		valid = base64ToBytes(keyBase64).byteLength === 32;
+	} catch {
+		valid = false;
+	}
+	encryptionKeyValidationCache.set(keyBase64, { valid });
+	if (!valid) {
+		// Surface once at error level — operators need to see this in alerting.
+		// Subsequent requests hit the cache and skip without re-logging.
+		logError(
+			'Invalid MCP_ACCESS_LOG_IP_ENCRYPTION_KEY: must be 32 bytes (base64-decoded). Access-log IP ciphertext disabled until fixed.',
+			{
+				category: 'config',
+				details: {
+					keyBytes: (() => {
+						try {
+							return base64ToBytes(keyBase64).byteLength;
+						} catch {
+							return 'unparseable_base64';
+						}
+					})(),
+				},
+			},
+		);
+	}
+	return valid;
+}
+
+async function encryptIpEvidence(ip: string, keyBase64: string | undefined): Promise<string | null> {
+	if (!keyBase64 || ip === 'unknown') return null;
+	if (!validateEncryptionKeyOnce(keyBase64)) return null;
+	const rawKey = base64ToBytes(keyBase64);
+	const key = await crypto.subtle.importKey('raw', toArrayBuffer(rawKey), { name: 'AES-GCM' }, false, ['encrypt']);
+	const iv = crypto.getRandomValues(new Uint8Array(12));
+	const plaintext = new TextEncoder().encode(ip);
+	const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: toArrayBuffer(iv) }, key, toArrayBuffer(plaintext)));
+	return `v1:${bytesToBase64(iv)}:${bytesToBase64(ciphertext)}`;
+}
+
+function recordMcpAccessLog(options: ExecuteMcpRequestOptions, input: { toolName: string; domain: string; rateLimited: boolean }): void {
+	if (!options.intelligenceDb) return;
+	const logger = getLogger();
+	const work = async () => {
+		const ipCiphertext = await encryptIpEvidence(options.ip, options.ipEncryptionKey);
+		await options
+			.intelligenceDb!.prepare(
+				`INSERT INTO mcp_access_log
+				 (ip_hash, ip_masked, tool_name, domain, country, user_agent, response_ms, rate_limited, ip_ciphertext, ip_key_version)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.bind(
+				options.ipHash ?? 'unknown',
+				maskIp(options.ip),
+				input.toolName,
+				input.domain,
+				options.country ?? null,
+				options.userAgent ?? null,
+				Math.max(0, Date.now() - options.startTime),
+				input.rateLimited ? 1 : 0,
+				ipCiphertext,
+				ipCiphertext ? (options.ipEncryptionKeyVersion ?? 'v1') : null,
+			)
+			.run();
+	};
+	const loggedWork = fireAndForget(work, logger, 'mcp_access_log_insert');
+	options.waitUntil?.(loggedWork);
+}
+
 function extractHeaders(response: Response): Record<string, string> {
 	const headers: Record<string, string> = {};
 	response.headers.forEach((value, key) => {
@@ -123,9 +269,7 @@ async function readJsonRpcPayload(response: Response): Promise<ReturnType<typeof
 	const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
 	if (contentType.includes('text/event-stream')) {
 		const text = await response.text();
-		const dataLine = text
-			.split('\n')
-			.find((line) => line.startsWith('data: '));
+		const dataLine = text.split('\n').find((line) => line.startsWith('data: '));
 		if (!dataLine) {
 			return jsonRpcError(null, JSON_RPC_ERRORS.INTERNAL_ERROR, 'Internal server error');
 		}
@@ -208,12 +352,7 @@ function recordMcpToolErrorIfUnknownTool(options: ExecuteMcpRequestOptions, meth
 export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Promise<ProcessedRequestResult> {
 	const validationError = validateJsonRpcRequest(options.body);
 	if (validationError) {
-		emitRequestAnalytics(
-			options,
-			typeof options.body?.method === 'string' ? options.body.method : 'invalid',
-			'error',
-			true,
-		);
+		emitRequestAnalytics(options, typeof options.body?.method === 'string' ? options.body.method : 'invalid', 'error', true);
 		return {
 			kind: 'response',
 			payload: validationError.payload,
@@ -226,12 +365,17 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 	const { id, method, params } = options.body;
 	const eventId = id != null ? String(id) : undefined;
+	const accessLogInput = getToolCallLogInput(method, params as Record<string, unknown> | undefined);
 
 	if (options.batchMode && options.batchSize > 1 && method === 'initialize') {
 		emitRequestAnalytics(options, method, 'error', true);
 		return {
 			kind: 'response',
-			payload: jsonRpcError(id, JSON_RPC_ERRORS.INVALID_REQUEST, 'Invalid JSON-RPC batch request: initialize cannot be batched with other messages'),
+			payload: jsonRpcError(
+				id,
+				JSON_RPC_ERRORS.INVALID_REQUEST,
+				'Invalid JSON-RPC batch request: initialize cannot be batched with other messages',
+			),
 			headers: {},
 			httpStatus: 400,
 			useErrorEnvelope: true,
@@ -256,6 +400,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				authTier: options.authTier,
 			});
 			emitRequestAnalytics(options, method, 'error', true);
+			if (accessLogInput) {
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+			}
 			return {
 				kind: 'response',
 				payload: jsonRpcError(
@@ -290,6 +437,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				authTier: options.authTier,
 			});
 			emitRequestAnalytics(options, method, 'error', true);
+			if (accessLogInput) {
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+			}
 			return {
 				kind: 'response',
 				payload: jsonRpcError(
@@ -304,7 +454,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			};
 		}
 
-		const toolNameRaw = typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
+		const toolNameRaw =
+			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
 		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : '';
 		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
 		if (toolDailyLimit !== undefined) {
@@ -333,6 +484,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 					authTier: options.authTier ?? 'anon',
 				});
 				emitRequestAnalytics(options, method, 'error', true);
+				if (accessLogInput) {
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+				}
 				return {
 					kind: 'response',
 					payload: jsonRpcError(
@@ -352,19 +506,14 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		const tier = options.tierAuthResult.tier;
 		const principalId = options.tierAuthResult.keyHash ?? options.ip;
 
-		const toolNameRaw = typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
+		const toolNameRaw =
+			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
 		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : 'unknown';
 
 		// Per-tool tier override takes precedence over flat tier limit
 		const dailyLimit = TIER_TOOL_DAILY_LIMITS[tier]?.[toolName] ?? TIER_DAILY_LIMITS[tier];
 
-		const tierQuotaResult = await checkToolDailyRateLimit(
-			principalId,
-			toolName,
-			dailyLimit,
-			options.rateLimitKv,
-			options.quotaCoordinator,
-		);
+		const tierQuotaResult = await checkToolDailyRateLimit(principalId, toolName, dailyLimit, options.rateLimitKv, options.quotaCoordinator);
 		const tierDailyResetEpoch = Math.ceil(Date.now() / 86_400_000) * 86_400;
 		rateHeaders['x-quota-limit'] = String(tierQuotaResult.limit);
 		rateHeaders['x-quota-remaining'] = String(tierQuotaResult.remaining);
@@ -383,6 +532,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				authTier: tier,
 			});
 			emitRequestAnalytics(options, method, 'error', true);
+			if (accessLogInput) {
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+			}
 			return {
 				kind: 'response',
 				payload: jsonRpcError(
@@ -440,10 +592,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			options.sessionErrorMessage ?? 'Bad Request: missing session. Send an initialize request first to create a session.',
 		);
 		if (sessionError) {
-			const canRecoverExpiredSession =
-				sessionError.status === 404 &&
-				typeof options.sessionId === 'string' &&
-				options.sessionId.length > 0;
+			const canRecoverExpiredSession = sessionError.status === 404 && typeof options.sessionId === 'string' && options.sessionId.length > 0;
 
 			if (canRecoverExpiredSession) {
 				let recoveryAllowed = true;
@@ -500,13 +649,10 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 	// Per-tier concurrency limiting for tools/call (after notification early-return)
 	if (method === 'tools/call') {
-		const tier = options.tierAuthResult?.authenticated && options.tierAuthResult.tier
-			? options.tierAuthResult.tier
-			: 'free' as const;
+		const tier = options.tierAuthResult?.authenticated && options.tierAuthResult.tier ? options.tierAuthResult.tier : ('free' as const);
 		const concurrencyLimit = TIER_CONCURRENT_LIMITS[tier];
-		concurrencyPrincipalId = options.tierAuthResult?.authenticated && options.tierAuthResult.keyHash
-			? options.tierAuthResult.keyHash
-			: options.ip;
+		concurrencyPrincipalId =
+			options.tierAuthResult?.authenticated && options.tierAuthResult.keyHash ? options.tierAuthResult.keyHash : options.ip;
 
 		if (concurrencyLimit !== Infinity) {
 			const concurrencyResult = acquireConcurrencySlot(concurrencyPrincipalId, concurrencyLimit);
@@ -524,6 +670,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 					authTier: options.authTier ?? tier,
 				});
 				emitRequestAnalytics(options, method, 'error', true);
+				if (accessLogInput) {
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+				}
 				return {
 					kind: 'response',
 					payload: jsonRpcError(
@@ -583,33 +732,39 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			tier0Lookup: options.tier0Lookup,
 			tier1Lookup: options.tier1Lookup,
 			tier2Lookup: options.tier2Lookup,
-		}).then((dispatchResult) => {
-			if (dispatchResult.kind === 'early-error') {
+		})
+			.then((dispatchResult) => {
+				if (dispatchResult.kind === 'early-error') {
+					return dispatchResult.payload;
+				}
+
+				logEvent({
+					timestamp: new Date().toISOString(),
+					requestId: typeof id === 'string' ? id : undefined,
+					ipHash: options.ipHash,
+					tool: dispatchResult.logTool,
+					category: dispatchResult.logCategory,
+					result: dispatchResult.logResult,
+					details: dispatchResult.logDetails,
+					durationMs: Date.now() - options.startTime,
+					userAgent: options.userAgent,
+					severity: dispatchResult.logCategory === 'error' ? 'error' : 'info',
+					domain: getDomainFromParams(params),
+				});
+
+				const hasJsonRpcError =
+					typeof dispatchResult.payload === 'object' && dispatchResult.payload !== null && 'error' in dispatchResult.payload;
+				const errPayload = hasJsonRpcError ? (dispatchResult.payload as { error?: { code?: number; message?: string } }).error : undefined;
+				emitRequestAnalytics(options, method, hasJsonRpcError ? 'error' : 'ok', hasJsonRpcError, errPayload?.code, errPayload?.message);
+				recordMcpToolErrorIfUnknownTool(options, method, dispatchResult.payload);
+				if (accessLogInput) {
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: false });
+				}
 				return dispatchResult.payload;
-			}
-
-			logEvent({
-				timestamp: new Date().toISOString(),
-				requestId: typeof id === 'string' ? id : undefined,
-				ipHash: options.ipHash,
-				tool: dispatchResult.logTool,
-				category: dispatchResult.logCategory,
-				result: dispatchResult.logResult,
-				details: dispatchResult.logDetails,
-				durationMs: Date.now() - options.startTime,
-				userAgent: options.userAgent,
-				severity: dispatchResult.logCategory === 'error' ? 'error' : 'info',
-				domain: getDomainFromParams(params),
+			})
+			.finally(() => {
+				if (concurrencyPrincipalId) releaseConcurrencySlot(concurrencyPrincipalId);
 			});
-
-			const hasJsonRpcError = typeof dispatchResult.payload === 'object' && dispatchResult.payload !== null && 'error' in dispatchResult.payload;
-			const errPayload = hasJsonRpcError ? (dispatchResult.payload as { error?: { code?: number; message?: string } }).error : undefined;
-			emitRequestAnalytics(options, method, hasJsonRpcError ? 'error' : 'ok', hasJsonRpcError, errPayload?.code, errPayload?.message);
-			recordMcpToolErrorIfUnknownTool(options, method, dispatchResult.payload);
-			return dispatchResult.payload;
-		}).finally(() => {
-			if (concurrencyPrincipalId) releaseConcurrencySlot(concurrencyPrincipalId);
-		});
 
 		return {
 			kind: 'response',
@@ -697,8 +852,12 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			domain: getDomainFromParams(params),
 		});
 
-		const hasJsonRpcError = typeof dispatchResult.payload === 'object' && dispatchResult.payload !== null && 'error' in dispatchResult.payload;
+		const hasJsonRpcError =
+			typeof dispatchResult.payload === 'object' && dispatchResult.payload !== null && 'error' in dispatchResult.payload;
 		emitRequestAnalytics(options, method, hasJsonRpcError ? 'error' : 'ok', hasJsonRpcError);
+		if (accessLogInput) {
+			recordMcpAccessLog(options, { ...accessLogInput, rateLimited: false });
+		}
 
 		return {
 			kind: 'response',
@@ -715,7 +874,12 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			ipHash: options.ipHash,
 			requestId: typeof options.body?.id === 'string' ? options.body.id : undefined,
 			tool: typeof options.body?.method === 'string' ? options.body.method : undefined,
-			details: { params: options.body?.params && typeof options.body.params === 'object' ? { keys: Object.keys(options.body.params).sort().slice(0, 25) } : undefined },
+			details: {
+				params:
+					options.body?.params && typeof options.body.params === 'object'
+						? { keys: Object.keys(options.body.params).sort().slice(0, 25) }
+						: undefined,
+			},
 			durationMs: Date.now() - options.startTime,
 			userAgent: options.userAgent,
 		});
