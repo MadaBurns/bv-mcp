@@ -86,8 +86,8 @@ import type { OutputFormat } from './tool-args';
 import { buildLogContext, logToolFailure, logToolSuccess } from './tool-execution';
 import { formatCheckResult, mcpError, buildToolContent } from './tool-formatters';
 import type { McpContent } from './tool-formatters';
-import { TOOLS } from './tool-schemas';
-import type { McpTool } from './tool-schemas';
+import { TOOLS } from '../schemas/tool-definitions';
+import type { McpTool } from '../schemas/tool-definitions';
 
 /** MCP tools/call result */
 interface McpToolResult {
