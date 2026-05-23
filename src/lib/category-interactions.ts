@@ -8,7 +8,7 @@
  * Existing compare_baseline CI/CD workflows continue to work identically.
  */
 
-import type { CheckCategory, ScanScore } from './scoring-model';
+import type { CheckCategory, ScanScore } from '@blackveil/dns-checks/scoring';
 import { scoreToGrade } from '@blackveil/dns-checks/scoring';
 import type { ScoringConfig } from '@blackveil/dns-checks/scoring';
 

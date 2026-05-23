@@ -9,7 +9,7 @@
  * weights stay close to static until enough telemetry has accumulated.
  */
 
-import type { CheckCategory } from './scoring-model';
+import type { CheckCategory } from '@blackveil/dns-checks/scoring';
 import type { DomainProfile } from '@blackveil/dns-checks/scoring';
 import { PROFILE_WEIGHTS } from '@blackveil/dns-checks/scoring';
 

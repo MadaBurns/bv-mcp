@@ -894,7 +894,7 @@ export async function handleToolsCall(
 				case 'analyze_drift': {
 					const baselineStr = typeof validatedArgs.baseline === 'string' ? validatedArgs.baseline : '';
 
-					let baselineScore: import('../lib/scoring-model').ScanScore;
+					let baselineScore: import('@blackveil/dns-checks/scoring').ScanScore;
 					if (baselineStr === 'cached') {
 						const cacheKey = `cache:${validDomain}`;
 						const cached = scanCacheKV
