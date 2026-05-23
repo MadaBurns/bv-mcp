@@ -26,11 +26,11 @@ Run `npx prettier --write 'src/**/*.ts' 'test/**/*.ts'` before committing large 
 ## Adding a New Tool
 
 1. Create `src/tools/check-<name>.ts` → export async fn returning `CheckResult`
-2. Add the `CheckCategory` value to the union type in `src/lib/scoring-model.ts` + `CATEGORY_DISPLAY_WEIGHTS`
-3. Add to `IMPORTANCE_WEIGHTS` in `src/lib/scoring-engine.ts`
-4. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 5 profiles), and baselineFailureRates in `src/lib/scoring-config.ts`
-5. Add to all 5 `PROFILE_WEIGHTS` maps in `src/lib/context-profiles.ts`
-6. Register in `src/handlers/tool-schemas.ts` (TOOLS array) + `src/handlers/tools.ts` (import + TOOL_REGISTRY)
+2. Add the `CheckCategory` value to the union type in `packages/dns-checks/src/scoring/model.ts` + `CATEGORY_DISPLAY_WEIGHTS`
+3. Add to `IMPORTANCE_WEIGHTS` in `packages/dns-checks/src/scoring/engine.ts`
+4. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 5 profiles), and baselineFailureRates in `packages/dns-checks/src/scoring/config.ts`
+5. Add to all 5 `PROFILE_WEIGHTS` maps in `packages/dns-checks/src/scoring/profiles.ts`
+6. Register in `src/schemas/tool-definitions.ts` (TOOL_DEFS) + `src/handlers/tools.ts` (import + TOOL_REGISTRY)
 7. Add to `FREE_TOOL_DAILY_LIMITS` in `src/lib/config.ts`
 8. Add explanation templates in `src/tools/explain-finding-data.ts`
 9. If the new check is part of `scan_domain`, add it to the parallel orchestration in `src/tools/scan-domain.ts`

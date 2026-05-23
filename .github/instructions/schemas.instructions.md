@@ -10,7 +10,6 @@ applyTo: src/schemas/**/*.ts
 - Tool argument schemas: `src/schemas/tool-args.ts` (`TOOL_SCHEMA_MAP`)
 - Tool definitions (MCP tools/list): `src/schemas/tool-definitions.ts` (`TOOLS` array, `TOOL_DEFS`)
 - Shared primitives: `src/schemas/primitives.ts` (`DomainSchema`, `SessionIdSchema`, `FormatSchema`, `ProfileSchema`)
-- `src/handlers/tool-schemas.ts` is a **deprecated re-export shim** — do not add new schemas there
 
 ## Key patterns
 
