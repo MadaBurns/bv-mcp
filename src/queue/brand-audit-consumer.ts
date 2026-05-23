@@ -305,8 +305,13 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 		// pipeline (brand-audit-pipeline.ts:1061). The send() signature there is
 		// `{ send(unknown): Promise<void> }`, wider (more permissive in input
 		// type) than the consumer's typed-message variant — the runtime shape
-		// is identical.
-		...(deps.brandAuditQueue ? { brandAuditQueue: deps.brandAuditQueue } : {}),
+		// is identical. Gated on `!isRetry` because the primary pass already
+		// enqueued deep_scan #1; allowing the retry pass to enqueue deep_scan #2
+		// produces a race on csc_complement_full (last-write-wins UPSERT in the
+		// step-store, no MVCC). Consumer's own retry-enqueue path is already
+		// gated on `!isRetry` at line 411, so the consumer doesn't need
+		// brandAuditQueue on retry messages either.
+		...(deps.brandAuditQueue && !isRetry ? { brandAuditQueue: deps.brandAuditQueue } : {}),
 	};
 	const hasSingleDeps =
 		deps.tier0Lookup || deps.tier1Lookup || deps.tier2Lookup || deps.whoisBinding || deps.certstream || deps.brandAuditQueue;

@@ -69,7 +69,11 @@ const REQUIRED_DEPS: Array<{ name: string; queuePattern: RegExp; handlerPattern:
 	},
 	{
 		name: 'brandAuditQueue',
-		queuePattern: /\.\.\.\(deps\.brandAuditQueue\s*\?\s*\{\s*brandAuditQueue:\s*deps\.brandAuditQueue\s*\}\s*:\s*\{\}\),?/,
+		// Queue side gated on `!isRetry` — primary pass enqueues the CSC deep_scan,
+		// retry pass would race against the primary's deep_scan worker
+		// (last-write-wins on csc_complement_full). See the matching test in
+		// brand-audit-consumer-retry.integration.test.ts.
+		queuePattern: /\.\.\.\(deps\.brandAuditQueue\s*&&\s*!isRetry\s*\?\s*\{\s*brandAuditQueue:\s*deps\.brandAuditQueue\s*\}\s*:\s*\{\}\),?/,
 		handlerPattern: /\.\.\.\(ro\?\.brandAuditQueue\s*\?\s*\{\s*brandAuditQueue:\s*ro\.brandAuditQueue\s*\}\s*:\s*\{\}\),?/,
 	},
 ];
