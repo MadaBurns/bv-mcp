@@ -169,7 +169,7 @@ bv-web plan → OAuth tier claim → bv-mcp limits:
 | pro / business / MCP Developer | developer  | 500       | 10         | Business / 48h  |
 | enterprise / MCP Enterprise    | enterprise | 10,000    | 25         | Enterprise / 4h |
 
-Resolution in `src/oauth/entitlements.ts` via bv-web service binding `api/internal/mcp/oauth/authorize`. Mapping defined in bv-web `app/lib/services/mcp/oauth-entitlements.server.ts`. Static API keys never resolve `developer`/`enterprise` from OAuth — they map to `agent` (500/day, 5 concurrent).
+Resolution in `src/oauth/entitlements.ts` via bv-web service binding `api/internal/mcp/oauth/authorize`. Mapping defined in bv-web `app/lib/services/mcp/oauth-entitlements.server.ts`. The local static `BV_API_KEY` resolves to `owner` tier (`src/lib/tier-auth.ts:246-253`), with the `OWNER_ALLOW_IPS` IP gate downgrading to `partner` when the client IP isn't allowlisted. The `agent` tier (200/day, 5 concurrent) is reachable only via the bv-web `validate-key` service binding, when bv-web returns that tier for a non-paying key.
 
 ### Internal routes
 
