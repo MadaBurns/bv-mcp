@@ -1059,7 +1059,20 @@ export async function runBrandAuditPipeline(
 		}
 
 		if (deps.brandAuditQueue) {
-			await deps.brandAuditQueue.send({ auditId, target: seedDomain, phase: 'deep_scan' }, { contentType: 'json' });
+			// Best-effort: a Queue send failure leaves the audit with only the
+			// csc_complement_fast payload already persisted just above. Letting
+			// the throw propagate would surface as a JSON-RPC error in the sync
+			// request path (despite csc_complement_fast being in step-store) and
+			// would tip the entire target row to `failed` in the queue consumer
+			// (caught at processBrandAuditMessage's outer try/catch). The cron
+			// reaper / brand_audit_get_report fallback to the fast payload
+			// already covers the durability gap. Mirrors the pdfQueue.send()
+			// best-effort policy at brand-audit-consumer.ts:425-429.
+			try {
+				await deps.brandAuditQueue.send({ auditId, target: seedDomain, phase: 'deep_scan' }, { contentType: 'json' });
+			} catch (err) {
+				console.warn('[csc-complement] deep_scan enqueue failed:', err);
+			}
 		}
 	}
 
