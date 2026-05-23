@@ -10,8 +10,8 @@
  */
 
 import type { CheckCategory } from './scoring-model';
-import type { DomainProfile } from './context-profiles';
-import { PROFILE_WEIGHTS } from './context-profiles';
+import type { DomainProfile } from '@blackveil/dns-checks/scoring';
+import { PROFILE_WEIGHTS } from '@blackveil/dns-checks/scoring';
 
 // ─── Telemetry interfaces ──────────────────────────────────────────────
 

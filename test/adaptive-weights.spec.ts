@@ -16,8 +16,8 @@ import {
 	generateScoringNote,
 } from '../src/lib/adaptive-weights';
 // Type-only imports verified to exist: ScanTelemetry, AdaptiveWeightsResponse, WeightBound
-import { PROFILE_WEIGHTS } from '../src/lib/context-profiles';
-import type { DomainProfile } from '../src/lib/context-profiles';
+import { PROFILE_WEIGHTS } from '@blackveil/dns-checks/scoring';
+import type { DomainProfile } from '@blackveil/dns-checks/scoring';
 import type { CheckCategory } from '../src/lib/scoring-model';
 
 describe('adaptive-weights', () => {

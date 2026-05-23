@@ -6,7 +6,7 @@ import {
 	PROFILE_CRITICAL_CATEGORIES,
 	PROFILE_EMAIL_BONUS_ELIGIBLE,
 	type DomainProfile,
-} from '../src/lib/context-profiles';
+} from '@blackveil/dns-checks/scoring';
 import { buildCheckResult, createFinding, type CheckCategory } from '../src/lib/scoring-model';
 
 function makeCheckResult(category: CheckCategory, score: number, findings: ReturnType<typeof createFinding>[] = []) {
