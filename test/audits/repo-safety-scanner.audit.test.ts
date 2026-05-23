@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { scanCommitMessage, scanTextForSensitiveSurface, formatFindings } from '../../scripts/repo-safety/scanner-core.mjs';
+import { scanCommitMessage, scanFileContent, scanTextForSensitiveSurface, formatFindings } from '../../scripts/repo-safety/scanner-core.mjs';
 
 const clientDomainPolicy = {
 	forbiddenClientDomains: ['brand-eta.com', 'brand-beta.com.au', 'brand-kappa.com', 'brand-theta.com'],
@@ -61,5 +61,34 @@ describe('repo safety scanner helper', () => {
 		);
 
 		expect(findings.map((finding) => finding.ruleId)).toEqual(expect.arrayContaining(['client-domain', 'client-context']));
+	});
+
+	it('flags Megalodon-style workflow injection indicators even when .github is otherwise allowlisted', () => {
+		const workflow = [
+			'name: build',
+			'on: [push]',
+			'jobs:',
+			'  build:',
+			'    runs-on: ubuntu-latest',
+			'    steps:',
+			'      - run: echo Q0I9Imh0dHA6Ly8yMTYu | base64 -d | bash',
+			'        env:',
+			'          BUILD_EMAIL: build-system@noreply.dev',
+		].join('\n');
+		const findings = scanFileContent('.github/workflows/build.yml', workflow, { allowedPathPrefixes: ['.github/'] });
+
+		expect(findings.map((finding) => finding.ruleId)).toEqual(
+			expect.arrayContaining(['github-actions-megalodon-indicator', 'github-actions-encoded-shell-exec']),
+		);
+	});
+
+	it('flags remote shell installers in workflow files', () => {
+		const findings = scanFileContent(
+			'.github/workflows/ci.yml',
+			'run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh',
+			{ allowedPathPrefixes: ['.github/'] },
+		);
+
+		expect(findings.map((finding) => finding.ruleId)).toContain('github-actions-remote-shell-exec');
 	});
 });

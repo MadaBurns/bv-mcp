@@ -198,6 +198,33 @@ describe('POST /oauth/authorize', () => {
 		expect(loc.searchParams.get('error')).toBeNull();
 	});
 
+	it('OWNER_ALLOW_IPS ignores x-forwarded-for and denies when cf-connecting-ip is absent', async () => {
+		// Security gate: x-forwarded-for is attacker-controlled. An attacker who knows
+		// BV_API_KEY must NOT be able to spoof an allowlisted IP via the forwarding
+		// header. When cf-connecting-ip is missing, the resolver returns 'unknown',
+		// applyOwnerIpGate sees the IP outside the allowlist, and downgrades to
+		// partner — so /oauth/authorize redirects with access_denied, no code minted.
+		const cid = await registerClient();
+		const form = buildForm(TEST_API_KEY, cid);
+		const authEnv = { ...env, BV_API_KEY: TEST_API_KEY, OWNER_ALLOW_IPS: '198.51.100.20' } as Env;
+		const request = new Request<unknown, IncomingRequestCfProperties>('https://example.com/oauth/authorize', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/x-www-form-urlencoded',
+				'x-forwarded-for': '198.51.100.20, 203.0.113.30',
+			},
+			body: form.toString(),
+			redirect: 'manual',
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, authEnv, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(302);
+		const loc = new URL(res.headers.get('location') ?? '');
+		expect(loc.searchParams.get('code')).toBeNull();
+		expect(loc.searchParams.get('error')).toBe('access_denied');
+	});
+
 	it('OWNER_ALLOW_IPS set + client IP NOT in allowlist → access_denied, no code persisted', async () => {
 		// Hard security test: correct BV_API_KEY from a disallowed IP must NOT mint a code.
 		// The deny path must go through redirectWithError (so the client surfaces the standard
