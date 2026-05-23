@@ -218,12 +218,9 @@ describe('tier-auth KV cache validation', () => {
 		expect(putArgs[2]).toEqual({ expirationTtl: 300 });
 	});
 
-	it('keeps BV_INTERNAL_DEV_KEY at owner tier regardless of client IP', async () => {
-		// BV_INTERNAL_DEV_KEY is documented as the internal "us only" key for
-		// load tests / ops scripts. Unlike BV_API_KEY (customer-facing, IP-gated),
-		// the dev key must remain owner-tier from any IP — otherwise benchmark/
-		// load-test runs from a developer laptop silently degrade to partner
-		// (200/mo) and crash on production quota walls.
+	it('downgrades BV_INTERNAL_DEV_KEY when the request IP is outside OWNER_ALLOW_IPS', async () => {
+		// Internal static keys are production bearer credentials too. When
+		// OWNER_ALLOW_IPS is configured, every owner-tier path must enforce it.
 		const { resolveTier } = await import('../src/lib/tier-auth');
 
 		const kv = {
@@ -244,10 +241,34 @@ describe('tier-auth KV cache validation', () => {
 		);
 
 		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('partner');
+	});
+
+	it('keeps BV_INTERNAL_DEV_KEY at owner tier when the request IP is allowlisted', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+
+		const result = await resolveTier(
+			'dev-key-secret',
+			{
+				RATE_LIMIT: kv,
+				BV_INTERNAL_DEV_KEY: 'dev-key-secret',
+				OWNER_ALLOW_IPS: '203.0.113.10',
+			},
+			'203.0.113.10',
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
 		expect(result.tier).toBe('owner');
 	});
 
-	it('BV_INTERNAL_DEV_KEY wins over a stale partner cache and over a bv-web validate-key result', async () => {
+	it('BV_INTERNAL_DEV_KEY wins over a stale cache and over a bv-web validate-key result, then applies OWNER_ALLOW_IPS', async () => {
 		// The dev key is an internal static secret — it must be authoritative
 		// before the KV cache or bv-web validate-key fallback can demote it.
 		// Otherwise a prior IP-gated resolution can poison the cache and the
@@ -277,7 +298,7 @@ describe('tier-auth KV cache validation', () => {
 		);
 
 		expect(result.authenticated).toBe(true);
-		expect(result.tier).toBe('owner');
+		expect(result.tier).toBe('partner');
 		// Dev-key resolution must not depend on the bv-web round-trip — it's a
 		// hardcoded internal secret.
 		expect(bvWeb.fetch).not.toHaveBeenCalled();

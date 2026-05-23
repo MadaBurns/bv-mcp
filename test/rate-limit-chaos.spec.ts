@@ -329,20 +329,40 @@ describe('rate-limit chaos tests', () => {
 	// Edge case: config consistency
 	// -----------------------------------------------------------------------
 	describe('config consistency', () => {
-		it('all check_* tools in config have the same daily limit (25)', () => {
+		it('standard check_* tools in config have the same daily limit (25)', () => {
+			const nonStandardCheckTools = new Set([
+				'check_lookalikes',
+				'check_shadow_domains',
+				'check_subdomain_takeover',
+				'check_root_server_set',
+				'check_authoritative_dns_infra',
+				'check_mx_reputation',
+				'check_resolver_consistency',
+				'check_dbl',
+				'check_rbl',
+				'check_nsec_walkability',
+				'check_dnssec_chain',
+				'check_fast_flux',
+			]);
 			const checkTools = Object.entries(FREE_TOOL_DAILY_LIMITS).filter(
-				([name]) => name.startsWith('check_') && name !== 'check_lookalikes' && name !== 'check_shadow_domains' && name !== 'check_mx_reputation' && name !== 'check_resolver_consistency' && name !== 'check_dbl' && name !== 'check_rbl' && name !== 'check_nsec_walkability' && name !== 'check_dnssec_chain' && name !== 'check_fast_flux',
+				([name]) => name.startsWith('check_') && !nonStandardCheckTools.has(name),
 			);
 			for (const [name, limit] of checkTools) {
 				expect(limit, `${name} should have limit 25`).toBe(25);
 			}
 		});
 
-		it('check_lookalikes has a lower limit than other checks', () => {
+		it('high-query demo checks have bounded free daily limits', () => {
 			expect(FREE_TOOL_DAILY_LIMITS['check_lookalikes']).toBe(5);
-			expect(FREE_TOOL_DAILY_LIMITS['check_lookalikes']).toBeLessThan(
-				FREE_TOOL_DAILY_LIMITS['check_spf'],
-			);
+			expect(FREE_TOOL_DAILY_LIMITS['check_shadow_domains']).toBe(5);
+			expect(FREE_TOOL_DAILY_LIMITS['check_subdomain_takeover']).toBe(25);
+			expect(FREE_TOOL_DAILY_LIMITS['check_root_server_set']).toBe(25);
+		});
+
+		it('private-probe checks stay tightly bounded on the free tier', () => {
+			expect(FREE_TOOL_DAILY_LIMITS['discover_brand_domains']).toBe(1);
+			expect(FREE_TOOL_DAILY_LIMITS['check_authoritative_dns_infra']).toBe(25);
+			expect(FREE_TOOL_DAILY_LIMITS['check_fast_flux']).toBe(3);
 		});
 
 		it('compare_baseline has a lower limit than individual checks', () => {

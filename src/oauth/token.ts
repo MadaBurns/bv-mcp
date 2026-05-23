@@ -5,6 +5,7 @@ import { consumeCode } from './storage';
 import { signJwt, newJti, constantTimeEqual } from './jwt';
 import { OAUTH_JWT_TTL_SECONDS, OAUTH_KV_PREFIX, OAUTH_SIGNING_SECRET_MIN_BYTES } from '../lib/config';
 import { resolveIssuer } from './discovery';
+import { resolveClientIpFromRequestHeaders } from '../lib/client-ip';
 
 // Fixed-window per-IP rate limit on /oauth/token. Token exchange happens once per OAuth
 // flow for legitimate clients — 30/min is generous for humans and tight for attackers
@@ -100,7 +101,7 @@ export async function handleToken(c: Context): Promise<Response> {
 
 	// Rate limit runs FIRST — before content-type / grant-type / Zod — so an attacker
 	// flooding the endpoint with invalid payloads still hits the cheap KV gate.
-	const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 	if (await tokenRateExceeded(env.SESSION_STORE, ip)) {
 		return c.json({ error: 'invalid_request', error_description: 'Too many token requests' }, 429);
 	}
@@ -109,10 +110,15 @@ export async function handleToken(c: Context): Promise<Response> {
 	if (!ct.toLowerCase().includes('application/x-www-form-urlencoded')) {
 		return c.json({ error: 'invalid_request', error_description: 'Content-Type must be application/x-www-form-urlencoded' }, 415);
 	}
-	const params = new URLSearchParams(await c.req.raw.clone().text());
+	let params: FormData;
+	try {
+		params = await c.req.formData();
+	} catch {
+		return c.json({ error: 'invalid_request', error_description: 'Request body failed validation' }, 400);
+	}
 	const body: Record<string, string> = {};
 	params.forEach((v, k) => {
-		body[k] = v;
+		if (typeof v === 'string') body[k] = v;
 	});
 
 	// grant_type check runs BEFORE Zod so a wrong value surfaces the spec-correct

@@ -27,6 +27,7 @@
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import type { BrandAuditFormat } from '../lib/db/brand-audit-schema';
+import { sanitizeDomain, validateDomain } from '../lib/sanitize';
 
 const CATEGORY = 'brand_discovery';
 
@@ -111,17 +112,26 @@ function buildErrorResult(
 	]);
 }
 
-function normaliseDomains(input: readonly string[]): string[] {
+function normaliseDomains(input: readonly string[]): { targets: string[]; invalidTargets: Array<{ input: string; error: string }> } {
 	const seen = new Set<string>();
-	const out: string[] = [];
+	const targets: string[] = [];
+	const invalidTargets: Array<{ input: string; error: string }> = [];
 	for (const raw of input) {
-		if (typeof raw !== 'string') continue;
-		const norm = raw.trim().toLowerCase().replace(/\.$/, '');
+		if (typeof raw !== 'string') {
+			invalidTargets.push({ input: String(raw), error: 'Domain must be a string' });
+			continue;
+		}
+		const validation = validateDomain(raw);
+		if (!validation.valid) {
+			invalidTargets.push({ input: raw, error: validation.error ?? 'Invalid domain' });
+			continue;
+		}
+		const norm = sanitizeDomain(raw);
 		if (!norm || seen.has(norm)) continue;
 		seen.add(norm);
-		out.push(norm);
+		targets.push(norm);
 	}
-	return out;
+	return { targets, invalidTargets };
 }
 
 export async function brandAuditBatchStart(
@@ -142,7 +152,14 @@ export async function brandAuditBatchStart(
 		);
 	}
 
-	const targets = normaliseDomains(domains);
+	const { targets, invalidTargets } = normaliseDomains(domains);
+	if (invalidTargets.length > 0) {
+		return buildErrorResult(
+			'invalidInput',
+			`Invalid brand audit target(s): ${invalidTargets.map((entry) => `${entry.input} (${entry.error})`).join(', ')}`,
+			{ invalidTargets },
+		);
+	}
 	if (targets.length === 0) {
 		return buildErrorResult('invalidInput', 'No usable targets after normalisation.');
 	}
