@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeScanScore } from '../src/lib/scoring-engine';
+import { computeScanScore } from '@blackveil/dns-checks/scoring';
 import { buildCheckResult, createFinding, type CheckCategory, type CheckResult } from '../src/lib/scoring-model';
 import { getProfileWeights, PROFILE_WEIGHTS, PROFILE_CRITICAL_CATEGORIES, type DomainContext } from '@blackveil/dns-checks/scoring';
 

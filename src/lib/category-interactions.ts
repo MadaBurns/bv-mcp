@@ -9,7 +9,7 @@
  */
 
 import type { CheckCategory, ScanScore } from './scoring-model';
-import { scoreToGrade } from './scoring-engine';
+import { scoreToGrade } from '@blackveil/dns-checks/scoring';
 import type { ScoringConfig } from './scoring-config';
 
 /** A condition that must be met for an interaction rule to fire. */
