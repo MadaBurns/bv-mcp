@@ -92,8 +92,12 @@ function extractId(result, keys) {
 	if (fromJson) return fromJson;
 	const text = resultText(result);
 	for (const k of keys) {
-		const m = text.match(new RegExp(`"${k}"\\s*:\\s*"([^"]+)"`));
-		if (m) return m[1];
+		// JSON form: "auditId":"<uuid>"
+		const json = text.match(new RegExp(`"${k}"\\s*:\\s*"([^"]+)"`));
+		if (json) return json[1];
+		// Finding detail form (e.g. brand_audit_batch_start with format:'json'): auditId=<uuid>
+		const kv = text.match(new RegExp(`\\b${k}\\s*[=:]\\s*"?([A-Za-z0-9._-]{4,})`));
+		if (kv) return kv[1];
 	}
 	return null;
 }
@@ -366,10 +370,13 @@ function selfTest() {
 	};
 	const compact = { content: [{ type: 'text', text: '## SPF Check\nresult' }] };
 	const errEnvelope = { content: [{ type: 'text', text: 'boom' }], isError: true };
+	// brand_audit_batch_start with format:'json' emits the id only as `auditId=<uuid>` (no JSON, no STRUCTURED_RESULT).
+	const detailForm = { content: [{ type: 'text', text: '### Findings\n- Brand audit batch queued\n  auditId=2fe7d69b-1974-4d3d-9dcc-9a56a396e78c queuedAt=2026-05-24T11:58:25Z etaSeconds=180' }] };
 	const cases = [
 		['hasStructuredResult(full) === true', hasStructuredResult(full) === true],
 		['hasStructuredResult(compact) === false', hasStructuredResult(compact) === false],
 		["extractId(full, ['auditId','n']) === 'abc123'", extractId(full, ['auditId', 'n']) === 'abc123'],
+		["extractId detail-form 'auditId=' captures id", extractId(detailForm, ['auditId', 'id']) === '2fe7d69b-1974-4d3d-9dcc-9a56a396e78c'],
 		['checkEnvelope({result:full}).ok === true', checkEnvelope({ result: full }).ok === true],
 		['checkEnvelope({result:errEnvelope}).ok === false', checkEnvelope({ result: errEnvelope }).ok === false],
 		['checkEnvelope({error}).ok === false', checkEnvelope({ error: 'x', code: -32029 }).ok === false],
