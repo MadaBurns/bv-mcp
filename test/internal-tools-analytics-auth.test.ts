@@ -1,13 +1,12 @@
-// H1 regression: /internal/tools/* and /internal/analytics/* relied solely on
+// H1 regression (FIND-12): /internal/tools/* and /internal/analytics/* relied solely on
 // the network guard (cf-connecting-ip absence) for access control. A misconfigured
 // upstream that strips or forwards cf-connecting-ip could expose the entire
 // internal surface — defense-in-depth eliminates the risk.
 //
-// Gate behavior is *opt-in*: activates only when REQUIRE_INTERNAL_AUTH === 'true'
-// AND BV_WEB_INTERNAL_KEY is set. Default off so existing bv-web → bv-mcp service
-// bindings (which today don't send an Authorization header on /tools/call) keep
-// working after deploy. Operators flip the flag once bv-web is updated to attach
-// the bearer.
+// Gate behavior is *secure-by-default* (FIND-12): bearer is required UNLESS
+// REQUIRE_INTERNAL_AUTH=false is set as an explicit opt-out. Callers must present
+// Authorization: Bearer ${BV_WEB_INTERNAL_KEY} on all /internal/tools/* and
+// /internal/analytics/* routes.
 
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
@@ -34,18 +33,17 @@ describe('internal tools+analytics auth gate', () => {
 	];
 
 	for (const r of routes) {
-		it(`${r.name}: gate disabled by default (REQUIRE_INTERNAL_AUTH unset) — passes through`, async () => {
+		it(`${r.name}: gate active by default (REQUIRE_INTERNAL_AUTH unset), bearer missing → 401`, async () => {
 			const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY, REQUIRE_INTERNAL_AUTH: undefined } as TestEnv;
 			const headers: Record<string, string> = {};
 			if (r.ct) headers['Content-Type'] = r.ct;
 			const req = new Request<unknown, IncomingRequestCfProperties>(r.url, { method: r.method, headers, ...(r.body ? { body: r.body } : {}) });
 			const res = await send(req, customEnv);
-			expect(res.status).not.toBe(401);
-			expect(res.status).not.toBe(503);
+			expect(res.status).toBe(401);
 		});
 
-		it(`${r.name}: opted-in but missing key → 503 (misconfig fail-closed)`, async () => {
-			const customEnv = { ...env, BV_WEB_INTERNAL_KEY: undefined, REQUIRE_INTERNAL_AUTH: 'true' } as TestEnv;
+		it(`${r.name}: key missing and REQUIRE_INTERNAL_AUTH unset → 503 (misconfig fail-closed)`, async () => {
+			const customEnv = { ...env, BV_WEB_INTERNAL_KEY: undefined, REQUIRE_INTERNAL_AUTH: undefined } as TestEnv;
 			const headers: Record<string, string> = {};
 			if (r.ct) headers['Content-Type'] = r.ct;
 			const req = new Request<unknown, IncomingRequestCfProperties>(r.url, { method: r.method, headers, ...(r.body ? { body: r.body } : {}) });
@@ -53,8 +51,8 @@ describe('internal tools+analytics auth gate', () => {
 			expect(res.status).toBe(503);
 		});
 
-		it(`${r.name}: opted-in, bearer missing → 401`, async () => {
-			const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY, REQUIRE_INTERNAL_AUTH: 'true' } as TestEnv;
+		it(`${r.name}: bearer missing → 401`, async () => {
+			const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY } as TestEnv;
 			const headers: Record<string, string> = {};
 			if (r.ct) headers['Content-Type'] = r.ct;
 			const req = new Request<unknown, IncomingRequestCfProperties>(r.url, { method: r.method, headers, ...(r.body ? { body: r.body } : {}) });
@@ -62,20 +60,33 @@ describe('internal tools+analytics auth gate', () => {
 			expect(res.status).toBe(401);
 		});
 
-		it(`${r.name}: opted-in, bearer wrong → 401`, async () => {
-			const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY, REQUIRE_INTERNAL_AUTH: 'true' } as TestEnv;
+		it(`${r.name}: bearer wrong → 401`, async () => {
+			const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY } as TestEnv;
 			const headers: Record<string, string> = { Authorization: 'Bearer wrong' };
 			if (r.ct) headers['Content-Type'] = r.ct;
 			const req = new Request<unknown, IncomingRequestCfProperties>(r.url, { method: r.method, headers, ...(r.body ? { body: r.body } : {}) });
 			const res = await send(req, customEnv);
 			expect(res.status).toBe(401);
 		});
+
+		it(`${r.name}: opt-out (REQUIRE_INTERNAL_AUTH=false) without bearer → passes through`, async () => {
+			// When the operator explicitly opts out, bearer should not be required.
+			// This covers the controlled migration window where bv-web isn't yet
+			// sending an Authorization header.
+			const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY, REQUIRE_INTERNAL_AUTH: 'false' } as TestEnv;
+			const headers: Record<string, string> = {};
+			if (r.ct) headers['Content-Type'] = r.ct;
+			const req = new Request<unknown, IncomingRequestCfProperties>(r.url, { method: r.method, headers, ...(r.body ? { body: r.body } : {}) });
+			const res = await send(req, customEnv);
+			expect(res.status).not.toBe(401);
+			expect(res.status).not.toBe(503);
+		});
 	}
 
-	it('opted-in + valid bearer → passes through to handler (POST /internal/tools/call)', async () => {
+	it('valid bearer → passes through to handler (POST /internal/tools/call)', async () => {
 		const { mockTxtRecords } = await import('./helpers/dns-mock');
 		mockTxtRecords(['v=spf1 -all']);
-		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY, REQUIRE_INTERNAL_AUTH: 'true' } as TestEnv;
+		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY } as TestEnv;
 		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_INTERNAL_KEY}` },

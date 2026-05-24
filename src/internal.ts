@@ -76,7 +76,11 @@ type InternalEnv = {
 	CF_ACCOUNT_ID?: string;
 	CF_ANALYTICS_TOKEN?: string;
 	BV_WEB_INTERNAL_KEY?: string;
-	/** Opt-in flag for the H1 defense-in-depth bearer gate on /tools/* and /analytics/*. */
+	/**
+	 * Opt-out flag for the defense-in-depth bearer gate on /tools/* and /analytics/*.
+	 * Default: gate is ACTIVE (bearer required). Set to 'false' to disable the bearer
+	 * requirement and rely solely on the cf-connecting-ip network guard.
+	 */
 	REQUIRE_INTERNAL_AUTH?: string;
 	/**
 	 * Brand-discovery cross-Worker service bindings. Operator-deploy only —
@@ -123,35 +127,34 @@ internalRoutes.use('*', async (c, next) => {
 });
 
 /**
- * Defense-in-depth gate for /tools/* and /analytics/*. Unlike trialKeysAuthGate
- * (which 503s on unset key because trial-keys mint credentials), this gate is
- * *opt-in*: it activates only when REQUIRE_INTERNAL_AUTH === 'true' AND
- * BV_WEB_INTERNAL_KEY is set. Default off so deploying H1 doesn't 401 the
- * existing bv-web → bv-mcp service binding (which doesn't currently send an
- * Authorization header on /tools/call).
+ * Defense-in-depth bearer gate for /tools/*, /analytics/*, and /tenants/*.
  *
- * Rollout:
- *   1. Ship bv-mcp 2.10.10 with the gate code present but REQUIRE_INTERNAL_AUTH unset.
- *   2. Update bv-web's service client to attach `Authorization: Bearer ${BV_WEB_INTERNAL_KEY}`.
- *   3. Deploy bv-web; verify in prod.
- *   4. Set REQUIRE_INTERNAL_AUTH=true on bv-mcp; redeploy.
+ * **Secure by default (FIND-12):** the gate is ACTIVE unless explicitly opted
+ * out. Callers must present `Authorization: Bearer ${BV_WEB_INTERNAL_KEY}`.
+ * Set `REQUIRE_INTERNAL_AUTH=false` to disable and rely solely on the
+ * cf-connecting-ip network guard (e.g. during a controlled migration window).
  *
- * H1 finding (2026-05-08 security audit): without this, /tools/batch could
- * issue up to 8,000 DoH lookups per call without rate limiting, and the
- * analytics routes leaked per-key telemetry to anyone bypassing the network
- * guard.
+ * Fail-closed: if the gate is active but `BV_WEB_INTERNAL_KEY` is unset,
+ * the route returns 503 rather than silently passing unauthenticated requests.
+ *
+ * Unlike trialKeysAuthGate (which always enforces because it mints credentials),
+ * this gate can be disabled at the operator's explicit request via the env flag.
+ *
+ * NOTE (cross-repo): bv-web's service client must send
+ * `Authorization: Bearer ${BV_WEB_INTERNAL_KEY}` on all calls to
+ * /internal/tools/*, /internal/analytics/*, and /internal/tenants/*.
  *
  * Registered BEFORE the route handlers below — Hono middleware applies only to
  * routes registered after the .use() call.
  */
 const internalLenientAuthGate: import('hono').MiddlewareHandler<{ Bindings: InternalEnv }> = async (c, next) => {
-	if (c.env.REQUIRE_INTERNAL_AUTH !== 'true') {
-		// Gate not opted in — rely on the network guard (cf-connecting-ip) alone.
+	if (c.env.REQUIRE_INTERNAL_AUTH === 'false') {
+		// Explicitly opted out — rely on the network guard (cf-connecting-ip) alone.
 		return next();
 	}
 	const expected = c.env.BV_WEB_INTERNAL_KEY;
 	if (!expected) {
-		// Misconfig: opt-in flag set but no key — fail closed rather than fail open.
+		// Misconfig: gate is active but no key configured — fail closed.
 		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
 	}
 	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {
