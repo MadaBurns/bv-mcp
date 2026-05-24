@@ -256,6 +256,64 @@ async function listTools(session) {
 	return res.result.tools.map((t) => t.name);
 }
 
+// --- Runner ---------------------------------------------------------------
+async function runMatrix() {
+	requireKey();
+	const started = Date.now();
+	const sessI = await createSession(REP_INTERACTIVE_UA);
+	const sessN = await createSession(REP_NONINTERACTIVE_UA);
+	const tools = await listTools(sessN);
+	const sweep = tools.filter((t) => !MUTATING_TOOLS.has(t));
+
+	const ctx = {};
+	const setup = [];
+	// Phase A — setup (non-interactive UA, so IDs are machine-readable).
+	console.error('Phase A: setup (register watch, start audit)...');
+	const reg = await callTool(sessN, 'register_brand_audit_watch', buildArgs('register_brand_audit_watch', ctx));
+	ctx.watchId = reg.result ? extractId(reg.result, ['watchId', 'n', 'id']) : null;
+	setup.push({ name: 'register_brand_audit_watch', env: checkEnvelope(reg), captured: ctx.watchId });
+	const batch = await callTool(sessN, 'brand_audit_batch_start', buildArgs('brand_audit_batch_start', ctx));
+	ctx.auditId = batch.result ? extractId(batch.result, ['auditId', 'n', 'id']) : null;
+	setup.push({ name: 'brand_audit_batch_start', env: checkEnvelope(batch), captured: ctx.auditId });
+
+	let toolResults = [];
+	let clientResults = [];
+	try {
+		// Phase B — dual-session sweep.
+		console.error(`Phase B: sweeping ${sweep.length} tools x 2 classes...`);
+		toolResults = await mapConcurrent(sweep, CONCURRENCY, async (name) => {
+			const args = buildArgs(name, ctx);
+			const [ri, rn] = await Promise.all([callTool(sessI, name, args), callTool(sessN, name, args)]);
+			return classifyTool({ name, ri, rn });
+		});
+
+		// Client axis — 9 other UAs each run check_spf.
+		console.error('Phase B: client-axis wiring (check_spf x 9 UAs)...');
+		const others = [
+			...Object.entries(INTERACTIVE_UAS).filter(([k]) => k !== 'claude_code').map(([k, ua]) => [k, ua, 'interactive']),
+			...Object.entries(NONINTERACTIVE_UAS).filter(([k]) => k !== 'mcp_remote').map(([k, ua]) => [k, ua, 'non-interactive']),
+		];
+		clientResults = await mapConcurrent(others, CONCURRENCY, async ([client, ua, expectedClass]) => {
+			const session = await createSession(ua);
+			const res = await callTool(session, 'check_spf', buildArgs('check_spf'));
+			const env = checkEnvelope(res);
+			const marker = res.result ? hasStructuredResult(res.result) : false;
+			const expectMarker = expectedClass === 'non-interactive';
+			const ok = env.ok && marker === expectMarker;
+			return { client, ua, expectedClass, expectMarker, observedMarker: marker, env, ok };
+		});
+	} finally {
+		// Phase C — teardown (best-effort even if Phase B threw).
+		if (ctx.watchId) {
+			console.error('Phase C: teardown (delete watch)...');
+			const del = await callTool(sessN, 'delete_brand_audit_watch', { watchId: ctx.watchId });
+			setup.push({ name: 'delete_brand_audit_watch', env: checkEnvelope(del), captured: ctx.watchId });
+		}
+	}
+
+	return { tools, sweep, setup, toolResults, clientResults, ctx, durationMs: Date.now() - started };
+}
+
 // --- Offline self-test of the pure helpers --------------------------------
 function selfTest() {
 	const full = {
@@ -316,4 +374,16 @@ if (DRY_RUN) {
 		console.error(e.message);
 		process.exit(1);
 	});
+}
+
+if (!SELF_TEST && !DRY_RUN) {
+	runMatrix()
+		.then((r) => {
+			console.log(JSON.stringify({ setup: r.setup, toolResults: r.toolResults, clientResults: r.clientResults }, null, 2));
+			process.exit(0);
+		})
+		.catch((e) => {
+			console.error(e.stack || e.message);
+			process.exit(1);
+		});
 }
