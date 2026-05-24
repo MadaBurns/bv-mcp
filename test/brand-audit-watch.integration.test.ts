@@ -128,6 +128,23 @@ describe('register_brand_audit_watch', () => {
 		const error = result.findings.find((f) => f.metadata?.watchLimitExceeded === true);
 		expect(error).toBeDefined();
 	});
+
+	it('rejects a blocklisted / SSRF-class watched domain at register time (no INSERT)', async () => {
+		const { registerBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
+		const { db, calls } = makeMockD1();
+		const deps = makeDeps({ db });
+
+		// An IP literal is rejected by validateDomain (SSRF/blocklist guard). It must
+		// be refused at register time rather than stored and failed every cron cycle.
+		const result = await registerBrandAuditWatch({ domain: '127.0.0.1', interval: 'daily' }, 'owner-1', deps);
+
+		const error = result.findings.find((f) => f.metadata?.invalidInput === true);
+		expect(error).toBeDefined();
+
+		// No row is written for a rejected domain.
+		const insert = calls.find((c) => c.sql.includes('INSERT INTO brand_audit_watches'));
+		expect(insert).toBeUndefined();
+	});
 });
 
 describe('list_brand_audit_watches', () => {
