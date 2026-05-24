@@ -24,6 +24,10 @@ const DRY_RUN = process.argv.includes('--dry-run');
 const SELF_TEST = process.argv.includes('--self-test');
 const jsonIdx = process.argv.indexOf('--json');
 const JSON_OUT = jsonIdx >= 0 ? process.argv[jsonIdx + 1] : null;
+if (jsonIdx >= 0 && !JSON_OUT) {
+	console.error('Error: --json requires a path argument.');
+	process.exit(1);
+}
 
 // --- Client UA tables -----------------------------------------------------
 const INTERACTIVE_UAS = {
@@ -45,11 +49,13 @@ const REP_INTERACTIVE_UA = INTERACTIVE_UAS.claude_code;
 const REP_NONINTERACTIVE_UA = NONINTERACTIVE_UAS.mcp_remote;
 
 // Tools that mutate/produce IDs — run once in setup/teardown, not the dual sweep.
-const MUTATING_TOOLS = new Set(['register_brand_audit_watch', 'brand_audit_batch_start', 'delete_brand_audit_watch']);
+// `brand_audit_watch` is action-routed (register/list/delete); we drive register+delete
+// explicitly in Phase A/C, so keep it out of the default-arg sweep.
+const MUTATING_TOOLS = new Set(['brand_audit_watch', 'brand_audit_batch_start']);
 // `format` arg is output-mode (json|markdown|both), not verbosity — skip Invariant B.
 const FORMAT_SPECIAL = new Set(['brand_audit_single', 'brand_audit_batch_start']);
-// Envelope may legitimately be isError (not-ready / scan-only) — record, don't fail.
-const RECORD_ONLY = new Set(['check_subdomain_takeover', 'brand_audit_get_report']);
+// Envelope may legitimately be isError (not-ready / scan-only / no-baseline) — record, don't fail.
+const RECORD_ONLY = new Set(['check_subdomain_takeover', 'brand_audit_get_report', 'analyze_drift']);
 
 // --- Pure result helpers --------------------------------------------------
 function resultText(result) {
@@ -158,11 +164,12 @@ async function createSession(ua) {
 	const sid = res.headers.get('mcp-session-id') ?? '';
 	await res.text(); // drain SSE body
 	if (!sid) throw new Error(`initialize returned no Mcp-Session-Id (status ${res.status}) for UA "${ua}"`);
-	await fetch(EP, {
+	const ack = await fetch(EP, {
 		method: 'POST',
 		headers: headers(ua, sid),
 		body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
 	});
+	await ack.text(); // drain
 	return { ua, sid };
 }
 
@@ -183,8 +190,9 @@ async function rpc(session, method, params, { retry = true } = {}) {
 	if (!parsed) return { httpStatus: res.status, error: 'no_data_frame', raw: text.slice(0, 200) };
 	if (parsed.error) {
 		if (retry && parsed.error.code === -32029) {
-			const wait = parseInt(res.headers.get('retry-after') || '2', 10);
-			await new Promise((r) => setTimeout(r, wait * 1000));
+			const parsedWait = parseInt(res.headers.get('retry-after') || '2', 10);
+			const waitMs = (Number.isFinite(parsedWait) ? parsedWait : 2) * 1000;
+			await new Promise((r) => setTimeout(r, waitMs));
 			return rpc(session, method, params, { retry: false });
 		}
 		return { httpStatus: res.status, error: parsed.error.message, code: parsed.error.code };
@@ -220,8 +228,10 @@ function buildArgs(name, ctx = {}) {
 			return { domain: TARGET, baseline: { grade: 'B' } };
 		case 'check_root_server_set':
 		case 'get_benchmark':
-		case 'list_brand_audit_watches':
 			return {};
+		case 'brand_audit_watch':
+			// Setup/teardown drive register+delete explicitly; default to the read-only list action.
+			return { action: 'list' };
 		case 'explain_finding':
 			return { checkType: 'SPF', status: 'fail' };
 		case 'get_provider_insights':
@@ -238,10 +248,6 @@ function buildArgs(name, ctx = {}) {
 			return { auditId: ctx.auditId ?? 'unknown' };
 		case 'brand_audit_get_report':
 			return { auditId: ctx.auditId ?? 'unknown' };
-		case 'register_brand_audit_watch':
-			return { domain: TARGET, interval: 'monthly' };
-		case 'delete_brand_audit_watch':
-			return { watchId: ctx.watchId ?? 'unknown' };
 		default:
 			return { domain: TARGET };
 	}
@@ -269,11 +275,11 @@ async function runMatrix() {
 	const setup = [];
 	// Phase A — setup (non-interactive UA, so IDs are machine-readable).
 	console.error('Phase A: setup (register watch, start audit)...');
-	const reg = await callTool(sessN, 'register_brand_audit_watch', buildArgs('register_brand_audit_watch', ctx));
-	ctx.watchId = reg.result ? extractId(reg.result, ['watchId', 'n', 'id']) : null;
-	setup.push({ name: 'register_brand_audit_watch', env: checkEnvelope(reg), captured: ctx.watchId });
+	const reg = await callTool(sessN, 'brand_audit_watch', { action: 'register', domain: TARGET, interval: 'monthly' });
+	ctx.watchId = reg.result ? extractId(reg.result, ['watchId', 'id']) : null;
+	setup.push({ name: 'brand_audit_watch:register', env: checkEnvelope(reg), captured: ctx.watchId });
 	const batch = await callTool(sessN, 'brand_audit_batch_start', buildArgs('brand_audit_batch_start', ctx));
-	ctx.auditId = batch.result ? extractId(batch.result, ['auditId', 'n', 'id']) : null;
+	ctx.auditId = batch.result ? extractId(batch.result, ['auditId', 'id']) : null;
 	setup.push({ name: 'brand_audit_batch_start', env: checkEnvelope(batch), captured: ctx.auditId });
 
 	let toolResults = [];
@@ -306,8 +312,8 @@ async function runMatrix() {
 		// Phase C — teardown (best-effort even if Phase B threw).
 		if (ctx.watchId) {
 			console.error('Phase C: teardown (delete watch)...');
-			const del = await callTool(sessN, 'delete_brand_audit_watch', { watchId: ctx.watchId });
-			setup.push({ name: 'delete_brand_audit_watch', env: checkEnvelope(del), captured: ctx.watchId });
+			const del = await callTool(sessN, 'brand_audit_watch', { action: 'delete', watchId: ctx.watchId });
+			setup.push({ name: 'brand_audit_watch:delete', env: checkEnvelope(del), captured: ctx.watchId });
 		}
 	}
 
@@ -402,9 +408,11 @@ async function dryRun() {
 	console.log(`Deployed tools: ${tools.length}`);
 	console.log(`\nTool axis (run in BOTH claude_code + mcp_remote): ${sweep.length} tools`);
 	for (const t of sweep) console.log(`  ${t.padEnd(34)} args=${JSON.stringify(buildArgs(t))}`);
-	console.log(`\nSetup/teardown (mcp_remote only): ${[...MUTATING_TOOLS].join(', ')}`);
+	console.log(`\nSetup/teardown (mcp_remote only): brand_audit_watch:register, brand_audit_batch_start, brand_audit_watch:delete`);
 	console.log(`\nClient axis (check_spf): ${[...Object.keys(INTERACTIVE_UAS), ...Object.keys(NONINTERACTIVE_UAS)].join(', ')}`);
-	console.log(`\nEstimated tools/call count: ${sweep.length * 2 + MUTATING_TOOLS.size + (Object.keys(INTERACTIVE_UAS).length + Object.keys(NONINTERACTIVE_UAS).length - 2)}`);
+	// 3 setup/teardown calls (register, batch_start, delete) + 9 client-axis UAs (11 - 2 representatives).
+	const SETUP_CALLS = 3;
+	console.log(`\nEstimated tools/call count: ${sweep.length * 2 + SETUP_CALLS + (Object.keys(INTERACTIVE_UAS).length + Object.keys(NONINTERACTIVE_UAS).length - 2)}`);
 }
 
 if (DRY_RUN) {
