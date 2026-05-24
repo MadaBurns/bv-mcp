@@ -90,6 +90,8 @@ type BvMcpEnv = {
 	BV_CERTSTREAM?: Fetcher;
 	BV_WHOIS?: Fetcher;
 	REQUIRE_AUTH?: string;
+	/** FIND-01: when 'true', the ?api_key= query-param fallback is nulled; requests proceed as free tier. */
+	REJECT_QUERY_API_KEY?: string;
 	ENABLE_OAUTH?: string;
 	ENABLE_OWNER_OAUTH?: string;
 	BV_WEB_OAUTH_CONSENT_URL?: string;
@@ -247,7 +249,7 @@ for (const path of mcpPaths) {
 	app.use(path, async (c, next) => {
 		const authHeader = c.req.header('authorization');
 		const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
-		const queryToken = bearerToken ? null : (c.req.query('api_key') ?? null);
+		const queryToken = c.env.REJECT_QUERY_API_KEY === 'true' ? null : bearerToken ? null : (c.req.query('api_key') ?? null);
 		const token = bearerToken ?? queryToken;
 		const apiKeyInQuery = queryToken !== null;
 
