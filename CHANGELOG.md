@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+
+- **Split `brand_audit_watch` into three single-purpose tools** — `list_brand_audit_watches` (read-only), `register_brand_audit_watch` (write), and `delete_brand_audit_watch` (destructive). **Breaking MCP surface change:** the `action`-discriminated `brand_audit_watch` tool is removed. Satisfies the Anthropic Directory rule that read and destructive operations live in separate tools. `delete_brand_audit_watch` now advertises `destructiveHint: true`. Behavior (owner-scoping, SSRF re-validation, 20-watch cap, per-tier quotas) is unchanged. Tool surface 60 → 62.
+- **Tool annotations carry a real `destructiveHint`** — `ToolDef` gained a `destructive?` flag; the previously hard-coded `destructiveHint: false` now reflects it. New audit `test/audits/tool-annotations.audit.test.ts` locks the directory review criteria (title present, names ≤64, read/destructive split, no prescriptive/injection language in descriptions).
+- **`scan_domain` description rewritten** to describe behavior factually instead of steering Claude ("Use this whenever…", "Start here…") — the latter is treated as prompt injection at directory review.
+- **`tools/list` wire response is MCP-spec-shaped** — server-specific `group`/`tier`/`scanIncluded` fields moved under the spec-sanctioned `_meta` object instead of leaking as top-level tool fields.
+
 ## [2.27.0] - 2026-05-23
 
 ### Added

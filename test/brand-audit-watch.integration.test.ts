@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * Tests for the brand_audit_watch MCP tool.
+ * Tests for the brand-audit watch MCP tools.
  *
- * Three actions on a single tool surface:
- *   - register: create a new watch row in brand_audit_watches
- *   - list:     enumerate the caller's active watches
- *   - delete:   remove a watch (owner-scoped — can't delete another owner's)
+ * The single `action`-discriminated `brand_audit_watch` tool was split into
+ * three single-purpose tools to satisfy the Anthropic Directory requirement
+ * that read and destructive operations live in separate tools:
+ *   - list_brand_audit_watches   (read-only)  — enumerate the caller's watches
+ *   - register_brand_audit_watch (write)      — create a new watch row
+ *   - delete_brand_audit_watch   (destructive)— remove a watch (owner-scoped)
  *
  * Webhook URL is validated for SSRF at register time AND at delivery time
  * (cron handler). At register, the SSRF check is done via the canonical
@@ -15,6 +17,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { BrandAuditWatchDeps } from '../src/tools/brand-audit-watch';
+import { TOOLS } from '../src/schemas/tool-definitions';
 
 interface D1Call {
 	sql: string;
@@ -67,14 +70,14 @@ function makeDeps(over: Partial<BrandAuditWatchDeps> = {}): BrandAuditWatchDeps 
 	};
 }
 
-describe('brandAuditWatch — register', () => {
+describe('register_brand_audit_watch', () => {
 	it('creates a row and returns the watch id', async () => {
-		const { brandAuditWatch } = await import('../src/tools/brand-audit-watch');
+		const { registerBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
 		const { db, calls } = makeMockD1();
 		const deps = makeDeps({ db });
 
-		const result = await brandAuditWatch(
-			{ action: 'register', domain: 'apple.com', interval: 'weekly', webhook_url: 'https://hooks.example.com/abc' },
+		const result = await registerBrandAuditWatch(
+			{ domain: 'apple.com', interval: 'weekly', webhook_url: 'https://hooks.example.com/abc' },
 			'owner-1',
 			deps,
 		);
@@ -92,12 +95,12 @@ describe('brandAuditWatch — register', () => {
 	});
 
 	it('rejects a webhook URL that fails SSRF validation (private IP)', async () => {
-		const { brandAuditWatch } = await import('../src/tools/brand-audit-watch');
+		const { registerBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
 		const { db } = makeMockD1();
 		const deps = makeDeps({ db });
 
-		const result = await brandAuditWatch(
-			{ action: 'register', domain: 'apple.com', interval: 'daily', webhook_url: 'http://10.0.0.1/internal' },
+		const result = await registerBrandAuditWatch(
+			{ domain: 'apple.com', interval: 'daily', webhook_url: 'http://10.0.0.1/internal' },
 			'owner-1',
 			deps,
 		);
@@ -106,15 +109,11 @@ describe('brandAuditWatch — register', () => {
 	});
 
 	it('accepts register without webhook_url (logging-only watch)', async () => {
-		const { brandAuditWatch } = await import('../src/tools/brand-audit-watch');
+		const { registerBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
 		const { db, calls } = makeMockD1();
 		const deps = makeDeps({ db });
 
-		const result = await brandAuditWatch(
-			{ action: 'register', domain: 'apple.com', interval: 'monthly' },
-			'owner-1',
-			deps,
-		);
+		const result = await registerBrandAuditWatch({ domain: 'apple.com', interval: 'monthly' }, 'owner-1', deps);
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
 		expect(summary?.metadata?.watchId).toBeDefined();
 		const insert = calls.find((c) => c.sql.includes('INSERT INTO brand_audit_watches'));
@@ -122,44 +121,72 @@ describe('brandAuditWatch — register', () => {
 	});
 
 	it('refuses to register when the principal already has 20 watches (cap)', async () => {
-		const { brandAuditWatch } = await import('../src/tools/brand-audit-watch');
+		const { registerBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
 		const { db } = makeMockD1({ existingCount: 20 });
 		const deps = makeDeps({ db });
-		const result = await brandAuditWatch(
-			{ action: 'register', domain: 'apple.com', interval: 'daily' },
-			'owner-1',
-			deps,
-		);
+		const result = await registerBrandAuditWatch({ domain: 'apple.com', interval: 'daily' }, 'owner-1', deps);
 		const error = result.findings.find((f) => f.metadata?.watchLimitExceeded === true);
 		expect(error).toBeDefined();
 	});
 });
 
-describe('brandAuditWatch — list', () => {
+describe('list_brand_audit_watches', () => {
 	it("returns the caller's active watches", async () => {
-		const { brandAuditWatch } = await import('../src/tools/brand-audit-watch');
+		const { listBrandAuditWatches } = await import('../src/tools/brand-audit-watch');
 		const rows = [
-			{ id: 'w-1', owner_id: 'owner-1', domain: 'apple.com', interval: 'weekly', webhook_url: null, last_run_at: null, last_classification_hash: null, active: 1, created_at: 1 },
-			{ id: 'w-2', owner_id: 'owner-1', domain: 'brand-zeta.example.com', interval: 'monthly', webhook_url: 'https://hooks.example.com/a', last_run_at: 2, last_classification_hash: 'a'.repeat(64), active: 1, created_at: 2 },
+			{
+				id: 'w-1',
+				owner_id: 'owner-1',
+				domain: 'apple.com',
+				interval: 'weekly',
+				webhook_url: null,
+				last_run_at: null,
+				last_classification_hash: null,
+				active: 1,
+				created_at: 1,
+			},
+			{
+				id: 'w-2',
+				owner_id: 'owner-1',
+				domain: 'brand-zeta.example.com',
+				interval: 'monthly',
+				webhook_url: 'https://hooks.example.com/a',
+				last_run_at: 2,
+				last_classification_hash: 'a'.repeat(64),
+				active: 1,
+				created_at: 2,
+			},
 		];
 		const { db } = makeMockD1({ existing: rows });
 		const deps = makeDeps({ db });
 
-		const result = await brandAuditWatch({ action: 'list' }, 'owner-1', deps);
+		const result = await listBrandAuditWatches('owner-1', deps);
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
-		expect((summary?.metadata?.watches as unknown[])).toHaveLength(2);
+		expect(summary?.metadata?.watches as unknown[]).toHaveLength(2);
 	});
 });
 
-describe('brandAuditWatch — delete', () => {
+describe('delete_brand_audit_watch', () => {
 	it('deletes a watch owned by the caller', async () => {
-		const { brandAuditWatch } = await import('../src/tools/brand-audit-watch');
+		const { deleteBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
 		const { db, calls } = makeMockD1({
-			existing: [{ id: 'w-1', owner_id: 'owner-1', domain: 'apple.com', interval: 'weekly', webhook_url: null, last_run_at: null, last_classification_hash: null, active: 1, created_at: 1 }],
+			existing: [
+				{
+					id: 'w-1',
+					owner_id: 'owner-1',
+					domain: 'apple.com',
+					interval: 'weekly',
+					webhook_url: null,
+					last_run_at: null,
+					last_classification_hash: null,
+					active: 1,
+					created_at: 1,
+				},
+			],
 		});
 		const deps = makeDeps({ db });
 
-		const result = await brandAuditWatch({ action: 'delete', watchId: 'w-1' }, 'owner-1', deps);
+		const result = await deleteBrandAuditWatch({ watchId: 'w-1' }, 'owner-1', deps);
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
 		expect(summary?.metadata?.deleted).toBe(true);
 		const del = calls.find((c) => c.sql.includes('DELETE FROM brand_audit_watches'));
@@ -168,15 +195,44 @@ describe('brandAuditWatch — delete', () => {
 	});
 
 	it("refuses to delete another owner's watch (notFound, not accessDenied)", async () => {
-		const { brandAuditWatch } = await import('../src/tools/brand-audit-watch');
+		const { deleteBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
 		const { db } = makeMockD1({
-			existing: [{ id: 'w-2', owner_id: 'owner-other', domain: 'x.com', interval: 'daily', webhook_url: null, last_run_at: null, last_classification_hash: null, active: 1, created_at: 1 }],
+			existing: [
+				{
+					id: 'w-2',
+					owner_id: 'owner-other',
+					domain: 'x.com',
+					interval: 'daily',
+					webhook_url: null,
+					last_run_at: null,
+					last_classification_hash: null,
+					active: 1,
+					created_at: 1,
+				},
+			],
 		});
 		const deps = makeDeps({ db });
-		const result = await brandAuditWatch({ action: 'delete', watchId: 'w-2' }, 'owner-1', deps);
+		const result = await deleteBrandAuditWatch({ watchId: 'w-2' }, 'owner-1', deps);
 		const notFound = result.findings.find((f) => f.metadata?.notFound === true);
 		const accessDenied = result.findings.find((f) => f.metadata?.accessDenied === true);
 		expect(notFound).toBeDefined();
 		expect(accessDenied).toBeUndefined();
+	});
+});
+
+describe('brand-audit watch tool surface (directory read/write split)', () => {
+	const byName = (n: string) => TOOLS.find((t) => t.name === n);
+
+	it('exposes three single-purpose tools and removes the catch-all', () => {
+		expect(byName('brand_audit_watch')).toBeUndefined();
+		expect(byName('list_brand_audit_watches')).toBeDefined();
+		expect(byName('register_brand_audit_watch')).toBeDefined();
+		expect(byName('delete_brand_audit_watch')).toBeDefined();
+	});
+
+	it('annotates each tool by its operation kind', () => {
+		expect(byName('list_brand_audit_watches')?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+		expect(byName('register_brand_audit_watch')?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+		expect(byName('delete_brand_audit_watch')?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
 	});
 });

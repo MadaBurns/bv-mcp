@@ -28,7 +28,9 @@ import {
 	BrandAuditBatchStartArgs,
 	BrandAuditStatusArgs,
 	BrandAuditGetReportArgs,
-	BrandAuditWatchArgs,
+	ListBrandAuditWatchesArgs,
+	RegisterBrandAuditWatchArgs,
+	DeleteBrandAuditWatchArgs,
 	TOOL_SCHEMA_MAP,
 } from './tool-args';
 
@@ -74,6 +76,8 @@ interface ToolDef {
 	tier?: ToolTier;
 	scanIncluded: boolean;
 	mutating?: boolean;
+	/** True when the tool deletes or overwrites data → drives `destructiveHint`. Implies `mutating`. */
+	destructive?: boolean;
 }
 
 /** DNS/security acronyms that should be uppercased in human-readable tool titles. */
@@ -242,16 +246,16 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		tier: 'protective',
 		scanIncluded: false,
 	},
-		check_subdomailing: {
-			description: 'Detect SubdoMailing risk by analyzing SPF include chain for takeover-vulnerable domains.',
-			schema: BaseDomainArgs,
+	check_subdomailing: {
+		description: 'Detect SubdoMailing risk by analyzing SPF include chain for takeover-vulnerable domains.',
+		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'protective',
 		scanIncluded: true,
 	},
 	scan_domain: {
 		description:
-			"Look up any domain to get a full DNS and email security audit. Use this whenever a user mentions a domain name, asks to check/scan/lookup/analyze a domain, or wants to know about a domain's security posture. Returns score, grade, maturity stage, and prioritized findings. Start here for any domain-related question.",
+			'Runs a full DNS and email security audit for a domain, aggregating every scan-included check in parallel: SPF, DKIM, DMARC, DNSSEC, TLS/SSL, MTA-STS, CAA, BIMI, subdomain takeover, and more. Returns an overall score, letter grade, maturity stage, and prioritized findings. The broadest single-domain tool; the individual check_* tools each cover one control in isolation.',
 		schema: ScanDomainArgs,
 		group: 'meta',
 		scanIncluded: false,
@@ -531,13 +535,29 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'discovery',
 		scanIncluded: false,
 	},
-	brand_audit_watch: {
+	list_brand_audit_watches: {
 		description:
-			'Register, list, or delete recurring brand-audit watches. Watches run on a daily/weekly/monthly cadence via the scheduled cron tick — each run enqueues a fresh brand_audit_batch_start and (when configured) POSTs a diff webhook on classification drift. Owner-scoped; per-principal cap of 20 active watches. Phase 4 (v2.21.0+).',
-		schema: BrandAuditWatchArgs,
+			"Returns the caller's recurring brand-audit watches: watchId, domain, interval, webhook presence, last-run time, and active state. Owner-scoped. Read-only.",
+		schema: ListBrandAuditWatchesArgs,
+		group: 'discovery',
+		scanIncluded: false,
+	},
+	register_brand_audit_watch: {
+		description:
+			'Creates a recurring brand-audit watch for a domain on a daily/weekly/monthly cadence. Each run enqueues a fresh brand_audit_batch_start and (when a webhook is configured) POSTs a diff webhook on classification drift. Returns the new watchId. Owner-scoped; per-principal cap of 20 active watches.',
+		schema: RegisterBrandAuditWatchArgs,
 		group: 'discovery',
 		scanIncluded: false,
 		mutating: true,
+	},
+	delete_brand_audit_watch: {
+		description:
+			'Permanently removes a recurring brand-audit watch by watchId. Owner-scoped — a watchId owned by another principal surfaces as notFound. Returns confirmation of deletion.',
+		schema: DeleteBrandAuditWatchArgs,
+		group: 'discovery',
+		scanIncluded: false,
+		mutating: true,
+		destructive: true,
 	},
 };
 
@@ -548,7 +568,7 @@ export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => (
 	annotations: {
 		title: toolNameToTitle(name),
 		readOnlyHint: !def.mutating,
-		destructiveHint: false,
+		destructiveHint: Boolean(def.destructive),
 		idempotentHint: !def.mutating,
 		openWorldHint: true,
 	},

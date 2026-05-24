@@ -64,7 +64,7 @@ import { brandAuditSingle } from '../tools/brand-audit-single';
 import { brandAuditBatchStart } from '../tools/brand-audit-batch-start';
 import { brandAuditStatus } from '../tools/brand-audit-status';
 import { brandAuditGetReport } from '../tools/brand-audit-get-report';
-import { brandAuditWatch } from '../tools/brand-audit-watch';
+import { registerBrandAuditWatch, listBrandAuditWatches, deleteBrandAuditWatch } from '../tools/brand-audit-watch';
 import { createD1BrandAuditStepStore } from '../lib/brand-audit-step-store';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
@@ -96,11 +96,41 @@ interface McpToolResult {
 }
 
 /**
- * Handle the MCP tools/list method.
- * Returns all available tool definitions.
+ * MCP-spec-shaped tool descriptor as sent over the wire. Server-specific
+ * metadata (functional group, scoring tier, scan inclusion) is nested under
+ * `_meta` — the spec-sanctioned extension point — rather than leaked as
+ * top-level fields the MCP `Tool` shape does not define.
  */
-export function handleToolsList(): { tools: McpTool[] } {
-	return { tools: TOOLS };
+interface WireTool {
+	name: string;
+	description: string;
+	inputSchema: McpTool['inputSchema'];
+	annotations: McpTool['annotations'];
+	_meta: {
+		group: McpTool['group'];
+		tier?: McpTool['tier'];
+		scanIncluded: boolean;
+	};
+}
+
+/**
+ * Handle the MCP tools/list method.
+ * Returns all available tool definitions in MCP-spec shape.
+ */
+export function handleToolsList(): { tools: WireTool[] } {
+	return {
+		tools: TOOLS.map((tool) => ({
+			name: tool.name,
+			description: tool.description,
+			inputSchema: tool.inputSchema,
+			annotations: tool.annotations,
+			_meta: {
+				group: tool.group,
+				...(tool.tier !== undefined && { tier: tool.tier }),
+				scanIncluded: tool.scanIncluded,
+			},
+		})),
+	};
 }
 
 /** Wrapper for dynamic check_mx import (required for test mock isolation) */
@@ -215,6 +245,16 @@ async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOption
 		},
 		buildDnsOptions(runtimeOptions),
 	);
+}
+
+/** Shared `unprovisioned` result for the brand-audit watch tools when BRAND_AUDIT_DB is absent. */
+async function brandAuditWatchUnprovisioned(): Promise<CheckResult> {
+	const { buildCheckResult, createFinding } = await import('../lib/scoring');
+	return buildCheckResult('brand_discovery', [
+		createFinding('brand_discovery', 'Brand audit watch unavailable', 'high', 'BRAND_AUDIT_DB binding is not provisioned.', {
+			unprovisioned: true,
+		}),
+	]);
 }
 
 /**
@@ -502,31 +542,44 @@ const TOOL_REGISTRY: Record<
 		},
 		cacheable: false,
 	},
-	brand_audit_watch: {
+	list_brand_audit_watches: {
+		// Read-only, but watch state is mutable — never cache.
+		cacheKey: () => `__nocache__:list_brand_audit_watches:${crypto.randomUUID()}`,
+		execute: async (_domain, _args, ro) => {
+			const db = ro?.brandAuditDb;
+			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
+			if (!db) return brandAuditWatchUnprovisioned();
+			return listBrandAuditWatches(principalId, { db });
+		},
+		cacheTtlSeconds: 0,
+	},
+	register_brand_audit_watch: {
 		// Mutating tool — random UUID keeps every call a cache-miss.
-		cacheKey: () => `__nocache__:brand_audit_watch:${crypto.randomUUID()}`,
+		cacheKey: () => `__nocache__:register_brand_audit_watch:${crypto.randomUUID()}`,
 		execute: async (_domain, args, ro) => {
 			const db = ro?.brandAuditDb;
 			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
-			if (!db) {
-				const { buildCheckResult, createFinding } = await import('../lib/scoring');
-				return buildCheckResult('brand_discovery', [
-					createFinding('brand_discovery', 'Brand audit watch unavailable', 'high', 'BRAND_AUDIT_DB binding is not provisioned.', {
-						unprovisioned: true,
-					}),
-				]);
-			}
-			return brandAuditWatch(
+			if (!db) return brandAuditWatchUnprovisioned();
+			return registerBrandAuditWatch(
 				{
-					action: args.action as 'register' | 'list' | 'delete',
 					domain: args.domain as string | undefined,
 					interval: args.interval as 'daily' | 'weekly' | 'monthly' | undefined,
 					webhook_url: args.webhook_url as string | undefined,
-					watchId: args.watchId as string | undefined,
 				},
 				principalId,
 				{ db },
 			);
+		},
+		cacheTtlSeconds: 0,
+	},
+	delete_brand_audit_watch: {
+		// Destructive tool — random UUID keeps every call a cache-miss.
+		cacheKey: () => `__nocache__:delete_brand_audit_watch:${crypto.randomUUID()}`,
+		execute: async (_domain, args, ro) => {
+			const db = ro?.brandAuditDb;
+			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
+			if (!db) return brandAuditWatchUnprovisioned();
+			return deleteBrandAuditWatch({ watchId: args.watchId as string | undefined }, principalId, { db });
 		},
 		cacheTtlSeconds: 0,
 	},
@@ -604,11 +657,13 @@ export async function handleToolsCall(
 			'batch_scan',
 			'compare_domains',
 			'check_root_server_set',
-			// v2.21+ brand-audit tools — take `domains[]`, `auditId`, or `action` instead of `domain`.
+			// v2.21+ brand-audit tools — take `domains[]`, `auditId`, or `watchId` instead of a required `domain`.
 			'brand_audit_batch_start',
 			'brand_audit_status',
 			'brand_audit_get_report',
-			'brand_audit_watch',
+			'list_brand_audit_watches',
+			'register_brand_audit_watch',
+			'delete_brand_audit_watch',
 		]);
 		if (!DOMAIN_OPTIONAL_TOOLS.has(name)) {
 			domain = extractAndValidateDomain(validatedArgs);
