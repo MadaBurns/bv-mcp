@@ -121,6 +121,141 @@ function classifyTool({ name, ri, rn }) {
 	return { name, status: 'PASS' };
 }
 
+// --- MCP network layer ----------------------------------------------------
+function headers(ua, sid) {
+	const h = {
+		'Authorization': `Bearer ${API_KEY}`,
+		'Content-Type': 'application/json',
+		'Accept': 'application/json, text/event-stream',
+		'User-Agent': ua,
+	};
+	if (sid) h['Mcp-Session-Id'] = sid;
+	return h;
+}
+
+function parseSse(text) {
+	const line = text.split('\n').find((l) => l.startsWith('data: '));
+	if (!line) return null;
+	try {
+		return JSON.parse(line.slice(6));
+	} catch {
+		return null;
+	}
+}
+
+// Open a session for a given client UA: initialize -> capture id -> initialized.
+async function createSession(ua) {
+	const res = await fetch(EP, {
+		method: 'POST',
+		headers: headers(ua),
+		body: JSON.stringify({
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'initialize',
+			params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: ua, version: '1' } },
+		}),
+	});
+	const sid = res.headers.get('mcp-session-id') ?? '';
+	await res.text(); // drain SSE body
+	if (!sid) throw new Error(`initialize returned no Mcp-Session-Id (status ${res.status}) for UA "${ua}"`);
+	await fetch(EP, {
+		method: 'POST',
+		headers: headers(ua, sid),
+		body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+	});
+	return { ua, sid };
+}
+
+// Single JSON-RPC call on a session. Retries once on rate-limit (-32029).
+async function rpc(session, method, params, { retry = true } = {}) {
+	let res;
+	try {
+		res = await fetch(EP, {
+			method: 'POST',
+			headers: headers(session.ua, session.sid),
+			body: JSON.stringify({ jsonrpc: '2.0', id: Math.floor(Math.random() * 1e9), method, params }),
+		});
+	} catch (err) {
+		return { error: `network: ${err.message}` };
+	}
+	const text = await res.text();
+	const parsed = parseSse(text);
+	if (!parsed) return { httpStatus: res.status, error: 'no_data_frame', raw: text.slice(0, 200) };
+	if (parsed.error) {
+		if (retry && parsed.error.code === -32029) {
+			const wait = parseInt(res.headers.get('retry-after') || '2', 10);
+			await new Promise((r) => setTimeout(r, wait * 1000));
+			return rpc(session, method, params, { retry: false });
+		}
+		return { httpStatus: res.status, error: parsed.error.message, code: parsed.error.code };
+	}
+	return { httpStatus: res.status, result: parsed.result };
+}
+
+const callTool = (session, name, args, opts) => rpc(session, 'tools/call', { name, arguments: args }, opts);
+
+// Bounded concurrency map (from scripts/chaos-100-domains.mjs).
+async function mapConcurrent(items, limit, fn) {
+	const out = new Array(items.length);
+	let next = 0;
+	async function worker() {
+		while (true) {
+			const i = next++;
+			if (i >= items.length) return;
+			out[i] = await fn(items[i], i);
+		}
+	}
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+	return out;
+}
+
+// --- Per-tool argument map ------------------------------------------------
+function buildArgs(name, ctx = {}) {
+	switch (name) {
+		case 'batch_scan':
+			return { domains: [TARGET] };
+		case 'compare_domains':
+			return { domains: [TARGET, 'example.com'] };
+		case 'compare_baseline':
+			return { domain: TARGET, baseline: { grade: 'B' } };
+		case 'check_root_server_set':
+		case 'get_benchmark':
+		case 'list_brand_audit_watches':
+			return {};
+		case 'explain_finding':
+			return { checkType: 'SPF', status: 'fail' };
+		case 'get_provider_insights':
+			return { provider: 'google workspace' };
+		case 'validate_fix':
+			return { domain: TARGET, check: 'dmarc' };
+		case 'analyze_drift':
+			return { domain: TARGET, baseline: 'cached' };
+		case 'brand_audit_single':
+			return { domain: TARGET, format: 'json' };
+		case 'brand_audit_batch_start':
+			return { domains: [TARGET], format: 'json' };
+		case 'brand_audit_status':
+			return { auditId: ctx.auditId ?? 'unknown' };
+		case 'brand_audit_get_report':
+			return { auditId: ctx.auditId ?? 'unknown' };
+		case 'register_brand_audit_watch':
+			return { domain: TARGET, interval: 'monthly' };
+		case 'delete_brand_audit_watch':
+			return { watchId: ctx.watchId ?? 'unknown' };
+		default:
+			return { domain: TARGET };
+	}
+}
+
+// Fetch the deployed tool list via the MCP tools/list method.
+async function listTools(session) {
+	const res = await rpc(session, 'tools/list', {});
+	if (res.error || !res.result || !Array.isArray(res.result.tools)) {
+		throw new Error(`tools/list failed: ${res.error ?? 'no tools array'}`);
+	}
+	return res.result.tools.map((t) => t.name);
+}
+
 // --- Offline self-test of the pure helpers --------------------------------
 function selfTest() {
 	const full = {
@@ -152,4 +287,33 @@ function selfTest() {
 // --- Entrypoint -----------------------------------------------------------
 if (SELF_TEST) {
 	process.exit(selfTest() ? 0 : 1);
+}
+
+function requireKey() {
+	if (!API_KEY) {
+		console.error('Error: BV_API_KEY environment variable is required.');
+		process.exit(1);
+	}
+}
+
+async function dryRun() {
+	requireKey();
+	const session = await createSession(REP_NONINTERACTIVE_UA);
+	const tools = await listTools(session);
+	const sweep = tools.filter((t) => !MUTATING_TOOLS.has(t));
+	console.log(`Endpoint: ${EP}`);
+	console.log(`Target domain: ${TARGET}`);
+	console.log(`Deployed tools: ${tools.length}`);
+	console.log(`\nTool axis (run in BOTH claude_code + mcp_remote): ${sweep.length} tools`);
+	for (const t of sweep) console.log(`  ${t.padEnd(34)} args=${JSON.stringify(buildArgs(t))}`);
+	console.log(`\nSetup/teardown (mcp_remote only): ${[...MUTATING_TOOLS].join(', ')}`);
+	console.log(`\nClient axis (check_spf): ${[...Object.keys(INTERACTIVE_UAS), ...Object.keys(NONINTERACTIVE_UAS)].join(', ')}`);
+	console.log(`\nEstimated tools/call count: ${sweep.length * 2 + MUTATING_TOOLS.size + (Object.keys(INTERACTIVE_UAS).length + Object.keys(NONINTERACTIVE_UAS).length - 2)}`);
+}
+
+if (DRY_RUN) {
+	dryRun().then(() => process.exit(0)).catch((e) => {
+		console.error(e.message);
+		process.exit(1);
+	});
 }
