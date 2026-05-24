@@ -26,7 +26,7 @@
  */
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
-import { validateOutboundUrl } from '../lib/sanitize';
+import { validateOutboundUrl, validateDomain, sanitizeDomain } from '../lib/sanitize';
 import type { BrandAuditWatchInterval, BrandAuditWatchRow } from '../lib/db/brand-audit-schema';
 
 const CATEGORY = 'brand_discovery';
@@ -72,6 +72,13 @@ export async function registerBrandAuditWatch(
 	if (!args.interval || !['daily', 'weekly', 'monthly'].includes(args.interval)) {
 		return errorResult('invalidInput', 'interval must be one of daily|weekly|monthly.');
 	}
+	// SSRF/blocklist guard at register time. The watched domain is scanned on a
+	// recurring cron cadence, so reject reserved/IP/blocklisted targets here
+	// rather than storing a row that fails every cycle (#198).
+	const domainValidation = validateDomain(args.domain);
+	if (!domainValidation.valid) {
+		return errorResult('invalidInput', `Invalid domain: ${domainValidation.error ?? 'not allowed'}`);
+	}
 	if (args.webhook_url) {
 		const v = validateOutboundUrl(args.webhook_url);
 		if (!v.valid) {
@@ -95,7 +102,7 @@ export async function registerBrandAuditWatch(
 
 	const watchId = (deps.generateId ?? defaultGenerateId)();
 	const now = (deps.now ?? Date.now)();
-	const domain = args.domain.trim().toLowerCase();
+	const domain = sanitizeDomain(args.domain);
 
 	try {
 		await deps.db
