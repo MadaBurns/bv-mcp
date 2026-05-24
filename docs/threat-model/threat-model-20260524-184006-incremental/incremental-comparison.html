@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bv-mcp — Incremental Threat Model Comparison</title>
+<style>
+  :root{
+    --fixed:#28a745; --new:#dc3545; --unident:#fd7e14; --still:#6c757d; --mod:#2171b5;
+    --bg:#ffffff; --ink:#1b1f23; --muted:#57606a; --line:#d0d7de; --soft:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;padding:24px;max-width:1080px;margin:0 auto}
+  h1{font-size:24px;margin:0}
+  h2{font-size:18px;margin:32px 0 12px;border-bottom:2px solid var(--line);padding-bottom:6px}
+  .badge{display:inline-block;font-size:11px;letter-spacing:.08em;font-weight:700;color:#fff;background:var(--mod);padding:3px 10px;border-radius:4px}
+  .header{margin-bottom:20px}
+  .header .sub{color:var(--muted);font-size:13px;margin-top:6px}
+  .cards{display:flex;gap:12px;align-items:stretch;flex-wrap:wrap;margin:16px 0}
+  .card{border:1px solid var(--line);border-radius:8px;padding:14px 16px;flex:1;min-width:160px;background:var(--soft)}
+  .card .lbl{font-size:11px;letter-spacing:.06em;color:var(--muted);font-weight:700}
+  .card .hash{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;margin-top:4px}
+  .card .date{font-size:12px;color:var(--muted)}
+  .risk{display:inline-block;margin-top:8px;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:700}
+  .risk.mod{background:#fff3cd;color:#8a6d00} .risk.low{background:#d4edda;color:#0f5132}
+  .arrow{display:flex;align-items:center;font-size:28px;color:var(--muted)}
+  .trend{background:#d4edda;border-color:#badbcc}
+  .trend .dir{font-size:20px;font-weight:800;color:var(--fixed)}
+  .metrics{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
+  .metric{border:1px solid var(--line);border-radius:6px;padding:10px 14px;flex:1;min-width:120px;text-align:center;background:#fff}
+  .metric .v{font-size:18px;font-weight:700} .metric .k{font-size:11px;color:var(--muted)}
+  .statuscards{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}
+  .sc{flex:1;min-width:180px;border-radius:8px;padding:14px;color:#fff}
+  .sc.fixed{background:var(--fixed)} .sc.new{background:var(--new)} .sc.unident{background:var(--unident)} .sc.still{background:var(--still)}
+  .sc .n{font-size:28px;font-weight:800;line-height:1} .sc .t{font-size:12px;letter-spacing:.04em;margin-top:4px;opacity:.95}
+  .sc ul{margin:8px 0 0;padding-left:18px;font-size:12px;opacity:.95} .sc li{margin:1px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left}
+  th{background:var(--soft);font-size:11px;letter-spacing:.03em;text-transform:uppercase;color:var(--muted)}
+  td.c,th.c{text-align:center}
+  .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700;color:#fff}
+  .pill.mod{background:var(--mod)} .pill.unch{background:var(--still)} .pill.fix{background:var(--fixed)} .pill.part{background:var(--unident)} .pill.recl{background:#6f42c1}
+  .divider{width:6px;background:var(--soft);border:none}
+  .nv{background:#fff8f0;border:1px solid #ffd8a8;border-radius:8px;padding:12px 16px;font-size:13px}
+  .nv li{margin:4px 0}
+  .footer{margin-top:32px;border-top:1px solid var(--line);padding-top:12px;color:var(--muted);font-size:12px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--soft);padding:1px 5px;border-radius:3px;font-size:12px}
+  @media print{body{padding:0}.sc{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span class="badge">INCREMENTAL THREAT MODEL COMPARISON</span>
+  <h1>Blackveil DNS (bv-mcp)</h1>
+  <div class="sub">Baseline threat model vs. post-remediation <code>main</code> — generated 2026-05-25</div>
+</div>
+
+<!-- Section 1: comparison cards -->
+<div class="cards">
+  <div class="card">
+    <div class="lbl">BASELINE</div>
+    <div class="hash">7e23243</div>
+    <div class="date">2026-05-24</div>
+    <div class="risk mod">Moderate</div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="card">
+    <div class="lbl">TARGET</div>
+    <div class="hash">f75ca7d</div>
+    <div class="date">2026-05-25</div>
+    <div class="risk low">Low</div>
+  </div>
+  <div class="card trend">
+    <div class="lbl">TREND</div>
+    <div class="dir">▲ Improving</div>
+    <div class="date">PR #208 remediation</div>
+  </div>
+</div>
+
+<!-- Section 2: metrics bar -->
+<div class="metrics">
+  <div class="metric"><div class="v">23 → 23</div><div class="k">Components (±0)</div></div>
+  <div class="metric"><div class="v">5 → 5</div><div class="k">Trust Boundaries (±0)</div></div>
+  <div class="metric"><div class="v">78 → 78</div><div class="k">Threats (±0)</div></div>
+  <div class="metric"><div class="v">17 → 17</div><div class="k">Findings (±0)</div></div>
+  <div class="metric"><div class="v">2 / 2</div><div class="k">Commits / PRs</div></div>
+</div>
+
+<!-- Section 3: status summary cards -->
+<h2>Status Summary</h2>
+<div class="statuscards">
+  <div class="sc fixed">
+    <div class="n">9</div><div class="t">FINDINGS FIXED (13 threats)</div>
+    <ul><li>FIND-01 ?api_key= gate</li><li>FIND-02 per-IP daily cap</li><li>FIND-03 tool caps</li><li>FIND-04 issuer pinning</li><li>FIND-06 force_refresh</li><li>FIND-07 IDN/homoglyph</li><li>FIND-12 internal auth default</li><li>FIND-15 trial-key expiry</li><li>FIND-17 KV envelope</li></ul>
+  </div>
+  <div class="sc unident">
+    <div class="n">2</div><div class="t">PARTIALLY MITIGATED</div>
+    <ul><li>FIND-13 token-version (needs bv-web revoke call)</li><li>FIND-14 ownership attestation (DNS-TXT challenge pending)</li></ul>
+  </div>
+  <div class="sc new">
+    <div class="n">0</div><div class="t">NEW VULNERABILITIES</div>
+    <ul><li>No new threats or findings</li><li>Remediation added controls, not surface</li></ul>
+  </div>
+  <div class="sc still">
+    <div class="n">5+1</div><div class="t">EXISTING CONTROLS / RECLASSIFIED</div>
+    <ul><li>FIND-08/09/10/11/16 test-locked</li><li>FIND-05 false positive (already mitigated)</li></ul>
+  </div>
+</div>
+
+<!-- Section 4: component status grid -->
+<h2>Component Status</h2>
+<table>
+  <thead><tr><th>Component</th><th>Trust Boundary</th><th class="c">Status</th></tr></thead>
+  <tbody>
+    <tr><td>HonoWorker</td><td>CloudflareWorker</td><td class="c"><span class="pill mod">Modified</span></td></tr>
+    <tr><td>TierAuthResolver</td><td>CloudflareWorker</td><td class="c"><span class="pill mod">Modified</span></td></tr>
+    <tr><td>OAuthIssuer</td><td>CloudflareWorker</td><td class="c"><span class="pill mod">Modified</span></td></tr>
+    <tr><td>McpExecutor</td><td>CloudflareWorker</td><td class="c"><span class="pill mod">Modified</span></td></tr>
+    <tr><td>ToolsHandler</td><td>CloudflareWorker</td><td class="c"><span class="pill mod">Modified</span></td></tr>
+    <tr><td>DomainSanitizer</td><td>CloudflareWorker</td><td class="c"><span class="pill mod">Modified</span></td></tr>
+    <tr><td>RateLimiter</td><td>CloudflareWorker</td><td class="c"><span class="pill mod">Modified</span></td></tr>
+    <tr><td>InternalRouter</td><td>CloudflareWorker</td><td class="c"><span class="pill mod">Modified</span></td></tr>
+    <tr><td>SessionStoreKV</td><td>PlatformStorage</td><td class="c"><span class="pill mod">Modified</span></td></tr>
+    <tr><td>RateLimitKV</td><td>PlatformStorage</td><td class="c"><span class="pill mod">Modified</span></td></tr>
+    <tr><td>SafeFetch / DnsResolver / BrandAuditPipeline</td><td>CloudflareWorker</td><td class="c"><span class="pill unch">Unchanged</span></td></tr>
+    <tr><td>QuotaCoordinator / ProfileAccumulator</td><td>DurableObjects</td><td class="c"><span class="pill unch">Unchanged</span></td></tr>
+    <tr><td>ScanCacheKV / IntelligenceDB</td><td>PlatformStorage</td><td class="c"><span class="pill unch">Unchanged</span></td></tr>
+    <tr><td>BvWeb / PublicDoH / CertTransparency / WhoisRdap</td><td>External</td><td class="c"><span class="pill unch">Unchanged</span></td></tr>
+    <tr><td>McpClient / Operator</td><td>Internet (actors)</td><td class="c"><span class="pill unch">Unchanged</span></td></tr>
+  </tbody>
+</table>
+<p style="font-size:12px;color:var(--muted)">10 modified · 13 unchanged · 0 new · 0 removed. <code>kv-envelope.ts</code> added as a crypto helper to the storage components (not a standalone component).</p>
+
+<!-- Section 5: finding status breakdown -->
+<h2>Finding Status Breakdown</h2>
+<table>
+  <thead><tr><th>Finding</th><th>Title</th><th>Tier</th><th class="c">Status</th><th>Resolved by</th></tr></thead>
+  <tbody>
+    <tr><td>FIND-01</td><td>?api_key= query token</td><td class="c">1</td><td class="c"><span class="pill fix">Fixed</span></td><td><code>REJECT_QUERY_API_KEY</code> kill-switch</td></tr>
+    <tr><td>FIND-02</td><td>Distributed free-tier abuse</td><td class="c">1</td><td class="c"><span class="pill fix">Fixed</span></td><td>per-IP daily cap</td></tr>
+    <tr><td>FIND-03</td><td>Scanner as recon proxy</td><td class="c">1</td><td class="c"><span class="pill fix">Fixed</span></td><td>tightened tool caps</td></tr>
+    <tr><td>FIND-04</td><td>Spoofable OAuth issuer</td><td class="c">1</td><td class="c"><span class="pill fix">Fixed</span></td><td><code>resolveIssuerStrict</code></td></tr>
+    <tr><td>FIND-05</td><td>Open client registration</td><td class="c">1</td><td class="c"><span class="pill recl">Reclassified</span></td><td>false positive — already mitigated</td></tr>
+    <tr><td>FIND-06</td><td>force_refresh amplification</td><td class="c">1</td><td class="c"><span class="pill fix">Fixed</span></td><td>force_refresh sub-limit</td></tr>
+    <tr><td>FIND-07</td><td>Homoglyph/IDN inputs</td><td class="c">1</td><td class="c"><span class="pill fix">Fixed</span></td><td>IDNA + mixed-script reject</td></tr>
+    <tr><td>FIND-08–11</td><td>Auth / SSRF / rate-limit / info-disclosure controls</td><td class="c">1</td><td class="c"><span class="pill unch">Existing</span></td><td>now regression-test-locked</td></tr>
+    <tr><td>FIND-12</td><td>Internal auth default</td><td class="c">2</td><td class="c"><span class="pill fix">Fixed</span></td><td>secure-by-default flip</td></tr>
+    <tr><td>FIND-13</td><td>JWT not revoked on downgrade</td><td class="c">2</td><td class="c"><span class="pill part">Partial</span></td><td><code>ver</code> claim + revoke endpoint (needs bv-web)</td></tr>
+    <tr><td>FIND-14</td><td>Brand-audit enumeration</td><td class="c">2</td><td class="c"><span class="pill part">Partial</span></td><td>ownership attestation (DNS challenge pending)</td></tr>
+    <tr><td>FIND-15</td><td>Trial-key cache staleness</td><td class="c">2</td><td class="c"><span class="pill fix">Fixed</span></td><td>expiry re-check on cache hit</td></tr>
+    <tr><td>FIND-16</td><td>Internal isolation / dependencies</td><td class="c">2</td><td class="c"><span class="pill unch">Existing</span></td><td>now regression-test-locked</td></tr>
+    <tr><td>FIND-17</td><td>KV secrets at-rest</td><td class="c">3</td><td class="c"><span class="pill fix">Fixed</span></td><td>AES-GCM envelope</td></tr>
+  </tbody>
+</table>
+
+<!-- Section 6: STRIDE heatmap -->
+<h2>STRIDE Threat Counts (unchanged; status improved)</h2>
+<p style="font-size:12px;color:var(--muted)">Threat <em>counts</em> per component are carried forward from baseline (Δ 0 — no new/removed threats). The change is in <em>status</em>: 13 fixed, 3 partial, 1 reclassified, 61 still-present. Counts shown for the modified components; see baseline <code>2-stride-analysis.md</code> for the full table.</p>
+<table>
+  <thead><tr><th>Component</th><th class="c">S</th><th class="c">T</th><th class="c">R</th><th class="c">I</th><th class="c">D</th><th class="c">E</th><th class="c">A</th><th class="c">Total</th><th class="divider"></th><th class="c">T1</th><th class="c">T2</th><th class="c">T3</th></tr></thead>
+  <tbody>
+    <tr><td>HonoWorker</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">2</td><td class="c">1</td><td class="c">0</td><td class="c">1</td><td class="c">7</td><td class="divider"></td><td class="c">7</td><td class="c">0</td><td class="c">0</td></tr>
+    <tr><td>TierAuthResolver</td><td class="c">2</td><td class="c">1</td><td class="c">0</td><td class="c">1</td><td class="c">0</td><td class="c">2</td><td class="c">1</td><td class="c">7</td><td class="divider"></td><td class="c">6</td><td class="c">1</td><td class="c">0</td></tr>
+    <tr><td>OAuthIssuer</td><td class="c">1</td><td class="c">1</td><td class="c">0</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">6</td><td class="divider"></td><td class="c">3</td><td class="c">1</td><td class="c">2</td></tr>
+    <tr><td>McpExecutor</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">7</td><td class="divider"></td><td class="c">7</td><td class="c">0</td><td class="c">0</td></tr>
+    <tr><td>ToolsHandler</td><td class="c">0</td><td class="c">1</td><td class="c">0</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">2</td><td class="c">6</td><td class="divider"></td><td class="c">6</td><td class="c">0</td><td class="c">0</td></tr>
+    <tr><td>DomainSanitizer</td><td class="c">0</td><td class="c">1</td><td class="c">0</td><td class="c">1</td><td class="c">0</td><td class="c">1</td><td class="c">0</td><td class="c">3</td><td class="divider"></td><td class="c">3</td><td class="c">0</td><td class="c">0</td></tr>
+    <tr><td>RateLimiter</td><td class="c">0</td><td class="c">1</td><td class="c">0</td><td class="c">0</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">4</td><td class="divider"></td><td class="c">3</td><td class="c">0</td><td class="c">1</td></tr>
+    <tr><td>InternalRouter</td><td class="c">1</td><td class="c">1</td><td class="c">0</td><td class="c">0</td><td class="c">1</td><td class="c">1</td><td class="c">1</td><td class="c">5</td><td class="divider"></td><td class="c">0</td><td class="c">5</td><td class="c">0</td></tr>
+    <tr><td>SessionStoreKV</td><td class="c">0</td><td class="c">1</td><td class="c">0</td><td class="c">1</td><td class="c">0</td><td class="c">0</td><td class="c">0</td><td class="c">2</td><td class="divider"></td><td class="c">0</td><td class="c">0</td><td class="c">2</td></tr>
+    <tr><td>RateLimitKV</td><td class="c">0</td><td class="c">1</td><td class="c">0</td><td class="c">1</td><td class="c">0</td><td class="c">0</td><td class="c">0</td><td class="c">2</td><td class="divider"></td><td class="c">0</td><td class="c">0</td><td class="c">2</td></tr>
+    <tr><td><em>13 unchanged components</em></td><td class="c" colspan="7">carried forward from baseline</td><td class="c">29</td><td class="divider"></td><td class="c">5</td><td class="c">15</td><td class="c">9</td></tr>
+  </tbody>
+</table>
+
+<!-- Section 7: needs verification -->
+<h2>Needs Verification</h2>
+<div class="nv">
+<ul>
+  <li><strong>FIND-13 token-version</strong> — confirm bv-web calls <code>POST /internal/oauth/revoke-subject</code> on plan downgrade; <code>ver</code> defaults to 1, so tokens issued before the first revoke stay valid until <code>exp</code>.</li>
+  <li><strong>FIND-14 ownership</strong> — <code>ownership_verified</code> is currently caller-supplied; a DNS-TXT challenge is the intended follow-up before trusting it for third-party domains.</li>
+  <li><strong>FIND-17 KV_ENVELOPE_KEY</strong> — set the 32-byte secret in prod (envelope is a no-op when unset); plan key-version rotation.</li>
+  <li><strong>FIND-12 REQUIRE_INTERNAL_AUTH</strong> — sequence the bv-web deploy (send the internal bearer) before prod relies on the now-default-on gate, else <code>/internal/*</code> 401s.</li>
+  <li><strong>FIND-01/04 deploy gates</strong> — set <code>REJECT_QUERY_API_KEY=true</code> and <code>OAUTH_ISSUER</code> in the private deploy config to activate the merged mechanisms.</li>
+</ul>
+</div>
+
+<!-- Section 8: footer -->
+<div class="footer">
+  Model: claude-opus-4-7[1m] · Analysis mode: Incremental · Generated 2026-05-25<br>
+  Baseline: <code>../threat-model-20260524-114907/</code> at <code>7e23243</code> → Target <code>f75ca7d</code><br>
+  Risk direction: <strong>Improving</strong> (Moderate → Low). Residual risk = deploy-config activation + bv-web cross-repo follow-ups.
+</div>
+
+</body>
+</html>
