@@ -103,6 +103,11 @@ export function parseCacheTtl(envValue?: string): number {
  */
 export const GLOBAL_DAILY_TOOL_LIMIT = 500_000;
 
+/** Per-IP daily cap for unauthenticated callers, beneath the GLOBAL_DAILY_TOOL_LIMIT
+ *  ceiling — stops one source consuming a disproportionate share of the global free
+ *  budget while staying under the per-minute/hour limits (FIND-02). */
+export const FREE_IP_DAILY_LIMIT = 1_000;
+
 /**
  * Sliding-window thresholds for the fuzzing detector. Single source of truth —
  * the audit test in test/audits/fuzzing-config.audit.test.ts asserts these are

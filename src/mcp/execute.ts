@@ -4,6 +4,7 @@ import {
 	checkRateLimit,
 	checkToolDailyRateLimit,
 	checkGlobalDailyLimit,
+	checkIpDailyLimit,
 	acquireConcurrencySlot,
 	releaseConcurrencySlot,
 } from '../lib/rate-limiter';
@@ -12,6 +13,7 @@ import { jsonRpcError, JSON_RPC_ERRORS, sanitizeErrorMessage } from '../lib/json
 import { buildControlPlaneRateLimitResponse, validateSessionRequest } from './route-gates';
 import {
 	FREE_TOOL_DAILY_LIMITS,
+	FREE_IP_DAILY_LIMIT,
 	FORCE_REFRESH_DAILY_LIMIT,
 	GLOBAL_DAILY_TOOL_LIMIT,
 	TIER_DAILY_LIMITS,
@@ -412,6 +414,40 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 					'Service capacity reached for today. Please try again tomorrow or deploy your own instance.',
 				),
 				headers: globalHeaders,
+				httpStatus: 429,
+				useErrorEnvelope: true,
+				eventId,
+			};
+		}
+
+		// FIND-02: per-IP daily cap prevents one source consuming a disproportionate share
+		// of the global free budget while staying under per-minute/hour limits.
+		const ipDailyResult = await checkIpDailyLimit(options.ip, options.rateLimitKv);
+		if (!ipDailyResult.allowed) {
+			const ipDailyHeaders: Record<string, string> = {};
+			if (ipDailyResult.retryAfterMs !== undefined) {
+				ipDailyHeaders['retry-after'] = String(Math.ceil(ipDailyResult.retryAfterMs / 1000));
+			}
+			options.analytics?.emitRateLimitEvent({
+				limitType: 'daily_ip',
+				toolName: 'n/a',
+				limit: FREE_IP_DAILY_LIMIT,
+				remaining: 0,
+				country: options.country,
+				authTier: options.authTier,
+			});
+			emitRequestAnalytics(options, method, 'error', true);
+			if (accessLogInput) {
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+			}
+			return {
+				kind: 'response',
+				payload: jsonRpcError(
+					id,
+					JSON_RPC_ERRORS.RATE_LIMITED,
+					'Rate limit exceeded. Daily request limit reached for this IP. Please try again tomorrow.',
+				),
+				headers: ipDailyHeaders,
 				httpStatus: 429,
 				useErrorEnvelope: true,
 				eventId,
