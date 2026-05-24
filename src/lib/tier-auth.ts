@@ -16,7 +16,7 @@ import { TierCacheEntrySchema, ValidateKeyResponseSchema } from '../schemas/auth
 import { resolveTrialKey } from './trial-keys';
 import { verifyJwt } from '../oauth/jwt';
 import { resolveIssuer } from '../oauth/discovery';
-import { isRevoked } from '../oauth/storage';
+import { isRevoked, getTokenVersion } from '../oauth/storage';
 import { z } from 'zod';
 
 /**
@@ -103,6 +103,14 @@ export async function resolveTier(
 			const tierResult = JwtIssuableTierSchema.safeParse(claims.tier);
 			if (typeof claims.sub === 'string' && tierResult.success) {
 				if (await isRevoked(env.SESSION_STORE, claims.jti)) {
+					return { authenticated: false };
+				}
+				// Token-version check (FIND-13): reject tokens whose `ver` claim is
+				// less than the current per-subject counter. Absent `ver` defaults to
+				// 1 (backward compat for JWTs minted before this feature was deployed).
+				const storedVer = await getTokenVersion(env.SESSION_STORE, claims.sub);
+				const tokenVer = typeof claims.ver === 'number' ? claims.ver : 1;
+				if (tokenVer < storedVer) {
 					return { authenticated: false };
 				}
 				const resolvedTier = applyOwnerIpGate(tierResult.data, env.OWNER_ALLOW_IPS, clientIp);

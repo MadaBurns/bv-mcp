@@ -44,7 +44,7 @@ import { InternalOAuthGrantRequestSchema } from './schemas/oauth';
 import { createTrialKey, getTrialKeyStatus, revokeTrialKey, listTrialKeys } from './lib/trial-keys';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { buildCodeRecordFromEntitlement } from './oauth/entitlements';
-import { createAuthorizationCode, getClient, putCode } from './oauth/storage';
+import { createAuthorizationCode, getClient, putCode, bumpTokenVersion } from './oauth/storage';
 import {
 	queryTierToolUsage,
 	queryTierLatency,
@@ -300,6 +300,52 @@ internalRoutes.post('/oauth/grants', async (c) => {
 		200,
 		{ 'Cache-Control': 'no-store', Pragma: 'no-cache' },
 	);
+});
+
+/**
+ * POST /internal/oauth/revoke-subject
+ *
+ * Bumps the token-version counter for a subject, invalidating all in-flight
+ * JWTs minted before this call. bv-web calls this endpoint on plan downgrade
+ * so that the new, lower tier takes effect immediately rather than waiting
+ * for the 90-day JWT expiry (FIND-13).
+ *
+ * Secured behind the same strict bearer gate as /oauth/grants — 503 when
+ * BV_WEB_INTERNAL_KEY is unset, 401 on missing/wrong bearer.
+ *
+ * Request body: { "sub": string }
+ * Response body: { "ok": true, "version": number }
+ */
+internalRoutes.post('/oauth/revoke-subject', async (c) => {
+	const expected = c.env.BV_WEB_INTERNAL_KEY;
+	if (!expected) {
+		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
+	}
+	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {
+		return c.json({ error: 'unauthorized' }, 401, { 'Cache-Control': 'no-store' });
+	}
+	if (!c.env.SESSION_STORE) {
+		return c.json({ error: 'session_store_not_configured' }, 500, { 'Cache-Control': 'no-store' });
+	}
+
+	let body: { sub: string };
+	try {
+		const raw = await c.req.json<unknown>();
+		if (typeof raw !== 'object' || raw === null || typeof (raw as Record<string, unknown>).sub !== 'string') {
+			throw new Error('invalid');
+		}
+		body = raw as { sub: string };
+	} catch {
+		return c.json({ error: 'Invalid request body: sub must be a string' }, 400, { 'Cache-Control': 'no-store' });
+	}
+
+	const sub = (body.sub as string).trim();
+	if (!sub) {
+		return c.json({ error: 'Invalid request body: sub must be a non-empty string' }, 400, { 'Cache-Control': 'no-store' });
+	}
+
+	const version = await bumpTokenVersion(c.env.SESSION_STORE, sub);
+	return c.json({ ok: true, version }, 200, { 'Cache-Control': 'no-store' });
 });
 
 /** Default concurrency for batch endpoint. */
