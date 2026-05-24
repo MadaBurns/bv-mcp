@@ -102,9 +102,7 @@ describe('discoverSubdomains', () => {
 		expect(oldSub!.isExpired).toBe(true);
 
 		// Should have an expired_subdomain issue
-		const expiredIssue = result.issues.find(
-			(i) => i.type === 'expired_subdomain' && i.detail.includes('old.example.com'),
-		);
+		const expiredIssue = result.issues.find((i) => i.type === 'expired_subdomain' && i.detail.includes('old.example.com'));
 		expect(expiredIssue).toBeDefined();
 		expect(expiredIssue!.severity).toBe('medium');
 	});
@@ -116,6 +114,8 @@ describe('discoverSubdomains', () => {
 		expect(result.totalSubdomains).toBe(0);
 		expect(result.subdomains).toHaveLength(0);
 		expect(result.totalCertificates).toBe(0);
+		// Distinguish "source unavailable" from "queried, none found".
+		expect(result.sourceUnavailable).toBe(true);
 	});
 
 	it('should handle crt.sh returning an error status', async () => {
@@ -124,6 +124,15 @@ describe('discoverSubdomains', () => {
 
 		expect(result.totalSubdomains).toBe(0);
 		expect(result.subdomains).toHaveLength(0);
+		expect(result.sourceUnavailable).toBe(true);
+	});
+
+	it('marks a successful-but-empty crt.sh query as available (none found, not unavailable)', async () => {
+		mockCrtSh([]);
+		const result = await run();
+
+		expect(result.totalSubdomains).toBe(0);
+		expect(result.sourceUnavailable).toBeFalsy();
 	});
 
 	it('should filter out the bare domain (only returns subdomains)', async () => {
@@ -253,6 +262,24 @@ describe('formatSubdomainDiscovery', () => {
 		const { formatSubdomainDiscovery } = await import('../src/tools/discover-subdomains');
 		return formatSubdomainDiscovery;
 	}
+
+	it('reports CT source unavailable distinctly from "none found"', async () => {
+		const formatSubdomainDiscovery = await getFormatter();
+		const result = {
+			domain: 'github.com',
+			totalSubdomains: 0,
+			totalCertificates: 0,
+			subdomains: [],
+			wildcardCerts: 0,
+			expiredCerts: 0,
+			uniqueIssuers: [],
+			issues: [],
+			sourceUnavailable: true,
+		};
+		const output = formatSubdomainDiscovery(result, 'full');
+		expect(output).toMatch(/unavailable|could not/i);
+		expect(output).not.toMatch(/no subdomains found/i);
+	});
 
 	it('should format compact output correctly', async () => {
 		const formatSubdomainDiscovery = await getFormatter();
