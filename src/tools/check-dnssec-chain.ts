@@ -40,8 +40,13 @@ const WEAK_ALGORITHMS = new Set([1, 3, 5, 6, 7]);
 /** DS digest type names. */
 const DIGEST_TYPES: Record<number, string> = { 1: 'SHA-1', 2: 'SHA-256', 4: 'SHA-384' };
 
-/** Linkage status between DS and DNSKEY at a zone. */
-type LinkageStatus = 'linked' | 'no_ds' | 'no_dnskey' | 'broken';
+/**
+ * Linkage status between DS and DNSKEY at a zone.
+ * `unverified` is reserved for the root trust anchor when its DNSKEY could not
+ * be retrieved — the root is always signed, so an empty result is a retrieval
+ * failure, never a broken chain.
+ */
+type LinkageStatus = 'linked' | 'no_ds' | 'no_dnskey' | 'broken' | 'unverified';
 
 /** Parsed DS record fields. */
 interface ParsedDs {
@@ -167,8 +172,10 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 			// DNSKEY query failed — treat as no DNSKEY
 		}
 
-		// Determine linkage (root always has no_ds since we skip DS query)
-		const linkage = zone === '.' ? (dnskeyRecords.length > 0 ? 'linked' : 'no_dnskey') : determineLinkage(dsRecords, dnskeyRecords);
+		// Determine linkage. The root has no parent DS; an empty root DNSKEY means
+		// the trust anchor could not be retrieved (transient), NOT a broken chain.
+		const linkage: LinkageStatus =
+			zone === '.' ? (dnskeyRecords.length > 0 ? 'linked' : 'unverified') : determineLinkage(dsRecords, dnskeyRecords);
 
 		// Collect algorithm names
 		const allAlgs = new Set<number>();
@@ -211,7 +218,9 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	const reachedTarget = lastZone?.zone === domain;
 	// Chain is complete only if we reached the target AND it's not broken AND the target zone is actually signed
 	const targetSigned = reachedTarget && (lastZone.dsRecords.length > 0 || lastZone.dnskeyRecords.length > 0);
-	const chainComplete = reachedTarget && !chainBroken && targetSigned;
+	// The root trust anchor must have been retrieved for the chain to be "complete".
+	const rootVerified = zoneResults.find((z) => z.zone === '.')?.linkage === 'linked';
+	const chainComplete = reachedTarget && !chainBroken && targetSigned && rootVerified;
 
 	// --- Findings ---
 
@@ -230,6 +239,21 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 				),
 			);
 		}
+	}
+
+	// Root trust-anchor retrieval failure (informational — NOT a chain break).
+	// The root zone is always signed, so an empty DNSKEY result means a transient
+	// resolver/cache failure rather than an actually-broken chain.
+	if (zoneResults.find((z) => z.zone === '.')?.linkage === 'unverified') {
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'Root trust anchor unverified',
+				'info',
+				'Could not retrieve the root zone (.) DNSKEY, so the chain of trust could not be verified all the way to the trust anchor. The root zone is always signed — an empty result indicates a transient resolver/cache issue, not a broken chain.',
+				{ zone: '.', linkage: 'unverified' },
+			),
+		);
 	}
 
 	// Weak algorithm finding (medium severity)

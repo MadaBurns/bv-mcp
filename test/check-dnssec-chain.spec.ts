@@ -39,7 +39,11 @@ function emptyDnskeyResponse(zone: string) {
 
 /** Build an A-record response with AD flag. */
 function adResponse(domain: string, ad: boolean) {
-	return createDohResponse([{ name: domain, type: RecordType.A }], [{ name: domain, type: RecordType.A, TTL: 300, data: '93.184.216.34' }], { ad });
+	return createDohResponse(
+		[{ name: domain, type: RecordType.A }],
+		[{ name: domain, type: RecordType.A, TTL: 300, data: '93.184.216.34' }],
+		{ ad },
+	);
 }
 
 /**
@@ -129,6 +133,36 @@ describe('checkDnssecChain', () => {
 		const highFinding = result.findings.find((f) => f.severity === 'high');
 		expect(highFinding).toBeDefined();
 		expect(highFinding!.detail).toMatch(/broken|no DNSKEY|mismatch/i);
+	});
+
+	it('empty root DNSKEY (trust-anchor retrieval failure) does NOT report a broken chain', async () => {
+		// The root is a global trust anchor and is ALWAYS signed. An empty DNSKEY
+		// result for "." can only mean the query failed/was-served-empty (e.g. the
+		// prod edge-cache emptiness) — never that the chain is broken. The rest of
+		// the chain (com, example.com) is fully signed here.
+		mockDnsFetch({
+			'.:DNSKEY': emptyDnskeyResponse('.'),
+			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
+			'com:DNSKEY': dnskeyResponse('com', ['257 3 8 AwEAAcom...']),
+			'example.com:DS': dsResponse('example.com', ['54321 8 2 DDEEFF00']),
+			'example.com:DNSKEY': dnskeyResponse('example.com', ['257 3 8 AwEAAexample...']),
+			'example.com:A': adResponse('example.com', true),
+		});
+
+		const result = await run();
+
+		// No false HIGH "broken chain at ." finding.
+		const brokenHigh = result.findings.find((f) => f.severity === 'high' && /broken/i.test(f.title));
+		expect(brokenHigh).toBeUndefined();
+
+		// Root unverifiability is surfaced as a non-high note — NOT the (root-inaccurate)
+		// "DS record exists but no DNSKEY found" message.
+		const rootNote = result.findings.find(
+			(f) => /root/i.test(f.title) && /unverif|could not|trust anchor/i.test(`${f.title} ${f.detail ?? ''}`),
+		);
+		expect(rootNote).toBeDefined();
+		expect(rootNote!.severity).not.toBe('high');
+		expect(rootNote!.detail).not.toMatch(/DS record exists but no DNSKEY/i);
 	});
 
 	it('maps algorithm 8 to RSA-SHA256', async () => {

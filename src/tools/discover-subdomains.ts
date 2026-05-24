@@ -18,10 +18,50 @@ const MAX_SUBDOMAINS = 100;
 
 /** Common subdomain prefixes that are expected infrastructure. */
 const COMMON_SUBDOMAINS = new Set([
-	'www', 'api', 'mail', 'smtp', 'imap', 'pop', 'pop3', 'ftp', 'ns', 'ns1', 'ns2', 'ns3', 'ns4',
-	'dns', 'mx', 'mx1', 'mx2', 'webmail', 'vpn', 'remote', 'cdn', 'static', 'assets', 'img',
-	'images', 'media', 'docs', 'help', 'support', 'admin', 'portal', 'login', 'sso', 'auth',
-	'app', 'dashboard', 'status', 'blog', 'shop', 'store', 'dev', 'staging', 'test', 'beta',
+	'www',
+	'api',
+	'mail',
+	'smtp',
+	'imap',
+	'pop',
+	'pop3',
+	'ftp',
+	'ns',
+	'ns1',
+	'ns2',
+	'ns3',
+	'ns4',
+	'dns',
+	'mx',
+	'mx1',
+	'mx2',
+	'webmail',
+	'vpn',
+	'remote',
+	'cdn',
+	'static',
+	'assets',
+	'img',
+	'images',
+	'media',
+	'docs',
+	'help',
+	'support',
+	'admin',
+	'portal',
+	'login',
+	'sso',
+	'auth',
+	'app',
+	'dashboard',
+	'status',
+	'blog',
+	'shop',
+	'store',
+	'dev',
+	'staging',
+	'test',
+	'beta',
 ]);
 
 /** Threshold for flagging many issuers. */
@@ -63,6 +103,12 @@ export interface SubdomainDiscoveryResult {
 	expiredCerts: number;
 	uniqueIssuers: string[];
 	issues: SubdomainIssue[];
+	/**
+	 * True when the Certificate Transparency source could not be queried (e.g.
+	 * crt.sh returned a non-OK status or the request failed). Distinguishes a
+	 * lookup failure from a successful query that genuinely found no subdomains.
+	 */
+	sourceUnavailable?: boolean;
 }
 
 /** Extract CN= value from an issuer_name string (e.g. "C=US, O=Let's Encrypt, CN=R3" -> "R3"). */
@@ -103,10 +149,7 @@ interface CertstreamEnumerateResponse {
  * @param certstream - Optional bv-certstream-worker service binding
  * @returns Subdomain discovery result with metadata and issues
  */
-export async function discoverSubdomains(
-	domain: string,
-	certstream?: { fetch: typeof fetch },
-): Promise<SubdomainDiscoveryResult> {
+export async function discoverSubdomains(domain: string, certstream?: { fetch: typeof fetch }): Promise<SubdomainDiscoveryResult> {
 	// Fast path: use certstream service binding
 	if (certstream) {
 		const result = await queryCertstream(domain, certstream);
@@ -129,12 +172,12 @@ export async function discoverSubdomains(
 		clearTimeout(timeoutId);
 
 		if (!response.ok) {
-			return emptyResult(domain);
+			return emptyResult(domain, true);
 		}
 
 		entries = (await response.json()) as CrtShEntry[];
 	} catch {
-		return emptyResult(domain);
+		return emptyResult(domain, true);
 	}
 
 	if (!Array.isArray(entries) || entries.length === 0) {
@@ -155,7 +198,10 @@ export async function discoverSubdomains(
 		if (!entry.name_value) continue;
 
 		// Split name_value on newlines — one cert can cover multiple names
-		const names = entry.name_value.split('\n').map((n) => n.trim().toLowerCase()).filter(Boolean);
+		const names = entry.name_value
+			.split('\n')
+			.map((n) => n.trim().toLowerCase())
+			.filter(Boolean);
 		const issuer = extractIssuerCN(entry.issuer_name ?? '');
 		const notBefore = entry.not_before ?? '';
 		const notAfter = entry.not_after ?? '';
@@ -291,18 +337,14 @@ export async function discoverSubdomains(
 }
 
 /** Query bv-certstream-worker via service binding. Returns null on failure. */
-async function queryCertstream(
-	domain: string,
-	certstream: { fetch: typeof fetch },
-): Promise<SubdomainDiscoveryResult | null> {
+async function queryCertstream(domain: string, certstream: { fetch: typeof fetch }): Promise<SubdomainDiscoveryResult | null> {
 	try {
 		const controller = new AbortController();
 		const timeoutId = setTimeout(() => controller.abort(), CRT_SH_TIMEOUT_MS);
 
-		const response = await certstream.fetch(
-			`https://certstream/enumerate?domain=${encodeURIComponent(domain)}`,
-			{ signal: controller.signal },
-		);
+		const response = await certstream.fetch(`https://certstream/enumerate?domain=${encodeURIComponent(domain)}`, {
+			signal: controller.signal,
+		});
 
 		clearTimeout(timeoutId);
 
@@ -382,8 +424,11 @@ async function queryCertstream(
 	}
 }
 
-/** Build an empty result for when crt.sh is unavailable or returns no data. */
-function emptyResult(domain: string): SubdomainDiscoveryResult {
+/**
+ * Build an empty result. `sourceUnavailable` distinguishes a CT lookup failure
+ * (crt.sh non-OK / network error) from a successful query that found nothing.
+ */
+function emptyResult(domain: string, sourceUnavailable = false): SubdomainDiscoveryResult {
 	return {
 		domain,
 		totalSubdomains: 0,
@@ -393,11 +438,15 @@ function emptyResult(domain: string): SubdomainDiscoveryResult {
 		expiredCerts: 0,
 		uniqueIssuers: [],
 		issues: [],
+		sourceUnavailable,
 	};
 }
 
 /** Format subdomain discovery result as human-readable text. */
 export function formatSubdomainDiscovery(result: SubdomainDiscoveryResult, format: OutputFormat = 'full'): string {
+	if (result.sourceUnavailable) {
+		return `Subdomain Discovery: ${result.domain} — Certificate Transparency source unavailable (the CT log endpoint returned an error or was unreachable); could not enumerate subdomains. This does not mean the domain has no subdomains — retry shortly.`;
+	}
 	if (result.totalSubdomains === 0) {
 		return `Subdomain Discovery: ${result.domain} — no subdomains found in Certificate Transparency logs`;
 	}
@@ -412,9 +461,7 @@ export function formatSubdomainDiscovery(result: SubdomainDiscoveryResult, forma
 /** Compact format: concise one-line-per-subdomain output. */
 function formatCompact(result: SubdomainDiscoveryResult): string {
 	const lines: string[] = [];
-	lines.push(
-		`Subdomain Discovery: ${result.domain} — ${result.totalSubdomains} subdomains (${result.totalCertificates} certificates)`,
-	);
+	lines.push(`Subdomain Discovery: ${result.domain} — ${result.totalSubdomains} subdomains (${result.totalCertificates} certificates)`);
 	if (result.uniqueIssuers.length > 0) {
 		lines.push(`Issuers: ${result.uniqueIssuers.map((i) => sanitizeOutputText(i, 60)).join(', ')}`);
 	}
@@ -450,9 +497,7 @@ function formatCompact(result: SubdomainDiscoveryResult): string {
 function formatFull(result: SubdomainDiscoveryResult): string {
 	const lines: string[] = [];
 	lines.push(`# Subdomain Discovery: ${result.domain}`);
-	lines.push(
-		`Total: ${result.totalSubdomains} subdomains across ${result.totalCertificates} certificates`,
-	);
+	lines.push(`Total: ${result.totalSubdomains} subdomains across ${result.totalCertificates} certificates`);
 	lines.push(`Issuers: ${result.uniqueIssuers.map((i) => sanitizeOutputText(i, 60)).join(', ')}`);
 	lines.push(`Wildcards: ${result.wildcardCerts} | Expired: ${result.expiredCerts}`);
 	lines.push('');
@@ -477,8 +522,7 @@ function formatFull(result: SubdomainDiscoveryResult): string {
 	if (result.issues.length > 0) {
 		lines.push('## Issues');
 		for (const issue of result.issues) {
-			const icon =
-				issue.severity === 'high' ? '🔴' : issue.severity === 'medium' ? '🟠' : issue.severity === 'low' ? '🟡' : '🔵';
+			const icon = issue.severity === 'high' ? '🔴' : issue.severity === 'medium' ? '🟠' : issue.severity === 'low' ? '🟡' : '🔵';
 			lines.push(`${icon} [${issue.severity.toUpperCase()}] ${sanitizeOutputText(issue.detail, 300)}`);
 		}
 	}
