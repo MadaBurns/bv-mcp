@@ -21,6 +21,23 @@ export function resolveIssuer(requestUrl: string, envIssuer?: string): string {
 	return `${url.protocol}//${url.host}`;
 }
 
+/**
+ * Strict variant of `resolveIssuer` that enforces host-pinning when `configured` is set.
+ * When the request's `Host` does not match the configured issuer's host, throws so that a
+ * spoofed Host header cannot bypass the pin and reach attacker-controlled endpoints.
+ */
+export function resolveIssuerStrict(requestUrl: string, configured: string | undefined): string {
+	const issuer = resolveIssuer(requestUrl, configured);
+	if (configured) {
+		const reqHost = new URL(requestUrl).host;
+		const issHost = new URL(issuer).host;
+		if (reqHost !== issHost) {
+			throw new Error('Invalid issuer: request host does not match configured OAUTH_ISSUER');
+		}
+	}
+	return issuer;
+}
+
 /** Build RFC 8414 OAuth 2.0 Authorization Server Metadata for the given issuer. */
 export function buildAuthorizationServerMetadata(issuer: string): Record<string, unknown> {
 	return {
