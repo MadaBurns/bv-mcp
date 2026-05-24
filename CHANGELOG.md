@@ -6,12 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-05-24
+
+Major bump: removes the `brand_audit_watch` MCP tool (breaking tool-surface change). All deployed to production across PRs #197, #200, #201, #202, #203.
+
+### Removed
+
+- **BREAKING: `brand_audit_watch` MCP tool removed.** Replaced by three single-purpose tools — `list_brand_audit_watches` (read-only), `register_brand_audit_watch` (write), `delete_brand_audit_watch` (destructive) — so read and destructive operations live in separate tools per the Anthropic Directory review criteria. Clients calling `brand_audit_watch` must migrate. Behavior (owner-scoping, SSRF re-validation, 20-watch cap, per-tier quotas) is unchanged. Tool surface 60 → 62.
+
 ### Changed
 
-- **Split `brand_audit_watch` into three single-purpose tools** — `list_brand_audit_watches` (read-only), `register_brand_audit_watch` (write), and `delete_brand_audit_watch` (destructive). **Breaking MCP surface change:** the `action`-discriminated `brand_audit_watch` tool is removed. Satisfies the Anthropic Directory rule that read and destructive operations live in separate tools. `delete_brand_audit_watch` now advertises `destructiveHint: true`. Behavior (owner-scoping, SSRF re-validation, 20-watch cap, per-tier quotas) is unchanged. Tool surface 60 → 62.
-- **Tool annotations carry a real `destructiveHint`** — `ToolDef` gained a `destructive?` flag; the previously hard-coded `destructiveHint: false` now reflects it. New audit `test/audits/tool-annotations.audit.test.ts` locks the directory review criteria (title present, names ≤64, read/destructive split, no prescriptive/injection language in descriptions).
+- **Tool annotations carry a real `destructiveHint`** — `ToolDef` gained a `destructive?` flag; the previously hard-coded `destructiveHint: false` now reflects it. `delete_brand_audit_watch` advertises `destructiveHint: true`. New audit `test/audits/tool-annotations.audit.test.ts` locks the directory review criteria (title present, names ≤64, read/destructive split, no prescriptive/injection language in descriptions).
 - **`scan_domain` description rewritten** to describe behavior factually instead of steering Claude ("Use this whenever…", "Start here…") — the latter is treated as prompt injection at directory review.
 - **`tools/list` wire response is MCP-spec-shaped** — server-specific `group`/`tier`/`scanIncluded` fields moved under the spec-sanctioned `_meta` object instead of leaking as top-level tool fields.
+
+### Fixed
+
+- **`register_brand_audit_watch` validates the watched domain** at register time (`validateDomain`/`sanitizeDomain`), rejecting SSRF/blocklist-class domains before the DB write instead of storing a row that fails every cron cycle (#201, closes #198).
+- **`check_dnssec_chain` no longer reports a false "broken chain at `.`"** — an empty root DNSKEY is a trust-anchor retrieval failure (the root is always signed), now surfaced as a non-high "Root trust anchor unverified" note (#200).
+- **`check_dnssec_chain` no longer caches `unverified`-root results** (marked `partial`), so a transient empty self-heals on the next request instead of persisting as a stale false-negative (#202, #199).
+- **DoH secondary-resolver confirmations are no longer edge-cached**, removing a vector for persisting a transient empty at the edge (#203, #199).
+- **`discover_subdomains` distinguishes "CT source unavailable" from "no subdomains found"** — a crt.sh failure no longer reports a false-definitive empty (#200).
 
 ## [2.27.0] - 2026-05-23
 
