@@ -28,6 +28,8 @@ export interface JwtClaims {
 	iat: number;
 	exp: number;
 	tier?: string;
+	/** Token-version claim (FIND-13). Absent on old tokens — treated as 1 by verifiers. */
+	ver?: number;
 	[k: string]: unknown;
 }
 
