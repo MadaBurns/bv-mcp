@@ -9,6 +9,8 @@ describe('resolveIssuer host pinning', () => {
 
 	it('throws when configured issuer host does not match request host', async () => {
 		const { resolveIssuerStrict } = await import('../src/oauth/discovery');
-		expect(() => resolveIssuerStrict('https://evil.example/x', 'https://dns-mcp.blackveilsecurity.com')).toThrow(/issuer/i);
+		expect(() => resolveIssuerStrict('https://evil.example/x', 'https://dns-mcp.blackveilsecurity.com')).toThrow(
+			'Invalid issuer: request host does not match configured OAUTH_ISSUER',
+		);
 	});
 });
