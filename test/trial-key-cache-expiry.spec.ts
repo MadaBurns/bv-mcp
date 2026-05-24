@@ -28,7 +28,7 @@ describe('FIND-15 — trial-key expiry re-check on tier-cache hit', () => {
 			delete: vi.fn(),
 		} as unknown as KVNamespace;
 
-		const result = await resolveTier('TOKEN', { RATE_LIMIT: kv } as any, '203.0.113.1', 'https://t/mcp');
+		const result = await resolveTier('TOKEN', { RATE_LIMIT: kv } as unknown as Parameters<typeof resolveTier>[1], '203.0.113.1', 'https://t/mcp');
 
 		expect(result.authenticated).toBe(false);
 		// The stale cache entry must be deleted so the next request re-validates
@@ -47,7 +47,7 @@ describe('FIND-15 — trial-key expiry re-check on tier-cache hit', () => {
 			delete: vi.fn(),
 		} as unknown as KVNamespace;
 
-		const result = await resolveTier('TOKEN', { RATE_LIMIT: kv } as any, '203.0.113.1', 'https://t/mcp');
+		const result = await resolveTier('TOKEN', { RATE_LIMIT: kv } as unknown as Parameters<typeof resolveTier>[1], '203.0.113.1', 'https://t/mcp');
 
 		expect(result.authenticated).toBe(true);
 		expect(result.tier).toBe('developer');
