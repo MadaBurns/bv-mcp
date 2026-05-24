@@ -150,6 +150,13 @@ export async function resolveTier(
 					await env.RATE_LIMIT.delete(`tier:${keyHash}`);
 				} else {
 					if (cacheResult.data.revokedAt) return { authenticated: false };
+					// FIND-15: re-check trial-key expiry on cache hit. If the entry carries
+					// a trialExpiresAt timestamp and it has passed, evict the stale entry so
+					// the next request falls through to a fresh trial lookup / bv-web resolve.
+					if (cacheResult.data.trialExpiresAt !== undefined && cacheResult.data.trialExpiresAt < Date.now()) {
+						await env.RATE_LIMIT.delete(`tier:${keyHash}`);
+						return { authenticated: false };
+					}
 					const resolvedTier = applyOwnerIpGate(cacheResult.data.tier, env.OWNER_ALLOW_IPS, clientIp);
 					return { authenticated: true, tier: resolvedTier, keyHash };
 				}
@@ -173,10 +180,12 @@ export async function resolveTier(
 					);
 					return { authenticated: false };
 				}
-				// Valid trial key — cache with shorter TTL for faster expiry/exhaustion detection
+				// Valid trial key — cache with shorter TTL for faster expiry/exhaustion detection.
+				// Include trialExpiresAt so the cache-hit branch (FIND-15) can re-check expiry
+				// without a full trial lookup on every request within the cache window.
 				await env.RATE_LIMIT.put(
 					`tier:${keyHash}`,
-					JSON.stringify({ tier: trialResult.tier, revokedAt: null }),
+					JSON.stringify({ tier: trialResult.tier, revokedAt: null, trialExpiresAt: trialResult.trialInfo.expiresAt }),
 					{ expirationTtl: TRIAL_KEY_CACHE_TTL },
 				);
 				const resolvedTier = applyOwnerIpGate(trialResult.tier, env.OWNER_ALLOW_IPS, clientIp);
