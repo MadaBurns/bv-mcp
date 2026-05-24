@@ -14,9 +14,10 @@ import type { McpApiKeyTier } from './config';
 import { OAUTH_JWT_CLOCK_SKEW_SECONDS, parseOwnerAllowIps, TRIAL_KEY_CACHE_TTL } from './config';
 import { TierCacheEntrySchema, ValidateKeyResponseSchema } from '../schemas/auth';
 import { resolveTrialKey } from './trial-keys';
+import { parseEnvelopeKey } from './kv-envelope';
 import { verifyJwt } from '../oauth/jwt';
 import { resolveIssuer } from '../oauth/discovery';
-import { isRevoked } from '../oauth/storage';
+import { isRevoked, getTokenVersion } from '../oauth/storage';
 import { z } from 'zod';
 
 /**
@@ -74,6 +75,7 @@ export async function resolveTier(
 		OAUTH_SIGNING_SECRET?: string;
 		OAUTH_ISSUER?: string;
 		SESSION_STORE?: KVNamespace;
+		KV_ENVELOPE_KEY?: string;
 	},
 	clientIp: string | undefined,
 	requestUrl: string,
@@ -103,6 +105,14 @@ export async function resolveTier(
 			const tierResult = JwtIssuableTierSchema.safeParse(claims.tier);
 			if (typeof claims.sub === 'string' && tierResult.success) {
 				if (await isRevoked(env.SESSION_STORE, claims.jti)) {
+					return { authenticated: false };
+				}
+				// Token-version check (FIND-13): reject tokens whose `ver` claim is
+				// less than the current per-subject counter. Absent `ver` defaults to
+				// 1 (backward compat for JWTs minted before this feature was deployed).
+				const storedVer = await getTokenVersion(env.SESSION_STORE, claims.sub);
+				const tokenVer = typeof claims.ver === 'number' ? claims.ver : 1;
+				if (tokenVer < storedVer) {
 					return { authenticated: false };
 				}
 				const resolvedTier = applyOwnerIpGate(tierResult.data, env.OWNER_ALLOW_IPS, clientIp);
@@ -150,6 +160,13 @@ export async function resolveTier(
 					await env.RATE_LIMIT.delete(`tier:${keyHash}`);
 				} else {
 					if (cacheResult.data.revokedAt) return { authenticated: false };
+					// FIND-15: re-check trial-key expiry on cache hit. If the entry carries
+					// a trialExpiresAt timestamp and it has passed, evict the stale entry so
+					// the next request falls through to a fresh trial lookup / bv-web resolve.
+					if (cacheResult.data.trialExpiresAt !== undefined && cacheResult.data.trialExpiresAt < Date.now()) {
+						await env.RATE_LIMIT.delete(`tier:${keyHash}`);
+						return { authenticated: false };
+					}
 					const resolvedTier = applyOwnerIpGate(cacheResult.data.tier, env.OWNER_ALLOW_IPS, clientIp);
 					return { authenticated: true, tier: resolvedTier, keyHash };
 				}
@@ -162,7 +179,7 @@ export async function resolveTier(
 	// 2. Try trial key lookup
 	if (env.RATE_LIMIT) {
 		try {
-			const trialResult = await resolveTrialKey(env.RATE_LIMIT, keyHash);
+			const trialResult = await resolveTrialKey(env.RATE_LIMIT, keyHash, parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined);
 			if (trialResult) {
 				if (!trialResult.authenticated) {
 					// Expired or exhausted — cache as revoked to avoid repeated lookups
@@ -173,10 +190,12 @@ export async function resolveTier(
 					);
 					return { authenticated: false };
 				}
-				// Valid trial key — cache with shorter TTL for faster expiry/exhaustion detection
+				// Valid trial key — cache with shorter TTL for faster expiry/exhaustion detection.
+				// Include trialExpiresAt so the cache-hit branch (FIND-15) can re-check expiry
+				// without a full trial lookup on every request within the cache window.
 				await env.RATE_LIMIT.put(
 					`tier:${keyHash}`,
-					JSON.stringify({ tier: trialResult.tier, revokedAt: null }),
+					JSON.stringify({ tier: trialResult.tier, revokedAt: null, trialExpiresAt: trialResult.trialInfo.expiresAt }),
 					{ expirationTtl: TRIAL_KEY_CACHE_TTL },
 				);
 				const resolvedTier = applyOwnerIpGate(trialResult.tier, env.OWNER_ALLOW_IPS, clientIp);

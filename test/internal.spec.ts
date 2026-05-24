@@ -5,6 +5,12 @@ import { resetAllRateLimits } from '../src/lib/rate-limiter';
 import { resetSessions } from '../src/lib/session';
 import { IN_MEMORY_CACHE } from '../src/lib/cache';
 
+// These tests cover dispatch behaviour and the network guard, not bearer auth.
+// Set REQUIRE_INTERNAL_AUTH=false to opt out of the bearer requirement and
+// preserve the original test intent (FIND-12 secure-by-default is validated
+// separately in test/internal-auth-default.audit.test.ts).
+const testEnv = { ...env, REQUIRE_INTERNAL_AUTH: 'false' } as typeof env & { REQUIRE_INTERNAL_AUTH: string };
+
 afterEach(() => {
 	resetAllRateLimits();
 	resetSessions();
@@ -22,7 +28,7 @@ describe('Internal service binding routes', () => {
 				body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(404);
 		});
@@ -40,7 +46,7 @@ describe('Internal service binding routes', () => {
 				body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(200);
 		});
@@ -55,7 +61,7 @@ describe('Internal service binding routes', () => {
 				body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(200);
 		});
@@ -72,7 +78,7 @@ describe('Internal service binding routes', () => {
 				body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(200);
@@ -89,7 +95,7 @@ describe('Internal service binding routes', () => {
 				body: JSON.stringify({ arguments: { domain: 'example.com' } }),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(400);
@@ -104,7 +110,7 @@ describe('Internal service binding routes', () => {
 				body: JSON.stringify({ name: 'check_nonexistent', arguments: { domain: 'example.com' } }),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(200);
@@ -120,7 +126,7 @@ describe('Internal service binding routes', () => {
 				body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'not a domain!' } }),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(200);
@@ -142,7 +148,7 @@ describe('Internal service binding routes', () => {
 					body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
 				});
 				const ctx = createExecutionContext();
-				const response = await worker.fetch(request, env, ctx);
+				const response = await worker.fetch(request, testEnv, ctx);
 				await waitOnExecutionContext(ctx);
 				expect(response.status).not.toBe(429);
 			}
@@ -161,7 +167,7 @@ describe('Internal service binding routes', () => {
 				},
 			);
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(200);
@@ -187,7 +193,7 @@ describe('Internal service binding routes', () => {
 				},
 			);
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(200);
@@ -217,7 +223,7 @@ describe('Internal service binding routes', () => {
 				},
 			);
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(200);
@@ -238,7 +244,7 @@ describe('Internal service binding routes', () => {
 				body: JSON.stringify({}),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(400);
@@ -253,7 +259,7 @@ describe('Internal service binding routes', () => {
 				body: JSON.stringify({ domains: [] }),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(400);
@@ -267,7 +273,7 @@ describe('Internal service binding routes', () => {
 				body: JSON.stringify({ domains }),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(400);
@@ -288,7 +294,7 @@ describe('Internal service binding routes', () => {
 				}),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(200);
@@ -321,7 +327,7 @@ describe('Internal service binding routes', () => {
 				body: JSON.stringify({ domains: ['example.com'] }),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(200);
@@ -347,7 +353,7 @@ describe('Internal service binding routes', () => {
 				}),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(200);
@@ -378,7 +384,7 @@ describe('Internal service binding routes', () => {
 				},
 			);
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(200);
@@ -402,7 +408,7 @@ describe('Internal service binding routes', () => {
 				body: largeBody,
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(413);
@@ -420,7 +426,7 @@ describe('Internal service binding routes', () => {
 				body: JSON.stringify({ domains: ['example.com'] }),
 			});
 			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
+			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(404);

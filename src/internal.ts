@@ -42,9 +42,10 @@ import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
 import { InternalOAuthGrantRequestSchema } from './schemas/oauth';
 import { createTrialKey, getTrialKeyStatus, revokeTrialKey, listTrialKeys } from './lib/trial-keys';
+import { parseEnvelopeKey } from './lib/kv-envelope';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { buildCodeRecordFromEntitlement } from './oauth/entitlements';
-import { createAuthorizationCode, getClient, putCode } from './oauth/storage';
+import { createAuthorizationCode, getClient, putCode, bumpTokenVersion } from './oauth/storage';
 import {
 	queryTierToolUsage,
 	queryTierLatency,
@@ -76,7 +77,11 @@ type InternalEnv = {
 	CF_ACCOUNT_ID?: string;
 	CF_ANALYTICS_TOKEN?: string;
 	BV_WEB_INTERNAL_KEY?: string;
-	/** Opt-in flag for the H1 defense-in-depth bearer gate on /tools/* and /analytics/*. */
+	/**
+	 * Opt-out flag for the defense-in-depth bearer gate on /tools/* and /analytics/*.
+	 * Default: gate is ACTIVE (bearer required). Set to 'false' to disable the bearer
+	 * requirement and rely solely on the cf-connecting-ip network guard.
+	 */
 	REQUIRE_INTERNAL_AUTH?: string;
 	/**
 	 * Brand-discovery cross-Worker service bindings. Operator-deploy only —
@@ -91,6 +96,8 @@ type InternalEnv = {
 		getDomainEvidence: (params: { domain: string; includeHistory?: boolean }) => Promise<unknown>;
 	};
 	BV_ENTERPRISE?: Fetcher;
+	/** FIND-17: Base64-encoded 32-byte AES-256 key for app-layer KV envelope encryption. */
+	KV_ENVELOPE_KEY?: string;
 };
 
 export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
@@ -123,35 +130,34 @@ internalRoutes.use('*', async (c, next) => {
 });
 
 /**
- * Defense-in-depth gate for /tools/* and /analytics/*. Unlike trialKeysAuthGate
- * (which 503s on unset key because trial-keys mint credentials), this gate is
- * *opt-in*: it activates only when REQUIRE_INTERNAL_AUTH === 'true' AND
- * BV_WEB_INTERNAL_KEY is set. Default off so deploying H1 doesn't 401 the
- * existing bv-web → bv-mcp service binding (which doesn't currently send an
- * Authorization header on /tools/call).
+ * Defense-in-depth bearer gate for /tools/*, /analytics/*, and /tenants/*.
  *
- * Rollout:
- *   1. Ship bv-mcp 2.10.10 with the gate code present but REQUIRE_INTERNAL_AUTH unset.
- *   2. Update bv-web's service client to attach `Authorization: Bearer ${BV_WEB_INTERNAL_KEY}`.
- *   3. Deploy bv-web; verify in prod.
- *   4. Set REQUIRE_INTERNAL_AUTH=true on bv-mcp; redeploy.
+ * **Secure by default (FIND-12):** the gate is ACTIVE unless explicitly opted
+ * out. Callers must present `Authorization: Bearer ${BV_WEB_INTERNAL_KEY}`.
+ * Set `REQUIRE_INTERNAL_AUTH=false` to disable and rely solely on the
+ * cf-connecting-ip network guard (e.g. during a controlled migration window).
  *
- * H1 finding (2026-05-08 security audit): without this, /tools/batch could
- * issue up to 8,000 DoH lookups per call without rate limiting, and the
- * analytics routes leaked per-key telemetry to anyone bypassing the network
- * guard.
+ * Fail-closed: if the gate is active but `BV_WEB_INTERNAL_KEY` is unset,
+ * the route returns 503 rather than silently passing unauthenticated requests.
+ *
+ * Unlike trialKeysAuthGate (which always enforces because it mints credentials),
+ * this gate can be disabled at the operator's explicit request via the env flag.
+ *
+ * NOTE (cross-repo): bv-web's service client must send
+ * `Authorization: Bearer ${BV_WEB_INTERNAL_KEY}` on all calls to
+ * /internal/tools/*, /internal/analytics/*, and /internal/tenants/*.
  *
  * Registered BEFORE the route handlers below — Hono middleware applies only to
  * routes registered after the .use() call.
  */
 const internalLenientAuthGate: import('hono').MiddlewareHandler<{ Bindings: InternalEnv }> = async (c, next) => {
-	if (c.env.REQUIRE_INTERNAL_AUTH !== 'true') {
-		// Gate not opted in — rely on the network guard (cf-connecting-ip) alone.
+	if (c.env.REQUIRE_INTERNAL_AUTH === 'false') {
+		// Explicitly opted out — rely on the network guard (cf-connecting-ip) alone.
 		return next();
 	}
 	const expected = c.env.BV_WEB_INTERNAL_KEY;
 	if (!expected) {
-		// Misconfig: opt-in flag set but no key — fail closed rather than fail open.
+		// Misconfig: gate is active but no key configured — fail closed.
 		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
 	}
 	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {
@@ -268,7 +274,8 @@ internalRoutes.post('/oauth/grants', async (c) => {
 		return c.json({ error: 'invalid_grant_request' }, 400, { 'Cache-Control': 'no-store' });
 	}
 
-	const client = await getClient(c.env.SESSION_STORE, body.clientId);
+	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
+	const client = await getClient(c.env.SESSION_STORE, body.clientId, kvEnvelopeKey);
 	if (!client) {
 		return c.json({ error: 'unknown_client' }, 400, { 'Cache-Control': 'no-store' });
 	}
@@ -287,6 +294,7 @@ internalRoutes.post('/oauth/grants', async (c) => {
 			...(body.scope ? { scope: body.scope } : {}),
 			entitlement: body.entitlement,
 		}),
+		kvEnvelopeKey,
 	);
 
 	const redirectTo = new URL(body.redirectUri);
@@ -297,6 +305,52 @@ internalRoutes.post('/oauth/grants', async (c) => {
 		200,
 		{ 'Cache-Control': 'no-store', Pragma: 'no-cache' },
 	);
+});
+
+/**
+ * POST /internal/oauth/revoke-subject
+ *
+ * Bumps the token-version counter for a subject, invalidating all in-flight
+ * JWTs minted before this call. bv-web calls this endpoint on plan downgrade
+ * so that the new, lower tier takes effect immediately rather than waiting
+ * for the 90-day JWT expiry (FIND-13).
+ *
+ * Secured behind the same strict bearer gate as /oauth/grants — 503 when
+ * BV_WEB_INTERNAL_KEY is unset, 401 on missing/wrong bearer.
+ *
+ * Request body: { "sub": string }
+ * Response body: { "ok": true, "version": number }
+ */
+internalRoutes.post('/oauth/revoke-subject', async (c) => {
+	const expected = c.env.BV_WEB_INTERNAL_KEY;
+	if (!expected) {
+		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
+	}
+	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {
+		return c.json({ error: 'unauthorized' }, 401, { 'Cache-Control': 'no-store' });
+	}
+	if (!c.env.SESSION_STORE) {
+		return c.json({ error: 'session_store_not_configured' }, 500, { 'Cache-Control': 'no-store' });
+	}
+
+	let body: { sub: string };
+	try {
+		const raw = await c.req.json<unknown>();
+		if (typeof raw !== 'object' || raw === null || typeof (raw as Record<string, unknown>).sub !== 'string') {
+			throw new Error('invalid');
+		}
+		body = raw as { sub: string };
+	} catch {
+		return c.json({ error: 'Invalid request body: sub must be a string' }, 400, { 'Cache-Control': 'no-store' });
+	}
+
+	const sub = (body.sub as string).trim();
+	if (!sub) {
+		return c.json({ error: 'Invalid request body: sub must be a non-empty string' }, 400, { 'Cache-Control': 'no-store' });
+	}
+
+	const version = await bumpTokenVersion(c.env.SESSION_STORE, sub);
+	return c.json({ ok: true, version }, 200, { 'Cache-Control': 'no-store' });
 });
 
 /** Default concurrency for batch endpoint. */
@@ -486,12 +540,17 @@ internalRoutes.post('/trial-keys', async (c) => {
 		return c.json({ error: 'Invalid request body' }, 400);
 	}
 
-	const result = await createTrialKey(c.env.RATE_LIMIT, {
-		label: body.label,
-		tier: body.tier as import('./lib/config').McpApiKeyTier | undefined,
-		expiresInDays: body.expiresInDays,
-		maxUses: body.maxUses,
-	});
+	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
+	const result = await createTrialKey(
+		c.env.RATE_LIMIT,
+		{
+			label: body.label,
+			tier: body.tier as import('./lib/config').McpApiKeyTier | undefined,
+			expiresInDays: body.expiresInDays,
+			maxUses: body.maxUses,
+		},
+		kvEnvelopeKey,
+	);
 
 	return c.json({
 		key: result.rawKey,
@@ -518,7 +577,8 @@ internalRoutes.get('/trial-keys/:hash', async (c) => {
 		return c.json({ error: 'Invalid hash format' }, 400);
 	}
 
-	const record = await getTrialKeyStatus(c.env.RATE_LIMIT, hash);
+	const kvEnvelopeKeyForGet = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
+	const record = await getTrialKeyStatus(c.env.RATE_LIMIT, hash, kvEnvelopeKeyForGet);
 	if (!record) {
 		return c.json({ error: 'Trial key not found' }, 404);
 	}
@@ -565,7 +625,8 @@ internalRoutes.get('/trial-keys', async (c) => {
 	const url = new URL(c.req.url);
 	const limit = Math.min(Number(url.searchParams.get('limit') ?? 100), 1000);
 
-	const keys = await listTrialKeys(c.env.RATE_LIMIT, { limit });
+	const kvEnvelopeKeyForList = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
+	const keys = await listTrialKeys(c.env.RATE_LIMIT, { limit }, kvEnvelopeKeyForList);
 	const now = Date.now();
 
 	return c.json({
