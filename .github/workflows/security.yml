@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Weekly CodeQL re-scan of main so new query packs run against existing code.
+    - cron: '30 5 * * 1'
 
 concurrency:
   group: security-${{ github.ref }}
@@ -17,6 +20,8 @@ env:
 jobs:
   secret-scan:
     name: Secret & PII scan
+    # gitleaks needs an exact base..head range; scheduled runs have none.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +53,8 @@ jobs:
 
   dependency-audit:
     name: Dependency audit
+    # PR/push only; the weekly schedule is for CodeQL.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,3 +68,38 @@ jobs:
 
       - name: Audit for moderate+ vulnerabilities
         run: npm audit --audit-level=moderate
+
+  codeql:
+    name: CodeQL analysis (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Root Worker + packages/dns-checks (single JS/TS tree); full suite.
+          - language: javascript-typescript
+            build-mode: none
+            queries: security-extended
+          # Scans the repo's own workflows for injection/misconfig; default suite.
+          - language: actions
+            build-mode: none
+            queries: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: ${{ matrix.queries }}
+          dependency-caching: true
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
