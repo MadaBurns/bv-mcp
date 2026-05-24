@@ -44,6 +44,7 @@ export interface ScheduledEnv {
 	ALERT_SPF_NULL_RATE_THRESHOLD?: string;
 	RATE_LIMIT?: KVNamespace;
 	BRAND_AUDIT_DB?: D1Database;
+	INTELLIGENCE_DB?: D1Database;
 }
 
 const DEFAULT_ERROR_THRESHOLD = 5;
@@ -83,6 +84,19 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 				result: 'brand_audit_reaper_failed',
 			});
 		}
+	}
+
+	if (env.INTELLIGENCE_DB) {
+		await env.INTELLIGENCE_DB
+			.prepare("DELETE FROM mcp_access_log WHERE created_at < (strftime('%s', 'now') - ?)")
+			.bind(90 * 24 * 3600)
+			.run()
+			.catch((err) => {
+				logError(err instanceof Error ? err : String(err), {
+					category: 'retention',
+					details: { table: 'mcp_access_log', operation: 'delete_older_than_90d' },
+				});
+			});
 	}
 
 	if (!env.ALERT_WEBHOOK_URL) return;

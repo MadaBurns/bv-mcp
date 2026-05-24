@@ -5,7 +5,7 @@ Guidance for Claude Code working in this repo.
 ## What is this?
 
 Blackveil DNS — source-available DNS & email security scanner, built as a Cloudflare Worker.
-57 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
+62 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
 
 **Version sync** when bumping: `SERVER_VERSION` (`src/lib/server-version.ts`), `version` in `package.json` + `package-lock.json`, `version` AND `packages[0].version` in `server.json` (both fields — foot-gun), and `[X.Y.Z]` heading in `CHANGELOG.md`.
 
@@ -95,7 +95,7 @@ Both publish together from `publish.yml` on version tags.
 ## Conventions
 
 - **Zod**: Centralized in `src/schemas/`. Tool `inputSchema` derived via `z.toJSONSchema()` (Zod v4). Runtime: `validateToolArgs()`. Use `.passthrough()` and `.transform().pipe()` for case-insensitive enum normalization.
-- `createFinding()` + `buildCheckResult()` from `lib/scoring-model.ts` (re-exported via `lib/scoring.ts`) — never construct findings manually. `createFinding()` auto-sanitizes `detail`.
+- `createFinding()` + `buildCheckResult()` from `@blackveil/dns-checks/scoring` — never construct findings manually. `createFinding()` auto-sanitizes `detail`.
 - `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs (after Zod) — SSRF/blocklist.
 - `mcpError()` / `mcpText()` from `handlers/tool-formatters.ts`.
 - `cacheGet/Set/SetDeferred/runWithCache` from `lib/cache.ts`. `cacheSetDeferred` wraps in `ctx.waitUntil()`.
@@ -140,7 +140,7 @@ Override via `SCORING_CONFIG` env (JSON; `weights`, `profileWeights`, `threshold
 
 ### Profiles
 
-Five: `mail_enabled` (default), `enterprise_mail`, `non_mail`, `web_only`, `minimal`. Defined in `lib/context-profiles.ts`. **Phase 1**: `auto` uses `mail_enabled` weights; explicit `profile` activates different weights + cache keys.
+Five: `mail_enabled` (default), `enterprise_mail`, `non_mail`, `web_only`, `minimal`. Defined in `packages/dns-checks/src/scoring/profiles.ts`. **Phase 1**: `auto` uses `mail_enabled` weights; explicit `profile` activates different weights + cache keys.
 
 ### Adaptive weights
 
@@ -169,7 +169,7 @@ bv-web plan → OAuth tier claim → bv-mcp limits:
 | pro / business / MCP Developer | developer  | 500       | 10         | Business / 48h  |
 | enterprise / MCP Enterprise    | enterprise | 10,000    | 25         | Enterprise / 4h |
 
-Resolution in `src/oauth/entitlements.ts` via bv-web service binding `api/internal/mcp/oauth/authorize`. Mapping defined in bv-web `app/lib/services/mcp/oauth-entitlements.server.ts`. Static API keys never resolve `developer`/`enterprise` from OAuth — they map to `agent` (500/day, 5 concurrent).
+Resolution in `src/oauth/entitlements.ts` via bv-web service binding `api/internal/mcp/oauth/authorize`. Mapping defined in bv-web `app/lib/services/mcp/oauth-entitlements.server.ts`. The local static `BV_API_KEY` resolves to `owner` tier (`src/lib/tier-auth.ts:246-253`), with the `OWNER_ALLOW_IPS` IP gate downgrading to `partner` when the client IP isn't allowlisted. The `agent` tier (200/day, 5 concurrent) is reachable only via the bv-web `validate-key` service binding, when bv-web returns that tier for a non-paying key.
 
 ### Internal routes
 
@@ -187,10 +187,10 @@ Pattern-based, emits `fuzzing_suspected` to `ALERT_WEBHOOK_URL` from 15-min cron
 ## Adding a New Tool
 
 1. `src/tools/check-<name>.ts` → async fn returning `CheckResult`
-2. Add `CheckCategory` to `lib/scoring-model.ts` + `CATEGORY_DISPLAY_WEIGHTS`
-3. Add to `IMPORTANCE_WEIGHTS` in `lib/scoring-engine.ts`
-4. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 5), baselineFailureRates in `scoring-config.ts`
-5. Add to all 5 `PROFILE_WEIGHTS` in `context-profiles.ts`
+2. Add `CheckCategory` to `packages/dns-checks/src/scoring/model.ts` + `CATEGORY_DISPLAY_WEIGHTS`
+3. Add to `IMPORTANCE_WEIGHTS` in `packages/dns-checks/src/scoring/engine.ts`
+4. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 5), baselineFailureRates in `packages/dns-checks/src/scoring/config.ts`
+5. Add to all 5 `PROFILE_WEIGHTS` in `packages/dns-checks/src/scoring/profiles.ts`
 6. Add Zod schema to `schemas/tool-args.ts` + `TOOL_SCHEMA_MAP`
 7. Tool entry in `TOOL_DEFS` in `schemas/tool-definitions.ts`
 8. `TOOL_REGISTRY` in `handlers/tools.ts` (import + cacheKey + execute)
@@ -222,7 +222,7 @@ Three gates: (1) blocked paths (`docs/plans/`, `docs/code-review/`, `docs/superp
 
 Workflows: `ci.yml`, `ci-contract.yml` (Zod contracts, required), `security.yml` (Gitleaks + npm audit, required), `repo-hygiene.yml` (reusable, called by other repos), `deploy-hook.yml` (active deploy path), `publish.yml` (tagged-release pipeline), `triage-issues.yml`, `.gitleaks.toml`. `dns-security.yml.disabled` is intentionally disabled because it invokes the paid `MadaBurns/blackveil-dns-action` path.
 
-**Branch protection** (2026-05-07): required checks = `build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`. No required reviews; admin merge OK for trivial CI/doc. Direct pushes to `main` blocked except by admin. **`dns-scan` is NOT required** and stays pending for hours; `mergeStateStatus: UNSTABLE` is mergeable — `gh pr merge <N> --squash` works.
+**Branch protection** (verified 2026-05-22): required checks = `build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`. **1 approving review required** (`dismiss_stale_reviews=true`, `required_conversation_resolution=true`). **`enforce_admins=true`** — admin override is gated; `gh pr merge --admin` alone fails with "1 approving review required." Direct pushes to `main` are blocked; use the PR review path. **`dns-scan` is NOT required** and stays pending for hours; `mergeStateStatus: UNSTABLE` is mergeable once required checks and review are satisfied.
 
 **Deploy mode**: manual via `npm run deploy:prod` using an authenticated local Wrangler session. `auto-deploy-main.yml` is disabled unless GitHub production secrets are deliberately configured.
 

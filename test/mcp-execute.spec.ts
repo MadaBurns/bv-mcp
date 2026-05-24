@@ -365,7 +365,7 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 		expect(payload.error.message).toContain('check_lookalikes');
 		expect(payload.error.message).toContain('5');
 		// x-quota headers should be present
-		expect(result.headers['x-quota-limit']).toBe("5");
+		expect(result.headers['x-quota-limit']).toBe('5');
 		expect(result.headers['x-quota-remaining']).toBe('0');
 		expect(result.headers['x-quota-tier']).toBe('free');
 	});

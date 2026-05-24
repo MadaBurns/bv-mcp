@@ -14,7 +14,8 @@ afterEach(() => {
 
 describe('parseScoringConfigCached', () => {
 	it('first call parses and returns correct config', async () => {
-		const { parseScoringConfigCached, DEFAULT_SCORING_CONFIG } = await import('../src/lib/scoring-config');
+		const { parseScoringConfigCached } = await import('../src/lib/scoring-config');
+		const { DEFAULT_SCORING_CONFIG } = await import('@blackveil/dns-checks/scoring');
 
 		const result = parseScoringConfigCached(undefined);
 		expect(result).toEqual(DEFAULT_SCORING_CONFIG);
@@ -52,7 +53,8 @@ describe('parseScoringConfigCached', () => {
 	});
 
 	it('handles undefined input caching correctly', async () => {
-		const { parseScoringConfigCached, DEFAULT_SCORING_CONFIG } = await import('../src/lib/scoring-config');
+		const { parseScoringConfigCached } = await import('../src/lib/scoring-config');
+		const { DEFAULT_SCORING_CONFIG } = await import('@blackveil/dns-checks/scoring');
 
 		const result1 = parseScoringConfigCached(undefined);
 		const result2 = parseScoringConfigCached(undefined);

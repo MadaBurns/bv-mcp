@@ -140,6 +140,14 @@ export const TIER_DAILY_LIMITS: Record<McpApiKeyTier, number> = {
 /**
  * Per-tool daily limit overrides for specific tiers.
  * When a tier+tool combo exists here, it takes precedence over the flat TIER_DAILY_LIMITS value.
+ *
+ * Note on brand_audit_* daily caps: partner=200, enterprise=500 is intentional
+ * even though partner > enterprise in the generic TIER_DAILY_LIMITS hierarchy.
+ * Brand audits are multi-minute operations metered on a MONTHLY budget
+ * (BRAND_AUDIT_QUOTAS: partner=200/month, enterprise=500/month). The daily
+ * cap mirrors the monthly budget so a customer can't burn their entire
+ * monthly quota in one day — the daily ≤ monthly invariant matters more
+ * than the cross-tier daily ordering for these specific tools.
  */
 export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string, number>>> = {
 	partner: {
@@ -172,28 +180,36 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		brand_audit_batch_start: 200,
 		brand_audit_status: 10_000,
 		brand_audit_get_report: 10_000,
-		brand_audit_watch: 100,
+		list_brand_audit_watches: 100,
+		register_brand_audit_watch: 100,
+		delete_brand_audit_watch: 100,
 	},
 	developer: {
 		brand_audit_single: 50,
 		brand_audit_batch_start: 50,
 		brand_audit_status: 5_000,
 		brand_audit_get_report: 5_000,
-		brand_audit_watch: 20,
+		list_brand_audit_watches: 20,
+		register_brand_audit_watch: 20,
+		delete_brand_audit_watch: 20,
 	},
 	enterprise: {
 		brand_audit_single: 500,
 		brand_audit_batch_start: 500,
 		brand_audit_status: 25_000,
 		brand_audit_get_report: 25_000,
-		brand_audit_watch: 100,
+		list_brand_audit_watches: 100,
+		register_brand_audit_watch: 100,
+		delete_brand_audit_watch: 100,
 	},
 	agent: {
 		brand_audit_single: 0,
 		brand_audit_batch_start: 0,
 		brand_audit_status: 0,
 		brand_audit_get_report: 0,
-		brand_audit_watch: 0,
+		list_brand_audit_watches: 0,
+		register_brand_audit_watch: 0,
+		delete_brand_audit_watch: 0,
 	},
 };
 
@@ -258,7 +274,9 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	brand_audit_batch_start: 0,
 	brand_audit_status: 0,
 	brand_audit_get_report: 0,
-	brand_audit_watch: 0,
+	list_brand_audit_watches: 0,
+	register_brand_audit_watch: 0,
+	delete_brand_audit_watch: 0,
 };
 
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */

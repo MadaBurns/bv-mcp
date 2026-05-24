@@ -4,6 +4,7 @@ import { AuthorizeQuerySchema } from '../schemas/oauth';
 import { createAuthorizationCode, getClient, putCode } from './storage';
 import { isAuthorizedRequest } from '../lib/auth';
 import { OAUTH_CONSENT_RATE_LIMIT, OAUTH_CONSENT_RATE_WINDOW_SECONDS, OAUTH_KV_PREFIX, parseOwnerAllowIps } from '../lib/config';
+import { resolveClientIpFromRequestHeaders } from '../lib/client-ip';
 
 function escapeHtml(s: string): string {
 	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -193,7 +194,7 @@ function redirectWithError(redirectUri: string, error: string, state: string | u
  */
 export async function handleAuthorizePost(c: Context): Promise<Response> {
 	const kv = (c.env as { SESSION_STORE: KVNamespace }).SESSION_STORE;
-	const ip = c.req.header('cf-connecting-ip') ?? '0.0.0.0';
+	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 
 	if (await consentRateExceeded(kv, ip)) {
 		return new Response('Too many attempts. Try again later.', { status: 429 });

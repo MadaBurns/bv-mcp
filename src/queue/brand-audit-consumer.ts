@@ -152,6 +152,14 @@ export interface BrandAuditConsumerDeps {
 	/** Optional service binding for registrar WHOIS fallback in queued audits. */
 	whoisBinding?: { fetch: typeof fetch };
 	/**
+	 * Optional bv-certstream-worker service binding. Threaded into the
+	 * SAN-signal path of `discoverBrandDomains` (via the pipeline) so queued
+	 * audits use the dedicated CT-log binding instead of the public crt.sh
+	 * fallback. The sync MCP path threads `ro.certstream` here; without this
+	 * the queue path silently degraded to crt.sh for every batched audit.
+	 */
+	certstream?: { fetch: typeof fetch };
+	/**
 	 * Optional internal-call closure for the CSC deep-scan queue job.
 	 * Wraps handleToolsCall so the deep-scan orchestrator can invoke scan_domain
 	 * and discover_subdomains without going through HTTP framing. Constructed at
@@ -282,17 +290,36 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 	}, BRAND_AUDIT_MESSAGE_TIMEOUT_MS);
 	let result: CheckResult | null = null;
 	let runtimeError: string | null = null;
-	// Tier closures: built once, passed as the 3rd `deps` arg ONLY when at
-	// least one closure is present. Skipping the arg on BSL self-hosts keeps
-	// the existing 2-arg `toHaveBeenCalledWith(...)` test assertions valid —
-	// vitest matches arg count exactly.
+	// Pipeline deps: built once, passed as the 3rd `deps` arg ONLY when at
+	// least one binding-backed field is present (any tier closure, whoisBinding,
+	// or certstream — see hasSingleDeps below). Skipping the arg keeps the
+	// existing 2-arg `toHaveBeenCalledWith(...)` test assertions valid for the
+	// many tests that mock no bindings — vitest matches arg count exactly. The
+	// 3-arg path activates when ANY single binding is provided, including on a
+	// BSL self-host with only BV_CERTSTREAM provisioned. Any new binding-backed
+	// pipeline dep must be added to BOTH the singleDeps spread AND the
+	// hasSingleDeps gate — they must enumerate the same set.
 	const singleDeps: BrandAuditSingleDeps = {
 		...(deps.tier0Lookup ? { tier0Lookup: deps.tier0Lookup } : {}),
 		...(deps.tier1Lookup ? { tier1Lookup: deps.tier1Lookup } : {}),
 		...(deps.tier2Lookup ? { tier2Lookup: deps.tier2Lookup } : {}),
 		...(deps.whoisBinding ? { whoisBinding: deps.whoisBinding } : {}),
+		...(deps.certstream ? { certstream: deps.certstream } : {}),
+		// The same brandAuditQueue binding that powers the Phase 2b retry-enqueue
+		// at line 416 doubles as the CSC fast→full deep-scan trigger inside the
+		// pipeline (brand-audit-pipeline.ts:1061). The send() signature there is
+		// `{ send(unknown): Promise<void> }`, wider (more permissive in input
+		// type) than the consumer's typed-message variant — the runtime shape
+		// is identical. Gated on `!isRetry` because the primary pass already
+		// enqueued deep_scan #1; allowing the retry pass to enqueue deep_scan #2
+		// produces a race on csc_complement_full (last-write-wins UPSERT in the
+		// step-store, no MVCC). Consumer's own retry-enqueue path is already
+		// gated on `!isRetry` at line 411, so the consumer doesn't need
+		// brandAuditQueue on retry messages either.
+		...(deps.brandAuditQueue && !isRetry ? { brandAuditQueue: deps.brandAuditQueue } : {}),
 	};
-	const hasSingleDeps = deps.tier0Lookup || deps.tier1Lookup || deps.tier2Lookup || deps.whoisBinding;
+	const hasSingleDeps =
+		deps.tier0Lookup || deps.tier1Lookup || deps.tier2Lookup || deps.whoisBinding || deps.certstream || deps.brandAuditQueue;
 	const singleOptions: BrandAuditSingleOptions = {
 		auditId: message.auditId,
 		stepStore,

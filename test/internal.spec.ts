@@ -27,6 +27,24 @@ describe('Internal service binding routes', () => {
 			expect(response.status).toBe(404);
 		});
 
+		it('ignores forwarded public IP headers and allows service-binding-shaped requests', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'x-forwarded-for': '198.51.100.20',
+				},
+				body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+		});
+
 		it('allows requests without cf-connecting-ip header (service binding)', async () => {
 			const { mockTxtRecords } = await import('./helpers/dns-mock');
 			mockTxtRecords(['v=spf1 -all']);
