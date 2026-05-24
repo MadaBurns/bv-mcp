@@ -87,12 +87,14 @@ const NON_SCAN_TOOL_NAMES = new Set([
 	'brand_audit_batch_start',
 	'brand_audit_status',
 	'brand_audit_get_report',
-	'brand_audit_watch',
+	'list_brand_audit_watches',
+	'register_brand_audit_watch',
+	'delete_brand_audit_watch',
 ]);
 
 describe('tool-schemas metadata', () => {
-	it('exports exactly 60 tools', () => {
-		expect(TOOLS).toHaveLength(60);
+	it('exports exactly 62 tools', () => {
+		expect(TOOLS).toHaveLength(62);
 	});
 
 	it('all tool names are unique', () => {
