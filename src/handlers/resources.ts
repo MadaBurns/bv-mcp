@@ -24,19 +24,19 @@ interface McpResourceContent {
 
 /** Static resource definitions */
 const RESOURCES: McpResource[] = [
- {
-   uri: 'dns-security://guides/security-checks',
-   name: 'DNS Security Checks Guide',
-   description:
-		 'Overview of all DNS/email security checks performed by Blackveil DNS, including SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, and Subdomain Takeover.',
-   mimeType: 'text/markdown',
- },
- {
-   uri: 'dns-security://guides/scoring',
-   name: 'Scoring Methodology',
-   description: 'How DNS/email security scores and grades are calculated, including category weights and severity penalties.',
-   mimeType: 'text/markdown',
- },
+	{
+		uri: 'dns-security://guides/security-checks',
+		name: 'DNS Security Checks Guide',
+		description:
+			'Overview of all DNS/email security checks performed by Blackveil DNS, including SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, and Subdomain Takeover.',
+		mimeType: 'text/markdown',
+	},
+	{
+		uri: 'dns-security://guides/scoring',
+		name: 'Scoring Methodology',
+		description: 'How DNS/email security scores and grades are calculated, including category weights and severity penalties.',
+		mimeType: 'text/markdown',
+	},
 	{
 		uri: 'dns-security://guides/record-types',
 		name: 'Supported DNS Record Types',
@@ -109,7 +109,7 @@ const RESOURCE_CONTENT: Record<string, string> = {
 ## Composite Tools
 
 - **\`scan_domain\`** - 18 scan categories in parallel, returns score + grade + prioritized findings
-- **Brand audit tools** - \`discover_brand_domains\`, \`brand_audit_single\`, \`brand_audit_batch_start\`, \`brand_audit_status\`, \`brand_audit_get_report\`, \`brand_audit_watch\`
+- **Brand audit tools** - \`discover_brand_domains\`, \`brand_audit_single\`, \`brand_audit_batch_start\`, \`brand_audit_status\`, \`brand_audit_get_report\`, \`list_brand_audit_watches\`, \`register_brand_audit_watch\`, \`delete_brand_audit_watch\`
 - **\`explain_finding\`** - plain-language context + remediation for any finding
 - **\`compare_baseline\`** - pass/fail against minimum security standards
 `,

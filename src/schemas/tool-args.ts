@@ -411,21 +411,27 @@ export const BrandAuditGetReportArgs = z
 	})
 	.passthrough();
 
-/** brand_audit_watch — register/list/delete recurring brand-audit watches. */
-export const BrandAuditWatchArgs = z
+/** list_brand_audit_watches — enumerate the caller's recurring brand-audit watches. */
+export const ListBrandAuditWatchesArgs = z.object({}).passthrough();
+
+/** register_brand_audit_watch — create a recurring brand-audit watch. */
+export const RegisterBrandAuditWatchArgs = z
 	.object({
-		action: z
-			.enum(['register', 'list', 'delete'])
-			.describe("Action: 'register' creates a new watch, 'list' returns the caller's watches, 'delete' removes one."),
-		domain: DomainSchema.optional().describe('Domain to watch. Required for action=register.'),
-		interval: z.enum(['daily', 'weekly', 'monthly']).optional().describe('Recurrence interval. Required for action=register.'),
+		domain: DomainSchema.describe('Domain to watch.'),
+		interval: z.enum(['daily', 'weekly', 'monthly']).describe('Recurrence interval.'),
 		webhook_url: z
 			.string()
 			.url()
 			.max(2048)
 			.optional()
 			.describe('Optional webhook URL — POSTed on classification drift. Re-validated for SSRF at both register and delivery time.'),
-		watchId: z.string().min(1).max(64).optional().describe('Watch ID returned by action=register. Required for action=delete.'),
+	})
+	.passthrough();
+
+/** delete_brand_audit_watch — remove a recurring brand-audit watch the caller owns. */
+export const DeleteBrandAuditWatchArgs = z
+	.object({
+		watchId: z.string().min(1).max(64).describe('Watch ID returned by register_brand_audit_watch.'),
 	})
 	.passthrough();
 
@@ -493,5 +499,7 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	brand_audit_batch_start: BrandAuditBatchStartArgs,
 	brand_audit_status: BrandAuditStatusArgs,
 	brand_audit_get_report: BrandAuditGetReportArgs,
-	brand_audit_watch: BrandAuditWatchArgs,
+	list_brand_audit_watches: ListBrandAuditWatchesArgs,
+	register_brand_audit_watch: RegisterBrandAuditWatchArgs,
+	delete_brand_audit_watch: DeleteBrandAuditWatchArgs,
 };

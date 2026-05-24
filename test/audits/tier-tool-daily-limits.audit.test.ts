@@ -25,7 +25,9 @@ const BRAND_AUDIT_TOOLS = [
 	'brand_audit_batch_start',
 	'brand_audit_status',
 	'brand_audit_get_report',
-	'brand_audit_watch',
+	'list_brand_audit_watches',
+	'register_brand_audit_watch',
+	'delete_brand_audit_watch',
 ] as const;
 
 describe('TIER_DAILY_LIMITS audit (flat per-tier defaults)', () => {
@@ -70,7 +72,9 @@ describe('TIER_TOOL_DAILY_LIMITS audit (per-tool per-tier overrides)', () => {
 			brand_audit_batch_start: 50,
 			brand_audit_status: 5_000,
 			brand_audit_get_report: 5_000,
-			brand_audit_watch: 20,
+			list_brand_audit_watches: 20,
+			register_brand_audit_watch: 20,
+			delete_brand_audit_watch: 20,
 		});
 	});
 
@@ -81,7 +85,9 @@ describe('TIER_TOOL_DAILY_LIMITS audit (per-tool per-tier overrides)', () => {
 			brand_audit_batch_start: 500,
 			brand_audit_status: 25_000,
 			brand_audit_get_report: 25_000,
-			brand_audit_watch: 100,
+			list_brand_audit_watches: 100,
+			register_brand_audit_watch: 100,
+			delete_brand_audit_watch: 100,
 		});
 	});
 
@@ -93,7 +99,9 @@ describe('TIER_TOOL_DAILY_LIMITS audit (per-tool per-tier overrides)', () => {
 		const partnerOverrides = TIER_TOOL_DAILY_LIMITS.partner ?? {};
 		expect(partnerOverrides.brand_audit_single).toBe(200);
 		expect(partnerOverrides.brand_audit_batch_start).toBe(200);
-		expect(partnerOverrides.brand_audit_watch).toBe(100);
+		expect(partnerOverrides.list_brand_audit_watches).toBe(100);
+		expect(partnerOverrides.register_brand_audit_watch).toBe(100);
+		expect(partnerOverrides.delete_brand_audit_watch).toBe(100);
 		// Non-brand_audit partner overrides exist too; we only lock the brand-audit
 		// subset here to keep the audit scoped to the paywall-relevant rows.
 	});
@@ -143,7 +151,9 @@ describe('TIER_TOOL_DAILY_LIMITS audit (per-tool per-tier overrides)', () => {
 			'brand_audit_batch_start',
 			'brand_audit_status',
 			'brand_audit_get_report',
-			'brand_audit_watch',
+			'list_brand_audit_watches',
+			'register_brand_audit_watch',
+			'delete_brand_audit_watch',
 		]);
 		expect(new Set(Object.keys(partner))).toEqual(expectedKeys);
 	});

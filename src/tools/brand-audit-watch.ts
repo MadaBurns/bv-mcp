@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * brand_audit_watch — register / list / delete recurring brand-audit watches.
+ * Brand-audit watch tools — register / list / delete recurring brand-audit watches.
  *
- * One MCP tool with an `action` discriminator (mirroring the bv-web pattern
- * for routes that fan out across CRUD verbs without exploding the registry).
- * Owner-scoped: a caller's principalId is bound at every operation, and any
- * cross-owner attempt surfaces as `notFound` (never `accessDenied`) to defend
- * against ID enumeration.
+ * Originally a single `action`-discriminated `brand_audit_watch` tool; split
+ * into three single-purpose MCP tools (`register_brand_audit_watch`,
+ * `list_brand_audit_watches`, `delete_brand_audit_watch`) so that read and
+ * destructive operations live in separate tools per the Anthropic Directory
+ * review criteria. Owner-scoped: a caller's principalId is bound at every
+ * operation, and any cross-owner attempt surfaces as `notFound` (never
+ * `accessDenied`) to defend against ID enumeration.
  *
  * Watch storage: `brand_audit_watches` in BRAND_AUDIT_DB. The cron tick in
  * `src/scheduled.ts` enumerates active rows, enqueues
@@ -32,17 +34,17 @@ const CATEGORY = 'brand_discovery';
 /** Hard cap on active watches per principal. */
 const MAX_WATCHES_PER_OWNER = 20;
 
-export type BrandAuditWatchAction = 'register' | 'list' | 'delete';
-
-export interface BrandAuditWatchArgs {
-	action: BrandAuditWatchAction;
-	/** Required for register. */
+export interface RegisterBrandAuditWatchArgs {
+	/** Domain to watch. */
 	domain?: string;
-	/** Required for register. */
+	/** Recurrence interval. */
 	interval?: BrandAuditWatchInterval;
-	/** Optional webhook URL for register; null/undefined → logging-only watch. */
+	/** Optional webhook URL; null/undefined → logging-only watch. */
 	webhook_url?: string;
-	/** Required for delete. */
+}
+
+export interface DeleteBrandAuditWatchArgs {
+	/** Watch ID returned by register_brand_audit_watch. */
 	watchId?: string;
 }
 
@@ -55,31 +57,17 @@ export interface BrandAuditWatchDeps {
 }
 
 function errorResult(flag: string, message: string, extra: Record<string, unknown> = {}): CheckResult {
-	return buildCheckResult(CATEGORY, [
-		createFinding(CATEGORY, `Brand audit watch: ${flag}`, 'high', message, { [flag]: true, ...extra }),
-	]);
+	return buildCheckResult(CATEGORY, [createFinding(CATEGORY, `Brand audit watch: ${flag}`, 'high', message, { [flag]: true, ...extra })]);
 }
 
-export async function brandAuditWatch(
-	args: BrandAuditWatchArgs,
+/** Create a new recurring brand-audit watch. */
+export async function registerBrandAuditWatch(
+	args: RegisterBrandAuditWatchArgs,
 	ownerId: string,
 	deps: BrandAuditWatchDeps,
 ): Promise<CheckResult> {
-	switch (args.action) {
-		case 'register':
-			return registerWatch(args, ownerId, deps);
-		case 'list':
-			return listWatches(ownerId, deps);
-		case 'delete':
-			return deleteWatch(args, ownerId, deps);
-		default:
-			return errorResult('invalidInput', `Unknown action: ${String((args as { action?: string }).action ?? '')}`);
-	}
-}
-
-async function registerWatch(args: BrandAuditWatchArgs, ownerId: string, deps: BrandAuditWatchDeps): Promise<CheckResult> {
 	if (!args.domain || typeof args.domain !== 'string') {
-		return errorResult('invalidInput', 'domain is required for action=register.');
+		return errorResult('invalidInput', 'domain is required.');
 	}
 	if (!args.interval || !['daily', 'weekly', 'monthly'].includes(args.interval)) {
 		return errorResult('invalidInput', 'interval must be one of daily|weekly|monthly.');
@@ -117,10 +105,7 @@ async function registerWatch(args: BrandAuditWatchArgs, ownerId: string, deps: B
 			.bind(watchId, ownerId, domain, args.interval, args.webhook_url ?? null, 1, now)
 			.run();
 	} catch (err) {
-		return errorResult(
-			'persistenceFailure',
-			`Failed to register watch: ${err instanceof Error ? err.message : String(err)}`,
-		);
+		return errorResult('persistenceFailure', `Failed to register watch: ${err instanceof Error ? err.message : String(err)}`);
 	}
 
 	return buildCheckResult(CATEGORY, [
@@ -141,7 +126,8 @@ async function registerWatch(args: BrandAuditWatchArgs, ownerId: string, deps: B
 	]);
 }
 
-async function listWatches(ownerId: string, deps: BrandAuditWatchDeps): Promise<CheckResult> {
+/** List the caller's recurring brand-audit watches. */
+export async function listBrandAuditWatches(ownerId: string, deps: BrandAuditWatchDeps): Promise<CheckResult> {
 	const rows = await deps.db
 		.prepare(
 			'SELECT id, owner_id, domain, interval, webhook_url, last_run_at, last_classification_hash, active, created_at FROM brand_audit_watches WHERE owner_id = ? ORDER BY created_at DESC',
@@ -160,35 +146,34 @@ async function listWatches(ownerId: string, deps: BrandAuditWatchDeps): Promise<
 	}));
 
 	return buildCheckResult(CATEGORY, [
-		createFinding(
-			CATEGORY,
-			`Brand audit watches: ${watches.length}`,
-			'info',
-			`${watches.length} watch(es) for principal.`,
-			{ summary: true, count: watches.length, watches },
-		),
+		createFinding(CATEGORY, `Brand audit watches: ${watches.length}`, 'info', `${watches.length} watch(es) for principal.`, {
+			summary: true,
+			count: watches.length,
+			watches,
+		}),
 	]);
 }
 
-async function deleteWatch(args: BrandAuditWatchArgs, ownerId: string, deps: BrandAuditWatchDeps): Promise<CheckResult> {
+/** Delete a recurring brand-audit watch the caller owns. */
+export async function deleteBrandAuditWatch(
+	args: DeleteBrandAuditWatchArgs,
+	ownerId: string,
+	deps: BrandAuditWatchDeps,
+): Promise<CheckResult> {
 	if (!args.watchId || typeof args.watchId !== 'string') {
-		return errorResult('invalidInput', 'watchId is required for action=delete.');
+		return errorResult('invalidInput', 'watchId is required.');
 	}
 
-	const existing = (await deps.db
-		.prepare('SELECT owner_id FROM brand_audit_watches WHERE id = ? LIMIT 1')
-		.bind(args.watchId)
-		.first()) as { owner_id: string } | null;
+	const existing = (await deps.db.prepare('SELECT owner_id FROM brand_audit_watches WHERE id = ? LIMIT 1').bind(args.watchId).first()) as {
+		owner_id: string;
+	} | null;
 
 	if (!existing || existing.owner_id !== ownerId) {
 		// notFound — never confirm existence of a row the caller doesn't own.
 		return errorResult('notFound', `No watch with id ${args.watchId}.`, { watchId: args.watchId });
 	}
 
-	await deps.db
-		.prepare('DELETE FROM brand_audit_watches WHERE id = ? AND owner_id = ?')
-		.bind(args.watchId, ownerId)
-		.run();
+	await deps.db.prepare('DELETE FROM brand_audit_watches WHERE id = ? AND owner_id = ?').bind(args.watchId, ownerId).run();
 
 	return buildCheckResult(CATEGORY, [
 		createFinding(CATEGORY, `Brand audit watch deleted: ${args.watchId}`, 'info', '', {
