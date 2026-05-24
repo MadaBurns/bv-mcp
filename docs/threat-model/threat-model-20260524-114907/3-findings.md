@@ -1,6 +1,6 @@
 # Security Findings
 
-> **Remediation status (updated 2026-05-25).** All findings have been addressed and their STRIDE status + coverage table now read `Mitigated`. The Tier-1/2/3 remediation findings are resolved by PR #208 (`fix/threat-model-findings`), **pending merge to `main`** — statuses here reflect that remediation branch, not yet `main`. FIND-05 is a false positive (already mitigated on `main`). A few remediations carry deploy/cross-repo follow-ups (set `OAUTH_ISSUER`/`KV_ENVELOPE_KEY`, flip `REJECT_QUERY_API_KEY`; bv-web must send the internal bearer and call the revoke endpoint) — see PR #208. This model was generated at commit `7e23243`.
+> **Remediation status (updated 2026-05-25).** All findings have been addressed and their STRIDE status + coverage table read `Mitigated`. The Tier-1/2/3 remediation findings were **merged to `main` via PR #208** (commit `ffe9f7e`). FIND-05 is a false positive (already mitigated on `main`). A few remediations carry deploy/cross-repo follow-ups (set `OAUTH_ISSUER`/`KV_ENVELOPE_KEY`, flip `REJECT_QUERY_API_KEY`; bv-web must send the internal bearer and call the revoke endpoint) — see PR #208. This model was generated at commit `7e23243`; see `../threat-model-20260524-184006-incremental/` for the before/after comparison.
 
 ---
 
