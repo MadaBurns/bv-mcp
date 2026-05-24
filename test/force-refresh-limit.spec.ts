@@ -56,7 +56,7 @@ describe('force_refresh sub-limit — enforcement in execute path', () => {
 		// The spy returns denied specifically for the synthetic '__force_refresh__' key,
 		// but allows the normal per-tool scan_domain call.
 		const checkToolSpy = vi.fn().mockImplementation(
-			async (principalId: string, toolName: string, _limit: number) => {
+			async (_principalId: string, toolName: string, _limit: number) => {
 				if (toolName === '__force_refresh__') {
 					return { allowed: false, retryAfterMs: 50_000, remaining: 0, limit: 5 };
 				}
