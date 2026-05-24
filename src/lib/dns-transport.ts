@@ -236,7 +236,10 @@ export async function confirmWithSecondaryResolvers(
 		bvDnsUrl
 			? fetchDohOutcome(bvDnsUrl, timeoutMs, { token: opts!.secondaryDoh!.token, semaphore: sem })
 			: Promise.resolve({ kind: 'error', reason: 'network' } as const),
-		fetchDohOutcome(googleUrl, timeoutMs, { useEdgeCache: true, semaphore: sem }),
+		// No edge cache on the secondary: it's the rare fallback used precisely when
+		// the primary missed, so caching its responses risks persisting a transient
+		// empty at the edge for the cache TTL (#199).
+		fetchDohOutcome(googleUrl, timeoutMs, { semaphore: sem }),
 	];
 	const results = await Promise.allSettled(candidates);
 	for (const r of results) {

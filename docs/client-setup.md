@@ -416,10 +416,12 @@ Static API keys (via `?api_key=` or `Authorization: Bearer`) authenticate as a s
 
 | Tier | Quota | Use Case | Source |
 |---|---|---|---|
-| free | 25 scans/day, 3 concurrent | Unauthenticated, public testing (e.g. Claude.ai web) | Per-IP rate limit (no key) |
+| free | 25 domain scans/day, 1 batch scan/day, 3 concurrent. High-cost tools have tighter per-tool limits. | Unauthenticated, public testing (e.g. Claude.ai web) | Per-IP rate limit (no key) |
 | **agent** | **500 scans/day, 5 concurrent** | **Team automation, CI/CD scripts** | **`BV_API_KEY` environment variable** |
 | developer | 500 scans/day, 10 concurrent | OAuth + MCP Developer plan | Stripe subscription (bv-web) |
 | enterprise | 10,000 scans/day, 25 concurrent | OAuth + MCP Enterprise plan | Stripe subscription (bv-web) |
+
+Free hosted usage keeps core DNS and email checks open for trial traffic, while high-cost or private-probe tools have tighter unauthenticated limits: `discover_brand_domains` is limited to 1/day, `check_fast_flux` to 3/day, `check_lookalikes` and `check_shadow_domains` to 5/day, and `check_authoritative_dns_infra`, `check_subdomain_takeover`, and `check_root_server_set` to 25/day. Async `brand_audit_*` tools require an authenticated paid tier.
 
 **Agent tier** is intended for:
 - **CI/CD pipelines**: Commit-on-push DNS scans as part of security checks

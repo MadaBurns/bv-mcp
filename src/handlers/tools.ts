@@ -64,7 +64,7 @@ import { brandAuditSingle } from '../tools/brand-audit-single';
 import { brandAuditBatchStart } from '../tools/brand-audit-batch-start';
 import { brandAuditStatus } from '../tools/brand-audit-status';
 import { brandAuditGetReport } from '../tools/brand-audit-get-report';
-import { brandAuditWatch } from '../tools/brand-audit-watch';
+import { registerBrandAuditWatch, listBrandAuditWatches, deleteBrandAuditWatch } from '../tools/brand-audit-watch';
 import { createD1BrandAuditStepStore } from '../lib/brand-audit-step-store';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
@@ -86,8 +86,8 @@ import type { OutputFormat } from './tool-args';
 import { buildLogContext, logToolFailure, logToolSuccess } from './tool-execution';
 import { formatCheckResult, mcpError, buildToolContent } from './tool-formatters';
 import type { McpContent } from './tool-formatters';
-import { TOOLS } from './tool-schemas';
-import type { McpTool } from './tool-schemas';
+import { TOOLS } from '../schemas/tool-definitions';
+import type { McpTool } from '../schemas/tool-definitions';
 
 /** MCP tools/call result */
 interface McpToolResult {
@@ -96,11 +96,41 @@ interface McpToolResult {
 }
 
 /**
- * Handle the MCP tools/list method.
- * Returns all available tool definitions.
+ * MCP-spec-shaped tool descriptor as sent over the wire. Server-specific
+ * metadata (functional group, scoring tier, scan inclusion) is nested under
+ * `_meta` — the spec-sanctioned extension point — rather than leaked as
+ * top-level fields the MCP `Tool` shape does not define.
  */
-export function handleToolsList(): { tools: McpTool[] } {
-	return { tools: TOOLS };
+interface WireTool {
+	name: string;
+	description: string;
+	inputSchema: McpTool['inputSchema'];
+	annotations: McpTool['annotations'];
+	_meta: {
+		group: McpTool['group'];
+		tier?: McpTool['tier'];
+		scanIncluded: boolean;
+	};
+}
+
+/**
+ * Handle the MCP tools/list method.
+ * Returns all available tool definitions in MCP-spec shape.
+ */
+export function handleToolsList(): { tools: WireTool[] } {
+	return {
+		tools: TOOLS.map((tool) => ({
+			name: tool.name,
+			description: tool.description,
+			inputSchema: tool.inputSchema,
+			annotations: tool.annotations,
+			_meta: {
+				group: tool.group,
+				...(tool.tier !== undefined && { tier: tool.tier }),
+				scanIncluded: tool.scanIncluded,
+			},
+		})),
+	};
 }
 
 /** Wrapper for dynamic check_mx import (required for test mock isolation) */
@@ -111,7 +141,7 @@ interface ToolRuntimeOptions {
 	analytics?: AnalyticsClient;
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
-	scoringConfig?: import('../lib/scoring-config').ScoringConfig;
+	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
 	/** When provided, receives the raw CheckResult before MCP text formatting. Used by internal structured response mode. */
 	resultCapture?: (result: CheckResult) => void;
 	/** Override cache TTL in seconds for scan results. Threaded to scanDomain. */
@@ -215,6 +245,16 @@ async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOption
 		},
 		buildDnsOptions(runtimeOptions),
 	);
+}
+
+/** Shared `unprovisioned` result for the brand-audit watch tools when BRAND_AUDIT_DB is absent. */
+async function brandAuditWatchUnprovisioned(): Promise<CheckResult> {
+	const { buildCheckResult, createFinding } = await import('../lib/scoring');
+	return buildCheckResult('brand_discovery', [
+		createFinding('brand_discovery', 'Brand audit watch unavailable', 'high', 'BRAND_AUDIT_DB binding is not provisioned.', {
+			unprovisioned: true,
+		}),
+	]);
 }
 
 /**
@@ -401,6 +441,12 @@ const TOOL_REGISTRY: Record<
 					certstream: ro?.certstream,
 					whoisBinding: ro?.whoisBinding,
 					enforceQuota: buildMonthlyEnforceQuota(ro),
+					// The brand-audit queue binding doubles as the CSC fast→full
+					// deep-scan trigger in the pipeline (brand-audit-pipeline.ts:1061).
+					// Without it, sync view='csc_complement' audits write only the
+					// fast payload and brand_audit_get_report can never surface the
+					// full enrichment.
+					...(ro?.brandAuditQueue ? { brandAuditQueue: ro.brandAuditQueue } : {}),
 					// Tier closures: forwarded through the pipeline → discoverBrandDomains
 					// seam. Undefined on BSL self-hosts → pipeline never calls the
 					// proprietary lookups.
@@ -496,31 +542,44 @@ const TOOL_REGISTRY: Record<
 		},
 		cacheable: false,
 	},
-	brand_audit_watch: {
+	list_brand_audit_watches: {
+		// Read-only, but watch state is mutable — never cache.
+		cacheKey: () => `__nocache__:list_brand_audit_watches:${crypto.randomUUID()}`,
+		execute: async (_domain, _args, ro) => {
+			const db = ro?.brandAuditDb;
+			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
+			if (!db) return brandAuditWatchUnprovisioned();
+			return listBrandAuditWatches(principalId, { db });
+		},
+		cacheTtlSeconds: 0,
+	},
+	register_brand_audit_watch: {
 		// Mutating tool — random UUID keeps every call a cache-miss.
-		cacheKey: () => `__nocache__:brand_audit_watch:${crypto.randomUUID()}`,
+		cacheKey: () => `__nocache__:register_brand_audit_watch:${crypto.randomUUID()}`,
 		execute: async (_domain, args, ro) => {
 			const db = ro?.brandAuditDb;
 			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
-			if (!db) {
-				const { buildCheckResult, createFinding } = await import('../lib/scoring');
-				return buildCheckResult('brand_discovery', [
-					createFinding('brand_discovery', 'Brand audit watch unavailable', 'high', 'BRAND_AUDIT_DB binding is not provisioned.', {
-						unprovisioned: true,
-					}),
-				]);
-			}
-			return brandAuditWatch(
+			if (!db) return brandAuditWatchUnprovisioned();
+			return registerBrandAuditWatch(
 				{
-					action: args.action as 'register' | 'list' | 'delete',
 					domain: args.domain as string | undefined,
 					interval: args.interval as 'daily' | 'weekly' | 'monthly' | undefined,
 					webhook_url: args.webhook_url as string | undefined,
-					watchId: args.watchId as string | undefined,
 				},
 				principalId,
 				{ db },
 			);
+		},
+		cacheTtlSeconds: 0,
+	},
+	delete_brand_audit_watch: {
+		// Destructive tool — random UUID keeps every call a cache-miss.
+		cacheKey: () => `__nocache__:delete_brand_audit_watch:${crypto.randomUUID()}`,
+		execute: async (_domain, args, ro) => {
+			const db = ro?.brandAuditDb;
+			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
+			if (!db) return brandAuditWatchUnprovisioned();
+			return deleteBrandAuditWatch({ watchId: args.watchId as string | undefined }, principalId, { db });
 		},
 		cacheTtlSeconds: 0,
 	},
@@ -598,11 +657,13 @@ export async function handleToolsCall(
 			'batch_scan',
 			'compare_domains',
 			'check_root_server_set',
-			// v2.21+ brand-audit tools — take `domains[]`, `auditId`, or `action` instead of `domain`.
+			// v2.21+ brand-audit tools — take `domains[]`, `auditId`, or `watchId` instead of a required `domain`.
 			'brand_audit_batch_start',
 			'brand_audit_status',
 			'brand_audit_get_report',
-			'brand_audit_watch',
+			'list_brand_audit_watches',
+			'register_brand_audit_watch',
+			'delete_brand_audit_watch',
 		]);
 		if (!DOMAIN_OPTIONAL_TOOLS.has(name)) {
 			domain = extractAndValidateDomain(validatedArgs);
@@ -621,6 +682,38 @@ export async function handleToolsCall(
 					const tier = runtimeOptions?.authTier;
 					if (tier !== 'enterprise' && tier !== 'owner') {
 						return buildToolErrorResult("Invalid view: 'csc_complement' requires enterprise tier");
+					}
+				}
+			}
+
+			// Tier gate: discovery_mode='tiered' activates the Tier-0/1/2 lookups
+			// against private BV_INFRA_GRAPH, BV_INTEL_GATEWAY, and BV_ENTERPRISE
+			// service bindings (operator-deploy only). Pay-walled at developer
+			// tier or higher to match the premium nature of those data sources.
+			// On BSL self-hosts the bindings are unprovisioned and the pipeline
+			// degrades to classic regardless, so this gate is a no-op there.
+			if (name === 'discover_brand_domains' || name === 'brand_audit_single' || name === 'brand_audit_batch_start') {
+				const requestedMode = (validatedArgs as { discovery_mode?: string }).discovery_mode;
+				if (requestedMode === 'tiered') {
+					const tier = runtimeOptions?.authTier;
+					if (tier !== 'developer' && tier !== 'partner' && tier !== 'enterprise' && tier !== 'owner') {
+						return buildToolErrorResult("Invalid discovery_mode: 'tiered' requires developer tier or higher");
+					}
+				}
+			}
+
+			// Tier gate: depth='deep' expands candidate seeding + enrichment fanout
+			// (roughly 3× the per-call compute cost of 'standard'). Pay-walled at
+			// developer tier or higher — same threshold as discovery_mode='tiered'.
+			// Defensive for brand_audit_* (free/agent already get 0 quota there);
+			// meaningful for discover_brand_domains where free callers have 1/day
+			// and could otherwise burn it on deep.
+			if (name === 'discover_brand_domains' || name === 'brand_audit_single' || name === 'brand_audit_batch_start') {
+				const requestedDepth = (validatedArgs as { depth?: string }).depth;
+				if (requestedDepth === 'deep') {
+					const tier = runtimeOptions?.authTier;
+					if (tier !== 'developer' && tier !== 'partner' && tier !== 'enterprise' && tier !== 'owner') {
+						return buildToolErrorResult("Invalid depth: 'deep' requires developer tier or higher");
 					}
 				}
 			}
@@ -856,7 +949,7 @@ export async function handleToolsCall(
 				case 'analyze_drift': {
 					const baselineStr = typeof validatedArgs.baseline === 'string' ? validatedArgs.baseline : '';
 
-					let baselineScore: import('../lib/scoring-model').ScanScore;
+					let baselineScore: import('@blackveil/dns-checks/scoring').ScanScore;
 					if (baselineStr === 'cached') {
 						const cacheKey = `cache:${validDomain}`;
 						const cached = scanCacheKV

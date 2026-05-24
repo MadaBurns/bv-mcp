@@ -199,7 +199,7 @@ internalRoutes.post('/tools/call', async (c) => {
 	const url = new URL(c.req.url);
 	const wantStructured = url.searchParams.get('format') === 'structured';
 
-	let capturedResult: import('./lib/scoring-model').CheckResult | null = null;
+	let capturedResult: import('@blackveil/dns-checks/scoring').CheckResult | null = null;
 
 	const cacheTtlSeconds = parseCacheTtl(c.env.CACHE_TTL_SECONDS);
 
@@ -227,7 +227,7 @@ internalRoutes.post('/tools/call', async (c) => {
 			// public `/mcp`. Closures stay `undefined` on BSL self-hosts where
 			// the bindings aren't provisioned.
 			...buildBrandTierLookups(c.env),
-			...(wantStructured ? { resultCapture: (r: import('./lib/scoring-model').CheckResult) => { capturedResult = r; } } : {}),
+			...(wantStructured ? { resultCapture: (r: import('@blackveil/dns-checks/scoring').CheckResult) => { capturedResult = r; } } : {}),
 		},
 	);
 
@@ -384,7 +384,7 @@ internalRoutes.post('/tools/batch', async (c) => {
 		const chunk = validEntries.slice(i, i + concurrency);
 		const chunkResults = await Promise.allSettled(
 			chunk.map(async (entry) => {
-				let capturedResult: import('./lib/scoring-model').CheckResult | null = null;
+				let capturedResult: import('@blackveil/dns-checks/scoring').CheckResult | null = null;
 
 				const toolResult = await handleToolsCall(
 					{ name: toolName, arguments: { ...extraArgs, domain: entry.sanitized } },
@@ -409,7 +409,7 @@ internalRoutes.post('/tools/batch', async (c) => {
 						// from internal callers must also exercise tiered mode when the
 						// bindings are provisioned.
 						...buildBrandTierLookups(c.env),
-						...(wantStructured ? { resultCapture: (r: import('./lib/scoring-model').CheckResult) => { capturedResult = r; } } : {}),
+						...(wantStructured ? { resultCapture: (r: import('@blackveil/dns-checks/scoring').CheckResult) => { capturedResult = r; } } : {}),
 					},
 				);
 

@@ -82,7 +82,12 @@ function createMockScan(overrides?: Partial<ScanDomainResult>): ScanDomainResult
 		},
 		checks: [
 			{ category: 'spf', passed: true, score: 90, findings: [] },
-			{ category: 'dmarc', passed: true, score: 95, findings: [{ category: 'dmarc', title: 'DMARC p=reject', severity: 'info', detail: '' }] },
+			{
+				category: 'dmarc',
+				passed: true,
+				score: 95,
+				findings: [{ category: 'dmarc', title: 'DMARC p=reject', severity: 'info', detail: '' }],
+			},
 			{ category: 'dkim', passed: true, score: 85, findings: [] },
 			{ category: 'dnssec', passed: true, score: 70, findings: [] },
 		],
@@ -100,7 +105,7 @@ function createMockScan(overrides?: Partial<ScanDomainResult>): ScanDomainResult
 
 describe('compare_baseline schema', () => {
 	it('is registered in TOOLS', async () => {
-		const { TOOLS } = await import('../src/handlers/tool-schemas');
+		const { TOOLS } = await import('../src/schemas/tool-definitions');
 		const tool = TOOLS.find((value) => value.name === 'compare_baseline');
 		expect(tool).toBeDefined();
 		expect(tool?.inputSchema.required).toContain('domain');

@@ -370,7 +370,9 @@ function makeToolCases(): ToolCase[] {
 		},
 		{ name: 'brand_audit_status', arguments: { auditId: 'chaos-audit-1' } },
 		{ name: 'brand_audit_get_report', arguments: { auditId: 'chaos-audit-1', target: 'brand-example.net' } },
-		{ name: 'brand_audit_watch', arguments: { action: 'list' } },
+		{ name: 'list_brand_audit_watches', arguments: {} },
+		{ name: 'register_brand_audit_watch', arguments: { domain: 'brand-example.net', interval: 'weekly' } },
+		{ name: 'delete_brand_audit_watch', arguments: { watchId: 'chaos-watch-1' } },
 	];
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { scoreToGrade, computeScanScore, IMPORTANCE_WEIGHTS, CORE_WEIGHTS, PROTECTIVE_WEIGHTS } from '../src/lib/scoring-engine';
-import { buildCheckResult, createFinding, CATEGORY_DISPLAY_WEIGHTS, type CheckCategory } from '../src/lib/scoring-model';
+import { scoreToGrade, computeScanScore, IMPORTANCE_WEIGHTS, CORE_WEIGHTS, PROTECTIVE_WEIGHTS } from '@blackveil/dns-checks/scoring';
+import { buildCheckResult, createFinding, CATEGORY_DISPLAY_WEIGHTS, type CheckCategory } from '@blackveil/dns-checks/scoring';
 
 describe('scoring-engine', () => {
 	it('maps numeric scores to expected grade bands', () => {

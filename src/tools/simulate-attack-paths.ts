@@ -10,7 +10,7 @@
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import type { QueryDnsOptions } from '../lib/dns-types';
-import type { Finding } from '../lib/scoring-model';
+import type { Finding } from '@blackveil/dns-checks/scoring';
 import { checkSpf } from './check-spf';
 import { checkDmarc } from './check-dmarc';
 import { checkDkim } from './check-dkim';

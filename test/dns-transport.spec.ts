@@ -648,6 +648,21 @@ describe('confirmWithSecondaryResolvers', () => {
 		expect((result as { kind?: string }).kind).toBe('unconfirmed');
 	});
 
+	it('does not edge-cache secondary (fallback) confirmations', async () => {
+		const calls: Array<{ url: string; init: RequestInit & { cf?: unknown } }> = [];
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string, init: RequestInit & { cf?: unknown }) => {
+			calls.push({ url: String(url), init });
+			return { ok: true, status: 200, json: async () => ({ Status: 0, Answer: [] }) };
+		}) as unknown as typeof fetch;
+		const transport = await import('../src/lib/dns-transport');
+		await transport.confirmWithSecondaryResolvers('example.com', 'TXT', false, 2000);
+		// The secondary is the rare fallback used precisely when the primary missed;
+		// edge-caching its responses risks persisting a transient empty (#199).
+		const googleCall = calls.find((c) => c.url.includes('dns.google'));
+		expect(googleCall, 'expected a Google secondary fetch').toBeDefined();
+		expect(googleCall!.init?.cf).toBeUndefined();
+	});
+
 	it('returns a DohResponse when at least one secondary succeeds', async () => {
 		let calls = 0;
 		globalThis.fetch = vi.fn().mockImplementation(async () => {
