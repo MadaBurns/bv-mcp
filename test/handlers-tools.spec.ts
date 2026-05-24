@@ -1,5 +1,14 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { setupFetchMock, createDohResponse, mockTxtRecords, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
+import {
+	setupFetchMock,
+	createDohResponse,
+	mockTxtRecords,
+	txtResponse,
+	nsResponse,
+	caaResponse,
+	dnssecResponse,
+	httpResponse,
+} from './helpers/dns-mock';
 import { IN_MEMORY_CACHE } from '../src/lib/cache';
 
 const { restore } = setupFetchMock();
@@ -148,13 +157,13 @@ describe('handleToolsCall - dispatch routing', () => {
 	});
 
 	it('check_dnssec with valid domain returns content', async () => {
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			createDohResponse(
-				[{ name: 'example.com', type: 1 }],
-				[{ name: 'example.com', type: 1, TTL: 300, data: '192.0.2.1' }],
-				{ ad: true },
-			),
-		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				createDohResponse([{ name: 'example.com', type: 1 }], [{ name: 'example.com', type: 1, TTL: 300, data: '192.0.2.1' }], {
+					ad: true,
+				}),
+			);
 		const result = await call('check_dnssec', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toHaveLength(2);
@@ -209,7 +218,12 @@ describe('handleToolsCall - dispatch routing', () => {
 					json: () => Promise.resolve({}),
 				} as unknown as Response);
 			}
-			return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('OK'), json: () => Promise.resolve({}) } as unknown as Response);
+			return Promise.resolve({
+				ok: true,
+				status: 200,
+				text: () => Promise.resolve('OK'),
+				json: () => Promise.resolve({}),
+			} as unknown as Response);
 		});
 		const result = await call('check_mta_sts', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
@@ -224,7 +238,12 @@ describe('handleToolsCall - dispatch routing', () => {
 				return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
 			}
 			if (url.includes('type=SOA') || url.includes('type=6')) {
-				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 6 }], [{ name: 'example.com', type: 6, TTL: 300, data: 'ns1.example.com. admin.example.com. 2024010101 3600 600 604800 300' }]));
+				return Promise.resolve(
+					createDohResponse(
+						[{ name: 'example.com', type: 6 }],
+						[{ name: 'example.com', type: 6, TTL: 300, data: 'ns1.example.com. admin.example.com. 2024010101 3600 600 604800 300' }],
+					),
+				);
 			}
 			return Promise.resolve(createDohResponse([], []));
 		});
@@ -248,7 +267,9 @@ describe('handleToolsCall - per-tool cache TTL', () => {
 		};
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		await handleToolsCall({ name: 'check_lookalikes', arguments: { domain: 'example.com' } }, mockKV as unknown as KVNamespace);
-		const lookalikesPut = mockKV.put.mock.calls.find((c: unknown[]) => (c[0] as string).includes('lookalikes') && !(c[0] as string).endsWith(':computing'));
+		const lookalikesPut = mockKV.put.mock.calls.find(
+			(c: unknown[]) => (c[0] as string).includes('lookalikes') && !(c[0] as string).endsWith(':computing'),
+		);
 		expect(lookalikesPut).toBeDefined();
 		expect(lookalikesPut![2]).toEqual({ expirationTtl: 3600 });
 	});
@@ -261,7 +282,9 @@ describe('handleToolsCall - per-tool cache TTL', () => {
 		};
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		await handleToolsCall({ name: 'check_spf', arguments: { domain: 'example.com' } }, mockKV as unknown as KVNamespace);
-		const spfPut = mockKV.put.mock.calls.find((c: unknown[]) => (c[0] as string).includes('spf') && !(c[0] as string).endsWith(':computing'));
+		const spfPut = mockKV.put.mock.calls.find(
+			(c: unknown[]) => (c[0] as string).includes('spf') && !(c[0] as string).endsWith(':computing'),
+		);
 		expect(spfPut).toBeDefined();
 		expect(spfPut![2]).toEqual({ expirationTtl: 300 });
 	});
@@ -315,11 +338,10 @@ describe('handleToolsCall - per-tool cache TTL', () => {
 		};
 
 		const { handleToolsCall } = await import('../src/handlers/tools');
-		await handleToolsCall(
-			{ name: 'brand_audit_status', arguments: { auditId: 'aud-1' } },
-			mockKV as unknown as KVNamespace,
-			{ brandAuditDb: db as unknown as D1Database, principalId: 'owner-1' },
-		);
+		await handleToolsCall({ name: 'brand_audit_status', arguments: { auditId: 'aud-1' } }, mockKV as unknown as KVNamespace, {
+			brandAuditDb: db as unknown as D1Database,
+			principalId: 'owner-1',
+		});
 
 		const statusPut = mockKV.put.mock.calls.find((c: unknown[]) => (c[0] as string).includes('brand_audit_status'));
 		expect(statusPut).toBeUndefined();
@@ -500,7 +522,12 @@ describe('formatCheckResult - via handleToolsCall', () => {
 
 			if (url.includes('type=CNAME') || url.includes('type=5')) {
 				if (url.includes('staging.example.com')) {
-					return Promise.resolve(createDohResponse([{ name: 'staging.example.com', type: 5 }], [{ name: 'staging.example.com', type: 5, TTL: 300, data: 'old-app.herokuapp.com.' }]));
+					return Promise.resolve(
+						createDohResponse(
+							[{ name: 'staging.example.com', type: 5 }],
+							[{ name: 'staging.example.com', type: 5, TTL: 300, data: 'old-app.herokuapp.com.' }],
+						),
+					);
 				}
 				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 5 }], []));
 			}
@@ -523,11 +550,11 @@ describe('formatCheckResult - via handleToolsCall', () => {
 // -- handleToolsList --
 
 describe('handleToolsList', () => {
-	it('returns an object with a tools array of 60 entries', async () => {
+	it('returns an object with a tools array of 62 entries', async () => {
 		const { handleToolsList } = await import('../src/handlers/tools');
 		const result = handleToolsList();
 		expect(Array.isArray(result.tools)).toBe(true);
-		expect(result.tools).toHaveLength(60);
+		expect(result.tools).toHaveLength(62);
 	});
 
 	it('every tool entry has name, description, and inputSchema', async () => {
@@ -540,6 +567,21 @@ describe('handleToolsList', () => {
 			expect(tool.description.length, `${tool.name}: description must not be empty`).toBeGreaterThan(0);
 			expect(typeof tool.inputSchema, `${tool.name}: inputSchema must be object`).toBe('object');
 			expect(tool.inputSchema).not.toBeNull();
+		}
+	});
+
+	it('exposes only MCP-spec fields, nesting custom metadata under _meta', async () => {
+		const { handleToolsList } = await import('../src/handlers/tools');
+		const { tools } = handleToolsList();
+		const SPEC_FIELDS = new Set(['name', 'title', 'description', 'inputSchema', 'outputSchema', 'annotations', '_meta']);
+		for (const tool of tools) {
+			for (const key of Object.keys(tool)) {
+				expect(SPEC_FIELDS.has(key), `${tool.name}: non-spec wire field "${key}"`).toBe(true);
+			}
+			const meta = (tool as { _meta?: Record<string, unknown> })._meta;
+			expect(meta, `${tool.name}: missing _meta`).toBeDefined();
+			expect(typeof meta?.group, `${tool.name}: _meta.group`).toBe('string');
+			expect(typeof meta?.scanIncluded, `${tool.name}: _meta.scanIncluded`).toBe('boolean');
 		}
 	});
 
@@ -592,8 +634,7 @@ describe('handleToolsCall - format routing', () => {
 		expect(result.isError).toBeUndefined();
 		const text = result.content[0].text;
 		// Full mode includes emoji icons for severity
-		const hasSeverityIcon =
-			text.includes('ℹ️') || text.includes('⚠️') || text.includes('🔶') || text.includes('🔴') || text.includes('🚨');
+		const hasSeverityIcon = text.includes('ℹ️') || text.includes('⚠️') || text.includes('🔶') || text.includes('🔴') || text.includes('🚨');
 		expect(hasSeverityIcon).toBe(true);
 	});
 
@@ -726,11 +767,10 @@ describe('handleToolsCall - caching behaviour', () => {
 			put: vi.fn().mockResolvedValue(undefined),
 		};
 		const { handleToolsCall } = await import('../src/handlers/tools');
-		await handleToolsCall(
-			{ name: 'check_spf', arguments: { domain: 'example.com' } },
-			mockKV as unknown as KVNamespace,
+		await handleToolsCall({ name: 'check_spf', arguments: { domain: 'example.com' } }, mockKV as unknown as KVNamespace);
+		const spfPut = mockKV.put.mock.calls.find(
+			(c: unknown[]) => (c[0] as string).includes('spf') && !(c[0] as string).endsWith(':computing'),
 		);
-		const spfPut = mockKV.put.mock.calls.find((c: unknown[]) => (c[0] as string).includes('spf') && !(c[0] as string).endsWith(':computing'));
 		expect(spfPut).toBeDefined();
 		// Default TTL is 300s
 		expect(spfPut![2]).toEqual({ expirationTtl: 300 });
@@ -772,11 +812,11 @@ describe('handleToolsCall - resultCapture', () => {
 		mockTxtRecords(['v=spf1 -all']);
 		let captured: unknown = null;
 		const { handleToolsCall } = await import('../src/handlers/tools');
-		const result = await handleToolsCall(
-			{ name: 'check_spf', arguments: { domain: 'example.com' } },
-			undefined,
-			{ resultCapture: (r) => { captured = r; } },
-		);
+		const result = await handleToolsCall({ name: 'check_spf', arguments: { domain: 'example.com' } }, undefined, {
+			resultCapture: (r) => {
+				captured = r;
+			},
+		});
 		expect(result.isError).toBeUndefined();
 		expect(captured).not.toBeNull();
 		expect((captured as Record<string, unknown>).category).toBe('spf');
@@ -833,12 +873,11 @@ describe('handleToolsCall - additional registry tool routing', () => {
 	});
 
 	it('check_txt_hygiene with valid domain returns content', async () => {
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			createDohResponse(
-				[{ name: 'example.com', type: 16 }],
-				[{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 -all"' }],
-			),
-		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				createDohResponse([{ name: 'example.com', type: 16 }], [{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 -all"' }]),
+			);
 		const result = await call('check_txt_hygiene', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toHaveLength(2);
@@ -940,10 +979,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 				);
 			}
 			return Promise.resolve(
-				createDohResponse(
-					[{ name: 'example.com', type: 16 }],
-					[{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 -all"' }],
-				),
+				createDohResponse([{ name: 'example.com', type: 16 }], [{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 -all"' }]),
 			);
 		});
 		const result = await call('assess_spoofability', { domain: 'example.com' });
@@ -953,12 +989,14 @@ describe('handleToolsCall - non-registry tool routing', () => {
 	});
 
 	it('generate_spf_record with valid domain returns an SPF record', async () => {
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			createDohResponse(
-				[{ name: 'example.com', type: 16 }],
-				[{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 include:_spf.google.com -all"' }],
-			),
-		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				createDohResponse(
+					[{ name: 'example.com', type: 16 }],
+					[{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 include:_spf.google.com -all"' }],
+				),
+			);
 		const result = await call('generate_spf_record', { domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toHaveLength(2);
@@ -1044,10 +1082,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 				);
 			}
 			return Promise.resolve(
-				createDohResponse(
-					[{ name: 'example.com', type: 16 }],
-					[{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 -all"' }],
-				),
+				createDohResponse([{ name: 'example.com', type: 16 }], [{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 -all"' }]),
 			);
 		});
 		const result = await call('simulate_attack_paths', { domain: 'example.com' });
@@ -1071,10 +1106,7 @@ describe('handleToolsCall - non-registry tool routing', () => {
 				);
 			}
 			return Promise.resolve(
-				createDohResponse(
-					[{ name: 'example.com', type: 16 }],
-					[{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 -all"' }],
-				),
+				createDohResponse([{ name: 'example.com', type: 16 }], [{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 -all"' }]),
 			);
 		});
 		const result = await call('map_supply_chain', { domain: 'example.com' });
