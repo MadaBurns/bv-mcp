@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import type { RateLimitResult, ToolDailyRateLimitResult } from './rate-limiter';
+import type { GlobalRateLimitResult, RateLimitResult, ToolDailyRateLimitResult } from './rate-limiter';
 
 interface RateLimitWindow {
 	timestamps: number[];
@@ -151,6 +151,33 @@ export function checkToolDailyRateLimitInMemory(principalId: string, toolName: s
 	};
 }
 
+// ---------------------------------------------------------------------------
+// Per-IP daily cap (fixed-window, mirrors KV key scheme)
+// ---------------------------------------------------------------------------
+
+interface IpDailyEntry {
+	dayWindow: number;
+	count: number;
+}
+
+const IP_DAILY_ENTRIES = new Map<string, IpDailyEntry>();
+
+export function checkIpDailyLimitInMemory(ip: string, limit: number): GlobalRateLimitResult {
+	const now = Date.now();
+	const currentWindow = Math.floor(now / DAY_MS);
+	let entry = IP_DAILY_ENTRIES.get(ip);
+	if (!entry || entry.dayWindow !== currentWindow) {
+		entry = { dayWindow: currentWindow, count: 0 };
+		IP_DAILY_ENTRIES.set(ip, entry);
+	}
+	if (entry.count >= limit) {
+		const windowEnd = (currentWindow + 1) * DAY_MS;
+		return { allowed: false, retryAfterMs: Math.max(windowEnd - now, 0), remaining: 0, limit };
+	}
+	entry.count++;
+	return { allowed: true, remaining: Math.max(limit - entry.count, 0), limit };
+}
+
 export function resetRateLimit(ip: string): void {
 	RATE_LIMIT_ENTRIES.delete(buildScopedEntryKey(ip, 'tools'));
 	RATE_LIMIT_ENTRIES.delete(buildScopedEntryKey(ip, 'control'));
@@ -159,5 +186,6 @@ export function resetRateLimit(ip: string): void {
 export function resetAllRateLimits(): void {
 	RATE_LIMIT_ENTRIES.clear();
 	TOOL_DAILY_ENTRIES.clear();
+	IP_DAILY_ENTRIES.clear();
 	lastCleanup = Date.now();
 }

@@ -3,6 +3,7 @@ import type { Context } from 'hono';
 import { RegisterRequestSchema } from '../schemas/oauth';
 import { OAUTH_KV_PREFIX, OAUTH_REDIRECT_URI_ALLOWLIST } from '../lib/config';
 import { putClient } from './storage';
+import { parseEnvelopeKey } from '../lib/kv-envelope';
 
 const MAX_BODY_BYTES = 4 * 1024;
 
@@ -84,6 +85,7 @@ async function registerRateExceeded(kv: KVNamespace, ip: string): Promise<{ exce
  */
 export async function handleRegister(c: Context): Promise<Response> {
 	const kv = (c.env as { SESSION_STORE: KVNamespace }).SESSION_STORE;
+	const kvEnvelopeKey = parseEnvelopeKey((c.env as { KV_ENVELOPE_KEY?: string }).KV_ENVELOPE_KEY) ?? undefined;
 	const ip = c.req.header('cf-connecting-ip') ?? '0.0.0.0';
 	const rl = await registerRateExceeded(kv, ip);
 	if (rl.exceeded) {
@@ -136,7 +138,7 @@ export async function handleRegister(c: Context): Promise<Response> {
 		software_id: parsed.software_id,
 		software_version: parsed.software_version,
 	};
-	await putClient(kv, rec);
+	await putClient(kv, rec, kvEnvelopeKey);
 
 	return c.json(
 		{

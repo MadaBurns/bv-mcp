@@ -90,6 +90,8 @@ type BvMcpEnv = {
 	BV_CERTSTREAM?: Fetcher;
 	BV_WHOIS?: Fetcher;
 	REQUIRE_AUTH?: string;
+	/** FIND-01: when 'true', the ?api_key= query-param fallback is nulled; requests proceed as free tier. */
+	REJECT_QUERY_API_KEY?: string;
 	ENABLE_OAUTH?: string;
 	ENABLE_OWNER_OAUTH?: string;
 	BV_WEB_OAUTH_CONSENT_URL?: string;
@@ -100,6 +102,8 @@ type BvMcpEnv = {
 	INTELLIGENCE_DB?: D1Database;
 	MCP_ACCESS_LOG_IP_ENCRYPTION_KEY?: string;
 	MCP_ACCESS_LOG_IP_KEY_VERSION?: string;
+	/** FIND-17: Base64-encoded 32-byte AES-256 key for app-layer KV envelope encryption of trial keys and OAuth codes. */
+	KV_ENVELOPE_KEY?: string;
 	BRAND_AUDIT_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	BRAND_AUDIT_PDF_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	BRAND_REPORTS?: R2Bucket;
@@ -247,7 +251,7 @@ for (const path of mcpPaths) {
 	app.use(path, async (c, next) => {
 		const authHeader = c.req.header('authorization');
 		const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
-		const queryToken = bearerToken ? null : (c.req.query('api_key') ?? null);
+		const queryToken = c.env.REJECT_QUERY_API_KEY === 'true' ? null : bearerToken ? null : (c.req.query('api_key') ?? null);
 		const token = bearerToken ?? queryToken;
 		const apiKeyInQuery = queryToken !== null;
 

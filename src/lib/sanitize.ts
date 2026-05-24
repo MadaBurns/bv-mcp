@@ -182,7 +182,60 @@ export function validateDomain(input: string): ValidationResult {
 }
 
 /**
- * Sanitize a domain string: trim, lowercase, remove trailing dot.
+ * Detect whether a single domain label (pre-punycode, NFC-normalized, lowercased)
+ * mixes characters from more than one Unicode script.
+ * ASCII letters a-z, digits 0-9, and hyphens are treated as Latin script.
+ * Returns true when two or more distinct scripts are found in the same label.
+ */
+function hasMixedScripts(label: string): boolean {
+	const scripts = new Set<string>();
+	for (const char of label) {
+		const cp = char.codePointAt(0);
+		if (cp === undefined) continue;
+		// ASCII hyphen, digits \u2014 neutral, skip
+		if (cp === 0x2d || (cp >= 0x30 && cp <= 0x39)) continue;
+		// ASCII letters a-z (already lowercased) \u2014 Latin
+		if (cp >= 0x61 && cp <= 0x7a) {
+			scripts.add('Latin');
+			continue;
+		}
+		// Detect script via Unicode property escapes \u2014 Workers supports ES2018+ regex
+		if (/\p{Script=Latin}/u.test(char)) {
+			scripts.add('Latin');
+		} else if (/\p{Script=Cyrillic}/u.test(char)) {
+			scripts.add('Cyrillic');
+		} else if (/\p{Script=Greek}/u.test(char)) {
+			scripts.add('Greek');
+		} else if (/\p{Script=Armenian}/u.test(char)) {
+			scripts.add('Armenian');
+		} else if (/\p{Script=Georgian}/u.test(char)) {
+			scripts.add('Georgian');
+		} else if (/\p{Script=Han}/u.test(char)) {
+			scripts.add('Han');
+		} else if (/\p{Script=Hiragana}/u.test(char)) {
+			scripts.add('Hiragana');
+		} else if (/\p{Script=Katakana}/u.test(char)) {
+			scripts.add('Katakana');
+		} else if (/\p{Script=Hangul}/u.test(char)) {
+			scripts.add('Hangul');
+		} else if (/\p{Script=Arabic}/u.test(char)) {
+			scripts.add('Arabic');
+		} else if (/\p{Script=Hebrew}/u.test(char)) {
+			scripts.add('Hebrew');
+		} else if (/\p{Script=Devanagari}/u.test(char)) {
+			scripts.add('Devanagari');
+		} else if (/\p{Script=Thai}/u.test(char)) {
+			scripts.add('Thai');
+		}
+		// Other scripts/common: skip (don't contribute to mix detection)
+		if (scripts.size > 1) return true;
+	}
+	return scripts.size > 1;
+}
+
+/**
+ * Sanitize a domain string: trim, lowercase, remove trailing dot, IDNA-encode.
+ * Throws for mixed-script labels (homoglyph detection).
  * Call validateDomain first to ensure the domain is valid.
  */
 export function sanitizeDomain(input: string): string {
@@ -191,6 +244,13 @@ export function sanitizeDomain(input: string): string {
 	if (cleaned.length === 0) return '';
 	let domain = cleaned.normalize('NFC').toLowerCase();
 	if (domain.endsWith('.')) domain = domain.slice(0, -1);
+	// Reject labels that mix Unicode scripts \u2014 homoglyph/confusable attack prevention
+	const labels = domain.split('.');
+	for (const label of labels) {
+		if (hasMixedScripts(label)) {
+			throw new Error(`Invalid domain: label "${label.slice(0, 63)}" mixes multiple Unicode scripts`);
+		}
+	}
 	// Convert Unicode/emoji/IDN to punycode for DNS queries
 	try {
 		return punycode.toASCII(domain);

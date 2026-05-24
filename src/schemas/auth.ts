@@ -7,6 +7,7 @@ import { TierSchema } from './primitives';
 export const TierCacheEntrySchema = z.object({
 	tier: TierSchema,
 	revokedAt: z.number().nullable().optional(),
+	trialExpiresAt: z.number().optional(),
 });
 
 /** Response from bv-web service binding validate-key endpoint. */

@@ -15,6 +15,7 @@
  */
 
 import {
+	checkIpDailyLimitInMemory,
 	checkScopedRateLimitInMemory,
 	checkToolDailyRateLimitInMemory,
 	pruneTimestamps,
@@ -29,7 +30,7 @@ import {
 } from './quota-coordinator';
 import { CircuitBreaker, CircuitBreakerOpen } from './circuit-breaker';
 import { logError } from './log';
-import { IP_LOCK_TTL_MS, IP_LOCK_RETRY_MS } from './config';
+import { IP_LOCK_TTL_MS, IP_LOCK_RETRY_MS, FREE_IP_DAILY_LIMIT } from './config';
 
 export interface RateLimitResult {
 	allowed: boolean;
@@ -313,6 +314,32 @@ async function checkGlobalDailyLimitKV(limit: number, kv: KVNamespace): Promise<
 }
 
 // ---------------------------------------------------------------------------
+// Per-IP daily cap (FIND-02)
+// ---------------------------------------------------------------------------
+
+async function checkIpDailyLimitKV(ip: string, limit: number, kv: KVNamespace): Promise<GlobalRateLimitResult> {
+	return withIpKvLock(`ipday:${ip}`, async () => {
+		const now = Date.now();
+		const dayWindow = Math.floor(now / DAY_MS);
+		const key = `rl:ipday:${ip}:${dayWindow}`;
+		const ttl = Math.ceil(DAY_MS / 1000);
+
+		const currentVal = await kv.get(key);
+		const currentCount = parseKvCounter(currentVal);
+
+		if (currentCount >= limit) {
+			const windowEnd = (dayWindow + 1) * DAY_MS;
+			return { allowed: false, retryAfterMs: Math.max(windowEnd - now, 0), remaining: 0, limit };
+		}
+
+		const nextCount = currentCount + 1;
+		await kv.put(key, String(nextCount), { expirationTtl: ttl });
+
+		return { allowed: true, remaining: Math.max(limit - nextCount, 0), limit };
+	});
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -456,6 +483,24 @@ export async function checkGlobalDailyLimit(
 		}
 	}
 	return checkGlobalDailyLimitInMemory(limit);
+}
+
+/**
+ * Check if a single IP has exceeded its per-IP daily cap for unauthenticated callers.
+ * Uses KV when available, with in-memory fallback on failure (FIND-02).
+ *
+ * @param ip  - Client IP address (cf-connecting-ip)
+ * @param kv  - Optional KV namespace; falls back to in-memory when absent or on error.
+ */
+export async function checkIpDailyLimit(ip: string, kv: KVNamespace | undefined): Promise<GlobalRateLimitResult> {
+	if (kv) {
+		try {
+			return await checkIpDailyLimitKV(ip, FREE_IP_DAILY_LIMIT, kv);
+		} catch {
+			logError('[rate-limiter] KV ip-daily cap error, falling back to in-memory');
+		}
+	}
+	return checkIpDailyLimitInMemory(ip, FREE_IP_DAILY_LIMIT);
 }
 
 /**

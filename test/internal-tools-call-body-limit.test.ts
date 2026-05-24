@@ -5,11 +5,17 @@
 //
 // Limit chosen: same MAX_REQUEST_BODY_BYTES (10 KB) used on the public /mcp path —
 // a single direct tool invocation never legitimately exceeds the public limit.
+//
+// REQUIRE_INTERNAL_AUTH=false: these tests cover body-limit behaviour, not bearer
+// auth — opt out of the auth gate so assertions stay focused on the 413 contract.
 
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import worker from '../src';
 import { MAX_REQUEST_BODY_BYTES } from '../src/lib/config';
+
+// Opt out of bearer auth gate — body-limit tests are about size rejection, not auth.
+const testEnv = { ...env, REQUIRE_INTERNAL_AUTH: 'false' } as typeof env & { REQUIRE_INTERNAL_AUTH: string };
 
 describe('/internal/tools/call — body size limit', () => {
 	it('rejects bodies larger than MAX_REQUEST_BODY_BYTES with 413', async () => {
@@ -24,7 +30,7 @@ describe('/internal/tools/call — body size limit', () => {
 			body,
 		});
 		const ctx = createExecutionContext();
-		const response = await worker.fetch(request, env, ctx);
+		const response = await worker.fetch(request, testEnv, ctx);
 		await waitOnExecutionContext(ctx);
 		expect(response.status).toBe(413);
 	});
@@ -38,7 +44,7 @@ describe('/internal/tools/call — body size limit', () => {
 			body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
 		});
 		const ctx = createExecutionContext();
-		const response = await worker.fetch(request, env, ctx);
+		const response = await worker.fetch(request, testEnv, ctx);
 		await waitOnExecutionContext(ctx);
 		expect(response.status).toBe(200);
 	});

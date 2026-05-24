@@ -5,6 +5,7 @@ import { createAuthorizationCode, getClient, putCode } from './storage';
 import { isAuthorizedRequest } from '../lib/auth';
 import { OAUTH_CONSENT_RATE_LIMIT, OAUTH_CONSENT_RATE_WINDOW_SECONDS, OAUTH_KV_PREFIX, parseOwnerAllowIps } from '../lib/config';
 import { resolveClientIpFromRequestHeaders } from '../lib/client-ip';
+import { parseEnvelopeKey } from '../lib/kv-envelope';
 
 function escapeHtml(s: string): string {
 	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -113,7 +114,8 @@ export async function handleAuthorizeGet(c: Context): Promise<Response> {
 		return new Response('Invalid authorization request', { status: 400 });
 	}
 	const kv = (c.env as { SESSION_STORE: KVNamespace }).SESSION_STORE;
-	const client = await getClient(kv, parsed.client_id);
+	const kvEnvelopeKey = parseEnvelopeKey((c.env as { KV_ENVELOPE_KEY?: string }).KV_ENVELOPE_KEY) ?? undefined;
+	const client = await getClient(kv, parsed.client_id, kvEnvelopeKey);
 	if (!client) return new Response('Unknown client_id', { status: 400 });
 	if (!client.redirect_uris.includes(parsed.redirect_uri)) {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
@@ -194,6 +196,7 @@ function redirectWithError(redirectUri: string, error: string, state: string | u
  */
 export async function handleAuthorizePost(c: Context): Promise<Response> {
 	const kv = (c.env as { SESSION_STORE: KVNamespace }).SESSION_STORE;
+	const kvEnvelopeKey = parseEnvelopeKey((c.env as { KV_ENVELOPE_KEY?: string }).KV_ENVELOPE_KEY) ?? undefined;
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 
 	if (await consentRateExceeded(kv, ip)) {
@@ -227,7 +230,7 @@ export async function handleAuthorizePost(c: Context): Promise<Response> {
 		return new Response('Invalid authorization request', { status: 400 });
 	}
 
-	const client = await getClient(kv, parsed.client_id);
+	const client = await getClient(kv, parsed.client_id, kvEnvelopeKey);
 	if (!client) return new Response('Unknown client_id', { status: 400 });
 	if (!client.redirect_uris.includes(parsed.redirect_uri)) {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
@@ -254,13 +257,18 @@ export async function handleAuthorizePost(c: Context): Promise<Response> {
 	}
 
 	const code = createAuthorizationCode();
-	await putCode(kv, code, {
-		client_id: parsed.client_id,
-		redirect_uri: parsed.redirect_uri,
-		code_challenge: parsed.code_challenge,
-		issued_at: Math.floor(Date.now() / 1000),
-		...(parsed.scope ? { scope: parsed.scope } : {}),
-	});
+	await putCode(
+		kv,
+		code,
+		{
+			client_id: parsed.client_id,
+			redirect_uri: parsed.redirect_uri,
+			code_challenge: parsed.code_challenge,
+			issued_at: Math.floor(Date.now() / 1000),
+			...(parsed.scope ? { scope: parsed.scope } : {}),
+		},
+		kvEnvelopeKey,
+	);
 
 	const success = new URL(parsed.redirect_uri);
 	success.searchParams.set('code', code);

@@ -328,6 +328,14 @@ export const DiscoverBrandDomainsArgs = z
 					'candidates. Tiered mode requires private BlackVeil service bindings — BSL self-hosts ' +
 					'should leave this on "classic".',
 			),
+		ownership_verified: z
+			.boolean()
+			.optional()
+			.describe(
+				'Caller attests that the seed domain is owned or authorized for scanning. ' +
+					'Required when discovery_mode is "tiered" and the caller is not an enterprise/owner/partner principal. ' +
+					'Prevents unauthorized mass reconnaissance via deep tier lookups.',
+			),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
 	.passthrough();
@@ -362,6 +370,19 @@ export const BrandAuditSingleArgs = z
 		view: BrandAuditViewSchema.optional().describe(
 			"Output view mode. 'csc_complement' produces a CSC-tuned payload; requires enterprise tier. Default 'standard'.",
 		),
+		discovery_mode: z
+			.enum(['classic', 'tiered'])
+			.optional()
+			.describe(
+				'Brand-discovery pipeline mode. classic = legacy sweep; tiered = tenant/graph/evidence wrappers first (BlackVeil-internal).',
+			),
+		ownership_verified: z
+			.boolean()
+			.optional()
+			.describe(
+				'Caller attests that the target domain is owned or authorized for scanning. ' +
+					'Required when discovery_mode is "tiered" and the caller is not an enterprise/owner/partner principal.',
+			),
 	})
 	.passthrough();
 
@@ -389,6 +410,13 @@ export const BrandAuditBatchStartArgs = z
 			.optional()
 			.describe(
 				'Brand-discovery pipeline mode. classic = legacy sweep; tiered = tenant/graph/evidence wrappers first (BlackVeil-internal).',
+			),
+		ownership_verified: z
+			.boolean()
+			.optional()
+			.describe(
+				'Caller attests that the target domains are owned or authorized for scanning. ' +
+					'Required when discovery_mode is "tiered" and the caller is not an enterprise/owner/partner principal.',
 			),
 		view: BrandAuditViewSchema.optional().describe(
 			"Output view mode. 'csc_complement' produces a CSC-tuned payload; requires enterprise tier. Default 'standard'.",

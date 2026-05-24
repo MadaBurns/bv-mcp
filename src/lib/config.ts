@@ -103,6 +103,11 @@ export function parseCacheTtl(envValue?: string): number {
  */
 export const GLOBAL_DAILY_TOOL_LIMIT = 500_000;
 
+/** Per-IP daily cap for unauthenticated callers, beneath the GLOBAL_DAILY_TOOL_LIMIT
+ *  ceiling — stops one source consuming a disproportionate share of the global free
+ *  budget while staying under the per-minute/hour limits (FIND-02). */
+export const FREE_IP_DAILY_LIMIT = 1_000;
+
 /**
  * Sliding-window thresholds for the fuzzing detector. Single source of truth —
  * the audit test in test/audits/fuzzing-config.audit.test.ts asserts these are
@@ -251,17 +256,17 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	get_provider_insights: 10,
 	assess_spoofability: 10,
 	check_resolver_consistency: 10,
-	map_supply_chain: 10,
+	map_supply_chain: 5,
 	analyze_drift: 5,
 	validate_fix: 25,
 	generate_rollout_plan: 10,
 	resolve_spf_chain: 15,
 	discover_subdomains: 5,
-	map_compliance: 10,
+	map_compliance: 5,
 	simulate_attack_paths: 3,
 	check_dbl: 5,
 	check_rbl: 5,
-	cymru_asn: 10,
+	cymru_asn: 5,
 	rdap_lookup: 5,
 	check_nsec_walkability: 10,
 	check_dnssec_chain: 10,
@@ -278,6 +283,10 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	register_brand_audit_watch: 0,
 	delete_brand_audit_watch: 0,
 };
+
+/** Free-tier daily cap on cache-bypassing (force_refresh) requests. Far below the
+ *  per-tool quota so cache-busting cannot amplify backend load (FIND-06). */
+export const FORCE_REFRESH_DAILY_LIMIT = 5;
 
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
 export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>([]);

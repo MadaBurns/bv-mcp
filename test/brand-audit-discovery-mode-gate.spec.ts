@@ -21,9 +21,9 @@ const TOOLS_ACCEPTING_DISCOVERY_MODE = ['discover_brand_domains', 'brand_audit_s
 
 type ToolName = (typeof TOOLS_ACCEPTING_DISCOVERY_MODE)[number];
 
-function makeArgs(tool: ToolName, discovery_mode?: 'tiered' | 'classic') {
+function makeArgs(tool: ToolName, discovery_mode?: 'tiered' | 'classic', extra: Record<string, unknown> = {}) {
 	const base = tool === 'brand_audit_batch_start' ? { domains: ['example.com'] } : { domain: 'example.com' };
-	return discovery_mode === undefined ? base : { ...base, discovery_mode };
+	return discovery_mode === undefined ? { ...base, ...extra } : { ...base, discovery_mode, ...extra };
 }
 
 const okResult = {
@@ -54,7 +54,11 @@ describe('discovery_mode=tiered tier gate', () => {
 	});
 
 	for (const tool of TOOLS_ACCEPTING_DISCOVERY_MODE) {
+		// Used for low-tier rejection tests (free/agent — fail at tier gate before ownership gate).
 		const args = makeArgs(tool, 'tiered');
+		// Used for developer-tier acceptance tests: ownership_verified=true to clear the
+		// FIND-14 ownership gate that fires after the tier gate passes.
+		const argsWithOwnership = makeArgs(tool, 'tiered', { ownership_verified: true });
 
 		it(`rejects ${tool} discovery_mode='tiered' when authTier is free`, async () => {
 			mockUnderlyingTools();
@@ -76,10 +80,10 @@ describe('discovery_mode=tiered tier gate', () => {
 			expect(text).toMatch(/^Error: Invalid discovery_mode: 'tiered' requires developer tier or higher/);
 		});
 
-		it(`accepts ${tool} discovery_mode='tiered' when authTier is developer`, async () => {
+		it(`accepts ${tool} discovery_mode='tiered' when authTier is developer (with ownership_verified=true)`, async () => {
 			mockUnderlyingTools();
 			const { handleToolsCall } = await import('../src/handlers/tools');
-			const result = await handleToolsCall({ name: tool, arguments: args }, undefined, { authTier: 'developer' } as never);
+			const result = await handleToolsCall({ name: tool, arguments: argsWithOwnership }, undefined, { authTier: 'developer' } as never);
 			if (result.isError) {
 				const textContent = result.content[0];
 				const text = textContent && 'text' in textContent ? textContent.text : '';
