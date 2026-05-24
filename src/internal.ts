@@ -42,6 +42,7 @@ import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
 import { InternalOAuthGrantRequestSchema } from './schemas/oauth';
 import { createTrialKey, getTrialKeyStatus, revokeTrialKey, listTrialKeys } from './lib/trial-keys';
+import { parseEnvelopeKey } from './lib/kv-envelope';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { buildCodeRecordFromEntitlement } from './oauth/entitlements';
 import { createAuthorizationCode, getClient, putCode, bumpTokenVersion } from './oauth/storage';
@@ -95,6 +96,8 @@ type InternalEnv = {
 		getDomainEvidence: (params: { domain: string; includeHistory?: boolean }) => Promise<unknown>;
 	};
 	BV_ENTERPRISE?: Fetcher;
+	/** FIND-17: Base64-encoded 32-byte AES-256 key for app-layer KV envelope encryption. */
+	KV_ENVELOPE_KEY?: string;
 };
 
 export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
@@ -271,7 +274,8 @@ internalRoutes.post('/oauth/grants', async (c) => {
 		return c.json({ error: 'invalid_grant_request' }, 400, { 'Cache-Control': 'no-store' });
 	}
 
-	const client = await getClient(c.env.SESSION_STORE, body.clientId);
+	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
+	const client = await getClient(c.env.SESSION_STORE, body.clientId, kvEnvelopeKey);
 	if (!client) {
 		return c.json({ error: 'unknown_client' }, 400, { 'Cache-Control': 'no-store' });
 	}
@@ -290,6 +294,7 @@ internalRoutes.post('/oauth/grants', async (c) => {
 			...(body.scope ? { scope: body.scope } : {}),
 			entitlement: body.entitlement,
 		}),
+		kvEnvelopeKey,
 	);
 
 	const redirectTo = new URL(body.redirectUri);
@@ -535,12 +540,17 @@ internalRoutes.post('/trial-keys', async (c) => {
 		return c.json({ error: 'Invalid request body' }, 400);
 	}
 
-	const result = await createTrialKey(c.env.RATE_LIMIT, {
-		label: body.label,
-		tier: body.tier as import('./lib/config').McpApiKeyTier | undefined,
-		expiresInDays: body.expiresInDays,
-		maxUses: body.maxUses,
-	});
+	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
+	const result = await createTrialKey(
+		c.env.RATE_LIMIT,
+		{
+			label: body.label,
+			tier: body.tier as import('./lib/config').McpApiKeyTier | undefined,
+			expiresInDays: body.expiresInDays,
+			maxUses: body.maxUses,
+		},
+		kvEnvelopeKey,
+	);
 
 	return c.json({
 		key: result.rawKey,
@@ -567,7 +577,8 @@ internalRoutes.get('/trial-keys/:hash', async (c) => {
 		return c.json({ error: 'Invalid hash format' }, 400);
 	}
 
-	const record = await getTrialKeyStatus(c.env.RATE_LIMIT, hash);
+	const kvEnvelopeKeyForGet = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
+	const record = await getTrialKeyStatus(c.env.RATE_LIMIT, hash, kvEnvelopeKeyForGet);
 	if (!record) {
 		return c.json({ error: 'Trial key not found' }, 404);
 	}
@@ -614,7 +625,8 @@ internalRoutes.get('/trial-keys', async (c) => {
 	const url = new URL(c.req.url);
 	const limit = Math.min(Number(url.searchParams.get('limit') ?? 100), 1000);
 
-	const keys = await listTrialKeys(c.env.RATE_LIMIT, { limit });
+	const kvEnvelopeKeyForList = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
+	const keys = await listTrialKeys(c.env.RATE_LIMIT, { limit }, kvEnvelopeKeyForList);
 	const now = Date.now();
 
 	return c.json({

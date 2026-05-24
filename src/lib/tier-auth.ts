@@ -14,6 +14,7 @@ import type { McpApiKeyTier } from './config';
 import { OAUTH_JWT_CLOCK_SKEW_SECONDS, parseOwnerAllowIps, TRIAL_KEY_CACHE_TTL } from './config';
 import { TierCacheEntrySchema, ValidateKeyResponseSchema } from '../schemas/auth';
 import { resolveTrialKey } from './trial-keys';
+import { parseEnvelopeKey } from './kv-envelope';
 import { verifyJwt } from '../oauth/jwt';
 import { resolveIssuer } from '../oauth/discovery';
 import { isRevoked, getTokenVersion } from '../oauth/storage';
@@ -74,6 +75,7 @@ export async function resolveTier(
 		OAUTH_SIGNING_SECRET?: string;
 		OAUTH_ISSUER?: string;
 		SESSION_STORE?: KVNamespace;
+		KV_ENVELOPE_KEY?: string;
 	},
 	clientIp: string | undefined,
 	requestUrl: string,
@@ -177,7 +179,7 @@ export async function resolveTier(
 	// 2. Try trial key lookup
 	if (env.RATE_LIMIT) {
 		try {
-			const trialResult = await resolveTrialKey(env.RATE_LIMIT, keyHash);
+			const trialResult = await resolveTrialKey(env.RATE_LIMIT, keyHash, parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined);
 			if (trialResult) {
 				if (!trialResult.authenticated) {
 					// Expired or exhausted — cache as revoked to avoid repeated lookups

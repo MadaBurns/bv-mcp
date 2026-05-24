@@ -2,6 +2,7 @@
 import type { ClientRecord, CodeRecord } from '../schemas/oauth';
 import { ClientRecordSchema, CodeRecordSchema } from '../schemas/oauth';
 import { OAUTH_CLIENT_TTL_SECONDS, OAUTH_CODE_TTL_SECONDS, OAUTH_JWT_TTL_SECONDS, OAUTH_KV_PREFIX } from '../lib/config';
+import { sealKv, openKv, isSealed } from '../lib/kv-envelope';
 
 const clientKey = (id: string) => `${OAUTH_KV_PREFIX}client:${id}`;
 const codeKey = (code: string) => `${OAUTH_KV_PREFIX}code:${code}`;
@@ -17,24 +18,41 @@ export function createAuthorizationCode(): string {
 }
 
 /** Persist a registered OAuth client record. Refreshes the 1-year TTL on every write. */
-export async function putClient(kv: KVNamespace, rec: ClientRecord): Promise<void> {
-	await kv.put(clientKey(rec.client_id), JSON.stringify(rec), { expirationTtl: OAUTH_CLIENT_TTL_SECONDS });
+export async function putClient(kv: KVNamespace, rec: ClientRecord, kvEnvelopeKey?: Uint8Array): Promise<void> {
+	const plaintext = JSON.stringify(rec);
+	const value = kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext;
+	await kv.put(clientKey(rec.client_id), value, { expirationTtl: OAUTH_CLIENT_TTL_SECONDS });
 }
 
 /** Look up a client by id. Returns null if not found or if stored record fails schema validation. */
-export async function getClient(kv: KVNamespace, id: string): Promise<ClientRecord | null> {
+export async function getClient(kv: KVNamespace, id: string, kvEnvelopeKey?: Uint8Array): Promise<ClientRecord | null> {
 	const raw = await kv.get(clientKey(id));
 	if (!raw) return null;
 	try {
-		return ClientRecordSchema.parse(JSON.parse(raw));
+		// Migration read-fallback: try decrypt if key present and value looks sealed;
+		// fall back to plaintext parse for legacy records.
+		let jsonStr: string;
+		if (kvEnvelopeKey && isSealed(raw)) {
+			try {
+				jsonStr = await openKv(raw, kvEnvelopeKey);
+			} catch {
+				// Decryption failed — treat as unrecoverable (corrupted or wrong key)
+				return null;
+			}
+		} else {
+			jsonStr = raw;
+		}
+		return ClientRecordSchema.parse(JSON.parse(jsonStr));
 	} catch {
 		return null;
 	}
 }
 
 /** Store a one-time authorization code with a 60s TTL (KV minimum). */
-export async function putCode(kv: KVNamespace, code: string, rec: CodeRecord): Promise<void> {
-	await kv.put(codeKey(code), JSON.stringify(rec), { expirationTtl: OAUTH_CODE_TTL_SECONDS });
+export async function putCode(kv: KVNamespace, code: string, rec: CodeRecord, kvEnvelopeKey?: Uint8Array): Promise<void> {
+	const plaintext = JSON.stringify(rec);
+	const value = kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext;
+	await kv.put(codeKey(code), value, { expirationTtl: OAUTH_CODE_TTL_SECONDS });
 }
 
 /**
@@ -44,12 +62,25 @@ export async function putCode(kv: KVNamespace, code: string, rec: CodeRecord): P
  * both read before either delete propagates; v1 accepts this because PKCE
  * verification (Phase 7) provides a second binding factor.
  */
-export async function consumeCode(kv: KVNamespace, code: string): Promise<CodeRecord | null> {
+export async function consumeCode(kv: KVNamespace, code: string, kvEnvelopeKey?: Uint8Array): Promise<CodeRecord | null> {
 	const raw = await kv.get(codeKey(code));
 	if (!raw) return null;
 	await kv.delete(codeKey(code));
 	try {
-		return CodeRecordSchema.parse(JSON.parse(raw));
+		// Migration read-fallback: try decrypt first if key present and value looks sealed;
+		// fall back to legacy plaintext parse. Delete already ran — we parse best-effort.
+		let jsonStr: string;
+		if (kvEnvelopeKey && isSealed(raw)) {
+			try {
+				jsonStr = await openKv(raw, kvEnvelopeKey);
+			} catch {
+				// Decryption failed — code is unrecoverable (corrupted or wrong key)
+				return null;
+			}
+		} else {
+			jsonStr = raw;
+		}
+		return CodeRecordSchema.parse(JSON.parse(jsonStr));
 	} catch {
 		return null;
 	}

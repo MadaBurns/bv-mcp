@@ -16,6 +16,7 @@ import type { McpApiKeyTier } from './config';
 import { TRIAL_DEFAULT_EXPIRES_DAYS, TRIAL_DEFAULT_MAX_USES, TRIAL_DEFAULT_TIER } from './config';
 import { TrialKeyRecordSchema } from '../schemas/auth';
 import type { TrialKeyRecord } from '../schemas/auth';
+import { sealKv, openKv, isSealed } from './kv-envelope';
 
 const TRIAL_KEY_TIERS: ReadonlySet<McpApiKeyTier> = new Set(['free', 'agent', 'developer', 'enterprise', 'partner']);
 
@@ -60,6 +61,7 @@ export interface CreateTrialKeyResult {
 export async function createTrialKey(
 	kv: KVNamespace,
 	opts: CreateTrialKeyOptions,
+	kvEnvelopeKey?: Uint8Array,
 ): Promise<CreateTrialKeyResult> {
 	const tier = opts.tier ?? TRIAL_DEFAULT_TIER;
 	const expiresInDays = opts.expiresInDays ?? TRIAL_DEFAULT_EXPIRES_DAYS;
@@ -92,7 +94,9 @@ export async function createTrialKey(
 	// Store with KV expiration TTL matching the trial expiry (auto-cleanup).
 	// Add 1 hour buffer so the record is readable slightly past expiry for status checks.
 	const ttlSeconds = Math.ceil((expiresAt - now) / 1000) + 3600;
-	await kv.put(`trial:${hash}`, JSON.stringify(record), { expirationTtl: ttlSeconds });
+	const plaintext = JSON.stringify(record);
+	const value = kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext;
+	await kv.put(`trial:${hash}`, value, { expirationTtl: ttlSeconds });
 
 	return { rawKey, hash, record };
 }
@@ -126,6 +130,7 @@ export interface TrialExpired {
 export async function resolveTrialKey(
 	kv: KVNamespace,
 	tokenHash: string,
+	kvEnvelopeKey?: Uint8Array,
 ): Promise<TrialResolution | TrialExpired | null> {
 	let raw: string | null;
 	try {
@@ -137,7 +142,19 @@ export async function resolveTrialKey(
 
 	let record: TrialKeyRecord;
 	try {
-		const parsed = JSON.parse(raw);
+		// Migration read-fallback: try decrypt if key present and value looks sealed;
+		// fall back to legacy plaintext JSON for existing records.
+		let jsonStr: string;
+		if (kvEnvelopeKey && isSealed(raw)) {
+			try {
+				jsonStr = await openKv(raw, kvEnvelopeKey);
+			} catch {
+				return null;
+			}
+		} else {
+			jsonStr = raw;
+		}
+		const parsed = JSON.parse(jsonStr);
 		const result = TrialKeyRecordSchema.safeParse(parsed);
 		if (!result.success) return null;
 		record = result.data;
@@ -160,7 +177,9 @@ export async function resolveTrialKey(
 	const remainingTtlMs = record.expiresAt - Date.now();
 	const remainingTtlSeconds = Math.max(Math.ceil(remainingTtlMs / 1000) + 3600, 60);
 	try {
-		await kv.put(`trial:${tokenHash}`, JSON.stringify(record), {
+		const plaintext = JSON.stringify(record);
+		const value = kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext;
+		await kv.put(`trial:${tokenHash}`, value, {
 			expirationTtl: remainingTtlSeconds,
 		});
 	} catch {
@@ -184,11 +203,21 @@ export async function resolveTrialKey(
 // ---------------------------------------------------------------------------
 
 /** Get the current status of a trial key by its hash. */
-export async function getTrialKeyStatus(kv: KVNamespace, hash: string): Promise<TrialKeyRecord | null> {
+export async function getTrialKeyStatus(kv: KVNamespace, hash: string, kvEnvelopeKey?: Uint8Array): Promise<TrialKeyRecord | null> {
 	try {
 		const raw = await kv.get(`trial:${hash}`);
 		if (!raw) return null;
-		const parsed = JSON.parse(raw);
+		let jsonStr: string;
+		if (kvEnvelopeKey && isSealed(raw)) {
+			try {
+				jsonStr = await openKv(raw, kvEnvelopeKey);
+			} catch {
+				return null;
+			}
+		} else {
+			jsonStr = raw;
+		}
+		const parsed = JSON.parse(jsonStr);
 		const result = TrialKeyRecordSchema.safeParse(parsed);
 		return result.success ? result.data : null;
 	} catch {
@@ -208,6 +237,7 @@ export async function revokeTrialKey(kv: KVNamespace, hash: string): Promise<boo
 export async function listTrialKeys(
 	kv: KVNamespace,
 	opts?: { limit?: number },
+	kvEnvelopeKey?: Uint8Array,
 ): Promise<{ hash: string; record: TrialKeyRecord }[]> {
 	const limit = opts?.limit ?? 100;
 	const list = await kv.list({ prefix: 'trial:', limit });
@@ -215,7 +245,7 @@ export async function listTrialKeys(
 
 	for (const key of list.keys) {
 		const hash = key.name.replace('trial:', '');
-		const record = await getTrialKeyStatus(kv, hash);
+		const record = await getTrialKeyStatus(kv, hash, kvEnvelopeKey);
 		if (record) results.push({ hash, record });
 	}
 

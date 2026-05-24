@@ -102,6 +102,8 @@ type BvMcpEnv = {
 	INTELLIGENCE_DB?: D1Database;
 	MCP_ACCESS_LOG_IP_ENCRYPTION_KEY?: string;
 	MCP_ACCESS_LOG_IP_KEY_VERSION?: string;
+	/** FIND-17: Base64-encoded 32-byte AES-256 key for app-layer KV envelope encryption of trial keys and OAuth codes. */
+	KV_ENVELOPE_KEY?: string;
 	BRAND_AUDIT_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	BRAND_AUDIT_PDF_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	BRAND_REPORTS?: R2Bucket;

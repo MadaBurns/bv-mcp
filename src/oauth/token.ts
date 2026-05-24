@@ -6,6 +6,7 @@ import { signJwt, newJti, constantTimeEqual } from './jwt';
 import { OAUTH_JWT_TTL_SECONDS, OAUTH_KV_PREFIX, OAUTH_SIGNING_SECRET_MIN_BYTES } from '../lib/config';
 import { resolveIssuer } from './discovery';
 import { resolveClientIpFromRequestHeaders } from '../lib/client-ip';
+import { parseEnvelopeKey } from '../lib/kv-envelope';
 
 // Fixed-window per-IP rate limit on /oauth/token. Token exchange happens once per OAuth
 // flow for legitimate clients — 30/min is generous for humans and tight for attackers
@@ -97,7 +98,8 @@ export async function verifyPkce(verifier: string, challenge: string): Promise<b
  * recognizable scope claim for downstream Bearer-path policy decisions (Phase 8).
  */
 export async function handleToken(c: Context): Promise<Response> {
-	const env = c.env as { SESSION_STORE: KVNamespace; OAUTH_SIGNING_SECRET?: string; OAUTH_ISSUER?: string };
+	const env = c.env as { SESSION_STORE: KVNamespace; OAUTH_SIGNING_SECRET?: string; OAUTH_ISSUER?: string; KV_ENVELOPE_KEY?: string };
+	const kvEnvelopeKey = parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined;
 
 	// Rate limit runs FIRST — before content-type / grant-type / Zod — so an attacker
 	// flooding the endpoint with invalid payloads still hits the cheap KV gate.
@@ -135,7 +137,7 @@ export async function handleToken(c: Context): Promise<Response> {
 		return c.json({ error: 'invalid_request', error_description: 'Request body failed validation' }, 400);
 	}
 
-	const codeRec = await consumeCode(env.SESSION_STORE, parsed.code);
+	const codeRec = await consumeCode(env.SESSION_STORE, parsed.code, kvEnvelopeKey);
 	if (!codeRec) {
 		return c.json({ error: 'invalid_grant', error_description: 'Code unknown, expired, or already used' }, 400);
 	}
