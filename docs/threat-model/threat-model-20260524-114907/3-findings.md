@@ -1,5 +1,7 @@
 # Security Findings
 
+> **Remediation status (updated 2026-05-25).** All findings have been addressed and their STRIDE status + coverage table now read `Mitigated`. The Tier-1/2/3 remediation findings are resolved by PR #208 (`fix/threat-model-findings`), **pending merge to `main`** — statuses here reflect that remediation branch, not yet `main`. FIND-05 is a false positive (already mitigated on `main`). A few remediations carry deploy/cross-repo follow-ups (set `OAUTH_ISSUER`/`KV_ENVELOPE_KEY`, flip `REJECT_QUERY_API_KEY`; bv-web must send the internal bearer and call the revoke endpoint) — see PR #208. This model was generated at commit `7e23243`.
+
 ---
 
 ## Tier 1 — Direct Exposure (No Prerequisites)
@@ -147,11 +149,13 @@ With `OAUTH_ISSUER` set, send a spoofed `Host` and confirm discovery/token respo
 | Exploitation Prerequisites | None |
 | Exploitability Tier | Tier 1 — Direct Exposure (No Prerequisites) |
 | Remediation Effort | Low |
-| Mitigation Type | Standard Mitigation |
+| Mitigation Type | Existing Control |
 | Component | OAuthIssuer |
 | Related Threats | [T15.S](2-stride-analysis.md#oauthissuer) |
 
 #### Description
+
+> **Reclassified 2026-05-25 — FALSE POSITIVE (already mitigated).** Code verification found this control already present on `main`: `src/oauth/register.ts` enforces a per-IP registration limit (10/min + 30/hr → HTTP 429) and `src/oauth/storage.ts` writes client records with a TTL. No change was required; the original reconnaissance examined `token.ts` and missed `register.ts`. Retained here for traceability.
 
 `POST /oauth/register` allows unauthenticated dynamic client registration (per the MCP OAuth profile). Without throttling or storage caps, an attacker can register many rogue clients, polluting client storage and enabling phishing-style consent flows.
 
@@ -583,22 +587,22 @@ Inspect KV contents and confirm trial keys / OAuth codes are stored encrypted or
 | T02.T | FIND-10 | ✅ Mitigated (FIND-10) |
 | T03.R | FIND-11 | ✅ Mitigated (FIND-11) |
 | T04.I | FIND-11 | ✅ Mitigated (FIND-11) |
-| T05.I | FIND-04 | ✅ Covered (FIND-04) |
+| T05.I | FIND-04 | ✅ Mitigated (FIND-04) |
 | T06.D | FIND-10 | ✅ Mitigated (FIND-10) |
-| T07.A | FIND-02 | ✅ Covered (FIND-02) |
+| T07.A | FIND-02 | ✅ Mitigated (FIND-02) |
 | T08.S | FIND-08 | ✅ Mitigated (FIND-08) |
 | T09.S | FIND-08 | ✅ Mitigated (FIND-08) |
 | T10.T | FIND-08 | ✅ Mitigated (FIND-08) |
-| T11.I | FIND-01 | ✅ Covered (FIND-01) |
+| T11.I | FIND-01 | ✅ Mitigated (FIND-01) |
 | T12.E | FIND-08 | ✅ Mitigated (FIND-08) |
-| T13.E | FIND-15 | ✅ Covered (FIND-15) |
+| T13.E | FIND-15 | ✅ Mitigated (FIND-15) |
 | T14.A | FIND-08 | ✅ Mitigated (FIND-08) |
-| T15.S | FIND-05 | ✅ Covered (FIND-05) |
+| T15.S | FIND-05 | ✅ Mitigated (FIND-05) |
 | T16.T | FIND-08 | ✅ Mitigated (FIND-08) |
 | T17.I | FIND-08 | ✅ Mitigated (FIND-08) |
 | T18.D | FIND-10 | ✅ Mitigated (FIND-10) |
 | T19.E | FIND-16 | ✅ Mitigated (FIND-16) |
-| T20.A | FIND-13 | ✅ Covered (FIND-13) |
+| T20.A | FIND-13 | ✅ Mitigated (FIND-13) |
 | T21.S | FIND-08 | ✅ Mitigated (FIND-08) |
 | T22.T | FIND-10 | ✅ Mitigated (FIND-10) |
 | T23.R | FIND-11 | ✅ Mitigated (FIND-11) |
@@ -610,9 +614,9 @@ Inspect KV contents and confirm trial keys / OAuth codes are stored encrypted or
 | T29.I | FIND-11 | ✅ Mitigated (FIND-11) |
 | T30.D | FIND-10 | ✅ Mitigated (FIND-10) |
 | T31.E | FIND-10 | ✅ Mitigated (FIND-10) |
-| T32.A | FIND-03 | ✅ Covered (FIND-03) |
-| T33.A | FIND-06 | ✅ Covered (FIND-06) |
-| T34.T | FIND-07 | ✅ Covered (FIND-07) |
+| T32.A | FIND-03 | ✅ Mitigated (FIND-03) |
+| T33.A | FIND-06 | ✅ Mitigated (FIND-06) |
+| T34.T | FIND-07 | ✅ Mitigated (FIND-07) |
 | T35.I | FIND-09 | ✅ Mitigated (FIND-09) |
 | T36.E | FIND-09 | ✅ Mitigated (FIND-09) |
 | T37.T | FIND-09 | ✅ Mitigated (FIND-09) |
@@ -620,30 +624,30 @@ Inspect KV contents and confirm trial keys / OAuth codes are stored encrypted or
 | T39.D | FIND-09 | ✅ Mitigated (FIND-09) |
 | T40.S | FIND-16 | ✅ Mitigated (FIND-16) |
 | T41.T | FIND-16 | ✅ Mitigated (FIND-16) |
-| T42.D | FIND-03 | ✅ Covered (FIND-03) |
-| T43.A | FIND-03 | ✅ Covered (FIND-03) |
+| T42.D | FIND-03 | ✅ Mitigated (FIND-03) |
+| T43.A | FIND-03 | ✅ Mitigated (FIND-03) |
 | T44.T | FIND-10 | ✅ Mitigated (FIND-10) |
 | T45.D | FIND-10 | ✅ Mitigated (FIND-10) |
-| T46.E | FIND-02 | ✅ Covered (FIND-02) |
+| T46.E | FIND-02 | ✅ Mitigated (FIND-02) |
 | T47.A | FIND-10 | ✅ Mitigated (FIND-10) |
 | T48.S | FIND-16 | ✅ Mitigated (FIND-16) |
 | T49.T | FIND-16 | ✅ Mitigated (FIND-16) |
 | T50.D | FIND-16 | ✅ Mitigated (FIND-16) |
 | T51.E | FIND-16 | ✅ Mitigated (FIND-16) |
-| T52.A | FIND-12 | ✅ Covered (FIND-12) |
+| T52.A | FIND-12 | ✅ Mitigated (FIND-12) |
 | T53.T | FIND-16 | ✅ Mitigated (FIND-16) |
-| T54.I | FIND-14 | ✅ Covered (FIND-14) |
+| T54.I | FIND-14 | ✅ Mitigated (FIND-14) |
 | T55.D | FIND-16 | ✅ Mitigated (FIND-16) |
-| T56.A | FIND-14 | ✅ Covered (FIND-14) |
+| T56.A | FIND-14 | ✅ Mitigated (FIND-14) |
 | T57.T | — | 🔄 Mitigated by Platform |
 | T58.D | FIND-16 | ✅ Mitigated (FIND-16) |
 | T59.T | FIND-16 | ✅ Mitigated (FIND-16) |
 | T60.A | FIND-16 | ✅ Mitigated (FIND-16) |
 | T61.T | — | 🔄 Mitigated by Platform |
-| T62.I | FIND-17 | ✅ Covered (FIND-17) |
+| T62.I | FIND-17 | ✅ Mitigated (FIND-17) |
 | T63.T | — | 🔄 Mitigated by Platform |
 | T64.T | — | 🔄 Mitigated by Platform |
-| T65.I | FIND-17 | ✅ Covered (FIND-17) |
+| T65.I | FIND-17 | ✅ Mitigated (FIND-17) |
 | T66.I | FIND-11 | ✅ Mitigated (FIND-11) |
 | T67.T | — | 🔄 Mitigated by Platform |
 | T68.R | FIND-11 | ✅ Mitigated (FIND-11) |

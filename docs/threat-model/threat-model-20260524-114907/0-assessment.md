@@ -1,5 +1,7 @@
 # Security Assessment
 
+> **Remediation status (updated 2026-05-25).** All findings have been addressed; STRIDE statuses and the coverage table now read `Mitigated`. Remediation is delivered by PR #208 (`fix/threat-model-findings`), **pending merge to `main`** — the risk rating below reflects the analyzed commit `7e23243` (pre-remediation), not the post-fix state. FIND-05 was a false positive (already mitigated on `main`). See PR #208 for deploy/cross-repo follow-ups.
+
 ---
 
 ## Report Files

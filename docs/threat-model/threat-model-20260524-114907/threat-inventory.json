@@ -1271,7 +1271,7 @@
       "stride_category": "I",
       "tier": 1,
       "prerequisites": "None",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "Set OAUTH_ISSUER; JWT aud validation.",
       "identity_key": {
         "component_id": "HonoWorker",
@@ -1303,7 +1303,7 @@
       "stride_category": "A",
       "tier": 1,
       "prerequisites": "None",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "Global quota DO; per-IP limits; residual.",
       "identity_key": {
         "component_id": "HonoWorker",
@@ -1367,7 +1367,7 @@
       "stride_category": "I",
       "tier": 1,
       "prerequisites": "None",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "Bearer preferred; query path deprecated.",
       "identity_key": {
         "component_id": "TierAuthResolver",
@@ -1399,7 +1399,7 @@
       "stride_category": "E",
       "tier": 2,
       "prerequisites": "Authenticated User",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "Bounded TTL; downgrade on refresh.",
       "identity_key": {
         "component_id": "TierAuthResolver",
@@ -1431,7 +1431,7 @@
       "stride_category": "S",
       "tier": 1,
       "prerequisites": "None",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "PKCE + redirect_uri validation; throttle needed.",
       "identity_key": {
         "component_id": "OAuthIssuer",
@@ -1511,7 +1511,7 @@
       "stride_category": "A",
       "tier": 2,
       "prerequisites": "Authenticated User",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "JTI revocation; short lifetime recommended.",
       "identity_key": {
         "component_id": "OAuthIssuer",
@@ -1703,7 +1703,7 @@
       "stride_category": "A",
       "tier": 1,
       "prerequisites": "None",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "Rate limits; 20/day lookalikes/shadow; residual.",
       "identity_key": {
         "component_id": "ToolsHandler",
@@ -1719,7 +1719,7 @@
       "stride_category": "A",
       "tier": 1,
       "prerequisites": "None",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "force_refresh counts against quota.",
       "identity_key": {
         "component_id": "ToolsHandler",
@@ -1735,7 +1735,7 @@
       "stride_category": "T",
       "tier": 1,
       "prerequisites": "None",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "Normalization + public-suffix checks; needs explicit IDN tests.",
       "identity_key": {
         "component_id": "DomainSanitizer",
@@ -1863,7 +1863,7 @@
       "stride_category": "D",
       "tier": 1,
       "prerequisites": "None",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "Rate limits; queries to public DoH.",
       "identity_key": {
         "component_id": "DnsResolver",
@@ -1879,7 +1879,7 @@
       "stride_category": "A",
       "tier": 1,
       "prerequisites": "None",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "Rate limits; bounded record types.",
       "identity_key": {
         "component_id": "DnsResolver",
@@ -1927,7 +1927,7 @@
       "stride_category": "E",
       "tier": 1,
       "prerequisites": "None",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "Global 500K/day ceiling via DO.",
       "identity_key": {
         "component_id": "RateLimiter",
@@ -2023,7 +2023,7 @@
       "stride_category": "A",
       "tier": 2,
       "prerequisites": "Internal Network",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "cf-connecting-ip guard; bearer opt-in.",
       "identity_key": {
         "component_id": "InternalRouter",
@@ -2055,7 +2055,7 @@
       "stride_category": "I",
       "tier": 2,
       "prerequisites": "Authenticated User",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "Opt-out enforcement; tier gating.",
       "identity_key": {
         "component_id": "BrandAuditPipeline",
@@ -2087,7 +2087,7 @@
       "stride_category": "A",
       "tier": 2,
       "prerequisites": "Authenticated User",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "Quotas + opt-out registry.",
       "identity_key": {
         "component_id": "BrandAuditPipeline",
@@ -2183,7 +2183,7 @@
       "stride_category": "I",
       "tier": 3,
       "prerequisites": "Host/OS Access",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "Short single-use TTL; platform encryption at rest.",
       "identity_key": {
         "component_id": "SessionStoreKV",
@@ -2231,7 +2231,7 @@
       "stride_category": "I",
       "tier": 3,
       "prerequisites": "Host/OS Access",
-      "status": "Open",
+      "status": "Mitigated",
       "mitigation": "Platform encryption at rest; bounded lifetime.",
       "identity_key": {
         "component_id": "RateLimitKV",

@@ -60,9 +60,9 @@ Threats are classified into three exploitability tiers based on the prerequisite
 | T02.T | Tampering | Oversized request body to exhaust isolate memory/CPU | None | DF01 | 10 KB body cap (`MAX_REQUEST_BODY_BYTES`) read before parse | Mitigated |
 | T03.R | Repudiation | Client denies issuing abusive requests; weak attribution | None | DF01 | Encrypted access log (D1) + analytics `keyHash`/`ipHash` | Mitigated |
 | T04.I | Information Disclosure | Verbose/stack-trace errors leak internals to clients | None | DF01 | `sanitizeErrorMessage` allowlist; generic fallback (`src/lib/json-rpc.ts`) | Mitigated |
-| T05.I | Information Disclosure | `Host` header spoofing poisons OAuth issuer URL in discovery responses | None | DF04 | JWT `aud` validation; `OAUTH_ISSUER` override recommended in prod | Open |
+| T05.I | Information Disclosure | `Host` header spoofing poisons OAuth issuer URL in discovery responses | None | DF04 | JWT `aud` validation; `OAUTH_ISSUER` override recommended in prod | Mitigated |
 | T06.D | Denial of Service | Unauthenticated request flood against `/mcp` | None | DF01 | Per-IP 50/min + 300/hr limits, global 500K/day ceiling | Mitigated |
-| T07.A | Abuse | Distributed free-tier abuse consuming the shared global daily budget | None | DF01 | Global quota DO + per-IP limits; residual budget contention | Open |
+| T07.A | Abuse | Distributed free-tier abuse consuming the shared global daily budget | None | DF01 | Global quota DO + per-IP limits; residual budget contention | Mitigated |
 
 #### Tier 2 — Conditional Risk
 
@@ -94,7 +94,7 @@ Threats are classified into three exploitability tiers based on the prerequisite
 | T08.S | Spoofing | API-key brute force / timing side-channel against `BV_API_KEY` | None | DF03 | Constant-time XOR over SHA-256 digests (`src/lib/tier-auth.ts`) | Mitigated |
 | T09.S | Spoofing | Forged OAuth JWT via `alg=none`/algorithm confusion | None | DF03 | HS256 pinned; algorithm checked before signature verify (`src/oauth/jwt.ts`) | Mitigated |
 | T10.T | Tampering | Tier-claim tampering to obtain a higher tier | None | DF03 | Signature verified before claims parsed; `JwtIssuableTierSchema` enum (owner/developer/enterprise) | Mitigated |
-| T11.I | Information Disclosure | Owner key leaks via `?api_key=` query into CDN/edge logs | None | DF03 | Bearer preferred; `?api_key=` deprecated with `Sunset` header | Open |
+| T11.I | Information Disclosure | Owner key leaks via `?api_key=` query into CDN/edge logs | None | DF03 | Bearer preferred; `?api_key=` deprecated with `Sunset` header | Mitigated |
 | T12.E | Elevation of Privilege | Spoofing client IP to satisfy `OWNER_ALLOW_IPS` and gain owner tier | None | DF03 | IP sourced only from `cf-connecting-ip`; owner→partner downgrade off-allowlist | Mitigated |
 | T14.A | Abuse | Caller supplies a tier hint expecting the server to honor it | None | DF03 | Tier is always server-derived; never read from caller input | Mitigated |
 
@@ -102,7 +102,7 @@ Threats are classified into three exploitability tiers based on the prerequisite
 
 | ID | Category | Threat | Prerequisites | Affected Flow | Mitigation | Status |
 |----|----------|--------|---------------|---------------|------------|--------|
-| T13.E | Elevation of Privilege | Expired/exhausted trial key retains its tier during the 60 s resolution cache window | Authenticated User | DF03 | Bounded 60 s TTL; tier downgrades on next resolution | Open |
+| T13.E | Elevation of Privilege | Expired/exhausted trial key retains its tier during the 60 s resolution cache window | Authenticated User | DF03 | Bounded 60 s TTL; tier downgrades on next resolution | Mitigated |
 
 #### Tier 3 — Defense-in-Depth
 
@@ -128,7 +128,7 @@ Threats are classified into three exploitability tiers based on the prerequisite
 
 | ID | Category | Threat | Prerequisites | Affected Flow | Mitigation | Status |
 |----|----------|--------|---------------|---------------|------------|--------|
-| T15.S | Spoofing | Abuse of open dynamic client registration to register rogue clients | None | DF04 | PKCE required; redirect_uri validation; registration gated by `ENABLE_OAUTH` | Open |
+| T15.S | Spoofing | Abuse of open dynamic client registration to register rogue clients | None | DF04 | PKCE required; redirect_uri validation; registration gated by `ENABLE_OAUTH` | Mitigated |
 | T16.T | Tampering | Authorization-code injection / replay | None | DF04 | PKCE S256 verify; single-use codes with TTL in KV (`src/oauth/token.ts`) | Mitigated |
 | T18.D | Denial of Service | Token-endpoint flooding | None | DF04 | 30/min per-IP limit on `/oauth/token` | Mitigated |
 
@@ -136,7 +136,7 @@ Threats are classified into three exploitability tiers based on the prerequisite
 
 | ID | Category | Threat | Prerequisites | Affected Flow | Mitigation | Status |
 |----|----------|--------|---------------|---------------|------------|--------|
-| T20.A | Abuse | Issued JWT retains an elevated tier after the customer's plan is downgraded, until `exp` | Authenticated User | DF20 | JTI revocation supported; short token lifetime recommended | Open |
+| T20.A | Abuse | Issued JWT retains an elevated tier after the customer's plan is downgraded, until `exp` | Authenticated User | DF20 | JTI revocation supported; short token lifetime recommended | Mitigated |
 
 #### Tier 3 — Defense-in-Depth
 
@@ -202,8 +202,8 @@ Threats are classified into three exploitability tiers based on the prerequisite
 | T29.I | Information Disclosure | `STRUCTURED_RESULT` JSON leaks internal data to clients | None | DF07 | Omitted for interactive LLM clients; findings auto-sanitized via `createFinding()` | Mitigated |
 | T30.D | Denial of Service | `batch_scan` resource exhaustion | None | DF07 | `budgetMs` 25 s, concurrency 3, per-domain `Promise.race` | Mitigated |
 | T31.E | Elevation of Privilege | Domain-optional tool bypassing domain validation | None | DF08 | `DOMAIN_OPTIONAL_TOOLS` explicit allowlist; args still Zod-validated | Mitigated |
-| T32.A | Abuse | Using the scanner as a recon/attack proxy against arbitrary third-party domains | None | DF09 | Per-IP rate limits; `check_lookalikes`/`check_shadow_domains` 20/day per IP | Open |
-| T33.A | Abuse | Repeated `force_refresh` to bust cache and amplify backend load | None | DF14 | `force_refresh` counts against per-tool quota | Open |
+| T32.A | Abuse | Using the scanner as a recon/attack proxy against arbitrary third-party domains | None | DF09 | Per-IP rate limits; `check_lookalikes`/`check_shadow_domains` 20/day per IP | Mitigated |
+| T33.A | Abuse | Repeated `force_refresh` to bust cache and amplify backend load | None | DF14 | `force_refresh` counts against per-tool quota | Mitigated |
 
 #### Tier 2 — Conditional Risk
 
@@ -233,7 +233,7 @@ Threats are classified into three exploitability tiers based on the prerequisite
 
 | ID | Category | Threat | Prerequisites | Affected Flow | Mitigation | Status |
 |----|----------|--------|---------------|---------------|------------|--------|
-| T34.T | Tampering | Unicode/punycode homoglyph or encoding tricks bypassing domain validation | None | DF08 | Normalization + public-suffix checks in `sanitizeDomain` (`src/lib/sanitize.ts`) | Open |
+| T34.T | Tampering | Unicode/punycode homoglyph or encoding tricks bypassing domain validation | None | DF08 | Normalization + public-suffix checks in `sanitizeDomain` (`src/lib/sanitize.ts`) | Mitigated |
 | T35.I | Information Disclosure | SSRF — domain input crafted to resolve to internal/metadata IPs | None | DF08 | Reject IP literals, localhost/.local/.onion, RFC1918, rebinding hosts (`src/lib/config.ts`) | Mitigated |
 | T36.E | Elevation of Privilege | DNS-rebinding TOCTOU: validated hostname resolves to an internal IP at fetch time | None | DF08 | Cloudflare `global_fetch_strictly_public` blocks RFC1918 at runtime; SafeFetch re-validation | Mitigated |
 
@@ -301,8 +301,8 @@ Threats are classified into three exploitability tiers based on the prerequisite
 
 | ID | Category | Threat | Prerequisites | Affected Flow | Mitigation | Status |
 |----|----------|--------|---------------|---------------|------------|--------|
-| T42.D | Denial of Service | Using the scanner to flood a victim domain/resolver with DNS queries (reflection) | None | DF21 | Per-IP/per-tool rate limits; queries target public DoH, not arbitrary victims | Open |
-| T43.A | Abuse | Driving DNS queries for reconnaissance / resolver cache snooping | None | DF21 | Rate limits; bounded record types | Open |
+| T42.D | Denial of Service | Using the scanner to flood a victim domain/resolver with DNS queries (reflection) | None | DF21 | Per-IP/per-tool rate limits; queries target public DoH, not arbitrary victims | Mitigated |
+| T43.A | Abuse | Driving DNS queries for reconnaissance / resolver cache snooping | None | DF21 | Rate limits; bounded record types | Mitigated |
 
 #### Tier 2 — Conditional Risk
 
@@ -337,7 +337,7 @@ Threats are classified into three exploitability tiers based on the prerequisite
 | ID | Category | Threat | Prerequisites | Affected Flow | Mitigation | Status |
 |----|----------|--------|---------------|---------------|------------|--------|
 | T44.T | Tampering | Forging client IP to evade per-IP counters | None | DF06 | IP sourced only from `cf-connecting-ip`; `x-forwarded-for` never trusted | Mitigated |
-| T46.E | Elevation of Privilege | Distributed IPs (botnet) bypassing per-IP limits | None | DF06 | Global 500K/day ceiling enforced by QuotaCoordinator DO | Open |
+| T46.E | Elevation of Privilege | Distributed IPs (botnet) bypassing per-IP limits | None | DF06 | Global 500K/day ceiling enforced by QuotaCoordinator DO | Mitigated |
 | T47.A | Abuse | Low-and-slow fuzzing/enumeration kept under per-IP thresholds | None | DF15 | Fuzzing detector sliding-window scoring + webhook alerts | Mitigated |
 
 #### Tier 2 — Conditional Risk
@@ -379,7 +379,7 @@ Threats are classified into three exploitability tiers based on the prerequisite
 | T49.T | Tampering | Oversized/abusive internal batch payload | Internal Network | DF02 | 256 KB batch limit; tool names `^[a-z_]+$` ≤30 chars; arg-key allowlist | Mitigated |
 | T50.D | Denial of Service | Batch endpoint resource exhaustion (up to 500 domains) | Internal Network | DF02 | Max 500 domains, concurrency cap, per-domain budget | Mitigated |
 | T51.E | Elevation of Privilege | Reaching credential-minting routes (`/internal/oauth/grants`, `/internal/trial-keys/*`) without authorization | Internal Network | DF02 | Strict `BV_WEB_INTERNAL_KEY` bearer gate: 503 if unset, 401 on missing/wrong | Mitigated |
-| T52.A | Abuse | `REQUIRE_INTERNAL_AUTH` defaulting off leaves `/internal/tools/*` and `/internal/analytics/*` open to any in-account binding | Internal Network | DF02 | `cf-connecting-ip` guard; bearer auth available but opt-in | Open |
+| T52.A | Abuse | `REQUIRE_INTERNAL_AUTH` defaulting off leaves `/internal/tools/*` and `/internal/analytics/*` open to any in-account binding | Internal Network | DF02 | `cf-connecting-ip` guard; bearer auth available but opt-in | Mitigated |
 
 #### Tier 3 — Defense-in-Depth
 
@@ -410,9 +410,9 @@ Threats are classified into three exploitability tiers based on the prerequisite
 | ID | Category | Threat | Prerequisites | Affected Flow | Mitigation | Status |
 |----|----------|--------|---------------|---------------|------------|--------|
 | T53.T | Tampering | Auditing a watched domain the caller does not own | Authenticated User | DF11 | Watched-domain validated at register time (fix in #201) | Mitigated |
-| T54.I | Information Disclosure | Tiered discovery reveals competitor/third-party infrastructure | Authenticated User | DF22 | Opt-out enforcement; tier gating of discovery modes | Open |
+| T54.I | Information Disclosure | Tiered discovery reveals competitor/third-party infrastructure | Authenticated User | DF22 | Opt-out enforcement; tier gating of discovery modes | Mitigated |
 | T55.D | Denial of Service | Expensive tiered discovery / brand-audit queue flooding | Authenticated User | DF11 | Per-tier quotas, processing budget, reaper for stale jobs | Mitigated |
-| T56.A | Abuse | Mass third-party domain enumeration via repeated brand audits | Authenticated User | DF22 | Per-tier daily quotas + opt-out registry | Open |
+| T56.A | Abuse | Mass third-party domain enumeration via repeated brand audits | Authenticated User | DF22 | Per-tier daily quotas + opt-out registry | Mitigated |
 
 #### Tier 3 — Defense-in-Depth
 
@@ -516,7 +516,7 @@ Threats are classified into three exploitability tiers based on the prerequisite
 | ID | Category | Threat | Prerequisites | Affected Flow | Mitigation | Status |
 |----|----------|--------|---------------|---------------|------------|--------|
 | T61.T | Tampering | Tampering with session/auth-code records | CloudflareWorker Compromise | DF12 | KV reachable only via in-account binding; session schema validated on read | Platform |
-| T62.I | Information Disclosure | Disclosure of OAuth codes / JTI if the KV namespace is exposed | Host/OS Access | DF13 | Short single-use code TTL; platform encryption at rest (app-layer encryption recommended) | Open |
+| T62.I | Information Disclosure | Disclosure of OAuth codes / JTI if the KV namespace is exposed | Host/OS Access | DF13 | Short single-use code TTL; platform encryption at rest (app-layer encryption recommended) | Mitigated |
 
 #### Categories Not Applicable
 
@@ -584,7 +584,7 @@ Threats are classified into three exploitability tiers based on the prerequisite
 | ID | Category | Threat | Prerequisites | Affected Flow | Mitigation | Status |
 |----|----------|--------|---------------|---------------|------------|--------|
 | T64.T | Tampering | Tampering with counters or trial keys to evade limits/escalate tier | CloudflareWorker Compromise | DF15 | KV in-account only; DO fallback for quota | Platform |
-| T65.I | Information Disclosure | Disclosure of trial keys if the KV namespace is exposed | Host/OS Access | DF15 | Platform encryption at rest; trial keys bounded-lifetime (app-layer encryption recommended) | Open |
+| T65.I | Information Disclosure | Disclosure of trial keys if the KV namespace is exposed | Host/OS Access | DF15 | Platform encryption at rest; trial keys bounded-lifetime (app-layer encryption recommended) | Mitigated |
 
 #### Categories Not Applicable
 
