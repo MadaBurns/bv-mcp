@@ -304,5 +304,13 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		}),
 	);
 
-	return buildCheckResult(CATEGORY, findings) as CheckResult;
+	const result = buildCheckResult(CATEGORY, findings) as CheckResult;
+	// A transient root-DNSKEY retrieval failure leaves the chain unverified. Mark
+	// the result partial so the dispatch cache predicate skips it — otherwise a
+	// one-off empty would be cached and served as a stale "unverified" result for
+	// the cache TTL (#199).
+	if (zoneResults.find((z) => z.zone === '.')?.linkage === 'unverified') {
+		result.partial = true;
+	}
+	return result;
 }

@@ -94,6 +94,8 @@ describe('checkDnssecChain', () => {
 		const infoFinding = result.findings.find((f) => f.severity === 'info' && f.metadata?.chainComplete === true);
 		expect(infoFinding).toBeDefined();
 		expect(infoFinding!.metadata!.adFlag).toBe(true);
+		// A fully-verified chain is complete and stays cacheable.
+		expect(result.partial).toBeFalsy();
 	});
 
 	it('unsigned domain reports no DS', async () => {
@@ -163,6 +165,11 @@ describe('checkDnssecChain', () => {
 		expect(rootNote).toBeDefined();
 		expect(rootNote!.severity).not.toBe('high');
 		expect(rootNote!.detail).not.toMatch(/DS record exists but no DNSKEY/i);
+
+		// An unverified-root result is incomplete (transient retrieval failure) and
+		// must NOT be cached — marking it partial makes the dispatch cache predicate
+		// skip it, so a one-off empty can't persist and be served stale (#199).
+		expect(result.partial).toBe(true);
 	});
 
 	it('maps algorithm 8 to RSA-SHA256', async () => {
