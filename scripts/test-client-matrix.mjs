@@ -314,6 +314,44 @@ async function runMatrix() {
 	return { tools, sweep, setup, toolResults, clientResults, ctx, durationMs: Date.now() - started };
 }
 
+// --- Reporting ------------------------------------------------------------
+const GLYPH = { PASS: '✓', FAIL: '✗', INVARIANT: '~', RECORD: '·' };
+
+function report(r) {
+	console.log(`\n=== Client-Matrix Results — ${EP} (${(r.durationMs / 1000).toFixed(1)}s) ===\n`);
+
+	console.log('Setup / teardown (mcp_remote):');
+	for (const s of r.setup) {
+		console.log(`  ${GLYPH[s.env.ok ? 'PASS' : 'FAIL']} ${s.name.padEnd(30)} ${s.env.ok ? 'ok' : s.env.reason}  id=${s.captured ?? '-'}`);
+	}
+
+	console.log('\nTool axis (interactive=claude_code vs non-interactive=mcp_remote):');
+	const sorted = [...r.toolResults].sort((a, b) => a.name.localeCompare(b.name));
+	for (const t of sorted) {
+		console.log(`  ${GLYPH[t.status] ?? '?'} ${t.name.padEnd(34)} ${t.status}${t.reason ? ` — ${t.reason}` : ''}`);
+	}
+
+	console.log('\nClient axis (check_spf wiring):');
+	for (const c of r.clientResults) {
+		console.log(
+			`  ${GLYPH[c.ok ? 'PASS' : 'FAIL']} ${c.client.padEnd(22)} ${c.expectedClass.padEnd(16)} marker expected=${c.expectMarker} observed=${c.observedMarker}${c.env.ok ? '' : ` [envelope: ${c.env.reason}]`}`,
+		);
+	}
+
+	const toolFails = r.toolResults.filter((t) => t.status === 'FAIL');
+	const setupFails = r.setup.filter((s) => !s.env.ok);
+	const clientFails = r.clientResults.filter((c) => !c.ok);
+	const counts = r.toolResults.reduce((m, t) => ((m[t.status] = (m[t.status] || 0) + 1), m), {});
+	console.log(
+		`\nSummary: tools ${JSON.stringify(counts)} | setup-fail ${setupFails.length} | client-fail ${clientFails.length} | total tools/call ≈ ${
+			r.sweep.length * 2 + r.setup.length + r.clientResults.length
+		}`,
+	);
+
+	const failed = toolFails.length + setupFails.length + clientFails.length;
+	return failed === 0;
+}
+
 // --- Offline self-test of the pure helpers --------------------------------
 function selfTest() {
 	const full = {
@@ -379,8 +417,12 @@ if (DRY_RUN) {
 if (!SELF_TEST && !DRY_RUN) {
 	runMatrix()
 		.then((r) => {
-			console.log(JSON.stringify({ setup: r.setup, toolResults: r.toolResults, clientResults: r.clientResults }, null, 2));
-			process.exit(0);
+			const ok = report(r);
+			if (JSON_OUT) {
+				fs.writeFileSync(JSON_OUT, JSON.stringify(r, null, 2));
+				console.error(`\nWrote structured results to ${JSON_OUT}`);
+			}
+			process.exit(ok ? 0 : 1);
 		})
 		.catch((e) => {
 			console.error(e.stack || e.message);
