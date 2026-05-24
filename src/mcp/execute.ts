@@ -12,6 +12,7 @@ import { jsonRpcError, JSON_RPC_ERRORS, sanitizeErrorMessage } from '../lib/json
 import { buildControlPlaneRateLimitResponse, validateSessionRequest } from './route-gates';
 import {
 	FREE_TOOL_DAILY_LIMITS,
+	FORCE_REFRESH_DAILY_LIMIT,
 	GLOBAL_DAILY_TOOL_LIMIT,
 	TIER_DAILY_LIMITS,
 	TIER_TOOL_DAILY_LIMITS,
@@ -493,6 +494,62 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 						id,
 						JSON_RPC_ERRORS.RATE_LIMITED,
 						`Rate limit exceeded. ${toolName} is limited to ${toolDailyLimit} requests per day for free tier users.`,
+					),
+					headers: rateHeaders,
+					httpStatus: 429,
+					useErrorEnvelope: true,
+					eventId,
+				};
+			}
+		}
+
+		// FIND-06: sub-limit force_refresh requests so free-tier callers cannot
+		// bypass the scan cache repeatedly and amplify backend load.
+		const argsRaw =
+			typeof params === 'object' && params !== null && 'arguments' in params
+				? (params as Record<string, unknown>).arguments
+				: undefined;
+		const forceRefresh =
+			argsRaw !== null &&
+			typeof argsRaw === 'object' &&
+			!Array.isArray(argsRaw) &&
+			(argsRaw as Record<string, unknown>).force_refresh === true;
+
+		if (forceRefresh) {
+			const forceRefreshResult = await checkToolDailyRateLimit(
+				options.ip,
+				'__force_refresh__',
+				FORCE_REFRESH_DAILY_LIMIT,
+				options.rateLimitKv,
+				options.quotaCoordinator,
+			);
+			const dailyResetEpoch = Math.ceil(Date.now() / 86_400_000) * 86_400;
+			rateHeaders['x-quota-limit'] = String(forceRefreshResult.limit);
+			rateHeaders['x-quota-remaining'] = String(forceRefreshResult.remaining);
+			rateHeaders['x-quota-reset'] = String(dailyResetEpoch);
+			rateHeaders['x-quota-tier'] = 'free';
+			if (!forceRefreshResult.allowed) {
+				if (forceRefreshResult.retryAfterMs !== undefined) {
+					rateHeaders['retry-after'] = String(Math.ceil(forceRefreshResult.retryAfterMs / 1000));
+				}
+				options.analytics?.emitRateLimitEvent({
+					limitType: 'daily_tool',
+					toolName: '__force_refresh__',
+					limit: FORCE_REFRESH_DAILY_LIMIT,
+					remaining: 0,
+					country: options.country,
+					authTier: options.authTier ?? 'anon',
+				});
+				emitRequestAnalytics(options, method, 'error', true);
+				if (accessLogInput) {
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+				}
+				return {
+					kind: 'response',
+					payload: jsonRpcError(
+						id,
+						JSON_RPC_ERRORS.RATE_LIMITED,
+						`Rate limit exceeded. force_refresh is limited to ${FORCE_REFRESH_DAILY_LIMIT} requests per day for free tier users.`,
 					),
 					headers: rateHeaders,
 					httpStatus: 429,

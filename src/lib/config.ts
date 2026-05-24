@@ -279,6 +279,10 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	delete_brand_audit_watch: 0,
 };
 
+/** Free-tier daily cap on cache-bypassing (force_refresh) requests. Far below the
+ *  per-tool quota so cache-busting cannot amplify backend load (FIND-06). */
+export const FORCE_REFRESH_DAILY_LIMIT = 5;
+
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
 export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>([]);
 
