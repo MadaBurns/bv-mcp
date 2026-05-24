@@ -1,0 +1,2945 @@
+{
+  "schema_version": "1.0",
+  "report_folder": "threat-model-20260524-114907",
+  "commit": "7e23243",
+  "commit_date": "2026-05-24 23:32:40 +1200",
+  "branch": "main",
+  "repository": "https://github.com/MadaBurns/bv-mcp.git",
+  "analysis_timestamp": "2026-05-24 11:49:07 UTC",
+  "model": "claude-opus-4-7[1m]",
+  "components": [
+    {
+      "id": "BrandAuditPipeline",
+      "display": "BrandAuditPipeline",
+      "type": "process",
+      "tmt_type": "SE.P.TMCore.WebSvc",
+      "boundary": "CloudflareWorker",
+      "boundary_kind": "ProcessBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/brand-audit-pipeline.ts",
+        "src/scheduled.ts"
+      ],
+      "source_directories": [
+        "src/lib/",
+        "src/queue/"
+      ],
+      "fingerprint": {
+        "component_type": "process",
+        "boundary_kind": "ProcessBoundary",
+        "source_files": [
+          "src/lib/brand-audit-pipeline.ts",
+          "src/scheduled.ts"
+        ],
+        "source_directories": [
+          "src/lib/",
+          "src/queue/"
+        ],
+        "class_names": [
+          "runBrandAuditPipeline"
+        ],
+        "namespace": "src.lib",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "ToolsHandler"
+        ],
+        "outbound_to": [
+          "CertTransparency",
+          "WhoisRdap"
+        ],
+        "protocols": [
+          "HTTPS",
+          "Queue"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "BvWeb",
+      "display": "BvWeb",
+      "type": "external_service",
+      "tmt_type": "SE.EI.TMCore.WebSvc",
+      "boundary": "BlackVeilServices",
+      "boundary_kind": "NetworkBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/tier-auth.ts",
+        "src/oauth/entitlements.ts"
+      ],
+      "source_directories": [
+        "src/lib/",
+        "src/oauth/"
+      ],
+      "fingerprint": {
+        "component_type": "external_service",
+        "boundary_kind": "NetworkBoundary",
+        "source_files": [
+          "src/lib/tier-auth.ts",
+          "src/oauth/entitlements.ts"
+        ],
+        "source_directories": [
+          "src/lib/",
+          "src/oauth/"
+        ],
+        "class_names": [],
+        "namespace": "",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "TierAuthResolver"
+        ],
+        "outbound_to": [],
+        "protocols": [
+          "ServiceBinding"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "CertTransparency",
+      "display": "CertTransparency",
+      "type": "external_service",
+      "tmt_type": "SE.EI.TMCore.WebSvc",
+      "boundary": "Internet",
+      "boundary_kind": "NetworkBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/brand-discovery-tiers.ts"
+      ],
+      "source_directories": [
+        "src/lib/"
+      ],
+      "fingerprint": {
+        "component_type": "external_service",
+        "boundary_kind": "NetworkBoundary",
+        "source_files": [
+          "src/lib/brand-discovery-tiers.ts"
+        ],
+        "source_directories": [
+          "src/lib/"
+        ],
+        "class_names": [],
+        "namespace": "",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "BrandAuditPipeline"
+        ],
+        "outbound_to": [],
+        "protocols": [
+          "HTTPS"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "DnsResolver",
+      "display": "DnsResolver",
+      "type": "process",
+      "tmt_type": "SE.P.TMCore.WebSvc",
+      "boundary": "CloudflareWorker",
+      "boundary_kind": "ProcessBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/dns-transport.ts",
+        "src/lib/dns-multi-resolver.ts"
+      ],
+      "source_directories": [
+        "src/lib/"
+      ],
+      "fingerprint": {
+        "component_type": "process",
+        "boundary_kind": "ProcessBoundary",
+        "source_files": [
+          "src/lib/dns-transport.ts",
+          "src/lib/dns-multi-resolver.ts"
+        ],
+        "source_directories": [
+          "src/lib/"
+        ],
+        "class_names": [
+          "queryDns",
+          "queryDnsRecords"
+        ],
+        "namespace": "src.lib",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "ToolsHandler"
+        ],
+        "outbound_to": [
+          "PublicDoH"
+        ],
+        "protocols": [
+          "HTTPS"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "DomainSanitizer",
+      "display": "DomainSanitizer",
+      "type": "process",
+      "tmt_type": "SE.P.TMCore.WebSvc",
+      "boundary": "CloudflareWorker",
+      "boundary_kind": "ProcessBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/sanitize.ts",
+        "src/lib/config.ts"
+      ],
+      "source_directories": [
+        "src/lib/"
+      ],
+      "fingerprint": {
+        "component_type": "process",
+        "boundary_kind": "ProcessBoundary",
+        "source_files": [
+          "src/lib/sanitize.ts",
+          "src/lib/config.ts"
+        ],
+        "source_directories": [
+          "src/lib/"
+        ],
+        "class_names": [
+          "validateDomain",
+          "sanitizeDomain",
+          "validateOutboundUrl"
+        ],
+        "namespace": "src.lib",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "ToolsHandler"
+        ],
+        "outbound_to": [],
+        "protocols": [
+          "in-process"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "HonoWorker",
+      "display": "HonoWorker",
+      "type": "process",
+      "tmt_type": "SE.P.TMCore.WebServer",
+      "boundary": "CloudflareWorker",
+      "boundary_kind": "ProcessBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/index.ts"
+      ],
+      "source_directories": [
+        "src/"
+      ],
+      "fingerprint": {
+        "component_type": "process",
+        "boundary_kind": "ProcessBoundary",
+        "source_files": [
+          "src/index.ts"
+        ],
+        "source_directories": [
+          "src/"
+        ],
+        "class_names": [
+          "app (Hono)"
+        ],
+        "namespace": "src",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "McpClient"
+        ],
+        "outbound_to": [
+          "TierAuthResolver",
+          "OAuthIssuer",
+          "McpExecutor"
+        ],
+        "protocols": [
+          "HTTPS"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "IntelligenceDB",
+      "display": "IntelligenceDB",
+      "type": "data_store",
+      "tmt_type": "SE.DS.TMCore.SQL",
+      "boundary": "PlatformStorage",
+      "boundary_kind": "PrivilegeBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/mcp/execute.ts",
+        "src/lib/db"
+      ],
+      "source_directories": [
+        "src/lib/db/"
+      ],
+      "fingerprint": {
+        "component_type": "data_store",
+        "boundary_kind": "PrivilegeBoundary",
+        "source_files": [
+          "src/mcp/execute.ts",
+          "src/lib/db"
+        ],
+        "source_directories": [
+          "src/lib/db/"
+        ],
+        "class_names": [],
+        "namespace": "src.lib.db",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [],
+        "outbound_to": [],
+        "protocols": [
+          "D1"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "InternalRouter",
+      "display": "InternalRouter",
+      "type": "process",
+      "tmt_type": "SE.P.TMCore.WebSvc",
+      "boundary": "CloudflareWorker",
+      "boundary_kind": "ProcessBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/internal.ts"
+      ],
+      "source_directories": [
+        "src/"
+      ],
+      "fingerprint": {
+        "component_type": "process",
+        "boundary_kind": "ProcessBoundary",
+        "source_files": [
+          "src/internal.ts"
+        ],
+        "source_directories": [
+          "src/"
+        ],
+        "class_names": [
+          "isPublicInternetRequest",
+          "internalLenientAuthGate"
+        ],
+        "namespace": "src",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "Operator"
+        ],
+        "outbound_to": [],
+        "protocols": [
+          "ServiceBinding"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "McpClient",
+      "display": "McpClient",
+      "type": "external_interactor",
+      "tmt_type": "SE.EI.TMCore.WebApp",
+      "boundary": "Internet",
+      "boundary_kind": "NetworkBoundary",
+      "aliases": [],
+      "source_files": [],
+      "source_directories": [],
+      "fingerprint": {
+        "component_type": "external_interactor",
+        "boundary_kind": "NetworkBoundary",
+        "source_files": [],
+        "source_directories": [],
+        "class_names": [],
+        "namespace": "",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [],
+        "outbound_to": [
+          "HonoWorker"
+        ],
+        "protocols": [
+          "HTTPS"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "McpExecutor",
+      "display": "McpExecutor",
+      "type": "process",
+      "tmt_type": "SE.P.TMCore.WebSvc",
+      "boundary": "CloudflareWorker",
+      "boundary_kind": "ProcessBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/mcp/execute.ts",
+        "src/mcp/dispatch.ts"
+      ],
+      "source_directories": [
+        "src/mcp/"
+      ],
+      "fingerprint": {
+        "component_type": "process",
+        "boundary_kind": "ProcessBoundary",
+        "source_files": [
+          "src/mcp/execute.ts",
+          "src/mcp/dispatch.ts"
+        ],
+        "source_directories": [
+          "src/mcp/"
+        ],
+        "class_names": [
+          "executeMcpRequest",
+          "dispatchMcpMethod"
+        ],
+        "namespace": "src.mcp",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "HonoWorker"
+        ],
+        "outbound_to": [
+          "RateLimiter",
+          "ToolsHandler",
+          "SessionStoreKV",
+          "IntelligenceDB"
+        ],
+        "protocols": [
+          "HTTPS",
+          "KV",
+          "D1"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "OAuthIssuer",
+      "display": "OAuthIssuer",
+      "type": "process",
+      "tmt_type": "SE.P.TMCore.WebSvc",
+      "boundary": "CloudflareWorker",
+      "boundary_kind": "ProcessBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/oauth/jwt.ts",
+        "src/oauth/token.ts",
+        "src/oauth/authorize.ts"
+      ],
+      "source_directories": [
+        "src/oauth/"
+      ],
+      "fingerprint": {
+        "component_type": "process",
+        "boundary_kind": "ProcessBoundary",
+        "source_files": [
+          "src/oauth/jwt.ts",
+          "src/oauth/token.ts",
+          "src/oauth/authorize.ts"
+        ],
+        "source_directories": [
+          "src/oauth/"
+        ],
+        "class_names": [
+          "signJwt",
+          "handleToken"
+        ],
+        "namespace": "src.oauth",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "HonoWorker"
+        ],
+        "outbound_to": [
+          "BvWeb",
+          "SessionStoreKV"
+        ],
+        "protocols": [
+          "HTTPS",
+          "ServiceBinding"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "Operator",
+      "display": "Operator",
+      "type": "external_interactor",
+      "tmt_type": "SE.EI.TMCore.User",
+      "boundary": "Internet",
+      "boundary_kind": "NetworkBoundary",
+      "aliases": [],
+      "source_files": [],
+      "source_directories": [],
+      "fingerprint": {
+        "component_type": "external_interactor",
+        "boundary_kind": "NetworkBoundary",
+        "source_files": [],
+        "source_directories": [],
+        "class_names": [],
+        "namespace": "",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [],
+        "outbound_to": [
+          "InternalRouter"
+        ],
+        "protocols": [
+          "ServiceBinding"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "ProfileAccumulator",
+      "display": "ProfileAccumulator",
+      "type": "process",
+      "tmt_type": "SE.P.TMCore.WebSvc",
+      "boundary": "DurableObjects",
+      "boundary_kind": "ProcessBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/profile-accumulator.ts"
+      ],
+      "source_directories": [
+        "src/lib/"
+      ],
+      "fingerprint": {
+        "component_type": "process",
+        "boundary_kind": "ProcessBoundary",
+        "source_files": [
+          "src/lib/profile-accumulator.ts"
+        ],
+        "source_directories": [
+          "src/lib/"
+        ],
+        "class_names": [
+          "ProfileAccumulator"
+        ],
+        "namespace": "src.lib",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "ToolsHandler"
+        ],
+        "outbound_to": [],
+        "protocols": [
+          "DO"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "PublicDoH",
+      "display": "PublicDoH",
+      "type": "external_service",
+      "tmt_type": "SE.EI.TMCore.WebSvc",
+      "boundary": "Internet",
+      "boundary_kind": "NetworkBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/dns-transport.ts"
+      ],
+      "source_directories": [
+        "src/lib/"
+      ],
+      "fingerprint": {
+        "component_type": "external_service",
+        "boundary_kind": "NetworkBoundary",
+        "source_files": [
+          "src/lib/dns-transport.ts"
+        ],
+        "source_directories": [
+          "src/lib/"
+        ],
+        "class_names": [],
+        "namespace": "",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "DnsResolver"
+        ],
+        "outbound_to": [],
+        "protocols": [
+          "HTTPS"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "QuotaCoordinator",
+      "display": "QuotaCoordinator",
+      "type": "process",
+      "tmt_type": "SE.P.TMCore.WebSvc",
+      "boundary": "DurableObjects",
+      "boundary_kind": "ProcessBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/quota-coordinator.ts"
+      ],
+      "source_directories": [
+        "src/lib/"
+      ],
+      "fingerprint": {
+        "component_type": "process",
+        "boundary_kind": "ProcessBoundary",
+        "source_files": [
+          "src/lib/quota-coordinator.ts"
+        ],
+        "source_directories": [
+          "src/lib/"
+        ],
+        "class_names": [
+          "QuotaCoordinator"
+        ],
+        "namespace": "src.lib",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "RateLimiter"
+        ],
+        "outbound_to": [],
+        "protocols": [
+          "DO"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "RateLimitKV",
+      "display": "RateLimitKV",
+      "type": "data_store",
+      "tmt_type": "SE.DS.TMCore.NoSQL",
+      "boundary": "PlatformStorage",
+      "boundary_kind": "PrivilegeBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/rate-limiter.ts",
+        "src/lib/trial-keys.ts"
+      ],
+      "source_directories": [
+        "src/lib/"
+      ],
+      "fingerprint": {
+        "component_type": "data_store",
+        "boundary_kind": "PrivilegeBoundary",
+        "source_files": [
+          "src/lib/rate-limiter.ts",
+          "src/lib/trial-keys.ts"
+        ],
+        "source_directories": [
+          "src/lib/"
+        ],
+        "class_names": [],
+        "namespace": "src.lib",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [],
+        "outbound_to": [],
+        "protocols": [
+          "KV"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "RateLimiter",
+      "display": "RateLimiter",
+      "type": "process",
+      "tmt_type": "SE.P.TMCore.WebSvc",
+      "boundary": "CloudflareWorker",
+      "boundary_kind": "ProcessBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/rate-limiter.ts",
+        "src/lib/fuzzing-detector.ts"
+      ],
+      "source_directories": [
+        "src/lib/"
+      ],
+      "fingerprint": {
+        "component_type": "process",
+        "boundary_kind": "ProcessBoundary",
+        "source_files": [
+          "src/lib/rate-limiter.ts",
+          "src/lib/fuzzing-detector.ts"
+        ],
+        "source_directories": [
+          "src/lib/"
+        ],
+        "class_names": [
+          "checkRateLimit",
+          "scoreWindow"
+        ],
+        "namespace": "src.lib",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "McpExecutor"
+        ],
+        "outbound_to": [
+          "RateLimitKV",
+          "QuotaCoordinator"
+        ],
+        "protocols": [
+          "KV",
+          "DO"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "SafeFetch",
+      "display": "SafeFetch",
+      "type": "process",
+      "tmt_type": "SE.P.TMCore.WebSvc",
+      "boundary": "CloudflareWorker",
+      "boundary_kind": "ProcessBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/safe-fetch.ts"
+      ],
+      "source_directories": [
+        "src/lib/"
+      ],
+      "fingerprint": {
+        "component_type": "process",
+        "boundary_kind": "ProcessBoundary",
+        "source_files": [
+          "src/lib/safe-fetch.ts"
+        ],
+        "source_directories": [
+          "src/lib/"
+        ],
+        "class_names": [
+          "safeFetch"
+        ],
+        "namespace": "src.lib",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "ToolsHandler"
+        ],
+        "outbound_to": [],
+        "protocols": [
+          "HTTPS"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "ScanCacheKV",
+      "display": "ScanCacheKV",
+      "type": "data_store",
+      "tmt_type": "SE.DS.TMCore.Cache",
+      "boundary": "PlatformStorage",
+      "boundary_kind": "PrivilegeBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/cache.ts"
+      ],
+      "source_directories": [
+        "src/lib/"
+      ],
+      "fingerprint": {
+        "component_type": "data_store",
+        "boundary_kind": "PrivilegeBoundary",
+        "source_files": [
+          "src/lib/cache.ts"
+        ],
+        "source_directories": [
+          "src/lib/"
+        ],
+        "class_names": [
+          "runWithCache"
+        ],
+        "namespace": "src.lib",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [],
+        "outbound_to": [],
+        "protocols": [
+          "KV"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "SessionStoreKV",
+      "display": "SessionStoreKV",
+      "type": "data_store",
+      "tmt_type": "SE.DS.TMCore.NoSQL",
+      "boundary": "PlatformStorage",
+      "boundary_kind": "PrivilegeBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/session.ts",
+        "src/oauth/storage.ts"
+      ],
+      "source_directories": [
+        "src/lib/",
+        "src/oauth/"
+      ],
+      "fingerprint": {
+        "component_type": "data_store",
+        "boundary_kind": "PrivilegeBoundary",
+        "source_files": [
+          "src/lib/session.ts",
+          "src/oauth/storage.ts"
+        ],
+        "source_directories": [
+          "src/lib/",
+          "src/oauth/"
+        ],
+        "class_names": [
+          "createSession"
+        ],
+        "namespace": "src.lib",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [],
+        "outbound_to": [],
+        "protocols": [
+          "KV"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "TierAuthResolver",
+      "display": "TierAuthResolver",
+      "type": "process",
+      "tmt_type": "SE.P.TMCore.WebSvc",
+      "boundary": "CloudflareWorker",
+      "boundary_kind": "ProcessBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/tier-auth.ts",
+        "src/lib/auth.ts"
+      ],
+      "source_directories": [
+        "src/lib/"
+      ],
+      "fingerprint": {
+        "component_type": "process",
+        "boundary_kind": "ProcessBoundary",
+        "source_files": [
+          "src/lib/tier-auth.ts",
+          "src/lib/auth.ts"
+        ],
+        "source_directories": [
+          "src/lib/"
+        ],
+        "class_names": [
+          "resolveTier",
+          "isAuthorizedRequest"
+        ],
+        "namespace": "src.lib",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "HonoWorker"
+        ],
+        "outbound_to": [
+          "BvWeb"
+        ],
+        "protocols": [
+          "HTTPS",
+          "ServiceBinding"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "ToolsHandler",
+      "display": "ToolsHandler",
+      "type": "process",
+      "tmt_type": "SE.P.TMCore.WebSvc",
+      "boundary": "CloudflareWorker",
+      "boundary_kind": "ProcessBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/handlers/tools.ts"
+      ],
+      "source_directories": [
+        "src/handlers/",
+        "src/tools/"
+      ],
+      "fingerprint": {
+        "component_type": "process",
+        "boundary_kind": "ProcessBoundary",
+        "source_files": [
+          "src/handlers/tools.ts"
+        ],
+        "source_directories": [
+          "src/handlers/",
+          "src/tools/"
+        ],
+        "class_names": [
+          "handleToolsCall",
+          "TOOL_REGISTRY"
+        ],
+        "namespace": "src.handlers",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "McpExecutor"
+        ],
+        "outbound_to": [
+          "DomainSanitizer",
+          "DnsResolver",
+          "SafeFetch",
+          "BrandAuditPipeline",
+          "ScanCacheKV",
+          "ProfileAccumulator"
+        ],
+        "protocols": [
+          "KV",
+          "DO"
+        ]
+      },
+      "sidecars": []
+    },
+    {
+      "id": "WhoisRdap",
+      "display": "WhoisRdap",
+      "type": "external_service",
+      "tmt_type": "SE.EI.TMCore.WebSvc",
+      "boundary": "Internet",
+      "boundary_kind": "NetworkBoundary",
+      "aliases": [],
+      "source_files": [
+        "src/lib/registrar-identity.ts"
+      ],
+      "source_directories": [
+        "src/lib/"
+      ],
+      "fingerprint": {
+        "component_type": "external_service",
+        "boundary_kind": "NetworkBoundary",
+        "source_files": [
+          "src/lib/registrar-identity.ts"
+        ],
+        "source_directories": [
+          "src/lib/"
+        ],
+        "class_names": [],
+        "namespace": "",
+        "config_keys": [],
+        "api_routes": [],
+        "dependencies": [],
+        "inbound_from": [
+          "BrandAuditPipeline"
+        ],
+        "outbound_to": [],
+        "protocols": [
+          "HTTPS"
+        ]
+      },
+      "sidecars": []
+    }
+  ],
+  "boundaries": [
+    {
+      "id": "BlackVeilServices",
+      "display": "BlackVeil Services",
+      "kind": "NetworkBoundary",
+      "aliases": [],
+      "contains": [
+        "BvWeb"
+      ],
+      "contains_fingerprint": "BvWeb"
+    },
+    {
+      "id": "CloudflareWorker",
+      "display": "Cloudflare Worker (bv-mcp)",
+      "kind": "ProcessBoundary",
+      "aliases": [],
+      "contains": [
+        "BrandAuditPipeline",
+        "DnsResolver",
+        "DomainSanitizer",
+        "HonoWorker",
+        "InternalRouter",
+        "McpExecutor",
+        "OAuthIssuer",
+        "RateLimiter",
+        "SafeFetch",
+        "TierAuthResolver",
+        "ToolsHandler"
+      ],
+      "contains_fingerprint": "BrandAuditPipeline|DnsResolver|DomainSanitizer|HonoWorker|InternalRouter|McpExecutor|OAuthIssuer|RateLimiter|SafeFetch|TierAuthResolver|ToolsHandler"
+    },
+    {
+      "id": "DurableObjects",
+      "display": "Durable Objects",
+      "kind": "ProcessBoundary",
+      "aliases": [],
+      "contains": [
+        "ProfileAccumulator",
+        "QuotaCoordinator"
+      ],
+      "contains_fingerprint": "ProfileAccumulator|QuotaCoordinator"
+    },
+    {
+      "id": "Internet",
+      "display": "Public Internet",
+      "kind": "NetworkBoundary",
+      "aliases": [],
+      "contains": [
+        "CertTransparency",
+        "McpClient",
+        "Operator",
+        "PublicDoH",
+        "WhoisRdap"
+      ],
+      "contains_fingerprint": "CertTransparency|McpClient|Operator|PublicDoH|WhoisRdap"
+    },
+    {
+      "id": "PlatformStorage",
+      "display": "Cloudflare Platform Storage",
+      "kind": "PrivilegeBoundary",
+      "aliases": [],
+      "contains": [
+        "IntelligenceDB",
+        "RateLimitKV",
+        "ScanCacheKV",
+        "SessionStoreKV"
+      ],
+      "contains_fingerprint": "IntelligenceDB|RateLimitKV|ScanCacheKV|SessionStoreKV"
+    }
+  ],
+  "flows": [
+    {
+      "id": "DF_BrandAuditPipeline_to_CertTransparency",
+      "from": "BrandAuditPipeline",
+      "to": "CertTransparency",
+      "protocol": "HTTPS",
+      "description": "CT-log enumeration"
+    },
+    {
+      "id": "DF_BrandAuditPipeline_to_WhoisRdap",
+      "from": "BrandAuditPipeline",
+      "to": "WhoisRdap",
+      "protocol": "HTTPS",
+      "description": "WHOIS/RDAP lookups"
+    },
+    {
+      "id": "DF_DnsResolver_to_PublicDoH",
+      "from": "DnsResolver",
+      "to": "PublicDoH",
+      "protocol": "HTTPS (DoH)",
+      "description": "DNS-over-HTTPS queries"
+    },
+    {
+      "id": "DF_HonoWorker_to_McpExecutor",
+      "from": "HonoWorker",
+      "to": "McpExecutor",
+      "protocol": "in-process",
+      "description": "Validated JSON-RPC dispatch"
+    },
+    {
+      "id": "DF_HonoWorker_to_OAuthIssuer",
+      "from": "HonoWorker",
+      "to": "OAuthIssuer",
+      "protocol": "in-process",
+      "description": "OAuth register/authorize/token"
+    },
+    {
+      "id": "DF_HonoWorker_to_TierAuthResolver",
+      "from": "HonoWorker",
+      "to": "TierAuthResolver",
+      "protocol": "in-process",
+      "description": "Resolve caller tier"
+    },
+    {
+      "id": "DF_McpClient_to_HonoWorker",
+      "from": "McpClient",
+      "to": "HonoWorker",
+      "protocol": "HTTPS (JSON-RPC)",
+      "description": "MCP requests over Streamable HTTP"
+    },
+    {
+      "id": "DF_McpExecutor_to_IntelligenceDB",
+      "from": "McpExecutor",
+      "to": "IntelligenceDB",
+      "protocol": "D1 (TLS)",
+      "description": "Encrypted access-log evidence"
+    },
+    {
+      "id": "DF_McpExecutor_to_RateLimiter",
+      "from": "McpExecutor",
+      "to": "RateLimiter",
+      "protocol": "in-process",
+      "description": "Apply limits/quota"
+    },
+    {
+      "id": "DF_McpExecutor_to_SessionStoreKV",
+      "from": "McpExecutor",
+      "to": "SessionStoreKV",
+      "protocol": "KV (TLS)",
+      "description": "Sessions and OAuth codes"
+    },
+    {
+      "id": "DF_McpExecutor_to_ToolsHandler",
+      "from": "McpExecutor",
+      "to": "ToolsHandler",
+      "protocol": "in-process",
+      "description": "Dispatch tools/call"
+    },
+    {
+      "id": "DF_OAuthIssuer_to_BvWeb",
+      "from": "OAuthIssuer",
+      "to": "BvWeb",
+      "protocol": "Service binding RPC",
+      "description": "Plan-to-tier entitlement lookup"
+    },
+    {
+      "id": "DF_OAuthIssuer_to_SessionStoreKV",
+      "from": "OAuthIssuer",
+      "to": "SessionStoreKV",
+      "protocol": "KV (TLS)",
+      "description": "Auth codes / JTI revocation"
+    },
+    {
+      "id": "DF_Operator_to_InternalRouter",
+      "from": "Operator",
+      "to": "InternalRouter",
+      "protocol": "Service binding RPC",
+      "description": "Internal tool/grant/trial-key calls"
+    },
+    {
+      "id": "DF_RateLimiter_to_QuotaCoordinator",
+      "from": "RateLimiter",
+      "to": "QuotaCoordinator",
+      "protocol": "DO RPC",
+      "description": "Global daily quota"
+    },
+    {
+      "id": "DF_RateLimiter_to_RateLimitKV",
+      "from": "RateLimiter",
+      "to": "RateLimitKV",
+      "protocol": "KV (TLS)",
+      "description": "Counters and trial keys"
+    },
+    {
+      "id": "DF_TierAuthResolver_to_BvWeb",
+      "from": "TierAuthResolver",
+      "to": "BvWeb",
+      "protocol": "Service binding RPC",
+      "description": "validate-key tier resolution"
+    },
+    {
+      "id": "DF_ToolsHandler_to_BrandAuditPipeline",
+      "from": "ToolsHandler",
+      "to": "BrandAuditPipeline",
+      "protocol": "in-process",
+      "description": "Run brand audit"
+    },
+    {
+      "id": "DF_ToolsHandler_to_DnsResolver",
+      "from": "ToolsHandler",
+      "to": "DnsResolver",
+      "protocol": "in-process",
+      "description": "DNS record queries"
+    },
+    {
+      "id": "DF_ToolsHandler_to_DomainSanitizer",
+      "from": "ToolsHandler",
+      "to": "DomainSanitizer",
+      "protocol": "in-process",
+      "description": "Validate/sanitize domain"
+    },
+    {
+      "id": "DF_ToolsHandler_to_ProfileAccumulator",
+      "from": "ToolsHandler",
+      "to": "ProfileAccumulator",
+      "protocol": "DO RPC",
+      "description": "Adaptive scoring weights"
+    },
+    {
+      "id": "DF_ToolsHandler_to_SafeFetch",
+      "from": "ToolsHandler",
+      "to": "SafeFetch",
+      "protocol": "in-process",
+      "description": "Fetch attacker-influenced URLs"
+    },
+    {
+      "id": "DF_ToolsHandler_to_ScanCacheKV",
+      "from": "ToolsHandler",
+      "to": "ScanCacheKV",
+      "protocol": "KV (TLS)",
+      "description": "Cached results"
+    }
+  ],
+  "threats": [
+    {
+      "id": "T01.S",
+      "title": "Origin spoofing / CSRF on /mcp",
+      "description": "Forged Origin header to mount cross-site requests.",
+      "stride_category": "S",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "checkOrigin allowlist + MCP-compliant rejection.",
+      "identity_key": {
+        "component_id": "HonoWorker",
+        "data_flow_id": "DF_McpClient_to_HonoWorker",
+        "stride_category": "S",
+        "attack_surface": "Origin spoofing / CSRF on /mcp"
+      }
+    },
+    {
+      "id": "T02.T",
+      "title": "Oversized request body",
+      "description": "Large body to exhaust isolate memory/CPU.",
+      "stride_category": "T",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "10 KB body cap read before parse.",
+      "identity_key": {
+        "component_id": "HonoWorker",
+        "data_flow_id": "DF_McpClient_to_HonoWorker",
+        "stride_category": "T",
+        "attack_surface": "Oversized request body"
+      }
+    },
+    {
+      "id": "T03.R",
+      "title": "Weak request attribution",
+      "description": "Client denies abusive requests.",
+      "stride_category": "R",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Encrypted access log + hashed analytics principals.",
+      "identity_key": {
+        "component_id": "HonoWorker",
+        "data_flow_id": "DF_McpClient_to_HonoWorker",
+        "stride_category": "R",
+        "attack_surface": "Weak request attribution"
+      }
+    },
+    {
+      "id": "T04.I",
+      "title": "Verbose error disclosure",
+      "description": "Errors leak internals.",
+      "stride_category": "I",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "sanitizeErrorMessage allowlist with generic fallback.",
+      "identity_key": {
+        "component_id": "HonoWorker",
+        "data_flow_id": "DF_McpClient_to_HonoWorker",
+        "stride_category": "I",
+        "attack_surface": "Verbose error disclosure"
+      }
+    },
+    {
+      "id": "T05.I",
+      "title": "Host-header OAuth issuer poisoning",
+      "description": "Spoofed Host poisons issuer URL.",
+      "stride_category": "I",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Set OAUTH_ISSUER; JWT aud validation.",
+      "identity_key": {
+        "component_id": "HonoWorker",
+        "data_flow_id": "DF_McpClient_to_HonoWorker",
+        "stride_category": "I",
+        "attack_surface": "Host-header OAuth issuer poisoning"
+      }
+    },
+    {
+      "id": "T06.D",
+      "title": "Unauthenticated request flood",
+      "description": "Flooding /mcp.",
+      "stride_category": "D",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Per-IP and global rate limits.",
+      "identity_key": {
+        "component_id": "HonoWorker",
+        "data_flow_id": "DF_McpClient_to_HonoWorker",
+        "stride_category": "D",
+        "attack_surface": "Unauthenticated request flood"
+      }
+    },
+    {
+      "id": "T07.A",
+      "title": "Distributed free-tier budget abuse",
+      "description": "Many IPs drain shared global budget.",
+      "stride_category": "A",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Global quota DO; per-IP limits; residual.",
+      "identity_key": {
+        "component_id": "HonoWorker",
+        "data_flow_id": "DF_McpClient_to_HonoWorker",
+        "stride_category": "A",
+        "attack_surface": "Distributed free-tier budget abuse"
+      }
+    },
+    {
+      "id": "T08.S",
+      "title": "API key brute force / timing",
+      "description": "Timing side-channel on key compare.",
+      "stride_category": "S",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Constant-time XOR over SHA-256.",
+      "identity_key": {
+        "component_id": "TierAuthResolver",
+        "data_flow_id": "DF_HonoWorker_to_TierAuthResolver",
+        "stride_category": "S",
+        "attack_surface": "API key brute force / timing"
+      }
+    },
+    {
+      "id": "T09.S",
+      "title": "JWT alg confusion / none",
+      "description": "Forged JWT via alg=none.",
+      "stride_category": "S",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "HS256 pinned; alg checked before verify.",
+      "identity_key": {
+        "component_id": "TierAuthResolver",
+        "data_flow_id": "DF_HonoWorker_to_TierAuthResolver",
+        "stride_category": "S",
+        "attack_surface": "JWT alg confusion / none"
+      }
+    },
+    {
+      "id": "T10.T",
+      "title": "Tier-claim tampering",
+      "description": "Tamper tier to elevate.",
+      "stride_category": "T",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Signature verified before claims; tier enum.",
+      "identity_key": {
+        "component_id": "TierAuthResolver",
+        "data_flow_id": "DF_HonoWorker_to_TierAuthResolver",
+        "stride_category": "T",
+        "attack_surface": "Tier-claim tampering"
+      }
+    },
+    {
+      "id": "T11.I",
+      "title": "API key in query string",
+      "description": "?api_key= leaks into edge logs.",
+      "stride_category": "I",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Bearer preferred; query path deprecated.",
+      "identity_key": {
+        "component_id": "TierAuthResolver",
+        "data_flow_id": "DF_HonoWorker_to_TierAuthResolver",
+        "stride_category": "I",
+        "attack_surface": "API key in query string"
+      }
+    },
+    {
+      "id": "T12.E",
+      "title": "Owner-tier IP spoofing",
+      "description": "Spoof IP into OWNER_ALLOW_IPS.",
+      "stride_category": "E",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "cf-connecting-ip only; off-allowlist downgrade.",
+      "identity_key": {
+        "component_id": "TierAuthResolver",
+        "data_flow_id": "DF_HonoWorker_to_TierAuthResolver",
+        "stride_category": "E",
+        "attack_surface": "Owner-tier IP spoofing"
+      }
+    },
+    {
+      "id": "T13.E",
+      "title": "Trial-key cache staleness",
+      "description": "Expired key keeps tier 60s.",
+      "stride_category": "E",
+      "tier": 2,
+      "prerequisites": "Authenticated User",
+      "status": "Mitigated",
+      "mitigation": "Bounded TTL; downgrade on refresh.",
+      "identity_key": {
+        "component_id": "TierAuthResolver",
+        "data_flow_id": "DF_HonoWorker_to_TierAuthResolver",
+        "stride_category": "E",
+        "attack_surface": "Trial-key cache staleness"
+      }
+    },
+    {
+      "id": "T14.A",
+      "title": "Caller-supplied tier hint",
+      "description": "Caller asserts a tier.",
+      "stride_category": "A",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Tier always server-derived.",
+      "identity_key": {
+        "component_id": "TierAuthResolver",
+        "data_flow_id": "DF_HonoWorker_to_TierAuthResolver",
+        "stride_category": "A",
+        "attack_surface": "Caller-supplied tier hint"
+      }
+    },
+    {
+      "id": "T15.S",
+      "title": "Open client registration abuse",
+      "description": "Mass rogue client registration.",
+      "stride_category": "S",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "PKCE + redirect_uri validation; throttle needed.",
+      "identity_key": {
+        "component_id": "OAuthIssuer",
+        "data_flow_id": "DF_HonoWorker_to_OAuthIssuer",
+        "stride_category": "S",
+        "attack_surface": "Open client registration abuse"
+      }
+    },
+    {
+      "id": "T16.T",
+      "title": "Auth-code injection/replay",
+      "description": "Replay authorization code.",
+      "stride_category": "T",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "PKCE S256; single-use codes with TTL.",
+      "identity_key": {
+        "component_id": "OAuthIssuer",
+        "data_flow_id": "DF_HonoWorker_to_OAuthIssuer",
+        "stride_category": "T",
+        "attack_surface": "Auth-code injection/replay"
+      }
+    },
+    {
+      "id": "T17.I",
+      "title": "Weak JWT signing secret",
+      "description": "Short secret enables forgery.",
+      "stride_category": "I",
+      "tier": 3,
+      "prerequisites": "Host/OS Access",
+      "status": "Mitigated",
+      "mitigation": "OAUTH_SIGNING_SECRET >=32 bytes enforced; 503 until set.",
+      "identity_key": {
+        "component_id": "OAuthIssuer",
+        "data_flow_id": "DF_HonoWorker_to_OAuthIssuer",
+        "stride_category": "I",
+        "attack_surface": "Weak JWT signing secret"
+      }
+    },
+    {
+      "id": "T18.D",
+      "title": "Token endpoint flooding",
+      "description": "Flood /oauth/token.",
+      "stride_category": "D",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "30/min per IP limit.",
+      "identity_key": {
+        "component_id": "OAuthIssuer",
+        "data_flow_id": "DF_HonoWorker_to_OAuthIssuer",
+        "stride_category": "D",
+        "attack_surface": "Token endpoint flooding"
+      }
+    },
+    {
+      "id": "T19.E",
+      "title": "Entitlement spoofing",
+      "description": "Forged entitlement grants tier.",
+      "stride_category": "E",
+      "tier": 3,
+      "prerequisites": "BvWeb Compromise",
+      "status": "Mitigated",
+      "mitigation": "Authenticated binding; tier enum validation.",
+      "identity_key": {
+        "component_id": "OAuthIssuer",
+        "data_flow_id": "DF_OAuthIssuer_to_BvWeb",
+        "stride_category": "E",
+        "attack_surface": "Entitlement spoofing"
+      }
+    },
+    {
+      "id": "T20.A",
+      "title": "Stale tier after downgrade",
+      "description": "JWT keeps tier until exp.",
+      "stride_category": "A",
+      "tier": 2,
+      "prerequisites": "Authenticated User",
+      "status": "Mitigated",
+      "mitigation": "JTI revocation; short lifetime recommended.",
+      "identity_key": {
+        "component_id": "OAuthIssuer",
+        "data_flow_id": "DF_OAuthIssuer_to_BvWeb",
+        "stride_category": "A",
+        "attack_surface": "Stale tier after downgrade"
+      }
+    },
+    {
+      "id": "T21.S",
+      "title": "Session guessing/fixation",
+      "description": "Hijack session via guessed ID.",
+      "stride_category": "S",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "64-hex random IDs; schema-validated; KV-backed.",
+      "identity_key": {
+        "component_id": "McpExecutor",
+        "data_flow_id": "DF_McpExecutor_to_SessionStoreKV",
+        "stride_category": "S",
+        "attack_surface": "Session guessing/fixation"
+      }
+    },
+    {
+      "id": "T22.T",
+      "title": "JSON-RPC param tampering",
+      "description": "Malformed params.",
+      "stride_category": "T",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "JSON-RPC validation + Zod validateToolArgs.",
+      "identity_key": {
+        "component_id": "McpExecutor",
+        "data_flow_id": "DF_HonoWorker_to_McpExecutor",
+        "stride_category": "T",
+        "attack_surface": "JSON-RPC param tampering"
+      }
+    },
+    {
+      "id": "T23.R",
+      "title": "Tool-call repudiation",
+      "description": "No attribution of tool calls.",
+      "stride_category": "R",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "tool_call analytics + encrypted access log.",
+      "identity_key": {
+        "component_id": "McpExecutor",
+        "data_flow_id": "DF_McpExecutor_to_IntelligenceDB",
+        "stride_category": "R",
+        "attack_surface": "Tool-call repudiation"
+      }
+    },
+    {
+      "id": "T24.I",
+      "title": "Cross-session cache leakage",
+      "description": "Predictable cache keys.",
+      "stride_category": "I",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Domain-scoped keys; no secrets cached.",
+      "identity_key": {
+        "component_id": "McpExecutor",
+        "data_flow_id": "DF_McpExecutor_to_SessionStoreKV",
+        "stride_category": "I",
+        "attack_surface": "Cross-session cache leakage"
+      }
+    },
+    {
+      "id": "T25.D",
+      "title": "Expensive-method amplification",
+      "description": "scan_domain amplification.",
+      "stride_category": "D",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Per-tool quotas; 12s/8s budgets.",
+      "identity_key": {
+        "component_id": "McpExecutor",
+        "data_flow_id": "DF_McpExecutor_to_ToolsHandler",
+        "stride_category": "D",
+        "attack_surface": "Expensive-method amplification"
+      }
+    },
+    {
+      "id": "T26.E",
+      "title": "Invoking scan-only tool directly",
+      "description": "Call check_subdomain_takeover directly.",
+      "stride_category": "E",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "TOOL_REGISTRY allowlist; scan-only enforced.",
+      "identity_key": {
+        "component_id": "McpExecutor",
+        "data_flow_id": "DF_McpExecutor_to_ToolsHandler",
+        "stride_category": "E",
+        "attack_surface": "Invoking scan-only tool directly"
+      }
+    },
+    {
+      "id": "T27.A",
+      "title": "Session creation flooding",
+      "description": "Exhaust KV/session maps.",
+      "stride_category": "A",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "10/min per IP; LRU caps.",
+      "identity_key": {
+        "component_id": "McpExecutor",
+        "data_flow_id": "DF_McpExecutor_to_SessionStoreKV",
+        "stride_category": "A",
+        "attack_surface": "Session creation flooding"
+      }
+    },
+    {
+      "id": "T28.T",
+      "title": "Tool argument injection",
+      "description": "Unvalidated args reach DNS/fetch.",
+      "stride_category": "T",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Zod validateToolArgs + validateDomain.",
+      "identity_key": {
+        "component_id": "ToolsHandler",
+        "data_flow_id": "DF_ToolsHandler_to_DomainSanitizer",
+        "stride_category": "T",
+        "attack_surface": "Tool argument injection"
+      }
+    },
+    {
+      "id": "T29.I",
+      "title": "STRUCTURED_RESULT leakage",
+      "description": "Internal data in structured JSON.",
+      "stride_category": "I",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Omitted for interactive clients; sanitized findings.",
+      "identity_key": {
+        "component_id": "ToolsHandler",
+        "data_flow_id": "DF_McpExecutor_to_ToolsHandler",
+        "stride_category": "I",
+        "attack_surface": "STRUCTURED_RESULT leakage"
+      }
+    },
+    {
+      "id": "T30.D",
+      "title": "batch_scan exhaustion",
+      "description": "Resource exhaustion via batch.",
+      "stride_category": "D",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "budgetMs 25s, concurrency 3, Promise.race.",
+      "identity_key": {
+        "component_id": "ToolsHandler",
+        "data_flow_id": "DF_McpExecutor_to_ToolsHandler",
+        "stride_category": "D",
+        "attack_surface": "batch_scan exhaustion"
+      }
+    },
+    {
+      "id": "T31.E",
+      "title": "Domain-optional validation bypass",
+      "description": "Bypass domain validation.",
+      "stride_category": "E",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "DOMAIN_OPTIONAL_TOOLS explicit; args Zod-validated.",
+      "identity_key": {
+        "component_id": "ToolsHandler",
+        "data_flow_id": "DF_ToolsHandler_to_DomainSanitizer",
+        "stride_category": "E",
+        "attack_surface": "Domain-optional validation bypass"
+      }
+    },
+    {
+      "id": "T32.A",
+      "title": "Scanner as recon proxy",
+      "description": "Scan arbitrary third-party domains.",
+      "stride_category": "A",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Rate limits; 20/day lookalikes/shadow; residual.",
+      "identity_key": {
+        "component_id": "ToolsHandler",
+        "data_flow_id": "DF_ToolsHandler_to_DnsResolver",
+        "stride_category": "A",
+        "attack_surface": "Scanner as recon proxy"
+      }
+    },
+    {
+      "id": "T33.A",
+      "title": "force_refresh cache busting",
+      "description": "Repeated force_refresh amplifies load.",
+      "stride_category": "A",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "force_refresh counts against quota.",
+      "identity_key": {
+        "component_id": "ToolsHandler",
+        "data_flow_id": "DF_ToolsHandler_to_ScanCacheKV",
+        "stride_category": "A",
+        "attack_surface": "force_refresh cache busting"
+      }
+    },
+    {
+      "id": "T34.T",
+      "title": "Homoglyph/IDN bypass",
+      "description": "Confusable domain inputs.",
+      "stride_category": "T",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Normalization + public-suffix checks; needs explicit IDN tests.",
+      "identity_key": {
+        "component_id": "DomainSanitizer",
+        "data_flow_id": "DF_ToolsHandler_to_DomainSanitizer",
+        "stride_category": "T",
+        "attack_surface": "Homoglyph/IDN bypass"
+      }
+    },
+    {
+      "id": "T35.I",
+      "title": "SSRF via domain input",
+      "description": "Domain resolves to internal IP.",
+      "stride_category": "I",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Reject IP literals/localhost/RFC1918/rebinding.",
+      "identity_key": {
+        "component_id": "DomainSanitizer",
+        "data_flow_id": "DF_ToolsHandler_to_DomainSanitizer",
+        "stride_category": "I",
+        "attack_surface": "SSRF via domain input"
+      }
+    },
+    {
+      "id": "T36.E",
+      "title": "DNS rebinding TOCTOU",
+      "description": "Validated host resolves internal at fetch.",
+      "stride_category": "E",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "global_fetch_strictly_public; safeFetch re-validation.",
+      "identity_key": {
+        "component_id": "DomainSanitizer",
+        "data_flow_id": "DF_ToolsHandler_to_DomainSanitizer",
+        "stride_category": "E",
+        "attack_surface": "DNS rebinding TOCTOU"
+      }
+    },
+    {
+      "id": "T37.T",
+      "title": "Redirect SSRF",
+      "description": "Location header to internal target.",
+      "stride_category": "T",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "redirect:manual + per-hop re-validation.",
+      "identity_key": {
+        "component_id": "SafeFetch",
+        "data_flow_id": "DF_ToolsHandler_to_SafeFetch",
+        "stride_category": "T",
+        "attack_surface": "Redirect SSRF"
+      }
+    },
+    {
+      "id": "T38.I",
+      "title": "Attacker URL SSRF",
+      "description": "BIMI l= fetched to internal.",
+      "stride_category": "I",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "safeFetch HTTPS-only, blocklist, userinfo rejection.",
+      "identity_key": {
+        "component_id": "SafeFetch",
+        "data_flow_id": "DF_ToolsHandler_to_SafeFetch",
+        "stride_category": "I",
+        "attack_surface": "Attacker URL SSRF"
+      }
+    },
+    {
+      "id": "T39.D",
+      "title": "Slowloris/large response",
+      "description": "Attacker target stalls fetch.",
+      "stride_category": "D",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "AbortSignal.timeout + total-budget caps.",
+      "identity_key": {
+        "component_id": "SafeFetch",
+        "data_flow_id": "DF_ToolsHandler_to_SafeFetch",
+        "stride_category": "D",
+        "attack_surface": "Slowloris/large response"
+      }
+    },
+    {
+      "id": "T40.S",
+      "title": "Malicious/MITM resolver",
+      "description": "Forged DNS records.",
+      "stride_category": "S",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "TLS; secondary token; multi-resolver.",
+      "identity_key": {
+        "component_id": "DnsResolver",
+        "data_flow_id": "DF_DnsResolver_to_PublicDoH",
+        "stride_category": "S",
+        "attack_surface": "Malicious/MITM resolver"
+      }
+    },
+    {
+      "id": "T41.T",
+      "title": "DNS response tampering",
+      "description": "Skew scan grades.",
+      "stride_category": "T",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "TLS; cross-resolver corroboration.",
+      "identity_key": {
+        "component_id": "DnsResolver",
+        "data_flow_id": "DF_DnsResolver_to_PublicDoH",
+        "stride_category": "T",
+        "attack_surface": "DNS response tampering"
+      }
+    },
+    {
+      "id": "T42.D",
+      "title": "DNS reflection/flood",
+      "description": "Flood victim resolver/domain.",
+      "stride_category": "D",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Rate limits; queries to public DoH.",
+      "identity_key": {
+        "component_id": "DnsResolver",
+        "data_flow_id": "DF_DnsResolver_to_PublicDoH",
+        "stride_category": "D",
+        "attack_surface": "DNS reflection/flood"
+      }
+    },
+    {
+      "id": "T43.A",
+      "title": "DNS recon / cache snooping",
+      "description": "Recon via DNS queries.",
+      "stride_category": "A",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Rate limits; bounded record types.",
+      "identity_key": {
+        "component_id": "DnsResolver",
+        "data_flow_id": "DF_DnsResolver_to_PublicDoH",
+        "stride_category": "A",
+        "attack_surface": "DNS recon / cache snooping"
+      }
+    },
+    {
+      "id": "T44.T",
+      "title": "IP spoofing to evade limits",
+      "description": "Forge client IP.",
+      "stride_category": "T",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "cf-connecting-ip only; XFF never trusted.",
+      "identity_key": {
+        "component_id": "RateLimiter",
+        "data_flow_id": "DF_McpExecutor_to_RateLimiter",
+        "stride_category": "T",
+        "attack_surface": "IP spoofing to evade limits"
+      }
+    },
+    {
+      "id": "T45.D",
+      "title": "KV unavailability fail-open",
+      "description": "Disable rate limits.",
+      "stride_category": "D",
+      "tier": 3,
+      "prerequisites": "RateLimitKV Compromise",
+      "status": "Mitigated",
+      "mitigation": "In-memory + DO circuit-breaker fallback.",
+      "identity_key": {
+        "component_id": "RateLimiter",
+        "data_flow_id": "DF_RateLimiter_to_RateLimitKV",
+        "stride_category": "D",
+        "attack_surface": "KV unavailability fail-open"
+      }
+    },
+    {
+      "id": "T46.E",
+      "title": "Distributed-IP bypass",
+      "description": "Botnet bypasses per-IP limits.",
+      "stride_category": "E",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Global 500K/day ceiling via DO.",
+      "identity_key": {
+        "component_id": "RateLimiter",
+        "data_flow_id": "DF_McpExecutor_to_RateLimiter",
+        "stride_category": "E",
+        "attack_surface": "Distributed-IP bypass"
+      }
+    },
+    {
+      "id": "T47.A",
+      "title": "Low-and-slow fuzzing",
+      "description": "Stay under thresholds.",
+      "stride_category": "A",
+      "tier": 1,
+      "prerequisites": "None",
+      "status": "Mitigated",
+      "mitigation": "Fuzzing detector sliding window + alerts.",
+      "identity_key": {
+        "component_id": "RateLimiter",
+        "data_flow_id": "DF_RateLimiter_to_RateLimitKV",
+        "stride_category": "A",
+        "attack_surface": "Low-and-slow fuzzing"
+      }
+    },
+    {
+      "id": "T48.S",
+      "title": "Public reaching /internal/*",
+      "description": "Spoof absence of proxy headers.",
+      "stride_category": "S",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "isPublicInternetRequest rejects public headers (404).",
+      "identity_key": {
+        "component_id": "InternalRouter",
+        "data_flow_id": "DF_Operator_to_InternalRouter",
+        "stride_category": "S",
+        "attack_surface": "Public reaching /internal/*"
+      }
+    },
+    {
+      "id": "T49.T",
+      "title": "Oversized internal batch",
+      "description": "Abusive batch payload.",
+      "stride_category": "T",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "256 KB limit; tool-name + arg-key allowlist.",
+      "identity_key": {
+        "component_id": "InternalRouter",
+        "data_flow_id": "DF_Operator_to_InternalRouter",
+        "stride_category": "T",
+        "attack_surface": "Oversized internal batch"
+      }
+    },
+    {
+      "id": "T50.D",
+      "title": "Batch exhaustion",
+      "description": "500-domain batch exhaustion.",
+      "stride_category": "D",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "Max 500, concurrency cap, budget.",
+      "identity_key": {
+        "component_id": "InternalRouter",
+        "data_flow_id": "DF_Operator_to_InternalRouter",
+        "stride_category": "D",
+        "attack_surface": "Batch exhaustion"
+      }
+    },
+    {
+      "id": "T51.E",
+      "title": "Credential-minting w/o auth",
+      "description": "Reach grants/trial-keys unauthorized.",
+      "stride_category": "E",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "Strict BV_WEB_INTERNAL_KEY gate (503/401).",
+      "identity_key": {
+        "component_id": "InternalRouter",
+        "data_flow_id": "DF_Operator_to_InternalRouter",
+        "stride_category": "E",
+        "attack_surface": "Credential-minting w/o auth"
+      }
+    },
+    {
+      "id": "T52.A",
+      "title": "Internal tools default-open",
+      "description": "REQUIRE_INTERNAL_AUTH off by default.",
+      "stride_category": "A",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "cf-connecting-ip guard; bearer opt-in.",
+      "identity_key": {
+        "component_id": "InternalRouter",
+        "data_flow_id": "DF_Operator_to_InternalRouter",
+        "stride_category": "A",
+        "attack_surface": "Internal tools default-open"
+      }
+    },
+    {
+      "id": "T53.T",
+      "title": "Watched-domain spoofing",
+      "description": "Audit a non-owned domain.",
+      "stride_category": "T",
+      "tier": 2,
+      "prerequisites": "Authenticated User",
+      "status": "Mitigated",
+      "mitigation": "Watched-domain validated at register time.",
+      "identity_key": {
+        "component_id": "BrandAuditPipeline",
+        "data_flow_id": "DF_ToolsHandler_to_BrandAuditPipeline",
+        "stride_category": "T",
+        "attack_surface": "Watched-domain spoofing"
+      }
+    },
+    {
+      "id": "T54.I",
+      "title": "Third-party infra disclosure",
+      "description": "Tiered discovery reveals competitor infra.",
+      "stride_category": "I",
+      "tier": 2,
+      "prerequisites": "Authenticated User",
+      "status": "Mitigated",
+      "mitigation": "Opt-out enforcement; tier gating.",
+      "identity_key": {
+        "component_id": "BrandAuditPipeline",
+        "data_flow_id": "DF_BrandAuditPipeline_to_CertTransparency",
+        "stride_category": "I",
+        "attack_surface": "Third-party infra disclosure"
+      }
+    },
+    {
+      "id": "T55.D",
+      "title": "Discovery/queue flooding",
+      "description": "Expensive tiered discovery.",
+      "stride_category": "D",
+      "tier": 2,
+      "prerequisites": "Authenticated User",
+      "status": "Mitigated",
+      "mitigation": "Per-tier quotas, budget, reaper.",
+      "identity_key": {
+        "component_id": "BrandAuditPipeline",
+        "data_flow_id": "DF_ToolsHandler_to_BrandAuditPipeline",
+        "stride_category": "D",
+        "attack_surface": "Discovery/queue flooding"
+      }
+    },
+    {
+      "id": "T56.A",
+      "title": "Mass third-party enumeration",
+      "description": "Repeated audits enumerate third parties.",
+      "stride_category": "A",
+      "tier": 2,
+      "prerequisites": "Authenticated User",
+      "status": "Mitigated",
+      "mitigation": "Quotas + opt-out registry.",
+      "identity_key": {
+        "component_id": "BrandAuditPipeline",
+        "data_flow_id": "DF_BrandAuditPipeline_to_CertTransparency",
+        "stride_category": "A",
+        "attack_surface": "Mass third-party enumeration"
+      }
+    },
+    {
+      "id": "T57.T",
+      "title": "DO state manipulation",
+      "description": "Reset/inflate quota counters.",
+      "stride_category": "T",
+      "tier": 3,
+      "prerequisites": "CloudflareWorker Compromise",
+      "status": "Platform",
+      "mitigation": "DO reachable only via in-account binding.",
+      "identity_key": {
+        "component_id": "QuotaCoordinator",
+        "data_flow_id": "DF_RateLimiter_to_QuotaCoordinator",
+        "stride_category": "T",
+        "attack_surface": "DO state manipulation"
+      }
+    },
+    {
+      "id": "T58.D",
+      "title": "DO bottleneck/unavailability",
+      "description": "Single-instance DO outage.",
+      "stride_category": "D",
+      "tier": 3,
+      "prerequisites": "Host/OS Access",
+      "status": "Mitigated",
+      "mitigation": "Circuit-breaker fallback to KV/in-memory.",
+      "identity_key": {
+        "component_id": "QuotaCoordinator",
+        "data_flow_id": "DF_RateLimiter_to_QuotaCoordinator",
+        "stride_category": "D",
+        "attack_surface": "DO bottleneck/unavailability"
+      }
+    },
+    {
+      "id": "T59.T",
+      "title": "Adaptive-weight poisoning",
+      "description": "Crafted telemetry poisons weights.",
+      "stride_category": "T",
+      "tier": 3,
+      "prerequisites": "CloudflareWorker Compromise",
+      "status": "Mitigated",
+      "mitigation": "Maturity-gated blending; static fallback.",
+      "identity_key": {
+        "component_id": "ProfileAccumulator",
+        "data_flow_id": "DF_ToolsHandler_to_ProfileAccumulator",
+        "stride_category": "T",
+        "attack_surface": "Adaptive-weight poisoning"
+      }
+    },
+    {
+      "id": "T60.A",
+      "title": "EMA score skew",
+      "description": "Sustained scans bias EMA.",
+      "stride_category": "A",
+      "tier": 3,
+      "prerequisites": "CloudflareWorker Compromise",
+      "status": "Mitigated",
+      "mitigation": "Maturity threshold; bounded influence.",
+      "identity_key": {
+        "component_id": "ProfileAccumulator",
+        "data_flow_id": "DF_ToolsHandler_to_ProfileAccumulator",
+        "stride_category": "A",
+        "attack_surface": "EMA score skew"
+      }
+    },
+    {
+      "id": "T61.T",
+      "title": "Session/code tampering",
+      "description": "Tamper session/auth records.",
+      "stride_category": "T",
+      "tier": 3,
+      "prerequisites": "CloudflareWorker Compromise",
+      "status": "Platform",
+      "mitigation": "In-account only; schema-validated reads.",
+      "identity_key": {
+        "component_id": "SessionStoreKV",
+        "data_flow_id": "DF_McpExecutor_to_SessionStoreKV",
+        "stride_category": "T",
+        "attack_surface": "Session/code tampering"
+      }
+    },
+    {
+      "id": "T62.I",
+      "title": "OAuth code/JTI disclosure",
+      "description": "Codes exposed if KV compromised.",
+      "stride_category": "I",
+      "tier": 3,
+      "prerequisites": "Host/OS Access",
+      "status": "Mitigated",
+      "mitigation": "Short single-use TTL; platform encryption at rest.",
+      "identity_key": {
+        "component_id": "SessionStoreKV",
+        "data_flow_id": "DF_OAuthIssuer_to_SessionStoreKV",
+        "stride_category": "I",
+        "attack_surface": "OAuth code/JTI disclosure"
+      }
+    },
+    {
+      "id": "T63.T",
+      "title": "Cache poisoning",
+      "description": "Tampered cached results served.",
+      "stride_category": "T",
+      "tier": 3,
+      "prerequisites": "CloudflareWorker Compromise",
+      "status": "Platform",
+      "mitigation": "In-account only; 5min TTL; force_refresh bypass.",
+      "identity_key": {
+        "component_id": "ScanCacheKV",
+        "data_flow_id": "DF_ToolsHandler_to_ScanCacheKV",
+        "stride_category": "T",
+        "attack_surface": "Cache poisoning"
+      }
+    },
+    {
+      "id": "T64.T",
+      "title": "Counter/trial-key tampering",
+      "description": "Evade limits / escalate tier.",
+      "stride_category": "T",
+      "tier": 3,
+      "prerequisites": "CloudflareWorker Compromise",
+      "status": "Platform",
+      "mitigation": "In-account only; DO fallback.",
+      "identity_key": {
+        "component_id": "RateLimitKV",
+        "data_flow_id": "DF_RateLimiter_to_RateLimitKV",
+        "stride_category": "T",
+        "attack_surface": "Counter/trial-key tampering"
+      }
+    },
+    {
+      "id": "T65.I",
+      "title": "Trial-key disclosure",
+      "description": "Keys exposed if KV compromised.",
+      "stride_category": "I",
+      "tier": 3,
+      "prerequisites": "Host/OS Access",
+      "status": "Mitigated",
+      "mitigation": "Platform encryption at rest; bounded lifetime.",
+      "identity_key": {
+        "component_id": "RateLimitKV",
+        "data_flow_id": "DF_RateLimiter_to_RateLimitKV",
+        "stride_category": "I",
+        "attack_surface": "Trial-key disclosure"
+      }
+    },
+    {
+      "id": "T66.I",
+      "title": "Access-log IP disclosure",
+      "description": "Client IP evidence exposed.",
+      "stride_category": "I",
+      "tier": 3,
+      "prerequisites": "Host/OS Access",
+      "status": "Mitigated",
+      "mitigation": "AES-GCM encryption; versioned key; 90-day retention.",
+      "identity_key": {
+        "component_id": "IntelligenceDB",
+        "data_flow_id": "DF_McpExecutor_to_IntelligenceDB",
+        "stride_category": "I",
+        "attack_surface": "Access-log IP disclosure"
+      }
+    },
+    {
+      "id": "T67.T",
+      "title": "Access-log tampering",
+      "description": "Hide abuse by editing logs.",
+      "stride_category": "T",
+      "tier": 3,
+      "prerequisites": "CloudflareWorker Compromise",
+      "status": "Platform",
+      "mitigation": "D1 in-account; append-oriented writes.",
+      "identity_key": {
+        "component_id": "IntelligenceDB",
+        "data_flow_id": "DF_McpExecutor_to_IntelligenceDB",
+        "stride_category": "T",
+        "attack_surface": "Access-log tampering"
+      }
+    },
+    {
+      "id": "T68.R",
+      "title": "Insufficient retention",
+      "description": "Forensic gaps.",
+      "stride_category": "R",
+      "tier": 3,
+      "prerequisites": "Host/OS Access",
+      "status": "Mitigated",
+      "mitigation": "~90-day encrypted retention.",
+      "identity_key": {
+        "component_id": "IntelligenceDB",
+        "data_flow_id": "DF_McpExecutor_to_IntelligenceDB",
+        "stride_category": "R",
+        "attack_surface": "Insufficient retention"
+      }
+    },
+    {
+      "id": "T69.S",
+      "title": "Forged entitlements",
+      "description": "Compromised bv-web elevates tier.",
+      "stride_category": "S",
+      "tier": 3,
+      "prerequisites": "BvWeb Compromise",
+      "status": "Mitigated",
+      "mitigation": "Authenticated binding; enum validation.",
+      "identity_key": {
+        "component_id": "BvWeb",
+        "data_flow_id": "DF_OAuthIssuer_to_BvWeb",
+        "stride_category": "S",
+        "attack_surface": "Forged entitlements"
+      }
+    },
+    {
+      "id": "T70.I",
+      "title": "Entitlement data in transit",
+      "description": "Plan data exposed between workers.",
+      "stride_category": "I",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "In-account binding; intra-CF TLS.",
+      "identity_key": {
+        "component_id": "BvWeb",
+        "data_flow_id": "DF_OAuthIssuer_to_BvWeb",
+        "stride_category": "I",
+        "attack_surface": "Entitlement data in transit"
+      }
+    },
+    {
+      "id": "T71.D",
+      "title": "bv-web unavailability",
+      "description": "Paid auth blocked.",
+      "stride_category": "D",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "Static key fallback; free tier unaffected.",
+      "identity_key": {
+        "component_id": "BvWeb",
+        "data_flow_id": "DF_TierAuthResolver_to_BvWeb",
+        "stride_category": "D",
+        "attack_surface": "bv-web unavailability"
+      }
+    },
+    {
+      "id": "T72.S",
+      "title": "Resolver spoofing",
+      "description": "Poisoned answers.",
+      "stride_category": "S",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "TLS; multi-resolver; secondary token.",
+      "identity_key": {
+        "component_id": "PublicDoH",
+        "data_flow_id": "DF_DnsResolver_to_PublicDoH",
+        "stride_category": "S",
+        "attack_surface": "Resolver spoofing"
+      }
+    },
+    {
+      "id": "T73.T",
+      "title": "On-wire DNS tampering",
+      "description": "Tamper responses.",
+      "stride_category": "T",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "TLS (DoH).",
+      "identity_key": {
+        "component_id": "PublicDoH",
+        "data_flow_id": "DF_DnsResolver_to_PublicDoH",
+        "stride_category": "T",
+        "attack_surface": "On-wire DNS tampering"
+      }
+    },
+    {
+      "id": "T74.D",
+      "title": "Resolver outage",
+      "description": "Degrade scan availability.",
+      "stride_category": "D",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "Fallback chain (bv-dns -> Google).",
+      "identity_key": {
+        "component_id": "PublicDoH",
+        "data_flow_id": "DF_DnsResolver_to_PublicDoH",
+        "stride_category": "D",
+        "attack_surface": "Resolver outage"
+      }
+    },
+    {
+      "id": "T75.T",
+      "title": "Malicious CT data",
+      "description": "Inflate candidate sets.",
+      "stride_category": "T",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "crt.sh fallback + validation; bounded.",
+      "identity_key": {
+        "component_id": "CertTransparency",
+        "data_flow_id": "DF_BrandAuditPipeline_to_CertTransparency",
+        "stride_category": "T",
+        "attack_surface": "Malicious CT data"
+      }
+    },
+    {
+      "id": "T76.D",
+      "title": "CT source outage",
+      "description": "Degrade discovery.",
+      "stride_category": "D",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "Direct crt.sh fallback + jittered backoff.",
+      "identity_key": {
+        "component_id": "CertTransparency",
+        "data_flow_id": "DF_BrandAuditPipeline_to_CertTransparency",
+        "stride_category": "D",
+        "attack_surface": "CT source outage"
+      }
+    },
+    {
+      "id": "T77.I",
+      "title": "Untrusted WHOIS data injection",
+      "description": "Injected content in reports.",
+      "stride_category": "I",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "Output sanitization via createFinding().",
+      "identity_key": {
+        "component_id": "WhoisRdap",
+        "data_flow_id": "DF_BrandAuditPipeline_to_WhoisRdap",
+        "stride_category": "I",
+        "attack_surface": "Untrusted WHOIS data injection"
+      }
+    },
+    {
+      "id": "T78.D",
+      "title": "WHOIS/RDAP outage",
+      "description": "Degrade enrichment.",
+      "stride_category": "D",
+      "tier": 2,
+      "prerequisites": "Internal Network",
+      "status": "Mitigated",
+      "mitigation": "RDAP-only fallback; KV-cached referrals.",
+      "identity_key": {
+        "component_id": "WhoisRdap",
+        "data_flow_id": "DF_BrandAuditPipeline_to_WhoisRdap",
+        "stride_category": "D",
+        "attack_surface": "WHOIS/RDAP outage"
+      }
+    }
+  ],
+  "findings": [
+    {
+      "id": "FIND-01",
+      "title": "API key accepted via query parameter",
+      "severity": "Moderate",
+      "cvss_score": 5.3,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N",
+      "cwe": "CWE-598",
+      "owasp": "A04:2025",
+      "tier": 1,
+      "effort": "Low",
+      "related_threats": [
+        "T11.I"
+      ],
+      "evidence_files": [
+        "src/lib/tier-auth.ts",
+        "src/lib/auth.ts"
+      ],
+      "component": "TierAuthResolver",
+      "identity_key": {
+        "component_id": "TierAuthResolver",
+        "vulnerability": "CWE-598",
+        "attack_surface": "src/index.ts ?api_key="
+      }
+    },
+    {
+      "id": "FIND-02",
+      "title": "Free-tier abuse via distributed IPs",
+      "severity": "Moderate",
+      "cvss_score": 5.3,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N",
+      "cwe": "CWE-770",
+      "owasp": "A06:2025",
+      "tier": 1,
+      "effort": "Medium",
+      "related_threats": [
+        "T07.A",
+        "T46.E"
+      ],
+      "evidence_files": [
+        "src/lib/rate-limiter.ts",
+        "src/lib/fuzzing-detector.ts"
+      ],
+      "component": "RateLimiter",
+      "identity_key": {
+        "component_id": "RateLimiter",
+        "vulnerability": "CWE-770",
+        "attack_surface": "src/lib/rate-limiter.ts"
+      }
+    },
+    {
+      "id": "FIND-03",
+      "title": "Scanner usable as recon/amplification proxy",
+      "severity": "Moderate",
+      "cvss_score": 5.1,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:L",
+      "cwe": "CWE-406",
+      "owasp": "A06:2025",
+      "tier": 1,
+      "effort": "Medium",
+      "related_threats": [
+        "T32.A",
+        "T42.D",
+        "T43.A"
+      ],
+      "evidence_files": [
+        "src/handlers/tools.ts"
+      ],
+      "component": "ToolsHandler",
+      "identity_key": {
+        "component_id": "ToolsHandler",
+        "vulnerability": "CWE-406",
+        "attack_surface": "src/tools/ scan tools"
+      }
+    },
+    {
+      "id": "FIND-04",
+      "title": "OAuth issuer from spoofable Host header",
+      "severity": "Moderate",
+      "cvss_score": 4.8,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N",
+      "cwe": "CWE-350",
+      "owasp": "A02:2025",
+      "tier": 1,
+      "effort": "Low",
+      "related_threats": [
+        "T05.I"
+      ],
+      "evidence_files": [
+        "src/index.ts"
+      ],
+      "component": "HonoWorker",
+      "identity_key": {
+        "component_id": "HonoWorker",
+        "vulnerability": "CWE-350",
+        "attack_surface": "src/oauth/discovery.ts"
+      }
+    },
+    {
+      "id": "FIND-05",
+      "title": "Open OAuth dynamic client registration",
+      "severity": "Low",
+      "cvss_score": 4.3,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N",
+      "cwe": "CWE-1188",
+      "owasp": "A02:2025",
+      "tier": 1,
+      "effort": "Low",
+      "related_threats": [
+        "T15.S"
+      ],
+      "evidence_files": [
+        "src/oauth/jwt.ts",
+        "src/oauth/token.ts",
+        "src/oauth/authorize.ts"
+      ],
+      "component": "OAuthIssuer",
+      "identity_key": {
+        "component_id": "OAuthIssuer",
+        "vulnerability": "CWE-1188",
+        "attack_surface": "src/oauth/register.ts"
+      }
+    },
+    {
+      "id": "FIND-06",
+      "title": "force_refresh cache-busting amplification",
+      "severity": "Low",
+      "cvss_score": 3.7,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N",
+      "cwe": "CWE-770",
+      "owasp": "A06:2025",
+      "tier": 1,
+      "effort": "Low",
+      "related_threats": [
+        "T33.A"
+      ],
+      "evidence_files": [
+        "src/handlers/tools.ts"
+      ],
+      "component": "ToolsHandler",
+      "identity_key": {
+        "component_id": "ToolsHandler",
+        "vulnerability": "CWE-770",
+        "attack_surface": "src/lib/cache.ts force_refresh"
+      }
+    },
+    {
+      "id": "FIND-07",
+      "title": "Domain validation hardening for homoglyph/IDN",
+      "severity": "Low",
+      "cvss_score": 3.1,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N",
+      "cwe": "CWE-1007",
+      "owasp": "A03:2025",
+      "tier": 1,
+      "effort": "Medium",
+      "related_threats": [
+        "T34.T"
+      ],
+      "evidence_files": [
+        "src/lib/sanitize.ts",
+        "src/lib/config.ts"
+      ],
+      "component": "DomainSanitizer",
+      "identity_key": {
+        "component_id": "DomainSanitizer",
+        "vulnerability": "CWE-1007",
+        "attack_surface": "src/lib/sanitize.ts"
+      }
+    },
+    {
+      "id": "FIND-08",
+      "title": "Authentication & token-integrity controls (existing control)",
+      "severity": "Low",
+      "cvss_score": 2.3,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N",
+      "cwe": "CWE-287",
+      "owasp": "A07:2025",
+      "tier": 1,
+      "effort": "Low",
+      "related_threats": [
+        "T08.S",
+        "T09.S",
+        "T10.T",
+        "T12.E",
+        "T14.A",
+        "T16.T",
+        "T17.I",
+        "T21.S"
+      ],
+      "evidence_files": [
+        "src/lib/tier-auth.ts",
+        "src/lib/auth.ts"
+      ],
+      "component": "TierAuthResolver",
+      "identity_key": {
+        "component_id": "TierAuthResolver",
+        "vulnerability": "CWE-287",
+        "attack_surface": "src/lib/tier-auth.ts"
+      }
+    },
+    {
+      "id": "FIND-09",
+      "title": "SSRF egress controls (existing control)",
+      "severity": "Low",
+      "cvss_score": 2.3,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N",
+      "cwe": "CWE-918",
+      "owasp": "A06:2025",
+      "tier": 1,
+      "effort": "Low",
+      "related_threats": [
+        "T35.I",
+        "T36.E",
+        "T37.T",
+        "T38.I",
+        "T39.D"
+      ],
+      "evidence_files": [
+        "src/lib/safe-fetch.ts"
+      ],
+      "component": "SafeFetch",
+      "identity_key": {
+        "component_id": "SafeFetch",
+        "vulnerability": "CWE-918",
+        "attack_surface": "src/lib/safe-fetch.ts"
+      }
+    },
+    {
+      "id": "FIND-10",
+      "title": "Rate limiting, quotas & DoS budgets (existing control)",
+      "severity": "Low",
+      "cvss_score": 2.3,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N",
+      "cwe": "CWE-770",
+      "owasp": "A06:2025",
+      "tier": 1,
+      "effort": "Low",
+      "related_threats": [
+        "T01.S",
+        "T02.T",
+        "T06.D",
+        "T18.D",
+        "T22.T",
+        "T25.D",
+        "T26.E",
+        "T27.A",
+        "T28.T",
+        "T30.D",
+        "T31.E",
+        "T44.T",
+        "T45.D",
+        "T47.A"
+      ],
+      "evidence_files": [
+        "src/lib/rate-limiter.ts",
+        "src/lib/fuzzing-detector.ts"
+      ],
+      "component": "RateLimiter",
+      "identity_key": {
+        "component_id": "RateLimiter",
+        "vulnerability": "CWE-770",
+        "attack_surface": "src/lib/rate-limiter.ts"
+      }
+    },
+    {
+      "id": "FIND-11",
+      "title": "Information-disclosure controls (existing control)",
+      "severity": "Low",
+      "cvss_score": 2.3,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N",
+      "cwe": "CWE-209",
+      "owasp": "A09:2025",
+      "tier": 1,
+      "effort": "Low",
+      "related_threats": [
+        "T03.R",
+        "T04.I",
+        "T23.R",
+        "T24.I",
+        "T29.I",
+        "T66.I",
+        "T68.R"
+      ],
+      "evidence_files": [
+        "src/index.ts"
+      ],
+      "component": "HonoWorker",
+      "identity_key": {
+        "component_id": "HonoWorker",
+        "vulnerability": "CWE-209",
+        "attack_surface": "src/lib/json-rpc.ts"
+      }
+    },
+    {
+      "id": "FIND-12",
+      "title": "Internal routes default to no bearer auth",
+      "severity": "Moderate",
+      "cvss_score": 5.1,
+      "cvss_vector": "CVSS:4.0/AV:A/AC:L/AT:N/PR:N/UI:N/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N",
+      "cwe": "CWE-1188",
+      "owasp": "A02:2025",
+      "tier": 2,
+      "effort": "Low",
+      "related_threats": [
+        "T52.A"
+      ],
+      "evidence_files": [
+        "src/internal.ts"
+      ],
+      "component": "InternalRouter",
+      "identity_key": {
+        "component_id": "InternalRouter",
+        "vulnerability": "CWE-1188",
+        "attack_surface": "src/internal.ts REQUIRE_INTERNAL_AUTH"
+      }
+    },
+    {
+      "id": "FIND-13",
+      "title": "JWT retains elevated tier after plan downgrade",
+      "severity": "Moderate",
+      "cvss_score": 4.6,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N",
+      "cwe": "CWE-613",
+      "owasp": "A07:2025",
+      "tier": 2,
+      "effort": "Medium",
+      "related_threats": [
+        "T20.A"
+      ],
+      "evidence_files": [
+        "src/oauth/jwt.ts",
+        "src/oauth/token.ts",
+        "src/oauth/authorize.ts"
+      ],
+      "component": "OAuthIssuer",
+      "identity_key": {
+        "component_id": "OAuthIssuer",
+        "vulnerability": "CWE-613",
+        "attack_surface": "src/oauth/jwt.ts"
+      }
+    },
+    {
+      "id": "FIND-14",
+      "title": "Brand-audit discovery enables third-party enumeration",
+      "severity": "Moderate",
+      "cvss_score": 4.3,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N",
+      "cwe": "CWE-799",
+      "owasp": "A06:2025",
+      "tier": 2,
+      "effort": "Medium",
+      "related_threats": [
+        "T54.I",
+        "T56.A"
+      ],
+      "evidence_files": [
+        "src/lib/brand-audit-pipeline.ts",
+        "src/scheduled.ts"
+      ],
+      "component": "BrandAuditPipeline",
+      "identity_key": {
+        "component_id": "BrandAuditPipeline",
+        "vulnerability": "CWE-799",
+        "attack_surface": "src/lib/brand-audit-pipeline.ts"
+      }
+    },
+    {
+      "id": "FIND-15",
+      "title": "Trial-key tier persists during cache window",
+      "severity": "Low",
+      "cvss_score": 3.5,
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N",
+      "cwe": "CWE-613",
+      "owasp": "A07:2025",
+      "tier": 2,
+      "effort": "Low",
+      "related_threats": [
+        "T13.E"
+      ],
+      "evidence_files": [
+        "src/lib/tier-auth.ts",
+        "src/lib/auth.ts"
+      ],
+      "component": "TierAuthResolver",
+      "identity_key": {
+        "component_id": "TierAuthResolver",
+        "vulnerability": "CWE-613",
+        "attack_surface": "src/lib/tier-auth.ts TRIAL_KEY_CACHE_TTL"
+      }
+    },
+    {
+      "id": "FIND-16",
+      "title": "Internal isolation & dependency hardening (existing control)",
+      "severity": "Low",
+      "cvss_score": 2.5,
+      "cvss_vector": "CVSS:4.0/AV:A/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N",
+      "cwe": "CWE-306",
+      "owasp": "A04:2025",
+      "tier": 2,
+      "effort": "Low",
+      "related_threats": [
+        "T19.E",
+        "T40.S",
+        "T41.T",
+        "T48.S",
+        "T49.T",
+        "T50.D",
+        "T51.E",
+        "T53.T",
+        "T55.D",
+        "T58.D",
+        "T59.T",
+        "T60.A",
+        "T69.S",
+        "T70.I",
+        "T71.D",
+        "T72.S",
+        "T73.T",
+        "T74.D",
+        "T75.T",
+        "T76.D",
+        "T77.I",
+        "T78.D"
+      ],
+      "evidence_files": [
+        "src/internal.ts"
+      ],
+      "component": "InternalRouter",
+      "identity_key": {
+        "component_id": "InternalRouter",
+        "vulnerability": "CWE-306",
+        "attack_surface": "src/internal.ts"
+      }
+    },
+    {
+      "id": "FIND-17",
+      "title": "Sensitive KV records rely on platform isolation only",
+      "severity": "Low",
+      "cvss_score": 4.2,
+      "cvss_vector": "CVSS:4.0/AV:L/AC:L/AT:N/PR:H/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N",
+      "cwe": "CWE-311",
+      "owasp": "A04:2025",
+      "tier": 3,
+      "effort": "Medium",
+      "related_threats": [
+        "T62.I",
+        "T65.I"
+      ],
+      "evidence_files": [
+        "src/lib/rate-limiter.ts",
+        "src/lib/trial-keys.ts"
+      ],
+      "component": "RateLimitKV",
+      "identity_key": {
+        "component_id": "RateLimitKV",
+        "vulnerability": "CWE-311",
+        "attack_surface": "src/lib/trial-keys.ts, src/oauth/storage.ts"
+      }
+    }
+  ],
+  "metrics": {
+    "total_components": 23,
+    "total_boundaries": 5,
+    "total_flows": 23,
+    "total_threats": 78,
+    "total_findings": 17,
+    "threats_by_tier": {
+      "T1": 40,
+      "T2": 22,
+      "T3": 16
+    },
+    "findings_by_tier": {
+      "T1": 11,
+      "T2": 5,
+      "T3": 1
+    },
+    "threats_by_stride": {
+      "S": 9,
+      "T": 19,
+      "R": 3,
+      "I": 14,
+      "D": 14,
+      "E": 8,
+      "A": 11
+    },
+    "findings_by_severity": {
+      "Critical": 0,
+      "Important": 0,
+      "Moderate": 7,
+      "Low": 10
+    }
+  }
+}

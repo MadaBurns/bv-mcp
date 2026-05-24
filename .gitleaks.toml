@@ -181,6 +181,13 @@ regexes = [
 # ─── Global Allowlists ───────────────────────────────────────────────
 
 [allowlist]
+# Threat-model report-folder timestamps (YYYYMMDD-HHMMSS, e.g. the `report_folder`
+# in threat-inventory.json) trip the default `phone-number` rule. Benign date-shaped
+# values — allow the specific pattern while keeping secret scanning active on the docs.
+regexTarget = "line"
+regexes = [
+  '''threat-model-\d{8}-\d{6}''',
+]
 paths = [
   '''\.gitleaks\.toml$''',           # This config file itself
   '''\.githooks/''',                 # Hook config (contains patterns)
