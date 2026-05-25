@@ -568,6 +568,8 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	osint_investigate_domain_start: OsintInvestigateArgs,
 	osint_investigate_infrastructure_start: OsintInvestigateArgs,
 	osint_investigate_supply_chain_start: OsintInvestigateArgs,
+	osint_investigate_username_start: OsintInvestigateArgs,
+	osint_investigate_email_start: OsintInvestigateArgs,
 	osint_investigation_status: OsintInvestigationIdArgs,
 	osint_investigation_report: OsintInvestigationIdArgs,
 };
