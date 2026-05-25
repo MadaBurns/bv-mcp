@@ -102,6 +102,7 @@ Transport support:
   map_supply_chain      check_rbl               brand_audit_single    generate_rollout_plan
   analyze_drift         cymru_asn               brand_audit_batch_
   resolve_spf_chain     rdap_lookup               start
+                        check_package_trust
   discover_subdomains   check_nsec_             brand_audit_status
   map_compliance          walkability           brand_audit_get_
   simulate_attack_paths check_dnssec_chain        report
