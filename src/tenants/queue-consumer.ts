@@ -28,7 +28,7 @@ import { ZodError } from 'zod';
 import { handleToolsCall } from '../handlers/tools';
 import { createAnalyticsClient } from '../lib/analytics';
 import { parseScoringConfigCached } from '../lib/scoring-config';
-import { parseCacheTtl } from '../lib/config';
+import { parseCacheTtl, parsePerCheckTimeout, parseScanTimeout } from '../lib/config';
 import { ScanQueueMessageSchema, type ScanQueueMessage } from '../schemas/tenant-internal';
 import { streamScanResult } from '../lib/hooks/analytics-stream';
 import { resolveTenant, type ResolverEnv } from './tenant-resolver';
@@ -56,6 +56,8 @@ export type ScanQueueConsumerEnv = ResolverEnv & {
 	PROVIDER_SIGNATURES_SHA256?: string;
 	SCORING_CONFIG?: string;
 	CACHE_TTL_SECONDS?: string;
+	SCAN_TIMEOUT_MS?: string;
+	PER_CHECK_TIMEOUT_MS?: string;
 	BV_DOH_ENDPOINT?: string;
 	BV_DOH_TOKEN?: string;
 };
@@ -240,6 +242,8 @@ export async function processScanMessage(
 		waitUntil: ctx.waitUntil,
 		scoringConfig: parseScoringConfigCached(env.SCORING_CONFIG),
 		cacheTtlSeconds,
+		scanTimeoutMs: parseScanTimeout(env.SCAN_TIMEOUT_MS),
+		perCheckTimeoutMs: parsePerCheckTimeout(env.PER_CHECK_TIMEOUT_MS),
 		secondaryDoh: env.BV_DOH_ENDPOINT ? { endpoint: env.BV_DOH_ENDPOINT, token: env.BV_DOH_TOKEN } : undefined,
 	};
 

@@ -375,7 +375,7 @@ export function parseGlobalDailyLimit(envValue?: string): number {
 
 /**
  * Parse SCAN_TIMEOUT_MS override, clamping to [5000, 30000].
- * Returns 12000 when absent or invalid.
+ * Returns SCAN_TIMEOUT_MS when absent or invalid.
  */
 export function parseScanTimeout(envValue?: string): number {
 	return parseClampedInt(envValue, SCAN_TIMEOUT_MS, 5000, 30000);

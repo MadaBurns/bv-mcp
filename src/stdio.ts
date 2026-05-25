@@ -5,10 +5,12 @@ import { parseJsonRpcRequest } from './mcp/request';
 import { executeMcpRequest } from './mcp/execute';
 import { JSON_RPC_ERRORS, jsonRpcError } from './lib/json-rpc';
 import { SERVER_VERSION } from './lib/server-version';
+import { parsePerCheckTimeout, parseScanTimeout } from './lib/config';
 import type { JsonRpcRequest } from './lib/json-rpc';
 
 declare const process: {
 	argv: string[];
+	env: Record<string, string | undefined>;
 	stdin: {
 		setEncoding(encoding: string): void;
 		resume(): void;
@@ -77,6 +79,8 @@ async function processRequest(
 		validateSession: false,
 		createSessionOnInitialize: false,
 		serverVersion: SERVER_VERSION,
+		scanTimeoutMs: parseScanTimeout(process.env.SCAN_TIMEOUT_MS),
+		perCheckTimeoutMs: parsePerCheckTimeout(process.env.PER_CHECK_TIMEOUT_MS),
 	});
 	if (result.kind === 'notification') {
 		return undefined;

@@ -211,6 +211,30 @@ describe('checkMxReputation', () => {
 		expect(finding!.severity).toBe('medium');
 	});
 
+	it('should skip malformed IPv4-like MX A data without PTR or DNSBL lookups', async () => {
+		const queriedUrls: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			queriedUrls.push(url);
+
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				return Promise.resolve(mxResponse('example.com', [{ priority: 10, exchange: 'mail.example.com' }]));
+			}
+			if (url.includes('name=mail.example.com') && (url.includes('type=A') || url.includes('type=1'))) {
+				return Promise.resolve(aResponse('mail.example.com', ['999.0.2.1']));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run();
+
+		expect(queriedUrls.some((url) => url.includes('in-addr.arpa'))).toBe(false);
+		expect(queriedUrls.some((url) => url.includes('spamhaus') || url.includes('spamcop') || url.includes('barracuda'))).toBe(false);
+		const finding = result.findings.find((f) => f.title.includes('No valid IPv4 address for MX host'));
+		expect(finding).toBeDefined();
+		expect(finding!.metadata?.invalidIps).toEqual(['999.0.2.1']);
+	});
+
 	it('should limit checks to first 3 MX hosts', async () => {
 		const mxHosts = [
 			{ priority: 10, exchange: 'mx1.example.com' },

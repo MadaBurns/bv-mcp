@@ -417,7 +417,7 @@ Static API keys (via `?api_key=` or `Authorization: Bearer`) authenticate as a s
 | Tier | Quota | Use Case | Source |
 |---|---|---|---|
 | free | 25 domain scans/day, 1 batch scan/day, 3 concurrent. High-cost tools have tighter per-tool limits. | Unauthenticated, public testing (e.g. Claude.ai web) | Per-IP rate limit (no key) |
-| **agent** | **500 scans/day, 5 concurrent** | **Team automation, CI/CD scripts** | **`BV_API_KEY` environment variable** |
+| **agent** | **200 scans/day, 5 concurrent** | **Team automation, CI/CD scripts** | **`BV_API_KEY` environment variable** |
 | developer | 500 scans/day, 10 concurrent | OAuth + MCP Developer plan | Stripe subscription (bv-web) |
 | enterprise | 10,000 scans/day, 25 concurrent | OAuth + MCP Enterprise plan | Stripe subscription (bv-web) |
 
@@ -504,7 +504,12 @@ If you are a developer troubleshooting how different MCP clients handle authenti
 python3 scripts/chaos/chaos-test-clients.py
 ```
 
-This test covers all 9 detected MCP client types and 56 assertions across session management, auth precedence, and transport-specific edge cases.
+This test covers all 9 detected MCP client types across session management, auth precedence, format negotiation, and transport-specific edge cases. With no `BV_API_KEY`, it exercises the public/free-tier path. With a valid API key exported as `BV_API_KEY`, it also covers `?api_key=` authentication, Bearer precedence, authenticated Legacy SSE bootstrap, and batch `scan_domain` behavior.
+
+Expected assertion count:
+
+- Unauthenticated/free-tier run: 58 assertions.
+- Authenticated run with `BV_API_KEY`: 65 assertions.
 
 ## Provider Detection Configuration
 

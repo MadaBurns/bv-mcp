@@ -7,6 +7,8 @@
  * Compatible with Cloudflare Workers runtime (no Node.js APIs).
  */
 
+import { TOOLS } from '../schemas/tool-definitions';
+
 /** MCP Resource descriptor */
 interface McpResource {
 	uri: string;
@@ -63,11 +65,14 @@ const RESOURCES: McpResource[] = [
 	},
 ];
 
+const TOOL_COUNT = TOOLS.length;
+const CHECK_TOOL_COUNT = TOOLS.filter((tool) => tool.name.startsWith('check_')).length;
+
 /** Resource content keyed by URI */
 const RESOURCE_CONTENT: Record<string, string> = {
 	'dns-security://guides/security-checks': `# DNS Security Checks
 
-60 MCP tools, including 30 \`check_*\` tools and \`scan_domain\` across 18 scan categories.
+${TOOL_COUNT} MCP tools, including ${CHECK_TOOL_COUNT} \`check_*\` tools and \`scan_domain\` across 18 scan categories.
 
 ## Tool -> Category Mapping
 
@@ -169,7 +174,7 @@ A+: 92+ | A: 87-91 | B+: 82-86 | B: 76-81 | C+: 70-75 | C: 63-69 | D+: 56-62 | D
 
 ## Tips
 - \`scan_domain\` caches 5 min; subsequent checks use cached data
-- \`check_lookalikes\`/\`check_shadow_domains\`: 20/day limit (unauth)
+- check_lookalikes/check_shadow_domains: 5/day limit (unauth)
 - All checks are passive/read-only
 - Use \`profile\` param on \`scan_domain\` for non-mail domains (\`web_only\`, \`non_mail\`)
 `,

@@ -236,4 +236,27 @@ describe('checkCymruAsn', () => {
 		expect(infoFinding).toBeDefined();
 		expect(infoFinding!.detail).toMatch(/no.*A record|no.*IP|Could not resolve/i);
 	});
+
+	it('should not query Team Cymru for malformed IPv4-like A records', async () => {
+		const queriedNames: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			const parsed = new URL(url);
+			const name = parsed.searchParams.get('name') ?? '';
+			queriedNames.push(name);
+
+			if (name === 'example.com') {
+				return Promise.resolve(aResponse('example.com', ['999.0.2.1']));
+			}
+
+			return Promise.resolve(emptyResponse(name));
+		});
+
+		const result = await run();
+
+		expect(queriedNames).toEqual(['example.com']);
+		const finding = result.findings.find((f) => f.title === 'No valid IPv4 A records found');
+		expect(finding).toBeDefined();
+		expect(finding!.metadata?.invalidIps).toEqual(['999.0.2.1']);
+	});
 });

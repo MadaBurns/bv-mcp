@@ -28,7 +28,9 @@
 	],
 	"scripts": {
 		"build": "tsup",
-		"build:wasm": "cd crates/bv-wasm-core && wasm-pack build --target web",
+		"generate:wasm-permissions": "tsx scripts/generate-wasm-permissions.ts",
+		"check:wasm-permissions": "tsx scripts/generate-wasm-permissions.ts --check",
+		"build:wasm": "npm run generate:wasm-permissions && cd crates/bv-wasm-core && wasm-pack build --target web",
 		"deploy:prod": "node scripts/inject-private-config.cjs && npx wrangler deploy --minify --config wrangler.production.jsonc",
 		"test": "node scripts/vitest-filter-workerd.mjs",
 		"typecheck": "tsc --noEmit",

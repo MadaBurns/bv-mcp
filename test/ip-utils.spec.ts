@@ -3,6 +3,24 @@
 import { describe, it, expect } from 'vitest';
 
 describe('ip-utils', () => {
+	describe('isValidIPv4', () => {
+		it('accepts dotted decimal IPv4 addresses within octet range', async () => {
+			const { isValidIPv4 } = await import('../src/lib/ip-utils');
+			expect(isValidIPv4('192.0.2.1')).toBe(true);
+			expect(isValidIPv4('0.0.0.0')).toBe(true);
+			expect(isValidIPv4('255.255.255.255')).toBe(true);
+		});
+
+		it('rejects malformed IPv4-like strings', async () => {
+			const { isValidIPv4 } = await import('../src/lib/ip-utils');
+			expect(isValidIPv4('999.0.2.1')).toBe(false);
+			expect(isValidIPv4('192.0.2')).toBe(false);
+			expect(isValidIPv4('192.0.2.1.5')).toBe(false);
+			expect(isValidIPv4('192.0.2.one')).toBe(false);
+			expect(isValidIPv4(' 192.0.2.1')).toBe(false);
+		});
+	});
+
 	describe('reverseIPv4', () => {
 		it('reverses simple octets', async () => {
 			const { reverseIPv4 } = await import('../src/lib/ip-utils');

@@ -21,7 +21,7 @@ import { handleToolsCall } from '../handlers/tools';
 import { createAnalyticsClient, hashForAnalytics, hashIpForAnalytics } from '../lib/analytics';
 import { resolveClientIpFromHeaderGetter } from '../lib/client-ip';
 import { parseScoringConfigCached } from '../lib/scoring-config';
-import { MAX_TENANT_PORTFOLIO_BODY_BYTES, MAX_INTERNAL_BATCH_BODY_BYTES, parseCacheTtl } from '../lib/config';
+import { MAX_INTERNAL_BATCH_BODY_BYTES, MAX_TENANT_PORTFOLIO_BODY_BYTES, parseCacheTtl, parsePerCheckTimeout, parseScanTimeout } from '../lib/config';
 import { validateDomain, sanitizeDomain } from '../lib/sanitize';
 import {
 	PortfolioRequestSchema,
@@ -60,6 +60,8 @@ type TenantEnv = ResolverEnv & {
 	PROVIDER_SIGNATURES_SHA256?: string;
 	SCORING_CONFIG?: string;
 	CACHE_TTL_SECONDS?: string;
+	SCAN_TIMEOUT_MS?: string;
+	PER_CHECK_TIMEOUT_MS?: string;
 	BV_DOH_ENDPOINT?: string;
 	BV_DOH_TOKEN?: string;
 	BV_SCANNER_QUEUE?: ScanQueueProducer;
@@ -551,6 +553,8 @@ tenantRoutes.post('/scan', async (c) => {
 		waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 		scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 		cacheTtlSeconds,
+		scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
+		perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
 		secondaryDoh: c.env.BV_DOH_ENDPOINT ? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN } : undefined,
 	};
 

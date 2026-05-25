@@ -33,14 +33,20 @@ import { createAnalyticsClient, hashForAnalytics, hashIpForAnalytics } from './l
 import { detectMcpClient } from './lib/client-detection';
 import type { JsonRpcRequest } from './lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionRequest } from './mcp/route-gates';
-import { MAX_REQUEST_BODY_BYTES, FREE_TOOL_DAILY_LIMITS, isValidOAuthSigningSecret } from './lib/config';
+import {
+	FREE_TOOL_DAILY_LIMITS,
+	MAX_REQUEST_BODY_BYTES,
+	isValidOAuthSigningSecret,
+	parseCacheTtl,
+	parsePerCheckTimeout,
+	parseScanTimeout,
+} from './lib/config';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { scanDomain } from './tools/scan-domain';
 import { gradeBadge, errorBadge } from './lib/badge';
 import { SERVER_VERSION } from './lib/server-version';
 import { executeMcpRequest } from './mcp/execute';
 import { parseScoringConfigCached } from './lib/scoring-config';
-import { parseCacheTtl } from './lib/config';
 import { closeLegacyStream, enqueueLegacyMessage, openLegacySseStream } from './lib/legacy-sse';
 import { resolveClientIpFromHeaders, resolveClientIpFromRequestHeaders } from './lib/client-ip';
 import { internalRoutes } from './internal';
@@ -85,6 +91,8 @@ type BvMcpEnv = {
 	PROVIDER_SIGNATURES_SHA256?: string;
 	SCORING_CONFIG?: string;
 	CACHE_TTL_SECONDS?: string;
+	SCAN_TIMEOUT_MS?: string;
+	PER_CHECK_TIMEOUT_MS?: string;
 	BV_DOH_ENDPOINT?: string;
 	BV_DOH_TOKEN?: string;
 	BV_CERTSTREAM?: Fetcher;
@@ -369,6 +377,8 @@ app.get('/badge/:domain', async (c) => {
 			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 			scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 			cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
+			scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
+			perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
 		});
 		return new Response(gradeBadge(result.score.grade), { status: 200, headers: svgHeaders });
 	} catch {
@@ -469,6 +479,8 @@ app.post('/mcp', async (c) => {
 					waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 					scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 					cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
+					scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
+					perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
 					secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 					secondaryDohToken: c.env.BV_DOH_TOKEN,
 					certstream: c.env.BV_CERTSTREAM,
@@ -544,6 +556,8 @@ app.post('/mcp', async (c) => {
 		waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 		scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 		cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
+		scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
+		perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
 		secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 		secondaryDohToken: c.env.BV_DOH_TOKEN,
 		certstream: c.env.BV_CERTSTREAM,
@@ -695,6 +709,8 @@ app.post('/mcp/messages', async (c) => {
 				waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 				scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 				cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
+				scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
+				perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
 				secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 				secondaryDohToken: c.env.BV_DOH_TOKEN,
 				certstream: c.env.BV_CERTSTREAM,
@@ -956,6 +972,8 @@ export default {
 				return handleToolsCall({ name: tool, arguments: args as Record<string, unknown> }, queueEnv.SCAN_CACHE, {
 					providerSignaturesUrl: queueEnv.PROVIDER_SIGNATURES_URL,
 					scoringConfig: parseScoringConfigCached(queueEnv.SCORING_CONFIG),
+					scanTimeoutMs: parseScanTimeout(queueEnv.SCAN_TIMEOUT_MS),
+					perCheckTimeoutMs: parsePerCheckTimeout(queueEnv.PER_CHECK_TIMEOUT_MS),
 					secondaryDoh: queueEnv.BV_DOH_ENDPOINT ? { endpoint: queueEnv.BV_DOH_ENDPOINT, token: queueEnv.BV_DOH_TOKEN } : undefined,
 					whoisBinding: queueEnv.BV_WHOIS,
 					infraProbe: queueEnv.BV_INFRA_PROBE,

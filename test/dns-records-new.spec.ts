@@ -182,6 +182,22 @@ describe('querySrvRecords', () => {
 
 		expect(results).toEqual([]);
 	});
+
+	it('drops malformed SRV records instead of returning NaN fields', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			createDohResponse([{ name: '_submission._tcp.example.com', type: 33 }], [
+				{ name: '_submission._tcp.example.com', type: 33, TTL: 300, data: 'bad 5 587 mail.example.com.' },
+				{ name: '_submission._tcp.example.com', type: 33, TTL: 300, data: '10 five 587 mail.example.com.' },
+				{ name: '_submission._tcp.example.com', type: 33, TTL: 300, data: '10 5 70000 mail.example.com.' },
+				{ name: '_submission._tcp.example.com', type: 33, TTL: 300, data: '10 5 587 mail.example.com.' },
+			]),
+		);
+
+		const { querySrvRecords } = await import('../src/lib/dns-records');
+		const results = await querySrvRecords('_submission._tcp.example.com');
+
+		expect(results).toEqual([{ priority: 10, weight: 5, port: 587, target: 'mail.example.com' }]);
+	});
 });
 
 describe('parseTlsaRecord', () => {
@@ -240,5 +256,11 @@ describe('parseTlsaRecord', () => {
 	it('returns null for insufficient hex wire bytes', async () => {
 		const { parseTlsaRecord } = await import('../src/lib/dns-records');
 		expect(parseTlsaRecord('\\# 2 03 01')).toBeNull();
+	});
+
+	it('returns null for malformed hex wire bytes', async () => {
+		const { parseTlsaRecord } = await import('../src/lib/dns-records');
+		expect(parseTlsaRecord('\\# 4 03 01 01 zz')).toBeNull();
+		expect(parseTlsaRecord('\\# 4 03 01 01 f')).toBeNull();
 	});
 });

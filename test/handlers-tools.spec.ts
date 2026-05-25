@@ -606,6 +606,22 @@ describe('handleToolsList', () => {
 		const names = handleToolsList().tools.map((t) => t.name);
 		expect(new Set(names).size).toBe(names.length);
 	});
+
+	it('validates register_brand_audit_watch domain before brand-audit binding checks', async () => {
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		const result = await handleToolsCall({
+			name: 'register_brand_audit_watch',
+			arguments: {
+				domain: '192.0.2.10',
+				interval: 'weekly',
+			},
+		});
+
+		const text = result.content.map((item) => ('text' in item ? item.text : '')).join('\n');
+		expect(result.isError).toBe(true);
+		expect(text).toContain('Domain validation failed');
+		expect(text).not.toContain('BRAND_AUDIT_DB binding is not provisioned');
+	});
 });
 
 // -- format routing --
