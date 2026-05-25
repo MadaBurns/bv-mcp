@@ -135,6 +135,10 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 	) {
 		delete jsonSchema.additionalProperties;
 	}
+	// Strip additionalProperties: false — MCP clients must not be constrained by strict schema markers
+	if (jsonSchema.additionalProperties === false) {
+		delete jsonSchema.additionalProperties;
+	}
 	return jsonSchema as McpTool['inputSchema'];
 }
 

@@ -92,11 +92,19 @@ const NON_SCAN_TOOL_NAMES = new Set([
 	'delete_brand_audit_watch',
 	'check_package_trust',
 	'check_realtime_threat_feed',
+	'scan_buckets_start',
+	'scan_buckets_status',
+	'scan_buckets_findings',
+	'osint_investigate_domain_start',
+	'osint_investigate_infrastructure_start',
+	'osint_investigate_supply_chain_start',
+	'osint_investigation_status',
+	'osint_investigation_report',
 ]);
 
 describe('tool-schemas metadata', () => {
-	it('exports exactly 64 tools', () => {
-		expect(TOOLS).toHaveLength(64);
+	it('exports exactly 72 tools', () => {
+		expect(TOOLS).toHaveLength(72);
 	});
 
 	it('all tool names are unique', () => {
