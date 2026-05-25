@@ -543,11 +543,11 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'discovery',
 		scanIncluded: false,
 	},
-		brand_audit_get_report: {
-			description:
-				'Fetch the result JSON for a completed brand audit. With `target` set, returns the per-target CheckResult; without, returns the audit-level aggregate. Returns notReady when polling an in-flight audit. When a rendered PDF sidecar exists and the R2 binding is configured, metadata includes a signed PDF URL; completed targets without a PDF URL include pdfPending so callers can poll again.',
-			schema: BrandAuditGetReportArgs,
-			group: 'discovery',
+	brand_audit_get_report: {
+		description:
+			'Fetch the result JSON for a completed brand audit. With `target` set, returns the per-target CheckResult; without, returns the audit-level aggregate. Returns notReady when polling an in-flight audit. When a rendered PDF sidecar exists and the R2 binding is configured, metadata includes a signed PDF URL; completed targets without a PDF URL include pdfPending so callers can poll again.',
+		schema: BrandAuditGetReportArgs,
+		group: 'discovery',
 		scanIncluded: false,
 	},
 	list_brand_audit_watches: {
