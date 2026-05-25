@@ -20,36 +20,37 @@ import { safeFetch } from '../lib/safe-fetch';
 /** User-Agent for outbound probes — matches the package's scanner UA. */
 const SCANNER_USER_AGENT = 'Mozilla/5.0 (compatible; BlackVeilDNSScanner/1.0; +https://blackveilsecurity.com)';
 
-/** WAF/CDN challenge page fingerprints. Matched against response headers (and optionally body). */
-const WAF_CHALLENGE_FINGERPRINTS: Array<{
-	name: string;
-	matchHeaders: (h: Headers) => boolean;
-	matchBody?: (body: string) => boolean;
-}> = [
-	{
-		name: 'cloudflare',
-		// cf-ray header is conclusive on its own; body title is a belt-and-suspenders signal
-		matchHeaders: (h) =>
-			!!(h.get('cf-ray') && (h.get('server') ?? '').toLowerCase().includes('cloudflare')),
-		matchBody: (body) => /just a moment/i.test(body),
-	},
-	{
-		name: 'akamai',
-		matchHeaders: (h) => (h.get('server') ?? '').toLowerCase().includes('akamaighost'),
-	},
-];
+/** A detected WAF interception — either an interstitial challenge or a terminal block. */
+type WafEvent = { provider: 'cloudflare' | 'akamai'; kind: 'challenge' | 'block' };
+
+/** Cloudflare access-block body signatures (distinct from the "Just a moment" JS challenge). */
+const CF_BLOCK_BODY = /sorry, you have been blocked|attention required|error 10(09|10|12|13|15|20)/i;
+
+/** True when the response carries any Cloudflare/Akamai signal worth fetching the body to disambiguate. */
+function looksLikeWaf(headers: Headers): boolean {
+	const server = (headers.get('server') ?? '').toLowerCase();
+	return !!(headers.get('cf-ray') || headers.get('cf-mitigated') || server.includes('cloudflare') || server.includes('akamaighost'));
+}
 
 /**
- * Detect a WAF/CDN challenge page from response headers and optional body.
- * Returns the WAF provider name if matched, null otherwise.
+ * Detect a WAF interception (challenge or block) from response headers, optional body, and status.
+ *
+ * Cloudflare events are commonly served as HTTP 403 (both the JS challenge and access blocks),
+ * so detection is status-aware. A block requires a 4xx plus a block-body signature or a
+ * `cf-mitigated` header — `cf-ray` + 403 alone is NOT treated as a block, since a real app may
+ * legitimately 403 a HEAD request. The interstitial challenge is checked first.
  */
-function detectWafChallenge(headers: Headers, body?: string): string | null {
-	for (const fp of WAF_CHALLENGE_FINGERPRINTS) {
-		if (!fp.matchHeaders(headers)) continue;
-		// If a body matcher is defined, at least one of headers or body must match
-		if (fp.matchBody && body !== undefined && !fp.matchBody(body)) continue;
-		return fp.name;
+function detectWafEvent(headers: Headers, body: string | undefined, status: number): WafEvent | null {
+	const server = (headers.get('server') ?? '').toLowerCase();
+	const cfRay = headers.get('cf-ray');
+	const cfMitigated = headers.get('cf-mitigated');
+	const b = body ?? '';
+
+	if (cfRay || cfMitigated || server.includes('cloudflare')) {
+		if (/just a moment/i.test(b) || cfMitigated === 'challenge') return { provider: 'cloudflare', kind: 'challenge' };
+		if (status >= 400 && (CF_BLOCK_BODY.test(b) || !!cfMitigated)) return { provider: 'cloudflare', kind: 'block' };
 	}
+	if (server.includes('akamaighost')) return { provider: 'akamai', kind: 'block' };
 	return null;
 }
 
@@ -177,7 +178,7 @@ function mergeSecurityHeaders(a: Headers, b: Headers): Headers {
 async function dualFetchHeaders(
 	domain: string,
 	timeoutMs: number,
-): Promise<{ headers: Headers; ok: boolean; status: number } | null> {
+): Promise<{ headers: Headers; ok: boolean; status: number; usable: boolean } | null> {
 	const url = `https://${domain}`;
 	const results = await Promise.allSettled([fetchWithRedirects(url, timeoutMs), fetchWithRedirects(url, timeoutMs)]);
 
@@ -187,18 +188,24 @@ async function dualFetchHeaders(
 
 	if (responses.length === 0) return null;
 
-	// Only use dual-fetch results when at least one response is usable (2xx or 3xx).
-	// If both are 403/405/4xx, return null so the package's GET-fallback handles it.
+	// Only treat 2xx/3xx as usable headers for analysis.
 	const usable = responses.filter((r) => r.ok || (r.status >= 300 && r.status < 400));
-	if (usable.length === 0) return null;
+	if (usable.length === 0) {
+		// Both probes are 4xx. Surface a Cloudflare-flagged response so WAF-event detection can
+		// attribute/short-circuit it; otherwise return null so the package's GET-fallback handles
+		// it as a generic block. usable:false means "don't analyze these headers as the site's".
+		const cf = responses.find((r) => looksLikeWaf(r.headers));
+		if (cf) return { headers: cf.headers, ok: false, status: cf.status, usable: false };
+		return null;
+	}
 
 	if (usable.length === 1) {
-		return { headers: usable[0].headers, ok: usable[0].ok, status: usable[0].status };
+		return { headers: usable[0].headers, ok: usable[0].ok, status: usable[0].status, usable: true };
 	}
 
 	const merged = mergeSecurityHeaders(usable[0].headers, usable[1].headers);
 	const primary = usable[0].ok ? usable[0] : usable[1].ok ? usable[1] : usable[0];
-	return { headers: merged, ok: primary.ok, status: primary.status };
+	return { headers: merged, ok: primary.ok, status: primary.status, usable: true };
 }
 
 /**
@@ -272,19 +279,32 @@ export async function checkHttpSecurity(domain: string): Promise<CheckResult> {
 async function checkHttpSecurityInner(domain: string): Promise<CheckResult> {
 	const dualResult = await dualFetchHeaders(domain, HTTPS_TIMEOUT_MS);
 
-	// WAF/CDN challenge detection — short-circuit before header analysis
+	// WAF/CDN event detection — runs on usable (2xx/3xx) AND Cloudflare-flagged 4xx responses,
+	// short-circuiting before header analysis so a challenge/block page is never mis-read as the site.
 	if (dualResult) {
 		const headersForWaf = dualResult.headers;
-		const needsBody = WAF_CHALLENGE_FINGERPRINTS.some((fp) => fp.matchHeaders(headersForWaf) && fp.matchBody);
-		const body = needsBody ? await fetchBodyForWafDetection(`https://${domain}`, HTTPS_TIMEOUT_MS) : undefined;
-		const wafName = detectWafChallenge(headersForWaf, body);
-		if (wafName) {
+		const body = looksLikeWaf(headersForWaf)
+			? await fetchBodyForWafDetection(`https://${domain}`, HTTPS_TIMEOUT_MS)
+			: undefined;
+		const event = detectWafEvent(headersForWaf, body, dualResult.status);
+		if (event) {
+			const provider = event.provider.charAt(0).toUpperCase() + event.provider.slice(1);
 			const finding = createFinding(
 				'http_security',
-				`${wafName.charAt(0).toUpperCase() + wafName.slice(1)} WAF challenge intercepted`,
+				event.kind === 'block' ? `${provider} WAF blocked external header inspection` : `${provider} WAF challenge intercepted`,
 				'info',
-				`The fetched response appears to be a WAF/CDN challenge page, not the real site. Header analysis is inconclusive.`,
-				{ wafChallenge: wafName, inconclusive: true },
+				event.kind === 'block'
+					? `https://${domain} returned an HTTP ${dualResult.status} ${provider} block page, not the site. Security headers cannot be inspected externally.`
+					: `The fetched response appears to be a ${provider} challenge page, not the real site. Header analysis is inconclusive.`,
+				{
+					wafEvent: event.provider,
+					wafKind: event.kind,
+					// Back-compat: challenges previously carried `wafChallenge` with the provider name.
+					...(event.kind === 'challenge' ? { wafChallenge: event.provider } : {}),
+					httpStatus: dualResult.status,
+					inconclusive: true,
+					missingControl: true,
+				},
 			);
 			const base = buildCheckResult('http_security', [finding]);
 			return { ...base, score: 0, passed: false, checkStatus: 'error' };
@@ -294,7 +314,10 @@ async function checkHttpSecurityInner(domain: string): Promise<CheckResult> {
 	let capturedHeaders: Headers | null = null;
 
 	const capturingFetch: typeof fetch = async (input, init) => {
-		if (dualResult) {
+		// Only feed the dual-fetch headers to the package when they came from a usable (2xx/3xx)
+		// response. A non-event 4xx (usable:false) falls through to the package's GET-fallback,
+		// which surfaces the generic "blocked by security appliance" finding.
+		if (dualResult && dualResult.usable) {
 			capturedHeaders = dualResult.headers;
 			// Synthetic response with the merged headers — the package will
 			// analyze this as if it were the real response.

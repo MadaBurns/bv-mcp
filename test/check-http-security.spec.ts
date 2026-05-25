@@ -417,4 +417,60 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 		);
 		expect(timeoutFinding).toBeDefined();
 	}, 15_000);
+
+	describe('Cloudflare WAF events served as 4xx (cf-403 fingerprint)', () => {
+		// Every probe (dual HEAD, body GET, package GET-fallback) returns the same CF response.
+		function mockCfResponse(status: number, headers: Record<string, string>, body: string) {
+			globalThis.fetch = vi.fn().mockResolvedValue({
+				ok: status >= 200 && status < 300,
+				status,
+				headers: new Headers(headers),
+				text: async () => body,
+			} as unknown as Response);
+		}
+
+		it('attributes a Cloudflare 403 access block (cf-ray + block body) as inconclusive', async () => {
+			mockCfResponse(
+				403,
+				{ 'cf-ray': '91abc1234-SFO', server: 'cloudflare' },
+				'<html><head><title>Attention Required! | Cloudflare</title></head><body>Sorry, you have been blocked</body></html>',
+			);
+			const result = await run();
+			expect(result.checkStatus).toBe('error');
+			const ev = result.findings.find((f) => f.metadata?.wafEvent === 'cloudflare');
+			expect(ev).toBeDefined();
+			expect(ev!.metadata?.wafKind).toBe('block');
+			expect(result.score).toBe(0);
+			expect(result.passed).toBe(false);
+			// No misleading per-header findings and no generic appliance finding.
+			expect(result.findings.some((f) => f.title === 'HTTP check blocked by security appliance')).toBe(false);
+			expect(result.findings.some((f) => f.title.startsWith('No '))).toBe(false);
+		});
+
+		it('detects a Cloudflare event via the cf-mitigated header on a 403', async () => {
+			mockCfResponse(403, { 'cf-ray': '91def5678-LHR', 'cf-mitigated': 'challenge', server: 'cloudflare' }, '<html></html>');
+			const result = await run();
+			expect(result.checkStatus).toBe('error');
+			expect(result.findings.some((f) => f.metadata?.wafEvent === 'cloudflare')).toBe(true);
+		});
+
+		it('detects a Cloudflare JS challenge served as 403 (not only 200)', async () => {
+			mockCfResponse(
+				403,
+				{ 'cf-ray': '91ghi9012-AMS', server: 'cloudflare' },
+				'<html><head><title>Just a moment...</title></head><body></body></html>',
+			);
+			const result = await run();
+			expect(result.checkStatus).toBe('error');
+			const ev = result.findings.find((f) => f.metadata?.wafEvent === 'cloudflare');
+			expect(ev?.metadata?.wafKind).toBe('challenge');
+		});
+
+		it('leaves a non-Cloudflare 403 on the generic appliance path (guard)', async () => {
+			mockCfResponse(403, {}, '');
+			const result = await run();
+			expect(result.findings.some((f) => f.title === 'HTTP check blocked by security appliance')).toBe(true);
+			expect(result.findings.some((f) => f.metadata?.wafEvent === 'cloudflare')).toBe(false);
+		});
+	});
 });
