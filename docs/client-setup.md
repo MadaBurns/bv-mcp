@@ -504,7 +504,12 @@ If you are a developer troubleshooting how different MCP clients handle authenti
 python3 scripts/chaos/chaos-test-clients.py
 ```
 
-This test covers all 9 detected MCP client types and 56 assertions across session management, auth precedence, and transport-specific edge cases.
+This test covers all 9 detected MCP client types across session management, auth precedence, format negotiation, and transport-specific edge cases. With no `BV_API_KEY`, it exercises the public/free-tier path. With a valid API key exported as `BV_API_KEY`, it also covers `?api_key=` authentication, Bearer precedence, authenticated Legacy SSE bootstrap, and batch `scan_domain` behavior.
+
+Expected assertion count:
+
+- Unauthenticated/free-tier run: 58 assertions.
+- Authenticated run with `BV_API_KEY`: 65 assertions.
 
 ## Provider Detection Configuration
 

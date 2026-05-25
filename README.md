@@ -128,14 +128,22 @@ Self-hosted or local deployments without `BV_INFRA_PROBE` still return structure
 
 The server is continuously validated using a **comprehensive chaos test suite** that covers all detected MCP client types:
 
-- **Interactive clients**: `claude_mobile`, `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf` (auto-format: `compact`)
-- **Non-interactive clients**: `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `bv_load_test`, `unknown` (auto-format: `full`)
+- **Interactive clients**: `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf` (auto-format: `compact`)
+- **Non-interactive clients**: `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `unknown` (auto-format: `full`)
 
 The `bv_load_test` class identifies internal load/chaos/tranco-scan traffic so it stays out of real-client analytics segments.
 
-The test suite ensures session stability, authentication precedence, and transport-specific edge cases across Streamable HTTP and Legacy SSE.
+The test suite ensures session stability, authentication precedence, format negotiation, and transport-specific edge cases across Streamable HTTP and Legacy SSE. Without an API key it exercises the public/free-tier path; with a valid key exported as `BV_API_KEY`, it also covers `?api_key=` authentication, Bearer precedence, authenticated SSE bootstrap, and authenticated batch behavior.
 
 Run the chaos tests locally: `python3 scripts/chaos/chaos-test-clients.py`
+
+SSOT guardrails are enforced by focused audit tests:
+
+- Tool counts and public resource copy are derived from the `TOOLS` registry.
+- Domain-required validation is derived from each tool input schema.
+- Scan timeout budgets are resolved from shared runtime config.
+- WASM tool permissions are generated from MCP tool annotations.
+- Public quota copy is checked against runtime quota config.
 
 ---
 
