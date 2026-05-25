@@ -556,6 +556,18 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 			'Investigate the package signals before use. Pin to a known-good version and monitor for updated verdicts.',
 		references: ['https://owasp.org/www-project-top-10-ci-cd-security-risks/'],
 	},
+	REALTIME_THREAT_FEED_HIT: {
+		title: 'Realtime Threat-Feed Match',
+		severity: 'high',
+		explanation:
+			'BlackVeil realtime threat intelligence has matched this domain against a curated intel-gateway feed. This indicates active or recent malicious activity observed across the threat landscape.',
+		impact: 'Domains matching the realtime threat feed may be engaged in phishing, malware distribution, C2 communication, or other active threat campaigns.',
+		adverseConsequences:
+			'Continued operation on a threat-feed matched domain risks automated blocking by security products, email delivery failures, and reputational damage.',
+		recommendation:
+			'Investigate the specific finding detail for context on the threat type. If this is a false positive, use the BlackVeil threat intelligence portal to submit a review request.',
+		references: ['https://blackveilsecurity.com/threat-intelligence'],
+	},
 	ASN_HIGH_RISK: {
 		title: 'High-Risk ASN Detected',
 		severity: 'medium',
@@ -638,6 +650,7 @@ export const DEFAULT_EXPLANATION: ExplanationTemplate = {
 
 export const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
 	package_trust: 'PACKAGE_TRUST',
+	realtime_threat_feed: 'REALTIME_THREAT_FEED',
 	spf: 'SPF',
 	dmarc: 'DMARC',
 	dkim: 'DKIM',

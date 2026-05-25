@@ -539,4 +539,5 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	register_brand_audit_watch: RegisterBrandAuditWatchArgs,
 	delete_brand_audit_watch: DeleteBrandAuditWatchArgs,
 	check_package_trust: PackageTrustArgsSchema,
+	check_realtime_threat_feed: BaseDomainArgs,
 };

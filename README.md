@@ -103,6 +103,7 @@ Transport support:
   analyze_drift         cymru_asn               brand_audit_batch_
   resolve_spf_chain     rdap_lookup               start
                         check_package_trust
+                        check_realtime_threat_feed
   discover_subdomains   check_nsec_             brand_audit_status
   map_compliance          walkability           brand_audit_get_
   simulate_attack_paths check_dnssec_chain        report
