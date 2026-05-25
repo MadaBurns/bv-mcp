@@ -326,7 +326,11 @@ const TOOL_REGISTRY: Record<
 	check_subdomailing: { cacheKey: () => 'subdomailing', execute: (d, _args, ro) => checkSubdomailing(d, buildDnsOptions(ro)) },
 	check_dbl: { cacheKey: () => 'dbl', execute: (d, _args, ro) => checkDbl(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	check_rbl: { cacheKey: () => 'rbl', execute: (d, _args, ro) => checkRbl(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
-	cymru_asn: { cacheKey: () => 'asn', execute: (d, _args, ro) => checkCymruAsn(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
+	cymru_asn: {
+		cacheKey: (_a, ro) => (ro?.reconBinding ? 'asn:recon' : 'asn'),
+		execute: (d, _args, ro) => checkCymruAsn(d, buildDnsOptions(ro), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+		cacheTtlSeconds: 3600,
+	},
 	rdap_lookup: {
 		cacheKey: () => 'rdap',
 		execute: (d, _args, ro) => checkRdapLookup(d, { whoisBinding: ro?.whoisBinding }),
