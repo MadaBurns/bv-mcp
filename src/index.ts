@@ -153,6 +153,16 @@ type BvMcpEnv = {
 	};
 	/** Tier 0 — bv-enterprise (HTTP service binding to tenant-portfolio lookup). */
 	BV_ENTERPRISE?: Fetcher;
+	/**
+	 * Operator-only bv-recon service binding (OSINT / package-trust / bucket-scan).
+	 * Declared ONLY in the private overlay (`.dev/wrangler.deploy.jsonc`) — never in
+	 * public `wrangler.jsonc`. Enforced by
+	 * `test/audits/wrangler-public-no-private-bindings.audit.test.ts`.
+	 * BSL self-hosts leave this undefined; bv-recon-backed tools degrade to no-op.
+	 */
+	BV_RECON?: Fetcher;
+	/** Bearer admin token for bv-recon's adminAuthMiddleware-gated routes. */
+	BV_RECON_KEY?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -491,6 +501,8 @@ app.post('/mcp', async (c) => {
 					certstream: c.env.BV_CERTSTREAM,
 					certstreamAuthToken: certstreamAuthToken(c.env as BvMcpEnv),
 					whoisBinding: c.env.BV_WHOIS,
+					reconBinding: c.env.BV_RECON,
+					reconAuthToken: c.env.BV_RECON_KEY,
 					infraProbe: c.env.BV_INFRA_PROBE,
 					brandAuditDb: c.env.BRAND_AUDIT_DB,
 					brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
@@ -569,6 +581,8 @@ app.post('/mcp', async (c) => {
 		certstream: c.env.BV_CERTSTREAM,
 		certstreamAuthToken: certstreamAuthToken(c.env as BvMcpEnv),
 		whoisBinding: c.env.BV_WHOIS,
+		reconBinding: c.env.BV_RECON,
+		reconAuthToken: c.env.BV_RECON_KEY,
 		infraProbe: c.env.BV_INFRA_PROBE,
 		brandAuditDb: c.env.BRAND_AUDIT_DB,
 		brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
@@ -723,6 +737,8 @@ app.post('/mcp/messages', async (c) => {
 				certstream: c.env.BV_CERTSTREAM,
 				certstreamAuthToken: certstreamAuthToken(c.env as BvMcpEnv),
 				whoisBinding: c.env.BV_WHOIS,
+				reconBinding: c.env.BV_RECON,
+				reconAuthToken: c.env.BV_RECON_KEY,
 				infraProbe: c.env.BV_INFRA_PROBE,
 				brandAuditDb: c.env.BRAND_AUDIT_DB,
 				brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,

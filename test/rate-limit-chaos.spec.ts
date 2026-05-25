@@ -343,6 +343,8 @@ describe('rate-limit chaos tests', () => {
 				'check_nsec_walkability',
 				'check_dnssec_chain',
 				'check_fast_flux',
+				'check_package_trust',
+				'check_realtime_threat_feed',
 			]);
 			const checkTools = Object.entries(FREE_TOOL_DAILY_LIMITS).filter(
 				([name]) => name.startsWith('check_') && !nonStandardCheckTools.has(name),

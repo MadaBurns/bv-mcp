@@ -532,6 +532,42 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 			'Check Spamhaus at https://check.spamhaus.org/. For shared hosting, contact your provider. For dedicated IPs, resolve the abuse issue and request delisting.',
 		references: ['https://www.spamhaus.org/zen/', 'https://www.spamcop.net/'],
 	},
+	PACKAGE_TRUST_MALICIOUS: {
+		title: 'Malicious Package Detected',
+		severity: 'critical',
+		explanation:
+			'BlackVeil package-trust analysis has classified this package as MALICIOUS based on behavioral signals such as postinstall scripts, obfuscated code, or confirmed threat intelligence.',
+		impact: 'Installing or executing this package may result in credential theft, data exfiltration, or persistent compromise of CI/CD pipelines.',
+		adverseConsequences:
+			'Supply-chain attacks via malicious packages can propagate silently through build artifacts and container images, reaching production systems.',
+		recommendation:
+			'Remove the package immediately and audit any environments where it was installed. Rotate credentials that may have been exposed. Pin dependencies to verified versions and enable lockfile integrity checks.',
+		references: [
+			'https://owasp.org/www-project-top-10-ci-cd-security-risks/',
+			'https://slsa.dev/',
+		],
+	},
+	PACKAGE_TRUST_SUSPICIOUS: {
+		title: 'Suspicious Package Detected',
+		severity: 'high',
+		explanation:
+			'BlackVeil package-trust analysis has flagged this package as SUSPICIOUS. It exhibits behaviors that are consistent with malicious intent but lack confirmed threat intelligence.',
+		recommendation:
+			'Investigate the package signals before use. Pin to a known-good version and monitor for updated verdicts.',
+		references: ['https://owasp.org/www-project-top-10-ci-cd-security-risks/'],
+	},
+	REALTIME_THREAT_FEED_HIT: {
+		title: 'Realtime Threat-Feed Match',
+		severity: 'high',
+		explanation:
+			'BlackVeil realtime threat intelligence has matched this domain against a curated intel-gateway feed. This indicates active or recent malicious activity observed across the threat landscape.',
+		impact: 'Domains matching the realtime threat feed may be engaged in phishing, malware distribution, C2 communication, or other active threat campaigns.',
+		adverseConsequences:
+			'Continued operation on a threat-feed matched domain risks automated blocking by security products, email delivery failures, and reputational damage.',
+		recommendation:
+			'Investigate the specific finding detail for context on the threat type. If this is a false positive, use the BlackVeil threat intelligence portal to submit a review request.',
+		references: ['https://blackveilsecurity.com/threat-intelligence'],
+	},
 	ASN_HIGH_RISK: {
 		title: 'High-Risk ASN Detected',
 		severity: 'medium',
@@ -613,6 +649,8 @@ export const DEFAULT_EXPLANATION: ExplanationTemplate = {
 };
 
 export const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
+	package_trust: 'PACKAGE_TRUST',
+	realtime_threat_feed: 'REALTIME_THREAT_FEED',
 	spf: 'SPF',
 	dmarc: 'DMARC',
 	dkim: 'DKIM',
