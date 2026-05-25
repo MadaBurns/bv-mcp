@@ -463,6 +463,14 @@ export const DeleteBrandAuditWatchArgs = z
 	})
 	.passthrough();
 
+export const PackageTrustArgsSchema = z
+	.object({
+		registry: z.string().min(1).max(32),
+		package: z.string().min(1).max(214),
+		version: z.string().min(1).max(64).optional(),
+	})
+	.passthrough();
+
 /**
  * Map of every tool name to its Zod argument schema.
  * Used for runtime validation in tools.ts and for inputSchema generation.
@@ -530,4 +538,5 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	list_brand_audit_watches: ListBrandAuditWatchesArgs,
 	register_brand_audit_watch: RegisterBrandAuditWatchArgs,
 	delete_brand_audit_watch: DeleteBrandAuditWatchArgs,
+	check_package_trust: PackageTrustArgsSchema,
 };
