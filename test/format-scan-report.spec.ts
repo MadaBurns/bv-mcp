@@ -27,7 +27,11 @@ describe('format-scan-report', () => {
 						title: 'Dangling CNAME',
 						severity: 'critical',
 						detail: 'Potential takeover vector.',
-						metadata: { verificationStatus: 'potential', confidence: 'heuristic' },
+						metadata: {
+							verificationStatus: 'potential',
+							confidence: 'heuristic',
+							proofRequired: 'authorized_proof_of_control',
+						},
 					},
 				],
 				summary: '1 issue(s) found. Grade: C+',
@@ -41,6 +45,7 @@ describe('format-scan-report', () => {
 		expect(report).toContain('DNS Security Scan: example.com');
 		expect(report).toContain('Overall Score: 72/100 (C+)');
 		expect(report).toContain('Takeover Verification: potential');
+		expect(report).toContain('Proof Required: authorized proof of control');
 		expect(report).toContain('Confidence: heuristic');
 		expect(report).toContain('Results served from cache');
 	});

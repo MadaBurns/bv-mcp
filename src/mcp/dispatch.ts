@@ -44,6 +44,7 @@ export interface DispatchMcpMethodOptions {
 	authTier?: string;
 	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
+	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
 	infraProbe?: { fetch: typeof fetch };
 	brandAuditDb?: D1Database;
@@ -168,6 +169,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				authTier: options.authTier,
 				keyHash: options.keyHash,
 				certstream: options.certstream,
+				certstreamAuthToken: options.certstreamAuthToken,
 				whoisBinding: options.whoisBinding,
 				infraProbe: options.infraProbe,
 				brandAuditDb: options.brandAuditDb,

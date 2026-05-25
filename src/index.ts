@@ -96,6 +96,7 @@ type BvMcpEnv = {
 	BV_DOH_ENDPOINT?: string;
 	BV_DOH_TOKEN?: string;
 	BV_CERTSTREAM?: Fetcher;
+	BV_CERTSTREAM_ADMIN_KEY?: string;
 	BV_WHOIS?: Fetcher;
 	REQUIRE_AUTH?: string;
 	/** FIND-01: when 'true', the ?api_key= query-param fallback is nulled; requests proceed as free tier. */
@@ -182,6 +183,10 @@ function oauthAvailability(env: Pick<BvMcpEnv, 'ENABLE_OAUTH' | 'OAUTH_SIGNING_S
 	if (env.ENABLE_OAUTH !== 'true') return 'disabled';
 	if (!isValidOAuthSigningSecret(env.OAUTH_SIGNING_SECRET)) return 'misconfigured';
 	return 'ready';
+}
+
+function certstreamAuthToken(env: BvMcpEnv): string | undefined {
+	return env.BV_CERTSTREAM_ADMIN_KEY || env.BV_INTERNAL_DEV_KEY;
 }
 
 function oauthDisabledResponse(): Response {
@@ -484,6 +489,7 @@ app.post('/mcp', async (c) => {
 					secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 					secondaryDohToken: c.env.BV_DOH_TOKEN,
 					certstream: c.env.BV_CERTSTREAM,
+					certstreamAuthToken: certstreamAuthToken(c.env as BvMcpEnv),
 					whoisBinding: c.env.BV_WHOIS,
 					infraProbe: c.env.BV_INFRA_PROBE,
 					brandAuditDb: c.env.BRAND_AUDIT_DB,
@@ -561,6 +567,7 @@ app.post('/mcp', async (c) => {
 		secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 		secondaryDohToken: c.env.BV_DOH_TOKEN,
 		certstream: c.env.BV_CERTSTREAM,
+		certstreamAuthToken: certstreamAuthToken(c.env as BvMcpEnv),
 		whoisBinding: c.env.BV_WHOIS,
 		infraProbe: c.env.BV_INFRA_PROBE,
 		brandAuditDb: c.env.BRAND_AUDIT_DB,
@@ -714,6 +721,7 @@ app.post('/mcp/messages', async (c) => {
 				secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 				secondaryDohToken: c.env.BV_DOH_TOKEN,
 				certstream: c.env.BV_CERTSTREAM,
+				certstreamAuthToken: certstreamAuthToken(c.env as BvMcpEnv),
 				whoisBinding: c.env.BV_WHOIS,
 				infraProbe: c.env.BV_INFRA_PROBE,
 				brandAuditDb: c.env.BRAND_AUDIT_DB,
@@ -978,6 +986,7 @@ export default {
 					whoisBinding: queueEnv.BV_WHOIS,
 					infraProbe: queueEnv.BV_INFRA_PROBE,
 					certstream: queueEnv.BV_CERTSTREAM,
+					certstreamAuthToken: certstreamAuthToken(queueEnv),
 					profileAccumulator: queueEnv.PROFILE_ACCUMULATOR,
 					...buildBrandTierLookups(queueEnv),
 				});

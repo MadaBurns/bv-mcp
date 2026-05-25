@@ -94,6 +94,7 @@ export interface ExecuteMcpRequestOptions {
 	ipEncryptionKey?: string;
 	ipEncryptionKeyVersion?: string;
 	certstream?: { fetch: typeof fetch };
+	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
 	infraProbe?: { fetch: typeof fetch };
 	/** D1 binding for the brand-audit DB. v2.21.2+. */
@@ -818,6 +819,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			clientType: options.clientType,
 			authTier: options.authTier,
 			certstream: options.certstream,
+			certstreamAuthToken: options.certstreamAuthToken,
 			whoisBinding: options.whoisBinding,
 			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,
@@ -907,6 +909,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			clientType: options.clientType,
 			authTier: options.authTier,
 			certstream: options.certstream,
+			certstreamAuthToken: options.certstreamAuthToken,
 			whoisBinding: options.whoisBinding,
 			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,

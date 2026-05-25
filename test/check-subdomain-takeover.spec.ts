@@ -227,7 +227,7 @@ describe('checkSubdomainTakeover', () => {
 		expect(highs.some((f) => f.title.includes('api.example.com'))).toBe(true);
 	});
 
-	it('detects HTTP fingerprint takeover on resolving CNAME (Heroku)', async () => {
+	it('detects HTTP fingerprint takeover signal on resolving CNAME (Heroku)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
@@ -257,15 +257,18 @@ describe('checkSubdomainTakeover', () => {
 		});
 
 		const result = await run('example.com');
-		const critical = result.findings.find((f) => f.severity === 'critical');
-		expect(critical).toBeDefined();
-		expect(critical!.title).toContain('vulnerable to takeover');
-		expect(critical!.title).toContain('Heroku');
-		expect(critical!.detail).toContain('deprovisioned');
-		expect(critical!.metadata?.verificationStatus).toBe('verified');
+		const finding = result.findings.find((f) => f.title.includes('Heroku'));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('high');
+		expect(finding!.title).toContain('possible takeover signal');
+		expect(finding!.detail).toContain('deprovisioned');
+		expect(finding!.detail).toContain('not proof of exploitability');
+		expect(finding!.metadata?.verificationStatus).toBe('potential');
+		expect(finding!.metadata?.evidenceStrength).toBe('provider_deprovisioned_fingerprint');
+		expect(finding!.metadata?.proofRequired).toBe('authorized_proof_of_control');
 	});
 
-	it('detects HTTP fingerprint takeover on resolving CNAME (GitHub Pages)', async () => {
+	it('detects HTTP fingerprint takeover signal on resolving CNAME (GitHub Pages)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
@@ -295,10 +298,11 @@ describe('checkSubdomainTakeover', () => {
 		});
 
 		const result = await run('example.com');
-		const critical = result.findings.find((f) => f.severity === 'critical');
-		expect(critical).toBeDefined();
-		expect(critical!.title).toContain('vulnerable to takeover');
-		expect(critical!.title).toContain('GitHub Pages');
+		const finding = result.findings.find((f) => f.title.includes('GitHub Pages'));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('high');
+		expect(finding!.title).toContain('possible takeover signal');
+		expect(finding!.metadata?.verificationStatus).toBe('potential');
 	});
 
 	it('silently skips HTTP fingerprint probe on timeout/error', async () => {

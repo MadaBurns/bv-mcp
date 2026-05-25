@@ -49,7 +49,7 @@ describe('subdomain-takeover-analysis', () => {
 		expect(findings[0].metadata?.verificationStatus).toBe('potential');
 	});
 
-	it('returns critical finding when CNAME target resolves AND fingerprint matches', async () => {
+	it('returns high finding when CNAME target resolves AND provider fingerprint matches', async () => {
 		const dns = makeDNS({
 			'docs.example.com|CNAME': ['example.github.io.'],
 			'example.github.io|A': ['185.199.108.153'],
@@ -57,9 +57,12 @@ describe('subdomain-takeover-analysis', () => {
 		const fetchFn = fetchReturning("<html><body>There isn't a GitHub Pages site here.</body></html>");
 		const findings = await scanSubdomainForTakeover('example.com', 'docs', dns, fetchFn);
 		expect(findings).toHaveLength(1);
-		expect(findings[0].severity).toBe('critical');
+		expect(findings[0].severity).toBe('high');
 		expect(findings[0].title).toContain('GitHub Pages');
-		expect(findings[0].metadata?.verificationStatus).toBe('verified');
+		expect(findings[0].metadata?.verificationStatus).toBe('potential');
+		expect(findings[0].metadata?.evidenceStrength).toBe('provider_deprovisioned_fingerprint');
+		expect(findings[0].metadata?.proofRequired).toBe('authorized_proof_of_control');
+		expect(findings[0].detail).toContain('not proof of exploitability');
 	});
 
 	it('builds the stable no-takeover info finding', () => {
@@ -203,7 +206,7 @@ describe('subdomain-takeover-analysis', () => {
 				}
 			});
 
-			it('scanSubdomainForTakeover surfaces the TLS-mismatch path as a CRITICAL finding', async () => {
+			it('scanSubdomainForTakeover surfaces the TLS-mismatch path as provider-fingerprint evidence, not proof-of-control', async () => {
 				const dns = makeDNS({
 					'gone.example.com|CNAME': ['old-app.herokuapp.com.'],
 					'old-app.herokuapp.com|A': ['54.243.180.1'], // target resolves; cert is the issue
@@ -213,9 +216,11 @@ describe('subdomain-takeover-analysis', () => {
 				});
 				const findings = await scanSubdomainForTakeover('example.com', 'gone', dns, fetchFn);
 				expect(findings).toHaveLength(1);
-				expect(findings[0].severity).toBe('critical');
+				expect(findings[0].severity).toBe('high');
 				expect(findings[0].title).toContain('TLS');
-				expect(findings[0].metadata?.verificationStatus).toBe('verified');
+				expect(findings[0].metadata?.verificationStatus).toBe('potential');
+				expect(findings[0].metadata?.evidenceStrength).toBe('provider_deprovisioned_fingerprint');
+				expect(findings[0].metadata?.proofRequired).toBe('authorized_proof_of_control');
 			});
 		});
 	});
