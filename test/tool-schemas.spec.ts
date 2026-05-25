@@ -100,11 +100,13 @@ const NON_SCAN_TOOL_NAMES = new Set([
 	'osint_investigate_supply_chain_start',
 	'osint_investigation_status',
 	'osint_investigation_report',
+	'osint_investigate_username_start',
+	'osint_investigate_email_start',
 ]);
 
 describe('tool-schemas metadata', () => {
-	it('exports exactly 72 tools', () => {
-		expect(TOOLS).toHaveLength(72);
+	it('exports exactly 74 tools', () => {
+		expect(TOOLS).toHaveLength(74);
 	});
 
 	it('all tool names are unique', () => {

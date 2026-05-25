@@ -383,6 +383,8 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'osint_investigate_supply_chain_start', arguments: { query: 'example.com' } },
 		{ name: 'osint_investigation_status', arguments: { investigationId: 'i1' } },
 		{ name: 'osint_investigation_report', arguments: { investigationId: 'i1' } },
+		{ name: 'osint_investigate_username_start', arguments: { query: 'alice' } },
+		{ name: 'osint_investigate_email_start', arguments: { query: 'a@b.com' } },
 	];
 }
 
