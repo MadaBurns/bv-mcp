@@ -341,6 +341,14 @@ const TOOL_REGISTRY: Record<
 			),
 		cacheTtlSeconds: 3600,
 	},
+	check_realtime_threat_feed: {
+		cacheKey: () => 'realtime_threat_feed',
+		execute: (d, _args, ro) =>
+			import('../tools/check-realtime-threat-feed').then((m) =>
+				m.checkRealtimeThreatFeed(d, { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+			),
+		cacheTtlSeconds: 3600,
+	},
 	check_nsec_walkability: {
 		cacheKey: () => 'nsec_walkability',
 		execute: (d, _args, ro) => checkNsecWalkability(d, buildDnsOptions(ro)),

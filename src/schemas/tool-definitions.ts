@@ -462,6 +462,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'intelligence',
 		scanIncluded: false,
 	},
+	check_realtime_threat_feed: {
+		description:
+			'Check a domain against BlackVeil real-time threat intelligence (curated intel-gateway feed). Distinct from DNSBL checks. Operator-deploy only; degrades to info when unprovisioned.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
 	check_nsec_walkability: {
 		description:
 			'Assess zone walkability risk by analyzing NSEC3PARAM configuration. Detects plain NSEC zones, weak NSEC3 parameters, and opt-out flags.',

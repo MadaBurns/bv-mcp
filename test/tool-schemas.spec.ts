@@ -91,11 +91,12 @@ const NON_SCAN_TOOL_NAMES = new Set([
 	'register_brand_audit_watch',
 	'delete_brand_audit_watch',
 	'check_package_trust',
+	'check_realtime_threat_feed',
 ]);
 
 describe('tool-schemas metadata', () => {
-	it('exports exactly 63 tools', () => {
-		expect(TOOLS).toHaveLength(63);
+	it('exports exactly 64 tools', () => {
+		expect(TOOLS).toHaveLength(64);
 	});
 
 	it('all tool names are unique', () => {
