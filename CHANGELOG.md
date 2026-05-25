@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-05-26
+
+### Added
+
+- **bv-recon integration (operator-only).** 12 new MCP tools backed by a new fail-soft `BV_RECON` service binding (absent by default → tools return `unprovisioned`; public/free surface unchanged). Tool count 62 → 74.
+  - Sync: `check_package_trust` (npm/PyPI supply-chain verdict), `check_realtime_threat_feed` (intel-gateway feed).
+  - Dedup-by-enrichment (additive, fail-soft) of `cymru_asn`, `check_lookalikes`, `check_fast_flux` with bv-recon threat intel.
+  - Async start/poll: `scan_buckets_start`/`_status`/`_findings`; `osint_investigate_domain_start`/`_infrastructure_start`/`_supply_chain_start` with shared `osint_investigation_status`/`_report`.
+  - Tier-gated people-OSINT: `osint_investigate_username_start`/`_email_start` (owner/enterprise only, deny-by-default, governance audit).
+
+### Fixed
+
+- Corrected `brand_audit_get_report` indentation in `tool-definitions.ts` (resolved a tool-sync hook false positive).
+
 ## [3.1.1] - 2026-05-25
 
 ### Fixed
