@@ -9,7 +9,7 @@
 import { queryDnsRecords, queryTxtRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { isValidIPv4, reverseIPv4 } from '../lib/ip-utils';
-import { callReconScan } from '../lib/recon-binding';
+import { callReconScan, isReconHit } from '../lib/recon-binding';
 import type { ReconBinding } from '../lib/recon-binding';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
@@ -203,14 +203,14 @@ export async function checkCymruAsn(
 	// Recon enrichment: additive-only, fail-soft
 	if (reconOptions.reconBinding) {
 		const reconResult = await callReconScan(reconOptions.reconBinding, reconOptions.reconAuthToken, 'MALICIOUS_ASN', { domain });
-		const hit = reconResult?.findings.find((f) => ['medium', 'high', 'critical'].includes(f.severity));
+		const hit = reconResult && isReconHit(reconResult.status);
 		if (hit) {
 			findings.push(
 				createFinding(
 					CATEGORY,
 					'Malicious-ASN intel corroboration',
 					'medium',
-					hit.detail ?? hit.title ?? `Threat intelligence corroborates malicious-ASN signal for ${domain}.`,
+					reconResult.details ?? `Threat intelligence corroborates malicious-ASN signal for ${domain}.`,
 					{ domain, reconEnriched: true },
 				),
 			);

@@ -8,15 +8,23 @@
  */
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
-import { callReconScan, type ReconBinding } from '../lib/recon-binding';
+import { callReconScan, isReconHit, type ReconBinding } from '../lib/recon-binding';
 
 const CATEGORY = 'realtime_threat_feed' as CheckCategory;
-
-const ALLOWED_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 
 export interface RealtimeThreatFeedOptions {
 	reconBinding?: ReconBinding;
 	reconAuthToken?: string;
+}
+
+/** Map a DNSCheckResult status to a finding severity for threat-feed hits. */
+function hitSeverity(status: string | undefined): 'critical' | 'high' | 'medium' {
+	const s = (status ?? '').toLowerCase();
+	if (s === 'critical') return 'critical';
+	if (s === 'high') return 'high';
+	if (s === 'medium') return 'medium';
+	// warning / fail / other hit statuses → high
+	return 'high';
 }
 
 /**
@@ -46,19 +54,27 @@ export async function checkRealtimeThreatFeed(domain: string, options: RealtimeT
 		return buildCheckResult(CATEGORY, findings) as CheckResult;
 	}
 
-	if (scan.findings.length === 0) {
+	if (isReconHit(scan.status)) {
+		const sev = hitSeverity(scan.status);
 		findings.push(
-			createFinding(CATEGORY, 'No realtime threat-feed hits', 'info', `${domain} has no matches in the BlackVeil realtime threat intelligence feed.`, {
-				domain,
-			}),
+			createFinding(
+				CATEGORY,
+				'Realtime threat-feed hit',
+				sev,
+				scan.details ?? 'Threat intelligence flagged this domain.',
+				{ domain, status: scan.status, ...scan.metadata },
+			),
 		);
 	} else {
-		for (const f of scan.findings) {
-			const sev = (ALLOWED_SEVERITIES as readonly string[]).includes(f.severity) ? (f.severity as (typeof ALLOWED_SEVERITIES)[number]) : 'info';
-			findings.push(
-				createFinding(CATEGORY, f.title ?? 'Threat-feed hit', sev, f.detail ?? f.title ?? 'Realtime threat-feed match.', { domain }),
-			);
-		}
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'No realtime threat-feed hits',
+				'info',
+				scan.details ?? 'No active threat-feed matches.',
+				{ domain },
+			),
+		);
 	}
 
 	return buildCheckResult(CATEGORY, findings) as CheckResult;
