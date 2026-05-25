@@ -682,6 +682,22 @@ const TOOL_REGISTRY: Record<
 			),
 		cacheTtlSeconds: 0,
 	},
+	osint_investigate_username_start: {
+		cacheKey: () => `__nocache__:osint_investigate_username_start:${crypto.randomUUID()}`,
+		execute: (_d, a, ro) =>
+			import('../tools/osint-people').then((m) =>
+				m.osintInvestigateUsernameStart(String(a.query), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken, authTier: ro?.authTier }),
+			),
+		cacheTtlSeconds: 0,
+	},
+	osint_investigate_email_start: {
+		cacheKey: () => `__nocache__:osint_investigate_email_start:${crypto.randomUUID()}`,
+		execute: (_d, a, ro) =>
+			import('../tools/osint-people').then((m) =>
+				m.osintInvestigateEmailStart(String(a.query), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken, authTier: ro?.authTier }),
+			),
+		cacheTtlSeconds: 0,
+	},
 	osint_investigation_status: {
 		cacheKey: (a) => `osintstatus:${String(a.investigationId)}`,
 		execute: (_d, a, ro) =>
