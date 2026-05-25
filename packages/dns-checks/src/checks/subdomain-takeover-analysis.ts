@@ -8,8 +8,9 @@
  *   1. DNS-NXDOMAIN: CNAME present, target does not resolve.
  *   2. Provider-deprovisioned fingerprint: CNAME resolves but provider returns
  *      a well-known "resource gone" body (NoSuchBucket, BlobNotFound,
- *      ResourceNotFound, etc.) — meaning the underlying bucket/endpoint can
- *      be re-claimed by another tenant.
+ *      ResourceNotFound, etc.). This is strong dangling-service evidence, but
+ *      exploitability still requires authorized provider-specific proof of
+ *      control before reporting a confirmed takeover.
  *
  * Copyright (c) 2023-2026 BlackVeil Security Ltd.
  * Licensed under BSL 1.1
@@ -18,6 +19,11 @@
 import type { DNSQueryFunction, FetchFunction, Finding } from '../types';
 import { createFinding } from '../check-utils';
 
+/**
+ * `verified` is reserved for authorized proof-of-control or equivalent
+ * explicit control evidence. Provider 404/body/TLS fingerprints are evidence
+ * of a dangling service, not proof that another tenant can claim traffic.
+ */
 export type TakeoverVerificationStatus = 'potential' | 'verified' | 'not_exploitable';
 
 /** Default HTTPS timeout for fingerprint probing (ms) */
@@ -239,10 +245,12 @@ export function createTakeoverFinding(
 	detail: string,
 	verificationStatus: TakeoverVerificationStatus,
 	evidence: string[],
+	metadata: Record<string, unknown> = {},
 ): Finding {
 	return createFinding('subdomain_takeover', title, severity, detail, {
 		verificationStatus,
 		evidence,
+		...metadata,
 	});
 }
 
@@ -347,7 +355,7 @@ export async function probeHttpFingerprint(fqdn: string, cname: string, fetchFn:
 /**
  * Sentinel display name returned by {@link probeHttpFingerprint} when the
  * upstream cert doesn't cover the SNI hostname. Callers treat any non-null
- * string as a CRITICAL takeover finding; this label flags the underlying
+ * string as provider deprovision evidence; this label flags the underlying
  * signal type for the operator-visible finding text.
  */
 export const TLS_SNI_MISMATCH_DISPLAY = 'TLS-SNI mismatch (deprovision signal)';
@@ -429,11 +437,16 @@ export async function scanSubdomainForTakeover(
 				if (vulnerableService) {
 					findings.push(
 						createTakeoverFinding(
-							`Subdomain vulnerable to takeover (${vulnerableService})`,
-							'critical',
-							`Subdomain ${fqdn} points to ${cname}, which resolves but returns a ${vulnerableService} deprovisioned fingerprint. This is a verified takeover signal and should be confirmed with authorized proof-of-control testing.`,
-							'verified',
+							`Subdomain possible takeover signal (${vulnerableService})`,
+							'high',
+							`Subdomain ${fqdn} points to ${cname}, which resolves but returns a ${vulnerableService} deprovisioned fingerprint. This is strong provider evidence of a dangling service, but it is not proof of exploitability. Confirm with authorized proof-of-control testing before reporting a confirmed takeover.`,
+							'potential',
 							['cname_resolves', 'provider_deprovisioned_fingerprint'],
+							{
+								evidenceStrength: 'provider_deprovisioned_fingerprint',
+								proofRequired: 'authorized_proof_of_control',
+								severityRationale: 'provider_deprovisioned_signal',
+							},
 						),
 					);
 				}
