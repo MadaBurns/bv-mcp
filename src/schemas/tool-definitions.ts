@@ -32,6 +32,9 @@ import {
 	RegisterBrandAuditWatchArgs,
 	DeleteBrandAuditWatchArgs,
 	PackageTrustArgsSchema,
+	ScanBucketsStartArgs,
+	ScanBucketsStatusArgs,
+	ScanBucketsFindingsArgs,
 	TOOL_SCHEMA_MAP,
 } from './tool-args';
 
@@ -573,6 +576,28 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: false,
 		mutating: true,
 		destructive: true,
+	},
+	scan_buckets_start: {
+		description:
+			'Start an async cloud-bucket discovery scan for a target domain. Operator-deploy only; degrades to info when unprovisioned. Returns a scanId immediately — poll progress with scan_buckets_status and retrieve results with scan_buckets_findings.',
+		schema: ScanBucketsStartArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+		mutating: true,
+	},
+	scan_buckets_status: {
+		description:
+			'Poll the status of a cloud-bucket discovery scan by scanId. Operator-deploy only; degrades to info when unprovisioned. Returns scan status (running | completed | failed) and progress metadata.',
+		schema: ScanBucketsStatusArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	scan_buckets_findings: {
+		description:
+			'Retrieve findings from a completed cloud-bucket discovery scan. Operator-deploy only; degrades to info when unprovisioned. Optionally scoped to a specific scanId; omit to retrieve the most recent findings.',
+		schema: ScanBucketsFindingsArgs,
+		group: 'intelligence',
+		scanIncluded: false,
 	},
 };
 
