@@ -7,7 +7,7 @@
 
 import { queryDnsRecords, queryMxRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
-import { reverseIPv4, isPrivateIP } from '../lib/ip-utils';
+import { reverseIPv4, isPrivateIP, isValidIPv4 } from '../lib/ip-utils';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 
@@ -107,16 +107,39 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 		);
 	}
 
-	// Deduplicate and limit
-	ips = [...new Set(ips)].slice(0, MAX_MX_IPS);
+	// Deduplicate, validate, and limit. Malformed resolver data should not be
+	// used to construct DNSBL query names or reported as clean.
+	const allIps = [...new Set(ips)];
+	const invalidIps = allIps.filter((ip) => !isValidIPv4(ip));
+	ips = allIps.filter(isValidIPv4).slice(0, MAX_MX_IPS);
+
+	if (ips.length === 0) {
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'No valid public IPv4 addresses found',
+				'info',
+				`Resolved records for ${domain} did not contain any valid IPv4 addresses that can be checked against RBLs.`,
+				{ domain, invalidIps },
+			),
+		);
+		return buildCheckResult(CATEGORY, findings) as CheckResult;
+	}
+
+	if (invalidIps.length > 0) {
+		findings.push(
+			createFinding(CATEGORY, 'Malformed IP addresses ignored', 'info', `Ignored malformed IP address value(s): ${invalidIps.join(', ')}.`, {
+				domain,
+				invalidIps,
+			}),
+		);
+	}
 
 	// Step 2: Check each IP against all RBL zones
 	let totalListings = 0;
+	let checkedPublicIps = 0;
 
 	for (const ip of ips) {
-		// Only check IPv4
-		if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) continue;
-
 		if (isPrivateIP(ip)) {
 			findings.push(
 				createFinding(CATEGORY, `Private IP detected: ${ip}`, 'info', `MX resolves to private IP ${ip} — RBL checks skipped for this address.`, {
@@ -127,6 +150,7 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 			continue;
 		}
 
+		checkedPublicIps++;
 		const reversed = reverseIPv4(ip);
 		let ipListingCount = 0;
 		let hasSpamhausListing = false;
@@ -222,7 +246,14 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 		}
 	}
 
-	if (totalListings === 0 && !findings.some((f) => f.title.includes('Listed'))) {
+	if (checkedPublicIps === 0) {
+		findings.push(
+			createFinding(CATEGORY, 'No public IPv4 addresses checked', 'info', `No public IPv4 addresses were available for ${domain}; RBL checks were skipped.`, {
+				domain,
+				ips,
+			}),
+		);
+	} else if (totalListings === 0 && !findings.some((f) => f.title.includes('Listed'))) {
 		findings.push(
 			createFinding(CATEGORY, 'IP reputation clean — not listed on any RBL', 'info', `All checked IPs for ${domain} are clean on ${RBL_ZONES.length} RBLs.`, {
 				ips,

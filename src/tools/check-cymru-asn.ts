@@ -8,7 +8,7 @@
 
 import { queryDnsRecords, queryTxtRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
-import { reverseIPv4 } from '../lib/ip-utils';
+import { isValidIPv4, reverseIPv4 } from '../lib/ip-utils';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 
@@ -90,16 +90,39 @@ export async function checkCymruAsn(domain: string, dnsOptions?: QueryDnsOptions
 		return buildCheckResult(CATEGORY, findings) as CheckResult;
 	}
 
-	// Deduplicate IPs
-	ips = [...new Set(ips)];
+	// Deduplicate and keep only well-formed IPv4 addresses. DoH schemas verify
+	// shape, not semantic A-record contents, so malformed resolver data must not
+	// be used to construct Cymru query names.
+	const allIps = [...new Set(ips)];
+	const invalidIps = allIps.filter((ip) => !isValidIPv4(ip));
+	ips = allIps.filter(isValidIPv4);
+
+	if (ips.length === 0) {
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'No valid IPv4 A records found',
+				'info',
+				`Resolved A records for ${domain} did not contain any valid IPv4 addresses. ASN lookup skipped.`,
+				{ domain, invalidIps },
+			),
+		);
+		return buildCheckResult(CATEGORY, findings) as CheckResult;
+	}
+
+	if (invalidIps.length > 0) {
+		findings.push(
+			createFinding(CATEGORY, 'Malformed A records ignored', 'info', `Ignored malformed A record value(s): ${invalidIps.join(', ')}.`, {
+				domain,
+				invalidIps,
+			}),
+		);
+	}
 
 	// Step 2: Query Cymru origin for each IP
 	const seenAsns = new Set<number>();
 
 	for (const ip of ips) {
-		// Only handle IPv4
-		if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) continue;
-
 		const reversed = reverseIPv4(ip);
 		const originName = `${reversed}.origin.asn.cymru.com`;
 

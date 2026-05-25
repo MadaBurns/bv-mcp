@@ -74,6 +74,8 @@ export interface ExecuteMcpRequestOptions {
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
 	cacheTtlSeconds?: number;
+	scanTimeoutMs?: number;
+	perCheckTimeoutMs?: number;
 	/** Custom secondary DoH endpoint URL (bv-dns). */
 	secondaryDohEndpoint?: string;
 	/** Auth token for custom secondary DoH. */
@@ -808,6 +810,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			existingSessionId: options.existingSessionId,
 			scoringConfig: options.scoringConfig,
 			cacheTtlSeconds: options.cacheTtlSeconds,
+			scanTimeoutMs: options.scanTimeoutMs,
+			perCheckTimeoutMs: options.perCheckTimeoutMs,
 			secondaryDohEndpoint: options.secondaryDohEndpoint,
 			secondaryDohToken: options.secondaryDohToken,
 			country: options.country,
@@ -895,6 +899,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			existingSessionId: options.existingSessionId,
 			scoringConfig: options.scoringConfig,
 			cacheTtlSeconds: options.cacheTtlSeconds,
+			scanTimeoutMs: options.scanTimeoutMs,
+			perCheckTimeoutMs: options.perCheckTimeoutMs,
 			secondaryDohEndpoint: options.secondaryDohEndpoint,
 			secondaryDohToken: options.secondaryDohToken,
 			country: options.country,

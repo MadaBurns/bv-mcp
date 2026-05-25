@@ -133,6 +133,14 @@ export function handleToolsList(): { tools: WireTool[] } {
 	};
 }
 
+const DOMAIN_REQUIRED_TOOLS = new Set(
+	TOOLS.filter((tool) => Array.isArray(tool.inputSchema.required) && tool.inputSchema.required.includes('domain')).map((tool) => tool.name),
+);
+
+export function toolRequiresDomain(name: string): boolean {
+	return DOMAIN_REQUIRED_TOOLS.has(name);
+}
+
 /** Wrapper for dynamic check_mx import (required for test mock isolation) */
 interface ToolRuntimeOptions {
 	providerSignaturesUrl?: string;
@@ -146,6 +154,10 @@ interface ToolRuntimeOptions {
 	resultCapture?: (result: CheckResult) => void;
 	/** Override cache TTL in seconds for scan results. Threaded to scanDomain. */
 	cacheTtlSeconds?: number;
+	/** Scan-level wall-clock budget in milliseconds. Threaded to scanDomain. */
+	scanTimeoutMs?: number;
+	/** Per-check wall-clock budget in milliseconds. Threaded to scanDomain. */
+	perCheckTimeoutMs?: number;
 	/** Custom secondary DoH resolver config (bv-dns). Threaded to dnsOptions for individual checks. */
 	secondaryDoh?: SecondaryDohConfig;
 	country?: string;
@@ -556,13 +568,13 @@ const TOOL_REGISTRY: Record<
 	register_brand_audit_watch: {
 		// Mutating tool — random UUID keeps every call a cache-miss.
 		cacheKey: () => `__nocache__:register_brand_audit_watch:${crypto.randomUUID()}`,
-		execute: async (_domain, args, ro) => {
+		execute: async (domain, args, ro) => {
 			const db = ro?.brandAuditDb;
 			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
 			if (!db) return brandAuditWatchUnprovisioned();
 			return registerBrandAuditWatch(
 				{
-					domain: args.domain as string | undefined,
+					domain,
 					interval: args.interval as 'daily' | 'weekly' | 'monthly' | undefined,
 					webhook_url: args.webhook_url as string | undefined,
 				},
@@ -648,24 +660,7 @@ export async function handleToolsCall(
 	let logDetails: unknown;
 	try {
 		const validatedArgs = validateToolArgs(name, args);
-		// Extract and validate domain for tools that need it
-		// (skip for explain_finding, get_benchmark, get_provider_insights which don't require a domain)
-		const DOMAIN_OPTIONAL_TOOLS = new Set([
-			'explain_finding',
-			'get_benchmark',
-			'get_provider_insights',
-			'batch_scan',
-			'compare_domains',
-			'check_root_server_set',
-			// v2.21+ brand-audit tools — take `domains[]`, `auditId`, or `watchId` instead of a required `domain`.
-			'brand_audit_batch_start',
-			'brand_audit_status',
-			'brand_audit_get_report',
-			'list_brand_audit_watches',
-			'register_brand_audit_watch',
-			'delete_brand_audit_watch',
-		]);
-		if (!DOMAIN_OPTIONAL_TOOLS.has(name)) {
+		if (toolRequiresDomain(name)) {
 			domain = extractAndValidateDomain(validatedArgs);
 		}
 		// `validDomain` is guaranteed to be a string for all branches that use it
@@ -836,6 +831,8 @@ export async function handleToolsCall(
 							scoringConfig: runtimeOptions?.scoringConfig,
 							waitUntil: runtimeOptions?.waitUntil,
 							profileAccumulator: runtimeOptions?.profileAccumulator,
+							scanTimeoutMs: runtimeOptions?.scanTimeoutMs,
+							perCheckTimeoutMs: runtimeOptions?.perCheckTimeoutMs,
 							secondaryDoh: runtimeOptions?.secondaryDoh,
 							infraProbe: runtimeOptions?.infraProbe,
 						},
@@ -861,6 +858,8 @@ export async function handleToolsCall(
 							scoringConfig: runtimeOptions?.scoringConfig,
 							waitUntil: runtimeOptions?.waitUntil,
 							profileAccumulator: runtimeOptions?.profileAccumulator,
+							scanTimeoutMs: runtimeOptions?.scanTimeoutMs,
+							perCheckTimeoutMs: runtimeOptions?.perCheckTimeoutMs,
 							secondaryDoh: runtimeOptions?.secondaryDoh,
 							infraProbe: runtimeOptions?.infraProbe,
 						},

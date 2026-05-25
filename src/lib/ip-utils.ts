@@ -1,6 +1,22 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
+ * Validate a dotted-decimal IPv4 address.
+ * Requires exactly four decimal octets in the 0-255 range with no surrounding
+ * whitespace or shorthand forms.
+ */
+export function isValidIPv4(ip: string): boolean {
+	const parts = ip.split('.');
+	if (parts.length !== 4) return false;
+
+	return parts.every((part) => {
+		if (!/^\d{1,3}$/.test(part)) return false;
+		const value = Number(part);
+		return Number.isInteger(value) && value >= 0 && value <= 255;
+	});
+}
+
+/**
  * Reverse the octets of an IPv4 address.
  * Used for DNSBL and PTR queries (e.g., "192.0.2.1" to "1.2.0.192").
  */
@@ -51,8 +67,8 @@ export function isPrivateIP(ip: string): boolean {
 	}
 
 	// IPv4 check
+	if (!isValidIPv4(ip)) return false;
 	const parts = ip.split('.').map(Number);
-	if (parts.length !== 4) return false;
 
 	const [a, b] = parts;
 	// 10.0.0.0/8

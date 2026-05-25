@@ -14,6 +14,7 @@
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
 import { queryDnsRecords, queryMxRecords, queryPtrRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
+import { isValidIPv4 } from '../lib/ip-utils';
 import {
 	analyzePtrRecords,
 	analyzeDnsblResults,
@@ -83,8 +84,8 @@ export async function checkMxReputation(domain: string, dnsOptions?: QueryDnsOpt
 
 		try {
 			// Resolve A records for MX host
-			const ips = await queryDnsRecords(mxHost, 'A', dnsOptions);
-			if (ips.length === 0) {
+			const rawIps = await queryDnsRecords(mxHost, 'A', dnsOptions);
+			if (rawIps.length === 0) {
 				findings.push(
 					createFinding(
 						'mx_reputation',
@@ -97,9 +98,23 @@ export async function checkMxReputation(domain: string, dnsOptions?: QueryDnsOpt
 				continue;
 			}
 
-			// Check the first IP of each MX host — validate IPv4 format
+			const invalidIps = [...new Set(rawIps.filter((ip) => !isValidIPv4(ip)))];
+			const ips = [...new Set(rawIps.filter(isValidIPv4))];
+			if (ips.length === 0) {
+				findings.push(
+					createFinding(
+						'mx_reputation',
+						`No valid IPv4 address for MX host ${mxHost}`,
+						'medium',
+						`MX host ${mxHost} returned A record data, but none of the values were valid IPv4 addresses. Reputation checks were skipped for this host.`,
+						{ mxHost, invalidIps },
+					),
+				);
+				continue;
+			}
+
+			// Check the first valid IPv4 address of each MX host.
 			const ip = ips[0];
-			if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) continue;
 
 			// PTR check
 			try {
