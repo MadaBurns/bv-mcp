@@ -473,4 +473,26 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 			expect(result.findings.some((f) => f.metadata?.wafEvent === 'cloudflare')).toBe(false);
 		});
 	});
+
+	describe('inconclusive fetches set checkStatus (so scoring excludes them, not zeroes)', () => {
+		it('a connection timeout sets checkStatus=timeout', async () => {
+			globalThis.fetch = vi.fn().mockRejectedValue(new Error('The operation timed out'));
+			const result = await run();
+			expect(result.checkStatus).toBe('timeout');
+			expect(result.score).toBe(0); // local category score is 0, but the engine excludes it from the overall
+		});
+
+		it('a generic connection failure sets checkStatus=error', async () => {
+			globalThis.fetch = vi.fn().mockRejectedValue(new Error('network unreachable'));
+			const result = await run();
+			expect(result.checkStatus).toBe('error');
+		});
+
+		it('a 403 block with no usable GET sets checkStatus=error (inconclusive, not a real 0)', async () => {
+			globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 403, headers: new Headers() });
+			const result = await run();
+			expect(result.checkStatus).toBe('error');
+			expect(result.findings.some((f) => f.title === 'HTTP check blocked by security appliance')).toBe(true);
+		});
+	});
 });

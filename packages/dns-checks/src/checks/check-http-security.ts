@@ -101,6 +101,11 @@ export async function checkHTTPSecurity(
 ): Promise<CheckResult> {
 	const timeoutMs = options?.timeout ?? HTTPS_TIMEOUT_MS;
 	const findings: Finding[] = [];
+	// Set when the headers could not actually be evaluated (inconclusive execution, not a real
+	// header gap). The scoring engine treats checkStatus 'timeout'/'error' as a transient failure
+	// and EXCLUDES the category from scoring (renormalized) rather than zeroing it — so a flaky
+	// fetch can't make the overall score fluctuate between a real value and 0.
+	let inconclusive: 'timeout' | 'error' | undefined;
 
 	try {
 		let response = await fetchFn(`https://${domain}`, {
@@ -117,6 +122,7 @@ export async function checkHTTPSecurity(
 			// 200-299: analyze headers normally
 			findings.push(...analyzeSecurityHeaders(response.headers));
 		} else if (response.status === 0 || response.status >= 500) {
+			inconclusive = 'error';
 			findings.push(
 				createFinding(
 					'http_security',
@@ -135,6 +141,7 @@ export async function checkHTTPSecurity(
 				const followed = await followRedirects(getResponse, fetchFn, timeoutMs);
 				findings.push(...analyzeSecurityHeaders(followed.headers));
 			} else {
+				inconclusive = 'error';
 				findings.push(
 					createFinding(
 						'http_security',
@@ -146,6 +153,7 @@ export async function checkHTTPSecurity(
 				);
 			}
 		} else if (response.status === 401) {
+			inconclusive = 'error';
 			findings.push(
 				createFinding(
 					'http_security',
@@ -157,6 +165,7 @@ export async function checkHTTPSecurity(
 			);
 		} else {
 			// Other 4xx (404, 429, etc.) — blocked or rejected
+			inconclusive = 'error';
 			findings.push(
 				createFinding(
 					'http_security',
@@ -168,10 +177,12 @@ export async function checkHTTPSecurity(
 			);
 		}
 	} catch (err) {
-		const message =
-			err instanceof Error && (err.message.includes('timeout') || err.message.includes('abort'))
-				? 'Connection timed out'
-				: 'Connection failed';
+		// AbortSignal.timeout throws a DOMException named 'TimeoutError' (message "The operation
+		// timed out"); also match abort/timeout phrasings from other runtimes.
+		const e = err as { name?: string; message?: string };
+		const isTimeout = e?.name === 'TimeoutError' || /timed?\s*out|abort|timeout/i.test(e?.message ?? '');
+		inconclusive = isTimeout ? 'timeout' : 'error';
+		const message = isTimeout ? 'Connection timed out' : 'Connection failed';
 		findings.push(
 			createFinding(
 				'http_security',
@@ -183,5 +194,6 @@ export async function checkHTTPSecurity(
 		);
 	}
 
-	return buildCheckResult('http_security', findings);
+	const result = buildCheckResult('http_security', findings);
+	return inconclusive ? { ...result, checkStatus: inconclusive } : result;
 }

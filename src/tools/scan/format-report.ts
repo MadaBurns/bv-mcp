@@ -96,6 +96,13 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 			}
 		}
 	}
+	// Transient/inconclusive checks (checkStatus timeout/error) are excluded from the score by the
+	// engine — surface them as n/a (not a misleading 0) so the report reflects "could not measure".
+	for (const check of result.checks) {
+		if ((check.checkStatus === 'timeout' || check.checkStatus === 'error') && !notApplicableCategories.includes(check.category)) {
+			notApplicableCategories.push(check.category);
+		}
+	}
 
 	return {
 		domain: result.domain,

@@ -133,6 +133,19 @@ function buildGenericContext(
 		}
 	}
 
+	// --- Build transientFailures map ---
+	// A check whose execution failed (checkStatus 'timeout'/'error') is INCONCLUSIVE — we
+	// couldn't measure it. That is distinct from a genuinely-missing control (missingControl).
+	// Exclude inconclusive categories from the weighted score (renormalized over the rest)
+	// rather than scoring them 0, so a transient fetch/DNS failure doesn't make the overall
+	// score fluctuate. See generic.ts: transientFailures keys are skipped in the tier partition.
+	const transientFailures: Record<string, boolean> = {};
+	for (const result of results) {
+		if (result.checkStatus === 'timeout' || result.checkStatus === 'error') {
+			transientFailures[result.category] = true;
+		}
+	}
+
 	// --- Build hardeningPassed map ---
 	// The original engine iterates ALL hardening categories from CATEGORY_TIERS (not just
 	// those with results). It uses hardeningCount = total hardening categories.
@@ -208,6 +221,7 @@ function buildGenericContext(
 		tierMap: { ...CATEGORY_TIERS },
 		weights,
 		missingControls,
+		transientFailures,
 		hardeningPassed,
 		criticalCategories: [...criticalCategories],
 		emailBonusEligible,
@@ -257,10 +271,21 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 		};
 	}
 
-	// Populate category scores from actual results
+	// Populate category scores from actual results. Transient (checkStatus 'timeout'/'error')
+	// checks are INCONCLUSIVE — exclude them from the category-score output (shown as n/a, never
+	// a misleading 0) and from the finding counts; buildGenericContext also excludes them from
+	// the weighted overall score via transientFailures.
+	const transientCategories = new Set<CheckCategory>();
 	for (const result of results) {
+		if (result.checkStatus === 'timeout' || result.checkStatus === 'error') {
+			transientCategories.add(result.category);
+			continue;
+		}
 		categoryScores[result.category] = result.score;
 		allFindings.push(...result.findings);
+	}
+	for (const cat of transientCategories) {
+		delete (categoryScores as Partial<Record<CheckCategory, number>>)[cat];
 	}
 
 	// Build the generic context and delegate to the generic engine
