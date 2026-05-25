@@ -651,6 +651,8 @@ export const DEFAULT_EXPLANATION: ExplanationTemplate = {
 export const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
 	package_trust: 'PACKAGE_TRUST',
 	realtime_threat_feed: 'REALTIME_THREAT_FEED',
+	bucket_scan: 'BUCKET_SCAN',
+	osint_investigation: 'OSINT_INVESTIGATION',
 	spf: 'SPF',
 	dmarc: 'DMARC',
 	dkim: 'DKIM',

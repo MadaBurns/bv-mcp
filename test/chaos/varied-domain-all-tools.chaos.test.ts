@@ -375,6 +375,14 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'delete_brand_audit_watch', arguments: { watchId: 'chaos-watch-1' } },
 		{ name: 'check_realtime_threat_feed', arguments: domainArgs() },
 		{ name: 'check_package_trust', arguments: { registry: 'npm', package: 'left-pad', format: 'compact' } },
+		{ name: 'scan_buckets_start', arguments: { target: 'example.com' } },
+		{ name: 'scan_buckets_status', arguments: { scanId: 's1' } },
+		{ name: 'scan_buckets_findings', arguments: {} },
+		{ name: 'osint_investigate_domain_start', arguments: { query: 'example.com' } },
+		{ name: 'osint_investigate_infrastructure_start', arguments: { query: 'example.com' } },
+		{ name: 'osint_investigate_supply_chain_start', arguments: { query: 'example.com' } },
+		{ name: 'osint_investigation_status', arguments: { investigationId: 'i1' } },
+		{ name: 'osint_investigation_report', arguments: { investigationId: 'i1' } },
 	];
 }
 

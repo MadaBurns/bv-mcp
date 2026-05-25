@@ -471,6 +471,28 @@ export const PackageTrustArgsSchema = z
 	})
 	.passthrough();
 
+export const ScanBucketsStartArgs = z
+	.object({
+		target: z.string().min(1).max(253),
+		providers: z.array(z.string().max(32)).max(8).optional(),
+	})
+	.strict();
+
+export const ScanBucketsStatusArgs = z
+	.object({
+		scanId: z.string().min(1).max(128),
+	})
+	.strict();
+
+export const ScanBucketsFindingsArgs = z
+	.object({
+		scanId: z.string().min(1).max(128).optional(),
+	})
+	.strict();
+
+export const OsintInvestigateArgs = z.object({ query: z.string().min(1).max(253) }).strict();
+export const OsintInvestigationIdArgs = z.object({ investigationId: z.string().min(1).max(128) }).strict();
+
 /**
  * Map of every tool name to its Zod argument schema.
  * Used for runtime validation in tools.ts and for inputSchema generation.
@@ -540,4 +562,12 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	delete_brand_audit_watch: DeleteBrandAuditWatchArgs,
 	check_package_trust: PackageTrustArgsSchema,
 	check_realtime_threat_feed: BaseDomainArgs,
+	scan_buckets_start: ScanBucketsStartArgs,
+	scan_buckets_status: ScanBucketsStatusArgs,
+	scan_buckets_findings: ScanBucketsFindingsArgs,
+	osint_investigate_domain_start: OsintInvestigateArgs,
+	osint_investigate_infrastructure_start: OsintInvestigateArgs,
+	osint_investigate_supply_chain_start: OsintInvestigateArgs,
+	osint_investigation_status: OsintInvestigationIdArgs,
+	osint_investigation_report: OsintInvestigationIdArgs,
 };
