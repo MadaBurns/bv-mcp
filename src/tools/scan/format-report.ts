@@ -214,6 +214,13 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 			if (verificationStatus) {
 				lines.push(`    Takeover Verification: ${sanitizeOutputText(verificationStatus, 80)}`);
 			}
+			const proofRequired =
+				finding.category === 'subdomain_takeover' && finding.metadata?.proofRequired
+					? String(finding.metadata.proofRequired)
+					: undefined;
+			if (proofRequired) {
+				lines.push(`    Proof Required: ${sanitizeOutputText(proofRequired, 120)}`);
+			}
 			const confidence = finding.metadata?.confidence ? String(finding.metadata.confidence) : undefined;
 			if (confidence) {
 				lines.push(`    Confidence: ${sanitizeOutputText(confidence, 80)}`);

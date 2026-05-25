@@ -52,6 +52,72 @@ describe('discoverSubdomains', () => {
 		return discoverSubdomains(domain);
 	}
 
+	it('uses the certstream service binding with bearer auth when a token is provided', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const certstreamFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			expect(url).toBe('https://certstream/enumerate?domain=example.com');
+			expect(init?.headers).toMatchObject({ Authorization: 'Bearer shared-internal-key' });
+			return new Response(
+				JSON.stringify({
+					domain: 'example.com',
+					subdomains: ['api.example.com', 'www.example.com'],
+					certificateCount: 2,
+					timedOut: false,
+					cached: false,
+					source: 'certspotter',
+				}),
+				{ status: 200, headers: { 'Content-Type': 'application/json' } },
+			);
+		});
+		globalThis.fetch = vi.fn(async () => {
+			throw new Error('crt.sh fallback should not be used');
+		});
+
+		const result = await discoverSubdomains('example.com', { fetch: certstreamFetch as unknown as typeof fetch }, 'shared-internal-key');
+
+		expect(result.totalSubdomains).toBe(2);
+		expect(result.totalCertificates).toBe(2);
+		expect(result.subdomains.map((s) => s.subdomain)).toEqual(['api.example.com', 'www.example.com']);
+		expect(result.sourceUnavailable).toBeUndefined();
+	});
+
+	it('falls back to certstream /sans when /enumerate is transiently unavailable', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const certstreamFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			expect(init?.headers).toMatchObject({ Authorization: 'Bearer shared-internal-key' });
+			if (url === 'https://certstream/enumerate?domain=example.com') {
+				return new Response(JSON.stringify({ error: 'upstream transient' }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (url === 'https://certstream/sans?domain=example.com') {
+				return new Response(
+					JSON.stringify({
+						domain: 'example.com',
+						names: ['www.example.com', '*.example.com', '*.attacker.invalid', 'example.com', 'api.example.com.'],
+						certificateCount: 5,
+						timedOut: false,
+						truncated: false,
+						cached: false,
+					}),
+					{ status: 200, headers: { 'Content-Type': 'application/json' } },
+				);
+			}
+			throw new Error(`unexpected certstream URL: ${url}`);
+		});
+		globalThis.fetch = vi.fn(async () => {
+			throw new Error('crt.sh fallback should not be used');
+		});
+
+		const result = await discoverSubdomains('example.com', { fetch: certstreamFetch as unknown as typeof fetch }, 'shared-internal-key');
+
+		expect(certstreamFetch).toHaveBeenCalledTimes(2);
+		expect(result.totalSubdomains).toBe(3);
+		expect(result.totalCertificates).toBe(5);
+		expect(result.subdomains.map((s) => s.subdomain)).toEqual(['www.example.com', '*.example.com', 'api.example.com']);
+		expect(result.sourceUnavailable).toBeUndefined();
+	});
+
 	it('should parse crt.sh response and extract subdomains', async () => {
 		mockCrtSh(mockCtResponse);
 		const result = await run();

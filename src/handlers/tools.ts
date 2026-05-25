@@ -165,6 +165,7 @@ interface ToolRuntimeOptions {
 	authTier?: string;
 	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
+	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
 	infraProbe?: { fetch: typeof fetch };
 	/** D1 binding for the brand-audit DB. Used by brand_audit_{batch_start,status,get_report}. Undefined if the operator hasn't provisioned brand-audit-v1 yet (see docs/provisioning/brand-audit-bindings.md). */
@@ -1030,7 +1031,7 @@ export async function handleToolsCall(
 					return { content: buildToolContent(formatSpfChain(result, effectiveFormat), result, effectiveFormat) };
 				}
 				case 'discover_subdomains': {
-					const result = await discoverSubdomains(validDomain, runtimeOptions?.certstream);
+					const result = await discoverSubdomains(validDomain, runtimeOptions?.certstream, runtimeOptions?.certstreamAuthToken);
 					logResult = `${result.totalSubdomains} subdomains`;
 					logDetails = { totalSubdomains: result.totalSubdomains, issues: result.issues.length };
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
