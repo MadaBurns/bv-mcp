@@ -629,6 +629,37 @@ const TOOL_REGISTRY: Record<
 		},
 		cacheTtlSeconds: 0,
 	},
+	scan_buckets_start: {
+		// Async producer — not cacheable. Each invocation enqueues fresh work.
+		cacheKey: () => `__nocache__:scan_buckets_start:${crypto.randomUUID()}`,
+		execute: (_d, args, ro) =>
+			import('../tools/scan-buckets').then((m) =>
+				m.scanBucketsStart(
+					{ target: String(args.target), providers: Array.isArray(args.providers) ? (args.providers as string[]) : undefined },
+					{ reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken },
+				),
+			),
+		cacheTtlSeconds: 0,
+	},
+	scan_buckets_status: {
+		cacheKey: (a) => `bucketstatus:${String(a.scanId)}`,
+		execute: (_d, a, ro) =>
+			import('../tools/scan-buckets').then((m) =>
+				m.scanBucketsStatus({ scanId: String(a.scanId) }, { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+			),
+		cacheTtlSeconds: 15,
+	},
+	scan_buckets_findings: {
+		cacheKey: (a) => `bucketfindings:${String(a.scanId ?? 'all')}`,
+		execute: (_d, a, ro) =>
+			import('../tools/scan-buckets').then((m) =>
+				m.scanBucketsFindings(
+					{ scanId: a.scanId ? String(a.scanId) : undefined },
+					{ reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken },
+				),
+			),
+		cacheTtlSeconds: 30,
+	},
 };
 
 /** Known interactive LLM client types that benefit from compact output. */
