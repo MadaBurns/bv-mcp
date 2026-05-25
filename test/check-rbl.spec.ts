@@ -282,15 +282,18 @@ describe('checkRbl', () => {
 	});
 
 	it('should not report clean reputation for malformed IPv4-like MX A data', async () => {
-		const queriedUrls: string[] = [];
+		const queriedNames: string[] = [];
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-			queriedUrls.push(url);
+			const parsed = new URL(url);
+			const name = parsed.searchParams.get('name') ?? '';
+			const type = parsed.searchParams.get('type') ?? '';
+			queriedNames.push(`${name}:${type}`);
 
-			if (url.includes('name=example.com') && url.includes('type=MX')) {
+			if (name === 'example.com' && type === 'MX') {
 				return Promise.resolve(mxResponse('example.com', [{ priority: 10, exchange: 'mail.example.com' }]));
 			}
-			if (url.includes('name=mail.example.com') && url.includes('type=A')) {
+			if (name === 'mail.example.com' && type === 'A') {
 				return Promise.resolve(aResponse('mail.example.com', ['999.0.2.1']));
 			}
 			return Promise.resolve(emptyResponse('unknown'));
@@ -298,7 +301,7 @@ describe('checkRbl', () => {
 
 		const result = await run();
 
-		expect(queriedUrls.some((url) => url.includes('zen.spamhaus.org'))).toBe(false);
+		expect(queriedNames).toEqual(['example.com:MX', 'mail.example.com:A']);
 		expect(result.findings.find((f) => f.title === 'No valid public IPv4 addresses found')).toBeDefined();
 		expect(result.findings.find((f) => f.title.includes('clean'))).toBeUndefined();
 	});

@@ -254,7 +254,7 @@ describe('checkCymruAsn', () => {
 
 		const result = await run();
 
-		expect(queriedNames.some((name) => name.includes('origin.asn.cymru.com'))).toBe(false);
+		expect(queriedNames).toEqual(['example.com']);
 		const finding = result.findings.find((f) => f.title === 'No valid IPv4 A records found');
 		expect(finding).toBeDefined();
 		expect(finding!.metadata?.invalidIps).toEqual(['999.0.2.1']);
