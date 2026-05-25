@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-05-25
+
+### Fixed
+
+- **Scoring no longer fluctuates on transient check failures.** A check whose execution failed (`checkStatus` timeout/error — e.g. a cold-start HTTP fetch timeout) is now **excluded from the weighted score (renormalized) and surfaced as n/a** in `notApplicableCategories`, instead of being forced to `0` and dragging the overall score. Genuinely-missing controls (`missingControl`) still count. Eliminates the 0↔real score swing observed on cold-start scans (e.g. blackveilsecurity.com HTTP Security). (#213)
+
 ## [3.1.0] - 2026-05-25
 
 ### Changed
