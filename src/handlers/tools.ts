@@ -167,6 +167,10 @@ interface ToolRuntimeOptions {
 	certstream?: { fetch: typeof fetch };
 	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
+	/** Operator-only bv-recon service binding. Fail-soft; absent on BSL self-hosts. */
+	reconBinding?: { fetch: typeof fetch };
+	/** Bearer admin token forwarded to bv-recon. */
+	reconAuthToken?: string;
 	infraProbe?: { fetch: typeof fetch };
 	/** D1 binding for the brand-audit DB. Used by brand_audit_{batch_start,status,get_report}. Undefined if the operator hasn't provisioned brand-audit-v1 yet (see docs/provisioning/brand-audit-bindings.md). */
 	brandAuditDb?: D1Database;
@@ -301,7 +305,11 @@ const TOOL_REGISTRY: Record<
 	check_caa: { cacheKey: () => 'caa', execute: (d, _args, ro) => checkCaa(d, buildDnsOptions(ro)) },
 	check_bimi: { cacheKey: () => 'bimi', execute: (d, _args, ro) => checkBimi(d, buildDnsOptions(ro)) },
 	check_tlsrpt: { cacheKey: () => 'tlsrpt', execute: (d, _args, ro) => checkTlsrpt(d, buildDnsOptions(ro)) },
-	check_lookalikes: { cacheKey: () => 'lookalikes', execute: (d) => checkLookalikes(d), cacheTtlSeconds: 3600 },
+	check_lookalikes: {
+		cacheKey: (_a, ro) => (ro?.reconBinding ? 'lookalikes:recon' : 'lookalikes'),
+		execute: (d, _args, ro) => checkLookalikes(d, { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+		cacheTtlSeconds: 3600,
+	},
 	check_shadow_domains: {
 		cacheKey: () => 'shadow_domains',
 		execute: (d, _args, ro) => checkShadowDomains(d, buildDnsOptions(ro)),
@@ -322,10 +330,31 @@ const TOOL_REGISTRY: Record<
 	check_subdomailing: { cacheKey: () => 'subdomailing', execute: (d, _args, ro) => checkSubdomailing(d, buildDnsOptions(ro)) },
 	check_dbl: { cacheKey: () => 'dbl', execute: (d, _args, ro) => checkDbl(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	check_rbl: { cacheKey: () => 'rbl', execute: (d, _args, ro) => checkRbl(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
-	cymru_asn: { cacheKey: () => 'asn', execute: (d, _args, ro) => checkCymruAsn(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
+	cymru_asn: {
+		cacheKey: (_a, ro) => (ro?.reconBinding ? 'asn:recon' : 'asn'),
+		execute: (d, _args, ro) => checkCymruAsn(d, buildDnsOptions(ro), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+		cacheTtlSeconds: 3600,
+	},
 	rdap_lookup: {
 		cacheKey: () => 'rdap',
 		execute: (d, _args, ro) => checkRdapLookup(d, { whoisBinding: ro?.whoisBinding }),
+		cacheTtlSeconds: 3600,
+	},
+	check_package_trust: {
+		cacheKey: (args) => `pkgtrust:${String(args.registry)}:${String(args.package)}:${String(args.version ?? '')}`,
+		execute: async (_d, args, ro) =>
+			(await import('../tools/check-package-trust')).checkPackageTrust(
+				{ registry: String(args.registry), package: String(args.package), version: args.version ? String(args.version) : undefined },
+				{ reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken },
+			),
+		cacheTtlSeconds: 3600,
+	},
+	check_realtime_threat_feed: {
+		cacheKey: () => 'realtime_threat_feed',
+		execute: (d, _args, ro) =>
+			import('../tools/check-realtime-threat-feed').then((m) =>
+				m.checkRealtimeThreatFeed(d, { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+			),
 		cacheTtlSeconds: 3600,
 	},
 	check_nsec_walkability: {
@@ -335,8 +364,12 @@ const TOOL_REGISTRY: Record<
 	},
 	check_dnssec_chain: { cacheKey: () => 'dnssec_chain', execute: (d, _args, ro) => checkDnssecChain(d, buildDnsOptions(ro)) },
 	check_fast_flux: {
-		cacheKey: () => 'fast_flux',
-		execute: (d, args, ro) => checkFastFlux(d, (args.rounds as number | undefined) ?? 3, buildDnsOptions(ro)),
+		cacheKey: (_a, ro) => (ro?.reconBinding ? 'fast_flux:recon' : 'fast_flux'),
+		execute: (d, args, ro) =>
+			checkFastFlux(d, (args.rounds as number | undefined) ?? 3, buildDnsOptions(ro), undefined, {
+				reconBinding: ro?.reconBinding,
+				reconAuthToken: ro?.reconAuthToken,
+			}),
 	},
 	check_subdomain_takeover: {
 		cacheKey: (args) => {

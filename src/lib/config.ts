@@ -268,6 +268,8 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_rbl: 5,
 	cymru_asn: 5,
 	rdap_lookup: 5,
+	check_package_trust: 5,
+	check_realtime_threat_feed: 5,
 	check_nsec_walkability: 10,
 	check_dnssec_chain: 10,
 	check_fast_flux: 3,
