@@ -17,17 +17,16 @@ const RECON_TIMEOUT_MS = 8_000;
 
 export type ReconScanType = 'MALICIOUS_ASN' | 'CT_LOOKALIKE' | 'ATTACKER_INFRASTRUCTURE' | 'REALTIME_THREAT_FEED';
 
-/** Minimal, defensive shape of a bv-recon /osint/scan response. Extra fields ignored.
- *  `findings` is REQUIRED (not defaulted) so bodies lacking it fail validation. */
+/** Defensive shape of a bv-recon /osint/check DNSCheckResult response.
+ *  All fields optional/lenient so unknown extra fields never fail validation. */
 const ReconScanResponseSchema = z
 	.object({
-		findings: z.array(
-			z.object({
-				severity: z.string(),
-				title: z.string().optional(),
-				detail: z.string().optional(),
-			}),
-		),
+		checkType: z.string().optional(),
+		status: z.string().optional(),
+		score: z.number().nullable().optional(),
+		details: z.string().optional(),
+		records: z.array(z.unknown()).optional(),
+		metadata: z.record(z.string(), z.unknown()).optional(),
 	})
 	.passthrough();
 export type ReconScanResult = z.infer<typeof ReconScanResponseSchema>;
@@ -35,7 +34,7 @@ export type ReconScanResult = z.infer<typeof ReconScanResponseSchema>;
 /** Minimal shape of a bv-recon /packages/check response. */
 const PackageTrustResponseSchema = z
 	.object({
-		verdict: z.enum(['MALICIOUS', 'SUSPICIOUS', 'LOW_RISK', 'SAFE', 'UNKNOWN']),
+		verdict: z.string().optional(),
 		confidence: z.string().optional(),
 		signals: z
 			.array(z.object({ id: z.string().optional(), severity: z.string(), detail: z.string() }))
@@ -43,6 +42,14 @@ const PackageTrustResponseSchema = z
 	})
 	.passthrough();
 export type PackageTrustResult = z.infer<typeof PackageTrustResponseSchema>;
+
+/**
+ * Returns true when a DNSCheckResult status indicates a threat signal.
+ * Benign statuses ('info', 'pass', 'ok', 'low', undefined) return false.
+ */
+export function isReconHit(status: string | undefined): boolean {
+	return !!status && ['warning', 'fail', 'critical', 'high', 'medium'].includes(status.toLowerCase());
+}
 
 function composeSignal(caller?: AbortSignal): AbortSignal {
 	const t = AbortSignal.timeout(RECON_TIMEOUT_MS);
@@ -62,13 +69,20 @@ export async function callReconScan(
 		if (target.domain) qs.set('domain', target.domain);
 		if (target.ip) qs.set('ip', target.ip);
 		if (target.asn != null) qs.set('asn', String(target.asn));
-		const resp = await binding.fetch(`https://bv-recon/osint/scan?${qs.toString()}`, {
+		const resp = await binding.fetch(`https://bv-recon/osint/check?${qs.toString()}`, {
 			method: 'GET',
 			headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
 			signal: composeSignal(signal),
 		});
 		if (!resp.ok) return null;
-		const parsed = ReconScanResponseSchema.safeParse(await resp.json());
+		const bodyText = await resp.text();
+		let body: unknown = null;
+		try {
+			body = JSON.parse(bodyText);
+		} catch {
+			body = null;
+		}
+		const parsed = ReconScanResponseSchema.safeParse(body);
 		return parsed.success ? parsed.data : null;
 	} catch {
 		return null;

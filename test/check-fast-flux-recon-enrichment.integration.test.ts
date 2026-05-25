@@ -51,9 +51,15 @@ function buildStableFetchMock(domain: string) {
 // Recon binding mock helper
 // ---------------------------------------------------------------------------
 
-function makeReconBinding(findings: Array<{ severity: string; title?: string; detail?: string }>) {
+function makeReconHitBinding(detail: string) {
 	return {
-		fetch: vi.fn(async () => new Response(JSON.stringify({ findings }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+		fetch: vi.fn(async () => new Response(JSON.stringify({ checkType: 'ATTACKER_INFRASTRUCTURE', status: 'warning', details: detail }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+	};
+}
+
+function makeReconBenignBinding() {
+	return {
+		fetch: vi.fn(async () => new Response(JSON.stringify({ checkType: 'ATTACKER_INFRASTRUCTURE', status: 'info', details: 'nothing serious' }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
 	};
 }
 
@@ -72,10 +78,10 @@ describe('checkFastFlux recon enrichment', () => {
 		expect(enriched).toHaveLength(0);
 	});
 
-	it('enriched: adds corroboration finding when recon returns a high-severity hit', async () => {
+	it('enriched: adds corroboration finding when recon returns a hit status', async () => {
 		buildStableFetchMock('example.com');
 
-		const reconBinding = makeReconBinding([{ severity: 'high', title: 'Attacker infra', detail: 'Infrastructure linked to known threat actor.' }]);
+		const reconBinding = makeReconHitBinding('Infrastructure linked to known threat actor.');
 
 		const { checkFastFlux } = await import('../src/tools/check-fast-flux');
 		const result = await checkFastFlux('example.com', 3, undefined, 0, { reconBinding, reconAuthToken: 'tok' });
@@ -87,10 +93,10 @@ describe('checkFastFlux recon enrichment', () => {
 		expect(enriched[0].detail).toContain('Infrastructure linked to known threat actor.');
 	});
 
-	it('enriched: no corroboration finding when recon returns only info-severity hits', async () => {
+	it('enriched: no corroboration finding when recon returns a benign status', async () => {
 		buildStableFetchMock('example.com');
 
-		const reconBinding = makeReconBinding([{ severity: 'info', title: 'Low priority note', detail: 'nothing serious' }]);
+		const reconBinding = makeReconBenignBinding();
 
 		const { checkFastFlux } = await import('../src/tools/check-fast-flux');
 		const result = await checkFastFlux('example.com', 3, undefined, 0, { reconBinding, reconAuthToken: 'tok' });

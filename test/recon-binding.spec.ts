@@ -24,10 +24,10 @@ describe('callReconScan', () => {
 
 	it('forwards type + target as query params and a bearer token', async () => {
 		const { callReconScan } = await fresh();
-		const binding = bindingReturning({ findings: [] });
+		const binding = bindingReturning({ checkType: 'CT_LOOKALIKE', status: 'info', details: 'ok' });
 		await callReconScan(binding, 'secret-tok', 'CT_LOOKALIKE', { domain: 'example.com' });
 		const [url, init] = binding.fetch.mock.calls[0];
-		expect(String(url)).toContain('/osint/scan?type=CT_LOOKALIKE');
+		expect(String(url)).toContain('/osint/check?type=CT_LOOKALIKE');
 		expect(String(url)).toContain('domain=example.com');
 		expect((init as RequestInit).headers).toMatchObject({ Authorization: 'Bearer secret-tok' });
 	});
@@ -39,17 +39,18 @@ describe('callReconScan', () => {
 		expect(out).toBeNull();
 	});
 
-	it('returns null when the body fails schema validation', async () => {
+	it('returns null when the body is not an object (non-parseable shape)', async () => {
 		const { callReconScan } = await fresh();
-		const binding = bindingReturning({ unexpected: true });
+		// A JSON array is not an object — Zod .object() rejects it
+		const binding = { fetch: vi.fn(async () => new Response(JSON.stringify([1, 2, 3]), { status: 200, headers: { 'Content-Type': 'application/json' } })) };
 		const out = await callReconScan(binding, 'tok', 'MALICIOUS_ASN', { domain: 'x.com' });
 		expect(out).toBeNull();
 	});
 
-	it('parses a valid scan body', async () => {
+	it('parses a valid DNSCheckResult body', async () => {
 		const { callReconScan } = await fresh();
-		const binding = bindingReturning({ findings: [{ severity: 'high', title: 'Malicious ASN', detail: 'AS9009' }] });
+		const binding = bindingReturning({ checkType: 'REALTIME_THREAT_FEED', status: 'info', details: 'Threat intelligence lookup returned status 404.', records: [], metadata: { domain: 'wikipedia.org', breachesFound: [] } });
 		const out = await callReconScan(binding, 'tok', 'MALICIOUS_ASN', { domain: 'x.com' });
-		expect(out?.findings[0]?.severity).toBe('high');
+		expect(out?.status).toBe('info');
 	});
 });
