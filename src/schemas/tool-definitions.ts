@@ -629,6 +629,22 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: false,
 		mutating: true,
 	},
+	osint_investigate_username_start: {
+		description:
+			'Start an async OSINT investigation for a username (cross-platform presence, breach correlation). Owner/enterprise tier only — people-centric OSINT is restricted to prevent misuse. Returns an investigationId immediately — poll with osint_investigation_status and retrieve results with osint_investigation_report.',
+		schema: OsintInvestigateArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+		mutating: true,
+	},
+	osint_investigate_email_start: {
+		description:
+			'Start an async OSINT investigation for an email address (breach exposure, account correlation). Owner/enterprise tier only — people-centric OSINT is restricted to prevent misuse. Returns an investigationId immediately — poll with osint_investigation_status and retrieve results with osint_investigation_report.',
+		schema: OsintInvestigateArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+		mutating: true,
+	},
 	osint_investigation_status: {
 		description:
 			'Poll the status of an OSINT investigation by investigationId. Operator-deploy only; degrades to info when unprovisioned. Returns current status (running | completed | failed) and progress metadata.',
