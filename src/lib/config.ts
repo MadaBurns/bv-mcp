@@ -284,6 +284,9 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	list_brand_audit_watches: 0,
 	register_brand_audit_watch: 0,
 	delete_brand_audit_watch: 0,
+	scan_buckets_start: 5,
+	scan_buckets_status: 25,
+	scan_buckets_findings: 25,
 };
 
 /** Free-tier daily cap on cache-bypassing (force_refresh) requests. Far below the
