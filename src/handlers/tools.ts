@@ -364,8 +364,12 @@ const TOOL_REGISTRY: Record<
 	},
 	check_dnssec_chain: { cacheKey: () => 'dnssec_chain', execute: (d, _args, ro) => checkDnssecChain(d, buildDnsOptions(ro)) },
 	check_fast_flux: {
-		cacheKey: () => 'fast_flux',
-		execute: (d, args, ro) => checkFastFlux(d, (args.rounds as number | undefined) ?? 3, buildDnsOptions(ro)),
+		cacheKey: (_a, ro) => (ro?.reconBinding ? 'fast_flux:recon' : 'fast_flux'),
+		execute: (d, args, ro) =>
+			checkFastFlux(d, (args.rounds as number | undefined) ?? 3, buildDnsOptions(ro), undefined, {
+				reconBinding: ro?.reconBinding,
+				reconAuthToken: ro?.reconAuthToken,
+			}),
 	},
 	check_subdomain_takeover: {
 		cacheKey: (args) => {
