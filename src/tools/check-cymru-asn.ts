@@ -9,6 +9,8 @@
 import { queryDnsRecords, queryTxtRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { isValidIPv4, reverseIPv4 } from '../lib/ip-utils';
+import { callReconScan } from '../lib/recon-binding';
+import type { ReconBinding } from '../lib/recon-binding';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 
@@ -70,7 +72,11 @@ function parseOrgTxt(txt: string): string | null {
  * @param dnsOptions - Optional DNS query options
  * @returns CheckResult with ASN findings
  */
-export async function checkCymruAsn(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
+export async function checkCymruAsn(
+	domain: string,
+	dnsOptions?: QueryDnsOptions,
+	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string } = {},
+): Promise<CheckResult> {
 	const findings: ReturnType<typeof createFinding>[] = [];
 
 	// Step 1: Resolve domain A records
@@ -192,6 +198,23 @@ export async function checkCymruAsn(domain: string, dnsOptions?: QueryDnsOptions
 				{ ip, asn: origin.asn, prefix: origin.prefix, cc: origin.cc, registry: origin.registry, allocated: origin.allocated, orgName },
 			),
 		);
+	}
+
+	// Recon enrichment: additive-only, fail-soft
+	if (reconOptions.reconBinding) {
+		const reconResult = await callReconScan(reconOptions.reconBinding, reconOptions.reconAuthToken, 'MALICIOUS_ASN', { domain });
+		const hit = reconResult?.findings.find((f) => ['medium', 'high', 'critical'].includes(f.severity));
+		if (hit) {
+			findings.push(
+				createFinding(
+					CATEGORY,
+					'Malicious-ASN intel corroboration',
+					'medium',
+					hit.detail ?? hit.title ?? `Threat intelligence corroborates malicious-ASN signal for ${domain}.`,
+					{ domain, reconEnriched: true },
+				),
+			);
+		}
 	}
 
 	return buildCheckResult(CATEGORY, findings) as CheckResult;

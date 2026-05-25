@@ -9,6 +9,8 @@
 
 import { queryDnsRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
+import { callReconScan } from '../lib/recon-binding';
+import type { ReconBinding } from '../lib/recon-binding';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { generateLookalikes } from './lookalike-analysis';
@@ -213,9 +215,12 @@ async function probeWithAdaptiveBatching(permutations: string[]): Promise<Promis
  * Generates domain permutations and checks for active registrations using adaptive batching.
  * Filters out false positives from wildcard DNS on parent domains and null MX records.
  */
-export async function checkLookalikes(domain: string): Promise<CheckResult> {
+export async function checkLookalikes(
+	domain: string,
+	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string } = {},
+): Promise<CheckResult> {
 	return Promise.race([
-		checkLookalikesCore(domain),
+		checkLookalikesCore(domain, reconOptions),
 		new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Lookalike check timed out')), LOOKALIKE_TIMEOUT_MS)),
 	]).catch(() => {
 		const result = buildCheckResult('lookalikes', [
@@ -232,7 +237,10 @@ export async function checkLookalikes(domain: string): Promise<CheckResult> {
 	});
 }
 
-async function checkLookalikesCore(domain: string): Promise<CheckResult> {
+async function checkLookalikesCore(
+	domain: string,
+	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string } = {},
+): Promise<CheckResult> {
 	const findings: Finding[] = [];
 	const permutations = generateLookalikes(domain);
 
@@ -370,6 +378,23 @@ async function checkLookalikesCore(domain: string): Promise<CheckResult> {
 				`Checked ${permutations.length} domain permutations of ${domain}. No active registrations with DNS or mail infrastructure detected.`,
 			),
 		);
+	}
+
+	// Recon enrichment: additive-only, fail-soft
+	if (reconOptions.reconBinding) {
+		const reconResult = await callReconScan(reconOptions.reconBinding, reconOptions.reconAuthToken, 'CT_LOOKALIKE', { domain });
+		const hit = reconResult?.findings.find((f) => ['medium', 'high', 'critical'].includes(f.severity));
+		if (hit) {
+			findings.push(
+				createFinding(
+					'lookalikes',
+					'CT-observed lookalike corroboration',
+					'medium',
+					hit.detail ?? hit.title ?? `Threat intelligence corroborates CT-observed lookalike signal for ${domain}.`,
+					{ domain, reconEnriched: true },
+				),
+			);
+		}
 	}
 
 	return buildCheckResult('lookalikes', findings);

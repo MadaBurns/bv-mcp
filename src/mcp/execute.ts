@@ -96,6 +96,10 @@ export interface ExecuteMcpRequestOptions {
 	certstream?: { fetch: typeof fetch };
 	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
+	/** Operator-only bv-recon service binding. Fail-soft; absent on BSL self-hosts. */
+	reconBinding?: { fetch: typeof fetch };
+	/** Bearer admin token forwarded to bv-recon. */
+	reconAuthToken?: string;
 	infraProbe?: { fetch: typeof fetch };
 	/** D1 binding for the brand-audit DB. v2.21.2+. */
 	brandAuditDb?: D1Database;
@@ -821,6 +825,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			certstream: options.certstream,
 			certstreamAuthToken: options.certstreamAuthToken,
 			whoisBinding: options.whoisBinding,
+			reconBinding: options.reconBinding,
+			reconAuthToken: options.reconAuthToken,
 			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,
@@ -911,6 +917,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			certstream: options.certstream,
 			certstreamAuthToken: options.certstreamAuthToken,
 			whoisBinding: options.whoisBinding,
+			reconBinding: options.reconBinding,
+			reconAuthToken: options.reconAuthToken,
 			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,
