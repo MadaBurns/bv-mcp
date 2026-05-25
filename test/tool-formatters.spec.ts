@@ -32,6 +32,32 @@ describe('tool-formatters', () => {
 		expect(text).toContain('Adverse Consequences:');
 	});
 
+	it('formatCheckResult renders takeover proof requirements when exploitability is not proven', () => {
+		const result: CheckResult = {
+			category: 'subdomain_takeover',
+			passed: false,
+			score: 75,
+			findings: [
+				{
+					category: 'subdomain_takeover',
+					title: 'Subdomain possible takeover signal (Azure Front Door)',
+					severity: 'high',
+					detail: 'Provider deprovisioned fingerprint observed; this is not proof of exploitability.',
+					metadata: {
+						verificationStatus: 'potential',
+						confidence: 'heuristic',
+						proofRequired: 'authorized_proof_of_control',
+					},
+				},
+			],
+		};
+
+		const text = formatCheckResult(result);
+		expect(text).toContain('Takeover Verification: potential');
+		expect(text).toContain('Proof Required: authorized proof of control');
+		expect(text).toContain('Confidence: heuristic');
+	});
+
 	it('formatCheckResult compact mode omits impact narratives and uses single-line findings', () => {
 		const result: CheckResult = {
 			category: 'spf',
