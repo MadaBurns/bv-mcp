@@ -75,14 +75,7 @@ export async function callReconScan(
 			signal: composeSignal(signal),
 		});
 		if (!resp.ok) return null;
-		const bodyText = await resp.text();
-		let body: unknown = null;
-		try {
-			body = JSON.parse(bodyText);
-		} catch {
-			body = null;
-		}
-		const parsed = ReconScanResponseSchema.safeParse(body);
+		const parsed = ReconScanResponseSchema.safeParse(await resp.json().catch(() => null));
 		return parsed.success ? parsed.data : null;
 	} catch {
 		return null;
