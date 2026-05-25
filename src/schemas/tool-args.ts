@@ -490,6 +490,9 @@ export const ScanBucketsFindingsArgs = z
 	})
 	.strict();
 
+export const OsintInvestigateArgs = z.object({ query: z.string().min(1).max(253) }).strict();
+export const OsintInvestigationIdArgs = z.object({ investigationId: z.string().min(1).max(128) }).strict();
+
 /**
  * Map of every tool name to its Zod argument schema.
  * Used for runtime validation in tools.ts and for inputSchema generation.
@@ -562,4 +565,9 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	scan_buckets_start: ScanBucketsStartArgs,
 	scan_buckets_status: ScanBucketsStatusArgs,
 	scan_buckets_findings: ScanBucketsFindingsArgs,
+	osint_investigate_domain_start: OsintInvestigateArgs,
+	osint_investigate_infrastructure_start: OsintInvestigateArgs,
+	osint_investigate_supply_chain_start: OsintInvestigateArgs,
+	osint_investigation_status: OsintInvestigationIdArgs,
+	osint_investigation_report: OsintInvestigationIdArgs,
 };

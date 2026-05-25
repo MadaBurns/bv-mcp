@@ -660,6 +660,44 @@ const TOOL_REGISTRY: Record<
 			),
 		cacheTtlSeconds: 30,
 	},
+	osint_investigate_domain_start: {
+		cacheKey: () => `__nocache__:osint_investigate_domain_start:${crypto.randomUUID()}`,
+		execute: (_d, a, ro) =>
+			import('../tools/osint-investigate').then((m) => m.osintInvestigateDomainStart(String(a.query), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken })),
+		cacheTtlSeconds: 0,
+	},
+	osint_investigate_infrastructure_start: {
+		cacheKey: () => `__nocache__:osint_investigate_infrastructure_start:${crypto.randomUUID()}`,
+		execute: (_d, a, ro) =>
+			import('../tools/osint-investigate').then((m) =>
+				m.osintInvestigateInfrastructureStart(String(a.query), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+			),
+		cacheTtlSeconds: 0,
+	},
+	osint_investigate_supply_chain_start: {
+		cacheKey: () => `__nocache__:osint_investigate_supply_chain_start:${crypto.randomUUID()}`,
+		execute: (_d, a, ro) =>
+			import('../tools/osint-investigate').then((m) =>
+				m.osintInvestigateSupplyChainStart(String(a.query), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+			),
+		cacheTtlSeconds: 0,
+	},
+	osint_investigation_status: {
+		cacheKey: (a) => `osintstatus:${String(a.investigationId)}`,
+		execute: (_d, a, ro) =>
+			import('../tools/osint-investigate').then((m) =>
+				m.osintInvestigationStatus(String(a.investigationId), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+			),
+		cacheTtlSeconds: 15,
+	},
+	osint_investigation_report: {
+		cacheKey: (a) => `osintreport:${String(a.investigationId)}`,
+		execute: (_d, a, ro) =>
+			import('../tools/osint-investigate').then((m) =>
+				m.osintInvestigationReport(String(a.investigationId), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+			),
+		cacheTtlSeconds: 30,
+	},
 };
 
 /** Known interactive LLM client types that benefit from compact output. */

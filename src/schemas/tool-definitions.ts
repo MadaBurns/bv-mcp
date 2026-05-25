@@ -35,6 +35,8 @@ import {
 	ScanBucketsStartArgs,
 	ScanBucketsStatusArgs,
 	ScanBucketsFindingsArgs,
+	OsintInvestigateArgs,
+	OsintInvestigationIdArgs,
 	TOOL_SCHEMA_MAP,
 } from './tool-args';
 
@@ -596,6 +598,44 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		description:
 			'Retrieve findings from a completed cloud-bucket discovery scan. Operator-deploy only; degrades to info when unprovisioned. Optionally scoped to a specific scanId; omit to retrieve the most recent findings.',
 		schema: ScanBucketsFindingsArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	osint_investigate_domain_start: {
+		description:
+			'Start an async OSINT investigation for a domain. Operator-deploy only; degrades to info when unprovisioned. Returns an investigationId immediately — poll with osint_investigation_status and retrieve results with osint_investigation_report.',
+		schema: OsintInvestigateArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+		mutating: true,
+	},
+	osint_investigate_infrastructure_start: {
+		description:
+			'Start an async deep-infrastructure OSINT investigation for a query (domain, IP, or org). Operator-deploy only; degrades to info when unprovisioned. Returns an investigationId immediately — poll with osint_investigation_status.',
+		schema: OsintInvestigateArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+		mutating: true,
+	},
+	osint_investigate_supply_chain_start: {
+		description:
+			'Start an async supply-chain OSINT investigation for a query. Operator-deploy only; degrades to info when unprovisioned. Returns an investigationId immediately — poll with osint_investigation_status.',
+		schema: OsintInvestigateArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+		mutating: true,
+	},
+	osint_investigation_status: {
+		description:
+			'Poll the status of an OSINT investigation by investigationId. Operator-deploy only; degrades to info when unprovisioned. Returns current status (running | completed | failed) and progress metadata.',
+		schema: OsintInvestigationIdArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	osint_investigation_report: {
+		description:
+			'Retrieve the final report of a completed OSINT investigation by investigationId. Operator-deploy only; degrades to info when unprovisioned or not yet complete.',
+		schema: OsintInvestigationIdArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
