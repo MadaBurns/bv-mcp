@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { scoreToGrade, computeScanScore, IMPORTANCE_WEIGHTS, CORE_WEIGHTS, PROTECTIVE_WEIGHTS } from '@blackveil/dns-checks/scoring';
-import { buildCheckResult, createFinding, CATEGORY_DISPLAY_WEIGHTS, type CheckCategory } from '@blackveil/dns-checks/scoring';
+import { buildCheckResult, createFinding, CATEGORY_DISPLAY_WEIGHTS, type CheckCategory, type CheckResult } from '@blackveil/dns-checks/scoring';
 
 describe('scoring-engine', () => {
 	it('maps numeric scores to expected grade bands', () => {
@@ -129,6 +129,38 @@ describe('scoring v2 three-tier', () => {
 			// Scores 50-54 should be D, not E
 			expect(scoreToGrade(50)).toBe('D');
 			expect(scoreToGrade(54)).toBe('D');
+		});
+	});
+
+	describe('transient check failures are excluded from scoring, not zeroed', () => {
+		const passingCore = (): CheckResult[] => [
+			{ ...buildCheckResult('spf', []), score: 100, passed: true },
+			{ ...buildCheckResult('dmarc', []), score: 100, passed: true },
+			{ ...buildCheckResult('dkim', []), score: 100, passed: true },
+			{ ...buildCheckResult('dnssec', []), score: 100, passed: true },
+			{ ...buildCheckResult('ssl', []), score: 100, passed: true },
+		];
+
+		it('a transient http_security failure (checkStatus=timeout) does NOT lower the overall', () => {
+			const baseline = computeScanScore(passingCore());
+			const httpTimeout: CheckResult = { ...buildCheckResult('http_security', []), score: 0, passed: false, checkStatus: 'timeout' };
+			const withTransient = computeScanScore([...passingCore(), httpTimeout]);
+			// Excluded & renormalized → identical to the baseline, NOT dragged toward 0.
+			expect(withTransient.overall).toBe(baseline.overall);
+			expect(withTransient.categoryScores.http_security).toBeUndefined();
+		});
+
+		it('a transient failure with checkStatus=error is also excluded', () => {
+			const baseline = computeScanScore(passingCore());
+			const httpErr: CheckResult = { ...buildCheckResult('http_security', []), score: 0, passed: false, checkStatus: 'error' };
+			expect(computeScanScore([...passingCore(), httpErr]).overall).toBe(baseline.overall);
+		});
+
+		it('a CONCLUSIVE low score (checkStatus completed) still counts against the overall', () => {
+			const baseline = computeScanScore(passingCore());
+			const httpBad: CheckResult = { ...buildCheckResult('http_security', [createFinding('http_security', 'No CSP', 'medium', 'missing')]), score: 0, passed: false };
+			// Genuinely measured 0 (no transient status) must still drag the score down.
+			expect(computeScanScore([...passingCore(), httpBad]).overall).toBeLessThan(baseline.overall);
 		});
 	});
 });
