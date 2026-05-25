@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-05-25
+
+### Changed
+
+- **HTTP-security check attributes Cloudflare WAF interceptions served as HTTP 403.** Both JS challenges and access blocks (commonly served as 403) are now detected via `cf-ray`/`cf-mitigated` + body fingerprints and short-circuit with `checkStatus: 'error'` plus `wafEvent`/`wafKind` metadata, instead of falling into the generic "blocked by security appliance" path. Also fixes a `checkStatus` inconsistency between 200-served and 403-served challenges. No scoring change; wrapper-only (no `@blackveil/dns-checks` change). (#211)
+
 ## [3.0.0] - 2026-05-24
 
 Major bump: removes the `brand_audit_watch` MCP tool (breaking tool-surface change). All deployed to production across PRs #197, #200, #201, #202, #203.
