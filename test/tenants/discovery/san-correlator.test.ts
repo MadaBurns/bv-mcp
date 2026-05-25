@@ -225,6 +225,25 @@ describe('correlateSans', () => {
 		expect(directFetch).toHaveBeenCalledTimes(1);
 	});
 
+	it('cancels unread certstream /sans body before falling back to direct crt.sh', async () => {
+		const certstreamResponse = new Response('boom', { status: 503 });
+		const certstreamCancel = vi.spyOn(certstreamResponse.body!, 'cancel');
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(certstreamResponse);
+		const directFetch = mockFetchOk([{ id: 7, name_value: 'foo.com\nfallback-sibling.com' }]);
+		const sleepFn = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
+
+		const result = await correlateSans('foo.com', {
+			certstream: { fetch: csFetch },
+			fetchFn: directFetch,
+			sleepFn,
+			maxRetries: 0,
+		});
+
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coOwnedDomains).toEqual(['fallback-sibling.com']);
+		expect(certstreamCancel).toHaveBeenCalledTimes(1);
+	});
+
 	it('falls back when certstream response sets error or timedOut', async () => {
 		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(
 			Response.json({ domain: 'foo.com', names: [], certificateCount: 0, timedOut: true, cached: false }),
