@@ -39,6 +39,14 @@ describe('callReconScan', () => {
 		expect(out).toBeNull();
 	});
 
+	it('returns a benign info result on 404 (no threat-feed entry — not a failure)', async () => {
+		const { callReconScan } = await fresh();
+		const binding = bindingReturning({ error: 'not found' }, 404);
+		const out = await callReconScan(binding, 'tok', 'REALTIME_THREAT_FEED', { domain: 'clean.example' });
+		expect(out).not.toBeNull();
+		expect(out?.status).toBe('info');
+	});
+
 	it('returns null when the body is not an object (non-parseable shape)', async () => {
 		const { callReconScan } = await fresh();
 		// A JSON array is not an object — Zod .object() rejects it

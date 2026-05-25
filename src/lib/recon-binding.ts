@@ -74,6 +74,14 @@ export async function callReconScan(
 			headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
 			signal: composeSignal(signal),
 		});
+		// A 404 from the intelligence /check means the threat feed has no entry for
+		// this target — i.e. no adverse intel (benign), NOT a provisioning failure.
+		// Return a benign result so callers render "no hits" instead of "unavailable".
+		// (The route 404 is fixed + regression-tested in bv-recon, so a 404 here is a
+		// data miss, not a misroute.) Other non-2xx (5xx/auth) stay null → unavailable.
+		if (resp.status === 404) {
+			return { status: 'info', details: 'No threat-intelligence match for this target.' };
+		}
 		if (!resp.ok) return null;
 		const parsed = ReconScanResponseSchema.safeParse(await resp.json().catch(() => null));
 		return parsed.success ? parsed.data : null;
