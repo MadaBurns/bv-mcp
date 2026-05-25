@@ -280,4 +280,26 @@ describe('checkRbl', () => {
 		expect(privateFinding).toBeDefined();
 		expect(privateFinding!.severity).toBe('info');
 	});
+
+	it('should not report clean reputation for malformed IPv4-like MX A data', async () => {
+		const queriedUrls: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			queriedUrls.push(url);
+
+			if (url.includes('name=example.com') && url.includes('type=MX')) {
+				return Promise.resolve(mxResponse('example.com', [{ priority: 10, exchange: 'mail.example.com' }]));
+			}
+			if (url.includes('name=mail.example.com') && url.includes('type=A')) {
+				return Promise.resolve(aResponse('mail.example.com', ['999.0.2.1']));
+			}
+			return Promise.resolve(emptyResponse('unknown'));
+		});
+
+		const result = await run();
+
+		expect(queriedUrls.some((url) => url.includes('zen.spamhaus.org'))).toBe(false);
+		expect(result.findings.find((f) => f.title === 'No valid public IPv4 addresses found')).toBeDefined();
+		expect(result.findings.find((f) => f.title.includes('clean'))).toBeUndefined();
+	});
 });
