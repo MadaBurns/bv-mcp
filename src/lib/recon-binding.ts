@@ -75,6 +75,140 @@ export async function callReconScan(
 	}
 }
 
+export type ReconInvestigationType = 'domain' | 'deep_infrastructure' | 'supply_chain' | 'username' | 'email';
+
+const InvestigationStartSchema = z
+	.object({
+		investigationId: z.string(),
+		workflowId: z.string().optional(),
+		status: z.string().optional(),
+		pollUrl: z.string().optional(),
+	})
+	.passthrough();
+export type InvestigationStart = z.infer<typeof InvestigationStartSchema>;
+
+const BucketScanStartSchema = z.object({ scanId: z.string(), status: z.string().optional() }).passthrough();
+export type BucketScanStart = z.infer<typeof BucketScanStartSchema>;
+
+/** Status/report/findings bodies pass through opaquely. Require an object (rejects null/array/scalar). */
+const OpaqueObjectSchema = z.record(z.string(), z.unknown());
+export type ReconOpaque = Record<string, unknown>;
+
+async function reconJson(
+	binding: ReconBinding | undefined,
+	authToken: string | undefined,
+	path: string,
+	init: RequestInit,
+	schema: z.ZodType,
+	signal?: AbortSignal,
+): Promise<unknown | null> {
+	if (!binding) return null;
+	try {
+		const resp = await binding.fetch(`https://bv-recon${path}`, {
+			...init,
+			headers: { ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}), ...(init.headers ?? {}) },
+			signal: composeSignal(signal),
+		});
+		if (!resp.ok) return null;
+		const parsed = schema.safeParse(await resp.json());
+		return parsed.success ? parsed.data : null;
+	} catch {
+		return null;
+	}
+}
+
+export function callReconInvestigateStart(
+	binding: ReconBinding | undefined,
+	authToken: string | undefined,
+	type: ReconInvestigationType,
+	query: string,
+	options?: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<InvestigationStart | null> {
+	return reconJson(
+		binding,
+		authToken,
+		`/osint/api/investigate/${type}`,
+		{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, options: options ?? {} }) },
+		InvestigationStartSchema,
+		signal,
+	) as Promise<InvestigationStart | null>;
+}
+
+export function callReconInvestigationStatus(
+	binding: ReconBinding | undefined,
+	authToken: string | undefined,
+	id: string,
+	signal?: AbortSignal,
+): Promise<ReconOpaque | null> {
+	return reconJson(
+		binding,
+		authToken,
+		`/osint/api/investigation/${encodeURIComponent(id)}`,
+		{ method: 'GET' },
+		OpaqueObjectSchema,
+		signal,
+	) as Promise<ReconOpaque | null>;
+}
+
+export function callReconInvestigationReport(
+	binding: ReconBinding | undefined,
+	authToken: string | undefined,
+	id: string,
+	signal?: AbortSignal,
+): Promise<ReconOpaque | null> {
+	return reconJson(
+		binding,
+		authToken,
+		`/osint/api/investigation/${encodeURIComponent(id)}/findings`,
+		{ method: 'GET' },
+		OpaqueObjectSchema,
+		signal,
+	) as Promise<ReconOpaque | null>;
+}
+
+export function callReconBucketScanStart(
+	binding: ReconBinding | undefined,
+	authToken: string | undefined,
+	body: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<BucketScanStart | null> {
+	return reconJson(
+		binding,
+		authToken,
+		`/buckets/api/scan/trigger`,
+		{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+		BucketScanStartSchema,
+		signal,
+	) as Promise<BucketScanStart | null>;
+}
+
+export function callReconBucketScanStatus(
+	binding: ReconBinding | undefined,
+	authToken: string | undefined,
+	scanId: string,
+	signal?: AbortSignal,
+): Promise<ReconOpaque | null> {
+	return reconJson(
+		binding,
+		authToken,
+		`/buckets/api/scan/status/${encodeURIComponent(scanId)}`,
+		{ method: 'GET' },
+		OpaqueObjectSchema,
+		signal,
+	) as Promise<ReconOpaque | null>;
+}
+
+export function callReconBucketFindings(
+	binding: ReconBinding | undefined,
+	authToken: string | undefined,
+	scanId: string | undefined,
+	signal?: AbortSignal,
+): Promise<ReconOpaque | null> {
+	const qs = scanId ? `?scanId=${encodeURIComponent(scanId)}` : '';
+	return reconJson(binding, authToken, `/buckets/api/findings${qs}`, { method: 'GET' }, OpaqueObjectSchema, signal) as Promise<ReconOpaque | null>;
+}
+
 export async function callReconPackageCheck(
 	binding: ReconBinding | undefined,
 	authToken: string | undefined,
