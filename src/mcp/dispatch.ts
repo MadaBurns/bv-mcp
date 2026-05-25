@@ -33,6 +33,8 @@ export interface DispatchMcpMethodOptions {
 	existingSessionId?: string;
 	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
 	cacheTtlSeconds?: number;
+	scanTimeoutMs?: number;
+	perCheckTimeoutMs?: number;
 	/** Custom secondary DoH endpoint URL (bv-dns). */
 	secondaryDohEndpoint?: string;
 	/** Auth token for custom secondary DoH. */
@@ -156,6 +158,8 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				waitUntil: options.waitUntil,
 				scoringConfig: options.scoringConfig,
 				cacheTtlSeconds: options.cacheTtlSeconds,
+				scanTimeoutMs: options.scanTimeoutMs,
+				perCheckTimeoutMs: options.perCheckTimeoutMs,
 				secondaryDoh: options.secondaryDohEndpoint
 					? { endpoint: options.secondaryDohEndpoint, token: options.secondaryDohToken }
 					: undefined,

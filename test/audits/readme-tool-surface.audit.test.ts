@@ -6,6 +6,9 @@ import scoringDocs from '../../docs/scoring.md?raw';
 import troubleshootingDocs from '../../docs/troubleshooting.md?raw';
 import packageReadme from '../../packages/dns-checks/README.md?raw';
 import readme from '../../README.md?raw';
+import resourcesSource from '../../src/handlers/resources.ts?raw';
+import vscodePackageText from '../../extensions/vscode/package.json?raw';
+import vscodeReadme from '../../extensions/vscode/README.md?raw';
 import { TOOLS } from '../../src/schemas/tool-definitions';
 
 describe('README tool surface', () => {
@@ -27,5 +30,19 @@ describe('README tool surface', () => {
 		expect(scoringDocs).toContain('authoritative_dns_infra');
 		expect(packageReadme).toContain('authoritative_dns_infra');
 		expect(troubleshootingDocs).toContain('BV_INFRA_PROBE');
+	});
+
+	it('keeps MCP resources and VS Code extension metadata aligned with the tool registry', () => {
+		const toolCount = TOOLS.length;
+		const checkToolCount = TOOLS.filter((tool) => tool.name.startsWith('check_')).length;
+		const vscodePackage = JSON.parse(vscodePackageText) as { description: string };
+
+		expect(resourcesSource).toContain('TOOLS.length');
+		expect(resourcesSource).toContain("tool.name.startsWith('check_')");
+		expect(vscodeReadme).toContain(`**${toolCount} DNS & email security tools**`);
+		expect(vscodeReadme).toContain(`All ${toolCount} tools`);
+		expect(vscodeReadme).toContain(`## Tools (${toolCount})`);
+		expect(vscodeReadme).toContain(`${checkToolCount} \`check_*\` tools`);
+		expect(vscodePackage.description).toContain(`${toolCount} DNS & email security tools`);
 	});
 });

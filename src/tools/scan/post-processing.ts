@@ -15,6 +15,10 @@ export interface ScanRuntimeOptions {
 	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
 	/** Override cache TTL in seconds (default: 300). Clamped to [60, 3600]. */
 	cacheTtlSeconds?: number;
+	/** Scan-level wall-clock budget in milliseconds. Defaults to SCAN_TIMEOUT_MS. */
+	scanTimeoutMs?: number;
+	/** Per-check wall-clock budget in milliseconds. Defaults to PER_CHECK_TIMEOUT_MS. */
+	perCheckTimeoutMs?: number;
 	/** Custom secondary DoH resolver config (bv-dns). Threaded to scanDns but only active when skipSecondaryConfirmation is false. */
 	secondaryDoh?: import('../../lib/dns-types').SecondaryDohConfig;
 	/** Optional service binding for raw DNS, routing, and vantage-point probes. */

@@ -206,8 +206,8 @@ For full hosted setup examples, stdio usage, OAuth setup, and legacy fallback en
 |                | **Free**   | **Pro** | **Enterprise**                              |
 | -------------- | ---------- | ------- | ------------------------------------------- |
 | **Price**      | $0         | $39/mo  | [Contact us](https://blackveilsecurity.com) |
-| **Scans/day**  | 5          | 500     | 10,000+                                     |
-| **Checks/day** | 25         | 5,000   | Unlimited                                   |
+| **Scans/day**  | 25         | 500     | 10,000+                                     |
+| **Checks/day** | Tool-specific limits | Tool-specific limits | Contract limits                  |
 | **Rate limit** | 50 req/min | None    | None                                        |
 | **API access** | Yes        | Yes     | Yes                                         |
 | **MCP access** | Yes        | Yes     | Yes                                         |

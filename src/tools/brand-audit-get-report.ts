@@ -15,7 +15,9 @@
  *     `brand_audits.results_json`. Same ready/notReady gating against the audit
  *     row's status.
  *
- * R2 PDF mode lands in Phase 3 — this tool returns inline JSON only.
+ * When a completed target has `pdf_r2_key` and the R2 binding is available,
+ * the response metadata includes a signed PDF URL. Otherwise completed targets
+ * surface `pdfPending` so callers can poll again.
  */
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
