@@ -17,14 +17,14 @@ describe('checkRealtimeThreatFeed', () => {
 
 	it('surfaces a high finding when the feed reports a hit', async () => {
 		const { checkRealtimeThreatFeed } = await import('../src/tools/check-realtime-threat-feed');
-		const binding = reconBinding({ findings: [{ severity: 'high', title: 'Live threat-feed hit', detail: 'seen 2026-05-24' }] });
+		const binding = reconBinding({ checkType: 'REALTIME_THREAT_FEED', status: 'warning', details: 'seen 2026-05-24' });
 		const r = await checkRealtimeThreatFeed('evil.com', { reconBinding: binding, reconAuthToken: 'tok' });
 		expect(r.findings.some(f => f.severity === 'high')).toBe(true);
 	});
 
-	it('reports a clean result when the feed returns no findings', async () => {
+	it('reports a clean result when the feed returns a benign status', async () => {
 		const { checkRealtimeThreatFeed } = await import('../src/tools/check-realtime-threat-feed');
-		const binding = reconBinding({ findings: [] });
+		const binding = reconBinding({ checkType: 'REALTIME_THREAT_FEED', status: 'info', details: 'No active threat-feed matches.' });
 		const r = await checkRealtimeThreatFeed('good.com', { reconBinding: binding, reconAuthToken: 'tok' });
 		expect(r.passed).toBe(true);
 	});
