@@ -114,5 +114,25 @@ describe('DNS library', () => {
 				{ priority: 20, exchange: 'backup.example.com' },
 			]);
 		});
+
+		it('drops malformed MX records instead of returning NaN priority or empty exchange', async () => {
+			mockFetchResponse({
+				Status: 0,
+				TC: false,
+				RD: true,
+				RA: true,
+				AD: false,
+				CD: false,
+				Question: [{ name: 'example.com', type: 15 }],
+				Answer: [
+					{ name: 'example.com', type: RecordType.MX, TTL: 300, data: 'x mail.example.com.' },
+					{ name: 'example.com', type: RecordType.MX, TTL: 300, data: '10' },
+					{ name: 'example.com', type: RecordType.MX, TTL: 300, data: '20 backup.example.com.' },
+				],
+			});
+
+			const records = await queryMxRecords('example.com');
+			expect(records).toEqual([{ priority: 20, exchange: 'backup.example.com' }]);
+		});
 	});
 });

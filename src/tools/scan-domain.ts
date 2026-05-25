@@ -52,6 +52,7 @@ import { checkSubdomailing } from './check-subdomailing';
 import { checkAuthoritativeDnsInfra } from './check-authoritative-dns-infra';
 import { checkRootServerSet } from './check-root-server-set';
 import { applyScanPostProcessing } from './scan/post-processing';
+import { resolveScanTimeoutBudget } from './scan/timeouts';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import { logError } from '../lib/log';
 import { getAdaptiveWeights, publishAdaptiveWeightSummary } from '../lib/profile-accumulator';
@@ -64,21 +65,6 @@ export type { ScanRuntimeOptions } from './scan/post-processing';
 
 /** Cache key prefix for scan and per-check results */
 const CACHE_PREFIX = 'cache:';
-
-/** Maximum wall-clock time for a single check within scan_domain (ms). */
-const PER_CHECK_TIMEOUT_MS = 8_000;
-
-/** Maximum wall-clock time for the entire scan_domain orchestration (ms). */
-const SCAN_TIMEOUT_MS = 12_000;
-
-/** Budget (ms) reserved for retry attempts of transiently-failed checks. */
-const RETRY_BUDGET_MS = 3_000;
-
-/** Maximum number of checks retried per scan to protect the overall budget. */
-const MAX_RETRIES_PER_SCAN = 3;
-
-/** Per-retry timeout (ms) — tighter than the initial 8s per-check timeout. */
-const RETRY_TIMEOUT_MS = 2_500;
 
 /** In-memory cache for adaptive weight responses from the ProfileAccumulator DO. */
 const adaptiveWeightCache = new Map<string, { weights: AdaptiveWeightsResponse; expires: number }>();
@@ -170,11 +156,12 @@ async function runCheckRetry(
 	category: CheckCategory,
 	domain: string,
 	scanDns: QueryDnsOptions,
+	retryTimeoutMs: number,
 	runtimeOptions?: ScanRuntimeOptions,
 ): Promise<CheckResult> {
 	const retryDns: QueryDnsOptions = { ...scanDns, queryCache: new Map() };
 	const timeoutPromise = new Promise<never>((_, reject) =>
-		setTimeout(() => reject(new Error('Retry timed out')), RETRY_TIMEOUT_MS),
+		setTimeout(() => reject(new Error('Retry timed out')), retryTimeoutMs),
 	);
 
 	let checkPromise: Promise<CheckResult>;
@@ -223,6 +210,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// Currently unused here — callers will pass it when emitDegradationEvent sites migrate.
 	const _scanId = crypto.randomUUID();
 	const scanStartTime = Date.now();
+	const timeoutBudget = resolveScanTimeoutBudget(runtimeOptions);
 	const explicitProfile = runtimeOptions?.profile;
 	const isExplicit = explicitProfile && explicitProfile !== 'auto';
 	const cacheKey = isExplicit
@@ -263,29 +251,31 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			safeCheck(
 				'authoritative_dns_infra',
 				() => checkAuthoritativeDnsInfra(domain, { infraProbe: runtimeOptions?.infraProbe }),
+				timeoutBudget.perCheckTimeoutMs,
 			),
 			safeCheck(
 				'authoritative_dns_infra',
 				() => checkRootServerSet({ infraProbe: runtimeOptions?.infraProbe }),
+				timeoutBudget.perCheckTimeoutMs,
 			),
 		]).then(mergeAuthoritativeDnsInfraResults),
 	] : [
-		runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain, scanDns)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain, scanDns)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain, undefined, scanDns)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain, scanDns)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain, scanDns)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain, scanDns)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain, scanDns)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'bimi', () => safeCheck('bimi', () => checkBimi(domain, scanDns)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'tlsrpt', () => safeCheck('tlsrpt', () => checkTlsrpt(domain, scanDns)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain, scanDns)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'http_security', () => safeCheck('http_security', () => checkHttpSecurity(domain)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'dane', () => safeCheck('dane', () => checkDane(domain, scanDns)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'dane_https', () => safeCheck('dane_https', () => checkDaneHttps(domain, scanDns)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'svcb_https', () => safeCheck('svcb_https', () => checkSvcbHttps(domain, scanDns)), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'subdomailing', () => safeCheck('subdomailing', () => checkSubdomailing(domain, scanDns)), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain, undefined, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'bimi', () => safeCheck('bimi', () => checkBimi(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'tlsrpt', () => safeCheck('tlsrpt', () => checkTlsrpt(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'http_security', () => safeCheck('http_security', () => checkHttpSecurity(domain), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'dane', () => safeCheck('dane', () => checkDane(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'dane_https', () => safeCheck('dane_https', () => checkDaneHttps(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'svcb_https', () => safeCheck('svcb_https', () => checkSvcbHttps(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'subdomailing', () => safeCheck('subdomailing', () => checkSubdomailing(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(
 			domain,
 			'mx',
@@ -298,6 +288,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 							providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
 							providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
 						}, scanDns),
+					timeoutBudget.perCheckTimeoutMs,
 				),
 			kv,
 			cacheTtl,
@@ -317,7 +308,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 						checkPromises.map((p) => Promise.race([p, new Promise<never>((_, reject) => reject(new Error('__check_pending__')))])),
 					),
 				);
-			}, SCAN_TIMEOUT_MS),
+			}, timeoutBudget.scanTimeoutMs),
 		),
 	]);
 
@@ -339,15 +330,15 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// Only fires for errored checks (checkStatus='error', score=0) caught
 	// by safeCheck() — thrown exceptions from DNS/HTTPS failures. Timeouts
 	// are skipped because they mean the scan budget is already exhausted.
-	if (!timedOut && (Date.now() - scanStartTime) < (SCAN_TIMEOUT_MS - RETRY_BUDGET_MS)) {
+	if (!timedOut && (Date.now() - scanStartTime) < (timeoutBudget.scanTimeoutMs - timeoutBudget.retryBudgetMs)) {
 		const retryable = checkResults
 			.map((r, idx) => ({ r, idx }))
 			.filter(({ r }) => shouldRetry(r))
-			.slice(0, MAX_RETRIES_PER_SCAN);
+			.slice(0, timeoutBudget.maxRetriesPerScan);
 
 		if (retryable.length > 0) {
 			const retrySettled = await Promise.allSettled(
-				retryable.map(({ r }) => runCheckRetry(r.category, domain, scanDns, runtimeOptions)),
+				retryable.map(({ r }) => runCheckRetry(r.category, domain, scanDns, timeoutBudget.retryTimeoutMs, runtimeOptions)),
 			);
 			for (let i = 0; i < retryable.length; i++) {
 				const s = retrySettled[i];
@@ -370,7 +361,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 						category,
 						`${category.toUpperCase()} check timed out`,
 						'low',
-						`Check did not complete within the ${SCAN_TIMEOUT_MS / 1000}s scan time limit. Try running this check individually.`,
+						`Check did not complete within the ${timeoutBudget.scanTimeoutMs / 1000}s scan time limit. Try running this check individually.`,
 					),
 				];
 				const result = buildCheckResult(category, findings);
@@ -694,11 +685,11 @@ async function runCachedCheck(
  * with an error/timeout finding instead of throwing, so other checks
  * can still complete.
  */
-async function safeCheck(category: CheckCategory, fn: () => Promise<CheckResult>): Promise<CheckResult> {
+async function safeCheck(category: CheckCategory, fn: () => Promise<CheckResult>, perCheckTimeoutMs: number): Promise<CheckResult> {
 	try {
 		const result = await Promise.race([
 			fn(),
-			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Check timed out')), PER_CHECK_TIMEOUT_MS)),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Check timed out')), perCheckTimeoutMs)),
 		]);
 		return result;
 	} catch (err) {
@@ -713,7 +704,7 @@ async function safeCheck(category: CheckCategory, fn: () => Promise<CheckResult>
 		const severity = isTimeout ? 'low' : ('high' as const);
 		const title = isTimeout ? `${category.toUpperCase()} check timed out` : `${category.toUpperCase()} check error`;
 		const detail = isTimeout
-			? `Check did not complete within the ${PER_CHECK_TIMEOUT_MS / 1000}s per-check time limit. Try running this check individually.`
+			? `Check did not complete within the ${perCheckTimeoutMs / 1000}s per-check time limit. Try running this check individually.`
 			: `Check failed: ${safeMessage}`;
 		const checkStatus = isTimeout ? ('timeout' as const) : ('error' as const);
 

@@ -97,6 +97,17 @@ export async function checkDnssec(domain: string, opts?: QueryDnsOptions): Promi
 	return resp.AD === true;
 }
 
+function isHexByte(value: string): boolean {
+	return /^[0-9a-fA-F]{2}$/.test(value);
+}
+
+function parseUnsignedInteger(value: string, max = Number.MAX_SAFE_INTEGER): number | null {
+	if (!/^\d+$/.test(value)) return null;
+	const parsed = Number.parseInt(value, 10);
+	if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > max) return null;
+	return parsed;
+}
+
 /**
  * Parse a single CAA record data string.
  * Handles both human-readable format (e.g. `0 issue "letsencrypt.org"`)
@@ -110,6 +121,7 @@ export function parseCaaRecord(data: string): CaaRecord | null {
 		const hexStart = parts[0] === '\\#' || parts[0] === '#' ? 2 : 1;
 		const hexBytes = parts.slice(hexStart);
 		if (hexBytes.length < 3) return null;
+		if (!hexBytes.every(isHexByte)) return null;
 
 		const flags = parseInt(hexBytes[0], 16);
 		const tagLen = parseInt(hexBytes[1], 16);
@@ -155,11 +167,15 @@ export async function queryCaaRecords(domain: string, opts?: QueryDnsOptions): P
  */
 export async function queryMxRecords(domain: string, opts?: QueryDnsOptions): Promise<Array<{ priority: number; exchange: string }>> {
 	const records = await queryDnsRecords(domain, 'MX', opts);
-	return records.map((record) => {
-		const parts = record.split(' ');
+	return records.flatMap((record) => {
+		const parts = record.trim().split(/\s+/);
+		const priority = parseUnsignedInteger(parts[0], 65_535);
+		const rawExchange = parts.slice(1).join(' ');
+		if (priority === null || rawExchange.length === 0) return [];
+		const exchange = rawExchange.replace(/\.$/, '');
 		return {
-			priority: parseInt(parts[0], 10),
-			exchange: parts.slice(1).join(' ').replace(/\.$/, ''),
+			priority,
+			exchange,
 		};
 	});
 }
@@ -184,13 +200,18 @@ export async function querySrvRecords(
 	opts?: QueryDnsOptions,
 ): Promise<Array<{ priority: number; weight: number; port: number; target: string }>> {
 	const records = await queryDnsRecords(name, 'SRV', opts);
-	return records.map((record) => {
-		const parts = record.split(' ');
+	return records.flatMap((record) => {
+		const parts = record.trim().split(/\s+/);
+		const priority = parseUnsignedInteger(parts[0], 65_535);
+		const weight = parseUnsignedInteger(parts[1], 65_535);
+		const port = parseUnsignedInteger(parts[2], 65_535);
+		const target = parts.slice(3).join(' ').replace(/\.$/, '');
+		if (priority === null || weight === null || port === null || target.length === 0) return [];
 		return {
-			priority: parseInt(parts[0], 10),
-			weight: parseInt(parts[1], 10),
-			port: parseInt(parts[2], 10),
-			target: parts.slice(3).join(' ').replace(/\.$/, ''),
+			priority,
+			weight,
+			port,
+			target,
 		};
 	});
 }
@@ -208,6 +229,7 @@ export function parseTlsaRecord(data: string): TlsaRecord | null {
 		const hexStart = parts[0] === '\\#' || parts[0] === '#' ? 2 : 1;
 		const hexBytes = parts.slice(hexStart);
 		if (hexBytes.length < 4) return null;
+		if (!hexBytes.every(isHexByte)) return null;
 
 		const usage = parseInt(hexBytes[0], 16);
 		const selector = parseInt(hexBytes[1], 16);

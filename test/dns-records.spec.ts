@@ -17,4 +17,9 @@ describe('dns record helpers', () => {
 			value: 'letsencrypt.org',
 		});
 	});
+
+	it('rejects CAA wire records with malformed hex bytes', () => {
+		expect(parseCaaRecord('\\# 03 00 01 zz')).toBeNull();
+		expect(parseCaaRecord('\\# 03 00 01 6')).toBeNull();
+	});
 });
