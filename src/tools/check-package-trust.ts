@@ -52,18 +52,19 @@ export async function checkPackageTrust(args: PackageTrustArgs, options: Package
 		return buildCheckResult(CATEGORY, findings) as CheckResult;
 	}
 
-	const severity = VERDICT_SEVERITY[verdict.verdict] ?? 'info';
+	const verdictLabel = verdict.verdict ?? 'UNKNOWN';
+	const severity = VERDICT_SEVERITY[verdictLabel] ?? 'info';
 	findings.push(
 		createFinding(
 			CATEGORY,
-			`Package verdict: ${verdict.verdict}`,
+			`Package verdict: ${verdictLabel}`,
 			severity,
-			`${args.registry}:${args.package}${args.version ? `@${args.version}` : ''} → ${verdict.verdict} (confidence ${verdict.confidence ?? 'unknown'}).`,
+			`${args.registry}:${args.package}${args.version ? `@${args.version}` : ''} → ${verdictLabel} (confidence ${verdict.confidence ?? 'unknown'}).`,
 			{
 				registry: args.registry,
 				package: args.package,
 				version: args.version ?? null,
-				verdict: verdict.verdict,
+				verdict: verdictLabel,
 				confidence: verdict.confidence ?? null,
 			},
 		),
