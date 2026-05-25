@@ -232,15 +232,16 @@ export async function callReconPackageCheck(
 ): Promise<PackageTrustResult | null> {
 	if (!binding) return null;
 	try {
-		const qs = new URLSearchParams({ registry: params.registry, package: params.package });
-		if (params.version) qs.set('version', params.version);
+		// bv-recon's /packages/check requires a non-empty `version` (CheckQuerySchema).
+		// Default to 'latest' when the caller doesn't pin one — otherwise the request 400s.
+		const qs = new URLSearchParams({ registry: params.registry, package: params.package, version: params.version || 'latest' });
 		const resp = await binding.fetch(`https://bv-recon/packages/check?${qs.toString()}`, {
 			method: 'GET',
 			headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
 			signal: composeSignal(signal),
 		});
 		if (!resp.ok) return null;
-		const parsed = PackageTrustResponseSchema.safeParse(await resp.json());
+		const parsed = PackageTrustResponseSchema.safeParse(await resp.json().catch(() => null));
 		return parsed.success ? parsed.data : null;
 	} catch {
 		return null;
