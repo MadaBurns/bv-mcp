@@ -305,7 +305,11 @@ const TOOL_REGISTRY: Record<
 	check_caa: { cacheKey: () => 'caa', execute: (d, _args, ro) => checkCaa(d, buildDnsOptions(ro)) },
 	check_bimi: { cacheKey: () => 'bimi', execute: (d, _args, ro) => checkBimi(d, buildDnsOptions(ro)) },
 	check_tlsrpt: { cacheKey: () => 'tlsrpt', execute: (d, _args, ro) => checkTlsrpt(d, buildDnsOptions(ro)) },
-	check_lookalikes: { cacheKey: () => 'lookalikes', execute: (d) => checkLookalikes(d), cacheTtlSeconds: 3600 },
+	check_lookalikes: {
+		cacheKey: (_a, ro) => (ro?.reconBinding ? 'lookalikes:recon' : 'lookalikes'),
+		execute: (d, _args, ro) => checkLookalikes(d, { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+		cacheTtlSeconds: 3600,
+	},
 	check_shadow_domains: {
 		cacheKey: () => 'shadow_domains',
 		execute: (d, _args, ro) => checkShadowDomains(d, buildDnsOptions(ro)),
