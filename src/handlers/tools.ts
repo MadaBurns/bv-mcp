@@ -167,6 +167,10 @@ interface ToolRuntimeOptions {
 	certstream?: { fetch: typeof fetch };
 	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
+	/** Operator-only bv-recon service binding. Fail-soft; absent on BSL self-hosts. */
+	reconBinding?: { fetch: typeof fetch };
+	/** Bearer admin token forwarded to bv-recon. */
+	reconAuthToken?: string;
 	infraProbe?: { fetch: typeof fetch };
 	/** D1 binding for the brand-audit DB. Used by brand_audit_{batch_start,status,get_report}. Undefined if the operator hasn't provisioned brand-audit-v1 yet (see docs/provisioning/brand-audit-bindings.md). */
 	brandAuditDb?: D1Database;

@@ -46,6 +46,10 @@ export interface DispatchMcpMethodOptions {
 	certstream?: { fetch: typeof fetch };
 	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
+	/** Operator-only bv-recon service binding. Fail-soft; absent on BSL self-hosts. */
+	reconBinding?: { fetch: typeof fetch };
+	/** Bearer admin token forwarded to bv-recon. */
+	reconAuthToken?: string;
 	infraProbe?: { fetch: typeof fetch };
 	brandAuditDb?: D1Database;
 	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
@@ -171,6 +175,8 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				certstream: options.certstream,
 				certstreamAuthToken: options.certstreamAuthToken,
 				whoisBinding: options.whoisBinding,
+				reconBinding: options.reconBinding,
+				reconAuthToken: options.reconAuthToken,
 				infraProbe: options.infraProbe,
 				brandAuditDb: options.brandAuditDb,
 				brandAuditQueue: options.brandAuditQueue,
