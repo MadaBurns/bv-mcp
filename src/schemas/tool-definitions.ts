@@ -38,6 +38,7 @@ import {
 	OsintInvestigationIdArgs,
 	TOOL_SCHEMA_MAP,
 } from './tool-args';
+import { buildCheckResultOutputJsonSchema } from './check-result-output';
 
 export type ToolGroup =
 	| 'email_auth'
@@ -59,6 +60,13 @@ export interface McpTool {
 		required?: string[];
 		[key: string]: unknown;
 	};
+	/**
+	 * MCP `outputSchema` for the tool's `structuredContent`. Present only on tools
+	 * whose `structuredContent` is a `CheckResult` (the registry-driven check/recon
+	 * tools); absent for special-case tools that return custom shapes. Lenient so any
+	 * real CheckResult validates — see `schemas/check-result-output.ts`.
+	 */
+	outputSchema?: McpTool['inputSchema'];
 	annotations?: {
 		title?: string;
 		readOnlyHint?: boolean;
@@ -653,10 +661,49 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 };
 
+/**
+ * Special-case tools whose `tools/call` `structuredContent` is NOT a `CheckResult`
+ * (custom shapes: scan reports, batch arrays, generated records, comparisons,
+ * baseline results, etc.). These dispatch outside the `TOOL_REGISTRY` CheckResult
+ * path in `handlers/tools.ts` and therefore get NO `outputSchema`.
+ *
+ * Every other tool flows through the registry path (`buildToolResult(..., result, ...)`
+ * where `result: CheckResult`), so its `structuredContent` IS a `CheckResult` and
+ * gets the lenient CheckResult `outputSchema`.
+ */
+const NON_CHECK_RESULT_TOOLS = new Set<string>([
+	'scan_domain',
+	'batch_scan',
+	'compare_domains',
+	'compare_baseline',
+	'generate_fix_plan',
+	'generate_spf_record',
+	'generate_dmarc_record',
+	'generate_dkim_config',
+	'generate_mta_sts_policy',
+	'get_benchmark',
+	'get_provider_insights',
+	'assess_spoofability',
+	'check_resolver_consistency',
+	'explain_finding',
+	'map_supply_chain',
+	'analyze_drift',
+	'validate_fix',
+	'generate_rollout_plan',
+	'resolve_spf_chain',
+	'discover_subdomains',
+	'map_compliance',
+	'simulate_attack_paths',
+]);
+
+/** Lenient CheckResult output schema — derived once, shared across all CheckResult tools. */
+const CHECK_RESULT_OUTPUT_SCHEMA = buildCheckResultOutputJsonSchema();
+
 export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => ({
 	name,
 	description: def.description,
 	inputSchema: toInputSchema(def.schema),
+	...(NON_CHECK_RESULT_TOOLS.has(name) ? {} : { outputSchema: CHECK_RESULT_OUTPUT_SCHEMA }),
 	annotations: {
 		title: toolNameToTitle(name),
 		readOnlyHint: !def.mutating,
