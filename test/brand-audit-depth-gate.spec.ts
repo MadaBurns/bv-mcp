@@ -6,10 +6,10 @@
  * Background: `deep` discovery expands candidate seeding and enrichment fanout,
  * roughly 3× the per-call compute and outbound-fetch cost of `standard`. The
  * surface accepts it on three tools — `discover_brand_domains`,
- * `brand_audit_single`, and `brand_audit_batch_start`. Pre-gate, a free caller
- * could request `deep` at the per-tool quota limit (1/day for
- * `discover_brand_domains`; brand_audit_* are already 0 for free/agent so the
- * gate is redundant-but-defensive for those two).
+ * `brand_audit_single`, and `brand_audit_batch_start`. The whole brand-discovery
+ * surface is now 0/day for free, so this gate is redundant-but-defensive for
+ * free; it stays meaningful for agent callers, who get `discover_brand_domains`
+ * at the tier default and could otherwise request `deep`.
  *
  * Pay-walled at developer tier or higher — same threshold as the
  * `discovery_mode='tiered'` gate landed in PR #188.
