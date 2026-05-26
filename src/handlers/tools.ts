@@ -857,9 +857,10 @@ export async function handleToolsCall(
 			// Tier gate: depth='deep' expands candidate seeding + enrichment fanout
 			// (roughly 3× the per-call compute cost of 'standard'). Pay-walled at
 			// developer tier or higher — same threshold as discovery_mode='tiered'.
-			// Defensive for brand_audit_* (free/agent already get 0 quota there);
-			// meaningful for discover_brand_domains where free callers have 1/day
-			// and could otherwise burn it on deep.
+			// Defensive for brand_audit_* (free/agent already get 0 quota there)
+			// and for discover_brand_domains on free (now 0/day too); still
+			// meaningful for agent callers, who get discover_brand_domains at the
+			// tier default and could otherwise burn it on deep.
 			if (name === 'discover_brand_domains' || name === 'brand_audit_single' || name === 'brand_audit_batch_start') {
 				const requestedDepth = (validatedArgs as { depth?: string }).depth;
 				if (requestedDepth === 'deep') {

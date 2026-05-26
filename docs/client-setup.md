@@ -425,7 +425,7 @@ Static API keys (via `?api_key=` or `Authorization: Bearer`) authenticate as a s
 | developer | 500 scans/day, 10 concurrent | OAuth + MCP Developer plan | Stripe subscription (bv-web) |
 | enterprise | 10,000 scans/day, 25 concurrent | OAuth + MCP Enterprise plan | Stripe subscription (bv-web) |
 
-Free hosted usage keeps core DNS and email checks open for trial traffic, while high-cost or private-probe tools have tighter unauthenticated limits: `discover_brand_domains` is limited to 1/day, `check_fast_flux` to 3/day, `check_lookalikes` and `check_shadow_domains` to 5/day, and `check_authoritative_dns_infra`, `check_subdomain_takeover`, and `check_root_server_set` to 25/day. Async `brand_audit_*` tools require an authenticated paid tier.
+Free hosted usage keeps core DNS and email checks open for trial traffic, while high-cost or private-probe tools have tighter unauthenticated limits: `check_fast_flux` to 3/day, `check_lookalikes` and `check_shadow_domains` to 5/day, and `check_authoritative_dns_infra`, `check_subdomain_takeover`, and `check_root_server_set` to 25/day. The full brand-discovery surface — `discover_brand_domains` and the async `brand_audit_*` tools — requires an authenticated paid tier.
 
 **Agent tier** is intended for:
 - **CI/CD pipelines**: Commit-on-push DNS scans as part of security checks

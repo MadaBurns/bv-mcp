@@ -275,7 +275,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_subdomain_takeover: 25,
 	check_authoritative_dns_infra: 25,
 	check_root_server_set: 25,
-	discover_brand_domains: 1,
+	discover_brand_domains: 0,
 	brand_audit_single: 0,
 	brand_audit_batch_start: 0,
 	brand_audit_status: 0,
