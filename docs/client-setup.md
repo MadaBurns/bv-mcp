@@ -396,6 +396,10 @@ Canonical tool names from `tools/list` remain unchanged.
 
 Important: raw JSON-RPC `tools/call` still requires `params.name` to be a tool identifier (`scan` or `scan_domain`), not a full phrase such as `scan example.com`.
 
+### Refreshing the tool list
+
+MCP clients fetch `tools/list` once when they connect and cache it for the lifetime of that connection. The tool set is static per deployment, so the server does not emit `tools/list_changed` notifications. To pick up tools added or removed by a server update, reconnect or restart your MCP client. This is why a client may briefly show a previous tool count right after a server update until it reconnects.
+
 ## Authentication
 
 Authenticated requests bypass per-IP rate limits and apply the caller's tier quota. Three authentication methods are supported:
