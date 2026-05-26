@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.3] - 2026-05-26
+
+### Changed
+
+- Negotiate MCP `protocolVersion` in the `initialize` handler (supports `2025-06-18` + `2025-03-26`; defaults to `2025-06-18`, matching structuredContent/outputSchema). The server now echoes the client's requested version when supported, and otherwise (omitted, malformed, or unsupported) returns its latest, `2025-06-18`. Previously it unconditionally returned `2025-03-26`, which was behind the structuredContent/outputSchema features bv-mcp already ships (introduced in spec `2025-06-18`). No tool-count or input-schema change.
+
 ## [3.3.2] - 2026-05-26
 
 ### Changed
