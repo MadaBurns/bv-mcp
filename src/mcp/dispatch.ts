@@ -11,6 +11,29 @@ import type { AnalyticsClient } from '../lib/analytics';
 
 type JsonRpcPayload = ReturnType<typeof jsonRpcSuccess> | ReturnType<typeof jsonRpcError>;
 
+/**
+ * MCP protocol versions this server supports, newest first.
+ * `2025-06-18` introduced `structuredContent` / `outputSchema`, both of which bv-mcp ships,
+ * so it is the latest advertised version. `2025-03-26` is retained for backward compatibility.
+ */
+export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26'] as const;
+
+/** The newest protocol version this server supports — returned when the client's request can't be honored. */
+export const LATEST_PROTOCOL_VERSION = '2025-06-18';
+
+/**
+ * Negotiate the MCP protocol version for an `initialize` response.
+ * Per spec: echo the client's requested version when supported; otherwise return the server's latest.
+ *
+ * @param requested - The client's `params.protocolVersion` (untyped — may be absent or malformed).
+ * @returns A supported protocol-version string.
+ */
+export function negotiateProtocolVersion(requested: unknown): string {
+	return typeof requested === 'string' && (SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(requested)
+		? requested
+		: LATEST_PROTOCOL_VERSION;
+}
+
 export interface DispatchMcpMethodOptions {
 	id: string | number | null | undefined;
 	method: string;
@@ -122,7 +145,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 			return {
 				kind: 'success',
 				payload: jsonRpcSuccess(options.id, {
-					protocolVersion: '2025-03-26',
+					protocolVersion: negotiateProtocolVersion(options.params?.protocolVersion),
 					capabilities: {
 						tools: { listChanged: false },
 						resources: { subscribe: false, listChanged: false },

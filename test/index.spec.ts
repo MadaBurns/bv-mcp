@@ -308,13 +308,28 @@ describe('DNS Security MCP Server', () => {
 			expect(body.id).toBe(1);
 			expect(body.result.serverInfo.name).toBe('Blackveil DNS');
 			expect(body.result.serverInfo.description).toBeTruthy();
-			expect(body.result.protocolVersion).toBe('2025-03-26');
+			// Request sent params:{} (no protocolVersion) → negotiation returns the server's latest.
+			expect(body.result.protocolVersion).toBe('2025-06-18');
 			expect(typeof body.result.instructions).toBe('string');
 			expect(body.result.instructions.length).toBeGreaterThan(0);
 			expect(body.result.capabilities.prompts).toEqual({ listChanged: false });
 			const sessionId = response.headers.get('mcp-session-id');
 			expect(sessionId).toBeTruthy();
 			expect(sessionId!.length).toBeGreaterThanOrEqual(32);
+		});
+
+		it('echoes the client-requested protocolVersion when supported', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { result: { protocolVersion: string } };
+			expect(body.result.protocolVersion).toBe('2025-03-26');
 		});
 
 		it('throttles excessive initialize calls from one IP', async () => {
@@ -856,7 +871,8 @@ describe('DNS Security MCP Server', () => {
 			expect(response.headers.get('mcp-session-id')).toBeTruthy();
 			const text = await response.text();
 			expect(text).toContain('event: message');
-			expect(text).toContain('"protocolVersion":"2025-03-26"');
+			// Request sent params:{} (no protocolVersion) → negotiation returns the server's latest.
+			expect(text).toContain('"protocolVersion":"2025-06-18"');
 		});
 
 		it('GET /mcp returns SSE stream with valid session', async () => {
@@ -1114,7 +1130,8 @@ describe('DNS Security MCP Server', () => {
 			const payload = parseSseMessage<{
 				result: { protocolVersion: string; serverInfo: { name: string } };
 			}>(messageChunk);
-			expect(payload.result.protocolVersion).toBe('2025-03-26');
+			// Request sent params:{} (no protocolVersion) → negotiation returns the server's latest.
+			expect(payload.result.protocolVersion).toBe('2025-06-18');
 			expect(payload.result.serverInfo.name).toBe('Blackveil DNS');
 
 			const deleteRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
