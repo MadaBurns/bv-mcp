@@ -463,14 +463,6 @@ export const DeleteBrandAuditWatchArgs = z
 	})
 	.passthrough();
 
-export const PackageTrustArgsSchema = z
-	.object({
-		registry: z.string().min(1).max(32),
-		package: z.string().min(1).max(214),
-		version: z.string().min(1).max(64).optional(),
-	})
-	.passthrough();
-
 export const ScanBucketsStartArgs = z
 	.object({
 		target: z.string().min(1).max(253),
@@ -560,7 +552,6 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	list_brand_audit_watches: ListBrandAuditWatchesArgs,
 	register_brand_audit_watch: RegisterBrandAuditWatchArgs,
 	delete_brand_audit_watch: DeleteBrandAuditWatchArgs,
-	check_package_trust: PackageTrustArgsSchema,
 	check_realtime_threat_feed: BaseDomainArgs,
 	scan_buckets_start: ScanBucketsStartArgs,
 	scan_buckets_status: ScanBucketsStatusArgs,
