@@ -7,25 +7,6 @@
 		"source": "github"
 	},
 	"version": "3.3.3",
-	"packages": [
-		{
-			"registryType": "npm",
-			"identifier": "blackveil-dns",
-			"version": "3.3.3",
-			"transport": {
-				"type": "stdio"
-			},
-			"environmentVariables": [
-				{
-					"description": "Blackveil API key (optional \u2014 free tier works without)",
-					"isRequired": false,
-					"format": "string",
-					"isSecret": true,
-					"name": "BV_API_KEY"
-				}
-			]
-		}
-	],
 	"remotes": [
 		{
 			"type": "streamable-http",
