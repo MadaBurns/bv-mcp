@@ -220,7 +220,7 @@ Pattern-based, emits `fuzzing_suspected` to `ALERT_WEBHOOK_URL` from 15-min cron
 
 ### Pre-commit (`.githooks/pre-commit`)
 
-Three gates: (1) blocked paths (`docs/plans/`, `docs/code-review/`, `docs/superpowers/`, `.dev/`, `.dev.vars*`, `.worktrees/`, generated deploy configs, reports, PDFs, `*.env*`); (2) generated files (`*.pyc`, `__pycache__/`, `worker-configuration.d.ts`, `*.wasm`, `*.sqlite`, `*.db`) even with `git add -f`; (3) IP-leakage regexes from ignored local patterns. Public docs (`docs/client-setup.md`, `docs/scoring.md`) are committable when they use placeholders. Override with `--no-verify` only for reviewed false positives.
+Four gates: (1) blocked paths (`docs/plans/`, `docs/code-review/`, `docs/superpowers/`, `.dev/`, `.dev.vars*`, `.worktrees/`, generated deploy configs, reports, PDFs, `*.env*`); (2) generated files (`*.pyc`, `__pycache__/`, `worker-configuration.d.ts`, `*.wasm`, `*.sqlite`, `*.db`) even with `git add -f`; (3) Gitleaks secret/PII scan; (4) repo-safety scanner (`scripts/repo-safety/scan-sensitive-surface.mjs` via `policy.json` — forbidden paths, internal hostnames, hashed client domains, public IPs, real emails; same scanner the required `File hygiene check` CI gate runs). Public docs (`docs/client-setup.md`, `docs/scoring.md`) are committable when they use placeholders. Override with `--no-verify` only for reviewed false positives.
 
 ## CI/CD
 

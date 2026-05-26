@@ -115,35 +115,3 @@ fi
 
 # ─── 2b. Repo safety scanner ─────────────────────────────────────────
 node scripts/repo-safety/scan-sensitive-surface.mjs
-
-# ─── 3. IP leakage patterns ─────────��────────────────────────────────
-# Patterns loaded from external file to avoid self-matching.
-# Each line is an extended regex pattern. Lines starting with # are ignored.
-# Loaded from .dev/ (gitignored) to avoid exposing internal hostnames in the public repo.
-PATTERNS_FILE="$(git rev-parse --show-toplevel)/.dev/blocked-patterns"
-
-if [ ! -f "$PATTERNS_FILE" ]; then
-  exit 0
-fi
-
-diff_content=$(git diff --cached --diff-filter=ACM -U0 -- ':!.githooks/' ':!.gitleaks.toml' | grep '^+' | grep -v '^+++' || true)
-
-if [ -n "$diff_content" ]; then
-  ip_found=""
-  while IFS= read -r pattern; do
-    [[ "$pattern" =~ ^#.*$ || -z "$pattern" ]] && continue
-    matches=$(echo "$diff_content" | grep -iE "$pattern" || true)
-    if [ -n "$matches" ]; then
-      ip_found="$ip_found\n  Pattern: $pattern\n$matches\n"
-    fi
-  done < "$PATTERNS_FILE"
-
-  if [ -n "$ip_found" ]; then
-    echo "BLOCKED: IP leakage patterns detected in staged changes:"
-    echo -e "$ip_found"
-    echo "These patterns indicate internal infrastructure, customer data,"
-    echo "or proprietary information that should not be in a public repo."
-    echo "If this is intentional, use: git commit --no-verify"
-    exit 1
-  fi
-fi
