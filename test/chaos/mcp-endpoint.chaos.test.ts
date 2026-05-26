@@ -37,12 +37,29 @@ afterEach(() => {
 	(env as TestEnv).MCP_ANALYTICS = ORIGINAL_ANALYTICS;
 });
 
-function postMcp(body: unknown): Request<unknown, IncomingRequestCfProperties> {
+function postMcp(body: unknown, sessionId?: string): Request<unknown, IncomingRequestCfProperties> {
 	return new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+		headers: {
+			'Content-Type': 'application/json',
+			Accept: 'application/json',
+			...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}),
+		},
 		body: JSON.stringify(body),
 	});
+}
+
+async function initSession(): Promise<string> {
+	const ctx = createExecutionContext();
+	const res = await worker.fetch(
+		postMcp({ jsonrpc: '2.0', id: 0, method: 'initialize', params: {} }),
+		env,
+		ctx,
+	);
+	await waitOnExecutionContext(ctx);
+	const id = res.headers.get('mcp-session-id');
+	if (!id) throw new Error('initSession: no Mcp-Session-Id returned');
+	return id;
 }
 
 describe('chaos: /mcp endpoint resilience', () => {
@@ -75,12 +92,20 @@ describe('chaos: /mcp endpoint resilience', () => {
 	});
 
 	it('H2: batch with one non-object entry returns per-entry error without blocking the valid entry', async () => {
+		// MCP spec forbids batching `initialize` (execute.ts:380), so the valid entry
+		// is a session-scoped tools/list — exercise per-entry isolation in the same
+		// batch shape that real clients send.
+		const sessionId = await initSession();
+
 		const ctx = createExecutionContext();
 		const res = await worker.fetch(
-			postMcp([
-				null,
-				{ jsonrpc: '2.0', id: 'init', method: 'initialize', params: {} },
-			]),
+			postMcp(
+				[
+					null,
+					{ jsonrpc: '2.0', id: 'list', method: 'tools/list', params: {} },
+				],
+				sessionId,
+			),
 			env,
 			ctx,
 		);
@@ -95,8 +120,8 @@ describe('chaos: /mcp endpoint resilience', () => {
 		expect(malformed?.error).toBeDefined();
 		expect(malformed?.error?.code).toBe(-32600); // JSON-RPC INVALID_REQUEST
 
-		const initialize = payloads.find((p) => p.id === 'init');
-		expect(initialize?.result).toBeDefined();
-		expect(initialize?.error).toBeUndefined();
+		const list = payloads.find((p) => p.id === 'list');
+		expect(list?.result).toBeDefined();
+		expect(list?.error).toBeUndefined();
 	});
 });
