@@ -374,7 +374,6 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'register_brand_audit_watch', arguments: { domain: 'brand-example.net', interval: 'weekly' } },
 		{ name: 'delete_brand_audit_watch', arguments: { watchId: 'chaos-watch-1' } },
 		{ name: 'check_realtime_threat_feed', arguments: domainArgs() },
-		{ name: 'check_package_trust', arguments: { registry: 'npm', package: 'left-pad', format: 'compact' } },
 		{ name: 'scan_buckets_start', arguments: { target: 'example.com' } },
 		{ name: 'scan_buckets_status', arguments: { scanId: 's1' } },
 		{ name: 'scan_buckets_findings', arguments: {} },
