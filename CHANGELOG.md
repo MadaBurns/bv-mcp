@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.2] - 2026-05-26
+
+### Changed
+
+- Scan-included `check_*` tool descriptions reference `scan_domain` for selection steering. The emitted `tools/list` description of each of the 16 scan-included checks now ends with the factual suffix "Part of the scan_domain audit.", letting an LLM pick `scan_domain` for a full audit and an individual `check_*` for a single control. Descriptive, not prescriptive — the suffix trips no phrase in the directory-review prescriptive-language audit. Applied at the `TOOLS` build (not per-tool), so it auto-covers any future scan-included tool. No tool-count or input-schema change.
+
 ## [3.3.1] - 2026-05-26
 
 ### Added
