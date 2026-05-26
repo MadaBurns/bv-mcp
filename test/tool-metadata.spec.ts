@@ -19,7 +19,7 @@ describe('tool metadata', () => {
 		}
 	});
 
-	it('has exactly 74 tools', () => {
-		expect(TOOLS).toHaveLength(74);
+	it('has exactly 73 tools', () => {
+		expect(TOOLS).toHaveLength(73);
 	});
 });

@@ -340,15 +340,6 @@ const TOOL_REGISTRY: Record<
 		execute: (d, _args, ro) => checkRdapLookup(d, { whoisBinding: ro?.whoisBinding }),
 		cacheTtlSeconds: 3600,
 	},
-	check_package_trust: {
-		cacheKey: (args) => `pkgtrust:${String(args.registry)}:${String(args.package)}:${String(args.version ?? '')}`,
-		execute: async (_d, args, ro) =>
-			(await import('../tools/check-package-trust')).checkPackageTrust(
-				{ registry: String(args.registry), package: String(args.package), version: args.version ? String(args.version) : undefined },
-				{ reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken },
-			),
-		cacheTtlSeconds: 3600,
-	},
 	check_realtime_threat_feed: {
 		cacheKey: () => 'realtime_threat_feed',
 		execute: (d, _args, ro) =>
