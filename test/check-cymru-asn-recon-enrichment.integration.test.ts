@@ -64,9 +64,15 @@ function buildCymruFetchMock(domain: string, ip: string, originTxtValue: string,
 // Recon binding mock helper
 // ---------------------------------------------------------------------------
 
-function makeReconBinding(findings: Array<{ severity: string; title?: string; detail?: string }>) {
+function makeReconHitBinding(detail: string) {
 	return {
-		fetch: vi.fn(async () => new Response(JSON.stringify({ findings }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+		fetch: vi.fn(async () => new Response(JSON.stringify({ checkType: 'MALICIOUS_ASN', status: 'warning', details: detail }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+	};
+}
+
+function makeReconBenignBinding() {
+	return {
+		fetch: vi.fn(async () => new Response(JSON.stringify({ checkType: 'MALICIOUS_ASN', status: 'info', details: 'nothing serious' }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
 	};
 }
 
@@ -91,7 +97,7 @@ describe('checkCymruAsn recon enrichment', () => {
 		expect(enriched).toHaveLength(0);
 	});
 
-	it('enriched: adds corroboration finding when recon returns a high-severity hit', async () => {
+	it('enriched: adds corroboration finding when recon returns a hit status', async () => {
 		buildCymruFetchMock(
 			'example.com',
 			'93.184.216.34',
@@ -100,7 +106,7 @@ describe('checkCymruAsn recon enrichment', () => {
 			'15169 | US | arin | 2007-03-19 | GOOGLE - Google LLC, US',
 		);
 
-		const reconBinding = makeReconBinding([{ severity: 'high', title: 'Known malicious ASN', detail: 'ASN 15169 flagged in threat feed' }]);
+		const reconBinding = makeReconHitBinding('ASN 15169 flagged in threat feed');
 
 		const { checkCymruAsn } = await import('../src/tools/check-cymru-asn');
 		const result = await checkCymruAsn('example.com', undefined, { reconBinding, reconAuthToken: 'tok' });
@@ -112,7 +118,7 @@ describe('checkCymruAsn recon enrichment', () => {
 		expect(enriched[0].detail).toContain('ASN 15169 flagged in threat feed');
 	});
 
-	it('enriched: no corroboration finding when recon returns only info-severity hits', async () => {
+	it('enriched: no corroboration finding when recon returns a benign status', async () => {
 		buildCymruFetchMock(
 			'example.com',
 			'93.184.216.34',
@@ -121,7 +127,7 @@ describe('checkCymruAsn recon enrichment', () => {
 			'15169 | US | arin | 2007-03-19 | GOOGLE - Google LLC, US',
 		);
 
-		const reconBinding = makeReconBinding([{ severity: 'info', title: 'Low priority note', detail: 'nothing serious' }]);
+		const reconBinding = makeReconBenignBinding();
 
 		const { checkCymruAsn } = await import('../src/tools/check-cymru-asn');
 		const result = await checkCymruAsn('example.com', undefined, { reconBinding, reconAuthToken: 'tok' });
