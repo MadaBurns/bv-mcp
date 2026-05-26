@@ -30,6 +30,40 @@ export function buildToolContent(text: string, structuredData: unknown, format: 
 	return content;
 }
 
+/**
+ * Coerce arbitrary structured tool data into the MCP-standard `structuredContent`
+ * shape — which MUST be a JSON object (not an array or scalar) per MCP 2025-06-18.
+ *
+ * - `null`/`undefined` → `undefined` (field is omitted from the result).
+ * - array → `{ results: <array> }` (objects-only constraint).
+ * - plain object → returned as-is.
+ * - scalar (string/number/boolean) → `{ value: <scalar> }`.
+ */
+export function toStructuredContent(data: unknown): Record<string, unknown> | undefined {
+	if (data === null || data === undefined) return undefined;
+	if (Array.isArray(data)) return { results: data };
+	if (typeof data === 'object') return data as Record<string, unknown>;
+	return { value: data };
+}
+
+/**
+ * Build a full MCP tool-call result: the human-readable `content` array (with the
+ * backward-compat `STRUCTURED_RESULT` comment in `full` format) plus the
+ * MCP-standard `structuredContent` machine-readable channel.
+ *
+ * `structuredContent` is set regardless of `format` — it is a separate channel
+ * from `content`, and clients that don't support it simply ignore it.
+ */
+export function buildToolResult(
+	text: string,
+	structuredData: unknown,
+	format: OutputFormat,
+): { content: McpContent[]; structuredContent?: Record<string, unknown> } {
+	const content = buildToolContent(text, structuredData, format);
+	const sc = toStructuredContent(structuredData);
+	return sc === undefined ? { content } : { content, structuredContent: sc };
+}
+
 export function formatCheckResult(result: CheckResult, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 	lines.push(`## ${result.category.toUpperCase()} Check`);
