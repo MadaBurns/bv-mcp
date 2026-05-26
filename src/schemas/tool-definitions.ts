@@ -701,7 +701,7 @@ const CHECK_RESULT_OUTPUT_SCHEMA = buildCheckResultOutputJsonSchema();
 
 export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => ({
 	name,
-	description: def.description,
+	description: def.scanIncluded ? `${def.description} Part of the scan_domain audit.` : def.description,
 	inputSchema: toInputSchema(def.schema),
 	...(NON_CHECK_RESULT_TOOLS.has(name) ? {} : { outputSchema: CHECK_RESULT_OUTPUT_SCHEMA }),
 	annotations: {
