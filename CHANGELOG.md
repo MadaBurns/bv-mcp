@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-05-26
+
+### Added
+
+- **MCP `outputSchema` on CheckResult-returning tools.** Follow-up to 3.3.0 (which deferred this): the registry-driven `check_*`/recon tools — every tool whose `tools/call` `structuredContent` is a `CheckResult` (51 tools) — now declare a lenient `outputSchema` in `tools/list`, letting strict MCP clients validate the `structuredContent` added in 3.3.0. The schema pins only the always-present keys (`category`, `score`, `passed`, `findings`) and permits any extra properties (`checkStatus`, `partial`, `metadata`, finding metadata), so any real CheckResult validates. Special-case tools that return custom shapes (`scan_domain`, `batch_scan`, `compare_domains`, `compare_baseline`, `generate_*`, etc.) intentionally declare no `outputSchema`. Additive — no tool-count or input-schema change.
+
 ## [3.3.0] - 2026-05-26
 
 ### Added
