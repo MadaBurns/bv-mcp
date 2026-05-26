@@ -106,6 +106,8 @@ interface WireTool {
 	name: string;
 	description: string;
 	inputSchema: McpTool['inputSchema'];
+	/** Present only for tools whose `structuredContent` is a `CheckResult`. */
+	outputSchema?: McpTool['outputSchema'];
 	annotations: McpTool['annotations'];
 	_meta: {
 		group: McpTool['group'];
@@ -124,6 +126,7 @@ export function handleToolsList(): { tools: WireTool[] } {
 			name: tool.name,
 			description: tool.description,
 			inputSchema: tool.inputSchema,
+			...(tool.outputSchema !== undefined && { outputSchema: tool.outputSchema }),
 			annotations: tool.annotations,
 			_meta: {
 				group: tool.group,
