@@ -102,8 +102,6 @@ Transport support:
   map_supply_chain      check_rbl               brand_audit_single    generate_rollout_plan
   analyze_drift         cymru_asn               brand_audit_batch_
   resolve_spf_chain     rdap_lookup               start
-                        check_package_trust
-                        check_realtime_threat_feed
   discover_subdomains   check_nsec_             brand_audit_status
   map_compliance          walkability           brand_audit_get_
   simulate_attack_paths check_dnssec_chain        report
@@ -114,6 +112,20 @@ Transport support:
 
   + check_subdomain_takeover (standalone tool + internal — runs inside scan_domain)
   + check_authoritative_dns_infra and check_root_server_set (authoritative DNS infrastructure profile)
+
+  Operator-deploy only (BV_RECON binding; degrade to unprovisioned on self-hosted BSL deployments):
+  + check_package_trust          — package ecosystem trust check via bv-recon
+  + check_realtime_threat_feed   — curated intel-gateway threat feed lookup
+  + scan_buckets_start           — async cloud-bucket discovery scan (start → poll → findings)
+  + scan_buckets_status          — poll status of a running bucket scan
+  + scan_buckets_findings        — retrieve findings for a completed bucket scan
+  + osint_investigate_domain_start          — async domain OSINT investigation (start → poll → report)
+  + osint_investigate_infrastructure_start  — async deep-infrastructure OSINT (domain, IP, or org)
+  + osint_investigate_supply_chain_start    — async supply-chain OSINT investigation
+  + osint_investigate_username_start        — async username OSINT (owner/enterprise tier only)
+  + osint_investigate_email_start           — async email OSINT (owner/enterprise tier only)
+  + osint_investigation_status   — poll status of any running OSINT investigation
+  + osint_investigation_report   — retrieve report for a completed OSINT investigation
 ```
 
 ### Authoritative DNS infrastructure
