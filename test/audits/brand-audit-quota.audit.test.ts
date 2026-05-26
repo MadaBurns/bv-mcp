@@ -13,7 +13,24 @@
 
 import { describe, it, expect } from 'vitest';
 import { BRAND_AUDIT_QUOTAS } from '../../src/lib/brand-audit-quota';
-import { TIER_DAILY_LIMITS } from '../../src/lib/config';
+import { FREE_TOOL_DAILY_LIMITS, TIER_DAILY_LIMITS } from '../../src/lib/config';
+
+// The brand_audit_* family is a paid feature. Free/unauthenticated callers are
+// blocked at TWO independent gates: the per-tool free daily limit (this set, the
+// first-line gate every unauthenticated tools/call hits) and the monthly
+// BRAND_AUDIT_QUOTAS budget (the in-tool gate). The monthly gate's free=0 is
+// locked below; without these assertions a future FREE_TOOL_DAILY_LIMITS edit
+// could silently re-open the daily gate, leaving only the monthly quota — which
+// itself fails open if the auth tier/KV bindings are absent.
+const FREE_BLOCKED_BRAND_TOOLS = [
+	'brand_audit_single',
+	'brand_audit_batch_start',
+	'brand_audit_status',
+	'brand_audit_get_report',
+	'register_brand_audit_watch',
+	'list_brand_audit_watches',
+	'delete_brand_audit_watch',
+] as const;
 
 describe('brand-audit-quota audit', () => {
 	it('covers every McpApiKeyTier in TIER_DAILY_LIMITS', () => {
@@ -25,6 +42,12 @@ describe('brand-audit-quota audit', () => {
 	it('free and agent tiers are excluded (paid feature, not part of static-key allowance)', () => {
 		expect(BRAND_AUDIT_QUOTAS.free).toBe(0);
 		expect(BRAND_AUDIT_QUOTAS.agent).toBe(0);
+	});
+
+	it('brand_audit_* family is hard-blocked (0/day) in the free-tier daily gate', () => {
+		for (const tool of FREE_BLOCKED_BRAND_TOOLS) {
+			expect(FREE_TOOL_DAILY_LIMITS[tool], `FREE_TOOL_DAILY_LIMITS.${tool} must be 0 (free tier blocked)`).toBe(0);
+		}
 	});
 
 	it('owner tier is unlimited', () => {
