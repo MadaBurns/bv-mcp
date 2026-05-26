@@ -318,6 +318,11 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('throttles excessive initialize calls from one IP', async () => {
+			// Pin the clock so all requests fall in one per-minute rate-limit window.
+			// The limiter keys its window by Math.floor(Date.now() / 60_000); a loop that
+			// straddles a wall-clock minute boundary splits the count across two windows so
+			// neither reaches the limit → flaky 200 instead of 429 (esp. under slow CI).
+			vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 0, 1, 12, 30, 30));
 			let lastResponse: Response | undefined;
 			for (let i = 0; i < 31; i++) {
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
