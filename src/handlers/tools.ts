@@ -84,7 +84,7 @@ import {
 } from './tool-args';
 import type { OutputFormat } from './tool-args';
 import { buildLogContext, logToolFailure, logToolSuccess } from './tool-execution';
-import { formatCheckResult, mcpError, buildToolContent } from './tool-formatters';
+import { formatCheckResult, mcpError, buildToolResult } from './tool-formatters';
 import type { McpContent } from './tool-formatters';
 import { TOOLS } from '../schemas/tool-definitions';
 import type { McpTool } from '../schemas/tool-definitions';
@@ -92,6 +92,7 @@ import type { McpTool } from '../schemas/tool-definitions';
 /** MCP tools/call result */
 interface McpToolResult {
 	content: McpContent[];
+	structuredContent?: Record<string, unknown>;
 	isError?: boolean;
 }
 
@@ -900,7 +901,7 @@ export async function handleToolsCall(
 					logDetails,
 					cacheStatus,
 				});
-				return { content: buildToolContent(formatCheckResult(result, effectiveFormat), result, effectiveFormat) };
+				return buildToolResult(formatCheckResult(result, effectiveFormat), result, effectiveFormat);
 			}
 
 			switch (name) {
@@ -926,7 +927,7 @@ export async function handleToolsCall(
 						cacheStatus,
 					});
 					const structured = buildStructuredScanResult(result);
-					return { content: buildToolContent(formatScanReport(result, effectiveFormat), structured, effectiveFormat) };
+					return buildToolResult(formatScanReport(result, effectiveFormat), structured, effectiveFormat);
 				}
 				case 'batch_scan': {
 					const domains = validatedArgs.domains as string[];
@@ -955,7 +956,7 @@ export async function handleToolsCall(
 						logDetails: { totalDomains: batchResults.length },
 						severity: 'info',
 					});
-					return { content: buildToolContent(batchText, batchResults, effectiveFormat) };
+					return buildToolResult(batchText, batchResults, effectiveFormat);
 				}
 				case 'compare_domains': {
 					const domains = validatedArgs.domains as string[];
@@ -982,7 +983,7 @@ export async function handleToolsCall(
 						logDetails: { totalDomains: compareResults.domains.length, winner: compareResults.winner },
 						severity: 'info',
 					});
-					return { content: buildToolContent(compareText, compareResults, effectiveFormat) };
+					return buildToolResult(compareText, compareResults, effectiveFormat);
 				}
 				case 'compare_baseline': {
 					const baseline = extractBaseline(validatedArgs) as PolicyBaseline;
@@ -991,45 +992,45 @@ export async function handleToolsCall(
 					logResult = result.passed ? 'pass' : 'fail';
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: result.passed ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
-					return { content: buildToolContent(formatBaselineResult(result, effectiveFormat), result, effectiveFormat) };
+					return buildToolResult(formatBaselineResult(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'generate_fix_plan': {
 					const plan = await generateFixPlan(validDomain, scanCacheKV, runtimeOptions);
 					logResult = plan.grade;
 					logDetails = plan;
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-					return { content: buildToolContent(formatFixPlan(plan, effectiveFormat), plan, effectiveFormat) };
+					return buildToolResult(formatFixPlan(plan, effectiveFormat), plan, effectiveFormat);
 				}
 				case 'generate_spf_record': {
 					const includeProviders = extractIncludeProviders(validatedArgs);
 					const record = await generateSpfRecord(validDomain, includeProviders, buildDnsOptions(runtimeOptions));
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
-					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
+					return buildToolResult(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat);
 				}
 				case 'generate_dmarc_record': {
 					const policy = typeof validatedArgs.policy === 'string' ? (validatedArgs.policy as 'none' | 'quarantine' | 'reject') : undefined;
 					const ruaEmail = typeof validatedArgs.rua_email === 'string' ? validatedArgs.rua_email : undefined;
 					const record = await generateDmarcRecord(validDomain, policy, ruaEmail, buildDnsOptions(runtimeOptions));
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
-					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
+					return buildToolResult(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat);
 				}
 				case 'generate_dkim_config': {
 					const provider = typeof validatedArgs.provider === 'string' ? validatedArgs.provider : undefined;
 					const record = await generateDkimConfig(validDomain, provider);
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
-					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
+					return buildToolResult(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat);
 				}
 				case 'generate_mta_sts_policy': {
 					const mxHosts = extractMxHosts(validatedArgs);
 					const record = await generateMtaStsPolicy(validDomain, mxHosts, buildDnsOptions(runtimeOptions));
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
-					return { content: buildToolContent(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat) };
+					return buildToolResult(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat);
 				}
 				case 'get_benchmark': {
 					const profile = typeof validatedArgs.profile === 'string' ? validatedArgs.profile : 'mail_enabled';
 					const result = await getBenchmark(runtimeOptions?.profileAccumulator, profile);
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: result.status, logDetails: result, severity: 'info' });
-					return { content: buildToolContent(formatBenchmark(result, effectiveFormat), result, effectiveFormat) };
+					return buildToolResult(formatBenchmark(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'get_provider_insights': {
 					const provider = typeof validatedArgs.provider === 'string' ? validatedArgs.provider : '';
@@ -1039,14 +1040,14 @@ export async function handleToolsCall(
 					const profile = typeof validatedArgs.profile === 'string' ? validatedArgs.profile : 'mail_enabled';
 					const result = await getProviderInsights(runtimeOptions?.profileAccumulator, provider, profile);
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: result.status, logDetails: result, severity: 'info' });
-					return { content: buildToolContent(formatProviderInsights(result, effectiveFormat), result, effectiveFormat) };
+					return buildToolResult(formatProviderInsights(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'assess_spoofability': {
 					const result = await assessSpoofability(validDomain, buildDnsOptions(runtimeOptions));
 					logResult = result.riskLevel;
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: result.spoofabilityScore <= 30 ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
-					return { content: buildToolContent(formatSpoofability(result, effectiveFormat), result, effectiveFormat) };
+					return buildToolResult(formatSpoofability(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'check_resolver_consistency': {
 					const recordType = extractRecordType(validatedArgs);
@@ -1055,7 +1056,7 @@ export async function handleToolsCall(
 					logResult = result.passed ? 'pass' : 'fail';
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: result.passed ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
-					return { content: buildToolContent(formatResolverConsistency(result, effectiveFormat), result, effectiveFormat) };
+					return buildToolResult(formatResolverConsistency(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'explain_finding': {
 					let explainArgs: ReturnType<typeof extractExplainFindingArgs>;
@@ -1067,7 +1068,7 @@ export async function handleToolsCall(
 					const { checkType, status, details } = explainArgs;
 					const result = explainFinding(checkType, status, details);
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: status, logDetails: { checkType, details }, severity: 'info' });
-					return { content: buildToolContent(formatExplanation(result, effectiveFormat), result, effectiveFormat) };
+					return buildToolResult(formatExplanation(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'validate_fix': {
 					const check = typeof validatedArgs.check === 'string' ? validatedArgs.check : '';
@@ -1076,14 +1077,14 @@ export async function handleToolsCall(
 					logResult = result.verdict;
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: result.verdict === 'fixed' ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
-					return { content: buildToolContent(formatValidateFix(result, effectiveFormat), result, effectiveFormat) };
+					return buildToolResult(formatValidateFix(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'map_supply_chain': {
 					const result = await mapSupplyChain(validDomain, buildDnsOptions(runtimeOptions));
 					logResult = `${result.summary.totalProviders} providers`;
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-					return { content: buildToolContent(formatSupplyChain(result, effectiveFormat), result, effectiveFormat) };
+					return buildToolResult(formatSupplyChain(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'generate_rollout_plan': {
 					const targetPolicy =
@@ -1096,7 +1097,7 @@ export async function handleToolsCall(
 					logResult = result.atTarget ? 'at_target' : `${result.phases.length} phases`;
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-					return { content: buildToolContent(formatRolloutPlan(result, effectiveFormat), result, effectiveFormat) };
+					return buildToolResult(formatRolloutPlan(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'analyze_drift': {
 					const baselineStr = typeof validatedArgs.baseline === 'string' ? validatedArgs.baseline : '';
@@ -1130,35 +1131,35 @@ export async function handleToolsCall(
 					logResult = drift.classification;
 					logDetails = drift;
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-					return { content: buildToolContent(formatDriftReport(drift, effectiveFormat), drift, effectiveFormat) };
+					return buildToolResult(formatDriftReport(drift, effectiveFormat), drift, effectiveFormat);
 				}
 				case 'resolve_spf_chain': {
 					const result = await resolveSpfChain(validDomain, buildDnsOptions(runtimeOptions));
 					logResult = result.overLimit ? 'over_limit' : 'ok';
 					logDetails = { totalLookups: result.totalLookups, maxDepth: result.maxDepth, issues: result.issues.length };
 					logToolSuccess({ ...ctx(), status: result.overLimit ? 'fail' : 'pass', logResult, logDetails, severity: 'info' });
-					return { content: buildToolContent(formatSpfChain(result, effectiveFormat), result, effectiveFormat) };
+					return buildToolResult(formatSpfChain(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'discover_subdomains': {
 					const result = await discoverSubdomains(validDomain, runtimeOptions?.certstream, runtimeOptions?.certstreamAuthToken);
 					logResult = `${result.totalSubdomains} subdomains`;
 					logDetails = { totalSubdomains: result.totalSubdomains, issues: result.issues.length };
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-					return { content: buildToolContent(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat) };
+					return buildToolResult(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'map_compliance': {
 					const result = await mapCompliance(validDomain, scanCacheKV, runtimeOptions);
 					logResult = 'mapped';
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-					return { content: buildToolContent(formatCompliance(result, effectiveFormat), result, effectiveFormat) };
+					return buildToolResult(formatCompliance(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'simulate_attack_paths': {
 					const result = await simulateAttackPaths(validDomain, buildDnsOptions(runtimeOptions));
 					logResult = `${result.totalPaths} paths, risk: ${result.overallRisk}`;
 					logDetails = { totalPaths: result.totalPaths, overallRisk: result.overallRisk };
 					logToolSuccess({ ...ctx(), status: result.overallRisk === 'low' ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
-					return { content: buildToolContent(formatAttackPaths(result, effectiveFormat), result, effectiveFormat) };
+					return buildToolResult(formatAttackPaths(result, effectiveFormat), result, effectiveFormat);
 				}
 				default:
 					logToolFailure({ ...ctx(), error: `Unknown tool: ${name}`, args });

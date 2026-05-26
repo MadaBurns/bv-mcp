@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-05-26
+
+### Added
+
+- **MCP `structuredContent` on tool-call results.** Every tool that returns structured data now sets the MCP-standard `structuredContent` object on its `tools/call` result, giving all LLM/clients a reliable machine-readable channel. Arrays are wrapped as `{ results: [...] }` and scalars as `{ value: ... }` (MCP requires an object); `null`/`undefined` omits the field. Set independently of `format` — the legacy `<!-- STRUCTURED_RESULT … -->` comment in `content` is preserved for backward compatibility. Per-tool `outputSchema` declarations are intentionally out of scope (clients treat unschematized `structuredContent` as opaque JSON).
+
 ## [3.2.1] - 2026-05-26
 
 ### Removed
