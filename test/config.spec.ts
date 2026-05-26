@@ -102,7 +102,7 @@ describe('partner tier', () => {
 
 describe('free tier tool quota policy', () => {
 	it('keeps high-cost or private-probe tools on tight free anonymous limits', () => {
-		expect(FREE_TOOL_DAILY_LIMITS.discover_brand_domains).toBe(1);
+		expect(FREE_TOOL_DAILY_LIMITS.discover_brand_domains).toBe(0);
 		expect(FREE_TOOL_DAILY_LIMITS.check_authoritative_dns_infra).toBe(25);
 		expect(FREE_TOOL_DAILY_LIMITS.check_fast_flux).toBe(3);
 	});

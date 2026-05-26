@@ -15,14 +15,16 @@ import { describe, it, expect } from 'vitest';
 import { BRAND_AUDIT_QUOTAS } from '../../src/lib/brand-audit-quota';
 import { FREE_TOOL_DAILY_LIMITS, TIER_DAILY_LIMITS } from '../../src/lib/config';
 
-// The brand_audit_* family is a paid feature. Free/unauthenticated callers are
-// blocked at TWO independent gates: the per-tool free daily limit (this set, the
-// first-line gate every unauthenticated tools/call hits) and the monthly
-// BRAND_AUDIT_QUOTAS budget (the in-tool gate). The monthly gate's free=0 is
-// locked below; without these assertions a future FREE_TOOL_DAILY_LIMITS edit
-// could silently re-open the daily gate, leaving only the monthly quota — which
-// itself fails open if the auth tier/KV bindings are absent.
+// The brand-discovery surface (brand_audit_* family + discover_brand_domains)
+// is a paid feature — fully blocked for free/unauthenticated callers via the
+// per-tool free daily limit (0/day, the first-line gate every unauthenticated
+// tools/call hits; limit 0 → first call denies). brand_audit_* carry a second
+// in-tool gate (BRAND_AUDIT_QUOTAS, monthly, free=0, locked below);
+// discover_brand_domains has no monthly quota, so its daily-0 lock is the sole
+// gate and matters most. Without these assertions a future FREE_TOOL_DAILY_LIMITS
+// edit could silently re-open free-tier access.
 const FREE_BLOCKED_BRAND_TOOLS = [
+	'discover_brand_domains',
 	'brand_audit_single',
 	'brand_audit_batch_start',
 	'brand_audit_status',
@@ -44,7 +46,7 @@ describe('brand-audit-quota audit', () => {
 		expect(BRAND_AUDIT_QUOTAS.agent).toBe(0);
 	});
 
-	it('brand_audit_* family is hard-blocked (0/day) in the free-tier daily gate', () => {
+	it('brand-discovery tools (brand_audit_* + discover_brand_domains) are hard-blocked (0/day) in the free-tier daily gate', () => {
 		for (const tool of FREE_BLOCKED_BRAND_TOOLS) {
 			expect(FREE_TOOL_DAILY_LIMITS[tool], `FREE_TOOL_DAILY_LIMITS.${tool} must be 0 (free tier blocked)`).toBe(0);
 		}

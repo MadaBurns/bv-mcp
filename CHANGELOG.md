@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.4] - 2026-05-26
+
+### Changed
+
+- **`discover_brand_domains` is now a paid-tier tool — free/unauthenticated daily limit lowered from 1/day to 0/day.** The full brand-discovery surface (`discover_brand_domains` + the async `brand_audit_*` family) now requires an authenticated paid tier. `brand_audit_*` were already 0/day for free; this closes the last free-tier entry point into brand discovery. An audit test (`brand-audit-quota.audit.test.ts`) locks the whole family at 0/day so the gate can't silently re-open. No tool-count or input-schema change.
+
 ## [3.3.3] - 2026-05-26
 
 ### Changed
