@@ -31,18 +31,6 @@ const ReconScanResponseSchema = z
 	.passthrough();
 export type ReconScanResult = z.infer<typeof ReconScanResponseSchema>;
 
-/** Minimal shape of a bv-recon /packages/check response. */
-const PackageTrustResponseSchema = z
-	.object({
-		verdict: z.string().optional(),
-		confidence: z.string().optional(),
-		signals: z
-			.array(z.object({ id: z.string().optional(), severity: z.string(), detail: z.string() }))
-			.default([]),
-	})
-	.passthrough();
-export type PackageTrustResult = z.infer<typeof PackageTrustResponseSchema>;
-
 /**
  * Returns true when a DNSCheckResult status indicates a threat signal.
  * Benign statuses ('info', 'pass', 'ok', 'low', undefined) return false.
@@ -224,26 +212,3 @@ export function callReconBucketFindings(
 	return reconJson(binding, authToken, `/buckets/api/findings${qs}`, { method: 'GET' }, OpaqueObjectSchema, signal) as Promise<ReconOpaque | null>;
 }
 
-export async function callReconPackageCheck(
-	binding: ReconBinding | undefined,
-	authToken: string | undefined,
-	params: { registry: string; package: string; version?: string },
-	signal?: AbortSignal,
-): Promise<PackageTrustResult | null> {
-	if (!binding) return null;
-	try {
-		// bv-recon's /packages/check requires a non-empty `version` (CheckQuerySchema).
-		// Default to 'latest' when the caller doesn't pin one — otherwise the request 400s.
-		const qs = new URLSearchParams({ registry: params.registry, package: params.package, version: params.version || 'latest' });
-		const resp = await binding.fetch(`https://bv-recon/packages/check?${qs.toString()}`, {
-			method: 'GET',
-			headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-			signal: composeSignal(signal),
-		});
-		if (!resp.ok) return null;
-		const parsed = PackageTrustResponseSchema.safeParse(await resp.json().catch(() => null));
-		return parsed.success ? parsed.data : null;
-	} catch {
-		return null;
-	}
-}

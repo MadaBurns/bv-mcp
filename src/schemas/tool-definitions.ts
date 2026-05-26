@@ -31,7 +31,6 @@ import {
 	ListBrandAuditWatchesArgs,
 	RegisterBrandAuditWatchArgs,
 	DeleteBrandAuditWatchArgs,
-	PackageTrustArgsSchema,
 	ScanBucketsStartArgs,
 	ScanBucketsStatusArgs,
 	ScanBucketsFindingsArgs,
@@ -461,13 +460,6 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		description:
 			'Fetch domain registration data via RDAP (modern WHOIS replacement). Returns registrar, creation/expiration dates, EPP status, registrant info, and domain age.',
 		schema: BaseDomainArgs,
-		group: 'intelligence',
-		scanIncluded: false,
-	},
-	check_package_trust: {
-		description:
-			'Assess supply-chain trust of an npm or PyPI package via BlackVeil package-trust. Returns a MALICIOUS/SUSPICIOUS/LOW_RISK/SAFE verdict with signals. Operator-deploy only; degrades to info when unprovisioned.',
-		schema: PackageTrustArgsSchema,
 		group: 'intelligence',
 		scanIncluded: false,
 	},

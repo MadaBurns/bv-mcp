@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-05-26
+
+### Removed
+
+- **`check_package_trust`** tool entirely (74 → 73 tools). Removed `PackageTrustArgsSchema`, `callReconPackageCheck`, `PackageTrustResponseSchema`, and `PackageTrustResult` from all SSOT surfaces.
+
 ## [3.2.0] - 2026-05-26
 
 ### Added
