@@ -13,7 +13,7 @@
 
 import { queryDns } from '../lib/dns';
 import type { DnsAnswer, QueryDnsOptions } from '../lib/dns-types';
-import { callReconScan } from '../lib/recon-binding';
+import { callReconScan, isReconHit } from '../lib/recon-binding';
 import type { ReconBinding } from '../lib/recon-binding';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory, Finding } from '../lib/scoring';
@@ -170,14 +170,14 @@ export async function checkFastFlux(
 	// Recon enrichment: additive-only, fail-soft
 	if (reconOptions.reconBinding) {
 		const reconResult = await callReconScan(reconOptions.reconBinding, reconOptions.reconAuthToken, 'ATTACKER_INFRASTRUCTURE', { domain });
-		const hit = reconResult?.findings.find((f) => ['medium', 'high', 'critical'].includes(f.severity));
+		const hit = reconResult && isReconHit(reconResult.status);
 		if (hit) {
 			findings.push(
 				createFinding(
 					CATEGORY,
 					'Attacker-infrastructure intel corroboration',
 					'medium',
-					hit.detail ?? hit.title ?? `External threat-intel flagged related infrastructure.`,
+					reconResult.details ?? `External threat-intel flagged related infrastructure.`,
 					{ domain, reconEnriched: true },
 				),
 			);
