@@ -9,7 +9,7 @@
 
 import { queryDnsRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
-import { callReconScan } from '../lib/recon-binding';
+import { callReconScan, isReconHit } from '../lib/recon-binding';
 import type { ReconBinding } from '../lib/recon-binding';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
@@ -383,14 +383,14 @@ async function checkLookalikesCore(
 	// Recon enrichment: additive-only, fail-soft
 	if (reconOptions.reconBinding) {
 		const reconResult = await callReconScan(reconOptions.reconBinding, reconOptions.reconAuthToken, 'CT_LOOKALIKE', { domain });
-		const hit = reconResult?.findings.find((f) => ['medium', 'high', 'critical'].includes(f.severity));
+		const hit = reconResult && isReconHit(reconResult.status);
 		if (hit) {
 			findings.push(
 				createFinding(
 					'lookalikes',
 					'CT-observed lookalike corroboration',
 					'medium',
-					hit.detail ?? hit.title ?? `Threat intelligence corroborates CT-observed lookalike signal for ${domain}.`,
+					reconResult.details ?? `Threat intelligence corroborates CT-observed lookalike signal for ${domain}.`,
 					{ domain, reconEnriched: true },
 				),
 			);

@@ -49,9 +49,15 @@ function buildLookalikeFetchMock() {
 // Recon binding mock helper
 // ---------------------------------------------------------------------------
 
-function makeReconBinding(findings: Array<{ severity: string; title?: string; detail?: string }>) {
+function makeReconHitBinding(detail: string) {
 	return {
-		fetch: vi.fn(async () => new Response(JSON.stringify({ findings }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+		fetch: vi.fn(async () => new Response(JSON.stringify({ checkType: 'CT_LOOKALIKE', status: 'warning', details: detail }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+	};
+}
+
+function makeReconBenignBinding() {
+	return {
+		fetch: vi.fn(async () => new Response(JSON.stringify({ checkType: 'CT_LOOKALIKE', status: 'info', details: 'nothing serious' }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
 	};
 }
 
@@ -70,12 +76,10 @@ describe('checkLookalikes recon enrichment', () => {
 		expect(enriched).toHaveLength(0);
 	});
 
-	it('enriched: adds corroboration finding when recon returns a high-severity hit', async () => {
+	it('enriched: adds corroboration finding when recon returns a hit status', async () => {
 		buildLookalikeFetchMock();
 
-		const reconBinding = makeReconBinding([
-			{ severity: 'high', title: 'CT-observed lookalike', detail: 'Certificate transparency logs show lookalike activity for test.com' },
-		]);
+		const reconBinding = makeReconHitBinding('Certificate transparency logs show lookalike activity for test.com');
 
 		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
 		const result = await checkLookalikes('test.com', { reconBinding, reconAuthToken: 'tok' });
@@ -87,10 +91,10 @@ describe('checkLookalikes recon enrichment', () => {
 		expect(enriched[0].detail).toContain('Certificate transparency logs show lookalike activity');
 	});
 
-	it('enriched: no corroboration finding when recon returns only info-severity hits', async () => {
+	it('enriched: no corroboration finding when recon returns a benign status', async () => {
 		buildLookalikeFetchMock();
 
-		const reconBinding = makeReconBinding([{ severity: 'info', title: 'Low priority note', detail: 'nothing serious' }]);
+		const reconBinding = makeReconBenignBinding();
 
 		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
 		const result = await checkLookalikes('test.com', { reconBinding, reconAuthToken: 'tok' });
