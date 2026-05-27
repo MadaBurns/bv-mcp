@@ -11,6 +11,17 @@ import type { CheckResult, CheckCategory } from '../lib/scoring';
 
 const CATEGORY = 'rdap' as CheckCategory;
 
+/**
+ * Wall-clock budget for the synchronous `rdap_lookup` tool path, threaded into
+ * the orchestrator as the caller AbortSignal AND as `deadlineMs` so retry
+ * sleeps + WHOIS follow-on calls clamp against the remaining budget instead of
+ * stacking unbounded `Retry-After` waits (otherwise: 10s fetch + 15s server-
+ * controlled Retry-After + 10s retry + 10s WHOIS ≈ 45s, well past the 28s
+ * tool-call cap). Kept inside `TOOL_CALL_TIMEOUT_MS` so the tool settles
+ * before the outer `Promise.race(__tool_timeout__)` fires.
+ */
+export const RDAP_LOOKUP_SYNC_BUDGET_MS = 24_000;
+
 /** RDAP bootstrap URL (IANA). */
 const IANA_BOOTSTRAP_URL = 'https://data.iana.org/rdap/dns.json';
 
@@ -287,17 +298,36 @@ function findEntityByRegistrarIanaId(entities: RdapEntity[] | undefined): RdapEn
 	return null;
 }
 
-function parseRetryAfterMs(value: string | null): number {
-	if (!value) return RDAP_RETRY_DEFAULT_DELAY_MS;
+/**
+ * Parse an HTTP `Retry-After` header into a sleep duration (ms), clamped both
+ * by the orchestrator's internal `RDAP_RETRY_MAX_DELAY_MS` ceiling AND by the
+ * remaining tool-call budget if `remainingBudgetMs` is supplied. The header
+ * value is server-controlled — a misbehaving (or DoS-adversarial) RDAP server
+ * can ship `Retry-After: 60`, which would otherwise eat the whole sync budget
+ * on a single retry. Returning `0` here tells the caller to skip the sleep
+ * and short-circuit retry attempts (the budget is exhausted anyway).
+ */
+function parseRetryAfterMs(value: string | null, remainingBudgetMs?: number): number {
+	// If the caller passes a budget and it's already exhausted, don't sleep —
+	// the next loop iteration would just abort on the composed signal anyway,
+	// burning the entire `Retry-After` wait for nothing.
+	if (typeof remainingBudgetMs === 'number' && remainingBudgetMs <= 0) return 0;
+
+	const ceiling =
+		typeof remainingBudgetMs === 'number'
+			? Math.max(0, Math.min(RDAP_RETRY_MAX_DELAY_MS, remainingBudgetMs))
+			: RDAP_RETRY_MAX_DELAY_MS;
+
+	if (!value) return Math.min(RDAP_RETRY_DEFAULT_DELAY_MS, ceiling);
 	const seconds = Number(value);
 	if (Number.isFinite(seconds) && seconds >= 0) {
-		return Math.min(seconds * 1000, RDAP_RETRY_MAX_DELAY_MS);
+		return Math.min(seconds * 1000, ceiling);
 	}
 	const dateMs = Date.parse(value);
 	if (Number.isFinite(dateMs)) {
-		return Math.min(Math.max(dateMs - Date.now(), 0), RDAP_RETRY_MAX_DELAY_MS);
+		return Math.min(Math.max(dateMs - Date.now(), 0), ceiling);
 	}
-	return RDAP_RETRY_DEFAULT_DELAY_MS;
+	return Math.min(RDAP_RETRY_DEFAULT_DELAY_MS, ceiling);
 }
 
 async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -316,25 +346,35 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 	});
 }
 
-async function fetchRdapResponse(rdapUrl: string, callerSignal?: AbortSignal): Promise<Response> {
+async function fetchRdapResponse(rdapUrl: string, callerSignal?: AbortSignal, deadlineMs?: number): Promise<Response> {
 	let lastResponse: Response | null = null;
 	for (let attempt = 1; attempt <= RDAP_RETRY_MAX_ATTEMPTS; attempt++) {
+		const remainingBudgetMs = typeof deadlineMs === 'number' ? deadlineMs - Date.now() : undefined;
 		const resp = await fetch(rdapUrl, {
 			redirect: 'manual',
-			signal: composeFetchSignal(callerSignal),
+			signal: composeFetchSignal(callerSignal, remainingBudgetMs),
 			headers: { Accept: 'application/rdap+json, application/json' },
 		});
 		if (resp.ok || !RDAP_RETRYABLE_HTTP_STATUSES.has(resp.status) || attempt === RDAP_RETRY_MAX_ATTEMPTS) {
 			return resp;
 		}
 		lastResponse = resp;
-		await sleep(parseRetryAfterMs(resp.headers.get('Retry-After')), callerSignal);
+		// Clamp the `Retry-After` sleep against the remaining sync budget so a
+		// server-controlled header can't blow past the tool-call cap. If the
+		// budget is already exhausted, skip the sleep AND the next attempt —
+		// the composed signal would just abort the retry fetch anyway.
+		const postFetchRemaining = typeof deadlineMs === 'number' ? deadlineMs - Date.now() : undefined;
+		const sleepMs = parseRetryAfterMs(resp.headers.get('Retry-After'), postFetchRemaining);
+		if (typeof postFetchRemaining === 'number' && postFetchRemaining <= 0) {
+			return resp;
+		}
+		await sleep(sleepMs, callerSignal);
 	}
 	return (
 		lastResponse ??
 		fetch(rdapUrl, {
 			redirect: 'manual',
-			signal: composeFetchSignal(callerSignal),
+			signal: composeFetchSignal(callerSignal, typeof deadlineMs === 'number' ? deadlineMs - Date.now() : undefined),
 			headers: { Accept: 'application/rdap+json, application/json' },
 		})
 	);
@@ -396,14 +436,23 @@ async function fetchWhoisRegistrar(
 	domain: string,
 	binding: FetcherLike | undefined,
 	signal?: AbortSignal,
+	deadlineMs?: number,
 ): Promise<WhoisFallbackPayload | null> {
 	if (!binding) return null;
+	// If the orchestrator deadline is already past, don't bother with a follow-on
+	// WHOIS call — composeFetchSignal would yield an already-aborted signal and
+	// we'd just return `error`. Surface that as a soft-null so the caller picks
+	// up the prior RDAP outcome verbatim.
+	if (typeof deadlineMs === 'number' && deadlineMs - Date.now() <= 0) {
+		return { registrar: null, source: 'error' };
+	}
+	const remainingBudgetMs = typeof deadlineMs === 'number' ? deadlineMs - Date.now() : undefined;
 	try {
 		const resp = await binding.fetch('https://bv-whois/lookup', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ domain }),
-			signal: composeFetchSignal(signal),
+			signal: composeFetchSignal(signal, remainingBudgetMs),
 		});
 		if (!resp.ok) return { registrar: null, source: 'error' };
 		const body = await resp.text();
@@ -475,11 +524,29 @@ export interface RdapCheckOptions {
 	 * pipeline so deadline aborts actually unwind RDAP work.
 	 */
 	signal?: AbortSignal;
+	/**
+	 * Wall-clock deadline (epoch ms) for the synchronous tool path. Used to
+	 * clamp `Retry-After` sleeps, per-request fetch timeouts, and the WHOIS
+	 * follow-on call against the remaining sync budget. When the handler
+	 * threads `AbortSignal.timeout(RDAP_LOOKUP_SYNC_BUDGET_MS)` as the signal,
+	 * it should pass `Date.now() + RDAP_LOOKUP_SYNC_BUDGET_MS` here so the
+	 * orchestrator can introspect "how much budget is left" — `AbortSignal`
+	 * alone can't answer that.
+	 */
+	deadlineMs?: number;
 }
 
-/** Build a fetch signal that aborts on EITHER the per-request timeout OR caller abort. */
-function composeFetchSignal(callerSignal: AbortSignal | undefined): AbortSignal {
-	const timeoutSignal = AbortSignal.timeout(RDAP_TIMEOUT_MS);
+/**
+ * Build a fetch signal that aborts on EITHER the per-request timeout OR caller
+ * abort. When a `remainingBudgetMs` is supplied, the per-request timeout is
+ * clamped to it so a single fetch can't outlive the orchestrator's tool-call
+ * budget. A non-positive remaining budget produces an already-aborted signal
+ * (the fetch returns immediately, the caller handles it as `caller_aborted`).
+ */
+function composeFetchSignal(callerSignal: AbortSignal | undefined, remainingBudgetMs?: number): AbortSignal {
+	const perRequestMs =
+		typeof remainingBudgetMs === 'number' ? Math.max(0, Math.min(RDAP_TIMEOUT_MS, remainingBudgetMs)) : RDAP_TIMEOUT_MS;
+	const timeoutSignal = AbortSignal.timeout(perRequestMs);
 	if (!callerSignal) return timeoutSignal;
 	return AbortSignal.any([timeoutSignal, callerSignal]);
 }
@@ -495,6 +562,7 @@ function composeFetchSignal(callerSignal: AbortSignal | undefined): AbortSignal 
 export async function checkRdapLookup(domain: string, options: RdapCheckOptions = {}): Promise<CheckResult> {
 	const findings: ReturnType<typeof createFinding>[] = [];
 	const callerSignal = options.signal;
+	const deadlineMs = options.deadlineMs;
 
 	// Pre-check: caller signal already aborted → short-circuit to lookup_failed
 	// without doing any I/O. Cuts wasted budget when the audit deadline fires
@@ -533,7 +601,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 		);
 		// Deterministic: TLD has no RDAP server. Not transient — keep as 'unknown'
 		// (or whichever WHOIS provides). reconcileWithWhois handles the rest.
-		const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal);
+		const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal, deadlineMs);
 		findings.push(buildWhoisFallbackFinding(domain, whois, { source: 'unknown' }));
 		return buildCheckResult(CATEGORY, findings) as CheckResult;
 	}
@@ -543,7 +611,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 	try {
 		const baseUrl = rdapServerUrl.endsWith('/') ? rdapServerUrl : `${rdapServerUrl}/`;
 		const rdapUrl = `${baseUrl}domain/${domain}`;
-		const resp = await fetchRdapResponse(rdapUrl, callerSignal);
+		const resp = await fetchRdapResponse(rdapUrl, callerSignal, deadlineMs);
 
 		if (!resp.ok) {
 			findings.push(
@@ -558,7 +626,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 					},
 				),
 			);
-			const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal);
+			const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal, deadlineMs);
 			findings.push(buildWhoisFallbackFinding(domain, whois, { source: 'lookup_failed', failureReason: `rdap_http_${resp.status}` }));
 			return buildCheckResult(CATEGORY, findings) as CheckResult;
 		}
@@ -575,7 +643,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 				error: message,
 			}),
 		);
-		const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal);
+		const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal, deadlineMs);
 		findings.push(buildWhoisFallbackFinding(domain, whois, { source: 'lookup_failed', failureReason: reason }));
 		return buildCheckResult(CATEGORY, findings) as CheckResult;
 	}
@@ -592,7 +660,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 	let registrarSource: RegistrarSourceTag = registrarName ? 'rdap' : 'unknown';
 	let registrarFailureReason: string | undefined;
 	if (!registrarName) {
-		const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal);
+		const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal, deadlineMs);
 		// Phase 7: this path is the success-side RDAP-rescue branch; keep the
 		// unknown→whois reconcile (not lookup_failed) as established in Phase 1.
 		// RDAP didn't return a registrar entity — that's a structural miss, not a transient
