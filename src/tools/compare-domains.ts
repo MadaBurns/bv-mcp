@@ -11,6 +11,17 @@ import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { StructuredScanResult } from './scan/format-report';
 import type { OutputFormat } from '../handlers/tool-args';
 
+/**
+ * Wall-clock budget for the synchronous `compare_domains` tool path, threaded
+ * into `compareDomains` as both `deadlineMs` and (where supported) a derived
+ * `AbortSignal.timeout(...)`. Kept inside the handler's 28s
+ * `TOOL_CALL_TIMEOUT_MS` race so the sequential scan loop bails out and
+ * preserves any completed scans *before* the outer race rejects the whole
+ * call. Mirrors the brand_audit_single / discover_brand_domains sync-handoff
+ * margins.
+ */
+export const COMPARE_DOMAINS_SYNC_BUDGET_MS = 24_000;
+
 export interface DomainComparisonResult {
 	domains: string[];
 	/** Domain with the highest overall score. Null on tie or if fewer than 2 valid results. */
@@ -25,11 +36,35 @@ export interface DomainComparisonResult {
 	uniqueGaps: Array<{ domain: string; categories: string[] }>;
 	/** Errors keyed by domain, for domains that failed validation or scanning. */
 	errors: Record<string, string>;
+	/**
+	 * True when the deadline budget fired before all domains were scanned. The
+	 * remaining (un-scanned) domains appear in `errors` with `budget_exceeded`.
+	 */
+	partial?: boolean;
 }
+
+/** Signature compatible with `scanDomain`. Exposed as an option for testing. */
+type ScanFn = typeof scanDomain;
 
 export interface CompareDomainsOptions {
 	kv?: KVNamespace;
 	runtimeOptions?: ScanRuntimeOptions;
+	/**
+	 * Optional abort signal forwarded to `scanDomain` if/when it gains
+	 * cancellation support. Today scan-domain does not accept a signal, so this
+	 * is reserved for future plumbing; the per-iteration deadline guard below
+	 * is what actually bounds wall-clock for now.
+	 */
+	signal?: AbortSignal;
+	/**
+	 * Absolute wall-clock cut-off in ms (e.g. `Date.now() + 24_000`). When set,
+	 * the scan loop checks the deadline before each `scanDomain` call and
+	 * marks the result `partial: true` rather than running past the handler's
+	 * 28s `TOOL_CALL_TIMEOUT_MS` race (which discards every completed scan).
+	 */
+	deadlineMs?: number;
+	/** Override scanDomain for testing. Matches the `batch-scan` injection seam. */
+	scanFn?: ScanFn;
 }
 
 /**
@@ -60,14 +95,29 @@ export async function compareDomains(
 	}
 
 	const structuredResults: Record<string, StructuredScanResult | null> = {};
+	const scan = options.scanFn ?? scanDomain;
+	let partial = false;
 
 	for (const domain of sanitized) {
 		if (errors[domain]) {
 			structuredResults[domain] = null;
 			continue;
 		}
+		// Deadline guard: stop *before* the next scanDomain await so we don't
+		// blow past the handler's 28s TOOL_CALL_TIMEOUT_MS race and discard
+		// already-completed scans. Remaining domains surface in `errors` with
+		// `budget_exceeded`, mirroring batch_scan's neighbouring shape.
+		if (options.deadlineMs !== undefined && Date.now() >= options.deadlineMs) {
+			errors[domain] = 'budget_exceeded';
+			structuredResults[domain] = null;
+			partial = true;
+			continue;
+		}
 		try {
-			const scanResult = await scanDomain(domain, options.kv, options.runtimeOptions);
+			// scanDomain doesn't currently accept an AbortSignal; the deadline
+			// guard above is the active bound. `options.signal` is held for the
+			// day scan-domain plumbs cancellation through.
+			const scanResult = await scan(domain, options.kv, options.runtimeOptions);
 			structuredResults[domain] = buildStructuredScanResult(scanResult);
 		} catch (err) {
 			errors[domain] = err instanceof Error ? err.message : 'Scan failed';
@@ -124,7 +174,17 @@ export async function compareDomains(
 		}
 	}
 
-	return { domains: sanitized, winner, scores, grades, categoryComparison, commonGaps, uniqueGaps, errors };
+	return {
+		domains: sanitized,
+		winner,
+		scores,
+		grades,
+		categoryComparison,
+		commonGaps,
+		uniqueGaps,
+		errors,
+		...(partial ? { partial: true } : {}),
+	};
 }
 
 /** Format comparison as a human-readable report. */
