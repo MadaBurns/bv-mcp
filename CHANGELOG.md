@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.7] - 2026-05-28
+
+### Changed
+
+- **Dev-tooling-only:** removed an inert pre-commit regex layer that scanned for `.dev/blocked-patterns` (a file that never existed in the repo, so the gate was always a no-op). Real PII / secrets protection remains carried by Gitleaks, `scan-sensitive-surface.mjs`, and the `File hygiene check` CI gate. No worker / tool / schema change; deployed bundle is byte-identical to v3.3.6. (#234)
+
 ## [3.3.6] - 2026-05-27
 
 ### Fixed
