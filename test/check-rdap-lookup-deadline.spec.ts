@@ -24,8 +24,16 @@ describe('checkRdapLookup — deadline propagation', () => {
 		const fetchSpy = vi
 			.spyOn(globalThis, 'fetch')
 			.mockImplementation((input: RequestInfo | URL) => {
-				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-				if (url.includes('data.iana.org/rdap/dns.json')) {
+				const rawUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				// Parse properly rather than substring-matching the URL — `.includes('host')`
+				// is the CodeQL js/incomplete-url-substring-sanitization anti-pattern
+				// (a malicious URL like `https://evil.com/?x=rdap.verisign.com` would match).
+				// Even in test code, the parsed form is unambiguous and exercises the
+				// same code path.
+				const parsed = new URL(rawUrl);
+				const hostMatches = (h: string) => parsed.hostname === h || parsed.hostname.endsWith(`.${h}`);
+				const pathMatches = (p: string) => parsed.pathname === p || parsed.pathname.startsWith(p);
+				if (hostMatches('data.iana.org') && pathMatches('/rdap/dns.json')) {
 					return Promise.resolve(
 						new Response(
 							JSON.stringify({
@@ -35,7 +43,7 @@ describe('checkRdapLookup — deadline propagation', () => {
 						),
 					);
 				}
-				if (url.includes('rdap.verisign.com')) {
+				if (hostMatches('rdap.verisign.com')) {
 					return Promise.resolve(
 						new Response('Too Many Requests', {
 							status: 503,
