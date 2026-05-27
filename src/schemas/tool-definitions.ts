@@ -36,6 +36,10 @@ import {
 	ScanBucketsFindingsArgs,
 	OsintInvestigateArgs,
 	OsintInvestigationIdArgs,
+	QuerySigninsArgs,
+	QueryUalArgs,
+	GetCaPoliciesArgs,
+	AssessCoverageArgs,
 	TOOL_SCHEMA_MAP,
 } from './tool-args';
 import { buildCheckResultOutputJsonSchema } from './check-result-output';
