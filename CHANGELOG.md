@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.8] - 2026-05-28
+
+### Fixed
+
+- **`map_supply_chain` no longer double-counts the same provider when discovered via both an SPF include and a TXT verification record.** Live evidence on `spark.co.nz`: `Microsoft 365` appeared once via `MS=…` TXT verification AND once as a raw `spf.protection.outlook.com` row. Root cause: the M365 rule in `DETECTION_RULES` declared a single static `signal: 'mx:mail.protection.outlook.com'`, but matched via its `spf` pattern when `mxHosts` was empty — the dedup loop's signal-substring check (`'spf.protection.outlook.com'.includes('mail.protection.outlook.com')`) was then false, so the include slipped through to the unrecognized-SPF path and surfaced as a second row. (Google Workspace avoided the bug by coincidence — `_spf.google.com` substring-contains `google.com`.) New helper `matchProviderForSpfInclude()` reuses `DETECTION_RULES`' `spf` patterns directly (single source of truth — no parallel list); SPF dedup now resolves each include via that helper and skips it when the resolved provider name is already represented. Regression test exercises the spark.co.nz pattern (SPF M365 include + `MS=…` TXT) and asserts a single Microsoft 365 dependency with both `spf` + `txt-verification` sources at `critical` trust level. (#251)
+
 ## [3.3.7] - 2026-05-28
 
 ### Changed
