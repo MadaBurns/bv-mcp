@@ -48,7 +48,8 @@ export type ToolGroup =
 	| 'intelligence'
 	| 'remediation'
 	| 'meta'
-	| 'discovery';
+	| 'discovery'
+	| 'identity_secops';
 export type ToolTier = 'core' | 'protective' | 'hardening';
 
 export interface McpTool {

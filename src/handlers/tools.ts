@@ -173,6 +173,8 @@ interface ToolRuntimeOptions {
 	whoisBinding?: { fetch: typeof fetch };
 	/** Operator-only bv-recon service binding. Fail-soft; absent on BSL self-hosts. */
 	reconBinding?: { fetch: typeof fetch };
+	/** Service binding to bv-web's internal M365 proxy surface. Fail-soft; absent when bv-web is not provisioned. */
+	m365Proxy?: { fetch: typeof fetch };
 	/** Bearer admin token forwarded to bv-recon. */
 	reconAuthToken?: string;
 	infraProbe?: { fetch: typeof fetch };
