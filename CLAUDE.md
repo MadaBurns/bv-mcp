@@ -5,7 +5,7 @@ Guidance for Claude Code working in this repo.
 ## What is this?
 
 Blackveil DNS — source-available DNS & email security scanner, built as a Cloudflare Worker.
-73 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
+77 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
 
 **Version sync** when bumping: `SERVER_VERSION` (`src/lib/server-version.ts`), `version` in `package.json` + `package-lock.json`, `version` AND `packages[0].version` in `server.json` (both fields — foot-gun), and `[X.Y.Z]` heading in `CHANGELOG.md`.
 
@@ -204,7 +204,7 @@ Pattern-based, emits `fuzzing_suspected` to `ALERT_WEBHOOK_URL` from 15-min cron
 12. `test/check-<name>.spec.ts` using `dns-mock` helper
 13. Update README tools table
 14. **If no `domain` arg** (uses `domains[]`, `auditId`, etc.): add to `DOMAIN_OPTIONAL_TOOLS` in `handlers/tools.ts` — else every call returns "Missing required parameter: domain"
-15. **Bump `toHaveLength(N)`** in 6 specs: `test/{tool-metadata,tool-schemas,handlers-tools,index,schemas/tool-args,schemas/tool-definitions}.spec.ts`. Also add to `NON_SCAN_TOOL_NAMES` in `tool-schemas.spec.ts`
+15. **Bump `toHaveLength(N)`** in 7 specs: `test/{tool-metadata,tool-schemas,handlers-tools,index,tool-output-schema,schemas/tool-args,schemas/tool-definitions}.spec.ts`. Also add to `NON_SCAN_TOOL_NAMES` in `tool-schemas.spec.ts`. For NON_CHECK_RESULT tools also add to `NON_CHECK_RESULT_TOOLS` in `tool-output-schema.spec.ts` (comment stays at 77 total − 26 excluded = 51 CheckResult tools).
 16. **New `ToolRuntimeOptions` field** for a binding: extend `BvMcpEnv` AND populate at all 3 construction sites in `src/index.ts` — declaration without wiring silently leaves `ro.<field>` undefined and tool returns `{ unprovisioned: true }`
 
 ## Testing

@@ -371,7 +371,7 @@ describe('DNS Security MCP Server', () => {
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
 			const body = (await response.json()) as { result: { tools: Array<{ name: string }> } };
-			expect(body.result.tools).toHaveLength(73);
+			expect(body.result.tools).toHaveLength(77);
 			const toolNames = body.result.tools.map((t) => t.name);
 			expect(toolNames).toContain('check_spf');
 			expect(toolNames).toContain('check_dmarc');

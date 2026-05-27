@@ -19,6 +19,7 @@ const VALID_GROUPS: ToolGroup[] = [
 	'remediation',
 	'meta',
 	'discovery',
+	'identity_secops',
 ];
 const VALID_TIERS: ToolTier[] = ['core', 'protective', 'hardening'];
 
@@ -101,11 +102,15 @@ const NON_SCAN_TOOL_NAMES = new Set([
 	'osint_investigation_report',
 	'osint_investigate_username_start',
 	'osint_investigate_email_start',
+	'query_signins',
+	'query_ual',
+	'get_ca_policies',
+	'assess_coverage',
 ]);
 
 describe('tool-schemas metadata', () => {
-	it('exports exactly 73 tools', () => {
-		expect(TOOLS).toHaveLength(73);
+	it('exports exactly 77 tools', () => {
+		expect(TOOLS).toHaveLength(77);
 	});
 
 	it('all tool names are unique', () => {

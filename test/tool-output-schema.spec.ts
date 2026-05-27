@@ -16,7 +16,7 @@ const { restore } = setupFetchMock();
 afterEach(() => restore());
 
 /**
- * The 22 special-case tools that return custom shapes (NOT a CheckResult) and
+ * The 26 special-case tools that return custom shapes (NOT a CheckResult) and
  * therefore must NOT carry an `outputSchema`. Mirrors the EXCLUDE set: everything
  * dispatched outside the TOOL_REGISTRY CheckResult path in handlers/tools.ts.
  */
@@ -43,6 +43,11 @@ const NON_CHECK_RESULT_TOOLS = new Set([
 	'discover_subdomains',
 	'map_compliance',
 	'simulate_attack_paths',
+	// identity_secops — M365 read tools (custom shape, not CheckResult)
+	'query_signins',
+	'query_ual',
+	'get_ca_policies',
+	'assess_coverage',
 ]);
 
 describe('CheckResult output schema (derived)', () => {
@@ -93,7 +98,7 @@ describe('outputSchema declarations on TOOLS', () => {
 	it('every other tool (the CheckResult set) HAS an outputSchema equal to the derived schema', () => {
 		const derived = buildCheckResultOutputJsonSchema();
 		const checkResultTools = TOOLS.filter((t) => !NON_CHECK_RESULT_TOOLS.has(t.name));
-		// Sanity: there should be 51 CheckResult tools (73 total − 22 excluded).
+		// Sanity: there should be 51 CheckResult tools (77 total − 26 excluded).
 		expect(checkResultTools).toHaveLength(51);
 		for (const tool of checkResultTools) {
 			expect(tool.outputSchema, `tool ${tool.name} must declare outputSchema`).toBeDefined();
@@ -102,7 +107,7 @@ describe('outputSchema declarations on TOOLS', () => {
 	});
 
 	it('adding outputSchema does not change tool count', () => {
-		expect(TOOLS).toHaveLength(73);
+		expect(TOOLS).toHaveLength(77);
 	});
 });
 
