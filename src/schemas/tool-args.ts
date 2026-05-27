@@ -485,6 +485,44 @@ export const ScanBucketsFindingsArgs = z
 export const OsintInvestigateArgs = z.object({ query: z.string().min(1).max(253) }).strict();
 export const OsintInvestigationIdArgs = z.object({ investigationId: z.string().min(1).max(128) }).strict();
 
+// ---------------------------------------------------------------------------
+// identity_secops — M365 read tools
+// ---------------------------------------------------------------------------
+
+/** query_signins */
+export const QuerySigninsArgs = z
+	.object({
+		ms_tenant_id: z.string().min(1).max(200).describe('Microsoft Entra tenant ID (GUID or domain).'),
+		user_principal_name: z.string().max(254).optional().describe('Filter to a specific user (UPN). Omit for all users.'),
+		failures_only: z.boolean().optional().describe('When true, return only failed sign-ins.'),
+		since_hours: z.number().int().min(1).max(720).optional().describe('Lookback window in hours (default: 24, max: 720).'),
+	})
+	.passthrough();
+
+/** query_ual */
+export const QueryUalArgs = z
+	.object({
+		ms_tenant_id: z.string().min(1).max(200).describe('Microsoft Entra tenant ID (GUID or domain).'),
+		operation: z.string().max(200).optional().describe('Filter to a specific Unified Audit Log operation (e.g., "MailItemsAccessed").'),
+		user_principal_name: z.string().max(254).optional().describe('Filter to a specific user (UPN). Omit for all users.'),
+		since_hours: z.number().int().min(1).max(720).optional().describe('Lookback window in hours (default: 24, max: 720).'),
+	})
+	.passthrough();
+
+/** get_ca_policies */
+export const GetCaPoliciesArgs = z
+	.object({
+		ms_tenant_id: z.string().min(1).max(200).describe('Microsoft Entra tenant ID (GUID or domain).'),
+	})
+	.passthrough();
+
+/** assess_coverage */
+export const AssessCoverageArgs = z
+	.object({
+		ms_tenant_id: z.string().min(1).max(200).describe('Microsoft Entra tenant ID (GUID or domain).'),
+	})
+	.passthrough();
+
 /**
  * Map of every tool name to its Zod argument schema.
  * Used for runtime validation in tools.ts and for inputSchema generation.
@@ -563,4 +601,8 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	osint_investigate_email_start: OsintInvestigateArgs,
 	osint_investigation_status: OsintInvestigationIdArgs,
 	osint_investigation_report: OsintInvestigationIdArgs,
+	query_signins: QuerySigninsArgs,
+	query_ual: QueryUalArgs,
+	get_ca_policies: GetCaPoliciesArgs,
+	assess_coverage: AssessCoverageArgs,
 };
