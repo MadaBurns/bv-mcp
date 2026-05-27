@@ -100,6 +100,10 @@ export interface ExecuteMcpRequestOptions {
 	reconBinding?: { fetch: typeof fetch };
 	/** Bearer admin token forwarded to bv-recon. */
 	reconAuthToken?: string;
+	/** Service binding to bv-web's internal M365 proxy surface. Fail-soft; absent when bv-web is not provisioned. */
+	m365Proxy?: { fetch: typeof fetch };
+	/** Bearer token (BV_WEB_INTERNAL_KEY) forwarded to bv-web's internal M365 endpoints. */
+	m365ProxyAuthToken?: string;
 	infraProbe?: { fetch: typeof fetch };
 	/** D1 binding for the brand-audit DB. v2.21.2+. */
 	brandAuditDb?: D1Database;
@@ -827,6 +831,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			whoisBinding: options.whoisBinding,
 			reconBinding: options.reconBinding,
 			reconAuthToken: options.reconAuthToken,
+			m365Proxy: options.m365Proxy,
+			m365ProxyAuthToken: options.m365ProxyAuthToken,
 			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,
@@ -919,6 +925,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			whoisBinding: options.whoisBinding,
 			reconBinding: options.reconBinding,
 			reconAuthToken: options.reconAuthToken,
+			m365Proxy: options.m365Proxy,
+			m365ProxyAuthToken: options.m365ProxyAuthToken,
 			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,
