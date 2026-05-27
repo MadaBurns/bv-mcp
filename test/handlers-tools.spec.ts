@@ -550,11 +550,11 @@ describe('formatCheckResult - via handleToolsCall', () => {
 // -- handleToolsList --
 
 describe('handleToolsList', () => {
-	it('returns an object with a tools array of 73 entries', async () => {
+	it('returns an object with a tools array of 77 entries', async () => {
 		const { handleToolsList } = await import('../src/handlers/tools');
 		const result = handleToolsList();
 		expect(Array.isArray(result.tools)).toBe(true);
-		expect(result.tools).toHaveLength(73);
+		expect(result.tools).toHaveLength(77);
 	});
 
 	it('every tool entry has name, description, and inputSchema', async () => {
