@@ -6,6 +6,7 @@ import { callM365Proxy } from './proxy';
 export async function getCaPolicies(
 	args: { ms_tenant_id: string },
 	proxy?: { fetch: typeof fetch },
+	opts?: { authToken?: string; keyHash?: string },
 ): Promise<M365ProxyResult> {
-	return callM365Proxy(proxy, 'get-ca-policies', args);
+	return callM365Proxy(proxy, 'get-ca-policies', args, opts);
 }
