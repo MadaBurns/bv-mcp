@@ -10,6 +10,24 @@
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 
+/**
+ * Synchronous handler budget for `discover_subdomains` (ms).
+ *
+ * The MCP handler enforces a hard 28s wall-clock guillotine on each tool call
+ * (`TOOL_CALL_TIMEOUT_MS`). Cold-cache worst case for this tool can chain:
+ *   certstream /enumerate (~10s) → certstream /sans (~10s) → crt.sh fallback (~10s)
+ * = ~30s, which trips the guillotine and throws away whatever the earlier
+ * stages already gathered. The handler passes this budget as `deadlineMs` so
+ * the orchestrator can short-circuit between stages and return the best
+ * partial result before the outer race kills it.
+ *
+ * Sized at 24_000 to leave ~4s of headroom under the 28s guillotine for
+ * formatting / log emission / handler overhead.
+ *
+ * Mirror of the fix shipped for `discover_brand_domains` (PR #236).
+ */
+export const DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS = 24_000;
+
 /** Timeout for the crt.sh API request (ms). */
 const CRT_SH_TIMEOUT_MS = 10_000;
 
@@ -109,6 +127,25 @@ export interface SubdomainDiscoveryResult {
 	 * lookup failure from a successful query that genuinely found no subdomains.
 	 */
 	sourceUnavailable?: boolean;
+	/**
+	 * True when the synchronous budget tripped mid-pipeline and one or more
+	 * downstream stages were skipped. Earlier stages that succeeded are kept.
+	 */
+	partial?: boolean;
+}
+
+/**
+ * Optional caller-supplied deadline / cancellation controls.
+ *
+ * `deadlineMs` is an absolute `Date.now()` epoch — stages compare against it
+ * synchronously between fetches and short-circuit if exceeded.
+ *
+ * `signal` is composed (via `AbortSignal.any` when available) with each
+ * stage's inner timeout so that an outer cancellation aborts in-flight fetches.
+ */
+export interface DiscoverSubdomainsOptions {
+	signal?: AbortSignal;
+	deadlineMs?: number;
 }
 
 /** Extract CN= value from an issuer_name string (e.g. "C=US, O=Let's Encrypt, CN=R3" -> "R3"). */
@@ -165,27 +202,32 @@ export async function discoverSubdomains(
 	domain: string,
 	certstream?: { fetch: typeof fetch },
 	certstreamAuthToken?: string,
+	options?: DiscoverSubdomainsOptions,
 ): Promise<SubdomainDiscoveryResult> {
 	// Fast path: use certstream service binding
 	if (certstream) {
-		const result = await queryCertstream(domain, certstream, certstreamAuthToken);
+		const result = await queryCertstream(domain, certstream, certstreamAuthToken, options);
 		if (result) return result;
 		// Fall through to crt.sh if service binding fails
+	}
+
+	// Deadline gate before the crt.sh fallback (slowest stage).
+	if (deadlineExceeded(options)) {
+		return emptyResult(domain, true, true);
 	}
 
 	const now = new Date();
 	let entries: CrtShEntry[];
 
 	try {
-		const controller = new AbortController();
-		const timeoutId = setTimeout(() => controller.abort(), CRT_SH_TIMEOUT_MS);
+		const composed = composeAbortSignal(CRT_SH_TIMEOUT_MS, options?.signal);
 
 		const response = await fetch(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json&exclude=expired`, {
-			signal: controller.signal,
+			signal: composed.signal,
 			redirect: 'manual',
 		});
 
-		clearTimeout(timeoutId);
+		composed.cleanup();
 
 		if (!response.ok) {
 			return emptyResult(domain, true);
@@ -352,20 +394,38 @@ export async function discoverSubdomains(
 	};
 }
 
-/** Query bv-certstream-worker via service binding. Returns null on failure. */
+/**
+ * Query bv-certstream-worker via service binding. Returns null on failure.
+ *
+ * Pipeline: `/enumerate` (fast path) → `/sans` (fallback). Between stages we
+ * check the optional deadline; if tripped, we either return the enumerate
+ * result tagged `partial:true` (when it had data) or signal the orchestrator
+ * to skip remaining stages by returning a partial empty result.
+ */
 async function queryCertstream(
 	domain: string,
 	certstream: { fetch: typeof fetch },
 	certstreamAuthToken?: string,
+	options?: DiscoverSubdomainsOptions,
 ): Promise<SubdomainDiscoveryResult | null> {
-	const enumerate = await queryCertstreamEndpoint<CertstreamEnumerateResponse>('enumerate', domain, certstream, certstreamAuthToken);
+	if (deadlineExceeded(options)) {
+		return emptyResult(domain, true, true);
+	}
+
+	const enumerate = await queryCertstreamEndpoint<CertstreamEnumerateResponse>('enumerate', domain, certstream, certstreamAuthToken, options);
 	const enumerateResult =
 		enumerate && !enumerate.error && Array.isArray(enumerate.subdomains)
 			? buildCertstreamResult(domain, enumerate.subdomains, enumerate.certificateCount)
 			: null;
 	if (enumerateResult) return enumerateResult;
 
-	const sans = await queryCertstreamEndpoint<CertstreamSansResponse>('sans', domain, certstream, certstreamAuthToken);
+	// Deadline gate: if we already burned the budget on /enumerate, skip /sans
+	// and let the orchestrator decide whether to fall through to crt.sh.
+	if (deadlineExceeded(options)) {
+		return emptyResult(domain, true, true);
+	}
+
+	const sans = await queryCertstreamEndpoint<CertstreamSansResponse>('sans', domain, certstream, certstreamAuthToken, options);
 	return sans && !sans.error && Array.isArray(sans.names) ? buildCertstreamResult(domain, sans.names, sans.certificateCount) : null;
 }
 
@@ -374,22 +434,67 @@ async function queryCertstreamEndpoint<T>(
 	domain: string,
 	certstream: { fetch: typeof fetch },
 	certstreamAuthToken?: string,
+	options?: DiscoverSubdomainsOptions,
 ): Promise<T | null> {
-	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), CRT_SH_TIMEOUT_MS);
+	const composed = composeAbortSignal(CRT_SH_TIMEOUT_MS, options?.signal);
 
 	try {
 		const response = await certstream.fetch(`https://certstream/${path}?domain=${encodeURIComponent(domain)}`, {
 			...(certstreamAuthToken ? { headers: { Authorization: `Bearer ${certstreamAuthToken}` } } : {}),
-			signal: controller.signal,
+			signal: composed.signal,
 		});
 		if (!response.ok) return null;
 		return (await response.json()) as T;
 	} catch {
 		return null;
 	} finally {
-		clearTimeout(timeoutId);
+		composed.cleanup();
 	}
+}
+
+/** True when an absolute deadline (epoch ms) has been crossed. */
+function deadlineExceeded(options?: DiscoverSubdomainsOptions): boolean {
+	return typeof options?.deadlineMs === 'number' && Date.now() >= options.deadlineMs;
+}
+
+interface ComposedSignal {
+	signal: AbortSignal;
+	cleanup: () => void;
+}
+
+/**
+ * Compose an inner-timeout signal with the caller's optional cancellation signal.
+ * Uses `AbortSignal.any` when present (workerd / modern Node); otherwise falls
+ * back to plain inner-timeout (the orchestrator's `deadlineMs` pre-check is the
+ * primary cancellation path in older runtimes).
+ */
+function composeAbortSignal(timeoutMs: number, outer?: AbortSignal): ComposedSignal {
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+	if (outer) {
+		const anyFn = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+		if (typeof anyFn === 'function') {
+			const merged = anyFn([controller.signal, outer]);
+			return { signal: merged, cleanup: () => clearTimeout(timeoutId) };
+		}
+		// Fallback: if outer fires first, forward to our controller.
+		const onAbort = () => controller.abort();
+		if (outer.aborted) {
+			controller.abort();
+		} else {
+			outer.addEventListener('abort', onAbort, { once: true });
+		}
+		return {
+			signal: controller.signal,
+			cleanup: () => {
+				clearTimeout(timeoutId);
+				outer.removeEventListener('abort', onAbort);
+			},
+		};
+	}
+
+	return { signal: controller.signal, cleanup: () => clearTimeout(timeoutId) };
 }
 
 function buildCertstreamResult(domain: string, names: string[], certificateCount: number | undefined): SubdomainDiscoveryResult {
@@ -469,8 +574,9 @@ function buildCertstreamResult(domain: string, names: string[], certificateCount
 /**
  * Build an empty result. `sourceUnavailable` distinguishes a CT lookup failure
  * (crt.sh non-OK / network error) from a successful query that found nothing.
+ * `partial` indicates the deadline tripped before a stage could run.
  */
-function emptyResult(domain: string, sourceUnavailable = false): SubdomainDiscoveryResult {
+function emptyResult(domain: string, sourceUnavailable = false, partial = false): SubdomainDiscoveryResult {
 	return {
 		domain,
 		totalSubdomains: 0,
@@ -481,6 +587,7 @@ function emptyResult(domain: string, sourceUnavailable = false): SubdomainDiscov
 		uniqueIssuers: [],
 		issues: [],
 		sourceUnavailable,
+		...(partial ? { partial: true } : {}),
 	};
 }
 
