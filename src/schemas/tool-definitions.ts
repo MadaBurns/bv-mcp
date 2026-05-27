@@ -664,6 +664,38 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'intelligence',
 		scanIncluded: false,
 	},
+	query_signins: {
+		description:
+			'Query Microsoft Entra sign-in logs for a tenant. Optionally filter by user principal name, failure status, or lookback window. Requires m365Proxy service binding; returns { unprovisioned: true } when absent.',
+		schema: QuerySigninsArgs,
+		group: 'identity_secops',
+		tier: 'protective',
+		scanIncluded: false,
+	},
+	query_ual: {
+		description:
+			'Query the Microsoft 365 Unified Audit Log for a tenant. Optionally filter by operation type, user, or lookback window. Requires m365Proxy service binding; returns { unprovisioned: true } when absent.',
+		schema: QueryUalArgs,
+		group: 'identity_secops',
+		tier: 'protective',
+		scanIncluded: false,
+	},
+	get_ca_policies: {
+		description:
+			'Retrieve Conditional Access policies for a Microsoft Entra tenant. Requires m365Proxy service binding; returns { unprovisioned: true } when absent.',
+		schema: GetCaPoliciesArgs,
+		group: 'identity_secops',
+		tier: 'protective',
+		scanIncluded: false,
+	},
+	assess_coverage: {
+		description:
+			'Assess Conditional Access coverage gaps for a Microsoft Entra tenant — identifies users and apps not protected by any enforced policy. Requires m365Proxy service binding; returns { unprovisioned: true } when absent.',
+		schema: AssessCoverageArgs,
+		group: 'identity_secops',
+		tier: 'protective',
+		scanIncluded: false,
+	},
 };
 
 /**
@@ -699,6 +731,11 @@ const NON_CHECK_RESULT_TOOLS = new Set<string>([
 	'discover_subdomains',
 	'map_compliance',
 	'simulate_attack_paths',
+	// identity_secops — M365 read tools (custom shape, not CheckResult)
+	'query_signins',
+	'query_ual',
+	'get_ca_policies',
+	'assess_coverage',
 ]);
 
 /** Lenient CheckResult output schema — derived once, shared across all CheckResult tools. */
