@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.5] - 2026-05-27
+
+### Fixed
+
+- **`discover_brand_domains` no longer 28-second-times-out when the SAN/CT signal hangs.** The tool handler called `discoverBrandDomains()` without threading `signal`/`deadlineMs`, so `correlateSans`'s retry loop (~46s) was uncancelable and the recursive-SAN headroom guard never armed; a hung crt.sh lookup blew the 28s tool cap, which rejected the whole call and discarded the 6 fast signals' completed results. The handler now threads a 24-second sync budget as `deadlineMs` and `signal: AbortSignal.timeout(24000)` into the orchestrator, matching the `brand_audit_single` pattern. A hung SAN signal degrades to `partial`/`timeout`/`failed` and the pipeline returns the other signals' results before the 28s race fires. Regression test exercises a hanging-SAN stub + fast NS signal with a verified negative control (#236).
+
+### Added
+
+- **`identity_secops` MCP tool group — 4 M365/Identity SecOps read tools** (tier `protective`, NON_CHECK_RESULT). `query_signins`, `query_ual`, `get_ca_policies`, `assess_coverage`. Tool count 73 → 77. The tools are **thin proxies** to bv-web's internal M365 surface via a new `m365Proxy` service binding — bv-mcp holds no M365 credentials. **Fail-soft**: returns `{ unprovisioned: true }` when the binding is absent (mirrors the `reconBinding` operator-tool pattern); never throws. Write tools (`block_ip`/`revoke_sessions`/`deploy_alert_policy`) ship later with SP4's approval gate (#237).
+- **`m365Proxy` service-binding wiring + auth.** Threads `BV_WEB` service binding + `BV_WEB_INTERNAL_KEY` through `ToolRuntimeOptions` → `proxy.ts` → bv-web internal endpoints. M365 tools now reach bv-web with `Bearer` auth + `keyHash` in body; paired with the bv-web tenantId-resolution work (#238).
+
 ## [3.3.4] - 2026-05-26
 
 ### Changed
