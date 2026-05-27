@@ -405,8 +405,22 @@ const TOOL_REGISTRY: Record<
 			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
 			return `discover_brand:${signals}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:m${minConf}`;
 		},
-		execute: (d, args, ro) =>
-			discoverBrandDomains(
+		execute: (d, args, ro) => {
+			// Bound the synchronous discovery against the server's 28s tool-call
+			// cap. Without this, a slow/hanging signal (notably the SAN/CT crt.sh
+			// lookup, which retries up to 3× at 15s each ≈ 46s) runs past the
+			// `Promise.race` deadline below — and because that race only *rejects*
+			// (it can't abort in-flight work), the call surfaces `__tool_timeout__`
+			// and the other six signals' completed results are discarded.
+			//
+			// Threading a deadline-derived AbortSignal makes the SAN retries
+			// cancellable (correlateSans composes it via AbortSignal.any) and lets
+			// the orchestrator return whatever the fast signals gathered, marking
+			// the sweep `partial`. `deadlineMs` additionally arms the recursive-SAN
+			// headroom guard. Budget mirrors `brand_audit_single`'s sync-handoff
+			// margin so we settle before the 28s race fires.
+			const deadlineMs = Date.now() + DISCOVER_BRAND_DOMAINS_SYNC_BUDGET_MS;
+			return discoverBrandDomains(
 				d,
 				{
 					signals: args.signals as Parameters<typeof discoverBrandDomains>[1] extends infer O
@@ -422,6 +436,8 @@ const TOOL_REGISTRY: Record<
 					dkim_selectors: args.dkim_selectors as string[] | undefined,
 					min_confidence: args.min_confidence as number | undefined,
 					certstream: ro?.certstream,
+					deadlineMs,
+					signal: AbortSignal.timeout(DISCOVER_BRAND_DOMAINS_SYNC_BUDGET_MS),
 				},
 				// Tier closures forwarded only when present — BSL self-hosts that lack
 				// the bindings pass nothing (the discoverer then sees `undefined`
@@ -435,7 +451,8 @@ const TOOL_REGISTRY: Record<
 					...(ro?.tier1Lookup ? { tier1Lookup: ro.tier1Lookup } : {}),
 					...(ro?.tier2Lookup ? { tier2Lookup: ro.tier2Lookup } : {}),
 				} as Parameters<typeof discoverBrandDomains>[2],
-			),
+			);
+		},
 		cacheTtlSeconds: 3600,
 	},
 	brand_audit_single: {
@@ -755,6 +772,15 @@ function handleExplainFindingValidationError(
 /** Maximum wall-clock time for any single tool call (ms). */
 const TOOL_CALL_TIMEOUT_MS = 28_000;
 const BRAND_AUDIT_SINGLE_SYNC_HANDOFF_MS = 24_000;
+/**
+ * Wall-clock budget for the synchronous `discover_brand_domains` tool path,
+ * threaded into `discoverBrandDomains` as both `deadlineMs` and a derived
+ * `AbortSignal.timeout(...)`. Kept inside `TOOL_CALL_TIMEOUT_MS` so the
+ * orchestrator aborts slow signals (SAN/CT crt.sh retries) and returns the
+ * fast signals' partial results *before* the 28s `Promise.race` rejects the
+ * whole call. Mirrors the brand_audit_single sync-handoff margin.
+ */
+const DISCOVER_BRAND_DOMAINS_SYNC_BUDGET_MS = 24_000;
 
 export async function handleToolsCall(
 	params: {
