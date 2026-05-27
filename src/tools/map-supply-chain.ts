@@ -11,7 +11,7 @@ import type { OutputFormat } from '../handlers/tool-args';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { queryTxtRecords, queryDnsRecords, querySrvRecords } from '../lib/dns';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { detectProviders } from './provider-guides';
+import { detectProviders, matchProviderForSpfInclude } from './provider-guides';
 import { VERIFICATION_PATTERNS, SERVICE_SPF_DOMAINS } from './txt-hygiene-analysis';
 import { SRV_PREFIXES } from './srv-analysis';
 import type { SrvProbeResult } from './srv-analysis';
@@ -220,20 +220,30 @@ export async function mapSupplyChain(
 	const detectedSpfDomains = new Set<string>();
 	const detectedNsHosts = new Set<string>();
 
+	const detectedMailSendingNames = new Set(
+		detectedProviders
+			.filter((p) => p.role === 'mail' || p.role === 'sending')
+			.map((p) => p.name),
+	);
+
+	// Resolve each raw SPF include against DETECTION_RULES (shared SSOT with
+	// detectProviders) so dedup can't drift from the detection patterns. This
+	// also closes the gap where a provider rule's static `signal` referenced
+	// MX (e.g. Microsoft 365 — `mx:mail.protection.outlook.com`) but the rule
+	// actually matched via its `spf` pattern (`spf.protection.outlook.com`),
+	// causing the substring-based dedup to miss and emit a duplicate raw row.
+	for (const inc of spfIncludes) {
+		const matchedName = matchProviderForSpfInclude(inc);
+		if (matchedName && detectedMailSendingNames.has(matchedName)) {
+			detectedSpfDomains.add(inc);
+		}
+	}
+
 	for (const provider of detectedProviders) {
 		const source = provider.role === 'mail' || provider.role === 'sending' ? 'spf' : 'ns';
 		addDependency(provider.name, source);
 
-		if (source === 'spf') {
-			for (const inc of spfIncludes) {
-				if (provider.signal.startsWith('spf:') || provider.signal.startsWith('mx:')) {
-					const signalDomain = provider.signal.split(':').slice(1).join(':');
-					if (inc.includes(signalDomain)) {
-						detectedSpfDomains.add(inc);
-					}
-				}
-			}
-		} else {
+		if (source === 'ns') {
 			for (const host of nsHosts) {
 				if (provider.signal.startsWith('ns:')) {
 					const signalDomain = provider.signal.split(':').slice(1).join(':');

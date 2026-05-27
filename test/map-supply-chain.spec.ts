@@ -459,6 +459,39 @@ describe('mapSupplyChain', () => {
 		expect(m365Deps[0].sources).toContain('srv');
 	});
 
+	it('deduplicates Microsoft 365 across SPF include + TXT verification (spark.co.nz pattern)', async () => {
+		// Regression: prior to this fix, the Microsoft 365 detection rule's static
+		// `signal: 'mx:mail.protection.outlook.com'` did NOT substring-match the
+		// SPF include `spf.protection.outlook.com`, so the include slipped through
+		// the dedup and produced a second standalone `spf.protection.outlook.com`
+		// row alongside the Microsoft 365 TXT-verification row.
+		mockDnsResponses({
+			spf: 'v=spf1 include:spf.protection.outlook.com include:_spf-c.spark.co.nz -all',
+			txtRecords: ['MS=ms12345'],
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+		});
+
+		const result = await run();
+
+		// Microsoft 365 should collapse to a single dependency carrying both sources.
+		const m365Deps = result.dependencies.filter((d) => d.provider === 'Microsoft 365');
+		expect(m365Deps.length).toBe(1);
+		expect(m365Deps[0].sources).toContain('spf');
+		expect(m365Deps[0].sources).toContain('txt-verification');
+		// SPF sources promote trust to critical.
+		expect(m365Deps[0].trustLevel).toBe('critical');
+
+		// No standalone raw SPF include row for the Microsoft 365 host.
+		expect(
+			result.dependencies.find((d) => d.provider === 'spf.protection.outlook.com'),
+		).toBeUndefined();
+
+		// Unrelated SPF include (Spark's own host) is still surfaced as a raw entry.
+		expect(
+			result.dependencies.find((d) => d.provider === '_spf-c.spark.co.nz'),
+		).toBeDefined();
+	});
+
 	it('tolerates SRV probe failures gracefully', async () => {
 		// Mock that throws for SRV queries but succeeds for everything else
 		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
