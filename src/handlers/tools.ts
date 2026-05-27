@@ -66,6 +66,10 @@ import { brandAuditStatus } from '../tools/brand-audit-status';
 import { brandAuditGetReport } from '../tools/brand-audit-get-report';
 import { registerBrandAuditWatch, listBrandAuditWatches, deleteBrandAuditWatch } from '../tools/brand-audit-watch';
 import { createD1BrandAuditStepStore } from '../lib/brand-audit-step-store';
+import { querySignins } from '../tools/m365/query-signins';
+import { queryUal } from '../tools/m365/query-ual';
+import { getCaPolicies } from '../tools/m365/get-ca-policies';
+import { assessCoverage } from '../tools/m365/assess-coverage';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
 import {
@@ -173,6 +177,8 @@ interface ToolRuntimeOptions {
 	whoisBinding?: { fetch: typeof fetch };
 	/** Operator-only bv-recon service binding. Fail-soft; absent on BSL self-hosts. */
 	reconBinding?: { fetch: typeof fetch };
+	/** Service binding to bv-web's internal M365 proxy surface. Fail-soft; absent when bv-web is not provisioned. */
+	m365Proxy?: { fetch: typeof fetch };
 	/** Bearer admin token forwarded to bv-recon. */
 	reconAuthToken?: string;
 	infraProbe?: { fetch: typeof fetch };
@@ -1190,6 +1196,60 @@ export async function handleToolsCall(
 					logDetails = { totalPaths: result.totalPaths, overallRisk: result.overallRisk };
 					logToolSuccess({ ...ctx(), status: result.overallRisk === 'low' ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
 					return buildToolResult(formatAttackPaths(result, effectiveFormat), result, effectiveFormat);
+				}
+				case 'query_signins': {
+					const result = await querySignins(
+						{
+							ms_tenant_id: String(validatedArgs.ms_tenant_id),
+							user_principal_name: validatedArgs.user_principal_name as string | undefined,
+							failures_only: validatedArgs.failures_only as boolean | undefined,
+							since_hours: validatedArgs.since_hours as number | undefined,
+						},
+						runtimeOptions?.m365Proxy,
+					);
+					logResult = result.ok ? 'ok' : 'error';
+					logDetails = result;
+					logToolSuccess({ ...ctx(), status: result.ok ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
+					const text = JSON.stringify(result, null, effectiveFormat === 'compact' ? 0 : 2);
+					return buildToolResult(text, result, effectiveFormat);
+				}
+				case 'query_ual': {
+					const result = await queryUal(
+						{
+							ms_tenant_id: String(validatedArgs.ms_tenant_id),
+							operation: validatedArgs.operation as string | undefined,
+							user_principal_name: validatedArgs.user_principal_name as string | undefined,
+							since_hours: validatedArgs.since_hours as number | undefined,
+						},
+						runtimeOptions?.m365Proxy,
+					);
+					logResult = result.ok ? 'ok' : 'error';
+					logDetails = result;
+					logToolSuccess({ ...ctx(), status: result.ok ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
+					const text = JSON.stringify(result, null, effectiveFormat === 'compact' ? 0 : 2);
+					return buildToolResult(text, result, effectiveFormat);
+				}
+				case 'get_ca_policies': {
+					const result = await getCaPolicies(
+						{ ms_tenant_id: String(validatedArgs.ms_tenant_id) },
+						runtimeOptions?.m365Proxy,
+					);
+					logResult = result.ok ? 'ok' : 'error';
+					logDetails = result;
+					logToolSuccess({ ...ctx(), status: result.ok ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
+					const text = JSON.stringify(result, null, effectiveFormat === 'compact' ? 0 : 2);
+					return buildToolResult(text, result, effectiveFormat);
+				}
+				case 'assess_coverage': {
+					const result = await assessCoverage(
+						{ ms_tenant_id: String(validatedArgs.ms_tenant_id) },
+						runtimeOptions?.m365Proxy,
+					);
+					logResult = result.ok ? 'ok' : 'error';
+					logDetails = result;
+					logToolSuccess({ ...ctx(), status: result.ok ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
+					const text = JSON.stringify(result, null, effectiveFormat === 'compact' ? 0 : 2);
+					return buildToolResult(text, result, effectiveFormat);
 				}
 				default:
 					logToolFailure({ ...ctx(), error: `Unknown tool: ${name}`, args });
