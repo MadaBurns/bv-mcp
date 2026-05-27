@@ -179,6 +179,8 @@ interface ToolRuntimeOptions {
 	reconBinding?: { fetch: typeof fetch };
 	/** Service binding to bv-web's internal M365 proxy surface. Fail-soft; absent when bv-web is not provisioned. */
 	m365Proxy?: { fetch: typeof fetch };
+	/** Bearer token (BV_WEB_INTERNAL_KEY) forwarded to bv-web's internal M365 endpoints. */
+	m365ProxyAuthToken?: string;
 	/** Bearer admin token forwarded to bv-recon. */
 	reconAuthToken?: string;
 	infraProbe?: { fetch: typeof fetch };
@@ -1206,6 +1208,7 @@ export async function handleToolsCall(
 							since_hours: validatedArgs.since_hours as number | undefined,
 						},
 						runtimeOptions?.m365Proxy,
+						{ authToken: runtimeOptions?.m365ProxyAuthToken, keyHash: runtimeOptions?.keyHash },
 					);
 					logResult = result.ok ? 'ok' : 'error';
 					logDetails = result;
@@ -1222,6 +1225,7 @@ export async function handleToolsCall(
 							since_hours: validatedArgs.since_hours as number | undefined,
 						},
 						runtimeOptions?.m365Proxy,
+						{ authToken: runtimeOptions?.m365ProxyAuthToken, keyHash: runtimeOptions?.keyHash },
 					);
 					logResult = result.ok ? 'ok' : 'error';
 					logDetails = result;
@@ -1233,6 +1237,7 @@ export async function handleToolsCall(
 					const result = await getCaPolicies(
 						{ ms_tenant_id: String(validatedArgs.ms_tenant_id) },
 						runtimeOptions?.m365Proxy,
+						{ authToken: runtimeOptions?.m365ProxyAuthToken, keyHash: runtimeOptions?.keyHash },
 					);
 					logResult = result.ok ? 'ok' : 'error';
 					logDetails = result;
@@ -1244,6 +1249,7 @@ export async function handleToolsCall(
 					const result = await assessCoverage(
 						{ ms_tenant_id: String(validatedArgs.ms_tenant_id) },
 						runtimeOptions?.m365Proxy,
+						{ authToken: runtimeOptions?.m365ProxyAuthToken, keyHash: runtimeOptions?.keyHash },
 					);
 					logResult = result.ok ? 'ok' : 'error';
 					logDetails = result;
