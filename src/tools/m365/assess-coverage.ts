@@ -6,6 +6,7 @@ import { callM365Proxy } from './proxy';
 export async function assessCoverage(
 	args: { ms_tenant_id: string },
 	proxy?: { fetch: typeof fetch },
+	opts?: { authToken?: string; keyHash?: string },
 ): Promise<M365ProxyResult> {
-	return callM365Proxy(proxy, 'assess-coverage', args);
+	return callM365Proxy(proxy, 'assess-coverage', args, opts);
 }

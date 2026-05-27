@@ -20,15 +20,20 @@ export async function callM365Proxy(
 	proxy: { fetch: typeof fetch } | undefined,
 	path: string,
 	body: unknown,
+	opts?: { authToken?: string; keyHash?: string },
 ): Promise<M365ProxyResult> {
 	if (!proxy) {
 		return { ok: false, unprovisioned: true, tool: path };
 	}
 	try {
+		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+		if (opts?.authToken) {
+			headers['Authorization'] = `Bearer ${opts.authToken}`;
+		}
 		const response = await proxy.fetch(`${M365_BASE_URL}/${path}`, {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(body),
+			headers,
+			body: JSON.stringify({ ...(body as object), keyHash: opts?.keyHash }),
 			signal: AbortSignal.timeout(TIMEOUT_MS) as never,
 		});
 		if (!response.ok) {
