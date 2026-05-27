@@ -13,7 +13,9 @@
  */
 import type { M365ProxyResult } from './types';
 
-const M365_BASE_URL = 'https://bv-web-internal/m365';
+// Routes live at /api/internal/m365/* on the bv-web SSR app — the prior
+// `/m365/*` path returned 405 (SSR has no top-level /m365 route).
+const M365_BASE_URL = 'https://bv-web-internal/api/internal/m365';
 const TIMEOUT_MS = 10_000;
 
 export async function callM365Proxy(
