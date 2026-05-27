@@ -8,6 +8,9 @@
  * Coverage:
  *   (a) proxy present + 200 response → { ok: true, data: ... }
  *   (b) proxy absent (undefined)     → { ok: false, unprovisioned: true, tool: <path> }
+ *   (c) keyHash threads into request body when provided
+ *   (d) Authorization: Bearer header set when authToken provided
+ *   (e) No Authorization header when authToken omitted
  */
 
 import { describe, it, expect } from 'vitest';
@@ -27,6 +30,25 @@ function mockProxy(responseBody: unknown): { fetch: typeof fetch } {
 function errorProxy(status: number): { fetch: typeof fetch } {
 	return {
 		fetch: async () => new Response('error', { status }),
+	};
+}
+
+/** Build a capturing proxy that records the last request for assertions. */
+function capturingProxy(): { fetch: typeof fetch; getLastRequest: () => { body: unknown; headers: Record<string, string> } } {
+	let lastBody: unknown = undefined;
+	let lastHeaders: Record<string, string> = {};
+	return {
+		fetch: async (input, init) => {
+			lastBody = JSON.parse(init?.body as string);
+			const hdrs = init?.headers as Record<string, string> | Headers | undefined;
+			if (hdrs instanceof Headers) {
+				hdrs.forEach((v, k) => { lastHeaders[k] = v; });
+			} else if (hdrs) {
+				lastHeaders = { ...hdrs };
+			}
+			return new Response(JSON.stringify({}), { status: 200 });
+		},
+		getLastRequest: () => ({ body: lastBody, headers: lastHeaders }),
 	};
 }
 
@@ -68,6 +90,27 @@ describe('querySignins', () => {
 	it('does not throw on any input', async () => {
 		await expect(querySignins({ ms_tenant_id: 'x' })).resolves.toBeDefined();
 	});
+
+	it('threads keyHash into request body when provided', async () => {
+		const proxy = capturingProxy();
+		await querySignins({ ms_tenant_id: 'tenant-abc' }, proxy, { keyHash: 'hash-xyz' });
+		const { body } = proxy.getLastRequest();
+		expect((body as Record<string, unknown>).keyHash).toBe('hash-xyz');
+	});
+
+	it('sets Authorization: Bearer header when authToken is provided', async () => {
+		const proxy = capturingProxy();
+		await querySignins({ ms_tenant_id: 'tenant-abc' }, proxy, { authToken: 'my-secret-key' });
+		const { headers } = proxy.getLastRequest();
+		expect(headers['Authorization']).toBe('Bearer my-secret-key');
+	});
+
+	it('does not set Authorization header when authToken is omitted', async () => {
+		const proxy = capturingProxy();
+		await querySignins({ ms_tenant_id: 'tenant-abc' }, proxy, { keyHash: 'hash-only' });
+		const { headers } = proxy.getLastRequest();
+		expect(headers['Authorization']).toBeUndefined();
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -97,7 +140,7 @@ describe('queryUal', () => {
 
 	it('passes optional filters in args', async () => {
 		let capturedBody = '';
-		const capturingProxy: { fetch: typeof fetch } = {
+		const capturingProxyLegacy: { fetch: typeof fetch } = {
 			fetch: async (input, init) => {
 				capturedBody = init?.body as string;
 				return new Response(JSON.stringify({}), { status: 200 });
@@ -105,12 +148,26 @@ describe('queryUal', () => {
 		};
 		await queryUal(
 			{ ms_tenant_id: 'tenant-abc', operation: 'MailItemsAccessed', user_principal_name: 'bob@corp.com', since_hours: 6 },
-			capturingProxy,
+			capturingProxyLegacy,
 		);
 		const parsed = JSON.parse(capturedBody);
 		expect(parsed.operation).toBe('MailItemsAccessed');
 		expect(parsed.user_principal_name).toBe('bob@corp.com');
 		expect(parsed.since_hours).toBe(6);
+	});
+
+	it('threads keyHash into request body when provided', async () => {
+		const proxy = capturingProxy();
+		await queryUal({ ms_tenant_id: 'tenant-abc' }, proxy, { keyHash: 'hash-ual' });
+		const { body } = proxy.getLastRequest();
+		expect((body as Record<string, unknown>).keyHash).toBe('hash-ual');
+	});
+
+	it('sets Authorization: Bearer header when authToken is provided', async () => {
+		const proxy = capturingProxy();
+		await queryUal({ ms_tenant_id: 'tenant-abc' }, proxy, { authToken: 'ual-token' });
+		const { headers } = proxy.getLastRequest();
+		expect(headers['Authorization']).toBe('Bearer ual-token');
 	});
 });
 
@@ -137,6 +194,20 @@ describe('getCaPolicies', () => {
 		} else {
 			throw new Error('expected unprovisioned shape');
 		}
+	});
+
+	it('threads keyHash into request body when provided', async () => {
+		const proxy = capturingProxy();
+		await getCaPolicies({ ms_tenant_id: 'tenant-abc' }, proxy, { keyHash: 'hash-ca' });
+		const { body } = proxy.getLastRequest();
+		expect((body as Record<string, unknown>).keyHash).toBe('hash-ca');
+	});
+
+	it('sets Authorization: Bearer header when authToken is provided', async () => {
+		const proxy = capturingProxy();
+		await getCaPolicies({ ms_tenant_id: 'tenant-abc' }, proxy, { authToken: 'ca-token' });
+		const { headers } = proxy.getLastRequest();
+		expect(headers['Authorization']).toBe('Bearer ca-token');
 	});
 });
 
@@ -178,5 +249,26 @@ describe('assessCoverage', () => {
 		} else {
 			throw new Error('expected error shape');
 		}
+	});
+
+	it('threads keyHash into request body when provided', async () => {
+		const proxy = capturingProxy();
+		await assessCoverage({ ms_tenant_id: 'tenant-abc' }, proxy, { keyHash: 'hash-cov' });
+		const { body } = proxy.getLastRequest();
+		expect((body as Record<string, unknown>).keyHash).toBe('hash-cov');
+	});
+
+	it('sets Authorization: Bearer header when authToken is provided', async () => {
+		const proxy = capturingProxy();
+		await assessCoverage({ ms_tenant_id: 'tenant-abc' }, proxy, { authToken: 'cov-token' });
+		const { headers } = proxy.getLastRequest();
+		expect(headers['Authorization']).toBe('Bearer cov-token');
+	});
+
+	it('does not set Authorization header when authToken is omitted', async () => {
+		const proxy = capturingProxy();
+		await assessCoverage({ ms_tenant_id: 'tenant-abc' }, proxy);
+		const { headers } = proxy.getLastRequest();
+		expect(headers['Authorization']).toBeUndefined();
 	});
 });
