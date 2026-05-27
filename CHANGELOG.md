@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.6] - 2026-05-27
+
+### Fixed
+
+- **Three more tool handlers no longer hit the 28s `TOOL_CALL_TIMEOUT_MS` guillotine.** Same bug class as the v3.3.5 `discover_brand_domains` fix: a tool handler called its orchestrator without threading `signal`/`deadlineMs`, so a slow sub-operation could run past the server-wide tool cap and `Promise.race` would reject the whole call — discarding every completed sub-result. Discovered by a defense-in-depth audit immediately after #236 landed. All three fixes follow the `brand_audit_single` pattern (`AbortSignal.timeout(24_000)` + `deadlineMs: Date.now() + 24_000`) and add a per-stage deadline guard in the orchestrator so partial results are preserved rather than thrown away. Regression tests use the established hang-on-abort stub.
+  - `compare_domains` (HIGH severity — easiest to trigger publicly): sequential `scanDomain` loop over 2–5 domains, each capped at 15s internally — 2 uncached domains routinely chained past 28s and lost every completed scan. The orchestrator now checks the deadline before each scan iteration, marks the result `partial: true`, and surfaces un-scanned domains in `errors` with `'budget_exceeded'`. `scanFn` injection seam added (mirrors `batch_scan`'s pattern) for testability.
+  - `rdap_lookup` (MEDIUM): server-controlled `Retry-After` headers (up to 15s) plus a 2-attempt loop plus a WHOIS fallback could chain past 28s on slow/rate-limited TLD RDAP servers. `parseRetryAfterMs` now clamps the sleep against remaining budget and returns 0 when budget is exhausted; the retry short-circuits without sleeping just to time out. The orchestrator already accepted `signal` — the handler just wasn't passing one. Also threads `deadlineMs` through `fetchRdapResponse` and `fetchWhoisRegistrar`.
+  - `discover_subdomains` (LOW-MED): cold-cache fallback chained 3 × 10-second timeouts (certstream `enumerate` → certstream `sans` → crt.sh) for ~30s, losing any data the earlier stages already gathered. The orchestrator now checks the deadline before each stage; if a prior stage returned data, the result is returned with `partial: true` rather than continuing past the cap.
+
 ## [3.3.5] - 2026-05-27
 
 ### Fixed
