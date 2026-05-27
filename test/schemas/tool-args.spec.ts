@@ -9,6 +9,10 @@ import {
 	CompareBaselineArgs,
 	GetBenchmarkArgs,
 	GetProviderInsightsArgs,
+	QuerySigninsArgs,
+	QueryUalArgs,
+	GetCaPoliciesArgs,
+	AssessCoverageArgs,
 	TOOL_SCHEMA_MAP,
 } from '../../src/schemas/tool-args';
 
@@ -153,9 +157,71 @@ describe('GetProviderInsightsArgs', () => {
 	});
 });
 
+describe('QuerySigninsArgs', () => {
+	it('accepts valid ms_tenant_id', () => {
+		const result = QuerySigninsArgs.parse({ ms_tenant_id: 'abc123.onmicrosoft.com' });
+		expect(result.ms_tenant_id).toBe('abc123.onmicrosoft.com');
+	});
+	it('accepts all optional fields', () => {
+		const result = QuerySigninsArgs.parse({
+			ms_tenant_id: 'abc123',
+			user_principal_name: 'user@corp.com',
+			failures_only: true,
+			since_hours: 48,
+		});
+		expect(result.failures_only).toBe(true);
+		expect(result.since_hours).toBe(48);
+	});
+	it('rejects missing ms_tenant_id', () => {
+		expect(() => QuerySigninsArgs.parse({})).toThrow();
+	});
+	it('rejects since_hours out of range', () => {
+		expect(() => QuerySigninsArgs.parse({ ms_tenant_id: 'x', since_hours: 721 })).toThrow();
+	});
+});
+
+describe('QueryUalArgs', () => {
+	it('accepts valid ms_tenant_id', () => {
+		const result = QueryUalArgs.parse({ ms_tenant_id: 'abc123' });
+		expect(result.ms_tenant_id).toBe('abc123');
+	});
+	it('accepts all optional fields', () => {
+		const result = QueryUalArgs.parse({
+			ms_tenant_id: 'abc123',
+			operation: 'MailItemsAccessed',
+			user_principal_name: 'user@corp.com',
+			since_hours: 6,
+		});
+		expect(result.operation).toBe('MailItemsAccessed');
+	});
+	it('rejects missing ms_tenant_id', () => {
+		expect(() => QueryUalArgs.parse({})).toThrow();
+	});
+});
+
+describe('GetCaPoliciesArgs', () => {
+	it('accepts valid ms_tenant_id', () => {
+		const result = GetCaPoliciesArgs.parse({ ms_tenant_id: 'tenant-guid-here' });
+		expect(result.ms_tenant_id).toBe('tenant-guid-here');
+	});
+	it('rejects missing ms_tenant_id', () => {
+		expect(() => GetCaPoliciesArgs.parse({})).toThrow();
+	});
+});
+
+describe('AssessCoverageArgs', () => {
+	it('accepts valid ms_tenant_id', () => {
+		const result = AssessCoverageArgs.parse({ ms_tenant_id: 'tenant-guid-here' });
+		expect(result.ms_tenant_id).toBe('tenant-guid-here');
+	});
+	it('rejects missing ms_tenant_id', () => {
+		expect(() => AssessCoverageArgs.parse({})).toThrow();
+	});
+});
+
 describe('TOOL_SCHEMA_MAP', () => {
-	it('has 73 tools', () => {
-		expect(Object.keys(TOOL_SCHEMA_MAP)).toHaveLength(73);
+	it('has 77 tools', () => {
+		expect(Object.keys(TOOL_SCHEMA_MAP)).toHaveLength(77);
 	});
 	it('all values are Zod schemas', () => {
 		for (const schema of Object.values(TOOL_SCHEMA_MAP)) {

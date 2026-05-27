@@ -384,6 +384,10 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'osint_investigation_report', arguments: { investigationId: 'i1' } },
 		{ name: 'osint_investigate_username_start', arguments: { query: 'alice' } },
 		{ name: 'osint_investigate_email_start', arguments: { query: 'a@b.com' } },
+		{ name: 'query_signins', arguments: { ms_tenant_id: '00000000-0000-0000-0000-000000000000' } },
+		{ name: 'query_ual', arguments: { ms_tenant_id: '00000000-0000-0000-0000-000000000000' } },
+		{ name: 'get_ca_policies', arguments: { ms_tenant_id: '00000000-0000-0000-0000-000000000000' } },
+		{ name: 'assess_coverage', arguments: { ms_tenant_id: '00000000-0000-0000-0000-000000000000' } },
 	];
 }
 
