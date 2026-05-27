@@ -300,7 +300,15 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 export const FORCE_REFRESH_DAILY_LIMIT = 5;
 
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
-export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>([]);
+export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>([
+	// identity_secops tools are gated by internal-auth + per-tenant membership at the
+	// bv-web proxy target (not by MCP free-tier quotas); they're never callable by
+	// anonymous principals, so they sit outside the daily-tool-quota matrix.
+	'query_signins',
+	'query_ual',
+	'get_ca_policies',
+	'assess_coverage',
+]);
 
 /**
  * Per-tier concurrent tool execution limits (per-isolate, best-effort fairness).
