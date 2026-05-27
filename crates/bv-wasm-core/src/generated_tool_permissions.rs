@@ -6,6 +6,7 @@ use crate::PermissionMode;
 pub fn required_mode_for_tool(tool: &str) -> PermissionMode {
     match tool {
         "analyze_drift" => PermissionMode::ReadOnly,
+        "assess_coverage" => PermissionMode::ReadOnly,
         "assess_spoofability" => PermissionMode::ReadOnly,
         "batch_scan" => PermissionMode::ReadOnly,
         "brand_audit_batch_start" => PermissionMode::WorkspaceWrite,
@@ -58,6 +59,7 @@ pub fn required_mode_for_tool(tool: &str) -> PermissionMode {
         "generate_rollout_plan" => PermissionMode::ReadOnly,
         "generate_spf_record" => PermissionMode::ReadOnly,
         "get_benchmark" => PermissionMode::ReadOnly,
+        "get_ca_policies" => PermissionMode::ReadOnly,
         "get_provider_insights" => PermissionMode::ReadOnly,
         "list_brand_audit_watches" => PermissionMode::ReadOnly,
         "map_compliance" => PermissionMode::ReadOnly,
@@ -69,6 +71,8 @@ pub fn required_mode_for_tool(tool: &str) -> PermissionMode {
         "osint_investigate_username_start" => PermissionMode::WorkspaceWrite,
         "osint_investigation_report" => PermissionMode::ReadOnly,
         "osint_investigation_status" => PermissionMode::ReadOnly,
+        "query_signins" => PermissionMode::ReadOnly,
+        "query_ual" => PermissionMode::ReadOnly,
         "rdap_lookup" => PermissionMode::ReadOnly,
         "register_brand_audit_watch" => PermissionMode::WorkspaceWrite,
         "resolve_spf_chain" => PermissionMode::ReadOnly,
