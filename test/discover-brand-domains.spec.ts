@@ -269,6 +269,49 @@ describe('discoverBrandDomains', () => {
 		});
 	});
 
+	it('does not let a hanging SAN signal block the rest of the sweep when an abort deadline fires', async () => {
+		// Regression for the discover_brand_domains ~28s server-cap timeout: the
+		// SAN/CT crt.sh lookup could hang the whole signal pipeline so the call
+		// lost the server's Promise.race and discarded the fast signals' results.
+		// With a deadline-derived AbortSignal threaded in (as the tool handler now
+		// does), a hung SAN must abort and degrade to a non-completed status while
+		// the fast NS signal still completes and the orchestrator returns.
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+
+		// SAN stub that hangs until the abort signal fires — i.e. resolves to a
+		// timeout-shaped result only once the caller's deadline cancels it. This
+		// mirrors correlateSans's real behaviour (it returns queryStatus:'timeout'
+		// on AbortError rather than hanging forever).
+		const correlateSans = vi.fn().mockImplementation(
+			(_seed: string, opts: { signal?: AbortSignal } = {}): Promise<SanCorrelationResult> =>
+				new Promise<SanCorrelationResult>((resolve) => {
+					const finish = () =>
+						resolve({ seedDomain: 'example.com', coOwnedDomains: [], certIds: [], queryStatus: 'timeout' });
+					if (opts.signal?.aborted) return finish();
+					opts.signal?.addEventListener('abort', finish, { once: true });
+				}),
+		);
+		const correlateNs = vi.fn().mockResolvedValue(okNs([{ domain: 'sister.example.net', confidence: 0.9 }]));
+		const deps = makeDeps({ correlateSans, correlateNs });
+
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ signals: ['san', 'ns'], signal: AbortSignal.timeout(20) },
+			deps,
+		);
+
+		// Pipeline completed (did not hang) and returned a brand_discovery result.
+		expect(result.category).toBe('brand_discovery');
+		// The fast NS signal ran...
+		expect(correlateNs).toHaveBeenCalledTimes(1);
+		// ...and the hung SAN signal was aborted, surfaced as a non-completed
+		// status rather than blocking — never an allFailed missingControl finding.
+		const summary = result.findings.find((f) => f.metadata?.signalStatus);
+		const signalStatus = summary?.metadata?.signalStatus as Record<string, { status: string }> | undefined;
+		expect(signalStatus?.ns?.status).toBe('ok');
+		expect(['timeout', 'failed']).toContain(signalStatus?.san?.status);
+	});
+
 	it('aggregates multi-signal candidates with combined-confidence math', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		// Same candidate reported by SAN (0.1) AND DKIM (0.95).
