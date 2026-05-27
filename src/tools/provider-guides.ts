@@ -151,6 +151,20 @@ const DETECTION_RULES: DetectionRule[] = [
 ];
 
 /**
+ * Resolve a single SPF include hostname to a known provider name, if any.
+ * Uses the same DETECTION_RULES as detectProviders so the two paths can't drift.
+ * Returns null when no rule's spf pattern matches.
+ */
+export function matchProviderForSpfInclude(spfInclude: string): string | null {
+	for (const rule of DETECTION_RULES) {
+		if (rule.patterns.spf && rule.patterns.spf.test(spfInclude)) {
+			return rule.name;
+		}
+	}
+	return null;
+}
+
+/**
  * Detect infrastructure providers from DNS signals.
  * Returns deduplicated list of DetectedProvider (one entry per provider name).
  */
