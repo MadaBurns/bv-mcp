@@ -564,10 +564,19 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 			expect(cdnFinding(result.findings)).toBeNull();
 		});
 
-		it('attributes Cloudflare from server: cloudflare (origin-set signal)', async () => {
+		it('does NOT attribute Cloudflare from server: cloudflare alone (CF Worker egress rewrites server: cloudflare on every response)', async () => {
+			// v3.3.11 diagnostic instrumentation captured the actual headers the
+			// Worker receives on outbound fetches: google.com and github.com BOTH
+			// surfaced `server: cloudflare` (along with cf-ray + cf-cache-status:
+			// DYNAMIC) despite their origins returning `server: gws` /
+			// `server: github.com` to direct curls. CF Workers' fetch infrastructure
+			// rewrites the server header to `cloudflare` on every outbound response.
+			// Header-based CF detection is therefore impossible from inside a CF
+			// Worker — we accept false-negative on actual CF customers rather than
+			// 100% false-positive on every domain.
 			mockWithHeaders({ server: 'cloudflare', 'cf-ray': '8aabcdef1234-AKL' });
 			const result = await run();
-			expect(cdnFinding(result.findings)).toBe('Cloudflare');
+			expect(cdnFinding(result.findings)).toBeNull();
 		});
 
 		it('does NOT attribute Cloudflare from cf-cache-status alone (CF Worker egress stamps this too)', async () => {

@@ -101,24 +101,24 @@ function detectCdnProvider(headers: Headers): string | null {
 	if (servedBy.includes('cache') || headers.get('via')?.toLowerCase().includes('varnish')) {
 		return 'Fastly';
 	}
-	// 2. Cloudflare — require `server: cloudflare`. Other CF-prefix headers
-	// (`cf-ray`, `cf-cache-status`, possibly more) are stamped on every
-	// outbound `fetch()` response by the Cloudflare Worker egress — `cf-ray` for
-	// tracing, `cf-cache-status` (typically `DYNAMIC`/`BYPASS` for non-cached
-	// fetches) by the edge's cache layer — so they appear on responses from
-	// google.com / akamai-fronted sites / anywhere, NOT just on origins that
-	// are actually behind Cloudflare. `server: cloudflare` is the only header
-	// the *origin's* CF zone sets that doesn't get attached to transit
-	// responses; CF customers can't override it via Transform Rules. We
-	// previously also gated on `cf-mitigated` (WAF-action signal) but dropped
-	// it for the same belt-and-braces reason — if a domain is truly fronted
-	// by Cloudflare it will also carry `server: cloudflare`. This is the
-	// third tightening of this rule (v3.3.9 → v3.3.10): each previous pass
-	// missed a CF-injected header the regression tests didn't cover.
-	const server = headers.get('server')?.toLowerCase() ?? '';
-	if (server.includes('cloudflare')) {
-		return 'Cloudflare';
-	}
+	// 2. Cloudflare — **removed.** No header-based detection of Cloudflare is
+	// possible when the scanner runs from inside a Cloudflare Worker, because
+	// CF's outbound `fetch()` infrastructure rewrites the response's `server`
+	// header to `cloudflare` on EVERY response — confirmed empirically by
+	// v3.3.11's diagnostic instrumentation, which observed `server: cloudflare`
+	// on responses from google.com (origin: `server: gws`) and github.com
+	// (origin: `server: github.com`). `cf-ray` is added for tracing and
+	// `cf-cache-status: DYNAMIC` is added by CF's edge cache layer. None of
+	// these signals can distinguish "origin is on CF" from "response transited
+	// CF's edge". True CF customers (cloudflare.com, sites behind Cloudflare
+	// CDN/WAF) now go undetected — acceptable, because false-negative is
+	// strictly better than the 100% false-positive rate we had pre-fix. The
+	// vendor-specific rules above (Imperva, Sucuri, Vercel, CloudFront,
+	// Akamai, Fastly) still work because they use origin-set headers that
+	// CF cannot impersonate. A future revision could add CF detection via
+	// IP-range matching against Cloudflare's published edge ranges (see
+	// cloudflare.com/ips/) — but that's a separate code path requiring DNS
+	// A-record lookups, not header inspection.
 	return null;
 }
 
@@ -374,29 +374,12 @@ async function checkHttpSecurityInner(domain: string): Promise<CheckResult> {
 		result.checkStatus === 'error' || result.checkStatus === 'timeout' || result.findings.some((f) => f.metadata?.missingControl === true);
 	if (isUnanalyzable) return result;
 
-	// TEMPORARY diagnostic — expose the raw CDN-attribution-relevant headers
-	// in the finding metadata. This is the third pass on CDN detection and
-	// each one missed a CF-injected header the unit tests didn't cover. We
-	// need empirical evidence of what the Worker actually sees on outbound
-	// fetches before tightening further. Remove the `cdnDiagnostics` field
-	// in the next release once the live behavior is understood.
-	const cdnDiagnostics = {
-		server: capturedHeaders.get('server'),
-		cfRay: capturedHeaders.get('cf-ray'),
-		cfCacheStatus: capturedHeaders.get('cf-cache-status'),
-		cfMitigated: capturedHeaders.get('cf-mitigated'),
-		xCdn: capturedHeaders.get('x-cdn'),
-		xIInfo: capturedHeaders.get('x-iinfo'),
-		via: capturedHeaders.get('via'),
-		xAmzCfId: capturedHeaders.get('x-amz-cf-id'),
-	};
-
 	const cdnFinding = createFinding(
 		'http_security',
 		`HTTP headers via ${cdnProvider} CDN`,
 		'info',
 		`HTTP security headers may be provided by ${cdnProvider} CDN rather than the origin server. CDN-applied headers do not reflect the origin server's security configuration.`,
-		{ cdnProvider, cdnDiagnostics },
+		{ cdnProvider },
 	);
 
 	return { ...result, findings: [...result.findings, cdnFinding] };
