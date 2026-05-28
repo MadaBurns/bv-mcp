@@ -224,12 +224,12 @@ describe('mx-reputation-analysis', () => {
 	});
 
 	describe('buildDnsblZones', () => {
-		it('should return the expected DNSBL zones', () => {
+		it('NEVER includes Spamhaus ZEN — it is dropped unconditionally', () => {
 			const zones = buildDnsblZones();
-			expect(zones).toContain('zen.spamhaus.org');
+			expect(zones).not.toContain('zen.spamhaus.org');
 			expect(zones).toContain('bl.spamcop.net');
 			expect(zones).toContain('b.barracudacentral.org');
-			expect(zones).toHaveLength(3);
+			expect(zones).toHaveLength(2);
 		});
 	});
 });
