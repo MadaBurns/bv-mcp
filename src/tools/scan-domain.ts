@@ -30,7 +30,7 @@ import {
 	type ScanTelemetry,
 } from '../lib/adaptive-weights';
 import { applyInteractionPenalties, type InteractionEffect } from '../lib/category-interactions';
-import { cacheGet, cacheSet, runWithCache } from '../lib/cache';
+import { buildCheckCacheKey, buildScanCacheKey, cacheGet, cacheSet, runWithCache } from '../lib/cache';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { checkSpf } from './check-spf';
 import { checkDmarc } from './check-dmarc';
@@ -62,9 +62,6 @@ export { formatScanReport, buildStructuredScanResult } from './scan/format-repor
 export type { StructuredScanResult, ScanResultEnrichment } from './scan/format-report';
 export type { MaturityStage } from './scan/maturity-staging';
 export type { ScanRuntimeOptions } from './scan/post-processing';
-
-/** Cache key prefix for scan and per-check results */
-const CACHE_PREFIX = 'cache:';
 
 /** In-memory cache for adaptive weight responses from the ProfileAccumulator DO. */
 const adaptiveWeightCache = new Map<string, { weights: AdaptiveWeightsResponse; expires: number }>();
@@ -213,9 +210,8 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	const timeoutBudget = resolveScanTimeoutBudget(runtimeOptions);
 	const explicitProfile = runtimeOptions?.profile;
 	const isExplicit = explicitProfile && explicitProfile !== 'auto';
-	const cacheKey = isExplicit
-		? `${CACHE_PREFIX}${domain}:profile:${explicitProfile}`
-		: `${CACHE_PREFIX}${domain}`;
+	// Versioned (cache:v<version>:...) so a deploy auto-invalidates — see buildScanCacheKey.
+	const cacheKey = isExplicit ? buildScanCacheKey(domain, explicitProfile) : buildScanCacheKey(domain);
 
 	// Check cache first (skip when force_refresh is requested)
 	if (!runtimeOptions?.forceRefresh) {
@@ -676,7 +672,7 @@ async function runCachedCheck(
 	ttlSeconds?: number,
 	skipCache?: boolean,
 ): Promise<CheckResult> {
-	return runWithCache(`${CACHE_PREFIX}${domain}:check:${category}`, run, kv, ttlSeconds, skipCache);
+	return runWithCache(buildCheckCacheKey(domain, category), run, kv, ttlSeconds, skipCache);
 }
 
 /**

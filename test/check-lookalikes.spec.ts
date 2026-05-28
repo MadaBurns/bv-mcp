@@ -802,3 +802,184 @@ describe('checkLookalikes - issue #264 severity calibration wiring', () => {
 		expect(tstFinding!.severity).toBe('medium');
 	});
 });
+
+describe('checkLookalikes - issue #263 same-entity RDAP registrant correlation', () => {
+	async function run(domain = 'example.com') {
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		return checkLookalikes(domain);
+	}
+
+	/** Build an RDAP domain response carrying a registrant entity with the given org via a vCard `org` property. */
+	function rdapWithRegistrant(org: string | null, registrationDaysAgo: number | null = 1500) {
+		const events =
+			registrationDaysAgo == null
+				? []
+				: [{ eventAction: 'registration', eventDate: new Date(Date.now() - registrationDaysAgo * 24 * 60 * 60 * 1000).toISOString() }];
+		const entities =
+			org == null
+				? []
+				: [
+						{
+							objectClassName: 'entity',
+							roles: ['registrant'],
+							vcardArray: ['vcard', [['version', {}, 'text', '4.0'], ['org', {}, 'text', org]]],
+						},
+				  ];
+		return { events, entities };
+	}
+
+	/**
+	 * Mock that serves DoH probes for one lookalike (NS/A/MX, DIFFERENT NS from
+	 * the primary so the shared-NS pass does NOT short-circuit), the primary
+	 * domain's NS, and RDAP responses for BOTH the lookalike and the primary.
+	 * Registrant orgs are injected per-domain so the same-entity correlation can
+	 * be exercised. HEAD probes default to ok (hasWebContent=true).
+	 */
+	function mockSameEntity(opts: {
+		lookalike: string;
+		lookalikeRdap: ReturnType<typeof rdapWithRegistrant> | { fail: true };
+		primaryRdap: ReturnType<typeof rdapWithRegistrant>;
+	}) {
+		const { lookalike, lookalikeRdap, primaryRdap } = opts;
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			// DoH queries
+			if (url.includes('cloudflare-dns.com')) {
+				const { name, type } = parseDohQuery(input);
+				if (name === 'test.com' && (type === 'NS' || type === '2')) {
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]));
+				}
+				if (name === lookalike) {
+					if (type === 'NS' || type === '2') {
+						// DIFFERENT NS provider — shared-NS pass must NOT fire (forces the RDAP path).
+						return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.other-dns.com.' }]));
+					}
+					if (type === 'MX' || type === '15') {
+						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.example.com.' }]));
+					}
+					if (type === 'A' || type === '1') {
+						return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
+					}
+				}
+				return Promise.resolve(createDohResponse([], []));
+			}
+
+			// RDAP for the lookalike
+			if (url.includes('rdap') && url.includes(`/domain/${lookalike}`)) {
+				if ('fail' in lookalikeRdap) {
+					return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) } as unknown as Response);
+				}
+				return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(lookalikeRdap) } as unknown as Response);
+			}
+			// RDAP for the primary domain
+			if (url.includes('rdap') && url.includes('/domain/test.com')) {
+				return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(primaryRdap) } as unknown as Response);
+			}
+
+			// HEAD probe — reachable web content (fail-soft true)
+			if (url.startsWith('https://') || url.startsWith('http://')) {
+				return Promise.resolve({ ok: true, status: 200, headers: new Headers(), text: () => Promise.resolve(''), json: () => Promise.resolve({}) } as unknown as Response);
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+	}
+
+	it('downgrades a mail-infra lookalike to info when its RDAP registrant org matches the scan domain (the xero.co.nz case)', async () => {
+		// Models a vendor whose regional subsidiary uses a different DNS provider
+		// (so shared-NS misses it) but shares the registrant org in RDAP.
+		mockSameEntity({
+			lookalike: 'tst.com',
+			lookalikeRdap: rdapWithRegistrant('<Vendor> Limited'),
+			primaryRdap: rdapWithRegistrant('<Vendor> Limited'),
+		});
+		const result = await run('test.com');
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.title).toContain('likely owned by same entity');
+		expect(tstFinding!.detail).toContain('registrant organisation');
+		expect(tstFinding!.metadata?.sharedRegistrantOrg).toBe('<vendor> limited');
+		// And it must NOT contribute to the HIGH summary.
+		const summary = result.findings.find((f) => /mail capability detected/i.test(f.title));
+		expect(summary).toBeUndefined();
+	});
+
+	it('keeps the calibrated threat severity when the registrant org differs (real third-party lookalike preserved)', async () => {
+		mockSameEntity({
+			lookalike: 'tst.com',
+			lookalikeRdap: rdapWithRegistrant('Phishing Co', 30), // recent reg + mail-infra → HIGH
+			primaryRdap: rdapWithRegistrant('<Vendor> Limited'),
+		});
+		const result = await run('test.com');
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('high');
+		expect(tstFinding!.title).not.toContain('likely owned by same entity');
+		expect(tstFinding!.title).toContain('mail infrastructure');
+	});
+
+	it('falls back to the threat severity when RDAP fails for the lookalike (fail-soft, never suppresses)', async () => {
+		mockSameEntity({
+			lookalike: 'tst.com',
+			lookalikeRdap: { fail: true }, // RDAP unavailable → registrantOrg unknown
+			primaryRdap: rdapWithRegistrant('<Vendor> Limited'),
+		});
+		const result = await run('test.com');
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		// Mail-infra, no corroborator, RDAP age unknown → MEDIUM (issue #264 default). NOT downgraded to info.
+		expect(tstFinding!.severity).toBe('medium');
+		expect(tstFinding!.title).not.toContain('likely owned by same entity');
+	});
+
+	it('detects a shared-NS same-entity lookalike WITHOUT issuing any RDAP fetch (cheap path preserved)', async () => {
+		const sharedNs = 'ns1.shared-dns.com.';
+		const rdapCalls: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('rdap')) rdapCalls.push(url);
+			if (url.includes('cloudflare-dns.com')) {
+				const { name, type } = parseDohQuery(input);
+				if (name === 'test.com' && (type === 'NS' || type === '2')) {
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: sharedNs }]));
+				}
+				if (name === 'tst.com') {
+					if (type === 'NS' || type === '2') {
+						return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: sharedNs }]));
+					}
+					if (type === 'MX' || type === '15') {
+						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }]));
+					}
+					if (type === 'A' || type === '1') {
+						return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
+					}
+				}
+				return Promise.resolve(createDohResponse([], []));
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const result = await run('test.com');
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.title).toContain('likely owned by same entity');
+		expect(tstFinding!.detail).toContain('shares nameservers');
+		// The cheaper shared-NS path must short-circuit BEFORE any RDAP call.
+		expect(rdapCalls.length).toBe(0);
+	});
+
+	it('matches the registrant org case-insensitively and whitespace-normalized', async () => {
+		mockSameEntity({
+			lookalike: 'tst.com',
+			lookalikeRdap: rdapWithRegistrant('  XERO   LIMITED  '),
+			primaryRdap: rdapWithRegistrant('xero limited'),
+		});
+		const result = await run('test.com');
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.title).toContain('likely owned by same entity');
+		expect(tstFinding!.metadata?.sharedRegistrantOrg).toBe('xero limited');
+	});
+});
