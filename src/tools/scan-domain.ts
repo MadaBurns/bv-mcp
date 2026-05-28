@@ -497,7 +497,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		const { adjustedScore, effects: interactionEffects } = applyInteractionPenalties(score, runtimeOptions?.scoringConfig);
 		score = adjustedScore;
 
-		const rawMaturity = computeMaturityStage(checkResults);
+		const rawMaturity = computeMaturityStage(checkResults, domainContext?.profile);
 		const maturity = capMaturityStage(rawMaturity, score.overall);
 
 		result = {
@@ -565,7 +565,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		}
 		const fallbackScoringContext = isExplicit ? fallbackContext : undefined;
 		const score = computeScanScore(checkResults, fallbackScoringContext, runtimeOptions?.scoringConfig);
-		const rawMaturity = computeMaturityStage(checkResults);
+		const rawMaturity = computeMaturityStage(checkResults, fallbackContext?.profile);
 		const maturity = capMaturityStage(rawMaturity, score.overall);
 		result = {
 			domain,

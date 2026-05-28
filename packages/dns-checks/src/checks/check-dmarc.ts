@@ -106,6 +106,13 @@ export async function checkDMARC(
 
 	// Check subdomain policy (sp= tag)
 	const sp = tags.get('sp');
+	// DMARCbis (RFC 9989) non-existent-subdomain policy. When `np=reject`/`np=quarantine`
+	// is set, non-existent subdomain spoofing is explicitly protected — the practical risk
+	// of `sp=none` is then limited to *existing* subdomains, which is a substantially
+	// smaller surface than the "any unowned subdomain" risk without np=. We downgrade the
+	// "Subdomain policy weaker than parent policy" finding accordingly.
+	const np = tags.get('np');
+	const npProtects = np === 'reject' || np === 'quarantine';
 	if (!sp && policy === 'reject') {
 		findings.push(
 			createFinding(
@@ -139,8 +146,10 @@ export async function checkDMARC(
 				createFinding(
 					'dmarc',
 					'Subdomain policy weaker than parent policy',
-					'high',
-					'Subdomain policy is set to "none" while parent policy is "reject". This leaves subdomains vulnerable to spoofing.',
+					npProtects ? 'low' : 'high',
+					npProtects
+						? `Subdomain policy is set to "none" while parent policy is "reject". Non-existent subdomains are still protected by DMARCbis np=${np}, so the residual risk is limited to existing subdomains.`
+						: 'Subdomain policy is set to "none" while parent policy is "reject". This leaves subdomains vulnerable to spoofing.',
 				),
 			);
 		} else if (policy === 'reject' && sp === 'quarantine') {
