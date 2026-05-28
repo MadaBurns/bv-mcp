@@ -618,6 +618,108 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		expect(dmarc).toBeDefined();
 		expect(dmarc!.passed).toBe(true);
 	});
+
+	// -- CDN fallback attribution (heuristic) --
+
+	it('falls back to NS+IP-based Cloudflare attribution when headers do not indicate CDN', async () => {
+		// Real-world shape: a Cloudflare customer (eg. ietf.org-pattern) whose
+		// NS is on `*.ns.cloudflare.com` and whose A records resolve to CF's
+		// edge ranges, but where the scanner cannot rely on response headers
+		// (server: cloudflare is rewritten by the scanner's own CF Worker egress).
+		// The post-processing NS+IP heuristic should attribute CF.
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=NS') || url.includes('type=2')) {
+					return Promise.resolve(nsResponse('example.com', ['jill.ns.cloudflare.com.', 'ken.ns.cloudflare.com.']));
+				}
+				if (url.includes('type=A') || url.includes('type=1')) {
+					// 104.16.45.99 is inside 104.16.0.0/13 (Cloudflare). Carry AD=true
+					// so DNSSEC also passes — keeps the focus on CDN attribution.
+					return Promise.resolve(
+						createDohResponse(
+							[{ name: 'example.com', type: 1 }],
+							[{ name: 'example.com', type: 1, TTL: 300, data: '104.16.45.99' }],
+							{ ad: true },
+						),
+					);
+				}
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=reject']));
+					if (url.includes('_domainkey.'))
+						return Promise.resolve(txtResponse('default._domainkey.example.com', ['v=DKIM1; k=rsa; p=MIGf']));
+					if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
+					if (url.includes('_smtp._tls.'))
+						return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
+					return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
+				}
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			// HTTPS probes: no CDN-vendor headers. detectCdnProvider() returns null.
+			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+
+		const result = await run();
+		const httpCheck = findCheck(result, 'http_security');
+		expect(httpCheck).toBeDefined();
+		const cdnFinding = httpCheck!.findings.find((f) => f.metadata?.cdnProvider === 'Cloudflare');
+		expect(cdnFinding).toBeDefined();
+		expect(cdnFinding!.metadata?.confidence).toBe('heuristic');
+		expect(cdnFinding!.metadata?.source).toBe('ns-and-ip-range');
+	});
+
+	it('does NOT attribute CF via heuristic when header-based detection already identified a different CDN', async () => {
+		// If header-based detection found Imperva/Akamai/etc., the heuristic
+		// MUST NOT add a competing Cloudflare row. Header signal is stronger.
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=NS') || url.includes('type=2')) {
+					return Promise.resolve(nsResponse('example.com', ['jill.ns.cloudflare.com.', 'ken.ns.cloudflare.com.']));
+				}
+				if (url.includes('type=A') || url.includes('type=1')) {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name: 'example.com', type: 1 }],
+							[{ name: 'example.com', type: 1, TTL: 300, data: '104.16.45.99' }],
+							{ ad: true },
+						),
+					);
+				}
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=reject']));
+					if (url.includes('_domainkey.'))
+						return Promise.resolve(txtResponse('default._domainkey.example.com', ['v=DKIM1; k=rsa; p=MIGf']));
+					if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
+					if (url.includes('_smtp._tls.'))
+						return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
+					return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
+				}
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			// HTTPS probes: return an Imperva-flagged response. The header-based
+			// detectCdnProvider() will set cdnProvider=Imperva BEFORE post-processing.
+			if (url.startsWith('https://')) {
+				const headers = new Headers({ 'x-cdn': 'Imperva' });
+				return Promise.resolve(httpResponse('OK', 200, headers));
+			}
+			return Promise.resolve(httpResponse('OK'));
+		});
+
+		const result = await run();
+		const httpCheck = findCheck(result, 'http_security');
+		expect(httpCheck).toBeDefined();
+		const cdnFindings = httpCheck!.findings.filter((f) => typeof f.metadata?.cdnProvider === 'string');
+		// Only ONE CDN finding (the header-based Imperva one). No heuristic CF row.
+		expect(cdnFindings).toHaveLength(1);
+		expect(cdnFindings[0].metadata?.cdnProvider).toBe('Imperva');
+		expect(cdnFindings[0].metadata?.confidence).toBeUndefined();
+	});
 });
 
 describe('scanDomain force_refresh', () => {

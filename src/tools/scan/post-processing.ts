@@ -2,7 +2,9 @@
 
 import { type CheckCategory, type CheckResult, type Finding, buildCheckResult, createFinding } from '../../lib/scoring';
 import { queryTxtRecords } from '../../lib/dns';
+import { queryDnsRecords } from '../../lib/dns-records';
 import { detectProviderMatches, detectProviderMatchesBySelectors, loadProviderSignatures } from '../../lib/provider-signatures';
+import { detectCloudflareViaNsAndIp } from '../../lib/cdn-fallback-detection';
 import { parseDmarcTags } from '../check-dmarc';
 
 export interface ScanRuntimeOptions {
@@ -51,7 +53,73 @@ export async function applyScanPostProcessing(
 		results = adjustForNoSendDomain(results);
 	}
 
+	results = await addCloudflareCdnHeuristic(domain, results);
+
 	return addOutboundProviderInference(results, runtimeOptions);
+}
+
+/**
+ * Heuristic Cloudflare CDN attribution fallback.
+ *
+ * Header-based CDN detection (in `check-http-security`) cannot identify
+ * Cloudflare from inside a Cloudflare Worker — see the rationale in
+ * `src/lib/cdn-fallback-detection.ts`. This post-processing pass restores
+ * attribution when:
+ *
+ *   1. No header-based CDN was identified for `http_security`, AND
+ *   2. All NS records resolve under `*.ns.cloudflare.com`, AND
+ *   3. At least one A record falls in a published Cloudflare edge range.
+ *
+ * When matched, emits a new info-level finding on the `http_security` check
+ * with `metadata: { cdnProvider: 'Cloudflare', confidence: 'heuristic',
+ * source: 'ns-and-ip-range' }`. Format-report already iterates findings
+ * looking for `metadata.cdnProvider`, so it picks this up automatically.
+ *
+ * Conservative: any DNS error during the fresh NS/A lookups silently skips
+ * the heuristic — never poisons a scan result.
+ */
+async function addCloudflareCdnHeuristic(domain: string, results: CheckResult[]): Promise<CheckResult[]> {
+	const httpResult = results.find((result) => result.category === 'http_security');
+	if (!httpResult) return results;
+
+	// Don't compete with a header-based CDN hit — those are stronger signal.
+	const alreadyHasCdn = httpResult.findings.some((f) => typeof f.metadata?.cdnProvider === 'string');
+	if (alreadyHasCdn) return results;
+
+	let nsHosts: string[];
+	let aRecords: string[];
+	try {
+		[nsHosts, aRecords] = await Promise.all([
+			queryDnsRecords(domain, 'NS'),
+			queryDnsRecords(domain, 'A'),
+		]);
+	} catch {
+		return results;
+	}
+
+	// Strip trailing dots for consistency with the helper's expected input.
+	const normalisedNs = nsHosts.map((h) => h.replace(/\.$/, '').toLowerCase());
+	const heuristic = detectCloudflareViaNsAndIp({ nsHosts: normalisedNs, aRecords });
+	if (!heuristic) return results;
+
+	const cdnFinding = createFinding(
+		'http_security',
+		'HTTP origin attributed to Cloudflare CDN (heuristic)',
+		'info',
+		'Cloudflare CDN inferred from NS records on *.ns.cloudflare.com combined with A records in Cloudflare\'s published edge ranges. Header-based CDN detection was inconclusive (the scanner runs inside a Cloudflare Worker, which rewrites server: cloudflare on every outbound response).',
+		{ cdnProvider: 'Cloudflare', confidence: 'heuristic', source: 'ns-and-ip-range' },
+	);
+
+	const updated = buildCheckResult('http_security', [...httpResult.findings, cdnFinding]);
+	// buildCheckResult creates a fresh CheckResult — preserve scoring fields we care about.
+	const merged: CheckResult = {
+		...updated,
+		score: httpResult.score,
+		passed: httpResult.passed,
+		checkStatus: httpResult.checkStatus,
+		metadata: httpResult.metadata,
+	};
+	return upsertCheckResult(results, merged);
 }
 
 function extractSpfSignalDomains(result: CheckResult | undefined): string[] {

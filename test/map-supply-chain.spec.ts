@@ -659,6 +659,56 @@ describe('mapSupplyChain', () => {
 		expect(awsRows.length).toBe(1);
 	});
 
+	// --- Catalog gaps surfaced 2026-05-28 (post-v3.3.14 fact-check) ---
+
+	it('treats nsone.net and ns1.com as a single NS1 (IBM) provider', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 -all',
+			nsHosts: ['dns1.p08.nsone.net', 'dns2.p08.nsone.net', 'a.ns1.com', 'b.ns1.com'],
+			domain: 'example.com',
+		});
+		const result = await run('example.com');
+		const ns1Rows = result.dependencies.filter((d) => /\bNS1\b|NSOne/i.test(d.provider));
+		expect(ns1Rows.length).toBe(1);
+		expect(ns1Rows[0].provider).toBe('NS1 (IBM)');
+	});
+
+	it('treats dyn.com and dynect.net as a single Dyn (Oracle) provider', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 -all',
+			nsHosts: ['ns1.p01.dynect.net', 'ns2.p01.dynect.net', 'ns3.p01.dyn.com', 'ns4.p01.dyn.com'],
+			domain: 'example.com',
+		});
+		const result = await run('example.com');
+		const dynRows = result.dependencies.filter((d) => /\bDyn\b/i.test(d.provider));
+		expect(dynRows.length).toBe(1);
+		expect(dynRows[0].provider).toBe('Dyn (Oracle)');
+	});
+
+	it('preserves single-TLD case (nsone-only deployment — should still detect NS1)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 -all',
+			nsHosts: ['dns1.p08.nsone.net', 'dns2.p08.nsone.net'],
+			domain: 'airbnb.com',
+		});
+		const result = await run('airbnb.com');
+		expect(result.dependencies.find((d) => d.provider === 'NS1 (IBM)')).toBeDefined();
+	});
+
+	it('resolves Oracle Cloud Email via spf_c/spf_s* selectors (ird.govt.nz pattern)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 include:spf.protection.outlook.com include:spf_c.oraclecloud.com -all',
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			domain: 'ird.govt.nz',
+		});
+		const result = await run('ird.govt.nz');
+		const oracleRows = result.dependencies.filter((d) => /Oracle Cloud Email/i.test(d.provider));
+		expect(oracleRows.length).toBe(1);
+		expect(oracleRows[0].sources).toContain('spf');
+		// no raw selector row for the matched host
+		expect(result.dependencies.find((d) => d.provider === 'spf_c.oraclecloud.com')).toBeUndefined();
+	});
+
 	it('emits a single security_tooling_exposed signal per service even when multiple TXT records exist (OneTrust pattern)', async () => {
 		mockDnsResponses({
 			spf: 'v=spf1 -all',

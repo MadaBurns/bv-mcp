@@ -97,7 +97,8 @@
 		"test/audits/repo-safety-scanner.audit.test.ts",
 		"test/audits/no-tracked-secrets.audit.test.ts",
 		"scripts/repo-safety/policy.json",
-		"src/lib/authoritative-dns-infra/root-hints.ts"
+		"src/lib/authoritative-dns-infra/root-hints.ts",
+		"src/lib/cdn-fallback-detection.ts"
 	],
 	"allowedPathPrefixes": [".github/", "test/", "packages/dns-checks/src/__tests__/"]
 }

@@ -11,7 +11,7 @@ import type { OutputFormat } from '../handlers/tool-args';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { queryTxtRecords, queryDnsRecords, querySrvRecords } from '../lib/dns';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { detectProviders, matchProviderForSpfInclude } from './provider-guides';
+import { detectProviders, matchProviderForNsHost, matchProviderForSpfInclude } from './provider-guides';
 import { VERIFICATION_PATTERNS, SERVICE_SPF_DOMAINS } from './txt-hygiene-analysis';
 import { SRV_PREFIXES } from './srv-analysis';
 import type { SrvProbeResult } from './srv-analysis';
@@ -297,16 +297,18 @@ export async function mapSupplyChain(
 	for (const provider of detectedProviders) {
 		const source = provider.role === 'mail' || provider.role === 'sending' ? 'spf' : 'ns';
 		addDependency(provider.name, source);
+	}
 
-		if (source === 'ns') {
-			for (const host of nsHosts) {
-				if (provider.signal.startsWith('ns:')) {
-					const signalDomain = provider.signal.split(':').slice(1).join(':');
-					if (host.includes(signalDomain)) {
-						detectedNsHosts.add(host);
-					}
-				}
-			}
+	// Mark every NS host that resolves to a known provider as "detected" so the
+	// downstream "unrecognized NS host → parent-domain row" loop skips it.
+	// Uses the shared DETECTION_RULES regex (via matchProviderForNsHost) instead
+	// of a `provider.signal` substring heuristic; the substring approach silently
+	// broke for multi-TLD vendors whose two TLDs share no common substring
+	// (eg. NS1: `*.ns1.com` + `*.nsone.net`). Mirrors the SPF dedup path's use
+	// of matchProviderForSpfInclude so the two paths can't drift.
+	for (const host of nsHosts) {
+		if (matchProviderForNsHost(host) !== null) {
+			detectedNsHosts.add(host);
 		}
 	}
 
