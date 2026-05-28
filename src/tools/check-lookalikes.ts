@@ -14,6 +14,8 @@ import type { ReconBinding } from '../lib/recon-binding';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { generateLookalikes } from './lookalike-analysis';
+import { FALLBACK_RDAP_SERVERS } from './check-rdap-lookup';
+import { calibrateLookalikeSeverity, isDisposableMxHost, type LookalikeSignals } from './lookalike-severity';
 
 /** Default and minimum batch sizes for adaptive batching */
 export const INITIAL_BATCH_SIZE = 10;
@@ -38,7 +40,13 @@ interface LookalikeResult {
 	domain: string;
 	hasA: boolean;
 	hasMX: boolean;
+	/** MX exchange hosts (lowercased, trailing-dot-stripped) — empty when no real MX. */
+	mxExchanges: string[];
 }
+
+/** Budgets for the Defect L enrichment probes. Both are intentionally tight so 12 candidates × (RDAP + HEAD) stays under LOOKALIKE_TIMEOUT_MS. */
+const RDAP_PROBE_TIMEOUT_MS = 2500;
+const WEB_PROBE_TIMEOUT_MS = 2500;
 
 /** Minimum number of NS records that must overlap to consider domains as sharing nameservers. */
 const SHARED_NS_THRESHOLD = 1;
@@ -65,6 +73,20 @@ function isRealMxRecord(data: string): boolean {
 }
 
 /**
+ * Extract the lowercase exchange host from an MX record `"<priority> <target>"`.
+ * Returns `null` when the record fails to parse or is a null MX. Used to feed
+ * the disposable-MX detector in {@link calibrateLookalikeSeverity}.
+ */
+function extractMxExchange(raw: string): string | null {
+	const trimmed = raw.trim().toLowerCase();
+	const match = trimmed.match(/^(\d+)[\s\t]+(.*?)\.?$/);
+	if (!match) return null;
+	const [, , target] = match;
+	if (target === '' || target === 'localhost') return null;
+	return target;
+}
+
+/**
  * Check a single lookalike domain for DNS and MX records.
  * Filters out null MX records (RFC 7505) to avoid false positives.
  */
@@ -72,11 +94,15 @@ async function probeLookalike(domain: string): Promise<LookalikeResult> {
 	const [aRecords, mxRecords] = await Promise.allSettled([queryDnsRecords(domain, 'A'), queryDnsRecords(domain, 'MX')]);
 
 	const realMxRecords = mxRecords.status === 'fulfilled' ? mxRecords.value.filter(isRealMxRecord) : [];
+	const mxExchanges = realMxRecords
+		.map(extractMxExchange)
+		.filter((host): host is string => host !== null);
 
 	return {
 		domain,
 		hasA: aRecords.status === 'fulfilled' && aRecords.value.length > 0,
 		hasMX: realMxRecords.length > 0,
+		mxExchanges,
 	};
 }
 
@@ -314,6 +340,18 @@ async function checkLookalikesCore(
 		}
 	}
 
+	// Enrichment (Defect L / issue #264): for each non-defensively-registered
+	// lookalike with mail or web infrastructure, gather corroborating signals
+	// so the calibrator can pick the right severity tier. Lookalikes that
+	// share nameservers with the primary domain skip enrichment entirely (they
+	// short-circuit to info-severity defensive-registration findings).
+	const candidatesToEnrich: LookalikeResult[] = results.filter((r) => {
+		const lookalikeNs = lookalikeNsMap.get(r.domain);
+		const sameOwner = primaryNs.size > 0 && lookalikeNs !== undefined && sharesNameservers(primaryNs, lookalikeNs);
+		return !sameOwner && (r.hasMX || r.hasA);
+	});
+	const enrichment = await enrichLookalikes(candidatesToEnrich);
+
 	// Classify results — check for shared nameservers with primary domain to detect defensive registrations
 	let highCount = 0;
 	for (const result of results) {
@@ -331,38 +369,74 @@ async function checkLookalikesCore(
 					{ lookalikeDomain: result.domain, hasA: result.hasA, hasMX: result.hasMX, sharedNs: true },
 				),
 			);
-		} else if (result.hasMX) {
-			highCount++;
+			continue;
+		}
+
+		if (!result.hasMX && !result.hasA) continue;
+
+		const corroborators = enrichment.get(result.domain) ?? {
+			registrationDays: null,
+			mxOnDisposable: false,
+			hasWebContent: true,
+		};
+		const signals: LookalikeSignals = {
+			hasA: result.hasA,
+			hasMX: result.hasMX,
+			registrationDays: corroborators.registrationDays,
+			mxOnDisposable: corroborators.mxOnDisposable,
+			hasWebContent: corroborators.hasWebContent,
+		};
+		const severity = calibrateLookalikeSeverity(signals);
+		const corroboratorReasons = describeCorroborators(signals);
+
+		if (result.hasMX) {
+			if (severity === 'high') highCount++;
 			findings.push(
 				createFinding(
 					'lookalikes',
 					`Lookalike domain with mail infrastructure: ${result.domain}`,
-					'high',
-					`The domain ${result.domain} is registered with active mail servers (MX records), which could be used for phishing or email spoofing targeting ${domain}.`,
-					{ lookalikeDomain: result.domain, hasA: result.hasA, hasMX: result.hasMX },
+					severity,
+					`The domain ${result.domain} is registered with active mail servers (MX records), which could be used for phishing or email spoofing targeting ${domain}.${corroboratorReasons ? ` Corroborating signals: ${corroboratorReasons}.` : ''}`,
+					{
+						lookalikeDomain: result.domain,
+						hasA: result.hasA,
+						hasMX: result.hasMX,
+						registrationDays: signals.registrationDays,
+						mxOnDisposable: signals.mxOnDisposable,
+						hasWebContent: signals.hasWebContent,
+					},
 				),
 			);
-		} else if (result.hasA) {
+		} else {
+			// Web-only
 			findings.push(
 				createFinding(
 					'lookalikes',
 					`Lookalike domain registered: ${result.domain}`,
-					'medium',
-					`The domain ${result.domain} is registered (has web presence) but no mail infrastructure detected. It could still be used for phishing websites targeting ${domain}.`,
-					{ lookalikeDomain: result.domain, hasA: result.hasA, hasMX: result.hasMX },
+					severity,
+					`The domain ${result.domain} is registered (has web presence) but no mail infrastructure detected. It could still be used for phishing websites targeting ${domain}.${corroboratorReasons ? ` Corroborating signals: ${corroboratorReasons}.` : ''}`,
+					{
+						lookalikeDomain: result.domain,
+						hasA: result.hasA,
+						hasMX: result.hasMX,
+						registrationDays: signals.registrationDays,
+						mxOnDisposable: signals.mxOnDisposable,
+						hasWebContent: signals.hasWebContent,
+					},
 				),
 			);
 		}
 	}
 
-	// Summary finding for high-severity lookalikes
+	// Summary finding for high-severity lookalikes. Only fires when at least one
+	// candidate reached HIGH under the issue #264 matrix (mail-infra + corroborator).
 	if (highCount > 0) {
 		findings.push(
 			createFinding(
 				'lookalikes',
 				`${highCount} lookalike domain${highCount > 1 ? 's' : ''} with mail capability detected`,
 				'high',
-				`${highCount} lookalike domain${highCount > 1 ? 's' : ''} of ${domain} ${highCount > 1 ? 'have' : 'has'} active mail infrastructure, presenting a phishing risk. Consider monitoring these domains and implementing DMARC with p=reject to protect your brand.`,
+				`${highCount} lookalike domain${highCount > 1 ? 's' : ''} of ${domain} ${highCount > 1 ? 'have' : 'has'} active mail infrastructure with corroborating phishing signals. Consider monitoring these domains and implementing DMARC with p=reject to protect your brand.`,
 				{ lookalikeDomainCount: highCount },
 			),
 		);
@@ -398,4 +472,108 @@ async function checkLookalikesCore(
 	}
 
 	return buildCheckResult('lookalikes', findings);
+}
+
+interface LookalikeCorroborators {
+	registrationDays: number | null;
+	mxOnDisposable: boolean;
+	hasWebContent: boolean;
+}
+
+/**
+ * Run the Defect L enrichment probes (RDAP registration age + web HEAD probe)
+ * for every candidate in parallel. Failure to enrich is fail-soft: missing
+ * RDAP data becomes `registrationDays: null` (treated as "unknown — not recent")
+ * and a probe error becomes `hasWebContent: true` to avoid synthesising HIGH
+ * out of nothing. `mxOnDisposable` is derived synchronously from the already-
+ * parsed MX exchanges, no extra DNS needed.
+ */
+async function enrichLookalikes(candidates: LookalikeResult[]): Promise<Map<string, LookalikeCorroborators>> {
+	const map = new Map<string, LookalikeCorroborators>();
+	if (candidates.length === 0) return map;
+	await Promise.allSettled(
+		candidates.map(async (candidate) => {
+			const [registrationDays, hasWebContent] = await Promise.all([
+				probeRegistrationDays(candidate.domain),
+				candidate.hasA ? probeHasWebContent(candidate.domain) : Promise.resolve(true),
+			]);
+			const mxOnDisposable = candidate.mxExchanges.some(isDisposableMxHost);
+			map.set(candidate.domain, { registrationDays, mxOnDisposable, hasWebContent });
+		}),
+	);
+	return map;
+}
+
+/**
+ * Lightweight RDAP lookup constrained for use inside the lookalike check.
+ * Hits the hardcoded {@link FALLBACK_RDAP_SERVERS} map only (no IANA bootstrap),
+ * single fetch, hard 2.5s timeout, no retries. Returns the age in days since
+ * the `registration` event, or `null` on any failure / missing data — which the
+ * calibrator treats as "unknown, not recent" so a single absent signal never
+ * elevates severity.
+ */
+async function probeRegistrationDays(domain: string): Promise<number | null> {
+	const labels = domain.split('.');
+	const tld = labels[labels.length - 1]?.toLowerCase();
+	if (!tld) return null;
+	const serverUrl = FALLBACK_RDAP_SERVERS[tld];
+	if (!serverUrl) return null;
+	try {
+		const baseUrl = serverUrl.endsWith('/') ? serverUrl : `${serverUrl}/`;
+		const rdapUrl = `${baseUrl}domain/${domain}`;
+		const resp = await fetch(rdapUrl, {
+			redirect: 'manual',
+			signal: AbortSignal.timeout(RDAP_PROBE_TIMEOUT_MS),
+			headers: { Accept: 'application/rdap+json, application/json' },
+		});
+		if (!resp.ok) return null;
+		const data = (await resp.json()) as { events?: Array<{ eventAction?: string; eventDate?: string }> };
+		const registration = Array.isArray(data.events) ? data.events.find((e) => e.eventAction === 'registration') : undefined;
+		if (!registration?.eventDate) return null;
+		const creationTime = new Date(registration.eventDate).getTime();
+		if (!Number.isFinite(creationTime)) return null;
+		return Math.floor((Date.now() - creationTime) / (1000 * 60 * 60 * 24));
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * HEAD probe the candidate domain to confirm web content is reachable.
+ * Fail-soft: any error (connection refused, timeout, DNS miss, TLS error)
+ * returns `true` so a flaky probe can't synthesise a HIGH severity via the
+ * "no-web-content" corroborator. Parked-or-refused domains return `false`.
+ *
+ * 5xx responses also count as "has content" — we got reached the server,
+ * the server just errored. Phishing infra rarely 5xx's; parked-page infra
+ * usually 200's with adverts. The only consistent "no content" signal is a
+ * hard transport failure.
+ */
+async function probeHasWebContent(domain: string): Promise<boolean> {
+	try {
+		const resp = await fetch(`https://${domain}/`, {
+			method: 'HEAD',
+			redirect: 'follow',
+			signal: AbortSignal.timeout(WEB_PROBE_TIMEOUT_MS),
+		});
+		// Any HTTP response means the host is reachable — content exists.
+		return Boolean(resp);
+	} catch {
+		// Transport failure (refused, timeout, DNS) — treat as no content (HIGH corroborator).
+		return false;
+	}
+}
+
+/**
+ * Build a short human-readable list of corroborating signals for the finding
+ * detail. Empty string when none apply (mail-infra-alone case).
+ */
+function describeCorroborators(signals: LookalikeSignals): string {
+	const parts: string[] = [];
+	if (signals.registrationDays !== null && signals.registrationDays < 90) {
+		parts.push(`registered ${signals.registrationDays} day${signals.registrationDays === 1 ? '' : 's'} ago`);
+	}
+	if (signals.mxOnDisposable) parts.push('disposable MX provider');
+	if (!signals.hasWebContent) parts.push('no reachable web content');
+	return parts.join(', ');
 }

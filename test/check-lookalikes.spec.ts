@@ -34,7 +34,9 @@ describe('checkLookalikes', () => {
 		expect(info!.severity).toBe('info');
 	});
 
-	it('should return high finding for lookalike with MX records', async () => {
+	it('should return medium finding for lookalike with mail-infra but no corroborator (issue #264 matrix)', async () => {
+		// Updated for issue #264: mail-infra alone is MEDIUM, not HIGH.
+		// HIGH requires a corroborator (recent registration, disposable MX, or no web content).
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
 
@@ -53,13 +55,18 @@ describe('checkLookalikes', () => {
 			return Promise.resolve(createDohResponse([], []));
 		});
 		const result = await run('test.com');
-		const highFindings = result.findings.filter((f) => f.severity === 'high');
-		expect(highFindings.length).toBeGreaterThan(0);
-		const mxFinding = highFindings.find((f) => /mail infrastructure/i.test(f.title));
+		const mediumFindings = result.findings.filter((f) => f.severity === 'medium');
+		expect(mediumFindings.length).toBeGreaterThan(0);
+		const mxFinding = mediumFindings.find((f) => /mail infrastructure/i.test(f.title));
 		expect(mxFinding).toBeDefined();
+		// And no HIGH should be emitted (no corroborating signal)
+		const highFindings = result.findings.filter((f) => f.severity === 'high');
+		expect(highFindings.length).toBe(0);
 	});
 
-	it('should return medium finding for lookalike with A but no MX', async () => {
+	it('should return low finding for lookalike with A but no MX (web-only, no corroborator)', async () => {
+		// Updated for issue #264: web-only lookalikes default to LOW.
+		// MEDIUM is reserved for web-only + recent registration (<90d).
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
 
@@ -75,9 +82,9 @@ describe('checkLookalikes', () => {
 			return Promise.resolve(createDohResponse([], []));
 		});
 		const result = await run('test.com');
-		const mediumFindings = result.findings.filter((f) => f.severity === 'medium');
-		expect(mediumFindings.length).toBeGreaterThan(0);
-		const registeredFinding = mediumFindings.find((f) => /Lookalike domain registered/i.test(f.title));
+		const lowFindings = result.findings.filter((f) => f.severity === 'low');
+		expect(lowFindings.length).toBeGreaterThan(0);
+		const registeredFinding = lowFindings.find((f) => /Lookalike domain registered/i.test(f.title));
 		expect(registeredFinding).toBeDefined();
 	});
 
@@ -150,7 +157,8 @@ describe('checkLookalikes', () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
 
-			// tst.com has NS + A records (no MX) — should pass Phase 1 and be reported as medium
+			// tst.com has NS + A records (no MX) — should pass Phase 1 and be reported as low
+			// (web-only baseline per issue #264 matrix; was MEDIUM under the old rule).
 			if (name === 'tst.com') {
 				if (type === 'NS' || type === '2') {
 					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
@@ -164,7 +172,7 @@ describe('checkLookalikes', () => {
 		const result = await run('test.com');
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('medium');
+		expect(tstFinding!.severity).toBe('low');
 	});
 });
 
@@ -198,9 +206,9 @@ describe('checkLookalikes - null MX filtering', () => {
 		const mxFindings = result.findings.filter((f) => /mail infrastructure/i.test(f.title));
 		expect(mxFindings.length).toBe(0);
 
-		// Should have medium findings (A record present, but no real MX)
-		const mediumFindings = result.findings.filter((f) => f.severity === 'medium');
-		expect(mediumFindings.length).toBeGreaterThan(0);
+		// Should have low findings (A record present, but no real MX → web-only LOW under #264)
+		const lowFindings = result.findings.filter((f) => f.severity === 'low');
+		expect(lowFindings.length).toBeGreaterThan(0);
 	});
 
 	it('should not flag legacy null MX (0 localhost.) as mail infrastructure', async () => {
@@ -259,17 +267,20 @@ describe('checkLookalikes - null MX filtering', () => {
 		});
 		const result = await run('test.com');
 
-		// testt.com should produce a HIGH finding (real MX)
-		const testtHigh = result.findings.find((f) => f.severity === 'high' && f.title.includes('testt.com'));
-		expect(testtHigh).toBeDefined();
+		// testt.com has real MX but no corroborating signal → MEDIUM under #264 matrix
+		const testtMedium = result.findings.find((f) => f.severity === 'medium' && f.title.includes('testt.com'));
+		expect(testtMedium).toBeDefined();
 
-		// tes.com should produce a MEDIUM finding (A record, no real MX)
-		const tesMedium = result.findings.find((f) => f.severity === 'medium' && f.title.includes('tes.com'));
-		expect(tesMedium).toBeDefined();
+		// tes.com has only A record (web-only, no MX) — LOW under #264 matrix.
+		// (Previously MEDIUM; the calibrator now reserves MEDIUM for web-only + recent registration.)
+		const tesLow = result.findings.find((f) => f.severity === 'low' && f.title.includes('tes.com'));
+		expect(tesLow).toBeDefined();
 
-		// tes.com should NOT produce a HIGH finding
+		// Neither should be HIGH
 		const tesHigh = result.findings.find((f) => f.severity === 'high' && f.title.includes('tes.com'));
 		expect(tesHigh).toBeUndefined();
+		const testtHigh = result.findings.find((f) => f.severity === 'high' && f.title.includes('testt.com'));
+		expect(testtHigh).toBeUndefined();
 	});
 });
 
@@ -325,7 +336,7 @@ describe('checkLookalikes - wildcard DNS filtering', () => {
 		// te.st.com should remain because st.com has no wildcard
 		const teStFinding = result.findings.find((f) => f.title.includes('te.st.com'));
 		expect(teStFinding).toBeDefined();
-		expect(teStFinding!.severity).toBe('medium');
+		expect(teStFinding!.severity).toBe('low'); // web-only baseline (#264)
 	});
 
 	it('should not affect non-dot-insertion permutations regardless of wildcard', async () => {
@@ -349,7 +360,7 @@ describe('checkLookalikes - wildcard DNS filtering', () => {
 		// tst.com is a same-label-count permutation (char omission), not dot-insertion — should be kept
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('medium');
+		expect(tstFinding!.severity).toBe('low'); // web-only baseline (#264)
 	});
 
 	it('exports WILDCARD_CANARY_LABEL constant', async () => {
@@ -451,7 +462,8 @@ describe('checkLookalikes - shared nameserver detection', () => {
 
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('high');
+		// MX present but no corroborator → MEDIUM under issue #264 matrix.
+		expect(tstFinding!.severity).toBe('medium');
 		expect(tstFinding!.title).toContain('mail infrastructure');
 	});
 
@@ -544,10 +556,14 @@ describe('checkLookalikes - shared nameserver detection', () => {
 
 		const result = await run('test.com');
 
-		// Should stay HIGH because primary NS is unknown (empty set — can't compare)
+		// Primary NS unknown (empty set — can't compare). Mail-infra present without
+		// corroborator → MEDIUM under issue #264 matrix. The shared-NS gate is
+		// independent of the severity calibration.
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('high');
+		expect(tstFinding!.severity).toBe('medium');
+		// And must NOT be downgraded to info (no shared NS detected)
+		expect(tstFinding!.title).not.toContain('likely owned by same entity');
 	});
 
 	it('should handle mixed scenario: some shared NS, some different', async () => {
@@ -611,14 +627,14 @@ describe('checkLookalikes - shared nameserver detection', () => {
 		expect(tstFinding).toBeDefined();
 		expect(tstFinding!.severity).toBe('info');
 
-		// testt.com should be high (different NS)
-		const testtFinding = result.findings.find((f) => f.severity === 'high' && f.title.includes('testt.com'));
+		// testt.com has different NS + MX but no corroborator → MEDIUM under #264 matrix
+		// (was HIGH under the old "any MX → high" rule).
+		const testtFinding = result.findings.find((f) => f.severity === 'medium' && f.title.includes('testt.com'));
 		expect(testtFinding).toBeDefined();
 
-		// Summary should count only 1 (testt.com), not 2
+		// No HIGH summary fires because no lookalike scored HIGH under the new matrix.
 		const summary = result.findings.find((f) => /mail capability detected/i.test(f.title));
-		expect(summary).toBeDefined();
-		expect(summary!.title).toContain('1 lookalike domain');
+		expect(summary).toBeUndefined();
 	});
 });
 
@@ -652,5 +668,137 @@ describe('checkLookalikes - timeout partial flag', () => {
 		const result = await checkLookalikes('test.com');
 
 		expect(result.partial).toBeUndefined();
+	});
+});
+
+describe('checkLookalikes - issue #264 severity calibration wiring', () => {
+	async function run(domain = 'example.com') {
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		return checkLookalikes(domain);
+	}
+
+	/**
+	 * Helper that mocks DoH for the lookalike probes AND mocks an RDAP server
+	 * fetch to return a registration event N days ago. The HEAD probe defaults
+	 * to ok:true (fail-soft → hasWebContent=true) unless the test overrides
+	 * the URL to be parked/refused.
+	 */
+	function mockWithRdap(opts: {
+		mailDomain: string;
+		mxExchange?: string;
+		registrationDaysAgo?: number | null;
+		hasWebContent?: boolean;
+	}) {
+		const { mailDomain, mxExchange = 'mail.example.com.', registrationDaysAgo, hasWebContent = true } = opts;
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			// DoH queries
+			if (url.includes('cloudflare-dns.com')) {
+				const { name, type } = parseDohQuery(input);
+				if (name === mailDomain) {
+					if (type === 'NS' || type === '2') {
+						return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
+					}
+					if (type === 'MX' || type === '15') {
+						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: `10 ${mxExchange}` }]));
+					}
+					if (type === 'A' || type === '1') {
+						return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
+					}
+				}
+				return Promise.resolve(createDohResponse([], []));
+			}
+
+			// RDAP queries — match /domain/<domain> on the RDAP-server path
+			if (url.includes('rdap') && url.includes(`/domain/${mailDomain}`)) {
+				if (registrationDaysAgo == null) {
+					return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as unknown as Response);
+				}
+				const eventDate = new Date(Date.now() - registrationDaysAgo * 24 * 60 * 60 * 1000).toISOString();
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve({ events: [{ eventAction: 'registration', eventDate }] }),
+				} as unknown as Response);
+			}
+
+			// HEAD probe — return ok or "no content" per opts
+			if (url.startsWith('https://') || url.startsWith('http://')) {
+				if (!hasWebContent) {
+					return Promise.reject(new Error('connection refused'));
+				}
+				return Promise.resolve({ ok: true, status: 200, headers: new Headers(), text: () => Promise.resolve(''), json: () => Promise.resolve({}) } as unknown as Response);
+			}
+
+			return Promise.resolve(createDohResponse([], []));
+		});
+	}
+
+	it('elevates mail-infra + recent registration to HIGH', async () => {
+		mockWithRdap({ mailDomain: 'tst.com', registrationDaysAgo: 30 });
+		const result = await run('test.com');
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com') && /mail infrastructure/i.test(f.title));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('high');
+	});
+
+	it('keeps mail-infra at MEDIUM when registration is old (≥90d)', async () => {
+		mockWithRdap({ mailDomain: 'tst.com', registrationDaysAgo: 1500 });
+		const result = await run('test.com');
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com') && /mail infrastructure/i.test(f.title));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('medium');
+	});
+
+	it('elevates mail-infra + disposable MX to HIGH', async () => {
+		mockWithRdap({ mailDomain: 'tst.com', mxExchange: 'smtp.mailgun.org.', registrationDaysAgo: null });
+		const result = await run('test.com');
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com') && /mail infrastructure/i.test(f.title));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('high');
+	});
+
+	it('elevates mail-infra + no web content (parked/refused) to HIGH', async () => {
+		mockWithRdap({ mailDomain: 'tst.com', registrationDaysAgo: null, hasWebContent: false });
+		const result = await run('test.com');
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com') && /mail infrastructure/i.test(f.title));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('high');
+	});
+
+	it('elevates web-only + recent registration to MEDIUM', async () => {
+		// Build a slightly different mock — no MX, A only, recent registration.
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				const { name, type } = parseDohQuery(input);
+				if (name === 'tst.com') {
+					if (type === 'NS' || type === '2') {
+						return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
+					}
+					if (type === 'A' || type === '1') {
+						return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
+					}
+				}
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('rdap') && url.includes('/domain/tst.com')) {
+				const eventDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve({ events: [{ eventAction: 'registration', eventDate }] }),
+				} as unknown as Response);
+			}
+			if (url.startsWith('https://') || url.startsWith('http://')) {
+				return Promise.resolve({ ok: true, status: 200, headers: new Headers(), text: () => Promise.resolve(''), json: () => Promise.resolve({}) } as unknown as Response);
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const result = await run('test.com');
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('medium');
 	});
 });

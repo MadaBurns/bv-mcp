@@ -10,6 +10,7 @@
 
 import type { CheckResult, DNSQueryFunction, FetchFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
+import { isNullMxRecord, parseMxRecords } from './mx-analysis';
 import {
 	finalizeMissingMtaStsRecordFinding,
 	finalizeMissingTlsRptRecordFinding,
@@ -177,19 +178,50 @@ export async function checkMTASTS(
 		);
 	}
 
-	// If both records are missing, add a clear summary and suppress duplicate findings
+	// If both records are missing, add a clear summary and suppress duplicate findings.
+	// Defect K (issue #264 sibling): branch the copy and severity on MX presence —
+	// missing MTA-STS on a domain that DOES accept inbound mail is medium (real
+	// risk), but on a domain with no inbound mail it's a low-severity informational
+	// note. Without the branch, paypal/stripe-class domains (with real MX) get
+	// the "do not accept inbound email" copy, which is factually wrong.
 	if (shouldSummarizeMissingMailProtections(findings, hasTxtRecord, tlsRptChecked, hasTlsRptRecord)) {
+		const hasMx = await detectInboundMail(domain, queryDNS, timeout);
 		findings = [];
 		findings.push(
-			createFinding(
-				'mta_sts',
-				'No MTA-STS or TLS-RPT records found',
-				'medium',
-				`Neither MTA-STS nor TLS-RPT records are present for ${domain}. This is normal for domains that do not accept inbound email, but consider adding these records if you operate a mail server.`,
-				{ missingControl: true },
-			),
+			hasMx
+				? createFinding(
+						'mta_sts',
+						'No MTA-STS or TLS-RPT records found',
+						'medium',
+						`${domain} accepts inbound email (MX records present) but has neither MTA-STS nor TLS-RPT configured. Sending MTAs cannot enforce TLS or report failures for mail to this domain.`,
+						{ missingControl: true },
+					)
+				: createFinding(
+						'mta_sts',
+						'No MTA-STS or TLS-RPT records found',
+						'low',
+						`Neither MTA-STS nor TLS-RPT records are present for ${domain}. This is normal for domains that do not accept inbound email, but consider adding these records if you operate a mail server.`,
+						{ missingControl: true },
+					),
 		);
 	}
 
 	return buildCheckResult('mta_sts', findings);
+}
+
+/**
+ * Lightweight MX presence probe used by the missing-mail-protections summary
+ * to branch its copy and severity. Returns `true` only when the domain has at
+ * least one real (non-null, RFC 7505) MX record. Any DNS failure resolves to
+ * `false` (treat as "no inbound mail") so a flaky lookup can't synthesise a
+ * medium-severity finding out of nothing.
+ */
+async function detectInboundMail(domain: string, queryDNS: DNSQueryFunction, timeout: number): Promise<boolean> {
+	try {
+		const mxAnswers = await queryDNS(domain, 'MX', { timeout });
+		const parsed = parseMxRecords(mxAnswers);
+		return parsed.some((record) => !isNullMxRecord(record));
+	} catch {
+		return false;
+	}
 }
