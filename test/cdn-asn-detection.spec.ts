@@ -74,3 +74,38 @@ describe('detectCdnFromAsn', () => {
 		expect(doh.queryTxt).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe('mapAsnToHosting (Task 3 — cloud-hosting tier)', () => {
+	it('maps major cloud-hosting ASNs', async () => {
+		const { mapAsnToHosting } = await import('../src/lib/cdn-asn-detection');
+		expect(mapAsnToHosting(16509)).toBe('AWS');
+		expect(mapAsnToHosting(15169)).toBe('GCP');
+		expect(mapAsnToHosting(8075)).toBe('Azure');
+	});
+	it('does NOT map CDN-exclusive ASNs (those belong to the CDN tier)', async () => {
+		const { mapAsnToHosting } = await import('../src/lib/cdn-asn-detection');
+		expect(mapAsnToHosting(13335)).toBeNull(); // Cloudflare
+		expect(mapAsnToHosting(20940)).toBeNull(); // Akamai
+	});
+	it('returns null for unknown ASNs', async () => {
+		const { mapAsnToHosting } = await import('../src/lib/cdn-asn-detection');
+		expect(mapAsnToHosting(64512)).toBeNull();
+	});
+});
+
+describe('detectHostingFromAsn (Task 3)', () => {
+	function mockDoh2(answers: Record<string, string>): { queryTxt: ReturnType<typeof vi.fn> } {
+		return { queryTxt: vi.fn(async (name: string) => (answers[name] !== undefined ? [answers[name]] : [])) };
+	}
+	it('attributes a cloud host when an A-record resolves to a hosting ASN', async () => {
+		const { detectHostingFromAsn } = await import('../src/lib/cdn-asn-detection');
+		const doh = mockDoh2({ '20.2.0.192.origin.asn.cymru.com': '16509 | 192.0.2.0/24 | US | arin' });
+		const r = await detectHostingFromAsn(['192.0.2.20'], doh);
+		expect(r).toEqual({ provider: 'AWS', confidence: 'heuristic', asn: 16509 });
+	});
+	it('returns null when no A-record maps to a known hosting ASN', async () => {
+		const { detectHostingFromAsn } = await import('../src/lib/cdn-asn-detection');
+		const doh = mockDoh2({ '10.2.0.192.origin.asn.cymru.com': '13335 | 192.0.2.0/24 | US | arin' }); // CF, not hosting
+		expect(await detectHostingFromAsn(['192.0.2.10'], doh)).toBeNull();
+	});
+});

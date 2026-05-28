@@ -61,6 +61,30 @@ export const ASN_TO_CDN: ReadonlyMap<number, string> = new Map([
 	// AS16509 (AWS) deliberately excluded — not CDN-exclusive; CloudFront caught by x-amz-cf-id header.
 ]);
 
+/**
+ * Cloud-HOSTING (compute/IaaS) origin ASNs -> canonical provider name.
+ *
+ * Distinct from ASN_TO_CDN on purpose. These ASNs (AWS/GCP/Azure/…) are NOT
+ * CDN-exclusive — they host arbitrary compute — so they must NEVER feed CDN
+ * attribution (that's why AS16509 is absent from ASN_TO_CDN). They are useful
+ * only as a LOW-confidence "where is the origin hosted" supply-chain signal,
+ * and only when no CDN fronts the origin. CDN-exclusive ASNs (Cloudflare,
+ * Akamai, Fastly, …) are intentionally absent here — they belong to the CDN
+ * tier, not the hosting tier.
+ */
+export const ASN_TO_HOSTING: ReadonlyMap<number, string> = new Map([
+	[16509, 'AWS'],
+	[14618, 'AWS'],
+	[15169, 'GCP'],
+	[396982, 'GCP'],
+	[8075, 'Azure'],
+	[8068, 'Azure'],
+	[16276, 'OVH'],
+	[14061, 'DigitalOcean'],
+	[24940, 'Hetzner'],
+	[20473, 'Vultr'],
+]);
+
 /** Bound on outbound team-cymru queries per detection run. */
 const MAX_ASN_LOOKUPS = 3;
 
@@ -105,20 +129,29 @@ export function mapAsnToCdn(asn: number): string | null {
 	return ASN_TO_CDN.get(asn) ?? null;
 }
 
+/** Map an origin ASN to its canonical cloud-hosting provider name, or null if not a known host. */
+export function mapAsnToHosting(asn: number): string | null {
+	return ASN_TO_HOSTING.get(asn) ?? null;
+}
+
 /**
- * Attribute a CDN provider by resolving up to MAX_ASN_LOOKUPS A-record IPs to
- * their origin ASN and mapping ASN -> CDN. Short-circuits on the first CDN
- * match. Fail-soft: any DoH error or unparseable answer falls through to the
- * next IP; returns null when no IP maps to a known CDN ASN.
+ * Resolve up to MAX_ASN_LOOKUPS A-record IPs to their origin ASN and map each
+ * against `asnMap`. Short-circuits on the first match. Fail-soft: any DoH error
+ * or unparseable answer falls through to the next IP; returns null when no IP
+ * maps to an entry in `asnMap`.
  */
-export async function detectCdnFromAsn(aRecords: string[], doh: AsnDohResolver): Promise<AsnCdnResult | null> {
+async function detectFromAsn(
+	aRecords: string[],
+	doh: AsnDohResolver,
+	asnMap: ReadonlyMap<number, string>,
+): Promise<AsnCdnResult | null> {
 	for (const ip of aRecords.slice(0, MAX_ASN_LOOKUPS)) {
 		const reversed = ip.split('.').reverse().join('.');
 		try {
 			const answers = await doh.queryTxt(`${reversed}.${CYMRU_ORIGIN_ZONE}`);
 			const asn = answers.length > 0 ? parseAsnFromCymru(answers[0]) : null;
 			if (asn !== null) {
-				const provider = mapAsnToCdn(asn);
+				const provider = asnMap.get(asn) ?? null;
 				if (provider) return { provider, confidence: 'heuristic', asn };
 			}
 		} catch {
@@ -126,4 +159,23 @@ export async function detectCdnFromAsn(aRecords: string[], doh: AsnDohResolver):
 		}
 	}
 	return null;
+}
+
+/**
+ * Attribute a CDN provider by resolving A-record IPs to their origin ASN and
+ * mapping ASN -> CDN (CDN-exclusive ASNs only). Bounded, short-circuiting,
+ * fail-soft. Returns null when no IP maps to a known CDN ASN.
+ */
+export function detectCdnFromAsn(aRecords: string[], doh: AsnDohResolver): Promise<AsnCdnResult | null> {
+	return detectFromAsn(aRecords, doh, ASN_TO_CDN);
+}
+
+/**
+ * Attribute a cloud-HOSTING provider (AWS/GCP/Azure/…) the same way. Intended
+ * as a LOW-confidence supply-chain signal used only when no CDN fronts the
+ * origin — callers must apply that guard (a CDN is the meaningful edge
+ * dependency; the origin host behind it is shared infrastructure).
+ */
+export function detectHostingFromAsn(aRecords: string[], doh: AsnDohResolver): Promise<AsnCdnResult | null> {
+	return detectFromAsn(aRecords, doh, ASN_TO_HOSTING);
 }
