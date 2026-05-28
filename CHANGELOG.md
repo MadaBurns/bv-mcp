@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.23] - 2026-05-28
+
+### Fixed
+
+- **`map_supply_chain` shadow_service signal — three correctness fixes (surfaced by a 16-domain fact-check sweep).**
+  - **MX corroboration (B2):** the shadow_service check considered only TXT-verification + SPF providers, so a service discovered via MX + SRV (e.g. Microsoft 365 SIP, Google Workspace) was falsely flagged "undocumented or unauthorized". It now also corroborates against MX-detected providers. (Observed: nytimes.com flagged "Google Workspace discovered via SRV…" while Google Workspace was its MX provider.)
+  - **Self-hosted SRV (B3):** a SRV record whose target is on the scan's own registrable domain is the org's own service, not a third party — no longer flagged. (Observed: microsoft.com→`sipdog3.microsoft.com`, paypal.com→`xmpp.paypal.com`, oracle.com→`vcse.dtvlb.oracle.com`.)
+  - **Dedup (B1):** the same provider discovered across multiple SRV prefixes now emits a single signal (mirrors the #261 dedup for stale_integration / security_tooling). (Observed: oracle.com emitted the `vcse.dtvlb.oracle.com` shadow_service twice.)
+  - SRV targets are now normalized (trailing dot stripped, lowercased) and the originating target is carried so the self-domain check works. (#285)
+
 ## [3.3.22] - 2026-05-28
 
 ### Added
