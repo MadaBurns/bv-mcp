@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.12] - 2026-05-28
+
+### Fixed
+
+- **CDN detection: drop the Cloudflare header rule entirely.** v3.3.11's diagnostic instrumentation confirmed empirically what three prior tightening passes missed (cf-ray → cf-cache-status → server:cloudflare): **Cloudflare Workers' outbound `fetch()` rewrites the response `server` header to `cloudflare` on every outbound response**, not just for CF-fronted origins. Diagnostic data captured `server: cloudflare` (with `cf-ray ...-AKL` + `cf-cache-status: DYNAMIC`) on responses from google.com (origin: `server: gws`) and github.com (origin: `server: github.com`). Header-based CF detection is therefore fundamentally impossible from inside a Cloudflare Worker — there is no header CF cannot impersonate in transit. **Resolution**: drop the CF detection rule entirely. The vendor-specific rules above it (Imperva, Sucuri, Vercel, CloudFront, Akamai, Fastly) still work because they use origin-set headers CF cannot impersonate. True Cloudflare customers (cloudflare.com, sites behind CF CDN/WAF) now go undetected — false-negative is strictly better than the 100% false-positive rate the original code had. Future work documented inline: add CF detection via DNS A-record IP-range matching against Cloudflare's published edge ranges (see cloudflare.com/ips/) — that's a separate code path, not header inspection. Also removes the v3.3.11 `cdnDiagnostics` finding-metadata field, its purpose fulfilled. (#259)
+
 ## [3.3.11] - 2026-05-28
 
 ### Added
