@@ -126,6 +126,65 @@ export function analyzePtrRecords(ip: string, ptrHostnames: string[], forwardIps
 }
 
 /**
+ * DNSBL response classification.
+ *
+ * - `listed`: the IP returned a real listing code (e.g. Spamhaus 127.0.0.2-11)
+ * - `inconclusive`: the DNSBL returned an operational code that does NOT indicate
+ *   a real listing — most commonly Spamhaus's 127.255.255.254 ("query refused —
+ *   public resolver") when the scanner runs through a non-registered public
+ *   resolver. Treating these as "listed" produces high-severity false positives.
+ *   Verify out-of-band before escalating.
+ * - `not_listed`: the DNSBL returned no A record (typical NXDOMAIN-like result for
+ *   a clean IP).
+ */
+export type DnsblStatus = 'listed' | 'inconclusive' | 'not_listed';
+
+export interface DnsblZoneResult {
+	zone: string;
+	status: DnsblStatus;
+	/** Raw answer record values (e.g. ["127.255.255.254"]) carried through for transparency. */
+	returnCodes?: string[];
+}
+
+/**
+ * Classify DNSBL A-record answers into a status.
+ *
+ * Real listing codes for the major public DNSBLs (Spamhaus ZEN, SpamCop, Barracuda)
+ * all use the `127.0.0.X` range — the low byte is the listing reason (2=SBL,
+ * 4-7=XBL, 10-11=PBL, etc.). The `127.255.255.X` range is reserved by Spamhaus
+ * for operational return codes:
+ *
+ * - 127.255.255.252: domain typo / not a DNSBL zone
+ * - 127.255.255.254: public/open resolver — query refused
+ * - 127.255.255.255: excessive queries — rate-limited
+ *
+ * The 127.255.255.254 code is the most common false-positive trigger when the
+ * scanner runs through a public resolver (which Workers' DoH typically does).
+ *
+ * @param answers - Raw A-record answer values from the DNSBL query
+ * @returns Classification + the raw codes for the finding's metadata
+ */
+export function classifyDnsblAnswers(answers: string[]): { status: DnsblStatus; returnCodes: string[] } {
+	if (answers.length === 0) {
+		return { status: 'not_listed', returnCodes: [] };
+	}
+
+	// 127.0.0.X where X >= 2: real DNSBL listing code. 127.0.0.0 (network) and
+	// 127.0.0.1 (loopback) would never legitimately appear; treat them like other
+	// anomalies (inconclusive).
+	const REAL_LISTING_RE = /^127\.0\.0\.([2-9]|\d{2,3})$/;
+	const hasRealListing = answers.some((a) => REAL_LISTING_RE.test(a));
+	if (hasRealListing) {
+		return { status: 'listed', returnCodes: answers };
+	}
+
+	// Anything else — Spamhaus operational codes (127.255.255.*), unknown 127.x,
+	// or non-127.* anomalies — is inconclusive. Carry the raw codes through so the
+	// finding can name them.
+	return { status: 'inconclusive', returnCodes: answers };
+}
+
+/**
  * Analyze DNSBL lookup results for an MX server IP.
  *
  * When the MX host belongs to a known shared email provider (e.g., Google Workspace,
@@ -133,51 +192,74 @@ export function analyzePtrRecords(ip: string, ptrHostnames: string[], forwardIps
  * listed IPs are shared infrastructure — their blocklist status reflects aggregate
  * platform traffic, not the individual domain's sending reputation.
  *
+ * **Inconclusive results are emitted as `info`-severity findings with explicit
+ * "verify out-of-band at check.spamhaus.org" guidance** rather than as high-severity
+ * "listed" findings — closing the public-resolver false-positive class.
+ *
  * @param ip - The MX server IP address
- * @param listings - Array of DNSBL zone check results
+ * @param results - Array of DNSBL zone check results
  * @param sharedProvider - If non-null, the name of the shared provider (triggers downgrade)
  * @returns Array of findings from DNSBL analysis
  */
 export function analyzeDnsblResults(
 	ip: string,
-	listings: Array<{ zone: string; listed: boolean }>,
+	results: DnsblZoneResult[],
 	sharedProvider?: string | null,
 ): Finding[] {
 	const findings: Finding[] = [];
-	const listedZones = listings.filter((l) => l.listed);
 
-	if (listedZones.length > 0) {
-		for (const listing of listedZones) {
+	for (const result of results) {
+		if (result.status === 'listed') {
 			if (sharedProvider) {
 				findings.push(
 					createFinding(
 						'mx_reputation',
-						`Shared ${sharedProvider} IP listed on ${listing.zone} (informational)`,
+						`Shared ${sharedProvider} IP listed on ${result.zone} (informational)`,
 						'info',
-						`IP ${ip} is listed on DNSBL ${listing.zone}, but this is a shared ${sharedProvider} IP. DNSBL listings on shared email infrastructure reflect the provider's aggregate traffic, not your domain's individual reputation. Your sending reputation is managed at the account level by ${sharedProvider}.`,
-						{ ip, zone: listing.zone, sharedProvider },
+						`IP ${ip} is listed on DNSBL ${result.zone}, but this is a shared ${sharedProvider} IP. DNSBL listings on shared email infrastructure reflect the provider's aggregate traffic, not your domain's individual reputation. Your sending reputation is managed at the account level by ${sharedProvider}.`,
+						{ ip, zone: result.zone, sharedProvider, returnCodes: result.returnCodes },
 					),
 				);
 			} else {
 				findings.push(
 					createFinding(
 						'mx_reputation',
-						`MX server IP listed on ${listing.zone}`,
+						`MX server IP listed on ${result.zone}`,
 						'high',
-						`IP ${ip} is listed on DNSBL ${listing.zone}. Blacklisted mail servers will have significantly degraded email deliverability.`,
-						{ ip, zone: listing.zone },
+						`IP ${ip} is listed on DNSBL ${result.zone}. Blacklisted mail servers will have significantly degraded email deliverability.`,
+						{ ip, zone: result.zone, returnCodes: result.returnCodes },
 					),
 				);
 			}
+		} else if (result.status === 'inconclusive') {
+			const codeList = result.returnCodes && result.returnCodes.length > 0
+				? result.returnCodes.join(', ')
+				: 'unknown';
+			findings.push(
+				createFinding(
+					'mx_reputation',
+					`DNSBL query inconclusive on ${result.zone}`,
+					'info',
+					`Query for ${ip} on ${result.zone} returned an operational code (${codeList}) rather than a listing code. This typically means the DNSBL refused the query — Spamhaus uses 127.255.255.254 to signal "public/open resolver, query blocked", which the scanner cannot distinguish from a real listing on its own. Verify out-of-band at check.spamhaus.org (or via a registered/paid resolver) before treating this as a real listing.`,
+					{ ip, zone: result.zone, returnCodes: result.returnCodes, inconclusive: true },
+				),
+			);
 		}
-	} else {
+		// not_listed: no per-zone finding emitted; aggregated into the summary below
+	}
+
+	// Summary finding when every zone came back clean (no listings AND no inconclusive
+	// queries). If ANY query was inconclusive, the summary is omitted — the user has
+	// per-zone inconclusive findings to act on instead.
+	const allClean = results.length > 0 && results.every((r) => r.status === 'not_listed');
+	if (allClean) {
 		findings.push(
 			createFinding(
 				'mx_reputation',
 				`MX reputation clean for ${ip}`,
 				'info',
-				`IP ${ip} is not listed on any checked DNSBLs (${listings.map((l) => l.zone).join(', ')}).`,
-				{ ip, zones: listings.map((l) => l.zone) },
+				`IP ${ip} is not listed on any checked DNSBLs (${results.map((r) => r.zone).join(', ')}).`,
+				{ ip, zones: results.map((r) => r.zone) },
 			),
 		);
 	}
