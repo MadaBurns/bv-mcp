@@ -1,12 +1,24 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * Email Security Maturity Staging.
- * Classifies a domain's email security posture into a maturity stage (0-4)
- * based on the results of individual DNS security checks.
+ * Security Maturity Staging.
+ *
+ * Classifies a domain's security posture into a maturity stage (0-4). The
+ * specific ladder depends on the scoring profile:
+ *
+ * - **mail-enabled** (and legacy default): email-centric ladder (SPF → DMARC
+ *   monitoring → enforcement → hardened with transport/integrity signals).
+ * - **web_only** (no MX): web-centric ladder. Web-only domains with strong
+ *   web posture (SSL + HSTS + DNSSEC) but no email service should not be capped
+ *   at "DNS-Only" just because they lack DKIM/MTA-STS — those don't apply.
+ *
+ * Defect I, cluster 3 (plan §5.3): the profile is now a first-class input.
+ * Backward-compatibility: omitting `profile` yields the legacy mail-enabled
+ * inference (including the historical "no-MX → DNS-Only" shortcut).
  */
 
 import type { CheckResult, Finding } from '../../lib/scoring';
+import type { DomainProfile } from '../../lib/scoring';
 
 export interface MaturityStage {
 	stage: number;
@@ -52,7 +64,90 @@ export function capMaturityStage(maturity: MaturityStage, score: number): Maturi
 	return maturity;
 }
 
-export function computeMaturityStage(checks: CheckResult[]): MaturityStage {
+/**
+ * Web-only maturity ladder (no-MX domains with real web posture).
+ *
+ * Stages credit transport (SSL), DNS integrity (DNSSEC), browser hardening
+ * (HSTS via http_security), and optional add-ons (CAA, anti-spoof SPF/DMARC).
+ * Mail categories (DKIM, MTA-STS, BIMI, MX) are intentionally excluded — they
+ * don't apply to a domain that doesn't accept email.
+ */
+function computeWebOnlyMaturity(checks: CheckResult[]): MaturityStage {
+	const byCategory = new Map(checks.map((c) => [c.category, c]));
+	const sslCheck = byCategory.get('ssl');
+	const dnssecCheck = byCategory.get('dnssec');
+	const httpSecurityCheck = byCategory.get('http_security');
+	const caaCheck = byCategory.get('caa');
+	const spfCheck = byCategory.get('spf');
+	const dmarcCheck = byCategory.get('dmarc');
+
+	const hasSsl = sslCheck?.passed ?? false;
+	const hasDnssec = dnssecCheck?.passed ?? false;
+	const hasHsts =
+		httpSecurityCheck?.findings.some((f: Finding) => /HSTS/i.test(f.title) && !/missing|no HSTS|no\s+HSTS/i.test(f.title)) ?? false;
+	const hasHttpHardening = httpSecurityCheck?.passed ?? false;
+	const hasCaa = caaCheck?.passed ?? false;
+	// Anti-spoof posture: a published SPF -all (or restrictive include) + DMARC reject is
+	// strong evidence even on a non-sending domain (defence against impersonation).
+	const hasSpfRecord = spfCheck != null && !spfCheck.findings.some((f: Finding) => /No SPF record/i.test(f.title));
+	const hasDmarcReject =
+		dmarcCheck != null &&
+		!dmarcCheck.findings.some((f: Finding) => /No DMARC record/i.test(f.title)) &&
+		!dmarcCheck.findings.some((f: Finding) => /policy set to (none|quarantine)/i.test(f.title));
+	const hasAntiSpoof = hasSpfRecord || hasDmarcReject;
+
+	// Stage 4 — Comprehensive: SSL + DNSSEC + HSTS + (CAA OR anti-spoof SPF/DMARC)
+	if (hasSsl && hasDnssec && hasHsts && (hasCaa || hasAntiSpoof)) {
+		return {
+			stage: 4,
+			label: 'Comprehensive',
+			description: 'This web-only domain has full transport (SSL), DNS integrity (DNSSEC), browser hardening (HSTS), and either CAA pinning or anti-spoof email posture.',
+			nextStep: '',
+		};
+	}
+
+	// Stage 3 — Defensive: SSL + DNSSEC + (HSTS or anti-spoof SPF/DMARC)
+	// CAA is NOT required at stage 3 — a domain can have strong defensive posture without it
+	// (DNSSEC + HSTS already provide DNS-integrity + transport-hardening guarantees).
+	if (hasSsl && hasDnssec && (hasHsts || hasAntiSpoof || hasHttpHardening)) {
+		return {
+			stage: 3,
+			label: 'Defensive',
+			description: 'This web-only domain has SSL, DNSSEC, and additional web/anti-spoof hardening. Strong defensive posture.',
+			nextStep: 'Add HSTS preload, CAA pinning, and explicit anti-spoof DMARC reject to reach full hardening.',
+		};
+	}
+
+	// Stage 2 — Hardened-baseline: SSL + DNSSEC OR SSL + HSTS
+	if (hasSsl && (hasDnssec || hasHsts)) {
+		return {
+			stage: 2,
+			label: 'Hardened',
+			description: 'Browser-facing TLS plus one DNS-or-browser hardening control. Resists most passive attacks.',
+			nextStep: 'Add DNSSEC and HSTS for layered protection.',
+		};
+	}
+
+	// Stage 1 — Basic: SSL present, nothing else
+	if (hasSsl) {
+		return {
+			stage: 1,
+			label: 'Basic',
+			description: 'TLS is configured. No additional DNS or browser hardening detected.',
+			nextStep: 'Enable DNSSEC and HSTS to layer protection above plain TLS.',
+		};
+	}
+
+	// Stage 0 — Unprotected
+	return {
+		stage: 0,
+		label: 'Unprotected',
+		description: 'No TLS detected on this web-only domain. Traffic is not authenticated or encrypted.',
+		nextStep: 'Configure HTTPS with a valid certificate before adding hardening layers.',
+	};
+}
+
+export function computeMaturityStage(checks: CheckResult[], profile?: DomainProfile): MaturityStage {
 	const byCategory = new Map(checks.map((c) => [c.category, c]));
 
 	const mxCheck = byCategory.get('mx');
@@ -63,13 +158,23 @@ export function computeMaturityStage(checks: CheckResult[]): MaturityStage {
 	const dnssecCheck = byCategory.get('dnssec');
 	const bimiCheck = byCategory.get('bimi');
 
+	// Profile-aware dispatch: explicit web_only domains use the web-only ladder.
+	// Non_mail also routes through web-only — both share the "no mail service" shape.
+	if (profile === 'web_only' || profile === 'non_mail') {
+		return computeWebOnlyMaturity(checks);
+	}
+
 	// Non-mail domains should not receive email maturity stages.
 	// The numeric stage values here (0 = "Unprotected", 1 = "DNS-Only") intentionally
 	// reuse the same numbers as the mail-domain scale. This is safe because `stage` is
 	// only ever rendered as a display value alongside `label` — it is never used as a
 	// numeric index or compared against mail-domain stages in any downstream logic.
+	//
+	// Legacy fallback: when `profile` is undefined (older callers) and MX records are
+	// missing, classify under the historical "DNS-Only" branch to preserve existing
+	// behaviour and test coverage.
 	const hasNoMx = mxCheck != null && mxCheck.findings.some((f: Finding) => f.title === 'No MX records found');
-	if (hasNoMx) {
+	if (hasNoMx && profile === undefined) {
 		const hasDnssec = dnssecCheck?.passed ?? false;
 		return {
 			stage: hasDnssec ? 1 : 0,
@@ -113,11 +218,20 @@ export function computeMaturityStage(checks: CheckResult[]): MaturityStage {
 		!dkimCheck.findings.some((f: Finding) => f.metadata?.detectionMethod === 'provider-implied');
 
 	// Stage 4 — Hardened: Stage 3 + at least 2 of (MTA-STS, DNSSEC, BIMI, DANE, CAA, DKIM-discovered)
+	// AND at least one TRANSPORT/INTEGRITY signal: DNSSEC, MTA-STS, or DANE.
+	//
+	// Defect I (cluster 3): the 2026-05-28 fact-check showed a payments-platform domain
+	// being labelled "Hardened" with only `CAA + DKIM-discovered = 2` hardening signals,
+	// despite missing DNSSEC, MTA-STS, BIMI, and DANE. Both CAA and DKIM-discovery are
+	// valuable but neither is a transport-encryption or DNS-integrity signal. Requiring
+	// at least one of {DNSSEC, MTA-STS, DANE} keeps full-stack mail providers at stage 4
+	// and drops the bare-DMARC-only stack to 3.
 	// DKIM is no longer required for Stage 3 — enforcement alone (SPF + DMARC p=quarantine/reject) qualifies
 	const isEnforcing = hasSpf && hasDmarc && (dmarcPolicyReject || dmarcPolicyQuarantine);
 	const hardeningCount = [hasMtaSts, hasDnssec, hasBimi, hasDane, hasCaa, hasDkimDiscovered].filter(Boolean).length;
+	const hasTransportOrIntegrityHardening = hasDnssec || hasMtaSts || hasDane;
 
-	if (isEnforcing && hardeningCount >= 2) {
+	if (isEnforcing && hardeningCount >= 2 && hasTransportOrIntegrityHardening) {
 		return {
 			stage: 4,
 			label: 'Hardened',
