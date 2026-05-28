@@ -218,6 +218,64 @@ const DETECTION_RULES: DetectionRule[] = [
 		},
 		signal: 'spf:oraclecloud.com',
 	},
+	{
+		// Google Cloud DNS. Authoritative DNS for projects on GCP — NS hosts are
+		// `ns-cloud-{a,b,c,d}{1,2,3,4}.googledomains.com`. Without this rule the
+		// raw `googledomains.com` (trailing-label heuristic) surfaces instead of
+		// the canonical provider name. Distinct from Google Workspace (mail) and
+		// Google Domains registrar (now sunset, transferred to Squarespace).
+		// Catalog gap surfaced 2026-05-28 (post-v3.3.15 fact-check round).
+		name: 'Google Cloud DNS',
+		role: 'dns',
+		patterns: {
+			ns: /\.googledomains\.com$/i,
+		},
+		signal: 'ns:googledomains',
+	},
+	{
+		// HubSpot transactional/marketing email. Customer SPF includes a per-tenant
+		// selector under `*.hubspotemail.net` (eg. `21894833.spf06.hubspotemail.net`).
+		// Without this rule the raw selector hostname surfaces as a third-party row.
+		// SPF-only (no fixed MX hostnames); the SPF-rule dedup path
+		// (matchProviderForSpfInclude) handles it. Distinct from the older
+		// self-wrapper pattern `hubspot.spf-records.<customer>.com` which v3.3.13
+		// self-SPF dedup already collapses.
+		// Catalog gap surfaced 2026-05-28 (post-v3.3.15 fact-check round).
+		name: 'HubSpot',
+		role: 'sending',
+		patterns: {
+			spf: /\.hubspotemail\.net$/i,
+		},
+		signal: 'spf:hubspot',
+	},
+	{
+		// Mailchimp Transactional (formerly Mandrill). Customer SPF includes
+		// `servers.mcsv.net` — the `mcsv.net` domain hosts Mailchimp's transactional
+		// email infrastructure. Distinct from Mailchimp marketing (which uses
+		// `mailchimp.com` / `mail.mailchimp.com` and has no rule here yet). Labelled
+		// "Mailchimp Transactional" to disambiguate from the marketing product.
+		// Catalog gap surfaced 2026-05-28 (post-v3.3.15 fact-check round).
+		name: 'Mailchimp Transactional',
+		role: 'sending',
+		patterns: {
+			spf: /\.mcsv\.net$/i,
+		},
+		signal: 'spf:mailchimp-transactional',
+	},
+	{
+		// Salesforce (Sales Cloud / Service Cloud / Marketing Cloud). Customer SPF
+		// includes `_spf.salesforce.com`. Pattern is anchored to a leading `.` or
+		// start-of-string so it cannot accidentally collapse Pardot endpoints
+		// (`et._spf.pardot.com`) — those continue to surface separately. Distinct
+		// from Pardot (no Pardot rule today; raw `et._spf.pardot.com` surfaces).
+		// Catalog gap surfaced 2026-05-28 (post-v3.3.15 fact-check round).
+		name: 'Salesforce',
+		role: 'sending',
+		patterns: {
+			spf: /(^|\.)salesforce\.com$/i,
+		},
+		signal: 'spf:salesforce',
+	},
 ];
 
 /**
