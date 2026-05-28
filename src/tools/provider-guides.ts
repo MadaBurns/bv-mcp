@@ -46,8 +46,16 @@ const DETECTION_RULES: DetectionRule[] = [
 		name: 'Google Workspace',
 		role: 'mail',
 		patterns: {
-			mx: /\.google\.com$/i,
-			spf: /_spf\.google\.com$/i,
+			// MX hosts use both `.google.com` (aspmx.l.google.com) and, in some
+			// regions, `.googlemail.com` (aspmx.l.googlemail.com). Without the
+			// latter, googlemail MX hosts collapse to a raw `googlemail.com` row
+			// alongside the detected Google Workspace (observed widely 2026-05-28).
+			mx: /(\.google\.com|\.googlemail\.com)$/i,
+			// SPF: the apex commonly includes `_spf.google.com`, but some orgs
+			// include Google's internal netblock includes directly
+			// (`_netblocks{,2,3}.google.com`) — each surfaced as a separate raw
+			// critical row before this. Collapse them all to Google Workspace.
+			spf: /(_spf|_netblocks\d*)\.google\.com$/i,
 		},
 		signal: 'mx:google.com',
 	},
@@ -81,6 +89,11 @@ const DETECTION_RULES: DetectionRule[] = [
 		role: 'mail',
 		patterns: {
 			mx: /\.pphosted\.com$/i,
+			// SPF selectors (`spf-00789a01.pphosted.com`) and macro includes
+			// (`%{ir}.%{v}.%{d}.spf.has.pphosted.com`) both end in `.pphosted.com`;
+			// the suffix match catches both forms so they resolve to Proofpoint
+			// instead of a raw critical row.
+			spf: /(^|\.)pphosted\.com$/i,
 		},
 		signal: 'mx:pphosted.com',
 	},
@@ -214,6 +227,10 @@ const DETECTION_RULES: DetectionRule[] = [
 		role: 'sending',
 		patterns: {
 			spf: /(^|\.)fireeyecloud\.com$/i,
+			// Some tenants DO point MX at `*.fireeyecloud.com` (observed: anz.co.nz).
+			// Match it so the inbound gateway resolves to Trellix instead of a raw
+			// `fireeyecloud.com` email-receiving row.
+			mx: /(^|\.)fireeyecloud\.com$/i,
 		},
 		signal: 'spf:fireeyecloud.com',
 	},
@@ -287,7 +304,9 @@ const DETECTION_RULES: DetectionRule[] = [
 		name: 'Mailchimp Transactional',
 		role: 'sending',
 		patterns: {
-			spf: /\.mcsv\.net$/i,
+			// Both the legacy Mandrill domain (`spf.mandrillapp.com`) and the
+			// current `*.mcsv.net` selector resolve to the same product.
+			spf: /(\.mcsv\.net|\.mandrillapp\.com|^mandrillapp\.com)$/i,
 		},
 		signal: 'spf:mailchimp-transactional',
 	},
@@ -304,6 +323,130 @@ const DETECTION_RULES: DetectionRule[] = [
 			spf: /(^|\.)salesforce\.com$/i,
 		},
 		signal: 'spf:salesforce',
+	},
+	// --- Catalog batch #286 (raw-hostname → vendor name; surfaced by 16-domain sweep 2026-05-28) ---
+	{
+		// Salesforce Pardot (marketing automation). SPF includes resolve under
+		// `*.pardot.com` (eg. `aspmx.pardot.com`, `et._spf.pardot.com`). Kept
+		// separate from the Salesforce rule (whose pattern is anchored to
+		// `salesforce.com`) so the two products surface distinctly.
+		name: 'Salesforce Pardot',
+		role: 'sending',
+		patterns: { spf: /(^|\.)pardot\.com$/i },
+		signal: 'spf:pardot.com',
+	},
+	{
+		// Salesforce Marketing Cloud (formerly ExactTarget). SPF includes under
+		// `*.exacttarget.com` (eg. `cust-spf.exacttarget.com`).
+		name: 'Salesforce Marketing Cloud',
+		role: 'sending',
+		patterns: { spf: /(^|\.)exacttarget\.com$/i },
+		signal: 'spf:exacttarget.com',
+	},
+	{
+		// Zendesk outbound email. SPF include `mail.zendesk.com`.
+		name: 'Zendesk',
+		role: 'sending',
+		patterns: { spf: /(^|\.)zendesk\.com$/i },
+		signal: 'spf:zendesk.com',
+	},
+	{
+		// Marketo (Adobe) email. SPF include `mktomail.com`.
+		name: 'Marketo',
+		role: 'sending',
+		patterns: { spf: /(^|\.)mktomail\.com$/i },
+		signal: 'spf:mktomail.com',
+	},
+	{
+		// Statuspage (Atlassian) notification email. SPF include `stspg-customer.com`.
+		name: 'Statuspage',
+		role: 'sending',
+		patterns: { spf: /(^|\.)stspg-customer\.com$/i },
+		signal: 'spf:stspg-customer.com',
+	},
+	{
+		// Qualtrics survey/email platform. SPF include `_spf.qualtrics.com`.
+		name: 'Qualtrics',
+		role: 'sending',
+		patterns: { spf: /(^|\.)qualtrics\.com$/i },
+		signal: 'spf:qualtrics.com',
+	},
+	{
+		// SparkPost (Bird) email. SPF include `_spf.e.sparkpost.com`.
+		name: 'SparkPost',
+		role: 'sending',
+		patterns: { spf: /(^|\.)sparkpost\.com$/i },
+		signal: 'spf:sparkpost.com',
+	},
+	{
+		// Alibaba Mail / Aliyun DirectMail. SPF includes under `*.aliyun.com`
+		// (eg. `spf1.alibaba.mail.aliyun.com`).
+		name: 'Alibaba Mail',
+		role: 'sending',
+		patterns: { spf: /(^|\.)aliyun\.com$/i },
+		signal: 'spf:aliyun.com',
+	},
+	{
+		// Valimail (managed SPF/DMARC). The apex delegates SPF to a per-tenant
+		// host under `*.vali.email` — both static (`<domain>._nspf.vali.email`)
+		// and macro (`%{i}._ip.%{h}._ehlo.%{d}._spf.vali.email`) forms end in
+		// `.vali.email`, so the suffix match resolves both to Valimail.
+		name: 'Valimail',
+		role: 'sending',
+		patterns: { spf: /(^|\.)vali\.email$/i },
+		signal: 'spf:vali.email',
+	},
+	{
+		// Cloudflare Email Security (formerly Area 1). Inbound gateway — MX points
+		// at `*.cf-emailsecurity.net`. Distinct from the Cloudflare DNS rule.
+		name: 'Cloudflare Email Security',
+		role: 'mail',
+		patterns: { mx: /(^|\.)cf-emailsecurity\.net$/i },
+		signal: 'mx:cf-emailsecurity.net',
+	},
+	{
+		// Azure DNS. Multi-TLD vendor — authoritative DNS is served from
+		// `*.azure-dns.{com,net,org,info}`; large zones use all four for
+		// redundancy, listing as four separate rows before this collapse.
+		name: 'Azure DNS',
+		role: 'dns',
+		patterns: { ns: /\.azure-dns\.(com|net|org|info)$/i },
+		signal: 'ns:azure-dns',
+	},
+	{
+		// Netlify DNS. NS hosts under `*.netlifydns.com`.
+		name: 'Netlify DNS',
+		role: 'dns',
+		patterns: { ns: /\.netlifydns\.com$/i },
+		signal: 'ns:netlifydns.com',
+	},
+	{
+		// Vercel DNS. NS hosts under `*.vercel-dns.com`.
+		name: 'Vercel DNS',
+		role: 'dns',
+		patterns: { ns: /\.vercel-dns\.com$/i },
+		signal: 'ns:vercel-dns.com',
+	},
+	{
+		// Oracle Cloud DNS (OCI). NS hosts under `*.oraclecloud.net`.
+		name: 'Oracle Cloud DNS',
+		role: 'dns',
+		patterns: { ns: /\.oraclecloud\.net$/i },
+		signal: 'ns:oraclecloud.net',
+	},
+	{
+		// Salesforce DNS. NS hosts under `*.salesforce-dns.com`.
+		name: 'Salesforce DNS',
+		role: 'dns',
+		patterns: { ns: /\.salesforce-dns\.com$/i },
+		signal: 'ns:salesforce-dns.com',
+	},
+	{
+		// Alibaba Cloud DNS. NS hosts under `*.alibabadns.com`.
+		name: 'Alibaba DNS',
+		role: 'dns',
+		patterns: { ns: /\.alibabadns\.com$/i },
+		signal: 'ns:alibabadns.com',
 	},
 ];
 
