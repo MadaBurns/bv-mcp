@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.17] - 2026-05-28
+
+### Added
+
+- **`map_supply_chain`: Foundation DNS multi-TLD collapse.** New `DETECTION_RULES` entry treats `*.foundationdns.{com,net,org}` NS hosts as one `Foundation DNS` provider row rather than three. Same drift class as v3.3.13 UltraDNS / v3.3.15 NS1+Dyn / v3.3.16 Google Cloud DNS — additive, surfaced by the post-v3.3.16 fact-check on shopify.com. (#273)
+- **`detectCloudflareFallback` — new 2-of-3 signal rule for Cloudflare CDN attribution.** Replaces v3.3.15's strict-AND `detectCloudflareViaNsAndIp` (kept as `@deprecated` wrapper to preserve the old NS+IP-only contract for any downstream consumers). Three signals: (A) NS all on `*.ns.cloudflare.com`; (B) at least one A-record IP in a published Cloudflare range; (C) TLS cert issuer matches `/cloudflare/i` (catches `Cloudflare Inc ECC CA-3`, `Cloudflare Origin SSL ECC Issuer ECC`). Two of three required → low false-positive risk, catches Cloudflare customers using external DNS providers. (#273)
+
+### Known limitation
+
+- **Cert-issuer signal is wired but DORMANT in production.** Cloudflare Workers' `fetch()` API does not expose peer-cert metadata, and `checkSsl` in `@blackveil/dns-checks` is a thin HTTPS-reachability + HSTS wrapper that does not capture cert issuer. The scan_domain call site for `detectCloudflareFallback` invokes with `certIssuer: null`, so attribution still degrades to NS+IP-only behavior (same as v3.3.15) for live scans. The 2-of-3 logic is fully unit-tested (12 new specs) and ready to activate when a cert source is plumbed — likely future work via a separate infra probe (crt.sh / certificate-transparency lookup). When that lands, Cloudflare customers like shopify.com (Foundation DNS for NS, Cloudflare for CDN) will start showing `cdnProvider: "Cloudflare"` automatically — no further code change required. (#273)
+
+### Changed
+
+- **`detectCloudflareViaNsAndIp` short-circuit semantics preserved in the deprecated wrapper, NOT in the new function.** Old wrapper returns `null` on empty `nsHosts` or empty `aRecords`. New `detectCloudflareFallback` treats empty inputs as "signal absent (0)" under the 2-of-3 rule, so `(NS=CF, A=[], certIssuer=CF)` attributes via 2 signals. Defensible semantics under the new rule; locked in by regression test. The wrapper preserves the old contract.
+
 ## [3.3.16] - 2026-05-28
 
 ### Added
