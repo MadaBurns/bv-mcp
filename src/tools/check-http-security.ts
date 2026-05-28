@@ -69,10 +69,24 @@ const MERGE_HEADERS = [
 /** Maximum manual redirect hops to follow during dual-fetch probes. */
 const MAX_REDIRECT_HOPS = 3;
 
-/** Detect CDN provider from HTTP response headers. Returns provider name or null. */
+/**
+ * Detect CDN provider from HTTP response headers. Returns provider name or null.
+ *
+ * Vendor-specific high-precision headers are checked BEFORE generic Cloudflare
+ * signals, because `cf-ray` alone is not a reliable origin-CDN signal: the
+ * scanner runs inside a Cloudflare Worker, and Cloudflare's edge adds `cf-ray`
+ * to the response of every outbound `fetch()` for tracing — even when the
+ * origin is on Imperva, Akamai, AWS, etc. Detecting Cloudflare requires an
+ * origin-set signal (`server: cloudflare`, `cf-cache-status`, or `cf-mitigated`),
+ * not just a `cf-ray` that may have been injected by our own egress.
+ */
 function detectCdnProvider(headers: Headers): string | null {
-	if (headers.get('cf-ray') || headers.get('server')?.toLowerCase().includes('cloudflare')) {
-		return 'Cloudflare';
+	// 1. Vendor-specific headers (high-precision, can't be spoofed by transit edges).
+	if (headers.get('x-cdn')?.toLowerCase() === 'imperva' || headers.get('x-iinfo')) {
+		return 'Imperva';
+	}
+	if (headers.get('x-sucuri-id') || headers.get('x-sucuri-cache')) {
+		return 'Sucuri';
 	}
 	if (headers.get('x-vercel-id') || headers.get('x-vercel-cache')) {
 		return 'Vercel';
@@ -80,12 +94,19 @@ function detectCdnProvider(headers: Headers): string | null {
 	if (headers.get('x-amz-cf-id') || headers.get('via')?.includes('CloudFront')) {
 		return 'CloudFront';
 	}
+	if (headers.get('x-akamai-transformed') || headers.get('x-check-cacheable')) {
+		return 'Akamai';
+	}
 	const servedBy = headers.get('x-served-by') ?? '';
 	if (servedBy.includes('cache') || headers.get('via')?.toLowerCase().includes('varnish')) {
 		return 'Fastly';
 	}
-	if (headers.get('x-akamai-transformed') || headers.get('x-check-cacheable')) {
-		return 'Akamai';
+	// 2. Cloudflare — require an origin-set signal. `cf-ray` alone is NOT
+	// sufficient (added by our own Worker egress), but `server: cloudflare`,
+	// `cf-cache-status` (set by the origin's CF zone), or `cf-mitigated` are.
+	const server = headers.get('server')?.toLowerCase() ?? '';
+	if (server.includes('cloudflare') || headers.get('cf-cache-status') || headers.get('cf-mitigated')) {
+		return 'Cloudflare';
 	}
 	return null;
 }
@@ -110,9 +131,7 @@ async function fetchWithRedirects(url: string, timeoutMs: number): Promise<Respo
 	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
 		const status = response.status;
 		const isRedirect =
-			(status >= 300 && status < 400) ||
-			response.type === 'opaqueredirect' ||
-			(status === 0 && response.headers.get('location'));
+			(status >= 300 && status < 400) || response.type === 'opaqueredirect' || (status === 0 && response.headers.get('location'));
 		if (!isRedirect) break;
 
 		const location = response.headers.get('location');
@@ -182,9 +201,7 @@ async function dualFetchHeaders(
 	const url = `https://${domain}`;
 	const results = await Promise.allSettled([fetchWithRedirects(url, timeoutMs), fetchWithRedirects(url, timeoutMs)]);
 
-	const responses = results
-		.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled')
-		.map((r) => r.value);
+	const responses = results.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled').map((r) => r.value);
 
 	if (responses.length === 0) return null;
 
@@ -283,9 +300,7 @@ async function checkHttpSecurityInner(domain: string): Promise<CheckResult> {
 	// short-circuiting before header analysis so a challenge/block page is never mis-read as the site.
 	if (dualResult) {
 		const headersForWaf = dualResult.headers;
-		const body = looksLikeWaf(headersForWaf)
-			? await fetchBodyForWafDetection(`https://${domain}`, HTTPS_TIMEOUT_MS)
-			: undefined;
+		const body = looksLikeWaf(headersForWaf) ? await fetchBodyForWafDetection(`https://${domain}`, HTTPS_TIMEOUT_MS) : undefined;
 		const event = detectWafEvent(headersForWaf, body, dualResult.status);
 		if (event) {
 			const provider = event.provider.charAt(0).toUpperCase() + event.provider.slice(1);
@@ -345,9 +360,7 @@ async function checkHttpSecurityInner(domain: string): Promise<CheckResult> {
 	// If the check was blocked (WAF, connection refused, etc.) or timed out,
 	// capturedHeaders may reflect the error response, not the security response.
 	const isUnanalyzable =
-		result.checkStatus === 'error' ||
-		result.checkStatus === 'timeout' ||
-		result.findings.some((f) => f.metadata?.missingControl === true);
+		result.checkStatus === 'error' || result.checkStatus === 'timeout' || result.findings.some((f) => f.metadata?.missingControl === true);
 	if (isUnanalyzable) return result;
 
 	const cdnFinding = createFinding(

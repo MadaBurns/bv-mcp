@@ -268,10 +268,7 @@ describe('checkHttpSecurity', () => {
 		// No header-missing findings — they'd be about the WAF, not the site
 		expect(
 			result.findings.some(
-				(f) =>
-					f.title.startsWith('No ') ||
-					f.title.toLowerCase().includes('missing') ||
-					f.title.toLowerCase().includes('header'),
+				(f) => f.title.startsWith('No ') || f.title.toLowerCase().includes('missing') || f.title.toLowerCase().includes('header'),
 			),
 		).toBe(false);
 		restore();
@@ -400,7 +397,10 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 		// Every fetch hangs forever — package-internal sequential fetches would
 		// otherwise compound to ≫ the per-fetch HTTPS_TIMEOUT_MS.
 		globalThis.fetch = vi.fn().mockImplementation(
-			() => new Promise<Response>(() => {/* never resolves */}),
+			() =>
+				new Promise<Response>(() => {
+					/* never resolves */
+				}),
 		);
 
 		const start = Date.now();
@@ -412,9 +412,7 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 		expect(result.category).toBe('http_security');
 		expect(result.checkStatus === 'timeout' || result.checkStatus === 'error').toBe(true);
 		// Surfaced as a timeout finding
-		const timeoutFinding = result.findings.find(
-			(f) => /timed? out|total budget|could not complete/i.test(f.title),
-		);
+		const timeoutFinding = result.findings.find((f) => /timed? out|total budget|could not complete/i.test(f.title));
 		expect(timeoutFinding).toBeDefined();
 	}, 15_000);
 
@@ -493,6 +491,109 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 			const result = await run();
 			expect(result.checkStatus).toBe('error');
 			expect(result.findings.some((f) => f.title === 'HTTP check blocked by security appliance')).toBe(true);
+		});
+	});
+
+	describe('CDN attribution (cdnProvider on the info finding)', () => {
+		// Build a minimal "well-configured" header set so the CDN annotation finding fires
+		// (the annotation is suppressed for unanalyzable responses).
+		function wellConfigured(extra: Record<string, string>): Headers {
+			return new Headers({
+				'content-security-policy': "default-src 'self'; frame-ancestors 'none'",
+				'x-frame-options': 'DENY',
+				'x-content-type-options': 'nosniff',
+				'permissions-policy': 'camera=()',
+				'referrer-policy': 'no-referrer',
+				'cross-origin-resource-policy': 'same-origin',
+				'cross-origin-opener-policy': 'same-origin',
+				'cross-origin-embedder-policy': 'require-corp',
+				...extra,
+			});
+		}
+
+		function mockWithHeaders(extra: Record<string, string>) {
+			globalThis.fetch = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				type: 'basic',
+				headers: wellConfigured(extra),
+			});
+		}
+
+		function cdnFinding(findings: Array<{ metadata?: Record<string, unknown> }>): string | null {
+			const f = findings.find((x) => typeof x.metadata?.cdnProvider === 'string');
+			return f ? (f.metadata!.cdnProvider as string) : null;
+		}
+
+		it('attributes Imperva from x-cdn: Imperva (anz.co.nz live signature)', async () => {
+			mockWithHeaders({
+				'x-cdn': 'Imperva',
+				'x-iinfo': '14-106106407-103906364 pNNN RT(1779925927445 89) q(0 0 0 0) r(1 1) U6',
+				server: 'anz',
+			});
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBe('Imperva');
+		});
+
+		it('attributes Imperva from x-iinfo alone', async () => {
+			mockWithHeaders({ 'x-iinfo': '14-1-1 pNNN RT(0 0) q(0 0 0 0) r(0 0) U0' });
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBe('Imperva');
+		});
+
+		it('does NOT attribute Cloudflare when only cf-ray is present (Worker egress noise)', async () => {
+			// Cloudflare's edge adds `cf-ray` to every fetch() leaving a Worker.
+			// The origin here is clearly NOT Cloudflare (Imperva server header) — the
+			// detector must require an origin-set CF signal, not transit-edge noise.
+			mockWithHeaders({
+				'cf-ray': '8aabcdef1234-AKL',
+				server: 'anz',
+				'x-cdn': 'Imperva',
+				'x-iinfo': '14-1-1 pNNN',
+			});
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBe('Imperva');
+		});
+
+		it('does NOT attribute Cloudflare when cf-ray is the only signal on an unrelated origin', async () => {
+			// No vendor headers, no server: cloudflare — just a transit cf-ray.
+			// Must return null, not "Cloudflare". Regression against the universal
+			// "everything is Cloudflare" bug.
+			mockWithHeaders({ 'cf-ray': '8aabcdef1234-AKL', server: 'nginx' });
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBeNull();
+		});
+
+		it('attributes Cloudflare from server: cloudflare (origin-set signal)', async () => {
+			mockWithHeaders({ server: 'cloudflare', 'cf-ray': '8aabcdef1234-AKL' });
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBe('Cloudflare');
+		});
+
+		it('attributes Cloudflare from cf-cache-status (origin-set signal)', async () => {
+			mockWithHeaders({ 'cf-cache-status': 'HIT', 'cf-ray': '8aabcdef1234-AKL' });
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBe('Cloudflare');
+		});
+
+		it('returns no CDN attribution when no signals are present (no Cloudflare default)', async () => {
+			mockWithHeaders({ server: 'nginx' });
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBeNull();
+		});
+
+		it('still attributes Vercel / CloudFront / Fastly / Akamai correctly', async () => {
+			mockWithHeaders({ 'x-vercel-id': 'iad1::abc' });
+			expect(cdnFinding((await run()).findings)).toBe('Vercel');
+
+			mockWithHeaders({ 'x-amz-cf-id': 'foo==' });
+			expect(cdnFinding((await run()).findings)).toBe('CloudFront');
+
+			mockWithHeaders({ 'x-served-by': 'cache-lhr1-LHR' });
+			expect(cdnFinding((await run()).findings)).toBe('Fastly');
+
+			mockWithHeaders({ 'x-akamai-transformed': '9 - 0 pmb=mTOE,2' });
+			expect(cdnFinding((await run()).findings)).toBe('Akamai');
 		});
 	});
 });
