@@ -97,6 +97,9 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           queries: ${{ matrix.queries }}
+          # Scope analysis to the deployed surface (src/ + packages/); excludes
+          # test fixtures + dev scripts, whose only findings are false positives.
+          config-file: ./.github/codeql/codeql-config.yml
           dependency-caching: true
 
       - name: Perform CodeQL analysis
