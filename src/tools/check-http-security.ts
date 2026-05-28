@@ -374,12 +374,29 @@ async function checkHttpSecurityInner(domain: string): Promise<CheckResult> {
 		result.checkStatus === 'error' || result.checkStatus === 'timeout' || result.findings.some((f) => f.metadata?.missingControl === true);
 	if (isUnanalyzable) return result;
 
+	// TEMPORARY diagnostic — expose the raw CDN-attribution-relevant headers
+	// in the finding metadata. This is the third pass on CDN detection and
+	// each one missed a CF-injected header the unit tests didn't cover. We
+	// need empirical evidence of what the Worker actually sees on outbound
+	// fetches before tightening further. Remove the `cdnDiagnostics` field
+	// in the next release once the live behavior is understood.
+	const cdnDiagnostics = {
+		server: capturedHeaders.get('server'),
+		cfRay: capturedHeaders.get('cf-ray'),
+		cfCacheStatus: capturedHeaders.get('cf-cache-status'),
+		cfMitigated: capturedHeaders.get('cf-mitigated'),
+		xCdn: capturedHeaders.get('x-cdn'),
+		xIInfo: capturedHeaders.get('x-iinfo'),
+		via: capturedHeaders.get('via'),
+		xAmzCfId: capturedHeaders.get('x-amz-cf-id'),
+	};
+
 	const cdnFinding = createFinding(
 		'http_security',
 		`HTTP headers via ${cdnProvider} CDN`,
 		'info',
 		`HTTP security headers may be provided by ${cdnProvider} CDN rather than the origin server. CDN-applied headers do not reflect the origin server's security configuration.`,
-		{ cdnProvider },
+		{ cdnProvider, cdnDiagnostics },
 	);
 
 	return { ...result, findings: [...result.findings, cdnFinding] };
