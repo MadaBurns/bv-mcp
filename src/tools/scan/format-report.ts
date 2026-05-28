@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { ScanDomainResult } from '../scan-domain';
-import type { Finding } from '../../lib/scoring';
+import type { CheckResult, Finding } from '../../lib/scoring';
 import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
@@ -14,7 +14,14 @@ export interface StructuredScanResult {
 	passed: boolean;
 	maturityStage: number | null;
 	maturityLabel: string | null;
-	categoryScores: Record<string, number>;
+	/**
+	 * Per-category numeric score, or `null` when the category is not applicable to this
+	 * domain (mirrored in `notApplicableCategories`). Cluster-3 reconciliation invariant:
+	 * for every `cat` in `notApplicableCategories`, `categoryScores[cat] === null`.
+	 * This eliminates the contradictory "spf: 100 AND spf in notApplicableCategories"
+	 * shape the v3.3.12 fact-check surfaced (defect G).
+	 */
+	categoryScores: Record<string, number | null>;
 	findingCounts: { critical: number; high: number; medium: number; low: number };
 	scoringProfile: string;
 	scoringSignals: string[];
@@ -32,10 +39,72 @@ export interface StructuredScanResult {
 	dnssecSource: 'domain_configured' | 'tld_inherited' | null;
 	/** CDN provider detected from HTTP response headers. null when no CDN detected or check did not run. */
 	cdnProvider: string | null;
-	/** Email categories that scored 100 due to web-only/non-mail profile (no MX). Downstream consumers should treat these as N/A rather than perfect. */
+	/**
+	 * Categories that don't apply to this domain (no MX → mail-only categories under
+	 * `web_only`/`non_mail`; check timed-out/errored → inconclusive). These categories
+	 * are always reported as `null` in `categoryScores` to avoid the misleading 100 or 0.
+	 */
 	notApplicableCategories: string[];
 	timestamp: string;
 	cached: boolean;
+}
+
+/**
+ * Categories that are intrinsically mail-only — under `web_only`/`non_mail`
+ * profiles (no MX) they should be reported as N/A regardless of underlying score.
+ * `bimi` requires DMARC enforcement to publish; `mta_sts` and `dkim` are inbound-
+ * /outbound-mail features; `mx` has no meaning when there are no MX records.
+ */
+const MAIL_ONLY_CATEGORIES_FOR_NON_MAIL_PROFILE = new Set<string>(['dkim', 'mta_sts', 'bimi', 'mx']);
+/** Email categories that current behaviour already downgrades to info under non-mail profiles. */
+const EMAIL_CATEGORIES_HEURISTIC_NA = new Set<string>(['spf', 'dmarc', 'dkim', 'mta_sts']);
+
+/**
+ * Decide whether a single check should be reported as N/A given the active scoring profile.
+ * The two rules combined are the single source of truth that `categoryScores` and
+ * `notApplicableCategories` both derive from (defect G — single-source CategoryEvaluation).
+ */
+function isCategoryNonApplicable(
+	check: CheckResult | undefined,
+	category: string,
+	profile: string,
+	score: number | undefined,
+): boolean {
+	// Rule 1: transient/inconclusive checks are always N/A (could not measure).
+	if (check && (check.checkStatus === 'timeout' || check.checkStatus === 'error')) return true;
+
+	const isNonMailProfile = profile === 'non_mail' || profile === 'web_only';
+	if (!isNonMailProfile) return false;
+
+	// Rule 2 (defect H): under web_only/non_mail, intrinsically mail-only categories
+	// are always N/A — even if the check produced a numeric 0 (pre-fix non-mail pattern).
+	if (MAIL_ONLY_CATEGORIES_FOR_NON_MAIL_PROFILE.has(category)) return true;
+
+	// Rule 3 (legacy heuristic — refined): a non-mail profile downgrades missing
+	// email findings to info; when ALL of an email category's findings are info AND
+	// none of them indicate a record was found, treat as N/A. A finding whose title
+	// signals presence of a configured record (e.g. "SPF record found",
+	// "DMARC record found") flips the category back to applicable — fixes the case
+	// where an anti-spoof SPF `-all` is published but findings happen to all be info.
+	if (EMAIL_CATEGORIES_HEURISTIC_NA.has(category)) {
+		if (check) {
+			const allInfo = check.findings.length > 0 && check.findings.every((f: Finding) => f.severity === 'info');
+			const noFindings = check.findings.length === 0 && check.score === 100;
+			const hasPositiveSignal = check.findings.some((f: Finding) => {
+				const t = f.title.toLowerCase();
+				return /record (found|configured)|properly configured|valid|configured/.test(t) &&
+					!/no\s+\S+\s+record/.test(t) &&
+					!/not found/.test(t) &&
+					!/missing/.test(t);
+			});
+			if ((allInfo || noFindings) && !hasPositiveSignal) return true;
+		} else if (score === 100) {
+			// Category absent from checks but seeded to 100 by the engine.
+			return true;
+		}
+	}
+
+	return false;
 }
 
 /** Optional enrichment data for structured scan results. */
@@ -81,27 +150,38 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		}
 	}
 
-	// notApplicableCategories
-	const emailCategories = ['spf', 'dmarc', 'dkim', 'mta_sts'];
-	const isNonMailProfile = ['non_mail', 'web_only'].includes(result.context?.profile ?? '');
-	const notApplicableCategories: string[] = [];
-	if (isNonMailProfile) {
-		for (const check of result.checks) {
-			if (emailCategories.includes(check.category)) {
-				const allInfo = check.findings.length > 0 && check.findings.every((f: Finding) => f.severity === 'info');
-				const noFindings = check.findings.length === 0 && check.score === 100;
-				if (allInfo || noFindings) {
-					notApplicableCategories.push(check.category);
-				}
-			}
-		}
-	}
-	// Transient/inconclusive checks (checkStatus timeout/error) are excluded from the score by the
-	// engine — surface them as n/a (not a misleading 0) so the report reflects "could not measure".
+	// --- Single-source CategoryEvaluation pass (defect G + H) ---
+	// `notApplicableCategories` and `categoryScores` are now derived from the same
+	// per-category applicability decision. This eliminates the "spf: 100 AND spf in
+	// notApplicableCategories" overlap surfaced in the 2026-05-28 fact-check round.
+	const profile = result.context?.profile ?? 'mail_enabled';
+	const sourceCategoryScores: Record<string, number> = result.score.categoryScores ?? {};
+	const checksByCategory = new Map<string, CheckResult>();
 	for (const check of result.checks) {
-		if ((check.checkStatus === 'timeout' || check.checkStatus === 'error') && !notApplicableCategories.includes(check.category)) {
-			notApplicableCategories.push(check.category);
+		checksByCategory.set(check.category, check);
+	}
+
+	// Union of categories present in either the score map or the checks array.
+	const allCategoryKeys = new Set<string>([
+		...Object.keys(sourceCategoryScores),
+		...result.checks.map((c) => c.category),
+	]);
+
+	const notApplicableCategories: string[] = [];
+	const categoryScores: Record<string, number | null> = {};
+	for (const category of allCategoryKeys) {
+		const check = checksByCategory.get(category);
+		const rawScore: number | undefined = Object.prototype.hasOwnProperty.call(sourceCategoryScores, category)
+			? sourceCategoryScores[category]
+			: undefined;
+		if (isCategoryNonApplicable(check, category, profile, rawScore)) {
+			notApplicableCategories.push(category);
+			categoryScores[category] = null;
+		} else if (rawScore !== undefined) {
+			categoryScores[category] = rawScore;
 		}
+		// If neither in sourceCategoryScores nor non-applicable, skip — preserves prior
+		// "only keys with a score appear" behaviour.
 	}
 
 	return {
@@ -111,7 +191,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		passed: result.score.overall >= 50,
 		maturityStage: result.maturity?.stage ?? null,
 		maturityLabel: result.maturity?.label ?? null,
-		categoryScores: result.score.categoryScores,
+		categoryScores,
 		findingCounts: {
 			critical: result.score.findings.filter((f: Finding) => f.severity === 'critical').length,
 			high: result.score.findings.filter((f: Finding) => f.severity === 'high').length,
