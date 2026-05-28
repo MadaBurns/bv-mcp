@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.9] - 2026-05-28
+
+### Fixed
+
+- **`scan_domain` no longer reports `cdnProvider: "Cloudflare"` for every scanned domain.** Root cause was much broader than the symptom that surfaced it: the CDN detector in `src/tools/check-http-security.ts` treated the presence of a `cf-ray` response header as proof of Cloudflare, but the scanner runs inside a Cloudflare Worker and **Cloudflare's edge stamps `cf-ray` onto every outbound `fetch()` response for tracing — including ones from origins behind Imperva, Akamai, AWS, Google Frontend, etc.** Confirmed by re-scanning anz.co.nz (Imperva), amazon.com (Akamai), and google.com (Google Frontend) — pre-fix, all three returned `"Cloudflare"`. Cloudflare detection now requires `server: cloudflare` OR `cf-cache-status` OR `cf-mitigated` (which CF only sets when CF is actually fronting the origin, not when the Worker fetches through it). Added Imperva (`x-cdn: Imperva` / `x-iinfo`) and Sucuri detection; reordered vendor-specific rules ahead of the (tightened) Cloudflare rule; no-match still returns `null` (no fallback default). 9 new regression tests including the `cf-ray`-alone-is-not-Cloudflare assertion. (#253)
+- **`map_supply_chain` no longer lists ccTLD second-level registry suffixes (`co.nz`, `co.uk`, `com.au`, …) as DNS hosting providers.** Root cause: `parts.slice(-2).join('.')` parent-domain derivation in `src/tools/map-supply-chain.ts` works for `.com/.net/.io` and silently degrades across the public-suffix long tail — for `ns1.anz.co.nz` it returned `co.nz`, the registry suffix, which then surfaced as a "DNS hosting provider" row. Same bug-class family as v3.3.8's M365 dedup (#251) — string heuristics that don't handle the long tail. Added `PUBLIC_SUFFIX_SECOND_LEVEL` (~50 ccTLD-2LDs covering uk/nz/au/za/jp/in/kr/br/mx/sg) + exported `getEffectiveParentDomain(host)` helper; NS rows that resolve to the scan domain are now treated as self-hosted and dropped from the third-party dependency list. Doc-comment notes the long-term fix is the Public Suffix List but the runtime cost isn't justified here. (#253)
+- **`map_supply_chain` now resolves `_spf.fireeyecloud.com` to `Trellix Email Security`** (formerly FireEye Email Security) via a new `DETECTION_RULES` entry in `src/tools/provider-guides.ts`. Same drift-class fix as the v3.3.8 M365 work — once a known SaaS surface gets added to `DETECTION_RULES`, the v3.3.8 `matchProviderForSpfInclude()` helper picks it up automatically (single source of truth, no parallel list). (#253)
+- **`map_supply_chain` no longer emits N identical `stale_integration` findings when a single SaaS provider has multiple TXT verification records.** ANZ has 3 `google-site-verification=…` TXT records (one per web property); the signals array surfaced 3 identical findings before, one now with the count embedded in `detail` ("3 TXT verification records but no corresponding SPF include"). (#253)
+
 ## [3.3.8] - 2026-05-28
 
 ### Fixed
