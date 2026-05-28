@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.16] - 2026-05-28
+
+### Added
+
+- **`map_supply_chain`: four new `DETECTION_RULES` entries surfaced by the spotify.com fact-check round.** Same drift class as v3.3.13/v3.3.15 catalog work — additive, no behavior change for domains that don't match. The v3.3.13 `matchProviderForSpfInclude()` + v3.3.15 `matchProviderForNsHost()` helpers consume `DETECTION_RULES` directly, so each entry lights up both attribution AND multi-record dedup paths. (#271)
+  - **Google Cloud DNS** — NS pattern `*.googledomains.com` (e.g. `ns-cloud-a{1-4}.googledomains.com`). Was: raw `googledomains.com`.
+  - **HubSpot** — SPF pattern `*.hubspotemail.net` (e.g. `21894833.spf06.hubspotemail.net`). Was: raw include hostname.
+  - **Mailchimp Transactional** — SPF pattern `*.mcsv.net` (Mailchimp's transactional / Mandrill infrastructure; distinct from marketing on `mailchimp.com`). Was: raw `servers.mcsv.net`.
+  - **Salesforce** — SPF pattern `(^|.)salesforce.com$`, anchored to avoid colliding with Pardot endpoints (`et._spf.pardot.com`). Was: raw `_spf.salesforce.com`. Regression test pins that Pardot rows surface separately when both Salesforce and Pardot includes are present.
+
 ## [3.3.15] - 2026-05-28
 
 ### Added
