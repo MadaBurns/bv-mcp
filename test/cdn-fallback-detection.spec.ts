@@ -3,6 +3,7 @@ import {
 	CLOUDFLARE_IPV4_RANGES,
 	isIpInCloudflareRange,
 	detectCloudflareViaNsAndIp,
+	detectCloudflareFallback,
 } from '../src/lib/cdn-fallback-detection';
 
 describe('CLOUDFLARE_IPV4_RANGES', () => {
@@ -149,5 +150,145 @@ describe('detectCloudflareViaNsAndIp', () => {
 				aRecords: ['8.8.8.8', '104.16.45.99'],
 			}),
 		).toEqual({ provider: 'Cloudflare', confidence: 'heuristic' });
+	});
+});
+
+describe('detectCloudflareFallback — cert-issuer signal (v3.3.17 extension)', () => {
+	it('attributes CF when A-record in CF range AND cert issuer is Cloudflare, even when NS is external (external-DNS-on-CF pattern)', () => {
+		// External NS provider (eg. Foundation DNS) + origin on CF edge + CF-issued
+		// cert. Signal A absent (NS not on CF), but B+C present → 2-of-3 → attribute.
+		// This is the real-world gap the cert-issuer signal closes.
+		expect(
+			detectCloudflareFallback({
+				nsHosts: ['gold.foundationdns.com', 'gold.foundationdns.net'], // EXTERNAL DNS
+				aRecords: ['104.16.45.99'], // CF published range (104.16.0.0/13)
+				certIssuer: 'C=US, O=Cloudflare, Inc., CN=Cloudflare Inc ECC CA-3',
+			}),
+		).toEqual({ provider: 'Cloudflare', confidence: 'heuristic' });
+	});
+
+	it('attributes CF when NS on CF AND cert issuer is Cloudflare, even when A-records are not in any published CF range', () => {
+		expect(
+			detectCloudflareFallback({
+				nsHosts: ['jill.ns.cloudflare.com', 'ken.ns.cloudflare.com'],
+				aRecords: ['8.8.8.8'], // not in any published CF range
+				certIssuer: 'CN=Cloudflare Origin SSL ECC Issuer ECC',
+			}),
+		).toEqual({ provider: 'Cloudflare', confidence: 'heuristic' });
+	});
+
+	it('does NOT attribute CF when only cert issuer matches (single signal)', () => {
+		expect(
+			detectCloudflareFallback({
+				nsHosts: ['ns-1.awsdns-01.com'],
+				aRecords: ['8.8.8.8'],
+				certIssuer: 'CN=Cloudflare Inc ECC CA-3',
+			}),
+		).toBeNull();
+	});
+
+	it('does NOT attribute CF when only A-record is in CF range (single signal, transit case)', () => {
+		expect(
+			detectCloudflareFallback({
+				nsHosts: ['ns-1.awsdns-01.com'],
+				aRecords: ['104.16.45.99'], // CF range
+				certIssuer: 'CN=DigiCert TLS RSA SHA256 2020 CA1', // not CF
+			}),
+		).toBeNull();
+	});
+
+	it('matches Cloudflare Origin SSL ECC Issuer ECC (the origin-CA variant)', () => {
+		expect(
+			detectCloudflareFallback({
+				nsHosts: ['gold.foundationdns.com'],
+				aRecords: ['104.16.45.99'],
+				certIssuer: 'CN=Cloudflare Origin SSL ECC Issuer ECC, O=Cloudflare, Inc., L=San Francisco, C=US',
+			}),
+		).toEqual({ provider: 'Cloudflare', confidence: 'heuristic' });
+	});
+
+	it('case-insensitive on the cert issuer match', () => {
+		expect(
+			detectCloudflareFallback({
+				nsHosts: ['gold.foundationdns.com'],
+				aRecords: ['104.16.45.99'],
+				certIssuer: 'cn=cloudflare inc ecc ca-3, o=CLOUDFLARE, INC.',
+			}),
+		).toEqual({ provider: 'Cloudflare', confidence: 'heuristic' });
+	});
+
+	it('handles null/undefined cert issuer gracefully (degrades to old NS+IP-only behavior)', () => {
+		// NS not on CF, no cert signal → single signal (IP) only → null
+		expect(
+			detectCloudflareFallback({
+				nsHosts: ['gold.foundationdns.com'],
+				aRecords: ['104.16.45.99'],
+				certIssuer: null,
+			}),
+		).toBeNull();
+
+		// NS on CF, A in CF range, certIssuer omitted entirely → 2 signals (A + B) → attribute
+		expect(
+			detectCloudflareFallback({
+				nsHosts: ['jill.ns.cloudflare.com'],
+				aRecords: ['104.16.45.99'],
+			}),
+		).toEqual({ provider: 'Cloudflare', confidence: 'heuristic' });
+	});
+
+	it('attributes CF when all three signals present (NS + IP + cert)', () => {
+		expect(
+			detectCloudflareFallback({
+				nsHosts: ['jill.ns.cloudflare.com', 'ken.ns.cloudflare.com'],
+				aRecords: ['104.16.45.99'],
+				certIssuer: 'CN=Cloudflare Inc ECC CA-3',
+			}),
+		).toEqual({ provider: 'Cloudflare', confidence: 'heuristic' });
+	});
+
+	it('treats empty aRecords as signal-B-absent (NS+cert still attributes with 2 signals)', () => {
+		// Regression guard: empty A-record list does NOT short-circuit when the
+		// other two signals are present. Old NS+IP-only function returned null on
+		// empty A; new 2-of-3 rule treats signal B as absent and lets A+C attribute.
+		expect(
+			detectCloudflareFallback({
+				nsHosts: ['jill.ns.cloudflare.com', 'ken.ns.cloudflare.com'],
+				aRecords: [],
+				certIssuer: 'CN=Cloudflare Inc ECC CA-3',
+			}),
+		).toEqual({ provider: 'Cloudflare', confidence: 'heuristic' });
+	});
+
+	it('treats empty nsHosts as signal-A-absent (IP+cert still attributes with 2 signals)', () => {
+		expect(
+			detectCloudflareFallback({
+				nsHosts: [],
+				aRecords: ['104.16.45.99'],
+				certIssuer: 'CN=Cloudflare Inc ECC CA-3',
+			}),
+		).toEqual({ provider: 'Cloudflare', confidence: 'heuristic' });
+	});
+
+	it('returns null when no signals present at all', () => {
+		expect(
+			detectCloudflareFallback({
+				nsHosts: [],
+				aRecords: [],
+				certIssuer: null,
+			}),
+		).toBeNull();
+	});
+});
+
+describe('detectCloudflareViaNsAndIp — backward-compat wrapper', () => {
+	it('still requires BOTH NS+IP and ignores cert-issuer (deprecated NS+IP-only contract)', () => {
+		// Confirms the deprecated wrapper preserves its conservative gate
+		// regardless of any new cert-issuer plumbing on the underlying function.
+		expect(
+			detectCloudflareViaNsAndIp({
+				nsHosts: ['jill.ns.cloudflare.com'],
+				aRecords: ['8.8.8.8'],
+			}),
+		).toBeNull();
 	});
 });

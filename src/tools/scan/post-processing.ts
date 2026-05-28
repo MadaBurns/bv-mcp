@@ -4,7 +4,7 @@ import { type CheckCategory, type CheckResult, type Finding, buildCheckResult, c
 import { queryTxtRecords } from '../../lib/dns';
 import { queryDnsRecords } from '../../lib/dns-records';
 import { detectProviderMatches, detectProviderMatchesBySelectors, loadProviderSignatures } from '../../lib/provider-signatures';
-import { detectCloudflareViaNsAndIp } from '../../lib/cdn-fallback-detection';
+import { detectCloudflareFallback } from '../../lib/cdn-fallback-detection';
 import { parseDmarcTags } from '../check-dmarc';
 
 export interface ScanRuntimeOptions {
@@ -99,7 +99,16 @@ async function addCloudflareCdnHeuristic(domain: string, results: CheckResult[])
 
 	// Strip trailing dots for consistency with the helper's expected input.
 	const normalisedNs = nsHosts.map((h) => h.replace(/\.$/, '').toLowerCase());
-	const heuristic = detectCloudflareViaNsAndIp({ nsHosts: normalisedNs, aRecords });
+
+	// TLS cert issuer is not currently surfaced by `checkSsl` — the CF Worker
+	// `fetch()` API does not expose peer-cert metadata, and we don't make a
+	// separate CT-log lookup in the scan path. Pass null; the 2-of-3 rule
+	// degrades to the original v3.3.15 NS+IP-only gate. Future plumbing (eg.
+	// from a dedicated TLS probe in the infra-probe service binding) can light
+	// up the third signal without changing this call site.
+	const certIssuer: string | null = null;
+
+	const heuristic = detectCloudflareFallback({ nsHosts: normalisedNs, aRecords, certIssuer });
 	if (!heuristic) return results;
 
 	const cdnFinding = createFinding(

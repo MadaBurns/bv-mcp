@@ -768,6 +768,19 @@ describe('mapSupplyChain', () => {
 		expect(result.dependencies.find((d) => /_spf\.salesforce/i.test(d.provider))).toBeUndefined();
 	});
 
+	it('treats foundationdns.{com,net,org} as a single Foundation DNS provider (shopify pattern)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 -all',
+			nsHosts: ['gold.foundationdns.com', 'gold.foundationdns.net', 'gold.foundationdns.org'],
+			domain: 'example.com',
+		});
+		const result = await run('example.com');
+		const fdRows = result.dependencies.filter((d) => /Foundation DNS/i.test(d.provider));
+		expect(fdRows.length).toBe(1);
+		expect(fdRows[0].provider).toBe('Foundation DNS');
+		expect(result.dependencies.find((d) => /foundationdns\.(com|net|org)/i.test(d.provider))).toBeUndefined();
+	});
+
 	it('keeps Salesforce Pardot distinct from Salesforce (the et._spf.pardot.com mapping persists)', async () => {
 		mockDnsResponses({
 			spf: 'v=spf1 include:_spf.salesforce.com include:et._spf.pardot.com -all',
