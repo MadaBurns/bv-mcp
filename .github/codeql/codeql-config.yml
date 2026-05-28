@@ -1,0 +1,22 @@
+name: bv-mcp CodeQL config
+
+# Scope CodeQL to the deployed attack surface only.
+#
+# The shipped Worker is `src/` + `packages/`. Test fixtures and dev/CI scripts
+# never run in production, so the production-oriented security-extended queries
+# only produce false positives there:
+#   - js/incomplete-url-substring-sanitization on Vitest mock-fetch routers
+#     (`url.includes('host.example.com')`) and on plain assertions
+#     (`provider.includes('%{')`), which are intentional substring checks in
+#     test code — see the bv-cc memory note on this exact FP class;
+#   - js/file-access-to-http on the chaos harness (`scripts/chaos-*.mjs`),
+#     which reads a domain list from disk and scans it by design;
+#   - js/regex/missing-regexp-anchor on test fixtures.
+#
+# Excluding these keeps the code-scanning signal focused on shippable code.
+# (Production URL/regex handling in `src/` + `packages/` is still fully scanned.)
+paths-ignore:
+  - test
+  - scripts
+  - '**/*.spec.ts'
+  - '**/*.test.ts'

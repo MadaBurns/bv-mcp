@@ -64,7 +64,11 @@ const DETECTION_RULES: DetectionRule[] = [
 		role: 'mail',
 		patterns: {
 			mx: /\.mail\.protection\.outlook\.com$/i,
-			spf: /spf\.protection\.outlook\.com$/i,
+			// `spf.protection.outlook.com` is the M365 tenant SPF; `*.msft.net`
+			// (eg. `_spf-ssg-a.msft.net`) is Microsoft's first-party sending infra
+			// used by microsoft.com itself — both are Microsoft email infrastructure
+			// for supply-chain purposes, so both resolve here instead of a raw row.
+			spf: /(spf\.protection\.outlook\.com|\.msft\.net)$/i,
 		},
 		signal: 'mx:mail.protection.outlook.com',
 	},

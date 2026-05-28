@@ -159,3 +159,12 @@ describe('provider catalog batch (#286)', () => {
 		});
 	});
 });
+
+describe('catalog residual — Microsoft msft.net SPF', () => {
+	it('maps *.msft.net SPF infra to Microsoft 365', () => {
+		expect(matchProviderForSpfInclude('_spf-ssg-a.msft.net')).toBe('Microsoft 365');
+	});
+	it('still maps spf.protection.outlook.com to Microsoft 365', () => {
+		expect(matchProviderForSpfInclude('spf.protection.outlook.com')).toBe('Microsoft 365');
+	});
+});
