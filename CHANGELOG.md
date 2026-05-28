@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.18] - 2026-05-28
+
+### Fixed
+
+- **`check_mx_reputation` no longer produces high-severity false-positive "MX server IP listed on zen.spamhaus.org" findings when Spamhaus returns its public-resolver refusal code.** Pre-fix, any A-record answer from a DNSBL query was treated as "listed" — including Spamhaus's `127.255.255.254` operational code, which means "public/open resolver — query refused", NOT "this IP is listed". The scanner runs through Workers' DoH (a public resolver), so Spamhaus refused every query and the scanner consistently surfaced false-positive listings on shared-mail-platform IPs (most visibly the SMX NZ shared IP that every NZ domain inheriting that infra got flagged for). New 3-state classifier `classifyDnsblAnswers(answers)` distinguishes real listings (`127.0.0.2-11`) from operational codes (`127.255.255.252` typo / `127.255.255.254` public-resolver refusal / `127.255.255.255` rate-limit) and from anomalous values (loopback `127.0.0.0-1`, non-127.x). Inconclusive results emit info-severity findings with the raw return codes and explicit "verify out-of-band at check.spamhaus.org" guidance — no high-severity false positive. Real listings still surface even when other zones are inconclusive (mixed-state). Same drift class as the v3.3.13 GSC / OneTrust dedup and v3.3.8 M365 fix: a heuristic that treated "got data back" as "got the data I assumed" without parsing the actual value. (#275)
+
+### API change
+
+- `analyzeDnsblResults` signature widened: `{ zone, listed: boolean }[]` → `{ zone, status: DnsblStatus, returnCodes?: string[] }[]`. New exports from `src/tools/mx-reputation-analysis.ts`: `classifyDnsblAnswers`, `DnsblStatus`, `DnsblZoneResult`.
+
 ## [3.3.17] - 2026-05-28
 
 ### Added
