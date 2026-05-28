@@ -32,9 +32,13 @@ function emptyResponse(name: string) {
 	return createDohResponse([{ name, type: 1 }], []);
 }
 
-/** The 8 RBL zones used by check_rbl. */
+/**
+ * The 7 RBL zones used by check_rbl. Spamhaus ZEN is intentionally excluded —
+ * bv-mcp has no reliable ZEN query path, so it is never queried or counted.
+ * `zen.spamhaus.org` is kept in this fixture list ONLY so the mock can assert
+ * it is never queried.
+ */
 const RBL_ZONES = [
-	'zen.spamhaus.org',
 	'bl.spamcop.net',
 	'dnsbl-1.uceprotect.net',
 	'dnsbl-2.uceprotect.net',
@@ -43,6 +47,9 @@ const RBL_ZONES = [
 	'psbl.surriel.com',
 	'dnsbl.sorbs.net',
 ];
+
+/** ZEN zone — must NEVER appear in a query. Tracked separately from RBL_ZONES. */
+const ZEN_ZONE = 'zen.spamhaus.org';
 
 /**
  * Build a fetch mock that routes MX, A, and RBL queries.
@@ -123,27 +130,82 @@ function buildFetchMock(opts: {
 // ---------------------------------------------------------------------------
 
 describe('checkRbl', () => {
-	async function run(domain = 'example.com') {
+	async function run(domain = 'example.com', dnsOptions?: import('../src/lib/dns-types').QueryDnsOptions) {
 		const { checkRbl } = await import('../src/tools/check-rbl');
-		return checkRbl(domain);
+		return checkRbl(domain, dnsOptions);
 	}
 
-	it('should report high finding when listed on Spamhaus ZEN', async () => {
-		buildFetchMock({
-			mxEntries: [{ priority: 10, exchange: 'mail.example.com' }],
-			mxIps: { 'mail.example.com': ['203.0.113.1'] },
-			rblAnswers: {
-				// 203.0.113.1 reversed = 1.113.0.203
-				'1.113.0.203.zen.spamhaus.org': ['127.0.0.2'],
-			},
+	it('NEVER queries Spamhaus ZEN — it is dropped unconditionally (neither queried nor counted)', async () => {
+		const queriedZones = new Set<string>();
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			const name = new URL(url).searchParams.get('name') ?? '';
+			const type = new URL(url).searchParams.get('type') ?? '';
+			if (name === 'example.com' && type === 'MX') {
+				return Promise.resolve(mxResponse('example.com', [{ priority: 10, exchange: 'mail.example.com' }]));
+			}
+			if (name === 'mail.example.com' && type === 'A') {
+				return Promise.resolve(aResponse('mail.example.com', ['203.0.113.1']));
+			}
+			if (name.endsWith(`.${ZEN_ZONE}`)) {
+				// ZEN must NEVER be queried — record it so the assertion below fails if it is.
+				queriedZones.add(ZEN_ZONE);
+				return Promise.resolve(aResponse(name, ['127.0.0.2']));
+			}
+			for (const zone of RBL_ZONES) {
+				if (name.endsWith(`.${zone}`)) {
+					queriedZones.add(zone);
+					return Promise.resolve(emptyResponse(name));
+				}
+			}
+			return Promise.resolve(emptyResponse('unknown'));
 		});
 
-		const result = await run();
-		expect(result.category).toBe('rbl');
-		const highFinding = result.findings.find((f) => f.severity === 'high');
-		expect(highFinding).toBeDefined();
-		expect(highFinding!.title).toMatch(/Spamhaus/i);
-		expect(highFinding!.detail).toContain('SBL');
+		const result = await run(); // ZEN is dropped regardless of dnsOptions
+		// ZEN never queried.
+		expect(queriedZones.has(ZEN_ZONE)).toBe(false);
+		// No ZEN/Spamhaus verdict emitted (no high listing, no quota finding).
+		expect(result.findings.some((f) => /spamhaus/i.test(f.title) || /spamhaus/i.test(f.detail))).toBe(false);
+		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
+		// Clean message counts only the 7 active (non-ZEN) zones.
+		const cleanFinding = result.findings.find((f) => /clean|not listed/i.test(f.title));
+		expect(cleanFinding).toBeDefined();
+		expect(cleanFinding!.detail).toContain('7 RBLs');
+		expect((cleanFinding!.metadata?.zones as string[]) ?? []).not.toContain(ZEN_ZONE);
+	});
+
+	it('NEVER queries Spamhaus ZEN even when a secondary-resolver token is supplied', async () => {
+		const queriedZones = new Set<string>();
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			const name = new URL(url).searchParams.get('name') ?? '';
+			const type = new URL(url).searchParams.get('type') ?? '';
+			if (name === 'example.com' && type === 'MX') {
+				return Promise.resolve(mxResponse('example.com', [{ priority: 10, exchange: 'mail.example.com' }]));
+			}
+			if (name === 'mail.example.com' && type === 'A') {
+				return Promise.resolve(aResponse('mail.example.com', ['203.0.113.1']));
+			}
+			if (name.endsWith(`.${ZEN_ZONE}`)) {
+				queriedZones.add(ZEN_ZONE);
+				return Promise.resolve(aResponse(name, ['127.0.0.2']));
+			}
+			for (const zone of RBL_ZONES) {
+				if (name.endsWith(`.${zone}`)) {
+					queriedZones.add(zone);
+					return Promise.resolve(emptyResponse(name));
+				}
+			}
+			return Promise.resolve(emptyResponse('unknown'));
+		});
+
+		// A secondary-resolver token used to gate ZEN; it no longer does — ZEN is gone.
+		const result = await run('example.com', {
+			secondaryDoh: { endpoint: 'https://doh.bv.example/dns-query', token: 'test-token' },
+		});
+		expect(queriedZones.has(ZEN_ZONE)).toBe(false);
+		expect(result.findings.some((f) => /spamhaus/i.test(f.title) || /spamhaus/i.test(f.detail))).toBe(false);
+		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
 	});
 
 	it('should report multiple listing findings when listed on multiple RBLs', async () => {
@@ -182,26 +244,6 @@ describe('checkRbl', () => {
 		expect(infoFinding!.title).toMatch(/clean|not listed/i);
 	});
 
-	it('should treat Spamhaus 127.255.255.x as quota error, not a listing', async () => {
-		buildFetchMock({
-			mxEntries: [{ priority: 10, exchange: 'mail.example.com' }],
-			mxIps: { 'mail.example.com': ['203.0.113.1'] },
-			rblAnswers: {
-				'1.113.0.203.zen.spamhaus.org': ['127.255.255.254'],
-			},
-		});
-
-		const result = await run();
-		expect(result.category).toBe('rbl');
-		// Should NOT have a high finding
-		const highFinding = result.findings.find((f) => f.severity === 'high');
-		expect(highFinding).toBeUndefined();
-		// Should have an info finding about quota
-		const quotaFinding = result.findings.find((f) => f.detail.includes('quota') || f.detail.includes('rate'));
-		expect(quotaFinding).toBeDefined();
-		expect(quotaFinding!.severity).toBe('info');
-	});
-
 	it('should treat Mailspike 127.0.0.10 as positive reputation (info, clean)', async () => {
 		buildFetchMock({
 			mxEntries: [{ priority: 10, exchange: 'mail.example.com' }],
@@ -231,7 +273,7 @@ describe('checkRbl', () => {
 			rblAnswers: {
 				'1.113.0.203.bl.spamcop.net': ['127.0.0.2'],
 			},
-			dnsErrors: new Set(['zen.spamhaus.org']),
+			dnsErrors: new Set(['dnsbl.sorbs.net']),
 		});
 
 		const result = await run();

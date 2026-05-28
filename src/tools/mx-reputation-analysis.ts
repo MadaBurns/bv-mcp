@@ -269,10 +269,19 @@ export function analyzeDnsblResults(
 
 /**
  * Return the list of DNSBL zones to check.
- * These are well-known, reliable blocklists with publicly queryable DNS interfaces.
+ * These are well-known blocklists with publicly queryable DNS interfaces.
+ *
+ * Spamhaus ZEN is intentionally EXCLUDED. From the shared public resolvers
+ * bv-mcp runs through, ZEN returns rate-limit/refused codes
+ * (127.255.255.252/.254/.255) indistinguishable from a real verdict,
+ * producing false "clean"/"listed" results. bv-mcp has no reliable ZEN query
+ * path — its secondary-resolver token only drives empty-result confirmation in
+ * the DoH transport, it does NOT reroute the ZEN lookup — so ZEN can never be
+ * trusted here and is dropped unconditionally (neither queried nor counted).
+ * All other providers are unaffected.
  */
 export function buildDnsblZones(): string[] {
-	return ['zen.spamhaus.org', 'bl.spamcop.net', 'b.barracudacentral.org'];
+	return ['bl.spamcop.net', 'b.barracudacentral.org'];
 }
 
 /**

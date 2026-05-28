@@ -29,9 +29,9 @@ function emptyResponse(name: string, type: number) {
 }
 
 describe('checkMxReputation', () => {
-	async function run(domain = 'example.com') {
+	async function run(domain = 'example.com', dnsOptions?: import('../src/lib/dns-types').QueryDnsOptions) {
 		const { checkMxReputation } = await import('../src/tools/check-mx-reputation');
-		return checkMxReputation(domain);
+		return checkMxReputation(domain, dnsOptions);
 	}
 
 	it('should return info findings for domain with clean MX reputation', async () => {
@@ -82,12 +82,12 @@ describe('checkMxReputation', () => {
 			if (url.includes('1.100.51.198.in-addr.arpa') && (url.includes('type=PTR') || url.includes('type=12'))) {
 				return Promise.resolve(ptrResponse('198.51.100.1', ['mail.example.com']));
 			}
-			// DNSBL: listed on Spamhaus
-			if (url.includes('spamhaus')) {
-				return Promise.resolve(aResponse('1.100.51.198.zen.spamhaus.org', ['127.0.0.2']));
+			// DNSBL: listed on SpamCop (ZEN is never queried)
+			if (url.includes('spamcop')) {
+				return Promise.resolve(aResponse('1.100.51.198.bl.spamcop.net', ['127.0.0.2']));
 			}
 			// Other DNSBLs clean
-			if (url.includes('spamcop') || url.includes('barracuda')) {
+			if (url.includes('barracuda')) {
 				return Promise.resolve(emptyResponse('lookup', 1));
 			}
 			return Promise.resolve(emptyResponse('example.com', 1));
@@ -98,7 +98,7 @@ describe('checkMxReputation', () => {
 		const highFinding = result.findings.find((f) => f.severity === 'high');
 		expect(highFinding).toBeDefined();
 		expect(highFinding!.title).toContain('listed on');
-		expect(highFinding!.title).toContain('spamhaus');
+		expect(highFinding!.title).toContain('spamcop');
 	});
 
 	it('should return medium finding when MX IP has no PTR record', async () => {
@@ -235,6 +235,39 @@ describe('checkMxReputation', () => {
 		expect(finding!.metadata?.invalidIps).toEqual(['999.0.2.1']);
 	});
 
+	it('NEVER queries Spamhaus ZEN — it is dropped unconditionally (neither queried nor counted)', async () => {
+		const queriedUrls: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			queriedUrls.push(url);
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				return Promise.resolve(mxResponse('example.com', [{ priority: 10, exchange: 'mail.example.com' }]));
+			}
+			if (url.includes('name=mail.example.com') && (url.includes('type=A') || url.includes('type=1'))) {
+				return Promise.resolve(aResponse('mail.example.com', ['198.51.100.1']));
+			}
+			if (url.includes('in-addr.arpa') && (url.includes('type=PTR') || url.includes('type=12'))) {
+				return Promise.resolve(ptrResponse('198.51.100.1', ['mail.example.com']));
+			}
+			// ZEN would report a listing — but it must not be queried at all here.
+			if (url.includes('spamhaus')) {
+				return Promise.resolve(aResponse('1.100.51.198.zen.spamhaus.org', ['127.0.0.2']));
+			}
+			if (url.includes('spamcop') || url.includes('barracuda')) {
+				return Promise.resolve(emptyResponse('lookup', 1));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run(); // ZEN is dropped regardless of dnsOptions
+		// ZEN never queried; SpamCop + Barracuda still are.
+		expect(queriedUrls.some((u) => u.includes('spamhaus'))).toBe(false);
+		expect(queriedUrls.some((u) => u.includes('spamcop'))).toBe(true);
+		// No Spamhaus verdict emitted, no false high finding.
+		expect(result.findings.some((f) => /spamhaus/i.test(f.title) || /spamhaus/i.test(f.detail))).toBe(false);
+		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
+	});
+
 	it('should limit checks to first 3 MX hosts', async () => {
 		const mxHosts = [
 			{ priority: 10, exchange: 'mx1.example.com' },
@@ -293,11 +326,11 @@ describe('checkMxReputation', () => {
 			if (url.includes('name=smtp-in.l.google.com') && (url.includes('type=A') || url.includes('type=1'))) {
 				return Promise.resolve(aResponse('smtp-in.l.google.com', ['74.125.24.26']));
 			}
-			// DNSBL: listed on Spamhaus
-			if (url.includes('spamhaus')) {
-				return Promise.resolve(aResponse('26.24.125.74.zen.spamhaus.org', ['127.0.0.2']));
+			// DNSBL: listed on SpamCop (ZEN is never queried)
+			if (url.includes('spamcop')) {
+				return Promise.resolve(aResponse('26.24.125.74.bl.spamcop.net', ['127.0.0.2']));
 			}
-			if (url.includes('spamcop') || url.includes('barracuda')) {
+			if (url.includes('barracuda')) {
 				return Promise.resolve(emptyResponse('lookup', 1));
 			}
 			return Promise.resolve(emptyResponse('anthropic.com', 1));
@@ -310,7 +343,7 @@ describe('checkMxReputation', () => {
 		expect(highFindings.length).toBe(0);
 		// Should have an info finding mentioning Google Workspace and shared IP
 		const sharedFinding = result.findings.find(
-			(f) => f.severity === 'info' && f.title.includes('Google Workspace') && f.title.includes('spamhaus'),
+			(f) => f.severity === 'info' && f.title.includes('Google Workspace') && f.title.includes('spamcop'),
 		);
 		expect(sharedFinding).toBeDefined();
 		expect(sharedFinding!.detail).toContain('shared');
@@ -340,15 +373,12 @@ describe('checkMxReputation', () => {
 			if (url.includes('outbound.protection.outlook.com') && (url.includes('type=A') || url.includes('type=1'))) {
 				return Promise.resolve(aResponse('mail-dm6nam10on2052.outbound.protection.outlook.com', ['52.101.73.22']));
 			}
-			// DNSBL: listed on Spamhaus and SpamCop
-			if (url.includes('spamhaus')) {
-				return Promise.resolve(aResponse('lookup', ['127.0.0.2']));
-			}
+			// DNSBL: listed on SpamCop and Barracuda (ZEN is never queried)
 			if (url.includes('spamcop')) {
 				return Promise.resolve(aResponse('lookup', ['127.0.0.2']));
 			}
 			if (url.includes('barracuda')) {
-				return Promise.resolve(emptyResponse('lookup', 1));
+				return Promise.resolve(aResponse('lookup', ['127.0.0.2']));
 			}
 			return Promise.resolve(emptyResponse('contoso.com', 1));
 		});
@@ -379,10 +409,10 @@ describe('checkMxReputation', () => {
 			if (url.includes('in-addr.arpa') && (url.includes('type=PTR') || url.includes('type=12'))) {
 				return Promise.resolve(ptrResponse('198.51.100.1', ['mail.example.com']));
 			}
-			if (url.includes('spamhaus')) {
-				return Promise.resolve(aResponse('1.100.51.198.zen.spamhaus.org', ['127.0.0.2']));
+			if (url.includes('spamcop')) {
+				return Promise.resolve(aResponse('1.100.51.198.bl.spamcop.net', ['127.0.0.2']));
 			}
-			if (url.includes('spamcop') || url.includes('barracuda')) {
+			if (url.includes('barracuda')) {
 				return Promise.resolve(emptyResponse('lookup', 1));
 			}
 			return Promise.resolve(emptyResponse('example.com', 1));
