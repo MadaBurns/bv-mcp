@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.28] - 2026-05-29
+
+### Removed
+
+- **Spamhaus ZEN dropped unconditionally from the RBL/DNSBL provider sets.** bv-mcp queries DNSBLs through shared public resolvers, where Spamhaus ZEN returns rate-limit/refused codes (`127.255.255.252/.254/.255`) that are indistinguishable from a real `127.0.0.x` listing — producing false "clean"/"listed" verdicts. The previous gate (`hasReliableSpamhausPath`, driven by `BV_DOH_TOKEN`) was a no-op for ZEN: the secondary-resolver token only drives empty-result confirmation in the DoH transport, it never reroutes the ZEN lookup, so the token can never make ZEN reliable here. ZEN is therefore removed entirely — neither queried nor counted:
+  - `check_rbl`: `RBL_ZONES` 8 → 7 (`zen.spamhaus.org` removed); "clean on N RBLs" and `zones` metadata reflect 7. Dead Spamhaus quota/return-code decoding removed.
+  - `check_mx_reputation` / `buildDnsblZones()`: ZEN excluded; the `hasReliableSpamhausPath` parameter/branch dropped. Tool description updated to "7 DNS-based Real-time Blocklists".
+  - `hasReliableSpamhausPath()` and `SPAMHAUS_ZEN_ZONE` removed from `src/lib/dns-types.ts` (now unreferenced).
+  - Version bump busts the version-keyed KV cache so stale ZEN-inclusive results are evicted on deploy.
+
 ## [3.3.27] - 2026-05-28
 
 ### Fixed
