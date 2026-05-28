@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.15] - 2026-05-28
+
+### Added
+
+- **`map_supply_chain`: NS1 (IBM) and Dyn (Oracle) DNS providers now collapse across their sibling TLDs.** Same drift class as the v3.3.13 UltraDNS multi-TLD fix. NS1 uses both `*.ns1.com` and `*.nsone.net`; Dyn uses both `*.dyn.com` and `*.dynect.net`. Both now surface as one row per provider rather than two. (#269)
+- **`map_supply_chain`: Oracle Cloud Email DETECTION_RULES entry.** SPF includes matching `(_c|_s\d+)\.oraclecloud\.com` now resolve to friendly `Oracle Cloud Email` instead of the raw include hostname. Same single-source pattern as the v3.3.8 M365 / v3.3.13 Trellix entries — the v3.3.13 `matchProviderForSpfInclude()` helper picks it up automatically. (#269)
+- **`scan_domain`: NS-based Cloudflare CDN attribution as a heuristic fallback.** v3.3.12 dropped header-based Cloudflare detection because CF Workers' outbound `fetch()` rewrites the response `server` header on every response (making header-based detection unreliable from within a CF Worker). v3.3.15 adds a fallback heuristic that runs ONLY when header detection returned null: when BOTH (a) the domain's NS records all match `*.ns.cloudflare.com` AND (b) at least one A record falls within Cloudflare's 15 published edge IPv4 ranges (`cloudflare.com/ips/`), attribute the CDN as Cloudflare with `confidence: 'heuristic'` in finding metadata. Implementation lives in new pure-TS helper `src/lib/cdn-fallback-detection.ts` (no external deps); invoked from scan post-processing AFTER `check_http_security` runs. The header detector (`detectCdnProvider`) stays header-only by design. Real Cloudflare customers like ietf.org and ird.govt.nz, which previously surfaced as `cdnProvider: null`, now correctly show `'Cloudflare'`. (#269)
+
+### Changed
+
+- **Internal: NS-host dedup refactored to use `matchProviderForNsHost` helper.** Previously the dedup loop used a `host.includes(signalDomain)` substring heuristic derived from each rule's `signal` string — happened to work for UltraDNS (`.com`/`.net` both contain `ultradns`) but silently broke for NS1 (no shared substring between `ns1.com` and `nsone.net`). New helper delegates to the actual `DETECTION_RULES` regexes — mirrors the existing `matchProviderForSpfInclude` SSOT path, so detection and dedup use the same regex source instead of diverging via signal-string parsing. UltraDNS regression test stays green; the helper makes future multi-TLD provider additions trivial. (#269)
+
 ## [3.3.14] - 2026-05-28
 
 ### Fixed
