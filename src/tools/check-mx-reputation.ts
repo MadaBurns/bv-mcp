@@ -19,6 +19,8 @@ import {
 	analyzePtrRecords,
 	analyzeDnsblResults,
 	buildDnsblZones,
+	classifyDnsblAnswers,
+	type DnsblZoneResult,
 	reverseIpForDnsbl,
 	detectSharedMxProvider,
 } from './mx-reputation-analysis';
@@ -144,18 +146,29 @@ export async function checkMxReputation(domain: string, dnsOptions?: QueryDnsOpt
 				);
 			}
 
-			// DNSBL checks
+			// DNSBL checks — classify each zone's answer codes rather than treating
+			// any A-record as a listing. Spamhaus returns 127.255.255.254 for queries
+			// via public resolvers ("refused, not listed"); the scanner runs through
+			// Workers' DoH (a public resolver), so without classification the refusal
+			// would silently surface as a high-severity false-positive listing.
+			// See `classifyDnsblAnswers` for the 127.0.0.X vs 127.255.255.X semantics.
 			const dnsblZones = buildDnsblZones();
-			const dnsblResults: Array<{ zone: string; listed: boolean }> = [];
+			const dnsblResults: DnsblZoneResult[] = [];
 
 			for (const zone of dnsblZones) {
 				const queryName = `${reverseIpForDnsbl(ip)}.${zone}`;
 				try {
 					const answers = await queryDnsRecords(queryName, 'A', dnsOptions);
-					dnsblResults.push({ zone, listed: answers.length > 0 });
+					const { status, returnCodes } = classifyDnsblAnswers(answers);
+					dnsblResults.push({
+						zone,
+						status,
+						returnCodes: returnCodes.length > 0 ? returnCodes : undefined,
+					});
 				} catch {
-					// DNSBL query failed (timeout, NXDOMAIN, etc.) — treat as not listed
-					dnsblResults.push({ zone, listed: false });
+					// DNSBL query failed (timeout, NXDOMAIN, etc.) — treat as not listed.
+					// NXDOMAIN is the explicit "not on this blocklist" signal for most DNSBLs.
+					dnsblResults.push({ zone, status: 'not_listed' });
 				}
 			}
 
