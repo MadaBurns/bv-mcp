@@ -20,11 +20,19 @@ function policyResponse(body: string, status = 200) {
 	} as unknown as Response;
 }
 
+function mxResponse(domain: string, records: Array<{ priority: number; exchange: string }>) {
+	return createDohResponse(
+		[{ name: domain, type: 15 }],
+		records.map((r) => ({ name: domain, type: 15, TTL: 300, data: `${r.priority} ${r.exchange}.` })),
+	);
+}
+
 function mockMultiFetch(opts: {
 	mtaStsDns?: Response;
 	policyFetch?: Response;
 	policyError?: Error;
 	tlsrptDns?: Response;
+	mxDns?: Response;
 	dnsError?: Error;
 }) {
 	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
@@ -35,6 +43,9 @@ function mockMultiFetch(opts: {
 		if (url.includes('cloudflare-dns.com')) {
 			if (url.includes('_mta-sts.') && opts.mtaStsDns) return Promise.resolve(opts.mtaStsDns);
 			if (url.includes('_smtp._tls.') && opts.tlsrptDns) return Promise.resolve(opts.tlsrptDns);
+			// MX queries hit the bare domain (no underscore prefix). Use `type=MX`
+			// query-param sniffing so the catch-all NS/etc. queries return empty.
+			if (url.includes('type=MX') && opts.mxDns) return Promise.resolve(opts.mxDns);
 			return Promise.resolve(createDohResponse([], []));
 		}
 		if (url.includes('mta-sts.') && url.includes('.well-known')) {
@@ -51,10 +62,11 @@ describe('checkMtaSts', () => {
 		return checkMtaSts(domain);
 	}
 
-	it('returns medium finding when no MTA-STS TXT record found', async () => {
+	it('returns medium finding when no MTA-STS TXT record found and domain has MX records', async () => {
 		mockMultiFetch({
 			mtaStsDns: txtResponse('_mta-sts.example.com', []),
 			tlsrptDns: txtResponse('_smtp._tls.example.com', []),
+			mxDns: mxResponse('example.com', [{ priority: 10, exchange: 'mx1.example.com' }]),
 		});
 		const r = await run();
 		expect(r.category).toBe('mta_sts');
@@ -192,5 +204,52 @@ describe('checkMtaSts', () => {
 		const f = r.findings.find((f) => f.title.includes('TLS-RPT'));
 		expect(f).toBeDefined();
 		expect(f!.severity).toBe('low');
+	});
+});
+
+describe('check-mta-sts copy for missing-MTA-STS finding (Defect K)', () => {
+	async function run(domain = 'example.com') {
+		const { checkMtaSts } = await import('../src/tools/check-mta-sts');
+		return checkMtaSts(domain);
+	}
+
+	it('uses inbound-mail-active copy when domain has MX records (paypal/stripe pattern)', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', []),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', []),
+			mxDns: mxResponse('example.com', [{ priority: 10, exchange: 'mx1.example.com' }]),
+		});
+		const r = await run();
+		const missing = r.findings.find((f) => f.title.includes('No MTA-STS'));
+		expect(missing).toBeDefined();
+		expect(missing!.detail).toContain('accepts inbound email');
+		expect(missing!.detail).not.toContain('do not accept inbound email');
+		expect(missing!.severity).toBe('medium');
+	});
+
+	it('uses non-mail-domain copy when no MX records (gov.uk pattern)', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', []),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', []),
+			// no mxDns → DoH default empty → no MX
+		});
+		const r = await run();
+		const missing = r.findings.find((f) => f.title.includes('No MTA-STS'));
+		expect(missing).toBeDefined();
+		expect(missing!.detail).toContain('normal for domains that do not accept inbound email');
+		expect(missing!.severity).toBe('low');
+	});
+
+	it('treats null MX (RFC 7505) as no inbound email — low severity', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', []),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', []),
+			mxDns: mxResponse('example.com', [{ priority: 0, exchange: '' }]),
+		});
+		const r = await run();
+		const missing = r.findings.find((f) => f.title.includes('No MTA-STS'));
+		expect(missing).toBeDefined();
+		expect(missing!.severity).toBe('low');
+		expect(missing!.detail).toContain('do not accept inbound email');
 	});
 });

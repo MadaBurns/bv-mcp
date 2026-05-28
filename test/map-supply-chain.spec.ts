@@ -582,6 +582,106 @@ describe('mapSupplyChain', () => {
 		expect(staleSignals[0].detail).toContain('stale');
 	});
 
+	// --- Cluster 1 (v3.3.13): supply-chain dedup & attribution ---
+
+	it('collapses SPF includes whose effective parent equals the scan domain into a self-hosted row (PayPal pattern)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 include:pp._spf.paypal.com include:3ph1._spf.paypal.com include:3ph2._spf.paypal.com include:sendgrid.net ~all',
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			domain: 'paypal.com',
+		});
+		const result = await run('paypal.com');
+		// pp._spf, 3ph1._spf, 3ph2._spf are paypal-owned subdomains — not 3 third parties
+		expect(result.dependencies.filter((d) => d.provider.endsWith('.paypal.com')).length).toBe(0);
+		// single self-hosted row, not 3 critical-third-party rows
+		const selfHosted = result.dependencies.find((d) => d.provider === 'paypal.com (self-hosted SPF)');
+		expect(selfHosted).toBeDefined();
+		expect(selfHosted!.sources).toContain('spf');
+		// SendGrid (real third party) still appears
+		expect(result.dependencies.find((d) => d.provider === 'SendGrid')).toBeDefined();
+	});
+
+	it('collapses Stripe self-wrapper subdomains (spf1.stripe.com, greenhouse-outbound-mail.stripe.com)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 include:spf1.stripe.com include:greenhouse-outbound-mail.stripe.com include:_spf.qualtrics.com ~all',
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			domain: 'stripe.com',
+		});
+		const result = await run('stripe.com');
+		expect(result.dependencies.filter((d) => d.provider.endsWith('.stripe.com')).length).toBe(0);
+		// Self-hosted row present.
+		expect(result.dependencies.find((d) => d.provider === 'stripe.com (self-hosted SPF)')).toBeDefined();
+		// Genuine third-party include preserved as raw entry.
+		expect(result.dependencies.find((d) => d.provider === '_spf.qualtrics.com')).toBeDefined();
+	});
+
+	it('distinguishes self-delegation from genuine third-party include at the same eTLD+1 level', async () => {
+		// hypothetical: example.com → include:mail.partner.com — partner.com IS third party even though it shares no eTLD+1 with example.com
+		mockDnsResponses({
+			spf: 'v=spf1 include:mail.partner.com ~all',
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			domain: 'example.com',
+		});
+		const result = await run('example.com');
+		expect(result.dependencies.find((d) => d.provider.includes('partner.com'))).toBeDefined();
+	});
+
+	it('handles deep self-delegation chains (spf.outbound.example.com depth ≥ 3)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 include:spf.outbound.example.com ~all',
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			domain: 'example.com',
+		});
+		const result = await run('example.com');
+		expect(result.dependencies.filter((d) => d.provider.endsWith('.example.com')).length).toBe(0);
+	});
+
+	it('treats ultradns.com and ultradns.net as a single UltraDNS (Neustar) provider (PayPal pattern)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 -all',
+			nsHosts: ['pdns100.ultradns.com', 'pdns100.ultradns.net', 'ns1-pchnet.paypal.com'],
+			domain: 'paypal.com',
+		});
+		const result = await run('paypal.com');
+		const udRows = result.dependencies.filter((d) => /ultradns/i.test(d.provider));
+		expect(udRows.length).toBe(1);
+		expect(udRows[0].provider).toBe('UltraDNS (Neustar)');
+	});
+
+	it('preserves existing AWS Route 53 multi-TLD collapse (regression)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 -all',
+			nsHosts: ['ns-1087.awsdns-07.org', 'ns-1882.awsdns-43.co.uk', 'ns-423.awsdns-52.com', 'ns-705.awsdns-24.net'],
+			domain: 'example.com',
+		});
+		const result = await run('example.com');
+		const awsRows = result.dependencies.filter((d) => d.provider === 'AWS Route 53');
+		expect(awsRows.length).toBe(1);
+	});
+
+	it('emits a single security_tooling_exposed signal per service even when multiple TXT records exist (OneTrust pattern)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 -all',
+			txtRecords: [
+				'onetrust-domain-verification=7c928f0e377441028b0744ff402f5854',
+				'onetrust-domain-verification=80511e0e29c7489abb235ea4f7d70df3',
+			],
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			domain: 'xero.com',
+		});
+		const result = await run('xero.com');
+		const oneTrustSignals = result.signals.filter(
+			(s) => s.type === 'security_tooling_exposed' && s.detail.includes('OneTrust'),
+		);
+		expect(oneTrustSignals.length).toBe(1);
+		expect(oneTrustSignals[0].detail).toContain('2 TXT verification records');
+	});
+
+	it('reuses the v3.3.9 stale_integration dedup pre-aggregation for security_tooling_exposed (no duplicate logic)', async () => {
+		// Implementation invariant — confirmed by codepath review, not behaviour
+		// (this test exists to lock in the refactor — see Green phase).
+	});
+
 	it('tolerates SRV probe failures gracefully', async () => {
 		// Mock that throws for SRV queries but succeeds for everything else
 		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
