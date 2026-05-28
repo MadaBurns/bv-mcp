@@ -101,11 +101,22 @@ function detectCdnProvider(headers: Headers): string | null {
 	if (servedBy.includes('cache') || headers.get('via')?.toLowerCase().includes('varnish')) {
 		return 'Fastly';
 	}
-	// 2. Cloudflare — require an origin-set signal. `cf-ray` alone is NOT
-	// sufficient (added by our own Worker egress), but `server: cloudflare`,
-	// `cf-cache-status` (set by the origin's CF zone), or `cf-mitigated` are.
+	// 2. Cloudflare — require `server: cloudflare`. Other CF-prefix headers
+	// (`cf-ray`, `cf-cache-status`, possibly more) are stamped on every
+	// outbound `fetch()` response by the Cloudflare Worker egress — `cf-ray` for
+	// tracing, `cf-cache-status` (typically `DYNAMIC`/`BYPASS` for non-cached
+	// fetches) by the edge's cache layer — so they appear on responses from
+	// google.com / akamai-fronted sites / anywhere, NOT just on origins that
+	// are actually behind Cloudflare. `server: cloudflare` is the only header
+	// the *origin's* CF zone sets that doesn't get attached to transit
+	// responses; CF customers can't override it via Transform Rules. We
+	// previously also gated on `cf-mitigated` (WAF-action signal) but dropped
+	// it for the same belt-and-braces reason — if a domain is truly fronted
+	// by Cloudflare it will also carry `server: cloudflare`. This is the
+	// third tightening of this rule (v3.3.9 → v3.3.10): each previous pass
+	// missed a CF-injected header the regression tests didn't cover.
 	const server = headers.get('server')?.toLowerCase() ?? '';
-	if (server.includes('cloudflare') || headers.get('cf-cache-status') || headers.get('cf-mitigated')) {
+	if (server.includes('cloudflare')) {
 		return 'Cloudflare';
 	}
 	return null;
