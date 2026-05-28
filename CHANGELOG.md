@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.10] - 2026-05-28
+
+### Fixed
+
+- **CDN detection: drop `cf-cache-status` and `cf-mitigated` from the Cloudflare gate — `server: cloudflare` alone now.** Follow-up to v3.3.9: live verification of v3.3.9 against `google.com` STILL returned `cdnProvider: "Cloudflare"` despite the v3.3.9 tightening, because Cloudflare's Worker `fetch()` infrastructure stamps **`cf-cache-status`** (typically `DYNAMIC` or `BYPASS` for non-cached fetches) on outbound responses too — not just `cf-ray`. Direct curls of `google.com` / `www.google.com` confirm `server: gws` with no CF-prefix headers, so the live mis-attribution came from CF Worker egress, not from the origin. `server: cloudflare` is the only header the origin's CF zone reliably sets that doesn't get attached to transit responses (CF customers can't override it via Transform Rules); any domain truly fronted by CF will carry it, so dropping the two secondary signals loses no true positives. The drift class (each previous tightening missed a CF-injected header the regression tests didn't cover) is captured in 2 new tests: `cf-cache-status` alone → null; `cf-mitigated` alone → null. (#255)
+
 ## [3.3.9] - 2026-05-28
 
 ### Fixed
