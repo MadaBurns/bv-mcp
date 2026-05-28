@@ -25,11 +25,20 @@ export interface MxPlatformResult {
 }
 
 function platform(records: Array<{ data?: string }>): string | null {
-	const joined = records.map((r) => (r.data ?? '').toLowerCase()).join(' ');
-	if (/aspmx\.l\.google\.com|googlemail\.com/.test(joined)) return 'google_workspace';
-	if (/protection\.outlook\.com/.test(joined)) return 'm365';
-	if (/pphosted\.com/.test(joined)) return 'proofpoint';
-	if (/mimecast\.com/.test(joined)) return 'mimecast';
+	// Extract each MX exchange host (DoH MX data is "<pref> <host>."), then match
+	// on a proper domain suffix rather than a substring of the joined records.
+	// Substring/`.test()` on joined data was an unanchored match (CWE-20 /
+	// js/regex/missing-regexp-anchor) that could be fooled by a host like
+	// `protection.outlook.com.evil.example`; suffix matching is precise.
+	const hosts = records.map((r) => {
+		const host = (r.data ?? '').trim().toLowerCase().split(/\s+/).pop() ?? '';
+		return host.replace(/\.$/, '');
+	});
+	const matches = (suffix: string) => hosts.some((h) => h === suffix || h.endsWith(`.${suffix}`));
+	if (matches('aspmx.l.google.com') || matches('googlemail.com')) return 'google_workspace';
+	if (matches('protection.outlook.com')) return 'm365';
+	if (matches('pphosted.com')) return 'proofpoint';
+	if (matches('mimecast.com')) return 'mimecast';
 	return null;
 }
 
