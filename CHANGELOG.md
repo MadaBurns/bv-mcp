@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.27] - 2026-05-28
+
+### Fixed
+
+- **`map_supply_chain` PUBLIC_SUFFIX_SECOND_LEVEL: missing Japanese 2LDs.** `rakuten.co.jp` reported `ad.jp` as a "DNS hosting provider" — `ad.jp` is a JPRS-managed registry suffix for network-administration entities, not a provider. The original set covered `co/ac/ne/or/go.jp` but missed `ad.jp` / `ed.jp` (primary+secondary education) / `gr.jp` (groups) / `lg.jp` (local government), so any NS at a 3-label JP host collapsed to the registry suffix instead of the operator's registrable domain. Added the four. Surfaced by a second-round 8-domain sweep. (#290)
+
+### Added
+
+- **`map_supply_chain` catalog batch 2: Symantec Email Security.cloud + Campaign Monitor.**
+  - **Symantec Email Security.cloud (MessageLabs)** — enterprise email gateway (same product class as Proofpoint/Mimecast/Trellix). MX `*.messagelabs.com` and SPF `spf.messagelabs.com` now resolve to "Symantec Email Security.cloud" instead of raw critical rows. Observed on bbc.co.uk.
+  - **Campaign Monitor** — newsletter/transactional ESP. SPF `*.createsend.com` now resolves to "Campaign Monitor". Observed on netflix.com. (#290)
+
 ## [3.3.26] - 2026-05-28
 
 ### Fixed
