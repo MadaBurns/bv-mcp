@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.24] - 2026-05-28
+
+### Added
+
+- **`map_supply_chain` provider catalog batch (#286) — raw hostnames now resolve to vendor names.** A 16-domain sweep found many well-known SPF/MX/NS hosts surfacing as raw `critical`/`high` rows instead of a vendor. Added/extended `DETECTION_RULES`:
+  - **Google (C1/C2):** MX now also matches `*.googlemail.com`; SPF now also matches Google's `_netblocks{,2,3}.google.com` internal includes — both previously surfaced as raw rows alongside the detected Google Workspace.
+  - **SPF senders (C3):** Zendesk (`mail.zendesk.com`), Marketo (`mktomail.com`), Statuspage (`stspg-customer.com`), Salesforce Marketing Cloud (`*.exacttarget.com`), Salesforce Pardot (`*.pardot.com`), Qualtrics (`*.qualtrics.com`), SparkPost (`*.sparkpost.com`), Alibaba Mail (`*.aliyun.com`); Mailchimp Transactional now also matches `spf.mandrillapp.com` (was `*.mcsv.net` only).
+  - **NS hosts (C4):** Azure DNS (`*.azure-dns.{com,net,org,info}` — collapses 4 rows → 1), Netlify DNS, Vercel DNS, Oracle Cloud DNS (`*.oraclecloud.net`), Salesforce DNS, Alibaba DNS.
+  - **MX hosts (C5):** Trellix Email Security now also matches MX `*.fireeyecloud.com` (was SPF-only); Cloudflare Email Security (`*.cf-emailsecurity.net`).
+  - **SPF macros (M1):** Proofpoint SPF selectors/macros (`*.pphosted.com`, incl. `%{…}.spf.has.pphosted.com`) and Valimail (`*.vali.email`, incl. macro forms) resolve to the vendor instead of the raw macro string — the suffix match handles both static and macro includes. (#286)
+
 ## [3.3.23] - 2026-05-28
 
 ### Fixed
