@@ -393,11 +393,13 @@ export async function mapSupplyChain(
 	// hosts collapse to their registrable parent and skip self-hosted MX,
 	// mirroring the NS path so the two can't drift.
 	const detectedMxHosts = new Set<string>();
+	const mxProviderNames = new Set<string>();
 	for (const host of mxHosts) {
 		const matched = matchProviderForMxHost(host);
 		if (matched !== null) {
 			addDependency(matched, 'mx');
 			detectedMxHosts.add(host);
+			mxProviderNames.add(matched);
 		}
 	}
 	addUnrecognizedHostsByParent(mxHosts, detectedMxHosts, 'mx');
@@ -442,10 +444,12 @@ export async function mapSupplyChain(
 		addDependency(vs.service, 'txt-verification');
 	}
 
-	// Add SRV-discovered services — resolve targets to known providers
-	const srvProviderNames: string[] = [];
+	// Add SRV-discovered services — resolve targets to known providers.
+	// Keep each provider's originating SRV target so the shadow_service check can
+	// tell a self-hosted SRV (target on the scan domain) from a real third party.
+	const srvDiscovered: Array<{ name: string; target: string }> = [];
 	for (const srv of srvResults) {
-		const target = srv.records[0].target;
+		const target = srv.records[0].target.replace(/\.$/, '').toLowerCase();
 		let providerName: string | null = null;
 		for (const mapping of SRV_TARGET_PROVIDERS) {
 			if (mapping.pattern.test(target)) {
@@ -455,7 +459,7 @@ export async function mapSupplyChain(
 		}
 		const name = providerName ?? target;
 		addDependency(name, 'srv');
-		srvProviderNames.push(name);
+		srvDiscovered.push({ name, target });
 	}
 
 	// Build final dependency list
@@ -537,22 +541,36 @@ export async function mapSupplyChain(
 		});
 	}
 
-	// Shadow service: SRV-discovered provider not corroborated by TXT verifications or SPF includes
+	// Shadow service: SRV-discovered provider not corroborated by any other signal.
+	// Corroboration now includes MX (email-receiving) providers — without this a
+	// provider found only via MX + SRV (eg. Microsoft 365 SIP) was falsely flagged
+	// "undocumented". A SRV whose target is on the scan domain itself is the org's
+	// own service, not a third party — skip it. Dedup by provider name so the same
+	// service discovered across multiple SRV prefixes emits a single signal.
 	const verifiedServiceNames = new Set(verifiedServices.map((vs) => vs.service));
 	const spfProviderNames = new Set(
 		detectedProviders
 			.filter((p) => p.role === 'mail' || p.role === 'sending')
 			.map((p) => p.name),
 	);
-	for (const srvProvider of srvProviderNames) {
-		if (!verifiedServiceNames.has(srvProvider) && !spfProviderNames.has(srvProvider)) {
+	const shadowFlagged = new Set<string>();
+	for (const { name: srvProvider, target } of srvDiscovered) {
+		if (shadowFlagged.has(srvProvider)) continue;
+		// Self-hosted SRV (target on the scan's own registrable domain) is not a third party.
+		if (getEffectiveParentDomain(target) === scanDomain) continue;
+		if (
+			!verifiedServiceNames.has(srvProvider) &&
+			!spfProviderNames.has(srvProvider) &&
+			!mxProviderNames.has(srvProvider)
+		) {
 			// Also check raw SPF includes for partial matches
 			const inSpfRaw = spfIncludes.some((inc) => inc.toLowerCase().includes(srvProvider.toLowerCase()));
 			if (!inSpfRaw) {
+				shadowFlagged.add(srvProvider);
 				signals.push({
 					type: 'shadow_service',
 					severity: 'medium',
-					detail: `${srvProvider} discovered via SRV but not corroborated by TXT verifications or SPF includes. This service may be undocumented or unauthorized.`,
+					detail: `${srvProvider} discovered via SRV but not corroborated by TXT verifications, SPF includes, or MX records. This service may be undocumented or unauthorized.`,
 				});
 			}
 		}

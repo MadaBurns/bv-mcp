@@ -1153,3 +1153,51 @@ describe('mapSupplyChain — cloud-hosting caveat signal (Task 3)', () => {
 		expect(r.signals.some((s) => s.type === 'shared_hosting' && s.severity === 'low')).toBe(true);
 	});
 });
+
+describe('mapSupplyChain — shadow_service signal correctness (B1/B2/B3)', () => {
+	async function run(domain = 'example.com') {
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		return mapSupplyChain(domain);
+	}
+
+	it('B1: emits a single shadow_service signal when one SRV provider is found via multiple prefixes', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			srvRecords: {
+				'_sip._tcp': [{ priority: 10, weight: 5, port: 5060, target: 'sip.thirdparty.net' }],
+				'_sip._udp': [{ priority: 10, weight: 5, port: 5060, target: 'sip.thirdparty.net' }],
+			},
+		});
+		const r = await run('acme.com');
+		const shadow = r.signals.filter((s) => s.type === 'shadow_service' && s.detail.includes('sip.thirdparty.net'));
+		expect(shadow.length).toBe(1);
+	});
+
+	it('B2: does not flag an SRV provider that is corroborated by MX', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			mxRecords: [{ pref: 10, host: 'acme-com.mail.protection.outlook.com' }], // Microsoft 365 via MX
+			srvRecords: { '_sip._tcp': [{ priority: 10, weight: 5, port: 443, target: 'sipfed.online.outlook.com' }] }, // -> Microsoft 365
+		});
+		const r = await run('acme.com');
+		expect(r.signals.some((s) => s.type === 'shadow_service')).toBe(false);
+	});
+
+	it('B3: does not flag a SRV target hosted on the scan domain itself', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			srvRecords: { '_sip._tcp': [{ priority: 10, weight: 5, port: 5060, target: 'sipdir.acme.com' }] },
+		});
+		const r = await run('acme.com');
+		expect(r.signals.some((s) => s.type === 'shadow_service')).toBe(false);
+	});
+
+	it('still flags a genuine uncorroborated third-party SRV service', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			srvRecords: { '_sip._tcp': [{ priority: 10, weight: 5, port: 5060, target: 'sip.thirdparty.net' }] },
+		});
+		const r = await run('acme.com');
+		expect(r.signals.some((s) => s.type === 'shadow_service' && s.detail.includes('sip.thirdparty.net'))).toBe(true);
+	});
+});
