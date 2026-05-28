@@ -67,7 +67,41 @@ const MERGE_HEADERS = [
 ] as const;
 
 /** Maximum manual redirect hops to follow during dual-fetch probes. */
-const MAX_REDIRECT_HOPS = 3;
+const MAX_REDIRECT_HOPS = 5;
+
+/**
+ * Vendor-specific, origin-set CDN headers worth carrying forward across redirect
+ * hops. These are exactly the tier-1 signals `detectCdnProvider` inspects — they
+ * cannot be injected by a transit edge (unlike `server`, which the Cloudflare
+ * Worker egress rewrites to `cloudflare` on every hop; see v3.3.12 lesson). A CDN
+ * commonly fronts the FINAL hop of a chain (e.g. apex → intermediate → CDN-fronted
+ * target), but the signal can also appear on an intermediate hop; the final
+ * response captured for security analysis would otherwise lose it.
+ *
+ * `server` is deliberately excluded — carrying it forward would resurrect the
+ * 100%-false-positive Cloudflare bug.
+ */
+const CDN_SIGNAL_HEADERS = [
+	'x-cdn',
+	'x-iinfo',
+	'x-sucuri-id',
+	'x-sucuri-cache',
+	'x-vercel-id',
+	'x-vercel-cache',
+	'x-amz-cf-id',
+	'via',
+	'x-akamai-transformed',
+	'x-check-cacheable',
+	'x-served-by',
+] as const;
+
+/** Copy any CDN-signal headers present on `from` into `into` (first writer wins). */
+function accumulateCdnSignals(into: Headers, from: Headers): void {
+	for (const header of CDN_SIGNAL_HEADERS) {
+		const value = from.get(header);
+		if (value !== null && !into.has(header)) into.set(header, value);
+	}
+}
 
 /**
  * Detect CDN provider from HTTP response headers. Returns provider name or null.
@@ -123,11 +157,23 @@ function detectCdnProvider(headers: Headers): string | null {
 }
 
 /**
- * Fetch a URL with HEAD and follow up to 3 HTTPS redirects manually.
- * Mirrors the package's own redirect follow logic — used only for the
- * dual-fetch probe ahead of the package call.
+ * The final response of a redirect chain, plus a union of vendor-specific CDN
+ * signal headers observed across EVERY hop. The chain's intermediate hops are
+ * otherwise discarded — only the final response is the site's; `cdnSignals`
+ * exists so CDN attribution doesn't lose a signal that appeared on an earlier
+ * hop (or on a hop the security analysis path can't see).
  */
-async function fetchWithRedirects(url: string, timeoutMs: number): Promise<Response> {
+type RedirectResult = { response: Response; cdnSignals: Headers };
+
+/**
+ * Fetch a URL with HEAD and follow up to MAX_REDIRECT_HOPS HTTPS redirects
+ * manually. Mirrors the package's own redirect follow logic — used only for the
+ * dual-fetch probe ahead of the package call. Accumulates vendor-specific CDN
+ * headers from every hop so a CDN fronting an intermediate (or final) hop is
+ * still attributable even when the final security response omits the signal.
+ */
+async function fetchWithRedirects(url: string, timeoutMs: number): Promise<RedirectResult> {
+	const cdnSignals = new Headers();
 	// Initial fetch goes to https://<domain> where <domain> is already validated
 	// upstream. Use raw fetch to keep the cost off the validation path. Subsequent
 	// redirect targets ARE attacker-controlled (Location header) and go via
@@ -138,6 +184,7 @@ async function fetchWithRedirects(url: string, timeoutMs: number): Promise<Respo
 		headers: { 'User-Agent': SCANNER_USER_AGENT },
 		signal: AbortSignal.timeout(timeoutMs),
 	});
+	accumulateCdnSignals(cdnSignals, response.headers);
 
 	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
 		const status = response.status;
@@ -170,9 +217,10 @@ async function fetchWithRedirects(url: string, timeoutMs: number): Promise<Respo
 			// redirect destination, not a real failure.
 			break;
 		}
+		accumulateCdnSignals(cdnSignals, response.headers);
 	}
 
-	return response;
+	return { response, cdnSignals };
 }
 
 /**
@@ -212,9 +260,19 @@ async function dualFetchHeaders(
 	const url = `https://${domain}`;
 	const results = await Promise.allSettled([fetchWithRedirects(url, timeoutMs), fetchWithRedirects(url, timeoutMs)]);
 
-	const responses = results.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled').map((r) => r.value);
+	const settled = results.filter((r): r is PromiseFulfilledResult<RedirectResult> => r.status === 'fulfilled').map((r) => r.value);
 
-	if (responses.length === 0) return null;
+	if (settled.length === 0) return null;
+
+	// Union of vendor-specific CDN signals seen on ANY hop of EITHER probe's chain.
+	// Folded into the analysed headers so `detectCdnProvider` attributes a CDN that
+	// fronted an intermediate (or final) hop even when the final security response
+	// omits the signal. Security-header analysis is unaffected — these headers are
+	// not in MERGE_HEADERS and are not scored by the package.
+	const allCdnSignals = new Headers();
+	for (const s of settled) accumulateCdnSignals(allCdnSignals, s.cdnSignals);
+
+	const responses = settled.map((s) => s.response);
 
 	// Only treat 2xx/3xx as usable headers for analysis.
 	const usable = responses.filter((r) => r.ok || (r.status >= 300 && r.status < 400));
@@ -228,12 +286,26 @@ async function dualFetchHeaders(
 	}
 
 	if (usable.length === 1) {
-		return { headers: usable[0].headers, ok: usable[0].ok, status: usable[0].status, usable: true };
+		const headers = withCdnSignals(usable[0].headers, allCdnSignals);
+		return { headers, ok: usable[0].ok, status: usable[0].status, usable: true };
 	}
 
 	const merged = mergeSecurityHeaders(usable[0].headers, usable[1].headers);
+	const headers = withCdnSignals(merged, allCdnSignals);
 	const primary = usable[0].ok ? usable[0] : usable[1].ok ? usable[1] : usable[0];
-	return { headers: merged, ok: primary.ok, status: primary.status, usable: true };
+	return { headers, ok: primary.ok, status: primary.status, usable: true };
+}
+
+/**
+ * Return a copy of `base` with any cross-hop CDN-signal headers folded in
+ * (without overwriting a same-named header already present on the final
+ * response). Used so `detectCdnProvider` sees signals from intermediate hops.
+ */
+function withCdnSignals(base: Headers, cdnSignals: Headers): Headers {
+	const out = new Headers();
+	base.forEach((value, key) => out.set(key, value));
+	accumulateCdnSignals(out, cdnSignals);
+	return out;
 }
 
 /**

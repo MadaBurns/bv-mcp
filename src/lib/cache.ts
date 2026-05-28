@@ -2,6 +2,7 @@
 
 import { INFLIGHT_CLEANUP_MS } from './config';
 import { logError } from './log';
+import { SERVER_VERSION } from './server-version';
 
 /**
  * TTL cache for DNS scan results.
@@ -116,6 +117,48 @@ export class TTLCache<T = unknown> {
 		}
 		return evicted;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Versioned cache-key builders
+// ---------------------------------------------------------------------------
+//
+// Every scan/check KV cache key embeds the server version (`cache:v<version>:`).
+// Deliberate trade-off: each deploy bumps SERVER_VERSION, so ALL keys change and
+// the cache cold-starts on the first request after a deploy. That is the correct
+// behaviour — the bug this fixes was the opposite: domain-only keys kept serving
+// stale pre-deploy results until the TTL expired, forcing a "scan a fresh domain
+// to verify the fix is live" workaround. For this scanner's traffic the cold
+// start is acceptable; correctness after deploy beats a few extra cache misses.
+//
+// Both call sites (handlers dispatch + scan-domain orchestrator) MUST use these
+// helpers so the per-check and top-level keys stay version-consistent — the
+// analyze_drift `baseline: "cached"` path reads the top-level scan key directly,
+// so a drift between the two key shapes would silently break cached baselines.
+
+/** Cache key prefix shared by scan and per-check results. */
+export const CACHE_KEY_PREFIX = 'cache:';
+
+/**
+ * Build the versioned cache key for a single check result.
+ * Shape: `cache:v<version>:<domain>:check:<checkName>`.
+ *
+ * @param version - Defaults to the live {@link SERVER_VERSION}; overridable for tests.
+ */
+export function buildCheckCacheKey(domain: string, checkName: string, version: string = SERVER_VERSION): string {
+	return `${CACHE_KEY_PREFIX}v${version}:${domain}:check:${checkName}`;
+}
+
+/**
+ * Build the versioned cache key for a top-level scan result.
+ * Shape: `cache:v<version>:<domain>` (default profile) or
+ * `cache:v<version>:<domain>:profile:<profile>` when an explicit profile is set.
+ *
+ * @param version - Defaults to the live {@link SERVER_VERSION}; overridable for tests.
+ */
+export function buildScanCacheKey(domain: string, profile?: string, version: string = SERVER_VERSION): string {
+	const base = `${CACHE_KEY_PREFIX}v${version}:${domain}`;
+	return profile ? `${base}:profile:${profile}` : base;
 }
 
 /** In-flight promise map for cache stampede (thundering herd) protection */
