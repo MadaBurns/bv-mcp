@@ -46,12 +46,21 @@ export function parseCaaRecord(data: string): CaaRecord | null {
 		return { flags, tag: tag.toLowerCase(), value };
 	}
 
-	const match = data.match(/^(\d+)\s+(\S+)\s+"?([^"]*)"?\s*$/);
-	if (match) {
+	// Match only the `<flags> <tag> ` prefix with a regex (no adjacent unbounded
+	// quantifiers → ReDoS-free), then take the value by slicing. The previous
+	// single regex used `"?([^"]*)"?\s*$`, whose `[^"]*` (which includes
+	// whitespace) overlapped the trailing `\s*$`, giving polynomial backtracking
+	// on a crafted CAA value (CWE-1333 / js/polynomial-redos).
+	const prefix = data.match(/^(\d+)\s+(\S+)\s+/);
+	if (prefix) {
+		let value = data.slice(prefix[0].length).trim();
+		if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+			value = value.slice(1, -1);
+		}
 		return {
-			flags: parseInt(match[1], 10),
-			tag: match[2].toLowerCase(),
-			value: match[3],
+			flags: parseInt(prefix[1], 10),
+			tag: prefix[2].toLowerCase(),
+			value,
 		};
 	}
 

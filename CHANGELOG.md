@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.26] - 2026-05-28
+
+### Fixed
+
+- **CodeQL alerts uncovered by v3.3.25's scope tightening — fix the code, not the rule.** Scoping CodeQL to the deployed surface (#288) surfaced 12 pre-existing real alerts that test-file noise had been hiding. All fixed at the source so they auto-resolve on the next `main` analysis:
+  - **`js/polynomial-redos`** in `packages/dns-checks/src/checks/caa-analysis.ts` — the single CAA-record regex `/^(\d+)\s+(\S+)\s+"?([^"]*)"?\s*$/` had `[^"]*` overlapping the trailing `\s*$`, giving polynomial backtracking (CWE-1333). Split into an anchored prefix match `/^(\d+)\s+(\S+)\s+/` plus a slice-and-strip step — no adjacent unbounded quantifiers; all 26 CAA + scoring + check-caa tests still pass.
+  - **`js/polynomial-redos`** in `packages/dns-checks/src/scoring/model.ts` `MISSING_CONTROL_REGEX` — the `no\s+.+\s+record` gap had two overlapping unbounded quantifiers. Replaced with a bounded gap `[^\r\n]{1,64}` (well above any real finding phrase).
+  - **`js/regex/missing-regexp-anchor`** in `src/tenants/discovery/mx-platform-detector.ts` (4 alerts) — `platform()` was substring-matching MX exchange hosts on a joined string (would match `protection.outlook.com.evil.example`). Replaced with per-record host extraction and proper suffix matching (`host === suffix || host.endsWith('.' + suffix)`) — eliminates the regexes entirely and is strictly more precise.
+  - **`actions/missing-workflow-permissions`** (5 alerts) — `ci.yml`, `ci-contract.yml`, `repo-hygiene.yml`, `security.yml` lacked an explicit `permissions:` block, so `GITHUB_TOKEN` defaulted to repo-wide read+write. Added top-level `permissions: contents: read` to each (verified no job uses write operations beyond CodeQL, which keeps its own elevated job-level `permissions:`).
+
 ## [3.3.25] - 2026-05-28
 
 ### Added

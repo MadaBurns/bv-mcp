@@ -91,8 +91,14 @@ export function computeCategoryScore(findings: Finding[], category?: CheckCatego
 	return Math.max(0, Math.min(100, 100 - penalty));
 }
 
-/** Regex for detecting missing control patterns in finding text. */
-const MISSING_CONTROL_REGEX = /(no\s+.+\s+record|missing|required|not\s+found)/i;
+/**
+ * Regex for detecting missing control patterns in finding text.
+ * The "no … record" gap is a bounded `[^\r\n]{1,64}` (not `.+\s+`): the old
+ * `.+\s+record` had two overlapping unbounded quantifiers, giving polynomial
+ * backtracking on a long no-"record" string (CWE-1333 / js/polynomial-redos).
+ * The bound is well above any real finding phrase ("No SPF record found").
+ */
+const MISSING_CONTROL_REGEX = /(no\s+[^\r\n]{1,64}\srecord|missing|required|not\s+found)/i;
 
 /**
  * Determine whether findings for a category indicate a fundamentally missing control.
