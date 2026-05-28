@@ -117,6 +117,20 @@ const DETECTION_RULES: DetectionRule[] = [
 		signal: 'ns:domaincontrol.com',
 	},
 	{
+		// UltraDNS (Neustar/Vercara). Multi-TLD vendor — same authoritative DNS
+		// service is served from `*.ultradns.com`, `*.ultradns.net`, `*.ultradns.info`,
+		// `*.ultradns.biz`. Without this collapse, a single zone using two sibling
+		// TLDs (eg. `pdns100.ultradns.com` + `pdns100.ultradns.net`) lists as two
+		// separate dns-hosting rows. Mirrors the AWS Route 53 multi-TLD pattern.
+		// Defect surfaced 2026-05-28.
+		name: 'UltraDNS (Neustar)',
+		role: 'dns',
+		patterns: {
+			ns: /\.ultradns\.(com|net|info|biz)$/i,
+		},
+		signal: 'ns:ultradns',
+	},
+	{
 		name: 'AWS SES',
 		role: 'sending',
 		patterns: {
