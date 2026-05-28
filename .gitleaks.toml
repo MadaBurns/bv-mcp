@@ -69,6 +69,7 @@ paths = [
   '''src/tools/.*-analysis\.ts$''',    # Analysis modules contain IP examples in JSDoc
   '''src/lib/ip-utils\.ts$''',         # IP utility module contains example IPs in JSDoc
   '''src/lib/authoritative-dns-infra/root-hints\.ts$''', # Public IANA root-server addresses
+  '''src/lib/cdn-fallback-detection\.ts$''', # Public Cloudflare edge CIDR snapshot from cloudflare.com/ips/
   '''docs/.*\.md$''',                  # IPv4 examples in RFC / explanation context (per-rule, not global)
   '''CHANGELOG\.md$''',                # IPs that appear in incident write-ups
   '''scripts/tranco-deep-.*\.json$''', # Captured scan artifacts (resolved IPs from public Tranco list)
