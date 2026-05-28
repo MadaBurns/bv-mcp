@@ -570,10 +570,27 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 			expect(cdnFinding(result.findings)).toBe('Cloudflare');
 		});
 
-		it('attributes Cloudflare from cf-cache-status (origin-set signal)', async () => {
-			mockWithHeaders({ 'cf-cache-status': 'HIT', 'cf-ray': '8aabcdef1234-AKL' });
+		it('does NOT attribute Cloudflare from cf-cache-status alone (CF Worker egress stamps this too)', async () => {
+			// Empirically observed in v3.3.9: scanning google.com from the live Worker
+			// still returned `cdnProvider: "Cloudflare"` despite tightening to
+			// (cf-cache-status || cf-mitigated || server:cloudflare). Cloudflare's
+			// Worker fetch() infrastructure attaches `cf-cache-status` (typically
+			// `DYNAMIC` or `BYPASS`) to outbound responses regardless of origin.
+			// Only `server: cloudflare` is reliably an origin-set CF signal.
+			mockWithHeaders({ 'cf-cache-status': 'DYNAMIC', 'cf-ray': '8aabcdef1234-AKL', server: 'gws' });
 			const result = await run();
-			expect(cdnFinding(result.findings)).toBe('Cloudflare');
+			expect(cdnFinding(result.findings)).toBeNull();
+		});
+
+		it('does NOT attribute Cloudflare from cf-mitigated alone on a non-CF origin', async () => {
+			// Belt-and-braces: previously also gated on `cf-mitigated`. If a domain
+			// is truly fronted by CF the response will carry `server: cloudflare`
+			// too, so we don't lose any true positives by dropping the secondary
+			// signal — and we close off the small risk that CF Worker egress also
+			// stamps cf-mitigated in some failure modes we haven't observed.
+			mockWithHeaders({ 'cf-mitigated': 'challenge', 'cf-ray': '8aabcdef1234-AKL', server: 'gws' });
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBeNull();
 		});
 
 		it('returns no CDN attribution when no signals are present (no Cloudflare default)', async () => {
