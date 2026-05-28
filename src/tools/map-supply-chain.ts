@@ -12,7 +12,7 @@ import type { QueryDnsOptions } from '../lib/dns-types';
 import { queryTxtRecords, queryDnsRecords, querySrvRecords, queryMxRecords } from '../lib/dns';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { detectProviders, matchProviderForNsHost, matchProviderForSpfInclude, matchProviderForMxHost } from './provider-guides';
-import { detectCdnFromAsn } from '../lib/cdn-asn-detection';
+import { detectCdnFromAsn, detectHostingFromAsn } from '../lib/cdn-asn-detection';
 import { VERIFICATION_PATTERNS, SERVICE_SPF_DOMAINS } from './txt-hygiene-analysis';
 import { SRV_PREFIXES } from './srv-analysis';
 import type { SrvProbeResult } from './srv-analysis';
@@ -30,7 +30,7 @@ export interface Dependency {
 
 /** A risk signal detected in the supply chain. */
 export interface Signal {
-	type: 'concentration' | 'excessive_includes' | 'single_ns_provider' | 'stale_integration' | 'shadow_service' | 'insecure_service' | 'security_tooling_exposed';
+	type: 'concentration' | 'excessive_includes' | 'single_ns_provider' | 'stale_integration' | 'shadow_service' | 'insecure_service' | 'security_tooling_exposed' | 'shared_hosting';
 	severity: 'low' | 'medium' | 'high';
 	detail: string;
 }
@@ -90,6 +90,8 @@ function determineTrustLevel(sources: string[]): TrustLevel {
 	if (sources.some((s) => s === 'cdn')) return 'critical';
 	// NS = high (they control your DNS)
 	if (sources.some((s) => s === 'ns')) return 'high';
+	// Cloud hosting = low (shared infrastructure, inferred from origin ASN — see caveat signal)
+	if (sources.some((s) => s === 'hosting')) return 'low';
 	// SRV = medium (advertised service)
 	if (sources.some((s) => s === 'srv')) return 'medium';
 	// TXT verification = low (SaaS integration)
@@ -108,6 +110,8 @@ function sourceToRole(source: string): string {
 			return 'email-receiving';
 		case 'cdn':
 			return 'cdn';
+		case 'hosting':
+			return 'cloud-hosting';
 		case 'ns':
 			return 'dns-hosting';
 		case 'caa':
@@ -406,13 +410,26 @@ export async function mapSupplyChain(
 	// bounded ASN tier (DoH-only — keeps this standalone tool probe-light, no
 	// HTTP fetch). Header-based attribution stays exclusively in the scan path.
 	let cdnProvider: string | null = precomputedCdn ?? null;
+	// Cloud-hosting fallback (noise-guarded). Only attributed when NO CDN fronts
+	// the origin — "hosted on AWS/GCP/Azure" is near-ubiquitous and signal-less
+	// without corroboration, and when a CDN is present the CDN is the meaningful
+	// edge dependency, not the shared origin host. Emitted at LOW trust with a
+	// caveat signal (see below).
+	let hostingProvider: string | null = null;
 	if (cdnProvider === null && aRecords.length > 0) {
 		const asnResolver = { queryTxt: (name: string) => queryTxtRecords(name, dnsOptions) };
-		const asnResult = await detectCdnFromAsn(aRecords, asnResolver);
-		cdnProvider = asnResult?.provider ?? null;
+		const cdnResult = await detectCdnFromAsn(aRecords, asnResolver);
+		if (cdnResult !== null) {
+			cdnProvider = cdnResult.provider;
+		} else {
+			const hostingResult = await detectHostingFromAsn(aRecords, asnResolver);
+			hostingProvider = hostingResult?.provider ?? null;
+		}
 	}
 	if (cdnProvider !== null) {
 		addDependency(cdnProvider, 'cdn');
+	} else if (hostingProvider !== null) {
+		addDependency(hostingProvider, 'hosting');
 	}
 
 	// Add CAA issuers
@@ -459,6 +476,15 @@ export async function mapSupplyChain(
 
 	// Detect signals
 	const signals: Signal[] = [];
+
+	// Cloud-hosting caveat — keep the inferred-from-ASN hosting row honest.
+	if (hostingProvider !== null) {
+		signals.push({
+			type: 'shared_hosting',
+			severity: 'low',
+			detail: `Origin appears to be hosted on ${hostingProvider} (shared cloud infrastructure inferred from the origin ASN). Low-confidence signal — corroborate before treating it as a dedicated dependency.`,
+		});
+	}
 
 	// Concentration risk: provider appears in 3+ roles
 	for (const dep of dependencies) {

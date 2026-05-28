@@ -1095,3 +1095,61 @@ describe('mapSupplyChain — CDN attribution (Task 2, #283)', () => {
 		expect(r.signals.some((s) => s.type === 'concentration')).toBe(false);
 	});
 });
+
+describe('mapSupplyChain — cloud-hosting ASN tier (Task 3, noise-guarded)', () => {
+	async function run(domain = 'example.com', opts?: { precomputedCdn?: string }) {
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		return mapSupplyChain(domain, opts);
+	}
+
+	it('emits a low-trust cloud-hosting row when origin is on a cloud ASN and no CDN fronts it', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			aRecords: ['192.0.2.20'],
+			asnAnswers: { '20.2.0.192.origin.asn.cymru.com': '16509 | 192.0.2.0/24 | US | arin' }, // AWS
+		});
+		const r = await run('acme.com');
+		const dep = r.dependencies.find((d) => d.provider === 'AWS' && d.sources.includes('hosting'));
+		expect(dep).toBeDefined();
+		expect(dep!.roles).toContain('cloud-hosting');
+		expect(dep!.trustLevel).toBe('low');
+	});
+
+	it('suppresses the cloud-hosting row when a CDN is attributed (precomputed)', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			aRecords: ['192.0.2.20'],
+			asnAnswers: { '20.2.0.192.origin.asn.cymru.com': '16509 | 192.0.2.0/24 | US | arin' },
+		});
+		const r = await run('acme.com', { precomputedCdn: 'CloudFront' });
+		expect(r.dependencies.some((d) => d.sources.includes('hosting'))).toBe(false);
+		expect(r.dependencies.some((d) => d.provider === 'CloudFront' && d.sources.includes('cdn'))).toBe(true);
+	});
+
+	it('never labels a CDN ASN as cloud-hosting (Akamai stays a cdn row)', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			aRecords: ['192.0.2.30'],
+			asnAnswers: { '30.2.0.192.origin.asn.cymru.com': '20940 | 192.0.2.0/24 | US | arin' }, // Akamai
+		});
+		const r = await run('acme.com');
+		expect(r.dependencies.some((d) => d.sources.includes('hosting'))).toBe(false);
+		expect(r.dependencies.some((d) => d.provider === 'Akamai' && d.sources.includes('cdn'))).toBe(true);
+	});
+});
+
+describe('mapSupplyChain — cloud-hosting caveat signal (Task 3)', () => {
+	async function run(domain = 'example.com') {
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		return mapSupplyChain(domain);
+	}
+	it('emits a low-severity shared-infrastructure caveat alongside a hosting row', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			aRecords: ['192.0.2.20'],
+			asnAnswers: { '20.2.0.192.origin.asn.cymru.com': '16509 | 192.0.2.0/24 | US | arin' },
+		});
+		const r = await run('acme.com');
+		expect(r.signals.some((s) => s.type === 'shared_hosting' && s.severity === 'low')).toBe(true);
+	});
+});
