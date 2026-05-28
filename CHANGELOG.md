@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.20] - 2026-05-28
+
+### Added
+
+- **CDN attribution: new ASN-based fallback tier closes the Akamai false-negative.** `detectCdnProvider` only caught Akamai via the optional `x-akamai-transformed` / `x-check-cacheable` headers — Akamai sites that don't send those (e.g. mit.edu, `Server: AkamaiGHost` only) returned `cdnProvider: null`. Same root cause as the Cloudflare saga (v3.3.7→v3.3.12): CF Worker egress rewrites the response `server` header to `cloudflare`, so the reliable server signal is dead from inside the Worker, and the Akamai-specific headers are optional. The new tier resolves each A-record IP to its origin ASN via team-cymru DoH (`<reversed-ip>.origin.asn.cymru.com`) and maps the ASN to a CDN provider — an origin-set signal (derived from the resolved IP, not a header) that's immune to the CF-Worker rewrite and generalizes to every CDN via one `ASN_TO_CDN` table (Akamai, Cloudflare, Fastly, Imperva, Edgecast, CDN77). **AS16509 (AWS) is deliberately excluded** — it covers all EC2/ELB, not CDN-exclusively; mapping it would false-positive every EC2-hosted app (CloudFront stays caught by the `x-amz-cf-id` header). New `src/lib/cdn-asn-detection.ts`; bounded at 3 lookups with short-circuit-on-first-match and fail-soft on DoH errors; reuses the existing DoH TXT resolver (no new dependency). Tier order in scan post-processing: header vendor-specific (primary) → Cloudflare NS+IP+cert heuristic (v3.3.17) → ASN lookup. The ASN tier runs only when prior tiers produce no attribution. Findings carry `metadata: { cdnProvider, confidence: 'heuristic', source: 'asn-lookup', asn }`. (#279)
+- **`map_supply_chain`: AutoSPF catalog entry.** SPF includes matching `*.autospf.email` (AutoSPF SPF-flattening service) now resolve to `AutoSPF` instead of the raw include hostname. Surfaced by mit.edu (`include:_s00430413.autospf.email`). Same drift class as the v3.3.16 batch. (#279)
+
 ## [3.3.19] - 2026-05-28
 
 ### Added
