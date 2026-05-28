@@ -709,6 +709,78 @@ describe('mapSupplyChain', () => {
 		expect(result.dependencies.find((d) => d.provider === 'spf_c.oraclecloud.com')).toBeUndefined();
 	});
 
+	// --- Catalog gaps surfaced 2026-05-28 (spotify.com fact-check round) ---
+
+	it('resolves Google Cloud DNS via ns-cloud-*.googledomains.com NS hosts (spotify pattern)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 -all',
+			nsHosts: [
+				'ns-cloud-a1.googledomains.com',
+				'ns-cloud-a2.googledomains.com',
+				'ns-cloud-a3.googledomains.com',
+				'ns-cloud-a4.googledomains.com',
+			],
+			domain: 'spotify.com',
+		});
+		const result = await run('spotify.com');
+		const gcdRows = result.dependencies.filter((d) => /Google Cloud DNS/i.test(d.provider));
+		expect(gcdRows.length).toBe(1);
+		expect(gcdRows[0].provider).toBe('Google Cloud DNS');
+		// no raw googledomains.com row
+		expect(result.dependencies.find((d) => d.provider === 'googledomains.com')).toBeUndefined();
+	});
+
+	it('resolves HubSpot via *.hubspotemail.net SPF includes (spotify pattern)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 include:21894833.spf06.hubspotemail.net -all',
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			domain: 'spotify.com',
+		});
+		const result = await run('spotify.com');
+		const hubRows = result.dependencies.filter((d) => /HubSpot/i.test(d.provider));
+		expect(hubRows.length).toBe(1);
+		expect(hubRows[0].provider).toBe('HubSpot');
+		expect(result.dependencies.find((d) => /hubspotemail\.net/i.test(d.provider))).toBeUndefined();
+	});
+
+	it('resolves Mailchimp Transactional via *.mcsv.net SPF includes (spotify pattern)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 include:servers.mcsv.net -all',
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			domain: 'spotify.com',
+		});
+		const result = await run('spotify.com');
+		const mcRows = result.dependencies.filter((d) => /Mailchimp Transactional/i.test(d.provider));
+		expect(mcRows.length).toBe(1);
+		expect(mcRows[0].provider).toBe('Mailchimp Transactional');
+		expect(result.dependencies.find((d) => /mcsv\.net/i.test(d.provider))).toBeUndefined();
+	});
+
+	it('resolves Salesforce via *.salesforce.com SPF includes (spotify pattern)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 include:_spf.salesforce.com -all',
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			domain: 'spotify.com',
+		});
+		const result = await run('spotify.com');
+		const sfRows = result.dependencies.filter((d) => d.provider === 'Salesforce');
+		expect(sfRows.length).toBe(1);
+		expect(result.dependencies.find((d) => /_spf\.salesforce/i.test(d.provider))).toBeUndefined();
+	});
+
+	it('keeps Salesforce Pardot distinct from Salesforce (the et._spf.pardot.com mapping persists)', async () => {
+		mockDnsResponses({
+			spf: 'v=spf1 include:_spf.salesforce.com include:et._spf.pardot.com -all',
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			domain: 'company.example',
+		});
+		const result = await run('company.example');
+		expect(result.dependencies.find((d) => d.provider === 'Salesforce')).toBeDefined();
+		// Pardot endpoint must NOT collapse into the Salesforce row — it stays as
+		// its own provider (raw `et._spf.pardot.com` if no friendly mapping exists).
+		expect(result.dependencies.find((d) => /pardot/i.test(d.provider))).toBeDefined();
+	});
+
 	it('emits a single security_tooling_exposed signal per service even when multiple TXT records exist (OneTrust pattern)', async () => {
 		mockDnsResponses({
 			spf: 'v=spf1 -all',
