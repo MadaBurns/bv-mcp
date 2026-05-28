@@ -663,7 +663,7 @@ describe('mapSupplyChain', () => {
 
 	it('collapses Stripe self-wrapper subdomains (spf1.stripe.com, greenhouse-outbound-mail.stripe.com)', async () => {
 		mockDnsResponses({
-			spf: 'v=spf1 include:spf1.stripe.com include:greenhouse-outbound-mail.stripe.com include:_spf.qualtrics.com ~all',
+			spf: 'v=spf1 include:spf1.stripe.com include:greenhouse-outbound-mail.stripe.com include:_spf.thirdparty-unknown.io ~all',
 			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
 			domain: 'stripe.com',
 		});
@@ -671,8 +671,8 @@ describe('mapSupplyChain', () => {
 		expect(result.dependencies.filter((d) => d.provider.endsWith('.stripe.com')).length).toBe(0);
 		// Self-hosted row present.
 		expect(result.dependencies.find((d) => d.provider === 'stripe.com (self-hosted SPF)')).toBeDefined();
-		// Genuine third-party include preserved as raw entry.
-		expect(result.dependencies.find((d) => d.provider === '_spf.qualtrics.com')).toBeDefined();
+		// Genuine (uncataloged) third-party include preserved as raw entry.
+		expect(result.dependencies.find((d) => d.provider === '_spf.thirdparty-unknown.io')).toBeDefined();
 	});
 
 	it('distinguishes self-delegation from genuine third-party include at the same eTLD+1 level', async () => {
@@ -1199,5 +1199,37 @@ describe('mapSupplyChain — shadow_service signal correctness (B1/B2/B3)', () =
 		});
 		const r = await run('acme.com');
 		expect(r.signals.some((s) => s.type === 'shadow_service' && s.detail.includes('sip.thirdparty.net'))).toBe(true);
+	});
+});
+
+describe('mapSupplyChain — catalog batch #286 collapse behavior', () => {
+	async function run(domain = 'example.com') {
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		return mapSupplyChain(domain);
+	}
+
+	it('collapses azure-dns.{com,net,org,info} into a single Azure DNS row', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			nsHosts: ['ns1-01.azure-dns.com', 'ns2-01.azure-dns.net', 'ns3-01.azure-dns.org', 'ns4-01.azure-dns.info'],
+		});
+		const r = await run('acme.com');
+		const azure = r.dependencies.filter((d) => d.provider === 'Azure DNS');
+		expect(azure.length).toBe(1);
+		expect(r.dependencies.some((d) => /azure-dns\.(com|net|org|info)/.test(d.provider))).toBe(false);
+	});
+
+	it('maps a googlemail.com MX to Google Workspace with no raw googlemail.com row', async () => {
+		mockDnsResponses({ domain: 'acme.com', mxRecords: [{ pref: 10, host: 'aspmx.l.googlemail.com' }] });
+		const r = await run('acme.com');
+		expect(r.dependencies.some((d) => d.provider === 'Google Workspace' && d.roles.includes('email-receiving'))).toBe(true);
+		expect(r.dependencies.some((d) => d.provider === 'googlemail.com')).toBe(false);
+	});
+
+	it('resolves a SPF macro include to its vendor (Valimail) with no raw macro row', async () => {
+		mockDnsResponses({ domain: 'acme.com', spf: 'v=spf1 include:%{i}._ip.%{h}._ehlo.%{d}._spf.vali.email -all' });
+		const r = await run('acme.com');
+		expect(r.dependencies.some((d) => d.provider === 'Valimail')).toBe(true);
+		expect(r.dependencies.some((d) => d.provider.includes('%{'))).toBe(false);
 	});
 });
