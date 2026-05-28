@@ -452,6 +452,30 @@ const DETECTION_RULES: DetectionRule[] = [
 		patterns: { ns: /\.alibabadns\.com$/i },
 		signal: 'ns:alibabadns.com',
 	},
+	// --- Catalog batch v3.3.27 (raw-hostname → vendor name; sweep 2 2026-05-28) ---
+	{
+		// Symantec Email Security.cloud (formerly MessageLabs; acquired by Symantec
+		// in 2008, transferred to Broadcom in 2019). Enterprise inbound/outbound
+		// email gateway — same product class as Proofpoint / Mimecast / Trellix.
+		// Detected via both MX (`*.messagelabs.com` clusters) and SPF
+		// (`spf.messagelabs.com`). Observed on bbc.co.uk.
+		name: 'Symantec Email Security.cloud',
+		role: 'mail',
+		patterns: {
+			mx: /(^|\.)messagelabs\.com$/i,
+			spf: /(^|\.)messagelabs\.com$/i,
+		},
+		signal: 'mx:messagelabs.com',
+	},
+	{
+		// Campaign Monitor (newsletter / transactional ESP). Customers' SPF
+		// includes resolve under `*.createsend.com` (eg. `_spf.createsend.com`,
+		// `*.spf.createsend.com`). Observed on netflix.com.
+		name: 'Campaign Monitor',
+		role: 'sending',
+		patterns: { spf: /(^|\.)createsend\.com$/i },
+		signal: 'spf:createsend.com',
+	},
 ];
 
 /**
