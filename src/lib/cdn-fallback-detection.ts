@@ -9,23 +9,34 @@
  * tracing, regardless of the origin. v3.3.11 removed CF detection entirely
  * to fix the resulting 100% false-positive rate.
  *
- * This module restores attribution by combining two corroborating signals
- * that the scanner CAN observe authentically:
+ * This module restores attribution by combining three independent signals
+ * that the scanner CAN observe authentically; ANY 2 of 3 must match:
  *
- *   1. NS records — all nameservers under `*.ns.cloudflare.com`
- *   2. A records — at least one IP in Cloudflare's published edge ranges
+ *   A. NS records — all nameservers under `*.ns.cloudflare.com`
+ *   B. A records — at least one IP in Cloudflare's published edge ranges
+ *   C. TLS cert issuer — issuer string matches Cloudflare's CA family
+ *      (eg. `Cloudflare Inc ECC CA-3`, `Cloudflare Origin SSL ECC Issuer ECC`)
  *
- * BOTH must match to attribute. The combined check rules out the two
- * common false positives: DNS-only customers (NS on CF, origin elsewhere)
- * and transit-only paths (origin on CF IPs but NS elsewhere — eg. a
- * partial migration). When matched, the attribution is flagged
- * `confidence: 'heuristic'` so consumers can distinguish it from
- * header-based hits (`confidence` absent → high-confidence vendor signal).
+ * The original v3.3.15 gate (A+B only) is preserved as a deprecated wrapper
+ * (`detectCloudflareViaNsAndIp`). The new v3.3.17 entry point
+ * (`detectCloudflareFallback`) accepts an optional `certIssuer` and applies
+ * the 2-of-3 rule.
  *
- * The published IPv4 ranges are snapshotted from cloudflare.com/ips/.
- * If Cloudflare publishes a new range, the `CLOUDFLARE_IPV4_RANGES`
- * snapshot test in `test/cdn-fallback-detection.spec.ts` will force a
- * deliberate update.
+ * Why 2-of-3 (not OR)? A single signal in isolation is ambiguous:
+ *   - Signal A alone → DNS-only customer; origin could be anywhere.
+ *   - Signal B alone → transit/proxy path; not necessarily a CF customer.
+ *   - Signal C alone → CA was used for a cert; says nothing about delivery.
+ * Requiring two corroborating origin-set signals keeps false-positive risk
+ * low while catching real CF customers who use external DNS (signals B+C).
+ *
+ * When matched, the attribution is flagged `confidence: 'heuristic'` so
+ * consumers can distinguish it from header-based hits (`confidence` absent →
+ * high-confidence vendor signal).
+ *
+ * The published IPv4 ranges are snapshotted from cloudflare.com/ips/. If
+ * Cloudflare publishes a new range, the `CLOUDFLARE_IPV4_RANGES` snapshot
+ * test in `test/cdn-fallback-detection.spec.ts` will force a deliberate
+ * update.
  */
 
 /**
@@ -87,17 +98,71 @@ export function isIpInCloudflareRange(ip: string): boolean {
 
 const CF_NS_PATTERN = /\.ns\.cloudflare\.com\.?$/i;
 
+/**
+ * Pattern for TLS cert issuer strings issued by Cloudflare's CA family.
+ * Covers the common forms observed in the wild:
+ *   - `C=US, O=Cloudflare, Inc., CN=Cloudflare Inc ECC CA-3`
+ *   - `CN=Cloudflare Origin SSL ECC Issuer ECC, O=Cloudflare, Inc., ...`
+ *   - `O=Cloudflare, Inc., ...` (some certs have only the O attribute)
+ * Case-insensitive. Any occurrence of "Cloudflare" anywhere in the issuer
+ * string counts as a match — there is no Cloudflare-issued cert whose
+ * issuer string omits the word.
+ */
+const CF_CERT_ISSUER_PATTERN = /cloudflare/i;
+
 export interface CloudflareHeuristicResult {
 	provider: 'Cloudflare';
 	confidence: 'heuristic';
 }
 
 /**
- * Returns a Cloudflare attribution iff BOTH signals match:
- *   - every NS host is under `*.ns.cloudflare.com`
- *   - at least one A record is in a published Cloudflare edge range
+ * 2-of-3-signal Cloudflare attribution heuristic.
  *
- * Returns null otherwise. Empty NS or empty A list always returns null.
+ * Signals:
+ *   A. `nsHosts` — every NS host under `*.ns.cloudflare.com`
+ *   B. `aRecords` — at least one IP in a published Cloudflare edge range
+ *   C. `certIssuer` — issuer string matches `/cloudflare/i`
+ *
+ * Returns an attribution iff at least TWO of the three signals are present.
+ * Returns null otherwise. Each signal is treated as either present (1) or
+ * absent (0); empty inputs count as absent (do not short-circuit).
+ *
+ * Backward-compat: when `certIssuer` is null/undefined, signal C is absent
+ * and the function reduces to the original v3.3.15 NS+IP requirement.
+ */
+export function detectCloudflareFallback(opts: {
+	nsHosts: string[];
+	aRecords: string[];
+	certIssuer?: string | null;
+}): CloudflareHeuristicResult | null {
+	const { nsHosts, aRecords, certIssuer } = opts;
+
+	// Signal A: every NS on CF (empty list ⇒ absent, NOT vacuously true).
+	const signalA = nsHosts.length > 0 && nsHosts.every((host) => CF_NS_PATTERN.test(host));
+
+	// Signal B: at least one A in published CF range.
+	const signalB = aRecords.length > 0 && aRecords.some((ip) => isIpInCloudflareRange(ip));
+
+	// Signal C: cert issuer mentions Cloudflare.
+	const signalC = typeof certIssuer === 'string' && CF_CERT_ISSUER_PATTERN.test(certIssuer);
+
+	const signalCount = (signalA ? 1 : 0) + (signalB ? 1 : 0) + (signalC ? 1 : 0);
+	if (signalCount < 2) return null;
+
+	return { provider: 'Cloudflare', confidence: 'heuristic' };
+}
+
+/**
+ * Deprecated v3.3.15 entry point — strict NS+IP-only attribution.
+ *
+ * Kept as a thin wrapper for downstream consumers that bound to the
+ * original contract. New code should call {@link detectCloudflareFallback}
+ * directly and pass `certIssuer` when available.
+ *
+ * @deprecated Use {@link detectCloudflareFallback} (2-of-3 signals incl.
+ *             optional `certIssuer`). This wrapper preserves the strict
+ *             NS+IP-only gate: BOTH NS-all-on-CF AND at-least-one-A-in-CF
+ *             must hold; cert issuer is ignored.
  */
 export function detectCloudflareViaNsAndIp(opts: {
 	nsHosts: string[];
