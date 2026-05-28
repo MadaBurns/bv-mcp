@@ -16,17 +16,41 @@ function mockDnsResponses(options: {
 	nsHosts?: string[];
 	caaRecords?: string[];
 	srvRecords?: Record<string, Array<{ priority: number; weight: number; port: number; target: string }>>;
+	mxRecords?: Array<{ pref: number; host: string }>;
+	aRecords?: string[];
+	/** Canned team-cymru origin-ASN TXT answers, keyed by the full `<rev-ip>.origin.asn.cymru.com` query name. */
+	asnAnswers?: Record<string, string>;
+	/** Invoked whenever an `*.origin.asn.cymru.com` TXT lookup is made (lets a test assert the ASN tier did / did not run). */
+	onAsnQuery?: () => void;
 	domain?: string;
 }) {
-	const { spf, txtRecords = [], nsHosts = [], caaRecords = [], srvRecords = {}, domain = 'example.com' } = options;
+	const {
+		spf,
+		txtRecords = [],
+		nsHosts = [],
+		caaRecords = [],
+		srvRecords = {},
+		mxRecords = [],
+		aRecords = [],
+		asnAnswers = {},
+		onAsnQuery,
+		domain = 'example.com',
+	} = options;
 
 	globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
 		const u = new URL(typeof url === 'string' ? url : url.toString());
 		const name = u.searchParams.get('name') ?? '';
 		const type = u.searchParams.get('type') ?? '';
 
-		// TXT queries (SPF + verification records)
+		// TXT queries (SPF + verification records + team-cymru origin-ASN lookups)
 		if (type === 'TXT') {
+			// ASN tier: `<rev-ip>.origin.asn.cymru.com` TXT lookups (Task 2/3).
+			if (name.endsWith('.origin.asn.cymru.com')) {
+				onAsnQuery?.();
+				const answer = asnAnswers[name];
+				const answers = answer !== undefined ? [{ name, type: 16, TTL: 300, data: `"${answer}"` }] : [];
+				return Promise.resolve(createDohResponse([{ name, type: 16 }], answers));
+			}
 			if (name === domain) {
 				const answers: Array<{ name: string; type: number; TTL: number; data: string }> = [];
 				if (spf !== null && spf !== undefined) {
@@ -66,6 +90,34 @@ function mockDnsResponses(options: {
 				return Promise.resolve(createDohResponse([{ name, type: 257 }], answers));
 			}
 			return Promise.resolve(createDohResponse([{ name, type: 257 }], []));
+		}
+
+		// MX queries
+		if (type === 'MX') {
+			if (name === domain) {
+				const answers = mxRecords.map((mx) => ({
+					name: domain,
+					type: 15,
+					TTL: 300,
+					data: `${mx.pref} ${mx.host}.`,
+				}));
+				return Promise.resolve(createDohResponse([{ name, type: 15 }], answers));
+			}
+			return Promise.resolve(createDohResponse([{ name, type: 15 }], []));
+		}
+
+		// A queries (apex IPs for the ASN-based CDN / hosting tier)
+		if (type === 'A') {
+			if (name === domain) {
+				const answers = aRecords.map((ip) => ({
+					name: domain,
+					type: 1,
+					TTL: 300,
+					data: ip,
+				}));
+				return Promise.resolve(createDohResponse([{ name, type: 1 }], answers));
+			}
+			return Promise.resolve(createDohResponse([{ name, type: 1 }], []));
 		}
 
 		// SRV queries
@@ -946,5 +998,48 @@ describe('formatSupplyChain', () => {
 
 		const text = formatSupplyChain(result, 'full');
 		expect(text).toContain('No third-party dependencies detected');
+	});
+});
+
+describe('mapSupplyChain — MX email-receiving providers (Task 1)', () => {
+	async function run(domain = 'example.com', opts?: { precomputedCdn?: string }) {
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		return mapSupplyChain(domain, opts);
+	}
+
+	it('maps a recognized MX host to an email-receiving dependency', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			nsHosts: ['ns1.acme.com'],
+			mxRecords: [{ pref: 10, host: 'acme-com.mail.protection.outlook.com' }],
+		});
+		const r = await run('acme.com');
+		const dep = r.dependencies.find((d) => d.provider === 'Microsoft 365');
+		expect(dep).toBeDefined();
+		expect(dep!.roles).toContain('email-receiving');
+		expect(dep!.sources).toContain('mx');
+		expect(dep!.trustLevel).toBe('critical');
+	});
+
+	it('groups an unrecognized MX host by registrable parent domain', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			mxRecords: [{ pref: 10, host: 'mx1.mailvendor.co.uk' }],
+		});
+		const r = await run('acme.com');
+		expect(r.dependencies.some((d) => d.provider === 'mailvendor.co.uk' && d.sources.includes('mx'))).toBe(true);
+		expect(r.dependencies.some((d) => d.provider === 'co.uk')).toBe(false);
+	});
+
+	it('does not emit a third-party row for self-hosted MX', async () => {
+		mockDnsResponses({ domain: 'acme.com', mxRecords: [{ pref: 10, host: 'mail.acme.com' }] });
+		const r = await run('acme.com');
+		expect(r.dependencies.some((d) => d.provider === 'acme.com' && d.sources.includes('mx'))).toBe(false);
+	});
+
+	it('handles a web-only domain with no MX records', async () => {
+		mockDnsResponses({ domain: 'acme.com', nsHosts: ['ns1.acme.com'] });
+		const r = await run('acme.com');
+		expect(r.dependencies.every((d) => !d.roles.includes('email-receiving'))).toBe(true);
 	});
 });

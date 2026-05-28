@@ -9,9 +9,9 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import type { QueryDnsOptions } from '../lib/dns-types';
-import { queryTxtRecords, queryDnsRecords, querySrvRecords } from '../lib/dns';
+import { queryTxtRecords, queryDnsRecords, querySrvRecords, queryMxRecords } from '../lib/dns';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { detectProviders, matchProviderForNsHost, matchProviderForSpfInclude } from './provider-guides';
+import { detectProviders, matchProviderForNsHost, matchProviderForSpfInclude, matchProviderForMxHost } from './provider-guides';
 import { VERIFICATION_PATTERNS, SERVICE_SPF_DOMAINS } from './txt-hygiene-analysis';
 import { SRV_PREFIXES } from './srv-analysis';
 import type { SrvProbeResult } from './srv-analysis';
@@ -83,6 +83,8 @@ function parseCaaIssuer(data: string): string | null {
 function determineTrustLevel(sources: string[]): TrustLevel {
 	// SPF includes = critical (they can send email as you)
 	if (sources.some((s) => s === 'spf')) return 'critical';
+	// MX = critical (they receive all your inbound mail)
+	if (sources.some((s) => s === 'mx')) return 'critical';
 	// NS = high (they control your DNS)
 	if (sources.some((s) => s === 'ns')) return 'high';
 	// SRV = medium (advertised service)
@@ -99,6 +101,8 @@ function sourceToRole(source: string): string {
 	switch (source) {
 		case 'spf':
 			return 'email-sending';
+		case 'mx':
+			return 'email-receiving';
 		case 'ns':
 			return 'dns-hosting';
 		case 'caa':
@@ -185,15 +189,28 @@ const SRV_TARGET_PROVIDERS: Array<{ pattern: RegExp; provider: string }> = [
  * @param dnsOptions - Optional DNS query options
  * @returns Supply chain map with dependencies, signals, and summary
  */
+export interface MapSupplyChainOptions {
+	/** DNS query options (timeout, resolver) threaded into every lookup. */
+	dnsOptions?: QueryDnsOptions;
+	/**
+	 * CDN provider already attributed by the scan's HTTP/header path. When set,
+	 * the supply-chain map uses it directly and skips its own ASN lookup. When
+	 * omitted (standalone calls), the ASN tier resolves the apex A-records.
+	 */
+	precomputedCdn?: string;
+}
+
 export async function mapSupplyChain(
 	domain: string,
-	dnsOptions?: QueryDnsOptions,
+	options: MapSupplyChainOptions = {},
 ): Promise<SupplyChainMap> {
+	const { dnsOptions } = options;
 	// Query all record types in parallel — allSettled so one failure doesn't block others
-	const [txtSettled, nsSettled, caaSettled, srvBatchSettled] = await Promise.allSettled([
+	const [txtSettled, nsSettled, caaSettled, mxSettled, srvBatchSettled] = await Promise.allSettled([
 		queryTxtRecords(domain, dnsOptions),
 		queryDnsRecords(domain, 'NS', dnsOptions),
 		queryDnsRecords(domain, 'CAA', dnsOptions),
+		queryMxRecords(domain, dnsOptions),
 		Promise.allSettled(
 			SRV_PREFIXES.map(async (prefix) => {
 				const name = `${prefix}.${domain}`;
@@ -223,6 +240,10 @@ export async function mapSupplyChain(
 	// Extract NS hostnames
 	const rawNsRecords = nsSettled.status === 'fulfilled' ? nsSettled.value : [];
 	const nsHosts = rawNsRecords.map((r) => r.replace(/\.$/, '').toLowerCase());
+
+	// Extract MX exchange hosts (email-receiving providers)
+	const rawMxRecords = mxSettled.status === 'fulfilled' ? mxSettled.value : [];
+	const mxHosts = rawMxRecords.map((r) => r.exchange.replace(/\.$/, '').toLowerCase());
 
 	// Extract CAA issuers (only issue and issuewild tags)
 	const rawCaaRecords = caaSettled.status === 'fulfilled' ? caaSettled.value : [];
@@ -334,18 +355,39 @@ export async function mapSupplyChain(
 		addDependency(`${scanDomainLower} (self-hosted SPF)`, 'spf');
 	}
 
-	// Add unrecognized NS hosts — group by registrable parent domain.
-	// `getEffectiveParentDomain` accounts for ccTLD-2LD suffixes (co.nz, co.uk,
-	// com.au, …) so `ns1.anz.co.nz` collapses to `anz.co.nz`, not `co.nz`.
-	// When the parent matches the scan domain itself, the NS is self-hosted —
-	// skip adding a "third-party" row so the output isn't misleading.
+	// Group unrecognized infra hosts (NS, MX) by registrable parent domain,
+	// skipping detected providers and self-hosted hosts. `getEffectiveParentDomain`
+	// accounts for ccTLD-2LD suffixes (co.nz, co.uk, com.au, …) so `ns1.anz.co.nz`
+	// collapses to `anz.co.nz`, not `co.nz`. When the parent matches the scan
+	// domain itself, the host is self-hosted — skip the "third-party" row.
 	const scanDomain = domain.toLowerCase();
-	for (const host of nsHosts) {
-		if (detectedNsHosts.has(host)) continue;
-		const parentDomain = getEffectiveParentDomain(host);
-		if (parentDomain === scanDomain) continue;
-		addDependency(parentDomain, 'ns');
+	const addUnrecognizedHostsByParent = (hosts: string[], detected: Set<string>, source: string): void => {
+		for (const host of hosts) {
+			if (detected.has(host)) continue;
+			const parentDomain = getEffectiveParentDomain(host);
+			if (parentDomain === scanDomain) continue;
+			addDependency(parentDomain, source);
+		}
+	};
+
+	// Add unrecognized NS hosts.
+	addUnrecognizedHostsByParent(nsHosts, detectedNsHosts, 'ns');
+
+	// Add MX (email-receiving) providers. Independent of the SPF email-sending
+	// path — a domain can receive via one provider (eg. Mimecast/Proofpoint
+	// inbound) and send via another (eg. M365). Match each exchange against
+	// DETECTION_RULES (shared SSOT, via matchProviderForMxHost); unrecognized
+	// hosts collapse to their registrable parent and skip self-hosted MX,
+	// mirroring the NS path so the two can't drift.
+	const detectedMxHosts = new Set<string>();
+	for (const host of mxHosts) {
+		const matched = matchProviderForMxHost(host);
+		if (matched !== null) {
+			addDependency(matched, 'mx');
+			detectedMxHosts.add(host);
+		}
 	}
+	addUnrecognizedHostsByParent(mxHosts, detectedMxHosts, 'mx');
 
 	// Add CAA issuers
 	for (const issuer of caaIssuers) {
