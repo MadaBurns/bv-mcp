@@ -21,6 +21,10 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Least-privilege default token for all jobs.
+permissions:
+  contents: read
+
 jobs:
   repo-hygiene:
     name: File hygiene check
