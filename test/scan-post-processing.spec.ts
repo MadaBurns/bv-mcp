@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { type CheckResult, buildCheckResult, createFinding } from '../src/lib/scoring';
 import { resetProviderSignatureState } from '../src/lib/provider-signatures';
 
@@ -659,5 +659,218 @@ describe('addOutboundProviderInference — provider detection coverage', () => {
 		expect(updated.find((r) => r.category === 'spf')).toBeUndefined();
 		// Other checks are preserved unchanged
 		expect(updated).toHaveLength(2);
+	});
+
+	// Tests for the v3.3.17 cert-issuer signal plumbing through bv-certstream-worker's
+	// /cert-meta endpoint. Activates the dormant 2-of-3 third signal — Cloudflare
+	// customers using external DNS providers (shopify.com on Foundation DNS NS +
+	// Cloudflare CDN) flip from cdnProvider:null to cdnProvider:'Cloudflare'.
+	describe('Cloudflare CDN heuristic: cert-issuer plumbing via /cert-meta', () => {
+		const HTTP_RESULT_NO_CDN: CheckResult = buildCheckResult('http_security', [
+			createFinding('http_security', 'HTTP probe', 'info', 'baseline'),
+		]);
+
+		const FOUNDATION_DNS_NS = ['gold.foundationdns.com', 'gold.foundationdns.net', 'gold.foundationdns.org'];
+		const CF_NS = ['jill.ns.cloudflare.com', 'ken.ns.cloudflare.com'];
+		// A real Cloudflare published-edge-range IP — 104.16.0.0/13 is one of theirs.
+		// (Note: shopify.com's 23.227.38.33 is BYOIP, NOT in the published edge ranges,
+		// so it would NOT count as the IP signal — only NS+cert would attribute there.)
+		const CF_A = ['104.16.45.99'];
+		const NON_CF_A = ['8.8.8.8'];
+
+		beforeEach(() => {
+			vi.doMock('../src/lib/dns', () => ({
+				queryTxtRecords: vi.fn().mockResolvedValue([]),
+			}));
+		});
+
+		afterEach(() => {
+			vi.doUnmock('../src/lib/dns');
+			vi.doUnmock('../src/lib/dns-records');
+			vi.resetModules();
+		});
+
+		it('plumbs Cloudflare issuer from /cert-meta and adds "ns-ip-and-cert" finding', async () => {
+			vi.doMock('../src/lib/dns-records', () => ({
+				queryDnsRecords: vi.fn(async (_d: string, type: string) => {
+					if (type === 'NS') return FOUNDATION_DNS_NS;
+					if (type === 'A') return CF_A;
+					return [];
+				}),
+			}));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const certstream = {
+				fetch: vi.fn(async () =>
+					new Response(
+						JSON.stringify({
+							domain: 'example.com',
+							issuer: 'C=US, O=Cloudflare, Inc., CN=Cloudflare Inc ECC CA-3',
+							notBefore: '2026-05-01',
+							notAfter: '2027-05-01',
+							source: 'crt.sh',
+						}),
+						{ status: 200, headers: { 'Content-Type': 'application/json' } },
+					),
+				),
+			};
+
+			const updated = await applyScanPostProcessing(
+				'example.com',
+				[HTTP_RESULT_NO_CDN],
+				{ certstream, certstreamAuthToken: 'admin-token' },
+			);
+			const httpSec = updated.find((r) => r.category === 'http_security');
+			const cdnFinding = httpSec?.findings.find((f) => f.metadata?.cdnProvider === 'Cloudflare');
+			expect(cdnFinding).toBeDefined();
+			expect(cdnFinding!.metadata?.source).toBe('ns-ip-and-cert');
+			expect(cdnFinding!.metadata?.certIssuer).toBe('C=US, O=Cloudflare, Inc., CN=Cloudflare Inc ECC CA-3');
+			expect(cdnFinding!.detail).toContain('TLS cert issuer matches Cloudflare');
+			// Verify the certstream binding was invoked with the right URL + auth
+			expect(certstream.fetch).toHaveBeenCalledOnce();
+			const callArgs = certstream.fetch.mock.calls[0];
+			expect(callArgs[0]).toContain('/cert-meta?domain=example.com');
+			expect(callArgs[1]?.headers).toMatchObject({ Authorization: 'Bearer admin-token' });
+		});
+
+		it('attributes Cloudflare via NS+cert when A-records are not in CF range (cert + NS = 2 signals)', async () => {
+			vi.doMock('../src/lib/dns-records', () => ({
+				queryDnsRecords: vi.fn(async (_d: string, type: string) => {
+					if (type === 'NS') return CF_NS;
+					if (type === 'A') return NON_CF_A;  // Not in any CF range
+					return [];
+				}),
+			}));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const certstream = {
+				fetch: vi.fn(async () =>
+					new Response(JSON.stringify({ issuer: 'CN=Cloudflare Origin SSL ECC Issuer ECC', source: 'crt.sh' }), { status: 200 }),
+				),
+			};
+
+			const updated = await applyScanPostProcessing(
+				'example.com',
+				[HTTP_RESULT_NO_CDN],
+				{ certstream },
+			);
+			const cdnFinding = updated
+				.find((r) => r.category === 'http_security')
+				?.findings.find((f) => f.metadata?.cdnProvider === 'Cloudflare');
+			expect(cdnFinding).toBeDefined();
+			expect(cdnFinding!.metadata?.source).toBe('ns-ip-and-cert');
+		});
+
+		it('falls back to NS+IP-only attribution when /cert-meta returns null issuer', async () => {
+			vi.doMock('../src/lib/dns-records', () => ({
+				queryDnsRecords: vi.fn(async (_d: string, type: string) => {
+					if (type === 'NS') return CF_NS;
+					if (type === 'A') return CF_A;
+					return [];
+				}),
+			}));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const certstream = {
+				fetch: vi.fn(async () =>
+					new Response(JSON.stringify({ issuer: null, source: 'none', error: 'both failed' }), { status: 200 }),
+				),
+			};
+
+			const updated = await applyScanPostProcessing('example.com', [HTTP_RESULT_NO_CDN], { certstream });
+			const cdnFinding = updated
+				.find((r) => r.category === 'http_security')
+				?.findings.find((f) => f.metadata?.cdnProvider === 'Cloudflare');
+			expect(cdnFinding).toBeDefined();
+			// NS+IP both match → attribution succeeds without cert signal
+			expect(cdnFinding!.metadata?.source).toBe('ns-and-ip-range');
+			expect(cdnFinding!.metadata?.certIssuer).toBeUndefined();
+		});
+
+		it('gracefully handles /cert-meta HTTP failures (5xx) — degrades to NS+IP behavior', async () => {
+			vi.doMock('../src/lib/dns-records', () => ({
+				queryDnsRecords: vi.fn(async (_d: string, type: string) => {
+					if (type === 'NS') return CF_NS;
+					if (type === 'A') return CF_A;
+					return [];
+				}),
+			}));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const certstream = {
+				fetch: vi.fn(async () => new Response('Internal Server Error', { status: 500 })),
+			};
+
+			const updated = await applyScanPostProcessing('example.com', [HTTP_RESULT_NO_CDN], { certstream });
+			const cdnFinding = updated
+				.find((r) => r.category === 'http_security')
+				?.findings.find((f) => f.metadata?.cdnProvider === 'Cloudflare');
+			expect(cdnFinding).toBeDefined();
+			expect(cdnFinding!.metadata?.source).toBe('ns-and-ip-range');
+		});
+
+		it('preserves the legacy null-issuer path when no certstream binding is provided', async () => {
+			vi.doMock('../src/lib/dns-records', () => ({
+				queryDnsRecords: vi.fn(async (_d: string, type: string) => {
+					if (type === 'NS') return CF_NS;
+					if (type === 'A') return CF_A;
+					return [];
+				}),
+			}));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			// No certstream in options → fetchCertIssuerFromCertstream is never called
+			const updated = await applyScanPostProcessing('example.com', [HTTP_RESULT_NO_CDN]);
+			const cdnFinding = updated
+				.find((r) => r.category === 'http_security')
+				?.findings.find((f) => f.metadata?.cdnProvider === 'Cloudflare');
+			expect(cdnFinding).toBeDefined();
+			expect(cdnFinding!.metadata?.source).toBe('ns-and-ip-range');
+		});
+
+		it('does not falsely attribute Cloudflare when cert issuer is non-CF and IP-range gate also fails', async () => {
+			// External NS (Foundation DNS) + A-records NOT in CF range + non-CF issuer
+			// → 0 of 3 signals → no Cloudflare attribution
+			vi.doMock('../src/lib/dns-records', () => ({
+				queryDnsRecords: vi.fn(async (_d: string, type: string) => {
+					if (type === 'NS') return FOUNDATION_DNS_NS;
+					if (type === 'A') return NON_CF_A;
+					return [];
+				}),
+			}));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const certstream = {
+				fetch: vi.fn(async () =>
+					new Response(JSON.stringify({ issuer: 'C=US, O=DigiCert Inc, CN=DigiCert Global G2' }), { status: 200 }),
+				),
+			};
+
+			const updated = await applyScanPostProcessing('example.com', [HTTP_RESULT_NO_CDN], { certstream });
+			const cdnFinding = updated
+				.find((r) => r.category === 'http_security')
+				?.findings.find((f) => f.metadata?.cdnProvider === 'Cloudflare');
+			// 0 of 3 signals matched → no CF finding added
+			expect(cdnFinding).toBeUndefined();
+		});
+
+		it('does not invoke /cert-meta when http_security already has a header-based CDN attribution', async () => {
+			vi.doMock('../src/lib/dns-records', () => ({
+				queryDnsRecords: vi.fn(async () => []),
+			}));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const httpResultWithCdn: CheckResult = buildCheckResult('http_security', [
+				createFinding('http_security', 'CDN: Imperva', 'info', 'from x-cdn header', {
+					cdnProvider: 'Imperva',
+				}),
+			]);
+
+			const certstream = { fetch: vi.fn() };
+
+			await applyScanPostProcessing('example.com', [httpResultWithCdn], { certstream });
+			// Header-based attribution wins; no /cert-meta call should happen
+			expect(certstream.fetch).not.toHaveBeenCalled();
+		});
 	});
 });

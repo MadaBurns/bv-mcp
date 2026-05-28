@@ -25,6 +25,15 @@ export interface ScanRuntimeOptions {
 	secondaryDoh?: import('../../lib/dns-types').SecondaryDohConfig;
 	/** Optional service binding for raw DNS, routing, and vantage-point probes. */
 	infraProbe?: { fetch: typeof fetch };
+	/**
+	 * Optional service binding to bv-certstream-worker. When present, the
+	 * Cloudflare-CDN attribution heuristic sources cert issuer from /cert-meta
+	 * (activates the v3.3.17 2-of-3 third signal). Without it, the heuristic
+	 * degrades to NS+IP-only.
+	 */
+	certstream?: { fetch: typeof fetch };
+	/** Bearer token for the bv-certstream-worker admin auth gate. */
+	certstreamAuthToken?: string;
 	/** Bypass cache and run a fresh scan. Useful for troubleshooting after DNS changes. */
 	forceRefresh?: boolean;
 }
@@ -53,7 +62,10 @@ export async function applyScanPostProcessing(
 		results = adjustForNoSendDomain(results);
 	}
 
-	results = await addCloudflareCdnHeuristic(domain, results);
+	results = await addCloudflareCdnHeuristic(domain, results, {
+		certstream: runtimeOptions?.certstream,
+		certstreamAuthToken: runtimeOptions?.certstreamAuthToken,
+	});
 
 	return addOutboundProviderInference(results, runtimeOptions);
 }
@@ -78,7 +90,46 @@ export async function applyScanPostProcessing(
  * Conservative: any DNS error during the fresh NS/A lookups silently skips
  * the heuristic — never poisons a scan result.
  */
-async function addCloudflareCdnHeuristic(domain: string, results: CheckResult[]): Promise<CheckResult[]> {
+/**
+ * Sync budget for the cert-meta lookup inside scan_domain post-processing.
+ * Cert issuer is a best-effort upgrade signal — any failure (including
+ * timeout) silently falls back to certIssuer:null, which degrades the
+ * 2-of-3 rule to the v3.3.15 NS+IP-only gate. crt.sh typically returns in
+ * <1s; certspotter fallback inside the worker can take up to 10s, but we
+ * cap the caller side here at 5s so the heuristic doesn't drag scan latency.
+ */
+const CERT_META_LOOKUP_TIMEOUT_MS = 5_000;
+
+async function fetchCertIssuerFromCertstream(
+	domain: string,
+	certstream: { fetch: typeof fetch },
+	authToken?: string,
+): Promise<string | null> {
+	try {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), CERT_META_LOOKUP_TIMEOUT_MS);
+		const response = await certstream.fetch(
+			`https://certstream/cert-meta?domain=${encodeURIComponent(domain)}`,
+			{
+				...(authToken ? { headers: { Authorization: `Bearer ${authToken}` } } : {}),
+				signal: controller.signal,
+			},
+		);
+		clearTimeout(timer);
+		if (!response.ok) return null;
+		const data = (await response.json()) as { issuer?: string | null; error?: string };
+		if (data.error || !data.issuer) return null;
+		return data.issuer;
+	} catch {
+		return null;
+	}
+}
+
+async function addCloudflareCdnHeuristic(
+	domain: string,
+	results: CheckResult[],
+	options?: { certstream?: { fetch: typeof fetch }; certstreamAuthToken?: string },
+): Promise<CheckResult[]> {
 	const httpResult = results.find((result) => result.category === 'http_security');
 	if (!httpResult) return results;
 
@@ -100,23 +151,46 @@ async function addCloudflareCdnHeuristic(domain: string, results: CheckResult[])
 	// Strip trailing dots for consistency with the helper's expected input.
 	const normalisedNs = nsHosts.map((h) => h.replace(/\.$/, '').toLowerCase());
 
-	// TLS cert issuer is not currently surfaced by `checkSsl` — the CF Worker
-	// `fetch()` API does not expose peer-cert metadata, and we don't make a
-	// separate CT-log lookup in the scan path. Pass null; the 2-of-3 rule
-	// degrades to the original v3.3.15 NS+IP-only gate. Future plumbing (eg.
-	// from a dedicated TLS probe in the infra-probe service binding) can light
-	// up the third signal without changing this call site.
-	const certIssuer: string | null = null;
+	// TLS cert issuer — sourced via the bv-certstream-worker /cert-meta
+	// endpoint when the service binding is available. Without the binding,
+	// or on lookup failure/timeout, fall back to null and let the 2-of-3 rule
+	// degrade to the v3.3.15 NS+IP-only gate. This activates v3.3.17's
+	// dormant third signal: Cloudflare customers using external DNS providers
+	// (eg. shopify.com on Foundation DNS for NS, Cloudflare for CDN) now
+	// flip from cdnProvider:null to cdnProvider:'Cloudflare' via IP+cert.
+	let certIssuer: string | null = null;
+	if (options?.certstream) {
+		certIssuer = await fetchCertIssuerFromCertstream(
+			domain,
+			options.certstream,
+			options.certstreamAuthToken,
+		);
+	}
 
 	const heuristic = detectCloudflareFallback({ nsHosts: normalisedNs, aRecords, certIssuer });
 	if (!heuristic) return results;
+
+	// Build a detail string that honestly reflects which signals matched, so
+	// users understand whether attribution came from (NS+IP) or (IP+cert) or
+	// (NS+cert) — the three valid 2-of-3 combinations.
+	const detailParts: string[] = [];
+	const nsMatchedCf = normalisedNs.some((h) => h.endsWith('.ns.cloudflare.com'));
+	const certMatchedCf = certIssuer !== null && /cloudflare/i.test(certIssuer);
+	if (nsMatchedCf) detailParts.push('NS records on *.ns.cloudflare.com');
+	if (aRecords.length > 0) detailParts.push("A records in Cloudflare's published edge ranges");
+	if (certMatchedCf) detailParts.push(`TLS cert issuer matches Cloudflare (${certIssuer})`);
 
 	const cdnFinding = createFinding(
 		'http_security',
 		'HTTP origin attributed to Cloudflare CDN (heuristic)',
 		'info',
-		'Cloudflare CDN inferred from NS records on *.ns.cloudflare.com combined with A records in Cloudflare\'s published edge ranges. Header-based CDN detection was inconclusive (the scanner runs inside a Cloudflare Worker, which rewrites server: cloudflare on every outbound response).',
-		{ cdnProvider: 'Cloudflare', confidence: 'heuristic', source: 'ns-and-ip-range' },
+		`Cloudflare CDN inferred from 2-of-3 signals: ${detailParts.join('; ')}. Header-based CDN detection was inconclusive (the scanner runs inside a Cloudflare Worker, which rewrites server: cloudflare on every outbound response).`,
+		{
+			cdnProvider: 'Cloudflare',
+			confidence: 'heuristic',
+			source: certMatchedCf ? 'ns-ip-and-cert' : 'ns-and-ip-range',
+			...(certIssuer ? { certIssuer } : {}),
+		},
 	);
 
 	const updated = buildCheckResult('http_security', [...httpResult.findings, cdnFinding]);
