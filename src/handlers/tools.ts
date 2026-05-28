@@ -2,7 +2,7 @@
 
 import type { CheckResult } from '../lib/scoring';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
-import { runWithCacheTracked } from '../lib/cache';
+import { buildCheckCacheKey, buildScanCacheKey, runWithCacheTracked } from '../lib/cache';
 import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { checkSpf } from '../tools/check-spf';
 import { checkSubdomainTakeover } from '../tools/check-subdomain-takeover';
@@ -918,7 +918,8 @@ export async function handleToolsCall(
 			const registeredTool = TOOL_REGISTRY[name];
 			if (registeredTool) {
 				const checkName = registeredTool.cacheKey(validatedArgs, runtimeOptions);
-				const cacheKey = `cache:${validDomain}:check:${checkName}`;
+				// Versioned (cache:v<version>:...) so a deploy auto-invalidates — see buildCheckCacheKey.
+				const cacheKey = buildCheckCacheKey(validDomain, checkName);
 				let cacheStatus: 'hit' | 'miss' = 'miss';
 				let result: CheckResult;
 				if (registeredTool.cacheable === false) {
@@ -1153,7 +1154,9 @@ export async function handleToolsCall(
 
 					let baselineScore: import('@blackveil/dns-checks/scoring').ScanScore;
 					if (baselineStr === 'cached') {
-						const cacheKey = `cache:${validDomain}`;
+						// MUST match scanDomain's default-profile top-level key (buildScanCacheKey)
+						// so the versioned cache written by scan_domain is readable here.
+						const cacheKey = buildScanCacheKey(validDomain);
 						const cached = scanCacheKV
 							? await import('../lib/cache').then((m) => m.cacheGet<import('../tools/scan-domain').ScanDomainResult>(cacheKey, scanCacheKV))
 							: undefined;
