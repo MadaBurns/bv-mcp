@@ -34,3 +34,4 @@ export type { CaaRecord } from './caa-analysis';
 export { parseCaaRecord } from './caa-analysis';
 export type { TlsaRecord } from './dane-analysis';
 export { analyzeSecurityHeaders } from './http-security-analysis';
+export { estimateTxtRrsetBytes } from './spf-analysis';

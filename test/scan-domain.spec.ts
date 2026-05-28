@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { env } from 'cloudflare:test';
 import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
-import { IN_MEMORY_CACHE } from '../src/lib/cache';
+import { IN_MEMORY_CACHE, buildScanCacheKey } from '../src/lib/cache';
 import type { ScanDomainResult } from '../src/tools/scan-domain';
 
 const { restore } = setupFetchMock();
@@ -762,7 +762,7 @@ describe('scanDomain force_refresh', () => {
 		expect(first.cached).toBe(false);
 
 		// Clear only the top-level scan cache so we re-enter orchestration
-		IN_MEMORY_CACHE.delete('cache:force-refresh.com');
+		IN_MEMORY_CACHE.delete(buildScanCacheKey('force-refresh.com'));
 
 		// Record how many fetch calls were made so far
 		const fetchCountBefore = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
@@ -774,7 +774,7 @@ describe('scanDomain force_refresh', () => {
 		const normalFetchCount = fetchCountAfterNormal - fetchCountBefore;
 
 		// Clear top-level again for force_refresh test
-		IN_MEMORY_CACHE.delete('cache:force-refresh.com');
+		IN_MEMORY_CACHE.delete(buildScanCacheKey('force-refresh.com'));
 
 		// With force_refresh=true, per-check caches MUST be bypassed — all checks should re-execute
 		const third = await scanDomain('force-refresh.com', undefined, { forceRefresh: true });
@@ -797,7 +797,7 @@ describe('scanDomain force_refresh', () => {
 
 		// Clear only the top-level scan cache key so scanDomain re-enters orchestration,
 		// but per-check caches remain populated
-		IN_MEMORY_CACHE.delete('cache:normal-cache.com');
+		IN_MEMORY_CACHE.delete(buildScanCacheKey('normal-cache.com'));
 
 		// Second scan without forceRefresh should use per-check caches (no DNS queries)
 		const fetchBefore = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
@@ -934,7 +934,7 @@ describe('scanDomain deferred cache write (Fix 3)', () => {
 		expect(result.cached).toBe(false);
 
 		// The in-memory cache should have the result after return
-		const cached = IN_MEMORY_CACHE.get('cache:sync-cache.com');
+		const cached = IN_MEMORY_CACHE.get(buildScanCacheKey('sync-cache.com'));
 		expect(cached).toBeDefined();
 	});
 });

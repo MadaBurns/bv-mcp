@@ -237,6 +237,38 @@ function extractVcardName(entity: RdapEntity): string | null {
 	return null;
 }
 
+/**
+ * Extract the registrant organisation from a parsed RDAP domain response and
+ * normalise it for cross-domain equality comparison (lowercase, collapsed
+ * whitespace). Returns `null` when there's no registrant entity or no usable
+ * name/org field. Exported so the lookalike check can reuse the exact same
+ * entity-parsing logic for same-entity (shared-registrant) detection without
+ * duplicating the vCard traversal.
+ *
+ * Accepts `unknown` so callers parsing a lightweight RDAP fetch (no shared
+ * type) can pass the raw JSON; non-conforming shapes fall through to `null`.
+ */
+export function extractRegistrantOrg(rdapData: unknown): string | null {
+	if (typeof rdapData !== 'object' || rdapData === null) return null;
+	const entities = (rdapData as { entities?: unknown }).entities;
+	if (!Array.isArray(entities)) return null;
+	const registrant = findEntityByRole(entities as RdapEntity[], 'registrant');
+	if (!registrant) return null;
+	const raw = extractVcardName(registrant);
+	return normalizeRegistrantOrg(raw);
+}
+
+/**
+ * Normalise a registrant org string for equality comparison: trim, lowercase,
+ * and collapse internal whitespace. Returns `null` for empty / whitespace-only
+ * input. Exported for direct unit testing of the comparison contract.
+ */
+export function normalizeRegistrantOrg(value: string | null | undefined): string | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim().toLowerCase().replace(/\s+/g, ' ');
+	return normalized.length > 0 ? normalized : null;
+}
+
 /** Extract country from a vCard adr property. */
 function extractVcardCountry(entity: RdapEntity): string | null {
 	if (!entity.vcardArray || entity.vcardArray[0] !== 'vcard') return null;
@@ -256,7 +288,7 @@ function extractVcardCountry(entity: RdapEntity): string | null {
 }
 
 /** Find an entity with the given role. Searches top-level and nested entities. */
-function findEntityByRole(entities: RdapEntity[] | undefined, role: string): RdapEntity | null {
+export function findEntityByRole(entities: RdapEntity[] | undefined, role: string): RdapEntity | null {
 	if (!Array.isArray(entities)) return null;
 	for (const entity of entities) {
 		if (Array.isArray(entity.roles) && entity.roles.includes(role)) {

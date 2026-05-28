@@ -14,7 +14,7 @@ import type { ReconBinding } from '../lib/recon-binding';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { generateLookalikes } from './lookalike-analysis';
-import { FALLBACK_RDAP_SERVERS } from './check-rdap-lookup';
+import { FALLBACK_RDAP_SERVERS, extractRegistrantOrg } from './check-rdap-lookup';
 import { calibrateLookalikeSeverity, isDisposableMxHost, type LookalikeSignals } from './lookalike-severity';
 
 /** Default and minimum batch sizes for adaptive batching */
@@ -50,6 +50,18 @@ const WEB_PROBE_TIMEOUT_MS = 2500;
 
 /** Minimum number of NS records that must overlap to consider domains as sharing nameservers. */
 const SHARED_NS_THRESHOLD = 1;
+
+/**
+ * Cap on the number of medium/high-severity lookalikes for which we attempt
+ * the same-entity (shared-registrant) RDAP correlation. RDAP registrant data
+ * is already harvested from the single enrichment fetch per candidate
+ * ({@link probeRdap}), so the cost is bounded by the enrichment set; this cap
+ * is a defensive ceiling so a pathological permutation explosion can't widen
+ * the RDAP fan-out beyond the lookalike check's wall-clock budget. Ordered by
+ * severity (high before medium) so the most damaging false-positives are
+ * corrected first when the cap binds.
+ */
+const SAME_ENTITY_RDAP_CAP = 10;
 
 /**
  * Check whether an MX record represents real mail infrastructure.
@@ -352,6 +364,30 @@ async function checkLookalikesCore(
 	});
 	const enrichment = await enrichLookalikes(candidatesToEnrich);
 
+	// Same-entity correlation (issue #263): a flagged lookalike that shares the
+	// scan domain's RDAP registrant org is almost certainly the org's own
+	// defensive registration / regional subsidiary (e.g. a vendor's regional
+	// presence on a DIFFERENT DNS provider, which the shared-NS pass above
+	// misses). We only fetch the primary's registrant org — and only apply the
+	// correlation — when at least one enriched candidate would surface at
+	// medium/high severity, so a clean scan pays no RDAP cost. The candidates'
+	// own registrant orgs are already in `enrichment` (harvested from the same
+	// fetch as registrationDays), so this adds exactly ONE extra RDAP fetch (the
+	// primary), not one-per-candidate. The eligible set is capped at
+	// SAME_ENTITY_RDAP_CAP, highest-severity first. Fail-soft: if the primary
+	// RDAP org is unknown, NO downgrade happens (a real threat is never
+	// suppressed because RDAP was unavailable).
+	const sameEntityCandidates = computeSameEntityCandidates(results, lookalikeNsMap, primaryNs, enrichment);
+	const primaryRegistrantOrg = sameEntityCandidates.length > 0 ? await probePrimaryRegistrantOrg(domain) : null;
+	const sameEntityMatches = new Map<string, string>();
+	if (primaryRegistrantOrg !== null) {
+		for (const candidateDomain of sameEntityCandidates) {
+			if (enrichment.get(candidateDomain)?.registrantOrg === primaryRegistrantOrg) {
+				sameEntityMatches.set(candidateDomain, primaryRegistrantOrg);
+			}
+		}
+	}
+
 	// Classify results — check for shared nameservers with primary domain to detect defensive registrations
 	let highCount = 0;
 	for (const result of results) {
@@ -378,6 +414,7 @@ async function checkLookalikesCore(
 			registrationDays: null,
 			mxOnDisposable: false,
 			hasWebContent: true,
+			registrantOrg: null,
 		};
 		const signals: LookalikeSignals = {
 			hasA: result.hasA,
@@ -388,6 +425,26 @@ async function checkLookalikesCore(
 		};
 		const severity = calibrateLookalikeSeverity(signals);
 		const corroboratorReasons = describeCorroborators(signals);
+
+		// Same-entity correlation (issue #263): the calibrated severity is a
+		// threat tier (low/medium/high), but if this lookalike's RDAP registrant
+		// org matches the scan domain's, it's the org's own defensive / regional
+		// registration. Downgrade to an info finding instead of a threat. Only
+		// medium/high candidates are eligible (see computeSameEntityCandidates);
+		// LOW web-only matches stay as-is (cheap, low-noise, not worth the fetch).
+		const matchedOrg = sameEntityMatches.get(result.domain);
+		if (matchedOrg !== undefined) {
+			findings.push(
+				createFinding(
+					'lookalikes',
+					`Lookalike domain likely owned by same entity: ${result.domain}`,
+					'info',
+					`The domain ${result.domain} shares the same RDAP registrant organisation as ${domain} ("${matchedOrg}"), indicating it is likely a defensive registration or regional presence by the same owner rather than a third-party lookalike.${result.hasMX ? ' Has active mail infrastructure.' : ''}${result.hasA ? ' Has web presence.' : ''}`,
+					{ lookalikeDomain: result.domain, hasA: result.hasA, hasMX: result.hasMX, sharedRegistrantOrg: matchedOrg },
+				),
+			);
+			continue;
+		}
 
 		if (result.hasMX) {
 			if (severity === 'high') highCount++;
@@ -478,6 +535,52 @@ interface LookalikeCorroborators {
 	registrationDays: number | null;
 	mxOnDisposable: boolean;
 	hasWebContent: boolean;
+	/**
+	 * Normalised RDAP registrant org for this candidate, harvested from the same
+	 * single RDAP fetch as {@link registrationDays}. `null` when RDAP failed,
+	 * returned no registrant entity, or the org field was empty — in which case
+	 * the same-entity correlation fails soft (the calibrated threat severity
+	 * stands; a real threat is never suppressed on missing RDAP).
+	 */
+	registrantOrg: string | null;
+}
+
+/**
+ * Determine which lookalike candidates are eligible for the issue #263
+ * same-entity (shared-registrant) downgrade. Eligibility mirrors the
+ * classification loop's decision so we never fetch the primary's registrant
+ * org speculatively: a candidate qualifies only when it is NOT already a
+ * shared-NS same-owner hit, has mail/web infra, AND its calibrated severity is
+ * medium or high (low web-only matches aren't worth the RDAP cost). The result
+ * is sorted high-before-medium and capped at {@link SAME_ENTITY_RDAP_CAP} so a
+ * permutation explosion can't widen the RDAP fan-out unbounded.
+ */
+function computeSameEntityCandidates(
+	results: LookalikeResult[],
+	lookalikeNsMap: Map<string, Set<string>>,
+	primaryNs: Set<string>,
+	enrichment: Map<string, LookalikeCorroborators>,
+): string[] {
+	const eligible: Array<{ domain: string; severity: 'medium' | 'high' }> = [];
+	for (const result of results) {
+		const lookalikeNs = lookalikeNsMap.get(result.domain);
+		const sameOwner = primaryNs.size > 0 && lookalikeNs !== undefined && sharesNameservers(primaryNs, lookalikeNs);
+		if (sameOwner) continue;
+		if (!result.hasMX && !result.hasA) continue;
+		const corroborators = enrichment.get(result.domain);
+		const severity = calibrateLookalikeSeverity({
+			hasA: result.hasA,
+			hasMX: result.hasMX,
+			registrationDays: corroborators?.registrationDays ?? null,
+			mxOnDisposable: corroborators?.mxOnDisposable ?? false,
+			hasWebContent: corroborators?.hasWebContent ?? true,
+		});
+		if (severity === 'medium' || severity === 'high') {
+			eligible.push({ domain: result.domain, severity });
+		}
+	}
+	eligible.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'high' ? -1 : 1));
+	return eligible.slice(0, SAME_ENTITY_RDAP_CAP).map((e) => e.domain);
 }
 
 /**
@@ -493,31 +596,49 @@ async function enrichLookalikes(candidates: LookalikeResult[]): Promise<Map<stri
 	if (candidates.length === 0) return map;
 	await Promise.allSettled(
 		candidates.map(async (candidate) => {
-			const [registrationDays, hasWebContent] = await Promise.all([
-				probeRegistrationDays(candidate.domain),
+			const [rdap, hasWebContent] = await Promise.all([
+				probeRdap(candidate.domain),
 				candidate.hasA ? probeHasWebContent(candidate.domain) : Promise.resolve(true),
 			]);
 			const mxOnDisposable = candidate.mxExchanges.some(isDisposableMxHost);
-			map.set(candidate.domain, { registrationDays, mxOnDisposable, hasWebContent });
+			map.set(candidate.domain, {
+				registrationDays: rdap.registrationDays,
+				mxOnDisposable,
+				hasWebContent,
+				registrantOrg: rdap.registrantOrg,
+			});
 		}),
 	);
 	return map;
 }
 
+/** Result of the single lightweight RDAP probe per candidate. */
+interface RdapProbeResult {
+	/** Age in days since the RDAP `registration` event, or `null` on any failure / missing data. */
+	registrationDays: number | null;
+	/** Normalised RDAP registrant org, or `null` on any failure / missing data. */
+	registrantOrg: string | null;
+}
+
+/** Empty probe result — used for early-outs and the catch path (fail-soft). */
+const EMPTY_RDAP_PROBE: RdapProbeResult = { registrationDays: null, registrantOrg: null };
+
 /**
  * Lightweight RDAP lookup constrained for use inside the lookalike check.
  * Hits the hardcoded {@link FALLBACK_RDAP_SERVERS} map only (no IANA bootstrap),
- * single fetch, hard 2.5s timeout, no retries. Returns the age in days since
- * the `registration` event, or `null` on any failure / missing data — which the
- * calibrator treats as "unknown, not recent" so a single absent signal never
- * elevates severity.
+ * single fetch, hard 2.5s timeout, no retries. From that single response it
+ * derives BOTH the registration age (issue #264 corroborator) AND the registrant
+ * org (issue #263 same-entity correlation) — no extra fetch for the org signal.
+ * Any failure / missing data yields `null` for the affected field, which the
+ * calibrator treats as "unknown" (never elevates severity) and the same-entity
+ * check treats as "no match" (never suppresses a real threat).
  */
-async function probeRegistrationDays(domain: string): Promise<number | null> {
+async function probeRdap(domain: string): Promise<RdapProbeResult> {
 	const labels = domain.split('.');
 	const tld = labels[labels.length - 1]?.toLowerCase();
-	if (!tld) return null;
+	if (!tld) return EMPTY_RDAP_PROBE;
 	const serverUrl = FALLBACK_RDAP_SERVERS[tld];
-	if (!serverUrl) return null;
+	if (!serverUrl) return EMPTY_RDAP_PROBE;
 	try {
 		const baseUrl = serverUrl.endsWith('/') ? serverUrl : `${serverUrl}/`;
 		const rdapUrl = `${baseUrl}domain/${domain}`;
@@ -526,16 +647,28 @@ async function probeRegistrationDays(domain: string): Promise<number | null> {
 			signal: AbortSignal.timeout(RDAP_PROBE_TIMEOUT_MS),
 			headers: { Accept: 'application/rdap+json, application/json' },
 		});
-		if (!resp.ok) return null;
+		if (!resp.ok) return EMPTY_RDAP_PROBE;
 		const data = (await resp.json()) as { events?: Array<{ eventAction?: string; eventDate?: string }> };
 		const registration = Array.isArray(data.events) ? data.events.find((e) => e.eventAction === 'registration') : undefined;
-		if (!registration?.eventDate) return null;
-		const creationTime = new Date(registration.eventDate).getTime();
-		if (!Number.isFinite(creationTime)) return null;
-		return Math.floor((Date.now() - creationTime) / (1000 * 60 * 60 * 24));
+		let registrationDays: number | null = null;
+		if (registration?.eventDate) {
+			const creationTime = new Date(registration.eventDate).getTime();
+			if (Number.isFinite(creationTime)) {
+				registrationDays = Math.floor((Date.now() - creationTime) / (1000 * 60 * 60 * 24));
+			}
+		}
+		return { registrationDays, registrantOrg: extractRegistrantOrg(data) };
 	} catch {
-		return null;
+		return EMPTY_RDAP_PROBE;
 	}
+}
+
+/**
+ * Fetch the scan domain's normalised RDAP registrant org for same-entity
+ * correlation (issue #263). Reuses {@link probeRdap}; fail-soft `null`.
+ */
+async function probePrimaryRegistrantOrg(domain: string): Promise<string | null> {
+	return (await probeRdap(domain)).registrantOrg;
 }
 
 /**

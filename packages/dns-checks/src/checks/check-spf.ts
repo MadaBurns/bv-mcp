@@ -13,9 +13,12 @@ import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { parseDmarcTags } from './dmarc-utils';
 import {
+	DNS_UDP_LIMIT_BYTES,
+	DNS_UDP_WARN_BYTES,
 	RISKY_MECHANISMS,
 	checkBroadIpRanges,
 	countRecursiveLookups,
+	estimateTxtRrsetBytes,
 	extractSpfSignalDomains,
 	type RecursiveState,
 } from './spf-analysis';
@@ -29,6 +32,34 @@ function isNoSendPolicy(spf: string): boolean {
 	if (qualifier !== '-' && qualifier !== '~') return false;
 	const hasAuthorizing = /\b(include:|a[:/\s]|a$|mx[:/\s]|mx$|ip4:|ip6:|redirect=|exists:)/i.test(spf);
 	return !hasAuthorizing;
+}
+
+/**
+ * Flag a TXT RRset large enough to truncate over UDP (forcing TCP fallback).
+ * DoH always returns the full response, so this wire-size estimate is the only
+ * signal available to a passive scanner (RFC 7208 §3.4).
+ */
+function checkUdpTruncation(domain: string, txtRecords: string[]): Finding | undefined {
+	const rrsetBytes = estimateTxtRrsetBytes(txtRecords);
+	if (rrsetBytes > DNS_UDP_LIMIT_BYTES) {
+		return createFinding(
+			'spf',
+			'TXT RRset exceeds UDP limit',
+			'medium',
+			`The combined TXT RRset for ${domain} is ~${rrsetBytes} bytes, which exceeds the 512-byte UDP limit and requires TCP fallback. Legacy resolvers and restrictive middleboxes that do not retry over TCP may only see the first ~512 bytes, silently breaking SPF for some receiving MTAs. RFC 7208 §3.4 advises keeping the SPF record and surrounding TXT RRset small enough to fit a single UDP packet.`,
+			{ findingCode: 'SPF_RRSET_LARGE', rrsetBytes },
+		);
+	}
+	if (rrsetBytes > DNS_UDP_WARN_BYTES) {
+		return createFinding(
+			'spf',
+			'TXT RRset approaching UDP limit',
+			'low',
+			`The combined TXT RRset for ${domain} is ~${rrsetBytes} bytes, approaching the 512-byte UDP limit. Once it exceeds 512 bytes, responses require TCP fallback and legacy resolvers that do not retry over TCP may silently break SPF. RFC 7208 §3.4 advises keeping the SPF record and surrounding TXT RRset small enough to fit a single UDP packet.`,
+			{ findingCode: 'SPF_RRSET_LARGE', rrsetBytes },
+		);
+	}
+	return undefined;
 }
 
 interface TrustSurfaceDmarcContext {
@@ -126,6 +157,12 @@ export async function checkSPF(
 				`Found ${spfMatches.length} SPF records in TXT data. RFC 7208 requires exactly one SPF record per domain. Multiple records cause unpredictable behavior.`,
 			),
 		);
+	}
+
+	// UDP truncation risk: estimate the full TXT RRset wire size (RFC 7208 §3.4).
+	const truncationFinding = checkUdpTruncation(domain, txtRecords);
+	if (truncationFinding) {
+		findings.push(truncationFinding);
 	}
 
 	const spf = spfRecords[0];

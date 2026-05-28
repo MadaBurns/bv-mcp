@@ -622,4 +622,92 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 			expect(cdnFinding((await run()).findings)).toBe('Akamai');
 		});
 	});
+
+	describe('CDN attribution across a redirect chain (intermediate-hop signals)', () => {
+		// A "well-configured" header set so the CDN annotation finding fires on the
+		// final analyzed response (annotation is suppressed for unanalyzable responses).
+		function wellConfigured(extra: Record<string, string>): Headers {
+			return new Headers({
+				'content-security-policy': "default-src 'self'; frame-ancestors 'none'",
+				'x-frame-options': 'DENY',
+				'x-content-type-options': 'nosniff',
+				'permissions-policy': 'camera=()',
+				'referrer-policy': 'no-referrer',
+				'cross-origin-resource-policy': 'same-origin',
+				'cross-origin-opener-policy': 'same-origin',
+				'cross-origin-embedder-policy': 'require-corp',
+				...extra,
+			});
+		}
+
+		function cdnFinding(findings: Array<{ metadata?: Record<string, unknown> }>): string | null {
+			const f = findings.find((x) => typeof x.metadata?.cdnProvider === 'string');
+			return f ? (f.metadata!.cdnProvider as string) : null;
+		}
+
+		/**
+		 * Route the mock by URL: a 301 redirect from the apex to a sub-host that
+		 * serves the (possibly CDN-fronted) final 200. `hops` maps URL → headers.
+		 * Any URL not in the map gets the final 200.
+		 */
+		function mockChain(intermediateHeaders: Record<string, string>, finalHeaders: Record<string, string>) {
+			globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+				if (url === 'https://example.com') {
+					return Promise.resolve({
+						ok: false,
+						status: 301,
+						type: 'basic',
+						url: 'https://example.com',
+						headers: new Headers({ location: 'https://cdn.example.com/', ...intermediateHeaders }),
+					});
+				}
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					type: 'basic',
+					url: 'https://cdn.example.com/',
+					headers: wellConfigured(finalHeaders),
+				});
+			});
+		}
+
+		it('detects CloudFront when only an INTERMEDIATE hop carries x-amz-cf-id', async () => {
+			// Final hop has no CDN signal; the intermediate redirect carries it.
+			mockChain({ 'x-amz-cf-id': 'abc123==' }, {});
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBe('CloudFront');
+		});
+
+		it('detects CloudFront when only an INTERMEDIATE hop carries via: ...cloudfront.net', async () => {
+			mockChain({ via: '1.1 a1b2c3.cloudfront.net (CloudFront)' }, {});
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBe('CloudFront');
+		});
+
+		it('still detects CloudFront when only the FINAL hop carries the header (no regression)', async () => {
+			mockChain({}, { 'x-amz-cf-id': 'final==' });
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBe('CloudFront');
+		});
+
+		it('returns null when NO hop carries any CDN header (no false positive)', async () => {
+			mockChain({ server: 'AkamaiGHost' }, { server: 'nginx' });
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBeNull();
+		});
+
+		it('does NOT attribute Cloudflare from server: cloudflare on an intermediate hop (v3.3.12 invariant)', async () => {
+			// server is rewritten to `cloudflare` by CF Worker egress on every hop —
+			// it must never be carried forward as a CF detection signal.
+			mockChain({ server: 'cloudflare', 'cf-ray': '8aabcdef1234-AKL' }, { server: 'cloudflare', 'cf-ray': '8aabcdef1234-AKL' });
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBeNull();
+		});
+
+		it('attributes Akamai from x-akamai-transformed on an intermediate hop', async () => {
+			mockChain({ 'x-akamai-transformed': '9 - 0 pmb=mTOE,2' }, {});
+			const result = await run();
+			expect(cdnFinding(result.findings)).toBe('Akamai');
+		});
+	});
 });
