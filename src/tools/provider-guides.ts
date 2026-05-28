@@ -189,6 +189,21 @@ const DETECTION_RULES: DetectionRule[] = [
 		signal: 'spf:mtasv.net',
 	},
 	{
+		// AutoSPF. SPF-flattening service — customers replace their nested SPF
+		// includes with a single per-tenant include under `*.autospf.email`
+		// (eg. `_s00430413.autospf.email`). Without this rule the raw per-tenant
+		// selector hostname surfaces as a third-party row instead of the canonical
+		// provider name. SPF-only (no fixed MX hostnames); the SPF-rule dedup path
+		// (matchProviderForSpfInclude) handles it.
+		// Catalog gap surfaced 2026-05-28 (post-v3.3.19 fact-check round).
+		name: 'AutoSPF',
+		role: 'sending',
+		patterns: {
+			spf: /\.autospf\.email$/i,
+		},
+		signal: 'spf:autospf',
+	},
+	{
 		// Trellix Email Security (formerly FireEye Email Security; rebranded after
 		// Trellix was formed in 2022). Enterprise email security gateway that sits
 		// between sender and recipient; SPF includes resolve to AWS-edge senders.

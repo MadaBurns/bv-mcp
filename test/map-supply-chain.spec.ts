@@ -136,6 +136,14 @@ describe('mapSupplyChain', () => {
 		expect(digicertDep!.roles).toContain('certificate-authority');
 	});
 
+	it('resolves AutoSPF via *.autospf.email SPF includes (mit.edu pattern)', async () => {
+		mockDnsResponses({ spf: 'v=spf1 include:_s00430413.autospf.email -all', domain: 'mit.edu' });
+		const result = await run('mit.edu');
+		const rows = result.dependencies.filter((d) => d.provider === 'AutoSPF');
+		expect(rows.length).toBe(1);
+		expect(result.dependencies.find((d) => /autospf\.email/i.test(d.provider))).toBeUndefined();
+	});
+
 	it('detects known providers via detectProviders()', async () => {
 		mockDnsResponses({
 			spf: 'v=spf1 include:spf.protection.outlook.com include:sendgrid.net -all',

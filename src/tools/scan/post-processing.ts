@@ -5,6 +5,7 @@ import { queryTxtRecords } from '../../lib/dns';
 import { queryDnsRecords } from '../../lib/dns-records';
 import { detectProviderMatches, detectProviderMatchesBySelectors, loadProviderSignatures } from '../../lib/provider-signatures';
 import { detectCloudflareFallback } from '../../lib/cdn-fallback-detection';
+import { type AsnDohResolver, detectCdnFromAsn } from '../../lib/cdn-asn-detection';
 import { parseDmarcTags } from '../check-dmarc';
 
 export interface ScanRuntimeOptions {
@@ -62,7 +63,7 @@ export async function applyScanPostProcessing(
 		results = adjustForNoSendDomain(results);
 	}
 
-	results = await addCloudflareCdnHeuristic(domain, results, {
+	results = await addCdnHeuristics(domain, results, {
 		certstream: runtimeOptions?.certstream,
 		certstreamAuthToken: runtimeOptions?.certstreamAuthToken,
 	});
@@ -71,24 +72,29 @@ export async function applyScanPostProcessing(
 }
 
 /**
- * Heuristic Cloudflare CDN attribution fallback.
+ * Heuristic CDN attribution fallback (tiered).
  *
- * Header-based CDN detection (in `check-http-security`) cannot identify
- * Cloudflare from inside a Cloudflare Worker — see the rationale in
- * `src/lib/cdn-fallback-detection.ts`. This post-processing pass restores
- * attribution when:
+ * Header-based CDN detection (in `check-http-security`) can miss CDNs that
+ * don't emit a vendor-specific header, and cannot identify Cloudflare at all
+ * from inside a Cloudflare Worker — see the rationale in
+ * `src/lib/cdn-fallback-detection.ts`. `addCdnHeuristics` restores attribution
+ * via three tiers, in order, each only running when the prior produced nothing:
  *
- *   1. No header-based CDN was identified for `http_security`, AND
- *   2. All NS records resolve under `*.ns.cloudflare.com`, AND
- *   3. At least one A record falls in a published Cloudflare edge range.
+ *   1. Header vendor-specific — primary; if `http_security` already carries a
+ *      `metadata.cdnProvider`, the fallbacks are skipped entirely.
+ *   2. Cloudflare NS+IP+cert 2-of-3 heuristic (`detectCloudflareFallback`).
+ *   3. ASN-based fallback (`detectCdnFromAsn`) — resolves A-record IPs to their
+ *      origin ASN via team-cymru DoH and maps ASN -> CDN (closes the Akamai and
+ *      other no-header-CDN false-negatives).
  *
  * When matched, emits a new info-level finding on the `http_security` check
- * with `metadata: { cdnProvider: 'Cloudflare', confidence: 'heuristic',
- * source: 'ns-and-ip-range' }`. Format-report already iterates findings
+ * with `metadata.cdnProvider`/`confidence: 'heuristic'`/`source` (`ns-and-ip-range`,
+ * `ns-ip-and-cert`, or `asn-lookup`). Format-report already iterates findings
  * looking for `metadata.cdnProvider`, so it picks this up automatically.
  *
  * Conservative: any DNS error during the fresh NS/A lookups silently skips
- * the heuristic — never poisons a scan result.
+ * the heuristic, and the ASN tier is bounded + fail-soft — never poisons a
+ * scan result.
  */
 /**
  * Sync budget for the cert-meta lookup inside scan_domain post-processing.
@@ -125,15 +131,15 @@ async function fetchCertIssuerFromCertstream(
 	}
 }
 
-async function addCloudflareCdnHeuristic(
+async function addCdnHeuristics(
 	domain: string,
 	results: CheckResult[],
-	options?: { certstream?: { fetch: typeof fetch }; certstreamAuthToken?: string },
+	options?: { certstream?: { fetch: typeof fetch }; certstreamAuthToken?: string; doh?: AsnDohResolver },
 ): Promise<CheckResult[]> {
 	const httpResult = results.find((result) => result.category === 'http_security');
 	if (!httpResult) return results;
 
-	// Don't compete with a header-based CDN hit — those are stronger signal.
+	// Tier 1: don't compete with a header-based CDN hit — those are stronger signal.
 	const alreadyHasCdn = httpResult.findings.some((f) => typeof f.metadata?.cdnProvider === 'string');
 	if (alreadyHasCdn) return results;
 
@@ -167,8 +173,12 @@ async function addCloudflareCdnHeuristic(
 		);
 	}
 
+	// Tier 2: Cloudflare NS+IP+cert heuristic. When it produces nothing, fall
+	// through to the ASN-based tier 3 below.
 	const heuristic = detectCloudflareFallback({ nsHosts: normalisedNs, aRecords, certIssuer });
-	if (!heuristic) return results;
+	if (!heuristic) {
+		return addAsnCdnHeuristic(httpResult, results, aRecords, options?.doh);
+	}
 
 	// Build a detail string that honestly reflects which signals matched, so
 	// users understand whether attribution came from (NS+IP) or (IP+cert) or
@@ -193,8 +203,56 @@ async function addCloudflareCdnHeuristic(
 		},
 	);
 
+	return appendCdnFinding(httpResult, results, cdnFinding);
+}
+
+/**
+ * Tier 3: ASN-based CDN attribution fallback.
+ *
+ * Runs only when tiers 1 (header) and 2 (CF NS+IP+cert) produced no
+ * attribution. Resolves up to MAX_ASN_LOOKUPS A-record IPs to their origin ASN
+ * via team-cymru DoH TXT and maps ASN -> CDN (see cdn-asn-detection.ts). This
+ * closes false-negatives for CDNs that don't emit a vendor-specific header —
+ * notably Akamai (`Server: AkamaiGHost`, no transform header) — without a
+ * hardcoded per-provider CIDR list.
+ *
+ * Best-effort and fail-soft: the resolver enforces its own per-query timeout,
+ * the lookup count is bounded, and any failure yields no attribution.
+ */
+async function addAsnCdnHeuristic(
+	httpResult: CheckResult,
+	results: CheckResult[],
+	aRecords: string[],
+	doh?: AsnDohResolver,
+): Promise<CheckResult[]> {
+	if (aRecords.length === 0) return results;
+
+	const resolver: AsnDohResolver = doh ?? { queryTxt: (name) => queryTxtRecords(name) };
+	const asnResult = await detectCdnFromAsn(aRecords, resolver);
+	if (!asnResult) return results;
+
+	const cdnFinding = createFinding(
+		'http_security',
+		`HTTP origin attributed to ${asnResult.provider} CDN (heuristic)`,
+		'info',
+		`${asnResult.provider} CDN inferred from the origin ASN (AS${asnResult.asn}) of the resolved A-record IP via team-cymru. Header-based CDN detection was inconclusive — this CDN does not emit a vendor-specific response header, and the scanner runs inside a Cloudflare Worker, which rewrites server: cloudflare on every outbound response.`,
+		{
+			cdnProvider: asnResult.provider,
+			confidence: asnResult.confidence,
+			source: 'asn-lookup',
+			asn: asnResult.asn,
+		},
+	);
+
+	return appendCdnFinding(httpResult, results, cdnFinding);
+}
+
+/**
+ * Append a heuristic CDN finding to the http_security check, preserving its
+ * scoring fields (buildCheckResult creates a fresh CheckResult).
+ */
+function appendCdnFinding(httpResult: CheckResult, results: CheckResult[], cdnFinding: Finding): CheckResult[] {
 	const updated = buildCheckResult('http_security', [...httpResult.findings, cdnFinding]);
-	// buildCheckResult creates a fresh CheckResult — preserve scoring fields we care about.
 	const merged: CheckResult = {
 		...updated,
 		score: httpResult.score,
