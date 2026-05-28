@@ -492,6 +492,96 @@ describe('mapSupplyChain', () => {
 		).toBeDefined();
 	});
 
+	it('groups NS hosts under ccTLD-2LD parent domains and treats self-hosted NS as self-hosted (anz.co.nz pattern)', async () => {
+		// Regression (2026-05-28): the prior 2-label heuristic returned `co.nz`
+		// as a "DNS hosting provider" for `ns1.anz.co.nz` because `slice(-2)`
+		// stops at the ccTLD-second-level. After the fix:
+		//   - akam.net surfaces as the actual third-party DNS host
+		//   - anz.co.nz is recognised as a registry-suffix-aware parent
+		//   - the self-hosted NS (ns1/ns2.example.co.nz) is dropped, not relabelled
+		mockDnsResponses({
+			spf: 'v=spf1 -all',
+			nsHosts: [
+				'a1-1.akam.net',
+				'a2-2.akam.net',
+				'a3-3.akam.net',
+				'a4-4.akam.net',
+				'a5-5.akam.net',
+				'a6-6.akam.net',
+				'ns1.example.co.nz',
+				'ns2.example.co.nz',
+			],
+			caaRecords: [],
+			domain: 'example.co.nz',
+		});
+
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		const result = await mapSupplyChain('example.co.nz');
+
+		// Bug: registry suffix must not appear as a provider.
+		expect(result.dependencies.find((d) => d.provider === 'co.nz')).toBeUndefined();
+		// Akamai (via akam.net parent) is the actual third-party DNS host.
+		const akam = result.dependencies.find((d) => d.provider === 'akam.net');
+		expect(akam).toBeDefined();
+		expect(akam!.sources).toContain('ns');
+		expect(akam!.roles).toContain('dns-hosting');
+		// Self-hosted NS must not be re-emitted as a third-party dependency.
+		expect(result.dependencies.find((d) => d.provider === 'example.co.nz')).toBeUndefined();
+		expect(result.dependencies.find((d) => d.provider === 'ns1.example.co.nz')).toBeUndefined();
+	});
+
+	it('resolves _spf.fireeyecloud.com to Trellix Email Security via shared DETECTION_RULES', async () => {
+		// Regression (2026-05-28): `_spf.fireeyecloud.com` previously surfaced as
+		// a raw SPF entry. Adding a DETECTION_RULES entry (with `spf` pattern and
+		// `spf:fireeyecloud.com` signal) routes it through matchProviderForSpfInclude
+		// so it dedups to the canonical Trellix Email Security name.
+		mockDnsResponses({
+			spf: 'v=spf1 include:_spf.fireeyecloud.com -all',
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			caaRecords: [],
+		});
+
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		const result = await mapSupplyChain('example.com');
+
+		// Canonical Trellix name appears exactly once with spf source + critical trust.
+		const trellix = result.dependencies.filter((d) => d.provider === 'Trellix Email Security');
+		expect(trellix.length).toBe(1);
+		expect(trellix[0].sources).toContain('spf');
+		expect(trellix[0].roles).toContain('email-sending');
+		expect(trellix[0].trustLevel).toBe('critical');
+		// No raw SPF row for the matched host (dedup worked).
+		expect(result.dependencies.find((d) => d.provider === '_spf.fireeyecloud.com')).toBeUndefined();
+	});
+
+	it('emits a single stale_integration signal with a count when multiple TXT verifications share one service', async () => {
+		// Regression (2026-05-28): anz.co.nz had 3x google-site-verification TXT
+		// records (one per web property) and produced 3x identical stale_integration
+		// signals. The fix dedups by service name and reports a count.
+		mockDnsResponses({
+			spf: 'v=spf1 -all',
+			txtRecords: [
+				'google-site-verification=abc111',
+				'google-site-verification=abc222',
+				'google-site-verification=abc333',
+			],
+			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+			caaRecords: [],
+		});
+
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		const result = await mapSupplyChain('example.com');
+
+		const staleSignals = result.signals.filter(
+			(s) => s.type === 'stale_integration' && s.detail.includes('Google Search Console'),
+		);
+		expect(staleSignals.length).toBe(1);
+		expect(staleSignals[0].severity).toBe('low');
+		// Count surfaces in the detail string so consumers can see the scope.
+		expect(staleSignals[0].detail).toContain('3 TXT verification records');
+		expect(staleSignals[0].detail).toContain('stale');
+	});
+
 	it('tolerates SRV probe failures gracefully', async () => {
 		// Mock that throws for SRV queries but succeeds for everything else
 		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
