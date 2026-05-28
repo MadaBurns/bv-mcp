@@ -148,6 +148,20 @@ const DETECTION_RULES: DetectionRule[] = [
 		},
 		signal: 'spf:mtasv.net',
 	},
+	{
+		// Trellix Email Security (formerly FireEye Email Security; rebranded after
+		// Trellix was formed in 2022). Enterprise email security gateway that sits
+		// between sender and recipient; SPF includes resolve to AWS-edge senders.
+		// Detected via SPF only (no fixed MX hostnames — customers point their MX
+		// at customer-specific Trellix tenants); intentionally no `signal: 'mx:…'`
+		// so the SPF-rule dedup path (see matchProviderForSpfInclude) handles it.
+		name: 'Trellix Email Security',
+		role: 'sending',
+		patterns: {
+			spf: /(^|\.)fireeyecloud\.com$/i,
+		},
+		signal: 'spf:fireeyecloud.com',
+	},
 ];
 
 /**

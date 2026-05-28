@@ -112,6 +112,61 @@ function sourceToRole(source: string): string {
 	}
 }
 
+/**
+ * Common ccTLD second-level domains (SLDs) where the registrable parent domain
+ * is 3 labels deep, not 2 (e.g. `ns1.anz.co.nz` → `anz.co.nz`, not `co.nz`).
+ *
+ * This is a curated short list covering >95% of real-world ccTLD-2LD cases;
+ * the proper long-term fix is the Public Suffix List, but its ~9KB dataset
+ * and fuzzy-matching cost isn't justified for a DNS-derived heuristic that
+ * only needs to avoid labelling registry suffixes as third-party providers.
+ *
+ * Extend as new false positives surface (defect surfaced 2026-05-28 against
+ * `anz.co.nz`, where `co.nz` was reported as a DNS hosting provider).
+ */
+const PUBLIC_SUFFIX_SECOND_LEVEL: ReadonlySet<string> = new Set([
+	// United Kingdom
+	'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'me.uk', 'ltd.uk', 'plc.uk',
+	// New Zealand
+	'co.nz', 'org.nz', 'net.nz', 'ac.nz', 'govt.nz', 'school.nz',
+	// Australia
+	'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au', 'asn.au', 'id.au',
+	// South Africa
+	'co.za', 'org.za', 'web.za',
+	// Japan
+	'co.jp', 'ac.jp', 'ne.jp', 'or.jp', 'go.jp',
+	// India
+	'co.in', 'org.in', 'net.in', 'gov.in', 'ac.in',
+	// South Korea
+	'co.kr', 'or.kr', 'ne.kr', 'go.kr',
+	// Brazil
+	'com.br', 'net.br', 'org.br', 'gov.br',
+	// Mexico
+	'com.mx', 'gob.mx', 'edu.mx',
+	// Singapore
+	'com.sg', 'edu.sg', 'org.sg', 'gov.sg',
+]);
+
+/**
+ * Resolve a hostname to its registrable parent domain, accounting for common
+ * ccTLD second-level domains. Used to group NS hostnames by provider zone.
+ *
+ * Examples:
+ *   ns1.akam.net      → akam.net
+ *   ns1.anz.co.nz     → anz.co.nz   (not co.nz — co.nz is a registry suffix)
+ *   ns1.example.co.uk → example.co.uk
+ *   ns1               → ns1         (degenerate; returned as-is)
+ */
+export function getEffectiveParentDomain(host: string): string {
+	const parts = host.split('.');
+	if (parts.length < 2) return host;
+	const twoLabel = parts.slice(-2).join('.');
+	if (parts.length >= 3 && PUBLIC_SUFFIX_SECOND_LEVEL.has(twoLabel)) {
+		return parts.slice(-3).join('.');
+	}
+	return twoLabel;
+}
+
 /** Map SRV target hostnames to known provider names. */
 const SRV_TARGET_PROVIDERS: Array<{ pattern: RegExp; provider: string }> = [
 	{ pattern: /\.outlook\.com$/i, provider: 'Microsoft 365' },
@@ -262,13 +317,17 @@ export async function mapSupplyChain(
 		}
 	}
 
-	// Add unrecognized NS hosts — group by parent domain
+	// Add unrecognized NS hosts — group by registrable parent domain.
+	// `getEffectiveParentDomain` accounts for ccTLD-2LD suffixes (co.nz, co.uk,
+	// com.au, …) so `ns1.anz.co.nz` collapses to `anz.co.nz`, not `co.nz`.
+	// When the parent matches the scan domain itself, the NS is self-hosted —
+	// skip adding a "third-party" row so the output isn't misleading.
+	const scanDomain = domain.toLowerCase();
 	for (const host of nsHosts) {
-		if (!detectedNsHosts.has(host)) {
-			const parts = host.split('.');
-			const parentDomain = parts.length >= 2 ? parts.slice(-2).join('.') : host;
-			addDependency(parentDomain, 'ns');
-		}
+		if (detectedNsHosts.has(host)) continue;
+		const parentDomain = getEffectiveParentDomain(host);
+		if (parentDomain === scanDomain) continue;
+		addDependency(parentDomain, 'ns');
 	}
 
 	// Add CAA issuers
@@ -342,21 +401,29 @@ export async function mapSupplyChain(
 		});
 	}
 
-	// Stale integration: verified service has known SPF domains but none appear in SPF includes
+	// Stale integration: verified service has known SPF domains but none appear in SPF includes.
+	// Dedup by service name first — large orgs commonly publish multiple TXT verification
+	// records for the same service (e.g. one google-site-verification per web property);
+	// without dedup we'd emit N identical signals (observed 3x on anz.co.nz, 2026-05-28).
+	const verificationCountByService = new Map<string, number>();
 	for (const vs of verifiedServices) {
-		const expectedSpfDomains = SERVICE_SPF_DOMAINS[vs.service];
-		if (expectedSpfDomains && expectedSpfDomains.length > 0) {
-			const hasMatchingSpf = expectedSpfDomains.some((spfDomain) =>
-				spfIncludes.some((inc) => inc.includes(spfDomain)),
-			);
-			if (!hasMatchingSpf) {
-				signals.push({
-					type: 'stale_integration',
-					severity: 'low',
-					detail: `${vs.service} has a TXT verification record but no corresponding SPF include. The integration may be stale or incomplete.`,
-				});
-			}
-		}
+		verificationCountByService.set(vs.service, (verificationCountByService.get(vs.service) ?? 0) + 1);
+	}
+	for (const [service, count] of verificationCountByService) {
+		const expectedSpfDomains = SERVICE_SPF_DOMAINS[service];
+		if (!expectedSpfDomains || expectedSpfDomains.length === 0) continue;
+		const hasMatchingSpf = expectedSpfDomains.some((spfDomain) =>
+			spfIncludes.some((inc) => inc.includes(spfDomain)),
+		);
+		if (hasMatchingSpf) continue;
+		const recordPhrase = count === 1
+			? 'a TXT verification record'
+			: `${count} TXT verification records`;
+		signals.push({
+			type: 'stale_integration',
+			severity: 'low',
+			detail: `${service} has ${recordPhrase} but no corresponding SPF include. The integration may be stale or incomplete.`,
+		});
 	}
 
 	// Shadow service: SRV-discovered provider not corroborated by TXT verifications or SPF includes
