@@ -2,7 +2,14 @@
 
 /**
  * Real-time Blocklist (RBL) check tool.
- * Resolves MX IPs for a domain and checks against 8 DNS-based blocklists.
+ * Resolves MX IPs for a domain and checks against 7 DNS-based blocklists.
+ *
+ * Spamhaus ZEN is intentionally NOT in the provider set. bv-mcp queries via
+ * shared public resolvers, where ZEN returns rate-limit/refused codes
+ * (127.255.255.x) indistinguishable from a real verdict — and bv-mcp has no
+ * reliable ZEN query path (its secondary-resolver token only drives
+ * empty-result confirmation, it does not reroute the ZEN lookup). ZEN is
+ * therefore dropped unconditionally: neither queried nor counted.
  */
 
 import { queryDnsRecords, queryMxRecords } from '../lib/dns';
@@ -17,7 +24,6 @@ interface RblZone {
 }
 
 const RBL_ZONES: RblZone[] = [
-	{ name: 'Spamhaus ZEN', zone: 'zen.spamhaus.org' },
 	{ name: 'SpamCop', zone: 'bl.spamcop.net' },
 	{ name: 'UCEProtect L1', zone: 'dnsbl-1.uceprotect.net' },
 	{ name: 'UCEProtect L2', zone: 'dnsbl-2.uceprotect.net' },
@@ -30,24 +36,6 @@ const RBL_ZONES: RblZone[] = [
 const CATEGORY = 'rbl' as CheckCategory;
 const MAX_MX_IPS = 4;
 
-/** Spamhaus ZEN return code descriptions (keyed by last two octets). */
-const SPAMHAUS_CODES: Record<string, string> = {
-	'0.2': 'SBL — direct spam source',
-	'0.3': 'SBL CSS — spam support service',
-	'0.4': 'XBL CBL — exploited host',
-	'0.5': 'XBL — exploited host (NJABL)',
-	'0.9': 'SBL DROP — hijacked netblock',
-	'0.10': 'PBL ISP — end-user IP',
-	'0.11': 'PBL ISP — end-user IP',
-};
-
-/** Decode Spamhaus ZEN return code. Returns null for quota codes. */
-function decodeSpamhausCode(ip: string): string | null {
-	if (ip.startsWith('127.255.255.')) return null; // quota
-	const lastTwo = ip.split('.').slice(2).join('.');
-	return SPAMHAUS_CODES[lastTwo] ?? `Listed (${ip})`;
-}
-
 /** Mailspike positive reputation codes: 127.0.0.10 through 127.0.0.14. */
 function isMailspikePositive(ip: string): boolean {
 	const last = parseInt(ip.split('.').pop() ?? '0', 10);
@@ -55,8 +43,10 @@ function isMailspikePositive(ip: string): boolean {
 }
 
 /**
- * Check MX server IPs against 8 DNS-based Real-time Blocklists.
+ * Check MX server IPs against 7 DNS-based Real-time Blocklists.
  * Falls back to domain A records if no MX records exist.
+ *
+ * Spamhaus ZEN is excluded from the provider set — see the module header.
  */
 export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	const findings: ReturnType<typeof createFinding>[] = [];
@@ -153,7 +143,6 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 		checkedPublicIps++;
 		const reversed = reverseIPv4(ip);
 		let ipListingCount = 0;
-		let hasSpamhausListing = false;
 		const ipListingIndices: number[] = [];
 
 		const rblResults = await Promise.allSettled(
@@ -164,11 +153,6 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 					if (answers.length === 0) return { rbl, listed: false };
 
 					const returnIp = answers[0];
-
-					// Spamhaus quota codes
-					if (rbl.zone === 'zen.spamhaus.org' && returnIp.startsWith('127.255.255.')) {
-						return { rbl, listed: false, quota: true };
-					}
 
 					// Mailspike positive reputation
 					if (rbl.zone === 'bl.mailspike.net' && isMailspikePositive(returnIp)) {
@@ -186,17 +170,6 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 			if (settled.status === 'rejected') continue;
 			const result = settled.value;
 
-			if (result.quota) {
-				findings.push(
-					createFinding(CATEGORY, `${result.rbl.name} quota exceeded`, 'info', `Spamhaus returned a quota/rate-limit response for ${ip}. Use a DQS key for reliable results.`, {
-						ip,
-						zone: result.rbl.zone,
-						quota: true,
-					}),
-				);
-				continue;
-			}
-
 			if (result.positiveRep) {
 				findings.push(
 					createFinding(CATEGORY, `Positive Mailspike reputation for ${ip}`, 'info', `${ip} has positive reputation on Mailspike.`, {
@@ -212,17 +185,10 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 
 			ipListingCount++;
 			totalListings++;
-			if (result.rbl.zone === 'zen.spamhaus.org') hasSpamhausListing = true;
-
-			const severity = result.rbl.zone === 'zen.spamhaus.org' ? 'high' : 'low';
-			const detail =
-				result.rbl.zone === 'zen.spamhaus.org'
-					? `${ip} is listed on ${result.rbl.name}: ${decodeSpamhausCode(result.returnIp!) ?? result.returnIp}.`
-					: `${ip} is listed on ${result.rbl.name}.`;
 
 			ipListingIndices.push(findings.length);
 			findings.push(
-				createFinding(CATEGORY, `Listed on ${result.rbl.name}`, severity as 'high' | 'low', detail, {
+				createFinding(CATEGORY, `Listed on ${result.rbl.name}`, 'low', `${ip} is listed on ${result.rbl.name}.`, {
 					ip,
 					zone: result.rbl.zone,
 					returnCode: result.returnIp,
@@ -230,8 +196,8 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 			);
 		}
 
-		// Elevate severity if 2+ non-Spamhaus RBLs list the same IP
-		if (!hasSpamhausListing && ipListingCount >= 2) {
+		// Elevate severity if 2+ RBLs list the same IP
+		if (ipListingCount >= 2) {
 			const firstLowIdx = ipListingIndices.find((idx) => findings[idx]?.severity === 'low');
 			if (firstLowIdx !== undefined) {
 				const f = findings[firstLowIdx];

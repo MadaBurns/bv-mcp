@@ -2,8 +2,12 @@
 
 /**
  * MX Reputation check tool.
- * Resolves MX server IPs, checks against major DNSBLs (Spamhaus ZEN, SpamCop,
- * Barracuda), and validates reverse DNS (PTR) with forward-confirmed rDNS.
+ * Resolves MX server IPs, checks against major DNSBLs (SpamCop, Barracuda),
+ * and validates reverse DNS (PTR) with forward-confirmed rDNS.
+ *
+ * Spamhaus ZEN is deliberately excluded — bv-mcp queries via shared public
+ * resolvers, where ZEN returns refusal codes indistinguishable from a real
+ * verdict. See `buildDnsblZones` in `mx-reputation-analysis.ts`.
  *
  * Standalone tool — NOT included in scan_domain due to unpredictable DNSBL
  * response times. Daily quota of 20/day per IP with 60-minute caching.
