@@ -131,6 +131,32 @@ const DETECTION_RULES: DetectionRule[] = [
 		signal: 'ns:ultradns',
 	},
 	{
+		// NS1 (IBM, since 2024). Multi-TLD vendor — authoritative DNS is served
+		// from both `*.ns1.com` and `*.nsone.net`. Many large customers carry NS
+		// hosts on both sibling TLDs for redundancy; without this collapse the
+		// supply-chain map double-counts. Single-TLD deployments (eg. nsone.net
+		// only) must still resolve to the same canonical provider name.
+		// Catalog gap surfaced 2026-05-28 (post-v3.3.14 fact-check round).
+		name: 'NS1 (IBM)',
+		role: 'dns',
+		patterns: {
+			ns: /\.(nsone\.net|ns1\.com)$/i,
+		},
+		signal: 'ns:ns1',
+	},
+	{
+		// Dyn (Oracle Dyn). Multi-TLD vendor — authoritative DNS is served from
+		// both `*.dyn.com` and `*.dynect.net`. Many pre-Oracle-acquisition
+		// enterprise customers still carry NS hosts on both sibling TLDs.
+		// Catalog gap surfaced 2026-05-28 (post-v3.3.14 fact-check round).
+		name: 'Dyn (Oracle)',
+		role: 'dns',
+		patterns: {
+			ns: /\.(dyn\.com|dynect\.net)$/i,
+		},
+		signal: 'ns:dyn',
+	},
+	{
 		name: 'AWS SES',
 		role: 'sending',
 		patterns: {
@@ -176,6 +202,22 @@ const DETECTION_RULES: DetectionRule[] = [
 		},
 		signal: 'spf:fireeyecloud.com',
 	},
+	{
+		// Oracle Cloud Email (formerly Oracle Cloud Infrastructure Email Delivery).
+		// Detected via SPF selector subdomains under `oraclecloud.com`: the customer
+		// SPF includes `spf_c.oraclecloud.com`, which cascades through
+		// `spf_s1.oraclecloud.com` and `spf_s2.oraclecloud.com`. Without this rule
+		// the raw selector hostname surfaces as a third-party row instead of the
+		// canonical provider name. SPF-only (no fixed MX hostnames); the SPF-rule
+		// dedup path (matchProviderForSpfInclude) handles it.
+		// Catalog gap surfaced 2026-05-28 (post-v3.3.14 fact-check round).
+		name: 'Oracle Cloud Email',
+		role: 'sending',
+		patterns: {
+			spf: /(_c|_s\d+)\.oraclecloud\.com$/i,
+		},
+		signal: 'spf:oraclecloud.com',
+	},
 ];
 
 /**
@@ -186,6 +228,24 @@ const DETECTION_RULES: DetectionRule[] = [
 export function matchProviderForSpfInclude(spfInclude: string): string | null {
 	for (const rule of DETECTION_RULES) {
 		if (rule.patterns.spf && rule.patterns.spf.test(spfInclude)) {
+			return rule.name;
+		}
+	}
+	return null;
+}
+
+/**
+ * Resolve a single NS host to a known provider name, if any.
+ * Uses the same DETECTION_RULES as detectProviders so the two paths can't drift.
+ * Returns null when no rule's ns pattern matches.
+ *
+ * Replaces the previous substring-via-signal heuristic in map-supply-chain,
+ * which silently broke for multi-TLD vendors whose two TLDs share no common
+ * substring (eg. NS1: `*.ns1.com` + `*.nsone.net`).
+ */
+export function matchProviderForNsHost(nsHost: string): string | null {
+	for (const rule of DETECTION_RULES) {
+		if (rule.patterns.ns && rule.patterns.ns.test(nsHost)) {
 			return rule.name;
 		}
 	}
