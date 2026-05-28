@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.25] - 2026-05-28
+
+### Added
+
+- **`map_supply_chain`: Microsoft first-party SPF infra (`*.msft.net`).** `_spf-ssg-a.msft.net` (used by microsoft.com's own SPF) surfaced as a raw critical row; the Microsoft 365 SPF pattern now also matches `*.msft.net` so it resolves to Microsoft 365. Last raw-hostname residual from the catalog sweep.
+
+### Changed
+
+- **CodeQL scoped to the deployed surface (`src/` + `packages/`).** New `.github/codeql/codeql-config.yml` adds `paths-ignore` for `test/`, `scripts/`, and `**/*.{spec,test}.ts`, wired into `security.yml`'s `init`. The `security-extended` suite was flagging ~30 false positives in non-shipping code — `js/incomplete-url-substring-sanitization` on Vitest mock-fetch routers and plain substring assertions, `js/file-access-to-http` on the chaos harness, `js/regex/missing-regexp-anchor` on fixtures — which produced a perpetual red "CodeQL" check on every PR. Production URL/regex handling in `src/`/`packages/` is still fully scanned; the pre-existing test/script alerts auto-resolve on the next main analysis.
+
 ## [3.3.24] - 2026-05-28
 
 ### Added
