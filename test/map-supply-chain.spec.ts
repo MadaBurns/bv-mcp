@@ -1043,3 +1043,55 @@ describe('mapSupplyChain — MX email-receiving providers (Task 1)', () => {
 		expect(r.dependencies.every((d) => !d.roles.includes('email-receiving'))).toBe(true);
 	});
 });
+
+describe('mapSupplyChain — CDN attribution (Task 2, #283)', () => {
+	async function run(domain = 'example.com', opts?: { precomputedCdn?: string }) {
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		return mapSupplyChain(domain, opts);
+	}
+
+	it('attributes a CDN from the apex A-record ASN when called standalone', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			nsHosts: ['ns1.acme.com'],
+			aRecords: ['192.0.2.10'],
+			asnAnswers: { '10.2.0.192.origin.asn.cymru.com': '13335 | 192.0.2.0/24 | US | arin' },
+		});
+		const r = await run('acme.com');
+		const dep = r.dependencies.find((d) => d.provider === 'Cloudflare' && d.sources.includes('cdn'));
+		expect(dep).toBeDefined();
+		expect(dep!.roles).toContain('cdn');
+		expect(dep!.trustLevel).toBe('critical');
+	});
+
+	it('uses a precomputed cdnProvider without performing an ASN lookup', async () => {
+		const asnSpy = vi.fn();
+		mockDnsResponses({ domain: 'acme.com', aRecords: ['192.0.2.10'], onAsnQuery: asnSpy });
+		const r = await run('acme.com', { precomputedCdn: 'CloudFront' });
+		expect(r.dependencies.some((d) => d.provider === 'CloudFront' && d.sources.includes('cdn'))).toBe(true);
+		expect(asnSpy).not.toHaveBeenCalled();
+	});
+
+	it('emits no cdn dependency when the apex ASN is not a known CDN', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			aRecords: ['198.51.100.5'],
+			asnAnswers: { '5.100.51.198.origin.asn.cymru.com': '15169 | 198.51.100.0/24 | US | arin' }, // GCP, not a CDN ASN
+		});
+		const r = await run('acme.com');
+		expect(r.dependencies.some((d) => d.sources.includes('cdn'))).toBe(false);
+	});
+
+	it('merges a provider serving both NS and CDN into one row (2 roles, no concentration at <3)', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			nsHosts: ['ns.cloudflare.com'],
+			aRecords: ['192.0.2.10'],
+			asnAnswers: { '10.2.0.192.origin.asn.cymru.com': '13335 | 192.0.2.0/24 | US | arin' },
+		});
+		const r = await run('acme.com');
+		const cf = r.dependencies.find((d) => d.provider === 'Cloudflare');
+		expect(cf!.roles).toEqual(expect.arrayContaining(['dns-hosting', 'cdn']));
+		expect(r.signals.some((s) => s.type === 'concentration')).toBe(false);
+	});
+});

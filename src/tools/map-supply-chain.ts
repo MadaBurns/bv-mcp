@@ -12,6 +12,7 @@ import type { QueryDnsOptions } from '../lib/dns-types';
 import { queryTxtRecords, queryDnsRecords, querySrvRecords, queryMxRecords } from '../lib/dns';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { detectProviders, matchProviderForNsHost, matchProviderForSpfInclude, matchProviderForMxHost } from './provider-guides';
+import { detectCdnFromAsn } from '../lib/cdn-asn-detection';
 import { VERIFICATION_PATTERNS, SERVICE_SPF_DOMAINS } from './txt-hygiene-analysis';
 import { SRV_PREFIXES } from './srv-analysis';
 import type { SrvProbeResult } from './srv-analysis';
@@ -85,6 +86,8 @@ function determineTrustLevel(sources: string[]): TrustLevel {
 	if (sources.some((s) => s === 'spf')) return 'critical';
 	// MX = critical (they receive all your inbound mail)
 	if (sources.some((s) => s === 'mx')) return 'critical';
+	// CDN = critical (they front and can see/serve all your web traffic)
+	if (sources.some((s) => s === 'cdn')) return 'critical';
 	// NS = high (they control your DNS)
 	if (sources.some((s) => s === 'ns')) return 'high';
 	// SRV = medium (advertised service)
@@ -103,6 +106,8 @@ function sourceToRole(source: string): string {
 			return 'email-sending';
 		case 'mx':
 			return 'email-receiving';
+		case 'cdn':
+			return 'cdn';
 		case 'ns':
 			return 'dns-hosting';
 		case 'caa':
@@ -204,13 +209,14 @@ export async function mapSupplyChain(
 	domain: string,
 	options: MapSupplyChainOptions = {},
 ): Promise<SupplyChainMap> {
-	const { dnsOptions } = options;
+	const { dnsOptions, precomputedCdn } = options;
 	// Query all record types in parallel — allSettled so one failure doesn't block others
-	const [txtSettled, nsSettled, caaSettled, mxSettled, srvBatchSettled] = await Promise.allSettled([
+	const [txtSettled, nsSettled, caaSettled, mxSettled, aSettled, srvBatchSettled] = await Promise.allSettled([
 		queryTxtRecords(domain, dnsOptions),
 		queryDnsRecords(domain, 'NS', dnsOptions),
 		queryDnsRecords(domain, 'CAA', dnsOptions),
 		queryMxRecords(domain, dnsOptions),
+		queryDnsRecords(domain, 'A', dnsOptions),
 		Promise.allSettled(
 			SRV_PREFIXES.map(async (prefix) => {
 				const name = `${prefix}.${domain}`;
@@ -244,6 +250,9 @@ export async function mapSupplyChain(
 	// Extract MX exchange hosts (email-receiving providers)
 	const rawMxRecords = mxSettled.status === 'fulfilled' ? mxSettled.value : [];
 	const mxHosts = rawMxRecords.map((r) => r.exchange.replace(/\.$/, '').toLowerCase());
+
+	// Apex A-records for the ASN-based CDN tier (resolved to origin ASN below)
+	const aRecords = aSettled.status === 'fulfilled' ? aSettled.value : [];
 
 	// Extract CAA issuers (only issue and issuewild tags)
 	const rawCaaRecords = caaSettled.status === 'fulfilled' ? caaSettled.value : [];
@@ -388,6 +397,23 @@ export async function mapSupplyChain(
 		}
 	}
 	addUnrecognizedHostsByParent(mxHosts, detectedMxHosts, 'mx');
+
+	// Attribute the web CDN as a (critical) dependency. The CDN fronting the
+	// primary web property is one of the most material third-party dependencies
+	// a domain has, yet it derives from a different signal than DNS records.
+	// Use the scan's precomputed header-derived value when available; otherwise
+	// resolve the apex A-records to their origin ASN via the shared, fail-soft,
+	// bounded ASN tier (DoH-only — keeps this standalone tool probe-light, no
+	// HTTP fetch). Header-based attribution stays exclusively in the scan path.
+	let cdnProvider: string | null = precomputedCdn ?? null;
+	if (cdnProvider === null && aRecords.length > 0) {
+		const asnResolver = { queryTxt: (name: string) => queryTxtRecords(name, dnsOptions) };
+		const asnResult = await detectCdnFromAsn(aRecords, asnResolver);
+		cdnProvider = asnResult?.provider ?? null;
+	}
+	if (cdnProvider !== null) {
+		addDependency(cdnProvider, 'cdn');
+	}
 
 	// Add CAA issuers
 	for (const issuer of caaIssuers) {
