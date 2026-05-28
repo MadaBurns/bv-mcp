@@ -873,4 +873,93 @@ describe('addOutboundProviderInference — provider detection coverage', () => {
 			expect(certstream.fetch).not.toHaveBeenCalled();
 		});
 	});
+
+	// Tests for the v3.3.20 ASN-based CDN attribution fallback — tier 3, runs
+	// only when header (tier 1) and CF NS+IP+cert (tier 2) produce no attribution.
+	// Resolves A-record IPs to origin ASN via team-cymru DoH TXT, maps ASN -> CDN.
+	describe('CDN attribution: ASN-based fallback (Akamai)', () => {
+		const HTTP_RESULT_NO_CDN: CheckResult = buildCheckResult('http_security', [
+			createFinding('http_security', 'HTTP probe', 'info', 'baseline'),
+		]);
+
+		const findCdn = (results: CheckResult[]) =>
+			results.find((r) => r.category === 'http_security')?.findings.find((f) => typeof f.metadata?.cdnProvider === 'string');
+
+		afterEach(() => {
+			vi.doUnmock('../src/lib/dns');
+			vi.doUnmock('../src/lib/dns-records');
+			vi.resetModules();
+		});
+
+		it('attributes Akamai via ASN when headers and NS+IP+cert all miss (mit.edu pattern)', async () => {
+			// NS on akam.net (not *.ns.cloudflare.com), A NOT in any CF range, no header CDN.
+			vi.doMock('../src/lib/dns-records', () => ({
+				queryDnsRecords: vi.fn(async (_d: string, type: string) => {
+					if (type === 'NS') return ['use5.akam.net', 'use6.akam.net'];
+					if (type === 'A') return ['118.215.90.214'];
+					return [];
+				}),
+			}));
+			vi.doMock('../src/lib/dns', () => ({
+				queryTxtRecords: vi.fn(async (name: string) =>
+					name === '214.90.215.118.origin.asn.cymru.com' ? ['16625 | 118.215.88.0/21 | SG | apnic'] : [],
+				),
+			}));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const updated = await applyScanPostProcessing('mit.edu', [HTTP_RESULT_NO_CDN]);
+			const cdn = findCdn(updated);
+			expect(cdn?.metadata?.cdnProvider).toBe('Akamai');
+			expect(cdn?.metadata?.source).toBe('asn-lookup');
+			expect(cdn?.metadata?.confidence).toBe('heuristic');
+			expect(cdn?.metadata?.asn).toBe(16625);
+		});
+
+		it('does not run ASN fallback when a header-based CDN attribution already exists', async () => {
+			const cymru = vi.fn().mockResolvedValue([]);
+			vi.doMock('../src/lib/dns', () => ({ queryTxtRecords: cymru }));
+			vi.doMock('../src/lib/dns-records', () => ({ queryDnsRecords: vi.fn(async () => []) }));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const httpWithCdn = buildCheckResult('http_security', [
+				createFinding('http_security', 'CDN: Imperva', 'info', 'x-cdn', { cdnProvider: 'Imperva' }),
+			]);
+			await applyScanPostProcessing('example.com', [httpWithCdn]);
+			expect(cymru).not.toHaveBeenCalled();
+		});
+
+		it('does not run ASN fallback when the CF NS+IP heuristic already attributed Cloudflare', async () => {
+			// CF NS + CF IP → NS+IP heuristic wins tier 2; ASN tier 3 is skipped.
+			const cymru = vi.fn().mockResolvedValue([]);
+			vi.doMock('../src/lib/dns', () => ({ queryTxtRecords: cymru }));
+			vi.doMock('../src/lib/dns-records', () => ({
+				queryDnsRecords: vi.fn(async (_d: string, type: string) => {
+					if (type === 'NS') return ['a.ns.cloudflare.com'];
+					if (type === 'A') return ['104.16.45.99'];
+					return [];
+				}),
+			}));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const updated = await applyScanPostProcessing('example.com', [HTTP_RESULT_NO_CDN]);
+			expect(findCdn(updated)?.metadata?.cdnProvider).toBe('Cloudflare');
+			expect(cymru).not.toHaveBeenCalled();
+		});
+
+		it('degrades to no-attribution when ASN lookup fails (fail-soft, no throw)', async () => {
+			vi.doMock('../src/lib/dns-records', () => ({
+				queryDnsRecords: vi.fn(async (_d: string, type: string) => {
+					if (type === 'NS') return ['use5.akam.net'];
+					if (type === 'A') return ['118.215.90.214'];
+					return [];
+				}),
+			}));
+			// Empty cymru answer → parseAsnFromCymru sees nothing → no attribution.
+			vi.doMock('../src/lib/dns', () => ({ queryTxtRecords: vi.fn(async () => []) }));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const updated = await applyScanPostProcessing('mit.edu', [HTTP_RESULT_NO_CDN]);
+			expect(findCdn(updated)).toBeUndefined();
+		});
+	});
 });
