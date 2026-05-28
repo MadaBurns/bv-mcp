@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.21] - 2026-05-28
+
+### Fixed
+
+- **KV cache now versioned by `SERVER_VERSION` — deploys auto-bust stale results.** `check_*` and `scan_domain` results were cached by domain only, so after a deploy stale pre-deploy results kept serving until the TTL expired (the recurring "scan a fresh domain to verify the fix is live" workaround all session). New `buildCheckCacheKey` / `buildScanCacheKey` helpers in `src/lib/cache.ts` prepend `v${SERVER_VERSION}`; wired at all four cache-key sites (`handlers/tools.ts` ×2, `scan-domain.ts` ×2). Deliberate trade-off documented inline: a deploy cold-starts the cache (all keys change) — correct behavior; stale-after-deploy was the bug. (#281)
+- **`check_spf`: flag SPF TXT RRsets that risk UDP truncation (#250).** Estimates the full TXT RRset wire size (`estimateTxtRrsetBytes` in `spf-analysis.ts`: `sum(12 + utf8Len(rec) + ceil(utf8Len/255))` per record) and emits a finding when it approaches (>450B, low `SPF_RRSET_LARGE`) or exceeds (>512B, medium) the 512-byte UDP limit — TCP fallback required, which legacy resolvers / restrictive middleboxes may not perform, silently breaking SPF. RFC 7208 §3.4. Reuses the already-fetched full TXT array (no new query). Closes #250. (#281)
+- **`check_http_security`: CDN detection now sees vendor-specific signals across the full redirect chain (#262).** Previously only the final captured response's headers were inspected, so `x-amz-cf-id` / `via: …cloudfront` on an intermediate hop was missed (e.g. origins that redirect through an intermediate before the CDN-fronted final). The redirect follower now unions vendor-specific CDN headers across all hops; `MAX_REDIRECT_HOPS` raised 3→5. The `server` header is explicitly excluded from the carried set (v3.3.12 invariant — CF Worker egress rewrites it; a dedicated test asserts an intermediate `server: cloudflare` still yields null). Closes #262. (#281)
+- **`check_lookalikes`: shared RDAP registrant org as a second same-entity signal (#263).** A domain's own defensive registrations / regional subsidiaries that use a *different* DNS provider than the parent (so the existing shared-NS check missed them) were flagged as high/medium phishing threats (e.g. scanning xero.com flagged xero.co.nz). When a flagged lookalike shares the scan domain's RDAP registrant organisation, it's now downgraded to an `info` "likely same-entity defensive registration" finding. Net cost: one extra RDAP fetch (the scan domain's), only when ≥1 candidate reaches medium/high; candidate orgs ride the existing enrichment fetch. Fail-soft — RDAP failure keeps the calibrated threat severity (never suppresses a real threat). Cert/DKIM same-entity signals deferred. Closes #263 (focused; the cross-domain-NS supply-chain case remains open). (#281)
+
 ## [3.3.20] - 2026-05-28
 
 ### Added
