@@ -144,15 +144,18 @@ function detectCdnProvider(headers: Headers): string | null {
 	// (origin: `server: github.com`). `cf-ray` is added for tracing and
 	// `cf-cache-status: DYNAMIC` is added by CF's edge cache layer. None of
 	// these signals can distinguish "origin is on CF" from "response transited
-	// CF's edge". True CF customers (cloudflare.com, sites behind Cloudflare
-	// CDN/WAF) now go undetected — acceptable, because false-negative is
-	// strictly better than the 100% false-positive rate we had pre-fix. The
+	// CF's edge", so this function returns null for Cloudflare. The
 	// vendor-specific rules above (Imperva, Sucuri, Vercel, CloudFront,
 	// Akamai, Fastly) still work because they use origin-set headers that
-	// CF cannot impersonate. A future revision could add CF detection via
-	// IP-range matching against Cloudflare's published edge ranges (see
-	// cloudflare.com/ips/) — but that's a separate code path requiring DNS
-	// A-record lookups, not header inspection.
+	// CF cannot impersonate.
+	//
+	// NOTE: Cloudflare customers are NOT undetected overall — the header path
+	// just abstains. The scan-level CDN attribution closes the CF case via the
+	// ASN tier (`src/lib/cdn-asn-detection.ts`, v3.3.20): the apex A-record
+	// resolves to AS13335 → "Cloudflare", origin-set and immune to the
+	// `server:` rewrite. Verified live (discord.com, 1password.com →
+	// "Cloudflare"). That is the IP-range/ASN path foreshadowed here; it lives
+	// in the post-processing CDN tier, not in this header function.
 	return null;
 }
 

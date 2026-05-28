@@ -1130,7 +1130,7 @@ export async function handleToolsCall(
 					return buildToolResult(formatValidateFix(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'map_supply_chain': {
-					const result = await mapSupplyChain(validDomain, buildDnsOptions(runtimeOptions));
+					const result = await mapSupplyChain(validDomain, { dnsOptions: buildDnsOptions(runtimeOptions) });
 					logResult = `${result.summary.totalProviders} providers`;
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });

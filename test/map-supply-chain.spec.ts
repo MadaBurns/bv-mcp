@@ -16,17 +16,41 @@ function mockDnsResponses(options: {
 	nsHosts?: string[];
 	caaRecords?: string[];
 	srvRecords?: Record<string, Array<{ priority: number; weight: number; port: number; target: string }>>;
+	mxRecords?: Array<{ pref: number; host: string }>;
+	aRecords?: string[];
+	/** Canned team-cymru origin-ASN TXT answers, keyed by the full `<rev-ip>.origin.asn.cymru.com` query name. */
+	asnAnswers?: Record<string, string>;
+	/** Invoked whenever an `*.origin.asn.cymru.com` TXT lookup is made (lets a test assert the ASN tier did / did not run). */
+	onAsnQuery?: () => void;
 	domain?: string;
 }) {
-	const { spf, txtRecords = [], nsHosts = [], caaRecords = [], srvRecords = {}, domain = 'example.com' } = options;
+	const {
+		spf,
+		txtRecords = [],
+		nsHosts = [],
+		caaRecords = [],
+		srvRecords = {},
+		mxRecords = [],
+		aRecords = [],
+		asnAnswers = {},
+		onAsnQuery,
+		domain = 'example.com',
+	} = options;
 
 	globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
 		const u = new URL(typeof url === 'string' ? url : url.toString());
 		const name = u.searchParams.get('name') ?? '';
 		const type = u.searchParams.get('type') ?? '';
 
-		// TXT queries (SPF + verification records)
+		// TXT queries (SPF + verification records + team-cymru origin-ASN lookups)
 		if (type === 'TXT') {
+			// ASN tier: `<rev-ip>.origin.asn.cymru.com` TXT lookups (Task 2/3).
+			if (name.endsWith('.origin.asn.cymru.com')) {
+				onAsnQuery?.();
+				const answer = asnAnswers[name];
+				const answers = answer !== undefined ? [{ name, type: 16, TTL: 300, data: `"${answer}"` }] : [];
+				return Promise.resolve(createDohResponse([{ name, type: 16 }], answers));
+			}
 			if (name === domain) {
 				const answers: Array<{ name: string; type: number; TTL: number; data: string }> = [];
 				if (spf !== null && spf !== undefined) {
@@ -66,6 +90,34 @@ function mockDnsResponses(options: {
 				return Promise.resolve(createDohResponse([{ name, type: 257 }], answers));
 			}
 			return Promise.resolve(createDohResponse([{ name, type: 257 }], []));
+		}
+
+		// MX queries
+		if (type === 'MX') {
+			if (name === domain) {
+				const answers = mxRecords.map((mx) => ({
+					name: domain,
+					type: 15,
+					TTL: 300,
+					data: `${mx.pref} ${mx.host}.`,
+				}));
+				return Promise.resolve(createDohResponse([{ name, type: 15 }], answers));
+			}
+			return Promise.resolve(createDohResponse([{ name, type: 15 }], []));
+		}
+
+		// A queries (apex IPs for the ASN-based CDN / hosting tier)
+		if (type === 'A') {
+			if (name === domain) {
+				const answers = aRecords.map((ip) => ({
+					name: domain,
+					type: 1,
+					TTL: 300,
+					data: ip,
+				}));
+				return Promise.resolve(createDohResponse([{ name, type: 1 }], answers));
+			}
+			return Promise.resolve(createDohResponse([{ name, type: 1 }], []));
 		}
 
 		// SRV queries
@@ -946,5 +998,158 @@ describe('formatSupplyChain', () => {
 
 		const text = formatSupplyChain(result, 'full');
 		expect(text).toContain('No third-party dependencies detected');
+	});
+});
+
+describe('mapSupplyChain — MX email-receiving providers (Task 1)', () => {
+	async function run(domain = 'example.com', opts?: { precomputedCdn?: string }) {
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		return mapSupplyChain(domain, opts);
+	}
+
+	it('maps a recognized MX host to an email-receiving dependency', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			nsHosts: ['ns1.acme.com'],
+			mxRecords: [{ pref: 10, host: 'acme-com.mail.protection.outlook.com' }],
+		});
+		const r = await run('acme.com');
+		const dep = r.dependencies.find((d) => d.provider === 'Microsoft 365');
+		expect(dep).toBeDefined();
+		expect(dep!.roles).toContain('email-receiving');
+		expect(dep!.sources).toContain('mx');
+		expect(dep!.trustLevel).toBe('critical');
+	});
+
+	it('groups an unrecognized MX host by registrable parent domain', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			mxRecords: [{ pref: 10, host: 'mx1.mailvendor.co.uk' }],
+		});
+		const r = await run('acme.com');
+		expect(r.dependencies.some((d) => d.provider === 'mailvendor.co.uk' && d.sources.includes('mx'))).toBe(true);
+		expect(r.dependencies.some((d) => d.provider === 'co.uk')).toBe(false);
+	});
+
+	it('does not emit a third-party row for self-hosted MX', async () => {
+		mockDnsResponses({ domain: 'acme.com', mxRecords: [{ pref: 10, host: 'mail.acme.com' }] });
+		const r = await run('acme.com');
+		expect(r.dependencies.some((d) => d.provider === 'acme.com' && d.sources.includes('mx'))).toBe(false);
+	});
+
+	it('handles a web-only domain with no MX records', async () => {
+		mockDnsResponses({ domain: 'acme.com', nsHosts: ['ns1.acme.com'] });
+		const r = await run('acme.com');
+		expect(r.dependencies.every((d) => !d.roles.includes('email-receiving'))).toBe(true);
+	});
+});
+
+describe('mapSupplyChain — CDN attribution (Task 2, #283)', () => {
+	async function run(domain = 'example.com', opts?: { precomputedCdn?: string }) {
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		return mapSupplyChain(domain, opts);
+	}
+
+	it('attributes a CDN from the apex A-record ASN when called standalone', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			nsHosts: ['ns1.acme.com'],
+			aRecords: ['192.0.2.10'],
+			asnAnswers: { '10.2.0.192.origin.asn.cymru.com': '13335 | 192.0.2.0/24 | US | arin' },
+		});
+		const r = await run('acme.com');
+		const dep = r.dependencies.find((d) => d.provider === 'Cloudflare' && d.sources.includes('cdn'));
+		expect(dep).toBeDefined();
+		expect(dep!.roles).toContain('cdn');
+		expect(dep!.trustLevel).toBe('critical');
+	});
+
+	it('uses a precomputed cdnProvider without performing an ASN lookup', async () => {
+		const asnSpy = vi.fn();
+		mockDnsResponses({ domain: 'acme.com', aRecords: ['192.0.2.10'], onAsnQuery: asnSpy });
+		const r = await run('acme.com', { precomputedCdn: 'CloudFront' });
+		expect(r.dependencies.some((d) => d.provider === 'CloudFront' && d.sources.includes('cdn'))).toBe(true);
+		expect(asnSpy).not.toHaveBeenCalled();
+	});
+
+	it('emits no cdn dependency when the apex ASN is not a known CDN', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			aRecords: ['198.51.100.5'],
+			asnAnswers: { '5.100.51.198.origin.asn.cymru.com': '15169 | 198.51.100.0/24 | US | arin' }, // GCP, not a CDN ASN
+		});
+		const r = await run('acme.com');
+		expect(r.dependencies.some((d) => d.sources.includes('cdn'))).toBe(false);
+	});
+
+	it('merges a provider serving both NS and CDN into one row (2 roles, no concentration at <3)', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			nsHosts: ['ns.cloudflare.com'],
+			aRecords: ['192.0.2.10'],
+			asnAnswers: { '10.2.0.192.origin.asn.cymru.com': '13335 | 192.0.2.0/24 | US | arin' },
+		});
+		const r = await run('acme.com');
+		const cf = r.dependencies.find((d) => d.provider === 'Cloudflare');
+		expect(cf!.roles).toEqual(expect.arrayContaining(['dns-hosting', 'cdn']));
+		expect(r.signals.some((s) => s.type === 'concentration')).toBe(false);
+	});
+});
+
+describe('mapSupplyChain — cloud-hosting ASN tier (Task 3, noise-guarded)', () => {
+	async function run(domain = 'example.com', opts?: { precomputedCdn?: string }) {
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		return mapSupplyChain(domain, opts);
+	}
+
+	it('emits a low-trust cloud-hosting row when origin is on a cloud ASN and no CDN fronts it', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			aRecords: ['192.0.2.20'],
+			asnAnswers: { '20.2.0.192.origin.asn.cymru.com': '16509 | 192.0.2.0/24 | US | arin' }, // AWS
+		});
+		const r = await run('acme.com');
+		const dep = r.dependencies.find((d) => d.provider === 'AWS' && d.sources.includes('hosting'));
+		expect(dep).toBeDefined();
+		expect(dep!.roles).toContain('cloud-hosting');
+		expect(dep!.trustLevel).toBe('low');
+	});
+
+	it('suppresses the cloud-hosting row when a CDN is attributed (precomputed)', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			aRecords: ['192.0.2.20'],
+			asnAnswers: { '20.2.0.192.origin.asn.cymru.com': '16509 | 192.0.2.0/24 | US | arin' },
+		});
+		const r = await run('acme.com', { precomputedCdn: 'CloudFront' });
+		expect(r.dependencies.some((d) => d.sources.includes('hosting'))).toBe(false);
+		expect(r.dependencies.some((d) => d.provider === 'CloudFront' && d.sources.includes('cdn'))).toBe(true);
+	});
+
+	it('never labels a CDN ASN as cloud-hosting (Akamai stays a cdn row)', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			aRecords: ['192.0.2.30'],
+			asnAnswers: { '30.2.0.192.origin.asn.cymru.com': '20940 | 192.0.2.0/24 | US | arin' }, // Akamai
+		});
+		const r = await run('acme.com');
+		expect(r.dependencies.some((d) => d.sources.includes('hosting'))).toBe(false);
+		expect(r.dependencies.some((d) => d.provider === 'Akamai' && d.sources.includes('cdn'))).toBe(true);
+	});
+});
+
+describe('mapSupplyChain — cloud-hosting caveat signal (Task 3)', () => {
+	async function run(domain = 'example.com') {
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		return mapSupplyChain(domain);
+	}
+	it('emits a low-severity shared-infrastructure caveat alongside a hosting row', async () => {
+		mockDnsResponses({
+			domain: 'acme.com',
+			aRecords: ['192.0.2.20'],
+			asnAnswers: { '20.2.0.192.origin.asn.cymru.com': '16509 | 192.0.2.0/24 | US | arin' },
+		});
+		const r = await run('acme.com');
+		expect(r.signals.some((s) => s.type === 'shared_hosting' && s.severity === 'low')).toBe(true);
 	});
 });

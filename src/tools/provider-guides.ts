@@ -340,6 +340,25 @@ export function matchProviderForNsHost(nsHost: string): string | null {
 }
 
 /**
+ * Resolve a single MX exchange host to a known provider name, if any.
+ * Uses the same DETECTION_RULES as detectProviders so the two paths can't drift.
+ * Returns null when no rule's mx pattern matches.
+ *
+ * Mirrors matchProviderForSpfInclude / matchProviderForNsHost so map-supply-chain
+ * can attribute an email-RECEIVING provider from MX independently of the SPF
+ * (email-sending) signal — the two are distinct dependencies (a domain can
+ * receive via Mimecast/Proofpoint while sending via M365, or vice versa).
+ */
+export function matchProviderForMxHost(mxHost: string): string | null {
+	for (const rule of DETECTION_RULES) {
+		if (rule.patterns.mx && rule.patterns.mx.test(mxHost)) {
+			return rule.name;
+		}
+	}
+	return null;
+}
+
+/**
  * Detect infrastructure providers from DNS signals.
  * Returns deduplicated list of DetectedProvider (one entry per provider name).
  */

@@ -9,9 +9,10 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import type { QueryDnsOptions } from '../lib/dns-types';
-import { queryTxtRecords, queryDnsRecords, querySrvRecords } from '../lib/dns';
+import { queryTxtRecords, queryDnsRecords, querySrvRecords, queryMxRecords } from '../lib/dns';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { detectProviders, matchProviderForNsHost, matchProviderForSpfInclude } from './provider-guides';
+import { detectProviders, matchProviderForNsHost, matchProviderForSpfInclude, matchProviderForMxHost } from './provider-guides';
+import { detectCdnFromAsn, detectHostingFromAsn } from '../lib/cdn-asn-detection';
 import { VERIFICATION_PATTERNS, SERVICE_SPF_DOMAINS } from './txt-hygiene-analysis';
 import { SRV_PREFIXES } from './srv-analysis';
 import type { SrvProbeResult } from './srv-analysis';
@@ -29,7 +30,7 @@ export interface Dependency {
 
 /** A risk signal detected in the supply chain. */
 export interface Signal {
-	type: 'concentration' | 'excessive_includes' | 'single_ns_provider' | 'stale_integration' | 'shadow_service' | 'insecure_service' | 'security_tooling_exposed';
+	type: 'concentration' | 'excessive_includes' | 'single_ns_provider' | 'stale_integration' | 'shadow_service' | 'insecure_service' | 'security_tooling_exposed' | 'shared_hosting';
 	severity: 'low' | 'medium' | 'high';
 	detail: string;
 }
@@ -83,8 +84,14 @@ function parseCaaIssuer(data: string): string | null {
 function determineTrustLevel(sources: string[]): TrustLevel {
 	// SPF includes = critical (they can send email as you)
 	if (sources.some((s) => s === 'spf')) return 'critical';
+	// MX = critical (they receive all your inbound mail)
+	if (sources.some((s) => s === 'mx')) return 'critical';
+	// CDN = critical (they front and can see/serve all your web traffic)
+	if (sources.some((s) => s === 'cdn')) return 'critical';
 	// NS = high (they control your DNS)
 	if (sources.some((s) => s === 'ns')) return 'high';
+	// Cloud hosting = low (shared infrastructure, inferred from origin ASN — see caveat signal)
+	if (sources.some((s) => s === 'hosting')) return 'low';
 	// SRV = medium (advertised service)
 	if (sources.some((s) => s === 'srv')) return 'medium';
 	// TXT verification = low (SaaS integration)
@@ -99,6 +106,12 @@ function sourceToRole(source: string): string {
 	switch (source) {
 		case 'spf':
 			return 'email-sending';
+		case 'mx':
+			return 'email-receiving';
+		case 'cdn':
+			return 'cdn';
+		case 'hosting':
+			return 'cloud-hosting';
 		case 'ns':
 			return 'dns-hosting';
 		case 'caa':
@@ -185,15 +198,29 @@ const SRV_TARGET_PROVIDERS: Array<{ pattern: RegExp; provider: string }> = [
  * @param dnsOptions - Optional DNS query options
  * @returns Supply chain map with dependencies, signals, and summary
  */
+export interface MapSupplyChainOptions {
+	/** DNS query options (timeout, resolver) threaded into every lookup. */
+	dnsOptions?: QueryDnsOptions;
+	/**
+	 * CDN provider already attributed by the scan's HTTP/header path. When set,
+	 * the supply-chain map uses it directly and skips its own ASN lookup. When
+	 * omitted (standalone calls), the ASN tier resolves the apex A-records.
+	 */
+	precomputedCdn?: string;
+}
+
 export async function mapSupplyChain(
 	domain: string,
-	dnsOptions?: QueryDnsOptions,
+	options: MapSupplyChainOptions = {},
 ): Promise<SupplyChainMap> {
+	const { dnsOptions, precomputedCdn } = options;
 	// Query all record types in parallel — allSettled so one failure doesn't block others
-	const [txtSettled, nsSettled, caaSettled, srvBatchSettled] = await Promise.allSettled([
+	const [txtSettled, nsSettled, caaSettled, mxSettled, aSettled, srvBatchSettled] = await Promise.allSettled([
 		queryTxtRecords(domain, dnsOptions),
 		queryDnsRecords(domain, 'NS', dnsOptions),
 		queryDnsRecords(domain, 'CAA', dnsOptions),
+		queryMxRecords(domain, dnsOptions),
+		queryDnsRecords(domain, 'A', dnsOptions),
 		Promise.allSettled(
 			SRV_PREFIXES.map(async (prefix) => {
 				const name = `${prefix}.${domain}`;
@@ -223,6 +250,13 @@ export async function mapSupplyChain(
 	// Extract NS hostnames
 	const rawNsRecords = nsSettled.status === 'fulfilled' ? nsSettled.value : [];
 	const nsHosts = rawNsRecords.map((r) => r.replace(/\.$/, '').toLowerCase());
+
+	// Extract MX exchange hosts (email-receiving providers)
+	const rawMxRecords = mxSettled.status === 'fulfilled' ? mxSettled.value : [];
+	const mxHosts = rawMxRecords.map((r) => r.exchange.replace(/\.$/, '').toLowerCase());
+
+	// Apex A-records for the ASN-based CDN tier (resolved to origin ASN below)
+	const aRecords = aSettled.status === 'fulfilled' ? aSettled.value : [];
 
 	// Extract CAA issuers (only issue and issuewild tags)
 	const rawCaaRecords = caaSettled.status === 'fulfilled' ? caaSettled.value : [];
@@ -334,17 +368,68 @@ export async function mapSupplyChain(
 		addDependency(`${scanDomainLower} (self-hosted SPF)`, 'spf');
 	}
 
-	// Add unrecognized NS hosts — group by registrable parent domain.
-	// `getEffectiveParentDomain` accounts for ccTLD-2LD suffixes (co.nz, co.uk,
-	// com.au, …) so `ns1.anz.co.nz` collapses to `anz.co.nz`, not `co.nz`.
-	// When the parent matches the scan domain itself, the NS is self-hosted —
-	// skip adding a "third-party" row so the output isn't misleading.
+	// Group unrecognized infra hosts (NS, MX) by registrable parent domain,
+	// skipping detected providers and self-hosted hosts. `getEffectiveParentDomain`
+	// accounts for ccTLD-2LD suffixes (co.nz, co.uk, com.au, …) so `ns1.anz.co.nz`
+	// collapses to `anz.co.nz`, not `co.nz`. When the parent matches the scan
+	// domain itself, the host is self-hosted — skip the "third-party" row.
 	const scanDomain = domain.toLowerCase();
-	for (const host of nsHosts) {
-		if (detectedNsHosts.has(host)) continue;
-		const parentDomain = getEffectiveParentDomain(host);
-		if (parentDomain === scanDomain) continue;
-		addDependency(parentDomain, 'ns');
+	const addUnrecognizedHostsByParent = (hosts: string[], detected: Set<string>, source: string): void => {
+		for (const host of hosts) {
+			if (detected.has(host)) continue;
+			const parentDomain = getEffectiveParentDomain(host);
+			if (parentDomain === scanDomain) continue;
+			addDependency(parentDomain, source);
+		}
+	};
+
+	// Add unrecognized NS hosts.
+	addUnrecognizedHostsByParent(nsHosts, detectedNsHosts, 'ns');
+
+	// Add MX (email-receiving) providers. Independent of the SPF email-sending
+	// path — a domain can receive via one provider (eg. Mimecast/Proofpoint
+	// inbound) and send via another (eg. M365). Match each exchange against
+	// DETECTION_RULES (shared SSOT, via matchProviderForMxHost); unrecognized
+	// hosts collapse to their registrable parent and skip self-hosted MX,
+	// mirroring the NS path so the two can't drift.
+	const detectedMxHosts = new Set<string>();
+	for (const host of mxHosts) {
+		const matched = matchProviderForMxHost(host);
+		if (matched !== null) {
+			addDependency(matched, 'mx');
+			detectedMxHosts.add(host);
+		}
+	}
+	addUnrecognizedHostsByParent(mxHosts, detectedMxHosts, 'mx');
+
+	// Attribute the web CDN as a (critical) dependency. The CDN fronting the
+	// primary web property is one of the most material third-party dependencies
+	// a domain has, yet it derives from a different signal than DNS records.
+	// Use the scan's precomputed header-derived value when available; otherwise
+	// resolve the apex A-records to their origin ASN via the shared, fail-soft,
+	// bounded ASN tier (DoH-only — keeps this standalone tool probe-light, no
+	// HTTP fetch). Header-based attribution stays exclusively in the scan path.
+	let cdnProvider: string | null = precomputedCdn ?? null;
+	// Cloud-hosting fallback (noise-guarded). Only attributed when NO CDN fronts
+	// the origin — "hosted on AWS/GCP/Azure" is near-ubiquitous and signal-less
+	// without corroboration, and when a CDN is present the CDN is the meaningful
+	// edge dependency, not the shared origin host. Emitted at LOW trust with a
+	// caveat signal (see below).
+	let hostingProvider: string | null = null;
+	if (cdnProvider === null && aRecords.length > 0) {
+		const asnResolver = { queryTxt: (name: string) => queryTxtRecords(name, dnsOptions) };
+		const cdnResult = await detectCdnFromAsn(aRecords, asnResolver);
+		if (cdnResult !== null) {
+			cdnProvider = cdnResult.provider;
+		} else {
+			const hostingResult = await detectHostingFromAsn(aRecords, asnResolver);
+			hostingProvider = hostingResult?.provider ?? null;
+		}
+	}
+	if (cdnProvider !== null) {
+		addDependency(cdnProvider, 'cdn');
+	} else if (hostingProvider !== null) {
+		addDependency(hostingProvider, 'hosting');
 	}
 
 	// Add CAA issuers
@@ -391,6 +476,15 @@ export async function mapSupplyChain(
 
 	// Detect signals
 	const signals: Signal[] = [];
+
+	// Cloud-hosting caveat — keep the inferred-from-ASN hosting row honest.
+	if (hostingProvider !== null) {
+		signals.push({
+			type: 'shared_hosting',
+			severity: 'low',
+			detail: `Origin appears to be hosted on ${hostingProvider} (shared cloud infrastructure inferred from the origin ASN). Low-confidence signal — corroborate before treating it as a dedicated dependency.`,
+		});
+	}
 
 	// Concentration risk: provider appears in 3+ roles
 	for (const dep of dependencies) {

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.22] - 2026-05-28
+
+### Added
+
+- **`map_supply_chain`: email-RECEIVING providers from MX.** The tool passed `mxHosts: []` to `detectProviders`, so the MX operator that receives all inbound mail — one of the most material third-party dependencies — was invisible. MX is now queried and attributed via a new `matchProviderForMxHost` (mirrors the SPF/NS match helpers, shared `DETECTION_RULES` SSOT); unrecognized exchanges collapse to their registrable parent (skipping self-hosted), via a new `addUnrecognizedHostsByParent` helper that also de-dups the NS path. New source `mx` → role `email-receiving`, trust `critical`. (#283)
+- **`map_supply_chain`: web CDN attributed as a dependency (#283).** The CDN fronting the primary web property (detected elsewhere as `scan.cdnProvider`) was never joined into the dependency map, so a domain's entire web edge — e.g. AWS CloudFront fronting kiwibank.co.nz — was invisible. The tool now attributes it as a `critical` dependency via the shared, bounded, fail-soft `detectCdnFromAsn` (apex A-record → origin ASN; DoH-only, no HTTP probe — keeps the standalone tool probe-light). An optional `precomputedCdn` option lets a future scan-integration caller pass the richer header-derived value and skip the ASN lookup; header-based attribution stays exclusively in the scan path. Closes #283. (#283)
+- **`map_supply_chain`: low-trust cloud-hosting ASN tier (noise-guarded).** New `ASN_TO_HOSTING` map (AWS/GCP/Azure/OVH/DigitalOcean/Hetzner/Vultr) + `mapAsnToHosting` + `detectHostingFromAsn`, kept strictly distinct from the CDN tier (cloud ASNs host arbitrary compute and must never drive CDN attribution — AS16509 stays out of `ASN_TO_CDN`). A cloud-hosting dependency is attributed **only when no CDN fronts the origin** (the CDN is the meaningful edge dependency; the origin host behind it is shared infra), emitted at **`low`** trust with a `shared_hosting` caveat signal so every EC2-hosted site doesn't get a critical AWS row. `detectCdnFromAsn`/`detectHostingFromAsn` now share a private `detectFromAsn(ips, doh, map)` skeleton. (#283)
+
+### Fixed
+
+- **Stale comment in `check-http-security.ts`.** The Cloudflare-detection docblock claimed "True CF customers now go undetected" — outdated since the v3.3.20 ASN tier closes the CF case (apex A-record → AS13335 → "Cloudflare", immune to the `server:` rewrite; verified live on discord.com / 1password.com). Comment corrected to point at the ASN tier; no behavior change. (#283)
+
 ## [3.3.21] - 2026-05-28
 
 ### Fixed
