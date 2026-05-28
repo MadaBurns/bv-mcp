@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.14] - 2026-05-28
+
+### Fixed
+
+- **`scan_domain`: `notApplicableCategories` and `categoryScores` reconciled via a single source of truth.** Pre-fix, scans could report a category in BOTH fields with contradictory values (e.g. `spf: 100` in `categoryScores` AND `spf` in `notApplicableCategories` for an anti-spoof-only domain). A new `isCategoryNonApplicable()` helper in `format-report.ts` is now the only place applicability is decided; both output fields derive from it. Invariant: every category in `notApplicableCategories` has `categoryScores[cat] === null`. (#267)
+- **`scan_domain`: `web_only` / `non_mail` profiles correctly suppress mail-only categories.** Domains without MX are no longer penalised in `categoryScores` for missing DKIM / MTA-STS / BIMI / MX — those are marked N/A and excluded from the overall score formula. The legacy 'all-info findings → N/A' heuristic now also recognises positive 'record found / configured' signals, so a domain that publishes `v=spf1 -all` for anti-spoof correctly stays at `spf: 100, applicable` rather than getting suppressed to N/A. (#267)
+- **`scan_domain`: maturity classifier now respects `scoringProfile`.** `computeMaturityStage()` accepts an optional `profile` parameter and routes `web_only` / `non_mail` domains through a new web-only ladder (Basic → Hardened → Defensive → Comprehensive) keyed off SSL / HSTS / DNSSEC / CAA / anti-spoof SPF+DMARC. Mail categories are intentionally excluded. The mail-enabled stage 4 gate is also tightened: `hardeningCount >= 2` AND at least one of {DNSSEC, MTA-STS, DANE} (the transport/integrity signals) is now required. CAA + DKIM-discovered alone no longer qualifies for "Hardened" — those are valuable signals but neither is transport encryption or DNS-integrity. (#267)
+- **`check_dmarc`: DMARCbis `np=reject` / `np=quarantine` correctly credited.** When the modern non-existent-subdomain policy tag is present and set to a strict value, the "Subdomain policy weaker than parent policy" finding (raised for `sp=none`) is downgraded from HIGH (-25 score impact) to LOW (-5), because `np=` explicitly covers the non-existent-subdomain attack surface that `sp=none` otherwise leaves open. Result: domains running modern DMARCbis policies with intentional `sp=none` (e.g. registrar-style delegation patterns) score significantly higher than they did pre-fix; cross-domain ordering now correctly puts DMARCbis + strict alignment ahead of basic-DMARC-plus-reporting. Single-mechanism penalty system preserved (no parallel credit system). (#267)
+
+### Changed
+
+- **`StructuredScanResult.categoryScores` widened from `Record<string, number>` to `Record<string, number | null>`.** `null` is used for any category marked N/A. All known downstream consumers (`compare-domains.ts`, `analyze-drift.ts`, `batch-scan.ts`) already null-tolerant via `?? 0` — no consumer changes needed. Internal `ScanScore.categoryScores` shape unchanged.
+
 ## [3.3.13] - 2026-05-28
 
 ### Fixed
