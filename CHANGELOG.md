@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.13] - 2026-05-28
+
+### Fixed
+
+- **`map_supply_chain`: self-owned SPF wrapper subdomains no longer show as critical third-parties.** Confirmed recurring on PayPal (`pp._spf.paypal.com` + 4 `3ph*` siblings) and Stripe (`spf1.stripe.com`, `greenhouse-outbound-mail.stripe.com`). When an SPF include's effective parent equals the scan domain, the rows collapse into a single `<domain> (self-hosted SPF)` entry. Genuine third-party includes preserved. (#265)
+- **`map_supply_chain`: UltraDNS no longer double-counted across sibling TLDs.** `ultradns.com` + `ultradns.net` (Neustar's redundant TLDs) now collapse to one `UltraDNS (Neustar)` row, matching the existing AWS Route 53 multi-TLD treatment. (#265)
+- **`map_supply_chain`: `security_tooling_exposed` findings deduplicated when a service has multiple TXT records.** Same pre-aggregation pattern as the v3.3.9 `stale_integration` GSC fix — xero.com's 2 OneTrust TXT records → 1 finding with count embedded. Closes #261. (#265)
+- **`check_dkim`: probe list expanded from 13 → 25 selectors.** New `dkim-selectors.ts` catalog adds Proton (`protonmail`/`protonmail2`/`protonmail3` — fixes proton.me false-negative), Mandrill, MailerSend, SparkPost, Postmark variants, and others. Custom selectors still pass via the `--selector` arg. (#265)
+- **`check_dkim`: score floor at 50 when probe finds no records.** Eliminates the contradictory `score: 75 + HIGH "No DKIM found"` output. (#265)
+- **`check_dkim`: CNAME-to-SaaS attribution + finding re-framing.** New `dkim-saas-attribution.ts` recognises SendGrid / Mailgun / Postmark / Mailchimp / Amazon SES / HubSpot / Klaviyo / Zoho / Proton CNAME endpoints. When a selector CNAME-delegates to a known SaaS provider (e.g. stripe `s1` → `*.sendgrid.net`), findings are attributed via `delegatedTo` metadata and the "missing v=DKIM1" finding downgrades to `info` (RFC 6376 §3.6.1 default is widely tolerated; upstream provider responsibility). Substantive findings (e.g. 1024-bit RSA key) preserved at `medium` severity with reframed copy crediting the SaaS provider. (#265)
+- **`check_mta_sts`: missing-records finding now branches on MX presence.** Domains with MX (PayPal, Stripe — Google Workspace MX) get medium severity + "accepts inbound email but has no MTA-STS / TLS-RPT configured" copy; non-mail domains (gov.uk) keep low severity + the existing "normal for domains that do not accept inbound email" copy. (#265)
+- **`check_lookalikes`: severity calibration matrix per issue #264.** Pure `calibrateLookalikeSeverity()` function replaces the "has MX → HIGH" shortcut. New severity matrix: `mail-infra alone → MEDIUM` (was HIGH); HIGH reserved for `mail-infra + corroborating signal` (recent registration <90d, disposable MX provider, no web content). Enrichment phase adds per-candidate RDAP-age probe + disposable-MX-host list + lightweight HEAD probe (all fail-soft). Eliminates 12 false-HIGH findings on generic-word lookalikes like `cero.com`, `dero.com`, `ero.com` against xero.com. Closes #264. (#265)
+
 ## [3.3.12] - 2026-05-28
 
 ### Fixed
