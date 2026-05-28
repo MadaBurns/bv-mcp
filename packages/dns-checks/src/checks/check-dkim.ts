@@ -11,23 +11,53 @@
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { analyzeKeyStrength, consolidateSelectorProbeKeyStrengthFindings, getDkimTagValue } from './dkim-analysis';
+import { COMMON_DKIM_SELECTORS } from './dkim-selectors';
+import { attributeCnameChain } from './dkim-saas-attribution';
 
-/** Common DKIM selectors used by major email providers */
-const COMMON_SELECTORS = [
-	'default',
-	'google',
-	'20230601', // Google Workspace
-	'selector1', // Microsoft 365
-	'selector2', // Microsoft 365
-	'k1', // Mailchimp
-	's1',
-	's2',
-	'mail',
-	'dkim',
-	'amazonses', // Amazon SES
-	'zoho', // Zoho Mail
-	'cf2024-1', // Cloudflare Email Routing
-];
+/** Maximum CNAME hops to follow when probing a selector. */
+const MAX_CNAME_HOPS = 5;
+
+/**
+ * Probe a selector's TXT record and, only if records are found, walk the
+ * CNAME chain to populate `chain` for SaaS attribution.
+ *
+ * The DNS query function may transparently follow CNAMEs when answering a
+ * TXT query (most DoH resolvers do), so the chain walk via explicit CNAME
+ * queries is the only way to recover the delegation path. We restrict
+ * those extra queries to selectors that actually returned TXT records, so
+ * the negative-probe path (the common case) still costs one query per
+ * selector.
+ */
+async function probeSelectorWithCname(
+	queryDNS: DNSQueryFunction,
+	name: string,
+	timeout: number,
+): Promise<{ records: string[]; chain: string[] }> {
+	let records: string[] = [];
+	try {
+		const txt = await queryDNS(name, 'TXT', { timeout });
+		records = txt.filter((r) => r.toLowerCase().includes('v=dkim1') || r.includes('p='));
+	} catch {
+		records = [];
+	}
+	if (records.length === 0) return { records, chain: [] };
+
+	const chain: string[] = [];
+	let current = name;
+	for (let hop = 0; hop < MAX_CNAME_HOPS; hop++) {
+		let target: string | undefined;
+		try {
+			const cnameAnswers = await queryDNS(current, 'CNAME', { timeout });
+			target = cnameAnswers[0]?.replace(/\.$/, '');
+		} catch {
+			target = undefined;
+		}
+		if (!target) break;
+		chain.push(target);
+		current = target;
+	}
+	return { records, chain };
+}
 
 /**
  * Check DKIM records for a domain.
@@ -42,26 +72,23 @@ export async function checkDKIM(
 	const timeout = options?.timeout ?? 5000;
 	const selector = options?.selector;
 	const findings: Finding[] = [];
-	const selectorsToCheck = selector ? [selector] : COMMON_SELECTORS;
+	const selectorsToCheck = selector ? [selector] : [...COMMON_DKIM_SELECTORS];
 	const foundSelectors: string[] = [];
 	let hasValidKey = false;
 
-	// Check each selector in parallel
+	// Check each selector in parallel (TXT + CNAME chain for SaaS attribution)
 	const results = await Promise.all(
 		selectorsToCheck.map(async (sel) => {
-			try {
-				const records = await queryDNS(`${sel}._domainkey.${domain}`, 'TXT', { timeout });
-				const dkimRecords = records.filter((r) => r.toLowerCase().includes('v=dkim1') || r.includes('p='));
-				return { selector: sel, records: dkimRecords };
-			} catch {
-				return { selector: sel, records: [] };
-			}
+			const name = `${sel}._domainkey.${domain}`;
+			const { records, chain } = await probeSelectorWithCname(queryDNS, name, timeout);
+			return { selector: sel, records, chain };
 		}),
 	);
 
 	for (const result of results) {
 		if (result.records.length > 0) {
 			foundSelectors.push(result.selector);
+			const delegatedTo = attributeCnameChain(result.chain);
 
 			// Validate each DKIM record
 			for (const record of result.records) {
@@ -155,16 +182,25 @@ export async function checkDKIM(
 						};
 
 						if (keyAnalysis.strength !== 'info') {
+							// SaaS-delegated CNAME chains downgrade high → medium and
+							// reframe the description to credit the provider.
+							let severity = keyAnalysis.strength;
+							let description = descriptions[keyAnalysis.strength];
+							if (delegatedTo && severity === 'high') {
+								severity = 'medium';
+								description = `DKIM RSA key for "${result.selector}" is ${severityMsg} (${keyAnalysis.bits} bits). The selector is CNAME-delegated to ${delegatedTo} — only ${delegatedTo} can rotate this key; raise it with your provider.`;
+							}
 							findings.push(
 								createFinding(
 									'dkim',
 									`${severityMsg.charAt(0).toUpperCase() + severityMsg.slice(1)} RSA key: ${result.selector}`,
-									keyAnalysis.strength,
-									descriptions[keyAnalysis.strength],
+									severity,
+									description,
 									{
 										estimatedBits: keyAnalysis.bits,
 										keyType: keyAnalysis.keyType,
 										selector: result.selector,
+										...(delegatedTo ? { delegatedTo } : {}),
 									},
 								),
 							);
@@ -175,14 +211,30 @@ export async function checkDKIM(
 				// Check for missing v= tag (should be v=DKIM1)
 				const versionTag = getDkimTagValue(record, 'v');
 				if (!versionTag) {
-					findings.push(
-						createFinding(
-							'dkim',
-							`Missing DKIM version tag: ${result.selector}`,
-							'medium',
-							`DKIM selector "${result.selector}" is missing the v= tag. Should be set to v=DKIM1.`,
-						),
-					);
+					if (delegatedTo) {
+						// SaaS providers (notably SendGrid) ship records without v=DKIM1
+						// by design — RFC 6376 §3.6.1 tolerates this. Downgrade to info
+						// and credit the provider so the tenant doesn't waste cycles on
+						// a record they can't change.
+						findings.push(
+							createFinding(
+								'dkim',
+								`Missing DKIM version tag: ${result.selector}`,
+								'info',
+								`DKIM selector "${result.selector}" is CNAME-delegated to ${delegatedTo} and the upstream record omits the v=DKIM1 tag. This is RFC 6376 §3.6.1-tolerated; only ${delegatedTo} can change it.`,
+								{ delegatedTo, selector: result.selector },
+							),
+						);
+					} else {
+						findings.push(
+							createFinding(
+								'dkim',
+								`Missing DKIM version tag: ${result.selector}`,
+								'medium',
+								`DKIM selector "${result.selector}" is missing the v= tag. Should be set to v=DKIM1.`,
+							),
+						);
+					}
 				}
 
 				// Check for deprecated SHA-1 hash algorithm (RFC 8301)
@@ -260,5 +312,15 @@ export async function checkDKIM(
 		);
 	}
 
-	return buildCheckResult('dkim', findings);
+	const result = buildCheckResult('dkim', findings);
+
+	// Defect E — score floor on probe miss.
+	// A HIGH "No DKIM records found" finding scores 75 by default (100 - 25),
+	// which contradicts the HIGH severity. Cap at 50 when probing turned up
+	// nothing so the score reflects the severity surface.
+	if (foundSelectors.length === 0 && result.score > 50) {
+		return { ...result, score: 50 };
+	}
+
+	return result;
 }

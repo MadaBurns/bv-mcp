@@ -310,11 +310,26 @@ export async function mapSupplyChain(
 		}
 	}
 
-	// Add unrecognized SPF includes as raw entries
+	// Add unrecognized SPF includes as raw entries.
+	// Self-delegated SPF includes — where the effective parent of the include
+	// equals the scan domain — collapse into ONE self-hosted row, not N
+	// critical third-party rows. Surfaced 2026-05-28: large orgs commonly
+	// publish multiple self-owned SPF wrapper subdomains (eg. `pp._spf.<own>`
+	// + several `3ph*._spf.<own>` siblings, or `spf1.<own>` plus a vendor-
+	// rewrite host like `<vendor>-outbound-mail.<own>`). These are the org's
+	// own SPF infrastructure, not external dependencies.
+	const scanDomainLower = domain.toLowerCase();
+	let selfDelegatedCount = 0;
 	for (const inc of spfIncludes) {
-		if (!detectedSpfDomains.has(inc)) {
-			addDependency(inc, 'spf');
+		if (detectedSpfDomains.has(inc)) continue;
+		if (getEffectiveParentDomain(inc) === scanDomainLower) {
+			selfDelegatedCount++;
+			continue;
 		}
+		addDependency(inc, 'spf');
+	}
+	if (selfDelegatedCount > 0) {
+		addDependency(`${scanDomainLower} (self-hosted SPF)`, 'spf');
 	}
 
 	// Add unrecognized NS hosts — group by registrable parent domain.
@@ -464,13 +479,24 @@ export async function mapSupplyChain(
 		});
 	}
 
-	// Security tooling exposed: TXT verification for a security-category service
-	const securityServices = verifiedServices.filter((vs) => vs.category === 'security');
-	for (const ss of securityServices) {
+	// Security tooling exposed: TXT verification for a security-category service.
+	// Dedup by service name first — large orgs commonly publish multiple TXT
+	// verification records for the same security tool (e.g. xero.com had 2×
+	// `onetrust-domain-verification=` records, one per property). Mirrors the
+	// stale_integration aggregation above; closes #261.
+	const securityCountByService = new Map<string, number>();
+	for (const vs of verifiedServices) {
+		if (vs.category !== 'security') continue;
+		securityCountByService.set(vs.service, (securityCountByService.get(vs.service) ?? 0) + 1);
+	}
+	for (const [service, count] of securityCountByService) {
+		const recordPhrase = count === 1
+			? 'A TXT verification record'
+			: `${count} TXT verification records`;
 		signals.push({
 			type: 'security_tooling_exposed',
 			severity: 'low',
-			detail: `${ss.service} TXT verification record reveals security tooling in use. Attackers can tailor evasion techniques to this specific vendor.`,
+			detail: `${recordPhrase} for ${service} reveals security tooling in use. Attackers can tailor evasion techniques to this specific vendor.`,
 		});
 	}
 
