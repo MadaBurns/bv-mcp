@@ -1233,3 +1233,45 @@ describe('mapSupplyChain — catalog batch #286 collapse behavior', () => {
 		expect(r.dependencies.some((d) => d.provider.includes('%{'))).toBe(false);
 	});
 });
+
+describe('mapSupplyChain — catalog batch v3.3.27 (G1/G2/G3)', () => {
+	async function run(domain = 'example.com') {
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		return mapSupplyChain(domain);
+	}
+
+	describe('G1 — Public Suffix List: Japanese 2LDs (ad/ed/gr/lg .jp)', () => {
+		it.each(['ad.jp', 'ed.jp', 'gr.jp', 'lg.jp'])(
+			'treats *.%s as a registry suffix when computing the parent domain',
+			async (suffix) => {
+				const { getEffectiveParentDomain } = await import('../src/tools/map-supply-chain');
+				expect(getEffectiveParentDomain(`ns1.dnsprovider.${suffix}`)).toBe(`dnsprovider.${suffix}`);
+			},
+		);
+
+		it('does not surface ad.jp as a DNS provider when the NS lives under it (rakuten.co.jp regression)', async () => {
+			mockDnsResponses({ domain: 'rakuten.co.jp', nsHosts: ['ns1.dnsweb.org.ad.jp', 'ns2.dnsweb.org.ad.jp'] });
+			const r = await run('rakuten.co.jp');
+			expect(r.dependencies.some((d) => d.provider === 'ad.jp')).toBe(false);
+			expect(r.dependencies.some((d) => d.provider === 'org.ad.jp')).toBe(true);
+		});
+	});
+
+	describe('G2 — Symantec Email Security.cloud (MessageLabs)', () => {
+		it('maps spf.messagelabs.com SPF to Symantec Email Security.cloud', async () => {
+			const { matchProviderForSpfInclude } = await import('../src/tools/provider-guides');
+			expect(matchProviderForSpfInclude('spf.messagelabs.com')).toBe('Symantec Email Security.cloud');
+		});
+		it('maps cluster*.eu.messagelabs.com MX to Symantec Email Security.cloud', async () => {
+			const { matchProviderForMxHost } = await import('../src/tools/provider-guides');
+			expect(matchProviderForMxHost('cluster1.eu.messagelabs.com')).toBe('Symantec Email Security.cloud');
+		});
+	});
+
+	describe('G3 — Campaign Monitor (createsend.com)', () => {
+		it('maps _spf.createsend.com SPF to Campaign Monitor', async () => {
+			const { matchProviderForSpfInclude } = await import('../src/tools/provider-guides');
+			expect(matchProviderForSpfInclude('_spf.createsend.com')).toBe('Campaign Monitor');
+		});
+	});
+});

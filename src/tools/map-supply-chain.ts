@@ -146,8 +146,13 @@ const PUBLIC_SUFFIX_SECOND_LEVEL: ReadonlySet<string> = new Set([
 	'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au', 'asn.au', 'id.au',
 	// South Africa
 	'co.za', 'org.za', 'web.za',
-	// Japan
-	'co.jp', 'ac.jp', 'ne.jp', 'or.jp', 'go.jp',
+	// Japan — covers JPRS-managed organisational 2LDs. The missing
+	// `ad.jp` (network admin) / `ed.jp` (primary+secondary education) /
+	// `gr.jp` (groups) / `lg.jp` (local government) entries surfaced
+	// `ad.jp` as a "DNS provider" row on rakuten.co.jp scans (its NS lives
+	// under `*.ad.jp`); without these, any NS at a 3-label JP host collapses
+	// to the registry suffix instead of the operator's registrable domain.
+	'co.jp', 'ac.jp', 'ne.jp', 'or.jp', 'go.jp', 'ad.jp', 'ed.jp', 'gr.jp', 'lg.jp',
 	// India
 	'co.in', 'org.in', 'net.in', 'gov.in', 'ac.in',
 	// South Korea
