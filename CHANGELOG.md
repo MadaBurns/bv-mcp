@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.19] - 2026-05-28
+
+### Added
+
+- **Cloudflare CDN attribution: the v3.3.17 cert-issuer signal is now live (no longer dormant).** `scan_domain` post-processing sources the most-recent cert's issuer DN from bv-certstream-worker's new `/cert-meta` endpoint (via the existing `BV_CERTSTREAM` service binding) and threads it into `detectCloudflareFallback`'s 2-of-3 rule. Cloudflare customers whose attribution needs the cert signal — external DNS provider + Cloudflare edge IP + Cloudflare-issued cert = 2 signals — now correctly report `cdnProvider: "Cloudflare"` instead of `null`. The lookup is best-effort with a 5s cap: any failure/timeout (or absent binding, or a bv-certstream-worker not yet deployed with `/cert-meta`) falls back to `certIssuer: null`, degrading to the v3.3.15 NS+IP-only gate — no regression. The CDN finding's `metadata.source` now distinguishes `ns-ip-and-cert` (cert participated) from `ns-and-ip-range`, and carries `metadata.certIssuer` for transparency. Requires bv-certstream-worker deploy (bv-web PR #621) for live value; ships safely in either order. (#277)
+
 ## [3.3.18] - 2026-05-28
 
 ### Fixed
