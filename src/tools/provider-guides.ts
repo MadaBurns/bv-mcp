@@ -219,6 +219,20 @@ const DETECTION_RULES: DetectionRule[] = [
 		signal: 'spf:oraclecloud.com',
 	},
 	{
+		// Foundation DNS. Multi-TLD vendor — the same authoritative DNS service is
+		// served from `*.foundationdns.com`, `*.foundationdns.net`, and
+		// `*.foundationdns.org`. Without this collapse a single zone using all three
+		// sibling TLDs (eg. `gold.foundationdns.{com,net,org}`) lists as three
+		// separate dns-hosting rows. Same drift class as UltraDNS / NS1 / Dyn /
+		// Google Cloud DNS — catalog gap surfaced 2026-05-28.
+		name: 'Foundation DNS',
+		role: 'dns',
+		patterns: {
+			ns: /\.foundationdns\.(com|net|org)$/i,
+		},
+		signal: 'ns:foundationdns',
+	},
+	{
 		// Google Cloud DNS. Authoritative DNS for projects on GCP — NS hosts are
 		// `ns-cloud-{a,b,c,d}{1,2,3,4}.googledomains.com`. Without this rule the
 		// raw `googledomains.com` (trailing-label heuristic) surfaces instead of
