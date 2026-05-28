@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.11] - 2026-05-28
+
+### Added
+
+- **Diagnostic-only release.** `check_http_security` findings with `cdnProvider` metadata now also carry a `cdnDiagnostics` field exposing the raw `server` / `cf-ray` / `cf-cache-status` / `cf-mitigated` / `x-cdn` / `x-iinfo` / `via` / `x-amz-cf-id` header values the Worker observed. v3.3.10's gate-tightening did not move the live behavior — google.com / github.com / microsoft.com still attribute as Cloudflare despite direct curls showing `server: gws` / `server: github.com` / no `server` header. Need empirical evidence of what the Worker actually receives on outbound `fetch()` before iterating further. The field will be removed in the next release once the root cause is understood. (#257)
+
 ## [3.3.10] - 2026-05-28
 
 ### Fixed
