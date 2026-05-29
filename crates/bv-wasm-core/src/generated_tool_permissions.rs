@@ -21,6 +21,7 @@ pub fn required_mode_for_tool(tool: &str) -> PermissionMode {
         "check_dbl" => PermissionMode::ReadOnly,
         "check_dkim" => PermissionMode::ReadOnly,
         "check_dmarc" => PermissionMode::ReadOnly,
+        "check_dnskey_strength" => PermissionMode::ReadOnly,
         "check_dnssec" => PermissionMode::ReadOnly,
         "check_dnssec_chain" => PermissionMode::ReadOnly,
         "check_fast_flux" => PermissionMode::ReadOnly,

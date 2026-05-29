@@ -60,6 +60,7 @@ import { checkCymruAsn } from '../tools/check-cymru-asn';
 import { checkRdapLookup, RDAP_LOOKUP_SYNC_BUDGET_MS } from '../tools/check-rdap-lookup';
 import { checkNsecWalkability } from '../tools/check-nsec-walkability';
 import { checkDnssecChain } from '../tools/check-dnssec-chain';
+import { checkDnskeyStrength } from '../tools/check-dnskey-strength';
 import { checkFastFlux } from '../tools/check-fast-flux';
 import { checkAuthoritativeDnsInfra } from '../tools/check-authoritative-dns-infra';
 import { checkRootServerSet } from '../tools/check-root-server-set';
@@ -375,6 +376,7 @@ const TOOL_REGISTRY: Record<
 		cacheTtlSeconds: 3600,
 	},
 	check_dnssec_chain: { cacheKey: () => 'dnssec_chain', execute: (d, _args, ro) => checkDnssecChain(d, buildDnsOptions(ro)) },
+	check_dnskey_strength: { cacheKey: () => 'dnskey_strength', execute: (d, _args, ro) => checkDnskeyStrength(d, buildDnsOptions(ro)) },
 	check_fast_flux: {
 		cacheKey: (_a, ro) => (ro?.reconBinding ? 'fast_flux:recon' : 'fast_flux'),
 		execute: (d, args, ro) =>
