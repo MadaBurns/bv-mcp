@@ -64,7 +64,7 @@
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.16.10",
 		"@cloudflare/workers-types": "4.20260528.1",
-		"@types/marked": "^5.0.2",
+		"@types/marked": "^6.0.0",
 		"@types/punycode": "^2.1.4",
 		"drizzle-kit": "^0.31.10",
 		"eslint": "9.39.3",
