@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.3.29] - 2026-05-29
+
+### Fixed
+
+- **Tool-quality batch (5 issues found running tools against a live, well-configured domain).** Version bump busts the version-keyed KV cache so stale outputs are evicted on deploy.
+  - **`generate_spf_record` no longer emits a mail-breaking empty record.** Previously, for a domain with a healthy `-all` SPF (e.g. ip4 blocks + includes) and no `include_providers` argument, the generator detected zero mechanisms — because the underlying SPF check only attaches `includeDomains` metadata to `~all`-style findings — and returned `v=spf1  -all` (double space, zero mechanisms) with an empty `warnings` array. Publishing that would hard-fail ALL of the domain's legitimate mail. Now the generator reads the live SPF record directly and preserves **every** authorizing mechanism verbatim (ip4, ip6, a, mx, include, exists, redirect=), layers in any `include_providers`, and — as a hard safety net — refuses to emit a bare `v=spf1 -all`: if no mechanisms are detected and none are supplied, it returns a neutral `v=spf1 ?all` placeholder plus a loud warning. Double-space defect fixed (single-space join). DNS-lookup-limit counting now correctly excludes ip4/ip6.
+  - **`generate_mta_sts_policy` now auto-detects MX from DNS.** The schema documents "Omit to detect from DNS", but the tool only parsed MX hosts out of MTA-STS check findings and otherwise emitted a `mail.example.com` placeholder with a "No MX hosts found" warning even when the domain clearly had MX records. It now queries MX directly (sorted by priority, null-MX `.` ignored), falling back to finding-text parsing, and only warns when the domain genuinely has no MX.
+  - **`explain_finding` returns specific content for severity-status findings.** The `EXPLANATIONS` map is keyed inconsistently (`_PASS/_FAIL/_WARNING/_MISSING` for SPF/DMARC/DNSSEC; `_HIGH/_MEDIUM/_LOW/_INFO` for MX/SSL), but real scan findings carry severity statuses (e.g. DNSSEC + `high`), so the literal `TYPE_STATUS` lookup missed the FAIL-style entries and fell through to the generic "Security Check Complete" stub. A status-class fallback ladder now maps failing statuses → FAIL/MISSING/CRITICAL/HIGH, warning statuses → WARNING/MEDIUM/LOW, and healthy statuses → PASS/INFO. Added minimal entries for `DANE`, `TLSRPT`, and `BIMI` (previously only `DANE_HTTPS` existed).
+  - **`check_authoritative_dns_infra` no longer reports a probe-side reachability failure as a HIGH domain finding.** When the BV_INFRA_PROBE cannot reach the target at all (UDP/53 `false` with every other capability inconclusive), that reflects a probe/vantage limitation, not the domain refusing service. UDP/53 and TCP/53 reachability failures are now demoted to inconclusive unless the probe proved contact another way (e.g. TCP answered while UDP was blocked, or an authoritative response was observed) — in which case they remain HIGH.
+  - **`check_nsec_walkability` no longer false-positives on unsigned zones.** NSEC/NSEC3 records only exist in DNSSEC-signed zones, but the tool reported any domain without an NSEC3PARAM record as "fully walkable" (HIGH) — including unsigned zones that have no NSEC chain at all. The check now gates on DNSSEC being enabled (DNSKEY, with DS as a backstop): unsigned zones return an info "walkability N/A — zone not DNSSEC-signed" finding, and the HIGH walkable finding only fires when the zone IS signed but publishes no NSEC3PARAM.
+
 ## [3.3.28] - 2026-05-29
 
 ### Removed

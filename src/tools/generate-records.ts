@@ -13,7 +13,7 @@
 import type { OutputFormat } from '../handlers/tool-args';
 import type { CheckResult, Finding } from '@blackveil/dns-checks/scoring';
 import type { QueryDnsOptions } from '../lib/dns-types';
-import { checkSpf } from './check-spf';
+import { queryMxRecords, queryTxtRecords } from '../lib/dns';
 import { checkDmarc } from './check-dmarc';
 import { checkMtaSts } from './check-mta-sts';
 
@@ -59,54 +59,108 @@ export async function generateSpfRecord(
 	includeProviders?: string[],
 	dnsOptions?: QueryDnsOptions,
 ): Promise<GeneratedRecord> {
-	const checkResult = await checkSpf(domain, dnsOptions);
 	const warnings: string[] = [];
 	const instructions: string[] = [];
 
-	// Extract existing include domains from findings metadata
-	const existingIncludes = extractSpfIncludes(checkResult);
+	// Detect the domain's existing authorizing mechanisms directly from live DNS.
+	// We must preserve ALL authorizing mechanisms (ip4, ip6, a, mx, include, exists,
+	// redirect) — not just include: — or a generated record would silently drop a
+	// domain's legitimate senders and hard-fail their mail.
+	const existing = await detectExistingSpfMechanisms(domain, dnsOptions);
 
-	// Start with explicitly requested providers
-	const includes = new Set<string>(existingIncludes);
+	// Build the authorizing-mechanism list, preserving existing mechanisms verbatim.
+	// Use insertion-ordered de-dup so the live record's structure is retained.
+	const mechanisms: string[] = [];
+	const seen = new Set<string>();
+	const addMechanism = (mech: string): void => {
+		const trimmed = mech.trim();
+		if (trimmed.length === 0 || seen.has(trimmed.toLowerCase())) return;
+		seen.add(trimmed.toLowerCase());
+		mechanisms.push(trimmed);
+	};
 
+	for (const mech of existing.mechanisms) {
+		addMechanism(mech);
+	}
+
+	// Layer in explicitly requested providers (in addition to detected senders).
 	if (includeProviders) {
 		for (const provider of includeProviders) {
 			const normalized = provider.toLowerCase().trim();
 			const known = KNOWN_SPF_INCLUDES[normalized];
 			if (known) {
-				includes.add(known);
+				addMechanism(`include:${known}`);
 			} else if (normalized.includes('.')) {
 				// Treat as raw include domain
-				includes.add(normalized);
+				addMechanism(`include:${normalized}`);
 			} else {
 				warnings.push(`Unknown provider "${provider}" — skipped. Use a full include domain instead.`);
 			}
 		}
 	}
 
-	// Build the SPF record
-	const mechanisms: string[] = [];
-	for (const inc of includes) {
-		mechanisms.push(`include:${inc}`);
+	// A redirect= modifier replaces the entire record (RFC 7208 §6.1), so 'all'
+	// is irrelevant and must not be appended.
+	const hasRedirect = mechanisms.some((m) => /^redirect=/i.test(m));
+
+	// HARD GUARD: never emit a bare "v=spf1 -all". Publishing an SPF record with no
+	// authorizing mechanisms and a hard fail (-all) rejects ALL of the domain's mail.
+	// This is the safety net the detection step backstops — detection can fail
+	// (timeout / DoH error) and we must refuse rather than break delivery silently.
+	if (mechanisms.length === 0 && !hasRedirect) {
+		warnings.push(
+			'No email senders detected for this domain and no include_providers were supplied. ' +
+				'Refusing to emit a bare "v=spf1 -all" because publishing it would REJECT ALL mail for the domain. ' +
+				'Pass include_providers (e.g. your email provider) or run a scan first so existing senders can be preserved.',
+		);
+		const safeValue = 'v=spf1 ?all';
+		instructions.push(
+			`No SPF record could be generated safely for ${domain}.`,
+			existing.detectionFailed
+				? 'The existing SPF record could not be read from DNS (lookup failed or timed out).'
+				: 'No existing SPF record was found and no senders were provided.',
+			'Provide include_providers for every legitimate sending source, then regenerate.',
+			'A neutral "v=spf1 ?all" is shown only as a non-breaking placeholder — it does NOT protect against spoofing.',
+		);
+		return {
+			recordType: 'TXT',
+			name: domain,
+			value: safeValue,
+			warnings,
+			instructions,
+		};
 	}
 
-	// Check DNS lookup count (10 maximum per RFC 7208)
-	if (mechanisms.length > 10) {
-		warnings.push(`SPF record has ${mechanisms.length} include mechanisms — exceeds the 10-lookup limit. Consider consolidating.`);
+	// Build the SPF record. Join with single spaces to avoid the double-space defect.
+	const parts = ['v=spf1', ...mechanisms];
+	if (!hasRedirect) {
+		parts.push('-all');
+	}
+	const spfValue = parts.join(' ');
+
+	// Count DNS-lookup-incurring mechanisms (10 maximum per RFC 7208 §4.6.4):
+	// include, a, mx, ptr, exists, redirect. ip4/ip6 do NOT incur lookups.
+	const lookupMechanisms = mechanisms.filter((m) => /^(include:|a[:/\s]?|a$|mx[:/\s]?|mx$|ptr|exists:|redirect=)/i.test(m));
+	if (lookupMechanisms.length > 10) {
+		warnings.push(`SPF record has ${lookupMechanisms.length} lookup-incurring mechanisms — exceeds the 10-lookup limit (RFC 7208). Consider consolidating.`);
 	}
 
-	const spfValue = `v=spf1 ${mechanisms.join(' ')} -all`;
+	if (existing.detectionFailed && (includeProviders?.length ?? 0) > 0) {
+		warnings.push(
+			'Could not read the existing SPF record from DNS, so only the explicitly supplied include_providers are included. ' +
+				'Verify no other legitimate senders are missing before publishing.',
+		);
+	}
 
 	instructions.push(`Publish the following TXT record at ${domain}:`);
 	instructions.push(`  Type: TXT`);
 	instructions.push(`  Name: ${domain}`);
 	instructions.push(`  Value: ${spfValue}`);
 	instructions.push('');
-	instructions.push('The "-all" suffix means emails from servers not listed will be rejected (hard fail).');
-
-	if (!checkResult.passed) {
-		instructions.push('');
-		instructions.push('Note: Your current SPF record has issues that this generated record addresses.');
+	if (hasRedirect) {
+		instructions.push('This record uses a "redirect=" modifier, which delegates the policy to another domain. No "all" mechanism is added.');
+	} else {
+		instructions.push('The "-all" suffix means emails from servers not listed will be rejected (hard fail).');
 	}
 
 	return {
@@ -118,23 +172,50 @@ export async function generateSpfRecord(
 	};
 }
 
-/** Extract existing include domains from SPF check findings. */
-function extractSpfIncludes(result: CheckResult): string[] {
-	const includes: string[] = [];
-	for (const finding of result.findings) {
-		// Look for include domains in metadata or detail text
-		if (finding.metadata?.includeDomains && Array.isArray(finding.metadata.includeDomains)) {
-			includes.push(...(finding.metadata.includeDomains as string[]));
-		}
-		// Parse from detail text as fallback
-		const includeMatches = finding.detail.match(/include:([^\s]+)/g);
-		if (includeMatches) {
-			for (const match of includeMatches) {
-				includes.push(match.replace('include:', ''));
-			}
+/** Result of detecting a domain's existing SPF authorizing mechanisms. */
+interface ExistingSpfMechanisms {
+	/** Authorizing/policy mechanisms in record order (ip4, ip6, a, mx, include, exists, redirect=). */
+	mechanisms: string[];
+	/** True if the live SPF record could not be read (lookup failed/timed out). */
+	detectionFailed: boolean;
+}
+
+/**
+ * Read the domain's live SPF record and extract every authorizing mechanism
+ * verbatim. This preserves ip4/ip6/a/mx/include/exists/redirect so a regenerated
+ * record does not silently drop legitimate senders.
+ */
+async function detectExistingSpfMechanisms(
+	domain: string,
+	dnsOptions?: QueryDnsOptions,
+): Promise<ExistingSpfMechanisms> {
+	let txtRecords: string[];
+	try {
+		txtRecords = await queryTxtRecords(domain, dnsOptions);
+	} catch {
+		return { mechanisms: [], detectionFailed: true };
+	}
+
+	const concatenated = txtRecords.join('');
+	const spfMatch = concatenated.match(/v=spf1[^]*/i);
+	if (!spfMatch) {
+		// No SPF record present — not a failure, just nothing to preserve.
+		return { mechanisms: [], detectionFailed: false };
+	}
+
+	const tokens = spfMatch[0].trim().split(/\s+/);
+	const mechanisms: string[] = [];
+	for (const token of tokens) {
+		if (/^v=spf1$/i.test(token)) continue;
+		// Skip the terminating 'all' mechanism (any qualifier) — we re-add our own.
+		if (/^[+?~-]?all$/i.test(token)) continue;
+		// Keep authorizing/policy mechanisms only.
+		if (/^([+?~-]?)(ip4:|ip6:|a([:/]|$)|mx([:/]|$)|include:|exists:|ptr|redirect=)/i.test(token)) {
+			mechanisms.push(token);
 		}
 	}
-	return [...new Set(includes)];
+
+	return { mechanisms, detectionFailed: false };
 }
 
 // ─── DMARC Record Generator ──────────────────────────────────────────
@@ -293,12 +374,20 @@ export async function generateMtaStsPolicy(
 	const warnings: string[] = [];
 	const instructions: string[] = [];
 
-	// Extract MX hosts from findings if not provided
-	const effectiveMxHosts = mxHosts ?? extractMxHostsFromFindings(checkResult);
+	// Resolve MX hosts. When mx_hosts is omitted, auto-detect from live DNS (the
+	// schema documents "Omit to detect from DNS"). Fall back to parsing the
+	// MTA-STS check findings only if a direct MX query yields nothing.
+	let effectiveMxHosts = mxHosts ?? [];
+	if (effectiveMxHosts.length === 0) {
+		effectiveMxHosts = await detectMxHosts(domain, dnsOptions);
+	}
+	if (effectiveMxHosts.length === 0) {
+		effectiveMxHosts = extractMxHostsFromFindings(checkResult);
+	}
 
 	if (effectiveMxHosts.length === 0) {
-		warnings.push('No MX hosts found or provided. You must specify mx_hosts for the policy file.');
-		effectiveMxHosts.push('mail.example.com');
+		warnings.push('No MX hosts found in DNS or provided. The domain appears to have no MX records — specify mx_hosts to generate a usable policy file.');
+		effectiveMxHosts = ['mail.example.com'];
 	}
 
 	// Generate policy ID (timestamp-based)
@@ -350,6 +439,28 @@ export async function generateMtaStsPolicy(
 			policyContent,
 		],
 	};
+}
+
+/**
+ * Auto-detect a domain's MX hostnames directly from live DNS.
+ * Returns lowercased, trailing-dot-stripped exchange hostnames sorted by priority.
+ */
+async function detectMxHosts(domain: string, dnsOptions?: QueryDnsOptions): Promise<string[]> {
+	try {
+		const records = await queryMxRecords(domain, dnsOptions);
+		const seen = new Set<string>();
+		const hosts: string[] = [];
+		for (const { exchange } of [...records].sort((a, b) => a.priority - b.priority)) {
+			const host = exchange.trim().replace(/\.$/, '').toLowerCase();
+			// A single "." exchange is RFC 7505 "null MX" — the domain does not receive mail.
+			if (host.length === 0 || host === '.' || seen.has(host)) continue;
+			seen.add(host);
+			hosts.push(host);
+		}
+		return hosts;
+	} catch {
+		return [];
+	}
 }
 
 /** Extract MX hostnames from MTA-STS check findings. */
