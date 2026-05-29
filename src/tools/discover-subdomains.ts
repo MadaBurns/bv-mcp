@@ -9,6 +9,7 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
+import { disposeUnreadResponseBody } from '../lib/response-body';
 
 /**
  * Synchronous handler budget for `discover_subdomains` (ms).
@@ -443,7 +444,10 @@ async function queryCertstreamEndpoint<T>(
 			...(certstreamAuthToken ? { headers: { Authorization: `Bearer ${certstreamAuthToken}` } } : {}),
 			signal: composed.signal,
 		});
-		if (!response.ok) return null;
+		if (!response.ok) {
+			await disposeUnreadResponseBody(response);
+			return null;
+		}
 		return (await response.json()) as T;
 	} catch {
 		return null;

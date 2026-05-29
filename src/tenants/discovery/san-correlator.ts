@@ -19,6 +19,7 @@
  */
 
 import { JSONParser } from '@streamparser/json-whatwg';
+import { disposeUnreadResponseBody } from '../../lib/response-body';
 import { safeFetch } from '../../lib/safe-fetch';
 import { validateDomain } from '../../lib/sanitize';
 
@@ -181,7 +182,10 @@ async function attemptCertstreamSans(
 	}
 	clearTimeout(timeoutId);
 
-	if (!response.ok) return null;
+	if (!response.ok) {
+		await disposeUnreadResponseBody(response);
+		return null;
+	}
 
 	let data: CertstreamSansResponse;
 	try {
