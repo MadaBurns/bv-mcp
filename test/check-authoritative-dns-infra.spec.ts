@@ -176,4 +176,54 @@ describe('checkAuthoritativeDnsInfra', () => {
 			'Route leak or hijack signal observed',
 		]));
 	});
+
+	it('demotes UDP/53 reachability=false to inconclusive when the probe never reached the target', async () => {
+		// trademe.co.nz scenario: the BV_INFRA_PROBE could not reach the target at
+		// all — udp53Reachable=false with EVERY other capability inconclusive. That
+		// is a probe/vantage limitation, NOT the domain refusing DNS service, so it
+		// must NOT surface as a high-severity domain finding.
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: 'trademe.co.nz',
+			checkedAt: '2026-05-29T00:00:00.000Z',
+			reachability: { udp53Reachable: false, tcp53Reachable: false },
+			// No authoritative/soa/dnssec evidence — the probe never got an answer.
+		})));
+
+		const result = await checkAuthoritativeDnsInfra('trademe.co.nz', {
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		// No high-severity reachability finding should be emitted.
+		const titles = result.findings.map((f) => f.title);
+		expect(titles).not.toContain('UDP/53 is not reachable');
+		expect(titles).not.toContain('TCP/53 is not reachable');
+
+		const summary = result.metadata?.capabilitySummary as { failed: string[]; inconclusive: string[] };
+		expect(summary.failed).not.toContain('dns53_udp_reachability');
+		expect(summary.failed).not.toContain('dns53_tcp_reachability');
+		expect(summary.inconclusive).toEqual(expect.arrayContaining([
+			'dns53_udp_reachability',
+			'dns53_tcp_reachability',
+		]));
+	});
+
+	it('keeps UDP/53 reachability=false as HIGH when the probe proved contact via TCP', async () => {
+		// UDP blocked but TCP answered → genuine domain-side observation, stays HIGH.
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: 'a.root-servers.net',
+			checkedAt: '2026-05-29T00:00:00.000Z',
+			reachability: { udp53Reachable: false, tcp53Reachable: true },
+			authoritative: { aaFlag: true },
+		})));
+
+		const result = await checkAuthoritativeDnsInfra('a.root-servers.net', {
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		const udpFinding = result.findings.find((f) => f.title === 'UDP/53 is not reachable');
+		expect(udpFinding).toBeDefined();
+		expect(udpFinding!.severity).toBe('high');
+		const summary = result.metadata?.capabilitySummary as { failed: string[] };
+		expect(summary.failed).toContain('dns53_udp_reachability');
+	});
 });

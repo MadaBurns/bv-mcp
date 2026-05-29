@@ -55,6 +55,29 @@ function parseNsec3Param(data: string): Nsec3Params | null {
 }
 
 /**
+ * Determine whether a zone is DNSSEC-signed by probing for DNSKEY records, with
+ * a DS lookup as a backstop. NSEC/NSEC3 records only exist in signed zones, so
+ * this gate prevents reporting an unsigned (DNSSEC-absent) zone as "walkable".
+ *
+ * Conservative: if both lookups error, we treat the zone as unsigned so the
+ * tool does not raise a high-severity walkability finding on weak evidence.
+ */
+async function isZoneSigned(domain: string, dnsOptions?: QueryDnsOptions): Promise<boolean> {
+	try {
+		const dnskey = await queryDnsRecords(domain, 'DNSKEY', dnsOptions);
+		if (dnskey.length > 0) return true;
+	} catch {
+		// fall through to DS backstop
+	}
+	try {
+		const ds = await queryDnsRecords(domain, 'DS', dnsOptions);
+		return ds.length > 0;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Assess NSEC3 zone walkability risk by analyzing NSEC3PARAM records.
  *
  * Limitations (disclosed in findings):
@@ -86,13 +109,32 @@ export async function checkNsecWalkability(domain: string, dnsOptions?: QueryDns
 	}
 
 	if (nsec3Records.length === 0) {
+		// NSEC and NSEC3 only exist in DNSSEC-signed zones. An unsigned zone has no
+		// NSEC chain at all, so "fully walkable" is a false positive. Gate the high
+		// severity behind confirmed signing: check for DNSKEY (and DS as a backstop)
+		// before concluding the zone uses plain NSEC.
+		const signed = await isZoneSigned(domain, dnsOptions);
+
+		if (!signed) {
+			findings.push(
+				createFinding(
+					CATEGORY,
+					'Zone not DNSSEC-signed — walkability N/A',
+					'info',
+					`No NSEC3PARAM record was found for ${domain}, and no DNSKEY/DS records were found either, so the zone is not DNSSEC-signed. NSEC/NSEC3 denial-of-existence records only exist in signed zones, so there is no NSEC chain to walk. Zone-walking risk does not apply here. (To gain DNSSEC's spoofing/cache-poisoning protections, the zone would need to be signed — at which point NSEC3 should be used to prevent enumeration.)`,
+					{ domain, walkable: false, dnssecSigned: false },
+				),
+			);
+			return buildCheckResult(CATEGORY, findings) as CheckResult;
+		}
+
 		findings.push(
 			createFinding(
 				CATEGORY,
 				'No NSEC3PARAM record found',
 				'high',
-				`No NSEC3PARAM record was found for ${domain}. The zone likely uses plain NSEC, which makes it fully walkable — an attacker can enumerate all zone contents by following NSEC chain links. Limitation: DoH cannot probe for actual NSEC/NSEC3 denial-of-existence records, so this assessment is based on the absence of NSEC3PARAM configuration only.`,
-				{ domain, walkable: true },
+				`The zone for ${domain} is DNSSEC-signed (DNSKEY/DS present) but publishes no NSEC3PARAM record. The signed zone therefore likely uses plain NSEC, which makes it fully walkable — an attacker can enumerate all zone contents by following NSEC chain links. Limitation: DoH cannot probe for actual NSEC/NSEC3 denial-of-existence records, so this assessment is based on the absence of NSEC3PARAM configuration only.`,
+				{ domain, walkable: true, dnssecSigned: true },
 			),
 		);
 		return buildCheckResult(CATEGORY, findings) as CheckResult;
