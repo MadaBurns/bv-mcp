@@ -118,6 +118,38 @@ describe('discoverSubdomains', () => {
 		expect(result.sourceUnavailable).toBeUndefined();
 	});
 
+	it('cancels unread certstream /enumerate body before falling back to /sans', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const enumerateResponse = new Response(JSON.stringify({ error: 'upstream transient' }), {
+			status: 502,
+			headers: { 'Content-Type': 'application/json' },
+		});
+		const enumerateCancel = vi.spyOn(enumerateResponse.body!, 'cancel');
+		const certstreamFetch = vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			if (url === 'https://certstream/enumerate?domain=example.com') return enumerateResponse;
+			if (url === 'https://certstream/sans?domain=example.com') {
+				return Response.json({
+					domain: 'example.com',
+					names: ['api.example.com', 'www.example.com'],
+					certificateCount: 2,
+					timedOut: false,
+					truncated: false,
+					cached: false,
+				});
+			}
+			throw new Error(`unexpected certstream URL: ${url}`);
+		});
+		globalThis.fetch = vi.fn(async () => {
+			throw new Error('crt.sh fallback should not be used');
+		});
+
+		const result = await discoverSubdomains('example.com', { fetch: certstreamFetch as unknown as typeof fetch }, 'shared-internal-key');
+
+		expect(result.totalSubdomains).toBe(2);
+		expect(enumerateCancel).toHaveBeenCalledTimes(1);
+	});
+
 	it('should parse crt.sh response and extract subdomains', async () => {
 		mockCrtSh(mockCtResponse);
 		const result = await run();
