@@ -19,9 +19,25 @@ function nsec3paramResponse(domain: string, records: string[]) {
 	);
 }
 
-/** Build an empty DoH response (no answers). */
-function emptyResponse(domain: string) {
-	return createDohResponse([{ name: domain, type: 51 }], []);
+/**
+ * Route DoH queries by type-name (the transport sends `type=NSEC3PARAM|DNSKEY|DS`).
+ * `signed` controls whether DNSKEY/DS lookups return records, gating the
+ * DNSSEC-signed-zone check. NSEC3PARAM always returns empty here (the "missing
+ * NSEC3PARAM" path) so the signed/unsigned branch is exercised.
+ */
+function routeByType(domain: string, opts: { signed: boolean }) {
+	return vi.fn().mockImplementation((url: string | URL) => {
+		const u = new URL(typeof url === 'string' ? url : url.toString());
+		const name = u.searchParams.get('name') ?? domain;
+		const typeName = (u.searchParams.get('type') ?? '').toUpperCase();
+		const TYPE_CODE: Record<string, number> = { NSEC3PARAM: 51, DNSKEY: 48, DS: 43 };
+		const typeCode = TYPE_CODE[typeName] ?? 0;
+		if (opts.signed && (typeName === 'DNSKEY' || typeName === 'DS')) {
+			const data = typeName === 'DNSKEY' ? '257 3 13 mdsswUyr3...' : '12345 13 2 ABCDEF...';
+			return Promise.resolve(createDohResponse([{ name, type: typeCode }], [{ name, type: typeCode, TTL: 300, data }]));
+		}
+		return Promise.resolve(createDohResponse([{ name, type: typeCode }], []));
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -61,9 +77,9 @@ describe('checkNsecWalkability', () => {
 		expect(mediumFinding!.detail).toMatch(/low enumeration cost|RFC 9276/i);
 	});
 
-	it('should flag missing NSEC3PARAM as high severity', async () => {
-		// No NSEC3PARAM → zone likely uses plain NSEC (fully walkable)
-		globalThis.fetch = vi.fn().mockResolvedValue(emptyResponse('example.com'));
+	it('should flag missing NSEC3PARAM as high severity ONLY when the zone is DNSSEC-signed', async () => {
+		// No NSEC3PARAM, but DNSKEY/DS present → signed zone using plain NSEC → walkable HIGH.
+		globalThis.fetch = routeByType('example.com', { signed: true });
 
 		const result = await run();
 		expect(result.category).toBe('nsec_walkability');
@@ -71,6 +87,25 @@ describe('checkNsecWalkability', () => {
 		const highFinding = result.findings.find((f) => f.severity === 'high');
 		expect(highFinding).toBeDefined();
 		expect(highFinding!.detail).toMatch(/walkable|plain NSEC/i);
+		expect(highFinding!.metadata?.walkable).toBe(true);
+		expect(highFinding!.metadata?.dnssecSigned).toBe(true);
+	});
+
+	it('should NOT flag walkability for an UNSIGNED zone (no NSEC3PARAM, no DNSKEY/DS)', async () => {
+		// trademe.co.nz scenario: no NSEC3PARAM AND no DNSSEC → no NSEC chain to walk.
+		globalThis.fetch = routeByType('example.com', { signed: false });
+
+		const result = await run();
+		expect(result.category).toBe('nsec_walkability');
+
+		// Must be an info "N/A" finding, NOT a high walkability false positive.
+		const highFinding = result.findings.find((f) => f.severity === 'high');
+		expect(highFinding).toBeUndefined();
+		const infoFinding = result.findings.find((f) => f.severity === 'info');
+		expect(infoFinding).toBeDefined();
+		expect(infoFinding!.detail).toMatch(/not DNSSEC-signed|N\/A|no NSEC chain|not signed/i);
+		expect(infoFinding!.metadata?.walkable).toBe(false);
+		expect(infoFinding!.metadata?.dnssecSigned).toBe(false);
 	});
 
 	it('should report opt-out flag when set', async () => {

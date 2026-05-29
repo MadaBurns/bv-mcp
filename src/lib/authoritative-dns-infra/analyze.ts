@@ -164,22 +164,62 @@ function vantageStatus(evidence: AuthoritativeDnsInfraEvidence): CapabilityStatu
 	return undefined;
 }
 
+/**
+ * Did the probe establish *any* positive contact with the target?
+ *
+ * Reachability over UDP/53 or TCP/53 is the transport substrate every other
+ * authoritative probe rides on. If the probe never reached the target at all,
+ * a single `udp53Reachable === false` reflects a probe-side / vantage limitation
+ * (the BV_INFRA_PROBE couldn't get to the target), NOT positive evidence that the
+ * domain refuses DNS service. Only treat a reachability failure as a genuine
+ * domain finding when some other capability proves the probe *did* talk to the
+ * target — e.g. TCP answered while UDP was blocked, or an authoritative response
+ * was observed.
+ */
+function probeEstablishedContact(evidence: AuthoritativeDnsInfraEvidence): boolean {
+	const r = evidence.reachability;
+	if (r?.udp53Reachable === true || r?.tcp53Reachable === true) return true;
+	if (r?.ipv4?.reachable === true || r?.ipv6?.reachable === true) return true;
+	// Any conclusive authoritative-behaviour signal means we received a real answer.
+	const a = evidence.authoritative;
+	if (typeof a?.aaFlag === 'boolean') return true;
+	if (typeof a?.recursionAvailable === 'boolean' || typeof a?.recursionRefused === 'boolean') return true;
+	if (typeof evidence.soaSerial?.consistent === 'boolean') return true;
+	if (typeof evidence.dnssec?.validates === 'boolean') return true;
+	if (typeof evidence.dnssec?.dnskeyPresent === 'boolean') return true;
+	return false;
+}
+
 export function analyzeAuthoritativeDnsInfraEvidence(
 	evidence: AuthoritativeDnsInfraEvidence,
 ): AuthoritativeDnsInfraAnalysis {
 	const findings: Finding[] = [];
 	const capabilitySummary: InfraCapabilitySummary = { passed: [], failed: [], inconclusive: [] };
 
-	pushCapabilityResult(capabilitySummary, findings, 'dns53_udp_reachability', reachabilityStatus(evidence), {
-		title: 'UDP/53 is not reachable',
-		severity: 'high',
-		detail: `The infra probe could not reach UDP/53 for ${evidence.hostname}.`,
-	});
+	const contactEstablished = probeEstablishedContact(evidence);
+
+	// Demote a bare reachability=false to inconclusive when the probe never
+	// established any contact — that is a probe/vantage artefact, not a
+	// domain-side service failure. Keep it as a HIGH finding only when contact
+	// was proven another way (e.g. TCP answered but UDP was blocked).
+	const udpStatus = reachabilityStatus(evidence);
+	pushCapabilityResult(
+		capabilitySummary,
+		findings,
+		'dns53_udp_reachability',
+		udpStatus === false && !contactEstablished ? undefined : udpStatus,
+		{
+			title: 'UDP/53 is not reachable',
+			severity: 'high',
+			detail: `The infra probe could not reach UDP/53 for ${evidence.hostname}.`,
+		},
+	);
+	const tcpStatus: CapabilityStatus = evidence.reachability?.tcp53Reachable;
 	pushCapabilityResult(
 		capabilitySummary,
 		findings,
 		'dns53_tcp_reachability',
-		evidence.reachability?.tcp53Reachable,
+		tcpStatus === false && !contactEstablished ? undefined : tcpStatus,
 		{
 			title: 'TCP/53 is not reachable',
 			severity: 'high',

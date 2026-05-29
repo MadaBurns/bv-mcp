@@ -586,6 +586,313 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 			'Deploy NSEC3 with at least algorithm 1 (SHA-1) and consider using salt. RFC 9276 recommends 0 iterations with no salt as the minimum.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc5155', 'https://datatracker.ietf.org/doc/html/rfc9276'],
 	},
+	// ── Severity-keyed entries ───────────────────────────────────────────
+	// Real scan findings carry a SEVERITY status (critical/high/medium/low/info),
+	// not pass/fail/warning. These provide accurate, general-per-(type,severity)
+	// content so explain_finding does not fall through to the generic DEFAULT
+	// stub for the common check types. Each is phrased to be TRUE across every
+	// distinct finding the corresponding check emits at that severity. We avoid
+	// cross-family fallback (a "high" severity finding must not resolve a "_FAIL"
+	// entry) because FAIL/MISSING means "control absent" while a severity finding
+	// usually means "control present but weak" — conflating them is a falsehood.
+
+	// DNSSEC — check emits high / medium / info.
+	DNSSEC_HIGH: {
+		title: 'DNSSEC Not Providing Protection',
+		severity: 'high',
+		explanation:
+			'DNSSEC is not effectively protecting this domain — for example no DNSKEY records are published, the chain of trust is incomplete, or a deprecated signing algorithm (e.g. RSASHA1) is in use. Without working DNSSEC, DNS responses are not cryptographically authenticated.',
+		impact: 'DNS responses can be forged in transit, enabling redirection to attacker-controlled infrastructure.',
+		adverseConsequences: 'Users may be sent to malicious destinations, causing credential theft, service disruption, and incident-response costs.',
+		recommendation:
+			'Enable DNSSEC at your registrar and DNS provider, ensure the parent DS record matches a published DNSKEY, and use a modern algorithm (e.g. ECDSAP256SHA256 / algorithm 13).',
+		references: ['https://datatracker.ietf.org/doc/html/rfc4033', 'https://www.cloudflare.com/dns/dnssec/how-dnssec-works/'],
+	},
+	DNSSEC_MEDIUM: {
+		title: 'DNSSEC Configuration Weakness',
+		severity: 'medium',
+		explanation:
+			'DNSSEC is configured but a weakness was detected — for example a missing DS record at the parent, an unrecognized signing algorithm, or a SHA-1 DS digest. These reduce the strength or completeness of the chain of trust.',
+		impact: 'The cryptographic assurance of DNS responses is weaker than intended and may not validate everywhere.',
+		adverseConsequences: 'Some resolvers may fail validation or accept weakly-protected responses, partially undermining DNSSEC.',
+		recommendation:
+			'Publish a DS record at the parent that matches a current DNSKEY, use a modern algorithm, and prefer SHA-256 (digest type 2) over SHA-1 for DS records.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc4033', 'https://datatracker.ietf.org/doc/html/rfc8624'],
+	},
+
+	// SPF — check emits critical / high / medium / low / info.
+	SPF_CRITICAL: {
+		title: 'SPF Policy Critically Permissive or Broken',
+		severity: 'critical',
+		explanation:
+			'A critical SPF problem was detected — for example a "+all" mechanism that authorizes every server on the internet, or the record exceeding the 10 DNS-lookup limit (which causes a PermError that voids the policy). Either way the SPF policy fails to constrain who may send as the domain.',
+		impact: 'Unauthorized senders can pass SPF as the domain, or SPF evaluation fails entirely.',
+		adverseConsequences: 'Spoofing and phishing from the domain become trivial, and legitimate mail may also be rejected when SPF PermErrors.',
+		recommendation:
+			'Remove "+all" (use "-all" or "~all"), and consolidate includes/flattening so the record stays under 10 DNS lookups (RFC 7208 §4.6.4).',
+		references: ['https://datatracker.ietf.org/doc/html/rfc7208'],
+	},
+	SPF_HIGH: {
+		title: 'SPF Policy Weakness',
+		severity: 'high',
+		explanation:
+			'A high-severity SPF issue was detected — for example multiple SPF records (RFC 7208 permits exactly one, so receivers behave unpredictably) or an overly broad IP range that authorizes far more hosts than intended.',
+		impact: 'SPF becomes ambiguous or over-permissive, letting unauthorized senders appear legitimate.',
+		adverseConsequences: 'Spoofing risk rises and deliverability can become inconsistent across receivers.',
+		recommendation:
+			'Publish exactly one SPF record and tighten over-broad ip4/ip6 ranges to the specific sending hosts your providers use.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc7208'],
+	},
+	SPF_MEDIUM: {
+		title: 'SPF Hardening Recommended',
+		severity: 'medium',
+		explanation:
+			'A medium-severity SPF issue was detected — for example use of the deprecated "ptr" mechanism (RFC 7208 §5.5) or a configuration that weakens the policy without breaking it.',
+		impact: 'SPF protection is weaker or less reliable than recommended.',
+		adverseConsequences: 'Edge-case authentication failures and unnecessary attack surface can persist over time.',
+		recommendation:
+			'Remove deprecated mechanisms such as "ptr" and prefer explicit ip4/ip6/include mechanisms with a "-all" or "~all" terminator.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc7208'],
+	},
+	SPF_LOW: {
+		title: 'SPF Soft Fail / Minor Issue',
+		severity: 'low',
+		explanation:
+			'A low-severity SPF observation — typically a "~all" soft-fail terminator. Soft fail accepts but flags failing mail; it is acceptable alongside an enforcing DMARC policy but is weaker than "-all" on its own.',
+		impact: 'Mail that fails SPF may still be accepted rather than rejected at the SMTP layer.',
+		adverseConsequences: 'Some spoofed mail can reach recipients unless DMARC enforcement compensates.',
+		recommendation:
+			'Use "-all" for strict enforcement, or keep "~all" only when a DMARC policy of quarantine/reject handles failures.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc7208#section-8.1'],
+	},
+
+	// DMARC — check emits critical / high / medium / low / info.
+	DMARC_CRITICAL: {
+		title: 'DMARC Critically Misconfigured',
+		severity: 'critical',
+		explanation:
+			'A critical DMARC problem was detected that leaves the domain effectively unprotected against spoofing despite a record being present.',
+		impact: 'Forged messages failing authentication are not reliably blocked by receivers.',
+		adverseConsequences: 'Large-scale impersonation of the domain becomes feasible, harming users and brand trust.',
+		recommendation:
+			'Correct the DMARC record to a single valid policy with an explicit, enforcing p= tag (quarantine or reject) and monitor aggregate reports.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc7489'],
+	},
+	DMARC_HIGH: {
+		title: 'DMARC Not Enforcing or Invalid',
+		severity: 'high',
+		explanation:
+			'A high-severity DMARC issue was detected — for example p=none (monitoring only), multiple DMARC records, a missing p= tag, or an invalid policy value. In each case the domain is not actively protected against spoofing.',
+		impact: 'Receiving systems are not instructed to reject or quarantine forged messages that fail authentication.',
+		adverseConsequences: 'Domain spoofing reaches inboxes more often, increasing phishing exposure and reputational damage.',
+		recommendation:
+			'Publish exactly one valid DMARC record with an explicit p= tag and progress toward p=quarantine then p=reject after reviewing aggregate reports.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc7489', 'https://www.cloudflare.com/learning/dns/dns-records/dns-dmarc-record/'],
+	},
+	DMARC_MEDIUM: {
+		title: 'DMARC Coverage Gap',
+		severity: 'medium',
+		explanation:
+			'A medium-severity DMARC gap was detected — for example no aggregate report URI (rua=), pct< 100 (partial enforcement), or a subdomain policy (sp=) weaker than the organizational policy.',
+		impact: 'DMARC enforcement or visibility is incomplete, leaving observable or exploitable gaps.',
+		adverseConsequences: 'Spoofing activity is harder to detect or only partially blocked, and subdomains may remain exposed.',
+		recommendation:
+			'Add a rua= aggregate-reporting address, set pct=100, and ensure sp= is at least as strict as the parent policy.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc7489#section-6.3'],
+	},
+	DMARC_LOW: {
+		title: 'DMARC Alignment / Reporting Refinement',
+		severity: 'low',
+		explanation:
+			'A low-severity DMARC refinement was detected — for example relaxed alignment (adkim=r / aspf=r), no subdomain policy specified, or forensic reporting (ruf=) not configured. These do not disable DMARC but tighten or improve it.',
+		impact: 'Alignment is looser or reporting is less complete than the strictest posture.',
+		adverseConsequences: 'Borderline spoofing techniques may pass alignment and some diagnostic detail is unavailable.',
+		recommendation:
+			'Consider strict alignment (adkim=s, aspf=s), set an explicit sp=, and add a ruf= address if forensic reporting is desired and privacy-permissible.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc7489'],
+	},
+
+	// DKIM — "key/configuration present but weak/revoked", NOT "no DKIM" (DKIM_FAIL).
+	DKIM_CRITICAL: {
+		title: 'DKIM Critically Weak Key',
+		severity: 'critical',
+		explanation:
+			'A critically weak DKIM signing key was detected (for example an obsolete, trivially factorable key length). The signature provides little to no real authenticity assurance.',
+		impact: 'DKIM signatures can be forged, defeating message-integrity protection.',
+		adverseConsequences: 'Attackers can sign mail as the domain, enabling high-credibility impersonation.',
+		recommendation: 'Immediately rotate to a strong key (RSA 2048-bit minimum or Ed25519) and revoke the weak selector.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc6376'],
+	},
+	DKIM_HIGH: {
+		title: 'DKIM Key Weakness',
+		severity: 'high',
+		explanation:
+			'A high-severity DKIM problem was detected with a published key — for example a key whose material is too short for its declared algorithm, or a similarly weak signing key. Weak keys undermine the integrity guarantee DKIM is meant to provide.',
+		impact: 'DKIM signatures are easier to forge, weakening message-authenticity assurance.',
+		adverseConsequences: 'Attackers can more plausibly impersonate the domain, increasing fraud and phishing risk.',
+		recommendation:
+			'Rotate to a strong key (RSA 2048-bit minimum, or Ed25519) that matches the declared algorithm, and retire weak selectors.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc6376', 'https://datatracker.ietf.org/doc/html/rfc8463'],
+	},
+	DKIM_MEDIUM: {
+		title: 'DKIM Configuration Issue',
+		severity: 'medium',
+		explanation:
+			'A medium-severity DKIM issue was detected on a published selector — for example a below-recommended (sub-2048-bit) RSA key, a revoked key (empty p=), a missing v= tag, or an unrecognized key type.',
+		impact: 'DKIM verification may be weaker, ambiguous, or fail for the affected selector.',
+		adverseConsequences: 'Message-authenticity confidence drops and some legitimate mail may be distrusted.',
+		recommendation:
+			'Use a 2048-bit RSA key (or Ed25519), include the v=DKIM1 tag, remove revoked/empty selectors, and use a recognized key type.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc6376'],
+	},
+	DKIM_LOW: {
+		title: 'DKIM Testing Mode / Minor Issue',
+		severity: 'low',
+		explanation:
+			'A low-severity DKIM observation — typically a selector left in testing mode (t=y), which tells receivers to treat signatures as experimental.',
+		impact: 'Receivers may not fully act on DKIM results for the affected selector.',
+		adverseConsequences: 'The intended authentication benefit is reduced while testing mode remains set.',
+		recommendation: 'Remove the t=y testing flag once the selector is verified to be signing correctly.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc6376'],
+	},
+
+	// MTA-STS — check emits high / medium / low / info.
+	MTA_STS_HIGH: {
+		title: 'MTA-STS Policy Broken',
+		severity: 'high',
+		explanation:
+			'A high-severity MTA-STS problem was detected — for example the policy file is not accessible over HTTPS (e.g. HTTP 404) despite a TXT record advertising it. A broken policy cannot enforce TLS for inbound mail.',
+		impact: 'Inbound SMTP cannot be reliably protected against TLS downgrade attacks.',
+		adverseConsequences: 'Email content may traverse the network unencrypted and be exposed to interception.',
+		recommendation:
+			'Host a valid policy file at https://mta-sts.<domain>/.well-known/mta-sts.txt with a matching id in the TXT record, served with a valid certificate.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc8461'],
+	},
+	MTA_STS_MEDIUM: {
+		title: 'MTA-STS Not Enforcing',
+		severity: 'medium',
+		explanation:
+			'A medium-severity MTA-STS issue was detected — for example neither MTA-STS nor TLS-RPT is present, or the policy mode is "none". TLS for inbound mail is therefore not enforced.',
+		impact: 'Inbound mail transport is not protected against active downgrade to cleartext.',
+		adverseConsequences: 'Confidential email can be intercepted in transit, raising compliance and privacy risk.',
+		recommendation:
+			'Publish an MTA-STS policy in mode=testing then mode=enforce, and add TLS-RPT (_smtp._tls) for visibility.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc8461', 'https://datatracker.ietf.org/doc/html/rfc8460'],
+	},
+	MTA_STS_LOW: {
+		title: 'MTA-STS Refinement',
+		severity: 'low',
+		explanation:
+			'A low-severity MTA-STS observation — for example mode=testing (monitoring only), a short max_age, or a missing TLS-RPT record. The control is present but not at its strongest.',
+		impact: 'TLS enforcement is partial or short-lived, or reporting visibility is missing.',
+		adverseConsequences: 'Downgrade protection is weaker than it could be until the policy is fully enforced.',
+		recommendation:
+			'Move to mode=enforce, set a max_age of at least 604800 (1 week), and publish a TLS-RPT record.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc8461'],
+	},
+
+	// CAA — check emits medium / low.
+	CAA_MEDIUM: {
+		title: 'CAA Issuance Controls Incomplete',
+		severity: 'medium',
+		explanation:
+			'A medium-severity CAA issue was detected — for example no CAA records at all, or CAA records present without a usable "issue" tag. Without effective CAA, any certificate authority may issue certificates for the domain.',
+		impact: 'Certificate-issuance controls are broad, increasing the chance of unauthorized or mis-issued certificates.',
+		adverseConsequences: 'Attackers could obtain a valid certificate for impersonation or interception.',
+		recommendation:
+			'Publish CAA records restricting issuance to your authorized CAs (e.g. 0 issue "letsencrypt.org") and add an iodef contact.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc8659', 'https://www.cloudflare.com/learning/dns/dns-records/dns-caa-record/'],
+	},
+	CAA_LOW: {
+		title: 'CAA Hardening Recommended',
+		severity: 'low',
+		explanation:
+			'A low-severity CAA observation — for example a missing "issuewild" restriction or no "iodef" incident-reporting tag. The base policy works but could be tightened.',
+		impact: 'Wildcard issuance or incident reporting is not fully constrained.',
+		adverseConsequences: 'Certificate governance is slightly weaker than recommended.',
+		recommendation: 'Add an issuewild restriction and an iodef tag for incident notifications.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc8659'],
+	},
+
+	// DANE — check emits medium / low.
+	DANE_MEDIUM: {
+		title: 'DANE TLSA Missing or Misconfigured',
+		severity: 'medium',
+		explanation:
+			'A medium-severity DANE issue was detected — for example no TLSA records pinning the service certificate/key, or TLSA present without DNSSEC (which leaves the pins unauthenticated and spoofable).',
+		impact: 'Certificate trust relies on the public CA system without an authenticated DNS-level pin.',
+		adverseConsequences: 'A compromised or mis-issuing CA could present a fraudulent certificate, enabling MITM attacks.',
+		recommendation:
+			'Enable DNSSEC and publish DANE-EE (usage 3) TLSA records with SHA-256 matching (type 1) for the relevant service ports.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc6698', 'https://datatracker.ietf.org/doc/html/rfc7671'],
+	},
+	DANE_LOW: {
+		title: 'DANE Hardening Recommended',
+		severity: 'low',
+		explanation:
+			'A low-severity DANE observation — TLSA records are present but a parameter could be improved (for example a weaker matching type or non-EE usage).',
+		impact: 'DANE protection is effective but not at its strongest, widely-interoperable configuration.',
+		adverseConsequences: 'Minor reduction in the robustness of certificate pinning.',
+		recommendation: 'Prefer DANE-EE (usage 3) with SHA-256 matching (type 1).',
+		references: ['https://datatracker.ietf.org/doc/html/rfc7671'],
+	},
+
+	// TLS-RPT — check emits medium / low / info.
+	TLSRPT_MEDIUM: {
+		title: 'TLS-RPT Reporting Absent',
+		severity: 'medium',
+		explanation:
+			'A medium-severity TLS-RPT issue was detected — typically no SMTP TLS Reporting (RFC 8460) record at _smtp._tls.<domain>. Without it you receive no reports when senders fail to negotiate TLS or when MTA-STS enforcement fails.',
+		impact: 'TLS downgrade attempts and MTA-STS policy failures against inbound mail go unobserved.',
+		adverseConsequences: 'Delivery-security regressions and active downgrade attacks can persist undetected.',
+		recommendation:
+			'Publish a TXT record at _smtp._tls.<domain> such as: v=TLSRPTv1; rua=mailto:tls-reports@<domain>, and monitor the reports.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc8460'],
+	},
+	TLSRPT_LOW: {
+		title: 'TLS-RPT Refinement',
+		severity: 'low',
+		explanation:
+			'A low-severity TLS-RPT observation — a reporting record exists but a detail (such as the reporting destination) could be improved.',
+		impact: 'Reporting visibility is present but could be more complete.',
+		adverseConsequences: 'Some delivery-security telemetry may be missed.',
+		recommendation: 'Ensure the rua= destination is monitored and correctly formatted.',
+		references: ['https://datatracker.ietf.org/doc/html/rfc8460'],
+	},
+
+	// BIMI — check emits high / medium / low / info.
+	BIMI_HIGH: {
+		title: 'BIMI Logo Invalid or Unsafe',
+		severity: 'high',
+		explanation:
+			'A high-severity BIMI logo problem was detected — for example the SVG logo contains prohibited <script> elements. BIMI logos must be script-free SVG Tiny PS; mail clients will reject a non-conformant or unsafe logo.',
+		impact: 'The brand logo will be rejected by mail clients, and a script-bearing SVG is a content-safety concern.',
+		adverseConsequences: 'BIMI provides no brand-trust benefit, and serving an unsafe SVG could expose downstream consumers to script content.',
+		recommendation:
+			'Serve a valid SVG Tiny PS logo with no <script> elements over HTTPS, and re-validate it against the BIMI logo profile.',
+		references: ['https://datatracker.ietf.org/doc/html/draft-blank-ietf-bimi', 'https://bimigroup.org/'],
+	},
+	BIMI_MEDIUM: {
+		title: 'BIMI Not Effective',
+		severity: 'medium',
+		explanation:
+			'A medium-severity BIMI issue was detected — for example a BIMI record present but DMARC not enforcing (p=quarantine/reject is required for BIMI to display), a logo that is too large (>32 KB), a wrong Content-Type, or a missing SVG Tiny PS baseProfile.',
+		impact: 'The brand logo will not display at supporting mailbox providers despite a BIMI record being present.',
+		adverseConsequences: 'The intended brand-trust benefit of BIMI is not realized until the prerequisite (enforcing DMARC) and logo requirements are met.',
+		recommendation:
+			'Bring DMARC to an enforcing policy (p=quarantine or p=reject), and serve a conformant SVG Tiny PS logo (<32 KB, correct Content-Type, baseProfile="tiny-ps").',
+		references: ['https://datatracker.ietf.org/doc/html/draft-blank-ietf-bimi', 'https://bimigroup.org/'],
+	},
+	BIMI_LOW: {
+		title: 'BIMI Refinement',
+		severity: 'low',
+		explanation:
+			'A low-severity BIMI observation — the record is largely in place but a detail (such as an optional VMC or logo metadata) could be improved.',
+		impact: 'BIMI works but is not at its most complete configuration.',
+		adverseConsequences: 'Minor reduction in display coverage across providers.',
+		recommendation: 'Consider adding a VMC and ensuring the logo metadata meets each target provider requirements.',
+		references: ['https://bimigroup.org/'],
+	},
 	BRAND_DISCOVERY_INFO: {
 		title: 'Candidate Brand Domain Surfaced',
 		severity: 'info',
@@ -640,6 +947,9 @@ export const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
 	subdomain_takeover: 'SUBDOMAIN_TAKEOVER',
 	subdomailing: 'SUBDOMAILING',
 	dane_https: 'DANE_HTTPS',
+	dane: 'DANE',
+	tlsrpt: 'TLSRPT',
+	bimi: 'BIMI',
 	svcb_https: 'SVCB_HTTPS',
 	brand_discovery: 'BRAND_DISCOVERY',
 };
@@ -696,6 +1006,18 @@ export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
 	SVCB_HTTPS: {
 		impact: 'Modern transport capabilities (ALPN, ECH) cannot be advertised via DNS, reducing connection efficiency and privacy.',
 		adverseConsequences: 'Clients require additional round-trips to negotiate protocols, and ECH-based privacy is unavailable.',
+	},
+	DANE: {
+		impact: 'Certificate/key pinning via DANE is absent or weak, leaving TLS trust dependent solely on the public CA system.',
+		adverseConsequences: 'A rogue or compromised CA can issue a fraudulent certificate, enabling undetected MITM attacks.',
+	},
+	TLSRPT: {
+		impact: 'TLS negotiation failures and MTA-STS policy failures for inbound mail are not reported, reducing delivery-security visibility.',
+		adverseConsequences: 'Downgrade attacks and policy regressions can persist undetected, delaying incident response.',
+	},
+	BIMI: {
+		impact: 'No verified brand logo is displayed on authenticated mail, weakening visual trust signals in the inbox.',
+		adverseConsequences: 'Reduced brand recognizability makes legitimate mail easier to overlook and impersonation harder to spot.',
 	},
 	RBL: {
 		impact: 'Mail server IPs are listed on one or more DNS blocklists, likely degrading email deliverability.',

@@ -82,37 +82,42 @@ describe('explainFinding', () => {
 		expect(result.severity).toBe('critical');
 	});
 
-	// DKIM — no detail-based sub-matching; lookup is checkType_STATUS only.
-	// Statuses like 'high', 'medium', 'low' have no DKIM entry, so they fall back to DEFAULT_EXPLANATION.
-	it('falls back to default for DKIM high severity (no DKIM_HIGH entry)', async () => {
+	// DKIM — severity-keyed entries (DKIM_HIGH/MEDIUM/LOW/CRITICAL) give specific
+	// content for "present but weak/revoked" findings, distinct from DKIM_FAIL
+	// ("no records"). Mapping a severity finding onto DKIM_FAIL would be a falsehood.
+	it('returns DKIM_HIGH (key weakness) for DKIM high severity', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DKIM', 'high', 'Legacy 1024-bit RSA key for selector s1024');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DKIM Key Weakness');
+		expect(result.severity).toBe('high');
+		// MUST NOT claim records are absent.
+		expect(result.title).not.toBe('No DKIM Records Found');
 		expect(result.details).toBe('Legacy 1024-bit RSA key for selector s1024');
 	});
 
-	it('falls back to default for DKIM medium severity (no DKIM_MEDIUM entry)', async () => {
+	it('returns DKIM_MEDIUM (config issue) for DKIM medium severity', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DKIM', 'medium', 'DKIM selector "20210112" has an empty public key (p=), indicating the key has been revoked');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DKIM Configuration Issue');
+		expect(result.title).not.toBe('No DKIM Records Found');
 	});
 
-	it('falls back to default for DKIM medium with below-recommended key details', async () => {
+	it('returns DKIM_MEDIUM for below-recommended key', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DKIM', 'medium', 'DKIM RSA key for "20230601" is below recommended (2048 bits)');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DKIM Configuration Issue');
 	});
 
-	it('falls back to default for DKIM medium with missing version tag details', async () => {
+	it('returns DKIM_MEDIUM for missing version tag', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DKIM', 'medium', 'DKIM selector "k1" is missing the v= tag');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DKIM Configuration Issue');
 	});
 
-	it('falls back to default for DKIM low severity (no DKIM_LOW entry)', async () => {
+	it('returns DKIM_LOW (testing mode) for DKIM low severity', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DKIM', 'low', 'DKIM policy is in testing mode for selector google');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DKIM Testing Mode / Minor Issue');
 	});
 
 	it('returns DKIM_FAIL entry when status is fail', async () => {
@@ -121,30 +126,31 @@ describe('explainFinding', () => {
 		expect(result.title).toBe('No DKIM Records Found');
 	});
 
-	// SPF — only SPF_PASS, SPF_FAIL, SPF_WARNING, SPF_MISSING keys exist.
-	// Statuses like 'low', 'critical', 'high', 'medium' have no entries.
-	it('falls back to default for SPF low severity (no SPF_LOW entry)', async () => {
+	// SPF — severity-keyed entries (SPF_CRITICAL/HIGH/MEDIUM/LOW) provide specific
+	// content for severity findings, alongside the legacy SPF_PASS/FAIL/MISSING keys.
+	it('returns SPF_LOW (soft fail) for SPF low severity', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('SPF', 'low', 'SPF record uses "~all" (soft fail)');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('SPF Soft Fail / Minor Issue');
+		expect(result.severity).toBe('low');
 	});
 
-	it('falls back to default for SPF critical severity (no SPF_CRITICAL entry)', async () => {
+	it('returns SPF_CRITICAL for permissive +all', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('SPF', 'critical', 'SPF record uses +all which allows any server');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('SPF Policy Critically Permissive or Broken');
 	});
 
-	it('falls back to default for SPF critical with too many lookups', async () => {
+	it('returns SPF_CRITICAL for too many lookups', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('SPF', 'critical', 'SPF record requires too many DNS lookups (12 > 10)');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('SPF Policy Critically Permissive or Broken');
 	});
 
-	it('falls back to default for SPF high severity (no SPF_HIGH entry)', async () => {
+	it('returns SPF_HIGH for multiple records', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('SPF', 'high', 'Multiple SPF records found. Only one is allowed per RFC 7208');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('SPF Policy Weakness');
 	});
 
 	it('returns SPF_MISSING entry when status is missing', async () => {
@@ -153,72 +159,108 @@ describe('explainFinding', () => {
 		expect(result.title).toBe('No SPF Record Found');
 	});
 
-	it('falls back to default for SPF high with broad IP range', async () => {
+	it('returns SPF_HIGH for broad IP range', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('SPF', 'high', 'Overly broad IP range /8 authorizes millions of IPs');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('SPF Policy Weakness');
 	});
 
-	it('falls back to default for SPF medium severity (no SPF_MEDIUM entry)', async () => {
+	it('returns SPF_MEDIUM for deprecated ptr mechanism', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('SPF', 'medium', 'SPF uses deprecated ptr mechanism');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('SPF Hardening Recommended');
 	});
 
-	// DMARC — only DMARC_PASS, DMARC_FAIL, DMARC_WARNING keys exist.
-	it('falls back to default for DMARC low severity (no DMARC_LOW entry)', async () => {
+	// DMARC — severity-keyed entries (DMARC_CRITICAL/HIGH/MEDIUM/LOW).
+	it('returns DMARC_LOW for no subdomain policy', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DMARC', 'low', 'No subdomain policy (sp=) specified');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DMARC Alignment / Reporting Refinement');
 	});
 
-	it('falls back to default for DMARC low with relaxed DKIM alignment', async () => {
+	it('returns DMARC_LOW for relaxed DKIM alignment', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DMARC', 'low', 'DKIM alignment mode is relaxed (adkim=r or unset)');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DMARC Alignment / Reporting Refinement');
 	});
 
-	it('falls back to default for DMARC low with relaxed SPF alignment', async () => {
+	it('returns DMARC_LOW for relaxed SPF alignment', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DMARC', 'low', 'SPF alignment mode is relaxed (aspf=r or unset)');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DMARC Alignment / Reporting Refinement');
 	});
 
-	it('falls back to default for DMARC low with no forensic reporting', async () => {
+	it('returns DMARC_LOW for no forensic reporting', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DMARC', 'low', 'Forensic reporting (ruf=) is not configured');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DMARC Alignment / Reporting Refinement');
 	});
 
-	it('falls back to default for DMARC high severity (no DMARC_HIGH entry)', async () => {
+	it('returns DMARC_HIGH for policy none', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DMARC', 'high', 'DMARC policy set to none \u2014 monitoring only');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DMARC Not Enforcing or Invalid');
 	});
 
-	it('falls back to default for DMARC medium severity (no DMARC_MEDIUM entry)', async () => {
+	it('returns DMARC_MEDIUM for no aggregate report URI', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DMARC', 'medium', 'No aggregate report URI (rua=) specified');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DMARC Coverage Gap');
 	});
 
 	// DNSSEC — only DNSSEC_PASS and DNSSEC_FAIL keys exist.
-	it('falls back to default for DNSSEC high severity (no DNSSEC_HIGH entry)', async () => {
+	it('returns DNSSEC_HIGH for missing DNSKEY', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DNSSEC', 'high', 'No DNSKEY records found for example.com');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DNSSEC Not Providing Protection');
 	});
 
-	it('falls back to default for DNSSEC medium severity (no DNSSEC_MEDIUM entry)', async () => {
+	it('returns DNSSEC_MEDIUM for missing DS', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DNSSEC', 'medium', 'No DS (Delegation Signer) records found');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DNSSEC Configuration Weakness');
 	});
 
-	it('falls back to default for DNSSEC high with deprecated algorithm', async () => {
+	it('returns DNSSEC_HIGH for deprecated algorithm', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DNSSEC', 'high', 'Deprecated DNSKEY algorithm (RSASHA1)');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DNSSEC Not Providing Protection');
+	});
+
+	// DANE / TLSRPT / BIMI — severity-keyed entries (these checks emit severities,
+	// not pass/fail). Lock in the titles so a future rename can't silently regress.
+	it('returns DANE_MEDIUM for a DANE medium finding', async () => {
+		const { explainFinding } = await getModule();
+		const result = explainFinding('DANE', 'medium', 'No TLSA records found for _25._tcp');
+		expect(result.title).toBe('DANE TLSA Missing or Misconfigured');
+		expect(result.severity).toBe('medium');
+		expect(result.title).not.toBe('Security Check Complete');
+	});
+
+	it('returns DANE_LOW for a DANE low finding', async () => {
+		const { explainFinding } = await getModule();
+		const result = explainFinding('DANE', 'low', 'TLSA uses a weaker matching type');
+		expect(result.title).toBe('DANE Hardening Recommended');
+	});
+
+	it('returns TLSRPT_MEDIUM for a TLS-RPT medium finding', async () => {
+		const { explainFinding } = await getModule();
+		const result = explainFinding('TLSRPT', 'medium', 'No TLS-RPT record at _smtp._tls');
+		expect(result.title).toBe('TLS-RPT Reporting Absent');
+		expect(result.title).not.toBe('Security Check Complete');
+	});
+
+	it('returns BIMI_HIGH for a logo script-tag finding (NOT a DMARC claim)', async () => {
+		const { explainFinding } = await getModule();
+		const result = explainFinding('BIMI', 'high', 'BIMI logo contains script tags');
+		expect(result.title).toBe('BIMI Logo Invalid or Unsafe');
+		expect(result.severity).toBe('high');
+	});
+
+	it('returns BIMI_MEDIUM for a DMARC-not-enforcing BIMI finding', async () => {
+		const { explainFinding } = await getModule();
+		const result = explainFinding('BIMI', 'medium', 'BIMI record ineffective (DMARC not enforcing)');
+		expect(result.title).toBe('BIMI Not Effective');
 	});
 
 	it('explains authoritative DNS infra critical findings', async () => {
@@ -250,28 +292,28 @@ describe('explainFinding', () => {
 	});
 
 	// MTA-STS — only MTA_STS_PASS, MTA_STS_FAIL, MTA_STS_WARNING keys exist.
-	it('falls back to default for MTA_STS medium severity (no MTA_STS_MEDIUM entry)', async () => {
+	it('returns MTA_STS_MEDIUM (not enforcing)', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('MTA_STS', 'medium', 'Neither MTA-STS nor TLS-RPT records are present for example.com');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('MTA-STS Not Enforcing');
 	});
 
-	it('falls back to default for MTA_STS low severity (no MTA_STS_LOW entry)', async () => {
+	it('returns MTA_STS_LOW (refinement)', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('MTA_STS', 'low', 'MTA-STS policy is in testing mode');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('MTA-STS Refinement');
 	});
 
-	it('falls back to default for MTA_STS high severity (no MTA_STS_HIGH entry)', async () => {
+	it('returns MTA_STS_HIGH (policy broken)', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('MTA_STS', 'high', 'MTA-STS policy file not accessible (HTTP 404)');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('MTA-STS Policy Broken');
 	});
 
-	it('falls back to default for MTA_STS low with TLS-RPT missing', async () => {
+	it('returns MTA_STS_LOW for TLS-RPT missing', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('MTA_STS', 'low', 'TLS-RPT record missing for this domain');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('MTA-STS Refinement');
 	});
 
 	// NS — only NS_PASS, NS_FAIL, NS_WARNING keys exist.
@@ -294,28 +336,28 @@ describe('explainFinding', () => {
 	});
 
 	// CAA — only CAA_PASS, CAA_FAIL, CAA_WARNING keys exist.
-	it('falls back to default for CAA medium severity (no CAA_MEDIUM entry)', async () => {
+	it('returns CAA_MEDIUM (incomplete)', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('CAA', 'medium', 'CAA records exist but no "issue" tag found');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('CAA Issuance Controls Incomplete');
 	});
 
-	it('falls back to default for CAA low severity (no CAA_LOW entry)', async () => {
+	it('returns CAA_LOW (hardening)', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('CAA', 'low', 'No "issuewild" CAA tag found');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('CAA Hardening Recommended');
 	});
 
-	it('falls back to default for CAA low with no iodef', async () => {
+	it('returns CAA_LOW for no iodef', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('CAA', 'low', 'No "iodef" CAA tag found');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('CAA Hardening Recommended');
 	});
 
-	it('falls back to default for CAA medium with no records', async () => {
+	it('returns CAA_MEDIUM for no records', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('CAA', 'medium', 'No CAA records found for this domain');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('CAA Issuance Controls Incomplete');
 	});
 
 	// MX — MX_LOW, MX_MEDIUM, MX_INFO keys exist.
@@ -344,66 +386,66 @@ describe('explainFinding', () => {
 	});
 
 	// DKIM additional severity tests
-	it('falls back to default for DKIM medium with weak RSA key', async () => {
+	it('returns DKIM_MEDIUM for weak RSA key', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DKIM', 'medium', 'DKIM RSA 1536-bit key is weak');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DKIM Configuration Issue');
 	});
 
-	it('falls back to default for DKIM medium with unknown key type', async () => {
+	it('returns DKIM_MEDIUM for unknown key type', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DKIM', 'medium', 'Unrecognized key type in DKIM record');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DKIM Configuration Issue');
 	});
 
-	it('falls back to default for DKIM high with short key material', async () => {
+	it('returns DKIM_HIGH for short key material', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DKIM', 'high', 'Key material too short for declared algorithm');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DKIM Key Weakness');
 	});
 
 	// DMARC additional severity tests
-	it('falls back to default for DMARC high with multiple records', async () => {
+	it('returns DMARC_HIGH for multiple records', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DMARC', 'high', 'Multiple DMARC TXT records found');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DMARC Not Enforcing or Invalid');
 	});
 
-	it('falls back to default for DMARC medium with subdomain weaker', async () => {
+	it('returns DMARC_MEDIUM for subdomain weaker', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DMARC', 'medium', 'Subdomain policy is weaker than organization policy');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DMARC Coverage Gap');
 	});
 
-	it('falls back to default for DMARC medium with partial coverage', async () => {
+	it('returns DMARC_MEDIUM for partial coverage', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DMARC', 'medium', 'DMARC percentage tag pct= is less than 100');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DMARC Coverage Gap');
 	});
 
-	it('falls back to default for DMARC high with invalid policy', async () => {
+	it('returns DMARC_HIGH for invalid policy', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DMARC', 'high', 'Invalid DMARC policy value in record');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DMARC Not Enforcing or Invalid');
 	});
 
-	it('falls back to default for DMARC high with missing policy tag', async () => {
+	it('returns DMARC_HIGH for missing policy tag', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DMARC', 'high', 'DMARC record found but missing p= tag');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DMARC Not Enforcing or Invalid');
 	});
 
 	// DNSSEC additional severity tests
-	it('falls back to default for DNSSEC medium with unknown algorithm', async () => {
+	it('returns DNSSEC_MEDIUM for unknown algorithm', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DNSSEC', 'medium', 'Unrecognized DNSSEC signing algorithm 99');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DNSSEC Configuration Weakness');
 	});
 
-	it('falls back to default for DNSSEC medium with deprecated DS digest', async () => {
+	it('returns DNSSEC_MEDIUM for deprecated DS digest', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('DNSSEC', 'medium', 'DS record uses SHA-1 digest type');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('DNSSEC Configuration Weakness');
 	});
 
 	// SSL additional — SSL_LOW exists
@@ -414,16 +456,16 @@ describe('explainFinding', () => {
 	});
 
 	// MTA-STS additional severity tests
-	it('falls back to default for MTA_STS medium with disabled policy', async () => {
+	it('returns MTA_STS_MEDIUM for disabled policy', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('MTA_STS', 'medium', 'MTA-STS policy set to mode:none');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('MTA-STS Not Enforcing');
 	});
 
-	it('falls back to default for MTA_STS low with short max-age', async () => {
+	it('returns MTA_STS_LOW for short max-age', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('MTA_STS', 'low', 'MTA-STS max_age is too short (3600 seconds)');
-		expect(result.title).toBe('Security Check Complete');
+		expect(result.title).toBe('MTA-STS Refinement');
 	});
 
 	// NS additional severity tests
@@ -533,7 +575,7 @@ describe('resolveImpactNarrative', () => {
 		expect(narrative.adverseConsequences).toContain('persist longer');
 	});
 
-	it('returns category fallback narrative for DMARC no subdomain policy', async () => {
+	it('resolves DMARC_LOW narrative for DMARC no subdomain policy', async () => {
 		const { resolveImpactNarrative } = await getModule();
 		const narrative = resolveImpactNarrative({
 			category: 'dmarc',
@@ -541,12 +583,12 @@ describe('resolveImpactNarrative', () => {
 			title: 'No subdomain policy (sp=) specified',
 			detail: 'Subdomains inherit the parent domain policy',
 		});
-		// No specific rule matches; falls back to CATEGORY_FALLBACK_IMPACT for DMARC
-		expect(narrative.impact).toContain('DMARC enforcement');
-		expect(narrative.adverseConsequences).toContain('Forged messages');
+		// Resolves the specific DMARC_LOW severity entry (more precise than the category fallback).
+		expect(narrative.impact).toContain('Alignment is looser');
+		expect(narrative.adverseConsequences).toContain('Borderline spoofing');
 	});
 
-	it('returns category fallback narrative for DMARC no forensic reporting', async () => {
+	it('resolves DMARC_LOW narrative for DMARC no forensic reporting', async () => {
 		const { resolveImpactNarrative } = await getModule();
 		const narrative = resolveImpactNarrative({
 			category: 'dmarc',
@@ -554,12 +596,12 @@ describe('resolveImpactNarrative', () => {
 			title: 'No forensic reporting configured (ruf= absent)',
 			detail: 'No ruf= tag present',
 		});
-		// No specific rule matches; falls back to CATEGORY_FALLBACK_IMPACT for DMARC
-		expect(narrative.impact).toContain('DMARC enforcement');
-		expect(narrative.adverseConsequences).toContain('brand trust');
+		// Resolves the specific DMARC_LOW severity entry (more precise than the category fallback).
+		expect(narrative.impact).toContain('Alignment is looser');
+		expect(narrative.adverseConsequences).toContain('Borderline spoofing');
 	});
 
-	it('returns category fallback narrative for DMARC relaxed DKIM alignment', async () => {
+	it('resolves DMARC_LOW narrative for DMARC relaxed DKIM alignment', async () => {
 		const { resolveImpactNarrative } = await getModule();
 		const narrative = resolveImpactNarrative({
 			category: 'dmarc',
@@ -567,12 +609,12 @@ describe('resolveImpactNarrative', () => {
 			title: 'Relaxed DKIM alignment (adkim=r)',
 			detail: 'DKIM alignment mode is relaxed',
 		});
-		// No specific rule matches; falls back to CATEGORY_FALLBACK_IMPACT for DMARC
-		expect(narrative.impact).toContain('DMARC enforcement');
-		expect(narrative.adverseConsequences).toContain('Forged messages');
+		// Resolves the specific DMARC_LOW severity entry (more precise than the category fallback).
+		expect(narrative.impact).toContain('Alignment is looser');
+		expect(narrative.adverseConsequences).toContain('Borderline spoofing');
 	});
 
-	it('returns category fallback narrative for DMARC relaxed SPF alignment', async () => {
+	it('resolves DMARC_LOW narrative for DMARC relaxed SPF alignment', async () => {
 		const { resolveImpactNarrative } = await getModule();
 		const narrative = resolveImpactNarrative({
 			category: 'dmarc',
@@ -580,8 +622,8 @@ describe('resolveImpactNarrative', () => {
 			title: 'Relaxed SPF alignment (aspf=r)',
 			detail: 'SPF alignment mode is relaxed',
 		});
-		// No specific rule matches; falls back to CATEGORY_FALLBACK_IMPACT for DMARC
-		expect(narrative.impact).toContain('DMARC enforcement');
-		expect(narrative.adverseConsequences).toContain('Forged messages');
+		// Resolves the specific DMARC_LOW severity entry (more precise than the category fallback).
+		expect(narrative.impact).toContain('Alignment is looser');
+		expect(narrative.adverseConsequences).toContain('Borderline spoofing');
 	});
 });
