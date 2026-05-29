@@ -93,13 +93,23 @@ export function resolveImpactNarrative(params: {
 		if (narrative) return narrative;
 	}
 
-	if (normalizedCheckType && normalizedSeverity) {
-		const narrative = getNarrativeFromEntry(EXPLANATIONS[`${normalizedCheckType}_${normalizedSeverity.toUpperCase()}`]);
+	if (derivedCheckType && normalizedStatus) {
+		const narrative = getNarrativeFromEntry(EXPLANATIONS[`${derivedCheckType}_${normalizedStatus}`]);
 		if (narrative) return narrative;
 	}
 
-	if (derivedCheckType && normalizedStatus) {
-		const narrative = getNarrativeFromEntry(EXPLANATIONS[`${derivedCheckType}_${normalizedStatus}`]);
+	// Title/detail-aware specific rules are MORE precise than the generic
+	// per-(type,severity) EXPLANATIONS entries, so resolve them before the
+	// severity-keyed lookup below.
+	const specificNarrative = resolveSpecificNarrative({
+		checkType: normalizedCheckType ?? derivedCheckType,
+		title: params.title,
+		detail: params.detail,
+	});
+	if (specificNarrative) return specificNarrative;
+
+	if (normalizedCheckType && normalizedSeverity) {
+		const narrative = getNarrativeFromEntry(EXPLANATIONS[`${normalizedCheckType}_${normalizedSeverity.toUpperCase()}`]);
 		if (narrative) return narrative;
 	}
 
@@ -107,13 +117,6 @@ export function resolveImpactNarrative(params: {
 		const narrative = getNarrativeFromEntry(EXPLANATIONS[`${derivedCheckType}_${normalizedSeverity.toUpperCase()}`]);
 		if (narrative) return narrative;
 	}
-
-	const specificNarrative = resolveSpecificNarrative({
-		checkType: normalizedCheckType ?? derivedCheckType,
-		title: params.title,
-		detail: params.detail,
-	});
-	if (specificNarrative) return specificNarrative;
 
 	if (normalizedCheckType && CATEGORY_FALLBACK_IMPACT[normalizedCheckType]) {
 		return CATEGORY_FALLBACK_IMPACT[normalizedCheckType];
@@ -134,13 +137,14 @@ export function explainFinding(checkType: string, status: string, details?: stri
 	const normalizedType = checkType.toUpperCase();
 	const key = `${normalizedType}_${status.toUpperCase()}`;
 
-	// 1. Try checkType_STATUS key
-	let entry: ExplanationTemplate | undefined = EXPLANATIONS[key];
-
-	// 2. Fall back to default
-	if (!entry) {
-		entry = DEFAULT_EXPLANATION;
-	}
+	// Exact checkType_STATUS lookup only. We deliberately do NOT fall back across
+	// status families (e.g. a "high" severity finding must not resolve a "_FAIL"
+	// entry): FAIL/MISSING entries assert the control is ABSENT, whereas a severity
+	// finding usually means the control is PRESENT but weak — mapping between them
+	// would surface a confident falsehood (e.g. "No DKIM Records Found" for a
+	// weak-key finding). Known severity-status content is provided by explicit
+	// TYPE_SEVERITY entries in EXPLANATIONS; unknown combinations fall to DEFAULT.
+	const entry: ExplanationTemplate = EXPLANATIONS[key] ?? DEFAULT_EXPLANATION;
 
 	const narrative = resolveImpactNarrative({ checkType: normalizedType, status, detail: details });
 

@@ -12,9 +12,12 @@ function mockTxtRecords(records: string[], domain = 'example.com') {
 	globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
 		const u = new URL(typeof url === 'string' ? url : url.toString());
 		const name = u.searchParams.get('name') ?? '';
-		const type = Number(u.searchParams.get('type') ?? '0');
+		// The DoH transport sends the record type by NAME (e.g. "TXT", "MX"), not number.
+		const typeName = (u.searchParams.get('type') ?? '').toUpperCase();
+		const TYPE_CODE: Record<string, number> = { TXT: 16, MX: 15, DNSKEY: 48, DS: 43 };
+		const typeCode = TYPE_CODE[typeName] ?? 0;
 
-		if (type === 16) {
+		if (typeName === 'TXT') {
 			// Return records only for the matching domain
 			if (name === domain || name === `_dmarc.${domain}` || name === `_mta-sts.${domain}`) {
 				const data = records
@@ -25,16 +28,16 @@ function mockTxtRecords(records: string[], domain = 'example.com') {
 						return false;
 					})
 					.map((d) => ({ name, type: 16, TTL: 300, data: `"${d}"` }));
-				return Promise.resolve(createDohResponse([{ name, type }], data));
+				return Promise.resolve(createDohResponse([{ name, type: typeCode }], data));
 			}
 		}
-		// MX
-		if (type === 15) {
-			return Promise.resolve(createDohResponse([{ name, type }], [
+		// MX — a single Google-Workspace-style exchange for the apex domain.
+		if (typeName === 'MX' && name === domain) {
+			return Promise.resolve(createDohResponse([{ name, type: typeCode }], [
 				{ name, type: 15, TTL: 300, data: '10 mail.example.com.' },
 			]));
 		}
-		return Promise.resolve(createDohResponse([{ name, type }], []));
+		return Promise.resolve(createDohResponse([{ name, type: typeCode }], []));
 	});
 }
 
@@ -51,9 +54,54 @@ describe('generateSpfRecord', () => {
 		expect(record.name).toBe('example.com');
 		expect(record.value).toContain('v=spf1');
 		expect(record.value).toContain('-all');
+		// Detected include must be preserved.
+		expect(record.value).toContain('include:_spf.google.com');
 	});
 
-	it('includes specified providers', async () => {
+	it('preserves ALL authorizing mechanisms from the live record (ip4, a, mx, include)', async () => {
+		// A rich, healthy -all record: dropping the ip4 blocks would hard-fail mail.
+		mockTxtRecords([
+			'v=spf1 ip4:203.0.113.0/24 ip4:198.51.100.7 a mx include:_spf.google.com include:mailgun.org -all',
+		]);
+		const record = await run();
+		expect(record.value).toContain('ip4:203.0.113.0/24');
+		expect(record.value).toContain('ip4:198.51.100.7');
+		expect(record.value).toContain(' a ');
+		expect(record.value).toContain(' mx ');
+		expect(record.value).toContain('include:_spf.google.com');
+		expect(record.value).toContain('include:mailgun.org');
+		expect(record.value.endsWith('-all')).toBe(true);
+		// No double spaces.
+		expect(record.value).not.toMatch(/ {2}/);
+	});
+
+	it('REFUSES to emit a bare "v=spf1 -all" when no senders detected and none provided', async () => {
+		// Domain has no SPF record and caller passes no providers.
+		mockTxtRecords([]);
+		const record = await run();
+		// Must NOT be the mail-breaking bare hard-fail.
+		expect(record.value).not.toBe('v=spf1 -all');
+		expect(record.value).not.toBe('v=spf1  -all');
+		expect(record.value).toContain('?all'); // neutral, non-breaking placeholder
+		expect(record.warnings.length).toBeGreaterThan(0);
+		expect(record.warnings.join(' ')).toMatch(/REJECT ALL mail|no.*senders.*detected/i);
+	});
+
+	it('refuses bare -all even when SPF lookup fails (detection failure → loud warning)', async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DNS timeout'));
+		const record = await run();
+		expect(record.value).not.toBe('v=spf1 -all');
+		expect(record.value).toContain('?all');
+		expect(record.warnings.length).toBeGreaterThan(0);
+	});
+
+	it('never emits a double space', async () => {
+		mockTxtRecords(['v=spf1 include:_spf.google.com -all']);
+		const record = await run();
+		expect(record.value).not.toMatch(/ {2}/);
+	});
+
+	it('includes specified providers (in addition to detected senders)', async () => {
 		mockTxtRecords(['v=spf1 ~all']);
 		const record = await run('example.com', ['google', 'sendgrid']);
 		expect(record.value).toContain('include:_spf.google.com');
@@ -61,10 +109,11 @@ describe('generateSpfRecord', () => {
 	});
 
 	it('warns about unknown providers', async () => {
-		mockTxtRecords(['v=spf1 -all']);
+		// Existing sender present so we still produce a usable record.
+		mockTxtRecords(['v=spf1 ip4:198.51.100.7 -all']);
 		const record = await run('example.com', ['unknown-provider']);
 		expect(record.warnings.length).toBeGreaterThan(0);
-		expect(record.warnings[0]).toContain('Unknown provider');
+		expect(record.warnings.some((w) => w.includes('Unknown provider'))).toBe(true);
 	});
 
 	it('accepts raw include domains', async () => {
@@ -73,8 +122,15 @@ describe('generateSpfRecord', () => {
 		expect(record.value).toContain('include:custom.mailer.com');
 	});
 
+	it('does not append -all when the record uses a redirect modifier', async () => {
+		mockTxtRecords(['v=spf1 redirect=_spf.example.net']);
+		const record = await run();
+		expect(record.value).toContain('redirect=_spf.example.net');
+		expect(record.value).not.toContain('-all');
+	});
+
 	it('includes instructions', async () => {
-		mockTxtRecords(['v=spf1 -all']);
+		mockTxtRecords(['v=spf1 include:_spf.google.com -all']);
 		const record = await run();
 		expect(record.instructions.length).toBeGreaterThan(0);
 		expect(record.instructions.some((i) => i.includes('TXT'))).toBe(true);
@@ -188,10 +244,27 @@ describe('generateMtaStsPolicy', () => {
 		expect(policyContent).toContain('mx: mx2.example.com');
 	});
 
-	it('warns when no MX hosts provided or detected', async () => {
+	it('auto-detects MX from DNS when mx_hosts is omitted', async () => {
+		// Default mock returns MX "10 mail.example.com." for type 15 queries.
 		mockTxtRecords([]);
 		const record = await run('example.com');
-		expect(record.warnings.some((w) => w.includes('No MX hosts'))).toBe(true);
+		const policyContent = record.instructions.join('\n');
+		expect(policyContent).toContain('mx: mail.example.com');
+		// Must NOT have warned or used the placeholder when MX is genuinely present.
+		expect(record.warnings.some((w) => w.includes('No MX hosts'))).toBe(false);
+		expect(policyContent).not.toContain('mx: mail.example.com\nmx: '); // no placeholder appended
+	});
+
+	it('warns only when the domain genuinely has no MX', async () => {
+		// Mock: empty TXT AND empty MX (type 15 returns no answers).
+		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+			const u = new URL(typeof url === 'string' ? url : url.toString());
+			const name = u.searchParams.get('name') ?? '';
+			const type = Number(u.searchParams.get('type') ?? '0');
+			return Promise.resolve(createDohResponse([{ name, type }], []));
+		});
+		const record = await run('example.com');
+		expect(record.warnings.some((w) => w.includes('no MX records') || w.includes('No MX hosts'))).toBe(true);
 	});
 
 	it('includes hosting instructions', async () => {
