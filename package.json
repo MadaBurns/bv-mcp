@@ -68,7 +68,7 @@
 		"@types/punycode": "^2.1.4",
 		"drizzle-kit": "^0.31.10",
 		"eslint": "9.39.3",
-		"hono": "4.12.21",
+		"hono": "4.12.23",
 		"playwright": "^1.60.0",
 		"tsup": "8.5.0",
 		"typescript": "5.9.3",
