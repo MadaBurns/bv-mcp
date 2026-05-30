@@ -76,7 +76,7 @@ describe('CATEGORY_PENALTY_CAPS — subdomain_takeover', () => {
 
 describe('CATEGORY_TIERS', () => {
 	it('classifies all categories into tiers', () => {
-		expect(Object.keys(CATEGORY_TIERS)).toHaveLength(25);
+		expect(Object.keys(CATEGORY_TIERS)).toHaveLength(26);
 	});
 
 	it('has 6 core categories', () => {
@@ -89,8 +89,8 @@ describe('CATEGORY_TIERS', () => {
 		expect(protective).toHaveLength(11);
 	});
 
-	it('has 7 hardening categories', () => {
+	it('has 9 hardening categories', () => {
 		const hardening = Object.entries(CATEGORY_TIERS).filter(([, t]) => t === 'hardening');
-		expect(hardening).toHaveLength(8);
+		expect(hardening).toHaveLength(9);
 	});
 });

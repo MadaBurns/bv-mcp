@@ -132,23 +132,23 @@ describe('scoring-profiles', () => {
 
 		it('all passing with mail_enabled (default) profile', () => {
 			const score = computeScanScore(allPassing);
-			// Three-tier: core=70, protective=20, hardening=2/7*10≈2.86 → base≈93 + email bonus 5 = 98
+			// Three-tier: core=70, protective=20, hardening=2/9*10≈2.22 → base≈92 + email bonus 5 = 97
 			// (only bimi + tlsrpt have results in hardening tier out of 7 hardening categories)
-			expect(score.overall).toBe(98);
+			expect(score.overall).toBe(97);
 			expect(score.grade).toBe('A+');
 		});
 
 		it('all passing with enterprise_mail profile', () => {
 			const score = computeScanScore(allPassing, makeEnterpriseContext());
 			// Same hardening gap as mail_enabled → 98
-			expect(score.overall).toBe(98);
+			expect(score.overall).toBe(97);
 			expect(score.grade).toBe('A+');
 		});
 
 		it('all passing with non_mail profile', () => {
 			const score = computeScanScore(allPassing, makeNonMailContext());
 			// No email bonus for non_mail → base ≈ 93
-			expect(score.overall).toBe(93);
+			expect(score.overall).toBe(92);
 			expect(score.grade).toBe('A+');
 		});
 

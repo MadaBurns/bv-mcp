@@ -952,9 +952,14 @@ export const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
 	bimi: 'BIMI',
 	svcb_https: 'SVCB_HTTPS',
 	brand_discovery: 'BRAND_DISCOVERY',
+	dnskey_strength: 'DNSKEY_STRENGTH',
 };
 
 export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
+	DNSKEY_STRENGTH: {
+		impact: 'DNSKEY signing algorithms are weak or deprecated, reducing the cryptographic assurance DNSSEC provides.',
+		adverseConsequences: 'Forged DNS responses become easier to construct, allowing attackers to redirect traffic despite DNSSEC being deployed.',
+	},
 	SPF: {
 		impact: 'SPF coverage is weak, so unauthorized senders can spoof domain identity more easily.',
 		adverseConsequences: 'Phishing attempts and deliverability disputes increase security and support workload.',
