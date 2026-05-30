@@ -29,6 +29,8 @@ const FORBIDDEN_PUBLIC_BINDINGS = [
 	'BV_ENTERPRISE',
 	'BV_RECON',
 	'BV_RECON_KEY',
+	'BV_TLS_PROBE',
+	'BV_TLS_PROBE_KEY',
 ] as const;
 
 describe('public wrangler.jsonc license-boundary audit', () => {

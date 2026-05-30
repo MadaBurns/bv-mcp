@@ -168,7 +168,7 @@ async function runCheckRetry(
 		case 'dmarc': checkPromise = checkDmarc(domain, retryDns); break;
 		case 'dkim': checkPromise = checkDkim(domain, undefined, retryDns); break;
 		case 'dnssec': checkPromise = checkDnssec(domain, retryDns); break;
-		case 'ssl': checkPromise = checkSsl(domain); break;
+		case 'ssl': checkPromise = checkSsl(domain, { tlsProbeBinding: runtimeOptions?.tlsProbeBinding, tlsProbeAuthToken: runtimeOptions?.tlsProbeAuthToken }); break;
 		case 'mta_sts': checkPromise = checkMtaSts(domain, retryDns); break;
 		case 'ns': checkPromise = checkNs(domain, retryDns); break;
 		case 'caa': checkPromise = checkCaa(domain, retryDns); break;
@@ -262,7 +262,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain, undefined, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain, { tlsProbeBinding: runtimeOptions?.tlsProbeBinding, tlsProbeAuthToken: runtimeOptions?.tlsProbeAuthToken }), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
