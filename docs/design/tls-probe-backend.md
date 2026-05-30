@@ -85,16 +85,22 @@ bv-mcp (check-ssl.ts) ──BV_TLS_PROBE binding──▶ bv-tls-probe backend
 The backend speaks the **unchanged §5 contract**, so **no bv-mcp code changes** — the merged
 `callTlsProbe`/`mergeTlsFinding` already map a `minVersion ≤1.1` response to the High finding.
 
-### 4.1 Hosting decision (recommended: reuse `bv-browser-renderer`)
+### 4.1 Hosting decision — DECIDED: dedicated `bv-tls-probe` worker
 
-`bv-browser-renderer` already holds a Browser Rendering binding and session-reuse plumbing
-(it renders brand-audit PDFs). **Recommendation: add a `/tls-probe` route there** and point
-`BV_TLS_PROBE` at `bv-browser-renderer`. Rationale: Browser Rendering bills per session and
-caps `maxConcurrentSessions`, so sharing one browser pool + `keep_alive` reuse is materially
-cheaper than a second worker with its own browser quota. A clean route boundary contains the
-coupling. *Alternative:* a dedicated `bv-tls-probe` worker (matches the `bv-recon` sibling
-pattern, cleaner isolation, independent limits) — pick this only if browser-quota contention
-with PDF rendering becomes a problem.
+**Decision (2026-05-31): a dedicated `bv-tls-probe` Worker**, with its own Browser Rendering
+binding, implementing the §5 `GET /probe` contract. `BV_TLS_PROBE` points at it; it matches
+the `bv-recon` sibling pattern (clean isolation, independent rate/limits).
+
+Reusing `bv-browser-renderer` (add a `/tls-probe` route, share its browser pool + `keep_alive`
+to amortize per-session billing) was the *preferred* option on cost grounds, **but its source
+repo is not accessible from the build environment** (deployed Worker exists in Cloudflare; no
+local checkout, unresolvable via `gh`). Rather than block on that, we scaffold the dedicated
+worker now. **Cost note (carried forward):** a dedicated worker holds its own
+`maxConcurrentSessions` browser quota and cannot share `bv-browser-renderer`'s warm sessions,
+so the §6 KV cache (60 min) and `keep_alive` reuse *within* this worker are load-bearing for
+cost control. If browser-quota cost becomes material, folding `/tls-probe` into
+`bv-browser-renderer` later is a clean migration (the §5 contract and `BV_TLS_PROBE` binding
+target are the only things that change).
 
 ## 5. Response mapping (to the existing §5 schema)
 
@@ -157,7 +163,9 @@ nav failures (DNS, refused, timeout) → `reachable:false`.
 
 ## 9. Open decisions
 
-1. **Host:** reuse `bv-browser-renderer` (recommended, §4.1) vs dedicated `bv-tls-probe` worker.
+1. ~~**Host:** reuse `bv-browser-renderer` vs dedicated worker.~~ **RESOLVED (§4.1): dedicated
+   `bv-tls-probe` worker** — reuse repo was inaccessible; revisit folding into
+   `bv-browser-renderer` only if browser-quota cost becomes material.
 2. **`minVersion`-true detection (1.1-alongside-1.2):** defer (approach C hand-rolled
    ClientHello) — revisit only if a customer requires PCI-grade "is ≤1.1 *offered*" beyond
    "is the server stuck at ≤1.1". Flag in the finding text that the current signal is the latter.
