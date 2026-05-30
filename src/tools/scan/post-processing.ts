@@ -26,6 +26,10 @@ export interface ScanRuntimeOptions {
 	secondaryDoh?: import('../../lib/dns-types').SecondaryDohConfig;
 	/** Optional service binding for raw DNS, routing, and vantage-point probes. */
 	infraProbe?: { fetch: typeof fetch };
+	/** Operator-only bv-tls-probe service binding (negotiated-TLS-version detection). Fail-soft; absent on BSL self-hosts → scan SSL score unchanged. */
+	tlsProbeBinding?: { fetch: typeof fetch };
+	/** Bearer token forwarded to bv-tls-probe. */
+	tlsProbeAuthToken?: string;
 	/**
 	 * Optional service binding to bv-certstream-worker. When present, the
 	 * Cloudflare-CDN attribution heuristic sources cert issuer from /cert-meta

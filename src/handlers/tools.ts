@@ -182,6 +182,10 @@ interface ToolRuntimeOptions {
 	whoisBinding?: { fetch: typeof fetch };
 	/** Operator-only bv-recon service binding. Fail-soft; absent on BSL self-hosts. */
 	reconBinding?: { fetch: typeof fetch };
+	/** Operator-only bv-tls-probe service binding (negotiated-TLS-version detection). Fail-soft; absent on BSL self-hosts → SSL check gains no TLS-version finding. */
+	tlsProbeBinding?: { fetch: typeof fetch };
+	/** Bearer token forwarded to bv-tls-probe. */
+	tlsProbeAuthToken?: string;
 	/** Service binding to bv-web's internal M365 proxy surface. Fail-soft; absent when bv-web is not provisioned. */
 	m365Proxy?: { fetch: typeof fetch };
 	/** Bearer token (BV_WEB_INTERNAL_KEY) forwarded to bv-web's internal M365 endpoints. */
@@ -316,7 +320,10 @@ const TOOL_REGISTRY: Record<
 		execute: (d, args, ro) => checkDkim(d, extractDkimSelector(args), buildDnsOptions(ro)),
 	},
 	check_dnssec: { cacheKey: () => 'dnssec', execute: (d, _args, ro) => checkDnssec(d, buildDnsOptions(ro)) },
-	check_ssl: { cacheKey: () => 'ssl', execute: (d) => checkSsl(d) },
+	check_ssl: {
+		cacheKey: (_a, ro) => (ro?.tlsProbeBinding ? 'ssl:tls-probe' : 'ssl'),
+		execute: (d, _args, ro) => checkSsl(d, { tlsProbeBinding: ro?.tlsProbeBinding, tlsProbeAuthToken: ro?.tlsProbeAuthToken }),
+	},
 	check_mta_sts: { cacheKey: () => 'mta_sts', execute: (d, _args, ro) => checkMtaSts(d, buildDnsOptions(ro)) },
 	check_ns: { cacheKey: () => 'ns', execute: (d, _args, ro) => checkNs(d, buildDnsOptions(ro)) },
 	check_caa: { cacheKey: () => 'caa', execute: (d, _args, ro) => checkCaa(d, buildDnsOptions(ro)) },

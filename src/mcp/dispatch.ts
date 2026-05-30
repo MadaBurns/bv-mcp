@@ -73,6 +73,10 @@ export interface DispatchMcpMethodOptions {
 	reconBinding?: { fetch: typeof fetch };
 	/** Bearer admin token forwarded to bv-recon. */
 	reconAuthToken?: string;
+	/** Operator-only bv-tls-probe service binding (negotiated-TLS-version detection). Fail-soft; absent on BSL self-hosts. */
+	tlsProbeBinding?: { fetch: typeof fetch };
+	/** Bearer token forwarded to bv-tls-probe. */
+	tlsProbeAuthToken?: string;
 	/** Service binding to bv-web's internal M365 proxy surface. Fail-soft; absent when bv-web is not provisioned. */
 	m365Proxy?: { fetch: typeof fetch };
 	/** Bearer token (BV_WEB_INTERNAL_KEY) forwarded to bv-web's internal M365 endpoints. */
@@ -204,6 +208,8 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				whoisBinding: options.whoisBinding,
 				reconBinding: options.reconBinding,
 				reconAuthToken: options.reconAuthToken,
+				tlsProbeBinding: options.tlsProbeBinding,
+				tlsProbeAuthToken: options.tlsProbeAuthToken,
 				m365Proxy: options.m365Proxy,
 				m365ProxyAuthToken: options.m365ProxyAuthToken,
 				infraProbe: options.infraProbe,

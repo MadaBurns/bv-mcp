@@ -163,6 +163,15 @@ type BvMcpEnv = {
 	BV_RECON?: Fetcher;
 	/** Bearer admin token for bv-recon's adminAuthMiddleware-gated routes. */
 	BV_RECON_KEY?: string;
+	/**
+	 * Operator-only bv-tls-probe service binding (negotiated-TLS-version detection).
+	 * Declared ONLY in the private overlay (`.dev/wrangler.deploy.jsonc`) — never in
+	 * public `wrangler.jsonc`. BSL self-hosts leave this undefined; the SSL check's
+	 * TLS-version enrichment degrades to no-op (no finding, no score change).
+	 */
+	BV_TLS_PROBE?: Fetcher;
+	/** Bearer token for bv-tls-probe (= bv-tls-probe's dedicated key). */
+	BV_TLS_PROBE_KEY?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -503,6 +512,8 @@ app.post('/mcp', async (c) => {
 					whoisBinding: c.env.BV_WHOIS,
 					reconBinding: c.env.BV_RECON,
 					reconAuthToken: c.env.BV_RECON_KEY,
+					tlsProbeBinding: c.env.BV_TLS_PROBE,
+					tlsProbeAuthToken: c.env.BV_TLS_PROBE_KEY,
 					m365Proxy: c.env.BV_WEB,
 					m365ProxyAuthToken: c.env.BV_WEB_INTERNAL_KEY,
 					infraProbe: c.env.BV_INFRA_PROBE,
@@ -585,6 +596,8 @@ app.post('/mcp', async (c) => {
 		whoisBinding: c.env.BV_WHOIS,
 		reconBinding: c.env.BV_RECON,
 		reconAuthToken: c.env.BV_RECON_KEY,
+		tlsProbeBinding: c.env.BV_TLS_PROBE,
+		tlsProbeAuthToken: c.env.BV_TLS_PROBE_KEY,
 		m365Proxy: c.env.BV_WEB,
 		m365ProxyAuthToken: c.env.BV_WEB_INTERNAL_KEY,
 		infraProbe: c.env.BV_INFRA_PROBE,
@@ -743,6 +756,8 @@ app.post('/mcp/messages', async (c) => {
 				whoisBinding: c.env.BV_WHOIS,
 				reconBinding: c.env.BV_RECON,
 				reconAuthToken: c.env.BV_RECON_KEY,
+				tlsProbeBinding: c.env.BV_TLS_PROBE,
+				tlsProbeAuthToken: c.env.BV_TLS_PROBE_KEY,
 				m365Proxy: c.env.BV_WEB,
 				m365ProxyAuthToken: c.env.BV_WEB_INTERNAL_KEY,
 				infraProbe: c.env.BV_INFRA_PROBE,
