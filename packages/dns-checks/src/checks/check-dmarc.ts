@@ -61,6 +61,8 @@ export async function checkDMARC(
 		ruf,
 		adkim: tags.get('adkim'),
 		aspf: tags.get('aspf'),
+		t: tags.get('t'),
+		inheritedFromParent: false,
 		aggregators: rua ? detectThirdPartyAggregators(ruaUris) : [],
 		invalidRuaUris: ruaUris.filter((uri) => !isValidDmarcUri(uri)),
 		invalidRufUris: rufUris.filter((uri) => !isValidDmarcUri(uri)),
