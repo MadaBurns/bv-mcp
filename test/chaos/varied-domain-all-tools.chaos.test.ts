@@ -348,6 +348,7 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'rdap_lookup', arguments: domainArgs() },
 		{ name: 'check_nsec_walkability', arguments: domainArgs() },
 		{ name: 'check_dnssec_chain', arguments: domainArgs() },
+		{ name: 'check_dnskey_strength', arguments: domainArgs() },
 		{ name: 'check_fast_flux', arguments: { domain: nextDomain(), rounds: 3, format: 'compact' } },
 		{ name: 'check_subdomain_takeover', arguments: { domain: nextDomain(), format: 'compact' } },
 		{ name: 'check_authoritative_dns_infra', arguments: domainArgs() },

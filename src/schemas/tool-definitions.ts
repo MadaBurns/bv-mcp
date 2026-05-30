@@ -497,6 +497,14 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'intelligence',
 		scanIncluded: false,
 	},
+	check_dnskey_strength: {
+		description:
+			'Audit DNSKEY signing-algorithm strength per RFC 8624. Grades each DNSKEY algorithm (flags deprecated RSA/SHA-1 and DSA, rewards ECDSA P-256 / Ed25519), independent of whether the DNSSEC chain validates.',
+		schema: BaseDomainArgs,
+		group: 'infrastructure',
+		tier: 'hardening',
+		scanIncluded: true,
+	},
 	check_fast_flux: {
 		description:
 			'Detect fast-flux DNS behavior by performing multiple rounds of A/AAAA queries with delays. Compares IP answer sets and TTLs across rounds to identify rotating infrastructure.',

@@ -46,6 +46,7 @@ import { checkSubdomainTakeover } from './check-subdomain-takeover';
 import { checkMx } from './check-mx';
 import { checkHttpSecurity } from './check-http-security';
 import { checkDane } from './check-dane';
+import { checkDnskeyStrength } from './check-dnskey-strength';
 import { checkDaneHttps } from './check-dane-https';
 import { checkSvcbHttps } from './check-svcb-https';
 import { checkSubdomailing } from './check-subdomailing';
@@ -179,6 +180,7 @@ async function runCheckRetry(
 		case 'dane_https': checkPromise = checkDaneHttps(domain, retryDns); break;
 		case 'svcb_https': checkPromise = checkSvcbHttps(domain, retryDns); break;
 		case 'subdomailing': checkPromise = checkSubdomailing(domain, retryDns); break;
+		case 'dnskey_strength': checkPromise = checkDnskeyStrength(domain, retryDns); break;
 		case 'mx':
 			checkPromise = checkMx(domain, {
 				providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
@@ -228,7 +230,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	const ALL_CHECK_CATEGORIES: CheckCategory[] = isAuthoritativeInfraProfile
 		? ['authoritative_dns_infra']
 		: [
-			'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'http_security', 'dane', 'mx', 'dane_https', 'svcb_https', 'subdomailing',
+			'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'http_security', 'dane', 'mx', 'dane_https', 'svcb_https', 'subdomailing', 'dnskey_strength',
 		];
 
 	// Skip secondary DNS confirmation in scan context for speed — individual checks
@@ -272,6 +274,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		runCachedCheck(domain, 'dane_https', () => safeCheck('dane_https', () => checkDaneHttps(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'svcb_https', () => safeCheck('svcb_https', () => checkSvcbHttps(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'subdomailing', () => safeCheck('subdomailing', () => checkSubdomailing(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'dnskey_strength', () => safeCheck('dnskey_strength', () => checkDnskeyStrength(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(
 			domain,
 			'mx',

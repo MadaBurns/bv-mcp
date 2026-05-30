@@ -5,7 +5,7 @@ Guidance for Claude Code working in this repo.
 ## What is this?
 
 Blackveil DNS — source-available DNS & email security scanner, built as a Cloudflare Worker.
-77 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
+78 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
 
 **Version sync** when bumping: `SERVER_VERSION` (`src/lib/server-version.ts`), `version` in `package.json` + `package-lock.json`, `version` AND `packages[0].version` in `server.json` (both fields — foot-gun), and `[X.Y.Z]` heading in `CHANGELOG.md`.
 
@@ -78,7 +78,7 @@ Both publish together from `publish.yml` on version tags.
 
 ### scan_domain orchestration
 
-17 scan categories run in parallel via `Promise.allSettled`: 16 registered scan-included tools plus internal `subdomain_takeover`. Cache keys: `cache:<domain>:check:<name>` + top-level `cache:<domain>`. 5 min TTL (overridable via `cacheTtlSeconds`). `force_refresh` → `skipCache` in `runWithCache()`.
+18 scan categories run in parallel via `Promise.allSettled`: 17 registered scan-included tools plus internal `subdomain_takeover`. Cache keys: `cache:<domain>:check:<name>` + top-level `cache:<domain>`. 5 min TTL (overridable via `cacheTtlSeconds`). `force_refresh` → `skipCache` in `runWithCache()`.
 
 **Maturity staging**: `computeMaturityStage()` 0–4 (Unprotected → Hardened). Stage 3 doesn't require DKIM; Stage 4 hardening: CAA, DKIM-discovered, BIMI, DANE, MTA-STS strict. Score caps stage: F → ≤2, D/D+ → ≤3.
 
@@ -190,22 +190,27 @@ Pattern-based, emits `fuzzing_suspected` to `ALERT_WEBHOOK_URL` from 15-min cron
 
 ## Adding a New Tool
 
+**First decide: scored or standalone?** A **scored** check gets a `CheckCategory` and MUST be `scanIncluded: true` + wired into `scan_domain` (else it sits in the scoring denominator at 0 and lowers every domain's score — the three-tier engine counts ALL `CATEGORY_TIERS` members). A **standalone/intelligence** tool (e.g. `check_dnssec_chain`) uses an out-of-union category label, `group: 'intelligence'`, no `tier`, `scanIncluded: false`, and skips all scoring steps. Never ship "scored + `scanIncluded: false`". See the `bv-mcp-add-tool` skill for the full annotated checklist.
+
 1. `src/tools/check-<name>.ts` → async fn returning `CheckResult`
-2. Add `CheckCategory` to `packages/dns-checks/src/scoring/model.ts` + `CATEGORY_DISPLAY_WEIGHTS`
-3. Add to `IMPORTANCE_WEIGHTS` in `packages/dns-checks/src/scoring/engine.ts`
-4. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 5), baselineFailureRates in `packages/dns-checks/src/scoring/config.ts`
-5. Add to all 5 `PROFILE_WEIGHTS` in `packages/dns-checks/src/scoring/profiles.ts`
-6. Add Zod schema to `schemas/tool-args.ts` + `TOOL_SCHEMA_MAP`
-7. Tool entry in `TOOL_DEFS` in `schemas/tool-definitions.ts`
-8. `TOOL_REGISTRY` in `handlers/tools.ts` (import + cacheKey + execute)
-9. `FREE_TOOL_DAILY_LIMITS` in `config.ts`
-10. Explanation templates in `explain-finding-data.ts`
-11. If in `scan_domain`: add to parallel orchestration in `scan-domain.ts` (static import)
-12. `test/check-<name>.spec.ts` using `dns-mock` helper
-13. Update README tools table
-14. **If no `domain` arg** (uses `domains[]`, `auditId`, etc.): add to `DOMAIN_OPTIONAL_TOOLS` in `handlers/tools.ts` — else every call returns "Missing required parameter: domain"
-15. **Bump `toHaveLength(N)`** in 7 specs: `test/{tool-metadata,tool-schemas,handlers-tools,index,tool-output-schema,schemas/tool-args,schemas/tool-definitions}.spec.ts`. Also add to `NON_SCAN_TOOL_NAMES` in `tool-schemas.spec.ts`. For NON_CHECK_RESULT tools also add to `NON_CHECK_RESULT_TOOLS` in `tool-output-schema.spec.ts` (comment stays at 77 total − 26 excluded = 51 CheckResult tools).
-16. **New `ToolRuntimeOptions` field** for a binding: extend `BvMcpEnv` AND populate at all 3 construction sites in `src/index.ts` — declaration without wiring silently leaves `ro.<field>` undefined and tool returns `{ unprovisioned: true }`
+2. **Scored only:** add the member to `CheckCategory`, `CATEGORY_TIERS`, and `CATEGORY_DISPLAY_WEIGHTS` in `packages/dns-checks/src/types.ts` (NOT `model.ts` — that only re-exports)
+3. **Scored only:** `IMPORTANCE_WEIGHTS` in `packages/dns-checks/src/scoring/engine.ts`
+4. **Scored only:** `DEFAULT_SCORING_CONFIG` weights, profileWeights (**all 6**, incl. `authoritative_dns_infra`), baselineFailureRates in `config.ts`
+5. **Scored only:** all 6 `PROFILE_WEIGHTS` in `packages/dns-checks/src/scoring/profiles.ts`
+6. **Scored only — rebuild the package:** `npm -w packages/dns-checks run build` (Worker code + tests import the built `dist/`, not `src/`; skip this and the new category won't resolve)
+7. Zod schema to `schemas/tool-args.ts` + `TOOL_SCHEMA_MAP`
+8. Tool entry in `TOOL_DEFS` in `schemas/tool-definitions.ts` (`scanIncluded: true` auto-appends the scan_domain suffix)
+9. `TOOL_REGISTRY` in `handlers/tools.ts` (import + cacheKey + execute)
+10. `FREE_TOOL_DAILY_LIMITS` in `config.ts` (or `INTENTIONALLY_UNLIMITED_TOOLS` — `tool-quota-coverage` audit requires exactly one)
+11. Explanation templates in `explain-finding-data.ts` (optional — no audit enforces it)
+12. **If scored + in scan:** wire `scan-domain.ts` at 3 hardcoded places (`ALL_CHECK_CATEGORIES`, the `checkPromises`/`runCachedCheck` array, the `runCheckRetry()` switch) + the static import
+13. `test/check-<name>.spec.ts` using `dns-mock` helper
+14. Update README tools table
+15. **No `domain` arg** (uses `domains[]`, `auditId`, etc.): handled via the schema's `domain` field / `toolRequiresDomain()`; covered by `test/audits/domain-required-ssot.audit.test.ts` — else every call returns "Missing required parameter: domain"
+16. **New `ToolRuntimeOptions` field** for a binding: extend `BvMcpEnv` AND populate at all 3 construction sites in `src/index.ts` — else `ro.<field>` is undefined and the tool returns `{ unprovisioned: true }`
+17. **Count surfaces** — bump `toHaveLength(N)` in 7 tool-count specs (`test/{tool-metadata,tool-schemas,handlers-tools,index,tool-output-schema,schemas/tool-args,schemas/tool-definitions}.spec.ts`); add to `SCAN_DOMAIN_TOOL_NAMES` **or** `NON_SCAN_TOOL_NAMES` in `tool-schemas.spec.ts` (exhaustive partition); bump the CheckResult count in `tool-output-schema.spec.ts` (NON_CHECK_RESULT tools also add to `NON_CHECK_RESULT_TOOLS`)
+18. **Audits that fail in CI** — `server-json-tool-count` (server.json "N MCP tools"); `readme-tool-surface` (hardcoded `toBe(N)` + README + `docs/github-settings.md` + `extensions/vscode/{README.md,package.json}`, incl. the `check_*` count); `npm run generate:wasm-permissions` (generated Rust perms); `test/chaos/varied-domain-all-tools.chaos.test.ts` (case list = registry)
+19. **Scored only** — bump `scoring-model.spec.ts` (`CATEGORY_TIERS` length + per-tier counts) and update the score snapshots in `scoring-profiles.spec.ts`; **both exist twice** (`packages/dns-checks/src/__tests__/scoring/` AND `test/`). If scanned, also bump the scan-category count in `test/scan-domain.spec.ts`
 
 ## Testing
 

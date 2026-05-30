@@ -98,8 +98,8 @@ describe('outputSchema declarations on TOOLS', () => {
 	it('every other tool (the CheckResult set) HAS an outputSchema equal to the derived schema', () => {
 		const derived = buildCheckResultOutputJsonSchema();
 		const checkResultTools = TOOLS.filter((t) => !NON_CHECK_RESULT_TOOLS.has(t.name));
-		// Sanity: there should be 51 CheckResult tools (77 total − 26 excluded).
-		expect(checkResultTools).toHaveLength(51);
+		// Sanity: there should be 52 CheckResult tools (78 total − 26 excluded).
+		expect(checkResultTools).toHaveLength(52);
 		for (const tool of checkResultTools) {
 			expect(tool.outputSchema, `tool ${tool.name} must declare outputSchema`).toBeDefined();
 			expect(tool.outputSchema).toEqual(derived);
@@ -107,7 +107,7 @@ describe('outputSchema declarations on TOOLS', () => {
 	});
 
 	it('adding outputSchema does not change tool count', () => {
-		expect(TOOLS).toHaveLength(77);
+		expect(TOOLS).toHaveLength(78);
 	});
 });
 

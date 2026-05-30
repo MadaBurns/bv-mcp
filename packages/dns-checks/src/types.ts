@@ -64,7 +64,8 @@ export type CheckCategory =
 	| 'svcb_https'
 	| 'subdomailing'
 	| 'brand_discovery'
-	| 'authoritative_dns_infra';
+	| 'authoritative_dns_infra'
+	| 'dnskey_strength';
 
 /** Three-tier classification for check categories: core (critical baseline), protective (active risk mitigation), hardening (advanced posture). */
 export type CategoryTier = 'core' | 'protective' | 'hardening';
@@ -96,6 +97,7 @@ export const CATEGORY_TIERS: Record<CheckCategory, CategoryTier> = {
 	subdomailing: 'protective',
 	brand_discovery: 'hardening',
 	authoritative_dns_infra: 'core',
+	dnskey_strength: 'hardening',
 };
 
 export interface Finding {
@@ -156,6 +158,7 @@ export const CATEGORY_DISPLAY_WEIGHTS: Record<CheckCategory, number> = {
 	subdomailing: 0.05,
 	brand_discovery: 0,
 	authoritative_dns_infra: 0.2,
+	dnskey_strength: 0,
 };
 
 /** Severity penalty multipliers applied to the category score */
