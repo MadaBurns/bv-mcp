@@ -96,6 +96,13 @@ jobs:
           sed -i "s/export const SERVER_VERSION = '.*'/export const SERVER_VERSION = '$VERSION'/" src/lib/server-version.ts
           grep SERVER_VERSION src/lib/server-version.ts
 
+      - name: Update server.json version
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          node -e "const fs=require('fs');const o=JSON.parse(fs.readFileSync('server.json','utf8'));o.version=process.env.VERSION;if(o.packages&&o.packages[0])o.packages[0].version=process.env.VERSION;fs.writeFileSync('server.json',JSON.stringify(o,null,'\t')+'\n');"
+          grep -n '"version"' server.json
+
       - id: changelog
         name: Extract changelog for this version
         env:
@@ -122,7 +129,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json src/lib/server-version.ts
+          git add package.json package-lock.json src/lib/server-version.ts server.json
           if git diff --cached --quiet; then
             echo "Version already matches tag"
           else
@@ -185,6 +192,17 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      # CI deploy is intentionally fenced off — see CLAUDE.md "Deployment".
+      # Production deploys are MANUAL via `npm run deploy:prod`, which injects private
+      # bindings from the gitignored `.dev/wrangler.deploy.jsonc`. Those overrides are
+      # unavailable in CI, so a CI deploy of the public config would ship a worker
+      # missing all KV/D1/R2/Analytics/service bindings. Do not remove this guard without
+      # first wiring private-config injection from an encrypted secret.
+      - name: CI deploy is not supported (use npm run deploy:prod)
+        run: |
+          echo "::error::CI deploy is disabled — deploy manually with 'npm run deploy:prod'. Private bindings live in the gitignored .dev/ overrides and are unavailable in CI."
+          exit 1
+
       - name: Check Cloudflare token
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

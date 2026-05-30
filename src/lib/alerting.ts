@@ -10,6 +10,9 @@
 
 import { logError } from './log';
 
+/** Bounded timeout for webhook alert delivery so a stalled endpoint can't hang the cron. */
+const ALERT_WEBHOOK_TIMEOUT_MS = 5000;
+
 export interface AlertPayloadInput {
 	title: string;
 	severity: 'warning' | 'critical';
@@ -51,6 +54,7 @@ export async function sendAlert(webhookUrl: string, payload: AlertPayload): Prom
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(payload),
 			redirect: 'manual',
+			signal: AbortSignal.timeout(ALERT_WEBHOOK_TIMEOUT_MS),
 		});
 		if (!response.ok) {
 			logError(`Alert webhook returned HTTP ${response.status}`, {
