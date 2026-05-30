@@ -61,6 +61,10 @@ export {
 } from './checks';
 export type { CaaRecord, TlsaRecord } from './checks';
 
+// Scoring classifiers
+export { classifyDmarc, appendDmarcCleanInfo } from './scoring/classifiers/dmarc';
+export type { DmarcFacts } from './scoring/classifiers/dmarc';
+
 // Zod schemas
 export {
 	CheckCategorySchema,

@@ -54,3 +54,6 @@ export type { DomainProfile, DomainContext } from './profiles';
 
 export { computeGenericScore } from './generic';
 export type { GenericScoringContext, GenericScanScore, FindingSeverityCounts, EmailBonusKeyMap, TierBreakdown } from './generic';
+
+export { classifyDmarc, appendDmarcCleanInfo } from './classifiers/dmarc';
+export type { DmarcFacts } from './classifiers/dmarc';
