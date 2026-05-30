@@ -72,6 +72,17 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      # CI deploy is intentionally fenced off — see CLAUDE.md "Deployment".
+      # Production deploys are MANUAL via `npm run deploy:prod`, which injects private
+      # bindings from the gitignored `.dev/wrangler.deploy.jsonc`. Those overrides are
+      # unavailable in CI, so a CI deploy of the public config would ship a worker
+      # missing all KV/D1/R2/Analytics/service bindings. Do not remove this guard without
+      # first wiring private-config injection from an encrypted secret.
+      - name: CI deploy is not supported (use npm run deploy:prod)
+        run: |
+          echo "::error::CI deploy is disabled — deploy manually with 'npm run deploy:prod'. Private bindings live in the gitignored .dev/ overrides and are unavailable in CI."
+          exit 1
+
       - name: Check Cloudflare token
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
