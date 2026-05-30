@@ -39,8 +39,8 @@ export async function checkDMARC(
 			createFinding(
 				'dmarc',
 				'No DMARC record found',
-				'critical',
-				`No DMARC record found at _dmarc.${domain}. Without DMARC, receivers cannot verify email authentication and spoofing is easier.`,
+				'high',
+				`No DMARC record found at _dmarc.${domain}. Without DMARC, receivers cannot verify email authentication and spoofing is easier. (Escalated to critical by scan_domain when active lookalike/impersonation domains are detected.)`,
 			),
 		);
 		return buildCheckResult('dmarc', findings);
@@ -88,8 +88,8 @@ export async function checkDMARC(
 			createFinding(
 				'dmarc',
 				'DMARC policy set to none',
-				'high',
-				`DMARC policy is "none" which only monitors but does not reject or quarantine spoofed emails. Consider upgrading to "quarantine" or "reject".`,
+				'medium',
+				`DMARC policy is "none" which only monitors but does not reject or quarantine spoofed emails. Consider upgrading to "quarantine" or "reject". (Escalated to critical by scan_domain when active lookalike/impersonation domains are detected.)`,
 			),
 		);
 	} else if (policy === 'quarantine') {

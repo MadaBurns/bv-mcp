@@ -11,15 +11,15 @@ function createMockDNS(records: Record<string, string[]>): DNSQueryFunction {
 }
 
 describe('checkDMARC', () => {
-	it('returns critical when no DMARC record found', async () => {
+	it('returns high when no DMARC record found (scan_domain escalates to critical under impersonation)', async () => {
 		const queryDNS = createMockDNS({ '_dmarc.example.com': [] });
 		const result = await checkDMARC('example.com', queryDNS);
 		expect(result.category).toBe('dmarc');
-		expect(result.findings[0].severity).toBe('critical');
+		expect(result.findings[0].severity).toBe('high');
 		expect(result.findings[0].title).toBe('No DMARC record found');
 	});
 
-	it('flags p=none as high', async () => {
+	it('flags p=none (monitoring-only)', async () => {
 		const queryDNS = createMockDNS({
 			'_dmarc.example.com': ['v=DMARC1; p=none; rua=mailto:dmarc@example.com'],
 		});

@@ -159,6 +159,35 @@ describe('applyInteractionPenalties', () => {
 		expect(rule).toBeUndefined();
 	});
 
+	it('applies impersonation_weak_dmarc when active lookalikes coincide with weak DMARC', () => {
+		// lookalikes=70 (a medium/high impersonation domain detected) + dmarc=0 (no record)
+		const score = buildScore({ lookalikes: 70, dmarc: 0 }, 55);
+		const { adjustedScore, effects } = applyInteractionPenalties(score);
+		const rule = effects.find((e) => e.ruleId === 'impersonation_weak_dmarc');
+		expect(rule).toBeDefined();
+		expect(rule!.penalty).toBe(8);
+		expect(adjustedScore.overall).toBe(47);
+	});
+
+	it('impersonation_weak_dmarc fires for p=none (dmarc=50) with active lookalikes', () => {
+		const score = buildScore({ lookalikes: 80, dmarc: 50 }, 60);
+		const { effects } = applyInteractionPenalties(score);
+		expect(effects.find((e) => e.ruleId === 'impersonation_weak_dmarc')).toBeDefined();
+	});
+
+	it('impersonation_weak_dmarc does NOT fire when no active lookalikes (clean = 100)', () => {
+		// Weak DMARC but no impersonation — the routine-sender case, must not escalate.
+		const score = buildScore({ lookalikes: 100, dmarc: 0 }, 60);
+		const { effects } = applyInteractionPenalties(score);
+		expect(effects.find((e) => e.ruleId === 'impersonation_weak_dmarc')).toBeUndefined();
+	});
+
+	it('impersonation_weak_dmarc does NOT fire when DMARC is strong', () => {
+		const score = buildScore({ lookalikes: 60, dmarc: 85 }, 80);
+		const { effects } = applyInteractionPenalties(score);
+		expect(effects.find((e) => e.ruleId === 'impersonation_weak_dmarc')).toBeUndefined();
+	});
+
 	it('minScore condition works correctly', () => {
 		// weak_dnssec_enforcing_dmarc requires dmarc >= 80 and dnssec <= 40
 		const score1 = buildScore({ dmarc: 79, dnssec: 0 }, 70);

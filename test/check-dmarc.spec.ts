@@ -32,12 +32,12 @@ describe('checkDmarc', () => {
 		return checkDmarc(domain);
 	}
 
-	it('should return critical finding when no DMARC record exists', async () => {
+	it('should return high finding when no DMARC record exists (critical reserved for the impersonation-corroborated case in scan_domain)', async () => {
 		mockTxtRecords([]);
 		const result = await run();
 		expect(result.category).toBe('dmarc');
 		expect(result.findings).toHaveLength(1);
-		expect(result.findings[0].severity).toBe('critical');
+		expect(result.findings[0].severity).toBe('high');
 		expect(result.findings[0].title).toMatch(/No DMARC/i);
 	});
 
@@ -57,12 +57,12 @@ describe('checkDmarc', () => {
 		expect(finding!.severity).toBe('critical');
 	});
 
-	it('should return high finding for p=none', async () => {
+	it('should return medium finding for p=none (monitoring-only, not a hard fail)', async () => {
 		mockTxtRecords(['v=DMARC1; p=none; rua=mailto:dmarc@example.com']);
 		const result = await run();
 		const finding = result.findings.find((f) => /policy set to none/i.test(f.title));
 		expect(finding).toBeDefined();
-		expect(finding!.severity).toBe('high');
+		expect(finding!.severity).toBe('medium');
 	});
 
 	it('should return low finding for p=quarantine', async () => {

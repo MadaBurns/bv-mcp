@@ -61,6 +61,35 @@ export const INTERACTION_RULES: InteractionRule[] = [
 		narrative: 'Complete absence of both SPF and DMARC means any server can send as this domain with no detection mechanism.',
 	},
 	{
+		// Score-penalty counterpart to the DMARC label-escalation in
+		// scan/post-processing.ts (`escalateDmarcForImpersonation`). Both fire on the
+		// SAME signal — active `lookalikes` impersonation — so a critical DMARC label
+		// never ships without a matching score consequence (and vice versa).
+		//
+		// Ordering matters: interaction rules run AFTER post-processing + scoring, so
+		// `dmarc` here is the POST-escalation category score. When impersonation is
+		// present the escalation rewrites the weak-DMARC finding to `critical`, which
+		// drops the dmarc category to 0 (no record, missing-control) or ~45 (p=none,
+		// critical penalty) — both <= 60. So `dmarc <= 60` reliably captures exactly
+		// the escalated cases, including p=none (whose UN-escalated score is ~70-80 and
+		// would otherwise slip past this threshold). Without impersonation the lookalikes
+		// gate below fails and neither mechanism fires.
+		id: 'impersonation_weak_dmarc',
+		conditions: [
+			// lookalikes score drops below 100 only when a calibrated medium/high
+			// lookalike is found (defensive registrations / shared-NS matches stay
+			// info-severity and don't move the score). <= 85 == "at least one
+			// medium-or-higher active impersonation domain" — the same predicate
+			// hasActiveImpersonation() uses on the label side.
+			{ category: 'lookalikes', maxScore: 85 },
+			// Weak/absent DMARC, as left by the escalation pass (see above).
+			{ category: 'dmarc', maxScore: 60 },
+		],
+		overallPenalty: 8,
+		narrative:
+			'Active lookalike/impersonation domains were detected while DMARC enforcement is weak or absent — receivers will not reject spoofed mail, turning a monitoring gap into an exploitable impersonation channel.',
+	},
+	{
 		id: 'weak_dnssec_enforcing_dmarc',
 		conditions: [
 			{ category: 'dmarc', minScore: 80 },
