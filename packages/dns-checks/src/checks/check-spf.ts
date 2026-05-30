@@ -256,7 +256,7 @@ export async function checkSPF(
 			createFinding(
 				'spf',
 				'Too many DNS lookups',
-				'critical',
+				'high',
 				`SPF record requires ${recursiveLookupCount} DNS lookups (limit: 10). Receivers may return PermError and reject legitimate mail.`,
 				{ ...spfMetadata, lookupCount: recursiveLookupCount },
 			),

@@ -161,7 +161,7 @@ describe('checkSpf', () => {
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('Too many DNS'));
 		expect(f).toBeDefined();
-		expect(f!.severity).toBe('critical');
+		expect(f!.severity).toBe('high');
 	});
 
 	// ---- New tests for recursive include expansion ----
@@ -187,7 +187,7 @@ describe('checkSpf', () => {
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('Too many DNS'));
 		expect(f).toBeDefined();
-		expect(f!.severity).toBe('critical');
+		expect(f!.severity).toBe('high');
 		// Total: 3 (top-level includes) + 3*3 (nested includes) = 12
 		expect(f!.metadata?.lookupCount).toBe(12);
 	});
@@ -273,7 +273,7 @@ describe('checkSpf', () => {
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('Too many DNS'));
 		expect(f).toBeDefined();
-		expect(f!.severity).toBe('critical');
+		expect(f!.severity).toBe('high');
 		// example.com: include + a + mx + exists = 4
 		// a.com: include + a + mx = 3
 		// b.com: include + a + mx + ptr = 4

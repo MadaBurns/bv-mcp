@@ -72,14 +72,20 @@ export async function checkDNSSEC(
 
 	// Consolidated finding logic
 	if (!adFlag && dnskeyRecords.length === 0 && dsRecords.length === 0) {
-		// Fully absent — single MEDIUM
+		// Fully absent — high-severity finding, but NOT a missing-control zero.
+		// NIST SP 800-81r3 (Mar 2026) positions DNSSEC as a baseline integrity
+		// control ("Deploy DNSSEC to protect the integrity of DNS data" — one of its
+		// four top-level recommendations) within a defense-in-depth model. Absence is
+		// therefore a real integrity GAP (high severity, dents the category) but not a
+		// catastrophic missing baseline like an absent SPF on a mail domain — so we do
+		// NOT set `missingControl: true`, which would zero the whole category. DNSSEC
+		// stays a weighted Core control; the score reflects a proportionate penalty.
 		findings.push(
 			createFinding(
 				'dnssec',
 				'DNSSEC not enabled',
 				'high',
 				`DNSSEC is not configured for ${domain}. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.`,
-				{ missingControl: true },
 			),
 		);
 	} else if (dnskeyRecords.length > 0 && dsRecords.length === 0) {
