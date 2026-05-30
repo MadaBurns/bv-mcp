@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-05-30
+
+### Added
+
+- **`check_dnskey_strength` — DNSKEY signing-algorithm strength audit (RFC 8624).** New scored tool (hardening tier, included in `scan_domain`) that grades each published DNSKEY algorithm — flagging deprecated RSA/SHA-1 and DSA, rewarding ECDSA P-256 / Ed25519 — independent of whether the DNSSEC chain validates. Tool count 77 → 78.
+
 ## [3.3.29] - 2026-05-29
 
 ### Fixed
