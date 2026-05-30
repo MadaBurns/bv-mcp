@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.4.1] - 2026-05-31
+
+### Fixed
+
+- **Webhook alert delivery is now time-bounded.** `sendAlert()` in `src/lib/alerting.ts` issued its webhook `POST` with no `AbortSignal`, so a stalled alert endpoint could hang the 15-minute cron. Added `signal: AbortSignal.timeout(5000)` (fail-open via the existing try/catch), matching the timeout discipline of every other outbound `fetch`.
+
+### Changed
+
+- **CI deploy jobs are explicitly fenced off.** `publish.yml` and `deploy-hook.yml` deployed the public `wrangler.jsonc` without the private-config injection that `npm run deploy:prod` performs, so an enabled CI deploy would have shipped a worker missing all KV/D1/R2/Analytics/service bindings. Both deploy jobs now fail loudly directing operators to the manual deploy path (private bindings live in the gitignored `.dev/` overrides, unavailable in CI).
+- **`server.json` version is auto-synced on release.** The `publish.yml` version-bump job now updates `server.json` and includes it in the committed file set, closing a manual, forgettable step.
+
+### Docs
+
+- Documented the Cloudflare Workers subrequest ceiling (Free 50 / Paid 1000) in `CLAUDE.md` for BSL self-hosters; noted why `@vitest/coverage-v8` cannot run under the workers-pool runtime.
+
 ## [3.4.0] - 2026-05-30
 
 ### Added
