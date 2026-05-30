@@ -17,8 +17,12 @@ describe('checkDNSSEC', () => {
 		const result = await checkDNSSEC('example.com', queryDNS, { rawQueryDNS });
 		expect(result.category).toBe('dnssec');
 		expect(result.findings.some((f) => f.title === 'DNSSEC not enabled')).toBe(true);
-		expect(result.passed).toBe(false);
-		expect(result.score).toBe(0);
+		// NIST-aligned (SP 800-81r3): DNSSEC absence is a high-severity integrity gap,
+		// NOT a missing-control zero. Category takes the high penalty (100-25=75) and
+		// passes, rather than zeroing — DNSSEC stays a weighted Core control.
+		expect(result.passed).toBe(true);
+		expect(result.score).toBe(75);
+		expect(result.findings.find((f) => f.title === 'DNSSEC not enabled')?.metadata?.missingControl).toBeUndefined();
 	});
 
 	it('reports chain of trust incomplete when DNSKEY present but no DS', async () => {
