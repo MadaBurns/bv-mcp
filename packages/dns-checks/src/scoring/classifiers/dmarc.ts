@@ -13,6 +13,8 @@ export interface DmarcFacts {
 	recordCount: number;
 	/** Raw policy token from `p=` (may be invalid/unset). `null` when absent. */
 	policy: string | null;
+	/** The domain being checked, for interpolating into finding messages. Optional; falls back to a literal placeholder when absent. */
+	domain?: string;
 	/** Raw subdomain policy token from `sp=`. `undefined` when absent. */
 	sp?: string;
 	/** Raw non-existent-subdomain policy token from `np=` (DMARCbis). */
@@ -53,7 +55,7 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 				'dmarc',
 				'No DMARC record found',
 				'high',
-				`No DMARC record found at _dmarc.<domain>. Without DMARC, receivers cannot verify email authentication and spoofing is easier. (Escalated to critical by scan_domain when active lookalike/impersonation domains are detected.)`,
+				`No DMARC record found at _dmarc.${facts.domain ?? '<domain>'}. Without DMARC, receivers cannot verify email authentication and spoofing is easier. (Escalated to critical by scan_domain when active lookalike/impersonation domains are detected.)`,
 			),
 		);
 		return findings;
@@ -369,8 +371,20 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 		);
 	}
 
-	// If no critical, high, or medium issues found, add info
-	const hasSignificantIssues = findings.some((f) => f.severity === 'critical' || f.severity === 'high' || f.severity === 'medium');
+	return findings;
+}
+
+/**
+ * Append the "DMARC properly configured" reassurance finding when no
+ * critical/high/medium finding is present. Apply this AFTER assembling the
+ * complete finding set (synchronous classifier findings + any DNS-dependent
+ * findings the caller adds), so it reflects the full picture. Mutates and
+ * returns `findings`. `policy` is the resolved `p=` value (for the message).
+ */
+export function appendDmarcCleanInfo(findings: Finding[], policy: string | null): Finding[] {
+	const hasSignificantIssues = findings.some(
+		(f) => f.severity === 'critical' || f.severity === 'high' || f.severity === 'medium',
+	);
 	if (!hasSignificantIssues) {
 		findings.push(
 			createFinding(
@@ -381,6 +395,5 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 			),
 		);
 	}
-
 	return findings;
 }

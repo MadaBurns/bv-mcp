@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 import { describe, expect, it } from 'vitest';
-import { classifyDmarc } from './dmarc';
+import { appendDmarcCleanInfo, classifyDmarc } from './dmarc';
 
 const base = { recordCount: 1 } as const;
 
@@ -41,5 +41,27 @@ describe('classifyDmarc', () => {
 	it('downgrades weak subdomain policy when np protects (DMARCbis)', () => {
 		const f = classifyDmarc({ ...base, policy: 'reject', sp: 'none', np: 'reject', rua: 'mailto:dmarc@example.com' });
 		expect(f.find((x) => x.title === 'Subdomain policy weaker than parent policy')?.severity).toBe('low');
+	});
+
+	it('flags weak subdomain policy as high when np is absent (DMARCbis)', () => {
+		const f = classifyDmarc({ recordCount: 1, policy: 'reject', sp: 'none', rua: 'mailto:dmarc@example.com' });
+		expect(f.find((x) => x.title === 'Subdomain policy weaker than parent policy')?.severity).toBe('high');
+	});
+
+	it('flags invalid policy value as high', () => {
+		const f = classifyDmarc({ recordCount: 1, policy: 'discard' });
+		expect(f.find((x) => x.title === 'Invalid DMARC policy value')?.severity).toBe('high');
+	});
+
+	it('flags pct<100 as medium', () => {
+		const f = classifyDmarc({ recordCount: 1, policy: 'reject', sp: 'reject', pct: '50', rua: 'mailto:dmarc@example.com', adkim: 's', aspf: 's' });
+		expect(f.find((x) => x.title === 'DMARC not applied to all emails')?.severity).toBe('medium');
+	});
+
+	it('appendDmarcCleanInfo adds the info note only when no significant finding exists', () => {
+		const clean = appendDmarcCleanInfo([], 'reject');
+		expect(clean.some((x) => x.title === 'DMARC properly configured')).toBe(true);
+		const dirty = appendDmarcCleanInfo([{ category: 'dmarc', title: 'x', severity: 'medium', detail: 'y' } as never], 'reject');
+		expect(dirty.some((x) => x.title === 'DMARC properly configured')).toBe(false);
 	});
 });
