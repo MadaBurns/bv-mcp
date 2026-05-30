@@ -106,6 +106,92 @@ describe('scan-post-processing helpers', () => {
 		expect(bimi?.findings[0].detail).not.toContain('does not appear to send email');
 	});
 
+	it('escalates a weak DMARC finding to critical when active impersonation is present on a mail domain', async () => {
+		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+		const results: CheckResult[] = [
+			buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 MX records configured.')]),
+			buildCheckResult('dmarc', [createFinding('dmarc', 'No DMARC record found', 'high', 'No DMARC record found at _dmarc.example.com.')]),
+			buildCheckResult('lookalikes', [
+				createFinding('lookalikes', 'Active lookalike domain detected', 'high', 'examp1e.com resolves with mail infrastructure.'),
+			]),
+		];
+
+		const updated = await applyScanPostProcessing('example.com', results);
+		const dmarc = updated.find((r) => r.category === 'dmarc');
+		expect(dmarc?.findings[0].severity).toBe('critical');
+		expect(dmarc?.findings[0].detail).toContain('escalated');
+	});
+
+	it('escalates p=none to critical under active impersonation', async () => {
+		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+		const results: CheckResult[] = [
+			buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 MX records configured.')]),
+			buildCheckResult('dmarc', [createFinding('dmarc', 'DMARC policy set to none', 'medium', 'DMARC policy is "none".')]),
+			buildCheckResult('lookalikes', [
+				createFinding('lookalikes', 'Active lookalike domain detected', 'medium', 'examp1e.com resolves with mail infrastructure.'),
+			]),
+		];
+
+		const updated = await applyScanPostProcessing('example.com', results);
+		const none = updated.find((r) => r.category === 'dmarc')?.findings.find((f) => f.title === 'DMARC policy set to none');
+		expect(none?.severity).toBe('critical');
+	});
+
+	it('does NOT escalate on a shadow_domains signal alone (escalation keys on lookalikes only, to stay coherent with the score penalty)', async () => {
+		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+		const results: CheckResult[] = [
+			buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 MX records configured.')]),
+			buildCheckResult('dmarc', [createFinding('dmarc', 'No DMARC record found', 'high', 'No DMARC record found at _dmarc.example.com.')]),
+			buildCheckResult('shadow_domains', [
+				createFinding('shadow_domains', 'Shadow domain variant detected', 'medium', 'example-support.com shares infrastructure.'),
+			]),
+		];
+
+		const updated = await applyScanPostProcessing('example.com', results);
+		const dmarc = updated.find((r) => r.category === 'dmarc');
+		expect(dmarc?.findings[0].severity).toBe('high');
+	});
+
+	it('does NOT escalate when no active impersonation — a routine sender keeps the demoted high severity', async () => {
+		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+		const results: CheckResult[] = [
+			buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 MX records configured.')]),
+			buildCheckResult('dmarc', [createFinding('dmarc', 'No DMARC record found', 'high', 'No DMARC record found at _dmarc.example.com.')]),
+			buildCheckResult('lookalikes', [
+				createFinding('lookalikes', 'No active lookalike domains detected', 'info', 'No active registrations detected.'),
+			]),
+		];
+
+		const updated = await applyScanPostProcessing('example.com', results);
+		const dmarc = updated.find((r) => r.category === 'dmarc');
+		expect(dmarc?.findings[0].severity).toBe('high');
+		expect(dmarc?.findings[0].detail).not.toContain('escalated');
+	});
+
+	it('does NOT escalate for non-mail domains — missing DMARC is downgraded to info, never escalated', async () => {
+		vi.doMock('../src/lib/dns', () => ({
+			queryTxtRecords: vi.fn().mockResolvedValue([]),
+		}));
+		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+		const results: CheckResult[] = [
+			buildCheckResult('mx', [createFinding('mx', 'No MX records found', 'info', 'No inbound mail is configured.')]),
+			buildCheckResult('dmarc', [createFinding('dmarc', 'No DMARC record found', 'high', 'No DMARC record found at _dmarc.parked.example.com.')]),
+			buildCheckResult('lookalikes', [
+				createFinding('lookalikes', 'Active lookalike domain detected', 'high', 'examp1e.com resolves with mail infrastructure.'),
+			]),
+		];
+
+		const updated = await applyScanPostProcessing('parked.example.com', results);
+		const dmarc = updated.find((r) => r.category === 'dmarc');
+		expect(dmarc?.findings[0].severity).toBe('info');
+		vi.doUnmock('../src/lib/dns');
+	});
+
 	it('adds outbound provider inference when SPF include domains match provider signatures', async () => {
 		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 

@@ -63,6 +63,15 @@ export async function applyScanPostProcessing(
 		results = adjustForNoSendDomain(results);
 	}
 
+	// Impersonation escalation: a mail-sending domain whose DMARC is weak/absent
+	// AND that has active lookalike/shadow impersonation domains is the brand-
+	// justified critical case. Re-escalate the demoted DMARC finding to critical
+	// so it is distinguishable from a routine mail domain with the same gap. Only
+	// applies when the domain actually sends mail (has MX, not a no-send policy).
+	if (!hasNoMx && !hasNoSendPolicy && hasActiveImpersonation(results) && dmarcIsWeak(results)) {
+		results = escalateDmarcForImpersonation(results);
+	}
+
 	results = await addCdnHeuristics(domain, results, {
 		certstream: runtimeOptions?.certstream,
 		certstreamAuthToken: runtimeOptions?.certstreamAuthToken,
@@ -458,6 +467,52 @@ function adjustBimiForNonMailDomain(results: CheckResult[]): CheckResult[] {
 				return {
 					...finding,
 					detail: `No BIMI record found at ${bimiDomain}. This domain does not appear to send email, so BIMI is not applicable.`,
+				};
+			}
+			return finding;
+		});
+		return buildCheckResult(result.category, adjusted);
+	});
+}
+
+/**
+ * Active brand impersonation is signalled by a medium-or-higher `lookalikes`
+ * finding (a calibrated lookalike/typosquat with real infrastructure). Info-level
+ * findings — defensive registrations, shared-NS matches — are deliberately excluded.
+ *
+ * This keys on `lookalikes` ONLY, deliberately matching the `impersonation_weak_dmarc`
+ * interaction rule in `category-interactions.ts`, which scores `lookalikes <= 85`
+ * (≈ "at least one medium-or-higher finding"). Keeping the label-escalation here and
+ * the score-penalty there on the *same* signal is what prevents a critical label that
+ * carries no score consequence. `shadow_domains` is a valid corroborator but is left
+ * out of BOTH sides for now — adding it would require a parallel interaction rule to
+ * stay coherent (see the note in category-interactions.ts).
+ */
+function hasActiveImpersonation(results: CheckResult[]): boolean {
+	const lookalikes = results.find((result) => result.category === 'lookalikes');
+	if (!lookalikes) return false;
+	return lookalikes.findings.some(
+		(finding: Finding) => finding.severity === 'medium' || finding.severity === 'high' || finding.severity === 'critical',
+	);
+}
+
+/** Weak DMARC = no record at all, or a published p=none policy (the two demoted findings). */
+function dmarcIsWeak(results: CheckResult[]): boolean {
+	const dmarc = results.find((result) => result.category === 'dmarc');
+	if (!dmarc) return false;
+	return dmarc.findings.some((finding: Finding) => finding.title === 'No DMARC record found' || finding.title === 'DMARC policy set to none');
+}
+
+/** Re-escalate the weak-DMARC finding(s) to critical, recording why. */
+function escalateDmarcForImpersonation(results: CheckResult[]): CheckResult[] {
+	return results.map((result) => {
+		if (result.category !== 'dmarc') return result;
+		const adjusted = result.findings.map((finding: Finding) => {
+			if (finding.title === 'No DMARC record found' || finding.title === 'DMARC policy set to none') {
+				return {
+					...finding,
+					severity: 'critical' as const,
+					detail: `${finding.detail} (escalated — active lookalike/impersonation domains were detected for this domain, so weak DMARC enforcement is an exploitable spoofing channel)`,
 				};
 			}
 			return finding;
