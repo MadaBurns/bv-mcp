@@ -59,5 +59,10 @@ export default defineConfig({
 		// this test environment; the npm Vitest wrapper keeps the matching raw
 		// stderr line out of user-visible test output.
 		dangerouslyIgnoreUnhandledErrors: true,
+		// No coverage config: the @vitest/coverage-v8 provider can't run under the
+		// @cloudflare/vitest-pool-workers runtime (workerd lacks `node:inspector`,
+		// so instrumentation throws and reports a false 0%). Quality is gated by the
+		// structural audit suite under test/audits/ (tool-count/scoring/contract
+		// invariants), not by line-coverage numbers.
 	},
 });

@@ -84,6 +84,8 @@ Both publish together from `publish.yml` on version tags.
 
 **Timeouts**: scan 12s preserves partial results; per-check 8s.
 
+**Subrequest ceiling** (operating constraint, not a bug): a cold-cache `scan_domain` fans out ~20 subrequests/domain (18 categories, mostly DoH + 2 HTTPS); `/internal/tools/batch` can fan out to ~50×18. Cloudflare Workers caps subrequests per invocation at 50 (Free) / 1000 (Paid). BlackVeil production runs on a paid plan, so this is not a prod concern. BSL self-hosters on the Free plan should keep batch size / scan concurrency modest (cache hits don't count) or upgrade.
+
 **Post-processing**:
 
 - Non-mail (no MX): parent DMARC `sp=`/`p=` → downgrade email-auth findings to `info`

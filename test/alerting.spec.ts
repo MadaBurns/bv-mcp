@@ -69,6 +69,17 @@ describe('sendAlert', () => {
 		expect(calls[0].redirect).toBe('manual');
 	});
 
+	it('passes a bounded AbortSignal to fetch so a stalled webhook cannot hang the cron', async () => {
+		const calls: RequestInit[] = [];
+		globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			calls.push(init!);
+			return new Response('ok', { status: 200 });
+		}) as typeof fetch;
+		await sendAlert('https://hooks.slack.com/test', { text: 'hello' });
+		expect(calls[0].signal).toBeInstanceOf(AbortSignal);
+		expect(calls[0].signal!.aborted).toBe(false);
+	});
+
 	it('logs warning on HTTP error response without throwing', async () => {
 		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 		globalThis.fetch = vi.fn(async () => {
