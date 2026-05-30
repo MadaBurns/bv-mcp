@@ -9,7 +9,8 @@
  */
 
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
-import { buildCheckResult, createFinding } from '../check-utils';
+import { buildCheckResult } from '../check-utils';
+import { classifyDmarc, appendDmarcCleanInfo, type DmarcFacts } from '../scoring/classifiers/dmarc';
 import { checkRuaAuthorization, detectThirdPartyAggregators, isValidDmarcUri, parseDmarcTags } from './dmarc-utils';
 
 export { parseDmarcTags } from './dmarc-utils';
@@ -24,7 +25,6 @@ export async function checkDMARC(
 	options?: { timeout?: number },
 ): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
-	const findings: Finding[] = [];
 	const txtRecords = await queryDNS(`_dmarc.${domain}`, 'TXT', { timeout });
 
 	// Concatenate all TXT records to handle cases where DMARC data is split across multiple records
@@ -35,345 +35,48 @@ export async function checkDMARC(
 	const dmarcRecords = dmarcMatch ? [dmarcMatch[0]] : [];
 
 	if (dmarcRecords.length === 0) {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'No DMARC record found',
-				'high',
-				`No DMARC record found at _dmarc.${domain}. Without DMARC, receivers cannot verify email authentication and spoofing is easier. (Escalated to critical by scan_domain when active lookalike/impersonation domains are detected.)`,
-			),
-		);
-		return buildCheckResult('dmarc', findings);
+		return buildCheckResult('dmarc', classifyDmarc({ recordCount: 0, policy: null, domain }));
 	}
 
 	// Check for multiple DMARC records in the concatenated data
 	const dmarcMatches = concatenatedTxt.match(/v=dmarc1/gi);
-	if (dmarcMatches && dmarcMatches.length > 1) {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'Multiple DMARC records',
-				'high',
-				`Found ${dmarcMatches.length} DMARC records in TXT data. Only one DMARC record should exist per domain.`,
-			),
-		);
-	}
+	const recordCount = dmarcMatches?.length ?? 1;
 
-	const dmarc = dmarcRecords[0];
-	const tags = parseDmarcTags(dmarc);
-	const validPolicies = new Set(['none', 'quarantine', 'reject']);
-
-	// Check policy (p= tag)
-	const policy = tags.get('p');
-	if (!policy) {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'Missing DMARC policy',
-				'critical',
-				`DMARC record is missing the required "p=" tag. Without a policy, DMARC provides no protection.`,
-			),
-		);
-	} else if (!validPolicies.has(policy)) {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'Invalid DMARC policy value',
-				'high',
-				`DMARC policy value "${policy}" is invalid. Allowed values are none, quarantine, or reject.`,
-			),
-		);
-	} else if (policy === 'none') {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'DMARC policy set to none',
-				'medium',
-				`DMARC policy is "none" which only monitors but does not reject or quarantine spoofed emails. Consider upgrading to "quarantine" or "reject". (Escalated to critical by scan_domain when active lookalike/impersonation domains are detected.)`,
-			),
-		);
-	} else if (policy === 'quarantine') {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'DMARC policy set to quarantine',
-				'low',
-				`DMARC policy is "quarantine". Consider upgrading to "reject" for maximum protection once you've verified legitimate email flows.`,
-			),
-		);
-	}
-	// "reject" is the strongest setting - no finding needed
-
-	// Check subdomain policy (sp= tag)
-	const sp = tags.get('sp');
-	// DMARCbis (RFC 9989) non-existent-subdomain policy. When `np=reject`/`np=quarantine`
-	// is set, non-existent subdomain spoofing is explicitly protected — the practical risk
-	// of `sp=none` is then limited to *existing* subdomains, which is a substantially
-	// smaller surface than the "any unowned subdomain" risk without np=. We downgrade the
-	// "Subdomain policy weaker than parent policy" finding accordingly.
-	const np = tags.get('np');
-	const npProtects = np === 'reject' || np === 'quarantine';
-	if (!sp && policy === 'reject') {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'No subdomain policy',
-				'low',
-				`No subdomain policy (sp=) specified. Subdomains inherit the main policy ("${policy}"), but explicitly setting sp= is recommended.`,
-			),
-		);
-	} else if (!sp && policy === 'none') {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'Subdomains inherit p=none policy',
-				'info',
-				'No subdomain policy (sp=) specified. Subdomains inherit the "none" policy, which provides no protection against spoofing.',
-			),
-		);
-	} else if (sp) {
-		if (!validPolicies.has(sp)) {
-			findings.push(
-				createFinding(
-					'dmarc',
-					'Invalid subdomain policy value',
-					'medium',
-					`DMARC subdomain policy value "${sp}" is invalid. Allowed values are none, quarantine, or reject.`,
-				),
-			);
-		} else if (policy === 'reject' && sp === 'none') {
-			findings.push(
-				createFinding(
-					'dmarc',
-					'Subdomain policy weaker than parent policy',
-					npProtects ? 'low' : 'high',
-					npProtects
-						? `Subdomain policy is set to "none" while parent policy is "reject". Non-existent subdomains are still protected by DMARCbis np=${np}, so the residual risk is limited to existing subdomains.`
-						: 'Subdomain policy is set to "none" while parent policy is "reject". This leaves subdomains vulnerable to spoofing.',
-				),
-			);
-		} else if (policy === 'reject' && sp === 'quarantine') {
-			findings.push(
-				createFinding(
-					'dmarc',
-					'Subdomain policy weaker than parent policy',
-					'low',
-					'Subdomain policy is "quarantine" while parent policy is "reject". Consider using sp=reject for consistent enforcement.',
-				),
-			);
-		} else if (policy === 'quarantine' && sp === 'none') {
-			findings.push(
-				createFinding(
-					'dmarc',
-					'Subdomain policy weaker than domain policy',
-					'medium',
-					'Subdomain policy is set to "none" while domain policy is "quarantine". Subdomains are unprotected against spoofing.',
-				),
-			);
-		}
-	}
-
-	// Check percentage (pct= tag)
-	const pct = tags.get('pct');
-	if (pct) {
-		const pctValue = Number.parseInt(pct, 10);
-		if (!Number.isFinite(pctValue) || Number.isNaN(pctValue) || pctValue < 0 || pctValue > 100) {
-			findings.push(
-				createFinding(
-					'dmarc',
-					'Invalid DMARC percentage value',
-					'medium',
-					`DMARC pct value "${pct}" is invalid. Allowed range is 0-100.`,
-				),
-			);
-		} else if (pctValue < 100) {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'DMARC not applied to all emails',
-				'medium',
-				`DMARC pct=${pctValue} means the policy only applies to ${pctValue}% of emails. Set pct=100 for full coverage.`,
-			),
-		);
-		}
-	}
-
-	// Check reporting interval (ri= tag) — RFC 7489 §6.3
-	// Value must be a positive integer (> 0). Default is 86400 (24 hours).
-	const ri = tags.get('ri');
-	if (ri !== undefined) {
-		const riValue = parseInt(ri, 10);
-		if (isNaN(riValue) || !Number.isFinite(riValue) || riValue <= 0) {
-			findings.push(
-				createFinding(
-					'dmarc',
-					'Invalid DMARC reporting interval',
-					'medium',
-					`DMARC ri value "${ri}" is invalid. RFC 7489 §6.3 requires ri= to be a positive integer greater than zero. The default is 86400 (24 hours).`,
-				),
-			);
-		}
-	}
-
-	// Check forensic failure reporting options (fo=)
-	const fo = tags.get('fo');
-	if (fo) {
-		const allowedFoValues = new Set(['0', '1', 'd', 's']);
-		const foValues = fo
-			.split(':')
-			.map((v) => v.trim())
-			.filter((v) => v.length > 0);
-
-		const invalidFo = foValues.filter((v) => !allowedFoValues.has(v));
-		if (foValues.length === 0 || invalidFo.length > 0) {
-			findings.push(
-				createFinding(
-					'dmarc',
-					'Invalid DMARC failure reporting options',
-					'medium',
-					`DMARC fo value "${fo}" contains unsupported option(s): ${invalidFo.join(', ') || 'none'}. Allowed values: 0, 1, d, s.`,
-				),
-			);
-		} else if (foValues.length === 1 && foValues[0] === '0') {
-			findings.push(
-				createFinding(
-					'dmarc',
-					'Limited DMARC failure reporting coverage',
-					'low',
-					'DMARC fo=0 only generates forensic reports when both SPF and DKIM fail. Consider fo=1 for broader failure visibility.',
-				),
-			);
-		}
-	}
-
-	// Check for reporting (rua= tag)
+	const tags = parseDmarcTags(dmarcRecords[0]);
 	const rua = tags.get('rua');
-	if (!rua) {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'No aggregate reporting',
-				'medium',
-				`No aggregate report URI (rua=) specified. Without reporting, you cannot monitor DMARC authentication results.`,
-			),
-		);
-	} else {
-		// Validate rua= URI format
-		const ruaUris = rua.split(',').map((u) => u.trim());
-		const invalidRuaUris = ruaUris.filter((uri) => !isValidDmarcUri(uri));
-		if (invalidRuaUris.length > 0) {
-			findings.push(
-				createFinding(
-					'dmarc',
-					'Invalid aggregate report URI format',
-					'medium',
-					`DMARC aggregate report URI(s) invalid: ${invalidRuaUris.join(', ')}. Must use mailto: scheme.`,
-				),
-			);
-		}
-
-		// Check for third-party aggregator services
-		const aggregators = detectThirdPartyAggregators(ruaUris);
-		if (aggregators.length > 0) {
-			findings.push(
-				createFinding(
-					'dmarc',
-					'Third-party DMARC aggregator detected',
-					'info',
-					`Using third-party aggregator(s): ${aggregators.join(', ')}. Ensure these services are authorized to receive your DMARC reports.`,
-					{ aggregators },
-				),
-			);
-		}
-
-		// Cross-domain RUA authorization check (RFC 7489 §7.1)
-		const ruaAuthFindings = await checkRuaAuthorization(domain, ruaUris, queryDNS, timeout);
-		findings.push(...ruaAuthFindings);
-	}
-
-	// Check forensic reporting (ruf= tag)
 	const ruf = tags.get('ruf');
-	if (ruf) {
-		const rufUris = ruf.split(',').map((u) => u.trim());
-		const invalidRufUris = rufUris.filter((uri) => !isValidDmarcUri(uri));
-		if (invalidRufUris.length > 0) {
-			findings.push(
-				createFinding(
-					'dmarc',
-					'Invalid forensic report URI format',
-					'medium',
-					`DMARC forensic report URI(s) invalid: ${invalidRufUris.join(', ')}. Must use mailto: scheme.`,
-				),
-			);
-		}
-	} else if (rua) {
-		// rua= is present but ruf= is not
-		findings.push(
-			createFinding(
-				'dmarc',
-				'No forensic reporting configured (ruf= absent)',
-				'low',
-				'Aggregate reporting (rua=) is configured but forensic reporting (ruf=) is not. Forensic reports provide detailed failure information useful for troubleshooting.',
-			),
-		);
+	const ruaUris = rua ? rua.split(',').map((u) => u.trim()) : [];
+	const rufUris = ruf ? ruf.split(',').map((u) => u.trim()) : [];
+
+	const facts: DmarcFacts = {
+		recordCount,
+		policy: tags.get('p') ?? null,
+		domain,
+		sp: tags.get('sp'),
+		np: tags.get('np'),
+		pct: tags.get('pct'),
+		ri: tags.get('ri'),
+		fo: tags.get('fo'),
+		rua,
+		ruf,
+		adkim: tags.get('adkim'),
+		aspf: tags.get('aspf'),
+		aggregators: rua ? detectThirdPartyAggregators(ruaUris) : [],
+		invalidRuaUris: ruaUris.filter((uri) => !isValidDmarcUri(uri)),
+		invalidRufUris: rufUris.filter((uri) => !isValidDmarcUri(uri)),
+	};
+
+	const findings: Finding[] = classifyDmarc(facts);
+
+	// DNS-dependent cross-domain RUA authorization (RFC 7489 §7.1) — stays in the
+	// check wrapper, not the pure classifier.
+	if (rua) {
+		findings.push(...(await checkRuaAuthorization(domain, ruaUris, queryDNS, timeout)));
 	}
 
-	// Check DKIM alignment mode (adkim= tag)
-	const adkim = tags.get('adkim');
-	if (adkim && adkim !== 'r' && adkim !== 's') {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'Invalid DKIM alignment mode',
-				'medium',
-				`DMARC adkim value "${adkim}" is invalid. Allowed values are "r" (relaxed) or "s" (strict).`,
-			),
-		);
-	} else if (!adkim || adkim === 'r') {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'Relaxed DKIM alignment',
-				'low',
-				`DKIM alignment mode is relaxed (adkim=r or unset). Consider adkim=s (strict) for stronger authentication.`,
-			),
-		);
-	}
-
-	// Check SPF alignment mode (aspf= tag)
-	const aspf = tags.get('aspf');
-	if (aspf && aspf !== 'r' && aspf !== 's') {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'Invalid SPF alignment mode',
-				'medium',
-				`DMARC aspf value "${aspf}" is invalid. Allowed values are "r" (relaxed) or "s" (strict).`,
-			),
-		);
-	} else if (!aspf || aspf === 'r') {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'Relaxed SPF alignment',
-				'low',
-				`SPF alignment mode is relaxed (aspf=r or unset). Consider aspf=s (strict) for stronger authentication.`,
-			),
-		);
-	}
-
-	// If no critical, high, or medium issues found, add info
-	const hasSignificantIssues = findings.some((f) => f.severity === 'critical' || f.severity === 'high' || f.severity === 'medium');
-	if (!hasSignificantIssues) {
-		findings.push(
-			createFinding(
-				'dmarc',
-				'DMARC properly configured',
-				'info',
-				`DMARC record found with policy "${policy}" and valid core tags.`,
-			),
-		);
-	}
+	// Closing reassurance finding, evaluated over the COMPLETE finding set
+	// (synchronous + RUA-auth), matching the original ordering.
+	appendDmarcCleanInfo(findings, facts.policy);
 
 	return buildCheckResult('dmarc', findings);
 }
