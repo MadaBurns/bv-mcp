@@ -578,6 +578,7 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	rdap_lookup: BaseDomainArgs,
 	check_nsec_walkability: BaseDomainArgs,
 	check_dnssec_chain: BaseDomainArgs,
+	check_dnskey_strength: BaseDomainArgs,
 	check_fast_flux: CheckFastFluxArgs,
 	check_subdomain_takeover: CheckSubdomainTakeoverArgs,
 	check_authoritative_dns_infra: BaseDomainArgs,
