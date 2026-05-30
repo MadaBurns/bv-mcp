@@ -6,7 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-## [3.4.1] - 2026-05-30
+## [3.5.0] - 2026-05-31
+
+Scoring-contract recalibration aligning email-authentication and DNS-integrity severities with NIST SP 800-81r3, plus a new impersonation-aware DMARC escalation. Scores and finding severities shift for some domains — see notes below.
+
+### Changed
+
+- **DMARC and SPF severities recalibrated down to reflect standalone risk.** "No DMARC record found" is now **high** (was critical) and "DMARC policy set to none" is now **medium** (was high); SPF "Too many DNS lookups" (>10 lookups → `PermError`) is now **high** (was critical). These reflect the true standalone impact of each gap — a missing DMARC record on a domain with no active impersonation is a serious monitoring gap, not an in-progress compromise. The critical rating is now reserved for the corroborated impersonation case (below).
+- **DNSSEC absence no longer zeroes the DNSSEC category.** Per NIST SP 800-81r3, DNSSEC is a baseline DNS-data-**integrity** control within a defense-in-depth model, not a category-defining missing control like an absent SPF on a mail domain. "DNSSEC not enabled" remains a **high**-severity Core finding (the category takes a proportionate penalty → ~75) but no longer sets `missingControl: true`, which previously zeroed the whole DNSSEC category. DNSSEC stays a weighted Core control; absence is now scored as a real-but-proportionate integrity gap rather than a catastrophic zero.
+
+### Added
+
+- **Impersonation-aware DMARC escalation in `scan_domain`.** When a mail-sending domain (has MX, not a no-send policy) has weak or absent DMARC **and** active lookalike/impersonation domains are detected (a medium-or-higher `lookalikes` finding), the demoted DMARC finding is re-escalated to **critical** in post-processing (`escalateDmarcForImpersonation`). This restores the critical rating precisely for the brand-justified case — weak DMARC enforcement plus a real spoofing channel — rather than applying it to every domain with a DMARC gap.
+- **`impersonation_weak_dmarc` category-interaction rule** (`src/lib/category-interactions.ts`): the score-penalty counterpart to the label escalation, firing on the same signal (`lookalikes ≤ 85` + post-escalation `dmarc ≤ 60` → −8 overall). Keeping the label escalation and the score penalty on the same signal ensures a critical DMARC label never ships without a matching score consequence.
 
 ### Fixed
 
