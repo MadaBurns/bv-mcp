@@ -75,6 +75,11 @@ export {
 	DNSSEC_PARITY_FIXTURES,
 	CAA_PARITY_FIXTURES,
 	MX_PARITY_FIXTURES,
+	TLS_RPT_PARITY_FIXTURES,
+	SPF_PARITY_FIXTURES,
+	DKIM_PARITY_FIXTURES,
+	BIMI_PARITY_FIXTURES,
+	MTA_STS_PARITY_FIXTURES,
 	PARITY_CORPUS_VERSION,
 } from './parity-fixtures';
 export type {
@@ -85,6 +90,11 @@ export type {
 	DnssecParityFixture,
 	CaaParityFixture,
 	MxParityFixture,
+	TlsRptParityFixture,
+	SpfParityFixture,
+	DkimParityFixture,
+	BimiParityFixture,
+	MtaStsParityFixture,
 } from './parity-fixtures';
 
 // Zod schemas
