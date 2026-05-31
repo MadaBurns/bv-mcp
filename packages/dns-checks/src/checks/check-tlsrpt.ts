@@ -52,8 +52,11 @@ export async function checkTLSRPT(
 			createFinding(
 				'tlsrpt',
 				'Multiple TLS-RPT records',
-				'medium',
-				`Found ${tlsrptMatches.length} TLS-RPT records at ${tlsrptDomain}. There should be exactly one TLS-RPT record per domain.`,
+				// RFC 8460: senders treat ≠1 record as "no TLSRPT" — functionally absent.
+				// TLS-RPT is hardening (reporting only); a duplicate config shouldn't be
+				// penalized harder than having none, so this is low, not medium.
+				'low',
+				`Found ${tlsrptMatches.length} TLS-RPT records at ${tlsrptDomain}. There should be exactly one TLS-RPT record per domain (RFC 8460 §3 — receivers treat multiple records as no policy).`,
 			),
 		);
 	}

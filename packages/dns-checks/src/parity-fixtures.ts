@@ -38,7 +38,7 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.3.8';
+export const PARITY_CORPUS_VERSION = '1.3.9';
 
 /**
  * MX parity fixture. No-MX scoring is SPF-context (NIST SP 800-177r1 §4.4.2):
@@ -179,12 +179,15 @@ export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 		expectedMissingControl: false,
 	},
 	{
+		// RFC 9989: multiple DMARC records = no valid policy → unprotected (0,
+		// missingControl), same as no record. Closes the prior bv-web divergence
+		// (dns-worker-v2 used to parse-first → 35; now both score 0 via the classifier).
 		check: 'dmarc',
-		name: 'multiple records',
+		name: 'multiple records (no valid policy)',
 		query: '_dmarc.example.com',
 		records: { '_dmarc.example.com': ['v=DMARC1; p=none', 'v=DMARC1; p=reject'] },
-		expectedScore: 45,
-		expectedMissingControl: false,
+		expectedScore: 0,
+		expectedMissingControl: true,
 	},
 	{
 		// RFC 9989 §4.10 inheritance: the subdomain has no record, so the tree walk
