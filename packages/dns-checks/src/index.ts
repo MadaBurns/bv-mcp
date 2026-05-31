@@ -72,6 +72,7 @@ export {
 	DANE_HTTPS_PARITY_FIXTURES,
 	SVCB_HTTPS_PARITY_FIXTURES,
 	DNSSEC_PARITY_FIXTURES,
+	CAA_PARITY_FIXTURES,
 	PARITY_CORPUS_VERSION,
 } from './parity-fixtures';
 export type {
@@ -79,6 +80,7 @@ export type {
 	DaneHttpsParityFixture,
 	SvcbParityFixture,
 	DnssecParityFixture,
+	CaaParityFixture,
 } from './parity-fixtures';
 
 // Zod schemas

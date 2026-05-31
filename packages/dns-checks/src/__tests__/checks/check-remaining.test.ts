@@ -60,12 +60,15 @@ describe('checkBIMI', () => {
 });
 
 describe('checkCAA', () => {
-	it('returns medium when no CAA records', async () => {
+	it('returns medium (85, not zeroed) when no CAA records', async () => {
+		// RFC 8659: absence is a defense-in-depth gap (any CA may issue), but CAA is
+		// CA/B-Forum hardening, not a NIST-DNS baseline → medium (85), not a zeroed control.
 		const queryDNS = createMockDNS({ 'example.com': [] });
 		const result = await checkCAA('example.com', queryDNS);
 		expect(result.findings[0].title).toBe('No CAA records');
-		expect(result.passed).toBe(false);
-		expect(result.score).toBe(0);
+		expect(result.findings[0].severity).toBe('medium');
+		expect(result.passed).toBe(true);
+		expect(result.score).toBe(85);
 	});
 
 	it('returns info for properly configured CAA', async () => {
