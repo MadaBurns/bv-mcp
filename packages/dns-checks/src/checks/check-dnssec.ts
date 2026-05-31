@@ -12,6 +12,7 @@
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { auditDnskeyAlgorithms, auditDsDigestTypes, auditNsec3Params } from './dnssec-analysis';
+import { isRegistryManagedDnssec } from './registry-managed-dnssec';
 
 export { parseDnskeyAlgorithm, parseDsRecord } from './dnssec-analysis';
 
@@ -114,6 +115,24 @@ export async function checkDNSSEC(
 				{ missingControl: true },
 			),
 		);
+	}
+
+	// Registry-managed DNSSEC: when the chain validates (AD set + DS + DNSKEY), some
+	// ccTLD registries auto-signed the zone rather than the owner. The zone is still
+	// protected, so this is a MODERATE deduction (medium → ~85), not the punitive 50
+	// bv-web historically used — 50 would rank a validated zone BELOW an unsigned one
+	// (60), which is incoherent. Detection is fail-safe (false when indeterminate).
+	if (adFlag && dnskeyRecords.length > 0 && dsRecords.length > 0) {
+		if (await isRegistryManagedDnssec(domain, queryDNS, timeout)) {
+			findings.push(
+				createFinding(
+					'dnssec',
+					'DNSSEC is registry-managed',
+					'medium',
+					`The DNSSEC chain for ${domain} validates, but the zone is signed by its ccTLD registry rather than independently configured by the domain owner. The zone is cryptographically protected, but the owner has less direct control over key management.`,
+				),
+			);
+		}
 	}
 
 	// Algorithm/digest audits (only when records exist)

@@ -38,7 +38,7 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.3.5';
+export const PARITY_CORPUS_VERSION = '1.3.6';
 
 /**
  * DNSSEC parity fixture. Keyed on the AD flag + DNSKEY/DS/NSEC3PARAM records.
@@ -330,6 +330,20 @@ export const DNSSEC_PARITY_FIXTURES: DnssecParityFixture[] = [
 		ds: ['12345 13 2 abc123'],
 		nsec3param: ['1 0 150 ab'],
 		expectedScore: 70,
+		expectedMissingControl: false,
+	},
+	{
+		// Registry-managed (ccTLD seed-list path, no NS query): valid chain, but the
+		// registry signed it → medium deduction → 85 (coherently above unsigned-60,
+		// NOT the historic punitive 50 which would rank below no-DNSSEC).
+		check: 'dnssec',
+		name: 'registry-managed valid DNSSEC (.co.tz)',
+		domain: 'example.co.tz',
+		ad: true,
+		dnskey: ['257 3 13 AwEAAabc'],
+		ds: ['12345 13 2 abc123'],
+		nsec3param: [],
+		expectedScore: 85,
 		expectedMissingControl: false,
 	},
 ];
