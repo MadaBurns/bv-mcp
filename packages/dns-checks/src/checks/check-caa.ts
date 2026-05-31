@@ -40,13 +40,17 @@ export async function checkCAA(
 		.filter((record): record is CaaRecord => record !== null);
 
 	if (caaRecords.length === 0) {
+		// RFC 8659: absence of CAA means ANY CA may issue — a real defense-in-depth gap,
+		// but NOT a zeroed control (CA/B-Forum hardening, not a NIST-DNS baseline). MEDIUM
+		// (→85), no missingControl. Severity MUST stay medium: at high/critical the
+		// "no … record" text would trip scoreIndicatesMissingControl and re-zero it.
+		// (D3: a managed-CDN domain still owes a CAA record listing its CDN's CA.)
 		findings.push(
 			createFinding(
 				'caa',
 				'No CAA records',
 				'medium',
 				`No CAA records found for ${domain}. CAA records restrict which Certificate Authorities can issue certificates for your domain, preventing unauthorized issuance.`,
-				{ missingControl: true },
 			),
 		);
 		return buildCheckResult('caa', findings);
