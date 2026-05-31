@@ -11,12 +11,13 @@
  * Design: bv-web docs/superpowers/specs/2026-05-31-cross-repo-scoring-parity-gate-design.md
  */
 import { describe, it, expect } from 'vitest';
-import { checkDMARC, checkDANEHTTPS, checkSVCBHTTPS, checkDNSSEC, checkCAA, checkMX } from '../checks';
+import { checkDMARC, checkDANEHTTPS, checkDANE, checkSVCBHTTPS, checkDNSSEC, checkCAA, checkMX } from '../checks';
 import { scoreIndicatesMissingControl } from '../scoring';
 import pkg from '../../package.json';
 import {
 	DMARC_PARITY_FIXTURES,
 	DANE_HTTPS_PARITY_FIXTURES,
+	DANE_EMAIL_PARITY_FIXTURES,
 	SVCB_HTTPS_PARITY_FIXTURES,
 	DNSSEC_PARITY_FIXTURES,
 	CAA_PARITY_FIXTURES,
@@ -58,6 +59,28 @@ describe('DANE-HTTPS parity corpus — bv-mcp full checkDANEHTTPS', () => {
 				name === `_443._tcp.${fx.domain}` ? fx.tlsa : []) as never;
 			const rawQueryDNS = (async () => ({ AD: fx.ad })) as never;
 			const result = await checkDANEHTTPS(fx.domain, queryDNS, { rawQueryDNS });
+			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
+				score: fx.expectedScore,
+				missing: fx.expectedMissingControl,
+			});
+		});
+	}
+});
+
+describe('DANE-email parity corpus — bv-mcp full checkDANE', () => {
+	for (const fx of DANE_EMAIL_PARITY_FIXTURES) {
+		it(`scores "${fx.name}" → ${fx.expectedScore} (missingControl=${fx.expectedMissingControl})`, async () => {
+			const queryDNS = (async (name: string, type: string) => {
+				if (type === 'MX' && name === fx.domain) return fx.mx;
+				if (type === 'TLSA') {
+					const host = name.replace(/^_25\._tcp\./, '');
+					return fx.tlsaByHost[host] ?? [];
+				}
+				return [];
+			}) as never;
+			// rawQueryDNS(mxHost, 'A', true) → AD flag of that MX host's zone (RFC 7672).
+			const rawQueryDNS = (async (name: string) => ({ AD: fx.adByHost[name] ?? false })) as never;
+			const result = await checkDANE(fx.domain, queryDNS, { rawQueryDNS });
 			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
 				score: fx.expectedScore,
 				missing: fx.expectedMissingControl,

@@ -38,7 +38,7 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.3.9';
+export const PARITY_CORPUS_VERSION = '1.3.10';
 
 /**
  * MX parity fixture. No-MX scoring is SPF-context (NIST SP 800-177r1 §4.4.2):
@@ -121,6 +121,26 @@ export interface DaneHttpsParityFixture {
 	tlsa: string[];
 	/** DNSSEC AD flag from the raw query (DANE-TA/EE without DNSSEC is downgraded). */
 	ad: boolean;
+	expectedScore: number;
+	expectedMissingControl: boolean;
+}
+
+/**
+ * DANE-email (SMTP) parity fixture. Keyed on the domain's MX records plus, per MX
+ * host, the TLSA records at `_25._tcp.<host>` and the DNSSEC AD flag of that host's
+ * zone (RFC 7672 §3.1.3 requires DNSSEC on the MX host, not the sending domain).
+ * A domain with no usable MX → SMTP DANE not applicable (info, score 100).
+ */
+export interface DaneEmailParityFixture {
+	check: 'dane';
+	name: string;
+	domain: string;
+	/** MX records at `domain` ("priority exchange"). */
+	mx: string[];
+	/** TLSA records keyed by MX host (queried at `_25._tcp.<host>`). */
+	tlsaByHost: Record<string, string[]>;
+	/** DNSSEC AD flag per MX host (raw A query). Absent host ⇒ false. */
+	adByHost: Record<string, boolean>;
 	expectedScore: number;
 	expectedMissingControl: boolean;
 }
@@ -252,6 +272,74 @@ export const DANE_HTTPS_PARITY_FIXTURES: DaneHttpsParityFixture[] = [
 		tlsa: [`1 1 1 ${SHA256_HASH}`],
 		ad: false,
 		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+];
+
+export const DANE_EMAIL_PARITY_FIXTURES: DaneEmailParityFixture[] = [
+	{
+		// DANE-email-1: no MX → domain does not accept inbound mail → not applicable.
+		check: 'dane',
+		name: 'no MX (SMTP DANE not applicable)',
+		domain: 'example.com',
+		mx: [],
+		tlsaByHost: {},
+		adByHost: {},
+		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+	{
+		// RFC 7505 null MX is also "no inbound mail" → not applicable, not a gap.
+		check: 'dane',
+		name: 'null MX (RFC 7505) — not applicable',
+		domain: 'example.com',
+		mx: ['0 .'],
+		tlsaByHost: {},
+		adByHost: {},
+		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+	{
+		// Mail-accepting domain with no TLSA → real (but non-zeroing) gap → medium.
+		check: 'dane',
+		name: 'MX present, no TLSA (real gap)',
+		domain: 'example.com',
+		mx: ['10 mail.example.com'],
+		tlsaByHost: {},
+		adByHost: { 'mail.example.com': true },
+		expectedScore: 85,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'dane',
+		name: 'valid DANE-EE (3 1 1) + DNSSEC on MX',
+		domain: 'example.com',
+		mx: ['10 mail.example.com'],
+		tlsaByHost: { 'mail.example.com': [`3 1 1 ${SHA256_HASH}`] },
+		adByHost: { 'mail.example.com': true },
+		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+	{
+		// DANE-EE without DNSSEC on the MX zone → spoofable → high (−25) → 75.
+		check: 'dane',
+		name: 'DANE-EE without DNSSEC on MX',
+		domain: 'example.com',
+		mx: ['10 mail.example.com'],
+		tlsaByHost: { 'mail.example.com': [`3 1 1 ${SHA256_HASH}`] },
+		adByHost: { 'mail.example.com': false },
+		expectedScore: 75,
+		expectedMissingControl: false,
+	},
+	{
+		// Malformed TLSA (3 fields) → medium (−15) → 85; absence note suppressed.
+		check: 'dane',
+		name: 'malformed TLSA on MX',
+		domain: 'example.com',
+		mx: ['10 mail.example.com'],
+		tlsaByHost: { 'mail.example.com': ['3 1 1'] },
+		adByHost: { 'mail.example.com': true },
+		expectedScore: 85,
 		expectedMissingControl: false,
 	},
 ];

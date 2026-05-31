@@ -238,14 +238,19 @@ describe('checkSubdomainTakeover', () => {
 });
 
 describe('checkMTASTS', () => {
-	it('reports missing MTA-STS and TLS-RPT records', async () => {
+	it('reports missing MTA-STS and TLS-RPT records (no inbound mail → low, not a zeroing gap)', async () => {
+		// No MX in this mock → the domain does not accept inbound email, so missing
+		// MTA-STS/TLS-RPT is an informational nudge (low, no missingControl → 95),
+		// not a control deficiency. The has-MX path keeps medium + missingControl.
 		const queryDNS = createMockDNS({
 			'_mta-sts.example.com': [],
 			'_smtp._tls.example.com': [],
 		});
 		const result = await checkMTASTS('example.com', queryDNS);
-		expect(result.findings.some((f) => f.title === 'No MTA-STS or TLS-RPT records found')).toBe(true);
-		expect(result.passed).toBe(false);
-		expect(result.score).toBe(0);
+		const finding = result.findings.find((f) => f.title === 'No MTA-STS or TLS-RPT records found');
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('low');
+		expect(result.passed).toBe(true);
+		expect(result.score).toBe(95);
 	});
 });

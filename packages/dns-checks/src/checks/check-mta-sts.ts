@@ -199,9 +199,12 @@ export async function checkMTASTS(
 				: createFinding(
 						'mta_sts',
 						'No MTA-STS or TLS-RPT records found',
+						// No inbound MX → this domain does not receive mail, so missing MTA-STS
+						// is NOT a deficiency (low, no missingControl → ~95). Penalizing a parked
+						// domain here harder than for a missing optional control would be
+						// inconsistent. The has-MX branch above keeps missingControl (real gap).
 						'low',
 						`Neither MTA-STS nor TLS-RPT records are present for ${domain}. This is normal for domains that do not accept inbound email, but consider adding these records if you operate a mail server.`,
-						{ missingControl: true },
 					),
 		);
 	}
