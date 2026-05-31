@@ -52,12 +52,14 @@ describe('checkTlsrpt', () => {
 		expect(finding!.severity).toBe('medium');
 	});
 
-	it('should return medium finding for multiple TLS-RPT records', async () => {
+	it('should return low finding for multiple TLS-RPT records', async () => {
+		// RFC 8460: ≠1 record = functionally absent; hardening-tier, so a duplicate
+		// config is dinged no harder than having none → low, not medium.
 		mockTxtRecords(['v=TLSRPTv1; rua=mailto:a@example.com', 'v=TLSRPTv1; rua=mailto:b@example.com']);
 		const result = await run();
 		const finding = result.findings.find((f) => /Multiple TLS-RPT records/i.test(f.title));
 		expect(finding).toBeDefined();
-		expect(finding!.severity).toBe('medium');
+		expect(finding!.severity).toBe('low');
 	});
 
 	it('should return info finding for record with multiple comma-separated valid URIs', async () => {
