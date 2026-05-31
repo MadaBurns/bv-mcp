@@ -353,3 +353,293 @@ describe('tier-auth KV cache validation', () => {
 		expect(kv.put).not.toHaveBeenCalled();
 	});
 });
+
+describe('tier-auth LKG (last-known-good) fallback', () => {
+	// ─── LKG WRITE on success ──────────────────────────────────────────────────
+
+	it('writes tier:lkg:{keyHash} with expirationTtl 86400 on successful bv-web resolution', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockResolvedValue(Response.json({ tier: 'enterprise' })),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'lkg-success-key',
+			{ RATE_LIMIT: kv, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			undefined,
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('enterprise');
+
+		// Must write the short-lived cache entry AND the long-lived LKG entry
+		const putCalls = vi.mocked(kv.put).mock.calls;
+		const lkgCall = putCalls.find((c) => c[0] === `tier:lkg:${result.keyHash}`);
+		expect(lkgCall).toBeDefined();
+		expect(lkgCall![1]).toBe('enterprise');
+		expect(lkgCall![2]).toEqual({ expirationTtl: 86400 });
+	});
+
+	it('does not write LKG for null tier (definitive revocation) from bv-web', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockResolvedValue(Response.json({ tier: null })),
+		} as unknown as Fetcher;
+
+		await resolveTier(
+			'revoked-key',
+			{ RATE_LIMIT: kv, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			undefined,
+			'https://example.com/mcp',
+		);
+
+		const putCalls = vi.mocked(kv.put).mock.calls;
+		const lkgCall = putCalls.find((c) => String(c[0]).startsWith('tier:lkg:'));
+		expect(lkgCall).toBeUndefined();
+	});
+
+	// ─── LKG READ when bv-web throws (network/connection failure) ─────────────
+
+	it('returns LKG tier when bv-web throws (network error) and LKG entry exists', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const keyHash = await (async () => {
+			// Pre-compute keyHash for 'lkg-throw-key' to build the correct KV mock
+			const raw = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('lkg-throw-key')));
+			return Array.from(raw)
+				.map((b) => b.toString(16).padStart(2, '0'))
+				.join('');
+		})();
+
+		const kv = {
+			get: vi.fn((key: string) => {
+				if (key === `tier:lkg:${keyHash}`) return Promise.resolve('developer');
+				return Promise.resolve(null); // no short-lived cache
+			}),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockRejectedValue(new Error('network error')),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'lkg-throw-key',
+			{ RATE_LIMIT: kv, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			undefined,
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('developer');
+		expect(result.keyHash).toBe(keyHash);
+	});
+
+	it('falls through to BV_API_KEY when bv-web throws and no LKG entry exists', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(null), // no cache, no LKG
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockRejectedValue(new Error('network error')),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'no-lkg-throw-key',
+			{ RATE_LIMIT: kv, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			undefined,
+			'https://example.com/mcp',
+		);
+
+		// No LKG, no BV_API_KEY match → falls through to unauthenticated
+		expect(result.authenticated).toBe(false);
+	});
+
+	// ─── LKG READ when bv-web returns a 5xx (server error / outage) ──────────
+	// NOTE: fetch() resolves on HTTP errors — 5xx does NOT throw, it returns a
+	// Response with response.ok === false. A catch-only implementation misses this
+	// case. Both ambiguous-failure branches must consult LKG.
+
+	it('returns LKG tier when bv-web returns 503 and LKG entry exists', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const keyHash = await (async () => {
+			const raw = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('lkg-503-key')));
+			return Array.from(raw)
+				.map((b) => b.toString(16).padStart(2, '0'))
+				.join('');
+		})();
+
+		const kv = {
+			get: vi.fn((key: string) => {
+				if (key === `tier:lkg:${keyHash}`) return Promise.resolve('enterprise');
+				return Promise.resolve(null);
+			}),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockResolvedValue(new Response('Service Unavailable', { status: 503 })),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'lkg-503-key',
+			{ RATE_LIMIT: kv, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			undefined,
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('enterprise');
+		expect(result.keyHash).toBe(keyHash);
+	});
+
+	it('falls through to unauthenticated when bv-web returns 503 and no LKG entry exists', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockResolvedValue(new Response('Service Unavailable', { status: 503 })),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'no-lkg-503-key',
+			{ RATE_LIMIT: kv, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			undefined,
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(false);
+	});
+
+	// ─── 4xx is definitive — LKG must NOT be consulted ────────────────────────
+
+	it('does not serve LKG when bv-web returns 401 (definitive rejection)', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const keyHash = await (async () => {
+			const raw = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('lkg-401-key')));
+			return Array.from(raw)
+				.map((b) => b.toString(16).padStart(2, '0'))
+				.join('');
+		})();
+
+		const kv = {
+			get: vi.fn((key: string) => {
+				// LKG entry exists — but should NOT be used for a 4xx response
+				if (key === `tier:lkg:${keyHash}`) return Promise.resolve('enterprise');
+				return Promise.resolve(null);
+			}),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockResolvedValue(new Response('Unauthorized', { status: 401 })),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'lkg-401-key',
+			{ RATE_LIMIT: kv, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			undefined,
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(false);
+	});
+
+	// ─── OWNER_ALLOW_IPS gate applied to LKG tier ─────────────────────────────
+
+	it('applies OWNER_ALLOW_IPS gate to the tier returned from LKG on bv-web throw', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const keyHash = await (async () => {
+			const raw = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('lkg-owner-gate-key')));
+			return Array.from(raw)
+				.map((b) => b.toString(16).padStart(2, '0'))
+				.join('');
+		})();
+
+		const kv = {
+			get: vi.fn((key: string) => {
+				if (key === `tier:lkg:${keyHash}`) return Promise.resolve('owner');
+				return Promise.resolve(null);
+			}),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockRejectedValue(new Error('unreachable')),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'lkg-owner-gate-key',
+			{
+				RATE_LIMIT: kv,
+				BV_WEB: bvWeb,
+				BV_WEB_INTERNAL_KEY: 'internal-key',
+				OWNER_ALLOW_IPS: '203.0.113.10',
+			},
+			'198.51.100.10', // NOT in allowlist
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('partner'); // downgraded from owner
+	});
+
+	// ─── Definitive "no entitlement" — LKG must NOT be consulted ─────────────
+
+	it('does not consult LKG when bv-web returns definitive null tier (revocation)', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const keyHash = await (async () => {
+			const raw = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('revoked-lkg-key')));
+			return Array.from(raw)
+				.map((b) => b.toString(16).padStart(2, '0'))
+				.join('');
+		})();
+
+		const kv = {
+			get: vi.fn((key: string) => {
+				// LKG entry exists — should NOT be consulted on a definitive null response
+				if (key === `tier:lkg:${keyHash}`) return Promise.resolve('enterprise');
+				return Promise.resolve(null);
+			}),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockResolvedValue(Response.json({ tier: null })),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'revoked-lkg-key',
+			{ RATE_LIMIT: kv, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			undefined,
+			'https://example.com/mcp',
+		);
+
+		// Definitive revocation must still downgrade, even if LKG says 'enterprise'
+		expect(result.authenticated).toBe(false);
+	});
+});
