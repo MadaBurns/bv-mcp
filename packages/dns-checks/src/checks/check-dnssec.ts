@@ -72,40 +72,46 @@ export async function checkDNSSEC(
 
 	// Consolidated finding logic
 	if (!adFlag && dnskeyRecords.length === 0 && dsRecords.length === 0) {
-		// Fully absent — high-severity finding, but NOT a missing-control zero.
-		// NIST SP 800-81r3 (Mar 2026) positions DNSSEC as a baseline integrity
-		// control ("Deploy DNSSEC to protect the integrity of DNS data" — one of its
-		// four top-level recommendations) within a defense-in-depth model. Absence is
-		// therefore a real integrity GAP (high severity, dents the category) but not a
-		// catastrophic missing baseline like an absent SPF on a mail domain — so we do
-		// NOT set `missingControl: true`, which would zero the whole category. DNSSEC
-		// stays a weighted Core control; the score reflects a proportionate penalty.
+		// Fully absent — CRITICAL, but NOT a missing-control zero. NIST SP 800-81r3
+		// (Mar 2026) makes DNSSEC a baseline deployment goal and RFC 9364 (BCP 237)
+		// states origin-authentication via DNSSEC is "the best current practice", so an
+		// unsigned PUBLIC zone is a near-failing deficiency (critical, −40 → ~60) — far
+		// heavier than the previous lenient 75. We do NOT set `missingControl: true`
+		// (which would zero the category): DNSSEC is one of several integrity controls,
+		// not a sole baseline, so a heavy proportionate deduction is the faithful read.
+		// The detail text deliberately avoids "no … record / missing / not found" so
+		// `scoreIndicatesMissingControl` cannot auto-zero a critical finding.
 		findings.push(
 			createFinding(
 				'dnssec',
 				'DNSSEC not enabled',
-				'high',
+				'critical',
 				`DNSSEC is not configured for ${domain}. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.`,
 			),
 		);
 	} else if (dnskeyRecords.length > 0 && dsRecords.length === 0) {
-		// DNSKEY published but no DS in parent zone — broken chain
+		// DNSKEY published but no DS in parent zone — broken chain. BOGUS to any
+		// validating resolver (worse than unsigned): explicit missingControl → score 0.
 		findings.push(
 			createFinding(
 				'dnssec',
 				'DNSSEC chain of trust incomplete',
 				'high',
 				`DNSKEY records are published for ${domain} but no DS records exist in the parent zone. The chain of trust is broken — DNSSEC validation will fail.`,
+				{ missingControl: true },
 			),
 		);
 	} else if (dnskeyRecords.length > 0 && dsRecords.length > 0 && !adFlag) {
-		// Deployed but validation failing — worse than not having DNSSEC
+		// Deployed but validation failing (BOGUS) — worse than not having DNSSEC.
+		// DNSSEC-1 decision: explicit missingControl → score 0 (same BOGUS principle as
+		// the broken chain — a validating resolver rejects the zone's data outright).
 		findings.push(
 			createFinding(
 				'dnssec',
 				'DNSSEC validation failing',
 				'high',
 				`DNSKEY and DS records are present for ${domain} but the AD flag is not set. DNSSEC is deployed but validation is failing — this is worse than not having DNSSEC.`,
+				{ missingControl: true },
 			),
 		);
 	}

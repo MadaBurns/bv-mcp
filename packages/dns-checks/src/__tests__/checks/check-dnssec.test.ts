@@ -17,11 +17,13 @@ describe('checkDNSSEC', () => {
 		const result = await checkDNSSEC('example.com', queryDNS, { rawQueryDNS });
 		expect(result.category).toBe('dnssec');
 		expect(result.findings.some((f) => f.title === 'DNSSEC not enabled')).toBe(true);
-		// NIST-aligned (SP 800-81r3): DNSSEC absence is a high-severity integrity gap,
-		// NOT a missing-control zero. Category takes the high penalty (100-25=75) and
-		// passes, rather than zeroing — DNSSEC stays a weighted Core control.
+		// NIST SP 800-81r3 / RFC 9364 (BCP 237): an unsigned PUBLIC zone is near-failing
+		// (DNSSEC origin-auth is best current practice). CRITICAL penalty (100-40=60),
+		// but NOT a missing-control zero — DNSSEC stays a weighted Core control the
+		// category still passes (60≥50). Recalibrated DOWN from the prior lenient 75.
+		expect(result.findings.find((f) => f.title === 'DNSSEC not enabled')?.severity).toBe('critical');
 		expect(result.passed).toBe(true);
-		expect(result.score).toBe(75);
+		expect(result.score).toBe(60);
 		expect(result.findings.find((f) => f.title === 'DNSSEC not enabled')?.metadata?.missingControl).toBeUndefined();
 	});
 
