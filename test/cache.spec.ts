@@ -419,3 +419,80 @@ describe('runWithCache sentinel lifecycle', () => {
 		expect(deleteSentinelIdx).toBeGreaterThan(putResultIdx);
 	});
 });
+
+describe('runWithCache — skipSentinel flag', () => {
+	afterEach(() => {
+		IN_MEMORY_CACHE.clear();
+		vi.restoreAllMocks();
+	});
+
+	it('skipSentinel:true, cold miss: result is returned and cached; no sentinel kv.get/put/delete', async () => {
+		const mockKV = {
+			get: vi.fn().mockResolvedValue(null),   // persistent: main-key lookup returns null (miss)
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const { runWithCache } = await import('../src/lib/cache');
+		const run = vi.fn().mockResolvedValue('computed-skip-sentinel');
+		const result = await runWithCache('ss:miss', run, mockKV as unknown as KVNamespace, 300, false, undefined, true);
+
+		// Result is correct
+		expect(result).toBe('computed-skip-sentinel');
+		expect(run).toHaveBeenCalledOnce();
+
+		// Main-key cacheGet still fires (exactly 1 kv.get for the main key, no sentinel read)
+		expect(mockKV.get).toHaveBeenCalledWith('ss:miss', 'json');
+		expect(mockKV.get).toHaveBeenCalledTimes(1);
+
+		// Result is written to KV
+		const resultPut = mockKV.put.mock.calls.find((c: [string, ...unknown[]]) => c[0] === 'ss:miss');
+		expect(resultPut).toBeDefined();
+
+		// NO sentinel kv.put (`:computing` key must not appear)
+		const sentinelPut = mockKV.put.mock.calls.find((c: [string, ...unknown[]]) => (c[0] as string).endsWith(':computing'));
+		expect(sentinelPut).toBeUndefined();
+
+		// NO kv.delete at all
+		expect(mockKV.delete).not.toHaveBeenCalled();
+	});
+
+	it('skipSentinel default (false), cold miss: sentinel IS written and deleted — current behavior preserved', async () => {
+		const mockKV = {
+			get: vi.fn()
+				.mockResolvedValueOnce(null)  // cacheGet — main key miss
+				.mockResolvedValueOnce(null), // sentinel check — nobody else computing
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const { runWithCache } = await import('../src/lib/cache');
+		const run = vi.fn().mockResolvedValue('computed-default');
+		await runWithCache('ss:default', run, mockKV as unknown as KVNamespace, 300, false, undefined);
+
+		// Sentinel was read (2 kv.get calls: main key + sentinel)
+		expect(mockKV.get).toHaveBeenCalledTimes(2);
+		expect(mockKV.get).toHaveBeenCalledWith('ss:default:computing');
+
+		// Sentinel was written
+		const sentinelPut = mockKV.put.mock.calls.find((c: [string, ...unknown[]]) => c[0] === 'ss:default:computing');
+		expect(sentinelPut).toBeDefined();
+
+		// Sentinel was cleaned up
+		expect(mockKV.delete).toHaveBeenCalledWith('ss:default:computing');
+	});
+
+	it('skipSentinel:true, cache HIT: returns cached value; no run(), no puts, no deletes', async () => {
+		const mockKV = {
+			get: vi.fn().mockResolvedValue({ cached: true }),   // main key is a hit
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+		const { runWithCache } = await import('../src/lib/cache');
+		const run = vi.fn().mockResolvedValue('should-not-run');
+		const result = await runWithCache('ss:hit', run, mockKV as unknown as KVNamespace, 300, false, undefined, true);
+
+		expect(result).toEqual({ cached: true });
+		expect(run).not.toHaveBeenCalled();
+		expect(mockKV.put).not.toHaveBeenCalled();
+		expect(mockKV.delete).not.toHaveBeenCalled();
+	});
+});

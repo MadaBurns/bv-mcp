@@ -254,9 +254,14 @@ export async function cacheSet(key: string, value: unknown, kv?: KVNamespace, tt
  *   result, the result is NOT written to KV / in-memory cache. Sentinel cleanup still runs.
  *   Used to suppress caching of partial results (e.g. lookalike timeouts) without the
  *   put-then-delete anti-pattern. See bv-web 2026-05-14 analytics remediation (cluster F5).
+ * @param skipSentinel - When true, skips the cross-isolate KV sentinel (`key:computing`
+ *   get/put/delete) while keeping the main-key cache read, INFLIGHT in-isolate dedup, and
+ *   result write. Cuts 2 KV ops per check on high-volume low-contention paths (e.g. scan
+ *   per-check, ~98% unique domains) where sentinel overhead exceeds the rare stampede it
+ *   prevents. INFLIGHT still dedups concurrent calls within the same isolate.
  * @returns The cached or freshly computed result
  */
-export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: KVNamespace, ttlSeconds?: number, skipCache?: boolean, shouldCache?: (result: T) => boolean): Promise<T> {
+export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: KVNamespace, ttlSeconds?: number, skipCache?: boolean, shouldCache?: (result: T) => boolean, skipSentinel?: boolean): Promise<T> {
 	if (!skipCache) {
 		const cached = await cacheGet<T>(key, kv);
 		if (cached !== undefined) return cached;
@@ -267,7 +272,7 @@ export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: K
 	if (existing) return existing as Promise<T>;
 
 	// Cross-isolate dedup via KV sentinel (best-effort)
-	if (kv && !skipCache) {
+	if (kv && !skipCache && !skipSentinel) {
 		const sentinelKey = `${key}:computing`;
 		try {
 			const sentinel = await kv.get(sentinelKey);
@@ -294,14 +299,14 @@ export async function runWithCache<T>(key: string, run: () => Promise<T>, kv?: K
 				await cacheSet(key, result, kv, ttlSeconds);
 			}
 			// Clean up sentinel regardless — we still claimed the computation slot.
-			if (kv) {
+			if (kv && !skipSentinel) {
 				try { await kv.delete(`${key}:computing`); } catch { /* best-effort */ }
 			}
 			return result;
 		})
 		.catch(async (err) => {
 			// Clean up sentinel on failure
-			if (kv) {
+			if (kv && !skipSentinel) {
 				try { await kv.delete(`${key}:computing`); } catch { /* best-effort */ }
 			}
 			throw err;

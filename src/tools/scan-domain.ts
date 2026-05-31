@@ -64,6 +64,12 @@ export type { StructuredScanResult, ScanResultEnrichment } from './scan/format-r
 export type { MaturityStage } from './scan/maturity-staging';
 export type { ScanRuntimeOptions } from './scan/post-processing';
 
+/**
+ * TLS probe (Browser Rendering) is a paid-tier enrichment — skip it for
+ * free/agent/anonymous scans, which are ~98% of volume and the cost driver.
+ */
+const PROBE_ELIGIBLE_TIERS = new Set(['developer', 'enterprise', 'partner', 'owner']);
+
 /** In-memory cache for adaptive weight responses from the ProfileAccumulator DO. */
 const adaptiveWeightCache = new Map<string, { weights: AdaptiveWeightsResponse; expires: number }>();
 
@@ -168,7 +174,7 @@ async function runCheckRetry(
 		case 'dmarc': checkPromise = checkDmarc(domain, retryDns); break;
 		case 'dkim': checkPromise = checkDkim(domain, undefined, retryDns); break;
 		case 'dnssec': checkPromise = checkDnssec(domain, retryDns); break;
-		case 'ssl': checkPromise = checkSsl(domain, { tlsProbeBinding: runtimeOptions?.tlsProbeBinding, tlsProbeAuthToken: runtimeOptions?.tlsProbeAuthToken }); break;
+		case 'ssl': checkPromise = checkSsl(domain, { tlsProbeBinding: PROBE_ELIGIBLE_TIERS.has(runtimeOptions?.authTier ?? '') ? runtimeOptions?.tlsProbeBinding : undefined, tlsProbeAuthToken: runtimeOptions?.tlsProbeAuthToken }); break;
 		case 'mta_sts': checkPromise = checkMtaSts(domain, retryDns); break;
 		case 'ns': checkPromise = checkNs(domain, retryDns); break;
 		case 'caa': checkPromise = checkCaa(domain, retryDns); break;
@@ -262,7 +268,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain, undefined, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain, { tlsProbeBinding: runtimeOptions?.tlsProbeBinding, tlsProbeAuthToken: runtimeOptions?.tlsProbeAuthToken }), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+		runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain, { tlsProbeBinding: PROBE_ELIGIBLE_TIERS.has(runtimeOptions?.authTier ?? '') ? runtimeOptions?.tlsProbeBinding : undefined, tlsProbeAuthToken: runtimeOptions?.tlsProbeAuthToken }), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
 		runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
@@ -675,7 +681,10 @@ async function runCachedCheck(
 	ttlSeconds?: number,
 	skipCache?: boolean,
 ): Promise<CheckResult> {
-	return runWithCache(buildCheckCacheKey(domain, category), run, kv, ttlSeconds, skipCache);
+	// skipSentinel: per-check scan caches are ~98% unique-domain / low-contention;
+	// the cross-isolate sentinel's KV writes+deletes cost more than the rare stampede
+	// they'd prevent (INFLIGHT still dedups in-isolate).
+	return runWithCache(buildCheckCacheKey(domain, category), run, kv, ttlSeconds, skipCache, undefined, true);
 }
 
 /**

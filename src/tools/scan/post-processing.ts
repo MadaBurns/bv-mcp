@@ -41,6 +41,11 @@ export interface ScanRuntimeOptions {
 	certstreamAuthToken?: string;
 	/** Bypass cache and run a fresh scan. Useful for troubleshooting after DNS changes. */
 	forceRefresh?: boolean;
+	/**
+	 * Auth tier of the requesting principal. Threaded from ToolRuntimeOptions so
+	 * scan_domain can gate paid-tier enrichments (e.g. TLS probe Browser Rendering).
+	 */
+	authTier?: string;
 }
 
 export async function applyScanPostProcessing(
