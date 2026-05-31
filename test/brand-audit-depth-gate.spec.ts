@@ -11,8 +11,9 @@
  * free; it stays meaningful for agent callers, who get `discover_brand_domains`
  * at the tier default and could otherwise request `deep`.
  *
- * Pay-walled at developer tier or higher — same threshold as the
- * `discovery_mode='tiered'` gate landed in PR #188.
+ * Pay-walled at enterprise tier or higher (enterprise, partner, owner).
+ * Developer tier was removed from this gate at the same time as the
+ * `discovery_mode='tiered'` gate — both gates use the same threshold.
  *
  * Mocks underlying tools so "accepts" tests don't hit real DNS/RDAP.
  */
@@ -59,7 +60,7 @@ describe('depth=deep tier gate', () => {
 			expect(result.isError, `${tool}@free with depth=deep must error`).toBe(true);
 			const textContent = result.content[0];
 			const text = textContent && 'text' in textContent ? textContent.text : '';
-			expect(text).toMatch(/^Error: Invalid depth: 'deep' requires developer tier or higher/);
+			expect(text).toMatch(/^Error: Invalid depth: 'deep' requires enterprise tier or higher/);
 		});
 
 		it(`rejects ${tool} depth='deep' when authTier is agent`, async () => {
@@ -69,13 +70,23 @@ describe('depth=deep tier gate', () => {
 			expect(result.isError, `${tool}@agent with depth=deep must error`).toBe(true);
 			const textContent = result.content[0];
 			const text = textContent && 'text' in textContent ? textContent.text : '';
-			expect(text).toMatch(/^Error: Invalid depth: 'deep' requires developer tier or higher/);
+			expect(text).toMatch(/^Error: Invalid depth: 'deep' requires enterprise tier or higher/);
 		});
 
-		it(`accepts ${tool} depth='deep' when authTier is developer`, async () => {
+		it(`rejects ${tool} depth='deep' when authTier is developer`, async () => {
 			mockUnderlyingTools();
 			const { handleToolsCall } = await import('../src/handlers/tools');
 			const result = await handleToolsCall({ name: tool, arguments: args }, undefined, { authTier: 'developer' } as never);
+			expect(result.isError, `${tool}@developer with depth=deep must error`).toBe(true);
+			const textContent = result.content[0];
+			const text = textContent && 'text' in textContent ? textContent.text : '';
+			expect(text).toMatch(/^Error: Invalid depth: 'deep' requires enterprise tier or higher/);
+		});
+
+		it(`accepts ${tool} depth='deep' when authTier is enterprise`, async () => {
+			mockUnderlyingTools();
+			const { handleToolsCall } = await import('../src/handlers/tools');
+			const result = await handleToolsCall({ name: tool, arguments: args }, undefined, { authTier: 'enterprise' } as never);
 			if (result.isError) {
 				const textContent = result.content[0];
 				const text = textContent && 'text' in textContent ? textContent.text : '';
@@ -83,10 +94,21 @@ describe('depth=deep tier gate', () => {
 			}
 		});
 
-		it(`accepts ${tool} depth='deep' when authTier is enterprise`, async () => {
+		it(`accepts ${tool} depth='deep' when authTier is partner`, async () => {
 			mockUnderlyingTools();
 			const { handleToolsCall } = await import('../src/handlers/tools');
-			const result = await handleToolsCall({ name: tool, arguments: args }, undefined, { authTier: 'enterprise' } as never);
+			const result = await handleToolsCall({ name: tool, arguments: args }, undefined, { authTier: 'partner' } as never);
+			if (result.isError) {
+				const textContent = result.content[0];
+				const text = textContent && 'text' in textContent ? textContent.text : '';
+				expect(text).not.toMatch(/^Error: Invalid depth: 'deep'/);
+			}
+		});
+
+		it(`accepts ${tool} depth='deep' when authTier is owner`, async () => {
+			mockUnderlyingTools();
+			const { handleToolsCall } = await import('../src/handlers/tools');
+			const result = await handleToolsCall({ name: tool, arguments: args }, undefined, { authTier: 'owner' } as never);
 			if (result.isError) {
 				const textContent = result.content[0];
 				const text = textContent && 'text' in textContent ? textContent.text : '';

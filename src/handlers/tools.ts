@@ -849,66 +849,26 @@ export async function handleToolsCall(
 
 			// Tier gate: discovery_mode='tiered' activates the Tier-0/1/2 lookups
 			// against private BV_INFRA_GRAPH, BV_INTEL_GATEWAY, and BV_ENTERPRISE
-			// service bindings (operator-deploy only). Pay-walled at developer
-			// tier or higher to match the premium nature of those data sources.
-			// On BSL self-hosts the bindings are unprovisioned and the pipeline
-			// degrades to classic regardless, so this gate is a no-op there.
+			// service bindings (operator-deploy only). Restricted to enterprise tier
+			// or higher (enterprise, partner, owner). Developer was removed because
+			// the prior self-asserted ownership_verified attestation was not
+			// cryptographically verifiable, opening a cost/abuse vector against
+			// third-party domains. On BSL self-hosts the bindings are unprovisioned
+			// and the pipeline degrades to classic regardless, so this gate is a
+			// no-op there.
 			if (name === 'discover_brand_domains' || name === 'brand_audit_single' || name === 'brand_audit_batch_start') {
 				const requestedMode = (validatedArgs as { discovery_mode?: string }).discovery_mode;
 				if (requestedMode === 'tiered') {
 					const tier = runtimeOptions?.authTier;
-					if (tier !== 'developer' && tier !== 'partner' && tier !== 'enterprise' && tier !== 'owner') {
-						return buildToolErrorResult("Invalid discovery_mode: 'tiered' requires developer tier or higher");
-					}
-				}
-			}
-
-			// FIND-14 — Ownership verification gate for tiered discovery.
-			//
-			// Tiered discovery activates Tier 0/1/2 lookups (infrastructure-graph,
-			// intel-gateway, enterprise portfolio) against data sources that can
-			// enumerate thousands of domains. Without a verification signal, a
-			// developer-tier caller could run deep discovery against third-party
-			// domains they don't own, enabling mass reconnaissance.
-			//
-			// Exemptions:
-			//   enterprise / owner — audit their own declared portfolios (Tier 0).
-			//   partner            — operator-internal tier (BV_API_KEY / OWNER_ALLOW_IPS
-			//                        downgrade path); treated same as enterprise.
-			//
-			// developer-tier callers must supply `ownership_verified: true` to attest
-			// that they own or are authorised to audit the target domain. The field is
-			// a caller attestation, not a cryptographic proof — strengthening this to a
-			// real DNS TXT challenge is a separate, deferred work item.
-			//
-			// Note: the recurring watch path (register_brand_audit_watch + cron in
-			// scheduled.ts) does not carry a per-watch discovery_mode column today; its
-			// tiered behaviour is env-gated (BRAND_AUDIT_DISCOVERY_MODE_DEFAULT) and
-			// restricted to operator deployments where that binding is provisioned.
-			// Per-watch ownership enforcement is deferred until the watch schema gains
-			// a discovery_mode + ownership_verified column.
-			if (name === 'discover_brand_domains' || name === 'brand_audit_single' || name === 'brand_audit_batch_start') {
-				const requestedMode = (validatedArgs as { discovery_mode?: string }).discovery_mode;
-				if (requestedMode === 'tiered') {
-					const tier = runtimeOptions?.authTier;
-					// enterprise / owner / partner are exempt — they audit their own portfolios.
-					const ownershipExempt = tier === 'enterprise' || tier === 'owner' || tier === 'partner';
-					if (!ownershipExempt) {
-						const ownershipVerified = (validatedArgs as { ownership_verified?: boolean }).ownership_verified;
-						if (ownershipVerified !== true) {
-							return buildToolErrorResult(
-								"Invalid discovery_mode: 'tiered' requires ownership_verified=true. " +
-									'Attest that you own or are authorised to audit the target domain before enabling deep tiered discovery. ' +
-									'(error: ownership_unverified)',
-							);
-						}
+					if (tier !== 'partner' && tier !== 'enterprise' && tier !== 'owner') {
+						return buildToolErrorResult("Invalid discovery_mode: 'tiered' requires enterprise tier or higher");
 					}
 				}
 			}
 
 			// Tier gate: depth='deep' expands candidate seeding + enrichment fanout
-			// (roughly 3× the per-call compute cost of 'standard'). Pay-walled at
-			// developer tier or higher — same threshold as discovery_mode='tiered'.
+			// (roughly 3× the per-call compute cost of 'standard'). Restricted to
+			// enterprise tier or higher — same threshold as discovery_mode='tiered'.
 			// Defensive for brand_audit_* (free/agent already get 0 quota there)
 			// and for discover_brand_domains on free (now 0/day too); still
 			// meaningful for agent callers, who get discover_brand_domains at the
@@ -917,8 +877,8 @@ export async function handleToolsCall(
 				const requestedDepth = (validatedArgs as { depth?: string }).depth;
 				if (requestedDepth === 'deep') {
 					const tier = runtimeOptions?.authTier;
-					if (tier !== 'developer' && tier !== 'partner' && tier !== 'enterprise' && tier !== 'owner') {
-						return buildToolErrorResult("Invalid depth: 'deep' requires developer tier or higher");
+					if (tier !== 'partner' && tier !== 'enterprise' && tier !== 'owner') {
+						return buildToolErrorResult("Invalid depth: 'deep' requires enterprise tier or higher");
 					}
 				}
 			}

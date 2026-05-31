@@ -6,11 +6,14 @@
  * Background: `tiered` discovery activates Tier-0/1/2 lookups against the
  * private BV_INFRA_GRAPH, BV_INTEL_GATEWAY, and BV_ENTERPRISE service
  * bindings (operator-deploy only). Premium data sources behind a public
- * tool surface — pay-walling them mirrors the `view='csc_complement'` gate
- * at handlers/tools.ts and brings discover_brand_domains, brand_audit_single,
- * and brand_audit_batch_start into parity. On BSL self-hosts, the bindings
- * aren't provisioned and the pipeline degrades to classic; the gate is a
- * no-op there because the underlying capability never existed.
+ * tool surface — pay-walled at enterprise tier or higher (enterprise, partner,
+ * owner). Developer tier was removed from this gate (decision: self-asserted
+ * ownership_verified attestation was not cryptographically verifiable, enabling
+ * low-cost mass reconnaissance against third-party domains).
+ *
+ * On BSL self-hosts, the bindings aren't provisioned and the pipeline degrades
+ * to classic; the gate is a no-op there because the underlying capability never
+ * existed.
  *
  * Mocks underlying tools so the "accepts" tests don't hit real DNS/RDAP.
  */
@@ -54,11 +57,7 @@ describe('discovery_mode=tiered tier gate', () => {
 	});
 
 	for (const tool of TOOLS_ACCEPTING_DISCOVERY_MODE) {
-		// Used for low-tier rejection tests (free/agent — fail at tier gate before ownership gate).
 		const args = makeArgs(tool, 'tiered');
-		// Used for developer-tier acceptance tests: ownership_verified=true to clear the
-		// FIND-14 ownership gate that fires after the tier gate passes.
-		const argsWithOwnership = makeArgs(tool, 'tiered', { ownership_verified: true });
 
 		it(`rejects ${tool} discovery_mode='tiered' when authTier is free`, async () => {
 			mockUnderlyingTools();
@@ -67,7 +66,7 @@ describe('discovery_mode=tiered tier gate', () => {
 			expect(result.isError, `${tool}@free with discovery_mode=tiered must error`).toBe(true);
 			const textContent = result.content[0];
 			const text = textContent && 'text' in textContent ? textContent.text : '';
-			expect(text).toMatch(/^Error: Invalid discovery_mode: 'tiered' requires developer tier or higher/);
+			expect(text).toMatch(/^Error: Invalid discovery_mode: 'tiered' requires enterprise tier or higher/);
 		});
 
 		it(`rejects ${tool} discovery_mode='tiered' when authTier is agent`, async () => {
@@ -77,13 +76,23 @@ describe('discovery_mode=tiered tier gate', () => {
 			expect(result.isError, `${tool}@agent with discovery_mode=tiered must error`).toBe(true);
 			const textContent = result.content[0];
 			const text = textContent && 'text' in textContent ? textContent.text : '';
-			expect(text).toMatch(/^Error: Invalid discovery_mode: 'tiered' requires developer tier or higher/);
+			expect(text).toMatch(/^Error: Invalid discovery_mode: 'tiered' requires enterprise tier or higher/);
 		});
 
-		it(`accepts ${tool} discovery_mode='tiered' when authTier is developer (with ownership_verified=true)`, async () => {
+		it(`rejects ${tool} discovery_mode='tiered' when authTier is developer`, async () => {
 			mockUnderlyingTools();
 			const { handleToolsCall } = await import('../src/handlers/tools');
-			const result = await handleToolsCall({ name: tool, arguments: argsWithOwnership }, undefined, { authTier: 'developer' } as never);
+			const result = await handleToolsCall({ name: tool, arguments: args }, undefined, { authTier: 'developer' } as never);
+			expect(result.isError, `${tool}@developer with discovery_mode=tiered must error`).toBe(true);
+			const textContent = result.content[0];
+			const text = textContent && 'text' in textContent ? textContent.text : '';
+			expect(text).toMatch(/^Error: Invalid discovery_mode: 'tiered' requires enterprise tier or higher/);
+		});
+
+		it(`accepts ${tool} discovery_mode='tiered' when authTier is enterprise`, async () => {
+			mockUnderlyingTools();
+			const { handleToolsCall } = await import('../src/handlers/tools');
+			const result = await handleToolsCall({ name: tool, arguments: args }, undefined, { authTier: 'enterprise' } as never);
 			if (result.isError) {
 				const textContent = result.content[0];
 				const text = textContent && 'text' in textContent ? textContent.text : '';
@@ -91,10 +100,21 @@ describe('discovery_mode=tiered tier gate', () => {
 			}
 		});
 
-		it(`accepts ${tool} discovery_mode='tiered' when authTier is enterprise`, async () => {
+		it(`accepts ${tool} discovery_mode='tiered' when authTier is partner`, async () => {
 			mockUnderlyingTools();
 			const { handleToolsCall } = await import('../src/handlers/tools');
-			const result = await handleToolsCall({ name: tool, arguments: args }, undefined, { authTier: 'enterprise' } as never);
+			const result = await handleToolsCall({ name: tool, arguments: args }, undefined, { authTier: 'partner' } as never);
+			if (result.isError) {
+				const textContent = result.content[0];
+				const text = textContent && 'text' in textContent ? textContent.text : '';
+				expect(text).not.toMatch(/^Error: Invalid discovery_mode: 'tiered'/);
+			}
+		});
+
+		it(`accepts ${tool} discovery_mode='tiered' when authTier is owner`, async () => {
+			mockUnderlyingTools();
+			const { handleToolsCall } = await import('../src/handlers/tools');
+			const result = await handleToolsCall({ name: tool, arguments: args }, undefined, { authTier: 'owner' } as never);
 			if (result.isError) {
 				const textContent = result.content[0];
 				const text = textContent && 'text' in textContent ? textContent.text : '';
