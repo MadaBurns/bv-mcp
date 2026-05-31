@@ -11,7 +11,7 @@
  * Design: bv-web docs/superpowers/specs/2026-05-31-cross-repo-scoring-parity-gate-design.md
  */
 import { describe, it, expect } from 'vitest';
-import { checkDMARC, checkDANEHTTPS, checkSVCBHTTPS, checkDNSSEC, checkCAA } from '../checks';
+import { checkDMARC, checkDANEHTTPS, checkSVCBHTTPS, checkDNSSEC, checkCAA, checkMX } from '../checks';
 import { scoreIndicatesMissingControl } from '../scoring';
 import pkg from '../../package.json';
 import {
@@ -20,6 +20,7 @@ import {
 	SVCB_HTTPS_PARITY_FIXTURES,
 	DNSSEC_PARITY_FIXTURES,
 	CAA_PARITY_FIXTURES,
+	MX_PARITY_FIXTURES,
 	PARITY_CORPUS_VERSION,
 } from '../parity-fixtures';
 
@@ -100,6 +101,24 @@ describe('CAA parity corpus — bv-mcp full checkCAA', () => {
 			const queryDNS = (async (name: string, type: string) =>
 				type === 'CAA' && name === fx.domain ? fx.caa : []) as never;
 			const result = await checkCAA(fx.domain, queryDNS);
+			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
+				score: fx.expectedScore,
+				missing: fx.expectedMissingControl,
+			});
+		});
+	}
+});
+
+describe('MX parity corpus — bv-mcp full checkMX', () => {
+	for (const fx of MX_PARITY_FIXTURES) {
+		it(`scores "${fx.name}" → ${fx.expectedScore} (missingControl=${fx.expectedMissingControl})`, async () => {
+			const queryDNS = (async (name: string, type: string) => {
+				if (type === 'MX' && name === fx.domain) return fx.mx;
+				if (type === 'TXT' && name === fx.domain) return fx.txt;
+				if (type === 'A') return fx.hostA[name] ?? [];
+				return [];
+			}) as never;
+			const result = await checkMX(fx.domain, queryDNS);
 			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
 				score: fx.expectedScore,
 				missing: fx.expectedMissingControl,

@@ -85,10 +85,11 @@ describe('checkCAA', () => {
 });
 
 describe('checkMX', () => {
-	it('returns medium when no MX records', async () => {
+	it('no MX and no SPF → spoofable (0, missingControl)', async () => {
+		// SPF-context (NIST SP 800-177r1): no MX with no SPF policy = genuinely spoofable.
 		const queryDNS = createMockDNS({ 'example.com': [] });
 		const result = await checkMX('example.com', queryDNS);
-		expect(result.findings[0].title).toBe('No MX records found');
+		expect(result.findings[0].title).toBe('No MX and no SPF — domain spoofable');
 		expect(result.passed).toBe(false);
 		expect(result.score).toBe(0);
 	});

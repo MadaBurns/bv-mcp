@@ -38,7 +38,25 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.3.7';
+export const PARITY_CORPUS_VERSION = '1.3.8';
+
+/**
+ * MX parity fixture. No-MX scoring is SPF-context (NIST SP 800-177r1 §4.4.2):
+ * `-all`+no-MX = correct non-sender (100); SPF-without-`-all`+no-MX = soft (85);
+ * no-MX+no-SPF = spoofable (0, missingControl). `hostA` provides A records for MX
+ * hosts so the dangling-MX check passes.
+ */
+export interface MxParityFixture {
+	check: 'mx';
+	name: string;
+	domain: string;
+	mx: string[];
+	txt: string[];
+	/** MX-host → A records (so the hostname resolves; avoids a dangling-MX finding). */
+	hostA: Record<string, string[]>;
+	expectedScore: number;
+	expectedMissingControl: boolean;
+}
 
 /**
  * CAA parity fixture (RFC 8659). Absence of CAA = any CA may issue → a defense-in-depth
@@ -393,6 +411,69 @@ export const CAA_PARITY_FIXTURES: CaaParityFixture[] = [
 		name: 'missing issuewild',
 		domain: 'example.com',
 		caa: ['0 issue "letsencrypt.org"', '0 iodef "mailto:sec@example.com"'],
+		expectedScore: 95,
+		expectedMissingControl: false,
+	},
+];
+
+export const MX_PARITY_FIXTURES: MxParityFixture[] = [
+	{
+		check: 'mx',
+		name: 'no MX + SPF -all (correct non-sender)',
+		domain: 'example.com',
+		mx: [],
+		txt: ['v=spf1 -all'],
+		hostA: {},
+		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'mx',
+		name: 'no MX + SPF ~all (soft, should harden)',
+		domain: 'example.com',
+		mx: [],
+		txt: ['v=spf1 ~all'],
+		hostA: {},
+		expectedScore: 85,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'mx',
+		name: 'no MX + no SPF (spoofable — real gap)',
+		domain: 'example.com',
+		mx: [],
+		txt: [],
+		hostA: {},
+		expectedScore: 0,
+		expectedMissingControl: true,
+	},
+	{
+		check: 'mx',
+		name: 'null MX (RFC 7505)',
+		domain: 'example.com',
+		mx: ['0 .'],
+		txt: [],
+		hostA: {},
+		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'mx',
+		name: 'two MX (redundant)',
+		domain: 'example.com',
+		mx: ['10 mail1.example.com', '20 mail2.example.com'],
+		txt: [],
+		hostA: { 'mail1.example.com': ['10.0.0.1'], 'mail2.example.com': ['10.0.0.2'] },
+		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'mx',
+		name: 'single MX (no redundancy)',
+		domain: 'example.com',
+		mx: ['10 mail1.example.com'],
+		txt: [],
+		hostA: { 'mail1.example.com': ['10.0.0.1'] },
 		expectedScore: 95,
 		expectedMissingControl: false,
 	},
