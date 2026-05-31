@@ -124,12 +124,15 @@ describe('checkNS', () => {
 });
 
 describe('checkSVCBHTTPS', () => {
-	it('returns low when no HTTPS records', async () => {
+	it('treats absent HTTPS record as advisory (low, not a failure)', async () => {
+		// RFC 9460: HTTPS/SVCB RRs are a performance/privacy optimization, not a
+		// required security control — absence is not a deficiency (no missingControl).
 		const queryDNS = createMockDNS({ 'example.com': [] });
 		const result = await checkSVCBHTTPS('example.com', queryDNS);
 		expect(result.findings[0].title).toBe('No HTTPS record found');
-		expect(result.passed).toBe(false);
-		expect(result.score).toBe(0);
+		expect(result.findings[0].severity).toBe('low');
+		expect(result.passed).toBe(true);
+		expect(result.score).toBe(95);
 	});
 
 	it('detects H3 ALPN', async () => {

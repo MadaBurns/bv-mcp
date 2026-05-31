@@ -37,8 +37,10 @@ describe('checkSvcbHttps', () => {
 
 		const result = await run();
 		expect(result.category).toBe('svcb_https');
-		expect(result.passed).toBe(false); // missingControl: true forces passed=false
-		expect(result.score).toBe(0);
+		// RFC 9460: HTTPS/SVCB RRs are an advisory performance/privacy optimization,
+		// not a required control — absence is not a deficiency (lone low → 95, passes).
+		expect(result.passed).toBe(true);
+		expect(result.score).toBe(95);
 		const lowFinding = result.findings.find((f) => f.severity === 'low');
 		expect(lowFinding).toBeDefined();
 		expect(lowFinding!.title).toBe('No HTTPS record found');
