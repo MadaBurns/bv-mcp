@@ -11,7 +11,20 @@
  * Design: bv-web docs/superpowers/specs/2026-05-31-cross-repo-scoring-parity-gate-design.md
  */
 import { describe, it, expect } from 'vitest';
-import { checkDMARC, checkDANEHTTPS, checkDANE, checkSVCBHTTPS, checkDNSSEC, checkCAA, checkMX } from '../checks';
+import {
+	checkDMARC,
+	checkDANEHTTPS,
+	checkDANE,
+	checkSVCBHTTPS,
+	checkDNSSEC,
+	checkCAA,
+	checkMX,
+	checkTLSRPT,
+	checkSPF,
+	checkDKIM,
+	checkBIMI,
+	checkMTASTS,
+} from '../checks';
 import { scoreIndicatesMissingControl } from '../scoring';
 import pkg from '../../package.json';
 import {
@@ -22,6 +35,11 @@ import {
 	DNSSEC_PARITY_FIXTURES,
 	CAA_PARITY_FIXTURES,
 	MX_PARITY_FIXTURES,
+	TLS_RPT_PARITY_FIXTURES,
+	SPF_PARITY_FIXTURES,
+	DKIM_PARITY_FIXTURES,
+	BIMI_PARITY_FIXTURES,
+	MTA_STS_PARITY_FIXTURES,
 	PARITY_CORPUS_VERSION,
 } from '../parity-fixtures';
 
@@ -142,6 +160,101 @@ describe('MX parity corpus — bv-mcp full checkMX', () => {
 				return [];
 			}) as never;
 			const result = await checkMX(fx.domain, queryDNS);
+			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
+				score: fx.expectedScore,
+				missing: fx.expectedMissingControl,
+			});
+		});
+	}
+});
+
+describe('TLS-RPT parity corpus — bv-mcp full checkTLSRPT', () => {
+	for (const fx of TLS_RPT_PARITY_FIXTURES) {
+		it(`scores "${fx.name}" → ${fx.expectedScore} (missingControl=${fx.expectedMissingControl})`, async () => {
+			const queryDNS = (async (name: string, type: string) =>
+				type === 'TXT' && name === `_smtp._tls.${fx.domain}` ? fx.txt : []) as never;
+			const result = await checkTLSRPT(fx.domain, queryDNS);
+			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
+				score: fx.expectedScore,
+				missing: fx.expectedMissingControl,
+			});
+		});
+	}
+});
+
+describe('SPF parity corpus — bv-mcp full checkSPF', () => {
+	for (const fx of SPF_PARITY_FIXTURES) {
+		it(`scores "${fx.name}" → ${fx.expectedScore} (missingControl=${fx.expectedMissingControl})`, async () => {
+			const queryDNS = (async (name: string, type: string) =>
+				type === 'TXT' ? (fx.txtByName[name] ?? []) : []) as never;
+			const result = await checkSPF(fx.domain, queryDNS);
+			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
+				score: fx.expectedScore,
+				missing: fx.expectedMissingControl,
+			});
+		});
+	}
+});
+
+describe('DKIM parity corpus — bv-mcp full checkDKIM', () => {
+	for (const fx of DKIM_PARITY_FIXTURES) {
+		it(`scores "${fx.name}" → ${fx.expectedScore} (missingControl=${fx.expectedMissingControl})`, async () => {
+			const queryDNS = (async (name: string, type: string) =>
+				type === 'TXT' && name === `${fx.selector}._domainkey.${fx.domain}` ? fx.txt : []) as never;
+			const result = await checkDKIM(fx.domain, queryDNS, { selector: fx.selector });
+			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
+				score: fx.expectedScore,
+				missing: fx.expectedMissingControl,
+			});
+		});
+	}
+});
+
+describe('BIMI parity corpus — bv-mcp full checkBIMI', () => {
+	for (const fx of BIMI_PARITY_FIXTURES) {
+		it(`scores "${fx.name}" → ${fx.expectedScore} (missingControl=${fx.expectedMissingControl})`, async () => {
+			// No fetchFn → logo is not fetched; corpus locks the DNS-derived bands only.
+			const queryDNS = (async (name: string, type: string) => {
+				if (type !== 'TXT') return [];
+				if (name === `default._bimi.${fx.domain}`) return fx.bimi;
+				if (name === `_dmarc.${fx.domain}`) return fx.dmarc;
+				return [];
+			}) as never;
+			const result = await checkBIMI(fx.domain, queryDNS);
+			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
+				score: fx.expectedScore,
+				missing: fx.expectedMissingControl,
+			});
+		});
+	}
+});
+
+describe('MTA-STS parity corpus — bv-mcp full checkMTASTS', () => {
+	for (const fx of MTA_STS_PARITY_FIXTURES) {
+		it(`scores "${fx.name}" → ${fx.expectedScore} (missingControl=${fx.expectedMissingControl})`, async () => {
+			const queryDNS = (async (name: string, type: string) => {
+				if (type === 'MX' && name === fx.domain) return fx.mx;
+				if (type === 'TXT' && name === `_mta-sts.${fx.domain}`) return fx.sts;
+				if (type === 'TXT' && name === `_smtp._tls.${fx.domain}`) return fx.tlsrpt;
+				return [];
+			}) as never;
+			// fetchFn serves the policy file body (or a 404 when policy === null).
+			const fetchFn = (async () =>
+				fx.policy === null
+					? {
+							ok: false,
+							status: 404,
+							headers: { get: () => null },
+							body: { cancel: async () => {} },
+							text: async () => '',
+						}
+					: {
+							ok: true,
+							status: 200,
+							headers: { get: () => String(fx.policy!.length) },
+							text: async () => fx.policy!,
+						}) as never;
+			const result = await checkMTASTS(fx.domain, queryDNS, { fetchFn });
 			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
 				score: fx.expectedScore,
 				missing: fx.expectedMissingControl,

@@ -38,7 +38,7 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.3.10';
+export const PARITY_CORPUS_VERSION = '1.3.11';
 
 /**
  * MX parity fixture. No-MX scoring is SPF-context (NIST SP 800-177r1 §4.4.2):
@@ -141,6 +141,81 @@ export interface DaneEmailParityFixture {
 	tlsaByHost: Record<string, string[]>;
 	/** DNSSEC AD flag per MX host (raw A query). Absent host ⇒ false. */
 	adByHost: Record<string, boolean>;
+	expectedScore: number;
+	expectedMissingControl: boolean;
+}
+
+/** TLS-RPT parity fixture (RFC 8460). Keyed on the TXT records at `_smtp._tls.<domain>`. */
+export interface TlsRptParityFixture {
+	check: 'tlsrpt';
+	name: string;
+	domain: string;
+	/** TXT records returned at `_smtp._tls.<domain>`. */
+	txt: string[];
+	expectedScore: number;
+	expectedMissingControl: boolean;
+}
+
+/**
+ * SPF parity fixture (RFC 7208). Keyed on TXT records per name so include-chains can
+ * be expanded for the recursive DNS-lookup budget (>10 → PermError class).
+ */
+export interface SpfParityFixture {
+	check: 'spf';
+	name: string;
+	domain: string;
+	/** Lookup name → TXT records (domain + any included names for lookup counting). */
+	txtByName: Record<string, string[]>;
+	expectedScore: number;
+	expectedMissingControl: boolean;
+}
+
+/** DKIM parity fixture (RFC 6376/8301). Keyed on the TXT record at `<selector>._domainkey.<domain>`. */
+export interface DkimParityFixture {
+	check: 'dkim';
+	name: string;
+	domain: string;
+	selector: string;
+	/** TXT records returned at `<selector>._domainkey.<domain>`. */
+	txt: string[];
+	expectedScore: number;
+	expectedMissingControl: boolean;
+}
+
+/**
+ * BIMI parity fixture. Keyed on the TXT records at `default._bimi.<domain>` plus the
+ * DMARC record at `_dmarc.<domain>` (BIMI requires an enforcing DMARC policy). No
+ * logo fetch (fetchFn omitted) — the corpus locks the DNS-derived bands only.
+ */
+export interface BimiParityFixture {
+	check: 'bimi';
+	name: string;
+	domain: string;
+	/** TXT records at `default._bimi.<domain>`. */
+	bimi: string[];
+	/** TXT records at `_dmarc.<domain>` (DMARC prerequisite). */
+	dmarc: string[];
+	expectedScore: number;
+	expectedMissingControl: boolean;
+}
+
+/**
+ * MTA-STS parity fixture (RFC 8461). Keyed on the `_mta-sts.<domain>` TXT record, the
+ * `_smtp._tls.<domain>` TLS-RPT TXT, the domain MX records, and the fetched policy file
+ * body (mode grading requires the HTTPS policy — supplied via a fixture `policy` string).
+ */
+export interface MtaStsParityFixture {
+	check: 'mta_sts';
+	name: string;
+	domain: string;
+	/** TXT records at `_mta-sts.<domain>`. */
+	sts: string[];
+	/** TXT records at `_smtp._tls.<domain>` (TLS-RPT). */
+	tlsrpt: string[];
+	/** MX records at `domain` (drives the no-inbound-mail fork). */
+	mx: string[];
+	/** Policy file body served at `https://mta-sts.<domain>/.well-known/mta-sts.txt`, or null = unfetchable. */
+	policy: string | null;
 	expectedScore: number;
 	expectedMissingControl: boolean;
 }
@@ -342,6 +417,67 @@ export const DANE_EMAIL_PARITY_FIXTURES: DaneEmailParityFixture[] = [
 		expectedScore: 85,
 		expectedMissingControl: false,
 	},
+];
+
+export const TLS_RPT_PARITY_FIXTURES: TlsRptParityFixture[] = [
+	{ check: 'tlsrpt', name: 'no record (hardening absence)', domain: 'example.com', txt: [], expectedScore: 95, expectedMissingControl: false },
+	{ check: 'tlsrpt', name: 'valid rua mailto', domain: 'example.com', txt: ['v=TLSRPTv1; rua=mailto:t@example.com'], expectedScore: 100, expectedMissingControl: false },
+	{ check: 'tlsrpt', name: 'missing rua tag', domain: 'example.com', txt: ['v=TLSRPTv1;'], expectedScore: 85, expectedMissingControl: false },
+	{ check: 'tlsrpt', name: 'invalid rua scheme', domain: 'example.com', txt: ['v=TLSRPTv1; rua=ftp://x/r'], expectedScore: 85, expectedMissingControl: false },
+	{ check: 'tlsrpt', name: 'multiple records (≠1 = absent)', domain: 'example.com', txt: ['v=TLSRPTv1; rua=mailto:a@example.com', 'v=TLSRPTv1; rua=mailto:b@example.com'], expectedScore: 95, expectedMissingControl: false },
+];
+
+// Build a >10-lookup SPF include chain for the RFC 7208 §4.6.4 budget fixture.
+const SPF_OVERLIMIT_TXT: Record<string, string[]> = (() => {
+	const txtByName: Record<string, string[]> = {};
+	let record = 'v=spf1';
+	for (let i = 1; i <= 11; i++) {
+		record += ` include:i${i}.example.com`;
+		txtByName[`i${i}.example.com`] = ['v=spf1 ip4:10.0.0.0/8 -all'];
+	}
+	record += ' -all';
+	txtByName['example.com'] = [record];
+	return txtByName;
+})();
+
+export const SPF_PARITY_FIXTURES: SpfParityFixture[] = [
+	{ check: 'spf', name: 'no SPF record (spoofable)', domain: 'example.com', txtByName: {}, expectedScore: 0, expectedMissingControl: true },
+	{ check: 'spf', name: 'hard fail -all', domain: 'example.com', txtByName: { 'example.com': ['v=spf1 -all'] }, expectedScore: 100, expectedMissingControl: false },
+	{ check: 'spf', name: 'soft fail ~all', domain: 'example.com', txtByName: { 'example.com': ['v=spf1 ~all'] }, expectedScore: 95, expectedMissingControl: false },
+	{ check: 'spf', name: 'permissive +all', domain: 'example.com', txtByName: { 'example.com': ['v=spf1 +all'] }, expectedScore: 60, expectedMissingControl: false },
+	{ check: 'spf', name: 'ptr mechanism (deprecated)', domain: 'example.com', txtByName: { 'example.com': ['v=spf1 ptr -all'] }, expectedScore: 85, expectedMissingControl: false },
+	{ check: 'spf', name: '>10 DNS lookups (RFC 7208 §4.6.4)', domain: 'example.com', txtByName: SPF_OVERLIMIT_TXT, expectedScore: 75, expectedMissingControl: false },
+];
+
+// Real RSA public keys (SPKI base64 = DKIM p= value). Generated via
+// `openssl genrsa N | openssl rsa -pubout -outform DER | base64`. PUBLIC keys only —
+// needed so the bit-length classifier (RFC 8301: <1024 weak) sees a parseable key.
+const DKIM_RSA_2048_P =
+	'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArmqcx2roHY0AGFBJ6QQldlX0e5/BQVCL9nQKNgJqPgjhSlRVuBJmGCI4vEAe5qLkgKRbZ5WxS0F9LRI+tgDlKZvmmv/Bh7BhqN9ZpKFdsQIg4odgUa0tCFg/V9cPlzDDFFgox77fDFcKf2os+ORqBunHmhJPE6HODXD+lFF6RtTmQSyQXVZepREju5fmUd/xEkMhVYQVIKSK9YMM0D5cIkKzylpjMp9WKozrdkg9OnSE6TrtJB88hSAtKesFnU2kMzdd8+QhyP9dtSy9DQRUeUjFkPiyNdCXQf1SOxIzZZQ67SbPpEz4+RTllDgBgs2gsw9r9w6xyF665o+2K2YeZwIDAQAB';
+const DKIM_RSA_1024_P =
+	'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCdshfa2y3h7g/BJPSw9NHhxi6teky3b+WGfl+NdW/MaV7WYWaDcvNiUQxCtD5JJnY2o023hoAZbaZdXlA/DVCS+0SnULqObqPHUd9oSd+1cNu3RVi7HiygsxC+yA/htkz46fNRSqDHFUB3M5CF4IFnA3ZuT/5SX6OkUngjGUs4lQIDAQAB';
+
+export const DKIM_PARITY_FIXTURES: DkimParityFixture[] = [
+	{ check: 'dkim', name: 'no record at selector (heuristic, not zeroed)', domain: 'example.com', selector: 'sel', txt: [], expectedScore: 50, expectedMissingControl: false },
+	{ check: 'dkim', name: 'valid RSA-2048', domain: 'example.com', selector: 'sel', txt: [`v=DKIM1; k=rsa; p=${DKIM_RSA_2048_P}`], expectedScore: 100, expectedMissingControl: false },
+	{ check: 'dkim', name: 'weak RSA-1024', domain: 'example.com', selector: 'sel', txt: [`v=DKIM1; k=rsa; p=${DKIM_RSA_1024_P}`], expectedScore: 75, expectedMissingControl: false },
+	{ check: 'dkim', name: 'h=sha1 (RFC 8301 deprecated)', domain: 'example.com', selector: 'sel', txt: [`v=DKIM1; h=sha1; k=rsa; p=${DKIM_RSA_2048_P}`], expectedScore: 75, expectedMissingControl: false },
+	{ check: 'dkim', name: 'revoked (empty p=)', domain: 'example.com', selector: 'sel', txt: ['v=DKIM1; k=rsa; p='], expectedScore: 85, expectedMissingControl: false },
+];
+
+export const BIMI_PARITY_FIXTURES: BimiParityFixture[] = [
+	{ check: 'bimi', name: 'no BIMI, DMARC enforcing (advisory absence)', domain: 'example.com', bimi: [], dmarc: ['v=DMARC1; p=reject'], expectedScore: 95, expectedMissingControl: false },
+	{ check: 'bimi', name: 'BIMI + DMARC enforcing (no logo fetch)', domain: 'example.com', bimi: ['v=BIMI1; l=https://x/logo.svg;'], dmarc: ['v=DMARC1; p=reject'], expectedScore: 95, expectedMissingControl: false },
+	{ check: 'bimi', name: 'BIMI but DMARC p=none (ineffective)', domain: 'example.com', bimi: ['v=BIMI1; l=https://x/logo.svg;'], dmarc: ['v=DMARC1; p=none'], expectedScore: 0, expectedMissingControl: true },
+	{ check: 'bimi', name: 'no BIMI, no DMARC', domain: 'example.com', bimi: [], dmarc: [], expectedScore: 95, expectedMissingControl: false },
+];
+
+export const MTA_STS_PARITY_FIXTURES: MtaStsParityFixture[] = [
+	{ check: 'mta_sts', name: 'enforce mode + MX', domain: 'example.com', sts: ['v=STSv1; id=1'], tlsrpt: ['v=TLSRPTv1; rua=mailto:t@example.com'], mx: ['10 mail.example.com'], policy: 'version: STSv1\nmode: enforce\nmx: mail.example.com\nmax_age: 604800', expectedScore: 100, expectedMissingControl: false },
+	{ check: 'mta_sts', name: 'testing mode + MX', domain: 'example.com', sts: ['v=STSv1; id=1'], tlsrpt: [], mx: ['10 mail.example.com'], policy: 'version: STSv1\nmode: testing\nmx: mail.example.com\nmax_age: 604800', expectedScore: 90, expectedMissingControl: false },
+	{ check: 'mta_sts', name: 'none mode + MX (disabled)', domain: 'example.com', sts: ['v=STSv1; id=1'], tlsrpt: [], mx: ['10 mail.example.com'], policy: 'version: STSv1\nmode: none\nmx: mail.example.com\nmax_age: 604800', expectedScore: 80, expectedMissingControl: false },
+	{ check: 'mta_sts', name: 'no records, MX present (real gap)', domain: 'example.com', sts: [], tlsrpt: [], mx: ['10 mail.example.com'], policy: null, expectedScore: 0, expectedMissingControl: true },
+	{ check: 'mta_sts', name: 'no records, no MX (parked, not applicable)', domain: 'example.com', sts: [], tlsrpt: [], mx: [], policy: null, expectedScore: 95, expectedMissingControl: false },
 ];
 
 export const SVCB_HTTPS_PARITY_FIXTURES: SvcbParityFixture[] = [
