@@ -65,16 +65,20 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 		return findings;
 	}
 
-	// Check for multiple DMARC records
+	// Multiple DMARC records = NO valid policy (RFC 9989: receivers ignore all and
+	// apply no DMARC policy when more than one record is present). Treat as a missing
+	// control (score 0), the same as no record — do NOT evaluate a "first" policy.
 	if (facts.recordCount > 1) {
 		findings.push(
 			createFinding(
 				'dmarc',
-				'Multiple DMARC records',
+				'Multiple DMARC records — no valid policy',
 				'high',
-				`Found ${facts.recordCount} DMARC records in TXT data. Only one DMARC record should exist per domain.`,
+				`Found ${facts.recordCount} DMARC records at _dmarc.${facts.domain ?? '<domain>'}. Per RFC 9989, receivers treat more than one record as no DMARC policy at all — the domain is unprotected. Publish exactly one DMARC record.`,
+				{ missingControl: true },
 			),
 		);
+		return findings;
 	}
 
 	const validPolicies = new Set(['none', 'quarantine', 'reject']);
