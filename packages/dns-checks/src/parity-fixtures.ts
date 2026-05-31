@@ -38,7 +38,24 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.3.1';
+export const PARITY_CORPUS_VERSION = '1.3.2';
+
+/**
+ * DANE-HTTPS parity fixture. Keyed on the TLSA records at `_443._tcp.<domain>`
+ * plus the DNSSEC AD flag (DANE without DNSSEC is ineffective → RFC 7672).
+ * Both repos run their full checkDANEHTTPS over these + must match.
+ */
+export interface DaneHttpsParityFixture {
+	check: 'dane_https';
+	name: string;
+	domain: string;
+	/** TLSA records returned at `_443._tcp.<domain>`. */
+	tlsa: string[];
+	/** DNSSEC AD flag from the raw query (DANE-TA/EE without DNSSEC is downgraded). */
+	ad: boolean;
+	expectedScore: number;
+	expectedMissingControl: boolean;
+}
 
 export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 	{
@@ -114,5 +131,55 @@ export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 		expectedScore: 80,
 		expectedMissingControl: false,
 		treeWalkOnly: true,
+	},
+];
+
+const SHA256_HASH = '0000000000000000000000000000000000000000000000000000000000000001';
+
+export const DANE_HTTPS_PARITY_FIXTURES: DaneHttpsParityFixture[] = [
+	{
+		check: 'dane_https',
+		name: 'no TLSA record',
+		domain: 'example.com',
+		tlsa: [],
+		ad: true,
+		expectedScore: 95,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'dane_https',
+		name: 'valid DANE-EE (3 1 1) + DNSSEC',
+		domain: 'example.com',
+		tlsa: [`3 1 1 ${SHA256_HASH}`],
+		ad: true,
+		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'dane_https',
+		name: 'valid DANE-EE (3 1 1) without DNSSEC',
+		domain: 'example.com',
+		tlsa: [`3 1 1 ${SHA256_HASH}`],
+		ad: false,
+		expectedScore: 75,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'dane_https',
+		name: 'malformed TLSA (3 fields)',
+		domain: 'example.com',
+		tlsa: ['3 1 1'],
+		ad: true,
+		expectedScore: 85,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'dane_https',
+		name: 'PKIX-EE (1 1 1) without DNSSEC',
+		domain: 'example.com',
+		tlsa: [`1 1 1 ${SHA256_HASH}`],
+		ad: false,
+		expectedScore: 100,
+		expectedMissingControl: false,
 	},
 ];
