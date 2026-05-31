@@ -208,6 +208,9 @@ export async function resolveTier(
 
 	// 3. Try service binding to bv-web
 	if (env.BV_WEB && env.BV_WEB_INTERNAL_KEY) {
+		let bvWebThrew = false;
+		let bvWebIsServerError = false;
+
 		try {
 			const response = await env.BV_WEB.fetch(
 				new Request('https://internal/api/internal/mcp/validate-key', {
@@ -226,19 +229,31 @@ export async function resolveTier(
 				if (keyResult.success) {
 					const data = keyResult.data;
 					if (data.tier !== null) {
-						// Cache the valid tier result
+						// Cache the valid tier result (short-lived, 5 min)
 						if (env.RATE_LIMIT) {
 							await env.RATE_LIMIT.put(
 								`tier:${keyHash}`,
 								JSON.stringify({ tier: data.tier, revokedAt: null }),
 								{ expirationTtl: TIER_KV_CACHE_TTL },
 							);
+							// Write long-lived last-known-good entry (24h, best-effort).
+							// Used as a fail-safe if bv-web is unreachable or returns 5xx on
+							// a future request — avoids downgrading paying customers during
+							// transient outages. Apply only to confirmed-valid tiers, never
+							// to null/revoked responses (those must still downgrade correctly).
+							try {
+								await env.RATE_LIMIT.put(`tier:lkg:${keyHash}`, data.tier, { expirationTtl: 86400 });
+							} catch {
+								// Best-effort — a KV write failure must not break auth
+							}
 						}
 						const resolvedTier = applyOwnerIpGate(data.tier, env.OWNER_ALLOW_IPS, clientIp);
 						return { authenticated: true, tier: resolvedTier, keyHash };
 					}
-					// Null tier = revoked or unknown key — cache negative result to avoid
-					// repeated service binding calls within the TTL window
+					// Null tier = definitive revocation or unknown key — cache negative result
+					// to avoid repeated service binding calls within the TTL window.
+					// LKG is NOT consulted or updated here: this is a definitive "no entitlement"
+					// signal from bv-web, not an ambiguous failure.
 					if (env.RATE_LIMIT) {
 						await env.RATE_LIMIT.put(
 							`tier:${keyHash}`,
@@ -247,9 +262,34 @@ export async function resolveTier(
 						);
 					}
 				}
+			} else if (response.status >= 500) {
+				// 5xx response: bv-web is up but returning server errors — treat as ambiguous.
+				// NOTE: fetch() resolves (not throws) on HTTP errors, so this branch handles
+				// the primary outage scenario. 4xx responses are definitive client errors and
+				// fall through without LKG (no entitlement signal is explicit, not ambiguous).
+				bvWebIsServerError = true;
 			}
+			// 4xx: fall through to BV_API_KEY without LKG — definitive rejection
 		} catch {
-			// Service binding failed, fall through to BV_API_KEY
+			// Network error / connection failure / service binding throw — ambiguous.
+			bvWebThrew = true;
+		}
+
+		// LKG fallback: only for ambiguous failures (thrown or 5xx), NOT for definitive
+		// rejections (null tier, 4xx). Preserves revocation correctness.
+		if ((bvWebThrew || bvWebIsServerError) && env.RATE_LIMIT) {
+			try {
+				const lkg = await env.RATE_LIMIT.get(`tier:lkg:${keyHash}`);
+				if (lkg) {
+					const lkgResult = ValidateKeyResponseSchema.shape.tier.safeParse(lkg);
+					if (lkgResult.success && lkgResult.data !== null) {
+						const resolvedTier = applyOwnerIpGate(lkgResult.data, env.OWNER_ALLOW_IPS, clientIp);
+						return { authenticated: true, tier: resolvedTier, keyHash };
+					}
+				}
+			} catch {
+				// LKG read failed — fall through to BV_API_KEY as before
+			}
 		}
 	}
 

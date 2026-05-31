@@ -1,18 +1,28 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * FIND-14 — Domain-ownership verification before tiered brand-audit discovery.
+ * Post-FIND-14 ownership gate tests.
  *
- * A developer-tier caller can run brand-audit "tiered" discovery against
- * third-party domains they don't own, enabling mass reconnaissance. The guard
- * requires `ownership_verified: true` on the tool call when `discovery_mode`
- * is `'tiered'` and the caller is not an enterprise/owner/partner principal
- * (those tiers audit their own portfolios and are exempt from the attestation).
+ * The self-asserted `ownership_verified` attestation path has been removed.
+ * Developer-tier callers no longer qualify for `discovery_mode='tiered'`
+ * (they hit the tier gate in src/handlers/tools.ts before any ownership
+ * logic fires), so the FIND-14 gate block is gone.
  *
- * Insertion point: `src/handlers/tools.ts`, inline with the existing
- * `discovery_mode='tiered'` tier gate.
+ * Enterprise, owner, and partner callers were already exempt from the
+ * ownership attestation under the old model. Under the new model they
+ * remain exempt — and are now the only tiers that can request tiered
+ * discovery at all.
  *
- * Mirrors the test structure in `test/brand-audit-discovery-mode-gate.spec.ts`.
+ * This file:
+ *  - Confirms developer-tier is rejected by the TIER gate (not ownership gate).
+ *  - Confirms enterprise / owner / partner are accepted by the tier gate.
+ *  - Confirms classic discovery is never gated for any tier.
+ *  - Confirms omitting discovery_mode is never gated for any tier.
+ *
+ * The `ownership_verified` field remains accepted by the Zod schema (no
+ * source change needed) but is ignored — enterprise/partner/owner callers
+ * may pass it without error; developer callers never reach the point where
+ * it would be read.
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -45,7 +55,7 @@ function mockUnderlyingTools() {
 	}));
 }
 
-describe('FIND-14: ownership_verified gate for tiered discovery', () => {
+describe('Tiered-discovery tier gate — post ownership-attestation removal', () => {
 	afterEach(() => {
 		vi.resetModules();
 		vi.doUnmock('../src/tools/discover-brand-domains');
@@ -54,7 +64,9 @@ describe('FIND-14: ownership_verified gate for tiered discovery', () => {
 	});
 
 	for (const tool of TOOLS_ACCEPTING_DISCOVERY_MODE) {
-		it(`rejects ${tool} with discovery_mode='tiered' when developer tier omits ownership_verified`, async () => {
+		// --- Developer is now rejected by the TIER gate ---
+
+		it(`rejects ${tool} with discovery_mode='tiered' for developer tier (tier gate, not ownership gate)`, async () => {
 			mockUnderlyingTools();
 			const { handleToolsCall } = await import('../src/handlers/tools');
 			const result = await handleToolsCall(
@@ -62,27 +74,15 @@ describe('FIND-14: ownership_verified gate for tiered discovery', () => {
 				undefined,
 				{ authTier: 'developer' } as never,
 			);
-			expect(result.isError, `${tool}@developer with tiered and no ownership_verified must error`).toBe(true);
+			expect(result.isError, `${tool}@developer with tiered must be rejected by tier gate`).toBe(true);
 			const textContent = result.content[0];
 			const text = textContent && 'text' in textContent ? textContent.text : '';
-			expect(text).toMatch(/ownership_unverified/);
+			// Must hit the TIER gate — not the (removed) ownership gate.
+			expect(text).toMatch(/^Error: Invalid discovery_mode: 'tiered' requires enterprise tier or higher/);
+			expect(text).not.toMatch(/ownership_unverified/);
 		});
 
-		it(`rejects ${tool} with discovery_mode='tiered' when developer tier sends ownership_verified=false`, async () => {
-			mockUnderlyingTools();
-			const { handleToolsCall } = await import('../src/handlers/tools');
-			const result = await handleToolsCall(
-				{ name: tool, arguments: makeArgs(tool, { ownership_verified: false }) },
-				undefined,
-				{ authTier: 'developer' } as never,
-			);
-			expect(result.isError, `${tool}@developer with tiered and ownership_verified=false must error`).toBe(true);
-			const textContent = result.content[0];
-			const text = textContent && 'text' in textContent ? textContent.text : '';
-			expect(text).toMatch(/ownership_unverified/);
-		});
-
-		it(`allows ${tool} with discovery_mode='tiered' when developer tier sends ownership_verified=true`, async () => {
+		it(`rejects ${tool} with discovery_mode='tiered' for developer even when ownership_verified=true (tier gate wins)`, async () => {
 			mockUnderlyingTools();
 			const { handleToolsCall } = await import('../src/handlers/tools');
 			const result = await handleToolsCall(
@@ -90,15 +90,16 @@ describe('FIND-14: ownership_verified gate for tiered discovery', () => {
 				undefined,
 				{ authTier: 'developer' } as never,
 			);
-			// Must not be the ownership_unverified error
-			if (result.isError) {
-				const textContent = result.content[0];
-				const text = textContent && 'text' in textContent ? textContent.text : '';
-				expect(text).not.toMatch(/ownership_unverified/);
-			}
+			// Ownership attestation no longer unlocks tiered discovery for developer.
+			expect(result.isError, `${tool}@developer with tiered+ownership_verified=true must still be rejected`).toBe(true);
+			const textContent = result.content[0];
+			const text = textContent && 'text' in textContent ? textContent.text : '';
+			expect(text).toMatch(/^Error: Invalid discovery_mode: 'tiered' requires enterprise tier or higher/);
 		});
 
-		it(`allows ${tool} with discovery_mode='tiered' when enterprise tier omits ownership_verified (exempt)`, async () => {
+		// --- Enterprise / partner / owner pass the tier gate ---
+
+		it(`allows ${tool} with discovery_mode='tiered' when enterprise tier (no ownership_verified needed)`, async () => {
 			mockUnderlyingTools();
 			const { handleToolsCall } = await import('../src/handlers/tools');
 			const result = await handleToolsCall(
@@ -106,15 +107,15 @@ describe('FIND-14: ownership_verified gate for tiered discovery', () => {
 				undefined,
 				{ authTier: 'enterprise' } as never,
 			);
-			// Enterprise is exempt — must not be the ownership_unverified error
 			if (result.isError) {
 				const textContent = result.content[0];
 				const text = textContent && 'text' in textContent ? textContent.text : '';
+				expect(text).not.toMatch(/^Error: Invalid discovery_mode: 'tiered'/);
 				expect(text).not.toMatch(/ownership_unverified/);
 			}
 		});
 
-		it(`allows ${tool} with discovery_mode='tiered' when owner tier omits ownership_verified (exempt)`, async () => {
+		it(`allows ${tool} with discovery_mode='tiered' when owner tier (no ownership_verified needed)`, async () => {
 			mockUnderlyingTools();
 			const { handleToolsCall } = await import('../src/handlers/tools');
 			const result = await handleToolsCall(
@@ -125,11 +126,12 @@ describe('FIND-14: ownership_verified gate for tiered discovery', () => {
 			if (result.isError) {
 				const textContent = result.content[0];
 				const text = textContent && 'text' in textContent ? textContent.text : '';
+				expect(text).not.toMatch(/^Error: Invalid discovery_mode: 'tiered'/);
 				expect(text).not.toMatch(/ownership_unverified/);
 			}
 		});
 
-		it(`allows ${tool} with discovery_mode='tiered' when partner tier omits ownership_verified (exempt — operator-internal)`, async () => {
+		it(`allows ${tool} with discovery_mode='tiered' when partner tier (operator-internal, no ownership_verified needed)`, async () => {
 			mockUnderlyingTools();
 			const { handleToolsCall } = await import('../src/handlers/tools');
 			const result = await handleToolsCall(
@@ -140,12 +142,13 @@ describe('FIND-14: ownership_verified gate for tiered discovery', () => {
 			if (result.isError) {
 				const textContent = result.content[0];
 				const text = textContent && 'text' in textContent ? textContent.text : '';
+				expect(text).not.toMatch(/^Error: Invalid discovery_mode: 'tiered'/);
 				expect(text).not.toMatch(/ownership_unverified/);
 			}
 		});
 	}
 
-	it("classic discovery_mode does not trigger the ownership gate (developer tier, no ownership_verified)", async () => {
+	it("classic discovery_mode is never gated (developer tier, no ownership_verified)", async () => {
 		mockUnderlyingTools();
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		const result = await handleToolsCall(
@@ -156,11 +159,12 @@ describe('FIND-14: ownership_verified gate for tiered discovery', () => {
 		if (result.isError) {
 			const textContent = result.content[0];
 			const text = textContent && 'text' in textContent ? textContent.text : '';
+			expect(text).not.toMatch(/^Error: Invalid discovery_mode/);
 			expect(text).not.toMatch(/ownership_unverified/);
 		}
 	});
 
-	it("omitting discovery_mode does not trigger the ownership gate (developer tier)", async () => {
+	it("omitting discovery_mode is never gated (developer tier)", async () => {
 		mockUnderlyingTools();
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		const result = await handleToolsCall(
@@ -171,6 +175,7 @@ describe('FIND-14: ownership_verified gate for tiered discovery', () => {
 		if (result.isError) {
 			const textContent = result.content[0];
 			const text = textContent && 'text' in textContent ? textContent.text : '';
+			expect(text).not.toMatch(/^Error: Invalid discovery_mode/);
 			expect(text).not.toMatch(/ownership_unverified/);
 		}
 	});
