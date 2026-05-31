@@ -64,4 +64,21 @@ describe('classifyDmarc', () => {
 		const dirty = appendDmarcCleanInfo([{ category: 'dmarc', title: 'x', severity: 'medium', detail: 'y' } as never], 'reject');
 		expect(dirty.some((x) => x.title === 'DMARC properly configured')).toBe(false);
 	});
+
+	it('flags t=y test mode as medium regardless of p=reject', () => {
+		const f = classifyDmarc({ recordCount: 1, policy: 'reject', sp: 'reject', t: 'y', rua: 'mailto:dmarc@example.com', adkim: 's', aspf: 's' });
+		expect(f.find((x) => x.title === 'DMARC in test mode (t=y)')?.severity).toBe('medium');
+	});
+	it('flags np=none spoofability on an enforcing org domain', () => {
+		const f = classifyDmarc({ recordCount: 1, policy: 'reject', sp: 'reject', np: 'none', rua: 'mailto:dmarc@example.com', adkim: 's', aspf: 's' });
+		expect(f.find((x) => x.title === 'Non-existent subdomains spoofable (np=none)')?.severity).toBe('medium');
+	});
+	it('does NOT flag np spoofability when np=reject', () => {
+		const f = classifyDmarc({ recordCount: 1, policy: 'reject', sp: 'none', np: 'reject', rua: 'mailto:dmarc@example.com' });
+		expect(f.some((x) => x.title === 'Non-existent subdomains spoofable (np=none)')).toBe(false);
+	});
+	it('does NOT flag np spoofability for an inherited subdomain scan', () => {
+		const f = classifyDmarc({ recordCount: 1, policy: 'reject', np: 'none', inheritedFromParent: true, rua: 'mailto:dmarc@example.com' });
+		expect(f.some((x) => x.title === 'Non-existent subdomains spoofable (np=none)')).toBe(false);
+	});
 });

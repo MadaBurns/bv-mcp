@@ -33,6 +33,10 @@ export interface DmarcFacts {
 	adkim?: string;
 	/** Raw `aspf=` token. `undefined` when absent. */
 	aspf?: string;
+	/** Raw t= tag (DMARCbis test mode). 'y' = policy not enforced. */
+	t?: string;
+	/** True when this is a subdomain scan whose policy was inherited from an ancestor (caller-resolved tree-walk). Default false = organizational-domain scan. */
+	inheritedFromParent?: boolean;
 	/** Third-party aggregators in `rua=` (resolved by the caller). Empty when none. */
 	aggregators?: string[];
 	/** Invalid `rua=` URIs (resolved by the caller). Empty when none. */
@@ -116,6 +120,18 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 	}
 	// "reject" is the strongest setting - no finding needed
 
+	// DMARCbis (RFC 9989) test mode — t=y disables policy enforcement regardless of p=
+	if (facts.t === 'y') {
+		findings.push(
+			createFinding(
+				'dmarc',
+				'DMARC in test mode (t=y)',
+				'medium',
+				'DMARC t=y (RFC 9989 DMARCbis test mode) disables policy enforcement — receivers honoring DMARCbis will not quarantine or reject. Remove t=y to activate the configured policy.',
+			),
+		);
+	}
+
 	// Check subdomain policy (sp= tag)
 	const sp = facts.sp;
 	// DMARCbis (RFC 9989) non-existent-subdomain policy. When `np=reject`/`np=quarantine`
@@ -183,6 +199,28 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 				),
 			);
 		}
+	}
+
+	// DMARCbis (RFC 9989) np= non-existent-subdomain spoofability (org-domain scans only).
+	// Distinct from the sp= finding above: sp= covers *existing* subdomains, np= covers
+	// *non-existent* subdomains (e.g. payroll.example.com). They can legitimately co-occur.
+	// Only fires when: this is an org-domain scan (not inherited), the domain enforces reject/
+	// quarantine for known mail flows, AND np (or sp, or p as fallback) resolves to 'none'.
+	// np=reject short-circuits the fallback chain — a domain with explicit np=reject is NOT flagged
+	// even when sp=none.
+	if (
+		!facts.inheritedFromParent &&
+		(facts.policy === 'reject' || facts.policy === 'quarantine') &&
+		(facts.np ?? facts.sp ?? facts.policy) === 'none'
+	) {
+		findings.push(
+			createFinding(
+				'dmarc',
+				'Non-existent subdomains spoofable (np=none)',
+				'medium',
+				'The organizational domain enforces DMARC but non-existent subdomains resolve to np=none, leaving them spoofable (e.g. payroll.example.com). Set np=reject to close this gap.',
+			),
+		);
 	}
 
 	// Check percentage (pct= tag)
