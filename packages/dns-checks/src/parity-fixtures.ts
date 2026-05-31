@@ -27,10 +27,10 @@ export interface DmarcParityFixture {
 	expectedScore: number;
 	expectedMissingControl: boolean;
 	/**
-	 * True when only bv-web can produce this via RFC 9989 tree-walk inheritance.
-	 * bv-mcp's checkDMARC reads `_dmarc.<domain>` directly (no tree-walk) so it
-	 * diverges here — a documented bounded-non-parity until bv-mcp gains tree-walk.
-	 * The bv-mcp contract test skips these; the bv-web tree-walk test asserts them.
+	 * True when the fixture requires RFC 9989 §4.10 tree-walk inheritance. The
+	 * tree-walking full checks (bv-mcp `checkDMARC` + bv-web dns-worker-v2) BOTH
+	 * assert it; only the SYNC extension path (records-in, no DNS) cannot tree-walk
+	 * and skips it.
 	 */
 	treeWalkOnly?: boolean;
 	/** Wrapper-only async finding bv-web can't compute (e.g. third-party RUA-auth), documented. */
@@ -38,7 +38,7 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.3.3';
+export const PARITY_CORPUS_VERSION = '1.3.4';
 
 /**
  * SVCB-HTTPS parity fixture (RFC 9460). Coarse-advisory scoring: a present record
@@ -134,16 +134,17 @@ export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 		expectedMissingControl: false,
 	},
 	{
-		// Tree-walk divergence — see the design's Decision Point. bv-web inherits the
-		// parent's sp; bv-mcp reads _dmarc.blog.example.com directly (no record) -> 0.
+		// RFC 9989 §4.10 inheritance: the subdomain has no record, so the tree walk
+		// applies the org domain's sp (=quarantine). No rua here — this fixture
+		// isolates tree-walk inheritance from the (separately tested) RUA-auth path.
 		check: 'dmarc',
-		name: 'subdomain inherits parent p=reject (tree-walk)',
+		name: 'subdomain inherits parent sp=quarantine (tree-walk)',
 		query: '_dmarc.blog.example.com',
 		records: {
 			'_dmarc.blog.example.com': [],
-			'_dmarc.example.com': ['v=DMARC1; p=reject; sp=quarantine; rua=mailto:d@example.com'],
+			'_dmarc.example.com': ['v=DMARC1; p=reject; sp=quarantine'],
 		},
-		expectedScore: 80,
+		expectedScore: 70,
 		expectedMissingControl: false,
 		treeWalkOnly: true,
 	},
