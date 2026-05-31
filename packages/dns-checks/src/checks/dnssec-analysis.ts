@@ -16,13 +16,16 @@ import { createFinding } from '../check-utils';
  * deprecated: RFC 8624 MUST NOT sign/validate — flag as high severity.
  * notRecommended: RFC 8624 NOT RECOMMENDED for signing — flag as low advisory.
  */
-const DNSKEY_ALGORITHMS: Record<number, { name: string; deprecated: boolean; notRecommended?: boolean }> = {
+const DNSKEY_ALGORITHMS: Record<
+	number,
+	{ name: string; deprecated: boolean; notRecommended?: boolean; rsaAcceptable?: boolean }
+> = {
 	1: { name: 'RSAMD5', deprecated: true },           // RFC 8624: MUST NOT sign/validate
 	3: { name: 'DSA', deprecated: true },              // RFC 8624: MUST NOT sign/validate
 	5: { name: 'RSA/SHA-1', deprecated: true },        // RFC 8624: NOT RECOMMENDED (effectively deprecated)
 	6: { name: 'DSA-NSEC3-SHA1', deprecated: true },   // RFC 8624: MUST NOT sign/validate
 	7: { name: 'RSASHA1-NSEC3', deprecated: true },    // RFC 8624: NOT RECOMMENDED (effectively deprecated)
-	8: { name: 'RSA/SHA-256', deprecated: false },     // RFC 8624: MUST sign/validate
+	8: { name: 'RSA/SHA-256', deprecated: false, rsaAcceptable: true }, // RFC 8624: MUST sign/validate — valid but RSA (large keys); ECDSA/Ed preferable
 	10: { name: 'RSA/SHA-512', deprecated: false, notRecommended: true }, // RFC 8624: NOT RECOMMENDED for signing
 	12: { name: 'ECC-GOST', deprecated: true },        // RFC 8624: MUST NOT sign; MAY validate
 	13: { name: 'ECDSA P-256', deprecated: false },    // RFC 8624: MUST sign/validate
@@ -101,6 +104,18 @@ export function auditDnskeyAlgorithms(domain: string, dnskeyRecords: string[]): 
 					`DNSKEY algorithm not recommended for signing (${known.name})`,
 					'low',
 					`${domain} uses DNSKEY algorithm ${algorithm} (${known.name}), which RFC 8624 marks as NOT RECOMMENDED for new DNSSEC deployments. Consider migrating to ECDSA (algorithm 13/14) or Ed25519 (algorithm 15).`,
+				),
+			);
+		} else if (known?.rsaAcceptable) {
+			// RFC 8624 fully permits RSA/SHA-256, but it produces larger keys/signatures
+			// than elliptic-curve algorithms (response-size & DoS pressure). NIST SP
+			// 800-81r3 Table 1 lists ECDSA/EdDSA as "preferable" — a soft, non-failing nudge.
+			findings.push(
+				createFinding(
+					'dnssec',
+					`RSA DNSSEC algorithm in use (${known.name})`,
+					'low',
+					`${domain} signs with DNSKEY algorithm ${algorithm} (${known.name}). This is valid per RFC 8624, but RSA produces larger keys and signatures than elliptic-curve algorithms; ECDSA (13/14) or Ed25519 (15) are preferable for smaller DNS responses and better DoS resistance.`,
 				),
 			);
 		} else if (!known) {

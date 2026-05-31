@@ -496,11 +496,12 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		const result = await run();
 		const dnssec = findCheck(result, 'dnssec');
 		expect(dnssec).toBeDefined();
-		// Fully absent DNSSEC → single HIGH finding
+		// Fully absent DNSSEC → single CRITICAL finding (NIST SP 800-81r3 / RFC 9364:
+		// unsigned public zone is near-failing; recalibrated down from the prior high).
 		const finding = dnssec!.findings.find((f) => f.severity !== 'info');
 		expect(finding).toBeDefined();
 		expect(finding!.title).toBe('DNSSEC not enabled');
-		expect(finding!.severity).toBe('high');
+		expect(finding!.severity).toBe('critical');
 	});
 
 	it('passes DNSSEC when AD flag is set', async () => {

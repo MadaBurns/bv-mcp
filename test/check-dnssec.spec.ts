@@ -80,13 +80,14 @@ describe('DNSSEC finding consolidation', () => {
 		return checkDnssec(domain);
 	}
 
-	it('emits single HIGH finding when DNSSEC is fully absent', async () => {
-		// AD=false, no DNSKEY, no DS
+	it('emits single CRITICAL finding when DNSSEC is fully absent', async () => {
+		// AD=false, no DNSKEY, no DS. NIST SP 800-81r3 / RFC 9364: unsigned public zone
+		// is near-failing → critical (recalibrated down from the prior lenient high/75).
 		mockDnssecResponses(false, false, false);
 		const result = await run();
 		const nonInfoFindings = result.findings.filter((f) => f.severity !== 'info');
 		expect(nonInfoFindings).toHaveLength(1);
-		expect(nonInfoFindings[0].severity).toBe('high');
+		expect(nonInfoFindings[0].severity).toBe('critical');
 		expect(nonInfoFindings[0].title).toBe('DNSSEC not enabled');
 	});
 
