@@ -38,7 +38,22 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.3.6';
+export const PARITY_CORPUS_VERSION = '1.3.7';
+
+/**
+ * CAA parity fixture (RFC 8659). Absence of CAA = any CA may issue → a defense-in-depth
+ * gap (medium → 85, NOT zeroed even behind a managed CDN). Tags graded: missing issue
+ * → medium, missing issuewild/iodef → low.
+ */
+export interface CaaParityFixture {
+	check: 'caa';
+	name: string;
+	domain: string;
+	/** CAA records returned for `domain`. */
+	caa: string[];
+	expectedScore: number;
+	expectedMissingControl: boolean;
+}
 
 /**
  * DNSSEC parity fixture. Keyed on the AD flag + DNSKEY/DS/NSEC3PARAM records.
@@ -344,6 +359,41 @@ export const DNSSEC_PARITY_FIXTURES: DnssecParityFixture[] = [
 		ds: ['12345 13 2 abc123'],
 		nsec3param: [],
 		expectedScore: 85,
+		expectedMissingControl: false,
+	},
+];
+
+export const CAA_PARITY_FIXTURES: CaaParityFixture[] = [
+	{
+		check: 'caa',
+		name: 'no CAA (defense-in-depth gap, not zeroed)',
+		domain: 'example.com',
+		caa: [],
+		expectedScore: 85,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'caa',
+		name: 'issue only (missing issuewild + iodef)',
+		domain: 'example.com',
+		caa: ['0 issue "letsencrypt.org"'],
+		expectedScore: 90,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'caa',
+		name: 'all tags (issue + issuewild + iodef)',
+		domain: 'example.com',
+		caa: ['0 issue "letsencrypt.org"', '0 issuewild "letsencrypt.org"', '0 iodef "mailto:sec@example.com"'],
+		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'caa',
+		name: 'missing issuewild',
+		domain: 'example.com',
+		caa: ['0 issue "letsencrypt.org"', '0 iodef "mailto:sec@example.com"'],
+		expectedScore: 95,
 		expectedMissingControl: false,
 	},
 ];
