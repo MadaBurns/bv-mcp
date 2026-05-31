@@ -35,45 +35,43 @@ export async function checkMX(
 	}
 
 	if (!answers || answers.length === 0) {
-		const findings: Finding[] = [
-			createFinding(
-				'mx',
-				'No MX records found',
-				'medium',
-				'No mail exchange records present. If this domain does not handle email, consider publishing a null MX record (RFC 7505).',
-				{ missingControl: true },
-			),
-		];
-		// Non-mail domains should publish v=spf1 -all to explicitly reject all mail
+		// No MX: scoring is SPF-CONTEXT-dependent, NOT an unconditional missing control.
+		// NIST SP 800-177r1 §4.4.2 — a non-mail domain SHOULD publish "v=spf1 -all";
+		// when it does, that is the correct posture (reward, do not penalize). Only a
+		// domain with no MX AND no/soft SPF is genuinely spoofable (the real gap).
+		let spf = '';
 		try {
 			const txtRecords = await queryDNS(domain, 'TXT', { timeout });
-			const spfRecords = txtRecords.filter((r) => r.toLowerCase().startsWith('v=spf1'));
-			if (spfRecords.length === 0) {
-				findings.push(
-					createFinding(
-						'mx',
-						'Missing SPF reject-all for non-mail domain',
-						'medium',
-						`No SPF record found. Non-mail domains should publish "v=spf1 -all" to explicitly prevent email spoofing.`,
-					),
-				);
-			} else {
-				const spf = spfRecords[0].toLowerCase();
-				if (!spf.includes('-all')) {
-					findings.push(
-						createFinding(
-							'mx',
-							'SPF not set to reject-all for non-mail domain',
-							'low',
-							`SPF record found but does not use "-all" (hard fail). Non-mail domains should publish "v=spf1 -all" to explicitly reject all email.`,
-						),
-					);
-				}
-			}
+			spf = (txtRecords.find((r) => r.toLowerCase().startsWith('v=spf1')) ?? '').toLowerCase();
 		} catch {
-			// DNS query failed — skip SPF check for non-mail domain
+			// TXT query failed — treat as no SPF.
 		}
-		return buildCheckResult('mx', findings);
+
+		let finding: Finding;
+		if (spf.includes('-all')) {
+			finding = createFinding(
+				'mx',
+				'Correctly-configured non-mail domain',
+				'info',
+				`No MX records, and SPF publishes "-all" (hard fail). Per NIST SP 800-177r1 §4.4.2 this is the recommended posture for a domain that does not handle email.`,
+			);
+		} else if (spf) {
+			finding = createFinding(
+				'mx',
+				'Non-mail domain SPF not hard-fail',
+				'medium',
+				`No MX records and an SPF record that does not use "-all". Non-mail domains should publish "v=spf1 -all" to fully prevent spoofing.`,
+			);
+		} else {
+			finding = createFinding(
+				'mx',
+				'No MX and no SPF — domain spoofable',
+				'medium',
+				`No mail exchange records and no SPF policy. The domain can be spoofed; publish "v=spf1 -all" (and a null MX per RFC 7505) if it does not handle email.`,
+				{ missingControl: true },
+			);
+		}
+		return buildCheckResult('mx', [finding]);
 	}
 
 	const findings: Finding[] = [];
