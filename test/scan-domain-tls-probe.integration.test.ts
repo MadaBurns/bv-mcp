@@ -105,6 +105,8 @@ describe('scan_domain TLS-probe scoring coherence', () => {
 		mockCleanScan();
 		const weak = await sslScoreFor('tlsweak.com', {
 			tlsProbeBinding: probeBinding({ reachable: true, minVersion: 'TLS1.1', maxVersion: 'TLS1.2' }),
+			// Probe is a paid-tier enrichment — must supply an eligible authTier for the gate to pass.
+			authTier: 'enterprise',
 		});
 		expect(weak.categoryScore).toBeLessThan(baseline.categoryScore);
 		const enriched = weak.sslCheck!.findings.find((f) => f.metadata?.tlsProbeEnriched === true);
@@ -118,6 +120,8 @@ describe('scan_domain TLS-probe scoring coherence', () => {
 		mockCleanScan();
 		const modern = await sslScoreFor('tlsmodern.com', {
 			tlsProbeBinding: probeBinding({ reachable: true, minVersion: 'TLS1.2', maxVersion: 'TLS1.3' }),
+			// Probe is a paid-tier enrichment — must supply an eligible authTier for the gate to pass.
+			authTier: 'enterprise',
 		});
 		expect(modern.categoryScore).toBe(baseline.categoryScore);
 		expect(modern.sslCheck!.findings.some((f) => f.metadata?.tlsProbeEnriched === true)).toBe(false);
@@ -129,6 +133,8 @@ describe('scan_domain TLS-probe scoring coherence', () => {
 		mockCleanScan();
 		const down = await sslScoreFor('tlsdown.com', {
 			tlsProbeBinding: probeBinding({ reachable: false, error: 'connect timeout' }),
+			// Probe is a paid-tier enrichment — must supply an eligible authTier for the gate to pass.
+			authTier: 'enterprise',
 		});
 		expect(down.categoryScore).toBe(baseline.categoryScore);
 		expect(down.sslCheck!.findings.some((f) => f.metadata?.tlsProbeEnriched === true)).toBe(false);
