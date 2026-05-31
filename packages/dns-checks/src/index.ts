@@ -70,6 +70,7 @@ export type { DmarcFacts } from './scoring/classifiers/dmarc';
 export {
 	DMARC_PARITY_FIXTURES,
 	DANE_HTTPS_PARITY_FIXTURES,
+	DANE_EMAIL_PARITY_FIXTURES,
 	SVCB_HTTPS_PARITY_FIXTURES,
 	DNSSEC_PARITY_FIXTURES,
 	CAA_PARITY_FIXTURES,
@@ -79,6 +80,7 @@ export {
 export type {
 	DmarcParityFixture,
 	DaneHttpsParityFixture,
+	DaneEmailParityFixture,
 	SvcbParityFixture,
 	DnssecParityFixture,
 	CaaParityFixture,
