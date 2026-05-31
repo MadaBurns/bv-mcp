@@ -71,12 +71,14 @@ export {
 	DMARC_PARITY_FIXTURES,
 	DANE_HTTPS_PARITY_FIXTURES,
 	SVCB_HTTPS_PARITY_FIXTURES,
+	DNSSEC_PARITY_FIXTURES,
 	PARITY_CORPUS_VERSION,
 } from './parity-fixtures';
 export type {
 	DmarcParityFixture,
 	DaneHttpsParityFixture,
 	SvcbParityFixture,
+	DnssecParityFixture,
 } from './parity-fixtures';
 
 // Zod schemas

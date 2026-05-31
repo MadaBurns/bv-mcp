@@ -11,13 +11,14 @@
  * Design: bv-web docs/superpowers/specs/2026-05-31-cross-repo-scoring-parity-gate-design.md
  */
 import { describe, it, expect } from 'vitest';
-import { checkDMARC, checkDANEHTTPS, checkSVCBHTTPS } from '../checks';
+import { checkDMARC, checkDANEHTTPS, checkSVCBHTTPS, checkDNSSEC } from '../checks';
 import { scoreIndicatesMissingControl } from '../scoring';
 import pkg from '../../package.json';
 import {
 	DMARC_PARITY_FIXTURES,
 	DANE_HTTPS_PARITY_FIXTURES,
 	SVCB_HTTPS_PARITY_FIXTURES,
+	DNSSEC_PARITY_FIXTURES,
 	PARITY_CORPUS_VERSION,
 } from '../parity-fixtures';
 
@@ -69,6 +70,21 @@ describe('SVCB-HTTPS parity corpus — bv-mcp full checkSVCBHTTPS', () => {
 			const queryDNS = (async (name: string, type: string) =>
 				type === 'HTTPS' && name === fx.domain ? fx.https : []) as never;
 			const result = await checkSVCBHTTPS(fx.domain, queryDNS);
+			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
+				score: fx.expectedScore,
+				missing: fx.expectedMissingControl,
+			});
+		});
+	}
+});
+
+describe('DNSSEC parity corpus — bv-mcp full checkDNSSEC', () => {
+	for (const fx of DNSSEC_PARITY_FIXTURES) {
+		it(`scores "${fx.name}" → ${fx.expectedScore} (missingControl=${fx.expectedMissingControl})`, async () => {
+			const queryDNS = (async (_name: string, type: string) =>
+				type === 'DNSKEY' ? fx.dnskey : type === 'DS' ? fx.ds : type === 'NSEC3PARAM' ? fx.nsec3param : []) as never;
+			const rawQueryDNS = (async () => ({ AD: fx.ad })) as never;
+			const result = await checkDNSSEC(fx.domain, queryDNS, { rawQueryDNS });
 			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
 				score: fx.expectedScore,
 				missing: fx.expectedMissingControl,

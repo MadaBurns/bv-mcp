@@ -38,7 +38,27 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.3.4';
+export const PARITY_CORPUS_VERSION = '1.3.5';
+
+/**
+ * DNSSEC parity fixture. Keyed on the AD flag + DNSKEY/DS/NSEC3PARAM records.
+ * NIST SP 800-81r3 / RFC 9364 (BCP 237): unsigned public zone is near-failing
+ * (critical → ~60, NOT zeroed); broken-chain / validation-failing are BOGUS
+ * (missingControl → 0); RSA is valid-but-soft-dinged; NSEC3 penalized only on
+ * RFC-9276-violating params.
+ */
+export interface DnssecParityFixture {
+	check: 'dnssec';
+	name: string;
+	domain: string;
+	/** DNSSEC AD flag (authenticated data) from the raw query. */
+	ad: boolean;
+	dnskey: string[];
+	ds: string[];
+	nsec3param: string[];
+	expectedScore: number;
+	expectedMissingControl: boolean;
+}
 
 /**
  * SVCB-HTTPS parity fixture (RFC 9460). Coarse-advisory scoring: a present record
@@ -239,6 +259,77 @@ export const SVCB_HTTPS_PARITY_FIXTURES: SvcbParityFixture[] = [
 		domain: 'example.com',
 		https: ['1 . port=443'],
 		expectedScore: 90,
+		expectedMissingControl: false,
+	},
+];
+
+// Placeholder DNSKEY/DS records (algorithm field is what matters: alg 13 = ECDSA P-256,
+// alg 8 = RSA/SHA-256). DS format "keytag algorithm digesttype hash".
+export const DNSSEC_PARITY_FIXTURES: DnssecParityFixture[] = [
+	{
+		check: 'dnssec',
+		name: 'no DNSSEC (unsigned public — near-failing, not zeroed)',
+		domain: 'example.com',
+		ad: false,
+		dnskey: [],
+		ds: [],
+		nsec3param: [],
+		expectedScore: 60,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'dnssec',
+		name: 'valid + DNSSEC (ECDSA P-256)',
+		domain: 'example.com',
+		ad: true,
+		dnskey: ['257 3 13 AwEAAabc'],
+		ds: ['12345 13 2 abc123'],
+		nsec3param: [],
+		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'dnssec',
+		name: 'valid RSA/SHA-256 (acceptable, soft-dinged)',
+		domain: 'example.com',
+		ad: true,
+		dnskey: ['257 3 8 AwEAAabc'],
+		ds: ['12345 8 2 abc123'],
+		nsec3param: [],
+		expectedScore: 95,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'dnssec',
+		name: 'broken chain (DNSKEY, no DS — BOGUS)',
+		domain: 'example.com',
+		ad: false,
+		dnskey: ['257 3 13 AwEAAabc'],
+		ds: [],
+		nsec3param: [],
+		expectedScore: 0,
+		expectedMissingControl: true,
+	},
+	{
+		check: 'dnssec',
+		name: 'validation failing (DNSKEY+DS, AD off — BOGUS, DNSSEC-1)',
+		domain: 'example.com',
+		ad: false,
+		dnskey: ['257 3 13 AwEAAabc'],
+		ds: ['12345 13 2 abc123'],
+		nsec3param: [],
+		expectedScore: 0,
+		expectedMissingControl: true,
+	},
+	{
+		check: 'dnssec',
+		name: 'NSEC3 RFC 9276 violations (150 iterations + non-empty salt)',
+		domain: 'example.com',
+		ad: true,
+		dnskey: ['257 3 13 AwEAAabc'],
+		ds: ['12345 13 2 abc123'],
+		nsec3param: ['1 0 150 ab'],
+		expectedScore: 70,
 		expectedMissingControl: false,
 	},
 ];
