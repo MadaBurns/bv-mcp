@@ -67,8 +67,17 @@ export type { DmarcFacts } from './scoring/classifiers/dmarc';
 
 // Cross-repo scoring parity corpus (shared contract; both repos assert their full
 // check matches these). See bv-web docs/superpowers/specs/2026-05-31-cross-repo-scoring-parity-gate-design.md
-export { DMARC_PARITY_FIXTURES, DANE_HTTPS_PARITY_FIXTURES, PARITY_CORPUS_VERSION } from './parity-fixtures';
-export type { DmarcParityFixture, DaneHttpsParityFixture } from './parity-fixtures';
+export {
+	DMARC_PARITY_FIXTURES,
+	DANE_HTTPS_PARITY_FIXTURES,
+	SVCB_HTTPS_PARITY_FIXTURES,
+	PARITY_CORPUS_VERSION,
+} from './parity-fixtures';
+export type {
+	DmarcParityFixture,
+	DaneHttpsParityFixture,
+	SvcbParityFixture,
+} from './parity-fixtures';
 
 // Zod schemas
 export {

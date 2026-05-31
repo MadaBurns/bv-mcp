@@ -38,7 +38,22 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.3.2';
+export const PARITY_CORPUS_VERSION = '1.3.3';
+
+/**
+ * SVCB-HTTPS parity fixture (RFC 9460). Coarse-advisory scoring: a present record
+ * scores ~90-100 (info/low), absence is NOT a deficiency (~95, no missingControl)
+ * — HTTPS/SVCB RRs are a performance/privacy optimization, not a required control.
+ */
+export interface SvcbParityFixture {
+	check: 'svcb_https';
+	name: string;
+	domain: string;
+	/** HTTPS (type 65) records returned for `domain`. */
+	https: string[];
+	expectedScore: number;
+	expectedMissingControl: boolean;
+}
 
 /**
  * DANE-HTTPS parity fixture. Keyed on the TLSA records at `_443._tcp.<domain>`
@@ -180,6 +195,49 @@ export const DANE_HTTPS_PARITY_FIXTURES: DaneHttpsParityFixture[] = [
 		tlsa: [`1 1 1 ${SHA256_HASH}`],
 		ad: false,
 		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+];
+
+export const SVCB_HTTPS_PARITY_FIXTURES: SvcbParityFixture[] = [
+	{
+		check: 'svcb_https',
+		name: 'no HTTPS record (advisory absence)',
+		domain: 'example.com',
+		https: [],
+		expectedScore: 95,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'svcb_https',
+		name: 'ServiceMode + ALPN h2,h3',
+		domain: 'example.com',
+		https: ['1 . alpn="h2,h3"'],
+		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'svcb_https',
+		name: 'ServiceMode + ALPN + ECH',
+		domain: 'example.com',
+		https: ['1 . alpn="h2,h3" ech="AEX+DQ"'],
+		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'svcb_https',
+		name: 'AliasMode',
+		domain: 'example.com',
+		https: ['0 cdn.example.com.'],
+		expectedScore: 100,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'svcb_https',
+		name: 'ServiceMode no ALPN',
+		domain: 'example.com',
+		https: ['1 . port=443'],
+		expectedScore: 90,
 		expectedMissingControl: false,
 	},
 ];
