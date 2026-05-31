@@ -1164,3 +1164,196 @@ describe('scanDomain — transient zero retry', () => {
 		expect(recovered.length).toBe(3);
 	});
 });
+
+/**
+ * FIX 1 — TLS probe tier-gating in scan_domain.
+ *
+ * The BV_TLS_PROBE Browser Rendering call is a paid-tier enrichment.
+ * Free / anonymous / agent scans (~98% of volume) must NOT invoke the
+ * probe binding even when it is physically present in runtimeOptions.
+ */
+describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
+	/** Minimal DNS mock: all checks healthy, no specific assertions on DNS queries. */
+	function mockAllDns() {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.probe-gate.com', ['v=DMARC1; p=reject']));
+					if (url.includes('_domainkey.'))
+						return Promise.resolve(txtResponse('default._domainkey.probe-gate.com', ['v=DKIM1; k=rsa; p=MIGf']));
+					if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse('_mta-sts.probe-gate.com', ['v=STSv1; id=20240101']));
+					if (url.includes('_smtp._tls.'))
+						return Promise.resolve(txtResponse('_smtp._tls.probe-gate.com', ['v=TLSRPTv1; rua=mailto:tls@probe-gate.com']));
+					if (url.includes('default._bimi.'))
+						return Promise.resolve(txtResponse('default._bimi.probe-gate.com', ['v=BIMI1; l=https://probe-gate.com/logo.svg']));
+					return Promise.resolve(txtResponse('probe-gate.com', ['v=spf1 include:_spf.google.com -all']));
+				}
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse('probe-gate.com', ['ns1.probe-gate.com.', 'ns2.probe-gate.com.']));
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('probe-gate.com', ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse('probe-gate.com', true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known'))
+				return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.probe-gate.com\nmax_age: 86400'));
+			// Normal HTTPS responses for the domain (SSL check, http_security check)
+			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+	}
+
+	it('does NOT invoke the probe binding when authTier is "free"', async () => {
+		mockAllDns();
+		const probeFetch = vi.fn().mockResolvedValue(new Response('{"reachable":true,"minVersion":"TLS1.3"}', { status: 200 }));
+		const tlsProbeBinding = { fetch: probeFetch };
+
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding, authTier: 'free' });
+
+		expect(probeFetch).not.toHaveBeenCalled();
+	});
+
+	it('does NOT invoke the probe binding when authTier is "agent"', async () => {
+		mockAllDns();
+		const probeFetch = vi.fn().mockResolvedValue(new Response('{"reachable":true,"minVersion":"TLS1.3"}', { status: 200 }));
+		const tlsProbeBinding = { fetch: probeFetch };
+
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding, authTier: 'agent' });
+
+		expect(probeFetch).not.toHaveBeenCalled();
+	});
+
+	it('does NOT invoke the probe binding when authTier is undefined (anonymous)', async () => {
+		mockAllDns();
+		const probeFetch = vi.fn().mockResolvedValue(new Response('{"reachable":true,"minVersion":"TLS1.3"}', { status: 200 }));
+		const tlsProbeBinding = { fetch: probeFetch };
+
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding });
+
+		expect(probeFetch).not.toHaveBeenCalled();
+	});
+
+	it('DOES invoke the probe binding when authTier is "developer"', async () => {
+		mockAllDns();
+		const probeFetch = vi.fn().mockResolvedValue(new Response('{"reachable":true,"minVersion":"TLS1.3"}', { status: 200 }));
+		const tlsProbeBinding = { fetch: probeFetch };
+
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding, authTier: 'developer' });
+
+		expect(probeFetch).toHaveBeenCalled();
+	});
+
+	it('DOES invoke the probe binding when authTier is "enterprise"', async () => {
+		mockAllDns();
+		const probeFetch = vi.fn().mockResolvedValue(new Response('{"reachable":true,"minVersion":"TLS1.3"}', { status: 200 }));
+		const tlsProbeBinding = { fetch: probeFetch };
+
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding, authTier: 'enterprise' });
+
+		expect(probeFetch).toHaveBeenCalled();
+	});
+
+	it('DOES invoke the probe binding when authTier is "partner"', async () => {
+		mockAllDns();
+		const probeFetch = vi.fn().mockResolvedValue(new Response('{"reachable":true,"minVersion":"TLS1.3"}', { status: 200 }));
+		const tlsProbeBinding = { fetch: probeFetch };
+
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding, authTier: 'partner' });
+
+		expect(probeFetch).toHaveBeenCalled();
+	});
+
+	it('DOES invoke the probe binding when authTier is "owner"', async () => {
+		mockAllDns();
+		const probeFetch = vi.fn().mockResolvedValue(new Response('{"reachable":true,"minVersion":"TLS1.3"}', { status: 200 }));
+		const tlsProbeBinding = { fetch: probeFetch };
+
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding, authTier: 'owner' });
+
+		expect(probeFetch).toHaveBeenCalled();
+	});
+});
+
+/**
+ * FIX 2 — Skip KV sentinel on per-check scan path.
+ *
+ * runCachedCheck passes skipSentinel=true to runWithCache, cutting 2 KV
+ * ops (get + put `:computing`) per check on high-volume unique-domain scans.
+ * INFLIGHT still dedups in-isolate concurrent calls.
+ */
+describe('scanDomain — sentinel-skip on per-check path (Fix 2)', () => {
+	function mockAllDns() {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.sentinel-skip.com', ['v=DMARC1; p=reject']));
+					if (url.includes('_domainkey.'))
+						return Promise.resolve(txtResponse('default._domainkey.sentinel-skip.com', ['v=DKIM1; k=rsa; p=MIGf']));
+					if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse('_mta-sts.sentinel-skip.com', ['v=STSv1; id=20240101']));
+					if (url.includes('_smtp._tls.'))
+						return Promise.resolve(txtResponse('_smtp._tls.sentinel-skip.com', ['v=TLSRPTv1; rua=mailto:tls@sentinel-skip.com']));
+					if (url.includes('default._bimi.'))
+						return Promise.resolve(txtResponse('default._bimi.sentinel-skip.com', ['v=BIMI1; l=https://sentinel-skip.com/logo.svg']));
+					return Promise.resolve(txtResponse('sentinel-skip.com', ['v=spf1 include:_spf.google.com -all']));
+				}
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse('sentinel-skip.com', ['ns1.sentinel-skip.com.', 'ns2.sentinel-skip.com.']));
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse('sentinel-skip.com', ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse('sentinel-skip.com', true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known'))
+				return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.sentinel-skip.com\nmax_age: 86400'));
+			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+	}
+
+	it('does not write KV sentinel (:computing) keys during a scan', async () => {
+		mockAllDns();
+		const mockKV = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		await scanDomain('sentinel-skip.com', mockKV as unknown as KVNamespace);
+
+		// No per-check KV put should have a key ending in ':computing'.
+		// The top-level scan cache write is still permitted (no sentinel there either,
+		// since the scan key uses cacheSet directly, not runWithCache sentinel).
+		const computingPuts = mockKV.put.mock.calls.filter((call: unknown[]) =>
+			typeof call[0] === 'string' && (call[0] as string).endsWith(':computing'),
+		);
+		expect(computingPuts).toHaveLength(0);
+	});
+
+	it('still writes per-check results to KV (sentinel skip does not suppress caching)', async () => {
+		mockAllDns();
+		const mockKV = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn().mockResolvedValue(undefined),
+			delete: vi.fn().mockResolvedValue(undefined),
+		};
+
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		await scanDomain('sentinel-skip.com', mockKV as unknown as KVNamespace);
+
+		// Per-check cache writes (cache:<domain>:check:<category>) must still happen.
+		const perCheckPuts = mockKV.put.mock.calls.filter(
+			(call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes(':check:'),
+		);
+		expect(perCheckPuts.length).toBeGreaterThan(0);
+	});
+});
