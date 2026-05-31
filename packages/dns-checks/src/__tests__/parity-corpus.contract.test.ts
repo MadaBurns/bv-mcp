@@ -33,7 +33,9 @@ describe('DMARC parity corpus — bv-mcp full checkDMARC', () => {
 		expect(pkg.version).toBe(PARITY_CORPUS_VERSION);
 	});
 
-	for (const fx of DMARC_PARITY_FIXTURES.filter((f) => !f.treeWalkOnly)) {
+	// bv-mcp now does the RFC 9989 §4.10 tree walk, so it asserts ALL DMARC
+	// fixtures including the inheriting-subdomain case (formerly treeWalkOnly).
+	for (const fx of DMARC_PARITY_FIXTURES) {
 		it(`scores "${fx.name}" → ${fx.expectedScore} (missingControl=${fx.expectedMissingControl})`, async () => {
 			const queryDNS = (async (name: string) => fx.records[name] ?? []) as never;
 			const domain = fx.query.replace(/^_dmarc\./, '');
