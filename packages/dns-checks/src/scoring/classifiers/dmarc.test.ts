@@ -28,9 +28,13 @@ describe('classifyDmarc', () => {
 		expect(significant).toHaveLength(0);
 	});
 
-	it('flags multiple records as high', () => {
+	it('flags multiple records as no valid policy (missingControl)', () => {
+		// RFC 9989: more than one DMARC record = no policy at all → unprotected.
 		const f = classifyDmarc({ ...base, recordCount: 2, policy: 'reject', rua: 'mailto:dmarc@example.com', adkim: 's', aspf: 's' });
-		expect(f.some((x) => x.title === 'Multiple DMARC records' && x.severity === 'high')).toBe(true);
+		const finding = f.find((x) => x.title === 'Multiple DMARC records — no valid policy');
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('high');
+		expect(finding!.metadata?.missingControl).toBe(true);
 	});
 
 	it('flags missing p= tag as critical', () => {

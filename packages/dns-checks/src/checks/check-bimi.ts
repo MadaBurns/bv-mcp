@@ -181,9 +181,11 @@ export async function checkBIMI(
 				createFinding(
 					'bimi',
 					'No BIMI record (DMARC not enforcing)',
+					// BIMI is an advisory brand-display control (IETF draft, no RFC/NIST mandate),
+					// so absence is NOT a deficiency → low, no missingControl. Score ~95. (The
+					// DMARC-not-enforcing aspect belongs to the DMARC check, not double-counted here.)
 					'low',
 					`No BIMI record found at ${bimiDomain}. BIMI requires DMARC enforcement (p=quarantine or p=reject) before a BIMI record can be validated by mail clients. Set up DMARC enforcement first.`,
-					{ missingControl: true },
 				),
 			);
 		} else {
@@ -191,9 +193,9 @@ export async function checkBIMI(
 				createFinding(
 					'bimi',
 					'No BIMI record found',
+					// Advisory control — absence is not a deficiency → low, no missingControl (~95).
 					'low',
 					`No BIMI record found at ${bimiDomain}. This domain has DMARC enforcement and is eligible for BIMI. Publishing a BIMI record allows email clients like Gmail and Apple Mail to display your brand logo next to your emails.`,
-					{ missingControl: true },
 				),
 			);
 		}

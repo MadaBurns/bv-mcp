@@ -251,8 +251,10 @@ export async function checkDKIM(
 							createFinding(
 								'dkim',
 								`Deprecated hash algorithm (h=sha1): ${result.selector}`,
-								'medium',
-								`DKIM selector "${result.selector}" only accepts SHA-1 signatures (h=sha1). SHA-1 is deprecated for DKIM signing per RFC 8301. Add sha256 to the h= tag or remove the restriction.`,
+								// RFC 8301 §3.1: rsa-sha1 "MUST NOT be used" and signatures with it
+								// "have permanently failed evaluation" → high, not medium.
+								'high',
+								`DKIM selector "${result.selector}" only accepts SHA-1 signatures (h=sha1). RFC 8301 §3.1 states SHA-1 MUST NOT be used and such signatures have permanently failed evaluation. Add sha256 to the h= tag or remove the restriction.`,
 							),
 						);
 					}
