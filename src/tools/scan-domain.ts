@@ -17,6 +17,7 @@ import {
 	type DomainProfile,
 	type ScanScore,
 	buildCheckResult,
+	computeProfileAwareScanScore,
 	computeScanScore,
 	createFinding,
 	detectDomainContext,
@@ -413,10 +414,12 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			}
 		}
 
-		// Phase 1: only pass context to scoring when an explicit profile is set.
-		// For 'auto' (or unset), detection runs and is reported but scoring
-		// uses the default weights (identical to pre-profile behavior).
-		const scoringContext = isExplicit ? domainContext : undefined;
+		const canonicalScoring = computeProfileAwareScanScore(checkResults, {
+			profile: isExplicit ? (explicitProfile as DomainProfile) : 'auto',
+			config: runtimeOptions?.scoringConfig,
+		});
+		domainContext = canonicalScoring.context;
+		const scoringContext = domainContext;
 
 		// Attempt to fetch adaptive weights — KV first for cross-isolate convergence,
 		// then fall through to the ProfileAccumulator DO on miss.
@@ -559,17 +562,12 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				return status ? { ...r, score: 0, checkStatus: status } : r;
 			});
 		}
-		let fallbackContext = detectDomainContext(checkResults);
-		if (isExplicit) {
-			fallbackContext = {
-				profile: explicitProfile as DomainProfile,
-				signals: [...fallbackContext.signals, `explicit profile override: ${explicitProfile}`],
-				weights: getProfileWeights(explicitProfile as DomainProfile, runtimeOptions?.scoringConfig),
-				detectedProvider: fallbackContext.detectedProvider,
-			};
-		}
-		const fallbackScoringContext = isExplicit ? fallbackContext : undefined;
-		const score = computeScanScore(checkResults, fallbackScoringContext, runtimeOptions?.scoringConfig);
+		const fallbackScoring = computeProfileAwareScanScore(checkResults, {
+			profile: isExplicit ? (explicitProfile as DomainProfile) : 'auto',
+			config: runtimeOptions?.scoringConfig,
+		});
+		const fallbackContext = fallbackScoring.context;
+		const score = fallbackScoring.score;
 		const rawMaturity = computeMaturityStage(checkResults, fallbackContext?.profile);
 		const maturity = capMaturityStage(rawMaturity, score.overall);
 		result = {

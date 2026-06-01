@@ -34,7 +34,9 @@ export {
 	PROTECTIVE_WEIGHTS,
 	scoreToGrade,
 	computeScanScore,
+	computeProfileAwareScanScore,
 } from './engine';
+export type { ProfileAwareScanScore } from './engine';
 
 export {
 	DEFAULT_SCORING_CONFIG,
