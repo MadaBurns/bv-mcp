@@ -18,6 +18,7 @@ describe('package public API', () => {
 		expect(mod.validateDomain).toBeTypeOf('function');
 		expect(mod.queryDns).toBeTypeOf('function');
 		expect(mod.computeScanScore).toBeTypeOf('function');
+		expect(mod.computeProfileAwareScanScore).toBeTypeOf('function');
 	});
 
 	it('supports helper-only usage without MCP transport wiring', async () => {
