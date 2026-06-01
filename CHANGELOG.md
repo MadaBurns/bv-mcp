@@ -6,7 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-_Deployed to production 2026-06-01 on top of 3.5.0 (`@blackveil/dns-checks` 1.3.12). `SERVER_VERSION` unchanged._
+## [3.5.1] - 2026-06-01
+
+Patch release formalizing the 2026-06-01 production deploy (`@blackveil/dns-checks` 1.3.12): cache-key correctness, workerd body-discipline in the HTTP-reading checks, and scoring-documentation reconciliation. No score changes.
 
 ### Fixed
 

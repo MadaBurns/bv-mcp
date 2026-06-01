@@ -7,7 +7,7 @@ Guidance for Claude Code working in this repo.
 Blackveil DNS — source-available DNS & email security scanner, built as a Cloudflare Worker.
 78 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
 
-**Version sync** when bumping: `SERVER_VERSION` (`src/lib/server-version.ts`), `version` in `package.json` + `package-lock.json`, `version` AND `packages[0].version` in `server.json` (both fields — foot-gun), and `[X.Y.Z]` heading in `CHANGELOG.md`.
+**Version sync** when bumping: `version` in `package.json` + `package-lock.json` (the source of truth — `SERVER_VERSION` in `src/lib/server-version.ts` auto-derives via `pkg.version`, do **not** hand-edit it), top-level `version` in `server.json` (currently **remotes-only — single `version` field**; the `packages[0].version` foot-gun only applies if an npm `packages` stanza is re-added), and the `[X.Y.Z]` heading in `CHANGELOG.md`.
 
 ## Commands
 
@@ -242,9 +242,8 @@ Workflows: `ci.yml`, `ci-contract.yml` (Zod contracts, required), `security.yml`
 **Pre-bump locally before tagging** to avoid the workflow's auto-bump push being rejected by branch protection:
 
 ```bash
-npm version <X.Y.Z> --no-git-tag-version --allow-same-version
-sed -i '' "s/export const SERVER_VERSION = '.*'/export const SERVER_VERSION = '<X.Y.Z>'/" src/lib/server-version.ts
-# Update CHANGELOG.md + server.json (both version fields)
+npm version <X.Y.Z> --no-git-tag-version --allow-same-version   # bumps package.json + lock; SERVER_VERSION auto-derives
+# Update CHANGELOG.md ([X.Y.Z] heading) + server.json (top-level version — remotes-only, single field)
 git commit -am "chore: bump version to <X.Y.Z>" && git push origin main
 git tag v<X.Y.Z> && git push origin v<X.Y.Z>
 ```
@@ -266,7 +265,7 @@ npm run deploy:prod
 mcp-publisher publish
 ```
 
-**`server.json` has TWO version fields** — top-level `version` and `packages[0].version`. Both must match the tag.
+**`server.json` is currently remotes-only** — a single top-level `version` field (no `packages` stanza); sync just that field to the tag. (If an npm `packages` stanza is ever re-added, it reintroduces the two-field foot-gun — sync both then.)
 
 Approve gated deploys through GitHub's protected environment UI or an
 operator-only runbook.
