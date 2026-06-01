@@ -3,6 +3,14 @@
 import { INFLIGHT_CLEANUP_MS } from './config';
 import { logError } from './log';
 import { SERVER_VERSION } from './server-version';
+import { PARITY_CORPUS_VERSION } from '@blackveil/dns-checks';
+
+// The scoring logic lives in `@blackveil/dns-checks`; its version (== PARITY_CORPUS_VERSION
+// by the version-lock contract) is folded into every cache key. A `dns-checks`-only deploy
+// (recalibrating scores) does NOT bump SERVER_VERSION, so without this a redeploy would keep
+// serving STALE pre-deploy scores until the TTL expired (observed 2026-06-01: cross-system
+// parity showed dns-mcp serving old CAA/DKIM/DANE scores after the dns-checks bump).
+const DNS_CHECKS_VERSION = PARITY_CORPUS_VERSION;
 
 /**
  * TTL cache for DNS scan results.
@@ -123,13 +131,14 @@ export class TTLCache<T = unknown> {
 // Versioned cache-key builders
 // ---------------------------------------------------------------------------
 //
-// Every scan/check KV cache key embeds the server version (`cache:v<version>:`).
-// Deliberate trade-off: each deploy bumps SERVER_VERSION, so ALL keys change and
-// the cache cold-starts on the first request after a deploy. That is the correct
-// behaviour — the bug this fixes was the opposite: domain-only keys kept serving
-// stale pre-deploy results until the TTL expired, forcing a "scan a fresh domain
-// to verify the fix is live" workaround. For this scanner's traffic the cold
-// start is acceptable; correctness after deploy beats a few extra cache misses.
+// Every scan/check KV cache key embeds BOTH the server version AND the dns-checks
+// (scoring) version: `cache:v<serverVersion>-dc<dnsChecksVersion>:`. The cache must
+// cold-start whenever EITHER changes. SERVER_VERSION alone is insufficient: a
+// dns-checks-only deploy recalibrates scores without moving SERVER_VERSION, so a
+// server-version-only key kept serving stale pre-deploy results until the TTL expired
+// (2026-06-01 parity finding). Including the dns-checks version closes that.
+// For this scanner's traffic the cold start is acceptable; correctness after deploy
+// beats a few extra cache misses.
 //
 // Both call sites (handlers dispatch + scan-domain orchestrator) MUST use these
 // helpers so the per-check and top-level keys stay version-consistent — the
@@ -141,23 +150,35 @@ export const CACHE_KEY_PREFIX = 'cache:';
 
 /**
  * Build the versioned cache key for a single check result.
- * Shape: `cache:v<version>:<domain>:check:<checkName>`.
+ * Shape: `cache:v<serverVersion>-dc<dnsChecksVersion>:<domain>:check:<checkName>`.
  *
  * @param version - Defaults to the live {@link SERVER_VERSION}; overridable for tests.
+ * @param dnsChecksVersion - Scoring (dns-checks) version; defaults to the live value.
  */
-export function buildCheckCacheKey(domain: string, checkName: string, version: string = SERVER_VERSION): string {
-	return `${CACHE_KEY_PREFIX}v${version}:${domain}:check:${checkName}`;
+export function buildCheckCacheKey(
+	domain: string,
+	checkName: string,
+	version: string = SERVER_VERSION,
+	dnsChecksVersion: string = DNS_CHECKS_VERSION
+): string {
+	return `${CACHE_KEY_PREFIX}v${version}-dc${dnsChecksVersion}:${domain}:check:${checkName}`;
 }
 
 /**
  * Build the versioned cache key for a top-level scan result.
- * Shape: `cache:v<version>:<domain>` (default profile) or
- * `cache:v<version>:<domain>:profile:<profile>` when an explicit profile is set.
+ * Shape: `cache:v<serverVersion>-dc<dnsChecksVersion>:<domain>` (default profile) or
+ * `…:<domain>:profile:<profile>` when an explicit profile is set.
  *
  * @param version - Defaults to the live {@link SERVER_VERSION}; overridable for tests.
+ * @param dnsChecksVersion - Scoring (dns-checks) version; defaults to the live value.
  */
-export function buildScanCacheKey(domain: string, profile?: string, version: string = SERVER_VERSION): string {
-	const base = `${CACHE_KEY_PREFIX}v${version}:${domain}`;
+export function buildScanCacheKey(
+	domain: string,
+	profile?: string,
+	version: string = SERVER_VERSION,
+	dnsChecksVersion: string = DNS_CHECKS_VERSION
+): string {
+	const base = `${CACHE_KEY_PREFIX}v${version}-dc${dnsChecksVersion}:${domain}`;
 	return profile ? `${base}:profile:${profile}` : base;
 }
 
