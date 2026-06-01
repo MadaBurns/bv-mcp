@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+_Deployed to production 2026-06-01 on top of 3.5.0 (`@blackveil/dns-checks` 1.3.12). `SERVER_VERSION` unchanged._
+
+### Fixed
+
+- **Cache keys now thread the `@blackveil/dns-checks` version.** Scan/check results were keyed by `SERVER_VERSION` only, so a scoring-only `@blackveil/dns-checks` deploy that didn't bump `SERVER_VERSION` kept serving pre-deploy scores until the cache TTL expired. Keys are now `cache:v<serverVersion>-dc<dnsChecksVersion>:…` (`src/lib/cache.ts`), so bumping **either** version cold-starts the cache. (`@blackveil/dns-checks` 1.3.11 → 1.3.12)
+- **workerd body-discipline in HTTP-reading checks.** `check_bimi`, `check_mta_sts`, `check_http_security` (including the GET fallback), and subdomain-takeover analysis read only response headers on some redirect / `!ok` / oversize paths without consuming or cancelling the response body, producing "stalled HTTP response was canceled" workerd log noise. Added `response.body?.cancel()` on every unread path.
+
+### Docs
+
+- Reconciled the documented DNSSEC Core weight to the live value (**10**) across `IMPORTANCE_WEIGHTS`, the `@deprecated` `CORE_WEIGHTS`, the flat `DEFAULT_SCORING_CONFIG.weights` map, and the `CLAUDE.md` scoring headline — all non-score-bearing surfaces, no score change. Clarified in `docs/scoring.md` that `auto` mode scores via `config.coreWeights` (not the `mail_enabled` profile), which matters under the production `SCORING_CONFIG` override (where the `auto` path's DNSSEC weight is 7).
+
 ## [3.5.0] - 2026-05-31
 
 Scoring-contract recalibration aligning email-authentication and DNS-integrity severities with NIST SP 800-81r3, plus a new impersonation-aware DMARC escalation. Scores and finding severities shift for some domains — see notes below.
