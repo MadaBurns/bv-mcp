@@ -10,6 +10,7 @@ _Deployed to production 2026-06-01 on top of 3.5.0 (`@blackveil/dns-checks` 1.3.
 
 ### Fixed
 
+- **Profile-aware overall scoring is now the canonical package path.** `computeProfileAwareScanScore()` exposes the profile-detected overall-score assembly from the package root and scoring subpath, and `scan_domain` now uses it for default `auto` scoring so web-only/non-mail domains are not scored through the mail-enabled no-context path. (`@blackveil/dns-checks` 1.3.12 → 1.3.13)
 - **Cache keys now thread the `@blackveil/dns-checks` version.** Scan/check results were keyed by `SERVER_VERSION` only, so a scoring-only `@blackveil/dns-checks` deploy that didn't bump `SERVER_VERSION` kept serving pre-deploy scores until the cache TTL expired. Keys are now `cache:v<serverVersion>-dc<dnsChecksVersion>:…` (`src/lib/cache.ts`), so bumping **either** version cold-starts the cache. (`@blackveil/dns-checks` 1.3.11 → 1.3.12)
 - **workerd body-discipline in HTTP-reading checks.** `check_bimi`, `check_mta_sts`, `check_http_security` (including the GET fallback), and subdomain-takeover analysis read only response headers on some redirect / `!ok` / oversize paths without consuming or cancelling the response body, producing "stalled HTTP response was canceled" workerd log noise. Added `response.body?.cancel()` on every unread path.
 
