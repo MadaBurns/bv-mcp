@@ -264,8 +264,15 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 	// Detect MX presence
 	const hasNoMx = mxResult
 		? mxResult.findings.some((f) => {
-				const title = f.title.toLowerCase();
-				return title.includes('no mx records') || title.includes('null mx');
+				const text = `${f.title} ${f.detail}`.toLowerCase();
+				return (
+					text.includes('no mx records') ||
+					text.includes('null mx') ||
+					text.includes('no mx and no spf') ||
+					text.includes('no mail exchange records') ||
+					text.includes('correctly-configured non-mail domain') ||
+					text.includes('does not accept email')
+				);
 			})
 		: false;
 	const hasMxUnknown = mxResult

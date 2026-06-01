@@ -11,7 +11,12 @@ import {
 	type ScanScore,
 } from './model';
 import type { DomainContext } from './profiles';
-import { PROFILE_CRITICAL_CATEGORIES, PROFILE_EMAIL_BONUS_ELIGIBLE } from './profiles';
+import {
+	detectDomainContext,
+	getProfileWeights,
+	PROFILE_CRITICAL_CATEGORIES,
+	PROFILE_EMAIL_BONUS_ELIGIBLE,
+} from './profiles';
 import type { ScoringConfig } from './config';
 import { DEFAULT_SCORING_CONFIG } from './config';
 import { computeGenericScore } from './generic';
@@ -316,5 +321,40 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 		categoryScores,
 		findings: allFindings,
 		summary,
+	};
+}
+
+export interface ProfileAwareScanScore {
+	score: ScanScore;
+	context: DomainContext;
+	profile: DomainContext['profile'];
+	detectedProfile: DomainContext['profile'];
+	scoringPolicyVersion: string;
+}
+
+export function computeProfileAwareScanScore(
+	results: CheckResult[],
+	options: { profile?: DomainContext['profile'] | 'auto'; config?: ScoringConfig } = {},
+): ProfileAwareScanScore {
+	const detectedContext = detectDomainContext(results);
+	const explicitProfile = options.profile && options.profile !== 'auto' ? options.profile : null;
+	const context: DomainContext = explicitProfile
+		? {
+				...detectedContext,
+				profile: explicitProfile,
+				signals: [...detectedContext.signals, `explicit profile override: ${explicitProfile}`],
+				weights: getProfileWeights(explicitProfile, options.config),
+			}
+		: {
+				...detectedContext,
+				weights: getProfileWeights(detectedContext.profile, options.config),
+			};
+
+	return {
+		score: computeScanScore(results, context, options.config),
+		context,
+		profile: context.profile,
+		detectedProfile: detectedContext.profile,
+		scoringPolicyVersion: 'dns-checks-scoring-v1',
 	};
 }
