@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	computeScanScore,
+	computeProfileAwareScanScore,
 	buildCheckResult,
 	createFinding,
 	getProfileWeights,
@@ -72,6 +73,56 @@ function makeEnterpriseContext(): DomainContext {
 }
 
 describe('scoring-profiles', () => {
+	describe('profile-aware auto scoring', () => {
+		it('auto-detects web_only context and matches explicit web_only scoring', () => {
+			const results = buildFullResults({
+				spf: makeResult('spf', 0, 'No SPF record found', 'critical'),
+				dmarc: makeResult('dmarc', 0, 'No DMARC record found', 'critical'),
+				dkim: makeResult('dkim', 0, 'No DKIM record found', 'critical'),
+				mx: makeResult('mx', 0, 'No MX records found', 'info'),
+				ssl: makeResult('ssl', 100),
+				caa: makeResult('caa', 100),
+				http_security: makeResult('http_security', 95, 'HTTP headers configured', 'info'),
+			});
+			const explicitWebOnly: DomainContext = {
+				profile: 'web_only',
+				signals: ['No MX records', 'SSL valid', 'CAA present'],
+				weights: getProfileWeights('web_only'),
+				detectedProvider: null,
+			};
+
+			const auto = computeProfileAwareScanScore(results);
+			const explicit = computeScanScore(results, explicitWebOnly);
+			const legacy = computeScanScore(results);
+
+			expect(auto.profile).toBe('web_only');
+			expect(auto.score.overall).toBe(explicit.overall);
+			expect(auto.score.overall).toBeGreaterThan(legacy.overall);
+		});
+
+		it('allows explicit profile override while still returning detected signals', () => {
+			const results = buildFullResults({
+				spf: makeResult('spf', 0, 'No SPF record found', 'critical'),
+				dmarc: makeResult('dmarc', 0, 'No DMARC record found', 'critical'),
+				mx: makeResult('mx', 0, 'No MX records found', 'info'),
+				ssl: makeResult('ssl', 100),
+				caa: makeResult('caa', 100),
+			});
+
+			const scored = computeProfileAwareScanScore(results, { profile: 'mail_enabled' });
+
+			expect(scored.detectedProfile).toBe('web_only');
+			expect(scored.profile).toBe('mail_enabled');
+			expect(scored.context.signals).toContain('explicit profile override: mail_enabled');
+			expect(scored.score.overall).toBe(computeScanScore(results, {
+				profile: 'mail_enabled',
+				signals: ['No MX records', 'SSL valid', 'CAA present', 'explicit profile override: mail_enabled'],
+				weights: getProfileWeights('mail_enabled'),
+				detectedProvider: null,
+			}).overall);
+		});
+	});
+
 	describe('regression: computeScanScore without context', () => {
 		it('returns identical results to pre-profile behavior', () => {
 			const results = buildFullResults();

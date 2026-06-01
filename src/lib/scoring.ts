@@ -15,6 +15,7 @@ export {
 	createFinding,
 	inferFindingConfidence,
 	computeScanScore,
+	computeProfileAwareScanScore,
 	scoreToGrade,
 	IMPORTANCE_WEIGHTS,
 	CORE_WEIGHTS,
@@ -42,6 +43,7 @@ export type {
 	DomainContext,
 	DomainProfile,
 	ScoringConfig,
+	ProfileAwareScanScore,
 } from '@blackveil/dns-checks/scoring';
 
 export {

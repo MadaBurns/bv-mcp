@@ -447,6 +447,26 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		expect(finding!.title.toLowerCase()).toContain('dmarc');
 	});
 
+	it('scores default auto with the same detected profile context as explicit web_only', async () => {
+		mockWithOverrides({
+			'name=example.com&type=TXT': () => Promise.resolve(createDohResponse([], [])),
+			'_dmarc.': () => Promise.resolve(createDohResponse([], [])),
+			'type=MX': () => Promise.resolve(createDohResponse([], [])),
+			'type=15': () => Promise.resolve(createDohResponse([], [])),
+		});
+		const { scanDomain } = await import('../src/tools/scan-domain');
+
+		const auto = await scanDomain('example.com', undefined, { forceRefresh: true });
+		const explicit = await scanDomain('example.com', undefined, {
+			forceRefresh: true,
+			profile: 'web_only',
+		});
+
+		expect(auto.context.profile).toBe('web_only');
+		expect(explicit.context.profile).toBe('web_only');
+		expect(auto.score.overall).toBe(explicit.score.overall);
+	});
+
 	it('detects DMARC p=none policy as medium severity', async () => {
 		mockWithOverrides({
 			'_dmarc.': () => Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=none'])),
