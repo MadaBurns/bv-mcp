@@ -175,7 +175,7 @@ Source: `scoreToGrade()` in `packages/dns-checks/src/scoring/engine.ts` (re-expo
 
 ### Phase 1 (Current)
 
-Auto-detection runs and is reported in the structured result (`scoringProfile`, `scoringSignals`), but `auto` mode uses `mail_enabled` weights. Only explicit `profile` parameter values activate different weights and cache keys (`cache:<domain>:profile:<profile>`).
+Auto-detection runs and is reported in the structured result (`scoringProfile`, `scoringSignals`), but `auto` mode does not pass a scoring context: it scores via the no-context path, which uses `config.coreWeights`/`config.protectiveWeights`. In an unconfigured deployment these equal the `mail_enabled` profile's core weights, so `auto` and explicit `mail_enabled` produce identical scores — but a `SCORING_CONFIG` `coreWeights` override (as in production) applies to the `auto`/no-context path **only**, not to explicit profiles (which read `config.profileWeights`). Only explicit `profile` parameter values activate profile weights and per-profile cache keys (`cache:<domain>:profile:<profile>`).
 
 Detection priority: `non_mail`/`web_only` (no MX or Null MX) -> `mail_enabled` (MX DNS failure safe fallback) -> `enterprise_mail` (MX + provider + hardening) -> `mail_enabled` (MX, default) -> `minimal` (>50% failed override). The `authoritative_dns_infra` profile is explicit-only.
 
