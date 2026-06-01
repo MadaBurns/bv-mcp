@@ -316,11 +316,18 @@ export async function probeHttpFingerprint(fqdn: string, cname: string, fetchFn:
 			signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
 		});
 		// Skip fingerprint matching on redirects — redirecting services are not deprovisioned.
-		if (response.status >= 300 && response.status < 400) return null;
+		// Release the unread body so workerd doesn't cancel a stalled response.
+		if (response.status >= 300 && response.status < 400) {
+			void response.body?.cancel();
+			return null;
+		}
 
 		const MAX_BODY_BYTES = 65_536; // 64 KB — no legitimate takeover fingerprint exceeds this
 		const contentLength = parseInt(response.headers?.get('content-length') ?? '0', 10);
-		if (contentLength > MAX_BODY_BYTES) return null;
+		if (contentLength > MAX_BODY_BYTES) {
+			void response.body?.cancel();
+			return null;
+		}
 		const body = await response.text();
 		if (body.length > MAX_BODY_BYTES) return null;
 

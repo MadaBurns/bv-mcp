@@ -41,6 +41,8 @@ async function validateBimiSvg(logoUrl: string, fetchFn: FetchFunction, timeout:
 					`BIMI logo URL "${logoUrl}" returns a redirect (HTTP ${response.status}). The logo should be served directly without redirects.`,
 				),
 			);
+			// Consume the unread body so workerd doesn't cancel a "stalled HTTP response".
+			void response.body?.cancel();
 			return findings;
 		}
 
@@ -53,6 +55,7 @@ async function validateBimiSvg(logoUrl: string, fetchFn: FetchFunction, timeout:
 					`BIMI logo URL "${logoUrl}" returned HTTP ${response.status}. The logo must be publicly accessible over HTTPS.`,
 				),
 			);
+			void response.body?.cancel();
 			return findings;
 		}
 
@@ -80,6 +83,7 @@ async function validateBimiSvg(logoUrl: string, fetchFn: FetchFunction, timeout:
 					`BIMI logo is ${Math.round(contentLength / 1024)} KB. The BIMI specification recommends logos be under 32 KB for reliable display in email clients.`,
 				),
 			);
+			void response.body?.cancel();
 			return findings;
 		}
 

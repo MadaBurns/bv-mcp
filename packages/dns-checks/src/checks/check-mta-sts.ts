@@ -81,6 +81,8 @@ export async function checkMTASTS(
 						`MTA-STS policy file at ${policyUrl} returned HTTP ${response.status} redirect. The policy must be served directly at the well-known URL without redirects.`,
 					),
 				);
+				// Body unread on this branch — release it so workerd doesn't cancel a stalled response.
+				void response.body?.cancel();
 			} else if (!response.ok) {
 				findings.push(
 					createFinding(
@@ -90,6 +92,7 @@ export async function checkMTASTS(
 						`MTA-STS policy file at ${policyUrl} returned HTTP ${response.status}. The policy file must be accessible over HTTPS.`,
 					),
 				);
+				void response.body?.cancel();
 			} else {
 				const MAX_BODY_BYTES = 65_536; // 64 KB — RFC 8461 max for MTA-STS
 				const contentLength = parseInt(response.headers?.get('content-length') ?? '0', 10);
@@ -102,6 +105,7 @@ export async function checkMTASTS(
 							`MTA-STS policy file at ${policyUrl} exceeds 64 KB (Content-Length: ${contentLength}). This is abnormally large for an MTA-STS policy and was not fetched.`,
 						),
 					);
+					void response.body?.cancel();
 				} else {
 					const body = await response.text();
 					if (body.length > MAX_BODY_BYTES) {

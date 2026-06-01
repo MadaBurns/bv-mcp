@@ -54,6 +54,9 @@ async function followRedirects(
 		if (!nextUrl.startsWith('https://')) break;
 
 		try {
+			// Release the body of the response we're about to abandon (e.g. a GET
+			// fallback that itself redirects) so workerd doesn't cancel a stalled stream.
+			void response.body?.cancel();
 			response = await fetchFn(nextUrl, {
 				method: 'HEAD',
 				redirect: 'manual',
@@ -140,6 +143,10 @@ export async function checkHTTPSecurity(
 			if (getResponse && (getResponse.ok || (getResponse.status >= 300 && getResponse.status < 400))) {
 				const followed = await followRedirects(getResponse, fetchFn, timeoutMs);
 				findings.push(...analyzeSecurityHeaders(followed.headers));
+				// GET fallback returns a real body we never read (followRedirects only
+				// cancels it when it redirects); release it so workerd doesn't cancel a
+				// stalled stream.
+				void followed.body?.cancel();
 			} else {
 				inconclusive = 'error';
 				findings.push(
