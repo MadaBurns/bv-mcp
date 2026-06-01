@@ -70,7 +70,7 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
 		spf: 10,
 		dmarc: 16,
 		dkim: 10,
-		dnssec: 8,
+		dnssec: 10,
 		ssl: 8,
 		mta_sts: 2,
 		ns: 0,

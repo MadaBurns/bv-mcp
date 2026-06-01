@@ -127,7 +127,7 @@ Anything else → generic fallback. New client-visible errors must start with on
 
 Three-tier model (`computeScanScore`). `CATEGORY_DISPLAY_WEIGHTS` is display-only.
 
-**Core (70%)**: DMARC 16, DKIM 10, SPF 10, DNSSEC 8, SSL 8.
+**Core (70%)**: DMARC 16, DKIM 10, SPF 10, DNSSEC 10, SSL 8 (representative `mail_enabled` profile — every core weight is per-profile; e.g. DNSSEC 5–20, SSL 7–14 across the 6 profiles).
 **Protective (20%)**: Subdomain Takeover 4, HTTP Security 3, MTA-STS 3, MX 2, CAA 2, NS 2, Lookalikes 2, Shadow Domains 2.
 **Hardening (10%)**: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene (~1.4 pts each, bonus-only).
 
