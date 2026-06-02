@@ -121,7 +121,7 @@ Both publish together from `publish.yml` on version tags.
 
 - `'Missing required'`, `'Invalid'`, `'Domain '`, `'Resource not found'`, `'Rate limit exceeded'`
 
-Anything else → generic fallback. New client-visible errors must start with one of these. Rate limit: HTTP 200 + JSON-RPC `code: -32029` (MCP spec) — not 429. `retry-after` header still set.
+Anything else → generic fallback. New client-visible errors must start with one of these. Rate limit: HTTP **429** + JSON-RPC `code: -32029` carried in the response body (`useErrorEnvelope`); `retry-after` header set. All rate-limit/quota paths in `mcp/execute.ts` return `httpStatus: 429` (per-IP minute/hour/day, per-tool daily, per-tier daily, global cap); asserted by `test/index.spec.ts`.
 
 ## Scoring
 
