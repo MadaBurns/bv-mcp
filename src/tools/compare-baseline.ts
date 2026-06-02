@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * Baseline comparison tool.
- * Compares a scan result against a policy floor for org-level enforcement.
+ * Baseline comparison tool (compliance enforcement).
+ *
+ * Here "baseline" is a **policy/requirements OBJECT** — grade/score floors,
+ * `require_*` control flags, and `max_*_findings` caps — answering
+ * "does this domain meet these required controls?" for org-level enforcement.
+ *
+ * This is NOT a prior-scan reference. For drift-over-time against a previous
+ * ScanScore (or the literal `"cached"`), use the `analyze_drift` tool, whose
+ * `baseline` parameter is a string, not this object.
  */
 
 import type { OutputFormat } from '../handlers/tool-args';

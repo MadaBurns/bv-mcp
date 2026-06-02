@@ -25,6 +25,47 @@ describe('checkRootServerSet', () => {
 		);
 	});
 
+	it('degrades gracefully (does not throw) when the infra probe returns HTTP 503', async () => {
+		const fetch = vi.fn(async () => new Response('upstream unavailable', { status: 503 }));
+
+		const result = await checkRootServerSet({
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		expect(fetch).toHaveBeenCalledOnce();
+		expect(result).toMatchObject({
+			category: 'authoritative_dns_infra',
+			checkStatus: 'error',
+			partial: true,
+			metadata: { evidenceMode: 'probe_unavailable', rootServers: ROOT_SERVER_NAMES },
+		});
+		expect(result.findings).toContainEqual(
+			expect.objectContaining({
+				title: 'Root server set probe unavailable',
+				severity: 'info',
+			}),
+		);
+	});
+
+	it('degrades gracefully when the infra probe fetch rejects (network error)', async () => {
+		const fetch = vi.fn(async () => {
+			throw new Error('Connection reset');
+		});
+
+		const result = await checkRootServerSet({
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.metadata?.evidenceMode).toBe('probe_unavailable');
+		expect(result.findings).toContainEqual(
+			expect.objectContaining({
+				title: 'Root server set probe unavailable',
+				severity: 'info',
+			}),
+		);
+	});
+
 	it('posts to the root-server-set probe and fails mismatched root infrastructure evidence', async () => {
 		const fetch = vi.fn(async () => new Response(JSON.stringify({
 			hostname: '.',

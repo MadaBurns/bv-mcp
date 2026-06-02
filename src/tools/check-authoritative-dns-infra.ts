@@ -34,7 +34,30 @@ export async function checkAuthoritativeDnsInfra(
 		};
 	}
 
-	const evidence = await fetchAuthoritativeDnsEvidence(hostname, options.infraProbe);
+	let evidence: Awaited<ReturnType<typeof fetchAuthoritativeDnsEvidence>>;
+	try {
+		evidence = await fetchAuthoritativeDnsEvidence(hostname, options.infraProbe);
+	} catch (err) {
+		// Provisioned-but-failing path (5xx / non-OK / network error). Degrade
+		// gracefully to an INCONCLUSIVE result (excluded from scoring via
+		// checkStatus: 'error') instead of surfacing a hard error to the client —
+		// this mirrors scan_domain's safeCheck() wrapper for the standalone path.
+		const message = err instanceof Error ? err.message : String(err);
+		return {
+			...buildCheckResult('authoritative_dns_infra', [
+				createFinding(
+					'authoritative_dns_infra',
+					'Authoritative DNS infra probe unavailable',
+					'info',
+					`The authoritative DNS infra probe could not be reached, so raw UDP/TCP DNS, BGP, RPKI, and vantage checks were not run: ${message}`,
+					{ evidenceMode: 'probe_unavailable' },
+				),
+			]),
+			checkStatus: 'error',
+			partial: true,
+			metadata: { evidenceMode: 'probe_unavailable', hostname },
+		};
+	}
 	const checkedAt = evidence.checkedAt ?? new Date().toISOString();
 	const analysis = analyzeAuthoritativeDnsInfraEvidence({ ...evidence, hostname });
 

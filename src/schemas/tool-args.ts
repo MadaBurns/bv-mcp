@@ -137,20 +137,32 @@ export const CompareBaselineArgs = z
 		domain: DomainSchema.describe('Domain to scan and compare.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 		baseline: z
-			.object({
-				grade: GradeSchema.optional().describe('Min grade (e.g., "B+").'),
-				score: z.number().min(0).max(100).optional().describe('Min score (0-100).'),
-				require_dmarc_enforce: z.boolean().optional().describe('Require DMARC enforce.'),
-				require_spf: z.boolean().optional().describe('Require SPF.'),
-				require_dkim: z.boolean().optional().describe('Require DKIM.'),
-				require_dnssec: z.boolean().optional().describe('Require DNSSEC.'),
-				require_mta_sts: z.boolean().optional().describe('Require MTA-STS.'),
-				require_caa: z.boolean().optional().describe('Require CAA.'),
-				max_critical_findings: z.number().int().min(0).optional().describe('Max critical findings (default 0).'),
-				max_high_findings: z.number().int().min(0).optional().describe('Max high findings allowed.'),
-			})
+			.object(
+				{
+					grade: GradeSchema.optional().describe('Min grade (e.g., "B+").'),
+					score: z.number().min(0).max(100).optional().describe('Min score (0-100).'),
+					require_dmarc_enforce: z.boolean().optional().describe('Require DMARC enforce.'),
+					require_spf: z.boolean().optional().describe('Require SPF.'),
+					require_dkim: z.boolean().optional().describe('Require DKIM.'),
+					require_dnssec: z.boolean().optional().describe('Require DNSSEC.'),
+					require_mta_sts: z.boolean().optional().describe('Require MTA-STS.'),
+					require_caa: z.boolean().optional().describe('Require CAA.'),
+					max_critical_findings: z.number().int().min(0).optional().describe('Max critical findings (default 0).'),
+					max_high_findings: z.number().int().min(0).optional().describe('Max high findings allowed.'),
+				},
+				{
+					// Only fires when baseline is the wrong type (e.g. a string). Keeps per-field errors intact.
+					// undefined input → fall back to default "required" message.
+					error: (issue) =>
+						issue.input === undefined
+							? undefined
+							: 'expected a policy/requirements object (e.g. { grade, require_spf }) for compliance enforcement, not a prior-scan reference. For drift-over-time vs a previous scan (incl. the literal "cached"), use the analyze_drift tool instead.',
+				},
+			)
 			.passthrough()
-			.describe('Policy baseline requirements.'),
+			.describe(
+				'Policy/requirements baseline OBJECT for compliance enforcement — "does this domain meet these required controls?" (grade/score floors, require_* flags, max_*_findings). NOT a prior scan. For drift-over-time vs a previous ScanScore (or the literal "cached"), use analyze_drift instead.',
+			),
 	})
 	.passthrough();
 
@@ -209,7 +221,13 @@ export const MapSupplyChainArgs = BaseDomainArgs;
 export const AnalyzeDriftArgs = z
 	.object({
 		domain: DomainSchema.describe('Domain to analyze drift for'),
-		baseline: z.string().min(1).max(50_000).describe('Previous ScanScore JSON or "cached" to use last cached scan'),
+		baseline: z
+			.string()
+			.min(1)
+			.max(50_000)
+			.describe(
+				'Prior scan reference for drift-over-time analysis: a previous ScanScore JSON STRING, or the literal "cached" to reuse the last cached scan. NOT a policy/requirements object — for compliance enforcement against required controls, use compare_baseline instead.',
+			),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
 	.passthrough();
