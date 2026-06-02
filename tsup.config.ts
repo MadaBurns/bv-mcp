@@ -19,7 +19,10 @@ const shared: Partial<Options> = {
 	format: ['esm'],
 	target: 'es2022',
 	platform: 'neutral',
-	dts: true,
+	// No `.d.ts` emit: the `blackveil-dns` package ships only a `bin` CLI (no `types`/`exports`),
+	// so nothing consumes declarations here. (Also avoids tsup's rollup-dts injecting a deprecated
+	// `baseUrl`, a hard error under TypeScript 6.0 — TS5101.) Type safety is still covered by `npm run typecheck`.
+	dts: false,
 	sourcemap: true,
 	splitting: false,
 	treeshake: true,
