@@ -58,23 +58,23 @@
 		"marked": "^18.0.4",
 		"pdf-lib": "^1.17.1",
 		"punycode": "^2.3.1",
-		"tldts": "^7.4.0",
-		"zod": "4.3.6"
+		"tldts": "^7.4.2",
+		"zod": "4.4.3"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.16.10",
-		"@cloudflare/workers-types": "4.20260528.1",
+		"@cloudflare/vitest-pool-workers": "^0.16.11",
+		"@cloudflare/workers-types": "4.20260602.1",
 		"@types/marked": "^6.0.0",
 		"@types/punycode": "^2.1.4",
 		"drizzle-kit": "^0.31.10",
 		"eslint": "9.39.3",
 		"hono": "4.12.23",
 		"playwright": "^1.60.0",
-		"tsup": "8.5.0",
+		"tsup": "8.5.1",
 		"typescript": "5.9.3",
-		"typescript-eslint": "8.60.0",
-		"vitest": "4.1.7",
-		"wrangler": "^4.95.0"
+		"typescript-eslint": "8.60.1",
+		"vitest": "4.1.8",
+		"wrangler": "^4.96.0"
 	},
 	"overrides": {
 		"@esbuild-kit/core-utils": {

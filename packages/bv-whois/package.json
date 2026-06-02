@@ -14,13 +14,13 @@
 	"dependencies": {
 		"@blackveil/dns-checks": "*",
 		"hono": "^4.12.23",
-		"zod": "^4.3.6"
+		"zod": "^4.4.3"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.16.10",
-		"@cloudflare/workers-types": "^4.20260528.1",
+		"@cloudflare/vitest-pool-workers": "^0.16.11",
+		"@cloudflare/workers-types": "^4.20260602.1",
 		"typescript": "^5.0.0",
-		"vitest": "4.1.7",
-		"wrangler": "^4.95.0"
+		"vitest": "4.1.8",
+		"wrangler": "^4.96.0"
 	}
 }
