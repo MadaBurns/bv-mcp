@@ -17,13 +17,20 @@
  *
  * BUMP THIS whenever scoring policy changes in a way that alters scores or grades:
  * category weights, profile weights, grade thresholds, severity penalties, the
- * `passed`/missing-control rule, or a severity reclassification (e.g. the recent
- * DNSSEC severity decouple — `critical`→`high` with the penalty preserved via
- * `penaltyOverride` — would have bumped this). Bumping it
- * lets a report consumer detect that two scans of the same domain ran under
- * different scoring policies.
+ * `passed`/missing-control rule, a severity reclassification (e.g. the DNSSEC
+ * severity decouple — `critical`→`high` with the penalty preserved via
+ * `penaltyOverride`), or a change to how the scoring **profile** is detected (the
+ * detected profile selects the per-profile weight table via `getProfileWeights`).
+ * Bumping it lets a report consumer detect that two scans of the same domain ran
+ * under different scoring policies.
+ *
+ * History:
+ * - 1.0.0 — baseline policy as of v3.7.0 (DNSSEC decouple, profile-aware auto scoring).
+ * - 1.1.0 — profile detection now requires an active observed control (`controlPresent`)
+ *   instead of bare `passed`/finding prose. Corrects `enterprise_mail` over-fire and
+ *   sparse-domain misdetection; per-domain score impact is bounded (~±2 pts).
  */
-export const SCORING_MODEL_VERSION = '1.0.0';
+export const SCORING_MODEL_VERSION = '1.1.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

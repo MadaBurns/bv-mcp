@@ -109,5 +109,7 @@ export function mergeTlsFinding(result: CheckResult, probe: TlsProbeResult): Che
 		`The HTTPS endpoint for ${probe.host ?? 'this domain'} still negotiates a legacy TLS version (minimum observed: ${probe.minVersion}). TLS 1.0/1.1 are deprecated (RFC 8996) and forbidden by PCI-DSS; offer TLS 1.2 as the minimum. This signal comes from the operator-only BV_TLS_PROBE service; self-hosted deploys without the probe will not see this finding.`,
 		{ tlsProbeEnriched: true, minVersion: probe.minVersion, maxVersion: probe.maxVersion, supportedVersions: probe.supportedVersions },
 	);
-	return buildCheckResult('ssl', [...result.findings, finding]);
+	// Preserve controlPresent — detectDomainContext reads it for profile detection,
+	// so dropping it here would flip sslPass to false for legacy-TLS-but-reachable hosts.
+	return buildCheckResult('ssl', [...result.findings, finding], result.controlPresent);
 }
