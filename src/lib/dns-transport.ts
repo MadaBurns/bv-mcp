@@ -116,7 +116,9 @@ export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck
 
 	// Include `checkingDisabled` in the key so a `cd=1` (validation-off) query
 	// never returns a cached `cd=0`/default result for the same domain:type.
-	const cacheKey = `${domain}:${type}:${dnssecCheck}:${opts?.checkingDisabled ? 'cd1' : ''}`;
+	// Suffix is OMITTED when checkingDisabled is falsy so the historical key
+	// format (`domain:type:dnssecCheck`) is preserved for all existing callers.
+	const cacheKey = `${domain}:${type}:${dnssecCheck}${opts?.checkingDisabled ? ':cd1' : ''}`;
 	const existing = cache.get(cacheKey);
 	if (existing) {
 		return existing;
