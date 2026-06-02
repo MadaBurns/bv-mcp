@@ -9,11 +9,13 @@ import type { Semaphore } from './semaphore';
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
 const GOOGLE_DOH_ENDPOINT = 'https://dns.google/resolve';
 
-function buildDohUrl(endpoint: string, domain: string, type: RecordTypeName, dnssecCheck: boolean): string {
+function buildDohUrl(endpoint: string, domain: string, type: RecordTypeName, dnssecCheck: boolean, checkingDisabled = false): string {
 	const params = new URLSearchParams({
 		name: domain,
 		type,
-		...(dnssecCheck ? { cd: '0' } : {}),
+		// `cd=1` (Checking Disabled) suppresses DNSSEC validation and takes
+		// precedence over `dnssecCheck`'s `cd=0` validate-on request.
+		...(checkingDisabled ? { cd: '1' } : dnssecCheck ? { cd: '0' } : {}),
 	});
 
 	return `${endpoint}?${params.toString()}`;
@@ -112,7 +114,9 @@ export async function queryDns(domain: string, type: RecordTypeName, dnssecCheck
 		return queryDnsUncached(domain, type, dnssecCheck, opts);
 	}
 
-	const cacheKey = `${domain}:${type}:${dnssecCheck}`;
+	// Include `checkingDisabled` in the key so a `cd=1` (validation-off) query
+	// never returns a cached `cd=0`/default result for the same domain:type.
+	const cacheKey = `${domain}:${type}:${dnssecCheck}:${opts?.checkingDisabled ? 'cd1' : ''}`;
 	const existing = cache.get(cacheKey);
 	if (existing) {
 		return existing;
@@ -130,7 +134,7 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 	const confirmWithSecondaryOnEmpty = opts?.confirmWithSecondaryOnEmpty ?? DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY;
 	const sem = opts?.dnsSemaphore;
 	const callerSignal = opts?.signal;
-	const url = buildDohUrl(DOH_ENDPOINT, domain, type, dnssecCheck);
+	const url = buildDohUrl(DOH_ENDPOINT, domain, type, dnssecCheck, opts?.checkingDisabled);
 
 	/** Optionally run a fetch through the semaphore when one is provided. */
 	const guardedFetch = (input: string | Request, init?: RequestInit & { cf?: Record<string, unknown> }): Promise<Response> =>

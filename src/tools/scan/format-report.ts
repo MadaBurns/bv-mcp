@@ -66,11 +66,12 @@ export interface StructuredScanResult {
 	 */
 	scoringConfigHash: string;
 	/**
-	 * Whether the domain resolves in DNS. `false` for NXDOMAIN / non-resolving
-	 * domains (no posture to assess). Omitted when unknown — additive-optional, so
-	 * tolerant downstream parsers are unaffected.
+	 * Tri-state DNS resolution signal. `false` for NXDOMAIN / non-resolving
+	 * domains; `'broken'` when the zone exists but SERVFAILs (DNSSEC-bogus or
+	 * lame delegation) — neither has a posture to assess. Omitted when unknown —
+	 * additive-optional, so tolerant downstream parsers are unaffected.
 	 */
-	resolves?: boolean;
+	resolves?: boolean | 'broken';
 }
 
 /**
