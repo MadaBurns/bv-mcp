@@ -80,15 +80,19 @@ describe('DNSSEC finding consolidation', () => {
 		return checkDnssec(domain);
 	}
 
-	it('emits single CRITICAL finding when DNSSEC is fully absent', async () => {
+	it('emits single HIGH finding (penalty decoupled to 40) when DNSSEC is fully absent', async () => {
 		// AD=false, no DNSKEY, no DS. NIST SP 800-81r3 / RFC 9364: unsigned public zone
-		// is near-failing → critical (recalibrated down from the prior lenient high/75).
+		// is near-failing. Severity is `high` (one of several integrity controls, not a
+		// sole baseline), but the score penalty is decoupled to 40 via penaltyOverride →
+		// category 60, the heavier deduction the prior `critical` label carried.
 		mockDnssecResponses(false, false, false);
 		const result = await run();
 		const nonInfoFindings = result.findings.filter((f) => f.severity !== 'info');
 		expect(nonInfoFindings).toHaveLength(1);
-		expect(nonInfoFindings[0].severity).toBe('critical');
+		expect(nonInfoFindings[0].severity).toBe('high');
+		expect(nonInfoFindings[0].metadata?.penaltyOverride).toBe(40);
 		expect(nonInfoFindings[0].title).toBe('DNSSEC not enabled');
+		expect(result.score).toBe(60);
 	});
 
 	it('emits HIGH when DNSKEY present but DS missing', async () => {
