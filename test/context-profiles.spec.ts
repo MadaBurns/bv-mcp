@@ -132,6 +132,41 @@ describe('context-profiles', () => {
 			expect(ctx.signals).toContain('SSL valid');
 		});
 
+		it('does NOT credit SSL/CAA as present when they only pass due to absence of findings (no positive record)', () => {
+			// No MX + ssl/caa "pass" only because findings are empty (nothing observed, not a real record).
+			// Must fall to the conservative non_mail profile, NOT web_only.
+			const results = fullPassingResults({
+				mx: buildCheckResult('mx', [
+					createFinding('mx', 'No MX records found', 'high', 'No MX records found for domain'),
+				]),
+				ssl: buildCheckResult('ssl', []),
+				caa: buildCheckResult('caa', []),
+			});
+			const ctx = detectDomainContext(results);
+			expect(ctx.profile).toBe('non_mail');
+			expect(ctx.signals).toContain('No MX records');
+			expect(ctx.signals).not.toContain('SSL valid');
+			expect(ctx.signals).not.toContain('CAA present');
+		});
+
+		it('does NOT over-fire into enterprise_mail when DKIM/MTA-STS/BIMI pass only via absence of findings', () => {
+			// MX + Google Workspace provider, but the hardening signals "pass" only because their
+			// findings are empty (no positive record observed). Should stay mail_enabled, not enterprise_mail.
+			const results = fullPassingResults({
+				mx: buildCheckResult('mx', [
+					createFinding('mx', 'MX records found', 'info', 'Mail handled by Google Workspace', { provider: 'Google Workspace' }),
+				]),
+				dkim: buildCheckResult('dkim', []),
+				mta_sts: buildCheckResult('mta_sts', []),
+				bimi: buildCheckResult('bimi', []),
+			});
+			const ctx = detectDomainContext(results);
+			expect(ctx.profile).toBe('mail_enabled');
+			expect(ctx.signals).not.toContain('DKIM present');
+			expect(ctx.signals).not.toContain('MTA-STS present');
+			expect(ctx.signals).not.toContain('BIMI present');
+		});
+
 		it('defaults to mail_enabled when MX DNS query fails', () => {
 			const results = fullPassingResults({
 				mx: buildCheckResult('mx', [

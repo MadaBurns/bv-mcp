@@ -189,7 +189,14 @@ export function adaptiveWeightsToContext(
 // ─── Scoring note generation ───────────────────────────────────────────
 
 /**
- * Generate a human-readable note explaining adaptive weight shifts.
+ * Generate a human-readable note describing observed peer patterns.
+ *
+ * IMPORTANT: adaptive weighting is **telemetry-only and does NOT affect the
+ * returned scan score** — the score is always computed from static profile
+ * weights (see `scanDomain` in `src/tools/scan-domain.ts`). These notes must
+ * therefore describe what was *observed* across similar domains and be framed
+ * as a non-scoring, experimental signal. They must never claim or imply the
+ * returned score was reweighted, shifted, or adjusted.
  *
  * Returns `null` if the absolute score delta is below the threshold.
  */
@@ -217,12 +224,18 @@ export function generateScoringNote(
 
 	if (significant.length >= 3) {
 		const [topCat] = significant[0];
-		return `Several checks were weighted differently based on patterns seen across similar domains. The biggest shift was in ${topCat.toUpperCase()}.`;
+		return `${EXPERIMENTAL_PREFIX} similar domains show divergent patterns across several checks, most notably ${topCat.toUpperCase()}. ${NON_SCORING_SUFFIX}`;
 	}
 
 	const [topCat, topDelta] = significant[0];
 	return formatNote(topCat, topDelta, provider);
 }
+
+/** Prefix marking the note as an experimental, non-scoring observation. */
+const EXPERIMENTAL_PREFIX = 'Experimental signal:';
+
+/** Suffix making the non-scoring nature of the note explicit to consumers. */
+const NON_SCORING_SUFFIX = 'This observation did not affect this scan’s score.';
 
 /** Format a single-category scoring note. */
 function formatNote(category: string, delta: number, provider: string | null): string {
@@ -230,14 +243,14 @@ function formatNote(category: string, delta: number, provider: string | null): s
 
 	if (delta > 0 && provider) {
 		const providerDisplay = capitalizeWords(provider);
-		return `${cat} carried more weight because domains using ${providerDisplay} frequently have issues in this area.`;
+		return `${EXPERIMENTAL_PREFIX} domains using ${providerDisplay} frequently show ${cat} issues. ${NON_SCORING_SUFFIX}`;
 	}
 
 	if (delta > 0) {
-		return `${cat} carried more weight in this scan because it is a common issue across similar domains.`;
+		return `${EXPERIMENTAL_PREFIX} ${cat} issues are common across similar domains. ${NON_SCORING_SUFFIX}`;
 	}
 
-	return `${cat} carried less weight because similar domains rarely have issues there.`;
+	return `${EXPERIMENTAL_PREFIX} similar domains rarely show ${cat} issues. ${NON_SCORING_SUFFIX}`;
 }
 
 /** Capitalize the first letter of each word. */
