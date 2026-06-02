@@ -12,7 +12,7 @@
 		"README.md"
 	],
 	"engines": {
-		"node": ">=22.0.0"
+		"node": ">=22.13.0"
 	},
 	"repository": {
 		"type": "git",
@@ -67,11 +67,11 @@
 		"@types/marked": "^6.0.0",
 		"@types/punycode": "^2.1.4",
 		"drizzle-kit": "^0.31.10",
-		"eslint": "9.39.3",
+		"eslint": "10.4.1",
 		"hono": "4.12.23",
 		"playwright": "^1.60.0",
 		"tsup": "8.5.1",
-		"typescript": "5.9.3",
+		"typescript": "6.0.3",
 		"typescript-eslint": "8.60.1",
 		"vitest": "4.1.8",
 		"wrangler": "^4.96.0"
