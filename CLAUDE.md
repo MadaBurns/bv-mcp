@@ -141,7 +141,7 @@ Override via `SCORING_CONFIG` env (JSON; `weights`, `profileWeights`, `threshold
 - **Confidence gate**: `scoreIndicatesMissingControl()` fires only for `deterministic`/`verified`. Heuristic DKIM "not found" doesn't zero category.
 - **Provider-informed DKIM**: provider detected + probing empty → HIGH → MEDIUM.
 - **Severity penalties**: C −40, H −25, M −15, L −5, Info 0.
-- **`passed`**: `score >= 50 && !hasMissingControl`. Missing control → score zeroed. Checks using `missingControl: true`: CAA, HTTP Security, MTA-STS, MX, SVCB-HTTPS, NS, Zone Hygiene, BIMI, DANE, TLS-RPT. **DNSSEC deliberately does NOT** — per NIST SP 800-81r3, DNSSEC is a baseline integrity control in a defense-in-depth model: absence is a `high`-severity Core penalty (category → 75), not a category-zeroing missing control.
+- **`passed`**: `score >= 50 && !hasMissingControl`. Missing control → score zeroed. Checks using `missingControl: true`: CAA, HTTP Security, MTA-STS, MX, SVCB-HTTPS, NS, Zone Hygiene, BIMI, DANE, TLS-RPT. **DNSSEC deliberately does NOT** — per NIST SP 800-81r3, DNSSEC is a baseline integrity control in a defense-in-depth model: absence is a `high`-severity Core penalty (category → 60, via a fixed `penaltyOverride: 40` on the finding metadata that decouples the −40 deduction from the `high` severity label — see `computeCategoryScore`), not a category-zeroing missing control.
 - **Grades**: A+ 92+, A 87–91, B+ 82–86, B 76–81, C+ 70–75, C 63–69, D+ 56–62, D 50–55, F <50.
 
 ### Profiles

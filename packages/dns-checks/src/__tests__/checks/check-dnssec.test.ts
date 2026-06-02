@@ -18,13 +18,18 @@ describe('checkDNSSEC', () => {
 		expect(result.category).toBe('dnssec');
 		expect(result.findings.some((f) => f.title === 'DNSSEC not enabled')).toBe(true);
 		// NIST SP 800-81r3 / RFC 9364 (BCP 237): an unsigned PUBLIC zone is near-failing
-		// (DNSSEC origin-auth is best current practice). CRITICAL penalty (100-40=60),
-		// but NOT a missing-control zero — DNSSEC stays a weighted Core control the
-		// category still passes (60≥50). Recalibrated DOWN from the prior lenient 75.
-		expect(result.findings.find((f) => f.title === 'DNSSEC not enabled')?.severity).toBe('critical');
+		// (DNSSEC origin-auth is best current practice). Severity is `high` (triage /
+		// distribution facing — it is one of several integrity controls, not a sole
+		// baseline, so it does not warrant `critical`), but the SCORE penalty is decoupled
+		// via `penaltyOverride: 40` → 100-40=60, the heavier proportionate deduction the
+		// prior `critical` label carried. NOT a missing-control zero — DNSSEC stays a
+		// weighted Core control the category still passes (60≥50).
+		const absent = result.findings.find((f) => f.title === 'DNSSEC not enabled');
+		expect(absent?.severity).toBe('high');
+		expect(absent?.metadata?.penaltyOverride).toBe(40);
 		expect(result.passed).toBe(true);
 		expect(result.score).toBe(60);
-		expect(result.findings.find((f) => f.title === 'DNSSEC not enabled')?.metadata?.missingControl).toBeUndefined();
+		expect(absent?.metadata?.missingControl).toBeUndefined();
 	});
 
 	it('reports chain of trust incomplete when DNSKEY present but no DS', async () => {
