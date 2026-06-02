@@ -263,6 +263,20 @@ describe('adaptive-weights', () => {
 	});
 
 	describe('generateScoringNote', () => {
+		// Adaptive weighting is telemetry-only: the returned scan score uses static
+		// profile weights (scan-domain.ts line ~615 re-runs computeScanScore against
+		// scoringContext). The note must therefore NOT claim the score was adjusted,
+		// reweighted, or shifted. It may describe observed peer patterns, but must be
+		// explicitly framed as a non-scoring / experimental signal.
+		const FORBIDDEN_SCORING_CLAIM = /carried (more|less) weight|weighted differently|biggest shift|adjusted the score|changed (the|this) score/i;
+		const HONEST_DISCLAIMER = /did not (affect|change)|does not (affect|change)|non-scoring|experimental signal|no effect on (the|this) score/i;
+
+		const expectHonest = (note: string | null) => {
+			expect(note).not.toBeNull();
+			expect(note!).not.toMatch(FORBIDDEN_SCORING_CLAIM);
+			expect(note!).toMatch(HONEST_DISCLAIMER);
+		};
+
 		it('returns null when score delta is below threshold', () => {
 			const note = generateScoringNote({ dmarc: 5 }, 2, null);
 			expect(note).toBeNull();
@@ -273,45 +287,40 @@ describe('adaptive-weights', () => {
 			expect(note).toBeNull();
 		});
 
-		it('generates weight_increased note for positive delta', () => {
+		it('generates an honest, non-scoring note for positive delta', () => {
 			const note = generateScoringNote({ dmarc: 5 }, 5, null);
-			expect(note).not.toBeNull();
+			expectHonest(note);
 			expect(note).toContain('DMARC');
-			expect(note).toContain('common issue across similar domains');
 		});
 
-		it('generates weight_increased_provider note when provider is present', () => {
+		it('generates an honest, non-scoring note when provider is present', () => {
 			const note = generateScoringNote({ dmarc: 5 }, 5, 'google workspace');
-			expect(note).not.toBeNull();
+			expectHonest(note);
 			expect(note).toContain('DMARC');
 			expect(note).toContain('Google Workspace');
-			expect(note).toContain('frequently have issues');
 		});
 
-		it('generates weight_decreased note for negative top delta', () => {
+		it('generates an honest, non-scoring note for negative top delta', () => {
 			const note = generateScoringNote({ mta_sts: -4 }, -4, null);
-			expect(note).not.toBeNull();
+			expectHonest(note);
 			expect(note).toContain('MTA_STS');
-			expect(note).toContain('rarely have issues');
 		});
 
-		it('generates multi_category note when 3+ significant deltas', () => {
+		it('generates an honest, non-scoring multi-category note when 3+ significant deltas', () => {
 			const note = generateScoringNote({ dmarc: 5, spf: 3, dkim: -2 }, 6, null);
-			expect(note).not.toBeNull();
-			expect(note).toContain('Several checks');
-			expect(note).toContain('biggest shift');
+			expectHonest(note);
 			expect(note).toContain('DMARC'); // highest magnitude
 		});
 
 		it('capitalizes multi-word provider names', () => {
 			const note = generateScoringNote({ spf: 3 }, 4, 'microsoft 365');
-			expect(note).not.toBeNull();
+			expectHonest(note);
 			expect(note).toContain('Microsoft 365');
 		});
 
 		it('displays category as uppercase', () => {
 			const note = generateScoringNote({ subdomain_takeover: 4 }, 5, null);
-			expect(note).not.toBeNull();
+			expectHonest(note);
 			expect(note).toContain('SUBDOMAIN_TAKEOVER');
 		});
 	});

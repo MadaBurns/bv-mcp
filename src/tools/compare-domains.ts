@@ -7,6 +7,7 @@
 
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
 import { scanDomain, buildStructuredScanResult } from './scan-domain';
+import { computeScoringConfigHash } from '../lib/scoring-version';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { StructuredScanResult } from './scan/format-report';
 import type { OutputFormat } from '../handlers/tool-args';
@@ -70,10 +71,7 @@ export interface CompareDomainsOptions {
 /**
  * Scan 2–5 domains and compare their security posture.
  */
-export async function compareDomains(
-	rawDomains: string[],
-	options: CompareDomainsOptions = {},
-): Promise<DomainComparisonResult> {
+export async function compareDomains(rawDomains: string[], options: CompareDomainsOptions = {}): Promise<DomainComparisonResult> {
 	if (rawDomains.length < 2) {
 		throw new Error('compare_domains requires at least 2 domains');
 	}
@@ -118,15 +116,16 @@ export async function compareDomains(
 			// guard above is the active bound. `options.signal` is held for the
 			// day scan-domain plumbs cancellation through.
 			const scanResult = await scan(domain, options.kv, options.runtimeOptions);
-			structuredResults[domain] = buildStructuredScanResult(scanResult);
+			structuredResults[domain] = buildStructuredScanResult(scanResult, {
+				scoringConfigHash: computeScoringConfigHash(options.runtimeOptions?.scoringConfig),
+			});
 		} catch (err) {
 			errors[domain] = err instanceof Error ? err.message : 'Scan failed';
 			structuredResults[domain] = null;
 		}
 	}
 
-	const validResults = Object.entries(structuredResults)
-		.filter((entry): entry is [string, StructuredScanResult] => entry[1] !== null);
+	const validResults = Object.entries(structuredResults).filter((entry): entry is [string, StructuredScanResult] => entry[1] !== null);
 
 	const scores: Record<string, number> = {};
 	const grades: Record<string, string> = {};
@@ -165,7 +164,9 @@ export async function compareDomains(
 		const unique = categoryComparison
 			.filter((cc) => {
 				const domScore = cc.scores[domain] ?? 100;
-				const others = Object.entries(cc.scores).filter(([d]) => d !== domain).map(([, s]) => s);
+				const others = Object.entries(cc.scores)
+					.filter(([d]) => d !== domain)
+					.map(([, s]) => s);
 				return domScore < 50 && others.length > 0 && others.every((s) => s >= 50);
 			})
 			.map((cc) => cc.category);
@@ -229,11 +230,13 @@ export function formatDomainComparison(result: DomainComparisonResult, format: O
 		for (const cc of result.categoryComparison) {
 			const row =
 				`  ${cc.category.toUpperCase().padEnd(14)}` +
-				validDomains.map((d) => {
-					const s = cc.scores[d] ?? 0;
-					const mark = s >= 80 ? '✓' : s >= 50 ? '⚠' : '✗';
-					return `${mark} ${String(s).padEnd(18)}`;
-				}).join('');
+				validDomains
+					.map((d) => {
+						const s = cc.scores[d] ?? 0;
+						const mark = s >= 80 ? '✓' : s >= 50 ? '⚠' : '✗';
+						return `${mark} ${String(s).padEnd(18)}`;
+					})
+					.join('');
 			lines.push(row);
 		}
 	}

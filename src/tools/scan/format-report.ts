@@ -5,6 +5,7 @@ import type { CheckResult, Finding } from '../../lib/scoring';
 import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
+import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scoring-version';
 
 /** Structured scan result for machine-readable consumption (e.g., CI/CD actions). */
 export interface StructuredScanResult {
@@ -47,6 +48,29 @@ export interface StructuredScanResult {
 	notApplicableCategories: string[];
 	timestamp: string;
 	cached: boolean;
+	/**
+	 * Scoring-policy semver (distinct from package/server version) that produced
+	 * this result — bumped whenever weights/severities/thresholds change. Pins the
+	 * scoring model for report reproducibility. See `lib/scoring-version.ts`.
+	 */
+	scoringModelVersion: string;
+	/**
+	 * Deterministic fingerprint of the **effective** scoring config — a short hex
+	 * hash of the merged config object (the default config produces one stable
+	 * fixed hash; any `SCORING_CONFIG` override produces a distinct one). On the
+	 * production scan paths this is always a hex hash, since the effective config
+	 * is always fully populated. The literal `'default'` marker appears only when
+	 * no config object was available to fingerprint (un-threaded / test callers and
+	 * batch error placeholders). Lets a consumer detect that two scans ran under
+	 * different scoring config. See `lib/scoring-version.ts`.
+	 */
+	scoringConfigHash: string;
+	/**
+	 * Whether the domain resolves in DNS. `false` for NXDOMAIN / non-resolving
+	 * domains (no posture to assess). Omitted when unknown — additive-optional, so
+	 * tolerant downstream parsers are unaffected.
+	 */
+	resolves?: boolean;
 }
 
 /**
@@ -64,12 +88,7 @@ const EMAIL_CATEGORIES_HEURISTIC_NA = new Set<string>(['spf', 'dmarc', 'dkim', '
  * The two rules combined are the single source of truth that `categoryScores` and
  * `notApplicableCategories` both derive from (defect G — single-source CategoryEvaluation).
  */
-function isCategoryNonApplicable(
-	check: CheckResult | undefined,
-	category: string,
-	profile: string,
-	score: number | undefined,
-): boolean {
+function isCategoryNonApplicable(check: CheckResult | undefined, category: string, profile: string, score: number | undefined): boolean {
 	// Rule 1: transient/inconclusive checks are always N/A (could not measure).
 	if (check && (check.checkStatus === 'timeout' || check.checkStatus === 'error')) return true;
 
@@ -92,10 +111,12 @@ function isCategoryNonApplicable(
 			const noFindings = check.findings.length === 0 && check.score === 100;
 			const hasPositiveSignal = check.findings.some((f: Finding) => {
 				const t = f.title.toLowerCase();
-				return /record (found|configured)|properly configured|valid|configured/.test(t) &&
+				return (
+					/record (found|configured)|properly configured|valid|configured/.test(t) &&
 					!/no\s+\S+\s+record/.test(t) &&
 					!/not found/.test(t) &&
-					!/missing/.test(t);
+					!/missing/.test(t)
+				);
 			});
 			if ((allInfo || noFindings) && !hasPositiveSignal) return true;
 		} else if (score === 100) {
@@ -111,6 +132,12 @@ function isCategoryNonApplicable(
 export interface ScanResultEnrichment {
 	percentileRank?: number | null;
 	spoofabilityScore?: number | null;
+	/**
+	 * Precomputed fingerprint of the effective scoring config, threaded from the
+	 * call site that holds the parsed config (`runtimeOptions.scoringConfig`). When
+	 * omitted, `buildStructuredScanResult` falls back to the `'default'` marker.
+	 */
+	scoringConfigHash?: string;
 }
 
 /** Build a machine-readable structured result from a scan. */
@@ -162,10 +189,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 	}
 
 	// Union of categories present in either the score map or the checks array.
-	const allCategoryKeys = new Set<string>([
-		...Object.keys(sourceCategoryScores),
-		...result.checks.map((c) => c.category),
-	]);
+	const allCategoryKeys = new Set<string>([...Object.keys(sourceCategoryScores), ...result.checks.map((c) => c.category)]);
 
 	const notApplicableCategories: string[] = [];
 	const categoryScores: Record<string, number | null> = {};
@@ -215,6 +239,11 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		notApplicableCategories,
 		timestamp: result.timestamp,
 		cached: result.cached,
+		scoringModelVersion: SCORING_MODEL_VERSION,
+		scoringConfigHash: enrichment?.scoringConfigHash ?? computeScoringConfigHash(),
+		// Additive-optional: only emit `resolves` when known (omit otherwise so
+		// tolerant downstream parsers see the same shape they always have).
+		...(result.resolves !== undefined ? { resolves: result.resolves } : {}),
 	};
 }
 
@@ -281,7 +310,9 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 			if (format === 'compact') {
 				const isHighPriority = finding.severity === 'critical' || finding.severity === 'high';
 				const detailLimit = isHighPriority ? 4000 : 300;
-				lines.push(`  [${finding.severity.toUpperCase()}] ${sanitizeOutputText(finding.title, 120)} — ${sanitizeOutputText(finding.detail, detailLimit)}`);
+				lines.push(
+					`  [${finding.severity.toUpperCase()}] ${sanitizeOutputText(finding.title, 120)} — ${sanitizeOutputText(finding.detail, detailLimit)}`,
+				);
 				continue;
 			}
 
@@ -295,9 +326,7 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 				lines.push(`    Takeover Verification: ${sanitizeOutputText(verificationStatus, 80)}`);
 			}
 			const proofRequired =
-				finding.category === 'subdomain_takeover' && finding.metadata?.proofRequired
-					? String(finding.metadata.proofRequired)
-					: undefined;
+				finding.category === 'subdomain_takeover' && finding.metadata?.proofRequired ? String(finding.metadata.proofRequired) : undefined;
 			if (proofRequired) {
 				lines.push(`    Proof Required: ${sanitizeOutputText(proofRequired, 120)}`);
 			}
@@ -338,5 +367,8 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 
 	lines.push('');
 	lines.push(`Scan completed: ${result.timestamp}`);
+	if (format === 'full') {
+		lines.push(`Scoring model: v${SCORING_MODEL_VERSION}`);
+	}
 	return lines.join('\n');
 }

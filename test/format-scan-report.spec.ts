@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildStructuredScanResult, formatScanReport } from '../src/tools/scan/format-report';
 import type { ScanDomainResult } from '../src/tools/scan-domain';
+import { SCORING_MODEL_VERSION } from '../src/lib/scoring-version';
 
 describe('format-scan-report', () => {
 	it('tolerates a non-resolving result (empty checks/categoryScores/findings)', () => {
@@ -14,7 +15,8 @@ describe('format-scan-report', () => {
 				grade: 'N/A',
 				categoryScores: {} as ScanDomainResult['score']['categoryScores'],
 				findings: [],
-				summary: 'does-not-exist-zzz.example does not resolve (NXDOMAIN) — the domain does not exist in DNS, so there is no security posture to assess.',
+				summary:
+					'does-not-exist-zzz.example does not resolve (NXDOMAIN) — the domain does not exist in DNS, so there is no security posture to assess.',
 			},
 			checks: [],
 			maturity: { stage: 0, label: 'Does not resolve', description: 'no posture', nextStep: 'Confirm the domain is registered.' },
@@ -138,9 +140,19 @@ describe('format-scan-report', () => {
 				overall: 85,
 				grade: 'A',
 				categoryScores: {
-					spf: 100, dmarc: 90, dkim: 80, dnssec: 100, ssl: 100,
-					mta_sts: 70, ns: 80, caa: 90, subdomain_takeover: 100, mx: 85,
-					bimi: 100, tlsrpt: 100, lookalikes: 100,
+					spf: 100,
+					dmarc: 90,
+					dkim: 80,
+					dnssec: 100,
+					ssl: 100,
+					mta_sts: 70,
+					ns: 80,
+					caa: 90,
+					subdomain_takeover: 100,
+					mx: 85,
+					bimi: 100,
+					tlsrpt: 100,
+					lookalikes: 100,
 				},
 				findings: [
 					{ category: 'dmarc', title: 'No rua', severity: 'medium', detail: 'No aggregate reporting' },
@@ -180,9 +192,19 @@ describe('format-scan-report', () => {
 				overall: 40,
 				grade: 'F',
 				categoryScores: {
-					spf: 10, dmarc: 10, dkim: 10, dnssec: 10, ssl: 10,
-					mta_sts: 10, ns: 10, caa: 10, subdomain_takeover: 10, mx: 10,
-					bimi: 10, tlsrpt: 10, lookalikes: 10,
+					spf: 10,
+					dmarc: 10,
+					dkim: 10,
+					dnssec: 10,
+					ssl: 10,
+					mta_sts: 10,
+					ns: 10,
+					caa: 10,
+					subdomain_takeover: 10,
+					mx: 10,
+					bimi: 10,
+					tlsrpt: 10,
+					lookalikes: 10,
 				},
 				findings: [],
 				summary: 'Grade: F',
@@ -197,5 +219,54 @@ describe('format-scan-report', () => {
 		expect(structured.maturityStage).toBeNull();
 		expect(structured.maturityLabel).toBeNull();
 		expect(structured.findingCounts).toEqual({ critical: 0, high: 0, medium: 0, low: 0 });
+	});
+
+	it('stamps the scoring-model version + config hash into the structured result', () => {
+		const result = {
+			domain: 'stamp.com',
+			score: { overall: 50, grade: 'D', categoryScores: {}, findings: [], summary: '' },
+			checks: [],
+			cached: false,
+			timestamp: '2026-06-02T00:00:00.000Z',
+		} as unknown as ScanDomainResult;
+
+		const structured = buildStructuredScanResult(result);
+		expect(structured.scoringModelVersion).toBe(SCORING_MODEL_VERSION);
+		// Un-threaded callers fall back to the default-config marker.
+		expect(structured.scoringConfigHash).toBe('default');
+
+		// When an enrichment hash is threaded, it is stamped verbatim.
+		const enriched = buildStructuredScanResult(result, { scoringConfigHash: 'abc123' });
+		expect(enriched.scoringConfigHash).toBe('abc123');
+	});
+
+	it('passes through resolves additively (true/false pass through, undefined omitted)', () => {
+		const base = {
+			domain: 'r.com',
+			score: { overall: 50, grade: 'D', categoryScores: {}, findings: [], summary: '' },
+			checks: [],
+			cached: false,
+			timestamp: '2026-06-02T00:00:00.000Z',
+		} as unknown as ScanDomainResult;
+
+		expect(buildStructuredScanResult({ ...base, resolves: true }).resolves).toBe(true);
+		expect(buildStructuredScanResult({ ...base, resolves: false }).resolves).toBe(false);
+		// undefined → absent (additive-optional; key not present).
+		const noResolves = buildStructuredScanResult(base);
+		expect(noResolves.resolves).toBeUndefined();
+		expect(Object.prototype.hasOwnProperty.call(noResolves, 'resolves')).toBe(false);
+	});
+
+	it('full report footer shows the scoring-model version; compact omits it', () => {
+		const result = {
+			domain: 'footer.com',
+			score: { overall: 50, grade: 'D', categoryScores: { spf: 50 }, findings: [], summary: 'x' },
+			checks: [],
+			cached: false,
+			timestamp: '2026-06-02T00:00:00.000Z',
+		} as unknown as ScanDomainResult;
+
+		expect(formatScanReport(result, 'full')).toContain(`Scoring model: v${SCORING_MODEL_VERSION}`);
+		expect(formatScanReport(result, 'compact')).not.toContain('Scoring model:');
 	});
 });

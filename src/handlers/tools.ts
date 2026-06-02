@@ -27,6 +27,7 @@ import { checkSrv } from '../tools/check-srv';
 import { checkZoneHygiene } from '../tools/check-zone-hygiene';
 import { checkSubdomailing } from '../tools/check-subdomailing';
 import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
+import { computeScoringConfigHash } from '../lib/scoring-version';
 import { batchScan, formatBatchScan } from '../tools/batch-scan';
 import { compareDomains, formatDomainComparison, COMPARE_DOMAINS_SYNC_BUDGET_MS } from '../tools/compare-domains';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
@@ -47,11 +48,7 @@ import { mapSupplyChain, formatSupplyChain } from '../tools/map-supply-chain';
 import { generateRolloutPlan, formatRolloutPlan } from '../tools/generate-rollout-plan';
 import { computeDrift, formatDriftReport } from '../tools/analyze-drift';
 import { resolveSpfChain, formatSpfChain } from '../tools/resolve-spf-chain';
-import {
-	discoverSubdomains,
-	formatSubdomainDiscovery,
-	DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS,
-} from '../tools/discover-subdomains';
+import { discoverSubdomains, formatSubdomainDiscovery, DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS } from '../tools/discover-subdomains';
 import { mapCompliance, formatCompliance } from '../tools/map-compliance';
 import { simulateAttackPaths, formatAttackPaths } from '../tools/simulate-attack-paths';
 import { checkDbl } from '../tools/check-dbl';
@@ -356,7 +353,8 @@ const TOOL_REGISTRY: Record<
 	check_rbl: { cacheKey: () => 'rbl', execute: (d, _args, ro) => checkRbl(d, buildDnsOptions(ro)), cacheTtlSeconds: 3600 },
 	cymru_asn: {
 		cacheKey: (_a, ro) => (ro?.reconBinding ? 'asn:recon' : 'asn'),
-		execute: (d, _args, ro) => checkCymruAsn(d, buildDnsOptions(ro), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+		execute: (d, _args, ro) =>
+			checkCymruAsn(d, buildDnsOptions(ro), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
 		cacheTtlSeconds: 3600,
 	},
 	rdap_lookup: {
@@ -701,7 +699,9 @@ const TOOL_REGISTRY: Record<
 	osint_investigate_domain_start: {
 		cacheKey: () => `__nocache__:osint_investigate_domain_start:${crypto.randomUUID()}`,
 		execute: (_d, a, ro) =>
-			import('../tools/osint-investigate').then((m) => m.osintInvestigateDomainStart(String(a.query), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken })),
+			import('../tools/osint-investigate').then((m) =>
+				m.osintInvestigateDomainStart(String(a.query), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+			),
 		cacheTtlSeconds: 0,
 	},
 	osint_investigate_infrastructure_start: {
@@ -724,7 +724,11 @@ const TOOL_REGISTRY: Record<
 		cacheKey: () => `__nocache__:osint_investigate_username_start:${crypto.randomUUID()}`,
 		execute: (_d, a, ro) =>
 			import('../tools/osint-people').then((m) =>
-				m.osintInvestigateUsernameStart(String(a.query), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken, authTier: ro?.authTier }),
+				m.osintInvestigateUsernameStart(String(a.query), {
+					reconBinding: ro?.reconBinding,
+					reconAuthToken: ro?.reconAuthToken,
+					authTier: ro?.authTier,
+				}),
 			),
 		cacheTtlSeconds: 0,
 	},
@@ -732,7 +736,11 @@ const TOOL_REGISTRY: Record<
 		cacheKey: () => `__nocache__:osint_investigate_email_start:${crypto.randomUUID()}`,
 		execute: (_d, a, ro) =>
 			import('../tools/osint-people').then((m) =>
-				m.osintInvestigateEmailStart(String(a.query), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken, authTier: ro?.authTier }),
+				m.osintInvestigateEmailStart(String(a.query), {
+					reconBinding: ro?.reconBinding,
+					reconAuthToken: ro?.reconAuthToken,
+					authTier: ro?.authTier,
+				}),
 			),
 		cacheTtlSeconds: 0,
 	},
@@ -943,7 +951,9 @@ export async function handleToolsCall(
 						severity: 'info',
 						cacheStatus,
 					});
-					const structured = buildStructuredScanResult(result);
+					const structured = buildStructuredScanResult(result, {
+						scoringConfigHash: computeScoringConfigHash(runtimeOptions?.scoringConfig),
+					});
 					return buildToolResult(formatScanReport(result, effectiveFormat), structured, effectiveFormat);
 				}
 				case 'batch_scan': {
@@ -1162,15 +1172,10 @@ export async function handleToolsCall(
 					return buildToolResult(formatSpfChain(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'discover_subdomains': {
-					const result = await discoverSubdomains(
-						validDomain,
-						runtimeOptions?.certstream,
-						runtimeOptions?.certstreamAuthToken,
-						{
-							signal: AbortSignal.timeout(DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS),
-							deadlineMs: Date.now() + DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS,
-						},
-					);
+					const result = await discoverSubdomains(validDomain, runtimeOptions?.certstream, runtimeOptions?.certstreamAuthToken, {
+						signal: AbortSignal.timeout(DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS),
+						deadlineMs: Date.now() + DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS,
+					});
 					logResult = `${result.totalSubdomains} subdomains`;
 					logDetails = { totalSubdomains: result.totalSubdomains, issues: result.issues.length };
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
@@ -1225,11 +1230,10 @@ export async function handleToolsCall(
 					return buildToolResult(text, result, effectiveFormat);
 				}
 				case 'get_ca_policies': {
-					const result = await getCaPolicies(
-						{ ms_tenant_id: String(validatedArgs.ms_tenant_id) },
-						runtimeOptions?.m365Proxy,
-						{ authToken: runtimeOptions?.m365ProxyAuthToken, keyHash: runtimeOptions?.keyHash },
-					);
+					const result = await getCaPolicies({ ms_tenant_id: String(validatedArgs.ms_tenant_id) }, runtimeOptions?.m365Proxy, {
+						authToken: runtimeOptions?.m365ProxyAuthToken,
+						keyHash: runtimeOptions?.keyHash,
+					});
 					logResult = result.ok ? 'ok' : 'error';
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: result.ok ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
@@ -1237,11 +1241,10 @@ export async function handleToolsCall(
 					return buildToolResult(text, result, effectiveFormat);
 				}
 				case 'assess_coverage': {
-					const result = await assessCoverage(
-						{ ms_tenant_id: String(validatedArgs.ms_tenant_id) },
-						runtimeOptions?.m365Proxy,
-						{ authToken: runtimeOptions?.m365ProxyAuthToken, keyHash: runtimeOptions?.keyHash },
-					);
+					const result = await assessCoverage({ ms_tenant_id: String(validatedArgs.ms_tenant_id) }, runtimeOptions?.m365Proxy, {
+						authToken: runtimeOptions?.m365ProxyAuthToken,
+						keyHash: runtimeOptions?.keyHash,
+					});
 					logResult = result.ok ? 'ok' : 'error';
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: result.ok ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
