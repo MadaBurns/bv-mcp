@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-06-02
+
 ### Changed
 
 - **Dependency refresh — no runtime or scoring impact.** Semver-compatible npm bumps: `wrangler` 4.96.0, `zod` 4.4.3, `vitest` 4.1.8, `@cloudflare/vitest-pool-workers` 0.16.11, `@cloudflare/workers-types` 4.20260602.1, `tldts` 7.4.2, `tsup` 8.5.1, `typescript-eslint` 8.60.1; plus Cargo patch bumps for `bv-wasm-core` (`wasm-bindgen` 0.2.122, `serde_json` 1.0.150, `memchr` 2.8.1, `bumpalo` 3.20.3). `npm audit` clean. (#335)
