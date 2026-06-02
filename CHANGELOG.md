@@ -6,8 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- **Scan output now carries a scoring-model version + config fingerprint.** Every structured scan result includes `scoringModelVersion` (a semver for the scoring *policy*, distinct from the package/server version — bump it whenever weights, thresholds, severities, or the `passed` rule change) and `scoringConfigHash` (a deterministic FNV-1a fingerprint of the effective `SCORING_CONFIG`, so an override is captured). The full human-readable report gains a `Scoring model: v<X>` footer. This makes "the numbers moved between two scans" explainable by design — a dated report records exactly which scoring policy produced it. Inaugural version: `1.0.0`. (`src/lib/scoring-version.ts`)
+- **`resolves` is now exposed on the structured (wire) output.** The non-resolving short-circuit's `resolves: false` marker (previously internal-only) is now an additive-optional field on `StructuredScanResult`, so downstream consumers can exclude non-resolving domains from aggregates without inferring it from `grade === 'N/A'`.
+
 ### Changed
 
+- **Adaptive-weights `scoringNote` no longer implies a score effect.** Adaptive weighting is telemetry-only (not score-bearing), but the note read like *"DNSSEC carried less weight because similar domains rarely have issues there"* — describing a reweighting that never touched the returned score. The note is now framed as an explicit non-scoring/experimental observation and states plainly it did not affect the scan's score. Wording-only; no scoring math changed.
 - **DNSSEC-absent severity decoupled from its score penalty.** A fully unsigned public zone now surfaces as a **`high`** finding instead of `critical` — DNSSEC is one of several DNS integrity controls, not a sole baseline, so it doesn't warrant the top triage tier. The score impact is unchanged: a new numeric `penaltyOverride` on finding metadata (honored by `computeCategoryScore`) keeps the heavy −40 deduction the prior `critical` label carried, so the `dnssec` category still scores **60** (grade and overall score are unaffected). This corrects the severity-distribution inflation where DNSSEC alone drove ~94% of audited domains to carry a `critical`, without weakening the score-side stance grounded in NIST SP 800-81r3 / RFC 9364 (BCP 237). (#345)
 
 ### Fixed

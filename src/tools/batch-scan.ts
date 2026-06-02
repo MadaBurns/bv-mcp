@@ -9,6 +9,7 @@
 
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
 import { scanDomain, buildStructuredScanResult } from './scan-domain';
+import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../lib/scoring-version';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { StructuredScanResult } from './scan/format-report';
 import type { OutputFormat } from '../handlers/tool-args';
@@ -59,6 +60,10 @@ function emptyResult(domain: string, error: string): BatchScanResultItem {
 		notApplicableCategories: [],
 		timestamp: new Date().toISOString(),
 		cached: false,
+		// No scan ran for an error placeholder (invalid domain / budget exceeded),
+		// so there is no effective config to fingerprint — stamp the default marker.
+		scoringModelVersion: SCORING_MODEL_VERSION,
+		scoringConfigHash: computeScoringConfigHash(),
 		error,
 	};
 }
@@ -68,10 +73,7 @@ function emptyResult(domain: string, error: string): BatchScanResultItem {
  * Returns one structured result per input domain, in input order.
  * Invalid domains and budget-exceeded scans produce an error result instead of throwing.
  */
-export async function batchScan(
-	domains: string[],
-	options: BatchScanOptions = {},
-): Promise<BatchScanResultItem[]> {
+export async function batchScan(domains: string[], options: BatchScanOptions = {}): Promise<BatchScanResultItem[]> {
 	if (domains.length > MAX_DOMAINS) {
 		throw new Error(`Batch scan accepts a max of ${MAX_DOMAINS} domains per request (received ${domains.length})`);
 	}
@@ -120,7 +122,9 @@ export async function batchScan(
 					timeoutId = setTimeout(() => reject(new Error('batch_budget_exceeded')), remaining);
 				});
 				const scanResult = await Promise.race([scanPromise, timeoutPromise]);
-				results[task.idx] = buildStructuredScanResult(scanResult);
+				results[task.idx] = buildStructuredScanResult(scanResult, {
+					scoringConfigHash: computeScoringConfigHash(options.runtimeOptions?.scoringConfig),
+				});
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : 'Scan failed';
 				results[task.idx] = emptyResult(task.domain, msg);
