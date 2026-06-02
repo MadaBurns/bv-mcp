@@ -165,6 +165,21 @@ export async function checkDKIM(
 								},
 							),
 						);
+					} else if (keyAnalysis.keyType === 'rsa-malformed') {
+						findings.push(
+							createFinding(
+								'dkim',
+								`Malformed DKIM key: ${result.selector}`,
+								'medium',
+								`DKIM selector "${result.selector}" declares a ~${keyAnalysis.bits}-bit RSA key but the published key material is truncated or incomplete in DNS — commonly caused by splitting the key across multiple TXT records instead of one. DKIM signature verification fails until the full public key is republished as a single TXT record (RFC 6376 §3.6.2).`,
+								{
+									estimatedBits: keyAnalysis.bits,
+									keyType: 'rsa-malformed',
+									selector: result.selector,
+									...(delegatedTo ? { delegatedTo } : {}),
+								},
+							),
+						);
 					} else if (keyAnalysis.keyType === 'rsa') {
 						const severityMsg =
 							keyAnalysis.strength === 'critical'

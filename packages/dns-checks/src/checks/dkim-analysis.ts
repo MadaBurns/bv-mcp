@@ -16,8 +16,22 @@ export type DkimKeyStrength = 'critical' | 'high' | 'medium' | 'info';
 export type DkimKeyAnalysis = {
 	bits: number | null;
 	strength: DkimKeyStrength;
-	keyType: 'rsa' | 'ed25519' | 'unknown';
+	keyType: 'rsa' | 'ed25519' | 'unknown' | 'rsa-malformed';
 };
+
+/**
+ * Canonical SubjectPublicKeyInfo DER prefixes (base64) that identify the declared RSA
+ * modulus size. These bytes precede the modulus, so they survive truncation: a key whose
+ * data is cut short — or split across multiple TXT RRs (RFC 6376 §3.6.2 violation), so the
+ * resolver returns only a fragment — still carries its declared-size header. `fullChars` is
+ * the base64 length of a *complete* key of that size (deterministic for DER).
+ */
+const RSA_SPKI_HEADERS: ReadonlyArray<{ prefix: string; bits: number; fullChars: number }> = [
+	{ prefix: 'MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBA', bits: 512, fullChars: 128 },
+	{ prefix: 'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCB', bits: 1024, fullChars: 216 },
+	{ prefix: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A', bits: 2048, fullChars: 392 },
+	{ prefix: 'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8A', bits: 4096, fullChars: 736 },
+];
 
 export function getDkimTagValue(record: string, tag: string): string | undefined {
 	if (!/^[a-zA-Z0-9]+$/.test(tag)) return undefined;
@@ -41,6 +55,25 @@ export function analyzeKeyStrength(publicKeyBase64: string | undefined, declared
 
 	const cleanKey = publicKeyBase64.replace(/\s/g, '');
 	const charCount = cleanKey.length;
+
+	// Determine the declared modulus size from the DER header when recognizable. This is
+	// authoritative and survives truncation, so it stops a truncated or fragmented key (e.g.
+	// a 2048-bit key split across multiple TXT records, where the resolver returns only a
+	// short fragment) from being mis-measured as a weak short key by the char-count heuristic.
+	const header = RSA_SPKI_HEADERS.find((h) => cleanKey.startsWith(h.prefix));
+	if (header) {
+		// A complete key of this size has ~fullChars base64 chars. Real truncations seen in
+		// the wild are short fragments (≤60% of full); requiring <70% flags those as malformed
+		// — rather than inventing a small bit-count and escalating to a false "weak key"
+		// critical — while leaving near-complete keys to the normal strength mapping.
+		if (charCount < header.fullChars * 0.7) {
+			return { bits: header.bits, strength: 'medium', keyType: 'rsa-malformed' };
+		}
+		if (header.bits <= 512) return { bits: 512, strength: 'critical', keyType: 'rsa' };
+		if (header.bits <= 1024) return { bits: 1024, strength: 'high', keyType: 'rsa' };
+		if (header.bits < 2048) return { bits: header.bits, strength: 'medium', keyType: 'rsa' };
+		return { bits: header.bits, strength: 'info', keyType: 'rsa' };
+	}
 
 	if (declaredKeyType === 'rsa-default' && charCount < 50) {
 		return { bits: null, strength: 'medium', keyType: 'unknown' };
