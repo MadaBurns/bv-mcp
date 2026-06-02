@@ -31,7 +31,9 @@ function fullPassingResults(overrides?: Partial<Record<CheckCategory, ReturnType
 
 describe('context-profiles', () => {
 	describe('detectDomainContext', () => {
-		it('detects enterprise_mail when MX + Google Workspace provider + DKIM present', () => {
+		it('detects enterprise_mail when MX + Google Workspace provider + enforcing DMARC', () => {
+			// fullPassingResults defaults dmarc to a passing (controlPresent:true = enforcing) result,
+			// so this is provider + enforcing DMARC → enterprise_mail.
 			const results = fullPassingResults({
 				mx: buildCheckResult('mx', [
 					createFinding('mx', 'MX records found', 'info', 'Mail handled by Google Workspace', { provider: 'Google Workspace' }),
@@ -40,6 +42,7 @@ describe('context-profiles', () => {
 			const ctx = detectDomainContext(results);
 			expect(ctx.profile).toBe('enterprise_mail');
 			expect(ctx.signals).toContain('MX present');
+			expect(ctx.signals).toContain('DMARC enforcing');
 			expect(ctx.signals.some((s) => s.includes('google workspace'))).toBe(true);
 		});
 
@@ -156,12 +159,15 @@ describe('context-profiles', () => {
 		// bare passed===true (true for absent-but-not-penalized controls) or finding prose.
 
 		it('does NOT over-fire enterprise_mail when provider MX present but no ACTIVE hardening', () => {
-			// Google Workspace MX, but MTA-STS/BIMI absent (passed:true, controlPresent:false) and
-			// DKIM absent. Old code read mtaStsResult.passed/bimiResult.passed === true → enterprise_mail.
+			// Google Workspace MX, but MTA-STS/BIMI absent (passed:true, controlPresent:false), DKIM
+			// absent, and DMARC monitoring-only (p=none → controlPresent:false). No enterprise gate met.
 			const results = fullPassingResults({
 				mx: buildCheckResult('mx', [
 					createFinding('mx', 'MX records found', 'info', 'Mail handled by Google Workspace', { provider: 'Google Workspace' }),
 				], true),
+				dmarc: buildCheckResult('dmarc', [
+					createFinding('dmarc', 'DMARC policy set to none', 'low', 'p=none — monitoring only.'),
+				], false),
 				dkim: buildCheckResult('dkim', [
 					createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM among tested selectors'),
 				], false),
@@ -179,12 +185,15 @@ describe('context-profiles', () => {
 		});
 
 		it('does NOT count a revoked DKIM key as an active hardening signal', () => {
-			// All-revoked DKIM (info finding, passed:true, controlPresent:false) is the only hardening
-			// candidate. Old prose check (severity!=='info') treated revoked as present → enterprise_mail.
+			// All-revoked DKIM (info finding, passed:true, controlPresent:false). With DMARC also
+			// non-enforcing, no enterprise gate is met → mail_enabled (DKIM not counted as present).
 			const results = fullPassingResults({
 				mx: buildCheckResult('mx', [
 					createFinding('mx', 'MX records found', 'info', 'Mail handled by Google Workspace', { provider: 'Google Workspace' }),
 				], true),
+				dmarc: buildCheckResult('dmarc', [
+					createFinding('dmarc', 'DMARC policy set to none', 'low', 'p=none — monitoring only.'),
+				], false),
 				dkim: buildCheckResult('dkim', [
 					createFinding('dkim', 'DKIM selectors revoked', 'info', 'All 1 DKIM selector(s) have revoked keys (empty p= tag).'),
 				], false),
@@ -198,6 +207,48 @@ describe('context-profiles', () => {
 			const ctx = detectDomainContext(results);
 			expect(ctx.profile).toBe('mail_enabled');
 			expect(ctx.signals).not.toContain('DKIM present');
+		});
+
+		// --- enterprise_mail bar: requires enforcing DMARC, not provider + auto-DKIM (Option C) ---
+
+		it('does NOT classify enterprise_mail on provider + auto-DKIM when DMARC is monitoring-only (p=none)', () => {
+			// Google Workspace + DKIM present (auto-provisioned), but DMARC p=none → controlPresent:false.
+			// The enterprise lens is stricter; applying it requires a deliberate maturity signal
+			// (enforcing DMARC), which p=none is not. Should fall back to mail_enabled.
+			const results = fullPassingResults({
+				mx: buildCheckResult('mx', [
+					createFinding('mx', 'MX records found', 'info', 'Mail handled by Google Workspace', { provider: 'Google Workspace' }),
+				], true),
+				dmarc: buildCheckResult('dmarc', [
+					createFinding('dmarc', 'DMARC policy set to none', 'low', 'p=none — monitoring only, not enforcing.'),
+				], false),
+			});
+			const ctx = detectDomainContext(results);
+			expect(ctx.profile).toBe('mail_enabled');
+		});
+
+		it('classifies enterprise_mail on provider + enforcing DMARC (p=reject) even without DKIM/MTA-STS/BIMI', () => {
+			// Enforcing DMARC behind a managed provider is the enterprise-maturity signal. It qualifies
+			// on its own — auto-provisioned hardening is no longer what gates the stricter lens.
+			const results = fullPassingResults({
+				mx: buildCheckResult('mx', [
+					createFinding('mx', 'MX records found', 'info', 'Mail handled by Google Workspace', { provider: 'Google Workspace' }),
+				], true),
+				dmarc: buildCheckResult('dmarc', [
+					createFinding('dmarc', 'DMARC enforcing', 'info', 'p=reject — enforcing policy.'),
+				], true),
+				dkim: buildCheckResult('dkim', [
+					createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM among tested selectors'),
+				], false),
+				mta_sts: buildCheckResult('mta_sts', [
+					createFinding('mta_sts', 'No MTA-STS or TLS-RPT records found', 'low', 'Neither present.'),
+				], false),
+				bimi: buildCheckResult('bimi', [
+					createFinding('bimi', 'No BIMI record found', 'low', 'No BIMI record found.'),
+				], false),
+			});
+			const ctx = detectDomainContext(results);
+			expect(ctx.profile).toBe('enterprise_mail');
 		});
 
 		it('detects non_mail (not web_only) for a sparse domain whose CAA is absent-but-passed', () => {
