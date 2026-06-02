@@ -45,7 +45,32 @@ export async function checkRootServerSet(
 		};
 	}
 
-	const evidence = await fetchRootServerSetEvidence(options.infraProbe);
+	let evidence: Awaited<ReturnType<typeof fetchRootServerSetEvidence>>;
+	try {
+		evidence = await fetchRootServerSetEvidence(options.infraProbe);
+	} catch (err) {
+		// Provisioned-but-failing path (5xx / non-OK / network error). Degrade
+		// gracefully to an INCONCLUSIVE result (checkStatus: 'error') instead of
+		// surfacing a hard error — mirrors scan_domain's safeCheck() wrapper.
+		const message = err instanceof Error ? err.message : String(err);
+		return {
+			...buildCheckResult('authoritative_dns_infra', [
+				createFinding(
+					'authoritative_dns_infra',
+					'Root server set probe unavailable',
+					'info',
+					`The root-server-set infra probe could not be reached, so live root glue, delegation, serial, and DNSKEY cross-checks were not run: ${message}`,
+					{ evidenceMode: 'probe_unavailable' },
+				),
+			]),
+			checkStatus: 'error',
+			partial: true,
+			metadata: {
+				evidenceMode: 'probe_unavailable',
+				rootServers: ROOT_SERVER_NAMES,
+			},
+		};
+	}
 	const analysis = analyzeRootServerSetEvidence(evidence);
 	const checkedAt = evidence.checkedAt ?? new Date().toISOString();
 
