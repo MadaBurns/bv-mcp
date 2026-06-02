@@ -94,5 +94,7 @@ export function applyProviderDkimContext(dkimResult: CheckResult, provider: stri
 		);
 	}
 
-	return buildCheckResult('dkim', newFindings) as CheckResult;
+	// Preserve controlPresent — this branch only runs when DKIM was not found
+	// (controlPresent already false); detectDomainContext reads it, not finding prose.
+	return buildCheckResult('dkim', newFindings, dkimResult.controlPresent) as CheckResult;
 }

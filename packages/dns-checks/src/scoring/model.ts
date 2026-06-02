@@ -128,7 +128,7 @@ export function scoreIndicatesMissingControl(findings: Finding[]): boolean {
  * a fundamentally missing security control (e.g., no SPF/DMARC record), or if
  * any finding carries explicit `missingControl: true` metadata.
  */
-export function buildCheckResult(category: CheckCategory, findings: Finding[]): CheckResult {
+export function buildCheckResult(category: CheckCategory, findings: Finding[], controlPresent?: boolean): CheckResult {
 	const normalizedFindings = findings.map(withConfidenceMetadata);
 	const score = computeCategoryScore(normalizedFindings, category);
 	const hasMissingControl =
@@ -139,6 +139,9 @@ export function buildCheckResult(category: CheckCategory, findings: Finding[]): 
 		passed,
 		score: hasMissingControl ? 0 : score,
 		findings: normalizedFindings,
+		// Only set when the caller provides a determination; left absent (undefined) otherwise so
+		// consumers can distinguish "definitively absent" (false) from "not determined" (undefined).
+		...(controlPresent === undefined ? {} : { controlPresent }),
 	};
 }
 

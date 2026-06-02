@@ -71,7 +71,8 @@ export async function checkMX(
 				{ missingControl: true },
 			);
 		}
-		return buildCheckResult('mx', [finding]);
+		// No MX records → mail control definitively absent (controlPresent: false).
+		return buildCheckResult('mx', [finding], false);
 	}
 
 	const findings: Finding[] = [];
@@ -82,7 +83,8 @@ export async function checkMX(
 	const nullMx = mxRecords.find(isNullMxRecord);
 	if (nullMx) {
 		findings.push(getNullMxFinding());
-		return buildCheckResult('mx', findings);
+		// Null MX is an explicit "does not accept mail" declaration → not a mail control.
+		return buildCheckResult('mx', findings, false);
 	}
 
 	findings.push(getPresenceFinding(mxRecords));
@@ -124,5 +126,6 @@ export async function checkMX(
 		findings.push(singleMxFinding);
 	}
 
-	return buildCheckResult('mx', findings);
+	// Real mail-routing MX records present → mail control present.
+	return buildCheckResult('mx', findings, true);
 }

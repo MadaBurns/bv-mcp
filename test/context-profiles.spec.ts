@@ -17,7 +17,9 @@ function makeCheckResult(category: CheckCategory, score: number, findings: Retur
 			findings = [createFinding(category, `${category} issue`, 'medium', 'Issue detected')];
 		}
 	}
-	return buildCheckResult(category, findings);
+	// A passing (score 100) synthetic check expresses "control present & active"; a failing one
+	// expresses "absent/inactive". Mirrors how the real checks set controlPresent.
+	return buildCheckResult(category, findings, score === 100);
 }
 
 function fullPassingResults(overrides?: Partial<Record<CheckCategory, ReturnType<typeof buildCheckResult>>>) {
@@ -33,7 +35,7 @@ describe('context-profiles', () => {
 			const results = fullPassingResults({
 				mx: buildCheckResult('mx', [
 					createFinding('mx', 'MX records found', 'info', 'Mail handled by Google Workspace', { provider: 'Google Workspace' }),
-				]),
+				], true),
 			});
 			const ctx = detectDomainContext(results);
 			expect(ctx.profile).toBe('enterprise_mail');
@@ -45,7 +47,7 @@ describe('context-profiles', () => {
 			const results = fullPassingResults({
 				mx: buildCheckResult('mx', [
 					createFinding('mx', 'MX records found', 'info', 'mail.example.com'),
-				]),
+				], true),
 			});
 			const ctx = detectDomainContext(results);
 			expect(ctx.profile).toBe('mail_enabled');
@@ -56,7 +58,7 @@ describe('context-profiles', () => {
 			const results = fullPassingResults({
 				mx: buildCheckResult('mx', [
 					createFinding('mx', 'No MX records found', 'high', 'No MX records found for domain'),
-				]),
+				], false),
 			});
 			const ctx = detectDomainContext(results);
 			expect(ctx.profile).toBe('web_only');
@@ -68,15 +70,15 @@ describe('context-profiles', () => {
 			const results = fullPassingResults({
 				mx: buildCheckResult('mx', [
 					createFinding('mx', 'No MX records found', 'high', 'No MX records found for domain'),
-				]),
+				], false),
 				caa: buildCheckResult('caa', [
 					createFinding('caa', 'No CAA records', 'critical', 'No CAA records found'),
 					createFinding('caa', 'CAA missing', 'high', 'CAA is required'),
-				]),
+				], false),
 				ssl: buildCheckResult('ssl', [
 					createFinding('ssl', 'SSL check failed', 'critical', 'No valid certificate found'),
 					createFinding('ssl', 'SSL required', 'high', 'Certificate is required'),
-				]),
+				], false),
 			});
 			const ctx = detectDomainContext(results);
 			expect(ctx.profile).toBe('non_mail');
@@ -105,15 +107,15 @@ describe('context-profiles', () => {
 			const results = fullPassingResults({
 				mx: buildCheckResult('mx', [
 					createFinding('mx', 'Null MX record (RFC 7505)', 'info', 'Domain explicitly declares it does not accept email via null MX record.'),
-				]),
+				], false),
 				caa: buildCheckResult('caa', [
 					createFinding('caa', 'No CAA records', 'critical', 'No CAA records found'),
 					createFinding('caa', 'CAA missing', 'high', 'CAA is required'),
-				]),
+				], false),
 				ssl: buildCheckResult('ssl', [
 					createFinding('ssl', 'SSL check failed', 'critical', 'No valid certificate found'),
 					createFinding('ssl', 'SSL required', 'high', 'Certificate is required'),
-				]),
+				], false),
 			});
 			const ctx = detectDomainContext(results);
 			expect(ctx.profile).toBe('non_mail');
@@ -124,7 +126,7 @@ describe('context-profiles', () => {
 			const results = fullPassingResults({
 				mx: buildCheckResult('mx', [
 					createFinding('mx', 'Null MX record (RFC 7505)', 'info', 'Domain explicitly declares it does not accept email via null MX record.'),
-				]),
+				], false),
 			});
 			const ctx = detectDomainContext(results);
 			expect(ctx.profile).toBe('web_only');
@@ -149,11 +151,81 @@ describe('context-profiles', () => {
 			expect(ctx.profile).toBe('mail_enabled');
 		});
 
+		// --- controlPresent structured-signal discriminators (#1+#2) ---
+		// These encode that profile detection must use an *active record observed* signal, not a
+		// bare passed===true (true for absent-but-not-penalized controls) or finding prose.
+
+		it('does NOT over-fire enterprise_mail when provider MX present but no ACTIVE hardening', () => {
+			// Google Workspace MX, but MTA-STS/BIMI absent (passed:true, controlPresent:false) and
+			// DKIM absent. Old code read mtaStsResult.passed/bimiResult.passed === true → enterprise_mail.
+			const results = fullPassingResults({
+				mx: buildCheckResult('mx', [
+					createFinding('mx', 'MX records found', 'info', 'Mail handled by Google Workspace', { provider: 'Google Workspace' }),
+				], true),
+				dkim: buildCheckResult('dkim', [
+					createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM among tested selectors'),
+				], false),
+				mta_sts: buildCheckResult('mta_sts', [
+					createFinding('mta_sts', 'No MTA-STS or TLS-RPT records found', 'low', 'Neither MTA-STS nor TLS-RPT present (non-mail).'),
+				], false),
+				bimi: buildCheckResult('bimi', [
+					createFinding('bimi', 'No BIMI record found', 'low', 'No BIMI record found.'),
+				], false),
+			});
+			const ctx = detectDomainContext(results);
+			expect(ctx.profile).toBe('mail_enabled');
+			expect(ctx.signals).not.toContain('MTA-STS present');
+			expect(ctx.signals).not.toContain('BIMI present');
+		});
+
+		it('does NOT count a revoked DKIM key as an active hardening signal', () => {
+			// All-revoked DKIM (info finding, passed:true, controlPresent:false) is the only hardening
+			// candidate. Old prose check (severity!=='info') treated revoked as present → enterprise_mail.
+			const results = fullPassingResults({
+				mx: buildCheckResult('mx', [
+					createFinding('mx', 'MX records found', 'info', 'Mail handled by Google Workspace', { provider: 'Google Workspace' }),
+				], true),
+				dkim: buildCheckResult('dkim', [
+					createFinding('dkim', 'DKIM selectors revoked', 'info', 'All 1 DKIM selector(s) have revoked keys (empty p= tag).'),
+				], false),
+				mta_sts: buildCheckResult('mta_sts', [
+					createFinding('mta_sts', 'No MTA-STS or TLS-RPT records found', 'low', 'Neither MTA-STS nor TLS-RPT present (non-mail).'),
+				], false),
+				bimi: buildCheckResult('bimi', [
+					createFinding('bimi', 'No BIMI record found', 'low', 'No BIMI record found.'),
+				], false),
+			});
+			const ctx = detectDomainContext(results);
+			expect(ctx.profile).toBe('mail_enabled');
+			expect(ctx.signals).not.toContain('DKIM present');
+		});
+
+		it('detects non_mail (not web_only) for a sparse domain whose CAA is absent-but-passed', () => {
+			// No MX, no HTTPS, and CAA absent (medium "No CAA records" → passed:true, controlPresent:false).
+			// Old code read caaResult.passed === true → web_only. With controlPresent it is non_mail.
+			const results = fullPassingResults({
+				mx: buildCheckResult('mx', [
+					createFinding('mx', 'No MX and no SPF — domain spoofable', 'medium', 'No mail exchange records and no SPF policy.'),
+				], false),
+				ssl: buildCheckResult('ssl', [
+					createFinding('ssl', 'HTTPS connection failed', 'high', 'No valid certificate / unreachable.'),
+				], false),
+				caa: buildCheckResult('caa', [
+					createFinding('caa', 'No CAA records', 'medium', 'No CAA records found for domain.'),
+				], false),
+			});
+			const ctx = detectDomainContext(results);
+			expect(ctx.profile).toBe('non_mail');
+			expect(ctx.signals).toContain('No MX records');
+			expect(ctx.signals).not.toContain('CAA present');
+			expect(ctx.signals).not.toContain('SSL valid');
+		});
+
 		it('explicit profile override replaces detected profile in signals', () => {
 			const results = fullPassingResults({
 				mx: buildCheckResult('mx', [
 					createFinding('mx', 'MX records found', 'info', 'mail.example.com'),
-				]),
+				], true),
 			});
 			const ctx = detectDomainContext(results);
 			// Detection should give mail_enabled

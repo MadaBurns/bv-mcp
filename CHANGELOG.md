@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- **Profile detection now keys on an active control, not a bare `passed`/finding prose.** `detectDomainContext` (which selects the per-profile scoring weight table) inferred a control as "present" from `result.passed === true` for MTA-STS/BIMI/SSL/CAA and a brittle text regex for DKIM/MX. But `passed` is `true` for an absent-but-not-penalized control (e.g. MTA-STS on a non-mail domain), so most domains were mis-read as having hardening present. Checks now emit a structured `controlPresent` tri-state on `CheckResult` — `true` (active record observed: real mail MX, non-revoked DKIM key, MTA-STS policy record, DMARC-enforcing BIMI, reachable HTTPS, CAA records), `false` (definitively absent/inactive: no/null MX, all-revoked DKIM, non-enforcing BIMI), `undefined` (lookup failed) — and detection reads that instead. **Measured effect** on a 90-domain portfolio sample: `enterprise_mail` over-classification dropped from **87% → 62%** (24 domains reclassified to the correct `mail_enabled`/`non_mail`), with a **bounded per-domain score impact (~±2 pts, mean +0.69)** since the profile only selects a weight table — scoring math is unchanged. `SCORING_MODEL_VERSION` → `1.1.0`. Sets `controlPresent` in the six checks `detectDomainContext` consumes (`mx`, `dkim`, `mta_sts`, `bimi`, `ssl`, `caa`); `buildCheckResult` gains an optional `controlPresent` argument. (Supersedes the reverted prose-matching attempt.)
+
 ## [3.7.0] - 2026-06-03
 
 Scoring-output transparency and DNS-integrity severity refinement. No domain scores or grades change in this release: the DNSSEC reclassification adjusts a severity *label* only (the −40 score penalty is preserved), and the new scan-output fields are additive.

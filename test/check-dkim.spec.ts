@@ -351,6 +351,22 @@ describe('provider-informed DKIM', () => {
 		expect(adjusted.score).toBe(85); // single medium = -15
 	});
 
+	it('applyProviderDkimContext preserves controlPresent (DKIM not found stays false, not undefined)', async () => {
+		const { applyProviderDkimContext } = await import('../src/tools/check-dkim');
+		const findings = [
+			createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM records found', {
+				confidence: 'heuristic',
+				selectorsChecked: ['default', 'google'],
+			}),
+		];
+		// DKIM not found → controlPresent: false. The provider-context rebuild must
+		// preserve it; detectDomainContext reads controlPresent, not finding prose.
+		const result = buildCheckResult('dkim', findings, false);
+		expect(result.controlPresent).toBe(false);
+		const adjusted = applyProviderDkimContext(result, 'google workspace');
+		expect(adjusted.controlPresent).toBe(false);
+	});
+
 	it('applyProviderDkimContext adds low finding for medium-confidence provider', async () => {
 		const { applyProviderDkimContext } = await import('../src/tools/check-dkim');
 		const findings = [

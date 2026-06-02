@@ -314,7 +314,10 @@ export async function checkDKIM(
 		);
 	}
 
-	const result = buildCheckResult('dkim', findings);
+	// controlPresent: an ACTIVE DKIM key was observed. All-revoked (empty p=) selectors count as
+	// absent for profile detection — a revoked key is not a working hardening signal.
+	const dkimControlPresent = foundSelectors.length > 0 && hasValidKey;
+	const result = buildCheckResult('dkim', findings, dkimControlPresent);
 
 	// Defect E — score floor on probe miss.
 	// A HIGH "No DKIM records found" finding scores 75 by default (100 - 25),

@@ -53,7 +53,8 @@ export async function checkCAA(
 				`No CAA records found for ${domain}. CAA records restrict which Certificate Authorities can issue certificates for your domain, preventing unauthorized issuance.`,
 			),
 		);
-		return buildCheckResult('caa', findings);
+		// No CAA records observed → control absent (a query failure above leaves controlPresent undefined).
+		return buildCheckResult('caa', findings, false);
 	}
 
 	findings.push(...getCaaValidationFindings(summarizeCaaTags(caaRecords)));
@@ -63,5 +64,6 @@ export async function checkCAA(
 		findings.push(getCaaConfiguredFinding());
 	}
 
-	return buildCheckResult('caa', findings);
+	// CAA records present → control present.
+	return buildCheckResult('caa', findings, true);
 }

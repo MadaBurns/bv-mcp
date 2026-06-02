@@ -213,7 +213,9 @@ export async function checkMTASTS(
 		);
 	}
 
-	return buildCheckResult('mta_sts', findings);
+	// controlPresent: an MTA-STS policy record (_mta-sts TXT) was observed. TLS-RPT alone does not
+	// count as MTA-STS, and a failed lookup leaves hasTxtRecord false (conservative: not credited).
+	return buildCheckResult('mta_sts', findings, hasTxtRecord);
 }
 
 /**

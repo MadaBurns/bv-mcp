@@ -22,7 +22,10 @@ function makeResult(category: CheckCategory, score: number, title?: string, seve
 	} else {
 		findings.push(createFinding(category, title ?? `${category} issue`, severity ?? 'medium', 'Issue detected'));
 	}
-	return buildCheckResult(category, findings);
+	// Synthetic controlPresent for profile detection: a full-score check expresses an active control;
+	// a zeroed one expresses an absent control. Mid-scores leave it undefined (scoring ignores it).
+	const controlPresent = score === 100 ? true : score === 0 ? false : undefined;
+	return buildCheckResult(category, findings, controlPresent);
 }
 
 function buildFullResults(overrides: Partial<Record<CheckCategory, CheckResult>> = {}): CheckResult[] {

@@ -261,24 +261,12 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 	const mtaStsResult = results.find((r) => r.category === 'mta_sts');
 	const bimiResult = results.find((r) => r.category === 'bimi');
 
-	// Detect MX presence
-	const hasNoMx = mxResult
-		? mxResult.findings.some((f) => {
-				const text = `${f.title} ${f.detail}`.toLowerCase();
-				return (
-					text.includes('no mx records') ||
-					text.includes('null mx') ||
-					text.includes('no mx and no spf') ||
-					text.includes('no mail exchange records') ||
-					text.includes('correctly-configured non-mail domain') ||
-					text.includes('does not accept email')
-				);
-			})
-		: false;
-	const hasMxUnknown = mxResult
-		? mxResult.findings.some((f) => f.title.toLowerCase().includes('dns query failed'))
-		: false;
-	const hasMx = mxResult && !hasNoMx && !hasMxUnknown;
+	// Detect MX presence from the structured controlPresent signal (set by check-mx), not finding
+	// prose. true = real mail-routing MX; false = no MX or null MX (RFC 7505 → not a mail domain);
+	// undefined = the MX lookup failed (status unknown → safe mail_enabled fallback below).
+	const hasMx = mxResult?.controlPresent === true;
+	const hasNoMx = mxResult?.controlPresent === false;
+	const hasMxUnknown = mxResult ? mxResult.controlPresent === undefined : false;
 
 	if (hasMx) signals.push('MX present');
 	if (hasNoMx) signals.push('No MX records');
@@ -304,26 +292,25 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 		}
 	}
 
-	// Detect hardening signals (DKIM present, MTA-STS present, BIMI present)
-	const dkimPresent = dkimResult
-		? !dkimResult.findings.some((f) => {
-				const text = `${f.title} ${f.detail}`.toLowerCase();
-				return /(no\s+dkim|not\s+found|missing)/.test(text) && f.severity !== 'info';
-			})
-		: false;
+	// Detect hardening signals from controlPresent (an active record was observed), not passed/prose.
+	// A bare passed===true is true for absent-but-not-penalized controls (MTA-STS/BIMI on a non-mail
+	// domain) and the old DKIM prose check counted revoked keys as present — both inflated
+	// enterprise_mail. controlPresent is false for absent OR inactive (revoked DKIM, non-enforcing BIMI).
+	const dkimPresent = dkimResult?.controlPresent === true;
 	if (dkimPresent && hasMx) signals.push('DKIM present');
 
-	const mtaStsPresent = mtaStsResult ? mtaStsResult.passed : false;
+	const mtaStsPresent = mtaStsResult?.controlPresent === true;
 	if (mtaStsPresent) signals.push('MTA-STS present');
 
-	const bimiPresent = bimiResult ? bimiResult.passed : false;
+	const bimiPresent = bimiResult?.controlPresent === true;
 	if (bimiPresent) signals.push('BIMI present');
 
 	const hasHardeningSignal = dkimPresent || mtaStsPresent || bimiPresent;
 
-	// Detect web indicators
-	const sslPass = sslResult ? sslResult.passed : false;
-	const caaPass = caaResult ? caaResult.passed : false;
+	// Detect web indicators: reachable HTTPS / published CAA, again via controlPresent (a sparse
+	// domain whose CAA is "absent-but-passed" must not read as web_only).
+	const sslPass = sslResult?.controlPresent === true;
+	const caaPass = caaResult?.controlPresent === true;
 	if (sslPass) signals.push('SSL valid');
 	if (caaPass) signals.push('CAA present');
 

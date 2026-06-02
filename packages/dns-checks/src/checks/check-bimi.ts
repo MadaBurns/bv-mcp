@@ -203,7 +203,8 @@ export async function checkBIMI(
 				),
 			);
 		}
-		return buildCheckResult('bimi', findings);
+		// No BIMI record observed → control absent.
+		return buildCheckResult('bimi', findings, false);
 	}
 
 	// BIMI record exists but DMARC is not enforcing — record is non-functional
@@ -307,5 +308,7 @@ export async function checkBIMI(
 		}
 	}
 
-	return buildCheckResult('bimi', findings);
+	// controlPresent: a BIMI record exists AND DMARC is enforcing (the record can actually function).
+	// A record published without DMARC enforcement is non-functional → not an active hardening signal.
+	return buildCheckResult('bimi', findings, Boolean(isEnforcing));
 }
