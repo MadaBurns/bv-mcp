@@ -153,4 +153,15 @@ describe('mergeTlsFinding', () => {
 		expect(merged.findings.length).toBe(base.findings.length + 1);
 		expect(merged.findings.some((f) => f.severity === 'high')).toBe(true);
 	});
+
+	it('preserves controlPresent when adding a weak-TLS finding (profile detection depends on it)', async () => {
+		const { mergeTlsFinding } = await fresh();
+		const { buildCheckResult, createFinding } = await import('../src/lib/scoring');
+		// HTTPS-reachable → controlPresent: true. The weak-TLS rebuild must NOT drop it,
+		// or detectDomainContext sees sslPass=false and can misclassify the profile.
+		const base = buildCheckResult('ssl', [createFinding('ssl', 'HTTPS ok', 'info', 'ok')], true);
+		expect(base.controlPresent).toBe(true);
+		const merged = mergeTlsFinding(base, { reachable: true, minVersion: 'TLS1.0' });
+		expect(merged.controlPresent).toBe(true);
+	});
 });

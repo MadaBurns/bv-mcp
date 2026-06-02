@@ -119,6 +119,18 @@ export interface CheckResult {
 	checkStatus?: CheckStatus;
 	/** When true, the result is incomplete (e.g. timeout) and should not be cached long-term. */
 	partial?: boolean;
+	/**
+	 * Whether the checked control is *meaningfully present and active* — distinct from `passed`.
+	 * `true` = an active record/response was observed (real mail MX, non-revoked DKIM key, MTA-STS
+	 * policy record, DMARC-enforcing BIMI, reachable HTTPS, CAA records). `false` = definitively
+	 * absent or inactive (no MX / null MX, all-revoked DKIM, no record, non-enforcing BIMI,
+	 * unreachable HTTPS). `undefined` = could not be determined (e.g. the DNS query failed).
+	 *
+	 * `passed` is unsafe as a presence proxy: an absent-but-not-penalized control (e.g. MTA-STS on a
+	 * non-mail domain) still yields `passed === true`. Profile detection (`detectDomainContext`) reads
+	 * this instead of `passed`/finding prose. Only the checks `detectDomainContext` consumes set it.
+	 */
+	controlPresent?: boolean;
 	/** Optional structured metadata attached to the result by the check wrapper (not the core package). */
 	metadata?: Record<string, unknown>;
 }
