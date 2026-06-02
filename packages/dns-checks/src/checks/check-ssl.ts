@@ -30,8 +30,8 @@ export async function checkSSL(
 	const timeoutMs = options?.timeout ?? HTTPS_TIMEOUT_MS;
 	const findings: Finding[] = [];
 
-	const httpsResult = await checkHttps(domain, fetchFn, timeoutMs);
-	findings.push(...httpsResult);
+	const { findings: httpsFindings, reachable } = await checkHttps(domain, fetchFn, timeoutMs);
+	findings.push(...httpsFindings);
 
 	// Only check HTTP redirect if HTTPS is working (no critical findings)
 	const hasCritical = findings.some((f) => f.severity === 'critical');
@@ -44,12 +44,19 @@ export async function checkSSL(
 		findings.push(createFinding('ssl', 'HTTPS and HSTS properly configured', 'info', `HTTPS connection succeeded and HSTS header is properly configured for ${domain}. Note: This check verifies HTTPS reachability and HSTS policy. Certificate expiry, TLS version, and cipher suite analysis require a dedicated TLS scanner.`));
 	}
 
-	return buildCheckResult('ssl', findings);
+	// controlPresent: HTTPS was reachable (the TLS handshake completed). A connection failure/timeout
+	// means no working web TLS endpoint → web control absent for profile detection.
+	return buildCheckResult('ssl', findings, reachable);
 }
 
-/** Check HTTPS connectivity by attempting a fetch */
-async function checkHttps(domain: string, fetchFn: FetchFunction, timeoutMs: number): Promise<Finding[]> {
+/**
+ * Check HTTPS connectivity by attempting a fetch.
+ * `reachable` is true when the TLS handshake completed (any HTTP response was received, including
+ * redirects/errors); false when the connection failed or timed out.
+ */
+async function checkHttps(domain: string, fetchFn: FetchFunction, timeoutMs: number): Promise<{ findings: Finding[]; reachable: boolean }> {
 	const findings: Finding[] = [];
+	let reachable = false;
 
 	try {
 		const response = await fetchFn(`https://${domain}`, {
@@ -57,6 +64,7 @@ async function checkHttps(domain: string, fetchFn: FetchFunction, timeoutMs: num
 			redirect: 'manual',
 			signal: AbortSignal.timeout(timeoutMs),
 		});
+		reachable = true;
 
 		const isRedirect = response.status >= 300 && response.status < 400;
 		const location = isRedirect ? response.headers.get('location') : null;
@@ -75,7 +83,7 @@ async function checkHttps(domain: string, fetchFn: FetchFunction, timeoutMs: num
 		findings.push(getHttpsErrorFinding(domain, message));
 	}
 
-	return findings;
+	return { findings, reachable };
 }
 
 /** Check if HTTP redirects to HTTPS */
