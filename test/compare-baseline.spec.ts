@@ -202,6 +202,47 @@ describe('formatBaselineResult', () => {
 	});
 });
 
+describe('compare_baseline baseline-type validation', () => {
+	it('rejects a string baseline with a message that redirects to analyze_drift', async () => {
+		const { validateToolArgs } = await import('../src/handlers/tool-args');
+		let message = '';
+		try {
+			validateToolArgs('compare_baseline', { domain: 'example.com', baseline: 'cached' });
+		} catch (err) {
+			message = err instanceof Error ? err.message : String(err);
+		}
+		// Allowlisted prefix preserved (sanitizeErrorMessage requires 'Invalid ').
+		expect(message).toMatch(/^Invalid baseline:/);
+		// Points the confused caller at the right tool.
+		expect(message).toContain('analyze_drift');
+		// Still names this as a policy/requirements object, not a prior scan.
+		expect(message.toLowerCase()).toContain('object');
+	});
+
+	it('still accepts a valid policy-baseline object', async () => {
+		const { validateToolArgs } = await import('../src/handlers/tool-args');
+		const validated = validateToolArgs('compare_baseline', {
+			domain: 'example.com',
+			baseline: { grade: 'B', require_spf: true, max_critical_findings: 0 },
+		});
+		expect((validated.baseline as Record<string, unknown>).grade).toBe('B');
+		expect((validated.baseline as Record<string, unknown>).require_spf).toBe(true);
+	});
+
+	it('still surfaces field-level errors inside the baseline object', async () => {
+		const { validateToolArgs } = await import('../src/handlers/tool-args');
+		let message = '';
+		try {
+			validateToolArgs('compare_baseline', { domain: 'example.com', baseline: { score: 'not-a-number' } });
+		} catch (err) {
+			message = err instanceof Error ? err.message : String(err);
+		}
+		// The object-level custom message must NOT clobber per-field validation.
+		expect(message).not.toContain('analyze_drift');
+		expect(message).toContain('score');
+	});
+});
+
 describe('compare_baseline dispatch', () => {
 	it('is listed by handleToolsList', async () => {
 		const { handleToolsList } = await import('../src/handlers/tools');
