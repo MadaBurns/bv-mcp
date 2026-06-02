@@ -260,6 +260,7 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 	const dkimResult = results.find((r) => r.category === 'dkim');
 	const mtaStsResult = results.find((r) => r.category === 'mta_sts');
 	const bimiResult = results.find((r) => r.category === 'bimi');
+	const dmarcResult = results.find((r) => r.category === 'dmarc');
 
 	// Detect MX presence from the structured controlPresent signal (set by check-mx), not finding
 	// prose. true = real mail-routing MX; false = no MX or null MX (RFC 7505 → not a mail domain);
@@ -305,7 +306,13 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 	const bimiPresent = bimiResult?.controlPresent === true;
 	if (bimiPresent) signals.push('BIMI present');
 
-	const hasHardeningSignal = dkimPresent || mtaStsPresent || bimiPresent;
+	// Enterprise-maturity gate: DMARC is an ACTIVE anti-spoofing control only when enforcing
+	// (check-dmarc sets controlPresent = p=quarantine|reject). Unlike DKIM — which Google Workspace
+	// and M365 auto-provision, so provider+DKIM was nearly automatic — enforcement is a deliberate
+	// policy choice. This is what gates the stricter enterprise_mail lens (was: any one of
+	// DKIM/MTA-STS/BIMI present, which over-fired enterprise_mail on managed-provider SMB domains).
+	const dmarcEnforcing = dmarcResult?.controlPresent === true;
+	if (dmarcEnforcing) signals.push('DMARC enforcing');
 
 	// Detect web indicators: reachable HTTPS / published CAA, again via controlPresent (a sparse
 	// domain whose CAA is "absent-but-passed" must not read as web_only).
@@ -333,7 +340,7 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 	} else if (hasMxUnknown || !hasMx) {
 		// MX lookup failed or no MX result at all → default to mail_enabled (safe fallback)
 		profile = 'mail_enabled';
-	} else if (hasMx && hasEnterpriseProvider && hasHardeningSignal) {
+	} else if (hasMx && hasEnterpriseProvider && dmarcEnforcing) {
 		profile = 'enterprise_mail';
 	} else {
 		profile = 'mail_enabled';

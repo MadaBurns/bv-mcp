@@ -73,6 +73,29 @@ describe('checkDmarc', () => {
 		expect(finding!.severity).toBe('low');
 	});
 
+	// controlPresent = "DMARC is an ACTIVE anti-spoofing control" = enforcing (p=quarantine|reject).
+	// Consumed by detectDomainContext for the enterprise_mail bar (a managed-provider domain is only
+	// scored under the stricter enterprise lens when it enforces DMARC). p=none is monitoring-only.
+	it('sets controlPresent=true for enforcing DMARC (p=reject)', async () => {
+		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:dmarc@example.com']);
+		expect((await run()).controlPresent).toBe(true);
+	});
+
+	it('sets controlPresent=true for enforcing DMARC (p=quarantine)', async () => {
+		mockTxtRecords(['v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com']);
+		expect((await run()).controlPresent).toBe(true);
+	});
+
+	it('sets controlPresent=false for monitoring-only DMARC (p=none)', async () => {
+		mockTxtRecords(['v=DMARC1; p=none; rua=mailto:dmarc@example.com']);
+		expect((await run()).controlPresent).toBe(false);
+	});
+
+	it('sets controlPresent=false when no DMARC record exists', async () => {
+		mockTxtRecords([]);
+		expect((await run()).controlPresent).toBe(false);
+	});
+
 	it('should return info finding for p=reject with rua and sp', async () => {
 		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:dmarc@example.com; ruf=mailto:forensic@example.com']);
 		const result = await run();

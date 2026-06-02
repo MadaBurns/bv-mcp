@@ -29,8 +29,11 @@
  * - 1.1.0 — profile detection now requires an active observed control (`controlPresent`)
  *   instead of bare `passed`/finding prose. Corrects `enterprise_mail` over-fire and
  *   sparse-domain misdetection; per-domain score impact is bounded (~±2 pts).
+ * - 1.2.0 — `enterprise_mail` now requires enforcing DMARC (p=quarantine|reject) behind a
+ *   managed provider, not provider + any one auto-provisioned control (DKIM). Tightens the
+ *   stricter-lens membership; reclassified domains move to `mail_enabled` (slightly more lenient).
  */
-export const SCORING_MODEL_VERSION = '1.1.0';
+export const SCORING_MODEL_VERSION = '1.2.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

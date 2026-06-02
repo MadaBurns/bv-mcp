@@ -91,7 +91,9 @@ export async function checkDMARC(
 	const walk = await dmarcTreeWalk(domain, queryDNS, timeout);
 
 	if (!walk.foundAt) {
-		return buildCheckResult('dmarc', classifyDmarc({ recordCount: 0, policy: null, domain }));
+		// No DMARC record at all → not an active control. controlPresent:false (definitively
+		// absent; a DNS *error* throws out of the tree-walk instead, leaving controlPresent undefined).
+		return buildCheckResult('dmarc', classifyDmarc({ recordCount: 0, policy: null, domain }), false);
 	}
 
 	// A record found above the queried domain is inherited via the org domain.
@@ -148,5 +150,11 @@ export async function checkDMARC(
 	// Closing reassurance finding, evaluated over the COMPLETE finding set.
 	appendDmarcCleanInfo(findings, facts.policy);
 
-	return buildCheckResult('dmarc', findings);
+	// controlPresent = DMARC is an ACTIVE anti-spoofing control = enforcing (p=quarantine|reject).
+	// p=none is monitoring-only (not enforcing → false). Consumed by detectDomainContext as the
+	// enterprise_mail maturity gate. pct< 100 is intentionally not de-rated here, matching the
+	// existing scan post-processing enforcement convention.
+	const dmarcEnforcing = policy === 'quarantine' || policy === 'reject';
+
+	return buildCheckResult('dmarc', findings, dmarcEnforcing);
 }

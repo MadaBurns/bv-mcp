@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **`enterprise_mail` profile now requires enforcing DMARC, not provider + any auto-provisioned control.** The detected profile selects the per-profile scoring weight table, and `enterprise_mail` applies a stricter lens (heavier DMARC/DNSSEC/DKIM weighting). The gate was `enterprise provider + any one of {DKIM, MTA-STS, BIMI} present` — but Google Workspace and M365 auto-provision DKIM, so `provider + DKIM` was nearly automatic and over-classified ordinary managed-mail domains as enterprise. The gate is now `enterprise provider + enforcing DMARC (p=quarantine|reject)` — enforcement is a deliberate maturity choice, never auto-provisioned. `check-dmarc` sets the structured `controlPresent` signal to mean "DMARC is an active anti-spoofing control" (enforcing; `p=none` is monitoring-only → `false`; DNS failure → `undefined`), and `detectDomainContext` reads it (no finding-prose matching). **Measured** on a 379-domain portfolio sample: `enterprise_mail` classification dropped from 248 (65%) to 106 (28%); all reclassified domains move to `mail_enabled` (a slightly more lenient lens) with a **per-domain score impact ≤2 pts (same-config, local measurement)** — the two weight tables are close, and on prod (which overrides core weights via `SCORING_CONFIG`) the profile delta reduces to the protective/hardening weights, so local ≤2 is a conservative upper bound. `SCORING_MODEL_VERSION` → `1.2.0`.
+
 ## [3.8.0] - 2026-06-03
 
 Scoring-honesty release: profile detection now keys on observed controls rather than a `passed` flag or finding prose, and a SERVFAIL apex is reported as a distinct "DNS resolution broken" state instead of a fabricated low score. These **do** shift some per-domain scores (bounded ~±2 pts via profile reselection), so `SCORING_MODEL_VERSION` advances to `1.1.0`.
