@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Documentation
+
+- **Corrected the `CLAUDE.md` rate-limit note to HTTP 429.** The contributor guide stated rate-limit/quota responses were "HTTP 200 + JSON-RPC `code: -32029` — not 429"; in fact every rate-limit and per-tier quota path in `src/mcp/execute.ts` returns `httpStatus: 429` with the JSON-RPC `-32029` error carried in the response body and a `retry-after` header (as asserted by `test/index.spec.ts`). Documentation only — no runtime behavior changed. (#343)
+
 ## [3.6.0] - 2026-06-02
 
 ### Changed
