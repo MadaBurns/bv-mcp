@@ -22,6 +22,20 @@ describe('scoring-model', () => {
 		];
 		expect(computeCategoryScore(findings)).toBe(45);
 	});
+
+	it('honors a numeric metadata.penaltyOverride instead of the severity default', () => {
+		// Decouples the displayed severity from the score penalty: a finding can be
+		// labeled `high` (severity-distribution / triage signal) while still applying
+		// a heavier penalty via penaltyOverride (DNSSEC: high label, −40 penalty).
+		const finding = createFinding('dnssec', 'DNSSEC not enabled', 'high', 'unsigned zone', { penaltyOverride: 40 });
+		// severity 'high' alone would deduct 25 (→ 75); the override forces −40 (→ 60).
+		expect(computeCategoryScore([finding], 'dnssec')).toBe(60);
+	});
+
+	it('falls back to the severity penalty when penaltyOverride is non-numeric', () => {
+		const finding = createFinding('dmarc', 'Missing DMARC', 'high', 'No record found', { penaltyOverride: 'oops' });
+		expect(computeCategoryScore([finding], 'dmarc')).toBe(75);
+	});
 });
 
 describe('CATEGORY_PENALTY_CAPS — subdomain_takeover', () => {

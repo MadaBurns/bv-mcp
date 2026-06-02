@@ -73,21 +73,25 @@ export async function checkDNSSEC(
 
 	// Consolidated finding logic
 	if (!adFlag && dnskeyRecords.length === 0 && dsRecords.length === 0) {
-		// Fully absent — CRITICAL, but NOT a missing-control zero. NIST SP 800-81r3
-		// (Mar 2026) makes DNSSEC a baseline deployment goal and RFC 9364 (BCP 237)
-		// states origin-authentication via DNSSEC is "the best current practice", so an
-		// unsigned PUBLIC zone is a near-failing deficiency (critical, −40 → ~60) — far
-		// heavier than the previous lenient 75. We do NOT set `missingControl: true`
-		// (which would zero the category): DNSSEC is one of several integrity controls,
-		// not a sole baseline, so a heavy proportionate deduction is the faithful read.
-		// The detail text deliberately avoids "no … record / missing / not found" so
-		// `scoreIndicatesMissingControl` cannot auto-zero a critical finding.
+		// Fully absent — HIGH severity, but the SCORE penalty is decoupled to −40 via
+		// `penaltyOverride`. NIST SP 800-81r3 (Mar 2026) makes DNSSEC a baseline
+		// deployment goal and RFC 9364 (BCP 237) states origin-authentication via DNSSEC
+		// is "the best current practice", so an unsigned PUBLIC zone is a near-failing
+		// deficiency (−40 → ~60) — far heavier than the previous lenient 75. The severity
+		// LABEL is `high` (not `critical`): DNSSEC is one of several integrity controls,
+		// not a sole baseline, so it doesn't warrant the top triage tier — but the heavy
+		// proportionate deduction the prior `critical` carried is preserved via the
+		// override, keeping the category score unchanged at 60. We do NOT set
+		// `missingControl: true` (which would zero the category). The detail text
+		// deliberately avoids "no … record / missing / not found" so
+		// `scoreIndicatesMissingControl` cannot auto-zero the finding.
 		findings.push(
 			createFinding(
 				'dnssec',
 				'DNSSEC not enabled',
-				'critical',
+				'high',
 				`DNSSEC is not configured for ${domain}. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.`,
+				{ penaltyOverride: 40 },
 			),
 		);
 	} else if (dnskeyRecords.length > 0 && dsRecords.length === 0) {

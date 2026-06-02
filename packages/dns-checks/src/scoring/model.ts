@@ -80,7 +80,12 @@ function withConfidenceMetadata(finding: Finding): Finding {
 export function computeCategoryScore(findings: Finding[], category?: CheckCategory): number {
 	let penalty = 0;
 	for (const finding of findings) {
-		penalty += SEVERITY_PENALTIES[finding.severity];
+		// `penaltyOverride` decouples the displayed severity from the score penalty:
+		// a finding can carry a triage-facing severity label (e.g. DNSSEC `high`)
+		// while applying a different, fixed deduction. Honored only when numeric;
+		// anything else falls back to the severity default.
+		const override = finding.metadata?.penaltyOverride;
+		penalty += typeof override === 'number' ? override : SEVERITY_PENALTIES[finding.severity];
 	}
 	if (category !== undefined) {
 		const cap = CATEGORY_PENALTY_CAPS[category];

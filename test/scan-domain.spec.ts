@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { env } from 'cloudflare:test';
-import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse, nxdomainResponse } from './helpers/dns-mock';
 import { IN_MEMORY_CACHE, buildScanCacheKey } from '../src/lib/cache';
 import type { ScanDomainResult } from '../src/tools/scan-domain';
 
@@ -516,12 +516,16 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		const result = await run();
 		const dnssec = findCheck(result, 'dnssec');
 		expect(dnssec).toBeDefined();
-		// Fully absent DNSSEC → single CRITICAL finding (NIST SP 800-81r3 / RFC 9364:
-		// unsigned public zone is near-failing; recalibrated down from the prior high).
+		// Fully absent DNSSEC → single HIGH finding with the score penalty decoupled to
+		// 40 via penaltyOverride (category stays 60). NIST SP 800-81r3 / RFC 9364:
+		// unsigned public zone is near-failing, but DNSSEC is one of several integrity
+		// controls so the severity label is `high`, not `critical`.
 		const finding = dnssec!.findings.find((f) => f.severity !== 'info');
 		expect(finding).toBeDefined();
 		expect(finding!.title).toBe('DNSSEC not enabled');
-		expect(finding!.severity).toBe('critical');
+		expect(finding!.severity).toBe('high');
+		expect(finding!.metadata?.penaltyOverride).toBe(40);
+		expect(dnssec!.score).toBe(60);
 	});
 
 	it('passes DNSSEC when AD flag is set', async () => {
@@ -741,6 +745,73 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		expect(cdnFindings).toHaveLength(1);
 		expect(cdnFindings[0].metadata?.cdnProvider).toBe('Imperva');
 		expect(cdnFindings[0].metadata?.confidence).toBeUndefined();
+	});
+});
+
+describe('scanDomain — non-resolving (NXDOMAIN) short-circuit', () => {
+	// A domain that does not exist in DNS returns NXDOMAIN (RCODE 3) for the apex
+	// NS query. Such a domain has no posture to assess — running the full check
+	// matrix and emitting "absence = missing control" findings fabricates a D+/F
+	// for a domain that simply isn't registered. scanDomain probes the apex first
+	// and short-circuits to a dedicated non-resolving result (grade N/A, resolves:false,
+	// no fabricated category scores) instead.
+	function mockNxdomain(domain: string) {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) return Promise.resolve(nxdomainResponse(domain));
+			return Promise.resolve(httpResponse('OK'));
+		});
+	}
+
+	it('returns a non-resolving result (grade N/A, resolves:false, no categories) on NXDOMAIN apex', async () => {
+		mockNxdomain('does-not-exist-zzz.example');
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const result = await scanDomain('does-not-exist-zzz.example', undefined, { forceRefresh: true });
+
+		expect(result.resolves).toBe(false);
+		expect(result.score.grade).toBe('N/A');
+		expect(result.score.overall).toBe(0);
+		// No fabricated per-category scores or findings for a domain that doesn't exist.
+		expect(result.checks).toHaveLength(0);
+		expect(Object.keys(result.score.categoryScores)).toHaveLength(0);
+	});
+
+	it('fails open: a transient NS probe error does NOT abort the scan (falls through to the matrix)', async () => {
+		// The apex probe must never turn a transient NS hiccup into a total scan failure
+		// for a domain that may well be live. When the NS query rejects, the probe is
+		// caught and the full check matrix still runs.
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com') && (url.includes('type=NS') || url.includes('type=2'))) {
+				return Promise.reject(new Error('Simulated transient NS failure'));
+			}
+			if (url.includes('cloudflare-dns.com')) return Promise.resolve(createDohResponse([], []));
+			return Promise.resolve(httpResponse('OK'));
+		});
+		const { scanDomain } = await import('../src/tools/scan-domain');
+
+		// Must resolve (not reject) and must not short-circuit to a non-resolving result.
+		const result = await scanDomain('transient-ns.example', undefined, { forceRefresh: true });
+		expect(result.resolves).not.toBe(false);
+		expect(result.score.grade).not.toBe('N/A');
+		expect(result.checks.length).toBeGreaterThan(0);
+	});
+
+	it('still scores a resolving domain (resolves is true/undefined, not a short-circuit)', async () => {
+		// SERVFAIL / transient must NOT short-circuit; a normal NOERROR apex scores as usual.
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com') && (url.includes('type=NS') || url.includes('type=2'))) {
+				return Promise.resolve(nsResponse('resolves.example', ['ns1.resolves.example.', 'ns2.resolves.example.']));
+			}
+			if (url.includes('cloudflare-dns.com')) return Promise.resolve(createDohResponse([], []));
+			return Promise.resolve(httpResponse('OK'));
+		});
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const result = await scanDomain('resolves.example', undefined, { forceRefresh: true });
+
+		expect(result.resolves).not.toBe(false);
+		expect(result.checks.length).toBeGreaterThan(0);
 	});
 });
 

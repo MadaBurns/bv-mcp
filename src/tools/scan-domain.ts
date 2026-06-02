@@ -34,6 +34,7 @@ import {
 import { applyInteractionPenalties, type InteractionEffect } from '../lib/category-interactions';
 import { buildCheckCacheKey, buildScanCacheKey, cacheGet, cacheSet, runWithCache } from '../lib/cache';
 import type { QueryDnsOptions } from '../lib/dns-types';
+import { queryDns } from '../lib/dns';
 import { checkSpf } from './check-spf';
 import { checkDmarc } from './check-dmarc';
 import { checkDkim, applyProviderDkimContext } from './check-dkim';
@@ -96,6 +97,13 @@ export interface ScanDomainResult {
 	adaptiveWeightDeltas: Record<string, number> | null;
 	/** Category interaction effects applied as post-scoring adjustments. Empty when no interactions triggered. */
 	interactionEffects: InteractionEffect[];
+	/**
+	 * False when the apex returned NXDOMAIN — the domain does not exist in DNS and
+	 * was not scored (no posture to assess). Absent/true for domains that resolve.
+	 * Aggregators should exclude `resolves === false` results rather than averaging
+	 * their grade N/A into a population score.
+	 */
+	resolves?: boolean;
 }
 
 /**
@@ -144,6 +152,49 @@ function buildUnscoredResult(domain: string, checkResults: CheckResult[], reason
 		scoringNote: reason,
 		adaptiveWeightDeltas: null,
 		interactionEffects: [],
+	};
+}
+
+/**
+ * Build a result for a domain that does not exist in DNS (apex NXDOMAIN).
+ *
+ * Unlike {@link buildUnscoredResult} (checks ran, scoring failed), here the
+ * checks never run: a non-existent domain has no security posture to assess, and
+ * running the matrix would only fabricate "absence = missing control" findings —
+ * producing a misleading D+/F for a domain that simply isn't registered. We emit
+ * NO findings and NO per-category scores; grade is `N/A` and `resolves` is false
+ * so aggregators exclude it rather than averaging it in.
+ */
+function buildNonResolvingResult(domain: string): ScanDomainResult {
+	const reason = `${domain} does not resolve (NXDOMAIN) — the domain does not exist in DNS, so there is no security posture to assess.`;
+	return {
+		domain,
+		score: {
+			overall: 0,
+			grade: 'N/A',
+			categoryScores: {} as Record<CheckCategory, number>,
+			findings: [],
+			summary: reason,
+		},
+		checks: [],
+		maturity: {
+			stage: 0,
+			label: 'Does not resolve',
+			description: reason,
+			nextStep: 'Confirm the domain is registered and has authoritative nameservers. If it was recently registered, DNS may not have propagated yet.',
+		},
+		context: {
+			profile: 'mail_enabled',
+			signals: ['domain does not resolve (NXDOMAIN)'],
+			weights: {} as DomainContext['weights'],
+			detectedProvider: null,
+		},
+		cached: false,
+		timestamp: new Date().toISOString(),
+		scoringNote: reason,
+		adaptiveWeightDeltas: null,
+		interactionEffects: [],
+		resolves: false,
 	};
 }
 
@@ -297,6 +348,24 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		queryCache: new Map(),
 		secondaryDoh: runtimeOptions?.secondaryDoh,
 	};
+
+	// Non-resolving short-circuit: probe the apex NS before fanning out. A definitive
+	// NXDOMAIN (RCODE 3) means the domain does not exist — scoring it would fabricate a
+	// posture for an unregistered name, so we return a dedicated non-resolving result.
+	// Fail-open by design: only a confirmed NXDOMAIN short-circuits. Timeouts/network
+	// errors throw (caught here) and SERVFAIL/NOERROR fall through to the normal matrix —
+	// a transient or DNSSEC-bogus failure must never be mistaken for "does not exist".
+	// The NS lookup populates scanDns.queryCache, so the `ns` check reuses it (no double query).
+	if (!isAuthoritativeInfraProfile) {
+		try {
+			const apex = await queryDns(domain, 'NS', false, scanDns);
+			if (apex.Status === 3) {
+				return buildNonResolvingResult(domain);
+			}
+		} catch {
+			// Transient probe failure — fall through and let the full matrix run.
+		}
+	}
 
 	const forceRefresh = runtimeOptions?.forceRefresh;
 	const cacheTtl = runtimeOptions?.cacheTtlSeconds;

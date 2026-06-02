@@ -3,6 +3,42 @@ import { buildStructuredScanResult, formatScanReport } from '../src/tools/scan/f
 import type { ScanDomainResult } from '../src/tools/scan-domain';
 
 describe('format-scan-report', () => {
+	it('tolerates a non-resolving result (empty checks/categoryScores/findings)', () => {
+		// Mirrors buildNonResolvingResult: grade N/A, resolves:false, nothing scored.
+		// Both formatters must iterate empty collections without indexing a fixed
+		// category and without throwing.
+		const result: ScanDomainResult = {
+			domain: 'does-not-exist-zzz.example',
+			score: {
+				overall: 0,
+				grade: 'N/A',
+				categoryScores: {} as ScanDomainResult['score']['categoryScores'],
+				findings: [],
+				summary: 'does-not-exist-zzz.example does not resolve (NXDOMAIN) — the domain does not exist in DNS, so there is no security posture to assess.',
+			},
+			checks: [],
+			maturity: { stage: 0, label: 'Does not resolve', description: 'no posture', nextStep: 'Confirm the domain is registered.' },
+			context: { profile: 'mail_enabled', signals: ['domain does not resolve (NXDOMAIN)'], weights: {} as never, detectedProvider: null },
+			cached: false,
+			timestamp: '2026-06-02T00:00:00.000Z',
+			scoringNote: 'does not resolve',
+			adaptiveWeightDeltas: null,
+			interactionEffects: [],
+			resolves: false,
+		};
+
+		const report = formatScanReport(result);
+		expect(report).toContain('Overall Score: 0/100 (N/A)');
+		expect(report).toContain('does not resolve');
+
+		const structured = buildStructuredScanResult(result);
+		expect(structured.grade).toBe('N/A');
+		expect(structured.passed).toBe(false);
+		expect(Object.keys(structured.categoryScores)).toHaveLength(0);
+		expect(structured.findingCounts).toEqual({ critical: 0, high: 0, medium: 0, low: 0 });
+		expect(structured.notApplicableCategories).toHaveLength(0);
+	});
+
 	it('renders scan summaries without changing report structure', () => {
 		const result: ScanDomainResult = {
 			domain: 'example.com',

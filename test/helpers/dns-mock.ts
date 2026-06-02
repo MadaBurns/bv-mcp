@@ -17,6 +17,8 @@ export function setupFetchMock() {
 
 interface DohResponseOptions {
 	ad?: boolean;
+	/** DNS RCODE. Defaults to 0 (NOERROR). Use 3 for NXDOMAIN, 2 for SERVFAIL. */
+	status?: number;
 }
 
 /**
@@ -29,7 +31,7 @@ export function createDohResponse(
 	options?: DohResponseOptions,
 ) {
 	const json = {
-		Status: 0,
+		Status: options?.status ?? 0,
 		TC: false,
 		RD: true,
 		RA: true,
@@ -95,6 +97,11 @@ export function nsResponse(domain: string, nameservers: string[]) {
 		[{ name: domain, type: 2 }],
 		nameservers.map((data) => ({ name: domain, type: 2, TTL: 300, data })),
 	);
+}
+
+/** Build an NXDOMAIN (RCODE 3) DoH response — the domain does not exist. */
+export function nxdomainResponse(domain: string, type = 2) {
+	return createDohResponse([{ name: domain, type }], [], { status: 3 });
 }
 
 /** Build a DoH response containing CAA records for a domain. */
