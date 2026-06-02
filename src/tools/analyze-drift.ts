@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * Drift analysis tool.
- * Compares a domain's current security posture against a previous baseline ScanScore.
- * Diffs score, findings, and category scores, then classifies drift direction.
+ * Drift analysis tool (drift-over-time).
+ *
+ * Here "baseline" is a **prior-scan reference** — a previous ScanScore JSON
+ * string, or the literal `"cached"` to reuse the last cached scan — answering
+ * "how has this domain changed vs a prior scan?". It diffs score, findings, and
+ * category scores against the current posture, then classifies drift direction.
+ *
+ * This is NOT a policy/requirements object. For compliance enforcement against
+ * required controls (grade/score floors, `require_*` flags), use the
+ * `compare_baseline` tool, whose `baseline` parameter is an object, not a string.
  */
 
 import type { OutputFormat } from '../handlers/tool-args';
