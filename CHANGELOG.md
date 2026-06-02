@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-06-03
+
+Scoring-policy release: the `enterprise_mail` profile gate now requires enforcing DMARC behind a managed provider rather than any auto-provisioned control. This reselects the per-profile weight table for a large share of managed-mail domains (membership shift only — the scoring math is unchanged), so per-domain scores move within a bounded band and `SCORING_MODEL_VERSION` advances to `1.2.0`.
+
 ### Changed
 
 - **`enterprise_mail` profile now requires enforcing DMARC, not provider + any auto-provisioned control.** The detected profile selects the per-profile scoring weight table, and `enterprise_mail` applies a stricter lens (heavier DMARC/DNSSEC/DKIM weighting). The gate was `enterprise provider + any one of {DKIM, MTA-STS, BIMI} present` — but Google Workspace and M365 auto-provision DKIM, so `provider + DKIM` was nearly automatic and over-classified ordinary managed-mail domains as enterprise. The gate is now `enterprise provider + enforcing DMARC (p=quarantine|reject)` — enforcement is a deliberate maturity choice, never auto-provisioned. `check-dmarc` sets the structured `controlPresent` signal to mean "DMARC is an active anti-spoofing control" (enforcing; `p=none` is monitoring-only → `false`; DNS failure → `undefined`), and `detectDomainContext` reads it (no finding-prose matching). **Measured** on a 379-domain portfolio sample: `enterprise_mail` classification dropped from 248 (65%) to 106 (28%); all reclassified domains move to `mail_enabled` (a slightly more lenient lens) with a **per-domain score impact ≤2 pts (same-config, local measurement)** — the two weight tables are close, and on prod (which overrides core weights via `SCORING_CONFIG`) the profile delta reduces to the protective/hardening weights, so local ≤2 is a conservative upper bound. `SCORING_MODEL_VERSION` → `1.2.0`.
