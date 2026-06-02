@@ -15,6 +15,7 @@ import {
 	type CheckResult,
 	type DomainContext,
 	type DomainProfile,
+	type Finding,
 	type ScanScore,
 	buildCheckResult,
 	computeProfileAwareScanScore,
@@ -95,6 +96,55 @@ export interface ScanDomainResult {
 	adaptiveWeightDeltas: Record<string, number> | null;
 	/** Category interaction effects applied as post-scoring adjustments. Empty when no interactions triggered. */
 	interactionEffects: InteractionEffect[];
+}
+
+/**
+ * Build a degraded scan result when the scoring path itself fails — e.g. a
+ * runtime/bundle error such as the production "m5 is not defined" ReferenceError
+ * thrown from a stale bundle.
+ *
+ * The checks already ran successfully, so we preserve their findings and
+ * per-category scores and surface them to the operator; only the weighted
+ * overall score and grade are marked unavailable. This converts a total scan
+ * failure (a generic "unexpected error" for every domain) into a graceful
+ * degradation. Deliberately calls NO scoring-package function, since the
+ * scoring package is exactly what failed.
+ */
+function buildUnscoredResult(domain: string, checkResults: CheckResult[], reason: string): ScanDomainResult {
+	const categoryScores = {} as Record<CheckCategory, number>;
+	const findings: Finding[] = [];
+	for (const check of checkResults) {
+		categoryScores[check.category] = check.score;
+		findings.push(...check.findings);
+	}
+	return {
+		domain,
+		score: {
+			overall: 0,
+			grade: 'N/A',
+			categoryScores,
+			findings,
+			summary: reason,
+		},
+		checks: checkResults,
+		maturity: {
+			stage: 0,
+			label: 'Unscored',
+			description: reason,
+			nextStep: 'Re-run the scan. If the score stays unavailable, the scoring service is degraded — check the deployment.',
+		},
+		context: {
+			profile: 'mail_enabled',
+			signals: ['scoring unavailable — degraded result'],
+			weights: {} as DomainContext['weights'],
+			detectedProvider: null,
+		},
+		cached: false,
+		timestamp: new Date().toISOString(),
+		scoringNote: reason,
+		adaptiveWeightDeltas: null,
+		interactionEffects: [],
+	};
 }
 
 /**
@@ -562,26 +612,45 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				return status ? { ...r, score: 0, checkStatus: status } : r;
 			});
 		}
-		const fallbackScoring = computeProfileAwareScanScore(checkResults, {
-			profile: isExplicit ? (explicitProfile as DomainProfile) : 'auto',
-			config: runtimeOptions?.scoringConfig,
-		});
-		const fallbackContext = fallbackScoring.context;
-		const score = fallbackScoring.score;
-		const rawMaturity = computeMaturityStage(checkResults, fallbackContext?.profile);
-		const maturity = capMaturityStage(rawMaturity, score.overall);
-		result = {
-			domain,
-			score,
-			checks: checkResults,
-			maturity,
-			context: fallbackContext,
-			cached: false,
-			timestamp: new Date().toISOString(),
-			scoringNote: 'Post-processing encountered an error; results may be approximate',
-			adaptiveWeightDeltas: null,
-			interactionEffects: [],
-		};
+		// Defense-in-depth: the fallback re-runs the SAME scoring call, so if the
+		// scoring path itself is what failed (e.g. the prod "m5 is not defined"
+		// ReferenceError from a stale bundle), this would throw again and — with no
+		// outer try/catch — crash the whole scan into a generic handler error for
+		// every domain. Guard it so a scoring failure degrades to an unscored
+		// result (findings preserved) instead of taking down the entire tool.
+		try {
+			const fallbackScoring = computeProfileAwareScanScore(checkResults, {
+				profile: isExplicit ? (explicitProfile as DomainProfile) : 'auto',
+				config: runtimeOptions?.scoringConfig,
+			});
+			const fallbackContext = fallbackScoring.context;
+			const score = fallbackScoring.score;
+			const rawMaturity = computeMaturityStage(checkResults, fallbackContext?.profile);
+			const maturity = capMaturityStage(rawMaturity, score.overall);
+			result = {
+				domain,
+				score,
+				checks: checkResults,
+				maturity,
+				context: fallbackContext,
+				cached: false,
+				timestamp: new Date().toISOString(),
+				scoringNote: 'Post-processing encountered an error; results may be approximate',
+				adaptiveWeightDeltas: null,
+				interactionEffects: [],
+			};
+		} catch (scoringError) {
+			logError(scoringError instanceof Error ? scoringError : String(scoringError), {
+				category: 'scan-domain',
+				domain,
+				details: { phase: 'scoring-fallback', checksCompleted: checkResults.length },
+			});
+			result = buildUnscoredResult(
+				domain,
+				checkResults,
+				'Scoring unavailable — the security checks completed but the overall score could not be computed.',
+			);
+		}
 	}
 
 	// Cache the result (use configurable TTL if provided)
