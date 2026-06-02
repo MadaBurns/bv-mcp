@@ -65,6 +65,14 @@ export interface QueryDnsOptions {
 	confirmWithSecondaryOnEmpty?: boolean;
 	/** When true, skip secondary resolver confirmation on empty results. Used in scan context for speed. */
 	skipSecondaryConfirmation?: boolean;
+	/**
+	 * When true, send the DoH `cd=1` flag (Checking Disabled) so the resolver
+	 * returns the answer WITHOUT performing DNSSEC validation. Used to
+	 * distinguish a DNSSEC-bogus zone (resolves only with validation off) from a
+	 * genuinely broken/lame delegation. Independent of `dnssecCheck`; when set it
+	 * takes precedence over `dnssecCheck`'s `cd=0`.
+	 */
+	checkingDisabled?: boolean;
 	/** Scan-scoped DNS query cache. Stores Promises keyed by `domain:type:dnssecCheck` to deduplicate concurrent and sequential identical queries within a single scan. */
 	queryCache?: Map<string, Promise<DohResponse>>;
 	/** Custom secondary DoH resolver. When set, used instead of Google DoH for empty-result confirmation. Falls back to Google if this resolver fails. */

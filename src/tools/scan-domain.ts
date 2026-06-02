@@ -98,12 +98,17 @@ export interface ScanDomainResult {
 	/** Category interaction effects applied as post-scoring adjustments. Empty when no interactions triggered. */
 	interactionEffects: InteractionEffect[];
 	/**
-	 * False when the apex returned NXDOMAIN — the domain does not exist in DNS and
-	 * was not scored (no posture to assess). Absent/true for domains that resolve.
-	 * Aggregators should exclude `resolves === false` results rather than averaging
-	 * their grade N/A into a population score.
+	 * Tri-state resolution signal:
+	 * - absent/`true` — domain resolves and was scored normally.
+	 * - `false` — apex returned NXDOMAIN; the domain does not exist in DNS and was
+	 *   not scored (no posture to assess).
+	 * - `'broken'` — apex returned SERVFAIL; the zone exists but cannot be resolved
+	 *   (DNSSEC-bogus or lame/broken delegation). Not scored — see
+	 *   {@link buildDnsBrokenResult}.
+	 * Aggregators should exclude `resolves === false` and `resolves === 'broken'`
+	 * results rather than averaging their grade N/A into a population score.
 	 */
-	resolves?: boolean;
+	resolves?: boolean | 'broken';
 }
 
 /**
@@ -195,6 +200,67 @@ function buildNonResolvingResult(domain: string): ScanDomainResult {
 		adaptiveWeightDeltas: null,
 		interactionEffects: [],
 		resolves: false,
+	};
+}
+
+/** Kinds of broken DNS resolution distinguished by the SERVFAIL apex probe. */
+type DnsBrokenKind = 'dnssec_bogus' | 'unresolvable';
+
+/**
+ * Build a result for a domain whose apex SERVFAILs — the zone is delegated but
+ * cannot be resolved. Distinct from {@link buildNonResolvingResult} (NXDOMAIN,
+ * the name does not exist) and from a normal scored result.
+ *
+ * Two sub-states, both confirmed (never inferred from a single transient query):
+ * - `dnssec_bogus`: the validating apex query SERVFAILs but a checking-disabled
+ *   (`cd=1`) retry succeeds — the zone resolves only with DNSSEC validation off,
+ *   so its signatures are bogus/expired.
+ * - `unresolvable`: BOTH the validating query and the `cd=1` retry SERVFAIL — a
+ *   persistent broken/lame delegation, not a DNSSEC issue.
+ *
+ * Like the non-resolving case, we emit NO findings and NO per-category scores:
+ * a zone we cannot resolve has no measurable posture, and running the matrix
+ * would only fabricate "absence = missing control" findings. Grade is `N/A`
+ * and `resolves` is `'broken'` so aggregators exclude it.
+ */
+function buildDnsBrokenResult(domain: string, kind: DnsBrokenKind): ScanDomainResult {
+	const reason =
+		kind === 'dnssec_bogus'
+			? `${domain} DNS resolution is broken: the zone fails DNSSEC validation (resolves only with validation disabled). Until the DNSSEC chain is fixed, validating resolvers return SERVFAIL and the domain is effectively unreachable — so there is no measurable security posture to assess.`
+			: `${domain} DNS resolution is broken: the apex returns SERVFAIL and the zone is unresolvable (broken or lame delegation). With no resolvable records there is no security posture to assess.`;
+	const nextStep =
+		kind === 'dnssec_bogus'
+			? 'Fix the DNSSEC chain (re-sign the zone / update DS at the parent) or, if DNSSEC is not intended, remove the DS records so the zone resolves cleanly. Then re-run the scan.'
+			: 'Confirm the delegation is healthy: the parent NS records point at authoritative nameservers that answer for the zone. Once the zone resolves, re-run the scan.';
+	const signal = kind === 'dnssec_bogus' ? 'DNS resolution broken (DNSSEC validation failure)' : 'DNS resolution broken (unresolvable delegation)';
+	return {
+		domain,
+		score: {
+			overall: 0,
+			grade: 'N/A',
+			categoryScores: {} as Record<CheckCategory, number>,
+			findings: [],
+			summary: reason,
+		},
+		checks: [],
+		maturity: {
+			stage: 0,
+			label: 'DNS resolution broken',
+			description: reason,
+			nextStep,
+		},
+		context: {
+			profile: 'mail_enabled',
+			signals: [signal],
+			weights: {} as DomainContext['weights'],
+			detectedProvider: null,
+		},
+		cached: false,
+		timestamp: new Date().toISOString(),
+		scoringNote: reason,
+		adaptiveWeightDeltas: null,
+		interactionEffects: [],
+		resolves: 'broken',
 	};
 }
 
@@ -349,12 +415,30 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		secondaryDoh: runtimeOptions?.secondaryDoh,
 	};
 
-	// Non-resolving short-circuit: probe the apex NS before fanning out. A definitive
-	// NXDOMAIN (RCODE 3) means the domain does not exist — scoring it would fabricate a
-	// posture for an unregistered name, so we return a dedicated non-resolving result.
-	// Fail-open by design: only a confirmed NXDOMAIN short-circuits. Timeouts/network
-	// errors throw (caught here) and SERVFAIL/NOERROR fall through to the normal matrix —
-	// a transient or DNSSEC-bogus failure must never be mistaken for "does not exist".
+	// Apex-state short-circuit: probe the apex NS before fanning out, to separate
+	// "can't resolve the zone" from "resolves but insecure".
+	//
+	// - NXDOMAIN (RCODE 3): the domain does not exist — scoring it would fabricate a
+	//   posture for an unregistered name, so we return a dedicated non-resolving result.
+	//
+	// - SERVFAIL (RCODE 2): the zone is delegated but the validating query failed.
+	//   This is EITHER a DNSSEC-bogus zone OR a broken/lame delegation. We disambiguate
+	//   with a SECOND apex query that disables DNSSEC checking (cd=1), using a FRESH
+	//   queryCache so it can't return the already-cached SERVFAIL (the cache key now
+	//   also distinguishes cd=1, but a fresh map is the belt-and-suspenders guard, as
+	//   in runCheckRetry). Transient-vs-persistent rule: we only short-circuit on a
+	//   CONFIRMING signal, never on a single hiccup. A clean SERVFAIL on the validating
+	//   query PLUS a successful cd=1 retry ⇒ dnssec_bogus (confirmed: resolves only with
+	//   validation off). SERVFAIL on BOTH (or the retry errors) ⇒ unresolvable (confirmed
+	//   persistent). If the retry instead returns NOERROR because the original SERVFAIL
+	//   was a transient hiccup, it lands in the dnssec_bogus branch — acceptable, since
+	//   the only way the retry succeeds is the zone genuinely answering with validation
+	//   off; a flaky-then-clear validating result would more naturally re-SERVFAIL here
+	//   too. Crucially, if the FIRST query throws/times out (not a clean RCODE 2), we keep
+	//   the fail-open behavior and fall through to the matrix — a transport hiccup must
+	//   never be mistaken for "does not exist" or "broken".
+	//
+	// Fail-open by design otherwise: NOERROR falls through to the normal matrix.
 	// The NS lookup populates scanDns.queryCache, so the `ns` check reuses it (no double query).
 	if (!isAuthoritativeInfraProfile) {
 		try {
@@ -362,8 +446,24 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			if (apex.Status === 3) {
 				return buildNonResolvingResult(domain);
 			}
+			if (apex.Status === 2) {
+				// CD-disabled retry on a fresh cache (no cd=0/default collision).
+				try {
+					const cdDisabled = await queryDns(domain, 'NS', false, {
+						...scanDns,
+						checkingDisabled: true,
+						queryCache: new Map(),
+					});
+					// Resolves only with validation off ⇒ DNSSEC-bogus; still SERVFAIL/other ⇒ unresolvable.
+					return buildDnsBrokenResult(domain, cdDisabled.Status === 0 ? 'dnssec_bogus' : 'unresolvable');
+				} catch {
+					// The confirming retry itself failed transport-wise — treat the
+					// confirmed validating-SERVFAIL as a persistent unresolvable delegation.
+					return buildDnsBrokenResult(domain, 'unresolvable');
+				}
+			}
 		} catch {
-			// Transient probe failure — fall through and let the full matrix run.
+			// Transient probe failure on the FIRST query — fall through and let the full matrix run.
 		}
 	}
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { env } from 'cloudflare:test';
-import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse, nxdomainResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse, nxdomainResponse, servfailResponse } from './helpers/dns-mock';
 import { IN_MEMORY_CACHE, buildScanCacheKey } from '../src/lib/cache';
 import type { ScanDomainResult } from '../src/tools/scan-domain';
 
@@ -811,6 +811,95 @@ describe('scanDomain — non-resolving (NXDOMAIN) short-circuit', () => {
 		const result = await scanDomain('resolves.example', undefined, { forceRefresh: true });
 
 		expect(result.resolves).not.toBe(false);
+		expect(result.checks.length).toBeGreaterThan(0);
+	});
+});
+
+describe('scanDomain — SERVFAIL "DNS resolution broken" state', () => {
+	// A persistently-SERVFAIL apex (RCODE 2) means the zone exists at the parent
+	// but cannot be resolved — either DNSSEC validation fails (bogus) or the
+	// delegation is lame/broken. Running the full check matrix would fabricate a
+	// D+/F "misconfigured" posture, conflating "can't resolve" with "insecure".
+	// scanDomain distinguishes these via a CD-disabled (cd=1) retry of the apex.
+
+	it('case 1: apex SERVFAIL + CD-disabled retry SUCCEEDS → dnssec_bogus broken state', async () => {
+		// Validating query SERVFAILs; the cd=1 (checking-disabled) retry succeeds.
+		// The zone resolves only with validation off ⇒ DNSSEC-bogus (confirmed).
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com') && (url.includes('type=NS') || url.includes('type=2'))) {
+				if (url.includes('cd=1')) {
+					return Promise.resolve(nsResponse('bogus-dnssec.example', ['ns1.bogus-dnssec.example.', 'ns2.bogus-dnssec.example.']));
+				}
+				return Promise.resolve(servfailResponse('bogus-dnssec.example'));
+			}
+			if (url.includes('cloudflare-dns.com')) return Promise.resolve(createDohResponse([], []));
+			return Promise.resolve(httpResponse('OK'));
+		});
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const result = await scanDomain('bogus-dnssec.example', undefined, { forceRefresh: true });
+
+		expect(result.resolves).toBe('broken');
+		expect(result.score.grade).toBe('N/A');
+		expect(result.score.overall).toBe(0);
+		expect(result.maturity.label).toBe('DNS resolution broken');
+		expect(result.maturity.description).toMatch(/DNSSEC/i);
+		// No fabricated check findings for a zone that can't be resolved.
+		expect(result.checks).toHaveLength(0);
+		expect(Object.keys(result.score.categoryScores)).toHaveLength(0);
+	});
+
+	it('case 2: apex SERVFAIL on BOTH queries → unresolvable broken state', async () => {
+		// Both the validating query and the cd=1 retry SERVFAIL ⇒ persistent
+		// non-resolution (lame/broken delegation), not a DNSSEC issue.
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com') && (url.includes('type=NS') || url.includes('type=2'))) {
+				return Promise.resolve(servfailResponse('lame-delegation.example'));
+			}
+			if (url.includes('cloudflare-dns.com')) return Promise.resolve(createDohResponse([], []));
+			return Promise.resolve(httpResponse('OK'));
+		});
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const result = await scanDomain('lame-delegation.example', undefined, { forceRefresh: true });
+
+		expect(result.resolves).toBe('broken');
+		expect(result.score.grade).toBe('N/A');
+		expect(result.maturity.label).toBe('DNS resolution broken');
+		expect(result.maturity.description).toMatch(/unresolvable|delegation/i);
+		expect(result.checks).toHaveLength(0);
+		expect(Object.keys(result.score.categoryScores)).toHaveLength(0);
+	});
+
+	it('case 3 (regression): apex NXDOMAIN still → resolves:false, "Does not resolve"', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) return Promise.resolve(nxdomainResponse('nope-zzz.example'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const result = await scanDomain('nope-zzz.example', undefined, { forceRefresh: true });
+
+		expect(result.resolves).toBe(false);
+		expect(result.maturity.label).toBe('Does not resolve');
+		expect(result.score.grade).toBe('N/A');
+	});
+
+	it('case 4 (regression): apex NOERROR → proceeds to full matrix, scored normally', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com') && (url.includes('type=NS') || url.includes('type=2'))) {
+				return Promise.resolve(nsResponse('normal.example', ['ns1.normal.example.', 'ns2.normal.example.']));
+			}
+			if (url.includes('cloudflare-dns.com')) return Promise.resolve(createDohResponse([], []));
+			return Promise.resolve(httpResponse('OK'));
+		});
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const result = await scanDomain('normal.example', undefined, { forceRefresh: true });
+
+		expect(result.resolves).not.toBe('broken');
+		expect(result.resolves).not.toBe(false);
+		expect(result.score.grade).not.toBe('N/A');
 		expect(result.checks.length).toBeGreaterThan(0);
 	});
 });
