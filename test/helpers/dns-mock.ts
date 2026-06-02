@@ -104,6 +104,16 @@ export function nxdomainResponse(domain: string, type = 2) {
 	return createDohResponse([{ name: domain, type }], [], { status: 3 });
 }
 
+/**
+ * Build a SERVFAIL (RCODE 2) DoH response — the resolver failed to answer.
+ * Mirrors {@link nxdomainResponse} but with `status: 2`. A SERVFAIL on a
+ * DNSSEC-validating resolver typically means the zone is bogus (signature
+ * validation failed) or the delegation is lame/broken.
+ */
+export function servfailResponse(domain: string, type = 2) {
+	return createDohResponse([{ name: domain, type }], [], { status: 2 });
+}
+
 /** Build a DoH response containing CAA records for a domain. */
 export function caaResponse(domain: string, records: string[]) {
 	return createDohResponse(

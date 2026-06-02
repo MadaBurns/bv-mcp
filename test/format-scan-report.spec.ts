@@ -257,6 +257,46 @@ describe('format-scan-report', () => {
 		expect(Object.prototype.hasOwnProperty.call(noResolves, 'resolves')).toBe(false);
 	});
 
+	it("passes through resolves:'broken' and renders the broken result without throwing", () => {
+		// Mirrors buildDnsBrokenResult: grade N/A, empty checks/categoryScores/findings,
+		// resolves:'broken'. The tri-state value must pass through buildStructuredScanResult
+		// and both formatters must render it without indexing a fixed category.
+		const result: ScanDomainResult = {
+			domain: 'broken-dnssec.example',
+			score: {
+				overall: 0,
+				grade: 'N/A',
+				categoryScores: {} as ScanDomainResult['score']['categoryScores'],
+				findings: [],
+				summary: 'broken-dnssec.example DNS resolution is broken (DNSSEC validation failure).',
+			},
+			checks: [],
+			maturity: {
+				stage: 0,
+				label: 'DNS resolution broken',
+				description: 'DNSSEC validation failure',
+				nextStep: 'Fix or remove the broken DNSSEC chain.',
+			},
+			context: { profile: 'mail_enabled', signals: ['DNS resolution broken'], weights: {} as never, detectedProvider: null },
+			cached: false,
+			timestamp: '2026-06-02T00:00:00.000Z',
+			scoringNote: 'DNS resolution broken',
+			adaptiveWeightDeltas: null,
+			interactionEffects: [],
+			resolves: 'broken',
+		};
+
+		const structured = buildStructuredScanResult(result);
+		expect(structured.resolves).toBe('broken');
+		expect(structured.grade).toBe('N/A');
+		expect(structured.passed).toBe(false);
+		expect(Object.keys(structured.categoryScores)).toHaveLength(0);
+
+		const report = formatScanReport(result);
+		expect(report).toContain('Overall Score: 0/100 (N/A)');
+		expect(report).toContain('DNS resolution');
+	});
+
 	it('full report footer shows the scoring-model version; compact omits it', () => {
 		const result = {
 			domain: 'footer.com',
