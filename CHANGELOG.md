@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-06-03
+
+Scoring-output transparency and DNS-integrity severity refinement. No domain scores or grades change in this release: the DNSSEC reclassification adjusts a severity *label* only (the −40 score penalty is preserved), and the new scan-output fields are additive.
+
 ### Added
 
 - **Scan output now carries a scoring-model version + config fingerprint.** Every structured scan result includes `scoringModelVersion` (a semver for the scoring *policy*, distinct from the package/server version — bump it whenever weights, thresholds, severities, or the `passed` rule change) and `scoringConfigHash` (a deterministic FNV-1a fingerprint of the effective `SCORING_CONFIG`, so an override is captured). The full human-readable report gains a `Scoring model: v<X>` footer. This makes "the numbers moved between two scans" explainable by design — a dated report records exactly which scoring policy produced it. Inaugural version: `1.0.0`. (`src/lib/scoring-version.ts`)
