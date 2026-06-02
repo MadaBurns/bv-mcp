@@ -247,28 +247,6 @@ const ENTERPRISE_PROVIDERS = [
 	'barracuda',
 ];
 
-/** Matches finding titles/details that signal an ABSENCE of a record rather than its presence. */
-const ABSENCE_PATTERN = /(no\s+\w+\s+record|not\s+found|missing|absent|no\s+record|none\s+found)/;
-
-/**
- * Whether a check result carries POSITIVE evidence that a control is actually present.
- *
- * A bare `passed === true` is insufficient: `buildCheckResult(cat, [])` (no record observed,
- * nothing to fail) also yields `passed === true`. Crediting that as "present" lets a domain with
- * no records masquerade as a hardened profile (web_only) or over-fire into enterprise_mail.
- *
- * Require: the check passed, at least one finding exists, and not every finding is an
- * absence/missing marker (or a `missingControl` metadata flag).
- */
-function hasPositiveEvidence(result: CheckResult | undefined): boolean {
-	if (!result || !result.passed || result.findings.length === 0) return false;
-	return result.findings.some((f) => {
-		if (f.metadata?.missingControl === true) return false;
-		const text = `${f.title} ${f.detail}`.toLowerCase();
-		return !ABSENCE_PATTERN.test(text);
-	});
-}
-
 /**
  * Detect domain context from completed check results.
  * Pure function — reads findings metadata only, no DNS queries.
@@ -326,23 +304,26 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 		}
 	}
 
-	// Detect hardening signals (DKIM present, MTA-STS present, BIMI present).
-	// Require POSITIVE evidence (an observed record), not merely the absence of a failure —
-	// a check with no findings "passes" but proves nothing.
-	const dkimPresent = hasPositiveEvidence(dkimResult);
+	// Detect hardening signals (DKIM present, MTA-STS present, BIMI present)
+	const dkimPresent = dkimResult
+		? !dkimResult.findings.some((f) => {
+				const text = `${f.title} ${f.detail}`.toLowerCase();
+				return /(no\s+dkim|not\s+found|missing)/.test(text) && f.severity !== 'info';
+			})
+		: false;
 	if (dkimPresent && hasMx) signals.push('DKIM present');
 
-	const mtaStsPresent = hasPositiveEvidence(mtaStsResult);
+	const mtaStsPresent = mtaStsResult ? mtaStsResult.passed : false;
 	if (mtaStsPresent) signals.push('MTA-STS present');
 
-	const bimiPresent = hasPositiveEvidence(bimiResult);
+	const bimiPresent = bimiResult ? bimiResult.passed : false;
 	if (bimiPresent) signals.push('BIMI present');
 
 	const hasHardeningSignal = dkimPresent || mtaStsPresent || bimiPresent;
 
-	// Detect web indicators — likewise require positive evidence.
-	const sslPass = hasPositiveEvidence(sslResult);
-	const caaPass = hasPositiveEvidence(caaResult);
+	// Detect web indicators
+	const sslPass = sslResult ? sslResult.passed : false;
+	const caaPass = caaResult ? caaResult.passed : false;
 	if (sslPass) signals.push('SSL valid');
 	if (caaPass) signals.push('CAA present');
 
