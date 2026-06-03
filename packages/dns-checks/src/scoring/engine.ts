@@ -321,6 +321,7 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 		categoryScores,
 		findings: allFindings,
 		summary,
+		tierBreakdown: genericResult.tierBreakdown,
 	};
 }
 

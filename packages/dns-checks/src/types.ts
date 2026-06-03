@@ -141,6 +141,15 @@ export interface ScanScore {
 	categoryScores: Record<CheckCategory, number>;
 	findings: Finding[];
 	summary: string;
+	/**
+	 * Points earned per scoring tier (core/protective/hardening) for the overall
+	 * score — the tier-weighted composition behind the headline number, as opposed
+	 * to the per-category `categoryScores`. Structurally identical to `TierBreakdown`
+	 * (scoring/generic); kept inline here because `types` is a leaf module that
+	 * `scoring/generic` imports from. Optional: absent only for the degenerate
+	 * no-checks result.
+	 */
+	tierBreakdown?: { core: number; protective: number; hardening: number };
 }
 
 /** Display/UI weight distribution for categories. NOT used in scoring — see IMPORTANCE_WEIGHTS for actual scoring weights. Exists for category registry and display purposes only. */
