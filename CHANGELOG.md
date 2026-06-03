@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.12.0] - 2026-06-03
+
+Cache-control discoverability release: `force_refresh` is now declared in the published `inputSchema` of every **cached** tool, so clients can discover the cache-bypass instead of relying on undocumented passthrough. The flag already functioned at runtime on the `check_*` tools (central `skipCache` + `BaseDomainArgs.passthrough()`); this release makes it visible and fixes the scan-delegating tools that silently ignored it. The scoring model is **unchanged** (`SCORING_MODEL_VERSION` stays `1.2.0`).
+
+### Added
+
+- **`force_refresh` declared on cached tools' `inputSchema`.** Added `force_refresh: z.boolean().optional()` to the 9 Zod schemas backing cached tools — `BaseDomainArgs` (covers ~30 `check_*`/DNS tools in one edit), `CheckDkimArgs`, `CheckFastFluxArgs`, `CheckSubdomainTakeoverArgs`, `CompareDomainsArgs`, `CompareBaselineArgs`, `AnalyzeDriftArgs`, `DiscoverBrandDomainsArgs`, `BrandAuditSingleArgs` (`scan_domain`/`batch_scan` already had it). The flag now appears in those tools' published `inputSchema` so MCP clients can discover and send it. Stateless tools (generators, `explain_finding`, M365/OSINT/recon queries, brand-audit pollers) intentionally **omit** it — there it would be a misleading no-op; a `tool-definitions` contract test enforces the split.
+
+### Fixed
+
+- **Scan-delegating tools now honor `force_refresh`.** `compare_domains`, `compare_baseline`, `generate_fix_plan`, `analyze_drift`, and `map_compliance` call `scanDomain` internally but previously did **not** forward the caller's `force_refresh`, silently serving cached scans. They now thread it through (`analyze_drift`'s stored-baseline read is deliberately untouched — refresh applies only to the fresh comparison scan).
+
 ## [3.11.0] - 2026-06-03
 
 Combosquat detection release: the brand-audit and `check_lookalikes` pipelines now catch combosquatting domains (a brand token embedded in a longer label, e.g. `paypal-login.com`) that whole-label edit distance structurally misses — appending a token inflates `maxLen` and collapses normalized similarity below the lookalike threshold. This release also carries the first shipped `ScanScore.tierBreakdown` output field (#355) and advances the `@blackveil/dns-checks` sub-package to 1.3.15. The scoring model is **unchanged** (`SCORING_MODEL_VERSION` stays `1.2.0`): combosquat is detection coverage and `tierBreakdown` is an additive output field — neither alters weights, thresholds, or grade boundaries.
