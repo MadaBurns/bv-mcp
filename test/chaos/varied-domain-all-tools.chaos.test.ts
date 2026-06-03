@@ -303,6 +303,7 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'check_http_security', arguments: domainArgs() },
 		{ name: 'check_dane', arguments: domainArgs() },
 		{ name: 'check_dane_https', arguments: domainArgs() },
+		{ name: 'check_ptr', arguments: domainArgs() },
 		{ name: 'check_svcb_https', arguments: domainArgs() },
 		{ name: 'check_lookalikes', arguments: domainArgs() },
 		{ name: 'check_subdomailing', arguments: domainArgs() },
