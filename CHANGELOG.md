@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.13.0] - 2026-06-03
+
+Adds **`check_ptr`** — a forward-confirmed reverse DNS (FCrDNS) check for a domain's mail servers — taking the tool surface to **79 MCP tools** and the scored scan surface to **19 categories**. FCrDNS is a mail-deliverability and sender-reputation signal that pure DNS-record scanning did not previously surface.
+
+### Added
+
+- **`check_ptr` (forward-confirmed reverse DNS).** For each MX host, resolves its A records, performs a PTR lookup on each IP, then **forward-confirms** — the PTR hostname's A records must contain the original IP (canonical FCrDNS). Managed mail providers (Google / Microsoft 365) are credited via the existing provider-signatures subsystem rather than flagged, so provider-controlled infrastructure isn't penalized. Scored as a **Hardening-tier (bonus-only)** category mirroring `check_dane`: absence never penalizes (`info`); a present-but-unconfirmed PTR is `low` (a real misconfiguration); a transient DNS failure is excluded from the score as inconclusive. Wired into `scan_domain` (now 19 categories) and gated by the standard per-tool quotas (free 25/day).
+
+### Changed
+
+- **Hardening tier rebalanced 9 → 10 categories.** The hardening bonus is count-based (`tierSplit.hardening / hardeningCount`), so adding `check_ptr` slightly redistributes the 10 % hardening bonus across one more category. The score **floor is unaffected** (hardening never subtracts) and existing per-profile score snapshots are **unchanged** — the dilution rounds to the same integer grades.
+
 ## [3.12.0] - 2026-06-03
 
 Cache-control discoverability release: `force_refresh` is now declared in the published `inputSchema` of every **cached** tool, so clients can discover the cache-bypass instead of relying on undocumented passthrough. The flag already functioned at runtime on the `check_*` tools (central `skipCache` + `BaseDomainArgs.passthrough()`); this release makes it visible and fixes the scan-delegating tools that silently ignored it. The scoring model is **unchanged** (`SCORING_MODEL_VERSION` stays `1.2.0`).
