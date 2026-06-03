@@ -42,6 +42,7 @@ const SCAN_DOMAIN_TOOL_NAMES = new Set([
 	'check_mx',
 	'check_subdomailing',
 	'check_dnskey_strength',
+	'check_ptr',
 ]);
 
 /** Tools that are standalone-only or non-scoring orchestration/meta tools. */
@@ -111,7 +112,7 @@ const NON_SCAN_TOOL_NAMES = new Set([
 
 describe('tool-schemas metadata', () => {
 	it('exports exactly 77 tools', () => {
-		expect(TOOLS).toHaveLength(78);
+		expect(TOOLS).toHaveLength(79);
 	});
 
 	it('all tool names are unique', () => {

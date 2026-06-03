@@ -141,6 +141,7 @@ describe('TIER_TOOL_DAILY_LIMITS audit (per-tool per-tier overrides)', () => {
 			'check_txt_hygiene',
 			'check_http_security',
 			'check_dane',
+			'check_ptr',
 			'check_mx_reputation',
 			'check_srv',
 			'check_zone_hygiene',

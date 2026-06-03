@@ -282,6 +282,19 @@ async function dynamicCheckMx(domain: string, runtimeOptions?: ToolRuntimeOption
 	);
 }
 
+async function dynamicCheckPtr(domain: string, runtimeOptions?: ToolRuntimeOptions): Promise<CheckResult> {
+	const { checkPtr } = await import('../tools/check-ptr');
+	return checkPtr(
+		domain,
+		{
+			providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
+			providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
+			providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
+		},
+		buildDnsOptions(runtimeOptions),
+	);
+}
+
 /** Shared `unprovisioned` result for the brand-audit watch tools when BRAND_AUDIT_DB is absent. */
 async function brandAuditWatchUnprovisioned(): Promise<CheckResult> {
 	const { buildCheckResult, createFinding } = await import('../lib/scoring');
@@ -339,6 +352,7 @@ const TOOL_REGISTRY: Record<
 	check_txt_hygiene: { cacheKey: () => 'txt_hygiene', execute: (d, _args, ro) => checkTxtHygiene(d, buildDnsOptions(ro)) },
 	check_http_security: { cacheKey: () => 'http_security', execute: (d) => checkHttpSecurity(d) },
 	check_dane: { cacheKey: () => 'dane', execute: (d, _args, ro) => checkDane(d, buildDnsOptions(ro)) },
+	check_ptr: { cacheKey: () => 'ptr', execute: (d, _args, ro) => dynamicCheckPtr(d, ro) },
 	check_dane_https: { cacheKey: () => 'dane_https', execute: (d, _args, ro) => checkDaneHttps(d, buildDnsOptions(ro)) },
 	check_svcb_https: { cacheKey: () => 'svcb_https', execute: (d, _args, ro) => checkSvcbHttps(d, buildDnsOptions(ro)) },
 	check_mx_reputation: {

@@ -23,8 +23,8 @@ describe('scoring-model', () => {
 });
 
 describe('CATEGORY_TIERS', () => {
-	it('classifies all 26 categories into tiers', () => {
-		expect(Object.keys(CATEGORY_TIERS)).toHaveLength(26);
+	it('classifies all 27 categories into tiers', () => {
+		expect(Object.keys(CATEGORY_TIERS)).toHaveLength(27);
 	});
 
 	it('has 6 core categories', () => {
@@ -37,8 +37,8 @@ describe('CATEGORY_TIERS', () => {
 		expect(protective).toHaveLength(11);
 	});
 
-	it('has 9 hardening categories', () => {
+	it('has 10 hardening categories', () => {
 		const hardening = Object.entries(CATEGORY_TIERS).filter(([, t]) => t === 'hardening');
-		expect(hardening).toHaveLength(9);
+		expect(hardening).toHaveLength(10);
 	});
 });

@@ -1,6 +1,6 @@
 # Blackveil DNS — MCP Security Scanner
 
-**78 DNS & email security tools** for GitHub Copilot Chat. No install, no API key — just ask Copilot to scan any domain.
+**79 DNS & email security tools** for GitHub Copilot Chat. No install, no API key — just ask Copilot to scan any domain.
 
 ![Blackveil DNS](https://raw.githubusercontent.com/MadaBurns/bv-mcp/main/assets/bv-logo-full.png)
 
@@ -10,7 +10,7 @@
 2. Open GitHub Copilot Chat (`Ctrl+Shift+I` / `Cmd+Shift+I`)
 3. Ask: **"scan example.com"**
 
-That's it. All 78 tools are available instantly.
+That's it. All 79 tools are available instantly.
 
 ## What You Get
 
@@ -22,9 +22,9 @@ That's it. All 78 tools are available instantly.
 - **Attack path simulation** — enumerated spoofing, takeover, and hijack paths
 - **Compliance mapping** — NIST 800-177, PCI DSS 4.0, SOC 2, CIS Controls
 
-## Tools (78)
+## Tools (79)
 
-The extension exposes the hosted MCP `tools/list` surface: 78 tools, including 33 `check_*` tools. The table below groups the most common workflows; Copilot can call every registered tool returned by the server.
+The extension exposes the hosted MCP `tools/list` surface: 79 tools, including 34 `check_*` tools. The table below groups the most common workflows; Copilot can call every registered tool returned by the server.
 
 | Email Auth | Infrastructure | Brand & Threats | Intelligence |
 |---|---|---|---|

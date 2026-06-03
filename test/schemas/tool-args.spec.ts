@@ -221,7 +221,7 @@ describe('AssessCoverageArgs', () => {
 
 describe('TOOL_SCHEMA_MAP', () => {
 	it('has 77 tools', () => {
-		expect(Object.keys(TOOL_SCHEMA_MAP)).toHaveLength(78);
+		expect(Object.keys(TOOL_SCHEMA_MAP)).toHaveLength(79);
 	});
 	it('all values are Zod schemas', () => {
 		for (const schema of Object.values(TOOL_SCHEMA_MAP)) {

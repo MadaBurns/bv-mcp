@@ -47,6 +47,7 @@ import { checkBimi } from './check-bimi';
 import { checkTlsrpt } from './check-tlsrpt';
 import { checkSubdomainTakeover } from './check-subdomain-takeover';
 import { checkMx } from './check-mx';
+import { checkPtr } from './check-ptr';
 import { checkHttpSecurity } from './check-http-security';
 import { checkDane } from './check-dane';
 import { checkDnskeyStrength } from './check-dnskey-strength';
@@ -362,6 +363,13 @@ async function runCheckRetry(
 				providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
 			}, retryDns);
 			break;
+		case 'ptr':
+			checkPromise = checkPtr(domain, {
+				providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
+				providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
+				providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
+			}, retryDns);
+			break;
 		default:
 			// Unsupported category — return a synthetic error result
 			return { ...buildCheckResult(category, []), score: 0, passed: false, checkStatus: 'error' as const };
@@ -404,7 +412,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	const ALL_CHECK_CATEGORIES: CheckCategory[] = isAuthoritativeInfraProfile
 		? ['authoritative_dns_infra']
 		: [
-			'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'http_security', 'dane', 'mx', 'dane_https', 'svcb_https', 'subdomailing', 'dnskey_strength',
+			'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'http_security', 'dane', 'mx', 'dane_https', 'svcb_https', 'subdomailing', 'dnskey_strength', 'ptr',
 		];
 
 	// Skip secondary DNS confirmation in scan context for speed — individual checks
@@ -509,6 +517,24 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 					'mx',
 					() =>
 						checkMx(domain, {
+							providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
+							providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
+							providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
+						}, scanDns),
+					timeoutBudget.perCheckTimeoutMs,
+				),
+			kv,
+			cacheTtl,
+			forceRefresh,
+		),
+		runCachedCheck(
+			domain,
+			'ptr',
+			() =>
+				safeCheck(
+					'ptr',
+					() =>
+						checkPtr(domain, {
 							providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
 							providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
 							providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,

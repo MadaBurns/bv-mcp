@@ -948,6 +948,7 @@ export const CATEGORY_TO_CHECKTYPE: Record<string, string> = {
 	subdomailing: 'SUBDOMAILING',
 	dane_https: 'DANE_HTTPS',
 	dane: 'DANE',
+	ptr: 'PTR',
 	tlsrpt: 'TLSRPT',
 	bimi: 'BIMI',
 	svcb_https: 'SVCB_HTTPS',
@@ -1015,6 +1016,10 @@ export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
 	DANE: {
 		impact: 'Certificate/key pinning via DANE is absent or weak, leaving TLS trust dependent solely on the public CA system.',
 		adverseConsequences: 'A rogue or compromised CA can issue a fraudulent certificate, enabling undetected MITM attacks.',
+	},
+	PTR: {
+		impact: 'Mail-server IPs lack forward-confirmed reverse DNS (PTR/FCrDNS), weakening sender reputation.',
+		adverseConsequences: 'Outbound mail is more likely to be greylisted, throttled, or rejected by strict receivers.',
 	},
 	TLSRPT: {
 		impact: 'TLS negotiation failures and MTA-STS policy failures for inbound mail are not reported, reducing delivery-security visibility.',

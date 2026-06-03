@@ -247,6 +247,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		tier: 'hardening',
 		scanIncluded: true,
 	},
+	check_ptr: {
+		description: 'Verify forward-confirmed reverse DNS (PTR/FCrDNS) for mail servers.',
+		schema: BaseDomainArgs,
+		group: 'infrastructure',
+		tier: 'hardening',
+		scanIncluded: true,
+	},
 	check_dane_https: {
 		description: 'Verify DANE certificate pinning for HTTPS via TLSA records at _443._tcp.{domain}.',
 		schema: BaseDomainArgs,
