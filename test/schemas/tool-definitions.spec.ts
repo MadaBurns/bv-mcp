@@ -26,6 +26,52 @@ describe('TOOLS', () => {
 		expect(scan.inputSchema.properties).toHaveProperty('format');
 	});
 
+	// force_refresh is declared in inputSchema for CACHED tools (so clients can discover
+	// the cache-bypass), and intentionally ABSENT from stateless tools (generators,
+	// explain_finding, pure pollers/queries) where it would be a misleading no-op.
+	it('cached tools expose force_refresh; stateless tools do not', () => {
+		const hasForceRefresh = (name: string) =>
+			Boolean(TOOLS.find((t) => t.name === name)?.inputSchema.properties?.force_refresh);
+
+		const cachedTools = [
+			'scan_domain',
+			'batch_scan',
+			'check_spf',
+			'check_lookalikes',
+			'check_dkim',
+			'check_fast_flux',
+			'check_subdomain_takeover',
+			'compare_domains',
+			'compare_baseline',
+			'analyze_drift',
+			'generate_fix_plan',
+			'map_compliance',
+			'discover_brand_domains',
+			'brand_audit_single',
+		];
+		for (const name of cachedTools) {
+			expect(hasForceRefresh(name), `${name} should expose force_refresh`).toBe(true);
+		}
+
+		const statelessTools = [
+			'generate_spf_record',
+			'generate_dmarc_record',
+			'generate_dkim_config',
+			'generate_mta_sts_policy',
+			'generate_rollout_plan',
+			'explain_finding',
+			'get_benchmark',
+			'check_resolver_consistency',
+			'check_root_server_set',
+			'query_signins',
+			'osint_investigate_domain_start',
+			'brand_audit_status',
+		];
+		for (const name of statelessTools) {
+			expect(hasForceRefresh(name), `${name} should NOT expose force_refresh`).toBe(false);
+		}
+	});
+
 	it('check_dkim has selector property', () => {
 		const dkim = TOOLS.find((t) => t.name === 'check_dkim')!;
 		expect(dkim.inputSchema.properties).toHaveProperty('selector');
