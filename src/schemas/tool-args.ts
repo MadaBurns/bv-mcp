@@ -571,6 +571,7 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	check_txt_hygiene: BaseDomainArgs,
 	check_http_security: BaseDomainArgs,
 	check_dane: BaseDomainArgs,
+	check_ptr: BaseDomainArgs,
 	check_dane_https: BaseDomainArgs,
 	check_svcb_https: BaseDomainArgs,
 	check_mx_reputation: BaseDomainArgs,

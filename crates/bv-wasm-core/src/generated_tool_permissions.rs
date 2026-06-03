@@ -32,6 +32,7 @@ pub fn required_mode_for_tool(tool: &str) -> PermissionMode {
         "check_mx_reputation" => PermissionMode::ReadOnly,
         "check_ns" => PermissionMode::ReadOnly,
         "check_nsec_walkability" => PermissionMode::ReadOnly,
+        "check_ptr" => PermissionMode::ReadOnly,
         "check_rbl" => PermissionMode::ReadOnly,
         "check_realtime_threat_feed" => PermissionMode::ReadOnly,
         "check_resolver_consistency" => PermissionMode::ReadOnly,

@@ -49,6 +49,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		svcb_https: { importance: 1 },
 		// Hardening (all 0)
 		dane: { importance: 0 },
+		ptr: { importance: 0 },
 		bimi: { importance: 0 },
 		tlsrpt: { importance: 0 },
 		txt_hygiene: { importance: 0 },
@@ -80,6 +81,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		svcb_https: { importance: 1 },
 		// Hardening (all 0)
 		dane: { importance: 0 },
+		ptr: { importance: 0 },
 		bimi: { importance: 0 },
 		tlsrpt: { importance: 0 },
 		txt_hygiene: { importance: 0 },
@@ -111,6 +113,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		svcb_https: { importance: 1 },
 		// Hardening (all 0)
 		dane: { importance: 0 },
+		ptr: { importance: 0 },
 		bimi: { importance: 0 },
 		tlsrpt: { importance: 0 },
 		txt_hygiene: { importance: 0 },
@@ -142,6 +145,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		svcb_https: { importance: 1 },
 		// Hardening (all 0)
 		dane: { importance: 0 },
+		ptr: { importance: 0 },
 		bimi: { importance: 0 },
 		tlsrpt: { importance: 0 },
 		txt_hygiene: { importance: 0 },
@@ -173,6 +177,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		svcb_https: { importance: 0 },
 		// Hardening (all 0)
 		dane: { importance: 0 },
+		ptr: { importance: 0 },
 		bimi: { importance: 0 },
 		tlsrpt: { importance: 0 },
 		txt_hygiene: { importance: 0 },
@@ -205,6 +210,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		svcb_https: { importance: 0 },
 		// Hardening
 		dane: { importance: 0 },
+		ptr: { importance: 0 },
 		bimi: { importance: 0 },
 		tlsrpt: { importance: 0 },
 		txt_hygiene: { importance: 0 },

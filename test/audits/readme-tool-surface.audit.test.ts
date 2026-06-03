@@ -15,17 +15,17 @@ describe('README tool surface', () => {
 	it('keeps published tool counts and authoritative DNS infra tools current', () => {
 		const toolCount = TOOLS.length;
 
-		expect(toolCount).toBe(78);
+		expect(toolCount).toBe(79);
 		expect(readme).toContain(`MCP%20tools-${toolCount}`);
 		expect(readme).toContain(`current ${toolCount}-tool surface`);
 		expect(readme).toContain(`${toolCount} MCP tools`);
-		expect(readme).toContain('18 scoring categories');
+		expect(readme).toContain('19 scoring categories');
 		expect(readme).toContain('check_authoritative_dns_infra');
 		expect(readme).toContain('check_root_server_set');
 	});
 
 	it('keeps supporting docs aligned with the authoritative DNS infra surface', () => {
-		expect(githubSettings).toContain('78 MCP tools');
+		expect(githubSettings).toContain('79 MCP tools');
 		expect(scoringDocs).toContain('Authoritative DNS Infrastructure');
 		expect(scoringDocs).toContain('authoritative_dns_infra');
 		expect(packageReadme).toContain('authoritative_dns_infra');
