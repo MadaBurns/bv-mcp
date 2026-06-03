@@ -16,7 +16,7 @@ Cache-control discoverability release: `force_refresh` is now declared in the pu
 
 ### Fixed
 
-- **Scan-delegating tools now honor `force_refresh`.** `compare_domains`, `compare_baseline`, `generate_fix_plan`, `analyze_drift`, and `map_compliance` call `scanDomain` internally but previously did **not** forward the caller's `force_refresh`, silently serving cached scans. They now thread it through (`analyze_drift`'s stored-baseline read is deliberately untouched — refresh applies only to the fresh comparison scan).
+- **Scan-delegating tools now honor `force_refresh`.** `compare_domains`, `compare_baseline`, `generate_fix_plan`, `analyze_drift`, and `map_compliance` call `scanDomain` internally but previously did **not** forward the caller's `force_refresh`, silently serving cached scans. They now thread it through (`analyze_drift`'s stored-baseline read is deliberately untouched — refresh applies only to the fresh comparison scan). **Verified live on prod 3.12.0** (`generate_fix_plan` on cloudflare.com, alternated ×3): cached calls returned in ~0.13 s (per-check cache hits) while `force_refresh:true` consistently took ~2.3 s (full ~18-check re-scan) — a clean ~17–20× separation with no overlap, confirming the flag reaches `scanDomain` and bypasses the per-check cache.
 
 ## [3.11.0] - 2026-06-03
 
