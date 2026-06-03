@@ -132,8 +132,8 @@ describe('scoring-profiles', () => {
 
 		it('all passing with mail_enabled (default) profile', () => {
 			const score = computeScanScore(allPassing);
-			// Three-tier: core=70, protective=20, hardening=2/9*10≈2.22 → base≈92 + email bonus 5 = 97
-			// (only bimi + tlsrpt have results in hardening tier out of 7 hardening categories)
+			// Three-tier: core=70, protective=20, hardening=2/10*10=2.0 → base≈92 + email bonus 5 = 97
+			// (only bimi + tlsrpt have results in hardening tier out of 10 hardening categories)
 			expect(score.overall).toBe(97);
 			expect(score.grade).toBe('A+');
 		});

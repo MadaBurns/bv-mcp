@@ -48,6 +48,7 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	txt_hygiene: { importance: 0 },
 	http_security: { importance: 3 },
 	dane: { importance: 1 },
+	ptr: { importance: 1 },
 	mx_reputation: { importance: 0 },
 	srv: { importance: 0 },
 	zone_hygiene: { importance: 0 },

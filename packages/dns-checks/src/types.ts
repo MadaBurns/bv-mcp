@@ -57,6 +57,7 @@ export type CheckCategory =
 	| 'txt_hygiene'
 	| 'http_security'
 	| 'dane'
+	| 'ptr'
 	| 'mx_reputation'
 	| 'srv'
 	| 'zone_hygiene'
@@ -86,6 +87,7 @@ export const CATEGORY_TIERS: Record<CheckCategory, CategoryTier> = {
 	lookalikes: 'protective',
 	shadow_domains: 'protective',
 	dane: 'hardening',
+	ptr: 'hardening',
 	bimi: 'hardening',
 	tlsrpt: 'hardening',
 	txt_hygiene: 'hardening',
@@ -171,6 +173,7 @@ export const CATEGORY_DISPLAY_WEIGHTS: Record<CheckCategory, number> = {
 	txt_hygiene: 0,
 	http_security: 0.05,
 	dane: 0,
+	ptr: 0,
 	mx_reputation: 0,
 	srv: 0,
 	zone_hygiene: 0,
