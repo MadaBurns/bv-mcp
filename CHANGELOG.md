@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-06-03
+
+SPF detection-accuracy release: `check_spf` now identifies an SPF record per RFC 7208 §4.5 — the record must *begin* with the `v=spf1` version token — instead of matching `v=spf1` anywhere in the TXT data. This corrects a class of false negatives where a malformed record caused a genuinely-unprotected domain to be reported as having SPF. The scoring model is **unchanged** (`SCORING_MODEL_VERSION` stays `1.2.0`): this is a check-detection fix, not a scoring-policy change — but because it corrects the SPF category result, per-domain scores move for the (rare) affected domains, in the direction of correctly penalizing the missing control.
+
+### Fixed
+
+- **`check_spf` anchors SPF detection to the start of the record (RFC 7208 §4.5).** Detection used `concatenatedTxt.match(/v=spf1[^]*/i)` over all TXT records joined together, so any record that merely *contained* `v=spf1` was treated as a valid SPF record. Two real-world malformed shapes slipped through as false negatives: a paste artefact (`"Value: v=spf1 include:… ~all"` — does not begin with `v=spf1`, so receivers ignore it) and run-together mechanisms (`"v=spf1include:…"` — the version token must be followed by a space or end-of-record per the ABNF). Both are now correctly reported as **No SPF record found** (critical), since receivers treat each as having no SPF. Detection now filters per-record with `^v=spf1(\s|$)` (each TXT element is one complete RR — multi-string chunks are pre-joined by the DNS layer per RFC 7208 §3.3, so per-record anchoring is safe). This also removes a latent bug where the old greedy join pulled unrelated TXT records (e.g. vendor verification strings) into the parsed SPF string, and makes the "Multiple SPF records" permerror count from actual records rather than substring occurrences.
+
 ## [3.9.0] - 2026-06-03
 
 Scoring-policy release: the `enterprise_mail` profile gate now requires enforcing DMARC behind a managed provider rather than any auto-provisioned control. This reselects the per-profile weight table for a large share of managed-mail domains (membership shift only — the scoring math is unchanged), so per-domain scores move within a bounded band and `SCORING_MODEL_VERSION` advances to `1.2.0`.
