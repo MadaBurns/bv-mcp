@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateLookalikes } from '../src/tools/lookalike-analysis';
+import { generateCombosquats, generateLookalikes } from '../src/tools/lookalike-analysis';
 
 describe('generateLookalikes', () => {
 	it('generates expected permutation types for a simple domain', () => {
@@ -63,5 +63,48 @@ describe('generateLookalikes', () => {
 		const results = generateLookalikes('pool.com');
 		// o→0 substitution
 		expect(results).toContain('p0ol.com');
+	});
+
+	it('does NOT generate combosquats (those defeat edit-distance mutators)', () => {
+		const results = generateLookalikes('paypal.com');
+		expect(results).not.toContain('paypal-login.com');
+		expect(results).not.toContain('login-paypal.com');
+	});
+});
+
+describe('generateCombosquats', () => {
+	it('generates brand+affix combos in both positions, hyphen-delimited', () => {
+		const results = generateCombosquats('paypal.com');
+		expect(results).toContain('paypal-login.com');
+		expect(results).toContain('login-paypal.com');
+		expect(results).toContain('secure-paypal.com');
+		expect(results).toContain('paypal-verify.com');
+	});
+
+	it('preserves the original TLD (including multi-part TLDs)', () => {
+		expect(generateCombosquats('example.co.uk')).toContain('example-login.co.uk');
+	});
+
+	it('caps output and never includes the original domain', () => {
+		const results = generateCombosquats('paypal.com');
+		expect(results.length).toBeLessThanOrEqual(20);
+		expect(results).not.toContain('paypal.com');
+	});
+
+	it('produces only structurally valid, alphabetically sorted domains', () => {
+		const results = generateCombosquats('my-brand.com');
+		expect(results).toEqual([...results].sort());
+		for (const domain of results) {
+			const labels = domain.split('.');
+			expect(labels.length).toBeGreaterThanOrEqual(2);
+			for (const label of labels) {
+				expect(label.length).toBeGreaterThan(0);
+				expect(label.length).toBeLessThanOrEqual(63);
+			}
+		}
+	});
+
+	it('returns [] for input with no resolvable TLD', () => {
+		expect(generateCombosquats('localhost')).toEqual([]);
 	});
 });
