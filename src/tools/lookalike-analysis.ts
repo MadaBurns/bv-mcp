@@ -174,3 +174,44 @@ export function generateLookalikes(domain: string): string[] {
 
 	return results.slice(0, MAX_PERMUTATIONS);
 }
+
+/**
+ * Credential-phishing affixes used for combosquat *generation*. Deliberately a
+ * focused subset of the highest-signal lure words — generation pays one DNS
+ * probe per candidate, so it has a tighter cost/recall tradeoff than the
+ * free pattern-matching `LURE_KEYWORDS` set used for detection in
+ * `domain-similarity.ts`. Tune for probe budget, not for recall.
+ */
+const COMBOSQUAT_AFFIXES = ['login', 'signin', 'secure', 'verify', 'account', 'support', 'billing', 'update', 'mail', 'pay'] as const;
+
+/** Cap on combosquat permutations returned — bounds the extra DNS-probe cost. */
+const MAX_COMBOSQUATS = 20;
+
+/**
+ * Generate combosquat permutations: the brand label combined with a
+ * credential-phishing affix, hyphen-delimited, in both positions
+ * (`brand-login.com`, `login-brand.com`).
+ *
+ * Combosquats defeat whole-label edit distance (appending a token collapses the
+ * normalized score), so the typo-based {@link generateLookalikes} never produces
+ * them — this is the proactive counterpart to the detection-side
+ * `combosquatMatch`. Returns up to {@link MAX_COMBOSQUATS} unique, valid,
+ * alphabetically sorted permutations. Delimited-only by design: undelimited
+ * concatenations are too collision-prone to probe speculatively.
+ */
+export function generateCombosquats(domain: string): string[] {
+	const normalizedDomain = domain.toLowerCase();
+	const { base, tld } = splitDomainTld(normalizedDomain);
+	if (!base || !tld) return [];
+
+	const candidates = new Set<string>();
+	for (const affix of COMBOSQUAT_AFFIXES) {
+		candidates.add(`${base}-${affix}${tld}`);
+		candidates.add(`${affix}-${base}${tld}`);
+	}
+
+	return Array.from(candidates)
+		.filter((candidate) => candidate !== normalizedDomain && isDomainValid(candidate))
+		.sort()
+		.slice(0, MAX_COMBOSQUATS);
+}
