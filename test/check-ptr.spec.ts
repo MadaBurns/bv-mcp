@@ -112,6 +112,22 @@ describe('checkPtr', () => {
 		expect(result.controlPresent).toBe(true);
 	});
 
+	it('flags low (misconfigured) when some IPs confirm and others fail forward-confirmation', async () => {
+		routeDns({
+			'MX example.com': ['10 mail.example.com.'],
+			'A mail.example.com': ['192.0.2.10', '192.0.2.20'],
+			'PTR 10.2.0.192.in-addr.arpa': ['mail.example.com.'], // 192.0.2.10 confirms (forward A contains it)
+			'PTR 20.2.0.192.in-addr.arpa': ['wrong-host.example.net.'],
+			'A wrong-host.example.net': ['198.51.100.5'], // 192.0.2.20 fails forward-confirmation
+		});
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		const result = await checkPtr('example.com', undefined, DNS);
+		const low = result.findings.find((f) => f.severity === 'low');
+		expect(low).toBeDefined();
+		expect(low!.title).toMatch(/misconfigured/i);
+		expect(result.controlPresent).toBe(true);
+	});
+
 	it('returns a high missingControl finding on DNS failure (excluded from score)', async () => {
 		// Real timeouts surface as a DOMException AbortError; the transport rethrows as
 		// DnsQueryError("DNS query timed out after Nms"). A plain Error takes the generic

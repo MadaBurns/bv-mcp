@@ -175,6 +175,7 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		check_txt_hygiene: 500_000,
 		check_http_security: 500_000,
 		check_dane: 500_000,
+		check_ptr: 500_000,
 		check_mx_reputation: 50_000,
 		check_srv: 500_000,
 		check_zone_hygiene: 500_000,
