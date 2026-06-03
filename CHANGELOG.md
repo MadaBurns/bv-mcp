@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.13.2] - 2026-06-04
+
+Completes the 3.13.1 telemetry fix: the JSON-RPC error code is now recorded on **both** dispatch paths. 3.13.1 wired it only into the SSE/streaming dispatch path (`execute.ts:876`); the JSON/non-streaming dispatch path (`:984`) computed `hasJsonRpcError` but discarded the code, so `double2` stayed `0` for JSON-transport tool/method errors. Found during post-deploy verification — live errors recorded with `code=0`.
+
+### Fixed
+
+- **JSON-RPC error code on the JSON dispatch path.** `execute.ts` now extracts `errPayload?.code` and passes it to `emitRequestAnalytics` on the non-streaming dispatch branch, mirroring the streaming branch. Both transports now populate `double2` with the error code. (Known remaining gap: pre-dispatch early-return rejections — JSON-RPC validation `-32600`, auth, session, rate-limit `-32029` — still emit without a code; those are distinguishable via `status`/`method`/the dedicated `rate_limit` event, and are left for a follow-up.)
+
 ## [3.13.1] - 2026-06-04
 
 Observability fix: the `mcp_request` analytics event now records the **JSON-RPC error code** so error spikes are diagnosable from telemetry alone. The code was already computed and passed to the emit boundary (for fuzzing classification) but was dropped before being written — meaning a request-level error storm could only be characterized as "error", never by cause. The scoring model is **unchanged** (`SCORING_MODEL_VERSION` stays `1.2.0`).

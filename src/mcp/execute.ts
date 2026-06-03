@@ -981,7 +981,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 		const hasJsonRpcError =
 			typeof dispatchResult.payload === 'object' && dispatchResult.payload !== null && 'error' in dispatchResult.payload;
-		emitRequestAnalytics(options, method, hasJsonRpcError ? 'error' : 'ok', hasJsonRpcError);
+		const errPayload = hasJsonRpcError ? (dispatchResult.payload as { error?: { code?: number; message?: string } }).error : undefined;
+		emitRequestAnalytics(options, method, hasJsonRpcError ? 'error' : 'ok', hasJsonRpcError, errPayload?.code, errPayload?.message);
 		if (accessLogInput) {
 			recordMcpAccessLog(options, { ...accessLogInput, rateLimited: false });
 		}
