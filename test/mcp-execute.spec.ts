@@ -915,6 +915,47 @@ describe('executeMcpRequest — dispatch result propagation', () => {
 		expect(payload.error.code).toBe(-32029);
 	});
 
+	it('records the JSON-RPC error code in analytics on the JSON dispatch path', async () => {
+		vi.doMock('../src/mcp/dispatch', () => ({
+			dispatchMcpMethod: vi.fn().mockResolvedValue({
+				kind: 'success',
+				payload: { jsonrpc: '2.0', id: 9, error: { code: -32602, message: 'Invalid params' } },
+				headers: {},
+				newSessionId: undefined,
+				logTool: 'scan_domain',
+				logCategory: 'tool',
+				logResult: 'error',
+				logDetails: {},
+			}),
+		}));
+
+		const emitRequestEvent = vi.fn();
+		const analytics = {
+			enabled: true,
+			emitRequestEvent,
+			emitToolEvent: vi.fn(),
+			emitRateLimitEvent: vi.fn(),
+			emitSessionEvent: vi.fn(),
+		};
+
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		await executeMcpRequest(
+			baseOptions({
+				body: { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'scan_domain', arguments: {} } } as JsonRpcRequest,
+				isAuthenticated: true,
+				tierAuthResult: { authenticated: true, tier: 'owner', keyHash: 'ownerkey' },
+				analytics: analytics as unknown as ExecuteMcpRequestOptions['analytics'],
+			}),
+		);
+
+		expect(emitRequestEvent).toHaveBeenCalledTimes(1);
+		expect(emitRequestEvent.mock.calls[0][0]).toMatchObject({
+			status: 'error',
+			hasJsonRpcError: true,
+			jsonRpcErrorCode: -32602,
+		});
+	});
+
 	it('includes new session ID in response headers from dispatch result', async () => {
 		vi.doMock('../src/mcp/dispatch', () => ({
 			dispatchMcpMethod: vi.fn().mockResolvedValue({
