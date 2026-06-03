@@ -38,7 +38,7 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.3.14';
+export const PARITY_CORPUS_VERSION = '1.3.15';
 
 /**
  * MX parity fixture. No-MX scoring is SPF-context (NIST SP 800-177r1 §4.4.2):
