@@ -987,6 +987,7 @@ export async function handleToolsCall(
 				}
 				case 'compare_domains': {
 					const domains = validatedArgs.domains as string[];
+					const forceRefresh = extractForceRefresh(validatedArgs);
 					const compareResults = await compareDomains(domains, {
 						kv: scanCacheKV,
 						signal: AbortSignal.timeout(COMPARE_DOMAINS_SYNC_BUDGET_MS),
@@ -1002,6 +1003,7 @@ export async function handleToolsCall(
 							perCheckTimeoutMs: runtimeOptions?.perCheckTimeoutMs,
 							secondaryDoh: runtimeOptions?.secondaryDoh,
 							infraProbe: runtimeOptions?.infraProbe,
+							...(forceRefresh && { forceRefresh }),
 						},
 					});
 					const compareText = formatDomainComparison(compareResults, effectiveFormat);
@@ -1016,7 +1018,9 @@ export async function handleToolsCall(
 				}
 				case 'compare_baseline': {
 					const baseline = extractBaseline(validatedArgs) as PolicyBaseline;
-					const scan = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
+					const forceRefresh = extractForceRefresh(validatedArgs);
+					const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
+					const scan = await scanDomain(validDomain, scanCacheKV, scanOptions);
 					const result = compareBaseline(scan, baseline);
 					logResult = result.passed ? 'pass' : 'fail';
 					logDetails = result;
@@ -1024,7 +1028,9 @@ export async function handleToolsCall(
 					return buildToolResult(formatBaselineResult(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'generate_fix_plan': {
-					const plan = await generateFixPlan(validDomain, scanCacheKV, runtimeOptions);
+					const forceRefresh = extractForceRefresh(validatedArgs);
+					const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
+					const plan = await generateFixPlan(validDomain, scanCacheKV, scanOptions);
 					logResult = plan.grade;
 					logDetails = plan;
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
@@ -1157,7 +1163,9 @@ export async function handleToolsCall(
 						}
 					}
 
-					const scanResult = await scanDomain(validDomain, scanCacheKV, runtimeOptions);
+					const forceRefresh = extractForceRefresh(validatedArgs);
+					const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
+					const scanResult = await scanDomain(validDomain, scanCacheKV, scanOptions);
 					const drift = computeDrift(validDomain, baselineScore, scanResult.score);
 					logResult = drift.classification;
 					logDetails = drift;
@@ -1182,7 +1190,9 @@ export async function handleToolsCall(
 					return buildToolResult(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'map_compliance': {
-					const result = await mapCompliance(validDomain, scanCacheKV, runtimeOptions);
+					const forceRefresh = extractForceRefresh(validatedArgs);
+					const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
+					const result = await mapCompliance(validDomain, scanCacheKV, scanOptions);
 					logResult = 'mapped';
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });

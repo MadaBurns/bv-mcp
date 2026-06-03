@@ -18,6 +18,7 @@ import {
 export const BaseDomainArgs = z
 	.object({
 		domain: DomainSchema.describe('Domain to check (e.g., example.com)'),
+		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
 	.passthrough();
@@ -45,6 +46,7 @@ export const BatchScanArgs = z
 export const CompareDomainsArgs = z
 	.object({
 		domains: z.array(z.string().min(1).max(253)).min(2).max(5).describe('Domains to compare (2–5 domains)'),
+		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
 	.passthrough();
@@ -54,6 +56,7 @@ export const CheckDkimArgs = z
 	.object({
 		domain: DomainSchema.describe('Domain to check (e.g., example.com)'),
 		selector: DkimSelectorSchema.optional().describe('DKIM selector. Omit to probe common ones.'),
+		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
 	.passthrough();
@@ -135,6 +138,7 @@ export const ExplainFindingArgs = z
 export const CompareBaselineArgs = z
 	.object({
 		domain: DomainSchema.describe('Domain to scan and compare.'),
+		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 		baseline: z
 			.object(
@@ -228,6 +232,7 @@ export const AnalyzeDriftArgs = z
 			.describe(
 				'Prior scan reference for drift-over-time analysis: a previous ScanScore JSON STRING, or the literal "cached" to reuse the last cached scan. NOT a policy/requirements object — for compliance enforcement against required controls, use compare_baseline instead.',
 			),
+		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
 	.passthrough();
@@ -247,6 +252,7 @@ export const CheckFastFluxArgs = z
 	.object({
 		domain: DomainSchema.describe('Domain to check (e.g., example.com)'),
 		rounds: z.number().int().min(3).max(5).optional().describe('Number of query rounds (3-5, default 3).'),
+		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
 	.passthrough();
@@ -266,6 +272,7 @@ export const CheckSubdomainTakeoverArgs = z
 			.describe(
 				'Optional explicit subdomain list (full FQDNs or short labels). When provided (deduped, capped at 1000), this list is swept instead of the 15-name built-in. Source from Certificate-Transparency enumeration or brand-audit discovery.',
 			),
+		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
 	.passthrough();
@@ -354,6 +361,7 @@ export const DiscoverBrandDomainsArgs = z
 					'Required when discovery_mode is "tiered" and the caller is not an enterprise/owner/partner principal. ' +
 					'Prevents unauthorized mass reconnaissance via deep tier lookups.',
 			),
+		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
 	.passthrough();
@@ -370,6 +378,7 @@ export const BrandAuditViewSchema = z.enum(['standard', 'csc_complement']);
 export const BrandAuditSingleArgs = z
 	.object({
 		domain: DomainSchema.describe('Target domain to audit (e.g., apple.com).'),
+		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: BrandAuditFormatSchema.optional().describe('Inline output mode. Defaults to "both".'),
 		min_confidence: z
 			.number()
