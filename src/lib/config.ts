@@ -241,6 +241,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_txt_hygiene: 25,
 	check_http_security: 25,
 	check_dane: 25,
+	check_ptr: 25,
 	check_dane_https: 25,
 	check_svcb_https: 25,
 	check_mx_reputation: 5,
