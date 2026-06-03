@@ -8,7 +8,9 @@
  * Callers must account for _sample_interval in aggregations.
  *
  * Blob positions (mcp_request): blob1=method, blob2=transport, blob3=status,
- *   blob4=auth, blob5=jsonrpc, blob6=country, blob7=clientType, blob8=tier, blob9=sessionHash
+ *   blob4=auth, blob5=jsonrpc, blob6=country, blob7=clientType, blob8=tier, blob9=sessionHash,
+ *   blob10=keyHash, blob11=ipHash. Double positions: double1=durationMs,
+ *   double2=abs(jsonRpcErrorCode) (0 when no error).
  * Blob positions (tool_call): blob1=toolName, blob2=status, blob3=isError,
  *   blob4=hashedDomain, blob5=country, blob6=clientType, blob7=tier, blob8=cacheStatus
  * Double positions (tool_call): double1=durationMs, double2=score

@@ -44,6 +44,40 @@ describe('createAnalyticsClient', () => {
 		expect(point.blobs[9]).toBe('none');
 	});
 
+	it('emitRequestEvent records the JSON-RPC error code as abs(code) in double2', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitRequestEvent({
+			method: 'tools/call',
+			status: 'error',
+			durationMs: 42,
+			isAuthenticated: true,
+			hasJsonRpcError: true,
+			jsonRpcErrorCode: -32602,
+			transport: 'sse',
+			...ctx,
+		});
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		// Codes are negative per JSON-RPC; sanitizeNumber clamps <0 to 0, so we store abs().
+		expect(point.doubles).toEqual([42, 32602]);
+	});
+
+	it('emitRequestEvent defaults double2 to 0 when no error code is present', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitRequestEvent({
+			method: 'ping',
+			status: 'ok',
+			durationMs: 7,
+			isAuthenticated: false,
+			hasJsonRpcError: false,
+			transport: 'json',
+			...ctx,
+		});
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		expect(point.doubles).toEqual([7, 0]);
+	});
+
 	it('emitToolEvent includes enriched blobs and score double', () => {
 		const ds = mockDataset();
 		const client = createAnalyticsClient(ds);

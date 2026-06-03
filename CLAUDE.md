@@ -330,7 +330,7 @@ Four event types: `mcp_request`, `tool_call`, `rate_limit`, `session`. Queries i
 
 **Blob layout** (keep in sync when adding dimensions):
 
-- `mcp_request`: method, transport, status, auth-flag, jsonrpc-flag, country, clientType, authTier, sessionHash, keyHash, **ipHash** (blob11; FNV-1a `i_` prefix — lossy, equal IPs hash equally)
+- `mcp_request`: method, transport, status, auth-flag, jsonrpc-flag, country, clientType, authTier, sessionHash, keyHash, **ipHash** (blob11; FNV-1a `i_` prefix — lossy, equal IPs hash equally). Doubles: double1=durationMs, **double2=abs(jsonRpcErrorCode)** (0 when no error — codes are negative per spec, stored as magnitude since `sanitizeNumber` clamps <0)
 - `tool_call`: toolName, status, isError, domainFingerprint, country, clientType, authTier, cacheStatus, keyHash, **ipHash** (blob10)
 - `rate_limit`: limitType, toolName, country, authTier
 - `session`: action, country, clientType, authTier, method, keyHash
