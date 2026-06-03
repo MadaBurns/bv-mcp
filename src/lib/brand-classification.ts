@@ -20,6 +20,7 @@ import { sameRegistrarFamily } from './registrar-identity';
 import { clearsOwnershipGate, clearsTier1GraphEvidence, type BrandEvidenceObservation } from './brand-evidence';
 import type { BrandDiscoveryTier } from './brand-discovery-tiers';
 import { extractBrandName } from './public-suffix';
+import { combosquatMatch } from './domain-similarity';
 
 /**
  * Buckets emitted by the classifier.
@@ -332,6 +333,54 @@ export function isImpersonation(c: CandidateInput, t: TargetContext): string[] {
 	];
 }
 
+/**
+ * Pure combosquat predicate: the candidate's registrable label embeds the
+ * target's brand token as a bounded segment alongside another token
+ * (`paypal-login.com`, `secure-microsoft.net`, `paypallogin.com`). Whole-label
+ * edit distance scores these well below `IMPERSONATION_LOOKALIKE_THRESHOLD`, so
+ * `isImpersonation` cannot see them — this is a distinct check on token
+ * containment (`combosquatMatch`). Gated identically to impersonation: a
+ * registrar-family match signals a defensive registration (not abuse), and any
+ * shared-infrastructure / cross-channel signal should have routed to shadowIt
+ * earlier. Caller must have eliminated the consolidated/shadowIt branches first.
+ */
+export function isCombosquat(c: CandidateInput, t: TargetContext): string[] {
+	const brandToken = extractBrandName(t.domain);
+	const candidateLabel = extractBrandName(c.domain);
+	if (!brandToken || !candidateLabel) return [];
+
+	const match = combosquatMatch(brandToken, candidateLabel);
+	if (!match) return [];
+
+	// FP guard: a brand token beside a *generic* token (`apple-shop`, `apple-cz`)
+	// is as often legitimate/defensive as abusive (cf. the thesis's 20-legit +
+	// 22-defensive of 50 low-distance hits). Only assert impersonation when a
+	// credential-phishing lure keyword corroborates intent; non-lure combos fall
+	// through to the indeterminate / manual-review path. The lure set is the
+	// tunable knob in `domain-similarity.ts`.
+	if (!match.hasLureKeyword) return [];
+
+	// Registrar-family match signals defensive registration, not impersonation.
+	const sameFamily = sameRegistrarFamily(
+		{ name: c.registrar, ianaId: c.registrarIanaId },
+		{ name: t.registrar, ianaId: t.registrarIanaId },
+	);
+	if (sameFamily) return [];
+
+	// Any shared cross-channel signal should have routed to shadowIt already;
+	// belt-and-braces so the predicate is callable in isolation.
+	const sharedTxt = (c.sharedTxtVerifications ?? []).length > 0;
+	const sharedMx = !!c.sharedMxPlatform;
+	if (sharedTxt || sharedMx || hasSharedInfrastructureSignal(c)) return [];
+
+	const extra = match.extraTokens.map((tok) => `'${tok}'`).join(', ');
+	return [
+		`combosquat: label embeds brand token '${match.brandToken}' + ${extra} (${match.matchKind})`,
+		'contains credential-phishing lure keyword',
+		`registrar mismatch (candidate=${normalizeRegistrar(c.registrar) || 'Unknown'}, target=${t.registrarFamily || 'Unknown'})`,
+	];
+}
+
 function signalLabel(s: string): string {
 	switch (s) {
 		case 'san':
@@ -500,6 +549,17 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 	const impersonationReasons = isImpersonation(c, t);
 	if (impersonationReasons.length > 0) {
 		reasons.push(...impersonationReasons);
+		return classification('impersonation', tier, 'impersonation_risk', reasons);
+	}
+
+	// Rule 4.7: Combosquat — brand token embedded as a segment in a longer label
+	// (`paypal-login.com`). Whole-label edit distance scores these below the
+	// impersonation threshold, so Rule 4.6 misses them; detect via token
+	// containment. Fires before Rule 5 so a combosquat with redacted RDAP still
+	// surfaces as impersonation rather than vanishing into indeterminate.
+	const combosquatReasons = isCombosquat(c, t);
+	if (combosquatReasons.length > 0) {
+		reasons.push(...combosquatReasons);
 		return classification('impersonation', tier, 'impersonation_risk', reasons);
 	}
 

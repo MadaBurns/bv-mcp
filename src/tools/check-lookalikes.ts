@@ -13,7 +13,7 @@ import { callReconScan, isReconHit } from '../lib/recon-binding';
 import type { ReconBinding } from '../lib/recon-binding';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
-import { generateLookalikes } from './lookalike-analysis';
+import { generateCombosquats, generateLookalikes } from './lookalike-analysis';
 import { FALLBACK_RDAP_SERVERS, extractRegistrantOrg } from './check-rdap-lookup';
 import { calibrateLookalikeSeverity, isDisposableMxHost, type LookalikeSignals } from './lookalike-severity';
 
@@ -280,7 +280,11 @@ async function checkLookalikesCore(
 	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string } = {},
 ): Promise<CheckResult> {
 	const findings: Finding[] = [];
-	const permutations = generateLookalikes(domain);
+	// Typo/homoglyph permutations PLUS combosquats (brand + lure affix). The two
+	// generators are disjoint by construction — combosquats defeat the edit-distance
+	// mutators — so the union is deduped to a single candidate set that flows through
+	// the same NS-existence → probe → enrich → severity pipeline.
+	const permutations = [...new Set([...generateLookalikes(domain), ...generateCombosquats(domain)])];
 
 	if (permutations.length === 0) {
 		findings.push(
