@@ -18,6 +18,25 @@ describe('scoring-engine', () => {
 		expect(scan.summary).toContain('Excellent');
 	});
 
+	it('surfaces the three-tier breakdown on the scan score', () => {
+		const scan = computeScanScore([
+			buildCheckResult('http_security', [
+				createFinding('http_security', 'No CSP', 'high', 'Missing Content-Security-Policy'),
+			]),
+		]);
+		expect(scan.tierBreakdown).toBeDefined();
+		expect(typeof scan.tierBreakdown?.core).toBe('number');
+		expect(typeof scan.tierBreakdown?.protective).toBe('number');
+		expect(typeof scan.tierBreakdown?.hardening).toBe('number');
+		// core tier is the 70-point budget; all core checks absent → 100% → full core points
+		expect(scan.tierBreakdown?.core).toBeGreaterThan(0);
+	});
+
+	it('omits the tier breakdown for the degenerate no-checks result', () => {
+		// The empty-results early return is intentionally minimal (optional field absent).
+		expect(computeScanScore([]).tierBreakdown).toBeUndefined();
+	});
+
 	it('applies verified critical penalty during aggregate scoring', () => {
 		const scan = computeScanScore([
 			buildCheckResult('subdomain_takeover', [
