@@ -88,6 +88,32 @@ describe('checkLookalikes', () => {
 		expect(registeredFinding).toBeDefined();
 	});
 
+	it('surfaces a registered combosquat (brand + lure affix) that edit-distance generation misses', async () => {
+		// `paypal-login.com` is a combosquat of `paypal.com`: generateLookalikes
+		// (edit-distance mutators) never produces it — generateCombosquats does.
+		// Give it mail infrastructure so it surfaces at MEDIUM per the #264 matrix,
+		// proving Part 3 generation feeds the same severity pipeline.
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'paypal-login.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.attacker.com.' }]));
+				}
+				if (type === 'A' || type === '1') {
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const result = await run('paypal.com');
+		const surfaced = result.findings.filter((f) => f.severity === 'medium' || f.severity === 'high');
+		expect(surfaced.length).toBeGreaterThan(0);
+		expect(JSON.stringify(result.findings)).toContain('paypal-login.com');
+	});
+
 	it('should handle individual query failures gracefully via Promise.allSettled', async () => {
 		let callCount = 0;
 		globalThis.fetch = vi.fn().mockImplementation(() => {

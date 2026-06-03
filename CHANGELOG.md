@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.11.0] - 2026-06-03
+
+Combosquat detection release: the brand-audit and `check_lookalikes` pipelines now catch combosquatting domains (a brand token embedded in a longer label, e.g. `paypal-login.com`) that whole-label edit distance structurally misses — appending a token inflates `maxLen` and collapses normalized similarity below the lookalike threshold. This release also carries the first shipped `ScanScore.tierBreakdown` output field (#355) and advances the `@blackveil/dns-checks` sub-package to 1.3.15. The scoring model is **unchanged** (`SCORING_MODEL_VERSION` stays `1.2.0`): combosquat is detection coverage and `tierBreakdown` is an additive output field — neither alters weights, thresholds, or grade boundaries.
+
+### Added
+
+- **Combosquat detection across classification and generation.** `combosquatMatch()` (token-containment in `domain-similarity.ts`) recognizes a brand token as an exact delimited segment (`brand-login`, `secure-brand`) or an undelimited brand±lure affix, independent of edit distance. A lure-keyword-gated `isCombosquat` rule (Rule 4.7 in `classifyCandidate`) routes lure-bearing combos (`paypal-verify`) to the existing `impersonation` bucket with `impersonation_risk`, while non-lure brand+generic combos (`apple-shop`, `apple-cz`) fall through to `indeterminate` (manual review) — matching the calibrated fixtures and avoiding over-firing on legitimate/defensive registrations. Same-registrant-family and shared-infrastructure (TXT/MX/NS) signals downgrade defensive registrations. `check_lookalikes` additionally **generates** combosquat candidates (`generateCombosquats()`: brand + curated lure affix, hyphen-delimited, both positions, capped at 20) and merges them into the permutation set; `calibrateLookalikeSeverity()` rates them on infrastructure (MX/A/registration age/disposable-MX/web-content), not string similarity, so the existing severity calibration and defensive downgrades apply unchanged.
+- **`ScanScore.tierBreakdown` output field (#355).** `computeScanScore` now surfaces the three-tier breakdown (core/protective/hardening) it already computed but previously dropped when mapping to `ScanScore`. Additive output only — no score or finding changes. (First shipped in this release; prod 3.10.0 did not carry it.)
+
+### Changed
+
+- **`@blackveil/dns-checks` → 1.3.15** (`PARITY_CORPUS_VERSION` in lockstep). Sub-package version advances so the next bv-web-vendored tarball is reproducible from a real commit; no fixtures regenerated (the #353/#354 detection fixes move no parity-corpus score).
+
 ## [3.10.0] - 2026-06-03
 
 SPF detection-accuracy release: `check_spf` now identifies an SPF record per RFC 7208 §4.5 — the record must *begin* with the `v=spf1` version token — instead of matching `v=spf1` anywhere in the TXT data. This corrects a class of false negatives where a malformed record caused a genuinely-unprotected domain to be reported as having SPF. The scoring model is **unchanged** (`SCORING_MODEL_VERSION` stays `1.2.0`): this is a check-detection fix, not a scoring-policy change — but because it corrects the SPF category result, per-domain scores move for the (rare) affected domains, in the direction of correctly penalizing the missing control.
