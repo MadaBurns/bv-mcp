@@ -107,6 +107,8 @@ export interface AnalyticsClient {
 		durationMs: number;
 		isAuthenticated: boolean;
 		hasJsonRpcError: boolean;
+		/** JSON-RPC error code (negative per spec); stored as abs() in double2, 0 when absent. */
+		jsonRpcErrorCode?: number;
 		transport: 'json' | 'sse';
 	} & AnalyticsContext): void;
 	emitToolEvent(event: {
@@ -170,7 +172,9 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.keyHash ?? 'none',
 					event.ipHash ?? 'none',
 				],
-				doubles: [sanitizeNumber(event.durationMs)],
+				// double2: abs(JSON-RPC error code) — codes are negative per spec and
+				// sanitizeNumber clamps <0 to 0, so we store the magnitude (0 = no error).
+				doubles: [sanitizeNumber(event.durationMs), sanitizeNumber(Math.abs(event.jsonRpcErrorCode ?? 0))],
 			});
 		},
 		emitToolEvent: (event) => {

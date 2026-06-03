@@ -311,6 +311,7 @@ function emitRequestAnalytics(
 		durationMs: Date.now() - options.startTime,
 		isAuthenticated: options.isAuthenticated,
 		hasJsonRpcError,
+		jsonRpcErrorCode,
 		transport: options.responseTransport,
 		country: options.country,
 		clientType: options.clientType as import('../lib/client-detection').McpClientType,

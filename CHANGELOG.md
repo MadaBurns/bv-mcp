@@ -6,7 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-## [3.13.0] - 2026-06-03
+## [3.13.1] - 2026-06-04
+
+Observability fix: the `mcp_request` analytics event now records the **JSON-RPC error code** so error spikes are diagnosable from telemetry alone. The code was already computed and passed to the emit boundary (for fuzzing classification) but was dropped before being written — meaning a request-level error storm could only be characterized as "error", never by cause. The scoring model is **unchanged** (`SCORING_MODEL_VERSION` stays `1.2.0`).
+
+### Added
+
+- **JSON-RPC error code on `mcp_request` telemetry (`double2`).** `emitRequestEvent` now writes `abs(jsonRpcErrorCode)` to `double2` (0 when no error). Codes are negative per the JSON-RPC spec and `sanitizeNumber` clamps `<0` to `0`, so the magnitude is stored and queried as a positive integer (e.g. `32602` = invalid params, `32603` = internal error, `32029` = rate limit). Enables per-error-code breakdowns of authenticated error bursts that previously bottomed out at an undetermined cause. `tool_call` keeps `double2 = score`.
+
+
 
 Adds **`check_ptr`** — a forward-confirmed reverse DNS (FCrDNS) check for a domain's mail servers — taking the tool surface to **79 MCP tools** and the scored scan surface to **19 categories**. FCrDNS is a mail-deliverability and sender-reputation signal that pure DNS-record scanning did not previously surface.
 
