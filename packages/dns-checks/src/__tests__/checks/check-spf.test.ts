@@ -26,6 +26,43 @@ describe('checkSPF', () => {
 		expect(result.findings[0].title).toBe('No SPF record found');
 	});
 
+	it('returns critical when the record does not begin with v=spf1 (paste-prefix)', async () => {
+		// RFC 7208 §4.5: a TXT record is only an SPF record if it BEGINS with "v=spf1".
+		// "Value: v=spf1 ..." (a copy-paste artefact) is ignored by receivers → no SPF.
+		const queryDNS = createMockDNS({
+			'example.com': ['Value: v=spf1 include:spf.protection.outlook.com ~all'],
+			'_dmarc.example.com': [],
+		});
+		const result = await checkSPF('example.com', queryDNS);
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toBe('No SPF record found');
+		expect(result.findings[0].severity).toBe('critical');
+	});
+
+	it('returns critical when v=spf1 is not followed by a space (run-together mechanisms)', async () => {
+		// RFC 7208 §4.5 ABNF: the version token must be followed by SP or end-of-record.
+		// "v=spf1include:..." is malformed → receivers treat the domain as having no SPF.
+		const queryDNS = createMockDNS({
+			'example.com': ['v=spf1include:spf.protection.outlook.com~all'],
+			'_dmarc.example.com': [],
+		});
+		const result = await checkSPF('example.com', queryDNS);
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toBe('No SPF record found');
+		expect(result.findings[0].severity).toBe('critical');
+	});
+
+	it('does not treat an unrelated TXT record containing v=spf1 as an SPF record', async () => {
+		// A record that merely embeds the substring mid-string must not be picked up.
+		const queryDNS = createMockDNS({
+			'example.com': ['contains v=spf1 mid-string but is not an SPF record'],
+			'_dmarc.example.com': [],
+		});
+		const result = await checkSPF('example.com', queryDNS);
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toBe('No SPF record found');
+	});
+
 	it('returns high when multiple SPF records found', async () => {
 		const queryDNS = createMockDNS({
 			'example.com': ['v=spf1 -all', 'v=spf1 ~all'],

@@ -122,12 +122,14 @@ export async function checkSPF(
 	const findings: Finding[] = [];
 	const txtRecords = await queryDNS(domain, 'TXT', { timeout });
 
-	// Concatenate all TXT records to handle cases where SPF data is split across multiple records
-	const concatenatedTxt = txtRecords.join('');
-
-	// Extract SPF record from concatenated TXT data
-	const spfMatch = concatenatedTxt.match(/v=spf1[^]*/i);
-	const spfRecords = spfMatch ? [spfMatch[0]] : [];
+	// A TXT record is an SPF record only if it BEGINS with the version token "v=spf1"
+	// followed by a space or end-of-record (RFC 7208 §4.5 / ABNF: version *( SP terms )).
+	// Records that merely contain "v=spf1" mid-string (e.g. a "Value: v=spf1 ..." paste
+	// artefact) or run it together with mechanisms ("v=spf1include:...") are NOT valid SPF
+	// records — receivers ignore them, so the domain is effectively unprotected.
+	// Each element of txtRecords is one complete RR (multi-string chunks are pre-joined by
+	// the DNS layer per RFC 7208 §3.3), so anchoring per-record is safe.
+	const spfRecords = txtRecords.filter((record) => /^v=spf1(\s|$)/i.test(record.trim()));
 
 	if (spfRecords.length === 0) {
 		findings.push(
@@ -146,15 +148,14 @@ export async function checkSPF(
 	const dmarcPolicyToken = trustSurfaceContext.dmarcPolicy?.split(';')[0].trim();
 	const dmarcEnforcing = dmarcPolicyToken === 'reject' || dmarcPolicyToken === 'quarantine';
 
-	// Check for multiple SPF records in the concatenated data
-	const spfMatches = concatenatedTxt.match(/v=spf1/gi);
-	if (spfMatches && spfMatches.length > 1) {
+	// RFC 7208 §4.5: a domain MUST publish exactly one SPF record. More than one is a permerror.
+	if (spfRecords.length > 1) {
 		findings.push(
 			createFinding(
 				'spf',
 				'Multiple SPF records',
 				'high',
-				`Found ${spfMatches.length} SPF records in TXT data. RFC 7208 requires exactly one SPF record per domain. Multiple records cause unpredictable behavior.`,
+				`Found ${spfRecords.length} SPF records in TXT data. RFC 7208 requires exactly one SPF record per domain. Multiple records cause unpredictable behavior.`,
 			),
 		);
 	}
