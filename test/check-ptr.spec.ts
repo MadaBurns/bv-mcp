@@ -128,15 +128,19 @@ describe('checkPtr', () => {
 		expect(result.controlPresent).toBe(true);
 	});
 
-	it('returns a high missingControl finding on DNS failure (excluded from score)', async () => {
+	it('returns a transient-error result on DNS failure (excluded from score, scan retry fires)', async () => {
 		// Real timeouts surface as a DOMException AbortError; the transport rethrows as
-		// DnsQueryError("DNS query timed out after Nms"). A plain Error takes the generic
-		// branch ("DNS query failed: ...") — so errorKind is asserted loosely.
+		// DnsQueryError. buildDnsErrorResult converts that to a `checkStatus: 'error'` +
+		// score 0 + passed false result (NOT missingControl) so scan_domain's transient-zero
+		// retry fires and the scoring engine EXCLUDES ptr as transient rather than zeroing it.
 		globalThis.fetch = vi.fn().mockRejectedValue(new DOMException('The operation timed out', 'AbortError'));
 		const { checkPtr } = await import('../src/tools/check-ptr');
 		const result = await checkPtr('example.com', undefined, { retries: 0, skipSecondaryConfirmation: true });
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
 		expect(result.findings[0].severity).toBe('high');
-		expect(result.findings[0].metadata?.missingControl).toBe(true);
-		expect(['timeout', 'dns_error']).toContain(result.findings[0].metadata?.errorKind);
+		expect(result.findings[0].metadata?.errorKind).toBe('dns_error');
 	});
 });
