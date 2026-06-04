@@ -3,9 +3,12 @@
 /**
  * Finding 1: every directly-callable check_* wrapper must convert a transient
  * top-level DNS failure (timeout / network error / SERVFAIL) into a structured
- * CheckResult with `missingControl: true` + `errorKind`, instead of throwing —
- * so a direct `tools/call` returns an actionable finding rather than a generic
- * "unexpected error". check-spf.ts is the documented reference pattern.
+ * CheckResult via buildDnsErrorResult — `checkStatus: 'error'` + score 0 +
+ * `passed: false` + a high finding carrying `errorKind: 'dns_error'` — instead
+ * of throwing. This lets a direct `tools/call` return an actionable finding, and
+ * lets scan_domain's transient-zero retry (which keys off `checkStatus ===
+ * 'error'`) still fire. buildDnsErrorResult (src/lib/dns-error-result.ts) is the
+ * documented reference pattern.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { setupFetchMock, mockFetchError } from './helpers/dns-mock';
@@ -29,6 +32,8 @@ const WRAPPERS: { name: string; load: () => Promise<(domain: string) => Promise<
 	{ name: 'checkSubdomainTakeover', load: async () => (await import('../src/tools/check-subdomain-takeover')).checkSubdomainTakeover },
 	{ name: 'checkResolverConsistency', load: async () => (await import('../src/tools/check-resolver-consistency')).checkResolverConsistency },
 	{ name: 'checkSsl', load: async () => (await import('../src/tools/check-ssl')).checkSsl },
+	{ name: 'checkSpf', load: async () => (await import('../src/tools/check-spf')).checkSpf },
+	{ name: 'checkPtr', load: async () => (await import('../src/tools/check-ptr')).checkPtr },
 ];
 
 describe('check_* wrappers return a structured CheckResult on transient DNS failure', () => {
@@ -51,7 +56,38 @@ describe('check_* wrappers return a structured CheckResult on transient DNS fail
 		expect(result.category).toBe('dmarc');
 		expect(result.checkStatus).toBe('error'); // shouldRetry() keys off this
 		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false); // an errored check did not "pass" (was passed:true with score 0 before)
 		expect(result.partial).toBe(true); // keeps the transient error out of the 5-min cache (self-heals)
+		const errFinding = result.findings.find((f) => f.metadata?.errorKind === 'dns_error');
+		expect(errFinding).toBeDefined();
+	});
+
+	it('checkSpf returns a transient-error result (checkStatus=error, score 0, passed false) so the scan retry fires', async () => {
+		mockFetchError(new Error('DNS query failed: network timeout'));
+		const { checkSpf } = await import('../src/tools/check-spf');
+
+		const result = await checkSpf('example.com');
+
+		expect(result.category).toBe('spf');
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
+		const errFinding = result.findings.find((f) => f.metadata?.errorKind === 'dns_error');
+		expect(errFinding).toBeDefined();
+	});
+
+	it('checkPtr returns a transient-error result (checkStatus=error, score 0, passed false) so the scan retry fires', async () => {
+		mockFetchError(new Error('DNS query failed: network timeout'));
+		const { checkPtr } = await import('../src/tools/check-ptr');
+
+		const result = await checkPtr('example.com', undefined, { retries: 0, skipSecondaryConfirmation: true });
+
+		expect(result.category).toBe('ptr');
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
 		const errFinding = result.findings.find((f) => f.metadata?.errorKind === 'dns_error');
 		expect(errFinding).toBeDefined();
 	});

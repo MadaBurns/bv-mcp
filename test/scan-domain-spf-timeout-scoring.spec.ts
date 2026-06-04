@@ -1,22 +1,24 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * PROOF TEST (audit Finding 1): a transient SPF DNS failure scores DIFFERENTLY
- * depending on HOW the failure surfaces, which it should not.
+ * SCORING-ENGINE EQUIVALENCE GUARD (originally audit Finding 1): a transient
+ * SPF DNS failure must score the SAME however it surfaces in a CheckResult.
  *
- *  - check-spf's wrapper CATCHES the DNS error internally and returns a finding
- *    with { missingControl: true } and NO checkStatus  → scoring ZEROES spf and
- *    counts it (missingControls[spf]=true, can trip the critical-gap ceiling).
- *  - The dmarc-style path RETHROWS, so scan-domain's safeCheck catches it and
- *    stamps checkStatus='error'             → scoring EXCLUDES spf as a transient
- *    failure (renormalised denominator, shown n/a), per the documented
- *    "scoring excludes inconclusive" design.
+ *  - A wrapper that CATCHES the DNS error and returns a heuristic
+ *    { missingControl: true } finding with NO checkStatus  → scoring ZEROES the
+ *    category and counts it (present-and-zeroed).
+ *  - A wrapper that lets the error PROPAGATE, so scan-domain's safeCheck stamps
+ *    checkStatus='error'  → scoring EXCLUDES the category as a transient failure
+ *    (renormalised denominator, shown n/a), per the "scoring excludes
+ *    inconclusive" design.
  *
- * Both represent the identical real-world condition ("SPF could not be
- * measured"), so the overall score MUST be the same. This test asserts the
- * current divergence; once Finding 1 is fixed (transient catch → checkStatus,
- * not missingControl) the two runs converge and the `toBeLessThan` flips to
- * `toBe`.
+ * Finding 1 SHIPPED: check-spf (and check-ptr) now use buildDnsErrorResult, so
+ * the REAL check-spf emits the checkStatus='error' shape and is retried. This
+ * test deliberately MOCKS check-spf to emit BOTH shapes to prove the scoring
+ * engine treats them as score-equivalent — a standing invariant independent of
+ * which shape any wrapper happens to emit. See the in-body CAVEAT: score-equal
+ * is NOT retry-equal (only checkStatus is retried), which is exactly why the
+ * Finding-1 fix chose checkStatus over missingControl.
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { setupFetchMock, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse, createDohResponse } from './helpers/dns-mock';
