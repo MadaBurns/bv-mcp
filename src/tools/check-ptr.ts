@@ -11,6 +11,7 @@
  */
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import { queryDnsRecords, queryMxRecords, queryPtrRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { detectProviderMatches, loadProviderSignatures } from '../lib/provider-signatures';
@@ -158,18 +159,9 @@ export async function checkPtr(domain: string, options?: CheckPtrOptions, dnsOpt
 
 		return buildCheckResult('ptr', findings, confirmed > 0);
 	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		const isTimeout = /timed? out|timeout/i.test(message);
-		return buildCheckResult('ptr', [
-			createFinding(
-				'ptr',
-				isTimeout ? 'PTR check timed out' : 'PTR check could not complete',
-				'high',
-				isTimeout
-					? `DNS lookup timed out before reverse DNS (PTR) could be resolved: ${message}`
-					: `DNS lookup failed before reverse DNS (PTR) could be resolved: ${message}`,
-				{ errorKind: isTimeout ? 'timeout' : 'dns_error', confidence: 'heuristic', missingControl: true },
-			),
-		]);
+		// Transient top-level DNS failure → structured transient-error result (see
+		// buildDnsErrorResult). The `checkStatus: 'error'` shape lets scan_domain's
+		// transient-zero retry fire; PTR is Hardening/bonus-only so this never penalizes.
+		return buildDnsErrorResult('ptr', 'PTR', err);
 	}
 }
