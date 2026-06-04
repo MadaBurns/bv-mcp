@@ -92,7 +92,7 @@ Both publish together from `publish.yml` on version tags.
 - No-send (SPF `noSendPolicy`): downgrade DKIM/MTA-STS/BIMI missing-record findings to `info`
 - BIMI rewritten for non-mail domains
 
-**Output**: human-readable text + (non-interactive clients only) `<!-- STRUCTURED_RESULT ... -->` JSON. Omitted for LLM IDE clients.
+**Output**: human-readable text + (non-interactive clients only, `format=full`) `<!-- STRUCTURED_RESULT ... -->` JSON. Omitted for LLM IDE clients. The same payload is also returned in the MCP-standard `structuredContent` field (always, regardless of format). To avoid sending it twice, `stripRedundantStructuredComment()` (`src/mcp/dispatch.ts`, applied at the `tools/call` dispatch boundary) **drops the comment** when the client can read `structuredContent` — gated conservatively ("Both"): only when `structuredContent` is present AND it's not a known comment-parser (`STRUCTURED_COMMENT_LEGACY_CLIENTS` = `{blackveil_dns_action}`, which regex-parses the comment and negotiates `2025-03-26`) AND either the client negotiated protocol `>= 2025-06-18` (per the `MCP-Protocol-Version` request header) OR it's a verified positive-drop client (`STRUCTURED_COMMENT_DROP_CLIENTS` = `{bv_claude_dns_proxy}` — a stdio bridge that forwards prose to Claude Desktop and never parses the comment, so it drops header-independently). Absent/older/unknown header on a non-positive-drop client → comment kept. Most clients omit the header, so the realized drop is narrow; the `clientType` allowlist is the load-bearing safeguard. Emission stays format-driven in `buildToolContent`; the need-it decision lives at dispatch where the client/protocol signals are.
 
 ### Output format control
 
