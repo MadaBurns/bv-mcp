@@ -39,11 +39,13 @@ Active defenses against known attack vectors. Findings penalize but cannot trigg
 | Lookalikes | 2 |
 | Shadow Domains | 2 |
 
+> This table is the flat `protectiveWeights` map (sums to 23). `DANE-HTTPS` and `SVCB-HTTPS` are also protective-tier in `CATEGORY_TIERS`, but their weights are carried per-profile in `PROFILE_WEIGHTS` rather than in the flat map.
+
 ### Hardening (10% of score)
 
 Bonus-only defense-in-depth. Each passed category adds ~1.4 points. Never subtracts from the overall score. Uses `result.passed` (not raw score) to determine pass/fail — this means checks with `missingControl: true` metadata or `scoreIndicatesMissingControl()` detection do not contribute hardening bonus even if their numeric score is >= 50.
 
-Categories: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene, Brand Discovery.
+Categories: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene, Brand Discovery, Reverse DNS (PTR/FCrDNS), DNSKEY Strength.
 
 **Tool Annotations**: Every tool definition includes `group`, `tier` (`core`, `protective`, or `hardening`), and a `scanIncluded` flag. These annotations align with the category tiers above and are included in `tools/list` responses for structured consumption by MCP clients.
 
@@ -170,7 +172,7 @@ Source: `scoreToGrade()` in `packages/dns-checks/src/scoring/engine.ts` (re-expo
 | `authoritative_dns_infra` | Explicit infrastructure assessment profile | Mail/web controls are non-scoring; authoritative DNS infra, DNSSEC, NS, and zone hygiene dominate |
 
 - **Email bonus**: only for `mail_enabled` and `enterprise_mail`
-- **Critical gap categories**: `mail_enabled`/`enterprise_mail` use core categories; `non_mail`/`web_only` use `['ssl', 'subdomain_takeover', 'http_security']`; `minimal` uses `['ssl', 'subdomain_takeover']`
+- **Critical gap categories**: `mail_enabled`/`enterprise_mail` use core categories; `non_mail`/`web_only` use `['ssl', 'dnssec', 'http_security', 'subdomain_takeover', 'dane_https']`; `minimal` uses `['ssl', 'dnssec', 'subdomain_takeover']`
 - **Authoritative DNS infra profile**: uses `['authoritative_dns_infra', 'dnssec', 'ns', 'zone_hygiene']` as critical gap categories and disables the email bonus.
 
 ### Phase 1 (Current)
