@@ -87,7 +87,7 @@ export interface McpTool {
 	scanIncluded: boolean;
 	/**
 	 * True for the curated "starter set" — the small, high-value subset a client
-	 * can surface to avoid overwhelming an LLM with all 79 flat tools. Additive
+	 * can surface to avoid overwhelming an LLM with the full flat tool list. Additive
 	 * signal only (every tool is still listed); absent means "not curated", not a
 	 * negative. MUST mirror the tools named in SERVER_INSTRUCTIONS (the channel
 	 * that actually reaches the model) — see src/mcp/server-instructions.ts.
@@ -742,8 +742,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
  * Every other tool flows through the registry path (`buildToolResult(..., result, ...)`
  * where `result: CheckResult`), so its `structuredContent` IS a `CheckResult` and
  * gets the lenient CheckResult `outputSchema`.
+ *
+ * Exported as the single source of truth for the CheckResult/non-CheckResult
+ * partition: it drives `outputSchema` population on `TOOLS` below, and tests
+ * import it rather than re-declaring a drift-prone copy (see
+ * `test/tool-output-schema.spec.ts`).
  */
-const NON_CHECK_RESULT_TOOLS = new Set<string>([
+export const NON_CHECK_RESULT_TOOLS = new Set<string>([
 	'scan_domain',
 	'batch_scan',
 	'compare_domains',

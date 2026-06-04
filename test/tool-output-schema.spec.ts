@@ -6,7 +6,7 @@
 // or strict clients reject the result.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { TOOLS } from '../src/schemas/tool-definitions';
+import { TOOLS, NON_CHECK_RESULT_TOOLS } from '../src/schemas/tool-definitions';
 import { CheckResultOutputSchema, buildCheckResultOutputJsonSchema } from '../src/schemas/check-result-output';
 import { handleToolsList } from '../src/handlers/tools';
 import { setupFetchMock, createDohResponse, mockTxtRecords } from './helpers/dns-mock';
@@ -15,40 +15,9 @@ import { IN_MEMORY_CACHE } from '../src/lib/cache';
 const { restore } = setupFetchMock();
 afterEach(() => restore());
 
-/**
- * The 26 special-case tools that return custom shapes (NOT a CheckResult) and
- * therefore must NOT carry an `outputSchema`. Mirrors the EXCLUDE set: everything
- * dispatched outside the TOOL_REGISTRY CheckResult path in handlers/tools.ts.
- */
-const NON_CHECK_RESULT_TOOLS = new Set([
-	'scan_domain',
-	'batch_scan',
-	'compare_domains',
-	'compare_baseline',
-	'generate_fix_plan',
-	'generate_spf_record',
-	'generate_dmarc_record',
-	'generate_dkim_config',
-	'generate_mta_sts_policy',
-	'get_benchmark',
-	'get_provider_insights',
-	'assess_spoofability',
-	'check_resolver_consistency',
-	'explain_finding',
-	'map_supply_chain',
-	'analyze_drift',
-	'validate_fix',
-	'generate_rollout_plan',
-	'resolve_spf_chain',
-	'discover_subdomains',
-	'map_compliance',
-	'simulate_attack_paths',
-	// identity_secops — M365 read tools (custom shape, not CheckResult)
-	'query_signins',
-	'query_ual',
-	'get_ca_policies',
-	'assess_coverage',
-]);
+// The special-case tools that return custom shapes (NOT a CheckResult) and therefore
+// carry NO `outputSchema` are the single source of truth `NON_CHECK_RESULT_TOOLS`,
+// imported above — the same set that drives `outputSchema` population on `TOOLS`.
 
 describe('CheckResult output schema (derived)', () => {
 	it('is an object schema requiring category/score/passed/findings', () => {
@@ -97,17 +66,14 @@ describe('outputSchema declarations on TOOLS', () => {
 
 	it('every other tool (the CheckResult set) HAS an outputSchema equal to the derived schema', () => {
 		const derived = buildCheckResultOutputJsonSchema();
+		// Derived from the SSOT exclusion set — no hardcoded count to drift. Each
+		// CheckResult tool must carry the lenient schema; the sibling test asserts the
+		// excluded tools carry none, and the round-trip tests below check real dispatch.
 		const checkResultTools = TOOLS.filter((t) => !NON_CHECK_RESULT_TOOLS.has(t.name));
-		// Sanity: there should be 52 CheckResult tools (78 total − 26 excluded).
-		expect(checkResultTools).toHaveLength(53);
 		for (const tool of checkResultTools) {
 			expect(tool.outputSchema, `tool ${tool.name} must declare outputSchema`).toBeDefined();
 			expect(tool.outputSchema).toEqual(derived);
 		}
-	});
-
-	it('adding outputSchema does not change tool count', () => {
-		expect(TOOLS).toHaveLength(79);
 	});
 });
 
