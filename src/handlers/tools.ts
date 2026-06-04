@@ -3,6 +3,7 @@
 import type { CheckResult } from '../lib/scoring';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
 import { buildCheckCacheKey, buildScanCacheKey, runWithCacheTracked } from '../lib/cache';
+import { withRequestDedup } from '../lib/request-dedup';
 import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { checkSpf } from '../tools/check-spf';
 import { checkSubdomainTakeover } from '../tools/check-subdomain-takeover';
@@ -148,6 +149,18 @@ export function handleToolsList(): { tools: WireTool[] } {
 
 const DOMAIN_REQUIRED_TOOLS = new Set(
 	TOOLS.filter((tool) => Array.isArray(tool.inputSchema.required) && tool.inputSchema.required.includes('domain')).map((tool) => tool.name),
+);
+
+/**
+ * Tools eligible for the request-dedup window (#363 item 3): mutating
+ * (`readOnlyHint === false`) AND non-destructive (`destructiveHint === false`).
+ * That's the 8 `*_start` / `register_*` creators — the ones a client retry can
+ * DUPLICATE. The naturally-idempotent `delete_brand_audit_watch` (destructive)
+ * is excluded. Derived from annotations (the SSOT), so a future mutating tool
+ * auto-joins — guarded by an exact-set test so that's a conscious decision.
+ */
+export const MUTATING_DEDUP_TOOLS = new Set(
+	TOOLS.filter((tool) => tool.annotations?.readOnlyHint === false && tool.annotations?.destructiveHint === false).map((tool) => tool.name),
 );
 
 export function toolRequiresDomain(name: string): boolean {
@@ -1284,8 +1297,29 @@ export async function handleToolsCall(
 			}
 		};
 
+		// Mutating *_start/register tools: collapse a client network-retry that
+		// re-sends identical args onto the prior successful result, so it doesn't
+		// create a duplicate watch/scan/investigation (#363 item 3). Skipped without
+		// an authenticated principal or KV — see withRequestDedup. The dedup wrapper
+		// sits INSIDE the timeout race so a replay is still bounded.
+		const dedupKv = runtimeOptions?.rateLimitKv;
+		const dispatch =
+			MUTATING_DEDUP_TOOLS.has(name) && dedupKv
+				? () =>
+						withRequestDedup(
+							{
+								toolName: name,
+								principal: runtimeOptions?.principalId ?? runtimeOptions?.keyHash,
+								args: validatedArgs as Record<string, unknown>,
+								kv: dedupKv,
+								waitUntil: runtimeOptions?.waitUntil,
+							},
+							executeDispatch,
+						)
+				: executeDispatch;
+
 		return await Promise.race([
-			executeDispatch(),
+			dispatch(),
 			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('__tool_timeout__')), TOOL_CALL_TIMEOUT_MS)),
 		]);
 	} catch (err) {
