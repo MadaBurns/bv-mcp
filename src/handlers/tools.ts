@@ -119,6 +119,8 @@ interface WireTool {
 		group: McpTool['group'];
 		tier?: McpTool['tier'];
 		scanIncluded: boolean;
+		/** Present (true) only for the curated starter set; omitted otherwise (lean, like tier). */
+		recommended?: boolean;
 	};
 }
 
@@ -138,6 +140,7 @@ export function handleToolsList(): { tools: WireTool[] } {
 				group: tool.group,
 				...(tool.tier !== undefined && { tier: tool.tier }),
 				scanIncluded: tool.scanIncluded,
+				...(tool.recommended && { recommended: true }),
 			},
 		})),
 	};
