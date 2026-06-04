@@ -85,6 +85,14 @@ export interface McpTool {
 	tier?: ToolTier;
 	/** True when this tool is included in the scan_domain parallel orchestration. */
 	scanIncluded: boolean;
+	/**
+	 * True for the curated "starter set" — the small, high-value subset a client
+	 * can surface to avoid overwhelming an LLM with all 79 flat tools. Additive
+	 * signal only (every tool is still listed); absent means "not curated", not a
+	 * negative. MUST mirror the tools named in SERVER_INSTRUCTIONS (the channel
+	 * that actually reaches the model) — see src/mcp/server-instructions.ts.
+	 */
+	recommended?: boolean;
 }
 
 interface ToolDef {
@@ -96,6 +104,8 @@ interface ToolDef {
 	mutating?: boolean;
 	/** True when the tool deletes or overwrites data → drives `destructiveHint`. Implies `mutating`. */
 	destructive?: boolean;
+	/** Curated starter-set member (see McpTool.recommended). Mirror SERVER_INSTRUCTIONS. */
+	recommended?: boolean;
 }
 
 /** DNS/security acronyms that should be uppercased in human-readable tool titles. */
@@ -293,6 +303,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		schema: ScanDomainArgs,
 		group: 'meta',
 		scanIncluded: false,
+		recommended: true,
 	},
 	batch_scan: {
 		description: 'Scan up to 10 domains at once. Returns score, grade, and finding counts per domain.',
@@ -311,6 +322,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		schema: CompareBaselineArgs,
 		group: 'meta',
 		scanIncluded: false,
+		recommended: true,
 	},
 	check_shadow_domains: {
 		description: 'Find TLD variants with email auth gaps. Standalone.',
@@ -408,6 +420,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		schema: ExplainFindingArgs,
 		group: 'meta',
 		scanIncluded: false,
+		recommended: true,
 	},
 	map_supply_chain: {
 		description:
@@ -778,6 +791,7 @@ export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => (
 	group: def.group,
 	...(def.tier !== undefined && { tier: def.tier }),
 	scanIncluded: def.scanIncluded,
+	...(def.recommended && { recommended: true as const }),
 }));
 
 export { TOOL_SCHEMA_MAP };

@@ -7,6 +7,7 @@ import { parseAllowedHosts } from './request';
 import { createSession, checkSessionCreateRateLimit } from '../lib/session';
 import { auditSessionCreated } from '../lib/audit';
 import { jsonRpcError, jsonRpcSuccess, JSON_RPC_ERRORS } from '../lib/json-rpc';
+import { SERVER_INSTRUCTIONS } from './server-instructions';
 import type { AnalyticsClient } from '../lib/analytics';
 
 type JsonRpcPayload = ReturnType<typeof jsonRpcSuccess> | ReturnType<typeof jsonRpcError>;
@@ -165,8 +166,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 						description:
 							'Open-source DNS & email security scanner — 80+ checks across 20 categories with scoring, grading, and remediation guidance',
 					},
-					instructions:
-					'DNS and email security scanner. Use scan_domain for comprehensive audits (score, grade, findings). Use individual check_* tools for targeted investigation. Use explain_finding for remediation guidance. Use compare_baseline for policy enforcement. All checks are passive and read-only.',
+					instructions: SERVER_INSTRUCTIONS,
 				}),
 				newSessionId: createSessionOnInitialize ? sessionId : undefined,
 				logCategory: 'session',
