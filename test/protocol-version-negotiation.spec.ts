@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import worker from '../src';
 import {
 	negotiateProtocolVersion,
+	classifyProtocolVersionHeader,
 	SUPPORTED_PROTOCOL_VERSIONS,
 	LATEST_PROTOCOL_VERSION,
 } from '../src/mcp/dispatch';
@@ -37,6 +38,30 @@ describe('negotiateProtocolVersion', () => {
 		expect(negotiateProtocolVersion({})).toBe('2025-06-18');
 		expect(negotiateProtocolVersion([])).toBe('2025-06-18');
 		expect(negotiateProtocolVersion('')).toBe('2025-06-18');
+	});
+});
+
+describe('classifyProtocolVersionHeader (#363 item 4 — observe-only, never rejects)', () => {
+	it('classifies a supported header value', () => {
+		expect(classifyProtocolVersionHeader('2025-06-18')).toBe('supported');
+		expect(classifyProtocolVersionHeader('2025-03-26')).toBe('supported');
+	});
+
+	it('treats a missing / empty / whitespace header as absent (most clients omit it)', () => {
+		expect(classifyProtocolVersionHeader(undefined)).toBe('absent');
+		expect(classifyProtocolVersionHeader(null)).toBe('absent');
+		expect(classifyProtocolVersionHeader('')).toBe('absent');
+		expect(classifyProtocolVersionHeader('   ')).toBe('absent');
+	});
+
+	it('classifies an unknown / lagging / future version as unsupported (observed, not rejected)', () => {
+		expect(classifyProtocolVersionHeader('2024-11-05')).toBe('unsupported');
+		expect(classifyProtocolVersionHeader('2099-01-01')).toBe('unsupported');
+		expect(classifyProtocolVersionHeader('garbage')).toBe('unsupported');
+	});
+
+	it('tolerates surrounding whitespace on an otherwise-supported value', () => {
+		expect(classifyProtocolVersionHeader(' 2025-06-18 ')).toBe('supported');
 	});
 });
 
@@ -77,5 +102,56 @@ describe('initialize protocolVersion negotiation (integration)', () => {
 
 	it('returns the latest version when the client requests an unsupported version', async () => {
 		expect(await initialize({ protocolVersion: '2024-11-05' })).toBe('2025-06-18');
+	});
+});
+
+describe('MCP-Protocol-Version request header (#363 item 4 — never rejects)', () => {
+	beforeEach(async () => {
+		resetAllRateLimits();
+		resetSessions();
+		resetLegacySseState();
+		await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
+		await resetAllRateLimitsKv(env.RATE_LIMIT);
+	});
+
+	async function initSession(): Promise<string> {
+		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } }),
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const sessionId = response.headers.get('mcp-session-id');
+		expect(sessionId).toBeTruthy();
+		return sessionId!;
+	}
+
+	async function toolsList(sessionId: string, protocolHeader?: string): Promise<number> {
+		const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId };
+		if (protocolHeader !== undefined) headers['MCP-Protocol-Version'] = protocolHeader;
+		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		return response.status;
+	}
+
+	it('accepts a post-init request with a supported version header', async () => {
+		expect(await toolsList(await initSession(), '2025-06-18')).toBe(200);
+	});
+
+	it('accepts a post-init request with NO version header (most clients omit it)', async () => {
+		expect(await toolsList(await initSession(), undefined)).toBe(200);
+	});
+
+	it('accepts (does NOT reject) a post-init request with an unsupported / future version header', async () => {
+		expect(await toolsList(await initSession(), '2099-01-01')).toBe(200);
+		expect(await toolsList(await initSession(), 'garbage')).toBe(200);
 	});
 });
