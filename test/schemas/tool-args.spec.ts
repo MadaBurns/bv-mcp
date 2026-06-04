@@ -15,6 +15,7 @@ import {
 	AssessCoverageArgs,
 	TOOL_SCHEMA_MAP,
 } from '../../src/schemas/tool-args';
+import { TOOLS } from '../../src/schemas/tool-definitions';
 
 describe('BaseDomainArgs', () => {
 	it('accepts domain only', () => {
@@ -220,8 +221,10 @@ describe('AssessCoverageArgs', () => {
 });
 
 describe('TOOL_SCHEMA_MAP', () => {
-	it('has 77 tools', () => {
-		expect(Object.keys(TOOL_SCHEMA_MAP)).toHaveLength(79);
+	it('has exactly one schema per registered tool', () => {
+		// Derived from the tool registry — catches a tool added without a schema
+		// (or an orphan schema) rather than asserting a hardcoded count.
+		expect(Object.keys(TOOL_SCHEMA_MAP).sort()).toEqual(TOOLS.map((t) => t.name).sort());
 	});
 	it('all values are Zod schemas', () => {
 		for (const schema of Object.values(TOOL_SCHEMA_MAP)) {
