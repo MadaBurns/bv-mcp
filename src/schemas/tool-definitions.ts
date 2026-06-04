@@ -199,7 +199,8 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: true,
 	},
 	check_mta_sts: {
-		description: 'Validate MTA-STS SMTP encryption policy.',
+		description:
+			'Check whether a domain enforces SMTP TLS via MTA-STS. Queries _mta-sts.<domain> for the policy TXT record, fetches the published policy file at mta-sts.<domain>, and reports its mode (enforce/testing/none), MX coverage, and whether MX-accepting domains lack a policy. Use to confirm inbound mail is protected against downgrade/MITM.',
 		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'protective',
@@ -220,28 +221,32 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: true,
 	},
 	check_bimi: {
-		description: 'Validate BIMI record and VMC evidence.',
+		description:
+			'Check the BIMI brand-logo record at default._bimi.<domain>. Validates the logo URL (l=) and VMC certificate evidence (a=), and verifies the DMARC enforcement prerequisite (p=quarantine/reject) that mail clients require before displaying a BIMI logo. Returns findings for a missing/malformed record or unmet prerequisites. Use to assess brand-indicator readiness in inboxes.',
 		schema: BaseDomainArgs,
 		group: 'brand_threats',
 		tier: 'hardening',
 		scanIncluded: true,
 	},
 	check_tlsrpt: {
-		description: 'Validate TLS-RPT SMTP failure reporting.',
+		description:
+			'Check whether a domain has SMTP TLS Reporting (TLS-RPT) configured. Queries _smtp._tls.<domain> for the v=TLSRPTv1 record and validates its reporting destination (rua= mailto:/https:), flagging a missing record, duplicate records, or an invalid/absent reporting URI. Complements MTA-STS by giving visibility into TLS delivery failures.',
 		schema: BaseDomainArgs,
 		group: 'brand_threats',
 		tier: 'hardening',
 		scanIncluded: true,
 	},
 	check_http_security: {
-		description: 'Audit HTTP security headers (CSP, COOP, etc.).',
+		description:
+			'Audit a domain\'s browser-facing HTTP security headers over HTTPS. Inspects Content-Security-Policy (flagging unsafe-inline/unsafe-eval/wildcards), X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, and the cross-origin isolation headers (COOP/COEP/CORP), and detects CDN/WAF interception. Returns per-header findings for missing or weak protections against XSS, clickjacking, and cross-origin attacks.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'protective',
 		scanIncluded: true,
 	},
 	check_dane: {
-		description: 'Verify DANE/TLSA certificate pinning.',
+		description:
+			'Check DANE/TLSA certificate pinning for SMTP. Resolves the domain\'s MX hosts and looks up TLSA records at _25._tcp.<mx-host>, verifying whether mail-server certificates are bound in DNS for DNSSEC-backed protection against CA misissuance and MITM on inbound mail. Returns findings for absent or malformed TLSA records (not applicable to no-MX/null-MX domains). For HTTPS DANE at _443._tcp, use check_dane_https.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'hardening',
@@ -329,7 +334,8 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: false,
 	},
 	check_srv: {
-		description: 'Probe SRV records for service footprint.',
+		description:
+			'Map a domain\'s DNS-visible service footprint by probing ~16 common SRV prefixes (email, calendar, messaging, web, directory) in parallel. Returns the discovered services and flags insecure advertisements such as plaintext IMAP/POP3 offered without an encrypted variant. Standalone reconnaissance; not part of the scored scan.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'hardening',
@@ -385,7 +391,8 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: false,
 	},
 	assess_spoofability: {
-		description: 'Composite email spoofability score (0-100).',
+		description:
+			'Compute a single composite email-spoofability score (0–100) by combining SPF trust surface, DMARC enforcement, and DKIM coverage with interaction multipliers. Note the scale is inverted versus the scan grade: higher = more spoofable, 0 = fully protected, 100 = any server can send as the domain. Returns the score, a risk level (minimal→critical), per-control sub-scores, and a plain-language summary. Use for a quick spoofing-risk read; use scan_domain for the full graded audit.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,

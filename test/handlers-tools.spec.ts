@@ -457,6 +457,11 @@ describe('handleToolsCall - input validation & errors', () => {
 // -- handleToolsCall error categorization --
 
 describe('handleToolsCall - error categorization', () => {
+	afterEach(() => {
+		vi.doUnmock('../src/tools/check-dmarc');
+		vi.resetModules();
+	});
+
 	async function call(name: string, args: Record<string, unknown> = {}) {
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		return handleToolsCall({ name, arguments: args });
@@ -469,11 +474,19 @@ describe('handleToolsCall - error categorization', () => {
 	});
 
 	it('unexpected errors return generic error with tool name', async () => {
-		// check_spf has its own DNS-failure catch (see Workstream A, 2026-04-25),
-		// so use check_dmarc — still throws on DNS failure and exercises the
-		// handler's generic-error safety net.
-		globalThis.fetch = vi.fn().mockImplementation(() => {
-			throw new Error('ECONNREFUSED');
+		// All check_* wrappers now convert DNS failures into a structured CheckResult
+		// (buildDnsErrorResult), so a thrown fetch no longer reaches the handler. To
+		// exercise the handler's generic-error safety net we force an *unexpected*
+		// throw from the tool's execute path via a module mock.
+		vi.resetModules();
+		vi.doMock('../src/tools/check-dmarc', async (importOriginal) => {
+			const orig = await importOriginal<typeof import('../src/tools/check-dmarc')>();
+			return {
+				...orig,
+				checkDmarc: () => {
+					throw new Error('ECONNREFUSED');
+				},
+			};
 		});
 		const result = await call('check_dmarc', { domain: 'error-test.example.com' });
 		expect(result.isError).toBe(true);
