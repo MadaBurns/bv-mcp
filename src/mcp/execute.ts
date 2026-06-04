@@ -82,6 +82,8 @@ export interface ExecuteMcpRequestOptions {
 	secondaryDohToken?: string;
 	country?: string;
 	clientType?: string;
+	/** Raw `MCP-Protocol-Version` request header (threaded to dispatch for STRUCTURED_RESULT comment trimming). */
+	protocolVersionHeader?: string;
 	authTier?: string;
 	sessionHash?: string;
 	/** Truncated key hash for analytics (first 16 chars of SHA-256). */
@@ -830,6 +832,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			secondaryDohToken: options.secondaryDohToken,
 			country: options.country,
 			clientType: options.clientType,
+			protocolVersionHeader: options.protocolVersionHeader,
 			authTier: options.authTier,
 			certstream: options.certstream,
 			certstreamAuthToken: options.certstreamAuthToken,
@@ -926,6 +929,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			secondaryDohToken: options.secondaryDohToken,
 			country: options.country,
 			clientType: options.clientType,
+			protocolVersionHeader: options.protocolVersionHeader,
 			authTier: options.authTier,
 			certstream: options.certstream,
 			certstreamAuthToken: options.certstreamAuthToken,

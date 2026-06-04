@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.15.0] - 2026-06-04
+
+MCP token-hygiene follow-up to the #363 best-practices work. Worker `src/`-only; the `@blackveil/dns-checks` core and the scoring model (`SCORING_MODEL_VERSION` stays `1.2.0`) are untouched. No tool was added or removed (still 79).
+
+### Changed
+
+- **Drop the redundant `STRUCTURED_RESULT` comment for `structuredContent`-capable clients.** In `full` format the scan payload was delivered twice — the embedded `<!-- STRUCTURED_RESULT … -->` comment **and** the MCP-standard `structuredContent` field (verified byte-identical), ~1.5 KB / ~400 tokens per `scan_domain`. `stripRedundantStructuredComment()` (`src/mcp/dispatch.ts`) now removes the comment at the `tools/call` dispatch boundary when the client can read `structuredContent`. Conservatively gated: strips only when `structuredContent` is present, the client is **not** a known comment-parser (`STRUCTURED_COMMENT_LEGACY_CLIENTS` = `{blackveil_dns_action}`), **and** it either negotiated protocol `>= 2025-06-18` (per the `MCP-Protocol-Version` request header) **or** is a verified positive-drop client (`STRUCTURED_COMMENT_DROP_CLIENTS` = `{bv_claude_dns_proxy}`, which forwards prose to Claude Desktop and parses neither channel). Emission stays format-driven in `buildToolContent`; the need-it decision lives at dispatch where the client/protocol signals are. (#369)
+
 ## [3.14.0] - 2026-06-04
 
 MCP best-practices follow-up from the protocol audit (issue #363). Four additive, non-score-affecting improvements to the MCP surface — Worker `src/`-only, the `@blackveil/dns-checks` core and the scoring model (`SCORING_MODEL_VERSION` stays `1.2.0`) are untouched. No tool was added or removed (still 79).
