@@ -1,44 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { buildCheckResult, CATEGORY_TIERS, computeCategoryScore, createFinding, inferFindingConfidence } from '@blackveil/dns-checks/scoring';
+// SPDX-License-Identifier: BUSL-1.1
 
-describe('scoring-model', () => {
-	it('normalizes confidence metadata when building check results', () => {
-		const result = buildCheckResult('spf', [createFinding('spf', 'SPF record configured', 'info', 'Healthy SPF')]);
-		expect(result.findings[0].metadata?.confidence).toBe('deterministic');
-		expect(result.passed).toBe(true);
-	});
+// Thin wrapper: runs the shared scoring-model suite against the BUILT package
+// (`@blackveil/dns-checks/scoring`), so source↔dist/DTS drift is caught. The
+// source surface is exercised by the same suite in
+// packages/dns-checks/src/__tests__/scoring/scoring-model.spec.ts.
+import * as scoring from '@blackveil/dns-checks/scoring';
+import { defineScoringModelSuite } from '../packages/dns-checks/src/__tests__/scoring/scoring-model.suite';
 
-	it('detects heuristic confidence from partial-evidence language', () => {
-		const finding = createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'Possible missing DKIM coverage.');
-		expect(inferFindingConfidence(finding)).toBe('heuristic');
-	});
-
-	it('applies severity penalties for category scoring', () => {
-		const findings = [
-			createFinding('dmarc', 'Missing DMARC', 'critical', 'No record found'),
-			createFinding('dmarc', 'No aggregate reporting', 'medium', 'rua tag missing'),
-		];
-		expect(computeCategoryScore(findings)).toBe(45);
-	});
-});
-
-describe('CATEGORY_TIERS', () => {
-	it('classifies all 27 categories into tiers', () => {
-		expect(Object.keys(CATEGORY_TIERS)).toHaveLength(27);
-	});
-
-	it('has 6 core categories', () => {
-		const core = Object.entries(CATEGORY_TIERS).filter(([, t]) => t === 'core');
-		expect(core.map(([k]) => k).sort()).toEqual(['authoritative_dns_infra', 'dkim', 'dmarc', 'dnssec', 'spf', 'ssl']);
-	});
-
-	it('has 11 protective categories', () => {
-		const protective = Object.entries(CATEGORY_TIERS).filter(([, t]) => t === 'protective');
-		expect(protective).toHaveLength(11);
-	});
-
-	it('has 10 hardening categories', () => {
-		const hardening = Object.entries(CATEGORY_TIERS).filter(([, t]) => t === 'hardening');
-		expect(hardening).toHaveLength(10);
-	});
-});
+defineScoringModelSuite(scoring);
