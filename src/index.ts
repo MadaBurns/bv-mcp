@@ -108,6 +108,8 @@ type BvMcpEnv = {
 	OAUTH_ISSUER?: string;
 	OAUTH_SIGNING_SECRET?: string;
 	BV_INTERNAL_DEV_KEY?: string;
+	/** Second independent static internal-dev key (owner tier, OWNER_ALLOW_IPS-gated). Lets a per-machine key be added without rotating BV_INTERNAL_DEV_KEY. */
+	BV_INTERNAL_DEV_KEY_2?: string;
 	BRAND_AUDIT_DB?: D1Database;
 	INTELLIGENCE_DB?: D1Database;
 	MCP_ACCESS_LOG_IP_ENCRYPTION_KEY?: string;

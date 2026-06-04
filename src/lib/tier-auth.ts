@@ -41,6 +41,23 @@ async function hashTokenRaw(token: string): Promise<Uint8Array> {
 	return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
 }
 
+/**
+ * Constant-time comparison of a presented token's raw SHA-256 digest against a
+ * candidate static key. Returns false for an absent candidate. Comparison is
+ * constant-time XOR over the digests (never short-circuits on first mismatch)
+ * so it cannot leak the secret via timing.
+ */
+async function matchesStaticDevKey(tokenRaw: Uint8Array, candidate: string | undefined): Promise<boolean> {
+	if (!candidate) return false;
+	const b = await hashTokenRaw(candidate);
+	let mismatch = tokenRaw.byteLength ^ b.byteLength;
+	const len = Math.min(tokenRaw.byteLength, b.byteLength);
+	for (let i = 0; i < len; i++) {
+		mismatch |= tokenRaw[i] ^ b[i];
+	}
+	return mismatch === 0;
+}
+
 function applyOwnerIpGate(tier: McpApiKeyTier, ownerAllowIps: string | undefined, clientIp: string | undefined): McpApiKeyTier {
 	if (tier !== 'owner') return tier;
 	const allowed = parseOwnerAllowIps(ownerAllowIps);
@@ -68,6 +85,7 @@ export async function resolveTier(
 	env: {
 		BV_API_KEY?: string;
 		BV_INTERNAL_DEV_KEY?: string;
+		BV_INTERNAL_DEV_KEY_2?: string;
 		OWNER_ALLOW_IPS?: string;
 		RATE_LIMIT?: KVNamespace;
 		BV_WEB?: Fetcher;
@@ -131,22 +149,20 @@ export async function resolveTier(
 		.map((b) => b.toString(16).padStart(2, '0'))
 		.join('');
 
-	// 0. Static internal-dev key short-circuit. The dev key is a hardcoded
-	// "us only" secret (load tests, ops scripts); it must not be subject to
+	// 0. Static internal-dev key short-circuit. The dev keys are hardcoded
+	// "us only" secrets (load tests, ops scripts); they must not be subject to
 	// KV-cache staleness or bv-web validate-key fallback — those paths can
-	// quietly demote it to partner-tier and crash benchmarks on the 200/mo
+	// quietly demote them to partner-tier and crash benchmarks on the 200/mo
 	// quota. Comparison is constant-time XOR over raw SHA-256 digests.
-	if (env.BV_INTERNAL_DEV_KEY) {
-		const a = tokenRaw;
-		const b = await hashTokenRaw(env.BV_INTERNAL_DEV_KEY);
-		let mismatch = 0;
-		for (let i = 0; i < a.byteLength; i++) {
-			mismatch |= a[i] ^ b[i];
-		}
-		if (mismatch === 0) {
-			const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
-			return { authenticated: true, tier: resolvedTier, keyHash };
-		}
+	// Two independent slots (BV_INTERNAL_DEV_KEY + BV_INTERNAL_DEV_KEY_2) allow
+	// adding a per-machine key without rotating the shared one out from under
+	// other consumers. Both resolve to owner tier and remain OWNER_ALLOW_IPS-gated.
+	if (
+		(await matchesStaticDevKey(tokenRaw, env.BV_INTERNAL_DEV_KEY)) ||
+		(await matchesStaticDevKey(tokenRaw, env.BV_INTERNAL_DEV_KEY_2))
+	) {
+		const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
+		return { authenticated: true, tier: resolvedTier, keyHash };
 	}
 
 	// 1. Try KV cache
