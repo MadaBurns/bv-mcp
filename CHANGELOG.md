@@ -20,6 +20,14 @@ MCP best-practices follow-up from the protocol audit (issue #363). Four additive
 
 - **Transient-DNS handling unified for `check_spf` / `check_ptr`.** Both now emit the retried `checkStatus: 'error'` shape via `buildDnsErrorResult` instead of the un-retried heuristic `missingControl` shape, so a transient DNS hiccup during a scan is retried (matching `check_dmarc`/`check_tlsrpt`/`check_bimi`) and excluded from scoring as inconclusive rather than zeroed. Score-equivalent on the headline number; closes a latent no-retry-on-transient gap. `check_http_security` deliberately excluded (its `'timeout'` shape is intentionally not retried — the budget is already spent).
 
+### Verified on production
+
+Confirmed live against the deployed worker (Cloudflare Version `318b6f0c`):
+
+- **#365 — starter-set flag.** `initialize` advertises `serverInfo.version` `3.14.0` and the new starter-set `instructions` string; `tools/list` carries `scan_domain._meta.recommended: true`, with the recommended set exactly `{scan_domain, explain_finding, compare_baseline}`; tool count unchanged at 79.
+- **#366 — dedup window.** Two identical `register_brand_audit_watch` calls (same principal, within the window) returned the **same** `watchId`, and the listing showed **exactly one** persisted row — proving the duplicate was fully short-circuited (no second INSERT), not merely a replayed payload. A call with different args returned a distinct `watchId` (negative control). Test watches were cleaned up afterward.
+- **#367 — protocol-header observation.** A post-`initialize` request with a supported, absent, unsupported, or garbage `MCP-Protocol-Version` header all returned `200` (never rejected). Log inspection confirmed the observation warn (`category: 'protocol'`) fired **only** for the two unsupported values on a non-`initialize` method, and stayed silent for the supported value and for an unsupported header sent on `initialize` (the documented exemption).
+
 ## [3.13.2] - 2026-06-04
 
 Completes the 3.13.1 telemetry fix: the JSON-RPC error code is now recorded on **both** dispatch paths. 3.13.1 wired it only into the SSE/streaming dispatch path (`execute.ts:876`); the JSON/non-streaming dispatch path (`:984`) computed `hasJsonRpcError` but discarded the code, so `double2` stayed `0` for JSON-transport tool/method errors. Found during post-deploy verification — live errors recorded with `code=0`.
