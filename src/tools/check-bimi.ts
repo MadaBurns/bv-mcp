@@ -8,6 +8,7 @@
 import { checkBIMI } from '@blackveil/dns-checks';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
 import type { QueryDnsOptions } from '../lib/dns-types';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import type { CheckResult } from '../lib/scoring';
 import { safeFetch } from '../lib/safe-fetch';
 
@@ -22,9 +23,9 @@ import { safeFetch } from '../lib/safe-fetch';
  * (H2 fix from the 2026-05-08 security audit).
  */
 export async function checkBimi(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
-	return checkBIMI(
-		domain,
-		makeQueryDNS(dnsOptions),
-		{ timeout: dnsOptions?.timeoutMs ?? 5000, fetchFn: safeFetch },
-	) as Promise<CheckResult>;
+	try {
+		return (await checkBIMI(domain, makeQueryDNS(dnsOptions), { timeout: dnsOptions?.timeoutMs ?? 5000, fetchFn: safeFetch })) as CheckResult;
+	} catch (err) {
+		return buildDnsErrorResult('bimi', 'BIMI', err);
+	}
 }
