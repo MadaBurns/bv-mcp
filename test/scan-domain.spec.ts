@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { env } from 'cloudflare:test';
 import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse, nxdomainResponse, servfailResponse } from './helpers/dns-mock';
 import { IN_MEMORY_CACHE, buildScanCacheKey } from '../src/lib/cache';
-import type { ScanDomainResult } from '../src/tools/scan-domain';
+import { type ScanDomainResult, SCAN_CATEGORIES } from '../src/tools/scan-domain';
 
 const { restore } = setupFetchMock();
 
@@ -118,7 +118,7 @@ describe('scanDomain', () => {
 		expect(() => new Date(result.timestamp).toISOString()).not.toThrow();
 	});
 
-	it('includes all 19 check categories', async () => {
+	it(`includes all ${SCAN_CATEGORIES.length} check categories`, async () => {
 		mockAllChecks();
 		const result = await run();
 
@@ -142,7 +142,7 @@ describe('scanDomain', () => {
 		expect(categories).toContain('subdomailing');
 		expect(categories).toContain('dnskey_strength');
 		expect(categories).toContain('ptr');
-		expect(result.checks).toHaveLength(19);
+		expect(result.checks).toHaveLength(SCAN_CATEGORIES.length);
 
 		// Each check result has expected shape
 		for (const check of result.checks) {
@@ -159,7 +159,7 @@ describe('scanDomain', () => {
 		const result = await run();
 
 		// All 19 checks should still be present
-		expect(result.checks).toHaveLength(19);
+		expect(result.checks).toHaveLength(SCAN_CATEGORIES.length);
 
 		// The DKIM check should have a degraded finding since DNS failed
 		const dkimCheck = result.checks.find((c) => c.category === 'dkim');

@@ -23,8 +23,18 @@ const VALID_GROUPS: ToolGroup[] = [
 ];
 const VALID_TIERS: ToolTier[] = ['core', 'protective', 'hardening'];
 
-/** Tools included in scan_domain parallel orchestration (excludes check_subdomain_takeover which is internal). */
-const SCAN_DOMAIN_TOOL_NAMES = new Set([
+/**
+ * The exact set of tools wired into scan_domain parallel orchestration (excludes
+ * check_subdomain_takeover, which runs inside scan_domain but is not a standalone
+ * scanIncluded tool).
+ *
+ * This is an intentional exact-set tripwire: `scanIncluded` drives the scoring
+ * denominator (a tool scored into scan_domain but mis-flagged drags every domain's
+ * score), so any change to what scan_domain runs MUST be acknowledged here. The
+ * derived set `TOOLS.filter((t) => t.scanIncluded)` is the source of truth; this
+ * list is the guard. Mirrors the MUTATING_DEDUP_TOOLS exact-set pattern.
+ */
+const EXPECTED_SCAN_DOMAIN_TOOLS = new Set([
 	'check_spf',
 	'check_dmarc',
 	'check_dkim',
@@ -45,76 +55,7 @@ const SCAN_DOMAIN_TOOL_NAMES = new Set([
 	'check_ptr',
 ]);
 
-/** Tools that are standalone-only or non-scoring orchestration/meta tools. */
-const NON_SCAN_TOOL_NAMES = new Set([
-	'check_lookalikes',
-	'check_shadow_domains',
-	'check_txt_hygiene',
-	'check_mx_reputation',
-	'check_srv',
-	'check_zone_hygiene',
-	'check_resolver_consistency',
-	'check_authoritative_dns_infra',
-	'check_root_server_set',
-	'scan_domain',
-	'batch_scan',
-	'compare_domains',
-	'compare_baseline',
-	'generate_fix_plan',
-	'generate_spf_record',
-	'generate_dmarc_record',
-	'generate_dkim_config',
-	'generate_mta_sts_policy',
-	'get_benchmark',
-	'get_provider_insights',
-	'assess_spoofability',
-	'explain_finding',
-	'map_supply_chain',
-	'analyze_drift',
-	'validate_fix',
-	'generate_rollout_plan',
-	'resolve_spf_chain',
-	'discover_subdomains',
-	'map_compliance',
-	'simulate_attack_paths',
-	'check_dbl',
-	'check_rbl',
-	'cymru_asn',
-	'rdap_lookup',
-	'check_nsec_walkability',
-	'check_dnssec_chain',
-	'check_fast_flux',
-	'check_subdomain_takeover',
-	'discover_brand_domains',
-	'brand_audit_single',
-	'brand_audit_batch_start',
-	'brand_audit_status',
-	'brand_audit_get_report',
-	'list_brand_audit_watches',
-	'register_brand_audit_watch',
-	'delete_brand_audit_watch',
-	'check_realtime_threat_feed',
-	'scan_buckets_start',
-	'scan_buckets_status',
-	'scan_buckets_findings',
-	'osint_investigate_domain_start',
-	'osint_investigate_infrastructure_start',
-	'osint_investigate_supply_chain_start',
-	'osint_investigation_status',
-	'osint_investigation_report',
-	'osint_investigate_username_start',
-	'osint_investigate_email_start',
-	'query_signins',
-	'query_ual',
-	'get_ca_policies',
-	'assess_coverage',
-]);
-
 describe('tool-schemas metadata', () => {
-	it('exports exactly 77 tools', () => {
-		expect(TOOLS).toHaveLength(79);
-	});
-
 	it('all tool names are unique', () => {
 		const names = TOOLS.map((t) => t.name);
 		expect(new Set(names).size).toBe(names.length);
@@ -140,20 +81,12 @@ describe('tool-schemas metadata', () => {
 		}
 	});
 
-	it('tools included in scan_domain are marked scanIncluded=true', () => {
-		for (const tool of TOOLS) {
-			if (SCAN_DOMAIN_TOOL_NAMES.has(tool.name)) {
-				expect(tool.scanIncluded, `${tool.name} is in scan_domain orchestration but scanIncluded=false`).toBe(true);
-			}
-		}
-	});
-
-	it('standalone and non-scoring tools are marked scanIncluded=false', () => {
-		for (const name of NON_SCAN_TOOL_NAMES) {
-			const tool = TOOLS.find((t) => t.name === name);
-			expect(tool, `${name} not found in TOOLS`).toBeDefined();
-			expect(tool!.scanIncluded, `${name} should have scanIncluded=false`).toBe(false);
-		}
+	it('the scanIncluded tool set exactly matches the expected scan_domain orchestration set', () => {
+		// scanIncluded is the source of truth; EXPECTED_SCAN_DOMAIN_TOOLS is the
+		// acknowledgment tripwire. Asserting exact equality pins membership in both
+		// directions, replacing the old hand-maintained scan/non-scan partition.
+		const scanIncludedNames = TOOLS.filter((t) => t.scanIncluded).map((t) => t.name);
+		expect(scanIncludedNames.sort()).toEqual([...EXPECTED_SCAN_DOMAIN_TOOLS].sort());
 	});
 
 	it('all scoring check tools have a tier (except check_resolver_consistency)', () => {
@@ -174,12 +107,4 @@ describe('tool-schemas metadata', () => {
 		}
 	});
 
-	it('scan and non-scan tool sets are exhaustive and non-overlapping', () => {
-		// Verify SCAN + NON_SCAN covers all tools with no overlap.
-		const allExpected = new Set([...SCAN_DOMAIN_TOOL_NAMES, ...NON_SCAN_TOOL_NAMES]);
-		expect(allExpected.size).toBe(SCAN_DOMAIN_TOOL_NAMES.size + NON_SCAN_TOOL_NAMES.size); // no overlap
-		for (const tool of TOOLS) {
-			expect(allExpected, `${tool.name} is not listed in either scan or non-scan set`).toContain(tool.name);
-		}
-	});
 });

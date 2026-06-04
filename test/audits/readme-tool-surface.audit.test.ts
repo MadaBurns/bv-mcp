@@ -13,9 +13,10 @@ import { TOOLS } from '../../src/schemas/tool-definitions';
 
 describe('README tool surface', () => {
 	it('keeps published tool counts and authoritative DNS infra tools current', () => {
+		// The headline count tripwire lives in tool-count-ssot.audit.test.ts; here we
+		// only assert the README prose stays in lockstep with the derived TOOLS.length.
 		const toolCount = TOOLS.length;
 
-		expect(toolCount).toBe(79);
 		expect(readme).toContain(`MCP%20tools-${toolCount}`);
 		expect(readme).toContain(`current ${toolCount}-tool surface`);
 		expect(readme).toContain(`${toolCount} MCP tools`);
@@ -25,7 +26,7 @@ describe('README tool surface', () => {
 	});
 
 	it('keeps supporting docs aligned with the authoritative DNS infra surface', () => {
-		expect(githubSettings).toContain('79 MCP tools');
+		expect(githubSettings).toContain(`${TOOLS.length} MCP tools`);
 		expect(scoringDocs).toContain('Authoritative DNS Infrastructure');
 		expect(scoringDocs).toContain('authoritative_dns_infra');
 		expect(packageReadme).toContain('authoritative_dns_infra');
