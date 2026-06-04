@@ -26,18 +26,21 @@ Run `npx prettier --write 'src/**/*.ts' 'test/**/*.ts'` before committing large 
 ## Adding a New Tool
 
 1. Create `src/tools/check-<name>.ts` → export async fn returning `CheckResult`
-2. Add the `CheckCategory` value to the union type in `packages/dns-checks/src/scoring/model.ts` + `CATEGORY_DISPLAY_WEIGHTS`
+2. Add the `CheckCategory` value to the union type in `packages/dns-checks/src/types.ts` + `CATEGORY_TIERS` (tier classification) + `CATEGORY_DISPLAY_WEIGHTS` (`scoring/model.ts` only re-exports these — edit `types.ts`)
 3. Add to `IMPORTANCE_WEIGHTS` in `packages/dns-checks/src/scoring/engine.ts`
-4. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 5 profiles), and baselineFailureRates in `packages/dns-checks/src/scoring/config.ts`
-5. Add to all 5 `PROFILE_WEIGHTS` maps in `packages/dns-checks/src/scoring/profiles.ts`
-6. Register in `src/schemas/tool-definitions.ts` (TOOL_DEFS) + `src/handlers/tools.ts` (import + TOOL_REGISTRY)
-7. Add to `FREE_TOOL_DAILY_LIMITS` in `src/lib/config.ts`
-8. Add explanation templates in `src/tools/explain-finding-data.ts`
-9. If the new check is part of `scan_domain`, add it to the parallel orchestration in `src/tools/scan-domain.ts`
-10. Add `test/check-<name>.spec.ts` using the `dns-mock` helper pattern
-11. Update the README tools table
+4. Add to `DEFAULT_SCORING_CONFIG` weights, profileWeights (all 6 profiles), and baselineFailureRates in `packages/dns-checks/src/scoring/config.ts`
+5. Add to all 6 `PROFILE_WEIGHTS` maps in `packages/dns-checks/src/scoring/profiles.ts`
+6. Rebuild the package: `npm -w packages/dns-checks run build` (the Worker and tests import the built `dist/`, not `src/`)
+7. Register in `src/schemas/tool-definitions.ts` (TOOL_DEFS) + `src/handlers/tools.ts` (import + TOOL_REGISTRY)
+8. Add to `FREE_TOOL_DAILY_LIMITS` in `src/lib/config.ts`
+9. Add explanation templates in `src/tools/explain-finding-data.ts`
+10. If the new check is part of `scan_domain`, add it to the `CHECK_DISPATCH` registry in `src/tools/scan-domain.ts` (the single dispatch source — `SCAN_CATEGORIES` and the retry switch both derive from it)
+11. Add `test/check-<name>.spec.ts` using the `dns-mock` helper pattern
+12. Bump the single tool-count tripwire `EXPECTED_TOOL_COUNT` in `test/audits/tool-count-ssot.audit.test.ts` (all other counts derive from the registry) and update the README tools table
 
-Follow the pattern in `src/tools/check-spf.ts` — use `createFinding()` and `buildCheckResult()` from `lib/scoring.ts`, never construct findings manually.
+Follow the pattern in `src/tools/check-spf.ts` — use `createFinding()` and `buildCheckResult()` from `@blackveil/dns-checks/scoring`, never construct findings manually.
+
+> The full SSOT checklist (the additional audits a new tool trips, scoring-snapshot bumps, generated WASM permissions, etc.) lives in the repo's `CLAUDE.md` "Adding a New Tool" section.
 
 ## Testing
 
@@ -45,6 +48,7 @@ Follow the pattern in `src/tools/check-spf.ts` — use `createFinding()` and `bu
 - Each test file calls `restore()` in `afterEach` to reset mocks
 - Tests that call tool handlers should clear scan cache between cases
 - Dynamic imports are used for mock isolation
+- **Scoring specs** (`model`/`profiles`/`config`/`engine`) keep their assertions and expected values once in `packages/dns-checks/src/__tests__/scoring/scoring-<name>.suite.ts`. The eight `scoring-<name>.spec.ts` files (one per name in that dir, one per name in `test/`) are thin wrappers that inject the SOURCE vs the BUILT `@blackveil/dns-checks/scoring` module so source↔build drift is caught — **edit the `.suite.ts`, not the wrappers**.
 
 ## Public Fixtures
 
