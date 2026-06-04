@@ -35,6 +35,30 @@ export function negotiateProtocolVersion(requested: unknown): string {
 		: LATEST_PROTOCOL_VERSION;
 }
 
+/** Classification of the incoming `MCP-Protocol-Version` HTTP header on a post-init request. */
+export type ProtocolVersionHeaderState = 'absent' | 'supported' | 'unsupported';
+
+/**
+ * Classify the `MCP-Protocol-Version` request header for OBSERVATION ONLY (#363 item 4).
+ *
+ * Per MCP 2025-06-18 (Streamable HTTP) a client SHOULD send this header on every
+ * post-`initialize` request, and the spec suggests a `400` on an unsupported value.
+ * bv-mcp deliberately does **not** reject: most existing clients omit the header
+ * or lag the negotiated version, so a hard 400 would break them. The caller logs
+ * the classification and never fails the request on its basis — mirroring the
+ * lenient posture of `negotiateProtocolVersion` and `validateContentType`.
+ *
+ * `absent` covers a missing, empty, whitespace-only, or non-string header. The
+ * value is trimmed before matching so stray header whitespace doesn't misclassify
+ * an otherwise-supported version.
+ */
+export function classifyProtocolVersionHeader(header: string | undefined | null): ProtocolVersionHeaderState {
+	if (typeof header !== 'string') return 'absent';
+	const trimmed = header.trim();
+	if (trimmed === '') return 'absent';
+	return (SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(trimmed) ? 'supported' : 'unsupported';
+}
+
 export interface DispatchMcpMethodOptions {
 	id: string | number | null | undefined;
 	method: string;
