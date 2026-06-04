@@ -21,6 +21,12 @@
  * predicate), so a one-off DNS hiccup on a direct check_* call self-heals on the
  * next call instead of sticking for the 5-minute TTL. (The scan path caches
  * regardless — unchanged from the prior throw→safeCheck behaviour.)
+ *
+ * `passed: false` is set explicitly: buildCheckResult would otherwise derive
+ * `passed: true` from the single-high-finding score (~75) even though we zero the
+ * score, leaving a misleading `passed: true` + `score: 0` for direct callers and
+ * the aggregators that branch on `.passed` (assess-spoofability, validate-fix,
+ * generate-records). An errored check did not pass.
  */
 
 import { buildCheckResult, createFinding, type CheckCategory, type CheckResult } from './scoring';
@@ -36,5 +42,5 @@ export function buildDnsErrorResult(category: CheckCategory, label: string, err:
 	const rawMessage = err instanceof Error ? err.message : 'Check failed';
 	const safeMessage = SAFE_PREFIXES.some((p) => rawMessage.startsWith(p)) ? rawMessage : 'Check failed';
 	const findings = [createFinding(category, `${label} check error`, 'high', `Check failed: ${safeMessage}`, { errorKind: 'dns_error' })];
-	return { ...buildCheckResult(category, findings), score: 0, checkStatus: 'error' as const, partial: true };
+	return { ...buildCheckResult(category, findings), score: 0, passed: false, checkStatus: 'error' as const, partial: true };
 }

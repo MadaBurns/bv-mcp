@@ -62,9 +62,12 @@ export async function runSpfCanary(domains: readonly string[] = SPF_CANARY_DOMAI
 	const settled = await Promise.allSettled(
 		domains.map(async (domain) => {
 			const result = await checkSpf(domain);
-			const titles = result.findings.map((f) => f.title);
-			const isNull = titles.some((t) => t === 'No SPF record found');
-			const isError = titles.some((t) => /could not complete|timed out/i.test(t));
+			// A transient DNS failure now surfaces via buildDnsErrorResult as
+			// `checkStatus: 'error'` (title "SPF check error", errorKind 'dns_error') —
+			// classify on that canonical signal, not a brittle title regex. A genuine
+			// absence is the "No SPF record found" finding with no error status.
+			const isError = result.checkStatus === 'error';
+			const isNull = !isError && result.findings.some((f) => f.title === 'No SPF record found');
 			return { domain, isNull, isError };
 		}),
 	);

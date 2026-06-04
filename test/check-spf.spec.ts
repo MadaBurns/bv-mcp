@@ -332,10 +332,11 @@ describe('checkSpf', () => {
 		expect(noSendFindings).toHaveLength(0);
 	});
 
-	it('returns a failing CheckResult when the top-level DNS query throws', async () => {
-		// Top-level DNS failure (e.g. DoH HTTP 500, SERVFAIL, network error) must
-		// not propagate out of the tool wrapper — it should surface as a finding
-		// so the caller sees a structured result instead of a thrown error.
+	it('returns a transient-error CheckResult when the top-level DNS query throws', async () => {
+		// Top-level DNS failure (e.g. DoH HTTP 500, SERVFAIL, network error) must not
+		// propagate out of the tool wrapper — it surfaces via buildDnsErrorResult as a
+		// `checkStatus: 'error'` + score 0 + passed false result with a high finding, so
+		// the caller sees a structured result AND scan_domain's transient-zero retry fires.
 		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DoH returned HTTP 503'));
 
 		const { checkSpf } = await import('../src/tools/check-spf');
@@ -343,14 +344,21 @@ describe('checkSpf', () => {
 
 		expect(result.category).toBe('spf');
 		expect(result.passed).toBe(false);
-		const errFinding = result.findings.find((f) => /SPF check (could not complete|failed)/i.test(f.title));
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.partial).toBe(true);
+		const errFinding = result.findings.find((f) => /SPF check error/i.test(f.title));
 		expect(errFinding).toBeDefined();
 		expect(errFinding!.severity).toBe('high');
-		expect(errFinding!.detail).toMatch(/DoH|503|DNS/);
+		expect(errFinding!.metadata?.errorKind).toBe('dns_error');
+		// Detail is allowlist-sanitized — a non-allowlisted message collapses to "Check failed".
+		expect(errFinding!.detail).toMatch(/Check failed/);
 	});
 
-	it('classifies DNS timeouts with a timeout-specific finding', async () => {
-		// Simulate a timeout by rejecting with an error message matching the transport layer
+	it('surfaces a DNS timeout as the same transient-error shape (no timeout-specific classification)', async () => {
+		// Timeouts are no longer special-cased: buildDnsErrorResult emits a uniform
+		// `errorKind: 'dns_error'` + `checkStatus: 'error'` for every transient failure,
+		// matching the dmarc/tlsrpt/bimi corpus. Retry behaviour is identical either way.
 		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DNS query timed out after 5000ms'));
 
 		const { checkSpf } = await import('../src/tools/check-spf');
@@ -358,9 +366,11 @@ describe('checkSpf', () => {
 
 		expect(result.category).toBe('spf');
 		expect(result.passed).toBe(false);
-		const timeoutFinding = result.findings.find((f) => /timed? out|timeout/i.test(f.detail));
-		expect(timeoutFinding).toBeDefined();
-		expect(timeoutFinding!.metadata?.errorKind).toBe('timeout');
+		expect(result.checkStatus).toBe('error');
+		const errFinding = result.findings.find((f) => f.metadata?.errorKind === 'dns_error');
+		expect(errFinding).toBeDefined();
+		// The allowlisted "DNS query ..." message is preserved in the detail.
+		expect(errFinding!.detail).toMatch(/timed? out|timeout/i);
 	});
 
 	it('handles failed nested DNS queries gracefully', async () => {
