@@ -124,6 +124,10 @@ Both publish together from `publish.yml` on version tags.
 
 Anything else → generic fallback. New client-visible errors must start with one of these. Rate limit: HTTP **429** + JSON-RPC `code: -32029` carried in the response body (`useErrorEnvelope`); `retry-after` header set. All rate-limit/quota paths in `mcp/execute.ts` return `httpStatus: 429` (per-IP minute/hour/day, per-tool daily, per-tier daily, global cap); asserted by `test/index.spec.ts`.
 
+### Protocol-version handling
+
+Two channels, both deliberately **lenient — never reject**: (1) the `initialize` **params** `protocolVersion` is negotiated via `negotiateProtocolVersion()` (echo if supported, else fall back to `LATEST_PROTOCOL_VERSION`); (2) the `MCP-Protocol-Version` **HTTP header** on post-init requests is `classifyProtocolVersionHeader()`'d in `index.ts` for **observation only** — an `unsupported` value is logged (`category: 'protocol'`, warn) but the request is NOT 400'd. `initialize` is exempt (header legitimately absent pre-negotiation). MCP 2025-06-18 *suggests* a 400 on an unsupported header; we don't, because most clients omit or lag it — strict rejection is intentionally a one-line gate on that classification, not the default. Both `SUPPORTED_PROTOCOL_VERSIONS` and the lenient posture live in `src/mcp/dispatch.ts`.
+
 ## Scoring
 
 Three-tier model (`computeScanScore`). `CATEGORY_DISPLAY_WEIGHTS` is display-only.

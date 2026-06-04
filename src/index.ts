@@ -46,6 +46,7 @@ import { scanDomain } from './tools/scan-domain';
 import { gradeBadge, errorBadge } from './lib/badge';
 import { SERVER_VERSION } from './lib/server-version';
 import { executeMcpRequest } from './mcp/execute';
+import { classifyProtocolVersionHeader } from './mcp/dispatch';
 import { parseScoringConfigCached } from './lib/scoring-config';
 import { closeLegacyStream, enqueueLegacyMessage, openLegacySseStream } from './lib/legacy-sse';
 import { resolveClientIpFromHeaders, resolveClientIpFromRequestHeaders } from './lib/client-ip';
@@ -452,6 +453,25 @@ app.post('/mcp', async (c) => {
 	}
 
 	const parsedBodies = parsedRequest.isBatch ? (parsedRequest.body as unknown[]) : [parsedRequest.body as JsonRpcRequest];
+
+	// #363 item 4 — observe (never reject) the MCP-Protocol-Version request header.
+	// Per MCP 2025-06-18 clients SHOULD send it on post-initialize requests; we log an
+	// unsupported value for spec-awareness but deliberately do not 400 (most clients omit
+	// or lag the header — a hard reject would break them). `initialize` is exempt: the
+	// header is legitimately absent before negotiation. Strict rejection, if ever wanted,
+	// is a one-line gate on this classification.
+	const singleMethod = parsedRequest.isBatch ? undefined : (parsedBodies[0] as JsonRpcRequest | undefined)?.method;
+	if (singleMethod !== 'initialize' && classifyProtocolVersionHeader(headersLc['mcp-protocol-version']) === 'unsupported') {
+		logEvent({
+			timestamp: new Date().toISOString(),
+			severity: 'warn',
+			category: 'protocol',
+			result: 'Unsupported MCP-Protocol-Version header (observed, not rejected)',
+			details: { protocolVersionHeader: headersLc['mcp-protocol-version'], method: singleMethod ?? 'batch' },
+			ipHash,
+		});
+	}
+
 	if (parsedRequest.isBatch) {
 		const batch = parsedBodies;
 		if (batch.length > 20) {
