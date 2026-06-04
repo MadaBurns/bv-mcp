@@ -24,6 +24,7 @@ interface ToolCallContent {
 
 interface ToolCallResult {
 	content: ToolCallContent[];
+	structuredContent?: unknown;
 	isError?: boolean;
 }
 
@@ -135,6 +136,10 @@ export class McpHttpClient {
 			if (payload.error) throw new Error(`tools/call ${name} JSON-RPC error: ${payload.error.message}`);
 			if (!payload.result) throw new Error(`tools/call ${name} missing result`);
 
+			// Prefer the MCP-standard structuredContent channel. The worker drops the redundant
+			// `<!-- STRUCTURED_RESULT -->` comment for structuredContent-capable clients (this client
+			// sends MCP-Protocol-Version: 2025-06-18), so the comment regex is now only a fallback.
+			if (payload.result.structuredContent !== undefined) return payload.result.structuredContent as T;
 			for (const content of payload.result.content) {
 				const m = STRUCTURED_RE.exec(content.text);
 				if (m) return JSON.parse(m[1]) as T;
