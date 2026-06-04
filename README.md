@@ -129,6 +129,15 @@ Transport support:
   + osint_investigation_report   — retrieve report for a completed OSINT investigation
 ```
 
+### Tool discovery metadata (`_meta`)
+
+`tools/list` returns every tool with server-specific discovery metadata under each tool's `_meta` (the MCP-sanctioned extension point), so a client can group or filter the surface without hard-coding tool names:
+
+- `group` — functional group (`email_auth`, `infrastructure`, `brand_threats`, `dns_hygiene`, `intelligence`, `remediation`, `discovery`, `identity_secops`, `meta`).
+- `tier` — scoring tier (`core` / `protective` / `hardening`); absent for non-scoring tools.
+- `scanIncluded` — `true` when the tool runs inside `scan_domain`'s parallel audit.
+- `recommended` — present (`true`) only on the curated **starter set** (`scan_domain`, `explain_finding`, `compare_baseline`); omitted otherwise. A client facing the full surface can lead with `tools.filter(t => t._meta.recommended)` to avoid overwhelming an LLM with all tools flat. Every tool is still listed — this is an additive signal, not a filter.
+
 ### Authoritative DNS infrastructure
 
 `check_authoritative_dns_infra` scores authoritative DNS hosting behavior for a hostname. It is designed to consume raw UDP/TCP DNS, authoritative AA/RA behavior, zone-transfer refusal, DNSSEC, abuse-resistance, BGP/RPKI, and multi-vantage evidence from the `BV_INFRA_PROBE` service binding when that worker is provisioned.
