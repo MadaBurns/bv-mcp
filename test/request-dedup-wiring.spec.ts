@@ -64,4 +64,24 @@ describe('handleToolsCall dedup wiring', () => {
 		const sawIdemKey = getMock.mock.calls.some((c) => typeof c[0] === 'string' && c[0].startsWith('idem:'));
 		expect(sawIdemKey).toBe(false);
 	});
+
+	// End-to-end seam: a *successful* mutating dispatch (here the deterministic
+	// `unprovisioned` result when BV_RECON is absent — falsy isError) must be
+	// STORED on the first call and REPLAYED on the second. If buildToolResult's
+	// success result were ever isError-truthy the store would silently no-op and
+	// the window would be a dead feature; this proves store-and-replay through the
+	// real handleToolsCall, not just the wrapper in a vacuum.
+	it('stores a successful mutating result and replays it on a duplicate', async () => {
+		const { kv } = fakeKv();
+		const args = { target: 'acme.example' };
+		const opts = { rateLimitKv: kv, principalId: 'key_abc' };
+
+		const first = await handleToolsCall({ name: 'scan_buckets_start', arguments: args }, undefined, opts);
+		const second = await handleToolsCall({ name: 'scan_buckets_start', arguments: args }, undefined, opts);
+
+		const putMock = kv.put as ReturnType<typeof vi.fn>;
+		const idemPuts = putMock.mock.calls.filter((c) => typeof c[0] === 'string' && c[0].startsWith('idem:scan_buckets_start:'));
+		expect(idemPuts).toHaveLength(1); // second call replayed — did not re-store
+		expect(second).toEqual(first); // identical operation result returned
+	});
 });
