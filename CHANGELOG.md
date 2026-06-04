@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.14.0] - 2026-06-04
+
+MCP best-practices follow-up from the protocol audit (issue #363). Four additive, non-score-affecting improvements to the MCP surface — Worker `src/`-only, the `@blackveil/dns-checks` core and the scoring model (`SCORING_MODEL_VERSION` stays `1.2.0`) are untouched. No tool was added or removed (still 79).
+
+### Added
+
+- **`_meta.recommended` starter-set flag on `tools/list`.** A curated subset (`scan_domain`, `explain_finding`, `compare_baseline`) is flagged `_meta.recommended: true` and named in the `initialize` `instructions` string, giving clients a default entry point into the 79-tool surface without a breaking contract change. Naive clients are unaffected; filtering clients gain a starter set. (#365)
+- **Automatic request-dedup window for mutating tools.** The 8 mutating `*_start` / `register_*` tools force a cache-miss by design, so a client network-retry of identical args created a duplicate watch/scan/investigation. A short-lived (90s) KV window now fingerprints `(principal · tool · canonical args)` and replays the prior **successful** result on a duplicate, so the retry gets the same operation ID. Store-on-success only; skipped without an authenticated principal; fail-soft; best-effort (not a lock). (#366)
+- **`MCP-Protocol-Version` request-header observation.** The header (sent by clients on post-`initialize` requests per MCP 2025-06-18) is now read on `/mcp` POST requests and an unsupported value is logged for spec-awareness. It is **observed, never rejected** — most clients omit or lag the header, so a hard `400` would break them; strict rejection is left as a deliberate one-line gate. `initialize` is exempt. (#367)
+
+### Fixed
+
+- **Transient-DNS handling unified for `check_spf` / `check_ptr`.** Both now emit the retried `checkStatus: 'error'` shape via `buildDnsErrorResult` instead of the un-retried heuristic `missingControl` shape, so a transient DNS hiccup during a scan is retried (matching `check_dmarc`/`check_tlsrpt`/`check_bimi`) and excluded from scoring as inconclusive rather than zeroed. Score-equivalent on the headline number; closes a latent no-retry-on-transient gap. `check_http_security` deliberately excluded (its `'timeout'` shape is intentionally not retried — the budget is already spent).
+
 ## [3.13.2] - 2026-06-04
 
 Completes the 3.13.1 telemetry fix: the JSON-RPC error code is now recorded on **both** dispatch paths. 3.13.1 wired it only into the SSE/streaming dispatch path (`execute.ts:876`); the JSON/non-streaming dispatch path (`:984`) computed `hasJsonRpcError` but discarded the code, so `double2` stayed `0` for JSON-transport tool/method errors. Found during post-deploy verification — live errors recorded with `code=0`.
