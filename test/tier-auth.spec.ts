@@ -643,3 +643,134 @@ describe('tier-auth LKG (last-known-good) fallback', () => {
 		expect(result.authenticated).toBe(false);
 	});
 });
+
+describe('tier-auth second internal dev key (BV_INTERNAL_DEV_KEY_2)', () => {
+	it('resolves BV_INTERNAL_DEV_KEY_2 to owner tier when the request IP is allowlisted', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+
+		const result = await resolveTier(
+			'second-dev-key-secret',
+			{
+				RATE_LIMIT: kv,
+				BV_INTERNAL_DEV_KEY_2: 'second-dev-key-secret',
+				OWNER_ALLOW_IPS: '203.0.113.10',
+			},
+			'203.0.113.10',
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('owner');
+	});
+
+	it('downgrades BV_INTERNAL_DEV_KEY_2 to partner when the request IP is outside OWNER_ALLOW_IPS', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+
+		const result = await resolveTier(
+			'second-dev-key-secret',
+			{
+				RATE_LIMIT: kv,
+				BV_INTERNAL_DEV_KEY_2: 'second-dev-key-secret',
+				OWNER_ALLOW_IPS: '203.0.113.10',
+			},
+			'198.51.100.10',
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('partner');
+	});
+
+	it('treats BV_INTERNAL_DEV_KEY_2 as authoritative over a stale cache and a bv-web validate-key result', async () => {
+		// Same invariant as the primary dev key: an internal static secret must be
+		// resolved before the KV cache or bv-web fallback can demote it.
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(JSON.stringify({ tier: 'partner', revokedAt: null })),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+		const bvWeb = {
+			fetch: vi.fn().mockResolvedValue(Response.json({ tier: 'developer' })),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'second-dev-key-secret',
+			{
+				RATE_LIMIT: kv,
+				BV_WEB: bvWeb,
+				BV_WEB_INTERNAL_KEY: 'internal-key',
+				BV_INTERNAL_DEV_KEY_2: 'second-dev-key-secret',
+				OWNER_ALLOW_IPS: '203.0.113.10',
+			},
+			'203.0.113.10',
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('owner');
+		expect(bvWeb.fetch).not.toHaveBeenCalled();
+	});
+
+	it('keeps the primary BV_INTERNAL_DEV_KEY working when both dev keys are configured', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+
+		const result = await resolveTier(
+			'primary-dev-key-secret',
+			{
+				RATE_LIMIT: kv,
+				BV_INTERNAL_DEV_KEY: 'primary-dev-key-secret',
+				BV_INTERNAL_DEV_KEY_2: 'second-dev-key-secret',
+				OWNER_ALLOW_IPS: '203.0.113.10',
+			},
+			'203.0.113.10',
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('owner');
+	});
+
+	it('does not authenticate a token that matches neither dev key', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+
+		const kv = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn(),
+			delete: vi.fn(),
+		} as unknown as KVNamespace;
+
+		const result = await resolveTier(
+			'not-a-dev-key',
+			{
+				RATE_LIMIT: kv,
+				BV_INTERNAL_DEV_KEY: 'primary-dev-key-secret',
+				BV_INTERNAL_DEV_KEY_2: 'second-dev-key-secret',
+				OWNER_ALLOW_IPS: '203.0.113.10',
+			},
+			'203.0.113.10',
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(false);
+	});
+});
