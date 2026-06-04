@@ -21,6 +21,11 @@ export function mcpText(text: string): McpContent {
 /**
  * Build MCP content array with human-readable text and, for non-interactive clients (format=full),
  * an appended structured JSON block for machine-readable consumption.
+ *
+ * Emission is format-driven here; whether a given client still *needs* this backward-compat comment
+ * is decided downstream at the dispatch boundary — `stripRedundantStructuredComment` in `mcp/dispatch.ts`
+ * removes it for clients that read the MCP-standard `structuredContent` field (protocol >= 2025-06-18,
+ * excluding known comment-parsers like `blackveil_dns_action`).
  */
 export function buildToolContent(text: string, structuredData: unknown, format: OutputFormat): McpContent[] {
 	const content: McpContent[] = [mcpText(text)];

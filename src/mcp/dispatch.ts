@@ -59,6 +59,74 @@ export function classifyProtocolVersionHeader(header: string | undefined | null)
 	return (SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(trimmed) ? 'supported' : 'unsupported';
 }
 
+/**
+ * The MCP protocol version that introduced the standard `structuredContent` channel
+ * (alongside `outputSchema`). A client negotiating this version or later can read the
+ * machine-readable result directly and no longer needs the legacy
+ * `<!-- STRUCTURED_RESULT … -->` comment that `buildToolContent` appends in `full` format.
+ */
+const STRUCTURED_CONTENT_MIN_VERSION = '2025-06-18';
+
+/**
+ * Client types known to parse the embedded `<!-- STRUCTURED_RESULT … -->` comment instead of
+ * the MCP-standard `structuredContent` field. The comment is preserved for these regardless of
+ * protocol version. `blackveil_dns_action` (its `scan.mjs`) regex-extracts the comment for
+ * `score`/`grade`/`categoryScores` and does not read `structuredContent`; it also negotiates
+ * `2025-03-26`, so it would be protected by the version gate anyway — the allowlist is
+ * belt-and-suspenders against a future protocol bump on that client.
+ */
+export const STRUCTURED_COMMENT_LEGACY_CLIENTS: ReadonlySet<string> = new Set(['blackveil_dns_action']);
+
+/**
+ * Client types verified to NOT consume the embedded comment, for which it is dropped regardless of
+ * the negotiated protocol version (a positive-drop allowlist). `bv_claude_dns_proxy` is a stdio
+ * bridge that forwards the human-readable `content` to Claude Desktop (an interactive LLM reading
+ * prose) and never parses the comment nor reads `structuredContent`; it also negotiates `2025-03-26`,
+ * so a protocol-only gate would never drop for it. Verified against the proxy source (`src/server.ts`).
+ */
+export const STRUCTURED_COMMENT_DROP_CLIENTS: ReadonlySet<string> = new Set(['bv_claude_dns_proxy']);
+
+/**
+ * Whether a client supports the MCP-standard `structuredContent` channel, judged from its
+ * per-request `MCP-Protocol-Version` header: `true` only for a *known* supported version
+ * `>= 2025-06-18`. Conservative by design — an absent, empty, unknown, older, or future header
+ * → `false` (keep the legacy comment). Most clients omit the header, so this rarely fires;
+ * the `clientType` allowlist is the load-bearing discriminator.
+ */
+export function clientSupportsStructuredContent(protocolVersionHeader: string | undefined | null): boolean {
+	if (typeof protocolVersionHeader !== 'string') return false;
+	const trimmed = protocolVersionHeader.trim();
+	if (!(SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(trimmed)) return false;
+	return trimmed >= STRUCTURED_CONTENT_MIN_VERSION; // lexicographic compare is valid for YYYY-MM-DD
+}
+
+/**
+ * Drop the redundant backward-compat `<!-- STRUCTURED_RESULT … -->` content item when the client
+ * can read the MCP-standard `structuredContent` field instead — the "Both (conservative)" gate.
+ * Strips ONLY when all hold: (1) `structuredContent` is present (so dropping the comment loses no
+ * data), (2) the client is not a known comment-parser ({@link STRUCTURED_COMMENT_LEGACY_CLIENTS}),
+ * and (3) it negotiated protocol `>= 2025-06-18` ({@link clientSupportsStructuredContent}) OR is a
+ * verified positive-drop client ({@link STRUCTURED_COMMENT_DROP_CLIENTS}, e.g. `bv_claude_dns_proxy`).
+ *
+ * Pure and fail-soft: returns the input unchanged (same reference) when any condition fails or
+ * nothing matches. This is the deliberate counterpart to `buildToolContent`'s `format === 'full'`
+ * emission — emission stays format-driven; whether a given client *needs* it is decided here at the
+ * dispatch boundary where the client/protocol signals live.
+ */
+export function stripRedundantStructuredComment<
+	T extends { content?: Array<{ type: string; text: string }>; structuredContent?: unknown },
+>(result: T, ctx: { clientType?: string; protocolVersionHeader?: string | null }): T {
+	if (!result || typeof result !== 'object' || result.structuredContent === undefined) return result;
+	if (ctx.clientType && STRUCTURED_COMMENT_LEGACY_CLIENTS.has(ctx.clientType)) return result;
+	// A client is comment-redundant if it negotiated >= 2025-06-18 OR is a verified positive-drop client.
+	const redundant = clientSupportsStructuredContent(ctx.protocolVersionHeader) || (ctx.clientType ? STRUCTURED_COMMENT_DROP_CLIENTS.has(ctx.clientType) : false);
+	if (!redundant) return result;
+	const content = result.content;
+	if (!Array.isArray(content)) return result;
+	const filtered = content.filter((c) => !(c?.type === 'text' && typeof c.text === 'string' && c.text.trimStart().startsWith('<!-- STRUCTURED_RESULT')));
+	return filtered.length === content.length ? result : { ...result, content: filtered };
+}
+
 export interface DispatchMcpMethodOptions {
 	id: string | number | null | undefined;
 	method: string;
@@ -89,6 +157,8 @@ export interface DispatchMcpMethodOptions {
 	secondaryDohToken?: string;
 	country?: string;
 	clientType?: string;
+	/** Raw `MCP-Protocol-Version` request header — used to drop the redundant STRUCTURED_RESULT comment for structuredContent-capable clients. */
+	protocolVersionHeader?: string;
 	authTier?: string;
 	keyHash?: string;
 	certstream?: { fetch: typeof fetch };
@@ -249,14 +319,22 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				tier2Lookup: options.tier2Lookup,
 			});
 
+			// Drop the redundant backward-compat STRUCTURED_RESULT comment for clients that read
+			// the MCP-standard structuredContent field (conservative — keeps it for legacy
+			// comment-parsers and pre-2025-06-18 / header-less clients). See buildToolContent.
+			const finalResult = stripRedundantStructuredComment(result, {
+				clientType: options.clientType,
+				protocolVersionHeader: options.protocolVersionHeader,
+			});
+
 			return {
 				kind: 'success',
-				payload: jsonRpcSuccess(options.id, result),
+				payload: jsonRpcSuccess(options.id, finalResult),
 				logCategory: 'tools',
 				logTool: toolParams.name,
 				// result shape varies by tool — narrowing via 'in' guard before access
-			logResult: typeof result === 'object' && result && 'status' in result ? String((result as { status: unknown }).status) : undefined,
-				logDetails: result,
+			logResult: typeof finalResult === 'object' && finalResult && 'status' in finalResult ? String((finalResult as { status: unknown }).status) : undefined,
+				logDetails: finalResult,
 			};
 		}
 
