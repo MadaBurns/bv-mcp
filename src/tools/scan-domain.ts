@@ -74,6 +74,76 @@ export type { ScanRuntimeOptions } from './scan/post-processing';
  */
 const PROBE_ELIGIBLE_TIERS = new Set(['developer', 'enterprise', 'partner', 'owner']);
 
+/**
+ * Resolve the TLS-probe binding for the ssl check, gated on tier eligibility.
+ * Paid-tier only — free/agent/anonymous scans skip Browser Rendering.
+ */
+function resolveSslOptions(rt?: ScanRuntimeOptions): { tlsProbeBinding?: { fetch: typeof fetch }; tlsProbeAuthToken?: string } {
+	return {
+		tlsProbeBinding: PROBE_ELIGIBLE_TIERS.has(rt?.authTier ?? '') ? rt?.tlsProbeBinding : undefined,
+		tlsProbeAuthToken: rt?.tlsProbeAuthToken,
+	};
+}
+
+/** Shape the provider-signature options object shared by the mx and ptr checks. */
+function resolveProviderSignatureOptions(rt?: ScanRuntimeOptions): {
+	providerSignaturesUrl?: string;
+	providerSignaturesAllowedHosts?: string[];
+	providerSignaturesSha256?: string;
+} {
+	return {
+		providerSignaturesUrl: rt?.providerSignaturesUrl,
+		providerSignaturesAllowedHosts: rt?.providerSignaturesAllowedHosts,
+		providerSignaturesSha256: rt?.providerSignaturesSha256,
+	};
+}
+
+/**
+ * A per-category check runner. Captures the bespoke argument shaping for each
+ * scanned category in one place (the single source of dispatch truth used by
+ * BOTH the initial-run fan-out and {@link runCheckRetry}). `ssl` and
+ * `http_security` ignore the `dnsOptions` parameter by design.
+ */
+type CheckRunner = (domain: string, dnsOptions: QueryDnsOptions, rt?: ScanRuntimeOptions) => Promise<CheckResult>;
+
+/**
+ * The single dispatch table for all NORMAL-PROFILE scanned categories.
+ *
+ * Key insertion order is load-bearing: it defines {@link SCAN_CATEGORIES} (and
+ * thus the scan fan-out order). It MUST match the historical normal-profile
+ * `ALL_CHECK_CATEGORIES` order. The `authoritative_dns_infra`/`root_server_set`
+ * profile-only checks are deliberately NOT here — that profile takes its own
+ * branch (Promise.all + mergeAuthoritativeDnsInfraResults).
+ */
+const CHECK_DISPATCH: Record<string, CheckRunner> = {
+	spf: (d, dns) => checkSpf(d, dns),
+	dmarc: (d, dns) => checkDmarc(d, dns),
+	dkim: (d, dns) => checkDkim(d, undefined, dns),
+	dnssec: (d, dns) => checkDnssec(d, dns),
+	ssl: (d, _dns, rt) => checkSsl(d, resolveSslOptions(rt)),
+	mta_sts: (d, dns) => checkMtaSts(d, dns),
+	ns: (d, dns) => checkNs(d, dns),
+	caa: (d, dns) => checkCaa(d, dns),
+	bimi: (d, dns) => checkBimi(d, dns),
+	tlsrpt: (d, dns) => checkTlsrpt(d, dns),
+	subdomain_takeover: (d, dns) => checkSubdomainTakeover(d, dns),
+	http_security: (d) => checkHttpSecurity(d),
+	dane: (d, dns) => checkDane(d, dns),
+	mx: (d, dns, rt) => checkMx(d, resolveProviderSignatureOptions(rt), dns),
+	dane_https: (d, dns) => checkDaneHttps(d, dns),
+	svcb_https: (d, dns) => checkSvcbHttps(d, dns),
+	subdomailing: (d, dns) => checkSubdomailing(d, dns),
+	dnskey_strength: (d, dns) => checkDnskeyStrength(d, dns),
+	ptr: (d, dns, rt) => checkPtr(d, resolveProviderSignatureOptions(rt), dns),
+};
+
+/**
+ * The runtime scan category set — the keys of {@link CHECK_DISPATCH}, in order.
+ * Frozen export contract: `test/audits/scan-domain-wiring.audit.test.ts` pins
+ * this against the `scanIncluded` SSOT in TOOL_DEFS.
+ */
+export const SCAN_CATEGORIES: CheckCategory[] = Object.keys(CHECK_DISPATCH) as CheckCategory[];
+
 /** In-memory cache for adaptive weight responses from the ProfileAccumulator DO. */
 const adaptiveWeightCache = new Map<string, { weights: AdaptiveWeightsResponse; expires: number }>();
 
@@ -325,7 +395,7 @@ function mergeAuthoritativeDnsInfraResults(results: CheckResult[]): CheckResult 
  * Dispatch a single check retry for the given category with fresh DNS options.
  * Uses a tighter timeout than the initial scan check to protect the budget.
  */
-async function runCheckRetry(
+export async function runCheckRetry(
 	category: CheckCategory,
 	domain: string,
 	scanDns: QueryDnsOptions,
@@ -337,42 +407,10 @@ async function runCheckRetry(
 		setTimeout(() => reject(new Error('Retry timed out')), retryTimeoutMs),
 	);
 
-	let checkPromise: Promise<CheckResult>;
-	switch (category) {
-		case 'spf': checkPromise = checkSpf(domain, retryDns); break;
-		case 'dmarc': checkPromise = checkDmarc(domain, retryDns); break;
-		case 'dkim': checkPromise = checkDkim(domain, undefined, retryDns); break;
-		case 'dnssec': checkPromise = checkDnssec(domain, retryDns); break;
-		case 'ssl': checkPromise = checkSsl(domain, { tlsProbeBinding: PROBE_ELIGIBLE_TIERS.has(runtimeOptions?.authTier ?? '') ? runtimeOptions?.tlsProbeBinding : undefined, tlsProbeAuthToken: runtimeOptions?.tlsProbeAuthToken }); break;
-		case 'mta_sts': checkPromise = checkMtaSts(domain, retryDns); break;
-		case 'ns': checkPromise = checkNs(domain, retryDns); break;
-		case 'caa': checkPromise = checkCaa(domain, retryDns); break;
-		case 'bimi': checkPromise = checkBimi(domain, retryDns); break;
-		case 'tlsrpt': checkPromise = checkTlsrpt(domain, retryDns); break;
-		case 'subdomain_takeover': checkPromise = checkSubdomainTakeover(domain, retryDns); break;
-		case 'http_security': checkPromise = checkHttpSecurity(domain); break;
-		case 'dane': checkPromise = checkDane(domain, retryDns); break;
-		case 'dane_https': checkPromise = checkDaneHttps(domain, retryDns); break;
-		case 'svcb_https': checkPromise = checkSvcbHttps(domain, retryDns); break;
-		case 'subdomailing': checkPromise = checkSubdomailing(domain, retryDns); break;
-		case 'dnskey_strength': checkPromise = checkDnskeyStrength(domain, retryDns); break;
-		case 'mx':
-			checkPromise = checkMx(domain, {
-				providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
-				providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
-				providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
-			}, retryDns);
-			break;
-		case 'ptr':
-			checkPromise = checkPtr(domain, {
-				providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
-				providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
-				providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
-			}, retryDns);
-			break;
-		default:
-			// Unsupported category — return a synthetic error result
-			return { ...buildCheckResult(category, []), score: 0, passed: false, checkStatus: 'error' as const };
+	const checkPromise = CHECK_DISPATCH[category]?.(domain, retryDns, runtimeOptions);
+	if (!checkPromise) {
+		// Unsupported category (e.g. profile-only authoritative_dns_infra) — synthetic error result.
+		return { ...buildCheckResult(category, []), score: 0, passed: false, checkStatus: 'error' as const };
 	}
 
 	return Promise.race([checkPromise, timeoutPromise]);
@@ -409,11 +447,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// overall scan timeout to guarantee a timely response.
 	// Uses Promise.allSettled so that completed checks are preserved on timeout.
 	const isAuthoritativeInfraProfile = explicitProfile === 'authoritative_dns_infra';
-	const ALL_CHECK_CATEGORIES: CheckCategory[] = isAuthoritativeInfraProfile
-		? ['authoritative_dns_infra']
-		: [
-			'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'http_security', 'dane', 'mx', 'dane_https', 'svcb_https', 'subdomailing', 'dnskey_strength', 'ptr',
-		];
+	const ALL_CHECK_CATEGORIES: CheckCategory[] = isAuthoritativeInfraProfile ? ['authoritative_dns_infra'] : SCAN_CATEGORIES;
 
 	// Skip secondary DNS confirmation in scan context for speed — individual checks
 	// still use secondary confirmation when called directly by users.
@@ -491,61 +525,16 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				timeoutBudget.perCheckTimeoutMs,
 			),
 		]).then(mergeAuthoritativeDnsInfraResults),
-	] : [
-		runCachedCheck(domain, 'spf', () => safeCheck('spf', () => checkSpf(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'dmarc', () => safeCheck('dmarc', () => checkDmarc(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'dkim', () => safeCheck('dkim', () => checkDkim(domain, undefined, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'dnssec', () => safeCheck('dnssec', () => checkDnssec(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'ssl', () => safeCheck('ssl', () => checkSsl(domain, { tlsProbeBinding: PROBE_ELIGIBLE_TIERS.has(runtimeOptions?.authTier ?? '') ? runtimeOptions?.tlsProbeBinding : undefined, tlsProbeAuthToken: runtimeOptions?.tlsProbeAuthToken }), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'mta_sts', () => safeCheck('mta_sts', () => checkMtaSts(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'ns', () => safeCheck('ns', () => checkNs(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'caa', () => safeCheck('caa', () => checkCaa(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'bimi', () => safeCheck('bimi', () => checkBimi(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'tlsrpt', () => safeCheck('tlsrpt', () => checkTlsrpt(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'subdomain_takeover', () => safeCheck('subdomain_takeover', () => checkSubdomainTakeover(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'http_security', () => safeCheck('http_security', () => checkHttpSecurity(domain), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'dane', () => safeCheck('dane', () => checkDane(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'dane_https', () => safeCheck('dane_https', () => checkDaneHttps(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'svcb_https', () => safeCheck('svcb_https', () => checkSvcbHttps(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'subdomailing', () => safeCheck('subdomailing', () => checkSubdomailing(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
-		runCachedCheck(domain, 'dnskey_strength', () => safeCheck('dnskey_strength', () => checkDnskeyStrength(domain, scanDns), timeoutBudget.perCheckTimeoutMs), kv, cacheTtl, forceRefresh),
+	] : SCAN_CATEGORIES.map((cat) =>
 		runCachedCheck(
 			domain,
-			'mx',
-			() =>
-				safeCheck(
-					'mx',
-					() =>
-						checkMx(domain, {
-							providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
-							providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
-							providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
-						}, scanDns),
-					timeoutBudget.perCheckTimeoutMs,
-				),
+			cat,
+			() => safeCheck(cat, () => CHECK_DISPATCH[cat](domain, scanDns, runtimeOptions), timeoutBudget.perCheckTimeoutMs),
 			kv,
 			cacheTtl,
 			forceRefresh,
 		),
-		runCachedCheck(
-			domain,
-			'ptr',
-			() =>
-				safeCheck(
-					'ptr',
-					() =>
-						checkPtr(domain, {
-							providerSignaturesUrl: runtimeOptions?.providerSignaturesUrl,
-							providerSignaturesAllowedHosts: runtimeOptions?.providerSignaturesAllowedHosts,
-							providerSignaturesSha256: runtimeOptions?.providerSignaturesSha256,
-						}, scanDns),
-					timeoutBudget.perCheckTimeoutMs,
-				),
-			kv,
-			cacheTtl,
-			forceRefresh,
-		),
-	];
+	);
 
 	let timedOut = false;
 	const settled = await Promise.race([

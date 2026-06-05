@@ -127,6 +127,12 @@ Transport support:
   + osint_investigate_email_start           — async email OSINT (owner/enterprise tier only)
   + osint_investigation_status   — poll status of any running OSINT investigation
   + osint_investigation_report   — retrieve report for a completed OSINT investigation
+
+  Operator-deploy only (m365Proxy binding; Microsoft 365 / Entra identity security ops — degrade to unprovisioned without it):
+  + query_signins                — query Microsoft Entra sign-in logs for a tenant
+  + query_ual                    — query the Microsoft 365 Unified Audit Log for a tenant
+  + get_ca_policies              — retrieve Conditional Access policies for an Entra tenant
+  + assess_coverage              — assess Conditional Access coverage gaps for an Entra tenant
 ```
 
 ### Tool discovery metadata (`_meta`)
