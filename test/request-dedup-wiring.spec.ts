@@ -50,7 +50,7 @@ describe('handleToolsCall dedup wiring', () => {
 		await handleToolsCall(
 			{ name: 'scan_buckets_start', arguments: { target: 'acme.example' } },
 			undefined,
-			{ rateLimitKv: kv, principalId: 'key_abc' },
+			{ rateLimitKv: kv, keyHash: 'key_abc' },
 		);
 		const getMock = kv.get as ReturnType<typeof vi.fn>;
 		const sawIdemKey = getMock.mock.calls.some((c) => typeof c[0] === 'string' && c[0].startsWith('idem:scan_buckets_start:'));
@@ -65,6 +65,22 @@ describe('handleToolsCall dedup wiring', () => {
 		expect(sawIdemKey).toBe(false);
 	});
 
+	// Cross-principal-leak guard: an UNAUTHENTICATED caller's principalId is the
+	// ipHash (keyHash ?? ipHash, execute.ts) — truthy, so keying dedup on
+	// principalId would let two NAT'd unauth callers share a fingerprint and
+	// replay each other's operation IDs. Dedup must key on keyHash ONLY (set only
+	// for authenticated callers); an ipHash-only principal must be SKIPPED.
+	it('does NOT dedup an unauthenticated caller (ipHash principalId, no keyHash)', async () => {
+		const { kv } = fakeKv();
+		await handleToolsCall({ name: 'scan_buckets_start', arguments: { target: 'acme.example' } }, undefined, {
+			rateLimitKv: kv,
+			principalId: 'i_deadbeef', // ipHash for an unauth caller — keyHash deliberately absent
+		});
+		const getMock = kv.get as ReturnType<typeof vi.fn>;
+		const sawIdemKey = getMock.mock.calls.some((c) => typeof c[0] === 'string' && c[0].startsWith('idem:'));
+		expect(sawIdemKey).toBe(false);
+	});
+
 	// End-to-end seam: a *successful* mutating dispatch (here the deterministic
 	// `unprovisioned` result when BV_RECON is absent — falsy isError) must be
 	// STORED on the first call and REPLAYED on the second. If buildToolResult's
@@ -74,7 +90,7 @@ describe('handleToolsCall dedup wiring', () => {
 	it('stores a successful mutating result and replays it on a duplicate', async () => {
 		const { kv } = fakeKv();
 		const args = { target: 'acme.example' };
-		const opts = { rateLimitKv: kv, principalId: 'key_abc' };
+		const opts = { rateLimitKv: kv, keyHash: 'key_abc' };
 
 		const first = await handleToolsCall({ name: 'scan_buckets_start', arguments: args }, undefined, opts);
 		const second = await handleToolsCall({ name: 'scan_buckets_start', arguments: args }, undefined, opts);

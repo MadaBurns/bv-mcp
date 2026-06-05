@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { env } from 'cloudflare:test';
 import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse, nxdomainResponse, servfailResponse } from './helpers/dns-mock';
-import { IN_MEMORY_CACHE, buildScanCacheKey } from '../src/lib/cache';
+import { IN_MEMORY_CACHE, buildScanCacheKey, buildCheckCacheKey, cacheGet } from '../src/lib/cache';
+import type { CheckResult } from '../src/lib/scoring';
 import { type ScanDomainResult, SCAN_CATEGORIES } from '../src/tools/scan-domain';
 
 const { restore } = setupFetchMock();
@@ -256,7 +257,71 @@ describe('scanDomain', () => {
 		expect(second.domain).toBe(first.domain);
 		expect(second.score.overall).toBe(first.score.overall);
 	});
+
+	it('does NOT poison the per-check cache with a transient check error (self-heals)', async () => {
+		// No KV is bound in the test pool — caching falls back to IN_MEMORY_CACHE,
+		// which is what the existing "caches results with KV" test relies on too.
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		// The SSL check's HTTPS fetch to https://example.com hangs, so safeCheck's
+		// per-check timeout race fires → checkStatus:'timeout', score:0. That
+		// transient error must NOT be written to the shared per-check cache key,
+		// which the direct check_* path (handlers/tools.ts) also reads.
+		const sslCacheKey = buildCheckCacheKey('example.com', 'ssl');
+
+		// First scan: SSL times out. forceRefresh skips the cache READ only — the
+		// per-check WRITE still happens, which is exactly what we're guarding.
+		mockSslHangs();
+		const first = await scanDomain('example.com', undefined, { forceRefresh: true });
+		const firstSsl = first.checks.find((c) => c.category === 'ssl');
+		expect(firstSsl).toBeDefined();
+		// Precondition: confirm safeCheck actually caught the transient failure.
+		expect(firstSsl!.checkStatus).toBe('timeout');
+
+		// (1) Load-bearing assertion: the transient error must NOT have populated
+		// the per-check cache. On buggy code this key holds the score-0 error.
+		const cached = await cacheGet<CheckResult>(sslCacheKey);
+		expect(cached).toBeUndefined();
+
+		// (2) Self-heal: a subsequent scan (no forceRefresh, so it reads the
+		// per-check cache) must re-execute SSL rather than serve a cached error.
+		// Clear only the top-level scan key so the per-check keys are re-read.
+		IN_MEMORY_CACHE.delete(buildScanCacheKey('example.com'));
+		mockAllChecks();
+		const second = await scanDomain('example.com');
+		const secondSsl = second.checks.find((c) => c.category === 'ssl');
+		expect(secondSsl).toBeDefined();
+		expect(secondSsl!.checkStatus).not.toBe('timeout');
+	}, 20_000);
 });
+
+/** Healthy mock for every check EXCEPT SSL, whose HTTPS fetch hangs forever. */
+function mockSslHangs() {
+	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+		if (url.includes('cloudflare-dns.com')) {
+			if (url.includes('type=TXT') || url.includes('type=16')) {
+				if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=reject']));
+				if (url.includes('_domainkey.')) return Promise.resolve(txtResponse('default._domainkey.example.com', ['v=DKIM1; k=rsa; p=MIGf']));
+				if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
+				if (url.includes('_smtp._tls.')) return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
+				if (url.includes('default._bimi.')) return Promise.resolve(txtResponse('default._bimi.example.com', ['v=BIMI1; l=https://example.com/logo.svg']));
+				return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
+			}
+			if (url.includes('type=NS') || url.includes('type=2')) return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+			if (url.includes('type=CAA') || url.includes('type=257')) return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
+			if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse('example.com', true));
+			return Promise.resolve(createDohResponse([], []));
+		}
+		if (url.includes('mta-sts.') && url.includes('.well-known')) {
+			return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'));
+		}
+		// SSL check hits the domain via HTTPS — hang forever to force a per-check timeout.
+		if (url.startsWith('https://example.com')) {
+			return new Promise(() => {});
+		}
+		return Promise.resolve(httpResponse('OK'));
+	});
+}
 
 describe('formatScanReport', () => {
 	it('returns human-readable string with grade, category scores, and timestamp', async () => {
