@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.15.1] - 2026-06-06
+
+Patch release: six bug fixes from an adversarial bug-hunt sweep, each gated behind a failing-before / passing-after test (#376). No tools added or removed (still 79); `SCORING_MODEL_VERSION` stays `1.2.0`. One scoring change is RFC-correctness (first item) with narrow, documented impact.
+
+### Fixed
+
+- **SPF `redirect=` now counts toward the RFC 7208 §4.6.4 10-lookup budget** (`packages/dns-checks` `analyzeSpfLookupBudget`). It was excluded (citing §6.1's modifier classification), undercounting by one per redirect. The recursive count is unchanged, so there is no double-count. Impact is narrow: only a record with exactly 8 lookup mechanisms plus a `redirect=` newly crosses the `>=9` near-limit threshold. Cross-consistent with `resolve_spf_chain`.
+- **`check_subdomain_takeover` cache key now hashes the caller-supplied subdomain list contents, not just its length** (`src/handlers/tools.ts`). Two different same-length lists previously collided on one 5-minute cache entry, so a caller could receive another caller's results.
+- **Transient check errors during `scan_domain` are no longer cached** (`src/tools/scan-domain.ts`). `safeCheck` now marks the error/timeout result `partial: true` and `runCachedCheck` skips caching partial results, so a one-off DNS/timeout failure self-heals instead of being served to direct `check_*` calls for five minutes.
+- **OAuth JWT auth now returns a `keyHash`** (`src/lib/tier-auth.ts`), so per-key daily quota and concurrency limits key on the credential instead of falling back to client IP for developer/enterprise callers.
+- **Request-dedup keys on `keyHash` only** (`src/handlers/tools.ts`). It previously used `principalId` (= `keyHash ?? ipHash`), so an unauthenticated caller's `ipHash` became a truthy principal and defeated the documented skip — two callers behind one NAT could share a dedup fingerprint and replay each other's operation IDs.
+- **The `unknown_tool` fuzzing signal is now recorded on the JSON transport** (`src/mcp/execute.ts`), not only the SSE path, so unknown-tool probing over `Accept: application/json` increments the abuse counter.
+
 ## [3.15.0] - 2026-06-04
 
 MCP token-hygiene follow-up to the #363 best-practices work. Worker `src/`-only; the `@blackveil/dns-checks` core and the scoring model (`SCORING_MODEL_VERSION` stays `1.2.0`) are untouched. No tool was added or removed (still 79).
