@@ -325,7 +325,7 @@ async function brandAuditWatchUnprovisioned(): Promise<CheckResult> {
  * Registry mapping tool names to their cache key and execution function.
  * Replaces repetitive switch cases for individual DNS check tools.
  */
-const TOOL_REGISTRY: Record<
+export const TOOL_REGISTRY: Record<
 	string,
 	{
 		/** cacheKey may consult runtimeOptions to bind principal (defense against owner-scoped IDOR via cache). */
@@ -423,8 +423,13 @@ const TOOL_REGISTRY: Record<
 	check_subdomain_takeover: {
 		cacheKey: (args) => {
 			const subs = Array.isArray(args.subdomains) ? (args.subdomains as string[]) : null;
-			// Cache key folds caller-supplied list size so callers passing CT inventories don't collide with default sweeps.
-			return subs && subs.length > 0 ? `subdomain_takeover:custom:${subs.length}` : 'subdomain_takeover:default';
+			// Cache key folds caller-supplied list CONTENTS (not just size) so two
+			// different same-length lists don't collide on one entry (5-min TTL,
+			// global per domain+checkName) — mirrors the discover_brand_domains
+			// sibling. Sorted + length-prefixed + bounded to keep keys finite.
+			return subs && subs.length > 0
+				? `subdomain_takeover:custom:${subs.length}:${subs.slice().sort().join('|').slice(0, 128)}`
+				: 'subdomain_takeover:default';
 		},
 		execute: (d, args, ro) => {
 			const subs = Array.isArray(args.subdomains) ? (args.subdomains as string[]) : undefined;
@@ -1309,7 +1314,12 @@ export async function handleToolsCall(
 						withRequestDedup(
 							{
 								toolName: name,
-								principal: runtimeOptions?.principalId ?? runtimeOptions?.keyHash,
+								// keyHash ONLY — it is set solely for AUTHENTICATED callers.
+								// principalId = keyHash ?? ipHash (execute.ts), so using it
+								// would make an unauth caller's ipHash a truthy principal and
+								// defeat withRequestDedup's skip, letting two NAT'd unauth
+								// callers share a fingerprint → cross-principal op-ID replay.
+								principal: runtimeOptions?.keyHash,
 								args: validatedArgs as Record<string, unknown>,
 								kv: dedupKv,
 								waitUntil: runtimeOptions?.waitUntil,

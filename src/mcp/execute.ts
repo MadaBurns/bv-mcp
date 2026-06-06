@@ -987,6 +987,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			typeof dispatchResult.payload === 'object' && dispatchResult.payload !== null && 'error' in dispatchResult.payload;
 		const errPayload = hasJsonRpcError ? (dispatchResult.payload as { error?: { code?: number; message?: string } }).error : undefined;
 		emitRequestAnalytics(options, method, hasJsonRpcError ? 'error' : 'ok', hasJsonRpcError, errPayload?.code, errPayload?.message);
+		recordMcpToolErrorIfUnknownTool(options, method, dispatchResult.payload);
 		if (accessLogInput) {
 			recordMcpAccessLog(options, { ...accessLogInput, rateLimited: false });
 		}

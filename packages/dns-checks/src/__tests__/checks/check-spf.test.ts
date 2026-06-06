@@ -2,7 +2,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { checkSPF } from '../../checks/check-spf';
-import { estimateTxtRrsetBytes } from '../../checks/spf-analysis';
+import { analyzeSpfLookupBudget, estimateTxtRrsetBytes } from '../../checks/spf-analysis';
 import type { DNSQueryFunction } from '../../types';
 
 /** Build a TXT string of an exact byte length (ASCII, so 1 char === 1 byte). */
@@ -221,5 +221,21 @@ describe('estimateTxtRrsetBytes', () => {
 	it('counts an empty TXT string as one (empty) character-string', () => {
 		// 12 (RR overhead) + 0 (string) + 1 (length octet) = 13
 		expect(estimateTxtRrsetBytes([''])).toBe(13);
+	});
+});
+
+describe('analyzeSpfLookupBudget — redirect= counts toward the §4.6.4 budget', () => {
+	it('counts a bare redirect= modifier as one DNS lookup', () => {
+		// RFC 7208 §4.6.4: the redirect modifier is a lookup-consuming term.
+		const analysis = analyzeSpfLookupBudget('v=spf1 redirect=_spf.example.com');
+		expect(analysis.count).toBe(1);
+		expect(analysis.mechanisms).toContain('redirect');
+	});
+
+	it('counts redirect= alongside mechanisms so 10 mechanisms + redirect = 11 (crosses the limit)', () => {
+		const tenMechs = Array.from({ length: 10 }, (_, i) => `include:spf${i}.example.com`).join(' ');
+		const analysis = analyzeSpfLookupBudget(`v=spf1 ${tenMechs} redirect=_spf.example.com -all`);
+		expect(analysis.count).toBe(11);
+		expect(analysis.count).toBeGreaterThan(10);
 	});
 });
