@@ -44,6 +44,50 @@ const DNS_AID_PARAMS: Record<string, string> = {
 /** Per-fetch budget for capability-document integrity verification. */
 const CAP_FETCH_TIMEOUT_MS = 5000;
 
+/**
+ * Max bytes read from a capability document. The `cap=` URL is attacker-
+ * controlled (published in the scanned domain's DNS), so the body read is
+ * bounded to prevent a malicious endpoint from exhausting worker memory.
+ * Capability descriptors are small JSON documents — 256 KB is generous.
+ */
+const CAP_MAX_BYTES = 256 * 1024;
+
+/**
+ * Max number of capability documents fetched per call. The record count is
+ * attacker-controlled (a domain can publish many SVCB records), so the
+ * verify_cap fan-out is capped to prevent request amplification.
+ */
+const CAP_MAX_FETCHES = 10;
+
+/**
+ * Read a response body up to `maxBytes`, aborting early if the cap is exceeded.
+ * Returns null when the body is too large — bounds memory on an
+ * attacker-controlled endpoint that ignores/lacks Content-Length.
+ */
+async function readBounded(resp: Response, maxBytes: number): Promise<ArrayBuffer | null> {
+	const reader = resp.body?.getReader();
+	if (!reader) return null;
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		total += value.byteLength;
+		if (total > maxBytes) {
+			await reader.cancel();
+			return null;
+		}
+		chunks.push(value);
+	}
+	const out = new Uint8Array(total);
+	let offset = 0;
+	for (const c of chunks) {
+		out.set(c, offset);
+		offset += c.byteLength;
+	}
+	return out.buffer;
+}
+
 /** Agent communication protocols advertised in SVCB ALPN (dns-aid Protocol enum). */
 export type AgentProtocol = 'a2a' | 'mcp' | 'https';
 
@@ -144,7 +188,20 @@ async function verifyCapIntegrity(rec: ParsedSvcb, findings: Finding[]): Promise
 			);
 			return;
 		}
-		const { hex, b64url } = await sha256Encodings(await resp.arrayBuffer());
+		const body = await readBounded(resp, CAP_MAX_BYTES);
+		if (body === null) {
+			findings.push(
+				createFinding(
+					CATEGORY,
+					`Capability document too large (${rec.owner})`,
+					'low',
+					`cap=${capUri} declared by ${rec.owner} exceeded the ${CAP_MAX_BYTES}-byte read cap — integrity not verified. A capability descriptor should be a small JSON document.`,
+					{ owner: rec.owner, capUri, maxBytes: CAP_MAX_BYTES },
+				),
+			);
+			return;
+		}
+		const { hex, b64url } = await sha256Encodings(body);
 		const matches = pin === b64url || pin.toLowerCase() === hex.toLowerCase();
 		findings.push(
 			matches
@@ -266,7 +323,22 @@ export async function checkAgentDiscovery(
 
 	// Capability-document integrity (declaration check always; fetch only on opt-in).
 	if (options?.verifyCap) {
-		await Promise.all(serviceRecords.map((r) => verifyCapIntegrity(r, findings)));
+		// Cap the fan-out: the record count is attacker-controlled, so bound the
+		// number of outbound cap-document fetches per call.
+		const toFetch = serviceRecords.filter((r) => r.params['cap']);
+		const capped = toFetch.slice(0, CAP_MAX_FETCHES);
+		await Promise.all(capped.map((r) => verifyCapIntegrity(r, findings)));
+		if (toFetch.length > CAP_MAX_FETCHES) {
+			findings.push(
+				createFinding(
+					CATEGORY,
+					'Capability verification truncated',
+					'info',
+					`${toFetch.length} agents declared a capability document; only the first ${CAP_MAX_FETCHES} were fetched and verified this call (amplification guard).`,
+					{ declared: toFetch.length, verified: CAP_MAX_FETCHES },
+				),
+			);
+		}
 	} else {
 		for (const r of serviceRecords) {
 			if (r.params['cap'] && !r.params['cap-sha256']) {

@@ -27,13 +27,9 @@ function svcbResponse(name: string, records: string[], ad = false) {
 	);
 }
 
-/** A mock capability-document HTTP Response with an arrayBuffer() body. */
+/** A mock capability-document HTTP Response with a real streaming body (.body.getReader()). */
 function capDoc(body: string, status = 200) {
-	return {
-		ok: status >= 200 && status < 300,
-		status,
-		arrayBuffer: () => Promise.resolve(new TextEncoder().encode(body).buffer),
-	} as unknown as Response;
+	return new Response(body, { status });
 }
 
 /** SHA-256 hex of a string (Workers runtime crypto.subtle — same path as the tool). */
@@ -165,6 +161,22 @@ describe('checkAgentDiscovery', () => {
 		const high = result.findings.find((f) => /hash mismatch/i.test(f.title));
 		expect(high).toBeDefined();
 		expect(high!.severity).toBe('high');
+	});
+
+	it('bounds the body read — flags LOW when the cap document exceeds the size cap', async () => {
+		const huge = 'x'.repeat(256 * 1024 + 1); // > CAP_MAX_BYTES (256 KB)
+		mockAgentFetch({
+			svcb: { '_agents.example.com': ['1 chat.example.com. alpn="mcp" key65400="https://example.com/cap.json" key65401="abc123"'] },
+			ad: true,
+			capDocs: { 'https://example.com/cap.json': capDoc(huge) },
+		});
+		const result = await run('example.com', { verifyCap: true });
+
+		const low = result.findings.find((f) => /too large/i.test(f.title));
+		expect(low).toBeDefined();
+		expect(low!.severity).toBe('low');
+		// Not verified, not a false mismatch.
+		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
 	});
 
 	it('flags LOW (descriptor_unreachable) when verifyCap=true but the cap document 404s', async () => {
