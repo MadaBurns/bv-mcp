@@ -935,7 +935,7 @@ async function runCachedCheck(
 	// skipSentinel: per-check scan caches are ~98% unique-domain / low-contention;
 	// the cross-isolate sentinel's KV writes+deletes cost more than the rare stampede
 	// they'd prevent (INFLIGHT still dedups in-isolate).
-	return runWithCache(buildCheckCacheKey(domain, category), run, kv, ttlSeconds, skipCache, undefined, true);
+	return runWithCache(buildCheckCacheKey(domain, category), run, kv, ttlSeconds, skipCache, (r: CheckResult) => !r.partial, true);
 }
 
 /**
@@ -969,6 +969,9 @@ async function safeCheck(category: CheckCategory, fn: () => Promise<CheckResult>
 
 		const findings = [createFinding(category, title, severity, detail)];
 		const result = buildCheckResult(category, findings);
-		return { ...result, score: 0, checkStatus };
+		// `partial: true` keeps the one-off transient error OUT of the 5-min
+		// per-check cache (see runCachedCheck's shouldCache predicate) so it
+		// self-heals and isn't served to direct check_* calls.
+		return { ...result, score: 0, checkStatus, partial: true };
 	}
 }

@@ -134,7 +134,15 @@ export async function resolveTier(
 					return { authenticated: false };
 				}
 				const resolvedTier = applyOwnerIpGate(tierResult.data, env.OWNER_ALLOW_IPS, clientIp);
-				return { authenticated: true, tier: resolvedTier };
+				// Derive a stable per-credential keyHash (same hex(SHA-256(rawToken)) the
+				// static/cache/trial paths return) so quota + concurrency principal selection
+				// (`tierAuthResult.keyHash ?? options.ip` in mcp/execute.ts) keys on the JWT,
+				// not the client IP. Without it, a JWT reused across IPs multiplies the daily
+				// quota and NAT users behind one IP share a single quota bucket.
+				const jwtKeyHash = Array.from(await hashTokenRaw(token))
+					.map((b) => b.toString(16).padStart(2, '0'))
+					.join('');
+				return { authenticated: true, tier: resolvedTier, keyHash: jwtKeyHash };
 			}
 			// JWT verified but payload is not a recognized MCP tier — fall through so static key
 			// path still has a chance for legacy operators with unusual three-segment keys.

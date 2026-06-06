@@ -25,6 +25,21 @@ async function mintOwnerJwt(): Promise<string> {
 	);
 }
 
+async function mintDeveloperJwt(): Promise<string> {
+	return signJwt(
+		{ sub: 'dev-user', jti: newJti(), tier: 'developer' },
+		{ secret: SECRET, ttlSeconds: OAUTH_JWT_TTL_SECONDS, issuer: ISSUER, audience: AUDIENCE },
+	);
+}
+
+/** Mirror tier-auth's keyHash derivation: hex(SHA-256(rawBearerToken)). */
+async function expectedKeyHash(token: string): Promise<string> {
+	const raw = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
+	return Array.from(raw)
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('');
+}
+
 const baseEnv = {
 	OAUTH_SIGNING_SECRET: SECRET,
 	OAUTH_ISSUER: ISSUER,
@@ -76,5 +91,23 @@ describe('resolveTier — owner-tier JWT IP rebind', () => {
 			`${ISSUER}/mcp`,
 		);
 		expect(result.tier).toBe('owner');
+	});
+});
+
+describe('resolveTier — JWT path returns a per-credential keyHash (BUG #5)', () => {
+	// Quota/concurrency principal selection is `tierAuthResult.keyHash ?? options.ip`
+	// (mcp/execute.ts). If the JWT branch omits keyHash, paid (developer/enterprise)
+	// callers fall back to client IP — a JWT reused across IPs multiplies the daily
+	// quota, and NAT users share one bucket. The JWT branch must return a stable
+	// keyHash derived the SAME way as the static path: hex(SHA-256(rawBearerToken)).
+	it('developer JWT → defined 64-hex keyHash matching hex(SHA-256(token))', async () => {
+		const token = await mintDeveloperJwt();
+		const result = await resolveTier(token, { ...baseEnv }, '203.0.113.9', `${ISSUER}/mcp`);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('developer');
+		expect(result.keyHash).toBeDefined();
+		expect(result.keyHash).toMatch(/^[0-9a-f]{64}$/);
+		expect(result.keyHash).toBe(await expectedKeyHash(token));
 	});
 });

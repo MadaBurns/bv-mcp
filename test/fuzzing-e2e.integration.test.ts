@@ -111,4 +111,56 @@ describe('fuzzing detection — subcutaneous E2E', () => {
 		}
 		expect(fuzzAlerts[0].kind).toBe('unknown_tool');
 	});
+
+	it('JSON-only transport (Accept: application/json) also increments the unknown_tool fuzz counter', async () => {
+		const ip = '203.0.113.77'; // RFC 5737 documentation prefix — safe for tests
+
+		// 1. Initialize a session (JSON-only Accept routes through the non-SSE dispatch path).
+		const initRes = await SELF.fetch('https://example.com/mcp', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json',
+				'cf-connecting-ip': ip,
+			},
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				id: 0,
+				method: 'initialize',
+				params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'fuzz-e2e-json', version: '1' } },
+			}),
+		});
+		expect(initRes.status).toBe(200);
+		const sessionId = initRes.headers.get('mcp-session-id');
+		expect(sessionId).toBeTruthy();
+
+		// 2. Drive a single unknown-tool request through the JSON-only (non-SSE) path.
+		const res = await SELF.fetch('https://example.com/mcp', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json',
+				'cf-connecting-ip': ip,
+				'mcp-session-id': sessionId!,
+			},
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				id: 1,
+				method: 'tools/call',
+				params: { name: 'definitely_not_a_tool_json', arguments: { domain: 'example.com' } },
+			}),
+		});
+		expect([200, 400, 401, 404]).toContain(res.status);
+
+		// 3. Assert the fuzz counter for this principal's unknown_tool kind was incremented in KV.
+		// The record is written via ctx.waitUntil; poll briefly to let it flush.
+		let unknownToolKeys: { name: string }[] = [];
+		for (let attempt = 0; attempt < 20; attempt++) {
+			const list = await env.RATE_LIMIT.list({ prefix: 'fuzz:' });
+			unknownToolKeys = list.keys.filter((k) => k.name.includes('unknown_tool'));
+			if (unknownToolKeys.length > 0) break;
+			await new Promise((r) => setTimeout(r, 25));
+		}
+		expect(unknownToolKeys.length).toBeGreaterThan(0);
+	});
 });

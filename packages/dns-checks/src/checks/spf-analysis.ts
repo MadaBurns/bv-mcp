@@ -86,9 +86,11 @@ export function analyzeSpfLookupBudget(spfRecord: string): SpfLookupAnalysis {
 		else if (normalized === 'mx' || normalized.startsWith('mx:') || normalized.startsWith('mx/')) mechanisms.push('mx');
 		else if (normalized === 'ptr' || normalized.startsWith('ptr:')) mechanisms.push('ptr');
 		else if (normalized.startsWith('exists:')) mechanisms.push('exists');
-		// Note: redirect= is a modifier (RFC 7208 §6.1), not a mechanism.
-		// It does not consume a DNS lookup slot itself — the target record's
-		// mechanisms are counted when countRecursiveLookups recurses into it.
+		else if (normalized.startsWith('redirect=')) mechanisms.push('redirect');
+		// Note: redirect= is counted as a lookup-consuming term per RFC 7208 §4.6.4
+		// (the lookup-limit rule explicitly counts the redirect modifier). This +1 is
+		// the redirect term's own lookup; the target record's mechanisms are added
+		// separately when countRecursiveLookups recurses into it (no double-count).
 	}
 
 	return { count: mechanisms.length, mechanisms };
