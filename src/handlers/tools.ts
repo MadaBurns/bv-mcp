@@ -59,6 +59,8 @@ import { checkRdapLookup, RDAP_LOOKUP_SYNC_BUDGET_MS } from '../tools/check-rdap
 import { checkNsecWalkability } from '../tools/check-nsec-walkability';
 import { checkDnssecChain } from '../tools/check-dnssec-chain';
 import { checkDnskeyStrength } from '../tools/check-dnskey-strength';
+import { checkAgentDiscovery } from '../tools/check-agent-discovery';
+import type { AgentProtocol } from '../tools/check-agent-discovery';
 import { checkFastFlux } from '../tools/check-fast-flux';
 import { checkAuthoritativeDnsInfra } from '../tools/check-authoritative-dns-infra';
 import { checkRootServerSet } from '../tools/check-root-server-set';
@@ -411,6 +413,23 @@ export const TOOL_REGISTRY: Record<
 		cacheTtlSeconds: 3600,
 	},
 	check_dnssec_chain: { cacheKey: () => 'dnssec_chain', execute: (d, _args, ro) => checkDnssecChain(d, buildDnsOptions(ro)) },
+	check_agent_discovery: {
+		cacheKey: (args) => {
+			const protocol = (args.protocol as string | undefined) ?? 'all';
+			const name = (args.name as string | undefined) ?? 'zone';
+			return `agent_discovery:${protocol}:${name}:${args.verify_cap === true ? 'v' : 'd'}`;
+		},
+		execute: (d, args, ro) =>
+			checkAgentDiscovery(
+				d,
+				{
+					protocol: args.protocol as AgentProtocol | undefined,
+					name: args.name as string | undefined,
+					verifyCap: args.verify_cap === true,
+				},
+				buildDnsOptions(ro),
+			),
+	},
 	check_dnskey_strength: { cacheKey: () => 'dnskey_strength', execute: (d, _args, ro) => checkDnskeyStrength(d, buildDnsOptions(ro)) },
 	check_fast_flux: {
 		cacheKey: (_a, ro) => (ro?.reconBinding ? 'fast_flux:recon' : 'fast_flux'),

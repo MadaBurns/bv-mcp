@@ -258,6 +258,33 @@ export const CheckFastFluxArgs = z
 	.passthrough();
 
 /**
+ * check_agent_discovery — assess the security posture of IETF BANDAID
+ * (draft-mozleywilliams-dnsop-dnsaid) agent-discovery records: SVCB records
+ * under _agents.{domain} / _index._{protocol}._agents.{domain}, their DNSSEC
+ * anchoring, and capability-document integrity (cap / cap-sha256).
+ */
+export const CheckAgentDiscoveryArgs = z
+	.object({
+		domain: DomainSchema.describe('Domain to check for published agent-discovery records (e.g., example.com).'),
+		protocol: z
+			.string()
+			.transform((v) => v.toLowerCase().trim())
+			.pipe(z.enum(['a2a', 'mcp', 'https']))
+			.optional()
+			.describe('Scope discovery to a single agent protocol index (_index._{protocol}._agents). Omit to sweep the zone.'),
+		name: z.string().min(1).max(63).optional().describe('Resolve a single named agent ({name}.{domain}) instead of enumerating the zone.'),
+		verify_cap: z
+			.boolean()
+			.optional()
+			.describe(
+				'Fetch each declared capability document (cap=) over HTTPS via safeFetch and verify it against the cap-sha256 integrity pin. Default false (declaration/existence check only).',
+			),
+		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+	})
+	.passthrough();
+
+/**
  * check_subdomain_takeover — sweep an explicit subdomain list (or fall back to
  * a 15-name built-in list of common labels) for dangling CNAMEs and
  * provider-deprovisioned takeover fingerprints.
@@ -607,6 +634,7 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	check_nsec_walkability: BaseDomainArgs,
 	check_dnssec_chain: BaseDomainArgs,
 	check_dnskey_strength: BaseDomainArgs,
+	check_agent_discovery: CheckAgentDiscoveryArgs,
 	check_fast_flux: CheckFastFluxArgs,
 	check_subdomain_takeover: CheckSubdomainTakeoverArgs,
 	check_authoritative_dns_infra: BaseDomainArgs,
