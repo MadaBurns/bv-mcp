@@ -21,6 +21,7 @@ import {
 	AnalyzeDriftArgs,
 	GenerateRolloutPlanArgs,
 	CheckFastFluxArgs,
+	CheckAgentDiscoveryArgs,
 	CheckSubdomainTakeoverArgs,
 	RootServerSetArgs,
 	DiscoverBrandDomainsArgs,
@@ -521,6 +522,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		description:
 			'Walk the DNSSEC chain of trust from root to target domain. Reports DS/DNSKEY records, algorithm usage, and linkage status at each zone level.',
 		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
+	check_agent_discovery: {
+		description:
+			'Assess the security posture of IETF BANDAID agent-discovery records (draft-mozleywilliams-dnsop-dnsaid). Detects SVCB agent records under _agents/_index._{protocol}._agents, reports whether the discovery zone is DNSSEC-anchored (unsigned = spoofable agent endpoints), evaluates DANE/TLSA binding trust (RFC 6698 §10.1), and checks capability-document integrity (cap / cap-sha256). Read-only; uses Private-Use SVCB param code points pending IANA assignment.',
+		schema: CheckAgentDiscoveryArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},

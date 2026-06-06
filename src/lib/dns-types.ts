@@ -17,6 +17,7 @@ export const RecordType = {
 	NSEC3PARAM: 51,
 	PTR: 12,
 	SRV: 33,
+	SVCB: 64,
 	HTTPS: 65,
 } as const;
 

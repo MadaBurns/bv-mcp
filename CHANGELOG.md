@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-06-07
+
+Minor release: adds one standalone intelligence tool (**79 → 80**), `SCORING_MODEL_VERSION` unchanged (`1.2.0` — not a scored category).
+
+### Added
+
+- **`check_agent_discovery`** — assesses the security posture of IETF BANDAID agent-discovery records (`draft-mozleywilliams-dnsop-dnsaid`), complementary to the [dns-aid](https://github.com/dns-aid/dns-aid-core) reference implementation. Detects SVCB agent records under `_agents` / `_index._{protocol}._agents`, reports whether the discovery zone is **DNSSEC-anchored** (unsigned = spoofable agent endpoints; reads the AD flag from the response that carried the records), and verifies **capability-document integrity** (`cap` / `cap-sha256`, base64url per dns-aid's `cap_fetcher`, fetched via `safeFetch` under the SSRF gate). Standalone/intelligence tool: out-of-union category, `group: 'intelligence'`, not scored, not part of `scan_domain`. Uses RFC 9460 Private-Use SVCB param code points (65400–65409) pending IANA assignment.
+- `SVCB` (type 64) added to the DoH `RecordType` map.
+
 ## [3.15.1] - 2026-06-06
 
 Patch release: six bug fixes from an adversarial bug-hunt sweep, each gated behind a failing-before / passing-after test (#376). No tools added or removed (still 79); `SCORING_MODEL_VERSION` stays `1.2.0`. One scoring change is RFC-correctness (first item) with narrow, documented impact.
