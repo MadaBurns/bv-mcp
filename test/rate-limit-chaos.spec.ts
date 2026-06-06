@@ -342,6 +342,7 @@ describe('rate-limit chaos tests', () => {
 				'check_rbl',
 				'check_nsec_walkability',
 				'check_dnssec_chain',
+				'check_agent_discovery',
 				'check_fast_flux',
 				'check_realtime_threat_feed',
 			]);
