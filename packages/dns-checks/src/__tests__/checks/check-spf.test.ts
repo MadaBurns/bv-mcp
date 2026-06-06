@@ -2,7 +2,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { checkSPF } from '../../checks/check-spf';
-import { analyzeSpfLookupBudget, estimateTxtRrsetBytes } from '../../checks/spf-analysis';
+import { analyzeSpfLookupBudget, checkBroadIpRanges, estimateTxtRrsetBytes, extractLookupDomains, extractSpfSignalDomains } from '../../checks/spf-analysis';
 import type { DNSQueryFunction } from '../../types';
 
 /** Build a TXT string of an exact byte length (ASCII, so 1 char === 1 byte). */
@@ -237,5 +237,28 @@ describe('analyzeSpfLookupBudget — redirect= counts toward the §4.6.4 budget'
 		const analysis = analyzeSpfLookupBudget(`v=spf1 ${tenMechs} redirect=_spf.example.com -all`);
 		expect(analysis.count).toBe(11);
 		expect(analysis.count).toBeGreaterThan(10);
+	});
+});
+
+// Relocated from the removed Worker-side test/spf-analysis.spec.ts, which exercised
+// a dead src/tools/spf-analysis.ts fork. These now run against the live dns-checks copy.
+// (The fork's analyzeSpfLookupBudget case is covered by the redirect-budget block above.)
+describe('spf-analysis signal/IP helpers', () => {
+	it('extracts include and redirect domains for downstream signal use', () => {
+		expect(extractSpfSignalDomains('v=spf1 include:_spf.google.com include:mail.example.com redirect=_spf.example.net')).toEqual({
+			includeDomains: ['_spf.google.com', 'mail.example.com'],
+			redirectDomain: '_spf.example.net',
+		});
+		expect(extractLookupDomains('v=spf1 include:a.com include:b.com redirect=c.com -all')).toEqual({
+			includes: ['a.com', 'b.com'],
+			redirect: 'c.com',
+		});
+	});
+
+	it('flags overly broad IPv4 and IPv6 ranges', () => {
+		const findings = checkBroadIpRanges('v=spf1 ip4:10.0.0.0/8 ip6:2001::/16 -all', { signalType: 'spf' });
+		expect(findings).toHaveLength(2);
+		expect(findings[0].title).toContain('Overly broad IP range');
+		expect(findings[1].title).toContain('Overly broad IPv6 range');
 	});
 });
