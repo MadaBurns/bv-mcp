@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createAnalyticsClient } from '../src/lib/analytics';
 import type { AnalyticsContext } from '../src/lib/analytics';
 
@@ -135,29 +135,29 @@ describe('createAnalyticsClient', () => {
 		client.emitToolEvent({ toolName: 'check_spf', status: 'pass', durationMs: 50, isError: false, ...ctx });
 		client.emitRateLimitEvent({ limitType: 'minute', toolName: 'n/a', limit: 50, remaining: 0, ...ctx });
 		client.emitSessionEvent({ action: 'created', ...ctx });
-		client.emitDegradationEvent({ degradationType: 'dns_resolver_failure', component: 'fetchDohResponse', ...ctx });
+		client.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session', ...ctx });
 	});
 
 	it('emitDegradationEvent writes degradation index', () => {
 		const ds = mockDataset();
 		const client = createAnalyticsClient(ds);
 		client.emitDegradationEvent({
-			degradationType: 'dns_resolver_failure',
-			component: 'fetchDohResponse',
+			degradationType: 'kv_fallback',
+			component: 'session',
 			domain: 'example.com',
 			...ctx,
 		});
 		expect(ds.writeDataPoint).toHaveBeenCalledOnce();
 		const point = ds.writeDataPoint.mock.calls[0][0];
 		expect(point.indexes).toEqual(['degradation']);
-		expect(point.blobs[0]).toBe('dns_resolver_failure');
-		expect(point.blobs[1]).toBe('fetchdohresponse');
-		// blobs[2] = domain fingerprint, blobs[3] = scanId (''), blobs[4] = country
-		expect(point.blobs[4]).toBe('NZ');
-		expect(point.blobs[5]).toBe('claude_code');
-		expect(point.blobs[6]).toBe('agent');
-		// doubles[0] = hashCollisionSuspected flag (0 = no collision)
-		expect(point.doubles?.[0]).toBe(0);
+		expect(point.blobs[0]).toBe('kv_fallback');
+		expect(point.blobs[1]).toBe('session');
+		// blobs[2] = domain fingerprint, blobs[3] = country, blobs[4] = clientType, blobs[5] = authTier
+		expect(point.blobs[3]).toBe('NZ');
+		expect(point.blobs[4]).toBe('claude_code');
+		expect(point.blobs[5]).toBe('agent');
+		// scanId/dedup/collision-probe plumbing removed — no doubles emitted.
+		expect(point.doubles).toBeUndefined();
 	});
 
 	it('emitDegradationEvent handles missing optional fields', () => {
@@ -171,69 +171,16 @@ describe('createAnalyticsClient', () => {
 		const point = ds.writeDataPoint.mock.calls[0][0];
 		expect(point.indexes).toEqual(['degradation']);
 		expect(point.blobs[0]).toBe('kv_fallback');
-		expect(point.blobs[2]).toBe('none');
-		expect(point.blobs[3]).toBe(''); // no scanId
-		expect(point.blobs[4]).toBe('unknown'); // country
-	});
-});
-
-describe('analytics degradation dedup + collision probe', () => {
-	function makeClient() {
-		const writes: Array<{ indexes?: string[]; blobs?: string[]; doubles?: number[] }> = [];
-		const dataset = {
-			writeDataPoint: (p: { indexes?: string[]; blobs?: string[]; doubles?: number[] }) => writes.push(p),
-		};
-		return { dataset, writes };
-	}
-
-	beforeEach(() => {
-		// Clear any module-level state between tests.
-		vi.resetModules();
+		expect(point.blobs[2]).toBe('none'); // no domain
+		expect(point.blobs[3]).toBe('unknown'); // country
 	});
 
-	it('dedups identical (scanId, degradationType, component) within the rolling window', async () => {
-		const { dataset, writes } = makeClient();
-		const { createAnalyticsClient } = await import('../src/lib/analytics');
-		const client = createAnalyticsClient(dataset as never);
-		client.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session', scanId: 'A' });
-		client.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session', scanId: 'A' });
-		// Same (scanId, type, component) → only one write.
-		const degWrites = writes.filter((w) => w.indexes?.[0] === 'degradation');
-		expect(degWrites.length).toBe(1);
-	});
-
-	it('does NOT dedup across different scanIds', async () => {
-		const { dataset, writes } = makeClient();
-		const { createAnalyticsClient } = await import('../src/lib/analytics');
-		const client = createAnalyticsClient(dataset as never);
-		client.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session', scanId: 'A' });
-		client.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session', scanId: 'B' });
-		const degWrites = writes.filter((w) => w.indexes?.[0] === 'degradation');
-		expect(degWrites.length).toBe(2);
-	});
-
-	it('does NOT dedup when scanId is undefined (each call is independent)', async () => {
-		const { dataset, writes } = makeClient();
-		const { createAnalyticsClient } = await import('../src/lib/analytics');
-		const client = createAnalyticsClient(dataset as never);
+	it('does NOT dedup identical kv_fallback emits (dead dedup window removed)', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
 		client.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session' });
 		client.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session' });
-		const degWrites = writes.filter((w) => w.indexes?.[0] === 'degradation');
-		expect(degWrites.length).toBe(2);
-	});
-
-	it('emits hashCollisionSuspected when two different domains hash identically', async () => {
-		const { dataset, writes } = makeClient();
-		const { createAnalyticsClient, hashDomain, __forceCollisionForTest } = await import('../src/lib/analytics');
-		const client = createAnalyticsClient(dataset as never);
-		// Prime the collision cache so the next hash call sees a collision.
-		hashDomain('example.com');
-		// Force-inject a collision for different.com → same hash as example.com.
-		(__forceCollisionForTest as ((a: string, b: string) => void) | undefined)?.('example.com', 'different.com');
-		client.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'probe-emit' });
-		const degWrites = writes.filter((w) => w.indexes?.[0] === 'degradation');
-		expect(degWrites.length).toBeGreaterThanOrEqual(1);
-		// hashCollisionSuspected is the 0th double.
-		expect(degWrites[0].doubles?.[0]).toBe(1);
+		// Two identical emits → two writes (no module-level dedup state).
+		expect(ds.writeDataPoint).toHaveBeenCalledTimes(2);
 	});
 });

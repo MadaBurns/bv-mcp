@@ -425,9 +425,6 @@ export async function runCheckRetry(
  * @returns Full scan result with score, individual check results, and metadata
  */
 export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOptions?: ScanRuntimeOptions): Promise<ScanDomainResult> {
-	// scanId: generated once per scan for threading to analytics degradation events.
-	// Currently unused here — callers will pass it when emitDegradationEvent sites migrate.
-	const _scanId = crypto.randomUUID();
 	const scanStartTime = Date.now();
 	const timeoutBudget = resolveScanTimeoutBudget(runtimeOptions);
 	const explicitProfile = runtimeOptions?.profile;

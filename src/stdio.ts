@@ -3,7 +3,7 @@
 
 import { parseJsonRpcRequest } from './mcp/request';
 import { executeMcpRequest } from './mcp/execute';
-import { JSON_RPC_ERRORS, jsonRpcError } from './lib/json-rpc';
+import { JSON_RPC_ERRORS, isJsonRpcNotification, jsonRpcError } from './lib/json-rpc';
 import { SERVER_VERSION } from './lib/server-version';
 import { parsePerCheckTimeout, parseScanTimeout } from './lib/config';
 import type { JsonRpcRequest } from './lib/json-rpc';
@@ -55,7 +55,7 @@ async function processRequest(
 		return buildInvalidBatchInitializeError(id);
 	}
 
-	const isNotification = id === undefined || id === null;
+	const isNotification = isJsonRpcNotification(request);
 	if (method !== 'initialize' && !state.initialized) {
 		return isNotification ? undefined : buildNotInitializedError(id);
 	}
