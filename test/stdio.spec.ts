@@ -74,6 +74,42 @@ describe('stdio MCP server', () => {
 		expect(payload[1]?.result).toHaveProperty('tools');
 	});
 
+	it('does not throw on a request with no method member, returns a JSON-RPC error carrying its id', async () => {
+		// Regression: stdio's notification detection used to call method.startsWith on an
+		// unvalidated method. A `{ jsonrpc, id }` message (no method) made `undefined.startsWith`
+		// throw a TypeError that flushLine swallowed, leaving the client with no response.
+		const server = createStdioServer();
+		const outputs = await server.handleMessage(JSON.stringify({ jsonrpc: '2.0', id: 1 }));
+
+		expect(outputs).toHaveLength(1);
+		const payload = JSON.parse(outputs[0] ?? 'null') as { id: number | null; error: { code: number; message: string } };
+		expect(payload.id).toBe(1);
+		// Not initialized → buildNotInitializedError; the point is a real error response, not a swallowed throw.
+		expect(payload.error.message).toContain('not initialized');
+	});
+
+	it('batch resilience: one malformed (no-method) entry does not wipe responses for valid entries', async () => {
+		// Regression: a throw inside Promise.all(entries.map(...)) rejected the whole batch,
+		// dropping responses for every valid request alongside the bad one.
+		const server = createStdioServer();
+		await server.handleMessage(JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'initialize', params: {} }));
+		const [output] = await server.handleMessage(
+			JSON.stringify([
+				{ jsonrpc: '2.0', id: 6, method: 'ping', params: {} },
+				{ jsonrpc: '2.0', id: 7 },
+				{ jsonrpc: '2.0', id: 8, method: 'ping', params: {} },
+			]),
+		);
+		const payload = JSON.parse(output ?? 'null') as Array<{ id: number; result?: unknown; error?: { code: number; message: string } }>;
+
+		expect(payload.map((entry) => entry.id)).toEqual([6, 7, 8]);
+		// Valid entries still answered.
+		expect(payload.find((entry) => entry.id === 6)?.result).toEqual({});
+		expect(payload.find((entry) => entry.id === 8)?.result).toEqual({});
+		// Malformed entry gets its own error, not a silent drop.
+		expect(payload.find((entry) => entry.id === 7)?.error?.code).toBe(-32600);
+	});
+
 	it('rejects initialize inside multi-message batches', async () => {
 		const server = createStdioServer();
 		const [output] = await server.handleMessage(

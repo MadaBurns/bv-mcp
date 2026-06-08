@@ -3,7 +3,7 @@
 
 import { parseJsonRpcRequest } from './mcp/request';
 import { executeMcpRequest } from './mcp/execute';
-import { JSON_RPC_ERRORS, jsonRpcError } from './lib/json-rpc';
+import { JSON_RPC_ERRORS, isJsonRpcNotification, jsonRpcError } from './lib/json-rpc';
 import { SERVER_VERSION } from './lib/server-version';
 import { parsePerCheckTimeout, parseScanTimeout } from './lib/config';
 import type { JsonRpcRequest } from './lib/json-rpc';
@@ -55,12 +55,7 @@ async function processRequest(
 		return buildInvalidBatchInitializeError(id);
 	}
 
-	// JSON-RPC 2.0: a notification is a request WITHOUT an `id` member. `id: null`
-	// is a valid id requiring a response, so distinguish absent-id from id:null
-	// (mirrors mcp/execute.ts). The `id !== undefined` clause covers callers that
-	// construct `{ id: undefined }` to mean "no id".
-	const hasIdMember = Object.prototype.hasOwnProperty.call(request, 'id') && id !== undefined;
-	const isNotification = method.startsWith('notifications/') || !hasIdMember;
+	const isNotification = isJsonRpcNotification(request);
 	if (method !== 'initialize' && !state.initialized) {
 		return isNotification ? undefined : buildNotInitializedError(id);
 	}

@@ -122,7 +122,12 @@ function parseJobs(content: string): Job[] {
 	return jobs;
 }
 
-const hasWrite = (perms: Record<string, string> | null, scope: string): boolean => perms?.[scope] === 'write';
+// A per-job block grants write to `scope` either explicitly (`scope: write`)
+// or via an inline `permissions: write-all`, which the parser stores under the
+// synthetic `__inline__` key. The latter would otherwise slip past the
+// id-token / contents per-job checks (it never sets `perms[scope]`).
+const hasWrite = (perms: Record<string, string> | null, scope: string): boolean =>
+	perms?.[scope] === 'write' || perms?.__inline__ === 'write-all';
 
 describe('workflow permissions audit (F10 — least-privilege OIDC)', () => {
 	const publish = workflowByName('publish.yml');
@@ -131,13 +136,15 @@ describe('workflow permissions audit (F10 — least-privilege OIDC)', () => {
 	const jobNames = jobs.map((j) => j.name).sort();
 
 	it('publish.yml workflow-level permissions are read-only (no contents/id-token write at workflow scope)', () => {
-		// Either absent, or present-and-read-only. A workflow-level write of
-		// contents or id-token is the F10 regression — it leaks to `validate`.
-		if (top !== null) {
-			expect(top.contents ?? 'read', 'workflow-level contents must not be write').not.toBe('write');
-			expect(top['id-token'] ?? 'none', 'workflow-level id-token must not be write').not.toBe('write');
-			expect(top.__inline__, 'workflow-level permissions must not be write-all').not.toBe('write-all');
-		}
+		// The block MUST be present AND read-only. If a future PR deletes the
+		// top-level `permissions: contents: read`, every job (incl. `validate`,
+		// which runs `npm ci` / build / test over third-party code) falls back to
+		// the repo-default token permissions — that IS the F10 regression. So we
+		// require the block to exist, not merely "be read-only if present".
+		expect(top, 'publish.yml must declare a read-only workflow-level permissions block').not.toBeNull();
+		expect(top!.contents ?? 'read', 'workflow-level contents must not be write').not.toBe('write');
+		expect(top!['id-token'] ?? 'none', 'workflow-level id-token must not be write').not.toBe('write');
+		expect(top!.__inline__, 'workflow-level permissions must not be write-all').not.toBe('write-all');
 	});
 
 	it('parsed all six publish.yml jobs', () => {
@@ -160,9 +167,14 @@ describe('workflow permissions audit (F10 — least-privilege OIDC)', () => {
 	it('the untrusted-code job (validate) has no write permission', () => {
 		const validate = jobs.find((j) => j.name === 'validate');
 		expect(validate, 'validate job present').toBeTruthy();
-		// Either no block (inherits read-only default) or an explicit read-only block.
+		// Either no block (inherits read-only default) or an explicit read-only
+		// block. Reject both per-scope `write` and the inline `write-all` grant
+		// (`read-all` is acceptable = read-only). The literal 'write-all' string
+		// is !== 'write', so a bare `.not.toContain('write')` would let it slip.
 		if (validate!.permissions) {
-			expect(Object.values(validate!.permissions)).not.toContain('write');
+			const values = Object.values(validate!.permissions);
+			expect(values, 'validate job must not grant any write permission').not.toContain('write');
+			expect(values, 'validate job must not grant inline write-all').not.toContain('write-all');
 		}
 	});
 });

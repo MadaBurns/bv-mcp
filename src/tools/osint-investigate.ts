@@ -77,6 +77,9 @@ const REPORT_MAX_FINDINGS = 100;
 /** Defensive cap on any single string field (the upstream AI summary can be malformed/huge). */
 const MAX_META_STRING = 8_000;
 
+/** Recursion ceiling for nested kept-field sanitization — drop absurdly-deep upstream nesting. */
+const MAX_META_DEPTH = 6;
+
 /**
  * Defensive shaping for any string value before it enters finding metadata /
  * structuredContent. Upstream bv-recon strings (the AI-generated investigation
@@ -87,13 +90,30 @@ const MAX_META_STRING = 8_000;
  * channel uses (`sanitizeDnsData`: strips C0/ANSI control bytes, neutralizes
  * markdown/HTML injection incl. code-fence backticks, collapses newlines) so
  * injected instructions can't reach the LLM here, THEN apply the length clamp on
- * the cleaned text. Non-strings (numbers/objects like `progress`/`options`) pass
- * through unchanged.
+ * the cleaned text. Kept fields can be object/array-valued (`details`, `aiAnalysis`,
+ * `progress`, `options`) — recurse into arrays and plain objects so every nested
+ * string is sanitized too (else nested injection payloads reach the LLM raw),
+ * bounded by `MAX_META_DEPTH`. Scalars (number/boolean/null) pass through unchanged.
+ *
+ * To bound regex cost on a pathologically large upstream string, coarse-slice to
+ * 2× the cap before sanitizing — `sanitizeDnsData` only ever shrinks length, so the
+ * 2× headroom preserves output correctness while avoiding a full-string sweep that
+ * just gets clamped to 8 KB anyway.
  */
-function capString(v: unknown): unknown {
-	if (typeof v !== 'string') return v;
-	const sanitized = sanitizeDnsData(v);
-	return sanitized.length > MAX_META_STRING ? sanitized.slice(0, MAX_META_STRING) : sanitized;
+function capString(v: unknown, depth = 0): unknown {
+	if (typeof v === 'string') {
+		const head = v.length > MAX_META_STRING * 2 ? v.slice(0, MAX_META_STRING * 2) : v;
+		const sanitized = sanitizeDnsData(head);
+		return sanitized.length > MAX_META_STRING ? sanitized.slice(0, MAX_META_STRING) : sanitized;
+	}
+	if (depth >= MAX_META_DEPTH) return undefined; // drop absurdly-deep nesting rather than recurse unbounded
+	if (Array.isArray(v)) return v.map((item) => capString(item, depth + 1));
+	if (v && typeof v === 'object') {
+		const out: Record<string, unknown> = {};
+		for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = capString(val, depth + 1);
+		return out;
+	}
+	return v; // number/boolean/null pass through
 }
 
 function projectStatusMeta(s: Record<string, unknown>): Record<string, unknown> {

@@ -9,7 +9,7 @@ import {
 	releaseConcurrencySlot,
 } from '../lib/rate-limiter';
 import { fireAndForget, getLogger, logEvent, logError } from '../lib/log';
-import { jsonRpcError, JSON_RPC_ERRORS, sanitizeErrorMessage } from '../lib/json-rpc';
+import { jsonRpcError, JSON_RPC_ERRORS, isJsonRpcNotification, sanitizeErrorMessage } from '../lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, validateSessionRequest } from './route-gates';
 import {
 	FREE_TOOL_DAILY_LIMITS,
@@ -757,8 +757,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 	// collapsed into a notification. We treat a request as a notification when EITHER its
 	// method is in the `notifications/*` namespace (which carries no response by definition,
 	// even if a client erroneously attaches `id: null`) OR the `id` member is absent entirely.
-	const hasIdMember = Object.prototype.hasOwnProperty.call(options.body, 'id') && id !== undefined;
-	const isNotification = method.startsWith('notifications/') || !hasIdMember;
+	const isNotification = isJsonRpcNotification(options.body);
 	if (isNotification && method !== 'initialize') {
 		emitRequestAnalytics(options, method, 'ok', false);
 		return { kind: 'notification' };
