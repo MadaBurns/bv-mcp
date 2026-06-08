@@ -93,27 +93,25 @@ const MAX_META_DEPTH = 6;
  * the cleaned text. Kept fields can be object/array-valued (`details`, `aiAnalysis`,
  * `progress`, `options`) — recurse into arrays and plain objects so every nested
  * string is sanitized too (else nested injection payloads reach the LLM raw),
- * bounded by `MAX_META_DEPTH`. Scalars (number/boolean/null) pass through unchanged.
+ * bounded by `MAX_META_DEPTH`. Scalars (number/boolean/null) pass through unchanged
+ * at any depth (they can't carry injection); only nested containers hit the cap.
  *
- * To bound regex cost on a pathologically large upstream string, coarse-slice to
- * 2× the cap before sanitizing — `sanitizeDnsData` only ever shrinks length, so the
- * 2× headroom preserves output correctness while avoiding a full-string sweep that
- * just gets clamped to 8 KB anyway.
+ * Sanitize the FULL string, THEN clamp — `sanitizeDnsData` collapses whitespace
+ * many-to-one, so coarse-slicing the input first could silently drop content a
+ * compressible prefix pushes past the slice. This path is operator-only (BV_RECON)
+ * and these strings are not multi-MB, so the full sweep is acceptable.
  */
 function capString(v: unknown, depth = 0): unknown {
 	if (typeof v === 'string') {
-		const head = v.length > MAX_META_STRING * 2 ? v.slice(0, MAX_META_STRING * 2) : v;
-		const sanitized = sanitizeDnsData(head);
+		const sanitized = sanitizeDnsData(v);
 		return sanitized.length > MAX_META_STRING ? sanitized.slice(0, MAX_META_STRING) : sanitized;
 	}
-	if (depth >= MAX_META_DEPTH) return undefined; // drop absurdly-deep nesting rather than recurse unbounded
+	if (v === null || typeof v !== 'object') return v; // numbers/booleans/null pass through at any depth
+	if (depth >= MAX_META_DEPTH) return undefined; // stop unbounded recursion into nested containers
 	if (Array.isArray(v)) return v.map((item) => capString(item, depth + 1));
-	if (v && typeof v === 'object') {
-		const out: Record<string, unknown> = {};
-		for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = capString(val, depth + 1);
-		return out;
-	}
-	return v; // number/boolean/null pass through
+	const out: Record<string, unknown> = {};
+	for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = capString(val, depth + 1);
+	return out;
 }
 
 function projectStatusMeta(s: Record<string, unknown>): Record<string, unknown> {
