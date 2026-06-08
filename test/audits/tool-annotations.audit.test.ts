@@ -78,4 +78,13 @@ describe('tool annotations & description hygiene (directory review criteria)', (
 			expect(hits, `${tool.name} description steers Claude with: ${hits.join(', ')}`).toEqual([]);
 		}
 	});
+
+	// F5: a delete-by-id is idempotent (deleting the same id twice yields the
+	// same end state). idempotentHint must NOT be derived blindly as `!mutating`
+	// — destructive-but-idempotent deletes have to advertise idempotentHint:true.
+	it('delete_brand_audit_watch (destructive delete-by-id) advertises idempotentHint:true', () => {
+		const tool = TOOLS.find((t) => t.name === 'delete_brand_audit_watch')!;
+		expect(tool.annotations?.destructiveHint, 'delete_brand_audit_watch should still be destructive').toBe(true);
+		expect(tool.annotations?.idempotentHint, 'delete-by-id is idempotent').toBe(true);
+	});
 });

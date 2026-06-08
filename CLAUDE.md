@@ -332,7 +332,7 @@ ignored env only; never commit it or paste it into workflow logs.
 
 ## Analytics
 
-Four event types: `mcp_request`, `tool_call`, `rate_limit`, `session`. Queries in `analytics-queries.ts`. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan`. Optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
+Four core event types: `mcp_request`, `tool_call`, `rate_limit`, `session`, plus a fifth `degradation` event with a single live member — `kv_fallback` (emitted from `session.ts` when a KV write throws). Queries in `analytics-queries.ts` cover the four core types; nothing queries/alerts on `degradation` yet. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan`. Optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
 
 **Blob layout** (keep in sync when adding dimensions):
 

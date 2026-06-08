@@ -728,6 +728,35 @@ describe('executeMcpRequest — notification handling', () => {
 		expect(result.kind).toBe('notification');
 	});
 
+	it('treats a non-notification method with explicit id=null as a real request (JSON-RPC 2.0 spec)', async () => {
+		// Per JSON-RPC 2.0, a notification is a request WITHOUT an `id` member.
+		// `id: null` is a valid (if discouraged) id that REQUIRES a response.
+		// A spec-conformant client sending `tools/call` with `id: null` must NOT get a 202/notification ack.
+		vi.doMock('../src/mcp/dispatch', () => ({
+			dispatchMcpMethod: vi.fn().mockResolvedValue({
+				kind: 'success',
+				payload: { jsonrpc: '2.0', id: null, result: { content: [] } },
+				headers: {},
+				newSessionId: undefined,
+				logTool: 'tools/call',
+				logCategory: 'call',
+				logResult: 'ok',
+				logDetails: {},
+			}),
+		}));
+
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const result = await executeMcpRequest(
+			baseOptions({
+				body: { jsonrpc: '2.0', id: null, method: 'tools/call', params: { name: 'check_spf', arguments: { domain: 'example.com' } } } as JsonRpcRequest,
+				validateSession: false,
+			}),
+		);
+
+		// Must be a response, not a notification ack.
+		expect(result.kind).toBe('response');
+	});
+
 	it('does NOT return kind=notification for initialize even without an id', async () => {
 		// initialize with no id is weird, but the code specifically checks: isNotification && method !== 'initialize'
 		vi.doMock('../src/lib/session', () => ({

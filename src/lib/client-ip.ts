@@ -14,11 +14,6 @@
  * front, or a service binding that constructed a fresh Request without copying
  * CF headers), the resolvers return `'unknown'`. Callers that gate on IP must
  * treat `'unknown'` as "no allowlist match" (i.e. fail closed).
- *
- * `hasPublicClientIpHeader` is the one exception: it widens the check to any
- * proxy-style header, but only for the purpose of REJECTING requests
- * (`isPublicInternetRequest`) — wider net = stricter rejection. A header
- * present on a request that should be private = treat it as public + 404.
  */
 
 function firstHeaderValue(value: string | null | undefined): string | undefined {
@@ -37,25 +32,4 @@ export function resolveClientIpFromRequestHeaders(headers: Headers): string {
 
 export function resolveClientIpFromHeaderGetter(header: (name: string) => string | undefined): string {
 	return firstHeaderValue(header('cf-connecting-ip')) ?? 'unknown';
-}
-
-/**
- * Detect whether a request *looks like* it came from the public internet via
- * any proxy header. Used by `isPublicInternetRequest` in `src/internal.ts` to
- * 404 the `/internal/*` routes from external callers. Intentionally broader
- * than the trust resolvers above — defense-in-depth: any sign of a proxied
- * request is treated as public.
- */
-export function hasPublicClientIpHeader(headers: {
-	cfConnectingIp?: string | null;
-	trueClientIp?: string | null;
-	xRealIp?: string | null;
-	xForwardedFor?: string | null;
-}): boolean {
-	return Boolean(
-		firstHeaderValue(headers.cfConnectingIp) ??
-		firstHeaderValue(headers.trueClientIp) ??
-		firstHeaderValue(headers.xRealIp) ??
-		firstHeaderValue(headers.xForwardedFor),
-	);
 }

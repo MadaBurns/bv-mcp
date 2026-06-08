@@ -95,9 +95,41 @@ describe('TOOLS', () => {
 		expect(tool.inputSchema.required).toEqual(['domain']);
 	});
 
-	it('no tool has additionalProperties: false', () => {
+	// F6: the published inputSchema must be HONEST about extra-prop handling.
+	// Tools whose runtime args schema is `.strict()` hard-reject unknown props,
+	// so their published schema MUST advertise additionalProperties:false (else
+	// the surface lies — "extra params allowed" while the runtime rejects them).
+	// Every other tool uses `.passthrough()` and must NOT carry the strict marker.
+	const STRICT_RUNTIME_TOOLS = new Set([
+		'scan_buckets_start',
+		'scan_buckets_status',
+		'scan_buckets_findings',
+		'osint_investigate_domain_start',
+		'osint_investigate_infrastructure_start',
+		'osint_investigate_supply_chain_start',
+		'osint_investigate_username_start',
+		'osint_investigate_email_start',
+		'osint_investigation_status',
+		'osint_investigation_report',
+	]);
+
+	it('strict-runtime tools publish additionalProperties:false (schema matches runtime)', () => {
+		for (const name of STRICT_RUNTIME_TOOLS) {
+			const tool = TOOLS.find((t) => t.name === name)!;
+			expect(tool, `${name} not found in TOOLS`).toBeDefined();
+			expect((tool.inputSchema as Record<string, unknown>).additionalProperties, `${name} should advertise additionalProperties:false`).toBe(
+				false,
+			);
+		}
+	});
+
+	it('non-strict tools never publish additionalProperties: false', () => {
 		for (const tool of TOOLS) {
-			expect((tool.inputSchema as Record<string, unknown>).additionalProperties).not.toBe(false);
+			if (STRICT_RUNTIME_TOOLS.has(tool.name)) continue;
+			expect(
+				(tool.inputSchema as Record<string, unknown>).additionalProperties,
+				`${tool.name} unexpectedly carries additionalProperties:false`,
+			).not.toBe(false);
 		}
 	});
 

@@ -470,6 +470,71 @@ describe('checkRdapLookup', () => {
 		expect(whoisBinding.fetch).toHaveBeenCalledOnce();
 	});
 
+	describe('SSRF: bootstrap-derived RDAP server host', () => {
+		it('does NOT fetch an RDAP server whose host (from network-sourced bootstrap) is a blocked RFC1918 destination', async () => {
+			// The IANA bootstrap is network-sourced, so its server hostnames are NOT
+			// statically trusted. A MITM (or poisoned mirror) could point a TLD at an
+			// internal address. The fetch must be re-validated by the SSRF gate and
+			// blocked — even though the blocked host here returns a VALID RDAP body,
+			// the response must never be consumed.
+			const blockedHost = '192.168.1.1';
+			const fetchSpy = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if (url.includes('data.iana.org/rdap/dns.json')) {
+					return Promise.resolve(
+						new Response(JSON.stringify(makeBootstrap([[['evilcorp'], [`https://${blockedHost}/rdap/`]]])), {
+							status: 200,
+							headers: { 'Content-Type': 'application/json' },
+						}),
+					);
+				}
+				// A would-be-successful RDAP response from the blocked host. If the SSRF
+				// gate is bypassed (raw fetch), this is consumed → registrarSource 'rdap'.
+				return Promise.resolve(
+					new Response(JSON.stringify(makeRdapResponse({ ldhName: 'acme.evilcorp' })), {
+						status: 200,
+						headers: { 'Content-Type': 'application/rdap+json' },
+					}),
+				);
+			});
+			globalThis.fetch = fetchSpy;
+
+			const result = await run('acme.evilcorp');
+
+			// Discriminator: the blocked host's valid response must NOT have been parsed.
+			const rdapSourced = result.findings.find((f) => f.metadata?.registrarSource === 'rdap');
+			expect(rdapSourced, 'blocked RDAP response must not be consumed').toBeUndefined();
+
+			// The fetch to the blocked host must never have been performed.
+			const calledBlockedHost = fetchSpy.mock.calls.some((call) => {
+				const u = typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].href : (call[0] as Request).url;
+				return u.includes(blockedHost);
+			});
+			expect(calledBlockedHost, `fetch must not be performed against ${blockedHost}`).toBe(false);
+
+			// The lookup surfaces as a transient lookup_failure (SSRF block → TypeError → catch).
+			const failed = result.findings.find((f) => f.metadata?.registrarSource === 'lookup_failed');
+			expect(failed?.metadata?.registrarFailureReason).toBe('rdap_fetch_error');
+		});
+
+		it('still fetches a normal public RDAP host (no regression)', async () => {
+			const fetchSpy = mockFetchRouter({
+				'data.iana.org/rdap/dns.json': () => makeBootstrap(),
+				'rdap.verisign.com': () => makeRdapResponse(),
+			});
+			globalThis.fetch = fetchSpy;
+
+			const result = await run('example.com');
+			const infoFinding = result.findings.find((f) => f.metadata?.registrarSource === 'rdap');
+			expect(infoFinding?.metadata?.registrar).toBe('Example Registrar Inc.');
+			const calledPublicHost = fetchSpy.mock.calls.some((call) => {
+				const u = typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].href : (call[0] as Request).url;
+				return u.includes('rdap.verisign.com');
+			});
+			expect(calledPublicHost, 'public RDAP host should be fetched').toBe(true);
+		});
+	});
+
 	describe('FALLBACK_RDAP_SERVERS', () => {
 		it('.app and .dev point at pubapi.registry.google (not the dead www.registry.google host)', async () => {
 			const { FALLBACK_RDAP_SERVERS } = await import('../src/tools/check-rdap-lookup');

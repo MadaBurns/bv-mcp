@@ -105,6 +105,14 @@ interface ToolDef {
 	mutating?: boolean;
 	/** True when the tool deletes or overwrites data → drives `destructiveHint`. Implies `mutating`. */
 	destructive?: boolean;
+	/**
+	 * Explicit `idempotentHint` override. Annotations default `idempotentHint` to
+	 * `!mutating`, which is wrong for a destructive-but-idempotent operation such
+	 * as a delete-by-id (deleting the same id twice yields the same end state).
+	 * Set this `true` on such tools so the published annotation is honest; leave
+	 * unset to use the `!mutating` default.
+	 */
+	idempotent?: boolean;
 	/** Curated starter-set member (see McpTool.recommended). Mirror SERVER_INSTRUCTIONS. */
 	recommended?: boolean;
 }
@@ -158,10 +166,10 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 	) {
 		delete jsonSchema.additionalProperties;
 	}
-	// Strip additionalProperties: false — MCP clients must not be constrained by strict schema markers
-	if (jsonSchema.additionalProperties === false) {
-		delete jsonSchema.additionalProperties;
-	}
+	// `additionalProperties: false` (from a `.strict()` runtime schema) is KEPT so
+	// the published surface is HONEST about extra-prop handling: the runtime hard-
+	// rejects unknown props, so the schema must say so too (F6). `.passthrough()`
+	// schemas never reach here with `false` — they emit `{}`, cleaned away above.
 	return jsonSchema as McpTool['inputSchema'];
 }
 
@@ -630,6 +638,9 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: false,
 		mutating: true,
 		destructive: true,
+		// delete-by-id: re-deleting the same watchId is a no-op (notFound), so the
+		// operation is idempotent even though it is destructive (F5).
+		idempotent: true,
 	},
 	scan_buckets_start: {
 		description:
@@ -798,7 +809,9 @@ export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => (
 		title: toolNameToTitle(name),
 		readOnlyHint: !def.mutating,
 		destructiveHint: Boolean(def.destructive),
-		idempotentHint: !def.mutating,
+		// `!mutating` is the default, but a destructive-but-idempotent op (e.g. a
+		// delete-by-id) sets `idempotent: true` explicitly to override it (F5).
+		idempotentHint: def.idempotent ?? !def.mutating,
 		openWorldHint: true,
 	},
 	group: def.group,

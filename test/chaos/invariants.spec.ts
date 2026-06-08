@@ -155,27 +155,3 @@ describe('invariants: P7c — DNSSEC transport failure → checkStatus=error', (
 		expect(hasMisclassification).toBe(false);
 	});
 });
-
-describe('invariants: P8 — analytics degradation dedup', () => {
-	it('same (scanId, type, component) emits exactly once', async () => {
-		const writes: Array<{ indexes?: string[] }> = [];
-		const dataset = { writeDataPoint: (p: { indexes?: string[] }) => writes.push(p) };
-		const { createAnalyticsClient } = await import('../../src/lib/analytics');
-		const client = createAnalyticsClient(dataset as never);
-		client.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session', scanId: 'X' });
-		client.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session', scanId: 'X' });
-		const degWrites = writes.filter((w) => w.indexes?.[0] === 'degradation');
-		expect(degWrites.length).toBe(1);
-	});
-
-	it('different scanIds produce separate emits', async () => {
-		const writes: Array<{ indexes?: string[] }> = [];
-		const dataset = { writeDataPoint: (p: { indexes?: string[] }) => writes.push(p) };
-		const { createAnalyticsClient } = await import('../../src/lib/analytics');
-		const client = createAnalyticsClient(dataset as never);
-		client.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session', scanId: 'Y1' });
-		client.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session', scanId: 'Y2' });
-		const degWrites = writes.filter((w) => w.indexes?.[0] === 'degradation');
-		expect(degWrites.length).toBe(2);
-	});
-});

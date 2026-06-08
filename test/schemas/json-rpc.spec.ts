@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { JsonRpcRequestSchema, JsonRpcBatchSchema, JsonRpcBodySchema } from '../../src/schemas/json-rpc';
+import { isJsonRpcNotification } from '../../src/lib/json-rpc';
 
 describe('JsonRpcRequestSchema', () => {
 	it('accepts valid request', () => {
@@ -48,6 +49,30 @@ describe('JsonRpcBatchSchema', () => {
 	it('rejects empty array', () => {
 		const result = JsonRpcBatchSchema.safeParse([]);
 		expect(result.success).toBe(false);
+	});
+});
+
+describe('isJsonRpcNotification', () => {
+	it('treats an absent id member as a notification', () => {
+		expect(isJsonRpcNotification({ method: 'tools/list' })).toBe(true);
+	});
+	it('treats id:null as a real request (NOT a notification)', () => {
+		expect(isJsonRpcNotification({ id: null, method: 'tools/list' })).toBe(false);
+	});
+	it('treats a present id as a real request', () => {
+		expect(isJsonRpcNotification({ id: 1, method: 'tools/list' })).toBe(false);
+	});
+	it('treats id:undefined as absent (notification)', () => {
+		expect(isJsonRpcNotification({ id: undefined, method: 'tools/list' })).toBe(true);
+	});
+	it('classifies notifications/* as a notification even with an id', () => {
+		expect(isJsonRpcNotification({ id: 1, method: 'notifications/initialized' })).toBe(true);
+	});
+	it('does not throw and is not a notification for a missing method with an id', () => {
+		expect(isJsonRpcNotification({ id: 1 })).toBe(false);
+	});
+	it('does not throw and is not a notification for a non-string method with an id', () => {
+		expect(isJsonRpcNotification({ id: 1, method: 123 })).toBe(false);
 	});
 });
 

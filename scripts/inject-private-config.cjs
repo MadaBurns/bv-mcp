@@ -53,8 +53,8 @@ function inject() {
     const privateConfigPath = '.dev/wrangler.deploy.jsonc';
 
     if (!fs.existsSync(privateConfigPath)) {
-        console.error("Missing .dev/wrangler.deploy.jsonc - skipping injection.");
-        return;
+        console.error("FATAL: Missing .dev/wrangler.deploy.jsonc private overlay - cannot produce a safe production config. Aborting deploy.");
+        process.exit(1);
     }
 
     const privateConfig = parseJsonc(fs.readFileSync(privateConfigPath, 'utf8'));

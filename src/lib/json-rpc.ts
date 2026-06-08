@@ -35,6 +35,19 @@ export function jsonRpcError(id: string | number | null | undefined, code: numbe
 	};
 }
 
+/**
+ * JSON-RPC 2.0 notification detection. A notification is a request WITHOUT an
+ * `id` member; `id: null` is a valid id that REQUIRES a response. Methods in the
+ * `notifications/*` namespace are always notifications. `method` may be absent or
+ * non-string on a malformed request, so guard the namespace check — classification
+ * must never throw; the caller's schema validation surfaces the malformed method.
+ */
+export function isJsonRpcNotification(body: { id?: unknown; method?: unknown }): boolean {
+	const hasIdMember = Object.prototype.hasOwnProperty.call(body, 'id') && body.id !== undefined;
+	const method = body.method;
+	return (typeof method === 'string' && method.startsWith('notifications/')) || !hasIdMember;
+}
+
 /** Known safe error message prefixes that may be passed through to clients */
 const SAFE_ERROR_PREFIXES = ['Missing required', 'Invalid', 'Domain ', 'Resource not found', 'Rate limit exceeded'];
 
