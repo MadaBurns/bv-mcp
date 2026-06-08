@@ -9,6 +9,7 @@ import {
 	type ReconBinding,
 	type ReconInvestigationType,
 } from '../lib/recon-binding';
+import { sanitizeDnsData } from '../lib/output-sanitize';
 
 const CATEGORY = 'osint_investigation' as CheckCategory;
 
@@ -76,8 +77,41 @@ const REPORT_MAX_FINDINGS = 100;
 /** Defensive cap on any single string field (the upstream AI summary can be malformed/huge). */
 const MAX_META_STRING = 8_000;
 
-function capString(v: unknown): unknown {
-	return typeof v === 'string' && v.length > MAX_META_STRING ? v.slice(0, MAX_META_STRING) : v;
+/** Recursion ceiling for nested kept-field sanitization — drop absurdly-deep upstream nesting. */
+const MAX_META_DEPTH = 6;
+
+/**
+ * Defensive shaping for any string value before it enters finding metadata /
+ * structuredContent. Upstream bv-recon strings (the AI-generated investigation
+ * `summary`/`aiAnalysis` and all third-party finding fields) are model-facing and
+ * attacker-influenceable — the structuredContent channel is the only otherwise-
+ * unsanitized path to the calling LLM (the prose `detail` is already sanitized by
+ * `createFinding`). Run every string through the same output sanitizer the prose
+ * channel uses (`sanitizeDnsData`: strips C0/ANSI control bytes, neutralizes
+ * markdown/HTML injection incl. code-fence backticks, collapses newlines) so
+ * injected instructions can't reach the LLM here, THEN apply the length clamp on
+ * the cleaned text. Kept fields can be object/array-valued (`details`, `aiAnalysis`,
+ * `progress`, `options`) — recurse into arrays and plain objects so every nested
+ * string is sanitized too (else nested injection payloads reach the LLM raw),
+ * bounded by `MAX_META_DEPTH`. Scalars (number/boolean/null) pass through unchanged
+ * at any depth (they can't carry injection); only nested containers hit the cap.
+ *
+ * Sanitize the FULL string, THEN clamp — `sanitizeDnsData` collapses whitespace
+ * many-to-one, so coarse-slicing the input first could silently drop content a
+ * compressible prefix pushes past the slice. This path is operator-only (BV_RECON)
+ * and these strings are not multi-MB, so the full sweep is acceptable.
+ */
+function capString(v: unknown, depth = 0): unknown {
+	if (typeof v === 'string') {
+		const sanitized = sanitizeDnsData(v);
+		return sanitized.length > MAX_META_STRING ? sanitized.slice(0, MAX_META_STRING) : sanitized;
+	}
+	if (v === null || typeof v !== 'object') return v; // numbers/booleans/null pass through at any depth
+	if (depth >= MAX_META_DEPTH) return undefined; // stop unbounded recursion into nested containers
+	if (Array.isArray(v)) return v.map((item) => capString(item, depth + 1));
+	const out: Record<string, unknown> = {};
+	for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = capString(val, depth + 1);
+	return out;
 }
 
 function projectStatusMeta(s: Record<string, unknown>): Record<string, unknown> {

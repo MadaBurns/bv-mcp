@@ -976,14 +976,80 @@ import { handleBrandAuditQueue, type BrandAuditConsumerDeps } from './queue/bran
 import { handleBrandAuditPdfQueue, type BrandAuditPdfConsumerDeps } from './queue/brand-audit-pdf-consumer';
 import { handleTenantCycleAlerts, handleTenantWeeklyRescan, type TenantScheduledEnv } from './tenants/scheduled-handlers';
 
+/**
+ * Day-of-week names → numeric form, per the cron spec. Cloudflare accepts both
+ * `SUN`-style names and `0`-style numbers in the 5th field; we cannot verify
+ * from here which form CF passes back in `event.cron`, so we normalize both
+ * sides of every dispatch comparison to stay correct regardless.
+ */
+const CRON_DOW_NAMES: Record<string, string> = {
+	SUN: '0',
+	MON: '1',
+	TUE: '2',
+	WED: '3',
+	THU: '4',
+	FRI: '5',
+	SAT: '6',
+};
+
+/**
+ * Normalize a 5-field cron expression so that the day-of-week field uses the
+ * numeric form (`SUN` → `0`, …`SAT` → `6`; the alias `7` also folds to `0`).
+ * Other fields (including `*`, step values, ranges) are left untouched. Already-numeric
+ * DOW forms are returned unchanged (`normalizeCron` is idempotent), so this is
+ * a no-op against the historically-deployed numeric literals.
+ *
+ * @param expr Raw cron expression (e.g. from `event.cron` or wrangler triggers).
+ * @returns The expression with a numeric day-of-week field.
+ */
+export function normalizeCron(expr: string): string {
+	const fields = expr.trim().split(/\s+/);
+	if (fields.length !== 5) return expr.trim();
+	const dow = fields[4].toUpperCase();
+	if (dow === '7') {
+		fields[4] = '0';
+	} else if (CRON_DOW_NAMES[dow] !== undefined) {
+		fields[4] = CRON_DOW_NAMES[dow];
+	}
+	return fields.join(' ');
+}
+
+/**
+ * Discriminated route for a scheduled cron trigger. `'periodic'` is the
+ * catch-all (the 15-min sweep) — every cron without a dedicated branch routes
+ * here, so the cron-dispatch-coverage audit treats it as the explicit fallback.
+ */
+export type CronRoute = 'daily-digest' | 'weekly-tenant-rescan' | 'periodic';
+
+/**
+ * Map a cron expression to its dispatch route, comparing the normalized form so
+ * the named (`0 2 * * SUN`) and numeric (`0 2 * * 0`) day-of-week variants are
+ * treated identically. This is the single source of truth shared by the
+ * `scheduled()` dispatcher and the cron-dispatch-coverage audit.
+ *
+ * @param cron The cron expression delivered on the scheduled event.
+ * @returns The route whose handler set should run.
+ */
+export function routeCron(cron: string): CronRoute {
+	const normalized = normalizeCron(cron);
+	if (normalized === normalizeCron('0 8 * * *')) return 'daily-digest';
+	if (normalized === normalizeCron('0 2 * * 0')) return 'weekly-tenant-rescan';
+	return 'periodic';
+}
+
 export default {
 	fetch: (req: Request, env: Record<string, unknown>, ctx: ExecutionContext) => app.fetch(req, env, ctx),
 	scheduled: async (event: ScheduledEvent, env: Record<string, unknown>, ctx: ExecutionContext) => {
 		// Each handler is dispatched via its own waitUntil so a failure in one
 		// (e.g. Tenant alert sweep throws) cannot mask the others' analytics outcome.
-		if (event.cron === '0 8 * * *') {
+		//
+		// `routeCron` normalizes the day-of-week field so the deployed named form
+		// `0 2 * * SUN` and the numeric `0 2 * * 0` both reach the weekly branch,
+		// regardless of which form Cloudflare passes verbatim in `event.cron`.
+		const route = routeCron(event.cron);
+		if (route === 'daily-digest') {
 			ctx.waitUntil(handleDailyDigest(env as ScheduledEnv));
-		} else if (event.cron === '0 2 * * 0') {
+		} else if (route === 'weekly-tenant-rescan') {
 			// Weekly Tenant rescan dispatch — Sunday 02:00 UTC.
 			ctx.waitUntil(handleTenantWeeklyRescan(env as TenantScheduledEnv, ctx));
 		} else {

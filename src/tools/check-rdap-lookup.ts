@@ -8,6 +8,7 @@
 
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
+import { safeFetch } from '../lib/safe-fetch';
 
 const CATEGORY = 'rdap' as CheckCategory;
 
@@ -379,14 +380,21 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 async function fetchRdapResponse(rdapUrl: string, callerSignal?: AbortSignal, deadlineMs?: number): Promise<Response> {
-	let lastResponse: Response | null = null;
-	for (let attempt = 1; attempt <= RDAP_RETRY_MAX_ATTEMPTS; attempt++) {
-		const remainingBudgetMs = typeof deadlineMs === 'number' ? deadlineMs - Date.now() : undefined;
-		const resp = await fetch(rdapUrl, {
+	// The RDAP server host is derived from the network-sourced IANA bootstrap
+	// registry, so it is NOT a statically-trusted destination — route through
+	// safeFetch so validateOutboundUrl() re-validates the host (SSRF gate). One
+	// init builder is shared by the retry loop and the terminal fallback so the
+	// request options can't drift apart.
+	const remainingBudget = () => (typeof deadlineMs === 'number' ? deadlineMs - Date.now() : undefined);
+	const rdapFetch = (): Promise<Response> =>
+		safeFetch(rdapUrl, {
 			redirect: 'manual',
-			signal: composeFetchSignal(callerSignal, remainingBudgetMs),
+			signal: composeFetchSignal(callerSignal, remainingBudget()),
 			headers: { Accept: 'application/rdap+json, application/json' },
 		});
+	let lastResponse: Response | null = null;
+	for (let attempt = 1; attempt <= RDAP_RETRY_MAX_ATTEMPTS; attempt++) {
+		const resp = await rdapFetch();
 		if (resp.ok || !RDAP_RETRYABLE_HTTP_STATUSES.has(resp.status) || attempt === RDAP_RETRY_MAX_ATTEMPTS) {
 			return resp;
 		}
@@ -395,21 +403,16 @@ async function fetchRdapResponse(rdapUrl: string, callerSignal?: AbortSignal, de
 		// server-controlled header can't blow past the tool-call cap. If the
 		// budget is already exhausted, skip the sleep AND the next attempt —
 		// the composed signal would just abort the retry fetch anyway.
-		const postFetchRemaining = typeof deadlineMs === 'number' ? deadlineMs - Date.now() : undefined;
+		const postFetchRemaining = remainingBudget();
 		const sleepMs = parseRetryAfterMs(resp.headers.get('Retry-After'), postFetchRemaining);
 		if (typeof postFetchRemaining === 'number' && postFetchRemaining <= 0) {
 			return resp;
 		}
 		await sleep(sleepMs, callerSignal);
 	}
-	return (
-		lastResponse ??
-		fetch(rdapUrl, {
-			redirect: 'manual',
-			signal: composeFetchSignal(callerSignal, typeof deadlineMs === 'number' ? deadlineMs - Date.now() : undefined),
-			headers: { Accept: 'application/rdap+json, application/json' },
-		})
-	);
+	// Defensive terminal (only reachable if RDAP_RETRY_MAX_ATTEMPTS < 1): the
+	// loop above always returns on its final attempt.
+	return lastResponse ?? rdapFetch();
 }
 
 /** Find an event by action name. */
