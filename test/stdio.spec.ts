@@ -26,6 +26,26 @@ describe('stdio MCP server', () => {
 		expect(payload.error.message).toContain('not initialized');
 	});
 
+	it('treats id:null as a real request (JSON-RPC 2.0), not a notification', async () => {
+		// Per JSON-RPC 2.0 a notification is a request WITHOUT an `id` member.
+		// `id: null` is a valid id that REQUIRES a response — it must not be swallowed.
+		const server = createStdioServer();
+		const outputs = await server.handleMessage(JSON.stringify({ jsonrpc: '2.0', id: null, method: 'tools/list', params: {} }));
+
+		// A swallowed notification would yield [] — a real request yields one response carrying id:null.
+		expect(outputs).toHaveLength(1);
+		const payload = JSON.parse(outputs[0] ?? 'null') as { id: number | null; error: { code: number; message: string } };
+		expect(payload.id).toBe(null);
+		expect(payload.error.message).toContain('not initialized');
+	});
+
+	it('still swallows true notifications (request without an id member)', async () => {
+		const server = createStdioServer();
+		await server.handleMessage(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }));
+		const outputs = await server.handleMessage(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }));
+		expect(outputs).toEqual([]);
+	});
+
 	it('ignores notifications and responds to subsequent requests after initialize', async () => {
 		const server = createStdioServer();
 		await server.handleMessage(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'initialize', params: {} }));

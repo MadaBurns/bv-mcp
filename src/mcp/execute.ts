@@ -752,7 +752,13 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		}
 	}
 
-	const isNotification = id === undefined || id === null;
+	// Per JSON-RPC 2.0, a notification is a request WITHOUT an `id` member. An explicit
+	// `id: null` is a valid (if discouraged) id that REQUIRES a response, so it must NOT be
+	// collapsed into a notification. We treat a request as a notification when EITHER its
+	// method is in the `notifications/*` namespace (which carries no response by definition,
+	// even if a client erroneously attaches `id: null`) OR the `id` member is absent entirely.
+	const hasIdMember = Object.prototype.hasOwnProperty.call(options.body, 'id') && id !== undefined;
+	const isNotification = method.startsWith('notifications/') || !hasIdMember;
 	if (isNotification && method !== 'initialize') {
 		emitRequestAnalytics(options, method, 'ok', false);
 		return { kind: 'notification' };

@@ -73,6 +73,20 @@ describe('worker.scheduled cron dispatch', () => {
 		expect(dailyDigestMock).not.toHaveBeenCalled();
 	});
 
+	it('a2. weekly cron 0 2 * * SUN (named DOW, the DEPLOYED form) → handleTenantWeeklyRescan runs (and only it)', async () => {
+		// Regression guard (F1): wrangler.jsonc declares the trigger as the NAMED
+		// day-of-week form `0 2 * * SUN`. If Cloudflare passes the cron string
+		// verbatim, a string-equality dispatcher against the numeric `0 2 * * 0`
+		// silently falls through to the 15-min else-branch and the weekly rescan
+		// never runs. The fix normalizes DOW names → numbers on both sides.
+		await runCron('0 2 * * SUN');
+		expect(brandAuditWeeklyRescanMock).toHaveBeenCalledTimes(1);
+		expect(brandAuditCycleAlertsMock).not.toHaveBeenCalled();
+		expect(fuzzingScanMock).not.toHaveBeenCalled();
+		expect(scheduledMock).not.toHaveBeenCalled();
+		expect(dailyDigestMock).not.toHaveBeenCalled();
+	});
+
 	it('b. 15-min cron *\\/15 * * * * → handleFuzzingScan AND handleTenantCycleAlerts both run', async () => {
 		await runCron('*/15 * * * *');
 		expect(fuzzingScanMock).toHaveBeenCalledTimes(1);

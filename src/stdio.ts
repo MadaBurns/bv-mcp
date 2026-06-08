@@ -55,7 +55,12 @@ async function processRequest(
 		return buildInvalidBatchInitializeError(id);
 	}
 
-	const isNotification = id === undefined || id === null;
+	// JSON-RPC 2.0: a notification is a request WITHOUT an `id` member. `id: null`
+	// is a valid id requiring a response, so distinguish absent-id from id:null
+	// (mirrors mcp/execute.ts). The `id !== undefined` clause covers callers that
+	// construct `{ id: undefined }` to mean "no id".
+	const hasIdMember = Object.prototype.hasOwnProperty.call(request, 'id') && id !== undefined;
+	const isNotification = method.startsWith('notifications/') || !hasIdMember;
 	if (method !== 'initialize' && !state.initialized) {
 		return isNotification ? undefined : buildNotInitializedError(id);
 	}

@@ -8,6 +8,7 @@
 
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
+import { safeFetch } from '../lib/safe-fetch';
 
 const CATEGORY = 'rdap' as CheckCategory;
 
@@ -382,7 +383,10 @@ async function fetchRdapResponse(rdapUrl: string, callerSignal?: AbortSignal, de
 	let lastResponse: Response | null = null;
 	for (let attempt = 1; attempt <= RDAP_RETRY_MAX_ATTEMPTS; attempt++) {
 		const remainingBudgetMs = typeof deadlineMs === 'number' ? deadlineMs - Date.now() : undefined;
-		const resp = await fetch(rdapUrl, {
+		// The RDAP server host is derived from the network-sourced IANA bootstrap
+		// registry, so it is NOT a statically-trusted destination — route through
+		// safeFetch so validateOutboundUrl() re-validates the host (SSRF gate).
+		const resp = await safeFetch(rdapUrl, {
 			redirect: 'manual',
 			signal: composeFetchSignal(callerSignal, remainingBudgetMs),
 			headers: { Accept: 'application/rdap+json, application/json' },
@@ -404,7 +408,7 @@ async function fetchRdapResponse(rdapUrl: string, callerSignal?: AbortSignal, de
 	}
 	return (
 		lastResponse ??
-		fetch(rdapUrl, {
+		safeFetch(rdapUrl, {
 			redirect: 'manual',
 			signal: composeFetchSignal(callerSignal, typeof deadlineMs === 'number' ? deadlineMs - Date.now() : undefined),
 			headers: { Accept: 'application/rdap+json, application/json' },

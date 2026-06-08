@@ -9,6 +9,7 @@ import {
 	type ReconBinding,
 	type ReconInvestigationType,
 } from '../lib/recon-binding';
+import { sanitizeDnsData } from '../lib/output-sanitize';
 
 const CATEGORY = 'osint_investigation' as CheckCategory;
 
@@ -76,8 +77,23 @@ const REPORT_MAX_FINDINGS = 100;
 /** Defensive cap on any single string field (the upstream AI summary can be malformed/huge). */
 const MAX_META_STRING = 8_000;
 
+/**
+ * Defensive shaping for any string value before it enters finding metadata /
+ * structuredContent. Upstream bv-recon strings (the AI-generated investigation
+ * `summary`/`aiAnalysis` and all third-party finding fields) are model-facing and
+ * attacker-influenceable — the structuredContent channel is the only otherwise-
+ * unsanitized path to the calling LLM (the prose `detail` is already sanitized by
+ * `createFinding`). Run every string through the same output sanitizer the prose
+ * channel uses (`sanitizeDnsData`: strips C0/ANSI control bytes, neutralizes
+ * markdown/HTML injection incl. code-fence backticks, collapses newlines) so
+ * injected instructions can't reach the LLM here, THEN apply the length clamp on
+ * the cleaned text. Non-strings (numbers/objects like `progress`/`options`) pass
+ * through unchanged.
+ */
 function capString(v: unknown): unknown {
-	return typeof v === 'string' && v.length > MAX_META_STRING ? v.slice(0, MAX_META_STRING) : v;
+	if (typeof v !== 'string') return v;
+	const sanitized = sanitizeDnsData(v);
+	return sanitized.length > MAX_META_STRING ? sanitized.slice(0, MAX_META_STRING) : sanitized;
 }
 
 function projectStatusMeta(s: Record<string, unknown>): Record<string, unknown> {
