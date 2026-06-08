@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.16.1] - 2026-06-08
+
+Patch release: 17 fixes from a multi-dimension MCP / Cloudflare / DevSecOps best-practice audit (12 findings) plus its self-review (5 follow-ups), each gated behind a failing-before / passing-after test (#381). No tools added or removed (still 80); `SCORING_MODEL_VERSION` stays `1.2.0`. No scoring change. Three new audit tripwires guard against recurrence.
+
+### Fixed
+
+- **JSON-RPC `id: null` is now treated as a real request, not a notification**, on both the HTTP (`src/mcp/execute.ts`) and stdio (`src/stdio.ts`) transports — a spec-conformant client sending `id: null` previously got a 202 and hung. Notification detection is consolidated into one crash-safe `isJsonRpcNotification()` helper (`src/lib/json-rpc.ts`) that guards against an absent/non-string `method` (a malformed stdin message no longer throws and, in a batch, no longer wipes the other entries' responses).
+- **OSINT recon text entering `structuredContent` is now sanitized recursively** (`src/tools/osint-investigate.ts`). `capString` previously sanitized only top-level strings, so injection payloads nested inside object/array finding fields (`details`, `aiAnalysis`, `progress`, `options`) reached the calling LLM raw — an indirect prompt-injection sink (operator-deploy `BV_RECON` only). Now every nested string is sanitized (depth-capped).
+- **Bootstrap-derived RDAP fetch now routes through `safeFetch`** (`src/tools/check-rdap-lookup.ts`), so the IANA-bootstrap-sourced RDAP server host is re-validated by the SSRF gate per the repo convention.
+- **Weekly tenant rescan cron now fires** (`src/index.ts`). The scheduled dispatcher matched `'0 2 * * 0'` but the deployed trigger ships as the named form `'0 2 * * SUN'`; cron strings are now normalized before comparison so the match is day-of-week-form-independent.
+- **Half-wired `degradation` analytics removed** (`src/lib/analytics.ts`, `src/tools/scan-domain.ts`): never-emitted scan-level members, a dead `_scanId`, an unused dedup window and FNV collision probe. The live `kv_fallback` event is unchanged.
+- **Dead `hasPublicClientIpHeader` helper removed** (`src/lib/client-ip.ts`) — its docstring falsely claimed it gated `/internal/*`; the real guard is `isPublicInternetRequest`.
+
+### Changed
+
+- **`deploy:prod` now rebuilds `@blackveil/dns-checks` before deploying** (`package.json`), and `scripts/inject-private-config.cjs` **fails closed** (`process.exit(1)`) when the private overlay is missing — closing two latent stale-/misconfigured-prod-deploy foot-guns.
+- **`publish.yml` permissions scoped per-job** (workflow default `contents: read`; `id-token: write` only on npm-publish, `contents: write` only on version-bump and github-release), and **all GitHub Actions SHA-pinned** across active workflows.
+- **MCP annotation/schema honesty**: `delete_brand_audit_watch` now reports `idempotentHint: true` (delete-by-id is idempotent); the five `.strict()` osint/bucket tool schemas now publish `additionalProperties: false` to match their runtime validation.
+
+### Tests
+
+- New audit tripwires: `cron-dispatch-coverage` (every `wrangler` cron has a dispatcher branch), `deploy-pipeline` (deploy:prod rebuilds dns-checks; inject script fails closed), `workflow-permissions` (least-privilege OIDC + SHA-pinning).
+
 ## [3.16.0] - 2026-06-07
 
 Minor release: adds one standalone intelligence tool (**79 → 80**), `SCORING_MODEL_VERSION` unchanged (`1.2.0` — not a scored category).
