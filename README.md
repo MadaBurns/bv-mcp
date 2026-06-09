@@ -250,6 +250,8 @@ For full hosted setup examples, stdio usage, OAuth setup, and legacy fallback en
 | **API access** | Yes        | Yes     | Yes                                         |
 | **MCP access** | Yes        | Yes     | Yes                                         |
 
+Offensive/recon and multi-domain tools (subdomain discovery, attack-path simulation, lookalike/shadow-domain detection, supply-chain mapping, bucket/OSINT investigations, `batch_scan`, `compare_domains`, brand audits) require a paid plan (Pro / developer tier or higher); free, unauthenticated, and agent-tier callers get an HTTP 403 upgrade-required response. Unauthenticated callers are additionally capped at a small number of distinct domains per day (best-effort, fail-open). The OSINT/bucket status and report pollers stay free.
+
 ---
 
 ## Example prompts
