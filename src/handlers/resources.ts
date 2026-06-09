@@ -212,20 +212,23 @@ Benchmarks require 100+ scans per profile to be meaningful.
 
 ## Tools
 
-| Tool | Output | When |
+All remediation artifacts come from the single \`generate\` tool, selected via the \`artifact\` parameter.
+
+| \`generate\` artifact | Output | When |
 |------|--------|------|
-| \`generate_fix_plan\` | Prioritized action list | Start here |
-| \`generate_spf_record\` | SPF TXT record | Missing/broken SPF |
-| \`generate_dmarc_record\` | DMARC TXT record | Missing/weak DMARC |
-| \`generate_dkim_config\` | DKIM setup instructions | Missing DKIM |
-| \`generate_mta_sts_policy\` | MTA-STS TXT + policy | No transport encryption |
+| \`fix_plan\` | Prioritized action list | Start here |
+| \`spf_record\` | SPF TXT record | Missing/broken SPF |
+| \`dmarc_record\` | DMARC TXT record | Missing/weak DMARC |
+| \`dkim_config\` | DKIM setup instructions | Missing DKIM |
+| \`mta_sts_policy\` | MTA-STS TXT + policy | No transport encryption |
+| \`rollout_plan\` | Phased DMARC enforcement timeline | Staging p=none -> reject |
 
 ## Workflow
-1. \`generate_fix_plan\` -> prioritized actions by impact
-2. \`generate_spf_record\` -> SPF first (sender authorization)
-3. \`generate_dkim_config\` -> DKIM second (message signing)
-4. \`generate_dmarc_record\` -> DMARC last (start \`p=none\`, upgrade to \`reject\`)
-5. \`generate_mta_sts_policy\` -> transport encryption
+1. \`generate\` artifact=\`fix_plan\` -> prioritized actions by impact
+2. \`generate\` artifact=\`spf_record\` -> SPF first (sender authorization)
+3. \`generate\` artifact=\`dkim_config\` -> DKIM second (message signing)
+4. \`generate\` artifact=\`dmarc_record\` -> DMARC last (start \`p=none\`, upgrade to \`reject\`)
+5. \`generate\` artifact=\`mta_sts_policy\` -> transport encryption
 
 ## Maturity Progression
 

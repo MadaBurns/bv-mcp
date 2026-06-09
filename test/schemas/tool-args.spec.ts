@@ -3,8 +3,7 @@ import {
 	BaseDomainArgs,
 	ScanDomainArgs,
 	CheckDkimArgs,
-	GenerateSpfArgs,
-	GenerateMtaStsArgs,
+	GenerateArgs,
 	ExplainFindingArgs,
 	CompareBaselineArgs,
 	GetBenchmarkArgs,
@@ -65,24 +64,24 @@ describe('CheckDkimArgs', () => {
 	});
 });
 
-describe('GenerateSpfArgs', () => {
+describe('GenerateArgs (artifact=spf_record)', () => {
 	it('accepts include_providers array', () => {
-		const result = GenerateSpfArgs.parse({ domain: 'example.com', include_providers: ['google', 'sendgrid'] });
+		const result = GenerateArgs.parse({ artifact: 'spf_record', domain: 'example.com', include_providers: ['google', 'sendgrid'] });
 		expect(result.include_providers).toEqual(['google', 'sendgrid']);
 	});
 	it('rejects > 15 providers', () => {
 		const providers = Array.from({ length: 16 }, (_, i) => `p${i}`);
-		expect(() => GenerateSpfArgs.parse({ domain: 'example.com', include_providers: providers })).toThrow();
+		expect(() => GenerateArgs.parse({ artifact: 'spf_record', domain: 'example.com', include_providers: providers })).toThrow();
 	});
 });
 
-describe('GenerateMtaStsArgs', () => {
+describe('GenerateArgs (artifact=mta_sts_policy)', () => {
 	it('rejects mx_hosts with whitespace', () => {
-		expect(() => GenerateMtaStsArgs.parse({ domain: 'example.com', mx_hosts: ['host with space'] })).toThrow();
+		expect(() => GenerateArgs.parse({ artifact: 'mta_sts_policy', domain: 'example.com', mx_hosts: ['host with space'] })).toThrow();
 	});
 	it('rejects > 20 hosts', () => {
 		const hosts = Array.from({ length: 21 }, (_, i) => `mx${i}.example.com`);
-		expect(() => GenerateMtaStsArgs.parse({ domain: 'example.com', mx_hosts: hosts })).toThrow();
+		expect(() => GenerateArgs.parse({ artifact: 'mta_sts_policy', domain: 'example.com', mx_hosts: hosts })).toThrow();
 	});
 });
 

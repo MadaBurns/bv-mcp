@@ -7,12 +7,12 @@ describe('tool metadata', () => {
 		expect(toolNames).toContain('map_supply_chain');
 		expect(toolNames).toContain('analyze_drift');
 		expect(toolNames).toContain('validate_fix');
-		expect(toolNames).toContain('generate_rollout_plan');
+		expect(toolNames).toContain('generate');
 	});
 
 	it('new tools are not included in scan_domain', () => {
 		const newTools = TOOLS.filter((t) =>
-			['map_supply_chain', 'analyze_drift', 'validate_fix', 'generate_rollout_plan'].includes(t.name),
+			['map_supply_chain', 'analyze_drift', 'validate_fix', 'generate'].includes(t.name),
 		);
 		for (const tool of newTools) {
 			expect(tool.scanIncluded).toBe(false);

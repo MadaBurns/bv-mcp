@@ -5,6 +5,7 @@ import {
 	extractExplainFindingArgs,
 	extractFormat,
 	normalizeToolName,
+	resolveToolAlias,
 	validateToolArgs,
 } from '../src/handlers/tool-args';
 
@@ -12,6 +13,25 @@ describe('tool-args helpers', () => {
 	it('normalizes tool aliases', () => {
 		expect(normalizeToolName(' scan ')).toBe('scan_domain');
 		expect(normalizeToolName('CHECK_SPF')).toBe('check_spf');
+		// deprecated generate_* names resolve (name-only) to the merged tool
+		expect(normalizeToolName('generate_spf_record')).toBe('generate');
+		expect(normalizeToolName('generate_rollout_plan')).toBe('generate');
+	});
+
+	it('resolveToolAlias injects the artifact for deprecated generate_* names', () => {
+		expect(resolveToolAlias('generate_spf_record', { domain: 'example.com' })).toEqual({
+			name: 'generate',
+			args: { domain: 'example.com', artifact: 'spf_record' },
+		});
+		// injected artifact is forced — it wins over a conflicting caller value
+		expect(resolveToolAlias('generate_dkim_config', { domain: 'example.com', artifact: 'dmarc_record' })).toEqual({
+			name: 'generate',
+			args: { domain: 'example.com', artifact: 'dkim_config' },
+		});
+		// 1:1 alias (no injection) passes args through untouched
+		expect(resolveToolAlias('scan', { domain: 'example.com' })).toEqual({ name: 'scan_domain', args: { domain: 'example.com' } });
+		// non-alias names pass through normalized
+		expect(resolveToolAlias('check_spf', { domain: 'example.com' })).toEqual({ name: 'check_spf', args: { domain: 'example.com' } });
 	});
 
 	it('extractAndValidateDomain sanitizes valid domains and rejects missing ones', () => {
@@ -83,17 +103,19 @@ describe('tool-args helpers', () => {
 		expect(() => validateToolArgs('analyze_drift', { domain: 'example.com' })).toThrow('Missing required parameters');
 	});
 
-	it('validates generate_rollout_plan args', () => {
-		const result = validateToolArgs('generate_rollout_plan', { domain: 'example.com' });
+	it('validates generate(artifact=rollout_plan) args', () => {
+		const result = validateToolArgs('generate', { artifact: 'rollout_plan', domain: 'example.com' });
 		expect(result).toHaveProperty('domain');
-		const full = validateToolArgs('generate_rollout_plan', {
+		const full = validateToolArgs('generate', {
+			artifact: 'rollout_plan',
 			domain: 'example.com',
 			target_policy: 'quarantine',
 			timeline: 'aggressive',
 		});
 		expect(full).toHaveProperty('target_policy', 'quarantine');
 		expect(full).toHaveProperty('timeline', 'aggressive');
-		expect(() => validateToolArgs('generate_rollout_plan', {
+		expect(() => validateToolArgs('generate', {
+			artifact: 'rollout_plan',
 			domain: 'example.com',
 			timeline: 'invalid',
 		})).toThrow('Invalid');

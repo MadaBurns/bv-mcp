@@ -88,7 +88,7 @@ import {
 	extractMxHosts,
 	extractRecordType,
 	extractScanProfile,
-	normalizeToolName,
+	resolveToolAlias,
 	validateToolArgs,
 } from './tool-args';
 import type { OutputFormat } from './tool-args';
@@ -878,8 +878,7 @@ export async function handleToolsCall(
 	scanCacheKV?: KVNamespace,
 	runtimeOptions?: ToolRuntimeOptions,
 ): Promise<McpToolResult> {
-	const name = normalizeToolName(params.name);
-	const args = params.arguments ?? {};
+	const { name, args } = resolveToolAlias(params.name, params.arguments ?? {});
 	const startTime = Date.now();
 	/** Lazy log context builder — evaluates durationMs at call time. */
 	const ctx = () => buildLogContext(name, startTime, domain, runtimeOptions);
@@ -1081,39 +1080,63 @@ export async function handleToolsCall(
 					logToolSuccess({ ...ctx(), status: result.passed ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
 					return buildToolResult(formatBaselineResult(result, effectiveFormat), result, effectiveFormat);
 				}
-				case 'generate_fix_plan': {
-					const forceRefresh = extractForceRefresh(validatedArgs);
-					const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
-					const plan = await generateFixPlan(validDomain, scanCacheKV, scanOptions);
-					logResult = plan.grade;
-					logDetails = plan;
-					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-					return buildToolResult(formatFixPlan(plan, effectiveFormat), plan, effectiveFormat);
-				}
-				case 'generate_spf_record': {
-					const includeProviders = extractIncludeProviders(validatedArgs);
-					const record = await generateSpfRecord(validDomain, includeProviders, buildDnsOptions(runtimeOptions));
-					logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
-					return buildToolResult(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat);
-				}
-				case 'generate_dmarc_record': {
-					const policy = typeof validatedArgs.policy === 'string' ? (validatedArgs.policy as 'none' | 'quarantine' | 'reject') : undefined;
-					const ruaEmail = typeof validatedArgs.rua_email === 'string' ? validatedArgs.rua_email : undefined;
-					const record = await generateDmarcRecord(validDomain, policy, ruaEmail, buildDnsOptions(runtimeOptions));
-					logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
-					return buildToolResult(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat);
-				}
-				case 'generate_dkim_config': {
-					const provider = typeof validatedArgs.provider === 'string' ? validatedArgs.provider : undefined;
-					const record = await generateDkimConfig(validDomain, provider);
-					logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
-					return buildToolResult(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat);
-				}
-				case 'generate_mta_sts_policy': {
-					const mxHosts = extractMxHosts(validatedArgs);
-					const record = await generateMtaStsPolicy(validDomain, mxHosts, buildDnsOptions(runtimeOptions));
-					logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
-					return buildToolResult(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat);
+				case 'generate': {
+					// Consolidated remediation generator; `artifact` selects the output.
+					// Zod has already validated `artifact` against the enum, so the
+					// default branch is a defensive backstop only.
+					const artifact = typeof validatedArgs.artifact === 'string' ? validatedArgs.artifact : '';
+					switch (artifact) {
+						case 'fix_plan': {
+							const forceRefresh = extractForceRefresh(validatedArgs);
+							const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
+							const plan = await generateFixPlan(validDomain, scanCacheKV, scanOptions);
+							logResult = plan.grade;
+							logDetails = plan;
+							logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
+							return buildToolResult(formatFixPlan(plan, effectiveFormat), plan, effectiveFormat);
+						}
+						case 'spf_record': {
+							const includeProviders = extractIncludeProviders(validatedArgs);
+							const record = await generateSpfRecord(validDomain, includeProviders, buildDnsOptions(runtimeOptions));
+							logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
+							return buildToolResult(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat);
+						}
+						case 'dmarc_record': {
+							const policy =
+								typeof validatedArgs.policy === 'string' ? (validatedArgs.policy as 'none' | 'quarantine' | 'reject') : undefined;
+							const ruaEmail = typeof validatedArgs.rua_email === 'string' ? validatedArgs.rua_email : undefined;
+							const record = await generateDmarcRecord(validDomain, policy, ruaEmail, buildDnsOptions(runtimeOptions));
+							logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
+							return buildToolResult(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat);
+						}
+						case 'dkim_config': {
+							const provider = typeof validatedArgs.provider === 'string' ? validatedArgs.provider : undefined;
+							const record = await generateDkimConfig(validDomain, provider);
+							logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
+							return buildToolResult(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat);
+						}
+						case 'mta_sts_policy': {
+							const mxHosts = extractMxHosts(validatedArgs);
+							const record = await generateMtaStsPolicy(validDomain, mxHosts, buildDnsOptions(runtimeOptions));
+							logToolSuccess({ ...ctx(), status: 'pass', logResult: 'generated', logDetails: record, severity: 'info' });
+							return buildToolResult(formatGeneratedRecord(record, effectiveFormat), record, effectiveFormat);
+						}
+						case 'rollout_plan': {
+							const targetPolicy =
+								typeof validatedArgs.target_policy === 'string' ? (validatedArgs.target_policy as 'quarantine' | 'reject') : 'reject';
+							const timeline =
+								typeof validatedArgs.timeline === 'string'
+									? (validatedArgs.timeline as 'aggressive' | 'standard' | 'conservative')
+									: 'standard';
+							const result = await generateRolloutPlan(validDomain, targetPolicy, timeline, buildDnsOptions(runtimeOptions));
+							logResult = result.atTarget ? 'at_target' : `${result.phases.length} phases`;
+							logDetails = result;
+							logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
+							return buildToolResult(formatRolloutPlan(result, effectiveFormat), result, effectiveFormat);
+						}
+						default:
+							return buildToolErrorResult(`Invalid artifact: ${artifact}`);
+					}
 				}
 				case 'get_benchmark': {
 					const profile = typeof validatedArgs.profile === 'string' ? validatedArgs.profile : 'mail_enabled';
@@ -1174,19 +1197,6 @@ export async function handleToolsCall(
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 					return buildToolResult(formatSupplyChain(result, effectiveFormat), result, effectiveFormat);
-				}
-				case 'generate_rollout_plan': {
-					const targetPolicy =
-						typeof validatedArgs.target_policy === 'string' ? (validatedArgs.target_policy as 'quarantine' | 'reject') : 'reject';
-					const timeline =
-						typeof validatedArgs.timeline === 'string'
-							? (validatedArgs.timeline as 'aggressive' | 'standard' | 'conservative')
-							: 'standard';
-					const result = await generateRolloutPlan(validDomain, targetPolicy, timeline, buildDnsOptions(runtimeOptions));
-					logResult = result.atTarget ? 'at_target' : `${result.phases.length} phases`;
-					logDetails = result;
-					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-					return buildToolResult(formatRolloutPlan(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'analyze_drift': {
 					const baselineStr = typeof validatedArgs.baseline === 'string' ? validatedArgs.baseline : '';
