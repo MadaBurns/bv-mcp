@@ -19,6 +19,8 @@ import {
 	TIER_DAILY_LIMITS,
 	TIER_TOOL_DAILY_LIMITS,
 	TIER_CONCURRENT_LIMITS,
+	isGatedPaidOnlyTool,
+	UPGRADE_URL,
 } from '../lib/config';
 import { normalizeToolName } from '../handlers/tool-args';
 import { acceptsSSE } from '../lib/sse';
@@ -370,6 +372,40 @@ function recordMcpToolErrorIfUnknownTool(options: ExecuteMcpRequestOptions, meth
 	else void recordPromise.catch(() => undefined);
 }
 
+function buildGatedToolResponse(
+	id: JsonRpcRequest['id'],
+	toolName: string,
+	method: string,
+	options: ExecuteMcpRequestOptions,
+	eventId: string | undefined,
+	accessLogInput: { toolName: string; domain: string } | undefined,
+): Extract<ProcessedRequestResult, { kind: 'response' }> {
+	options.analytics?.emitRateLimitEvent({
+		limitType: 'gated_tool',
+		toolName,
+		limit: 0,
+		remaining: 0,
+		country: options.country,
+		authTier: options.authTier ?? 'anon',
+	});
+	emitRequestAnalytics(options, method, 'error', true);
+	if (accessLogInput) {
+		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+	}
+	return {
+		kind: 'response',
+		payload: jsonRpcError(
+			id,
+			JSON_RPC_ERRORS.UPGRADE_REQUIRED,
+			`Upgrade required: ${toolName} requires a paid plan (developer tier or higher). See ${UPGRADE_URL}`,
+		),
+		headers: {},
+		httpStatus: 403,
+		useErrorEnvelope: true,
+		eventId,
+	};
+}
+
 export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Promise<ProcessedRequestResult> {
 	const validationError = validateJsonRpcRequest(options.body);
 	if (validationError) {
@@ -513,6 +549,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
 		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : '';
 		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
+		if (toolName && isGatedPaidOnlyTool(toolName)) {
+			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
+		}
 		if (toolDailyLimit !== undefined) {
 			const toolQuotaResult = await checkToolDailyRateLimit(
 				options.ip,
@@ -623,6 +662,10 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 		// Per-tool tier override takes precedence over flat tier limit
 		const dailyLimit = TIER_TOOL_DAILY_LIMITS[tier]?.[toolName] ?? TIER_DAILY_LIMITS[tier];
+
+		if (dailyLimit === 0 && isGatedPaidOnlyTool(toolName)) {
+			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
+		}
 
 		const tierQuotaResult = await checkToolDailyRateLimit(principalId, toolName, dailyLimit, options.rateLimitKv, options.quotaCoordinator);
 		const tierDailyResetEpoch = Math.ceil(Date.now() / 86_400_000) * 86_400;
