@@ -1,6 +1,6 @@
 # Blackveil DNS — MCP Security Scanner
 
-**80 DNS & email security tools** for GitHub Copilot Chat. No install, no API key — just ask Copilot to scan any domain.
+**75 DNS & email security tools** for GitHub Copilot Chat. No install, no API key — just ask Copilot to scan any domain.
 
 ![Blackveil DNS](https://raw.githubusercontent.com/MadaBurns/bv-mcp/main/assets/bv-logo-full.png)
 
@@ -10,7 +10,7 @@
 2. Open GitHub Copilot Chat (`Ctrl+Shift+I` / `Cmd+Shift+I`)
 3. Ask: **"scan example.com"**
 
-That's it. All 80 tools are available instantly.
+That's it. All 75 tools are available instantly.
 
 ## What You Get
 
@@ -22,7 +22,7 @@ That's it. All 80 tools are available instantly.
 - **Attack path simulation** — enumerated spoofing, takeover, and hijack paths
 - **Compliance mapping** — NIST 800-177, PCI DSS 4.0, SOC 2, CIS Controls
 
-## Tools (80)
+## Tools (75)
 
 The extension exposes the hosted MCP `tools/list` surface: 80 tools, including 35 `check_*` tools. The table below groups the most common workflows; Copilot can call every registered tool returned by the server.
 
@@ -37,13 +37,11 @@ The extension exposes the hosted MCP `tools/list` surface: 80 tools, including 3
 | `check_subdomailing` | `check_dane_https` | `check_txt_hygiene` | `map_compliance` |
 | | `check_svcb_https` | | `simulate_attack_paths` |
 | **Meta** | `check_srv` | **Remediation** | `analyze_drift` |
-| `scan_domain` | `check_zone_hygiene` | `generate_fix_plan` | `check_resolver_consistency` |
-| `batch_scan` | | `generate_spf_record` | |
-| `compare_domains` | | `generate_dmarc_record` | |
-| `compare_baseline` | | `generate_dkim_config` | |
-| `explain_finding` | | `generate_mta_sts_policy` | |
-| | | `generate_rollout_plan` | |
-| | | `validate_fix` | |
+| `scan_domain` | `check_zone_hygiene` | `generate` (artifact=fix_plan, | `check_resolver_consistency` |
+| `batch_scan` | | spf_record, dmarc_record, | |
+| `compare_domains` | | dkim_config, mta_sts_policy, | |
+| `compare_baseline` | | rollout_plan) | |
+| `explain_finding` | | `validate_fix` | |
 
 ## Example Prompts
 

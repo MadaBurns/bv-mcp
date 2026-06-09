@@ -77,53 +77,6 @@ export const RootServerSetArgs = z
 	})
 	.passthrough();
 
-/** generate_spf_record */
-export const GenerateSpfArgs = z
-	.object({
-		domain: DomainSchema.describe('Domain (e.g., example.com)'),
-		// SafeLabelSchema provides min(1)/max(253); .regex() adds a stacking refinement in Zod v4 (does not override).
-		include_providers: z
-			.array(SafeLabelSchema.regex(/^[a-z0-9._-]+$/i))
-			.max(15)
-			.optional()
-			.describe('Providers to include (e.g., ["google"]).'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
-	})
-	.passthrough();
-
-/** generate_dmarc_record */
-export const GenerateDmarcArgs = z
-	.object({
-		domain: DomainSchema.describe('Domain (e.g., example.com)'),
-		policy: DmarcPolicySchema.optional().describe('Policy (default "reject").'),
-		rua_email: z.string().max(254).optional().describe('Report email. Default: dmarc-reports@{domain}.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
-	})
-	.passthrough();
-
-/** generate_dkim_config */
-export const GenerateDkimConfigArgs = z
-	.object({
-		domain: DomainSchema.describe('Domain (e.g., example.com)'),
-		provider: z.string().max(100).optional().describe('Provider (e.g., "google"). Omit for generic.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
-	})
-	.passthrough();
-
-/** generate_mta_sts_policy */
-export const GenerateMtaStsArgs = z
-	.object({
-		domain: DomainSchema.describe('Domain (e.g., example.com)'),
-		// SafeLabelSchema provides min(1)/max(253); .regex() adds a stacking refinement in Zod v4 (does not override).
-		mx_hosts: z
-			.array(SafeLabelSchema.regex(/^[^\s\x00-\x1f\x7f]*$/))
-			.max(20)
-			.optional()
-			.describe('MX hosts. Omit to detect from DNS.'),
-		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
-	})
-	.passthrough();
-
 /** explain_finding */
 export const ExplainFindingArgs = z
 	.object({
@@ -190,9 +143,6 @@ export const GetProviderInsightsArgs = z
 /** assess_spoofability — same as BaseDomainArgs */
 export const AssessSpoofabilityArgs = BaseDomainArgs;
 
-/** generate_fix_plan — same as BaseDomainArgs */
-export const GenerateFixPlanArgs = BaseDomainArgs;
-
 const CheckNameSchema = z
 	.string()
 	.transform((v) => v.toLowerCase().trim())
@@ -237,12 +187,46 @@ export const AnalyzeDriftArgs = z
 	})
 	.passthrough();
 
-/** generate_rollout_plan */
-export const GenerateRolloutPlanArgs = z
+/**
+ * generate — consolidated remediation-artifact generator (replaces the six
+ * generate_* tools). `artifact` selects which record/plan to produce; all
+ * per-artifact params are optional and apply only to the relevant artifact.
+ */
+export const GenerateArtifactSchema = z.enum([
+	'fix_plan',
+	'spf_record',
+	'dmarc_record',
+	'dkim_config',
+	'mta_sts_policy',
+	'rollout_plan',
+]);
+
+export const GenerateArgs = z
 	.object({
-		domain: DomainSchema.describe('Domain to generate rollout plan for'),
-		target_policy: TargetPolicySchema.optional().describe('Target DMARC policy (default: reject)'),
-		timeline: TimelineSchema.optional().describe('Rollout speed: aggressive, standard, conservative (default: standard)'),
+		artifact: GenerateArtifactSchema.describe('Which artifact to generate (e.g., "dmarc_record", "fix_plan").'),
+		domain: DomainSchema.describe('Domain (e.g., example.com)'),
+		// spf_record
+		include_providers: z
+			.array(SafeLabelSchema.regex(/^[a-z0-9._-]+$/i))
+			.max(15)
+			.optional()
+			.describe('spf_record: providers to include (e.g., ["google"]).'),
+		// dmarc_record
+		policy: DmarcPolicySchema.optional().describe('dmarc_record: policy (default "reject").'),
+		rua_email: z.string().max(254).optional().describe('dmarc_record: report email. Default: dmarc-reports@{domain}.'),
+		// dkim_config
+		provider: z.string().max(100).optional().describe('dkim_config: provider (e.g., "google"). Omit for generic.'),
+		// mta_sts_policy
+		mx_hosts: z
+			.array(SafeLabelSchema.regex(/^[^\s\x00-\x1f\x7f]*$/))
+			.max(20)
+			.optional()
+			.describe('mta_sts_policy: MX hosts. Omit to detect from DNS.'),
+		// rollout_plan
+		target_policy: TargetPolicySchema.optional().describe('rollout_plan: target DMARC policy (default: reject).'),
+		timeline: TimelineSchema.optional().describe('rollout_plan: rollout speed (default: standard).'),
+		// fix_plan
+		force_refresh: z.boolean().optional().describe('fix_plan: bypass cache and run a fresh scan.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
 	.passthrough();
@@ -609,11 +593,7 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	batch_scan: BatchScanArgs,
 	compare_domains: CompareDomainsArgs,
 	compare_baseline: CompareBaselineArgs,
-	generate_fix_plan: GenerateFixPlanArgs,
-	generate_spf_record: GenerateSpfArgs,
-	generate_dmarc_record: GenerateDmarcArgs,
-	generate_dkim_config: GenerateDkimConfigArgs,
-	generate_mta_sts_policy: GenerateMtaStsArgs,
+	generate: GenerateArgs,
 	get_benchmark: GetBenchmarkArgs,
 	get_provider_insights: GetProviderInsightsArgs,
 	assess_spoofability: AssessSpoofabilityArgs,
@@ -622,7 +602,6 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	validate_fix: ValidateFixArgs,
 	map_supply_chain: MapSupplyChainArgs,
 	analyze_drift: AnalyzeDriftArgs,
-	generate_rollout_plan: GenerateRolloutPlanArgs,
 	resolve_spf_chain: BaseDomainArgs,
 	discover_subdomains: BaseDomainArgs,
 	map_compliance: BaseDomainArgs,

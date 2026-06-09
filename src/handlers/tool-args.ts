@@ -7,13 +7,46 @@ import type { OutputFormat, Profile } from '../schemas/primitives';
 
 export type { OutputFormat };
 
-const TOOL_ALIASES: Record<string, string> = {
-	scan: 'scan_domain',
+/**
+ * Tool aliases. A bare `name` is a 1:1 rename. An entry with `injectArgs`
+ * additionally supplies default args (used for deprecated names that merged
+ * into a parameterized tool — e.g. `generate_spf_record` → `generate` with
+ * `artifact: 'spf_record'`). The injected args are FORCED (win over caller
+ * args) so the deprecated name's semantics can't be subverted by a conflicting
+ * discriminator.
+ */
+interface ToolAlias {
+	name: string;
+	injectArgs?: Record<string, unknown>;
+}
+
+const TOOL_ALIASES: Record<string, ToolAlias> = {
+	scan: { name: 'scan_domain' },
+	// Deprecated generate_* tools, merged into `generate` (artifact-discriminated).
+	generate_fix_plan: { name: 'generate', injectArgs: { artifact: 'fix_plan' } },
+	generate_spf_record: { name: 'generate', injectArgs: { artifact: 'spf_record' } },
+	generate_dmarc_record: { name: 'generate', injectArgs: { artifact: 'dmarc_record' } },
+	generate_dkim_config: { name: 'generate', injectArgs: { artifact: 'dkim_config' } },
+	generate_mta_sts_policy: { name: 'generate', injectArgs: { artifact: 'mta_sts_policy' } },
+	generate_rollout_plan: { name: 'generate', injectArgs: { artifact: 'rollout_plan' } },
 };
 
+/** Resolve a (possibly aliased) tool name to its canonical name. Name-only — for routing/metrics. */
 export function normalizeToolName(name: string): string {
 	const normalized = name.trim().toLowerCase();
-	return TOOL_ALIASES[normalized] ?? normalized;
+	return TOOL_ALIASES[normalized]?.name ?? normalized;
+}
+
+/**
+ * Resolve a tool call through the alias table, injecting any alias-supplied
+ * args. Use at the dispatch boundary where args matter; `normalizeToolName`
+ * remains the name-only path for routing/analytics.
+ */
+export function resolveToolAlias(name: string, args: Record<string, unknown>): { name: string; args: Record<string, unknown> } {
+	const normalized = name.trim().toLowerCase();
+	const alias = TOOL_ALIASES[normalized];
+	if (!alias) return { name: normalized, args };
+	return { name: alias.name, args: alias.injectArgs ? { ...args, ...alias.injectArgs } : args };
 }
 
 /** Return true if the Zod issue represents a missing (undefined) field. */

@@ -17,8 +17,8 @@ describe('Wasm Integration', () => {
     it('enforces read-only permissions', () => {
         // check_spf is ReadOnly
         expect(checkPermission('read-only', 'check_spf')).toBe(true);
-        // generate_fix_plan generates suggested DNS text and is ReadOnly in TOOLS annotations
-        expect(checkPermission('read-only', 'generate_fix_plan')).toBe(true);
+        // generate produces suggested DNS text and is ReadOnly in TOOLS annotations
+        expect(checkPermission('read-only', 'generate')).toBe(true);
     });
 
     it('enforces workspace-write permissions', () => {
