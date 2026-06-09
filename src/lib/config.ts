@@ -298,6 +298,59 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
  *  per-tool quota so cache-busting cannot amplify backend load (FIND-06). */
 export const FORCE_REFRESH_DAILY_LIMIT = 5;
 
+/**
+ * Tools gated to paid tiers (developer and above). Pinned to 0 in
+ * FREE_TOOL_DAILY_LIMITS, TIER_TOOL_DAILY_LIMITS.free, and
+ * TIER_TOOL_DAILY_LIMITS.agent so unauthenticated, free-tier-key, and
+ * agent-tier callers are blocked; developer+ keep access via the flat
+ * TIER_DAILY_LIMITS fallback. Single source of truth for the "upgrade required"
+ * 403 branch in src/mcp/execute.ts. Audited by gated-tools-ssot.audit.test.ts.
+ */
+export const GATED_PAID_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
+	// offensive recon / job creators
+	'discover_subdomains',
+	'simulate_attack_paths',
+	'check_fast_flux',
+	'map_supply_chain',
+	'check_lookalikes',
+	'check_shadow_domains',
+	'scan_buckets_start',
+	'osint_investigate_domain_start',
+	'osint_investigate_infrastructure_start',
+	'osint_investigate_supply_chain_start',
+	'osint_investigate_username_start',
+	'osint_investigate_email_start',
+	'check_realtime_threat_feed',
+	// multi-domain tools (any multi-domain tool is paid)
+	'batch_scan',
+	'compare_domains',
+	// already paid-only; folded in for a consistent upgrade message
+	'discover_brand_domains',
+	'brand_audit_single',
+	'brand_audit_batch_start',
+	'register_brand_audit_watch',
+	'delete_brand_audit_watch',
+	'list_brand_audit_watches',
+]);
+
+/** True when a tool is gated to paid tiers (developer+). */
+export function isGatedPaidOnlyTool(toolName: string): boolean {
+	return GATED_PAID_ONLY_TOOLS.has(toolName);
+}
+
+/** URL shown in the upgrade-required (HTTP 403) message. */
+export const UPGRADE_URL = 'https://blackveilsecurity.com/pricing';
+
+/**
+ * Per-IP daily cap on the number of DISTINCT domains an unauthenticated caller
+ * may scan (across domain-bearing tools). Speed-bump against mass/3rd-party
+ * scanning of the still-free hygiene tools. Best-effort (KV, fail-open).
+ *
+ * Provisional conservative default. Re-tune from telemetry — set above the legit
+ * P99 distinct-domains/day per unauthenticated IP.
+ */
+export const FREE_DISTINCT_DOMAIN_DAILY_LIMIT = 12;
+
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
 export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>([
 	// identity_secops tools are gated by internal-auth + per-tenant membership at the
