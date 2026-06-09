@@ -293,6 +293,8 @@ ignored env only; never commit it or paste it into workflow logs.
 | CORS, Origin, Auth, Rate limiting, Sessions, JSON-RPC, Body limit |       ✓       |           —            |
 | Tool execution, Caching, Analytics, SSRF                          |       ✓       |           ✓            |
 
+The free-tier paid-gating (HTTP 403 for offensive tools) and the distinct-domain cap are public-`/mcp`-only controls enforced in `executeMcpRequest`; the internal path bypasses them — bv-web (the internal caller) is responsible for enforcing paid entitlement on gated tools before forwarding.
+
 ## Deployment
 
 `npm run deploy:prod` runs `scripts/inject-private-config.cjs`, merging public

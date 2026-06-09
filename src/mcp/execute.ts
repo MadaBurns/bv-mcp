@@ -661,6 +661,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw) ? (argsRaw as Record<string, unknown>) : undefined;
 		const ddcDomain = extractAccessLogDomain(args);
 		if (ddcDomain) {
+			// The domain slot is recorded before dispatch/validation intentionally: the cap throttles
+			// distinct-domain enumeration, not just successful scans, so invalid calls still consume a slot.
 			const ddcResult = await checkDistinctDomainDailyLimit(
 				options.ip,
 				hashDomain(ddcDomain),
