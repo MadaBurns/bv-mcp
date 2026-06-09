@@ -5,7 +5,7 @@ Guidance for Claude Code working in this repo.
 ## What is this?
 
 Blackveil DNS — source-available DNS & email security scanner, built as a Cloudflare Worker.
-79 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
+80 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
 
 **Version sync** when bumping: `version` in `package.json` + `package-lock.json` (the source of truth — `SERVER_VERSION` in `src/lib/server-version.ts` auto-derives via `pkg.version`, do **not** hand-edit it), top-level `version` in `server.json` (currently **remotes-only — single `version` field**; the `packages[0].version` foot-gun only applies if an npm `packages` stanza is re-added), and the `[X.Y.Z]` heading in `CHANGELOG.md`.
 
@@ -78,13 +78,13 @@ Both publish together from `publish.yml` on version tags.
 
 ### scan_domain orchestration
 
-18 scan categories run in parallel via `Promise.allSettled`: 17 registered scan-included tools plus internal `subdomain_takeover`. Cache keys: `cache:<domain>:check:<name>` + top-level `cache:<domain>`. 5 min TTL (overridable via `cacheTtlSeconds`). `force_refresh` → `skipCache` in `runWithCache()`.
+19 scan categories run in parallel via `Promise.allSettled`: 18 registered scan-included tools plus internal `subdomain_takeover`. Cache keys: `cache:<domain>:check:<name>` + top-level `cache:<domain>`. 5 min TTL (overridable via `cacheTtlSeconds`). `force_refresh` → `skipCache` in `runWithCache()`.
 
 **Maturity staging**: `computeMaturityStage()` 0–4 (Unprotected → Hardened). Stage 3 doesn't require DKIM; Stage 4 hardening: CAA, DKIM-discovered, BIMI, DANE, MTA-STS strict. Score caps stage: F → ≤2, D/D+ → ≤3.
 
-**Timeouts**: scan 12s preserves partial results; per-check 8s.
+**Timeouts**: scan 15s preserves partial results; per-check 8s. (`SCAN_TIMEOUT_MS`, env-overridable, clamped [5s, 30s].)
 
-**Subrequest ceiling** (operating constraint, not a bug): a cold-cache `scan_domain` fans out ~20 subrequests/domain (18 categories, mostly DoH + 2 HTTPS); `/internal/tools/batch` can fan out to ~50×18. Cloudflare Workers caps subrequests per invocation at 50 (Free) / 1000 (Paid). BlackVeil production runs on a paid plan, so this is not a prod concern. BSL self-hosters on the Free plan should keep batch size / scan concurrency modest (cache hits don't count) or upgrade.
+**Subrequest ceiling** (operating constraint, not a bug): a cold-cache `scan_domain` fans out ~20 subrequests/domain (19 categories, mostly DoH + 2 HTTPS); `/internal/tools/batch` can fan out to ~50×19. Cloudflare Workers caps subrequests per invocation at 50 (Free) / 1000 (Paid). BlackVeil production runs on a paid plan, so this is not a prod concern. BSL self-hosters on the Free plan should keep batch size / scan concurrency modest (cache hits don't count) or upgrade.
 
 **Post-processing**:
 
@@ -132,7 +132,7 @@ Two channels, both deliberately **lenient — never reject**: (1) the `initializ
 
 Three-tier model (`computeScanScore`). `CATEGORY_DISPLAY_WEIGHTS` is display-only.
 
-**Core (70%)**: DMARC 16, DKIM 10, SPF 10, DNSSEC 10, SSL 8 (representative `mail_enabled` profile — every core weight is per-profile; e.g. DNSSEC 5–20, SSL 7–14 across the 6 profiles).
+**Core (70%)**: DMARC 16, DKIM 10, SPF 10, DNSSEC 10, SSL 8 (representative `mail_enabled` profile — every core weight is per-profile; e.g. DNSSEC 5–20, SSL 0–14 across the 6 profiles — the `authoritative_dns_infra` profile zeroes SSL).
 **Protective (20%)**: Subdomain Takeover 4, HTTP Security 3, MTA-STS 3, MX 2, CAA 2, NS 2, Lookalikes 2, Shadow Domains 2.
 **Hardening (10%)**: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene (~1.4 pts each, bonus-only).
 
@@ -147,12 +147,12 @@ Override via `SCORING_CONFIG` env (JSON; `weights`, `profileWeights`, `threshold
 - **Confidence gate**: `scoreIndicatesMissingControl()` fires only for `deterministic`/`verified`. Heuristic DKIM "not found" doesn't zero category.
 - **Provider-informed DKIM**: provider detected + probing empty → HIGH → MEDIUM.
 - **Severity penalties**: C −40, H −25, M −15, L −5, Info 0.
-- **`passed`**: `score >= 50 && !hasMissingControl`. Missing control → score zeroed. Checks using `missingControl: true`: CAA, HTTP Security, MTA-STS, MX, SVCB-HTTPS, NS, Zone Hygiene, BIMI, DANE, TLS-RPT. **DNSSEC deliberately does NOT** — per NIST SP 800-81r3, DNSSEC is a baseline integrity control in a defense-in-depth model: absence is a `high`-severity Core penalty (category → 60, via a fixed `penaltyOverride: 40` on the finding metadata that decouples the −40 deduction from the `high` severity label — see `computeCategoryScore`), not a category-zeroing missing control.
+- **`passed`**: `score >= 50 && !hasMissingControl`. Missing control → score zeroed. Checks using `missingControl: true`: HTTP Security, MTA-STS, MX, NS, Zone Hygiene, BIMI, DANE. (CAA, SVCB-HTTPS, TLS-RPT deliberately do NOT — absence is a graded finding, not a category-zeroing missing control.) **DNSSEC deliberately does NOT** — per NIST SP 800-81r3, DNSSEC is a baseline integrity control in a defense-in-depth model: absence is a `high`-severity Core penalty (category → 60, via a fixed `penaltyOverride: 40` on the finding metadata that decouples the −40 deduction from the `high` severity label — see `computeCategoryScore`), not a category-zeroing missing control.
 - **Grades**: A+ 92+, A 87–91, B+ 82–86, B 76–81, C+ 70–75, C 63–69, D+ 56–62, D 50–55, F <50.
 
 ### Profiles
 
-Five: `mail_enabled` (default), `enterprise_mail`, `non_mail`, `web_only`, `minimal`. Defined in `packages/dns-checks/src/scoring/profiles.ts`. **Phase 1**: `auto` uses `mail_enabled` weights; explicit `profile` activates different weights + cache keys.
+Six: `mail_enabled` (default), `enterprise_mail`, `non_mail`, `web_only`, `minimal`, `authoritative_dns_infra`. Defined in `packages/dns-checks/src/scoring/profiles.ts`. **Phase 1**: `auto` uses `mail_enabled` weights; explicit `profile` activates different weights + cache keys.
 
 ### Adaptive weights
 
@@ -162,7 +162,7 @@ EMA per profile+provider via `ProfileAccumulator` DO. Maturity-gated blending (`
 
 - **SSRF**: blocked IPs/TLDs in `config.ts`; enforced by `sanitize.ts`. All outbound `redirect: 'manual'`. **Attacker-controlled URLs** (BIMI `l=`/`a=`, redirect `Location:` targets the worker follows) MUST use `safeFetch` (`lib/safe-fetch.ts`). Fetches to URLs whose hostname is already validated (e.g. `https://${validatedDomain}/.well-known/...`) may use raw `fetch` with manual redirects.
 - **Auth**: Static `BV_API_KEY` (constant-time XOR). Token from `Authorization: Bearer` first, then `?api_key=` (Smithery fallback). Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner-tier IP gate: client IP must be in `OWNER_ALLOW_IPS` else downgrade to `partner` (including OAuth JWT path). OAuth JWT validates `claims.tier` against `JwtIssuableTierSchema = z.enum(['owner','developer','enterprise'])`. The JWT path returns a `keyHash` (`hex(SHA-256(token))`, same as the static path) so per-key daily quota + concurrency key on the credential, not the client IP (3.15.1 — previously the JWT path returned no `keyHash` and quota fell back to `options.ip`).
-- **Rate limits**: 50/min, 300/hr per IP (unauthenticated). Authenticated bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_lookalikes`/`check_shadow_domains`: 20/day per IP + 60-min cache.
+- **Rate limits**: 50/min, 300/hr per IP (unauthenticated). Authenticated bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_mx_reputation`: 20/day per IP + 60-min cache. `check_lookalikes`/`check_shadow_domains`: 5/day (free-tier `FREE_TOOL_DAILY_LIMITS`).
 - **Per-tool quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts`. Global cap `GLOBAL_DAILY_TOOL_LIMIT` 500k/day via `QuotaCoordinator` DO.
 - **Body**: 10 KB on `/mcp`. **IP source**: `cf-connecting-ip` only (never `x-forwarded-for`).
 - **Origin**: MCP-compliant rejection of unauthorized browser `Origin`; `ALLOWED_ORIGINS` configurable.
@@ -181,7 +181,7 @@ bv-web plan → OAuth tier claim → bv-mcp limits:
 | pro / business / MCP Developer | developer  | 500       | 10         | Business / 48h  |
 | enterprise / MCP Enterprise    | enterprise | 10,000    | 25         | Enterprise / 4h |
 
-Resolution in `src/oauth/entitlements.ts` via bv-web service binding `api/internal/mcp/oauth/authorize`. Mapping defined in bv-web `app/lib/services/mcp/oauth-entitlements.server.ts`. The local static `BV_API_KEY` resolves to `owner` tier (`src/lib/tier-auth.ts:246-253`), with the `OWNER_ALLOW_IPS` IP gate downgrading to `partner` when the client IP isn't allowlisted. The `agent` tier (200/day, 5 concurrent) is reachable only via the bv-web `validate-key` service binding, when bv-web returns that tier for a non-paying key.
+Resolution in `src/oauth/entitlements.ts` via bv-web service binding `api/internal/mcp/oauth/authorize`. Mapping defined in bv-web `app/lib/services/mcp/oauth-entitlements.server.ts`. The local static `BV_API_KEY` resolves to `owner` tier (`src/lib/tier-auth.ts:320-338`, the step-4 fallback), with the `OWNER_ALLOW_IPS` IP gate downgrading to `partner` when the client IP isn't allowlisted. The `agent` tier (200/day, 5 concurrent) is reachable only via the bv-web `validate-key` service binding, when bv-web returns that tier for a non-paying key.
 
 ### Internal routes
 
@@ -190,7 +190,7 @@ Resolution in `src/oauth/entitlements.ts` via bv-web service binding `api/intern
 **Bearer auth (defense-in-depth)**:
 
 - `/internal/trial-keys/*`, `/internal/oauth/grants` (credential-minting) → strict gate: 503 if `BV_WEB_INTERNAL_KEY` unset, 401 on missing/wrong bearer.
-- `/internal/tools/*`, `/internal/analytics/*` → `internalLenientAuthGate`, opt-in via `REQUIRE_INTERNAL_AUTH=true`.
+- `/internal/tools/*`, `/internal/analytics/*`, `/internal/tenants/*` → `internalLenientAuthGate`. Despite the name it is **secure-by-default (FIND-12)**: ACTIVE unless `REQUIRE_INTERNAL_AUTH=false`, requiring `Authorization: Bearer ${BV_WEB_INTERNAL_KEY}` (503 if the key is unset, 401 on missing/wrong bearer). Set `REQUIRE_INTERNAL_AUTH=false` to disable and fall back to the `cf-connecting-ip` network guard alone.
 
 ### Fuzzing detection
 
