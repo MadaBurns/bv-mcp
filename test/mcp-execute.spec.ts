@@ -339,7 +339,7 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 					allowed: false,
 					retryAfterMs: 50_000,
 					remaining: 0,
-					limit: 5,
+					limit: 0,
 				}),
 			};
 		});
@@ -363,9 +363,9 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 		const payload = result.payload as { error: { code: number; message: string } };
 		expect(payload.error.code).toBe(-32029);
 		expect(payload.error.message).toContain('check_lookalikes');
-		expect(payload.error.message).toContain('5');
+		expect(payload.error.message).toContain('0');
 		// x-quota headers should be present
-		expect(result.headers['x-quota-limit']).toBe('5');
+		expect(result.headers['x-quota-limit']).toBe('0');
 		expect(result.headers['x-quota-remaining']).toBe('0');
 		expect(result.headers['x-quota-tier']).toBe('free');
 	});
