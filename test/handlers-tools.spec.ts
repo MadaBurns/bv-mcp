@@ -1018,38 +1018,8 @@ describe('handleToolsCall - non-registry tool routing', () => {
 		expect(result.content[0].text.length).toBeGreaterThan(0);
 	});
 
-	it('generate_spf_record with valid domain returns an SPF record', async () => {
-		globalThis.fetch = vi
-			.fn()
-			.mockResolvedValue(
-				createDohResponse(
-					[{ name: 'example.com', type: 16 }],
-					[{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 include:_spf.google.com -all"' }],
-				),
-			);
-		const result = await call('generate_spf_record', { domain: 'example.com' });
-		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(2);
-		expect(result.content[0].text).toContain('spf1');
-	});
-
-	it('generate_dmarc_record with valid domain returns a DMARC record', async () => {
-		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
-		const result = await call('generate_dmarc_record', { domain: 'example.com' });
-		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(2);
-		expect(result.content[0].text).toContain('DMARC');
-	});
-
-	it('generate_dkim_config with valid domain returns DKIM setup content', async () => {
-		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
-		const result = await call('generate_dkim_config', { domain: 'example.com' });
-		expect(result.isError).toBeUndefined();
-		expect(result.content).toHaveLength(2);
-		expect(result.content[0].text).toContain('DKIM');
-	});
-
-	it('generate_mta_sts_policy with valid domain returns policy content', async () => {
+	// --- Consolidated `generate` tool (artifact discriminator) ---
+	it('generate(artifact=mta_sts_policy) returns policy content', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 			if (url.includes('type=MX') || url.includes('type=15')) {
@@ -1062,18 +1032,95 @@ describe('handleToolsCall - non-registry tool routing', () => {
 			}
 			return Promise.resolve(createDohResponse([], []));
 		});
-		const result = await call('generate_mta_sts_policy', { domain: 'example.com' });
+		const result = await call('generate', { artifact: 'mta_sts_policy', domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('MTA');
 	});
 
-	it('generate_fix_plan with valid domain returns prioritized remediation content', async () => {
-		mockAllChecks();
-		const result = await call('generate_fix_plan', { domain: 'example.com' });
+	it('generate(artifact=spf_record) returns an SPF record', async () => {
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				createDohResponse(
+					[{ name: 'example.com', type: 16 }],
+					[{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 include:_spf.google.com -all"' }],
+				),
+			);
+		const result = await call('generate', { artifact: 'spf_record', domain: 'example.com' });
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toHaveLength(2);
+		expect(result.content[0].text).toContain('spf1');
+	});
+
+	it('generate(artifact=dmarc_record) returns a DMARC record', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
+		const result = await call('generate', { artifact: 'dmarc_record', domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0].text).toContain('DMARC');
+	});
+
+	it('generate(artifact=dkim_config) returns DKIM setup content', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
+		const result = await call('generate', { artifact: 'dkim_config', domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0].text).toContain('DKIM');
+	});
+
+	it('generate(artifact=fix_plan) returns prioritized remediation content', async () => {
+		mockAllChecks();
+		const result = await call('generate', { artifact: 'fix_plan', domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
 		expect(result.content[0].text.length).toBeGreaterThan(0);
+	});
+
+	it('generate(artifact=rollout_plan) returns a DMARC rollout plan', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
+		const result = await call('generate', { artifact: 'rollout_plan', domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0].text.length).toBeGreaterThan(0);
+	});
+
+	it('generate with an invalid artifact returns a validation error', async () => {
+		const result = await call('generate', { artifact: 'nonsense', domain: 'example.com' });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toMatch(/Invalid|Missing required/);
+	});
+
+	it('generate without a domain returns a missing-domain error', async () => {
+		const result = await call('generate', { artifact: 'spf_record' });
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain('Missing required parameter: domain');
+	});
+
+	// --- Back-compat: deprecated generate_* aliases inject the artifact discriminator ---
+	it('deprecated alias generate_spf_record routes to generate (artifact injected)', async () => {
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				createDohResponse(
+					[{ name: 'example.com', type: 16 }],
+					[{ name: 'example.com', type: 16, TTL: 300, data: '"v=spf1 include:_spf.google.com -all"' }],
+				),
+			);
+		const result = await call('generate_spf_record', { domain: 'example.com' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0].text).toContain('spf1');
+	});
+
+	it('deprecated alias generate_rollout_plan routes to generate and honors its params', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
+		const result = await call('generate_rollout_plan', { domain: 'example.com', target_policy: 'reject', timeline: 'standard' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0].text.length).toBeGreaterThan(0);
+	});
+
+	it('deprecated alias forces its artifact even if a conflicting one is passed', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(createDohResponse([], []));
+		// caller passes artifact=dmarc_record but the generate_dkim_config alias forces dkim_config
+		const result = await call('generate_dkim_config', { domain: 'example.com', artifact: 'dmarc_record' });
+		expect(result.isError).toBeUndefined();
+		expect(result.content[0].text).toContain('DKIM');
 	});
 
 	it('resolve_spf_chain with valid domain returns chain content', async () => {

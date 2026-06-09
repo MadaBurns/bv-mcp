@@ -40,7 +40,7 @@ describe('TOOLS', () => {
 			'compare_domains',
 			'compare_baseline',
 			'analyze_drift',
-			'generate_fix_plan',
+			'generate',
 			'map_compliance',
 			'discover_brand_domains',
 			'brand_audit_single',
@@ -50,11 +50,6 @@ describe('TOOLS', () => {
 		}
 
 		const statelessTools = [
-			'generate_spf_record',
-			'generate_dmarc_record',
-			'generate_dkim_config',
-			'generate_mta_sts_policy',
-			'generate_rollout_plan',
 			'explain_finding',
 			'get_benchmark',
 			'check_resolver_consistency',

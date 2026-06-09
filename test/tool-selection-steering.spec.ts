@@ -50,7 +50,7 @@ describe('tool selection-steering descriptions', () => {
 	});
 
 	it('representative non-scan-included tools do not carry the suffix', () => {
-		const sample = ['scan_domain', 'generate_dmarc_record', 'osint_investigate_domain_start', 'cymru_asn'];
+		const sample = ['scan_domain', 'generate', 'osint_investigate_domain_start', 'cymru_asn'];
 		for (const name of sample) {
 			const tool = TOOLS.find((t) => t.name === name);
 			expect(tool, `${name} should exist`).toBeDefined();
