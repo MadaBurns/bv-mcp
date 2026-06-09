@@ -339,7 +339,7 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 					allowed: false,
 					retryAfterMs: 50_000,
 					remaining: 0,
-					limit: 0,
+					limit: 5,
 				}),
 			};
 		});
@@ -363,9 +363,9 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 		const payload = result.payload as { error: { code: number; message: string } };
 		expect(payload.error.code).toBe(-32029);
 		expect(payload.error.message).toContain('check_mx_reputation');
-		// x-quota headers should be present (limit comes from mock, remaining from mock)
-		expect(result.headers['x-quota-limit']).toBeDefined();
-		expect(result.headers['x-quota-remaining']).toBeDefined();
+		expect(payload.error.message).toContain('5');
+		expect(result.headers['x-quota-limit']).toBe('5');
+		expect(result.headers['x-quota-remaining']).toBe('0');
 		expect(result.headers['x-quota-tier']).toBe('free');
 	});
 

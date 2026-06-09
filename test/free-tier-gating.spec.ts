@@ -151,6 +151,8 @@ describe('executeMcpRequest — paid-gated tool enforcement', () => {
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
 		expect(result.httpStatus).not.toBe(403);
+		const payload403 = result.payload as { error?: { code: number } } | undefined;
+		expect(payload403?.error?.code).not.toBe(-32003);
 	});
 
 	it('does NOT return HTTP 403 for unauthenticated caller hitting non-gated check_spf', async () => {
@@ -198,5 +200,7 @@ describe('executeMcpRequest — paid-gated tool enforcement', () => {
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
 		expect(result.httpStatus).not.toBe(403);
+		const payloadSpf = result.payload as { error?: { code: number } } | undefined;
+		expect(payloadSpf?.error?.code).not.toBe(-32003);
 	});
 });
