@@ -63,7 +63,7 @@ export interface AnalyticsClient {
 		cacheStatus?: 'hit' | 'miss' | 'n/a';
 	} & AnalyticsContext): void;
 	emitRateLimitEvent(event: {
-		limitType: 'minute' | 'hour' | 'daily_tool' | 'daily_global' | 'daily_ip';
+		limitType: 'minute' | 'hour' | 'daily_tool' | 'daily_global' | 'daily_ip' | 'distinct_domain' | 'gated_tool';
 		toolName: string;
 		limit: number;
 		remaining: number;
