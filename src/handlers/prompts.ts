@@ -179,7 +179,7 @@ Report pass/fail with each violation and remediation needed.`,
 					role: 'user',
 					content: {
 						type: 'text',
-						text: `Use generate_fix_plan on ${domain}. For the top 3 actions, generate records: generate_spf_record (SPF), generate_dmarc_record (DMARC), generate_dkim_config (DKIM), generate_mta_sts_policy (MTA-STS), or explain_finding (other).
+						text: `Use generate (artifact="fix_plan") on ${domain}. For the top 3 actions, call generate with artifact="spf_record" (SPF), "dmarc_record" (DMARC), "dkim_config" (DKIM), "mta_sts_policy" (MTA-STS), or use explain_finding (other).
 Summarize: score, grade, exact DNS records to publish, verification steps.`,
 					},
 				},
@@ -217,7 +217,7 @@ Synthesize: spoofability risk, brand impersonation threats, shadow domain exposu
 						type: 'text',
 						text: `Use scan_domain on ${domain}. Based on maturity stage, build a hardening plan:
 Stage 0-1: SPF + DMARC monitoring. Stage 2: DMARC enforcement + DKIM. Stage 3: MTA-STS + TLS-RPT. Stage 4: DNSSEC, DANE, BIMI.
-Generate records via generate_spf_record, generate_dmarc_record (none->quarantine->reject), generate_dkim_config, generate_mta_sts_policy.
+Generate records via generate with artifact="spf_record", "dmarc_record" (none->quarantine->reject), "dkim_config", "mta_sts_policy".
 Include verification steps and DMARC report monitoring timeline.`,
 					},
 				},

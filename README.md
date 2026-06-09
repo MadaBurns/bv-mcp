@@ -9,7 +9,7 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
-[![MCP tools](https://img.shields.io/badge/MCP%20tools-80-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![MCP tools](https://img.shields.io/badge/MCP%20tools-75-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![BUSL-1.1 License](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
@@ -25,7 +25,7 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 
 **Claude Desktop** (one-click install):
 
-Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — the current 80-tool surface is available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
+Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — the current 75-tool surface is available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
 
 **Claude Code** (one command):
 
@@ -65,10 +65,10 @@ Transport support:
 
 ## What you get
 
-- **80 MCP tools with 19 scoring categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, subdomailing, reverse DNS (PTR/FCrDNS), brand discovery, and authoritative DNS infrastructure
+- **75 MCP tools with 19 scoring categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, subdomailing, reverse DNS (PTR/FCrDNS), brand discovery, and authoritative DNS infrastructure
 - **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with score-based capping to prevent inflated labels
 - **Trust surface analysis** — detects shared SaaS platforms (Google, M365, SendGrid) and cross-references DMARC enforcement to determine real exposure
-- **Guided remediation** — `generate_fix_plan` produces provider-aware prioritized actions; record generators output ready-to-publish records; `validate_fix` confirms whether a fix was applied successfully
+- **Guided remediation** — `generate` (artifact=`fix_plan`) produces provider-aware prioritized actions; its record artifacts (`spf_record`, `dmarc_record`, `dkim_config`, `mta_sts_policy`, `rollout_plan`) output ready-to-publish records; `validate_fix` confirms whether a fix was applied successfully
 - **Supply chain mapping** — `map_supply_chain` correlates DNS signals to build a full third-party dependency graph with trust levels and risk signals
 - **Attack path simulation** — `simulate_attack_paths` enumerates specific paths (spoofing, takeover, hijack) with severity, steps, and mitigations
 - **Compliance mapping** — `map_compliance` maps scan findings to NIST 800-177, PCI DSS 4.0, SOC 2, and CIS Controls
@@ -81,7 +81,7 @@ Transport support:
 ## Tools
 
 ```
-  80 MCP tools · 7 prompts · 6 resources
+  75 MCP tools · 7 prompts · 6 resources
 
   Email Auth             Infrastructure          Brand & Threats       Meta
  ─────────────          ──────────────          ───────────────       ───────────────
@@ -93,14 +93,14 @@ Transport support:
   check_subdomailing    check_dane
   check_mx_reputation   check_dane_https        DNS Hygiene           Remediation
                         check_svcb_https       ─────────────         ───────────────
-                        check_ptr               check_txt_hygiene     generate_fix_plan
-  Intelligence          check_srv
- ─────────────          check_zone_hygiene                            generate_spf_record
-  get_benchmark         check_resolver_         Discovery             generate_dmarc_record
-  get_provider_           consistency          ─────────────         generate_dkim_config
-    insights                                    discover_brand_       generate_mta_sts_policy
-  assess_spoofability   check_dbl                domains             validate_fix
-  map_supply_chain      check_rbl               brand_audit_single    generate_rollout_plan
+                        check_ptr               check_txt_hygiene     generate (one tool;
+  Intelligence          check_srv                                       artifact=fix_plan,
+ ─────────────          check_zone_hygiene                              spf_record,
+  get_benchmark         check_resolver_         Discovery               dmarc_record,
+  get_provider_           consistency          ─────────────           dkim_config,
+    insights                                    discover_brand_         mta_sts_policy,
+  assess_spoofability   check_dbl                domains                rollout_plan)
+  map_supply_chain      check_rbl               brand_audit_single    validate_fix
   analyze_drift         cymru_asn               brand_audit_batch_
   resolve_spf_chain     rdap_lookup               start
   discover_subdomains   check_nsec_             brand_audit_status
