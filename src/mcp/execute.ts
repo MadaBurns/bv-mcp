@@ -5,6 +5,7 @@ import {
 	checkToolDailyRateLimit,
 	checkGlobalDailyLimit,
 	checkIpDailyLimit,
+	checkDistinctDomainDailyLimit,
 	acquireConcurrencySlot,
 	releaseConcurrencySlot,
 } from '../lib/rate-limiter';
@@ -14,11 +15,14 @@ import { buildControlPlaneRateLimitResponse, validateSessionRequest } from './ro
 import {
 	FREE_TOOL_DAILY_LIMITS,
 	FREE_IP_DAILY_LIMIT,
+	FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
 	FORCE_REFRESH_DAILY_LIMIT,
 	GLOBAL_DAILY_TOOL_LIMIT,
 	TIER_DAILY_LIMITS,
 	TIER_TOOL_DAILY_LIMITS,
 	TIER_CONCURRENT_LIMITS,
+	isGatedPaidOnlyTool,
+	UPGRADE_URL,
 } from '../lib/config';
 import { normalizeToolName } from '../handlers/tool-args';
 import { acceptsSSE } from '../lib/sse';
@@ -27,6 +31,7 @@ import { validateJsonRpcRequest } from './request';
 import { checkSessionCreateRateLimit, reviveSession } from '../lib/session';
 import type { JsonRpcRequest } from '../lib/json-rpc';
 import type { AnalyticsClient } from '../lib/analytics';
+import { hashDomain } from '../lib/analytics';
 import { classifyError as classifyFuzzError } from '../lib/fuzzing-detector';
 import { recordEvent as recordFuzzCounter } from '../lib/fuzzing-counter';
 
@@ -370,6 +375,40 @@ function recordMcpToolErrorIfUnknownTool(options: ExecuteMcpRequestOptions, meth
 	else void recordPromise.catch(() => undefined);
 }
 
+function buildGatedToolResponse(
+	id: JsonRpcRequest['id'],
+	toolName: string,
+	method: string,
+	options: ExecuteMcpRequestOptions,
+	eventId: string | undefined,
+	accessLogInput: { toolName: string; domain: string } | undefined,
+): Extract<ProcessedRequestResult, { kind: 'response' }> {
+	options.analytics?.emitRateLimitEvent({
+		limitType: 'gated_tool',
+		toolName,
+		limit: 0,
+		remaining: 0,
+		country: options.country,
+		authTier: options.authTier ?? 'anon',
+	});
+	emitRequestAnalytics(options, method, 'error', true);
+	if (accessLogInput) {
+		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+	}
+	return {
+		kind: 'response',
+		payload: jsonRpcError(
+			id,
+			JSON_RPC_ERRORS.UPGRADE_REQUIRED,
+			`Upgrade required: ${toolName} requires a paid plan (developer tier or higher). See ${UPGRADE_URL}`,
+		),
+		headers: {},
+		httpStatus: 403,
+		useErrorEnvelope: true,
+		eventId,
+	};
+}
+
 export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Promise<ProcessedRequestResult> {
 	const validationError = validateJsonRpcRequest(options.body);
 	if (validationError) {
@@ -513,6 +552,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
 		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : '';
 		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
+		if (toolName && isGatedPaidOnlyTool(toolName)) {
+			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
+		}
 		if (toolDailyLimit !== undefined) {
 			const toolQuotaResult = await checkToolDailyRateLimit(
 				options.ip,
@@ -612,6 +654,57 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				};
 			}
 		}
+
+		// Distinct-domain/day speed-bump: cap how many DISTINCT domains one
+		// unauthenticated IP can scan per day across domain-bearing tools.
+		const args =
+			argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw) ? (argsRaw as Record<string, unknown>) : undefined;
+		const ddcDomain = extractAccessLogDomain(args);
+		if (ddcDomain) {
+			// The domain slot is recorded before dispatch/validation intentionally: the cap throttles
+			// distinct-domain enumeration, not just successful scans, so invalid calls still consume a slot.
+			const ddcResult = await checkDistinctDomainDailyLimit(
+				options.ip,
+				hashDomain(ddcDomain),
+				FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
+				options.rateLimitKv,
+			);
+			if (!ddcResult.allowed) {
+				const ddcHeaders: Record<string, string> = {};
+				if (ddcResult.retryAfterMs !== undefined) {
+					ddcHeaders['retry-after'] = String(Math.ceil(ddcResult.retryAfterMs / 1000));
+				}
+				const dailyResetEpoch = Math.ceil(Date.now() / 86_400_000) * 86_400;
+				ddcHeaders['x-quota-limit'] = String(FREE_DISTINCT_DOMAIN_DAILY_LIMIT);
+				ddcHeaders['x-quota-remaining'] = '0';
+				ddcHeaders['x-quota-reset'] = String(dailyResetEpoch);
+				ddcHeaders['x-quota-tier'] = 'free';
+				options.analytics?.emitRateLimitEvent({
+					limitType: 'distinct_domain',
+					toolName,
+					limit: FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
+					remaining: 0,
+					country: options.country,
+					authTier: options.authTier ?? 'anon',
+				});
+				emitRequestAnalytics(options, method, 'error', true);
+				if (accessLogInput) {
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+				}
+				return {
+					kind: 'response',
+					payload: jsonRpcError(
+						id,
+						JSON_RPC_ERRORS.RATE_LIMITED,
+						`Rate limit exceeded. Free tier is limited to ${FREE_DISTINCT_DOMAIN_DAILY_LIMIT} distinct domains per day. Authenticate for a higher limit.`,
+					),
+					headers: ddcHeaders,
+					httpStatus: 429,
+					useErrorEnvelope: true,
+					eventId,
+				};
+			}
+		}
 	} else if (options.tierAuthResult?.authenticated && options.tierAuthResult.tier && method === 'tools/call') {
 		// Authenticated tier-based rate limiting (keyed by API key hash, not IP)
 		const tier = options.tierAuthResult.tier;
@@ -623,6 +716,10 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 		// Per-tool tier override takes precedence over flat tier limit
 		const dailyLimit = TIER_TOOL_DAILY_LIMITS[tier]?.[toolName] ?? TIER_DAILY_LIMITS[tier];
+
+		if (dailyLimit === 0 && isGatedPaidOnlyTool(toolName)) {
+			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
+		}
 
 		const tierQuotaResult = await checkToolDailyRateLimit(principalId, toolName, dailyLimit, options.rateLimitKv, options.quotaCoordinator);
 		const tierDailyResetEpoch = Math.ceil(Date.now() / 86_400_000) * 86_400;
