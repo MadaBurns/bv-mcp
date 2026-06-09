@@ -5,6 +5,7 @@ import {
 	checkToolDailyRateLimit,
 	checkGlobalDailyLimit,
 	checkIpDailyLimit,
+	checkDistinctDomainDailyLimit,
 	acquireConcurrencySlot,
 	releaseConcurrencySlot,
 } from '../lib/rate-limiter';
@@ -14,6 +15,7 @@ import { buildControlPlaneRateLimitResponse, validateSessionRequest } from './ro
 import {
 	FREE_TOOL_DAILY_LIMITS,
 	FREE_IP_DAILY_LIMIT,
+	FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
 	FORCE_REFRESH_DAILY_LIMIT,
 	GLOBAL_DAILY_TOOL_LIMIT,
 	TIER_DAILY_LIMITS,
@@ -29,6 +31,7 @@ import { validateJsonRpcRequest } from './request';
 import { checkSessionCreateRateLimit, reviveSession } from '../lib/session';
 import type { JsonRpcRequest } from '../lib/json-rpc';
 import type { AnalyticsClient } from '../lib/analytics';
+import { hashDomain } from '../lib/analytics';
 import { classifyError as classifyFuzzError } from '../lib/fuzzing-detector';
 import { recordEvent as recordFuzzCounter } from '../lib/fuzzing-counter';
 
@@ -645,6 +648,50 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 						`Rate limit exceeded. force_refresh is limited to ${FORCE_REFRESH_DAILY_LIMIT} requests per day for free tier users.`,
 					),
 					headers: rateHeaders,
+					httpStatus: 429,
+					useErrorEnvelope: true,
+					eventId,
+				};
+			}
+		}
+
+		// Distinct-domain/day speed-bump: cap how many DISTINCT domains one
+		// unauthenticated IP can scan per day across domain-bearing tools.
+		const args =
+			argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw) ? (argsRaw as Record<string, unknown>) : undefined;
+		const ddcDomain = extractAccessLogDomain(args);
+		if (ddcDomain) {
+			const ddcResult = await checkDistinctDomainDailyLimit(
+				options.ip,
+				hashDomain(ddcDomain),
+				FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
+				options.rateLimitKv,
+			);
+			if (!ddcResult.allowed) {
+				const ddcHeaders: Record<string, string> = {};
+				if (ddcResult.retryAfterMs !== undefined) {
+					ddcHeaders['retry-after'] = String(Math.ceil(ddcResult.retryAfterMs / 1000));
+				}
+				options.analytics?.emitRateLimitEvent({
+					limitType: 'distinct_domain',
+					toolName,
+					limit: FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
+					remaining: 0,
+					country: options.country,
+					authTier: options.authTier ?? 'anon',
+				});
+				emitRequestAnalytics(options, method, 'error', true);
+				if (accessLogInput) {
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+				}
+				return {
+					kind: 'response',
+					payload: jsonRpcError(
+						id,
+						JSON_RPC_ERRORS.RATE_LIMITED,
+						`Rate limit exceeded. Free tier is limited to ${FREE_DISTINCT_DOMAIN_DAILY_LIMIT} distinct domains per day. Authenticate for a higher limit.`,
+					),
+					headers: ddcHeaders,
 					httpStatus: 429,
 					useErrorEnvelope: true,
 					eventId,
