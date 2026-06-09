@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.17.0] - 2026-06-09
+
+Minor release: consolidates the six `generate_*` remediation tools into a single artifact-discriminated `generate` tool, trimming the agent-facing tool surface **80 → 75** (#384). Backward-compatible — the deprecated names still resolve via dispatch-layer aliases. No scoring or scan change (`generate` is not `scanIncluded`); `SCORING_MODEL_VERSION` stays `1.2.0`.
+
+### Changed
+
+- **`generate_fix_plan` / `generate_spf_record` / `generate_dmarc_record` / `generate_dkim_config` / `generate_mta_sts_policy` / `generate_rollout_plan` merged into `generate`** (`src/schemas/tool-args.ts`, `src/handlers/tools.ts`). The `artifact` parameter selects the output (`fix_plan`, `spf_record`, `dmarc_record`, `dkim_config`, `mta_sts_policy`, `rollout_plan`); per-artifact validation constraints are preserved. Reduces the per-session tool-schema context load and tool-selection ambiguity for MCP clients.
+
+### Added
+
+- **Arg-injecting tool aliases** (`resolveToolAlias` in `src/handlers/tool-args.ts`). Deprecated tool names resolve to their merged tool and inject the discriminator at the dispatch boundary, so `generate_spf_record({domain})` → `generate({domain, artifact:'spf_record'})`. Injected args are forced over caller args. `normalizeToolName` stays name-only for routing/quota/analytics; old names count against `generate`'s quota.
+
 ## [3.16.1] - 2026-06-08
 
 Patch release: 17 fixes from a multi-dimension MCP / Cloudflare / DevSecOps best-practice audit (12 findings) plus its self-review (5 follow-ups), each gated behind a failing-before / passing-after test (#381). No tools added or removed (still 80); `SCORING_MODEL_VERSION` stays `1.2.0`. No scoring change. Three new audit tripwires guard against recurrence.
