@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 import type { Context } from 'hono';
+import type { AppEnv } from '../index';
 import { RegisterRequestSchema } from '../schemas/oauth';
 import { OAUTH_KV_PREFIX, OAUTH_REDIRECT_URI_ALLOWLIST } from '../lib/config';
 import { putClient } from './storage';
@@ -83,9 +84,9 @@ async function registerRateExceeded(kv: KVNamespace, ip: string): Promise<{ exce
  * URI allowlist (`OAUTH_REDIRECT_URI_ALLOWLIST`) before any write. The `client_id` is a
  * UUID v4 generated via Web Crypto (`crypto.randomUUID`) — unguessable and globally unique.
  */
-export async function handleRegister(c: Context): Promise<Response> {
-	const kv = (c.env as { SESSION_STORE: KVNamespace }).SESSION_STORE;
-	const kvEnvelopeKey = parseEnvelopeKey((c.env as { KV_ENVELOPE_KEY?: string }).KV_ENVELOPE_KEY) ?? undefined;
+export async function handleRegister(c: Context<AppEnv>): Promise<Response> {
+	const kv = c.env.SESSION_STORE!;
+	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
 	const ip = c.req.header('cf-connecting-ip') ?? '0.0.0.0';
 	const rl = await registerRateExceeded(kv, ip);
 	if (rl.exceeded) {

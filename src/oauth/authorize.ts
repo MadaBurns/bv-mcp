@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 import type { Context } from 'hono';
+import type { AppEnv } from '../index';
 import { AuthorizeQuerySchema } from '../schemas/oauth';
 import { createAuthorizationCode, getClient, putCode } from './storage';
 import { isAuthorizedRequest } from '../lib/auth';
@@ -100,7 +101,7 @@ function redirectToCustomerConsent(
  * deny, no-store). On any validation or lookup failure returns a plain-text 400 — never HTML
  * and never a redirect — to avoid open-redirect risk before `redirect_uri` is trusted.
  */
-export async function handleAuthorizeGet(c: Context): Promise<Response> {
+export async function handleAuthorizeGet(c: Context<AppEnv>): Promise<Response> {
 	const sp = new URL(c.req.url).searchParams;
 	const q: Record<string, string> = {};
 	sp.forEach((value, key) => {
@@ -113,16 +114,16 @@ export async function handleAuthorizeGet(c: Context): Promise<Response> {
 		// Static description — never echo caller-controlled validation text (mirrors token.ts/register.ts).
 		return new Response('Invalid authorization request', { status: 400 });
 	}
-	const kv = (c.env as { SESSION_STORE: KVNamespace }).SESSION_STORE;
-	const kvEnvelopeKey = parseEnvelopeKey((c.env as { KV_ENVELOPE_KEY?: string }).KV_ENVELOPE_KEY) ?? undefined;
+	const kv = c.env.SESSION_STORE!;
+	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
 	const client = await getClient(kv, parsed.client_id, kvEnvelopeKey);
 	if (!client) return new Response('Unknown client_id', { status: 400 });
 	if (!client.redirect_uris.includes(parsed.redirect_uri)) {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
 	}
-	if (!ownerOAuthEnabled(c.env as { ENABLE_OWNER_OAUTH?: string })) {
+	if (!ownerOAuthEnabled(c.env)) {
 		const customerRedirect = redirectToCustomerConsent(
-			(c.env as { BV_WEB_OAUTH_CONSENT_URL?: string }).BV_WEB_OAUTH_CONSENT_URL,
+			c.env.BV_WEB_OAUTH_CONSENT_URL,
 			parsed,
 		);
 		if (customerRedirect) return customerRedirect;
@@ -194,9 +195,9 @@ function redirectWithError(redirectUri: string, error: string, state: string | u
  * with `?error=access_denied&state=`. Validation failures before redirect_uri is trusted
  * return plain-text 4xx — never HTML, never a redirect.
  */
-export async function handleAuthorizePost(c: Context): Promise<Response> {
-	const kv = (c.env as { SESSION_STORE: KVNamespace }).SESSION_STORE;
-	const kvEnvelopeKey = parseEnvelopeKey((c.env as { KV_ENVELOPE_KEY?: string }).KV_ENVELOPE_KEY) ?? undefined;
+export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response> {
+	const kv = c.env.SESSION_STORE!;
+	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 
 	if (await consentRateExceeded(kv, ip)) {
@@ -235,7 +236,7 @@ export async function handleAuthorizePost(c: Context): Promise<Response> {
 	if (!client.redirect_uris.includes(parsed.redirect_uri)) {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
 	}
-	if (!ownerOAuthEnabled(c.env as { ENABLE_OWNER_OAUTH?: string })) {
+	if (!ownerOAuthEnabled(c.env)) {
 		return redirectWithError(parsed.redirect_uri, 'temporarily_unavailable', parsed.state);
 	}
 
@@ -245,12 +246,12 @@ export async function handleAuthorizePost(c: Context): Promise<Response> {
 	// MCP request). If the env var is set, only allowlisted IPs may proceed; anything else
 	// redirects back with `access_denied` before any code is written. When unset we retain the
 	// self-hosted / dev default of no IP gating.
-	const allowed = parseOwnerAllowIps((c.env as { OWNER_ALLOW_IPS?: string }).OWNER_ALLOW_IPS);
+	const allowed = parseOwnerAllowIps(c.env.OWNER_ALLOW_IPS);
 	if (allowed.length > 0 && !allowed.includes(ip)) {
 		return redirectWithError(parsed.redirect_uri, 'access_denied', parsed.state);
 	}
 
-	const expected = (c.env as { BV_API_KEY?: string }).BV_API_KEY ?? '';
+	const expected = c.env.BV_API_KEY ?? '';
 	const ok = await isAuthorizedRequest(`Bearer ${apiKey}`, expected);
 	if (!ok) {
 		return redirectWithError(parsed.redirect_uri, 'access_denied', parsed.state);
