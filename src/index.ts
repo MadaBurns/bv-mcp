@@ -84,6 +84,8 @@ type BvMcpEnv = {
 	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
 	BV_API_KEY?: string;
+	/** Comma-separated IP allowlist for owner tier. When set, an owner-tier credential (static `BV_API_KEY` or owner JWT) from a non-listed client IP is downgraded to `partner` (`applyOwnerIpGate` in `lib/tier-auth.ts`). Unset/empty → owner unrestricted (self-hosted/dev). */
+	OWNER_ALLOW_IPS?: string;
 	BV_WEB?: Fetcher;
 	BV_WEB_INTERNAL_KEY?: string;
 	ALLOWED_ORIGINS?: string;
@@ -180,10 +182,12 @@ type BvMcpEnv = {
 import type { TierAuthResult } from './lib/tier-auth';
 import { resolveTier } from './lib/tier-auth';
 
-const app = new Hono<{
+/** Shared Hono app env (bindings + per-request variables). Exported so route handlers in `oauth/` can type `Context<AppEnv>` instead of casting `c.env`. */
+export type AppEnv = {
 	Bindings: BvMcpEnv;
 	Variables: { isAuthenticated: boolean; tierAuthResult: TierAuthResult; apiKeyInQuery: boolean };
-}>();
+};
+const app = new Hono<AppEnv>();
 const mcpPaths = ['/mcp', '/mcp/messages', '/mcp/sse'] as const;
 
 import { buildBrandTierLookups } from './lib/brand-tier-lookups';
@@ -262,9 +266,9 @@ for (const path of mcpPaths) {
 	app.use(
 		path,
 		cors({
-			origin: (origin, c) => {
+			origin: (origin, c: Context<AppEnv>) => {
 				if (!origin) return '';
-				const result = checkOrigin(origin, c.req.url, (c.env as BvMcpEnv).ALLOWED_ORIGINS?.trim());
+				const result = checkOrigin(origin, c.req.url, c.env.ALLOWED_ORIGINS?.trim());
 				return result === 'allowed' ? origin : '';
 			},
 			allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
@@ -530,7 +534,7 @@ app.post('/mcp', async (c) => {
 					secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 					secondaryDohToken: c.env.BV_DOH_TOKEN,
 					certstream: c.env.BV_CERTSTREAM,
-					certstreamAuthToken: certstreamAuthToken(c.env as BvMcpEnv),
+					certstreamAuthToken: certstreamAuthToken(c.env),
 					whoisBinding: c.env.BV_WHOIS,
 					reconBinding: c.env.BV_RECON,
 					reconAuthToken: c.env.BV_RECON_KEY,
@@ -615,7 +619,7 @@ app.post('/mcp', async (c) => {
 		secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 		secondaryDohToken: c.env.BV_DOH_TOKEN,
 		certstream: c.env.BV_CERTSTREAM,
-		certstreamAuthToken: certstreamAuthToken(c.env as BvMcpEnv),
+		certstreamAuthToken: certstreamAuthToken(c.env),
 		whoisBinding: c.env.BV_WHOIS,
 		reconBinding: c.env.BV_RECON,
 		reconAuthToken: c.env.BV_RECON_KEY,
@@ -776,7 +780,7 @@ app.post('/mcp/messages', async (c) => {
 				secondaryDohEndpoint: c.env.BV_DOH_ENDPOINT,
 				secondaryDohToken: c.env.BV_DOH_TOKEN,
 				certstream: c.env.BV_CERTSTREAM,
-				certstreamAuthToken: certstreamAuthToken(c.env as BvMcpEnv),
+				certstreamAuthToken: certstreamAuthToken(c.env),
 				whoisBinding: c.env.BV_WHOIS,
 				reconBinding: c.env.BV_RECON,
 				reconAuthToken: c.env.BV_RECON_KEY,
@@ -945,8 +949,8 @@ app.route('/internal', internalRoutes);
 // boolean. `'disabled'` → 404 (feature off). `'misconfigured'` → 503 (feature
 // on but signing secret missing/short — fail-fast at first RTT instead of
 // after the user completes the consent dance).
-function oauthGuarded<T>(c: Context, ready: () => T | Response): T | Response {
-	const state = oauthAvailability(c.env as Pick<BvMcpEnv, 'ENABLE_OAUTH' | 'OAUTH_SIGNING_SECRET'>);
+function oauthGuarded<T>(c: Context<AppEnv>, ready: () => T | Response): T | Response {
+	const state = oauthAvailability(c.env);
 	if (state === 'disabled') return oauthDisabledResponse();
 	if (state === 'misconfigured') return oauthMisconfiguredResponse();
 	return ready();

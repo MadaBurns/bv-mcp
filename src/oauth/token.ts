@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 import type { Context } from 'hono';
+import type { AppEnv } from '../index';
 import { TokenRequestSchema } from '../schemas/oauth';
 import { consumeCode, getTokenVersion } from './storage';
 import { signJwt, newJti, constantTimeEqual } from './jwt';
@@ -97,14 +98,15 @@ export async function verifyPkce(verifier: string, challenge: string): Promise<b
  * Scope defaults to `mcp` when the original authorize request omitted one — keeps a
  * recognizable scope claim for downstream Bearer-path policy decisions (Phase 8).
  */
-export async function handleToken(c: Context): Promise<Response> {
-	const env = c.env as { SESSION_STORE: KVNamespace; OAUTH_SIGNING_SECRET?: string; OAUTH_ISSUER?: string; KV_ENVELOPE_KEY?: string };
+export async function handleToken(c: Context<AppEnv>): Promise<Response> {
+	const env = c.env;
+	const kv = env.SESSION_STORE!;
 	const kvEnvelopeKey = parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined;
 
 	// Rate limit runs FIRST — before content-type / grant-type / Zod — so an attacker
 	// flooding the endpoint with invalid payloads still hits the cheap KV gate.
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
-	if (await tokenRateExceeded(env.SESSION_STORE, ip)) {
+	if (await tokenRateExceeded(kv, ip)) {
 		return c.json({ error: 'invalid_request', error_description: 'Too many token requests' }, 429);
 	}
 
@@ -137,7 +139,7 @@ export async function handleToken(c: Context): Promise<Response> {
 		return c.json({ error: 'invalid_request', error_description: 'Request body failed validation' }, 400);
 	}
 
-	const codeRec = await consumeCode(env.SESSION_STORE, parsed.code, kvEnvelopeKey);
+	const codeRec = await consumeCode(kv, parsed.code, kvEnvelopeKey);
 	if (!codeRec) {
 		return c.json({ error: 'invalid_grant', error_description: 'Code unknown, expired, or already used' }, 400);
 	}
@@ -163,7 +165,7 @@ export async function handleToken(c: Context): Promise<Response> {
 	const tier = codeRec.tier ?? 'owner';
 	// Read the current token-version for this subject so the minted JWT can be
 	// invalidated before its 90-day natural expiry (FIND-13).
-	const ver = await getTokenVersion(env.SESSION_STORE, subject);
+	const ver = await getTokenVersion(kv, subject);
 	const token = await signJwt(
 		{ sub: subject, jti: newJti(), tier, client_id: parsed.client_id, ver },
 		{ secret, ttlSeconds: OAUTH_JWT_TTL_SECONDS, issuer, audience: `${issuer}/mcp` },
