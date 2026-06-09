@@ -351,7 +351,7 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 					jsonrpc: '2.0',
 					id: 4,
 					method: 'tools/call',
-					params: { name: 'check_lookalikes', arguments: { domain: 'example.com' } },
+					params: { name: 'check_mx_reputation', arguments: { domain: 'example.com' } },
 				} as JsonRpcRequest,
 				isAuthenticated: false,
 			}),
@@ -362,9 +362,8 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 		expect(result.httpStatus).toBe(429);
 		const payload = result.payload as { error: { code: number; message: string } };
 		expect(payload.error.code).toBe(-32029);
-		expect(payload.error.message).toContain('check_lookalikes');
+		expect(payload.error.message).toContain('check_mx_reputation');
 		expect(payload.error.message).toContain('5');
-		// x-quota headers should be present
 		expect(result.headers['x-quota-limit']).toBe('5');
 		expect(result.headers['x-quota-remaining']).toBe('0');
 		expect(result.headers['x-quota-tier']).toBe('free');
