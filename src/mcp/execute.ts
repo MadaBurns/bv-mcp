@@ -672,6 +672,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				if (ddcResult.retryAfterMs !== undefined) {
 					ddcHeaders['retry-after'] = String(Math.ceil(ddcResult.retryAfterMs / 1000));
 				}
+				const dailyResetEpoch = Math.ceil(Date.now() / 86_400_000) * 86_400;
+				ddcHeaders['x-quota-limit'] = String(FREE_DISTINCT_DOMAIN_DAILY_LIMIT);
+				ddcHeaders['x-quota-remaining'] = '0';
+				ddcHeaders['x-quota-reset'] = String(dailyResetEpoch);
+				ddcHeaders['x-quota-tier'] = 'free';
 				options.analytics?.emitRateLimitEvent({
 					limitType: 'distinct_domain',
 					toolName,
