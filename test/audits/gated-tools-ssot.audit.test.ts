@@ -30,12 +30,7 @@ describe('gated paid-only tools SSOT', () => {
 	});
 
 	it('does NOT gate the pollers', () => {
-		for (const poller of [
-			'scan_buckets_status',
-			'scan_buckets_findings',
-			'osint_investigation_status',
-			'osint_investigation_report',
-		]) {
+		for (const poller of ['scan_buckets_status', 'scan_buckets_findings', 'osint_investigation_status', 'osint_investigation_report']) {
 			expect(GATED_PAID_ONLY_TOOLS.has(poller)).toBe(false);
 		}
 	});
