@@ -538,6 +538,59 @@ export async function resetAllRateLimitsKv(kv: KVNamespace): Promise<void> {
 	}
 }
 
+/**
+ * Best-effort per-IP daily cap on the number of DISTINCT domains scanned.
+ * Uses two KV keys per (principal, day): a per-domain marker and a counter.
+ * A repeat domain consumes no new budget. Fail-open: any KV error or absent KV
+ * returns allowed. Not a hard lock — IP rotation defeats it by design.
+ *
+ * KV eventual-consistency and partial-write drift are accepted as best-effort.
+ * The counter is written BEFORE the marker so a partial failure (counter
+ * written, marker not) leaves no marker — the domain is re-counted next time
+ * (a harmless over-count) rather than slipping through free (an under-count).
+ */
+export async function checkDistinctDomainDailyLimit(
+	principalId: string,
+	domainFingerprint: string,
+	limit: number,
+	kv?: KVNamespace,
+): Promise<ToolDailyRateLimitResult> {
+	if (!Number.isFinite(limit)) {
+		return { allowed: true, remaining: limit, limit };
+	}
+	if (!kv) {
+		return { allowed: true, remaining: limit, limit };
+	}
+	try {
+		return await withIpKvLock(`ddc:${principalId}`, async () => {
+			const now = Date.now();
+			const dayWindow = Math.floor(now / DAY_MS);
+			const markerKey = `rl:day:ddc:mark:${principalId}:${dayWindow}:${domainFingerprint}`;
+			const countKey = `rl:day:ddc:count:${principalId}:${dayWindow}`;
+
+			const alreadySeen = await kv.get(markerKey);
+			if (alreadySeen) {
+				const seenCount = parseKvCounter(await kv.get(countKey));
+				return { allowed: true, remaining: Math.max(limit - seenCount, 0), limit };
+			}
+
+			const currentCount = parseKvCounter(await kv.get(countKey));
+			if (currentCount >= limit) {
+				const windowEnd = (dayWindow + 1) * DAY_MS;
+				return { allowed: false, retryAfterMs: Math.max(windowEnd - now, 0), remaining: 0, limit };
+			}
+
+			const nextCount = currentCount + 1;
+			await kv.put(countKey, String(nextCount), { expirationTtl: 86_400 });
+			await kv.put(markerKey, '1', { expirationTtl: 86_400 });
+			return { allowed: true, remaining: Math.max(limit - nextCount, 0), limit };
+		});
+	} catch {
+		logError('[rate-limiter] distinct-domain KV error, failing open');
+		return { allowed: true, remaining: limit, limit };
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Per-tier concurrency limits (best-effort per-isolate fairness)
 // ---------------------------------------------------------------------------

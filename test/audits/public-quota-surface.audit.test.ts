@@ -30,8 +30,9 @@ describe('public quota surface audit', () => {
 	it('keeps MCP resources aligned with free high-cost tool limits', () => {
 		const text = readResource('dns-security://guides/agent-workflows');
 
-		expect(text).toContain(`check_lookalikes/check_shadow_domains: ${FREE_TOOL_DAILY_LIMITS.check_lookalikes}/day limit (unauth)`);
+		expect(text).toContain('check_lookalikes/check_shadow_domains: paid plan required (developer tier or higher)');
 		expect(text).not.toContain('check_lookalikes`/`check_shadow_domains`: 20/day limit');
+		expect(text).not.toContain('/day limit (unauth)');
 	});
 
 	it('keeps VS Code README free-tier copy aligned with runtime limits', () => {

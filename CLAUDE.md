@@ -162,8 +162,10 @@ EMA per profile+provider via `ProfileAccumulator` DO. Maturity-gated blending (`
 
 - **SSRF**: blocked IPs/TLDs in `config.ts`; enforced by `sanitize.ts`. All outbound `redirect: 'manual'`. **Attacker-controlled URLs** (BIMI `l=`/`a=`, redirect `Location:` targets the worker follows) MUST use `safeFetch` (`lib/safe-fetch.ts`). Fetches to URLs whose hostname is already validated (e.g. `https://${validatedDomain}/.well-known/...`) may use raw `fetch` with manual redirects.
 - **Auth**: Static `BV_API_KEY` (constant-time XOR). Token from `Authorization: Bearer` first, then `?api_key=` (Smithery fallback). Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner-tier IP gate: client IP must be in `OWNER_ALLOW_IPS` else downgrade to `partner` (including OAuth JWT path). OAuth JWT validates `claims.tier` against `JwtIssuableTierSchema = z.enum(['owner','developer','enterprise'])`. The JWT path returns a `keyHash` (`hex(SHA-256(token))`, same as the static path) so per-key daily quota + concurrency key on the credential, not the client IP (3.15.1 — previously the JWT path returned no `keyHash` and quota fell back to `options.ip`).
-- **Rate limits**: 50/min, 300/hr per IP (unauthenticated). Authenticated bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_mx_reputation`: 20/day per IP + 60-min cache. `check_lookalikes`/`check_shadow_domains`: 5/day (free-tier `FREE_TOOL_DAILY_LIMITS`).
+- **Rate limits**: 50/min, 300/hr per IP (unauthenticated). Authenticated bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_mx_reputation`: 20/day per IP + 60-min cache.
 - **Per-tool quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts`. Global cap `GLOBAL_DAILY_TOOL_LIMIT` 500k/day via `QuotaCoordinator` DO.
+- **Paid-only tools**: offensive/recon + multi-domain tools (`GATED_PAID_ONLY_TOOLS` in `config.ts`, incl. `check_lookalikes`/`check_shadow_domains`/`discover_subdomains`/`batch_scan`/`compare_domains`/osint+bucket `*_start`/brand-audit) are developer+ only — pinned to 0 in `FREE_TOOL_DAILY_LIMITS`, `TIER_TOOL_DAILY_LIMITS.free`, and `.agent`. Free/unauth/agent callers get HTTP **403** `UPGRADE_REQUIRED` (-32003, "requires a paid plan"). OSINT/bucket pollers (`*_status`/`*_findings`/`*_report`) stay free. SSOT audited by `gated-tools-ssot.audit.test.ts`.
+- **Distinct-domain cap**: unauthenticated callers also have a per-IP distinct-domains/day cap (`FREE_DISTINCT_DOMAIN_DAILY_LIMIT`, KV best-effort, fail-open, currently 12) across domain-bearing tools; exceed → HTTP **429** ("distinct domains per day") + `x-quota-*` headers.
 - **Body**: 10 KB on `/mcp`. **IP source**: `cf-connecting-ip` only (never `x-forwarded-for`).
 - **Origin**: MCP-compliant rejection of unauthorized browser `Origin`; `ALLOWED_ORIGINS` configurable.
 
@@ -290,6 +292,8 @@ ignored env only; never commit it or paste it into workflow logs.
 | ----------------------------------------------------------------- | :-----------: | :--------------------: |
 | CORS, Origin, Auth, Rate limiting, Sessions, JSON-RPC, Body limit |       ✓       |           —            |
 | Tool execution, Caching, Analytics, SSRF                          |       ✓       |           ✓            |
+
+The free-tier paid-gating (HTTP 403 for offensive tools) and the distinct-domain cap are public-`/mcp`-only controls enforced in `executeMcpRequest`; the internal path bypasses them — bv-web (the internal caller) is responsible for enforcing paid entitlement on gated tools before forwarding.
 
 ## Deployment
 

@@ -209,21 +209,60 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		delete_brand_audit_watch: 100,
 	},
 	agent: {
+		discover_subdomains: 0,
+		simulate_attack_paths: 0,
+		check_fast_flux: 0,
+		map_supply_chain: 0,
+		check_lookalikes: 0,
+		check_shadow_domains: 0,
+		scan_buckets_start: 0,
+		osint_investigate_domain_start: 0,
+		osint_investigate_infrastructure_start: 0,
+		osint_investigate_supply_chain_start: 0,
+		osint_investigate_username_start: 0,
+		osint_investigate_email_start: 0,
+		check_realtime_threat_feed: 0,
+		batch_scan: 0,
+		compare_domains: 0,
+		discover_brand_domains: 0,
 		brand_audit_single: 0,
 		brand_audit_batch_start: 0,
 		brand_audit_status: 0,
 		brand_audit_get_report: 0,
-		list_brand_audit_watches: 0,
 		register_brand_audit_watch: 0,
 		delete_brand_audit_watch: 0,
+		list_brand_audit_watches: 0,
+	},
+	free: {
+		discover_subdomains: 0,
+		simulate_attack_paths: 0,
+		check_fast_flux: 0,
+		map_supply_chain: 0,
+		check_lookalikes: 0,
+		check_shadow_domains: 0,
+		scan_buckets_start: 0,
+		osint_investigate_domain_start: 0,
+		osint_investigate_infrastructure_start: 0,
+		osint_investigate_supply_chain_start: 0,
+		osint_investigate_username_start: 0,
+		osint_investigate_email_start: 0,
+		check_realtime_threat_feed: 0,
+		batch_scan: 0,
+		compare_domains: 0,
+		discover_brand_domains: 0,
+		brand_audit_single: 0,
+		brand_audit_batch_start: 0,
+		register_brand_audit_watch: 0,
+		delete_brand_audit_watch: 0,
+		list_brand_audit_watches: 0,
 	},
 };
 
 export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	scan_domain: 25,
 	scan: 25,
-	batch_scan: 1,
-	compare_domains: 1,
+	batch_scan: 0,
+	compare_domains: 0,
 	check_spf: 25,
 	check_dmarc: 25,
 	check_dkim: 25,
@@ -235,10 +274,10 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_caa: 25,
 	check_bimi: 25,
 	check_tlsrpt: 25,
-	check_lookalikes: 5,
+	check_lookalikes: 0,
 	explain_finding: 50,
 	compare_baseline: 10,
-	check_shadow_domains: 5,
+	check_shadow_domains: 0,
 	check_txt_hygiene: 25,
 	check_http_security: 25,
 	check_dane: 25,
@@ -254,23 +293,23 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	get_provider_insights: 10,
 	assess_spoofability: 10,
 	check_resolver_consistency: 10,
-	map_supply_chain: 5,
+	map_supply_chain: 0,
 	analyze_drift: 5,
 	validate_fix: 25,
 	resolve_spf_chain: 15,
-	discover_subdomains: 5,
+	discover_subdomains: 0,
 	map_compliance: 5,
-	simulate_attack_paths: 3,
+	simulate_attack_paths: 0,
 	check_dbl: 5,
 	check_rbl: 5,
 	cymru_asn: 5,
 	rdap_lookup: 5,
-	check_realtime_threat_feed: 5,
+	check_realtime_threat_feed: 0,
 	check_nsec_walkability: 10,
 	check_dnssec_chain: 10,
 	check_agent_discovery: 10,
 	check_dnskey_strength: 25,
-	check_fast_flux: 3,
+	check_fast_flux: 0,
 	check_subdomain_takeover: 25,
 	check_authoritative_dns_infra: 25,
 	check_root_server_set: 25,
@@ -282,12 +321,12 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	list_brand_audit_watches: 0,
 	register_brand_audit_watch: 0,
 	delete_brand_audit_watch: 0,
-	scan_buckets_start: 5,
+	scan_buckets_start: 0,
 	scan_buckets_status: 25,
 	scan_buckets_findings: 25,
-	osint_investigate_domain_start: 1,
-	osint_investigate_infrastructure_start: 1,
-	osint_investigate_supply_chain_start: 1,
+	osint_investigate_domain_start: 0,
+	osint_investigate_infrastructure_start: 0,
+	osint_investigate_supply_chain_start: 0,
 	osint_investigate_username_start: 0,
 	osint_investigate_email_start: 0,
 	osint_investigation_status: 25,
@@ -297,6 +336,59 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 /** Free-tier daily cap on cache-bypassing (force_refresh) requests. Far below the
  *  per-tool quota so cache-busting cannot amplify backend load (FIND-06). */
 export const FORCE_REFRESH_DAILY_LIMIT = 5;
+
+/**
+ * Tools gated to paid tiers (developer and above). Pinned to 0 in
+ * FREE_TOOL_DAILY_LIMITS, TIER_TOOL_DAILY_LIMITS.free, and
+ * TIER_TOOL_DAILY_LIMITS.agent so unauthenticated, free-tier-key, and
+ * agent-tier callers are blocked; developer+ keep access via the flat
+ * TIER_DAILY_LIMITS fallback. Single source of truth for the "upgrade required"
+ * 403 branch in src/mcp/execute.ts. Audited by gated-tools-ssot.audit.test.ts.
+ */
+export const GATED_PAID_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
+	// offensive recon / job creators
+	'discover_subdomains',
+	'simulate_attack_paths',
+	'check_fast_flux',
+	'map_supply_chain',
+	'check_lookalikes',
+	'check_shadow_domains',
+	'scan_buckets_start',
+	'osint_investigate_domain_start',
+	'osint_investigate_infrastructure_start',
+	'osint_investigate_supply_chain_start',
+	'osint_investigate_username_start',
+	'osint_investigate_email_start',
+	'check_realtime_threat_feed',
+	// multi-domain tools (any multi-domain tool is paid)
+	'batch_scan',
+	'compare_domains',
+	// already paid-only; folded in for a consistent upgrade message
+	'discover_brand_domains',
+	'brand_audit_single',
+	'brand_audit_batch_start',
+	'register_brand_audit_watch',
+	'delete_brand_audit_watch',
+	'list_brand_audit_watches',
+]);
+
+/** True when a tool is gated to paid tiers (developer+). */
+export function isGatedPaidOnlyTool(toolName: string): boolean {
+	return GATED_PAID_ONLY_TOOLS.has(toolName);
+}
+
+/** URL shown in the upgrade-required (HTTP 403) message. */
+export const UPGRADE_URL = 'https://blackveilsecurity.com/pricing';
+
+/**
+ * Per-IP daily cap on the number of DISTINCT domains an unauthenticated caller
+ * may scan (across domain-bearing tools). Speed-bump against mass/3rd-party
+ * scanning of the still-free hygiene tools. Best-effort (KV, fail-open).
+ *
+ * Provisional conservative default. Re-tune from telemetry — set above the legit
+ * P99 distinct-domains/day per unauthenticated IP.
+ */
+export const FREE_DISTINCT_DOMAIN_DAILY_LIMIT = 12;
 
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
 export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>([

@@ -104,12 +104,12 @@ describe('free tier tool quota policy', () => {
 	it('keeps high-cost or private-probe tools on tight free anonymous limits', () => {
 		expect(FREE_TOOL_DAILY_LIMITS.discover_brand_domains).toBe(0);
 		expect(FREE_TOOL_DAILY_LIMITS.check_authoritative_dns_infra).toBe(25);
-		expect(FREE_TOOL_DAILY_LIMITS.check_fast_flux).toBe(3);
+		expect(FREE_TOOL_DAILY_LIMITS.check_fast_flux).toBe(0);
 	});
 
 	it('keeps high-query brand-threat tools on bounded free demo limits', () => {
-		expect(FREE_TOOL_DAILY_LIMITS.check_lookalikes).toBe(5);
-		expect(FREE_TOOL_DAILY_LIMITS.check_shadow_domains).toBe(5);
+		expect(FREE_TOOL_DAILY_LIMITS.check_lookalikes).toBe(0);
+		expect(FREE_TOOL_DAILY_LIMITS.check_shadow_domains).toBe(0);
 		expect(FREE_TOOL_DAILY_LIMITS.check_root_server_set).toBe(25);
 		expect(FREE_TOOL_DAILY_LIMITS.check_subdomain_takeover).toBe(25);
 	});

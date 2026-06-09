@@ -174,7 +174,7 @@ A+: 92+ | A: 87-91 | B+: 82-86 | B: 76-81 | C+: 70-75 | C: 63-69 | D+: 56-62 | D
 
 ## Tips
 - \`scan_domain\` caches 5 min; subsequent checks use cached data
-- check_lookalikes/check_shadow_domains: 5/day limit (unauth)
+- check_lookalikes/check_shadow_domains: paid plan required (developer tier or higher)
 - All checks are passive/read-only
 - Use \`profile\` param on \`scan_domain\` for non-mail domains (\`web_only\`, \`non_mail\`)
 `,
