@@ -22,7 +22,7 @@ Patch release: fixes a P0 regression introduced in 3.17.1 plus follow-up hardeni
 - **`AUTH_REQUIRED_TOOLS` is now CI-pinned to the `identity_secops` tool group** (`test/identity-secops-auth-gate.spec.ts` derives the expected set from `TOOL_DEFS`), so a new M365 tool cannot ship unauthenticated without failing CI.
 - **`TENANT_KEY_SCOPE` matching tolerates both the full 64-hex `SHA-256(bearer)` and its 16-char prefix** (`src/tenants/routes.ts`), removing a silent fail-open when an operator copies the truncated `keyHash`; key format documented.
 - **Tenant-scope check factored into one `denyIfOutOfScope` helper** called at all four tenant routes, with a coverage audit asserting every tenant-resolving route also scope-checks.
-- **De-duplicated sanitizers**: `osint-investigate` now imports the shared `src/lib/sanitize-upstream.ts` (was a byte-identical copy); deleted the dead `src/tools/dkim-analysis.ts` duplicate (the package copy is canonical). _(Deferred: generalizing `createFinding` to sanitize all finding `metadata` at the chokepoint — larger change spanning the vendored `dns-checks` package; tracked separately.)_
+- **De-duplicated sanitizers**: `osint-investigate` now imports the shared `src/lib/sanitize-upstream.ts` (was a byte-identical copy); deleted the dead `src/tools/dkim-analysis.ts` duplicate (the package copy is canonical). _(Deferred: generalizing `createFinding` to sanitize all finding `metadata` at the chokepoint — larger change spanning the vendored `dns-checks` package; tracked in #389.)_
 
 ## [3.17.1] - 2026-06-10
 
