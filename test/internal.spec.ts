@@ -232,6 +232,64 @@ describe('Internal service binding routes', () => {
 		});
 	});
 
+	describe('agent-chat caller allowlist (/internal/tools/call)', () => {
+		it('rejects a non-allowlisted tool when X-BV-Caller is agent-chat', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'X-BV-Caller': 'agent-chat' },
+				body: JSON.stringify({ name: 'query_signins', arguments: { tenantId: 't1' } }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(403);
+			const json = (await response.json()) as { isError?: boolean };
+			expect(json.isError).toBe(true);
+		});
+
+		it('allows an allowlisted tool for the agent-chat caller', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'X-BV-Caller': 'agent-chat' },
+				body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+		});
+
+		it('allows the scan alias for the agent-chat caller (normalized before the check)', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'X-BV-Caller': 'agent-chat' },
+				body: JSON.stringify({ name: 'scan', arguments: { domain: 'example.com' } }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).not.toBe(403);
+		});
+
+		it('does not gate non-agent internal callers', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' }, // no X-BV-Caller
+				body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).not.toBe(403);
+		});
+	});
+
 	describe('POST /internal/tools/batch', () => {
 		beforeEach(() => {
 			IN_MEMORY_CACHE.clear();

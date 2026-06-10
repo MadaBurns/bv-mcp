@@ -37,7 +37,17 @@ import { isAuthorizedRequest } from './lib/auth';
 import { createAnalyticsClient } from './lib/analytics';
 import { parseScoringConfigCached } from './lib/scoring-config';
 import { buildBrandTierLookups } from './lib/brand-tier-lookups';
-import { MAX_REQUEST_BODY_BYTES, OAUTH_CODE_TTL_SECONDS, parseCacheTtl, parsePerCheckTimeout, parseScanTimeout } from './lib/config';
+import {
+	AGENT_CALLER_HEADER,
+	isAgentAllowedTool,
+	isAgentCaller,
+	MAX_REQUEST_BODY_BYTES,
+	OAUTH_CODE_TTL_SECONDS,
+	parseCacheTtl,
+	parsePerCheckTimeout,
+	parseScanTimeout,
+} from './lib/config';
+import { normalizeToolName } from './handlers/tool-args';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
 import { InternalOAuthGrantRequestSchema } from './schemas/oauth';
@@ -202,6 +212,14 @@ internalRoutes.post('/tools/call', async (c) => {
 			return c.json({ content: [{ type: 'text', text: `Invalid ${err.issues[0].path.join('.')}: ${err.issues[0].message}` }], isError: true }, 400);
 		}
 		return c.json({ content: [{ type: 'text', text: 'Missing required field: name' }], isError: true }, 400);
+	}
+
+	// Agent-chat caller: enforce the read-only allowlist (defense-in-depth; bv-web
+	// also gates, but this is the boundary-side guard). Normalize the alias first
+	// (scan → scan_domain) so a legitimate aliased call isn't wrongly rejected.
+	// See docs/design/agent-chat-tool-allowlist.md.
+	if (isAgentCaller(c.req.header(AGENT_CALLER_HEADER)) && !isAgentAllowedTool(normalizeToolName(body.name))) {
+		return c.json({ content: [{ type: 'text', text: 'Invalid tool for caller' }], isError: true }, 403);
 	}
 
 	const url = new URL(c.req.url);
