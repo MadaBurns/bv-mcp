@@ -1,6 +1,6 @@
 # Design: Agent-Chat Caller Principal + Tool Allowlist (bv-mcp side)
 
-**Status:** Proposed · **Date:** 2026-06-10 · **Change class:** A (public contract — new internal caller class)
+**Status:** Implemented · **Date:** 2026-06-10 · **Change class:** A (public contract — new internal caller class)
 **Companion spec:** `bv-web-prod` `docs/superpowers/specs/2026-06-10-agentic-chat-integration-design.md` (the consuming side)
 
 ## Why this exists
