@@ -127,6 +127,41 @@ describe('FINDING #8: /discover domain validation', () => {
 		expect(upsertWithBad).toBeUndefined();
 	});
 
+	it('drops an invalid / SSRF DB-read seed (watch=1) and only discovers valid ones', async () => {
+		// FINDING #4: when seed_domains is omitted, seeds are read from the tenant DB
+		// (SELECT domain FROM domains WHERE watch=1). Those DB-read seeds must clear
+		// the same validateDomain/sanitizeDomain gate as the other two paths — an
+		// invalid/SSRF seed is dropped (skipped), never handed to discoverBrandDomains.
+		const registry = makeMockD1({
+			[REGISTRY_LOOKUP_SQL]: [{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'fake-d1-uuid', active: 1 }],
+		});
+		const tenant = makeMockD1({
+			'SELECT domain FROM domains WHERE watch = 1 LIMIT 10': [{ domain: '169.254.169.254' }, { domain: 'good.com' }],
+		});
+		const customEnv = {
+			...env,
+			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			REQUIRE_INTERNAL_AUTH: 'true',
+			TENANT_REGISTRY_DB: registry.db,
+			[TEST_TENANT_BINDING]: tenant.db,
+		} as TestEnv;
+
+		const spy = vi
+			.spyOn(discovery, 'discoverBrandDomains')
+			.mockResolvedValue({ findings: [] } as unknown as Awaited<ReturnType<typeof discovery.discoverBrandDomains>>);
+
+		// No seed_domains → DB-read path.
+		const res = await send(makeReq({}), customEnv);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { seeds: number };
+		// Only the valid seed survives the validation gate.
+		expect(body.seeds).toBe(1);
+
+		const calledDomains = spy.mock.calls.map((call) => call[0]);
+		expect(calledDomains).toContain('good.com');
+		expect(calledDomains).not.toContain('169.254.169.254');
+	});
+
 	it('still imports a valid high-confidence candidate (no regression)', async () => {
 		const { customEnv, tenantCalls } = buildEnv();
 		vi.spyOn(discovery, 'discoverBrandDomains').mockResolvedValue({
