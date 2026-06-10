@@ -305,6 +305,48 @@ describe('Internal service binding routes', () => {
 		});
 	});
 
+	describe('agent-chat caller allowlist (/internal/tools/batch)', () => {
+		it('rejects a non-allowlisted batch tool for the agent-chat caller', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'X-BV-Caller': 'agent-chat' },
+				body: JSON.stringify({ tool: 'discover_subdomains', domains: ['example.com'] }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(403);
+			const json = (await response.json()) as { error?: string };
+			expect(json.error).toBe('agent_tool_not_allowed');
+		});
+
+		it('allows an allowlisted batch tool for the agent-chat caller', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'X-BV-Caller': 'agent-chat' },
+				body: JSON.stringify({ tool: 'check_spf', domains: ['example.com'] }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+		});
+
+		it('does not gate non-agent batch callers', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ tool: 'discover_subdomains', domains: ['example.com'] }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).not.toBe(403);
+		});
+	});
+
 	describe('POST /internal/tools/batch', () => {
 		beforeEach(() => {
 			IN_MEMORY_CACHE.clear();

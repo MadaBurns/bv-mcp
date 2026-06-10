@@ -416,6 +416,11 @@ internalRoutes.post('/tools/batch', async (c) => {
 		return c.json({ error: 'Invalid request body' }, 400);
 	}
 
+	// Agent-chat caller: same read-only allowlist as /tools/call (normalize alias first).
+	if (isAgentCaller(c.req.header(AGENT_CALLER_HEADER)) && !isAgentAllowedTool(normalizeToolName(body.tool))) {
+		return c.json({ error: 'agent_tool_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
+	}
+
 	const toolName = body.tool;
 	const rawArgs = body.arguments ?? {};
 	// ALLOWED_BATCH_ARGS filtering stays (security allowlist, not shape validation)
