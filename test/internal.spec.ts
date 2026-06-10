@@ -232,6 +232,121 @@ describe('Internal service binding routes', () => {
 		});
 	});
 
+	describe('agent-chat caller allowlist (/internal/tools/call)', () => {
+		it('rejects a non-allowlisted tool when X-BV-Caller is agent-chat', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'X-BV-Caller': 'agent-chat' },
+				body: JSON.stringify({ name: 'query_signins', arguments: { tenantId: 't1' } }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(403);
+			const json = (await response.json()) as { error?: string };
+			expect(json.error).toBe('agent_tool_not_allowed');
+		});
+
+		it('allows an allowlisted tool for the agent-chat caller', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'X-BV-Caller': 'agent-chat' },
+				body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+		});
+
+		it('allows the scan alias for the agent-chat caller (normalized before the check)', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'X-BV-Caller': 'agent-chat' },
+				body: JSON.stringify({ name: 'scan', arguments: { domain: 'example.com' } }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			// scan_domain fans out across ~19 checks, only one of which is SPF-mocked here;
+			// the gate passing (not a 403) is what this case proves, so assert that the
+			// normalized alias was NOT rejected rather than a full 200.
+			expect(response.status).not.toBe(403);
+		});
+
+		it('does not gate non-agent internal callers', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' }, // no X-BV-Caller
+				body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+		});
+
+		it('rejects a deprecated alias that resolves to a non-allowlisted tool', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'X-BV-Caller': 'agent-chat' },
+				body: JSON.stringify({ name: 'generate_fix_plan', arguments: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(403);
+		});
+	});
+
+	describe('agent-chat caller allowlist (/internal/tools/batch)', () => {
+		it('rejects a non-allowlisted batch tool for the agent-chat caller', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'X-BV-Caller': 'agent-chat' },
+				body: JSON.stringify({ tool: 'discover_subdomains', domains: ['example.com'] }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(403);
+			const json = (await response.json()) as { error?: string };
+			expect(json.error).toBe('agent_tool_not_allowed');
+		});
+
+		it('allows an allowlisted batch tool for the agent-chat caller', async () => {
+			const { mockTxtRecords } = await import('./helpers/dns-mock');
+			mockTxtRecords(['v=spf1 -all']);
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'X-BV-Caller': 'agent-chat' },
+				body: JSON.stringify({ tool: 'check_spf', domains: ['example.com'] }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+		});
+
+		it('does not gate non-agent batch callers', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ tool: 'discover_subdomains', domains: ['example.com'] }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).not.toBe(403);
+		});
+	});
+
 	describe('POST /internal/tools/batch', () => {
 		beforeEach(() => {
 			IN_MEMORY_CACHE.clear();
