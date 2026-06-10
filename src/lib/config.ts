@@ -390,11 +390,34 @@ export const UPGRADE_URL = 'https://blackveilsecurity.com/pricing';
  */
 export const FREE_DISTINCT_DOMAIN_DAILY_LIMIT = 12;
 
+/**
+ * identity_secops M365 read tools. These forward to bv-web's internal M365 proxy
+ * carrying the trusted internal bearer, so an UNAUTHENTICATED caller must never
+ * reach them — the public `/mcp` gate in src/mcp/execute.ts rejects an
+ * unauthenticated tools/call for any member with HTTP 401 BEFORE dispatch
+ * (see isAuthRequiredTool), and the registry execute path (handlers/tools.ts)
+ * additionally hard-rejects when no real principal (keyHash) is present.
+ * Single source of truth for both gates.
+ */
+export const AUTH_REQUIRED_TOOLS: ReadonlySet<string> = new Set<string>([
+	'query_signins',
+	'query_ual',
+	'get_ca_policies',
+	'assess_coverage',
+]);
+
+/** True when a tool requires an authenticated principal (cannot be called anonymously). */
+export function isAuthRequiredTool(toolName: string): boolean {
+	return AUTH_REQUIRED_TOOLS.has(toolName);
+}
+
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
 export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>([
-	// identity_secops tools are gated by internal-auth + per-tenant membership at the
-	// bv-web proxy target (not by MCP free-tier quotas); they're never callable by
-	// anonymous principals, so they sit outside the daily-tool-quota matrix.
+	// identity_secops tools are auth-required (AUTH_REQUIRED_TOOLS): the public /mcp
+	// gate rejects unauthenticated callers with HTTP 401 before dispatch, and the
+	// registry path hard-rejects calls without a real principal. They carry no
+	// per-tool free-tier quota because they are never reachable by free/anon
+	// callers in the first place — so they sit outside the daily-tool-quota matrix.
 	'query_signins',
 	'query_ual',
 	'get_ca_policies',

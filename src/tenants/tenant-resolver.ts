@@ -19,6 +19,13 @@
  * TTL. Only **successful** resolutions are cached — caching "not found" would
  * make a freshly-provisioned tenant invisible for up to 5 min after creation.
  *
+ * FINDING #7: a cache hit re-validates the registry `active` flag before serving
+ * the cached binding/prefix work, so a tenant deactivated mid-TTL stops
+ * resolving promptly instead of staying valid for up to the full 5 min. The
+ * heavier resolution work (regex, binding-name derivation, prefix construction,
+ * per-tenant binding presence) stays cached; only the cheap indexed `active`
+ * lookup runs on a hit.
+ *
  * Test surface: `resetTenantResolverCache()` clears the cache between specs.
  */
 
@@ -95,13 +102,31 @@ export async function resolveTenant(env: ResolverEnv, subTenantId: string): Prom
 		throw new Error('Invalid tenant identifier');
 	}
 
-	const cached = CACHE.get(subTenantId);
-	if (cached && cached.expires > Date.now()) {
-		return cached.value;
-	}
-
 	if (!env.TENANT_REGISTRY_DB) {
 		throw new Error(`Tenant not found: ${subTenantId}`);
+	}
+
+	const cached = CACHE.get(subTenantId);
+	if (cached && cached.expires > Date.now()) {
+		// FINDING #7: re-validate the registry `active` flag on a cache hit so a
+		// tenant deactivated mid-TTL stops resolving immediately. We keep the rest
+		// of the cached resolution (binding name, prefixes, tier) and only pay for
+		// the cheap indexed lookup. If the registry read throws, fall through to a
+		// full re-resolution rather than serving a possibly-stale entry.
+		try {
+			const liveRow = await env.TENANT_REGISTRY_DB.prepare(REGISTRY_LOOKUP_SQL).bind(subTenantId).first<{ active: number | boolean }>();
+			if (!liveRow || !liveRow.active) {
+				CACHE.delete(subTenantId);
+				throw new Error(`Tenant not found: ${subTenantId}`);
+			}
+			return cached.value;
+		} catch (err) {
+			if (err instanceof Error && err.message.startsWith('Tenant not found')) {
+				throw err;
+			}
+			// Registry read failed — drop the cache entry and re-resolve below.
+			CACHE.delete(subTenantId);
+		}
 	}
 
 	const row = await env.TENANT_REGISTRY_DB.prepare(REGISTRY_LOOKUP_SQL).bind(subTenantId).first<{
