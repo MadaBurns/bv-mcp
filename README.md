@@ -11,9 +11,9 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![MCP tools](https://img.shields.io/badge/MCP%20tools-75-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![BUSL-1.1 License](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
-[![MCP](https://img.shields.io/badge/MCP-2025--03--26-blue)](https://modelcontextprotocol.io/)
+[![MCP](https://img.shields.io/badge/MCP-2025--06--18-blue)](https://modelcontextprotocol.io/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-6.0-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
 ![DNS Security](https://dns-mcp.blackveilsecurity.com/badge/blackveilsecurity.com)
 
@@ -106,7 +106,7 @@ Transport support:
   discover_subdomains   check_nsec_             brand_audit_status
   map_compliance          walkability           brand_audit_get_
   simulate_attack_paths check_dnssec_chain        report
-                        check_fast_flux         list_brand_audit_watches
+  check_agent_discovery check_fast_flux         list_brand_audit_watches
                         check_dnskey_strength
                         check_authoritative_dns_infra
                         check_root_server_set   register_brand_audit_watch
