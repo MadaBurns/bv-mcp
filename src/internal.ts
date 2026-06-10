@@ -219,7 +219,7 @@ internalRoutes.post('/tools/call', async (c) => {
 	// (scan → scan_domain) so a legitimate aliased call isn't wrongly rejected.
 	// See docs/design/agent-chat-tool-allowlist.md.
 	if (isAgentCaller(c.req.header(AGENT_CALLER_HEADER)) && !isAgentAllowedTool(normalizeToolName(body.name))) {
-		return c.json({ content: [{ type: 'text', text: 'Invalid tool for caller' }], isError: true }, 403);
+		return c.json({ error: 'agent_tool_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
 	}
 
 	const url = new URL(c.req.url);

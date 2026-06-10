@@ -243,8 +243,8 @@ describe('Internal service binding routes', () => {
 			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(403);
-			const json = (await response.json()) as { isError?: boolean };
-			expect(json.isError).toBe(true);
+			const json = (await response.json()) as { error?: string };
+			expect(json.error).toBe('agent_tool_not_allowed');
 		});
 
 		it('allows an allowlisted tool for the agent-chat caller', async () => {
@@ -272,6 +272,9 @@ describe('Internal service binding routes', () => {
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
+			// scan_domain fans out across ~19 checks, only one of which is SPF-mocked here;
+			// the gate passing (not a 403) is what this case proves, so assert that the
+			// normalized alias was NOT rejected rather than a full 200.
 			expect(response.status).not.toBe(403);
 		});
 
@@ -286,7 +289,19 @@ describe('Internal service binding routes', () => {
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, testEnv, ctx);
 			await waitOnExecutionContext(ctx);
-			expect(response.status).not.toBe(403);
+			expect(response.status).toBe(200);
+		});
+
+		it('rejects a deprecated alias that resolves to a non-allowlisted tool', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'X-BV-Caller': 'agent-chat' },
+				body: JSON.stringify({ name: 'generate_fix_plan', arguments: {} }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(403);
 		});
 	});
 
