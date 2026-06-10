@@ -2,6 +2,7 @@ import { SELF, env, createExecutionContext, waitOnExecutionContext } from 'cloud
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
 import { putCode } from '../../src/oauth/storage';
+import { OAUTH_JWT_TTL_SECONDS } from '../../src/lib/config';
 
 const TEST_API_KEY = 'testkey';
 const TEST_SIGNING_SECRET = 'a'.repeat(32);
@@ -138,6 +139,139 @@ describe('POST /oauth/token', () => {
 		expect(claims.client_id).toBe(cid);
 		expect(claims.stripeCustomerId).toBeUndefined();
 		expect(claims.stripeSubscriptionId).toBeUndefined();
+	});
+
+	it('clamps the JWT TTL to entitlementExpiresAt when it is sooner than the 90-day default', async () => {
+		// FIND (A01 token-persistence): a paid entitlement that expires in ~1 hour must mint a
+		// JWT whose lifetime is clamped to that window, not the flat 90-day default — otherwise a
+		// lapsed subscription keeps resolving to the paid tier for up to 90 days.
+		const { verifier, challenge } = await pkcePair();
+		const cid = await registerClient();
+		const code = 'paid-code-soon-expiry';
+		const now = Math.floor(Date.now() / 1000);
+		const oneHour = 3600;
+		await putCode(env.SESSION_STORE, code, {
+			client_id: cid,
+			redirect_uri: 'https://claude.ai/cb',
+			code_challenge: challenge,
+			issued_at: now,
+			scope: 'mcp',
+			subject: 'user_soon',
+			tier: 'developer',
+			stripeCustomerId: 'cus_soon',
+			stripeSubscriptionId: 'sub_soon',
+			subscriptionStatus: 'active',
+			entitlementExpiresAt: now + oneHour,
+		});
+		const res = await postToken(
+			new URLSearchParams({
+				grant_type: 'authorization_code',
+				code,
+				client_id: cid,
+				redirect_uri: 'https://claude.ai/cb',
+				code_verifier: verifier,
+			}),
+		);
+		expect(res.status).toBe(200);
+		const tok = (await res.json()) as { access_token: string; expires_in: number };
+		const [, payload] = tok.access_token.split('.');
+		const claims = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as { iat: number; exp: number };
+		// Lifetime asserted relative to the token's own iat — no wall-clock dependency.
+		const lifetime = claims.exp - claims.iat;
+		expect(lifetime).toBeLessThanOrEqual(oneHour);
+		expect(lifetime).toBeGreaterThan(oneHour - 60); // ~1h, not 90 days
+		expect(lifetime).toBeLessThan(OAUTH_JWT_TTL_SECONDS);
+		expect(tok.expires_in).toBe(lifetime);
+	});
+
+	it('preserves the 90-day TTL when entitlementExpiresAt is far in the future', async () => {
+		// A long-lived entitlement must still cap at the 90-day default (Math.min picks 90 days).
+		const { verifier, challenge } = await pkcePair();
+		const cid = await registerClient();
+		const code = 'paid-code-far-expiry';
+		const now = Math.floor(Date.now() / 1000);
+		await putCode(env.SESSION_STORE, code, {
+			client_id: cid,
+			redirect_uri: 'https://claude.ai/cb',
+			code_challenge: challenge,
+			issued_at: now,
+			scope: 'mcp',
+			subject: 'user_far',
+			tier: 'developer',
+			stripeCustomerId: 'cus_far',
+			stripeSubscriptionId: 'sub_far',
+			subscriptionStatus: 'active',
+			entitlementExpiresAt: now + OAUTH_JWT_TTL_SECONDS * 10,
+		});
+		const res = await postToken(
+			new URLSearchParams({
+				grant_type: 'authorization_code',
+				code,
+				client_id: cid,
+				redirect_uri: 'https://claude.ai/cb',
+				code_verifier: verifier,
+			}),
+		);
+		expect(res.status).toBe(200);
+		const tok = (await res.json()) as { access_token: string; expires_in: number };
+		const [, payload] = tok.access_token.split('.');
+		const claims = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as { iat: number; exp: number };
+		expect(claims.exp - claims.iat).toBe(OAUTH_JWT_TTL_SECONDS);
+		expect(tok.expires_in).toBe(OAUTH_JWT_TTL_SECONDS);
+	});
+
+	it('preserves the 90-day TTL when entitlementExpiresAt is absent', async () => {
+		const { verifier, challenge } = await pkcePair();
+		const cid = await registerClient();
+		const code = await getAuthCode(cid, challenge);
+		expect(code).not.toBe('');
+		const res = await postToken(
+			new URLSearchParams({
+				grant_type: 'authorization_code',
+				code,
+				client_id: cid,
+				redirect_uri: 'https://claude.ai/cb',
+				code_verifier: verifier,
+			}),
+		);
+		expect(res.status).toBe(200);
+		const tok = (await res.json()) as { access_token: string; expires_in: number };
+		const [, payload] = tok.access_token.split('.');
+		const claims = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as { iat: number; exp: number };
+		expect(claims.exp - claims.iat).toBe(OAUTH_JWT_TTL_SECONDS);
+		expect(tok.expires_in).toBe(OAUTH_JWT_TTL_SECONDS);
+	});
+
+	it('rejects with invalid_grant when entitlementExpiresAt is already in the past', async () => {
+		// A lapsed entitlement must never mint an (already-expired) token — reject the exchange.
+		const { verifier, challenge } = await pkcePair();
+		const cid = await registerClient();
+		const code = 'paid-code-lapsed';
+		const now = Math.floor(Date.now() / 1000);
+		await putCode(env.SESSION_STORE, code, {
+			client_id: cid,
+			redirect_uri: 'https://claude.ai/cb',
+			code_challenge: challenge,
+			issued_at: now,
+			scope: 'mcp',
+			subject: 'user_lapsed',
+			tier: 'developer',
+			stripeCustomerId: 'cus_lapsed',
+			stripeSubscriptionId: 'sub_lapsed',
+			subscriptionStatus: 'active',
+			entitlementExpiresAt: now - 3600,
+		});
+		const res = await postToken(
+			new URLSearchParams({
+				grant_type: 'authorization_code',
+				code,
+				client_id: cid,
+				redirect_uri: 'https://claude.ai/cb',
+				code_verifier: verifier,
+			}),
+		);
+		expect(res.status).toBe(400);
+		expect(((await res.json()) as Record<string, unknown>).error).toBe('invalid_grant');
 	});
 
 	it('rejects replay of the same code', async () => {

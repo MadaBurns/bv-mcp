@@ -1009,3 +1009,60 @@ describe('checkLookalikes - issue #263 same-entity RDAP registrant correlation',
 		expect(tstFinding!.metadata?.sharedRegistrantOrg).toBe('xero limited');
 	});
 });
+
+describe('probeHasWebContent - SSRF redirect-follow guard (OWASP A10)', () => {
+	afterEach(() => restore());
+
+	/**
+	 * The candidate lookalike host is attacker-influenced. An actor can serve a
+	 * 302 → internal Cloudflare host. The probe must NOT auto-follow that
+	 * redirect (which `redirect:'follow'` would, reaching the internal host),
+	 * yet must still report the 3xx as reachable web content.
+	 *
+	 * The mock models the Workers runtime contract: redirect resolution happens
+	 * BELOW the fetch surface, so `redirect:'follow'` is emulated by the mock
+	 * resolving the Location target itself (recording the internal host as
+	 * contacted); `redirect:'manual'` returns the 302 untouched. Branching on
+	 * `init.redirect` is what makes this test discriminate buggy vs fixed.
+	 */
+	it('does not follow a candidate 302 to an internal host, but still reports reachable', async () => {
+		const candidate = 'examp1e.com'; // public lookalike — passes validateOutboundUrl
+		const internalHost = 'metadata.cloudflare.internal';
+		const internalLocation = `https://${internalHost}/`;
+		const contactedHosts: string[] = [];
+
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+			contactedHosts.push(new URL(url).host);
+
+			// The candidate serves a redirect toward an internal host.
+			if (new URL(url).host === candidate) {
+				const redirectResp = {
+					ok: false,
+					status: 302,
+					headers: new Headers({ Location: internalLocation }),
+				} as unknown as Response;
+
+				// Emulate the runtime: 'follow' resolves the redirect below the
+				// fetch surface, so the internal host IS contacted.
+				if (init?.redirect === 'follow') {
+					contactedHosts.push(new URL(internalLocation).host);
+					return { ok: true, status: 200, headers: new Headers() } as unknown as Response;
+				}
+				// 'manual' (or default) returns the 302 untouched.
+				return redirectResp;
+			}
+
+			// Any other host contacted = the redirect was followed by the code.
+			return { ok: true, status: 200, headers: new Headers() } as unknown as Response;
+		}) as unknown as typeof fetch;
+
+		const { probeHasWebContent } = await import('../src/tools/check-lookalikes');
+		const reachable = await probeHasWebContent(candidate);
+
+		// (a) the internal Location host must never be contacted
+		expect(contactedHosts).not.toContain(internalHost);
+		// (b) a 3xx still proves reachability
+		expect(reachable).toBe(true);
+	});
+});

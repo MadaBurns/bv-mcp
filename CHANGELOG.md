@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.17.1] - 2026-06-10
+
+Patch release: security-audit remediation. A full-project security audit (OWASP Top 10 / LLM Top 10 / Agentic ASI Top 10) surfaced 2 High, 3 Medium, and 6 Low/Info findings (0 Critical); this ships TDD'd fixes for all actionable findings plus defense-in-depth hardening. No scoring or scan change; `SCORING_MODEL_VERSION` stays `1.2.0`; tool count unchanged (75).
+
+### Security
+
+- **(P1) `identity_secops` tools now require authentication** (`src/mcp/execute.ts`, `src/lib/config.ts`, `src/handlers/tools.ts`). `query_signins` / `query_ual` / `get_ca_policies` / `assess_coverage` were reachable by an unauthenticated public `/mcp` caller and forwarded to bv-web's internal M365 proxy carrying the trusted internal bearer with `keyHash: undefined`. Now: an unauthenticated call is rejected pre-dispatch (HTTP 401, new `AUTH_REQUIRED_TOOLS` SSOT), and the registry path hard-rejects when no real principal (`keyHash`) is present (defense-in-depth).
+- **(P1) Indirect prompt-injection hardening for recon tools** (`src/tools/scan-buckets.ts`, `src/tools/check-realtime-threat-feed.ts`, new `src/lib/sanitize-upstream.ts`). Raw upstream bv-recon JSON was spread into finding `metadata` (which `createFinding` does not sanitize) and reached the LLM via `structuredContent`. Upstream values are now sanitized + size-bounded (matching the existing OSINT F7 mitigation).
+- **(P2) SSRF: `check_lookalikes` web-content probe** (`src/tools/check-lookalikes.ts`) switched from raw `fetch(redirect:'follow')` on an attacker-influenced host to `safeFetch` with `redirect:'manual'` (closes a blind reachability oracle for Cloudflare-internal hosts).
+- **(P2) Output injection: generated DMARC record** (`src/schemas/tool-args.ts`, `src/tools/generate-records.ts`). `rua_email` is now validated against a mailto-safe pattern (rejects `;`, whitespace, `,`, control chars) at the schema layer + re-validated at interpolation, preventing DMARC tag injection into a copy-paste-ready record.
+- **(P2/P3) Tenant isolation hardening** (`src/tenants/routes.ts`, `src/tenants/tenant-resolver.ts`). Opt-in, backward-compatible per-credential tenant-scope assertion (`X-Tenant-Scope` / `TENANT_KEY_SCOPE`; intersected, never widened by the caller-supplied header); tenant-resolver re-validates the registry `active` flag on cache hits (prompt deactivation); `/discover` seed + auto-import domains now run through `validateDomain`/`sanitizeDomain`. The single-key prod flow is unchanged.
+- **(P3) OAuth token TTL clamp** (`src/oauth/token.ts`). JWT TTL is clamped to `entitlementExpiresAt` when present (and `invalid_grant` when already lapsed), so a token cannot outlive its paid entitlement up to the 90-day default.
+- **(Info) ReDoS false-positives suppressed** (`packages/dns-checks/src/checks/dkim-analysis.ts`, `src/tools/dkim-analysis.ts`) with `nosemgrep` + a literal-tag guard; doc tool-count corrected (80 → 75).
+
 ## [3.17.0] - 2026-06-09
 
 Minor release: consolidates the six `generate_*` remediation tools into a single artifact-discriminated `generate` tool, trimming the agent-facing tool surface **80 → 75** (#384). Backward-compatible — the deprecated names still resolve via dispatch-layer aliases. No scoring or scan change (`generate` is not `scanIncluded`); `SCORING_MODEL_VERSION` stays `1.2.0`.

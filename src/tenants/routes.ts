@@ -65,6 +65,15 @@ type TenantEnv = ResolverEnv & {
 	BV_DOH_ENDPOINT?: string;
 	BV_DOH_TOKEN?: string;
 	BV_SCANNER_QUEUE?: ScanQueueProducer;
+	/**
+	 * FINDING #5 (BOLA): OPT-IN per-credential tenant-scope map. JSON object
+	 * mapping `hex(SHA-256(bearer))` → array of sub-tenant ids that credential may
+	 * target. When set, a bearer that appears as a key in the map is restricted to
+	 * its listed tenants (403 otherwise). A bearer ABSENT from the map is
+	 * unconstrained — this preserves the live single shared-key bv-web flow, which
+	 * is expected NOT to appear in the map. Unset entirely → scoping disabled.
+	 */
+	TENANT_KEY_SCOPE?: string;
 };
 
 export const tenantRoutes = new Hono<{ Bindings: TenantEnv }>();
@@ -96,6 +105,106 @@ function extractTenantHeader(c: { req: { header(name: string): string | undefine
 	if (!raw) return { error: 'Missing required header: X-Tenant' };
 	if (!TENANT_ID_REGEX.test(raw)) return { error: 'Invalid tenant identifier' };
 	return raw;
+}
+
+/**
+ * TRUST INVARIANT (FINDING #5 / BOLA):
+ *
+ * `/internal/tenants/*` is authenticated by the single shared
+ * `BV_WEB_INTERNAL_KEY`; the `X-Tenant` header selects the tenant. By itself
+ * that lets ANY key holder target ANY active tenant, so the trust boundary is
+ * "bv-web is the only caller and it forwards the correct tenant". `assertTenantScope`
+ * lets an operator tighten that boundary WITHOUT breaking the live single-key
+ * flow:
+ *
+ *   1. `X-Tenant-Scope` request header — a comma/space-separated allowlist of
+ *      sub-tenant ids bv-web vouches the caller may touch (forwarded per request).
+ *   2. `TENANT_KEY_SCOPE` env — a JSON map of `hex(SHA-256(bearer))` → allowed
+ *      sub-tenant ids, binding a specific credential to specific tenants.
+ *
+ * Enforcement is OPT-IN and additive:
+ *   - No `X-Tenant-Scope` header AND no `TENANT_KEY_SCOPE` entry for this bearer
+ *     → no constraint (today's behaviour, prod single-key flow unchanged).
+ *   - A signal present → the resolved tenant MUST be in the union of allowed ids,
+ *     else the caller is denied (403). Enabling this requires bv-web to send the
+ *     scope signal; per-tenant keys are NOT mandatory.
+ */
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+
+/** hex(SHA-256(value)) — same credential-hash convention as `keyHash` elsewhere. */
+async function sha256Hex(value: string): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+	return Array.from(new Uint8Array(digest))
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('');
+}
+
+/** Parse an `X-Tenant-Scope` header into a set of allowed sub-tenant ids. */
+function parseScopeHeader(raw: string | undefined): Set<string> | null {
+	if (!raw) return null;
+	const ids = raw
+		.split(/[\s,]+/)
+		.map((s) => s.trim())
+		.filter(Boolean);
+	return ids.length > 0 ? new Set(ids) : null;
+}
+
+/** Parse the `TENANT_KEY_SCOPE` env map and return the allowed ids for this bearer hash, if listed. */
+function scopeForKeyHash(rawEnv: string | undefined, keyHash: string): Set<string> | null {
+	if (!rawEnv) return null;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(rawEnv);
+	} catch {
+		// Malformed env config: fail-open to "no env constraint" rather than bricking
+		// the route (the never-break-prod mandate). This is a deliberate trade-off —
+		// a typo'd TENANT_KEY_SCOPE disables only the env-map cap, it does not grant
+		// access beyond today's baseline (which has no scope cap at all). Any
+		// `X-Tenant-Scope` header still applies.
+		return null;
+	}
+	if (typeof parsed !== 'object' || parsed === null) return null;
+	const entry = (parsed as Record<string, unknown>)[keyHash];
+	if (!Array.isArray(entry)) return null; // bearer not listed → unconstrained by env
+	const ids = entry.filter((v): v is string => typeof v === 'string');
+	return new Set(ids);
+}
+
+/**
+ * Assert the caller is entitled to the resolved sub-tenant. Returns `true` when
+ * allowed (including when no scoping signal is configured — opt-in) and `false`
+ * when a configured scope explicitly excludes the requested tenant.
+ */
+async function assertTenantScope(
+	c: { req: { header(name: string): string | undefined }; env: { TENANT_KEY_SCOPE?: string } },
+	subTenantId: string,
+): Promise<boolean> {
+	const headerScope = parseScopeHeader(c.req.header('x-tenant-scope'));
+
+	let envScope: Set<string> | null = null;
+	const rawEnv = c.env.TENANT_KEY_SCOPE;
+	if (rawEnv) {
+		const bearer = (c.req.header('authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+		if (bearer) {
+			const keyHash = await sha256Hex(bearer);
+			if (SHA256_HEX_RE.test(keyHash)) {
+				envScope = scopeForKeyHash(rawEnv, keyHash);
+			}
+		}
+	}
+
+	// No signal at all → opt-in disabled, preserve current behaviour.
+	if (!headerScope && !envScope) return true;
+
+	// INTERSECTION, not union: every signal that is present must independently
+	// allow the tenant. The `TENANT_KEY_SCOPE` env map is bound to sha256(bearer)
+	// and is the credential-anchored cap; the `X-Tenant-Scope` header is
+	// caller-supplied and may only NARROW that cap, never widen it (otherwise an
+	// attacker holding the shared key would send a permissive header to bypass the
+	// env map). Each present scope is therefore a hard gate.
+	if (envScope && !envScope.has(subTenantId)) return false;
+	if (headerScope && !headerScope.has(subTenantId)) return false;
+	return true;
 }
 
 /** UUIDv4 generation via Web Crypto. Workers runtime exposes randomUUID. */
@@ -293,6 +402,20 @@ tenantRoutes.post('/portfolio', async (c) => {
 			return c.json({ error: errMsg }, status);
 		}
 
+		// FINDING #5 (BOLA): opt-in per-credential tenant-scope assertion. No-op
+		// (returns true) unless a scope signal is configured, so the live
+		// single-key bv-web flow is unchanged.
+		if (!(await assertTenantScope(c, tenant.subTenantId))) {
+			dispatchAudit(c, {
+				action: 'portfolio.upsert',
+				resourceType: 'sub_tenant',
+				resourceId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'tenant_scope_denied' },
+			});
+			return c.json({ error: 'Resource not found' }, 403);
+		}
+
 		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
 		if (!tenantDb) {
 			// Should be caught by resolveTenant, but defense-in-depth.
@@ -419,6 +542,19 @@ tenantRoutes.post('/scan', async (c) => {
 				blob: { reason: status === 404 ? 'tenant_not_found' : 'tenant_lookup_failed', error: errMsg },
 			});
 			return c.json({ error: errMsg }, status);
+		}
+
+		// FINDING #5 (BOLA): opt-in per-credential tenant-scope assertion.
+		if (!(await assertTenantScope(c, tenant.subTenantId))) {
+			dispatchAudit(c, {
+				action: 'scan.start',
+				resourceType: 'cycle',
+				resourceId: '<unknown>',
+				subTenantId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'tenant_scope_denied' },
+			});
+			return c.json({ error: 'Resource not found' }, 403);
 		}
 
 		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
@@ -762,6 +898,18 @@ tenantRoutes.post('/discover', async (c) => {
 			return c.json({ error: errMsg }, status);
 		}
 
+		// FINDING #5 (BOLA): opt-in per-credential tenant-scope assertion.
+		if (!(await assertTenantScope(c, tenant.subTenantId))) {
+			dispatchAudit(c, {
+				action: 'discovery.start',
+				resourceType: 'sub_tenant',
+				resourceId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'tenant_scope_denied' },
+			});
+			return c.json({ error: 'Resource not found' }, 403);
+		}
+
 		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
 		if (!tenantDb) {
 			dispatchAudit(c, {
@@ -788,9 +936,39 @@ tenantRoutes.post('/discover', async (c) => {
 			return rateLimited(c, rl.resetAt);
 		}
 
+		// FINDING #8: caller-supplied seed_domains must clear the same SSRF /
+		// blocklist gate as /portfolio and /scan before they drive discovery or an
+		// auto_import upsert. Reject the whole request on the first invalid seed so
+		// the behaviour matches /portfolio's fail-fast contract.
 		let seeds: string[] = [];
 		if (body.seed_domains && body.seed_domains.length > 0) {
-			seeds = body.seed_domains;
+			const sanitizedSeeds: string[] = [];
+			for (const d of body.seed_domains) {
+				const v = validateDomain(d);
+				if (!v.valid) {
+					dispatchAudit(c, {
+						action: 'discovery.start',
+						resourceType: 'sub_tenant',
+						resourceId: safeResourceId(tenantOrErr),
+						outcome: 'denied',
+						blob: { reason: 'invalid_seed_domain', error: v.error ?? 'rejected' },
+					});
+					return c.json({ error: `Invalid domain: ${v.error ?? 'rejected'}` }, 400);
+				}
+				const s = sanitizeDomain(d);
+				if (!s) {
+					dispatchAudit(c, {
+						action: 'discovery.start',
+						resourceType: 'sub_tenant',
+						resourceId: safeResourceId(tenantOrErr),
+						outcome: 'denied',
+						blob: { reason: 'invalid_seed_domain_after_sanitize' },
+					});
+					return c.json({ error: `Invalid domain: ${d}` }, 400);
+				}
+				sanitizedSeeds.push(s);
+			}
+			seeds = sanitizedSeeds;
 		} else {
 			const rows = await tenantDb
 				.prepare('SELECT domain FROM domains WHERE watch = 1 LIMIT 10')
@@ -842,11 +1020,19 @@ tenantRoutes.post('/discover', async (c) => {
 			const now = Date.now();
 			for (const cand of candidates) {
 				if (cand.confidence >= 0.85) {
+					// FINDING #8: discovery candidates are derived from external DNS / CT
+					// data and are NOT trusted — run the same SSRF / blocklist gate as
+					// /portfolio before persisting. An invalid candidate (IP literal,
+					// reserved TLD, blocklisted host) is skipped, never upserted.
+					const v = validateDomain(cand.domain);
+					if (!v.valid) continue;
+					const safeCandidate = sanitizeDomain(cand.domain);
+					if (!safeCandidate) continue;
 					try {
-						const existing = await tenantDb.prepare(PORTFOLIO_PROBE_SQL).bind(cand.domain).first<{ domain: string }>();
+						const existing = await tenantDb.prepare(PORTFOLIO_PROBE_SQL).bind(safeCandidate).first<{ domain: string }>();
 						if (!existing) {
 							// Insert with a 'discovery' source tag so the UI can highlight them.
-							await tenantDb.prepare(PORTFOLIO_UPSERT_SQL).bind(cand.domain, 'discovery', now).run();
+							await tenantDb.prepare(PORTFOLIO_UPSERT_SQL).bind(safeCandidate, 'discovery', now).run();
 							imported += 1;
 						}
 					} catch {
@@ -932,6 +1118,19 @@ tenantRoutes.get('/report/:cycle_id', async (c) => {
 				blob: { reason: status === 404 ? 'tenant_not_found' : 'tenant_lookup_failed', error: errMsg },
 			});
 			return c.json({ error: errMsg }, status);
+		}
+
+		// FINDING #5 (BOLA): opt-in per-credential tenant-scope assertion.
+		if (!(await assertTenantScope(c, tenant.subTenantId))) {
+			dispatchAudit(c, {
+				action: 'report.read',
+				resourceType: 'cycle',
+				resourceId: params.cycle_id,
+				subTenantId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'tenant_scope_denied' },
+			});
+			return c.json({ error: 'Resource not found' }, 403);
 		}
 
 		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;

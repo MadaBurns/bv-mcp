@@ -4,6 +4,7 @@ import type { CheckResult } from '../lib/scoring';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
 import { buildCheckCacheKey, buildScanCacheKey, runWithCacheTracked } from '../lib/cache';
 import { withRequestDedup } from '../lib/request-dedup';
+import { isAuthRequiredTool } from '../lib/config';
 import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { checkSpf } from '../tools/check-spf';
 import { checkSubdomainTakeover } from '../tools/check-subdomain-takeover';
@@ -897,6 +898,19 @@ export async function handleToolsCall(
 		const _interactive = isInteractiveClient(runtimeOptions?.clientType);
 
 		const executeDispatch = async (): Promise<McpToolResult> => {
+			// Defense-in-depth (P1): the identity_secops M365 tools forward to bv-web's
+			// internal proxy carrying the trusted internal bearer. If the dangerous
+			// forward is actually possible (m365Proxy bound) but there is no real
+			// principal (no keyHash), never forward keyHash:undefined alongside that
+			// bearer — hard-reject here even if an upstream gate were bypassed. Gated on
+			// m365Proxy presence so the `/internal/*` path (which wires neither m365Proxy
+			// nor keyHash) keeps its fail-soft `unprovisioned` behavior unchanged. The
+			// public /mcp gate (execute.ts) is the primary control; this is the backstop.
+			if (isAuthRequiredTool(name) && runtimeOptions?.m365Proxy && !runtimeOptions?.keyHash) {
+				logToolFailure({ ...ctx(), error: 'm365_proxy_unauthenticated', args });
+				return buildToolErrorResult('Invalid request: m365_proxy_unauthenticated (authentication required).');
+			}
+
 			// Tier gate: csc_complement view requires enterprise or owner tier.
 			if (name === 'brand_audit_single' || name === 'brand_audit_batch_start') {
 				const requestedView = (validatedArgs as { view?: string }).view;

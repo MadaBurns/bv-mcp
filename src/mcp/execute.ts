@@ -22,6 +22,7 @@ import {
 	TIER_TOOL_DAILY_LIMITS,
 	TIER_CONCURRENT_LIMITS,
 	isGatedPaidOnlyTool,
+	isAuthRequiredTool,
 	UPGRADE_URL,
 } from '../lib/config';
 import { normalizeToolName } from '../handlers/tool-args';
@@ -375,6 +376,47 @@ function recordMcpToolErrorIfUnknownTool(options: ExecuteMcpRequestOptions, meth
 	else void recordPromise.catch(() => undefined);
 }
 
+/**
+ * Reject an UNAUTHENTICATED tools/call for an auth-required tool (identity_secops
+ * M365 reads) before dispatch. Returns HTTP 401 with the JSON-RPC UNAUTHORIZED
+ * code and an allowlisted ("Invalid") message prefix so sanitizeErrorMessage
+ * passes it through unchanged. Prevents an anon → bv-web-internal trust-boundary
+ * breach (the proxy would otherwise carry the trusted internal bearer).
+ */
+function buildAuthRequiredResponse(
+	id: JsonRpcRequest['id'],
+	toolName: string,
+	method: string,
+	options: ExecuteMcpRequestOptions,
+	eventId: string | undefined,
+	accessLogInput: { toolName: string; domain: string } | undefined,
+): Extract<ProcessedRequestResult, { kind: 'response' }> {
+	options.analytics?.emitRateLimitEvent({
+		limitType: 'gated_tool',
+		toolName,
+		limit: 0,
+		remaining: 0,
+		country: options.country,
+		authTier: options.authTier ?? 'anon',
+	});
+	emitRequestAnalytics(options, method, 'error', true);
+	if (accessLogInput) {
+		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+	}
+	return {
+		kind: 'response',
+		payload: jsonRpcError(
+			id,
+			JSON_RPC_ERRORS.UNAUTHORIZED,
+			`Invalid request: ${toolName} requires authentication. Provide a valid API key (Authorization: Bearer …).`,
+		),
+		headers: {},
+		httpStatus: 401,
+		useErrorEnvelope: true,
+		eventId,
+	};
+}
+
 function buildGatedToolResponse(
 	id: JsonRpcRequest['id'],
 	toolName: string,
@@ -552,6 +594,13 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
 		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : '';
 		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
+		// Auth-required tools (identity_secops M365 reads) must NEVER be reached by an
+		// unauthenticated caller: dispatch would forward to bv-web's internal M365 proxy
+		// carrying the trusted internal bearer with keyHash:undefined. Reject before
+		// dispatch with HTTP 401 + an allowlisted ("Invalid") message prefix.
+		if (toolName && isAuthRequiredTool(toolName)) {
+			return buildAuthRequiredResponse(id, toolName, method, options, eventId, accessLogInput);
+		}
 		if (toolName && isGatedPaidOnlyTool(toolName)) {
 			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
 		}

@@ -10,6 +10,7 @@
 import { queryDnsRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { callReconScan, isReconHit } from '../lib/recon-binding';
+import { safeFetch } from '../lib/safe-fetch';
 import type { ReconBinding } from '../lib/recon-binding';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
@@ -686,14 +687,19 @@ async function probePrimaryRegistrantOrg(domain: string): Promise<string | null>
  * usually 200's with adverts. The only consistent "no content" signal is a
  * hard transport failure.
  */
-async function probeHasWebContent(domain: string): Promise<boolean> {
+export async function probeHasWebContent(domain: string): Promise<boolean> {
 	try {
-		const resp = await fetch(`https://${domain}/`, {
+		// safeFetch + manual redirect: the candidate is attacker-influenced, so we
+		// MUST NOT auto-follow a 302 → internal/Cloudflare host (blind SSRF oracle,
+		// OWASP A10). safeFetch validates the destination hostname; manual redirect
+		// stops the worker from chasing an attacker-supplied Location. A 3xx still
+		// proves the host is reachable, so any response counts as "has content".
+		const resp = await safeFetch(`https://${domain}/`, {
 			method: 'HEAD',
-			redirect: 'follow',
+			redirect: 'manual',
 			signal: AbortSignal.timeout(WEB_PROBE_TIMEOUT_MS),
 		});
-		// Any HTTP response means the host is reachable — content exists.
+		// Any HTTP response (incl. 3xx) means the host is reachable — content exists.
 		return Boolean(resp);
 	} catch {
 		// Transport failure (refused, timeout, DNS) — treat as no content (HIGH corroborator).

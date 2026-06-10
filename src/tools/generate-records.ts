@@ -16,6 +16,7 @@ import type { QueryDnsOptions } from '../lib/dns-types';
 import { queryMxRecords, queryTxtRecords } from '../lib/dns';
 import { checkDmarc } from './check-dmarc';
 import { checkMtaSts } from './check-mta-sts';
+import { RUA_EMAIL_PATTERN } from '../schemas/tool-args';
 
 /** Result from a record generator. */
 export interface GeneratedRecord {
@@ -239,7 +240,25 @@ export async function generateDmarcRecord(
 	const instructions: string[] = [];
 
 	const effectivePolicy = policy ?? 'reject';
-	const reportEmail = ruaEmail ?? `dmarc-reports@${domain}`;
+
+	// Defense-in-depth: re-validate rua_email at the interpolation site so any
+	// future caller path (not just the Zod-guarded tool args) is safe. DMARC tags
+	// are semicolon-separated, so an unsafe value (e.g. "user@example.com; p=none;
+	// ruf=mailto:attacker@example.invalid") would inject extra tags into the generated
+	// record. On a malicious/invalid value, fall back to the safe domain default
+	// and warn rather than throw — keeping the GeneratedRecord contract intact.
+	let reportEmail: string;
+	if (ruaEmail === undefined) {
+		reportEmail = `dmarc-reports@${domain}`;
+	} else if (RUA_EMAIL_PATTERN.test(ruaEmail)) {
+		reportEmail = ruaEmail;
+	} else {
+		reportEmail = `dmarc-reports@${domain}`;
+		warnings.push(
+			`Invalid report email was ignored; using the safe default "${reportEmail}" instead. ` +
+				'Provide a single, well-formed address (no spaces, ";", "," or control characters).',
+		);
+	}
 
 	// Build DMARC record
 	const tags: string[] = [

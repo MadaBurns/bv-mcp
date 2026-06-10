@@ -163,19 +163,36 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 	const issuer = resolveIssuer(c.req.url, env.OAUTH_ISSUER);
 	const subject = codeRec.subject ?? 'owner';
 	const tier = codeRec.tier ?? 'owner';
+
+	// Clamp the JWT lifetime to the paid entitlement window (A01 token-persistence). bv-web
+	// persists `entitlementExpiresAt` (epoch SECONDS — same units as the JWT iat/exp and
+	// `issued_at`) on the code record when a Stripe subscription gates the grant. Without this
+	// clamp a lapsed subscription would keep resolving to the paid tier for up to the flat
+	// 90-day default if bv-web never calls /internal/oauth/revoke-subject. If the entitlement
+	// has already passed, reject the exchange rather than mint an already-expired token.
+	let ttlSeconds = OAUTH_JWT_TTL_SECONDS;
+	if (codeRec.entitlementExpiresAt !== undefined) {
+		const now = Math.floor(Date.now() / 1000);
+		const remaining = codeRec.entitlementExpiresAt - now;
+		if (remaining <= 0) {
+			return c.json({ error: 'invalid_grant', error_description: 'Entitlement expired' }, 400);
+		}
+		ttlSeconds = Math.min(OAUTH_JWT_TTL_SECONDS, remaining);
+	}
+
 	// Read the current token-version for this subject so the minted JWT can be
 	// invalidated before its 90-day natural expiry (FIND-13).
 	const ver = await getTokenVersion(kv, subject);
 	const token = await signJwt(
 		{ sub: subject, jti: newJti(), tier, client_id: parsed.client_id, ver },
-		{ secret, ttlSeconds: OAUTH_JWT_TTL_SECONDS, issuer, audience: `${issuer}/mcp` },
+		{ secret, ttlSeconds, issuer, audience: `${issuer}/mcp` },
 	);
 
 	return c.json(
 		{
 			access_token: token,
 			token_type: 'Bearer',
-			expires_in: OAUTH_JWT_TTL_SECONDS,
+			expires_in: ttlSeconds,
 			scope: codeRec.scope ?? 'mcp',
 		},
 		200,

@@ -35,6 +35,8 @@ const RSA_SPKI_HEADERS: ReadonlyArray<{ prefix: string; bits: number; fullChars:
 
 export function getDkimTagValue(record: string, tag: string): string | undefined {
 	if (!/^[a-zA-Z0-9]+$/.test(tag)) return undefined;
+	// nosemgrep: detect-non-literal-regexp -- `tag` is guarded to /^[a-zA-Z0-9]+$/ above (no metachars);
+	// pattern has no nested quantifiers, so it is linear-time (verified <2ms @ 500K chars). Not ReDoS.
 	const match = record.match(new RegExp(`(?:^|;)\\s*${tag}=([^;]*)`, 'i'));
 	return match?.[1]?.trim();
 }

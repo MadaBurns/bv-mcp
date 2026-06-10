@@ -9,6 +9,7 @@
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import { callReconScan, isReconHit, type ReconBinding } from '../lib/recon-binding';
+import { sanitizeUpstreamObject, sanitizeUpstreamValue } from '../lib/sanitize-upstream';
 
 const CATEGORY = 'realtime_threat_feed' as CheckCategory;
 
@@ -62,7 +63,10 @@ export async function checkRealtimeThreatFeed(domain: string, options: RealtimeT
 				'Realtime threat-feed hit',
 				sev,
 				scan.details ?? 'Threat intelligence flagged this domain.',
-				{ domain, status: scan.status, ...scan.metadata },
+				// F7: sanitize the attacker-influenceable upstream metadata + status before they
+				// enter finding metadata / structuredContent. Sanitized spread FIRST so a malicious
+				// metadata.domain/.status can't override the explicit keys with raw upstream.
+				{ ...sanitizeUpstreamObject(scan.metadata), domain, status: sanitizeUpstreamValue(scan.status) },
 			),
 		);
 	} else {

@@ -201,6 +201,20 @@ export const GenerateArtifactSchema = z.enum([
 	'rollout_plan',
 ]);
 
+/**
+ * mailto-safe email pattern for the DMARC `rua_email` arg.
+ *
+ * DMARC tags are semicolon-separated, so a `rua_email` interpolated into
+ * `rua=mailto:${email}` must REJECT `;`, whitespace, `,`, `@` in the local/host
+ * parts, and control characters (`\x00`–`\x1f`, `\x7f`) — otherwise a value like
+ * `user@example.com; p=none; ruf=mailto:attacker@example.invalid` injects extra DMARC tags that
+ * weaken policy or redirect forensic reports in the generated, copy-paste-ready
+ * record (OWASP A03 / LLM02 Insecure Output Handling). Exported so the
+ * interpolation site in `generate-records.ts` can re-validate (defense-in-depth)
+ * without the two layers drifting.
+ */
+export const RUA_EMAIL_PATTERN = /^[^\s;,@\x00-\x1f\x7f]+@[^\s;,@\x00-\x1f\x7f]+\.[^\s;,@\x00-\x1f\x7f]+$/;
+
 export const GenerateArgs = z
 	.object({
 		artifact: GenerateArtifactSchema.describe('Which artifact to generate (e.g., "dmarc_record", "fix_plan").'),
@@ -213,7 +227,12 @@ export const GenerateArgs = z
 			.describe('spf_record: providers to include (e.g., ["google"]).'),
 		// dmarc_record
 		policy: DmarcPolicySchema.optional().describe('dmarc_record: policy (default "reject").'),
-		rua_email: z.string().max(254).optional().describe('dmarc_record: report email. Default: dmarc-reports@{domain}.'),
+		rua_email: z
+			.string()
+			.max(254)
+			.regex(RUA_EMAIL_PATTERN, 'Invalid email address')
+			.optional()
+			.describe('dmarc_record: report email. Default: dmarc-reports@{domain}.'),
 		// dkim_config
 		provider: z.string().max(100).optional().describe('dkim_config: provider (e.g., "google"). Omit for generic.'),
 		// mta_sts_policy
