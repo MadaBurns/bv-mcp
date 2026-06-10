@@ -190,6 +190,76 @@ describe('generateDmarcRecord', () => {
 	});
 });
 
+describe('rua_email output-injection hardening', () => {
+	// P2 / OWASP A03 / LLM02 Insecure Output Handling. DMARC tags are
+	// semicolon-separated, so an unvalidated rua_email can inject extra tags
+	// (e.g. "a@b.com; p=none; ruf=mailto:attacker@evil.com") that silently weaken
+	// policy or redirect forensic reports in a copy-paste-ready DNS record.
+
+	describe('Zod schema (GenerateArgs)', () => {
+		async function parse(rua_email: string) {
+			const { GenerateArgs } = await import('../src/schemas/tool-args');
+			return GenerateArgs.safeParse({ artifact: 'dmarc_record', domain: 'example.com', rua_email });
+		}
+
+		it('rejects a semicolon tag-injection payload', async () => {
+			const result = await parse('a@b.com; p=none; ruf=mailto:attacker@evil.com');
+			expect(result.success).toBe(false);
+		});
+
+		it('rejects a control-character payload', async () => {
+			const result = await parse('a@b.com\x00\x01');
+			expect(result.success).toBe(false);
+		});
+
+		it('rejects a whitespace/comma payload', async () => {
+			expect((await parse('a b@c.com')).success).toBe(false);
+			expect((await parse('a@b.com,evil@x.com')).success).toBe(false);
+		});
+
+		it('accepts a legitimate report email', async () => {
+			const result = await parse('dmarc@example.com');
+			expect(result.success).toBe(true);
+		});
+	});
+
+	describe('generateDmarcRecord interpolation site (defense-in-depth)', () => {
+		async function run(ruaEmail: string) {
+			const { generateDmarcRecord } = await import('../src/tools/generate-records');
+			return generateDmarcRecord('example.com', undefined, ruaEmail);
+		}
+
+		it('does not let an injected payload reach the record value', async () => {
+			mockTxtRecords(['v=DMARC1; p=none']);
+			const record = await run('a@b.com; p=none; ruf=mailto:attacker@evil.com');
+			// Injected tags / attacker email must NOT appear in the copy-paste record.
+			expect(record.value).not.toContain('ruf=');
+			expect(record.value).not.toContain('attacker@evil.com');
+			expect(record.value).not.toContain('a@b.com');
+			// Exactly one rua tag, and it must be the safe default.
+			expect(record.value.match(/rua=/g)?.length ?? 0).toBe(1);
+			expect(record.value).toContain('rua=mailto:dmarc-reports@example.com');
+			// The intended policy is preserved; injected p=none must not survive.
+			expect(record.value).toContain('p=reject');
+			expect(record.warnings.length).toBeGreaterThan(0);
+		});
+
+		it('keeps a control-character payload out of the record value', async () => {
+			mockTxtRecords(['v=DMARC1; p=none']);
+			const record = await run('a@b.com\x00');
+			expect(record.value).not.toContain('a@b.com');
+			expect(record.value).toContain('rua=mailto:dmarc-reports@example.com');
+		});
+
+		it('still uses a legitimate report email verbatim', async () => {
+			mockTxtRecords(['v=DMARC1; p=none']);
+			const record = await run('reports@monitoring.example.com');
+			expect(record.value).toContain('rua=mailto:reports@monitoring.example.com');
+			expect(record.warnings.some((w) => w.toLowerCase().includes('rua') || w.toLowerCase().includes('report email'))).toBe(false);
+		});
+	});
+});
+
 describe('generateDkimConfig', () => {
 	async function run(domain = 'example.com', provider?: string) {
 		const { generateDkimConfig } = await import('../src/tools/generate-records');
