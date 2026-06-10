@@ -34,6 +34,10 @@ const TEST_TENANT_ID = 'tenant-1';
 const TEST_TENANT_BINDING = 'TENANT_DB_TENANT_1';
 const REGISTRY_LOOKUP_SQL =
 	'SELECT id, super_tenant_id, d1_db_id, active FROM sub_tenants WHERE id = ? LIMIT 1';
+// Cheap single-column active-flag probe run by resolveTenant on a cache HIT (3.17.2,
+// FINDING #2). Per-message queue resolution warm-hits this, so the mock must model it
+// or cache-hit resolutions see no row and treat the tenant as deactivated.
+const ACTIVE_PROBE_SQL = 'SELECT active FROM sub_tenants WHERE id = ? LIMIT 1';
 const SCAN_PROBE_BY_DOMAIN_SQL = 'SELECT id FROM scans WHERE cycle_id = ? AND domain = ? LIMIT 1';
 const SCANS_INSERT_SQL =
 	'INSERT INTO scans (id, domain, scan_at, score, grade, maturity_stage, finding_count, result_json, cycle_id) ' +
@@ -168,6 +172,8 @@ describe('Tenant queue consumer chaos: handleScanQueue wrapper resilience', () =
 				[REGISTRY_LOOKUP_SQL]: [
 					{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'x', active: 1 },
 				],
+				// Cache-hit active-flag re-probe (3.17.2) — same tenant stays active.
+				[ACTIVE_PROBE_SQL]: [{ active: 1 }],
 			},
 		});
 		const tenant = makeMockD1();
@@ -215,6 +221,8 @@ describe('Tenant queue consumer chaos: handleScanQueue wrapper resilience', () =
 				[REGISTRY_LOOKUP_SQL]: [
 					{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'x', active: 1 },
 				],
+				// Cache-hit active-flag re-probe (3.17.2) — same tenant stays active.
+				[ACTIVE_PROBE_SQL]: [{ active: 1 }],
 			},
 		});
 		// Fail on the 2nd SCANS_INSERT call (the 2nd message's persistScan).

@@ -6,7 +6,7 @@
 		"url": "https://github.com/MadaBurns/bv-mcp",
 		"source": "github"
 	},
-	"version": "3.17.1",
+	"version": "3.17.2",
 	"remotes": [
 		{
 			"type": "streamable-http",

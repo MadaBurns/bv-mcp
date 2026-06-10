@@ -994,6 +994,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			tlsProbeAuthToken: options.tlsProbeAuthToken,
 			m365Proxy: options.m365Proxy,
 			m365ProxyAuthToken: options.m365ProxyAuthToken,
+			// keyHash MUST be forwarded: handleToolsCall's Layer-2 guard
+			// (isAuthRequiredTool && m365Proxy && !keyHash) rejects every
+			// authenticated identity_secops caller without it, and bv-web's
+			// M365 proxy needs the principal hash. Set only for authed callers.
+			keyHash: options.keyHash,
 			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,
@@ -1091,6 +1096,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			tlsProbeAuthToken: options.tlsProbeAuthToken,
 			m365Proxy: options.m365Proxy,
 			m365ProxyAuthToken: options.m365ProxyAuthToken,
+			// keyHash MUST be forwarded: handleToolsCall's Layer-2 guard
+			// (isAuthRequiredTool && m365Proxy && !keyHash) rejects every
+			// authenticated identity_secops caller without it, and bv-web's
+			// M365 proxy needs the principal hash. Set only for authed callers.
+			keyHash: options.keyHash,
 			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,
