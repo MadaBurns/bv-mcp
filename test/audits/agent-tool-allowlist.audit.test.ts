@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { AGENT_ALLOWED_TOOLS, AGENT_CALLER_HEADER, isAgentCaller, isAgentAllowedTool } from '../../src/lib/config';
+import { AGENT_ALLOWED_TOOLS, AGENT_CALLER_HEADER, AGENT_CALLER_VALUE, isAgentCaller, isAgentAllowedTool } from '../../src/lib/config';
 import { TOOLS } from '../../src/schemas/tool-definitions';
 
 const EXPECTED_AGENT_TOOLS = [
@@ -39,9 +39,11 @@ describe('agent-chat tool allowlist SSOT', () => {
 
 	it('header constant and predicates behave', () => {
 		expect(AGENT_CALLER_HEADER).toBe('x-bv-caller');
-		expect(isAgentCaller('agent-chat')).toBe(true);
+		expect(AGENT_CALLER_VALUE).toBe('agent-chat');
+		expect(isAgentCaller(AGENT_CALLER_VALUE)).toBe(true);
 		expect(isAgentCaller('something-else')).toBe(false);
 		expect(isAgentCaller(null)).toBe(false);
+		expect(isAgentCaller(undefined)).toBe(false);
 		expect(isAgentAllowedTool('scan_domain')).toBe(true);
 		expect(isAgentAllowedTool('query_signins')).toBe(false);
 	});

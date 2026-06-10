@@ -383,6 +383,9 @@ export function isGatedPaidOnlyTool(toolName: string): boolean {
  * (defense-in-depth across the trust boundary). All members are passive/read-only;
  * the agent-tool-allowlist audit pins the exact set and the read-only invariant.
  * See docs/design/agent-chat-tool-allowlist.md.
+ * Names are canonical TOOL_DEFS names. The `scan` → `scan_domain` alias must be
+ * normalized BEFORE calling isAgentAllowedTool() (same ordering as the gated-tool
+ * check relative to normalizeToolName).
  */
 export const AGENT_ALLOWED_TOOLS: ReadonlySet<string> = new Set<string>([
 	'scan_domain',
