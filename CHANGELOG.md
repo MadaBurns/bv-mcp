@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-06-11
+
+### Security
+
+- **Internal:** add `agent-chat` caller principal (`X-BV-Caller: agent-chat`) with a server-side 13-tool read-only allowlist on `/internal/tools/{call,batch}`. Defense-in-depth for the bv-web agent feature — non-allowlisted tools (mutating/offensive/identity) are rejected with `403 { "error": "agent_tool_not_allowed" }` even if the consuming gateway is bypassed. Alias-normalized before the check; audit-pinned (`agent-tool-allowlist.audit.test.ts`).
+
 ## [3.17.2] - 2026-06-10
 
 Patch release: fixes a P0 regression introduced in 3.17.1 plus follow-up hardening found in a post-merge code review of #387. No scoring/scan change; `SCORING_MODEL_VERSION` stays `1.2.0`; tool count unchanged (75).

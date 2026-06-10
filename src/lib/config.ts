@@ -377,6 +377,48 @@ export function isGatedPaidOnlyTool(toolName: string): boolean {
 	return GATED_PAID_ONLY_TOOLS.has(toolName);
 }
 
+/**
+ * Curated read-only tool set the bv-web agent-chat caller may invoke over the
+ * internal path. Second, independent gate behind bv-web's own gateway allowlist
+ * (defense-in-depth across the trust boundary). All members are passive/read-only;
+ * the agent-tool-allowlist audit pins the exact set and the read-only invariant.
+ * See docs/design/agent-chat-tool-allowlist.md.
+ * Names are canonical TOOL_DEFS names. The `scan` → `scan_domain` alias must be
+ * normalized BEFORE calling isAgentAllowedTool() (same ordering as the gated-tool
+ * check relative to normalizeToolName).
+ */
+export const AGENT_ALLOWED_TOOLS: ReadonlySet<string> = new Set<string>([
+	'scan_domain',
+	'check_spf',
+	'check_dkim',
+	'check_dmarc',
+	'check_dnssec',
+	'check_ssl',
+	'check_mx',
+	'check_mta_sts',
+	'check_caa',
+	'check_http_security',
+	'explain_finding',
+	'compare_baseline',
+	'get_benchmark',
+]);
+
+/** Lowercase header name carrying the internal caller identity. */
+export const AGENT_CALLER_HEADER = 'x-bv-caller';
+
+/** Value of AGENT_CALLER_HEADER that identifies the bv-web agent-chat path. */
+export const AGENT_CALLER_VALUE = 'agent-chat';
+
+/** True when the request carries the agent-chat caller assertion. */
+export function isAgentCaller(headerValue: string | null | undefined): boolean {
+	return headerValue === AGENT_CALLER_VALUE;
+}
+
+/** True when `toolName` is in the agent-chat allowlist. */
+export function isAgentAllowedTool(toolName: string): boolean {
+	return AGENT_ALLOWED_TOOLS.has(toolName);
+}
+
 /** URL shown in the upgrade-required (HTTP 403) message. */
 export const UPGRADE_URL = 'https://blackveilsecurity.com/pricing';
 
