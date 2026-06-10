@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.17.2] - 2026-06-10
+
+Patch release: fixes a P0 regression introduced in 3.17.1 plus follow-up hardening found in a post-merge code review of #387. No scoring/scan change; `SCORING_MODEL_VERSION` stays `1.2.0`; tool count unchanged (75).
+
+### Fixed
+
+- **(P0) `identity_secops` M365 tools were broken for authenticated callers** (`src/mcp/execute.ts`). 3.17.1's Layer-2 guard (`m365Proxy && !keyHash`) fired for every authenticated public caller because `executeMcpRequest` never forwarded `keyHash` into the `dispatchMcpMethod` runtime options — so `query_signins`/`query_ual`/`get_ca_policies`/`assess_coverage` returned `m365_proxy_unauthenticated`. Now `keyHash` is threaded into both dispatch paths (which also finally delivers the real principal to bv-web's M365 proxy — the original P1's intent). Covered by a new integration test through `executeMcpRequest`. Side effect: mutating-tool request-dedup now correctly engages for authenticated public callers (was silently skipped).
+- **(perf) Tenant resolver no longer issues a full-row registry query on every cache hit** (`src/tenants/tenant-resolver.ts`). The active-flag recheck now uses a cheap single-column probe (`SELECT active …`), restoring the cache benefit on the per-message queue-consumer hot path.
+- **(availability) Tenant resolver cache hit serves the cached tenant on a transient registry-read error** instead of dropping the entry and failing — a momentary D1 blip no longer breaks active tenants. Prompt-deactivation behavior is preserved (definitive `active=false`/missing still evicts).
+- **(input validation) `/discover` now validates DB-read seed domains** (`watch=1` rows) through `validateDomain`/`sanitizeDomain`, matching the caller-seed and auto-import paths.
+
+### Changed / hardening
+
+- **`AUTH_REQUIRED_TOOLS` is now CI-pinned to the `identity_secops` tool group** (`test/identity-secops-auth-gate.spec.ts` derives the expected set from `TOOL_DEFS`), so a new M365 tool cannot ship unauthenticated without failing CI.
+- **`TENANT_KEY_SCOPE` matching tolerates both the full 64-hex `SHA-256(bearer)` and its 16-char prefix** (`src/tenants/routes.ts`), removing a silent fail-open when an operator copies the truncated `keyHash`; key format documented.
+- **Tenant-scope check factored into one `denyIfOutOfScope` helper** called at all four tenant routes, with a coverage audit asserting every tenant-resolving route also scope-checks.
+- **De-duplicated sanitizers**: `osint-investigate` now imports the shared `src/lib/sanitize-upstream.ts` (was a byte-identical copy); deleted the dead `src/tools/dkim-analysis.ts` duplicate (the package copy is canonical). _(Deferred: generalizing `createFinding` to sanitize all finding `metadata` at the chokepoint — larger change spanning the vendored `dns-checks` package; tracked separately.)_
+
 ## [3.17.1] - 2026-06-10
 
 Patch release: security-audit remediation. A full-project security audit (OWASP Top 10 / LLM Top 10 / Agentic ASI Top 10) surfaced 2 High, 3 Medium, and 6 Low/Info findings (0 Critical); this ships TDD'd fixes for all actionable findings plus defense-in-depth hardening. No scoring or scan change; `SCORING_MODEL_VERSION` stays `1.2.0`; tool count unchanged (75).

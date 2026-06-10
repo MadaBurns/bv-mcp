@@ -152,6 +152,20 @@ describe('FINDING #5: opt-in tenant-scope assertion (BOLA)', () => {
 		expect(res.status).toBe(403);
 	});
 
+	it('(#6) TENANT_KEY_SCOPE keyed on the 16-char keyHash prefix also engages (no silent fail-open)', async () => {
+		// An operator who copies the analytics keyHash (sliced to 16 chars in
+		// index.ts) into TENANT_KEY_SCOPE must NOT get a silent fail-open. The
+		// 16-char prefix of the full sha256(bearer) is accepted as a tolerant match.
+		const sixteen = TEST_KEY_HASH.slice(0, 16);
+		const customEnv = buildEnv({ TENANT_KEY_SCOPE: JSON.stringify({ [sixteen]: [TENANT_A] }) });
+		// scoped to A → requesting B is denied (proves the cap engaged via the 16-char key)
+		const resDeny = await send(portfolioReq(TENANT_B), customEnv);
+		expect(resDeny.status).toBe(403);
+		// and the matching tenant succeeds
+		const resAllow = await send(portfolioReq(TENANT_A), customEnv);
+		expect(resAllow.status).toBe(200);
+	});
+
 	it('a key absent from the TENANT_KEY_SCOPE map is unrestricted (map only constrains listed keys)', async () => {
 		// The single shared prod key may not appear in a partial scope map; absence
 		// must NOT lock it out (backward-compat) — only keys present in the map are

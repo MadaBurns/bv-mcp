@@ -131,7 +131,18 @@ function extractTenantHeader(c: { req: { header(name: string): string | undefine
  */
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
-/** hex(SHA-256(value)) — same credential-hash convention as `keyHash` elsewhere. */
+/**
+ * hex(SHA-256(value)) — the SAME 64-hex-char credential-hash convention as the
+ * full `keyHash` derived in `src/lib/tier-auth.ts` (`hex(SHA-256(rawToken))`).
+ *
+ * TODO(reuse): this duplicates the hex-SHA-256 logic in `tier-auth.ts` (line ~155,
+ * `hashTokenRaw` + the hex map). It is kept local because there is NO cleanly
+ * importable hex-SHA-256 helper today: `tier-auth.ts`'s `hashTokenRaw` is private
+ * and returns raw bytes (not hex), `lib/analytics.ts`'s hashers are FNV-1a (not
+ * SHA-256), and `lib/auth.ts`'s comparator returns a boolean. If/when an exported
+ * `hex(SHA-256(...))` helper lands, import it here so the hash convention has ONE
+ * source.
+ */
 async function sha256Hex(value: string): Promise<string> {
 	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
 	return Array.from(new Uint8Array(digest))
@@ -149,7 +160,27 @@ function parseScopeHeader(raw: string | undefined): Set<string> | null {
 	return ids.length > 0 ? new Set(ids) : null;
 }
 
-/** Parse the `TENANT_KEY_SCOPE` env map and return the allowed ids for this bearer hash, if listed. */
+/**
+ * Parse the `TENANT_KEY_SCOPE` env map and return the allowed ids for this bearer
+ * hash, if listed.
+ *
+ * REQUIRED KEY FORMAT (FINDING #6): each JSON key is the bearer's credential hash.
+ * The canonical form is the FULL 64-lowercase-hex `hex(SHA-256(bearer))` — the
+ * same value `keyHash` carries before `src/index.ts` slices it to 16 chars for
+ * analytics. To avoid a SILENT fail-open for an operator who copies that sliced
+ * 16-char analytics value instead, this also accepts the **16-char lowercase-hex
+ * prefix** of the full hash as a tolerant match. Precedence: an exact full-hash
+ * entry wins; only if absent do we fall back to the 16-char-prefix entry.
+ *
+ * Example (full, canonical):
+ *   { "d98e0aceefca229728fdbdd7fa479f224a7a31cb53bde4f083c1a181015e79b2": ["tenant-1"] }
+ * Example (tolerated 16-char prefix form):
+ *   { "d98e0aceefca2297": ["tenant-1"] }
+ *
+ * 16 hex = 64 bits of entropy, so an accidental prefix collision between two
+ * distinct credentials is astronomically improbable; the prefix tolerance does
+ * not meaningfully broaden the cap.
+ */
 function scopeForKeyHash(rawEnv: string | undefined, keyHash: string): Set<string> | null {
 	if (!rawEnv) return null;
 	let parsed: unknown;
@@ -164,8 +195,11 @@ function scopeForKeyHash(rawEnv: string | undefined, keyHash: string): Set<strin
 		return null;
 	}
 	if (typeof parsed !== 'object' || parsed === null) return null;
-	const entry = (parsed as Record<string, unknown>)[keyHash];
-	if (!Array.isArray(entry)) return null; // bearer not listed → unconstrained by env
+	const map = parsed as Record<string, unknown>;
+	// Full 64-hex match wins; tolerantly fall back to the 16-char-prefix form so an
+	// operator using the sliced analytics keyHash doesn't get a silent fail-open.
+	const entry = map[keyHash] ?? map[keyHash.slice(0, 16)];
+	if (!Array.isArray(entry)) return null; // bearer not listed (in either form) → unconstrained by env
 	const ids = entry.filter((v): v is string => typeof v === 'string');
 	return new Set(ids);
 }
@@ -174,6 +208,12 @@ function scopeForKeyHash(rawEnv: string | undefined, keyHash: string): Set<strin
  * Assert the caller is entitled to the resolved sub-tenant. Returns `true` when
  * allowed (including when no scoping signal is configured — opt-in) and `false`
  * when a configured scope explicitly excludes the requested tenant.
+ *
+ * `TENANT_KEY_SCOPE` keys are `hex(SHA-256(bearer))`: the full 64-lowercase-hex
+ * digest (canonical) OR its 16-char lowercase-hex prefix (tolerated — see
+ * `scopeForKeyHash` for the exact format + example). Both forms match the same
+ * credential, so an operator copying the sliced analytics keyHash is safe rather
+ * than silently fail-open.
  */
 async function assertTenantScope(
 	c: { req: { header(name: string): string | undefined }; env: { TENANT_KEY_SCOPE?: string } },
@@ -205,6 +245,35 @@ async function assertTenantScope(
 	if (envScope && !envScope.has(subTenantId)) return false;
 	if (headerScope && !headerScope.has(subTenantId)) return false;
 	return true;
+}
+
+/**
+ * FINDING #8: single choke-point for the per-route BOLA scope gate. Runs the
+ * opt-in `assertTenantScope` check and, on denial, dispatches the standard
+ * `tenant_scope_denied` audit event and returns the 403 response. Returns `null`
+ * when the caller is in scope (or no scope is configured — opt-in inert), so the
+ * caller continues normally.
+ *
+ * Factored out of the four routes (/portfolio, /scan, /discover, /report) so a
+ * new tenant route can't silently forget the scope check — the
+ * `tenant-scope-coverage` audit pins `denyIfOutOfScope` call-site count ==
+ * `resolveTenant` call-site count. `auditPartial` carries the per-route
+ * action/resource fields (which legitimately differ — e.g. /scan + /report
+ * include `subTenantId`, /portfolio + /discover do not); this helper only injects
+ * the uniform `outcome: 'denied'` + `blob.reason: 'tenant_scope_denied'`.
+ */
+async function denyIfOutOfScope(
+	c: Parameters<typeof assertTenantScope>[0] & TenantRequestCtx & { json(body: unknown, status: number): Response },
+	subTenantId: string,
+	auditPartial: Omit<AuditPartial, 'outcome' | 'blob'>,
+): Promise<Response | null> {
+	if (await assertTenantScope(c, subTenantId)) return null;
+	dispatchAudit(c, {
+		...auditPartial,
+		outcome: 'denied',
+		blob: { reason: 'tenant_scope_denied' },
+	});
+	return c.json({ error: 'Resource not found' }, 403);
 }
 
 /** UUIDv4 generation via Web Crypto. Workers runtime exposes randomUUID. */
@@ -403,18 +472,15 @@ tenantRoutes.post('/portfolio', async (c) => {
 		}
 
 		// FINDING #5 (BOLA): opt-in per-credential tenant-scope assertion. No-op
-		// (returns true) unless a scope signal is configured, so the live
-		// single-key bv-web flow is unchanged.
-		if (!(await assertTenantScope(c, tenant.subTenantId))) {
-			dispatchAudit(c, {
-				action: 'portfolio.upsert',
-				resourceType: 'sub_tenant',
-				resourceId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'tenant_scope_denied' },
-			});
-			return c.json({ error: 'Resource not found' }, 403);
-		}
+		// (returns null) unless a scope signal is configured, so the live
+		// single-key bv-web flow is unchanged. Factored into denyIfOutOfScope
+		// (FINDING #8) so all 4 routes share one choke-point.
+		const portfolioScopeDeny = await denyIfOutOfScope(c, tenant.subTenantId, {
+			action: 'portfolio.upsert',
+			resourceType: 'sub_tenant',
+			resourceId: safeResourceId(tenantOrErr),
+		});
+		if (portfolioScopeDeny) return portfolioScopeDeny;
 
 		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
 		if (!tenantDb) {
@@ -544,18 +610,14 @@ tenantRoutes.post('/scan', async (c) => {
 			return c.json({ error: errMsg }, status);
 		}
 
-		// FINDING #5 (BOLA): opt-in per-credential tenant-scope assertion.
-		if (!(await assertTenantScope(c, tenant.subTenantId))) {
-			dispatchAudit(c, {
-				action: 'scan.start',
-				resourceType: 'cycle',
-				resourceId: '<unknown>',
-				subTenantId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'tenant_scope_denied' },
-			});
-			return c.json({ error: 'Resource not found' }, 403);
-		}
+		// FINDING #5 (BOLA): opt-in per-credential tenant-scope assertion (FINDING #8 helper).
+		const scanScopeDeny = await denyIfOutOfScope(c, tenant.subTenantId, {
+			action: 'scan.start',
+			resourceType: 'cycle',
+			resourceId: '<unknown>',
+			subTenantId: safeResourceId(tenantOrErr),
+		});
+		if (scanScopeDeny) return scanScopeDeny;
 
 		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
 		if (!tenantDb) {
@@ -898,17 +960,13 @@ tenantRoutes.post('/discover', async (c) => {
 			return c.json({ error: errMsg }, status);
 		}
 
-		// FINDING #5 (BOLA): opt-in per-credential tenant-scope assertion.
-		if (!(await assertTenantScope(c, tenant.subTenantId))) {
-			dispatchAudit(c, {
-				action: 'discovery.start',
-				resourceType: 'sub_tenant',
-				resourceId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'tenant_scope_denied' },
-			});
-			return c.json({ error: 'Resource not found' }, 403);
-		}
+		// FINDING #5 (BOLA): opt-in per-credential tenant-scope assertion (FINDING #8 helper).
+		const discoverScopeDeny = await denyIfOutOfScope(c, tenant.subTenantId, {
+			action: 'discovery.start',
+			resourceType: 'sub_tenant',
+			resourceId: safeResourceId(tenantOrErr),
+		});
+		if (discoverScopeDeny) return discoverScopeDeny;
 
 		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
 		if (!tenantDb) {
@@ -970,10 +1028,24 @@ tenantRoutes.post('/discover', async (c) => {
 			}
 			seeds = sanitizedSeeds;
 		} else {
+			// FINDING #4: DB-read seeds (watch=1) are NOT inherently trusted — a row
+			// could pre-date a blocklist change or have been written before the
+			// validation gate existed. Run each through the same validateDomain /
+			// sanitizeDomain SSRF / blocklist gate as the seed_domains and candidate
+			// paths, dropping (skipping) invalid rows rather than failing the request
+			// (mirrors /scan's DB-read target handling). All seeds invalid → empty set
+			// → the existing "No seed domains..." 400 below handles it.
 			const rows = await tenantDb
 				.prepare('SELECT domain FROM domains WHERE watch = 1 LIMIT 10')
 				.all<{ domain: string }>();
-			seeds = (rows.results ?? []).map((r) => r.domain);
+			const dbSeeds: string[] = [];
+			for (const r of rows.results ?? []) {
+				const v = validateDomain(r.domain);
+				if (!v.valid) continue;
+				const s = sanitizeDomain(r.domain);
+				if (s) dbSeeds.push(s);
+			}
+			seeds = dbSeeds;
 		}
 
 		if (seeds.length === 0) {
@@ -1120,18 +1192,14 @@ tenantRoutes.get('/report/:cycle_id', async (c) => {
 			return c.json({ error: errMsg }, status);
 		}
 
-		// FINDING #5 (BOLA): opt-in per-credential tenant-scope assertion.
-		if (!(await assertTenantScope(c, tenant.subTenantId))) {
-			dispatchAudit(c, {
-				action: 'report.read',
-				resourceType: 'cycle',
-				resourceId: params.cycle_id,
-				subTenantId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'tenant_scope_denied' },
-			});
-			return c.json({ error: 'Resource not found' }, 403);
-		}
+		// FINDING #5 (BOLA): opt-in per-credential tenant-scope assertion (FINDING #8 helper).
+		const reportScopeDeny = await denyIfOutOfScope(c, tenant.subTenantId, {
+			action: 'report.read',
+			resourceType: 'cycle',
+			resourceId: params.cycle_id,
+			subTenantId: safeResourceId(tenantOrErr),
+		});
+		if (reportScopeDeny) return reportScopeDeny;
 
 		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
 		if (!tenantDb) {

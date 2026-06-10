@@ -23,8 +23,14 @@
  * the cached binding/prefix work, so a tenant deactivated mid-TTL stops
  * resolving promptly instead of staying valid for up to the full 5 min. The
  * heavier resolution work (regex, binding-name derivation, prefix construction,
- * per-tenant binding presence) stays cached; only the cheap indexed `active`
- * lookup runs on a hit.
+ * per-tenant binding presence) stays cached; only a cheap single-column `active`
+ * probe (`ACTIVE_PROBE_SQL`, not the full-row `REGISTRY_LOOKUP_SQL`) runs on a
+ * hit — keeping the hot per-queue-message path cheap (FINDING #2).
+ *
+ * FINDING #3 (availability): the recheck is fail-OPEN on a thrown read. A
+ * definitive "gone" (row missing / `active=false`) drops the entry and 404s; a
+ * transient D1 read error serves the still-valid cached value rather than
+ * dropping it and re-resolving into the same failing read.
  *
  * Test surface: `resetTenantResolverCache()` clears the cache between specs.
  */
@@ -32,6 +38,13 @@
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const TENANT_BINDING_PREFIX = 'TENANT_DB_';
 const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, active FROM sub_tenants WHERE id = ? LIMIT 1';
+/**
+ * Cheap, indexed (PK `id`) probe used ONLY on the cache-hit recheck path. It
+ * reads a single column instead of the full row so the hot `queue-consumer`
+ * loop (one `resolveTenant` per message) doesn't pay for `REGISTRY_LOOKUP_SQL`'s
+ * full-row read on every cache hit — that is the FINDING #2 perf regression.
+ */
+const ACTIVE_PROBE_SQL = 'SELECT active FROM sub_tenants WHERE id = ? LIMIT 1';
 
 /** Same regex enforced by `TENANT_ID_REGEX` in `src/schemas/tenant-internal.ts`. */
 const TENANT_ID_REGEX = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -111,10 +124,15 @@ export async function resolveTenant(env: ResolverEnv, subTenantId: string): Prom
 		// FINDING #7: re-validate the registry `active` flag on a cache hit so a
 		// tenant deactivated mid-TTL stops resolving immediately. We keep the rest
 		// of the cached resolution (binding name, prefixes, tier) and only pay for
-		// the cheap indexed lookup. If the registry read throws, fall through to a
-		// full re-resolution rather than serving a possibly-stale entry.
+		// a cheap single-column `active` probe (FINDING #2 — not the full-row read).
+		//
+		// FINDING #3 (availability): a DEFINITIVE result — row missing or
+		// `active = false` — means the tenant is genuinely gone/deactivated, so we
+		// drop the entry and surface not-found. But a THROWN read (transient D1
+		// hiccup) must NOT take down a tenant that was valid within its TTL: we
+		// fail OPEN and serve the cached value, re-checking again on the next hit.
 		try {
-			const liveRow = await env.TENANT_REGISTRY_DB.prepare(REGISTRY_LOOKUP_SQL).bind(subTenantId).first<{ active: number | boolean }>();
+			const liveRow = await env.TENANT_REGISTRY_DB.prepare(ACTIVE_PROBE_SQL).bind(subTenantId).first<{ active: number | boolean }>();
 			if (!liveRow || !liveRow.active) {
 				CACHE.delete(subTenantId);
 				throw new Error(`Tenant not found: ${subTenantId}`);
@@ -124,8 +142,10 @@ export async function resolveTenant(env: ResolverEnv, subTenantId: string): Prom
 			if (err instanceof Error && err.message.startsWith('Tenant not found')) {
 				throw err;
 			}
-			// Registry read failed — drop the cache entry and re-resolve below.
-			CACHE.delete(subTenantId);
+			// Transient registry read failure — serve the still-valid cached entry
+			// (fail-open) instead of dropping it and re-resolving into the same
+			// failing read, which would 404 an otherwise-healthy tenant.
+			return cached.value;
 		}
 	}
 

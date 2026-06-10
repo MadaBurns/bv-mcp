@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { analyzeKeyStrength, consolidateSelectorProbeKeyStrengthFindings, getDkimTagValue } from '../src/tools/dkim-analysis';
+import { analyzeKeyStrength, consolidateSelectorProbeKeyStrengthFindings, getDkimTagValue } from '../packages/dns-checks/src/checks/dkim-analysis';
 import { createFinding } from '../src/lib/scoring';
 
 describe('dkim-analysis', () => {
