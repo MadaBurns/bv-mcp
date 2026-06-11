@@ -1,0 +1,67 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'background': '#ffffff', 'primaryColor': '#ffffff', 'lineColor': '#666666' }}}%%
+flowchart LR
+    classDef process fill:#6baed6,stroke:#2171b5,stroke-width:2px,color:#000000
+    classDef external fill:#fdae61,stroke:#d94701,stroke-width:2px,color:#000000
+    classDef datastore fill:#74c476,stroke:#238b45,stroke-width:2px,color:#000000
+    classDef newComponent fill:#d4edda,stroke:#28a745,stroke-width:3px,color:#000000
+
+    McpClient["McpClient"]:::external
+    Operator["Operator"]:::external
+    PublicDoH["PublicDoH"]:::external
+    CertTransparency["CertTransparency"]:::external
+    WhoisRdap["WhoisRdap"]:::external
+
+    subgraph CloudflareWorker["Cloudflare Worker (bv-mcp)"]
+        HonoWorker(("HonoWorker")):::process
+        TierAuthResolver(("TierAuthResolver")):::process
+        OAuthIssuer(("OAuthIssuer")):::process
+        McpExecutor(("McpExecutor")):::process
+        ToolsHandler(("ToolsHandler")):::process
+        M365Proxy(("M365Proxy")):::newComponent
+        InternalRouter(("InternalRouter")):::process
+        EgressGuards(("Egress Guards<br/>(DomainSanitizer, SafeFetch, DnsResolver)")):::process
+        SupportingServices(("Supporting<br/>(RateLimiter, BrandAuditPipeline)")):::process
+    end
+
+    subgraph DurableObjects["Durable Objects"]
+        DurableObjectsGroup(("Durable Objects<br/>(QuotaCoordinator, ProfileAccumulator)")):::process
+    end
+
+    subgraph PlatformStorage["Cloudflare Platform Storage"]
+        PlatformStorageGroup[("Platform Storage<br/>(SessionStoreKV, ScanCacheKV, RateLimitKV, IntelligenceDB)")]:::datastore
+    end
+
+    subgraph BlackVeilServices["BlackVeil Services"]
+        BvWeb["BvWeb"]:::external
+        ReconProbes["Recon Probes<br/>(BvRecon, BvTlsProbe)"]:::newComponent
+    end
+
+    McpClient <-->|"SDF01: JSON-RPC over HTTPS"| HonoWorker
+    Operator <-->|"SDF02: Service binding RPC"| InternalRouter
+    HonoWorker <-->|"SDF03: Resolve tier"| TierAuthResolver
+    HonoWorker <-->|"SDF04: OAuth flows"| OAuthIssuer
+    HonoWorker <-->|"SDF05: MCP request"| McpExecutor
+    McpExecutor <-->|"SDF06: Dispatch tool"| ToolsHandler
+    McpExecutor <-->|"SDF07: Limits/quota"| SupportingServices
+    ToolsHandler <-->|"SDF08: Validate/fetch/DNS"| EgressGuards
+    ToolsHandler <-->|"SDF09: Brand audit"| SupportingServices
+    McpExecutor <-->|"SDF10: Sessions/codes/logs"| PlatformStorageGroup
+    ToolsHandler <-->|"SDF11: Scan cache"| PlatformStorageGroup
+    SupportingServices <-->|"SDF12: Counters/trial keys"| PlatformStorageGroup
+    SupportingServices <-->|"SDF13: Global quota"| DurableObjectsGroup
+    ToolsHandler <-->|"SDF14: Adaptive weights"| DurableObjectsGroup
+    TierAuthResolver <-->|"SDF15: validate-key"| BvWeb
+    OAuthIssuer <-->|"SDF16: Entitlements"| BvWeb
+    EgressGuards <-->|"SDF17: DoH (TLS)"| PublicDoH
+    SupportingServices <-->|"SDF18: CT enumeration"| CertTransparency
+    SupportingServices <-->|"SDF19: WHOIS/RDAP"| WhoisRdap
+    ToolsHandler <-->|"SDF20: identity_secops dispatch"| M365Proxy
+    M365Proxy <-->|"SDF21: M365 queries (bearer + keyHash)"| BvWeb
+    ToolsHandler <-->|"SDF22: OSINT/buckets/TLS probe (bearer)"| ReconProbes
+
+    style CloudflareWorker fill:none,stroke:#e31a1c,stroke-width:3px,stroke-dasharray: 5 5
+    style DurableObjects fill:none,stroke:#e31a1c,stroke-width:3px,stroke-dasharray: 5 5
+    style PlatformStorage fill:none,stroke:#e31a1c,stroke-width:3px,stroke-dasharray: 5 5
+    style BlackVeilServices fill:none,stroke:#e31a1c,stroke-width:3px,stroke-dasharray: 5 5
+
+    linkStyle default stroke:#666666,stroke-width:2px

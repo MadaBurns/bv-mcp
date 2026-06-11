@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bv-mcp &mdash; Incremental Threat Model Comparison</title>
+<style>
+:root { --red:#dc3545; --green:#28a745; --amber:#fd7e14; --gray:#6c757d; --accent:#2171b5; }
+body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin:0; background:#f5f7fa; color:#212529; }
+.header { background:#1a2332; color:#fff; padding:28px 40px; }
+.report-badge { display:inline-block; background:var(--accent); color:#fff; font-size:11px; letter-spacing:2px; padding:4px 10px; border-radius:3px; }
+.header h1 { margin:10px 0 0; font-size:28px; }
+.comparison-cards { display:flex; align-items:center; gap:18px; padding:24px 40px; }
+.compare-card { background:#fff; border-radius:8px; padding:16px 22px; box-shadow:0 1px 4px rgba(0,0,0,.12); min-width:160px; }
+.card-label { font-size:11px; letter-spacing:1.5px; color:var(--gray); }
+.card-hash { font-family:monospace; font-size:20px; margin:4px 0; }
+.card-date { font-size:12px; color:var(--gray); }
+.risk-badge { display:inline-block; margin-top:8px; padding:3px 10px; border-radius:12px; color:#fff; font-size:12px; font-weight:600; }
+.risk-moderate { background:var(--amber); } .risk-low { background:var(--green); }
+.compare-arrow { font-size:30px; color:var(--gray); }
+.trend-direction { font-size:20px; font-weight:700; margin:4px 0; }
+.trend-improving { color:var(--green); }
+.trend-duration { font-size:12px; color:var(--gray); }
+.metrics-bar { display:flex; gap:14px; padding:0 40px 10px; flex-wrap:wrap; }
+.metric { background:#fff; border-radius:8px; padding:12px 18px; box-shadow:0 1px 4px rgba(0,0,0,.1); }
+.metric .label { font-size:11px; letter-spacing:1px; color:var(--gray); }
+.metric .value { font-size:18px; font-weight:700; }
+.delta { font-size:13px; color:var(--accent); }
+.status-cards { display:flex; gap:14px; padding:14px 40px; flex-wrap:wrap; }
+.status-card { flex:1; min-width:190px; border-radius:8px; color:#fff; padding:16px 18px; }
+.status-card .count { font-size:30px; font-weight:800; }
+.status-card .desc { font-size:13px; opacity:.95; }
+.sc-green { background:var(--green); } .sc-red { background:var(--red); } .sc-amber { background:var(--amber); } .sc-gray { background:var(--gray); }
+section { padding:14px 40px; }
+h2 { font-size:18px; margin:18px 0 8px; }
+table { border-collapse:collapse; width:100%; background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.08); font-size:13px; }
+th, td { padding:7px 10px; border-bottom:1px solid #e6e9ed; text-align:left; }
+th { background:#eef2f7; font-size:12px; }
+.badge { padding:2px 8px; border-radius:10px; color:#fff; font-size:11px; font-weight:600; white-space:nowrap; }
+.badge-unchanged { background:var(--gray); }
+.badge-modified { background:var(--accent); }
+.badge-new, .badge-new_code, .badge-new_in_modified { background:var(--red); }
+.badge-fixed { background:var(--green); }
+.badge-partial, .badge-partially_mitigated { background:var(--amber); }
+.files { font-family:monospace; font-size:11px; color:var(--gray); }
+.id { font-family:monospace; }
+.stride-heatmap td, .stride-heatmap th { text-align:center; }
+.stride-heatmap td.comp { text-align:left; font-weight:600; }
+.stride-heatmap .divider { background:#dfe4ea; width:4px; padding:0; }
+.up { color:var(--red); font-size:11px; }
+.down { color:var(--green); font-size:11px; }
+.needs-verification { background:#fff8ec; border-left:4px solid var(--amber); padding:14px 18px; border-radius:0 8px 8px 0; }
+.needs-verification li { margin:6px 0; font-size:13px; }
+.footer { padding:20px 40px 34px; color:var(--gray); font-size:12px; }
+@media print { body { background:#fff; } .status-card, .compare-card, table { box-shadow:none; border:1px solid #ccc; } section { padding:8px 12px; } }
+</style>
+</head>
+<body>
+
+<!-- Section 1: Header + Comparison Cards -->
+<div class="header">
+  <div class="report-badge">INCREMENTAL THREAT MODEL COMPARISON</div>
+  <h1>bv-mcp (Blackveil DNS)</h1>
+</div>
+<div class="comparison-cards">
+  <div class="compare-card baseline">
+    <div class="card-label">BASELINE</div>
+    <div class="card-hash">7e23243</div>
+    <div class="card-date">2026-05-24</div>
+    <div class="risk-badge risk-moderate">Moderate</div>
+  </div>
+  <div class="compare-arrow">&rarr;</div>
+  <div class="compare-card target">
+    <div class="card-label">TARGET</div>
+    <div class="card-hash">7a1c6b3</div>
+    <div class="card-date">2026-06-11</div>
+    <div class="risk-badge risk-low">Low</div>
+  </div>
+  <div class="compare-card trend">
+    <div class="card-label">TREND</div>
+    <div class="trend-direction trend-improving">Improving</div>
+    <div class="trend-duration">~2.5 weeks (diff base f75ca7d, 2026-05-25)</div>
+  </div>
+</div>
+
+<!-- Section 2: Metrics Bar -->
+<div class="metrics-bar">
+  <div class="metric"><div class="label">COMPONENTS</div><div class="value">23 &rarr; 26 <span class="delta">(+3)</span></div></div>
+  <div class="metric"><div class="label">TRUST BOUNDARIES</div><div class="value">5 &rarr; 5 <span class="delta">(&plusmn;0)</span></div></div>
+  <div class="metric"><div class="label">THREATS</div><div class="value">78 &rarr; 93 <span class="delta">(+15)</span></div></div>
+  <div class="metric"><div class="label">FINDINGS</div><div class="value">17 &rarr; 21 <span class="delta">(+4)</span></div></div>
+  <div class="metric"><div class="label">CODE CHANGES</div><div class="value">230 commits, ~159 PRs</div></div>
+</div>
+
+<!-- Section 3: Status Summary Cards -->
+<div class="status-cards">
+  <div class="status-card sc-green"><div class="count">12</div><div class="desc">Baseline threats remediated in code &mdash; gating, revocation, retention, and secure-by-default internal auth</div></div>
+  <div class="status-card sc-red"><div class="count">15</div><div class="desc">New threats from three new service-binding surfaces; all credential-gated (Tier 2/3), five open pending cross-service verification</div></div>
+  <div class="status-card sc-amber"><div class="count">0</div><div class="desc">No previously unidentified issues &mdash; the baseline analysis held up against re-verification</div></div>
+  <div class="status-card sc-gray"><div class="count">66</div><div class="desc">Threats carried forward, overwhelmingly mitigated existing controls re-verified at the target commit</div></div>
+</div>
+
+<!-- Section 4: Component Status Grid -->
+<section>
+<h2>Component Status</h2>
+<table class="component-grid">
+<tr><th>Component</th><th>Type</th><th>Status</th><th>Source Files</th></tr>
+<tr><td>BrandAuditPipeline</td><td>process</td><td><span class='badge badge-unchanged'>Unchanged</span></td><td class='files'>src/lib/brand-audit-pipeline.ts, src/scheduled.ts</td></tr>
+<tr><td>BvRecon</td><td>external_service</td><td><span class='badge badge-new'>New</span></td><td class='files'>src/lib/recon-binding.ts, src/tools/osint-investigate.ts, src/tools/scan-buckets.ts</td></tr>
+<tr><td>BvTlsProbe</td><td>external_service</td><td><span class='badge badge-new'>New</span></td><td class='files'>src/lib/tls-probe-binding.ts</td></tr>
+<tr><td>BvWeb</td><td>external_service</td><td><span class='badge badge-modified'>Modified</span></td><td class='files'>src/lib/tier-auth.ts, src/oauth/entitlements.ts</td></tr>
+<tr><td>CertTransparency</td><td>external_service</td><td><span class='badge badge-unchanged'>Unchanged</span></td><td class='files'>src/lib/brand-discovery-tiers.ts</td></tr>
+<tr><td>DnsResolver</td><td>process</td><td><span class='badge badge-unchanged'>Unchanged</span></td><td class='files'>src/lib/dns-transport.ts, src/lib/dns-multi-resolver.ts</td></tr>
+<tr><td>DomainSanitizer</td><td>process</td><td><span class='badge badge-modified'>Modified</span></td><td class='files'>src/lib/sanitize.ts, src/lib/config.ts</td></tr>
+<tr><td>HonoWorker</td><td>process</td><td><span class='badge badge-modified'>Modified</span></td><td class='files'>src/index.ts</td></tr>
+<tr><td>IntelligenceDB</td><td>data_store</td><td><span class='badge badge-modified'>Modified</span></td><td class='files'>src/mcp/execute.ts, src/lib/db</td></tr>
+<tr><td>InternalRouter</td><td>process</td><td><span class='badge badge-modified'>Modified</span></td><td class='files'>src/internal.ts</td></tr>
+<tr><td>M365Proxy</td><td>process</td><td><span class='badge badge-new'>New</span></td><td class='files'>src/tools/m365/proxy.ts, src/tools/m365/query-signins.ts, src/tools/m365/query-ual.ts</td></tr>
+<tr><td>McpClient</td><td>external_interactor</td><td><span class='badge badge-unchanged'>Unchanged</span></td><td class='files'>&mdash;</td></tr>
+<tr><td>McpExecutor</td><td>process</td><td><span class='badge badge-modified'>Modified</span></td><td class='files'>src/mcp/execute.ts, src/mcp/dispatch.ts</td></tr>
+<tr><td>OAuthIssuer</td><td>process</td><td><span class='badge badge-modified'>Modified</span></td><td class='files'>src/oauth/jwt.ts, src/oauth/token.ts, src/oauth/authorize.ts</td></tr>
+<tr><td>Operator</td><td>external_interactor</td><td><span class='badge badge-unchanged'>Unchanged</span></td><td class='files'>&mdash;</td></tr>
+<tr><td>ProfileAccumulator</td><td>process</td><td><span class='badge badge-unchanged'>Unchanged</span></td><td class='files'>src/lib/profile-accumulator.ts</td></tr>
+<tr><td>PublicDoH</td><td>external_service</td><td><span class='badge badge-unchanged'>Unchanged</span></td><td class='files'>src/lib/dns-transport.ts</td></tr>
+<tr><td>QuotaCoordinator</td><td>process</td><td><span class='badge badge-unchanged'>Unchanged</span></td><td class='files'>src/lib/quota-coordinator.ts</td></tr>
+<tr><td>RateLimitKV</td><td>data_store</td><td><span class='badge badge-modified'>Modified</span></td><td class='files'>src/lib/rate-limiter.ts, src/lib/trial-keys.ts</td></tr>
+<tr><td>RateLimiter</td><td>process</td><td><span class='badge badge-modified'>Modified</span></td><td class='files'>src/lib/rate-limiter.ts, src/lib/fuzzing-detector.ts</td></tr>
+<tr><td>SafeFetch</td><td>process</td><td><span class='badge badge-unchanged'>Unchanged</span></td><td class='files'>src/lib/safe-fetch.ts</td></tr>
+<tr><td>ScanCacheKV</td><td>data_store</td><td><span class='badge badge-modified'>Modified</span></td><td class='files'>src/lib/cache.ts</td></tr>
+<tr><td>SessionStoreKV</td><td>data_store</td><td><span class='badge badge-unchanged'>Unchanged</span></td><td class='files'>src/lib/session.ts, src/oauth/storage.ts</td></tr>
+<tr><td>TierAuthResolver</td><td>process</td><td><span class='badge badge-modified'>Modified</span></td><td class='files'>src/lib/tier-auth.ts, src/lib/auth.ts</td></tr>
+<tr><td>ToolsHandler</td><td>process</td><td><span class='badge badge-modified'>Modified</span></td><td class='files'>src/handlers/tools.ts</td></tr>
+<tr><td>WhoisRdap</td><td>external_service</td><td><span class='badge badge-unchanged'>Unchanged</span></td><td class='files'>src/lib/registrar-identity.ts</td></tr>
+</table>
+</section>
+
+<!-- Section 5: Threat/Finding Status Breakdown -->
+<section class="status-breakdown">
+<h2>Fixed Threats (12)</h2>
+<table><tr><th>ID</th><th>Title</th><th>Component</th><th>Status</th></tr>
+<tr><td class='id'>T07.A</td><td>Distributed free-tier budget abuse</td><td>HonoWorker</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>T13.E</td><td>Trial-key cache staleness</td><td>TierAuthResolver</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>T20.A</td><td>Stale tier after downgrade</td><td>OAuthIssuer</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>T32.A</td><td>Scanner as recon proxy</td><td>ToolsHandler</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>T33.A</td><td>force_refresh cache busting</td><td>ToolsHandler</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>T34.T</td><td>Homoglyph/IDN bypass</td><td>DomainSanitizer</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>T42.D</td><td>DNS reflection/flood</td><td>DnsResolver</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>T43.A</td><td>DNS recon / cache snooping</td><td>DnsResolver</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>T46.E</td><td>Distributed-IP bypass</td><td>RateLimiter</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>T52.A</td><td>Internal tools default-open</td><td>InternalRouter</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>T62.I</td><td>OAuth code/JTI disclosure</td><td>SessionStoreKV</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>T68.R</td><td>Insufficient retention</td><td>IntelligenceDB</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+</table>
+<h2>New Threats (15)</h2>
+<table><tr><th>ID</th><th>Title</th><th>Component</th><th>Status</th></tr>
+<tr><td class='id'>T79.S</td><td>Stolen API key invokes identity-secops tools</td><td>M365Proxy</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>T80.I</td><td>Cross-tenant M365 log access</td><td>M365Proxy</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>T81.I</td><td>Tenant-ID enumeration via error codes</td><td>M365Proxy</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>T82.D</td><td>Unmetered M365 query volume</td><td>M365Proxy</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>T83.A</td><td>Surveillance via identity tools</td><td>M365Proxy</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>T84.S</td><td>Compromised bv-recon forges intelligence</td><td>BvRecon</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>T85.T</td><td>Recon payload prompt injection</td><td>BvRecon</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>T86.I</td><td>Cross-principal recon result polling</td><td>BvRecon</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>T87.D</td><td>Recon job flooding</td><td>BvRecon</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>T88.A</td><td>People-OSINT abuse</td><td>BvRecon</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>T89.I</td><td>TLS probe as internal reachability oracle</td><td>BvTlsProbe</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>T90.T</td><td>Forged TLS-version results</td><td>BvTlsProbe</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>T91.D</td><td>Probe latency exhaustion</td><td>BvTlsProbe</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>T92.E</td><td>LKG tier outlives revocation during outage</td><td>TierAuthResolver</td><td><span class='badge badge-new'>new in modified</span></td></tr>
+<tr><td class='id'>T93.A</td><td>Agent-chat allowlist evasion</td><td>InternalRouter</td><td><span class='badge badge-new'>new in modified</span></td></tr>
+</table>
+<h2>Fixed Findings (7)</h2>
+<table><tr><th>ID</th><th>Title</th><th>Component</th><th>Status</th></tr>
+<tr><td class='id'>FIND-02</td><td>Free-tier abuse via distributed IPs</td><td>RateLimiter</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>FIND-03</td><td>Scanner usable as recon/amplification proxy</td><td>ToolsHandler</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>FIND-06</td><td>force_refresh cache-busting amplification</td><td>ToolsHandler</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>FIND-07</td><td>Domain validation hardening for homoglyph/IDN</td><td>DomainSanitizer</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>FIND-12</td><td>Internal routes default to no bearer auth</td><td>InternalRouter</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>FIND-13</td><td>JWT retains elevated tier after plan downgrade</td><td>OAuthIssuer</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+<tr><td class='id'>FIND-15</td><td>Trial-key tier persists during cache window</td><td>TierAuthResolver</td><td><span class='badge badge-fixed'>fixed</span></td></tr>
+</table>
+<h2>Partially Mitigated Findings (4)</h2>
+<table><tr><th>ID</th><th>Title</th><th>Component</th><th>Status</th></tr>
+<tr><td class='id'>FIND-01</td><td>API key accepted via query parameter</td><td>TierAuthResolver</td><td><span class='badge badge-partial'>partially mitigated</span></td></tr>
+<tr><td class='id'>FIND-04</td><td>OAuth issuer from spoofable Host header</td><td>HonoWorker</td><td><span class='badge badge-partial'>partially mitigated</span></td></tr>
+<tr><td class='id'>FIND-14</td><td>Brand-audit discovery enables third-party enumeration</td><td>BrandAuditPipeline</td><td><span class='badge badge-partial'>partially mitigated</span></td></tr>
+<tr><td class='id'>FIND-17</td><td>Sensitive KV records rely on platform isolation only</td><td>RateLimitKV</td><td><span class='badge badge-partial'>partially mitigated</span></td></tr>
+</table>
+<h2>New Findings (4)</h2>
+<table><tr><th>ID</th><th>Title</th><th>Component</th><th>Status</th></tr>
+<tr><td class='id'>FIND-18</td><td>Recon operation IDs are not bound to the requesting principal on poll</td><td>BvRecon</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>FIND-19</td><td>M365 tenant authorization is delegated cross-service on a forwarded keyHash</td><td>M365Proxy</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>FIND-20</td><td>M365 identity tools are intentionally unmetered per-tool</td><td>M365Proxy</td><td><span class='badge badge-new'>new code</span></td></tr>
+<tr><td class='id'>FIND-21</td><td>Recon upstream payloads lack injection-focused test coverage</td><td>BvRecon</td><td><span class='badge badge-new'>new code</span></td></tr>
+</table>
+</section>
+
+<!-- Section 6: STRIDE Heatmap with Deltas -->
+<section>
+<h2>STRIDE-A Heatmap (deltas vs baseline)</h2>
+<table class="stride-heatmap">
+<thead><tr><th>Component</th><th>S</th><th>T</th><th>R</th><th>I</th><th>D</th><th>E</th><th>A</th><th>Total</th><th class="divider"></th><th>T1</th><th>T2</th><th>T3</th></tr></thead>
+<tbody>
+<tr><td class='comp'>HonoWorker</td><td>1</td><td>1</td><td>1</td><td>2</td><td>1</td><td>0</td><td>1</td><td><b>7</b></td><td class='divider'></td><td>7</td><td>0</td><td>0</td></tr>
+<tr><td class='comp'>TierAuthResolver</td><td>2</td><td>1</td><td>0</td><td>1</td><td>0</td><td>3 <span class='up'>&#9650;+1</span></td><td>1</td><td><b>8 <span class='up'>&#9650;+1</span></b></td><td class='divider'></td><td>6</td><td>1</td><td>1</td></tr>
+<tr><td class='comp'>OAuthIssuer</td><td>1</td><td>1</td><td>0</td><td>1</td><td>1</td><td>1</td><td>1</td><td><b>6</b></td><td class='divider'></td><td>3</td><td>1</td><td>2</td></tr>
+<tr><td class='comp'>McpExecutor</td><td>1</td><td>1</td><td>1</td><td>1</td><td>1</td><td>1</td><td>1</td><td><b>7</b></td><td class='divider'></td><td>7</td><td>0</td><td>0</td></tr>
+<tr><td class='comp'>ToolsHandler</td><td>0</td><td>1</td><td>0</td><td>1</td><td>1</td><td>1</td><td>2</td><td><b>6</b></td><td class='divider'></td><td>6</td><td>0</td><td>0</td></tr>
+<tr><td class='comp'>M365Proxy</td><td>1 <span class='up'>&#9650;+1</span></td><td>0</td><td>0</td><td>2 <span class='up'>&#9650;+2</span></td><td>1 <span class='up'>&#9650;+1</span></td><td>0</td><td>1 <span class='up'>&#9650;+1</span></td><td><b>5 <span class='up'>&#9650;+5</span></b></td><td class='divider'></td><td>0</td><td>5</td><td>0</td></tr>
+<tr><td class='comp'>DomainSanitizer</td><td>0</td><td>1</td><td>0</td><td>1</td><td>0</td><td>1</td><td>0</td><td><b>3</b></td><td class='divider'></td><td>3</td><td>0</td><td>0</td></tr>
+<tr><td class='comp'>SafeFetch</td><td>0</td><td>1</td><td>0</td><td>1</td><td>1</td><td>0</td><td>0</td><td><b>3</b></td><td class='divider'></td><td>3</td><td>0</td><td>0</td></tr>
+<tr><td class='comp'>DnsResolver</td><td>1</td><td>1</td><td>0</td><td>0</td><td>1</td><td>0</td><td>1</td><td><b>4</b></td><td class='divider'></td><td>2</td><td>2</td><td>0</td></tr>
+<tr><td class='comp'>RateLimiter</td><td>0</td><td>1</td><td>0</td><td>0</td><td>1</td><td>1</td><td>1</td><td><b>4</b></td><td class='divider'></td><td>3</td><td>0</td><td>1</td></tr>
+<tr><td class='comp'>InternalRouter</td><td>1</td><td>1</td><td>0</td><td>0</td><td>1</td><td>1</td><td>2 <span class='up'>&#9650;+1</span></td><td><b>6 <span class='up'>&#9650;+1</span></b></td><td class='divider'></td><td>0</td><td>6</td><td>0</td></tr>
+<tr><td class='comp'>BrandAuditPipeline</td><td>0</td><td>1</td><td>0</td><td>1</td><td>1</td><td>0</td><td>1</td><td><b>4</b></td><td class='divider'></td><td>0</td><td>4</td><td>0</td></tr>
+<tr><td class='comp'>QuotaCoordinator</td><td>0</td><td>1</td><td>0</td><td>0</td><td>1</td><td>0</td><td>0</td><td><b>2</b></td><td class='divider'></td><td>0</td><td>0</td><td>2</td></tr>
+<tr><td class='comp'>ProfileAccumulator</td><td>0</td><td>1</td><td>0</td><td>0</td><td>0</td><td>0</td><td>1</td><td><b>2</b></td><td class='divider'></td><td>0</td><td>0</td><td>2</td></tr>
+<tr><td class='comp'>SessionStoreKV</td><td>0</td><td>1</td><td>0</td><td>1</td><td>0</td><td>0</td><td>0</td><td><b>2</b></td><td class='divider'></td><td>0</td><td>0</td><td>2</td></tr>
+<tr><td class='comp'>ScanCacheKV</td><td>0</td><td>1</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td><b>1</b></td><td class='divider'></td><td>0</td><td>0</td><td>1</td></tr>
+<tr><td class='comp'>RateLimitKV</td><td>0</td><td>1</td><td>0</td><td>1</td><td>0</td><td>0</td><td>0</td><td><b>2</b></td><td class='divider'></td><td>0</td><td>0</td><td>2</td></tr>
+<tr><td class='comp'>IntelligenceDB</td><td>0</td><td>1</td><td>1</td><td>1</td><td>0</td><td>0</td><td>0</td><td><b>3</b></td><td class='divider'></td><td>0</td><td>0</td><td>3</td></tr>
+<tr><td class='comp'>BvWeb</td><td>1</td><td>0</td><td>0</td><td>1</td><td>1</td><td>0</td><td>0</td><td><b>3</b></td><td class='divider'></td><td>0</td><td>2</td><td>1</td></tr>
+<tr><td class='comp'>BvRecon</td><td>1 <span class='up'>&#9650;+1</span></td><td>1 <span class='up'>&#9650;+1</span></td><td>0</td><td>1 <span class='up'>&#9650;+1</span></td><td>1 <span class='up'>&#9650;+1</span></td><td>0</td><td>1 <span class='up'>&#9650;+1</span></td><td><b>5 <span class='up'>&#9650;+5</span></b></td><td class='divider'></td><td>0</td><td>4</td><td>1</td></tr>
+<tr><td class='comp'>BvTlsProbe</td><td>0</td><td>1 <span class='up'>&#9650;+1</span></td><td>0</td><td>1 <span class='up'>&#9650;+1</span></td><td>1 <span class='up'>&#9650;+1</span></td><td>0</td><td>0</td><td><b>3 <span class='up'>&#9650;+3</span></b></td><td class='divider'></td><td>0</td><td>2</td><td>1</td></tr>
+<tr><td class='comp'>PublicDoH</td><td>1</td><td>1</td><td>0</td><td>0</td><td>1</td><td>0</td><td>0</td><td><b>3</b></td><td class='divider'></td><td>0</td><td>3</td><td>0</td></tr>
+<tr><td class='comp'>CertTransparency</td><td>0</td><td>1</td><td>0</td><td>0</td><td>1</td><td>0</td><td>0</td><td><b>2</b></td><td class='divider'></td><td>0</td><td>2</td><td>0</td></tr>
+<tr><td class='comp'>WhoisRdap</td><td>0</td><td>0</td><td>0</td><td>1</td><td>1</td><td>0</td><td>0</td><td><b>2</b></td><td class='divider'></td><td>0</td><td>2</td><td>0</td></tr>
+</tbody>
+</table>
+</section>
+
+<!-- Section 7: Needs Verification -->
+<section>
+<h2>Needs Verification</h2>
+<div class="needs-verification">
+<ul>
+<li><b>bv-web M365 tenant scoping (FIND-19):</b> confirm bv-web rejects keyHash values not entitled to the requested ms_tenant_id (and keyHash: undefined).</li>
+<li><b>bv-recon poll-ID ownership (FIND-18):</b> confirm investigation/bucket-scan IDs are bound to the creating caller inside bv-recon.</li>
+<li><b>bv-tls-probe host validation (T89.I):</b> confirm the probe refuses internal/reserved targets.</li>
+<li><b>Deploy gates (FIND-01, FIND-04):</b> confirm REJECT_QUERY_API_KEY=true and OAUTH_ISSUER are set in production overrides.</li>
+<li><b>KV envelope (FIND-17):</b> disagreement with the interim overlay &mdash; it recorded FIND-17 as fixed, but trial-key records are still not envelope-wrapped at the target commit; downgraded to Partial per code evidence.</li>
+<li><b>bv-web revoke call (FIND-13 residual):</b> confirm bv-web calls POST /internal/oauth/revoke-subject on plan downgrade.</li>
+<li><b>M365 per-principal metering (FIND-20):</b> product decision on a per-principal daily quota for identity_secops tools.</li>
+</ul>
+</div>
+</section>
+
+<!-- Section 8: Footer -->
+<div class="footer">
+Model: claude-fable-5 | Duration: ~65 minutes<br>
+Baseline: threat-model-20260524-114907 at 7e23243 (interim overlay threat-model-20260524-184006-incremental at f75ca7d)<br>
+Generated: 2026-06-11 12:34:00 UTC
+</div>
+
+</body>
+</html>

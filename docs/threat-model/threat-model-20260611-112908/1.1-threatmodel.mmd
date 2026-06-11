@@ -1,0 +1,81 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'background': '#ffffff', 'primaryColor': '#ffffff', 'lineColor': '#666666' }}}%%
+flowchart LR
+    classDef process fill:#6baed6,stroke:#2171b5,stroke-width:2px,color:#000000
+    classDef external fill:#fdae61,stroke:#d94701,stroke-width:2px,color:#000000
+    classDef datastore fill:#74c476,stroke:#238b45,stroke-width:2px,color:#000000
+    classDef newComponent fill:#d4edda,stroke:#28a745,stroke-width:3px,color:#000000
+    classDef removedComponent fill:#e9ecef,stroke:#6c757d,stroke-width:1px,stroke-dasharray:5,color:#6c757d
+
+    McpClient["McpClient"]:::external
+    Operator["Operator"]:::external
+    PublicDoH["PublicDoH"]:::external
+    CertTransparency["CertTransparency"]:::external
+    WhoisRdap["WhoisRdap"]:::external
+
+    subgraph CloudflareWorker["Cloudflare Worker (bv-mcp)"]
+        HonoWorker(("HonoWorker")):::process
+        TierAuthResolver(("TierAuthResolver")):::process
+        OAuthIssuer(("OAuthIssuer")):::process
+        McpExecutor(("McpExecutor")):::process
+        ToolsHandler(("ToolsHandler")):::process
+        M365Proxy(("M365Proxy")):::newComponent
+        DomainSanitizer(("DomainSanitizer")):::process
+        SafeFetch(("SafeFetch")):::process
+        DnsResolver(("DnsResolver")):::process
+        RateLimiter(("RateLimiter")):::process
+        InternalRouter(("InternalRouter")):::process
+        BrandAuditPipeline(("BrandAuditPipeline")):::process
+    end
+
+    subgraph DurableObjects["Durable Objects"]
+        QuotaCoordinator(("QuotaCoordinator")):::process
+        ProfileAccumulator(("ProfileAccumulator")):::process
+    end
+
+    subgraph PlatformStorage["Cloudflare Platform Storage"]
+        SessionStoreKV[("SessionStoreKV")]:::datastore
+        ScanCacheKV[("ScanCacheKV")]:::datastore
+        RateLimitKV[("RateLimitKV")]:::datastore
+        IntelligenceDB[("IntelligenceDB")]:::datastore
+    end
+
+    subgraph BlackVeilServices["BlackVeil Services"]
+        BvWeb["BvWeb"]:::external
+        BvRecon["BvRecon"]:::newComponent
+        BvTlsProbe["BvTlsProbe"]:::newComponent
+    end
+
+    McpClient <-->|"DF01: JSON-RPC over HTTPS"| HonoWorker
+    Operator <-->|"DF02: Service binding RPC"| InternalRouter
+    HonoWorker <-->|"DF03: Resolve tier"| TierAuthResolver
+    HonoWorker <-->|"DF04: OAuth flows"| OAuthIssuer
+    HonoWorker <-->|"DF05: MCP request"| McpExecutor
+    McpExecutor <-->|"DF06: Limits/quota"| RateLimiter
+    McpExecutor <-->|"DF07: Dispatch tool"| ToolsHandler
+    ToolsHandler <-->|"DF08: Validate domain"| DomainSanitizer
+    ToolsHandler <-->|"DF09: DNS query"| DnsResolver
+    ToolsHandler <-->|"DF10: Fetch attacker-influenced URL"| SafeFetch
+    ToolsHandler <-->|"DF11: Brand audit"| BrandAuditPipeline
+    McpExecutor <-->|"DF12: Sessions/OAuth codes (KV)"| SessionStoreKV
+    OAuthIssuer <-->|"DF13: Auth codes/JTI/token-version (KV)"| SessionStoreKV
+    ToolsHandler <-->|"DF14: Versioned scan cache (KV)"| ScanCacheKV
+    RateLimiter <-->|"DF15: Counters/trial keys/dedup (KV)"| RateLimitKV
+    RateLimiter <-->|"DF16: Global quota (DO)"| QuotaCoordinator
+    ToolsHandler <-->|"DF17: Adaptive weights (DO)"| ProfileAccumulator
+    McpExecutor <-->|"DF18: Encrypted access logs (D1)"| IntelligenceDB
+    TierAuthResolver <-->|"DF19: validate-key (binding)"| BvWeb
+    OAuthIssuer <-->|"DF20: Entitlements (binding)"| BvWeb
+    DnsResolver <-->|"DF21: DoH (TLS)"| PublicDoH
+    BrandAuditPipeline <-->|"DF22: CT enumeration (TLS)"| CertTransparency
+    BrandAuditPipeline <-->|"DF23: WHOIS/RDAP (TLS)"| WhoisRdap
+    ToolsHandler <-->|"DF24: identity_secops dispatch"| M365Proxy
+    M365Proxy <-->|"DF25: M365 queries (bearer + keyHash)"| BvWeb
+    ToolsHandler <-->|"DF26: OSINT/buckets/threat-feed (bearer)"| BvRecon
+    ToolsHandler <-->|"DF27: TLS version probe (bearer)"| BvTlsProbe
+
+    style CloudflareWorker fill:none,stroke:#e31a1c,stroke-width:3px,stroke-dasharray: 5 5
+    style DurableObjects fill:none,stroke:#e31a1c,stroke-width:3px,stroke-dasharray: 5 5
+    style PlatformStorage fill:none,stroke:#e31a1c,stroke-width:3px,stroke-dasharray: 5 5
+    style BlackVeilServices fill:none,stroke:#e31a1c,stroke-width:3px,stroke-dasharray: 5 5
+
+    linkStyle default stroke:#666666,stroke-width:2px
