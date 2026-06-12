@@ -8,6 +8,17 @@
 # false positives (e.g. `npm run report:qa` triggering this hook) were caused by
 # unscoped matching in earlier settings.json `if:` clauses.
 #
+# Hardened against bypass prefixes (2026-06-12):
+#   - `git -C <dir> push --force` / `git -c key=val push -f` (global option
+#     prefixes, spaced or attached form) — common in the worktree-heavy workflow
+#   - `command git push -f` (leading `command` builtin)
+#   - `GIT_DIR=x git push --force` (leading VAR=value environment assignments)
+#   - refspec force: `git push origin +main` (refspec starting with +)
+#   - combined short flags containing f (e.g. `-uf`)
+#
+# Fail-open: anything this parser cannot understand is allowed (exit 0) — this is
+# a developer guardrail, not an adversarial security boundary.
+#
 # Exit codes (Claude Code convention):
 #   0 — allow the tool call
 #   2 — block; stderr is surfaced to the model as the stop reason
@@ -28,8 +39,9 @@ else
 	command_str="$(printf '%s' "$payload" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
 fi
 
-# Only apply to Bash tool calls.
-if [ "$tool_name" != "Bash" ]; then
+# Skip only when the payload explicitly names a different tool. (The settings.json
+# matcher already scopes this hook to Bash; an absent tool_name is treated as Bash.)
+if [ -n "$tool_name" ] && [ "$tool_name" != "Bash" ]; then
 	exit 0
 fi
 
@@ -38,45 +50,78 @@ if [ -z "$command_str" ]; then
 	exit 0
 fi
 
-# Match force-push patterns. We require:
-#   1) The command starts with (or contains a pipeline/&&/; leading to) `git`
-#      followed by `push`, then a force flag in actual argument position.
-#   2) The force flag must be a real argument — not inside quotes / part of an
-#      echo. We approximate this by anchoring on shell-statement boundaries
-#      (start of string, `;`, `&&`, `||`, `|`, or a backtick/$( opener).
-#
-# Force flags we consider destructive:
-#   --force, --force-with-lease, --force-if-includes, -f
-#
-# Use grep -E with a Perl-ish style. Pattern explanation:
-#   (^|[;&|`(])  — start of a command statement
-#   [[:space:]]*git[[:space:]]+push\b  — `git push` as a word
-#   [^;&|]*       — same statement (no statement terminator)
-#   ([[:space:]](--force(-with-lease|-if-includes)?|-f)\b|[[:space:]]-[A-Za-z]*f[A-Za-z]*\b)?
-#
-# Simpler split: first check `git push` invocation boundary, then look for the
-# force flag in the same statement.
+# Evaluate one shell statement: does it invoke `git push` with a force flag or a
+# force refspec? Tolerates leading env assignments, `command`, and git global options.
+stmt_is_force_push() {
+	local stmt="$1"
+	local -a words
+	IFS=' 	' read -ra words <<<"$stmt" || return 1
+	local n=${#words[@]}
+	local i=0 w
+	# Skip leading `command` and VAR=value environment assignments.
+	while [ "$i" -lt "$n" ]; do
+		w="${words[$i]}"
+		if [ "$w" = "command" ]; then
+			i=$((i + 1))
+			continue
+		fi
+		if printf '%s' "$w" | grep -Eq '^[A-Za-z_][A-Za-z_0-9]*='; then
+			i=$((i + 1))
+			continue
+		fi
+		break
+	done
+	[ "$i" -lt "$n" ] || return 1
+	[ "${words[$i]}" = "git" ] || return 1
+	i=$((i + 1))
+	# Skip git global options before the subcommand (-C <path>, -c <key=val>, ...).
+	while [ "$i" -lt "$n" ]; do
+		w="${words[$i]}"
+		case "$w" in
+		-C | -c | --git-dir | --work-tree | --namespace | --exec-path)
+			i=$((i + 2))
+			continue
+			;;
+		-C?* | -c?* | --git-dir=* | --work-tree=* | --namespace=* | --exec-path=* | -p | --paginate | -P | --no-pager | --no-replace-objects | --literal-pathspecs | --glob-pathspecs | --noglob-pathspecs | --icase-pathspecs | --no-optional-locks)
+			i=$((i + 1))
+			continue
+			;;
+		*) break ;;
+		esac
+	done
+	[ "$i" -lt "$n" ] || return 1
+	[ "${words[$i]}" = "push" ] || return 1
+	i=$((i + 1))
+	# Scan the arguments for force flags and force refspecs.
+	while [ "$i" -lt "$n" ]; do
+		w="${words[$i]}"
+		case "$w" in
+		-f | --force | --force-with-lease | --force-with-lease=* | --force-if-includes) return 0 ;;
+		+*) return 0 ;;                                     # refspec force, e.g. +main
+		--) ;;                                              # separator — keep scanning
+		--*) ;;                                             # other long options — not force
+		-[A-Za-z]*)                                         # combined short flags, e.g. -uf
+			case "$w" in *f*) return 0 ;; esac
+			;;
+		esac
+		i=$((i + 1))
+	done
+	return 1
+}
 
-# Extract candidate `git push ...` statement segments (up to next ; && || or |).
-# Then check each segment for a force flag in word position.
+# Split the command on shell statement terminators (;, &&, ||, |, &, newlines)
+# and check each statement. Backslash escapes are not handled — adversarial
+# input is out of scope; this is a developer guardrail.
 matches_force_push() {
 	local cmd="$1"
-	# Split on shell statement terminators. We treat ;, &&, ||, |, &, and
-	# newlines as statement boundaries. Backslash-escapes are not handled —
-	# adversarial input is out of scope; this is a developer guardrail.
-	local IFS=$'\n'
 	local stmts
-	# Replace separators with newlines using tr-style sed.
 	stmts="$(printf '%s' "$cmd" | sed -E 's/(\|\||&&|;|\||&)/\n/g')"
 	while IFS= read -r stmt; do
 		# Trim leading whitespace and common subshell openers `$(`, `` ` ``, `(`.
 		stmt="$(printf '%s' "$stmt" | sed -E 's/^[[:space:]]*//; s/^(\$\(|`|\()//')"
-		# Match: starts with `git push` (whitespace tolerant), then has a force
-		# flag as a standalone word.
-		if printf '%s' "$stmt" | grep -Eq '^git[[:space:]]+push([[:space:]]|$)'; then
-			if printf '%s' "$stmt" | grep -Eq '([[:space:]]|^)(--force(-with-lease|-if-includes)?|-f)([[:space:]=]|$)'; then
-				return 0
-			fi
+		[ -n "$stmt" ] || continue
+		if stmt_is_force_push "$stmt"; then
+			return 0
 		fi
 	done <<<"$stmts"
 	return 1
