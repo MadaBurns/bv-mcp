@@ -77,9 +77,7 @@
 		"wrangler": "^4.99.0"
 	},
 	"overrides": {
-		"@esbuild-kit/core-utils": {
-			"esbuild": "0.25.12"
-		},
+		"esbuild": "0.28.1",
 		"ws": "^8.20.1"
 	}
 }
