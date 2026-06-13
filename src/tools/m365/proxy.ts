@@ -13,8 +13,14 @@
  */
 import type { M365ProxyResult } from './types';
 
-// Routes live at /api/internal/m365/* on the bv-web SSR app — the prior
-// `/m365/*` path returned 405 (SSR has no top-level /m365 route).
+// Target endpoint for the M365 read tools, reached via the `BV_WEB` service
+// binding. NOTE (issue #403): this `/api/internal/m365/*` path was served by
+// the now-retired `bv-web` SSR app. The active app, `bv-web-prod`, does NOT
+// implement it — M365 there is session-authenticated dashboard reads from D1
+// (`app/lib/dashboard/m365/*`), not an internal proxy. Until/unless that
+// endpoint is built downstream, the four identity_secops tools fail-soft with
+// `m365_proxy_404` in prod (the proxy never throws — see callM365Proxy). Kept
+// in place intentionally as a deferred surface; do not treat as live.
 const M365_BASE_URL = 'https://bv-web-internal/api/internal/m365';
 const TIMEOUT_MS = 10_000;
 
