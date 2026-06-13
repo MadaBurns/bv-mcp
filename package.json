@@ -55,31 +55,29 @@
 		"@blackveil/dns-checks": "^1.0.4",
 		"@streamparser/json-whatwg": "^0.0.22",
 		"drizzle-orm": "0.45.2",
-		"marked": "^18.0.4",
+		"marked": "^18.0.5",
 		"pdf-lib": "^1.17.1",
 		"punycode": "^2.3.1",
 		"tldts": "^7.4.2",
 		"zod": "4.4.3"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.16.12",
-		"@cloudflare/workers-types": "4.20260604.1",
+		"@cloudflare/vitest-pool-workers": "^0.16.14",
+		"@cloudflare/workers-types": "4.20260610.1",
 		"@types/marked": "^6.0.0",
 		"@types/punycode": "^2.1.4",
 		"drizzle-kit": "^0.31.10",
 		"eslint": "10.4.1",
-		"hono": "4.12.23",
+		"hono": "4.12.25",
 		"playwright": "^1.60.0",
 		"tsup": "8.5.1",
 		"typescript": "6.0.3",
-		"typescript-eslint": "8.60.1",
+		"typescript-eslint": "8.61.0",
 		"vitest": "4.1.8",
-		"wrangler": "^4.96.0"
+		"wrangler": "^4.99.0"
 	},
 	"overrides": {
-		"@esbuild-kit/core-utils": {
-			"esbuild": "0.25.12"
-		},
+		"esbuild": "0.28.1",
 		"ws": "^8.20.1"
 	}
 }
