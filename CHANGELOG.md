@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.18.1] - 2026-06-18
+
+Maintenance release: dependency bumps only. No scoring/scan change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (75).
+
+### Changed
+
+- **Dependencies:** bump `tldts` 7.4.2 → 7.4.3 (runtime — public-suffix data refresh used by `src/lib/public-suffix.ts`). Dev tooling: Cloudflare group (`wrangler` 4.99 → 4.101, `miniflare`/`workerd` to `20260616`), `vitest` 4.1.8 → 4.1.9, `eslint` 10.4.1 → 10.5.0, `typescript-eslint` 8.61.0 → 8.61.1, `playwright` 1.60.0 → 1.61.0 (#406–#411).
+
 ## [3.18.0] - 2026-06-11
 
 ### Security
