@@ -69,8 +69,8 @@ export function buildCodeRecordFromEntitlement(params: {
 		subject: params.entitlement.subject,
 		tier: params.entitlement.tier,
 		...(params.entitlement.emailHash ? { emailHash: params.entitlement.emailHash } : {}),
-		stripeCustomerId: params.entitlement.stripeCustomerId,
-		stripeSubscriptionId: params.entitlement.stripeSubscriptionId,
+		...(params.entitlement.stripeCustomerId ? { stripeCustomerId: params.entitlement.stripeCustomerId } : {}),
+		...(params.entitlement.stripeSubscriptionId ? { stripeSubscriptionId: params.entitlement.stripeSubscriptionId } : {}),
 		subscriptionStatus: params.entitlement.subscriptionStatus,
 		...(params.entitlement.entitlementExpiresAt ? { entitlementExpiresAt: params.entitlement.entitlementExpiresAt } : {}),
 	});

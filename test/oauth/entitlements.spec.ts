@@ -107,4 +107,23 @@ describe('paid OAuth entitlement service binding', () => {
 			stripeSubscriptionId: 'sub_123',
 		});
 	});
+
+	it('omits Stripe IDs from the code record when the entitlement has none', async () => {
+		const { buildCodeRecordFromEntitlement } = await import('../../src/oauth/entitlements');
+		const rec = buildCodeRecordFromEntitlement({
+			clientId: 'client-1',
+			redirectUri: 'https://claude.ai/api/mcp/auth_callback',
+			codeChallenge: 'a'.repeat(43),
+			entitlement: {
+				subject: 'tenant_abc',
+				tier: 'developer',
+				subscriptionStatus: 'active',
+				scopes: ['mcp'],
+			},
+		});
+		expect(rec.subject).toBe('tenant_abc');
+		expect(rec.tier).toBe('developer');
+		expect('stripeCustomerId' in rec).toBe(false);
+		expect('stripeSubscriptionId' in rec).toBe(false);
+	});
 });
