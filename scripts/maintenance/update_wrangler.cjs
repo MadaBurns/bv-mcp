@@ -11,7 +11,7 @@ function addBinding(filePath) {
     if (!config.services.find(s => s.binding === 'BV_WEB')) {
         config.services.push({
             "binding": "BV_WEB",
-            "service": "blackveil-web"
+            "service": "bv-web-prod"
         });
     }
     
