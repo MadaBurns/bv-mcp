@@ -183,7 +183,7 @@ describe('POST /internal/oauth/grants', () => {
 
 	it('mints a code from an entitlement with no Stripe IDs (comp)', async () => {
 		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY, OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET } as TestEnv;
-		const { verifier, challenge } = await pkcePair();
+		const { challenge } = await pkcePair();
 		const clientId = await registerClient(customEnv);
 
 		const body = {
