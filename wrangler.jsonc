@@ -68,7 +68,7 @@
   "services": [
     {
       "binding": "BV_WEB",
-      "service": "blackveil-web"
+      "service": "bv-web-prod"
     },
     {
       "binding": "BV_WHOIS",
