@@ -101,4 +101,17 @@ describe('oauth schemas', () => {
 		expect(parsed.subject).toBe('user_123');
 		expect(parsed.tier).toBe('developer');
 	});
+
+	it('accepts an entitlement with no Stripe IDs (comped partner)', async () => {
+		const { PaidOAuthEntitlementResponseSchema } = await import('../../src/schemas/oauth');
+		const parsed = PaidOAuthEntitlementResponseSchema.parse({
+			subject: 'tenant_abc',
+			tier: 'developer',
+			subscriptionStatus: 'active',
+			scopes: ['mcp'],
+		});
+		expect(parsed.stripeCustomerId).toBeUndefined();
+		expect(parsed.stripeSubscriptionId).toBeUndefined();
+		expect(parsed.tier).toBe('developer');
+	});
 });
