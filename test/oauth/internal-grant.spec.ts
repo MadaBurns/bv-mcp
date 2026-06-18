@@ -180,4 +180,28 @@ describe('POST /internal/oauth/grants', () => {
 		);
 		expect(response.status).toBe(400);
 	});
+
+	it('mints a code from an entitlement with no Stripe IDs (comp)', async () => {
+		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY, OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET } as TestEnv;
+		const { challenge } = await pkcePair();
+		const clientId = await registerClient(customEnv);
+
+		const body = {
+			clientId,
+			redirectUri: 'https://claude.ai/cb',
+			state: 'xyz',
+			codeChallenge: challenge,
+			codeChallengeMethod: 'S256',
+			entitlement: {
+				subject: 'tenant_abc',
+				tier: 'developer',
+				subscriptionStatus: 'active',
+				scopes: ['mcp'],
+			},
+		};
+		const res = await postGrant(body, customEnv);
+		expect(res.status).toBe(200);
+		const json = (await res.json()) as { redirectTo: string };
+		expect(json.redirectTo).toContain('code=');
+	});
 });
