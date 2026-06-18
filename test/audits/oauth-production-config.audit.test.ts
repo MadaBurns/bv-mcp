@@ -39,7 +39,7 @@ describe('production OAuth configuration audit', () => {
 		expect(config.services).toContainEqual(
 			expect.objectContaining({
 				binding: 'BV_WEB',
-				service: 'blackveil-web',
+				service: 'bv-web-prod',
 			}),
 		);
 	});
