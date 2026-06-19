@@ -925,7 +925,11 @@ describe('checkLookalikes - issue #263 same-entity RDAP registrant correlation',
 		expect(tstFinding!.severity).toBe('info');
 		expect(tstFinding!.title).toContain('likely owned by same entity');
 		expect(tstFinding!.detail).toContain('registrant organisation');
-		expect(tstFinding!.metadata?.sharedRegistrantOrg).toBe('<vendor> limited');
+		// `createFinding` now sanitizes metadata strings at the chokepoint (F7 / issue
+		// #389): the `< >` in the placeholder org are neutralized to spaces. The match
+		// logic itself runs pre-sanitize on the raw RDAP value, so the same-entity
+		// downgrade is unaffected — only the emitted metadata is normalized.
+		expect(tstFinding!.metadata?.sharedRegistrantOrg).toBe('vendor limited');
 		// And it must NOT contribute to the HIGH summary.
 		const summary = result.findings.find((f) => /mail capability detected/i.test(f.title));
 		expect(summary).toBeUndefined();
