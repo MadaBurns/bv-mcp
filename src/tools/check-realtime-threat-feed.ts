@@ -9,7 +9,11 @@
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import { callReconScan, isReconHit, type ReconBinding } from '../lib/recon-binding';
-import { sanitizeUpstreamObject, sanitizeUpstreamValue } from '../lib/sanitize-upstream';
+
+// F7 (OWASP LLM01): attacker-influenceable upstream metadata/status spread into
+// finding metadata below is sanitized at the `createFinding` chokepoint
+// (`@blackveil/dns-checks/scoring`). The former per-tool `sanitizeUpstream*` opt-ins
+// were removed as redundant.
 
 const CATEGORY = 'realtime_threat_feed' as CheckCategory;
 
@@ -63,10 +67,10 @@ export async function checkRealtimeThreatFeed(domain: string, options: RealtimeT
 				'Realtime threat-feed hit',
 				sev,
 				scan.details ?? 'Threat intelligence flagged this domain.',
-				// F7: sanitize the attacker-influenceable upstream metadata + status before they
-				// enter finding metadata / structuredContent. Sanitized spread FIRST so a malicious
-				// metadata.domain/.status can't override the explicit keys with raw upstream.
-				{ ...sanitizeUpstreamObject(scan.metadata), domain, status: sanitizeUpstreamValue(scan.status) },
+				// F7: upstream metadata + status are sanitized at the createFinding chokepoint.
+				// Spread upstream FIRST so the explicit `domain`/`status` keys (trusted input)
+				// win over any malicious upstream key of the same name.
+				{ ...(scan.metadata ?? {}), domain, status: scan.status },
 			),
 		);
 	} else {
