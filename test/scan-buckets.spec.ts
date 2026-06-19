@@ -95,14 +95,14 @@ describe('scan_buckets tools', () => {
 	it('findings: filters upstream bucket rows outside the requested target scope', async () => {
 		const { scanBucketsFindings } = await import('../src/tools/scan-buckets');
 		const r = await scanBucketsFindings(
-			{ scanId: 's1', target: 'palantir.com', providers: ['azure', 'gcp'] },
+			{ scanId: 's1', target: 'acme-corp.test', providers: ['azure', 'gcp'] },
 			{
 				reconBinding: binding({
 					success: true,
 					data: [
-						{ bucketName: 'palantir-prod', provider: 'azure_blob', isExposed: 0, confirmedExposure: false },
-						{ bucketName: 'allstateprod', provider: 'azure_blob', isExposed: 0, confirmedExposure: false },
-						{ bucketName: 'palantir-assets', provider: 'digitalocean_spaces', isExposed: 0, confirmedExposure: false },
+						{ bucketName: 'acme-corp-prod', provider: 'azure_blob', isExposed: 0, confirmedExposure: false },
+						{ bucketName: 'globexprod', provider: 'azure_blob', isExposed: 0, confirmedExposure: false },
+						{ bucketName: 'acme-corp-assets', provider: 'digitalocean_spaces', isExposed: 0, confirmedExposure: false },
 					],
 					count: 3,
 				}),
@@ -111,14 +111,14 @@ describe('scan_buckets tools', () => {
 		);
 		const meta = r.findings[0]!.metadata!;
 		const data = meta.data as Array<Record<string, unknown>>;
-		expect(data.map((row) => row.bucketName)).toEqual(['palantir-prod']);
+		expect(data.map((row) => row.bucketName)).toEqual(['acme-corp-prod']);
 		expect(meta.count).toBe(1);
 		expect(meta.originalCount).toBe(3);
 		expect(meta.filteredOutOfScopeCount).toBe(2);
 		expect(String(r.findings[0]!.detail)).toContain('filtered 2 out-of-scope');
 	});
 
-	it('findings: applies target scope to non-Palantir domains including short labels', async () => {
+	it('findings: applies target scope to non-acme domains including short labels', async () => {
 		const { scanBucketsFindings } = await import('../src/tools/scan-buckets');
 		const r = await scanBucketsFindings(
 			{ scanId: 's1', target: 'x.test', providers: ['aws'] },
@@ -158,7 +158,7 @@ describe('scan_buckets tools', () => {
 						success: true,
 						data: [
 							{ bucketName: c.bucketName, provider: 's3' },
-							{ bucketName: 'production.allstate', provider: 's3' },
+							{ bucketName: 'production.globex', provider: 's3' },
 							{ bucketName: c.bucketName, provider: 'azure_blob' },
 						],
 						count: 3,
@@ -176,7 +176,7 @@ describe('scan_buckets tools', () => {
 		const { scanBucketsStart, scanBucketsFindings } = await import('../src/tools/scan-buckets');
 		const scanKv = kv();
 		await scanBucketsStart(
-			{ target: 'palantir.com', providers: ['azure'] },
+			{ target: 'acme-corp.test', providers: ['azure'] },
 			{ reconBinding: binding({ scanId: 's1', status: 'running' }), reconAuthToken: 't', bucketScanKv: scanKv as unknown as KVNamespace },
 		);
 
@@ -186,8 +186,8 @@ describe('scan_buckets tools', () => {
 				reconBinding: binding({
 					success: true,
 					data: [
-						{ bucketName: 'palantir-prod', provider: 'azure_blob' },
-						{ bucketName: 'production.allstate', provider: 'azure_blob' },
+						{ bucketName: 'acme-corp-prod', provider: 'azure_blob' },
+						{ bucketName: 'production.globex', provider: 'azure_blob' },
 					],
 					count: 2,
 				}),
@@ -197,7 +197,7 @@ describe('scan_buckets tools', () => {
 		);
 
 		const meta = r.findings[0]!.metadata!;
-		expect((meta.data as Array<Record<string, unknown>>).map((row) => row.bucketName)).toEqual(['palantir-prod']);
+		expect((meta.data as Array<Record<string, unknown>>).map((row) => row.bucketName)).toEqual(['acme-corp-prod']);
 		expect(meta.filteredOutOfScopeCount).toBe(1);
 	});
 });
