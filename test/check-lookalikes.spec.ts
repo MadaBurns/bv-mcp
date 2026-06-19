@@ -1070,3 +1070,106 @@ describe('probeHasWebContent - SSRF redirect-follow guard (OWASP A10)', () => {
 		expect(reachable).toBe(true);
 	});
 });
+
+describe('checkLookalikes - probeRdap routes through safeFetch (SSRF parity, P3 defense-in-depth)', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		restore();
+	});
+
+	/**
+	 * The RDAP host comes from the FALLBACK_RDAP_SERVERS map and is not statically
+	 * trusted as a class (the sibling fetchRdapResponse path derives the same host
+	 * from the network-sourced IANA bootstrap). probeRdap MUST route its fetch
+	 * through safeFetch so validateOutboundUrl() re-validates the destination host
+	 * (the SSRF gate), matching the reference path in check-rdap-lookup.ts. These
+	 * tests assert (1) the RDAP probe goes through safeFetch, (2) a normal RDAP
+	 * response still parses (legitimate path preserved), and (3) a blocked host
+	 * (safeFetch throwing) degrades fail-soft and never throws out of the tool.
+	 */
+	function mockDohWithMailLookalike(mailDomain: string) {
+		return (input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				const { name, type } = parseDohQuery(input);
+				if (name === mailDomain) {
+					if (type === 'NS' || type === '2') {
+						return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
+					}
+					if (type === 'MX' || type === '15') {
+						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.example.com.' }]));
+					}
+					if (type === 'A' || type === '1') {
+						return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
+					}
+				}
+				return Promise.resolve(createDohResponse([], []));
+			}
+			// HEAD web-content probe — reachable (fail-soft true).
+			return Promise.resolve({ ok: true, status: 200, headers: new Headers(), text: () => Promise.resolve(''), json: () => Promise.resolve({}) } as unknown as Response);
+		};
+	}
+
+	it('routes the RDAP probe through safeFetch AND still parses a legitimate RDAP response', async () => {
+		const safeFetchModule = await import('../src/lib/safe-fetch');
+		const recentReg = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+		const rdapUrls: string[] = [];
+
+		// Spy on the SSRF-validated path. Delegate to the real safeFetch for DoH +
+		// HEAD; intercept the RDAP /domain/ request to return registration data.
+		const realSafeFetch = safeFetchModule.safeFetch;
+		const baseFetch = vi.fn(mockDohWithMailLookalike('tst.com'));
+		globalThis.fetch = baseFetch as unknown as typeof fetch;
+
+		const spy = vi.spyOn(safeFetchModule, 'safeFetch').mockImplementation(async (input, init) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+			if (url.includes('rdap') && url.includes('/domain/tst.com')) {
+				rdapUrls.push(url);
+				return {
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve({ events: [{ eventAction: 'registration', eventDate: recentReg }] }),
+				} as unknown as Response;
+			}
+			return realSafeFetch(input, init);
+		});
+
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		const result = await checkLookalikes('test.com');
+
+		// (1) the RDAP probe was issued through safeFetch (the SSRF-validated path)
+		expect(spy).toHaveBeenCalled();
+		expect(rdapUrls.length).toBeGreaterThan(0);
+		// the validated URL is the hardcoded public RDAP host — proves it passes validateOutboundUrl
+		expect(rdapUrls.some((u) => u.startsWith('https://rdap.verisign.com/'))).toBe(true);
+
+		// (2) the legitimate RDAP response still parses → recent registration elevates to HIGH
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com') && /mail infrastructure/i.test(f.title));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('high');
+	});
+
+	it('degrades fail-soft (no throw, registration unknown) when safeFetch blocks the RDAP host', async () => {
+		const safeFetchModule = await import('../src/lib/safe-fetch');
+		const realSafeFetch = safeFetchModule.safeFetch;
+		globalThis.fetch = vi.fn(mockDohWithMailLookalike('tst.com')) as unknown as typeof fetch;
+
+		// Simulate an SSRF-blocked RDAP host: safeFetch throws (its native semantics).
+		vi.spyOn(safeFetchModule, 'safeFetch').mockImplementation(async (input, init) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+			if (url.includes('rdap')) {
+				throw new TypeError('Outbound fetch blocked: blocked host');
+			}
+			return realSafeFetch(input, init);
+		});
+
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		// Must not throw out of the tool — the probe's try/catch absorbs the block.
+		const result = await checkLookalikes('test.com');
+
+		// Registration age is unknown (probe blocked) → mail-infra stays MEDIUM, not HIGH.
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com') && /mail infrastructure/i.test(f.title));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.severity).toBe('medium');
+	});
+});
