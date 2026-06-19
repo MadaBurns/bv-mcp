@@ -139,6 +139,8 @@ export interface BrandAuditPipelineDeps {
 	checkRdapLookup?: typeof defaultCheckRdapLookup;
 	/** Optional service bindings threaded through to the inner tools. */
 	certstream?: { fetch: typeof fetch };
+	/** Bearer token for the bv-certstream-worker `/sans` endpoint — forwarded to `discoverBrandDomains`. */
+	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
 	/**
 	 * Tier 0 (tenant-declared portfolio) lookup closure, wrapping the
@@ -699,6 +701,7 @@ export async function runBrandAuditPipeline(
 			brand_aliases: options.brand_aliases,
 			candidate_domains: options.candidate_domains,
 			certstream: deps.certstream,
+			certstreamAuthToken: deps.certstreamAuthToken,
 			signal,
 			deadlineMs: options.deadlineMs,
 			onProgress: persistDiscoveryProgress,

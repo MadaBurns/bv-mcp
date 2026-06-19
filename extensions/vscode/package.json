@@ -1,7 +1,7 @@
 {
 	"name": "blackveil-dns",
 	"displayName": "Blackveil DNS — MCP Security Scanner",
-	"description": "75 DNS & email security tools for GitHub Copilot Chat via MCP. Scan SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, and more — no install, no API key required.",
+	"description": "78 DNS & email security tools for GitHub Copilot Chat via MCP. Scan SPF, DMARC, DKIM, DNSSEC, SSL, MTA-STS, and more — no install, no API key required.",
 	"version": "1.0.0",
 	"publisher": "BlackveilSecurity",
 	"license": "BUSL-1.1",

@@ -4,7 +4,7 @@ These settings must be configured manually in the GitHub web UI.
 
 ## Repository description
 
-Set to: `Source-available DNS & email security scanner for MCP clients. 75 MCP tools for SPF, DMARC, DKIM, DNSSEC, SSL/TLS, brand audit, authoritative DNS infrastructure, and more.`
+Set to: `Source-available DNS & email security scanner for MCP clients. 78 MCP tools for SPF, DMARC, DKIM, DNSSEC, SSL/TLS, brand audit, authoritative DNS infrastructure, and more.`
 
 ## Repository topics
 

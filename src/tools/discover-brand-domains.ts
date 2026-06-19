@@ -271,6 +271,12 @@ export interface DiscoverBrandDomainsOptions {
 	 */
 	certstream?: { fetch: typeof fetch };
 	/**
+	 * Bearer token for the bv-certstream-worker. Threaded into the SAN correlator
+	 * so its `/sans` call authenticates — without it the worker 401s and falls
+	 * back to (rate-limited) direct crt.sh, which errors for large brands.
+	 */
+	certstreamAuthToken?: string;
+	/**
 	 * Abort signal — checked at major phase boundaries (post-allSettled, before
 	 * recursive SAN expansion) so that a budget-exceeded consumer can interrupt
 	 * the orchestrator before it launches the next expensive step. In-flight
@@ -1084,6 +1090,7 @@ export async function discoverBrandDomains(
 					() =>
 						d.correlateSans(seedDomain, {
 							...(options.certstream ? { certstream: options.certstream } : {}),
+							...(options.certstreamAuthToken ? { certstreamAuthToken: options.certstreamAuthToken } : {}),
 							signal: options.signal,
 						}),
 					(value) => value.queryStatus,
@@ -1418,6 +1425,7 @@ export async function discoverBrandDomains(
 				() =>
 					d.correlateSansRecursive(seedDomain, firstOrderSanCandidates, {
 						certstream: options.certstream,
+						certstreamAuthToken: options.certstreamAuthToken,
 						// Caps tightened (2026-05-19) to fit Cloudflare Worker CPU budget.
 						// Each candidate triggers a fresh crt.sh fetch (~200KB-2MB JSON parse
 						// for tier-1 brands), so 20 candidates × 8 concurrency was the single

@@ -29,6 +29,12 @@
 import { z } from 'zod';
 import { brandAuditSingle as defaultBrandAuditSingle, type BrandAuditSingleOptions } from '../tools/brand-audit-single';
 import type { BrandAuditSingleDeps } from '../tools/brand-audit-single';
+import {
+	discoverBrandDomains as defaultDiscoverBrandDomains,
+	type DiscoverBrandDomainsOptions,
+	type DiscoverBrandDomainsDeps,
+	type DiscoverSignal,
+} from '../tools/discover-brand-domains';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { BrandAuditStepStoreError, createD1BrandAuditStepStore } from '../lib/brand-audit-step-store';
 import { decideRetryEnqueue } from '../lib/registrar-retry';
@@ -90,6 +96,29 @@ export const BrandAuditQueueMessageSchema = z.object({
 });
 
 export type BrandAuditQueueMessage = z.infer<typeof BrandAuditQueueMessageSchema>;
+
+/**
+ * Wire format for a `discover_only` queue message produced by
+ * `discover_brand_domains_start`. Distinct from BrandAuditQueueMessageSchema:
+ * it carries the discovery args (no `format`) and a `phase` discriminator.
+ * Validated on the consumer side as defense in depth.
+ */
+export const DiscoverOnlyQueueMessageSchema = z.object({
+	auditId: z.string().min(1).max(64),
+	target: z.string().min(1).max(253),
+	phase: z.literal('discover_only'),
+	signals: z.array(z.string().min(1).max(64)).max(12).optional(),
+	depth: z.enum(['standard', 'deep']).optional(),
+	planner_mode: z.enum(['off', 'observe', 'enforce']).optional(),
+	brand_aliases: z.array(z.string().min(2).max(64)).max(20).optional(),
+	candidate_domains: z.array(z.string().min(1).max(253)).max(250).optional(),
+	dkim_selectors: z.array(z.string().min(1).max(63)).max(50).optional(),
+	min_confidence: z.number().min(0).max(1).optional(),
+	discovery_mode: z.enum(['classic', 'tiered']).optional(),
+	ownership_verified: z.boolean().optional(),
+});
+
+export type DiscoverOnlyQueueMessage = z.infer<typeof DiscoverOnlyQueueMessageSchema>;
 
 export interface BrandAuditConsumerDeps {
 	db: D1Database;
@@ -160,6 +189,13 @@ export interface BrandAuditConsumerDeps {
 	 */
 	certstream?: { fetch: typeof fetch };
 	/**
+	 * Bearer token for the bv-certstream-worker `/sans` endpoint. Paired with
+	 * `certstream`; threaded through the pipeline into `discoverBrandDomains` so
+	 * queued audits authenticate the CT-log binding instead of 401ing and
+	 * degrading to the rate-limited public crt.sh fallback.
+	 */
+	certstreamAuthToken?: string;
+	/**
 	 * Optional internal-call closure for the CSC deep-scan queue job.
 	 * Wraps handleToolsCall so the deep-scan orchestrator can invoke scan_domain
 	 * and discover_subdomains without going through HTTP framing. Constructed at
@@ -167,6 +203,19 @@ export interface BrandAuditConsumerDeps {
 	 * SCAN_CACHE or other required bindings are absent.
 	 */
 	internalCall?: (tool: string, args: { domain: string }) => Promise<unknown>;
+	/**
+	 * Injectable override for the discovery orchestrator used by the
+	 * `discover_only` phase (powers `discover_brand_domains_start`). Production
+	 * default is the real `discoverBrandDomains`; tests pass a mock. The consumer
+	 * threads the same certstream + tier closures + AbortSignal as the sync MCP
+	 * path so queued discovery uses the dedicated CT-log binding and tier
+	 * lookups instead of degrading to crt.sh / classic.
+	 */
+	discoverBrandDomains?: (
+		seedDomain: string,
+		options: DiscoverBrandDomainsOptions,
+		deps?: DiscoverBrandDomainsDeps,
+	) => Promise<CheckResult>;
 }
 
 interface TargetStatusRow {
@@ -305,6 +354,7 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 		...(deps.tier2Lookup ? { tier2Lookup: deps.tier2Lookup } : {}),
 		...(deps.whoisBinding ? { whoisBinding: deps.whoisBinding } : {}),
 		...(deps.certstream ? { certstream: deps.certstream } : {}),
+		...(deps.certstreamAuthToken ? { certstreamAuthToken: deps.certstreamAuthToken } : {}),
 		// The same brandAuditQueue binding that powers the Phase 2b retry-enqueue
 		// at line 416 doubles as the CSC fast→full deep-scan trigger inside the
 		// pipeline (brand-audit-pipeline.ts:1061). The send() signature there is
@@ -319,7 +369,13 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 		...(deps.brandAuditQueue && !isRetry ? { brandAuditQueue: deps.brandAuditQueue } : {}),
 	};
 	const hasSingleDeps =
-		deps.tier0Lookup || deps.tier1Lookup || deps.tier2Lookup || deps.whoisBinding || deps.certstream || deps.brandAuditQueue;
+		deps.tier0Lookup ||
+		deps.tier1Lookup ||
+		deps.tier2Lookup ||
+		deps.whoisBinding ||
+		deps.certstream ||
+		deps.certstreamAuthToken ||
+		deps.brandAuditQueue;
 	const singleOptions: BrandAuditSingleOptions = {
 		auditId: message.auditId,
 		stepStore,
@@ -520,6 +576,164 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 	return 'ack';
 }
 
+/**
+ * Process a single `discover_only` message: run discoverBrandDomains directly
+ * and persist the CheckResult to brand_audit_targets.result_json, flipping the
+ * target + (single-target) audit rows to completed. Mirrors the claim →
+ * idempotency → run → write structure of processBrandAuditMessage, but skips
+ * brandAuditSingle's report/registrar machinery — discovery is the whole job.
+ *
+ * Returns 'ack' | 'retry' (same contract as processBrandAuditMessage).
+ */
+export async function processDiscoverOnlyMessage(rawBody: unknown, deps: BrandAuditConsumerDeps): Promise<'ack' | 'retry'> {
+	const parsed = DiscoverOnlyQueueMessageSchema.safeParse(rawBody);
+	if (!parsed.success) {
+		// Malformed payload — never recoverable. Drop.
+		return 'ack';
+	}
+	const message = parsed.data;
+	const clock = deps.now ?? Date.now;
+	const messageStartedAt = clock();
+	const discover = deps.discoverBrandDomains ?? defaultDiscoverBrandDomains;
+
+	// 1. Idempotency check.
+	let existing: TargetStatusRow | null;
+	try {
+		existing = (await deps.db
+			.prepare('SELECT status, completed_at FROM brand_audit_targets WHERE audit_id = ? AND target = ? LIMIT 1')
+			.bind(message.auditId, message.target)
+			.first()) as TargetStatusRow | null;
+	} catch {
+		return 'retry';
+	}
+	if (!existing) {
+		// Producer should have inserted the row. Don't loop the queue.
+		return 'ack';
+	}
+	if (existing.status === 'completed' || existing.status === 'failed') {
+		return 'ack';
+	}
+
+	// 2. Atomic claim — flip queued → running.
+	let claimed = false;
+	try {
+		const claim = await deps.db
+			.prepare("UPDATE brand_audit_targets SET status = 'running' WHERE audit_id = ? AND target = ? AND status = 'queued'")
+			.bind(message.auditId, message.target)
+			.run();
+		claimed = (claim.meta?.changes ?? 0) > 0;
+		await deps.db
+			.prepare("UPDATE brand_audits SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'")
+			.bind(messageStartedAt, message.auditId)
+			.run();
+	} catch {
+		return 'retry';
+	}
+	if (!claimed) {
+		// Another consumer owns this target. Ack without re-running.
+		return 'ack';
+	}
+
+	// 3. Run discoverBrandDomains under an AbortController-driven budget.
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => {
+		controller.abort(new Error(`discover_brand_domains budget exceeded after ${BRAND_AUDIT_MESSAGE_TIMEOUT_MS}ms`));
+	}, BRAND_AUDIT_MESSAGE_TIMEOUT_MS);
+
+	const discoverDeps: DiscoverBrandDomainsDeps = {
+		...(deps.tier0Lookup ? { tier0Lookup: deps.tier0Lookup } : {}),
+		...(deps.tier1Lookup ? { tier1Lookup: deps.tier1Lookup } : {}),
+		...(deps.tier2Lookup ? { tier2Lookup: deps.tier2Lookup } : {}),
+	} as DiscoverBrandDomainsDeps;
+	const hasDiscoverDeps = Boolean(deps.tier0Lookup || deps.tier1Lookup || deps.tier2Lookup);
+
+	const discoverOptions: DiscoverBrandDomainsOptions = {
+		signals: message.signals as DiscoverSignal[] | undefined,
+		depth: message.depth,
+		planner_mode: message.planner_mode,
+		brand_aliases: message.brand_aliases,
+		candidate_domains: message.candidate_domains,
+		dkim_selectors: message.dkim_selectors,
+		min_confidence: message.min_confidence,
+		discovery_mode: message.discovery_mode,
+		certstream: deps.certstream,
+		certstreamAuthToken: deps.certstreamAuthToken,
+		signal: controller.signal,
+		deadlineMs: messageStartedAt + BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
+	};
+
+	let result: CheckResult | null = null;
+	let runtimeError: string | null = null;
+	try {
+		result = await Promise.race([
+			hasDiscoverDeps ? discover(message.target, discoverOptions, discoverDeps) : discover(message.target, discoverOptions),
+			new Promise<never>((_, reject) => {
+				const onAbort = () => {
+					const reason = (controller.signal as AbortSignal & { reason?: unknown }).reason;
+					reject(
+						reason instanceof Error ? reason : new Error(typeof reason === 'string' ? reason : 'discover_brand_domains budget exceeded'),
+					);
+				};
+				if (controller.signal.aborted) onAbort();
+				else controller.signal.addEventListener('abort', onAbort, { once: true });
+			}),
+		]);
+	} catch (err) {
+		runtimeError = err instanceof Error ? err.message : String(err);
+	} finally {
+		clearTimeout(timeoutId);
+	}
+
+	// 4. Persist result / error. Treat D1 write failure as retryable.
+	let finalStatus: 'completed' | 'failed' = runtimeError ? 'failed' : 'completed';
+	let resultJson: string | null = null;
+	let errorString = runtimeError ? sanitizeErrorString(runtimeError) : null;
+	if (finalStatus === 'completed' && result) {
+		try {
+			resultJson = JSON.stringify(result);
+		} catch (err) {
+			finalStatus = 'failed';
+			errorString = sanitizeErrorString(
+				`discover_brand_domains_result_serialization_failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+	try {
+		await deps.db
+			.prepare('UPDATE brand_audit_targets SET status = ?, result_json = ?, error = ?, completed_at = ? WHERE audit_id = ? AND target = ?')
+			.bind(finalStatus, resultJson, errorString, clock(), message.auditId, message.target)
+			.run();
+	} catch {
+		return 'retry';
+	}
+
+	// 5. Single-target finalization — bump completed_targets + flip audit terminal.
+	try {
+		const tickAt = clock();
+		await deps.db
+			.prepare('UPDATE brand_audits SET completed_targets = completed_targets + 1, updated_at = ? WHERE id = ?')
+			.bind(tickAt, message.auditId)
+			.run();
+		const counter = (await deps.db
+			.prepare('SELECT completed_targets, total_targets FROM brand_audits WHERE id = ? LIMIT 1')
+			.bind(message.auditId)
+			.first()) as AuditCounterRow | null;
+		if (counter && counter.completed_targets >= counter.total_targets) {
+			const finalizedAt = clock();
+			await deps.db
+				.prepare("UPDATE brand_audits SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?")
+				.bind(finalizedAt, finalizedAt, message.auditId)
+				.run();
+		}
+	} catch {
+		// Counter-tick failure leaves the audit row stale but the target is
+		// terminal. Ack to avoid re-running discovery.
+		return 'ack';
+	}
+
+	return 'ack';
+}
+
 /** Strip newlines / runaway-length from error strings before persisting. */
 function sanitizeErrorString(raw: string): string {
 	return raw.replace(/[\r\n\t]+/g, ' ').slice(0, 500);
@@ -548,6 +762,19 @@ export async function handleBrandAuditQueue(batch: MessageBatch<unknown>, deps: 
 			}
 			// Ack unconditionally: malformed payload, missing internalCall, or deep-scan failure are not retryable.
 			message.ack();
+			continue;
+		}
+
+		// Phase detection: discover_only messages (from discover_brand_domains_start)
+		// don't carry `format` and would be acked as "malformed" by the brand-audit
+		// schema. Route them to the discovery-only processor.
+		if (typeof rawBody === 'object' && rawBody !== null && rawBody.phase === 'discover_only') {
+			const verdict = await processDiscoverOnlyMessage(message.body, deps);
+			if (verdict === 'retry') {
+				message.retry();
+			} else {
+				message.ack();
+			}
 			continue;
 		}
 

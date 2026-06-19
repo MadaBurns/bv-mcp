@@ -1129,6 +1129,7 @@ export default {
 				discoveryModeDefault,
 				whoisBinding: e.BV_WHOIS as Fetcher | undefined,
 				certstream: e.BV_CERTSTREAM as Fetcher | undefined,
+				certstreamAuthToken: certstreamAuthToken(e as BvMcpEnv),
 				internalCall,
 				...tierLookups,
 			};

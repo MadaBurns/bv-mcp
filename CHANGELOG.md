@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.20.0] - 2026-06-20
+
+Minor release: async `discover_brand_domains` (start → poll → fetch) to fix interactive-client timeouts, plus two brand-discovery correctness fixes. Tool count 75 → **78**. No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged.
+
+### Added
+
+- **Async brand-domain discovery** — `discover_brand_domains_start` / `discover_brand_domains_status` / `discover_brand_domains_findings`. The synchronous `discover_brand_domains` runs ~24s to its fan-out budget and times out interactive MCP clients (e.g. Claude Desktop) even though the Worker completes successfully. The new start→poll→fetch trio offloads the slow sweep onto the existing brand-audit Cloudflare Queue + D1 store (a new `discover_only` queue phase running to the consumer's 300s budget), returning an `operationId` immediately. `discover_brand_domains_start` is mutating + paid-gated (developer+); the pollers are read-only and free. The synchronous tool is retained (it remains the fallback for BSL self-hosts without the queue/D1 bindings).
+
+### Fixed
+
+- **SAN signal authentication** (`src/tenants/discovery/san-correlator.ts` + threading). The brand-discovery SAN correlator's `bv-certstream-worker` `/sans` call sent no `Authorization` header, so it 401'd and silently fell back to rate-limited direct crt.sh — producing `san: error` (and starving the `san_recursive` signal) for large brand portfolios. The certstream Bearer token is now threaded through the discover, pipeline, and queue-consumer paths, mirroring `discover_subdomains`.
+- **Literal-seed scanning** (`src/schemas/tool-definitions.ts`, `src/schemas/tool-args.ts`). The brand-centric `discover_brand_domains` description led models to substitute a "canonical" brand domain for the literal seed (e.g. scanning `anthropic.com` when asked for `clau.de`). The description and `domain` param now instruct scanning the exact seed verbatim, with related labels directed to `brand_aliases`.
+
 ## [3.19.1] - 2026-06-19
 
 Patch release: P3 defense-in-depth hardening from the 3.19.0 full-server audit (the deferred follow-up items). No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (75).

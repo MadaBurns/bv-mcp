@@ -346,7 +346,9 @@ const BrandCandidateDomainsArg = z
 /** discover_brand_domains — seed + optional signal set + candidate seed list. */
 export const DiscoverBrandDomainsArgs = z
 	.object({
-		domain: DomainSchema.describe('Seed domain whose brand portfolio to expand (e.g., example.com).'),
+		domain: DomainSchema.describe(
+			'The exact seed domain to expand, scanned verbatim (e.g., example.com). Do NOT normalize, resolve, or substitute a brand\'s canonical/main domain — pass the literal domain the user named (e.g. pass `clau.de`, not `anthropic.com`). Use `brand_aliases` for related brand labels.',
+		),
 		signals: z
 			.array(DiscoverSignalSchema)
 			.min(1)
@@ -393,6 +395,27 @@ export const DiscoverBrandDomainsArgs = z
 			),
 		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+	})
+	.passthrough();
+
+/**
+ * discover_brand_domains_start — async producer mirroring discover_brand_domains.
+ * Same single-domain + signals/depth/etc. args; returns an auditId to poll.
+ * Reuses the DiscoverBrandDomainsArgs shape verbatim.
+ */
+export const DiscoverBrandDomainsStartArgs = DiscoverBrandDomainsArgs;
+
+/** discover_brand_domains_status — poll status of an async discovery run. Domainless. */
+export const DiscoverBrandDomainsStatusArgs = z
+	.object({
+		operationId: z.string().min(1).max(64).describe('Operation ID returned by discover_brand_domains_start.'),
+	})
+	.passthrough();
+
+/** discover_brand_domains_findings — fetch the discovery CheckResult for an async run. Domainless. */
+export const DiscoverBrandDomainsFindingsArgs = z
+	.object({
+		operationId: z.string().min(1).max(64).describe('Operation ID returned by discover_brand_domains_start.'),
 	})
 	.passthrough();
 
@@ -640,6 +663,9 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	check_authoritative_dns_infra: BaseDomainArgs,
 	check_root_server_set: RootServerSetArgs,
 	discover_brand_domains: DiscoverBrandDomainsArgs,
+	discover_brand_domains_start: DiscoverBrandDomainsStartArgs,
+	discover_brand_domains_status: DiscoverBrandDomainsStatusArgs,
+	discover_brand_domains_findings: DiscoverBrandDomainsFindingsArgs,
 	brand_audit_single: BrandAuditSingleArgs,
 	brand_audit_batch_start: BrandAuditBatchStartArgs,
 	brand_audit_status: BrandAuditStatusArgs,

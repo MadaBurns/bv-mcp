@@ -21,6 +21,9 @@ import {
 	CheckSubdomainTakeoverArgs,
 	RootServerSetArgs,
 	DiscoverBrandDomainsArgs,
+	DiscoverBrandDomainsStartArgs,
+	DiscoverBrandDomainsStatusArgs,
+	DiscoverBrandDomainsFindingsArgs,
 	BrandAuditSingleArgs,
 	BrandAuditBatchStartArgs,
 	BrandAuditStatusArgs,
@@ -548,8 +551,30 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	discover_brand_domains: {
 		description:
-			"Find a brand's hidden domain portfolio with standard or deep discovery by aggregating certificate, DNS, mail-policy, redirect, TXT verification, MX platform, and candidate-seeding signals. Returns ranked candidate domains with provenance and combined-confidence scoring.",
+			"Expand the hidden domain portfolio of the EXACT seed domain provided, scanned verbatim. Do NOT normalize, resolve, or substitute a 'canonical'/'main' brand domain — pass the literal domain the user named (e.g. pass `clau.de`, not `anthropic.com`); related or short/redirect domains belong in `brand_aliases`, not `domain`. Runs standard or deep discovery by aggregating certificate, DNS, mail-policy, redirect, TXT verification, MX platform, and candidate-seeding signals. Returns ranked candidate domains with provenance and combined-confidence scoring.",
 		schema: DiscoverBrandDomainsArgs,
+		group: 'discovery',
+		scanIncluded: false,
+	},
+	discover_brand_domains_start: {
+		description:
+			'Start an async brand-domain discovery for the EXACT seed domain provided (the async sibling of discover_brand_domains, which can run ~24s and time out interactive clients). Same args as discover_brand_domains. Returns { auditId, queuedAt, etaSeconds } immediately; poll with discover_brand_domains_status and fetch ranked candidates with discover_brand_domains_findings once complete.',
+		schema: DiscoverBrandDomainsStartArgs,
+		group: 'discovery',
+		scanIncluded: false,
+		mutating: true,
+	},
+	discover_brand_domains_status: {
+		description:
+			"Poll the status of an async brand-domain discovery started with discover_brand_domains_start. Returns status (queued | running | completed | failed) and progress. Owner-scoped — operationIds owned by other principals surface as notFound.",
+		schema: DiscoverBrandDomainsStatusArgs,
+		group: 'discovery',
+		scanIncluded: false,
+	},
+	discover_brand_domains_findings: {
+		description:
+			'Fetch the ranked candidate domains (the discovery CheckResult) for an async run started with discover_brand_domains_start. Returns notReady while the discovery is still in-flight; the discovery result once complete. Owner-scoped.',
+		schema: DiscoverBrandDomainsFindingsArgs,
 		group: 'discovery',
 		scanIncluded: false,
 	},
@@ -752,6 +777,10 @@ export const NON_CHECK_RESULT_TOOLS = new Set<string>([
 	'discover_subdomains',
 	'map_compliance',
 	'simulate_attack_paths',
+	// discover_brand_domains async trio — custom summary-metadata shape
+	'discover_brand_domains_start',
+	'discover_brand_domains_status',
+	'discover_brand_domains_findings',
 	// identity_secops — M365 read tools (custom shape, not CheckResult)
 	'query_signins',
 	'query_ual',

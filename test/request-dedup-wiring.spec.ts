@@ -8,10 +8,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { handleToolsCall, MUTATING_DEDUP_TOOLS } from '../src/handlers/tools';
 
 describe('mutating-dedup tool set (SSOT)', () => {
-	it('is exactly the 8 mutating, non-destructive start/register tools', () => {
+	it('is exactly the 9 mutating, non-destructive start/register tools', () => {
 		expect([...MUTATING_DEDUP_TOOLS].sort()).toEqual(
 			[
 				'brand_audit_batch_start',
+				'discover_brand_domains_start',
 				'osint_investigate_domain_start',
 				'osint_investigate_email_start',
 				'osint_investigate_infrastructure_start',

@@ -74,6 +74,14 @@ export interface SanCorrelationOptions {
 	 */
 	certstream?: { fetch: typeof fetch };
 	/**
+	 * Bearer token for the bv-certstream-worker `/sans` endpoint. The worker's
+	 * admin routes require `Authorization: Bearer <token>` — omitting it makes the
+	 * `/sans` call 401 and silently fall through to the (rate-limited) direct
+	 * crt.sh path, which fails for large brands. Mirrors `discover-subdomains.ts`
+	 * (`queryCertstreamEndpoint`'s `certstreamAuthToken`).
+	 */
+	certstreamAuthToken?: string;
+	/**
 	 * Caller-supplied abort signal. Cancels in-flight crt.sh fetches when the
 	 * audit budget fires — the JSON parse for tier-1 brands (mega-portfolio-scale)
 	 * is the single largest CPU sink in the orchestrator, so cancelling it
@@ -169,13 +177,17 @@ async function attemptCertstreamSans(
 	seedLower: string,
 	timeoutMs: number,
 	certstream: { fetch: typeof fetch },
+	certstreamAuthToken?: string,
 ): Promise<SanCorrelationResult | null> {
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
 	let response: Response;
 	try {
-		response = await certstream.fetch(`https://certstream/sans?domain=${encodeURIComponent(seedLower)}`, { signal: controller.signal });
+		response = await certstream.fetch(`https://certstream/sans?domain=${encodeURIComponent(seedLower)}`, {
+			...(certstreamAuthToken ? { headers: { Authorization: `Bearer ${certstreamAuthToken}` } } : {}),
+			signal: controller.signal,
+		});
 	} catch {
 		clearTimeout(timeoutId);
 		return null;
@@ -490,7 +502,7 @@ export async function correlateSans(seedDomain: string, options: SanCorrelationO
 	// attempt because the worker has its own cache + crt.sh-side timeout; if
 	// it fails we drop straight to direct crt.sh (which has its own retry).
 	if (options.certstream) {
-		const csResult = await attemptCertstreamSans(seedLower, timeoutMs, options.certstream);
+		const csResult = await attemptCertstreamSans(seedLower, timeoutMs, options.certstream, options.certstreamAuthToken);
 		if (csResult !== null) return csResult;
 	}
 

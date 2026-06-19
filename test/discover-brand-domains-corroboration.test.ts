@@ -97,6 +97,29 @@ function makeDeps(overrides: Partial<DiscoverBrandDomainsDeps> = {}): DiscoverBr
 	};
 }
 
+describe('discoverBrandDomains — certstream auth threading', () => {
+	it('forwards certstreamAuthToken into the SAN correlator (first-order + recursive)', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const correlateSans = vi.fn().mockResolvedValue(okSan(['sibling.com']));
+		const correlateSansRecursive = vi.fn().mockResolvedValue({
+			seedDomain: 'example.com',
+			crossConfirmed: [],
+			probed: [],
+			queryStatus: 'ok' as const,
+		});
+		const deps = makeDeps({ correlateSans, correlateSansRecursive });
+		await discoverBrandDomains(
+			'example.com',
+			{ signals: ['san', 'san_recursive'], certstream: { fetch: vi.fn() as unknown as typeof fetch }, certstreamAuthToken: 'tkn-123' },
+			deps,
+		);
+		expect(correlateSans).toHaveBeenCalled();
+		expect(correlateSans.mock.calls[0][1]?.certstreamAuthToken).toBe('tkn-123');
+		expect(correlateSansRecursive).toHaveBeenCalled();
+		expect(correlateSansRecursive.mock.calls[0][2]?.certstreamAuthToken).toBe('tkn-123');
+	});
+});
+
 describe('discoverBrandDomains — corroboration gate', () => {
 	it('LR-1: filters a single-signal dmarc_rua candidate', async () => {
 		// A `related` RUA addressee at confidence 0.6 currently surfaces alone.

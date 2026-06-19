@@ -70,6 +70,7 @@ import { brandAuditSingle } from '../tools/brand-audit-single';
 import { brandAuditBatchStart } from '../tools/brand-audit-batch-start';
 import { brandAuditStatus } from '../tools/brand-audit-status';
 import { brandAuditGetReport } from '../tools/brand-audit-get-report';
+import { discoverBrandDomainsStart, discoverBrandDomainsFindings } from '../tools/discover-brand-domains-start';
 import { registerBrandAuditWatch, listBrandAuditWatches, deleteBrandAuditWatch } from '../tools/brand-audit-watch';
 import { createD1BrandAuditStepStore } from '../lib/brand-audit-step-store';
 import { querySignins } from '../tools/m365/query-signins';
@@ -515,6 +516,7 @@ export const TOOL_REGISTRY: Record<
 					dkim_selectors: args.dkim_selectors as string[] | undefined,
 					min_confidence: args.min_confidence as number | undefined,
 					certstream: ro?.certstream,
+					certstreamAuthToken: ro?.certstreamAuthToken,
 					deadlineMs,
 					signal: AbortSignal.timeout(DISCOVER_BRAND_DOMAINS_SYNC_BUDGET_MS),
 				},
@@ -533,6 +535,94 @@ export const TOOL_REGISTRY: Record<
 			);
 		},
 		cacheTtlSeconds: 3600,
+	},
+	discover_brand_domains_start: {
+		// Async producer — not cacheable. Random UUID keeps every call a cache-miss.
+		cacheKey: () => `__nocache__:discover_brand_domains_start:${crypto.randomUUID()}`,
+		execute: async (domain, args, ro) => {
+			const db = ro?.brandAuditDb;
+			const queue = ro?.brandAuditQueue;
+			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
+			if (!db || !queue) {
+				const { buildCheckResult, createFinding } = await import('../lib/scoring');
+				return buildCheckResult('brand_discovery', [
+					createFinding(
+						'brand_discovery',
+						'Async brand-domain discovery unavailable',
+						'high',
+						'BRAND_AUDIT_DB or BRAND_AUDIT_QUEUE binding is not provisioned. See docs/provisioning/brand-audit-bindings.md.',
+						{ unprovisioned: true },
+					),
+				]);
+			}
+			return discoverBrandDomainsStart(
+				domain,
+				{
+					signals: args.signals as string[] | undefined,
+					depth: args.depth as 'standard' | 'deep' | undefined,
+					planner_mode: args.planner_mode as 'off' | 'observe' | 'enforce' | undefined,
+					brand_aliases: args.brand_aliases as string[] | undefined,
+					candidate_domains: args.candidate_domains as string[] | undefined,
+					dkim_selectors: args.dkim_selectors as string[] | undefined,
+					min_confidence: args.min_confidence as number | undefined,
+					discovery_mode: args.discovery_mode as 'classic' | 'tiered' | undefined,
+					ownership_verified: args.ownership_verified as boolean | undefined,
+				},
+				principalId,
+				{ db, queue },
+			);
+		},
+		cacheTtlSeconds: 0,
+	},
+	discover_brand_domains_status: {
+		// Mutable polling read — do not cache. Reuses the brand-audit status reader
+		// keyed on the operationId (= the brand_audits row id).
+		cacheKey: (args, ro) => `discover_brand_domains_status:${ro?.principalId ?? ro?.keyHash ?? 'anon'}:${String(args.operationId ?? '')}`,
+		execute: async (_domain, args, ro) => {
+			const db = ro?.brandAuditDb;
+			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
+			if (!db) {
+				const { buildCheckResult, createFinding } = await import('../lib/scoring');
+				return buildCheckResult('brand_discovery', [
+					createFinding(
+						'brand_discovery',
+						'Async brand-domain discovery status unavailable',
+						'high',
+						'BRAND_AUDIT_DB binding is not provisioned.',
+						{
+							unprovisioned: true,
+						},
+					),
+				]);
+			}
+			return brandAuditStatus(String(args.operationId ?? ''), principalId, { db });
+		},
+		cacheable: false,
+	},
+	discover_brand_domains_findings: {
+		// Mutable read — do not cache. Reuses the brand-audit get-report reader
+		// (per-target mode) to surface the discovery CheckResult.
+		cacheKey: (args, ro) => `discover_brand_domains_findings:${ro?.principalId ?? ro?.keyHash ?? 'anon'}:${String(args.operationId ?? '')}`,
+		execute: async (_domain, args, ro) => {
+			const db = ro?.brandAuditDb;
+			const principalId = ro?.principalId ?? ro?.keyHash ?? 'anonymous';
+			if (!db) {
+				const { buildCheckResult, createFinding } = await import('../lib/scoring');
+				return buildCheckResult('brand_discovery', [
+					createFinding(
+						'brand_discovery',
+						'Async brand-domain discovery findings unavailable',
+						'high',
+						'BRAND_AUDIT_DB binding is not provisioned.',
+						{
+							unprovisioned: true,
+						},
+					),
+				]);
+			}
+			return discoverBrandDomainsFindings(String(args.operationId ?? ''), principalId, { db });
+		},
+		cacheable: false,
 	},
 	brand_audit_single: {
 		cacheKey: (args, ro) => {
@@ -576,6 +666,7 @@ export const TOOL_REGISTRY: Record<
 				},
 				{
 					certstream: ro?.certstream,
+					certstreamAuthToken: ro?.certstreamAuthToken,
 					whoisBinding: ro?.whoisBinding,
 					enforceQuota: buildMonthlyEnforceQuota(ro),
 					// The brand-audit queue binding doubles as the CSC fast→full
@@ -938,7 +1029,12 @@ export async function handleToolsCall(
 			// third-party domains. On BSL self-hosts the bindings are unprovisioned
 			// and the pipeline degrades to classic regardless, so this gate is a
 			// no-op there.
-			if (name === 'discover_brand_domains' || name === 'brand_audit_single' || name === 'brand_audit_batch_start') {
+			if (
+				name === 'discover_brand_domains' ||
+				name === 'discover_brand_domains_start' ||
+				name === 'brand_audit_single' ||
+				name === 'brand_audit_batch_start'
+			) {
 				const requestedMode = (validatedArgs as { discovery_mode?: string }).discovery_mode;
 				if (requestedMode === 'tiered') {
 					const tier = runtimeOptions?.authTier;
@@ -955,7 +1051,12 @@ export async function handleToolsCall(
 			// and for discover_brand_domains on free (now 0/day too); still
 			// meaningful for agent callers, who get discover_brand_domains at the
 			// tier default and could otherwise burn it on deep.
-			if (name === 'discover_brand_domains' || name === 'brand_audit_single' || name === 'brand_audit_batch_start') {
+			if (
+				name === 'discover_brand_domains' ||
+				name === 'discover_brand_domains_start' ||
+				name === 'brand_audit_single' ||
+				name === 'brand_audit_batch_start'
+			) {
 				const requestedDepth = (validatedArgs as { depth?: string }).depth;
 				if (requestedDepth === 'deep') {
 					const tier = runtimeOptions?.authTier;

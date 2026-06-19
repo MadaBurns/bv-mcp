@@ -358,6 +358,16 @@ function makeToolCases(): ToolCase[] {
 				format: 'compact',
 			},
 		},
+		{
+			name: 'discover_brand_domains_start',
+			arguments: {
+				domain: 'brand-example.net',
+				signals: ['san', 'ns'],
+				min_confidence: 0,
+			},
+		},
+		{ name: 'discover_brand_domains_status', arguments: { operationId: 'chaos-disc-1' } },
+		{ name: 'discover_brand_domains_findings', arguments: { operationId: 'chaos-disc-1' } },
 		{ name: 'brand_audit_single', arguments: { domain: 'brand-example.net', format: 'json', min_confidence: 1 } },
 		{
 			name: 'brand_audit_batch_start',
