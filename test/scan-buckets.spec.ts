@@ -172,6 +172,63 @@ describe('scan_buckets tools', () => {
 		}
 	});
 
+	it('findings: drops multi-label-subdomain over-keeps (P3-1) — sub-prod dropped, acme-prod kept', async () => {
+		const { scanBucketsFindings } = await import('../src/tools/scan-buckets');
+		const r = await scanBucketsFindings(
+			{ scanId: 's1', target: 'sub.deep.acme.com', providers: ['aws'] },
+			{
+				reconBinding: binding({
+					success: true,
+					data: [
+						{ bucketName: 'acme-prod', provider: 's3' },
+						{ bucketName: 'sub-prod', provider: 's3' },
+						{ bucketName: 'deep-archive', provider: 's3' },
+					],
+					count: 3,
+				}),
+				reconAuthToken: 't',
+			},
+		);
+		const meta = r.findings[0]!.metadata!;
+		// org token derives from the registrable domain (acme.com → acme), so the
+		// intermediate subdomain labels `sub`/`deep` no longer wrongly retain rows.
+		expect((meta.data as Array<Record<string, unknown>>).map((row) => row.bucketName)).toEqual(['acme-prod']);
+		expect(meta.count).toBe(1);
+		expect(meta.filteredOutOfScopeCount).toBe(2);
+	});
+
+	it('findings: caps the in-scope array spread into structured metadata (P3 BUCKET_FINDINGS_MAX=200)', async () => {
+		const { scanBucketsFindings } = await import('../src/tools/scan-buckets');
+		const rows = Array.from({ length: 250 }, (_, i) => ({ bucketName: `acme-asset-${i}`, provider: 's3' }));
+		const r = await scanBucketsFindings(
+			{ scanId: 's1', target: 'acme.test', providers: ['aws'] },
+			{ reconBinding: binding({ success: true, data: rows, count: 250 }), reconAuthToken: 't' },
+		);
+		const meta = r.findings[0]!.metadata!;
+		const data = meta.data as Array<Record<string, unknown>>;
+		// All 250 are in-scope, but only the first 200 are emitted into structuredContent.
+		expect(data.length).toBe(200);
+		expect(meta.keptTruncated).toBe(true);
+		expect(meta.keptCap).toBe(200);
+		expect(meta.keptTotal).toBe(250);
+		// `count` reflects the true in-scope total, not the truncated emitted length.
+		expect(meta.count).toBe(250);
+		expect(meta.originalCount).toBe(250);
+		expect(meta.filteredOutOfScopeCount).toBe(0);
+	});
+
+	it('findings: fail-open — no cap markers when in-scope rows are at/under the cap', async () => {
+		const { scanBucketsFindings } = await import('../src/tools/scan-buckets');
+		const rows = Array.from({ length: 5 }, (_, i) => ({ bucketName: `acme-asset-${i}`, provider: 's3' }));
+		const r = await scanBucketsFindings(
+			{ scanId: 's1', target: 'acme.test', providers: ['aws'] },
+			{ reconBinding: binding({ success: true, data: rows, count: 5 }), reconAuthToken: 't' },
+		);
+		const meta = r.findings[0]!.metadata!;
+		expect((meta.data as unknown[]).length).toBe(5);
+		expect(meta.keptTruncated).toBeUndefined();
+	});
+
 	it('findings: reuses remembered scan scope when caller polls by scanId only', async () => {
 		const { scanBucketsStart, scanBucketsFindings } = await import('../src/tools/scan-buckets');
 		const scanKv = kv();

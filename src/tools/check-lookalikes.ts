@@ -647,7 +647,15 @@ async function probeRdap(domain: string): Promise<RdapProbeResult> {
 	try {
 		const baseUrl = serverUrl.endsWith('/') ? serverUrl : `${serverUrl}/`;
 		const rdapUrl = `${baseUrl}domain/${domain}`;
-		const resp = await fetch(rdapUrl, {
+		// The RDAP host comes from the FALLBACK_RDAP_SERVERS map — not statically
+		// trusted as a class (the sibling fetchRdapResponse path derives the same
+		// host from the network-sourced IANA bootstrap), so route through safeFetch
+		// for parity: validateOutboundUrl() re-validates the destination host (SSRF
+		// gate) and manual redirect stops the worker chasing a server-supplied
+		// Location. safeFetch throws on a blocked host (matching native fetch error
+		// semantics); the surrounding try/catch degrades it to EMPTY_RDAP_PROBE
+		// exactly like any other probe failure (fail-soft, never throws out of the tool).
+		const resp = await safeFetch(rdapUrl, {
 			redirect: 'manual',
 			signal: AbortSignal.timeout(RDAP_PROBE_TIMEOUT_MS),
 			headers: { Accept: 'application/rdap+json, application/json' },

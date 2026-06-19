@@ -135,6 +135,44 @@ describe('POST /mcp Bearer JWT acceptance', () => {
 		expect(res.status).toBe(401);
 	});
 
+	// Backward-compat pin for BSL self-hosters who leave OAUTH_ISSUER unset.
+	// In that deployment, sign AND verify both derive the issuer from the request
+	// Host (resolveIssuer with no envIssuer → `${protocol}//${host}`). The two are
+	// symmetric, so a Host-derived-iss token minted for a given Host must still
+	// verify when presented to that same Host. This guards against a future change
+	// that forces strict issuer-pinning (requiring OAUTH_ISSUER) and would silently
+	// 401 every self-hosted OAuth token.
+	it('OAUTH_ISSUER unset → Host-derived-iss JWT still authenticates', async () => {
+		// No OAUTH_ISSUER → issuer resolves from the request Host (https://example.com).
+		const unsetIssuerEnv = {
+			...env,
+			BV_API_KEY: TEST_API_KEY,
+			OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET,
+			// OAUTH_ISSUER intentionally omitted
+		} as TestEnv;
+		// Mint with the Host-derived issuer the verify path will recompute for this Host.
+		const { token } = await mintOAuthJwt({ issuer: 'https://example.com' });
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(mcpInitRequest(token), unsetIssuerEnv, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).not.toBe(401);
+	});
+
+	it('OAUTH_ISSUER unset → JWT whose iss is a different Host → 401', async () => {
+		// Symmetric counterpart: even with OAUTH_ISSUER unset, a token whose iss was
+		// derived for a DIFFERENT Host must not verify against this Host.
+		const unsetIssuerEnv = {
+			...env,
+			BV_API_KEY: TEST_API_KEY,
+			OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET,
+		} as TestEnv;
+		const { token } = await mintOAuthJwt({ issuer: 'https://other.example' });
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(mcpInitRequest(token), unsetIssuerEnv, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(401);
+	});
+
 	it('expired JWT → 401', async () => {
 		// ttlSeconds: -60 puts exp well past the clock-skew window, so verifyJwt throws
 		// `token expired`. Control flow falls through to the static-key branch which also

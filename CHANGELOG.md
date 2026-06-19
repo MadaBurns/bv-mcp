@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.19.1] - 2026-06-19
+
+Patch release: P3 defense-in-depth hardening from the 3.19.0 full-server audit (the deferred follow-up items). No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (75).
+
+### Security / hardening
+
+- **`scan_buckets_findings` output cap** (`src/tools/scan-buckets.ts`). The in-scope findings array spread into the MCP `structuredContent` channel is now capped (`BUCKET_FINDINGS_MAX = 200`) with coherent truncation markers, mirroring the OSINT projection — bounds response/token size on a large upstream payload.
+- **`scan_buckets` target tokenization** now derives the org token from the `tldts`-backed public-suffix helper (`src/lib/public-suffix.ts`) instead of a hand-rolled suffix list. Fixes multi-label-subdomain over-keep, drops the public suffix from the compact match token, and retires the partial hardcoded PSL set. The filter remains fail-open (in-scope buckets are never wrongly dropped). Adds a defensive `scanId` character guard before KV-key construction.
+- **`probeRdap` SSRF parity** (`src/tools/check-lookalikes.ts`). The lookalikes RDAP probe now routes through `safeFetch` (matching `check-rdap-lookup`'s `fetchRdapResponse`) so the SSRF allow/deny gate applies even if the RDAP server map ever gains a non-static entry. Behavior-preserving for the legitimate path.
+
+### Changed
+
+- Added backward-compat regression tests for the `OAUTH_ISSUER`-unset JWT path (`test/oauth/bearer-jwt.spec.ts`). The verify path is intentionally unchanged — sign/verify derive the issuer symmetrically and a configured-issuer mismatch is already rejected.
+
 ## [3.19.0] - 2026-06-19
 
 Feature + security-hardening release from a full-server best-practices audit. No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (75).
