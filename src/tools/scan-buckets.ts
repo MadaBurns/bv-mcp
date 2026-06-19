@@ -3,6 +3,7 @@
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import { callReconBucketScanStart, callReconBucketScanStatus, callReconBucketFindings, type ReconBinding } from '../lib/recon-binding';
+import { extractBrandName, getRegistrableDomain } from '../lib/public-suffix';
 
 // F7 (OWASP LLM01): upstream bv-recon strings spread into finding metadata below
 // are sanitized at the `createFinding` chokepoint (`@blackveil/dns-checks/scoring`,
@@ -46,34 +47,15 @@ const PROVIDER_ALIASES: Record<string, string[]> = {
 	digitalocean: ['digitalocean', 'digitalocean_spaces', 'do_spaces'],
 };
 
-const PUBLIC_SUFFIX_LABELS = new Set([
-	'com',
-	'net',
-	'org',
-	'edu',
-	'gov',
-	'mil',
-	'int',
-	'co',
-	'uk',
-	'us',
-	'ca',
-	'au',
-	'nz',
-	'de',
-	'fr',
-	'jp',
-	'cn',
-	'io',
-	'ai',
-	'app',
-	'dev',
-	'test',
-	'example',
-	'invalid',
-	'localhost',
-	'local',
-]);
+// Per-row cap on the bucket array spread into finding metadata (the MCP
+// `structuredContent` channel). Mirrors the OSINT path's `REPORT_MAX_FINDINGS`
+// so a huge upstream payload can't blow up structured output. The human-readable
+// `detail` string is independently clamped to 800 chars.
+const BUCKET_FINDINGS_MAX = 200;
+
+// scanId is already Zod-bounded (max 128) and only ever used as a KV key suffix,
+// so this is belt-and-suspenders: KV keys must stay to a conservative charset.
+const SAFE_SCAN_ID = /^[A-Za-z0-9._:-]+$/;
 
 function scopeKey(scanId: string): string {
 	return `bucket-scan-scope:${scanId}`;
@@ -90,22 +72,35 @@ function normalizeTarget(target: string | undefined): string | undefined {
 function targetTokens(target: string | undefined): TargetScopeTokens {
 	const normalized = normalizeTarget(target);
 	if (!normalized) return { substring: [], segment: [] };
-	const labels = normalized.split('.').filter(Boolean);
-	while (labels[0] === 'www') labels.shift();
-	const compact = normalized.replace(/[^a-z0-9]/g, '');
-	let strippedSuffix = false;
-	while (labels.length > 1 && PUBLIC_SUFFIX_LABELS.has(labels[labels.length - 1]!)) {
-		labels.pop();
-		strippedSuffix = true;
-	}
-	if (!strippedSuffix && labels.length > 1) labels.pop();
-	const core = labels.join('-');
-	const coreCompact = core.replace(/[^a-z0-9]/g, '');
+
+	// P3-1/P3-3: derive the registrable-domain org label via the PSL-backed
+	// (tldts) helper instead of a hand-rolled suffix set, so a multi-label
+	// subdomain like `sub.deep.acme.com` yields the org token `acme` (not
+	// `sub`/`deep`/`acme`, which over-kept unrelated buckets such as `sub-prod`).
+	// `extractBrandName` is `domainWithoutSuffix`; fall back to the bare normalized
+	// host when the input isn't a PSL-resolvable domain (fail-open).
+	const brand = extractBrandName(normalized);
+	const registrable = getRegistrableDomain(normalized);
+	const core = brand && brand.length > 0 ? brand : normalized;
+
 	const substring = new Set<string>();
 	const segment = new Set<string>();
-	for (const token of [compact, core, coreCompact]) {
-		if (token.length >= 3) substring.add(token);
+
+	// P3-2: the match token is the suffix-stripped org label, not the full host —
+	// so a public suffix (`.com`, `.test`) is no longer dead-weight in the token
+	// (`acme.com` matches on `acme`, not `acmecom`).
+	const coreCompact = core.replace(/[^a-z0-9]/g, '');
+	if (coreCompact.length >= 3) {
+		substring.add(coreCompact);
+	} else if (coreCompact.length > 0) {
+		// Fail-open for very short org labels (e.g. `x.test`): a 1–2 char token is
+		// weak scope, so widen to the registrable-domain compact (org + suffix) to
+		// avoid wrongly dropping in-scope buckets named after the full host.
+		segment.add(coreCompact);
+		const registrableCompact = (registrable ?? normalized).replace(/[^a-z0-9]/g, '');
+		if (registrableCompact.length >= 3) substring.add(registrableCompact);
 	}
+
 	for (const label of core.split(/[^a-z0-9]+/).filter(Boolean)) {
 		if (label.length >= 3) substring.add(label);
 		else segment.add(label);
@@ -153,14 +148,14 @@ function findingInTargetScope(finding: Record<string, unknown>, tokens: TargetSc
 }
 
 async function rememberBucketScanScope(scanId: string | undefined, scope: BucketScanScope, kv: KVNamespace | undefined): Promise<void> {
-	if (!scanId || !kv) return;
+	if (!scanId || !kv || !SAFE_SCAN_ID.test(scanId)) return;
 	const target = normalizeTarget(scope.target);
 	if (!target && !scope.providers?.length) return;
 	await kv.put(scopeKey(scanId), JSON.stringify({ target, providers: scope.providers }), { expirationTtl: BUCKET_SCAN_SCOPE_TTL_SECONDS }).catch(() => undefined);
 }
 
 async function loadBucketScanScope(scanId: string | undefined, kv: KVNamespace | undefined): Promise<BucketScanScope> {
-	if (!scanId || !kv) return {};
+	if (!scanId || !kv || !SAFE_SCAN_ID.test(scanId)) return {};
 	const raw = await kv.get(scopeKey(scanId)).catch(() => null);
 	if (!raw) return {};
 	try {
@@ -191,14 +186,24 @@ function filterBucketPayload(payload: Record<string, unknown>, scope: BucketScan
 		if (filteredSamples.length < 5) filteredSamples.push(bucketFindingName(finding) || '(unnamed bucket)');
 	}
 	const filteredCount = rows.length - kept.length;
-	if (filteredCount <= 0) return payload;
+	// P3: cap the in-scope array spread into structured metadata (mirrors the OSINT
+	// REPORT_MAX_FINDINGS=100 path). `count` stays the true in-scope total; the
+	// emitted array is the (possibly truncated) prefix. Markers signal truncation.
+	const keptTotal = kept.length;
+	const keptTruncated = keptTotal > BUCKET_FINDINGS_MAX;
+	const emitted = keptTruncated ? kept.slice(0, BUCKET_FINDINGS_MAX) : kept;
+	if (filteredCount <= 0 && !keptTruncated) return payload;
 	return {
 		...payload,
-		[arrayKey]: kept,
-		count: typeof payload.count === 'number' ? kept.length : payload.count,
+		[arrayKey]: emitted,
+		// In-scope total (not the possibly-truncated emitted length) so downstream
+		// callers see the real count regardless of the structured-output cap.
+		// Preserve prior behavior: only override `count` when upstream supplied one.
+		count: typeof payload.count === 'number' ? keptTotal : payload.count,
 		originalCount: typeof payload.count === 'number' ? payload.count : rows.length,
 		filteredOutOfScopeCount: filteredCount,
 		filteredOutOfScopeSamples: filteredSamples,
+		...(keptTruncated ? { keptTruncated: true, keptCap: BUCKET_FINDINGS_MAX, keptTotal } : {}),
 		targetScope: scope.target,
 		providerScope: scope.providers,
 	};
