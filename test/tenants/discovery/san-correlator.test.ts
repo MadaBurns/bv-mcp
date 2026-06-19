@@ -209,6 +209,24 @@ describe('correlateSans', () => {
 		expect(directFetch).not.toHaveBeenCalled();
 	});
 
+	it('sends the certstream Bearer token on the /sans request when provided', async () => {
+		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(
+			Response.json({ domain: 'foo.com', names: ['bar.com'], certificateCount: 1, timedOut: false, cached: true }),
+		);
+		const directFetch = vi.fn() as unknown as typeof fetch;
+		const result = await correlateSans('foo.com', {
+			certstream: { fetch: csFetch },
+			certstreamAuthToken: 'secret-token',
+			fetchFn: directFetch,
+			maxRetries: 0,
+		});
+		expect(result.queryStatus).toBe('ok');
+		const init = csFetch.mock.calls[0][1] as RequestInit | undefined;
+		const headers = new Headers(init?.headers);
+		expect(headers.get('authorization')).toBe('Bearer secret-token');
+		expect(directFetch).not.toHaveBeenCalled();
+	});
+
 	it('falls back to direct crt.sh when certstream binding fails', async () => {
 		const csFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response('boom', { status: 503 }));
 		const directFetch = mockFetchOk([{ id: 7, name_value: 'foo.com\nfallback-sibling.com' }]);
