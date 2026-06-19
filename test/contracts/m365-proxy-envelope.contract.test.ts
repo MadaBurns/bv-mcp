@@ -2,7 +2,7 @@
 /**
  * Contract: bv-web-prod → bv-mcp M365 proxy WIRE surface (consumer side).
  *
- * Endpoint: POST /api/internal/m365/<tool> over the `m365Proxy` (BV_WEB) service
+ * Endpoint: POST /api/internal/mcp/m365/<tool> over the `m365Proxy` (BV_WEB) service
  * binding, called by `callM365Proxy` in src/tools/m365/proxy.ts. The four
  * identity_secops tools (query_signins, query_ual, get_ca_policies,
  * assess_coverage) all funnel through this one helper.
@@ -124,7 +124,7 @@ describe('M365 proxy envelope contract (consumer side)', () => {
 
 		expect(fetchMock).toHaveBeenCalledOnce();
 		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-		expect(url).toBe('https://bv-web-internal/api/internal/m365/query-signins');
+		expect(url).toBe('https://bv-web-internal/api/internal/mcp/m365/query-signins');
 		expect(init.method).toBe('POST');
 		expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer tok');
 		expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
