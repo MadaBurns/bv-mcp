@@ -4,6 +4,15 @@ afterEach(() => vi.restoreAllMocks());
 function binding(body: unknown, status = 200) {
 	return { fetch: vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })) };
 }
+function kv() {
+	const store = new Map<string, string>();
+	return {
+		get: vi.fn(async (key: string) => store.get(key) ?? null),
+		put: vi.fn(async (key: string, value: string) => {
+			store.set(key, value);
+		}),
+	};
+}
 describe('scan_buckets tools', () => {
 	it('start: unprovisioned info when binding absent', async () => {
 		const { scanBucketsStart } = await import('../src/tools/scan-buckets');
@@ -81,5 +90,114 @@ describe('scan_buckets tools', () => {
 		assertSanitized((meta.findings as Array<Record<string, unknown>>)[0]!.key as string);
 		expect((meta.findings as Array<Record<string, unknown>>)[0]!.public).toBe(true); // scalars pass through
 		expect(meta.summary).toBe(true); // sentinel preserved
+	});
+
+	it('findings: filters upstream bucket rows outside the requested target scope', async () => {
+		const { scanBucketsFindings } = await import('../src/tools/scan-buckets');
+		const r = await scanBucketsFindings(
+			{ scanId: 's1', target: 'acme-corp.test', providers: ['azure', 'gcp'] },
+			{
+				reconBinding: binding({
+					success: true,
+					data: [
+						{ bucketName: 'acme-corp-prod', provider: 'azure_blob', isExposed: 0, confirmedExposure: false },
+						{ bucketName: 'globexprod', provider: 'azure_blob', isExposed: 0, confirmedExposure: false },
+						{ bucketName: 'acme-corp-assets', provider: 'digitalocean_spaces', isExposed: 0, confirmedExposure: false },
+					],
+					count: 3,
+				}),
+				reconAuthToken: 't',
+			},
+		);
+		const meta = r.findings[0]!.metadata!;
+		const data = meta.data as Array<Record<string, unknown>>;
+		expect(data.map((row) => row.bucketName)).toEqual(['acme-corp-prod']);
+		expect(meta.count).toBe(1);
+		expect(meta.originalCount).toBe(3);
+		expect(meta.filteredOutOfScopeCount).toBe(2);
+		expect(String(r.findings[0]!.detail)).toContain('filtered 2 out-of-scope');
+	});
+
+	it('findings: applies target scope to non-acme domains including short labels', async () => {
+		const { scanBucketsFindings } = await import('../src/tools/scan-buckets');
+		const r = await scanBucketsFindings(
+			{ scanId: 's1', target: 'x.test', providers: ['aws'] },
+			{
+				reconBinding: binding({
+					success: true,
+					data: [
+						{ bucketName: 'x-prod', provider: 's3' },
+						{ bucketName: 'xtest-archive', provider: 'aws_s3' },
+						{ bucketName: 'box-prod', provider: 's3' },
+						{ bucketName: 'test-fixture', provider: 's3' },
+						{ bucketName: 'x-prod', provider: 'azure_blob' },
+					],
+					count: 5,
+				}),
+				reconAuthToken: 't',
+			},
+		);
+		const meta = r.findings[0]!.metadata!;
+		expect((meta.data as Array<Record<string, unknown>>).map((row) => row.bucketName)).toEqual(['x-prod', 'xtest-archive']);
+		expect(meta.count).toBe(2);
+		expect(meta.originalCount).toBe(5);
+		expect(meta.filteredOutOfScopeCount).toBe(3);
+	});
+
+	it('findings: does not hard-code target names across varied domain formats', async () => {
+		const { scanBucketsFindings } = await import('../src/tools/scan-buckets');
+		for (const c of [
+			{ target: 'acme-industries.test', bucketName: 'acme-industries-prod' },
+			{ target: 'https://www.northwind.test/sitemap.xml', bucketName: 'northwind-backups' },
+			{ target: 'portal.example.invalid', bucketName: 'portal-example-assets' },
+		]) {
+			const r = await scanBucketsFindings(
+				{ scanId: 's1', target: c.target, providers: ['aws'] },
+				{
+					reconBinding: binding({
+						success: true,
+						data: [
+							{ bucketName: c.bucketName, provider: 's3' },
+							{ bucketName: 'production.globex', provider: 's3' },
+							{ bucketName: c.bucketName, provider: 'azure_blob' },
+						],
+						count: 3,
+					}),
+					reconAuthToken: 't',
+				},
+			);
+			const meta = r.findings[0]!.metadata!;
+			expect((meta.data as Array<Record<string, unknown>>).map((row) => row.bucketName)).toEqual([c.bucketName]);
+			expect(meta.filteredOutOfScopeCount).toBe(2);
+		}
+	});
+
+	it('findings: reuses remembered scan scope when caller polls by scanId only', async () => {
+		const { scanBucketsStart, scanBucketsFindings } = await import('../src/tools/scan-buckets');
+		const scanKv = kv();
+		await scanBucketsStart(
+			{ target: 'acme-corp.test', providers: ['azure'] },
+			{ reconBinding: binding({ scanId: 's1', status: 'running' }), reconAuthToken: 't', bucketScanKv: scanKv as unknown as KVNamespace },
+		);
+
+		const r = await scanBucketsFindings(
+			{ scanId: 's1' },
+			{
+				reconBinding: binding({
+					success: true,
+					data: [
+						{ bucketName: 'acme-corp-prod', provider: 'azure_blob' },
+						{ bucketName: 'production.globex', provider: 'azure_blob' },
+					],
+					count: 2,
+				}),
+				reconAuthToken: 't',
+				bucketScanKv: scanKv as unknown as KVNamespace,
+			},
+		);
+
+		const meta = r.findings[0]!.metadata!;
+		expect((meta.data as Array<Record<string, unknown>>).map((row) => row.bucketName)).toEqual(['acme-corp-prod']);
+		expect(meta.filteredOutOfScopeCount).toBe(1);
 	});
 });
