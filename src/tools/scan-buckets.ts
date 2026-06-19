@@ -3,7 +3,12 @@
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import { callReconBucketScanStart, callReconBucketScanStatus, callReconBucketFindings, type ReconBinding } from '../lib/recon-binding';
-import { sanitizeUpstreamObject, sanitizeUpstreamValue } from '../lib/sanitize-upstream';
+
+// F7 (OWASP LLM01): upstream bv-recon strings spread into finding metadata below
+// are sanitized at the `createFinding` chokepoint (`@blackveil/dns-checks/scoring`,
+// recursive string neutralization + length clamp). The former per-tool
+// `sanitizeUpstreamObject`/`sanitizeUpstreamValue` opt-ins were removed as redundant
+// — every value here flows through `createFinding(... metadata)`.
 
 const CATEGORY = 'bucket_scan' as CheckCategory;
 
@@ -26,11 +31,9 @@ export async function scanBucketsStart(args: { target: string; providers?: strin
 			'info',
 			`Bucket discovery started for ${args.target} (scanId ${started.scanId}). Poll with scan_buckets_status.`,
 			{
-				// F7: sanitize all upstream values; explicit keys below must use the
-				// sanitized forms too, else they re-introduce raw upstream into metadata.
-				...sanitizeUpstreamObject(started),
-				scanId: sanitizeUpstreamValue(started.scanId),
-				status: sanitizeUpstreamValue(started.status ?? 'running'),
+				...started,
+				scanId: started.scanId,
+				status: started.status ?? 'running',
 				pollWith: 'scan_buckets_status',
 			},
 		),
@@ -42,7 +45,7 @@ export async function scanBucketsStatus(args: { scanId: string }, options: Recon
 	if (!s) return unprovisioned(`Bucket scan status is unavailable for ${args.scanId} (unprovisioned or not found).`);
 	return buildCheckResult(CATEGORY, [
 		createFinding(CATEGORY, `Bucket scan ${args.scanId}`, 'info', JSON.stringify(s).slice(0, 800), {
-			...sanitizeUpstreamObject(s), // F7: sanitize opaque upstream payload
+			...s, // F7: opaque upstream payload sanitized at the createFinding chokepoint
 			summary: true,
 			scanId: args.scanId, // caller input (already validated) — safe
 		}),
@@ -54,7 +57,7 @@ export async function scanBucketsFindings(args: { scanId?: string }, options: Re
 	if (!f) return unprovisioned('Bucket findings are unavailable (unprovisioned or no scan).');
 	return buildCheckResult(CATEGORY, [
 		createFinding(CATEGORY, 'Bucket findings', 'info', JSON.stringify(f).slice(0, 800), {
-			...sanitizeUpstreamObject(f), // F7: sanitize opaque upstream payload
+			...f, // F7: opaque upstream payload sanitized at the createFinding chokepoint
 			summary: true,
 		}),
 	]) as CheckResult;

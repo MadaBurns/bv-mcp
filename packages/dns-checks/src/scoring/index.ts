@@ -54,6 +54,14 @@ export {
 } from './profiles';
 export type { DomainProfile, DomainContext } from './profiles';
 
+export {
+	sanitizeFindingMetadata,
+	sanitizeMetadataValue,
+	sanitizeMetadataString,
+	MAX_META_STRING,
+	MAX_META_DEPTH,
+} from './metadata-sanitize';
+
 export { computeGenericScore } from './generic';
 export type { GenericScoringContext, GenericScanScore, FindingSeverityCounts, EmailBonusKeyMap, TierBreakdown } from './generic';
 
