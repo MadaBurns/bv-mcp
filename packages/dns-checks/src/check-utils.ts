@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { CheckCategory, Finding, Severity } from './types';
+import { sanitizeFindingMetadata } from './scoring/metadata-sanitize';
 
 // Re-export scoring functions from the single source of truth (scoring/model.ts).
 // check-utils keeps createFinding + sanitizeDnsData locally because they apply
@@ -40,7 +41,13 @@ export function createFinding(
 	detail: string,
 	metadata?: Record<string, unknown>,
 ): Finding {
-	return { category, title, severity, detail: sanitizeDnsData(detail), ...(metadata ? { metadata } : {}) };
+	// F7 (OWASP LLM01) parity with scoring/model.ts createFinding: metadata reaches
+	// the LLM verbatim via the MCP `structuredContent` channel, so sanitize
+	// attacker-influenceable string values at this chokepoint too. Both exported
+	// createFinding implementations must sanitize metadata identically
+	// (createfinding-metadata-parity.audit.test.ts).
+	const sanitizedMetadata = sanitizeFindingMetadata(metadata);
+	return { category, title, severity, detail: sanitizeDnsData(detail), ...(sanitizedMetadata ? { metadata: sanitizedMetadata } : {}) };
 }
 
 /**

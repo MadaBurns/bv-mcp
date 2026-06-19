@@ -727,7 +727,7 @@ export const TOOL_REGISTRY: Record<
 			import('../tools/scan-buckets').then((m) =>
 				m.scanBucketsStart(
 					{ target: String(args.target), providers: Array.isArray(args.providers) ? (args.providers as string[]) : undefined },
-					{ reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken },
+					{ reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken, bucketScanKv: ro?.rateLimitKv },
 				),
 			),
 		cacheTtlSeconds: 0,
@@ -736,17 +736,24 @@ export const TOOL_REGISTRY: Record<
 		cacheKey: (a) => `bucketstatus:${String(a.scanId)}`,
 		execute: (_d, a, ro) =>
 			import('../tools/scan-buckets').then((m) =>
-				m.scanBucketsStatus({ scanId: String(a.scanId) }, { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+				m.scanBucketsStatus(
+					{ scanId: String(a.scanId) },
+					{ reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken, bucketScanKv: ro?.rateLimitKv },
+				),
 			),
 		cacheTtlSeconds: 15,
 	},
 	scan_buckets_findings: {
-		cacheKey: (a) => `bucketfindings:${String(a.scanId ?? 'all')}`,
+		cacheKey: (a) => `bucketfindings:${String(a.scanId ?? 'all')}:${String(a.target ?? '')}:${JSON.stringify(a.providers ?? [])}`,
 		execute: (_d, a, ro) =>
 			import('../tools/scan-buckets').then((m) =>
 				m.scanBucketsFindings(
-					{ scanId: a.scanId ? String(a.scanId) : undefined },
-					{ reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken },
+					{
+						scanId: a.scanId ? String(a.scanId) : undefined,
+						target: a.target ? String(a.target) : undefined,
+						providers: Array.isArray(a.providers) ? (a.providers as string[]) : undefined,
+					},
+					{ reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken, bucketScanKv: ro?.rateLimitKv },
 				),
 			),
 		cacheTtlSeconds: 30,
