@@ -41,6 +41,10 @@ export async function streamScanResult(env: AnalyticsHookEnv, payload: unknown):
 					Authorization: `Bearer ${env.BV_WEB_INTERNAL_KEY}`,
 				},
 				body: JSON.stringify(payload),
+				// Bound the best-effort telemetry POST so a stalled bv-web-prod ingest
+				// route can't keep this waitUntil() promise alive to the wall-clock limit
+				// (parity with lib/alerting.ts + lib/analytics-engine.ts).
+				signal: AbortSignal.timeout(5_000),
 			}),
 		);
 	} catch (e) {

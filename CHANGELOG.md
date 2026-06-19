@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.19.0] - 2026-06-19
+
+Feature + security-hardening release from a full-server best-practices audit. No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (75).
+
+### Added
+
+- **`scan_buckets_findings` target/provider scoping** (`src/tools/scan-buckets.ts`). The tool now accepts optional `target` (domain) and `providers[]` arguments to filter upstream cloud-bucket discovery results down to in-scope buckets only. Scope is persisted in KV at `scan_buckets_start`, so a `scanId`-only poll reuses it. This reduces out-of-scope data echoed to clients (data minimization). Operator-deploy only (bv-recon binding); fail-open in the safe direction (rows are kept when scope can't be determined, never wrongly dropped); the `scan_buckets_findings` cache key now includes the scope.
+
+### Security
+
+- **F7 (OWASP LLM01) metadata-sanitization parity.** The root `@blackveil/dns-checks` `createFinding` (`packages/dns-checks/src/check-utils.ts`) now sanitizes finding `metadata` at the chokepoint, matching the `/scoring` export patched in #416. Closes a latent bypass where a core check placing a raw record string into metadata would skip sanitization. Completes the work deferred from 3.17.2 (#389). Pinned by `test/audits/createfinding-metadata-parity.audit.test.ts`.
+- **Bounded best-effort fetches.** Added `AbortSignal.timeout(5s)` to the scan-telemetry stream POST (`src/lib/hooks/analytics-stream.ts`) and the fuzzing-alert webhook (`src/scheduled.ts`), so a stalled bv-web ingest route or operator webhook can't keep a `waitUntil()` promise (or the 15-min cron tick) alive to the wall-clock limit — parity with the timeout-bounded calls in `lib/alerting.ts` / `lib/analytics-engine.ts`.
+
+### Changed
+
+- Test fixtures in `test/scan-buckets.spec.ts` use reserved placeholder domains.
+
 ## [3.18.1] - 2026-06-18
 
 Maintenance release: dependency bumps only. No scoring/scan change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (75).

@@ -207,6 +207,9 @@ async function sendFuzzingAlert(webhookUrl: string, payload: import('./schemas/a
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(payload),
 			redirect: 'manual',
+			// Bound the operator webhook so a stalled endpoint can't hang the 15-min
+			// cron tick (parity with sendAlert in lib/alerting.ts).
+			signal: AbortSignal.timeout(5_000),
 		});
 	} catch (err) {
 		logError(err instanceof Error ? err : String(err), {

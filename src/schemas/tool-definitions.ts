@@ -626,7 +626,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	scan_buckets_findings: {
 		description:
-			'Retrieve findings from a completed cloud-bucket discovery scan. Operator-deploy only; degrades to info when unprovisioned. Optionally scoped to a specific scanId; omit to retrieve the most recent findings.',
+			'Retrieve findings from a completed cloud-bucket discovery scan. Operator-deploy only; degrades to info when unprovisioned. Optionally scoped to a specific scanId, target, and provider list; omit scanId to retrieve the most recent findings.',
 		schema: ScanBucketsFindingsArgs,
 		group: 'intelligence',
 		scanIncluded: false,
