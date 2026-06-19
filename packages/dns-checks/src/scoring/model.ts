@@ -2,6 +2,7 @@
 
 import type { CheckCategory, CheckResult, CheckStatus, Finding, Severity } from '../types';
 import { CATEGORY_DISPLAY_WEIGHTS, CATEGORY_PENALTY_CAPS, SEVERITY_PENALTIES } from '../types';
+import { sanitizeFindingMetadata } from './metadata-sanitize';
 
 export type { CheckCategory, CheckResult, CheckStatus, Finding, Severity };
 export { CATEGORY_DISPLAY_WEIGHTS, CATEGORY_PENALTY_CAPS, SEVERITY_PENALTIES };
@@ -161,5 +162,11 @@ export function createFinding(
 		.replace(/[`[\]<>]/g, ' ')
 		.replace(/\s+/g, ' ')
 		.trim();
-	return { category, title, severity, detail: sanitized, ...(metadata ? { metadata } : {}) };
+	// F7 (OWASP LLM01): metadata reaches the LLM verbatim via the MCP
+	// `structuredContent` channel, so sanitize attacker-influenceable STRING values
+	// here at the chokepoint (control bytes, code-fence/markdown injection, over-long
+	// strings) while preserving numeric/boolean/enum fields scoring & formatters rely
+	// on. Generalizes the per-tool F7 opt-ins (`src/lib/sanitize-upstream.ts`).
+	const sanitizedMetadata = sanitizeFindingMetadata(metadata);
+	return { category, title, severity, detail: sanitized, ...(sanitizedMetadata ? { metadata: sanitizedMetadata } : {}) };
 }

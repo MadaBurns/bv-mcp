@@ -9,7 +9,6 @@ import {
 	type ReconBinding,
 	type ReconInvestigationType,
 } from '../lib/recon-binding';
-import { sanitizeUpstreamValue } from '../lib/sanitize-upstream';
 
 const CATEGORY = 'osint_investigation' as CheckCategory;
 
@@ -74,22 +73,23 @@ const FINDING_KEEP_KEYS = ['type', 'severity', 'title', 'details', 'confidence',
 /** Hard cap on findings returned in a single report response, to stay under the MCP token cap. */
 const REPORT_MAX_FINDINGS = 100;
 
-// String sanitization + length clamp + depth-bounded recursion is the shared
-// `sanitizeUpstreamValue` helper (`../lib/sanitize-upstream`). The OSINT path and
-// the bucket/threat-feed recon paths must shape upstream bv-recon strings
-// identically before they reach finding metadata / the structuredContent channel
-// (F7 — OWASP LLM01 indirect prompt injection), so the logic lives in one place.
+// These projections handle the TOKEN-CAP concern (allowlisting which upstream
+// keys survive + truncating the findings[] array) — NOT injection. F7 string
+// neutralization + length clamp + depth-bounded recursion of every surviving
+// upstream string now happens at the `createFinding` chokepoint
+// (`@blackveil/dns-checks/scoring`), so the former per-value `sanitizeUpstreamValue`
+// wrapping here was removed as redundant. The key allowlisting below MUST stay.
 
 function projectStatusMeta(s: Record<string, unknown>): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
-	for (const k of STATUS_META_KEYS) if (k in s) out[k] = sanitizeUpstreamValue(s[k]);
+	for (const k of STATUS_META_KEYS) if (k in s) out[k] = s[k];
 	return out;
 }
 
 function shapeFinding(f: unknown): Record<string, unknown> {
 	const src = (f && typeof f === 'object' ? f : {}) as Record<string, unknown>;
 	const out: Record<string, unknown> = {};
-	for (const k of FINDING_KEEP_KEYS) if (k in src) out[k] = sanitizeUpstreamValue(src[k]);
+	for (const k of FINDING_KEEP_KEYS) if (k in src) out[k] = src[k];
 	return out;
 }
 
@@ -97,7 +97,7 @@ function projectReportMeta(r: Record<string, unknown>): Record<string, unknown> 
 	const out: Record<string, unknown> = {};
 	// Upstream summary TEXT lives under `investigationSummary`; the bare `summary`
 	// key is reserved as the codebase-wide "summary finding" boolean sentinel.
-	if ('summary' in r) out.investigationSummary = sanitizeUpstreamValue(r.summary);
+	if ('summary' in r) out.investigationSummary = r.summary;
 	if ('total' in r) out.total = r.total;
 	const raw = Array.isArray(r.findings) ? r.findings : [];
 	out.findings = raw.slice(0, REPORT_MAX_FINDINGS).map(shapeFinding);
@@ -123,7 +123,7 @@ export async function osintInvestigationStatus(id: string, options: ReconToolOpt
 	return buildCheckResult(CATEGORY, [
 		createFinding(CATEGORY, `Investigation ${id}`, 'info', shortText(parts.join(' · '), 800), {
 			...projectStatusMeta(s),
-			...(typeof s.summary === 'string' ? { investigationSummary: sanitizeUpstreamValue(s.summary) } : {}),
+			...(typeof s.summary === 'string' ? { investigationSummary: s.summary } : {}),
 			summary: true,
 			investigationId: id,
 		}),
