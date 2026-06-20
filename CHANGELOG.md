@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.22.0] - 2026-06-20
+
+Minor release: the second hardening & global-scalability wave (the verified-and-safe follow-ups to 3.21.0). Additive observability + resilience + a behavior-preserving scoring refactor. No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (78). The architectural items (QuotaCoordinator sharding, global-cost-ceiling KV fallback, ProfileAccumulator sharding) are deliberately NOT in this release — they change quota/scoring semantics under concurrency and are tracked as proposals pending a design decision.
+
+### Added
+
+- **Binding-degradation analytics is now LIVE.** 3.21.0 added the warn log + sink hook; this wires the `onBindingDegradation` sink through `ToolRuntimeOptions` to a live analytics client (constructed once at the dispatch boundary from `options.analytics`), so the `degradation` event (`binding_unavailable` / `binding_5xx` / `binding_timeout`, component `recon`/`tls_probe`) is actually emitted and the 15-min cron alert is now active. Sink types unified in `src/lib/binding-degradation.ts`.
+- **Edge-colo telemetry dimension.** `request.cf.colo` is captured at the request entry points and appended as a new trailing blob on the `mcp_request` and `tool_call` Analytics Engine events (append-only — existing position-indexed queries unaffected) and stamped into `LogEvent`; per-colo p95/error-rate query variants added so a single-datacenter regression no longer averages out of the global alert thresholds.
+- **Async-path observability.** Cron/queue/DO batch outcomes now emit a queryable `queue_batch` Analytics Engine event (handler/outcome/duration/failure-count) with a cron alert, closing the gap where brand-audit queue/cron failures were structurally outside `queryRecentAnomalies`.
+- **Tail-consumer Worker.** A self-referential `tail()` handler (`src/tail.ts`, wired via `tail_consumers` in `wrangler.jsonc`) aggregates invocation traces by colo+outcome+scriptName into `MCP_ANALYTICS`, durably capturing exceptions that never reach the in-band emit path.
+- **scan_domain outbound-concurrency semaphore.** The ~19-way DoH fan-out is now bounded by a per-scan `Semaphore` (sized by `SCAN_DNS_CONCURRENCY`, env-overridable, clamped [1,50]) to smooth tail-latency and Workers subrequest pressure; scan results/scores are unchanged.
+
+### Changed
+
+- **scan_domain subrequest abort-on-timeout.** Per-check and scan-level timeouts now abort in-flight DoH/HTTPS subrequests (a scan-level `AbortController` plus a per-check controller linked via `AbortSignal.any`, threaded into `queryDns` and the raw-`fetch` ssl/http checks) instead of merely abandoning them — reclaiming subrequest budget (chiefly a BSL Free-plan safety + tail-latency win). A timed-out check cancels only its own fetches, never a sibling's still-needed work.
+
+### Performance
+
+- **scan_domain score + domain-context recompute dedup** — reuse the score+context computed once instead of recomputing it 4× on the hot path; memoize `detectDomainContext`. Behavior-preserving (the scoring snapshot suites are unchanged).
+
 ## [3.21.0] - 2026-06-20
 
 Minor release: hardening & global-scalability ship-now wave from a multi-agent audit of the server. Additive observability + security defense-in-depth + a dependency patch bump. No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (78).
