@@ -14,6 +14,15 @@ export interface ScanRuntimeOptions {
 	providerSignaturesSha256?: string;
 	profile?: 'mail_enabled' | 'enterprise_mail' | 'non_mail' | 'web_only' | 'minimal' | 'auto' | 'authoritative_dns_infra';
 	profileAccumulator?: DurableObjectNamespace;
+	/**
+	 * ProfileAccumulator write-sharding mode (R10 PROPOSAL, default-off).
+	 * `'global'` (default/undefined): legacy single "global" DO instance — unchanged.
+	 * `'profile'`: shard the accumulator by scoring profile (6 fixed instances) so
+	 * adaptive-weight writes spread across ~6 DO input gates. Both the /ingest write
+	 * and the /weights read co-route by profile, so the partition is loss-free.
+	 * Operator-only; must be wired from env before it has any effect.
+	 */
+	profileAccumulatorShardMode?: import('../../lib/profile-accumulator').AccumulatorShardMode;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
 	/** Override cache TTL in seconds (default: 300). Clamped to [60, 3600]. */

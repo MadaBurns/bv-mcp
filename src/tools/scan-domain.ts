@@ -60,7 +60,7 @@ import { applyScanPostProcessing } from './scan/post-processing';
 import { resolveScanTimeoutBudget } from './scan/timeouts';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import { logError } from '../lib/log';
-import { getAdaptiveWeights, publishAdaptiveWeightSummary } from '../lib/profile-accumulator';
+import { getAdaptiveWeights, publishAdaptiveWeightSummary, resolveAccumulatorShardName } from '../lib/profile-accumulator';
 import { capMaturityStage, computeMaturityStage } from './scan/maturity-staging';
 import type { MaturityStage } from './scan/maturity-staging';
 export { formatScanReport, buildStructuredScanResult } from './scan/format-report';
@@ -678,6 +678,9 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				runtimeOptions.profileAccumulator,
 				domainContext.profile,
 				domainContext.detectedProvider,
+				// Route the /weights read to the SAME shard the /ingest write targets
+				// for this profile (R10 PROPOSAL, default-off → 'global').
+				resolveAccumulatorShardName(domainContext.profile, runtimeOptions.profileAccumulatorShardMode),
 			);
 			// Publish to KV so other isolates can converge within the TTL window.
 			if (adaptiveResponse && adaptiveProvider && kv && runtimeOptions.waitUntil) {
@@ -761,10 +764,19 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				timestamp: Date.now(),
 				overallScore: score.overall,
 			};
+			// R10 PROPOSAL (default-off): route the /ingest write to the per-profile
+			// shard so write traffic spreads across ~6 DO input gates instead of one
+			// global gate. The matching /weights read (fetchAdaptiveWeights below)
+			// resolves the SAME shard name from the SAME profile, so reads and writes
+			// co-locate. `'global'` mode reproduces the legacy single-instance routing.
+			const ingestShardName = resolveAccumulatorShardName(
+				domainContext.profile,
+				runtimeOptions.profileAccumulatorShardMode,
+			);
 			const telemetryPromise = (async () => {
 				try {
 					const stub = runtimeOptions.profileAccumulator!.get(
-						runtimeOptions.profileAccumulator!.idFromName('global'),
+						runtimeOptions.profileAccumulator!.idFromName(ingestShardName),
 					);
 					await stub.fetch(
 						new Request('https://do/ingest', {
@@ -854,8 +866,12 @@ async function fetchAdaptiveWeights(
 	accumulator: DurableObjectNamespace,
 	profile: string,
 	provider: string | null,
+	shardName: string = 'global',
 ): Promise<AdaptiveWeightsResponse | null> {
-	const cacheKey = `${profile}:${provider ?? ''}`;
+	// Include the shard name in the cache key so a routing-mode change never
+	// serves a stale cross-shard entry. Profile is already implied by shardName
+	// in 'profile' mode but kept for the legacy 'global' shard.
+	const cacheKey = `${shardName}:${profile}:${provider ?? ''}`;
 	const now = Date.now();
 
 	// Check in-memory cache first
@@ -865,7 +881,7 @@ async function fetchAdaptiveWeights(
 	}
 
 	try {
-		const stub = accumulator.get(accumulator.idFromName('global'));
+		const stub = accumulator.get(accumulator.idFromName(shardName));
 		const url = new URL('https://do/weights');
 		url.searchParams.set('profile', profile);
 		if (provider) url.searchParams.set('provider', provider);

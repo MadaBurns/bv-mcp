@@ -780,6 +780,79 @@ export class ProfileAccumulator extends DurableObject<Env> {
 	}
 }
 
+// ─── Write-sharding routing (PROPOSAL — opt-in) ─────────────────────────────
+//
+// R10 (architectural PROPOSAL): the ProfileAccumulator is a SECOND global
+// singleton (alongside QuotaCoordinator). Every scan's `waitUntil`'d /ingest POST
+// routes to a single DO instance named "global", so all adaptive-weight write
+// traffic serializes through one DO input gate. This is off the response hot path
+// (waitUntil), so DO overload degrades adaptive-weight FRESHNESS, not request
+// success — but at high scan throughput the single gate still caps write
+// throughput and can stall trend/benchmark convergence.
+//
+// SHARD KEY = PROFILE. Every persisted table is PRIMARY-KEYed with `profile`
+// (profile_stats, provider_stats, score_histogram, provider_cohort_summary,
+// trend_snapshots) and EVERY read endpoint (/weights, /benchmark,
+// /provider-insights, /trends) is parameterized by a single `profile`. There is
+// NO cross-profile aggregation inside the DO. Partitioning the DO by profile is
+// therefore loss-free: a given profile's reads and writes both route to the same
+// shard, and no shard ever needs another shard's rows. With 6 fixed profiles this
+// yields ~6× the write-gate throughput with zero counter-reconciliation.
+//
+// DEFAULT-OFF. `resolveAccumulatorShardName` returns the legacy "global" name
+// unless mode === 'profile', so existing deployments are byte-for-byte unchanged
+// until an operator opts in. See the maintainer-decision notes in the worktree
+// report / commit body before flipping this on in production.
+
+/** DO instance name used by the legacy single-global-accumulator topology. */
+export const PROFILE_ACCUMULATOR_GLOBAL_NAME = 'global';
+
+/**
+ * Write-sharding mode for the ProfileAccumulator DO.
+ * - `'global'` (default): legacy single instance named "global" — unchanged behavior.
+ * - `'profile'`: shard by scoring profile (6 fixed instances) for ~6× write throughput.
+ */
+export type AccumulatorShardMode = 'global' | 'profile';
+
+/** Prefix for per-profile shard instance names (keeps them out of the "global" key namespace). */
+const PROFILE_SHARD_PREFIX = 'aw-shard:';
+
+/**
+ * The six fixed scoring profiles. A profile that isn't one of these (defensive —
+ * `DomainContext.profile` is always concrete, never `'auto'`) routes to the
+ * `mail_enabled` shard, mirroring the DO's own `?? PROFILE_WEIGHTS.mail_enabled`
+ * unknown-profile fallback so reads and writes still co-locate deterministically.
+ */
+const SHARDABLE_PROFILES = new Set<string>([
+	'mail_enabled',
+	'enterprise_mail',
+	'non_mail',
+	'web_only',
+	'minimal',
+	'authoritative_dns_infra',
+]);
+
+/** Deterministic shard instance names when sharding is enabled (one per profile). */
+export const PROFILE_SHARD_NAMES: readonly string[] = Array.from(SHARDABLE_PROFILES, (p) => PROFILE_SHARD_PREFIX + p);
+
+/**
+ * Resolve the ProfileAccumulator DO instance name for a given scoring profile.
+ *
+ * Pure + deterministic so the SAME profile maps to the SAME instance for both the
+ * /ingest write and the /weights read within a scan — the property that makes
+ * profile-sharding loss-free. Default mode `'global'` returns the legacy name,
+ * preserving existing behavior exactly.
+ *
+ * @param profile - The resolved scoring profile (one of the six `DomainProfile` values).
+ * @param mode - Sharding mode; defaults to `'global'` (legacy, behavior-preserving).
+ * @returns The DO instance name to pass to `namespace.idFromName(...)` / `getByName(...)`.
+ */
+export function resolveAccumulatorShardName(profile: string, mode: AccumulatorShardMode = 'global'): string {
+	if (mode !== 'profile') return PROFILE_ACCUMULATOR_GLOBAL_NAME;
+	const key = SHARDABLE_PROFILES.has(profile) ? profile : 'mail_enabled';
+	return PROFILE_SHARD_PREFIX + key;
+}
+
 // ─── KV-backed cross-isolate convergence helpers ────────────────────────────
 
 const ADAPTIVE_WEIGHT_KV_TTL_SECONDS = 60;
