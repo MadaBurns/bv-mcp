@@ -8,6 +8,14 @@
 
 export type LogEvent = {
 	timestamp: string;
+	/**
+	 * Server-generated per-request correlation id (`crypto.randomUUID()`),
+	 * minted once at the Worker entry point and stamped onto EVERY log line on
+	 * the request path so multi-line traces (auth, rate-limit, parse-error,
+	 * session, dispatch, error) can be stitched together. Distinct from
+	 * {@link LogEvent.requestId}, which is the client-chosen JSON-RPC id.
+	 */
+	correlationId?: string;
 	requestId?: string;
 	/**
 	 * FNV-1a hash of the client IP (`i_` prefix), aligned with the analytics
