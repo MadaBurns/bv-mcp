@@ -144,6 +144,31 @@ describe('analytics query builders', () => {
 		expect(sql).toContain("INTERVAL '15' MINUTE");
 	});
 
+	it('queryBindingDegradation does NOT exclude cost_ceiling_degraded — it reaches the cron alert (R9)', () => {
+		const sql = queryBindingDegradation('15');
+		// The ONLY excluded degradationType is the session-store kv_fallback noise.
+		// The cost-ceiling guardrail must NOT be dropped (the whole point of using a
+		// distinct degradationType instead of riding on kv_fallback).
+		expect(sql).toContain("blob1 != 'kv_fallback'");
+		expect(sql).not.toContain("blob1 != 'cost_ceiling_degraded'");
+		expect(sql).not.toContain("blob1 = 'kv_fallback'");
+
+		// Simulate the WHERE clause's degradationType predicate against synthetic rows
+		// (blob1 = degradationType). The query keys on degradationType (blob1), not
+		// component (blob2) — so a cost_ceiling_degraded row survives while kv_fallback
+		// is dropped. This is the exact path scheduled.ts sums into totalDegradations.
+		const rows = [
+			{ blob1: 'kv_fallback', blob2: 'session_store' },
+			{ blob1: 'cost_ceiling_degraded', blob2: 'global_cost_ceiling' },
+			{ blob1: 'binding_5xx', blob2: 'recon' },
+		];
+		const kept = rows.filter((r) => r.blob1 !== 'kv_fallback');
+		expect(kept.map((r) => r.blob1)).toContain('cost_ceiling_degraded');
+		expect(kept.map((r) => r.blob1)).not.toContain('kv_fallback');
+		// The cost-ceiling row is counted (it would contribute to totalDegradations).
+		expect(kept.some((r) => r.blob1 === 'cost_ceiling_degraded' && r.blob2 === 'global_cost_ceiling')).toBe(true);
+	});
+
 	it('queryBindingDegradation sanitizes minutes parameter', () => {
 		const sql = queryBindingDegradation("10'; DROP TABLE --");
 		expect(sql).toContain("INTERVAL '10' MINUTE");

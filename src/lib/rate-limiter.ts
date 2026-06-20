@@ -27,6 +27,11 @@ import {
 	checkGlobalDailyLimitWithCoordinator,
 	checkScopedRateLimitWithCoordinator,
 	checkToolDailyRateLimitWithCoordinator,
+	evaluateQuotaWithCoordinator,
+	MalformedEvaluateResponse,
+	SINGLETON_ROUTING,
+	type EvaluateCheck,
+	type ShardRouting,
 } from './quota-coordinator';
 import { CircuitBreaker, CircuitBreakerOpen } from './circuit-breaker';
 import { logError } from './log';
@@ -78,6 +83,46 @@ const quotaCoordinatorBreaker = new CircuitBreaker({
 export function resetQuotaCoordinatorBreaker(): void {
 	quotaCoordinatorBreaker.reset();
 }
+
+/**
+ * True when the QuotaCoordinator DO circuit breaker is currently OPEN — i.e. the
+ * authoritative cross-isolate global counter is unreachable and every isolate is
+ * running on the degraded fallback path.
+ *
+ * Reading `.state` also lazily advances OPEN → HALF_OPEN once the cooldown
+ * elapses, so this returns `false` again as soon as a probe is allowed.
+ */
+function isQuotaCoordinatorBreakerOpen(): boolean {
+	return quotaCoordinatorBreaker.state === 'OPEN';
+}
+
+/**
+ * Narrow degradation-telemetry sink. Structurally satisfied by the analytics
+ * client's `emitDegradationEvent`; declared locally so the rate limiter doesn't
+ * import the analytics module (keeps the dependency graph acyclic and the limiter
+ * cheap to unit-test). The call site in `mcp/execute.ts` passes
+ * `options.analytics` directly.
+ */
+export interface GlobalCostCeilingDegradationSink {
+	emitDegradationEvent(event: { degradationType: 'cost_ceiling_degraded'; component: string }): void;
+}
+
+/**
+ * Conservative estimate of how many Worker isolates may be serving traffic
+ * concurrently at peak. Used ONLY to shrink the per-isolate in-memory global
+ * cost ceiling when both the coordinator DO AND shared KV are unavailable —
+ * the last-resort path. Dividing the cap by this factor keeps the aggregate
+ * cap across all isolates roughly bounded by `GLOBAL_DAILY_TOOL_LIMIT` instead
+ * of ballooning to `limit × isolate-count` exactly when traffic is highest.
+ *
+ * Deliberately coarse: under-estimating leaves the aggregate cap a little high;
+ * over-estimating throttles a touch early. Either is far safer than the
+ * unbounded per-isolate behaviour it replaces. KV (shared, approximate) is
+ * always preferred over this path when present.
+ *
+ * @internal Exported for tests asserting the scaled last-resort cap.
+ */
+export const GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE = 50;
 
 function checkRateLimitInMemory(ip: string): RateLimitResult {
 	return checkScopedRateLimitInMemory(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT);
@@ -277,19 +322,29 @@ async function checkToolDailyRateLimitKV(
 let globalDayWindow = 0;
 let globalDayCount = 0;
 
-function checkGlobalDailyLimitInMemory(limit: number): GlobalRateLimitResult {
+/**
+ * Per-isolate in-memory global counter. This is the LAST-RESORT cost ceiling:
+ * it only fires when neither the coordinator DO nor shared KV is reachable.
+ *
+ * `effectiveLimit` lets the breaker-open path pass a DOWN-SCALED cap (the
+ * configured limit divided by the estimated isolate fan-out) so the aggregate
+ * across all isolates stays roughly bounded instead of `limit × isolate-count`.
+ * The reported `limit` in the result intentionally echoes `effectiveLimit` —
+ * it reflects the budget THIS isolate is actually enforcing.
+ */
+function checkGlobalDailyLimitInMemory(effectiveLimit: number): GlobalRateLimitResult {
 	const now = Date.now();
 	const currentWindow = Math.floor(now / DAY_MS);
 	if (currentWindow !== globalDayWindow) {
 		globalDayWindow = currentWindow;
 		globalDayCount = 0;
 	}
-	if (globalDayCount >= limit) {
+	if (globalDayCount >= effectiveLimit) {
 		const windowEnd = (currentWindow + 1) * DAY_MS;
-		return { allowed: false, retryAfterMs: Math.max(windowEnd - now, 0), remaining: 0, limit };
+		return { allowed: false, retryAfterMs: Math.max(windowEnd - now, 0), remaining: 0, limit: effectiveLimit };
 	}
 	globalDayCount++;
-	return { allowed: true, remaining: Math.max(limit - globalDayCount, 0), limit };
+	return { allowed: true, remaining: Math.max(effectiveLimit - globalDayCount, 0), limit: effectiveLimit };
 }
 
 async function checkGlobalDailyLimitKV(limit: number, kv: KVNamespace): Promise<GlobalRateLimitResult> {
@@ -351,11 +406,16 @@ async function checkIpDailyLimitKV(ip: string, limit: number, kv: KVNamespace): 
  * @param kv - Optional KV namespace for distributed rate limiting.
  *             Falls back to in-memory when not provided or on KV errors.
  */
-export async function checkRateLimit(ip: string, kv?: KVNamespace, quotaCoordinator?: DurableObjectNamespace): Promise<RateLimitResult> {
+export async function checkRateLimit(
+	ip: string,
+	kv?: KVNamespace,
+	quotaCoordinator?: DurableObjectNamespace,
+	routing: ShardRouting = SINGLETON_ROUTING,
+): Promise<RateLimitResult> {
 	if (quotaCoordinator) {
 		try {
 			const coordinated = await quotaCoordinatorBreaker.call(
-				() => checkScopedRateLimitWithCoordinator(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT, quotaCoordinator),
+				() => checkScopedRateLimitWithCoordinator(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT, quotaCoordinator, routing),
 			);
 			if (coordinated) return coordinated;
 		} catch (err) {
@@ -416,6 +476,7 @@ export async function checkToolDailyRateLimit(
 	limit: number,
 	kv?: KVNamespace,
 	quotaCoordinator?: DurableObjectNamespace,
+	routing: ShardRouting = SINGLETON_ROUTING,
 ): Promise<ToolDailyRateLimitResult> {
 	// Unlimited tiers (owner) pass Infinity. JSON.stringify(Infinity) === "null",
 	// which the coordinator validator rejects with HTTP 400 and every KV write
@@ -429,7 +490,7 @@ export async function checkToolDailyRateLimit(
 	if (quotaCoordinator) {
 		try {
 			const coordinated = await quotaCoordinatorBreaker.call(
-				() => checkToolDailyRateLimitWithCoordinator(principalId, toolName, limit, quotaCoordinator),
+				() => checkToolDailyRateLimitWithCoordinator(principalId, toolName, limit, quotaCoordinator, routing),
 			);
 			if (coordinated) return coordinated;
 		} catch (err) {
@@ -449,13 +510,42 @@ export async function checkToolDailyRateLimit(
 }
 
 /**
- * Check if the global daily tool call budget has been exhausted.
- * Uses KV when available, with in-memory fallback on failure.
+ * Check if the global daily tool-call budget (the COST ceiling) has been exhausted.
+ *
+ * Enforcement is deliberately tiered to keep this a *globally* shared guardrail:
+ *
+ *   1. QuotaCoordinator DO  — authoritative, exact, cross-isolate.
+ *   2. Shared KV            — globally shared but eventually-consistent
+ *                             (`rl:global:day:*`). Approximate, can undercount
+ *                             under write contention, but bounded.
+ *   3. Per-isolate memory   — LAST RESORT only. Per-isolate, so the aggregate
+ *                             cap would otherwise balloon to `limit × isolate-
+ *                             count`. We DOWN-SCALE the cap by the estimated
+ *                             isolate fan-out to keep the aggregate bounded.
+ *
+ * When the DO circuit breaker is OPEN the authoritative tier is gone and we are
+ * on tier 2 or 3. A globally-shared-and-approximate counter (KV) beats a
+ * per-isolate-and-unbounded one (memory) for a coarse cost ceiling, so KV is
+ * always preferred while the breaker is open. We emit a `degradation`
+ * event with degradationType `cost_ceiling_degraded` (component
+ * `global_cost_ceiling`) so operators can see the cost guardrail is running
+ * degraded. It is a DISTINCT degradationType from the session-store `kv_fallback`
+ * signal precisely so `queryBindingDegradation` (which excludes `kv_fallback`)
+ * does NOT swallow it and it DOES reach the 15-min cron alert. That alert keys on
+ * degradationType (blob1), not component (blob2), so a distinct component alone
+ * would not have sufficed.
+ *
+ * @param limit            Configured global daily cap (`GLOBAL_DAILY_TOOL_LIMIT`).
+ * @param kv               Shared KV namespace (tier 2).
+ * @param quotaCoordinator QuotaCoordinator DO (tier 1).
+ * @param degradationSink  Optional telemetry sink (the analytics client) — emits
+ *                         when the breaker forces a degraded fallback path.
  */
 export async function checkGlobalDailyLimit(
 	limit: number,
 	kv?: KVNamespace,
 	quotaCoordinator?: DurableObjectNamespace,
+	degradationSink?: GlobalCostCeilingDegradationSink,
 ): Promise<GlobalRateLimitResult> {
 	// Same Infinity/JSON-encoding trap as checkToolDailyRateLimit. A self-host
 	// that disables the global cap by setting it to Infinity would otherwise
@@ -475,6 +565,18 @@ export async function checkGlobalDailyLimit(
 			}
 		}
 	}
+
+	// The authoritative DO is gone whenever the breaker is OPEN (or no DO was
+	// wired at all). In that degraded state the global cost ceiling is no longer
+	// exact — surface it once per affected request so operators can react. KV is
+	// the globally-shared tier we WANT to land on; in-memory is the last resort.
+	const breakerOpen = isQuotaCoordinatorBreakerOpen();
+	// Emit exactly once per degraded request, regardless of which fallback tier
+	// ultimately serves it.
+	if (breakerOpen) {
+		degradationSink?.emitDegradationEvent({ degradationType: 'cost_ceiling_degraded', component: 'global_cost_ceiling' });
+	}
+
 	if (kv) {
 		try {
 			return await checkGlobalDailyLimitKV(limit, kv);
@@ -482,7 +584,155 @@ export async function checkGlobalDailyLimit(
 			logError('[rate-limiter] KV global cap error, falling back to in-memory');
 		}
 	}
-	return checkGlobalDailyLimitInMemory(limit);
+
+	// Last resort: per-isolate in-memory. Down-scale the cap by the estimated
+	// isolate fan-out so hundreds of isolates don't each enforce the full `limit`
+	// (which would let the real global spend reach `limit × isolate-count`).
+	// `Math.max(1, …)` guards a tiny configured limit from flooring to 0.
+	const effectiveLimit = breakerOpen ? Math.max(1, Math.floor(limit / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE)) : limit;
+	return checkGlobalDailyLimitInMemory(effectiveLimit);
+}
+
+/** Verdicts from the batched per-IP unauthenticated quota evaluation. */
+export interface IpScopedQuotaBatchResult {
+	/** Per-minute/hour scoped (tools) rate-limit verdict. */
+	rate: RateLimitResult;
+	/**
+	 * Per-tool daily quota verdict. `undefined` when no per-tool limit applies
+	 * (i.e. `toolDailyLimit` was not supplied) — matches execute.ts skipping the
+	 * tool-daily check entirely in that case.
+	 */
+	toolDaily?: ToolDailyRateLimitResult;
+}
+
+/**
+ * Reason a batched quota evaluation was bypassed. Surfaced to the caller's
+ * degradation emitter (ADAM #6) so an operator sees the guardrail is degraded.
+ *  - `breaker_open` — the QuotaCoordinator circuit breaker is open; we never even
+ *    called the DO. Fell through to the serial path (which itself fails to KV/mem).
+ *  - `evaluate_error` — the DO call threw (network / non-2xx). Fell through to serial.
+ *  - `malformed_response` — the DO returned a 2xx body we could not parse. The DO
+ *    ALREADY committed its increments, so we take a single NON-incrementing
+ *    fail-soft allow and do NOT re-run serial (LINUS MUST-FIX #1 / ADAM #1).
+ */
+export type QuotaDegradationReason = 'breaker_open' | 'evaluate_error' | 'malformed_response';
+
+/** Optional callback invoked whenever the coordinator batch is bypassed (ADAM #6). */
+export type QuotaDegradationSink = (reason: QuotaDegradationReason) => void;
+
+export interface IpScopedQuotaBatchOptions {
+	kv?: KVNamespace;
+	quotaCoordinator?: DurableObjectNamespace;
+	/** Shard routing (flag + salt). Defaults to SINGLETON_ROUTING (sharding OFF). */
+	routing?: ShardRouting;
+	/** Degradation emitter (ADAM #6) — called once when the coordinator batch is bypassed. */
+	onDegradation?: QuotaDegradationSink;
+}
+
+/**
+ * R8: batch the unauthenticated per-IP scoped-rate (tools) + per-tool-daily checks
+ * into ONE QuotaCoordinator round trip (instead of two serial ones), routed to the
+ * IP's shard (when sharding is enabled) or the singleton (default). Both checks key
+ * on the SAME IP in the unauthenticated path (scoped-rate uses `ip`; tool-daily's
+ * principalId IS the ip), so they share a shard and stay count-exact.
+ *
+ * Semantics are identical to calling `checkRateLimit` then (if it allowed and a
+ * `toolDailyLimit` is set) `checkToolDailyRateLimit`: the coordinator short-circuits
+ * on the first denial, so a denied scoped-rate never increments the tool-daily
+ * counter — exactly as the serial path returned before reaching it.
+ *
+ * BYPASS DISCIPLINE (LINUS MUST-FIX #1 / ADAM #1):
+ *  - `undefined` results (namespace absent) OR breaker-open OR an evaluate throw
+ *    means the DO provably did NOT commit, so we fall through to the SERIAL path
+ *    (which itself falls back to KV / in-memory). A degradation event is emitted.
+ *  - A `MalformedEvaluateResponse` means the DO RAN and COMMITTED but we cannot
+ *    parse the body. We must NOT re-run the serial incrementing checks (that would
+ *    double/triple-count). Instead we take a single NON-incrementing fail-soft
+ *    allow and emit a degradation event.
+ */
+export async function checkIpScopedQuotaBatch(
+	ip: string,
+	toolName: string,
+	toolDailyLimit: number | undefined,
+	options: IpScopedQuotaBatchOptions = {},
+): Promise<IpScopedQuotaBatchResult> {
+	const { kv, quotaCoordinator, routing = SINGLETON_ROUTING, onDegradation } = options;
+
+	// An unlimited (non-finite) tool limit never trips and the coordinator validator
+	// rejects non-finite numbers — drop it from the batch and synthesize the allow,
+	// mirroring checkToolDailyRateLimit's Infinity short-circuit.
+	const toolDailyBatchable = toolDailyLimit !== undefined && Number.isFinite(toolDailyLimit);
+
+	/** Fail-soft allow for the requested checks WITHOUT touching any counter. */
+	const failSoftAllow = (): IpScopedQuotaBatchResult => {
+		const rate: RateLimitResult = { allowed: true, minuteRemaining: MINUTE_LIMIT, hourRemaining: HOUR_LIMIT };
+		if (toolDailyLimit === undefined) return { rate };
+		return { rate, toolDaily: { allowed: true, remaining: toolDailyLimit, limit: toolDailyLimit } };
+	};
+
+	if (quotaCoordinator) {
+		try {
+			const checks: EvaluateCheck[] = [{ kind: 'scoped-rate', scope: 'tools', ip, minuteLimit: MINUTE_LIMIT, hourLimit: HOUR_LIMIT }];
+			if (toolDailyBatchable) {
+				// principalId === ip in the unauthenticated path — keeps the shard key shared.
+				checks.push({ kind: 'tool-daily', principalId: ip, toolName, limit: toolDailyLimit as number });
+			}
+			const results = await quotaCoordinatorBreaker.call(() => evaluateQuotaWithCoordinator(ip, checks, quotaCoordinator, routing));
+
+			// `undefined` === the DO did not run (namespace absent inside the helper).
+			// Fall through to serial below — the DO never committed, so re-running is safe.
+			if (results !== undefined) {
+				const rateEntry = results.find((r) => r.kind === 'scoped-rate');
+				if (rateEntry && rateEntry.kind === 'scoped-rate') {
+					const rate = rateEntry.result;
+					const toolEntry = results.find((r) => r.kind === 'tool-daily');
+					// If scoped-rate denied, the batch short-circuited and tool-daily was
+					// never touched — surface no toolDaily verdict (execute.ts returns on rate).
+					let toolDaily: ToolDailyRateLimitResult | undefined;
+					if (toolDailyLimit !== undefined && !toolDailyBatchable) {
+						toolDaily = { allowed: true, remaining: toolDailyLimit, limit: toolDailyLimit };
+					} else if (toolEntry && toolEntry.kind === 'tool-daily') {
+						toolDaily = toolEntry.result;
+					}
+					return { rate, toolDaily };
+				}
+				// Parsed array but no scoped-rate entry. `parseEvaluateResponse` already
+				// rejects unknown entry kinds, so the only way here is an EMPTY array — which
+				// `handleEvaluate` never produces for a non-empty `checks` payload. Treat it
+				// as a DO that ran but gave us no usable verdict: fail-soft allow, NO serial
+				// re-increment (LINUS #1 — the DO may have committed).
+				onDegradation?.('malformed_response');
+				logError('[rate-limiter] quota coordinator evaluate returned no scoped-rate verdict — fail-soft allow (no serial re-increment)');
+				return failSoftAllow();
+			}
+			// results === undefined → fall through to serial (DO did not run).
+			onDegradation?.('evaluate_error');
+		} catch (err) {
+			if (err instanceof MalformedEvaluateResponse) {
+				// LINUS MUST-FIX #1 / ADAM #1: the DO ran and committed its increments but the
+				// body is unparseable. Re-running the serial incrementing checks here would
+				// double/triple-count. Take a SINGLE non-incrementing fail-soft allow.
+				onDegradation?.('malformed_response');
+				logError(`[rate-limiter] ${err.message} — fail-soft allow (no serial re-increment to avoid double-count)`);
+				return failSoftAllow();
+			}
+			if (err instanceof CircuitBreakerOpen) {
+				onDegradation?.('breaker_open');
+			} else {
+				onDegradation?.('evaluate_error');
+				logError('[rate-limiter] quota coordinator evaluate error, falling back to serial');
+			}
+		}
+	}
+
+	// Fallback: replicate the serial semantics exactly (only reached when the DO did
+	// NOT commit — namespace absent, breaker open, or the call threw a non-malformed error).
+	const rate = await checkRateLimit(ip, kv, quotaCoordinator, routing);
+	if (!rate.allowed || toolDailyLimit === undefined) {
+		return { rate };
+	}
+	const toolDaily = await checkToolDailyRateLimit(ip, toolName, toolDailyLimit, kv, quotaCoordinator, routing);
+	return { rate, toolDaily };
 }
 
 /**

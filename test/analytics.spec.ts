@@ -223,6 +223,22 @@ describe('createAnalyticsClient', () => {
 		expect(point.doubles).toBeUndefined();
 	});
 
+	it('emitDegradationEvent writes the cost_ceiling_degraded member to blob1 (reaches the cron query, R9)', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitDegradationEvent({
+			degradationType: 'cost_ceiling_degraded',
+			component: 'global_cost_ceiling',
+		});
+		expect(ds.writeDataPoint).toHaveBeenCalledOnce();
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		expect(point.indexes).toEqual(['degradation']);
+		// blob1 = degradationType (what queryBindingDegradation keys on) — NOT kv_fallback,
+		// so the cron query counts it instead of dropping it.
+		expect(point.blobs[0]).toBe('cost_ceiling_degraded');
+		expect(point.blobs[1]).toBe('global_cost_ceiling');
+	});
+
 	it('emitDegradationEvent handles missing optional fields', () => {
 		const ds = mockDataset();
 		const client = createAnalyticsClient(ds);
