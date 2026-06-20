@@ -87,9 +87,16 @@ export interface AnalyticsClient {
 			 *    emitted (those are expected, not alertable). `component` carries which
 			 *    binding (`recon` | `tls_probe`).
 			 */
-			degradationType: 'kv_fallback' | 'binding_unavailable' | 'binding_5xx' | 'binding_timeout';
+			degradationType: 'kv_fallback' | 'binding_unavailable' | 'binding_5xx' | 'binding_timeout' | 'cost_ceiling_degraded';
 			component: string;
 			domain?: string;
+			// `cost_ceiling_degraded` (component `global_cost_ceiling`) is emitted by
+			// rate-limiter.ts when the QuotaCoordinator DO breaker is OPEN and the global
+			// cost ceiling falls to KV/in-memory. Intentionally a DISTINCT degradationType
+			// (not `kv_fallback`) so queryBindingDegradation's `blob1 != 'kv_fallback'`
+			// exclusion does NOT swallow it and it reaches the 15-min cron alert. The alert
+			// keys on degradationType (blob1), not component (blob2) -- a new alertable
+			// signal must carry a non-excluded degradationType.
 		} & AnalyticsContext,
 	): void;
 }

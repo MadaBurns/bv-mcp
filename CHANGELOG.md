@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.21.1] - 2026-06-20
+
+Patch release: close the unalertable global-cost-ceiling degradation blind spot from the R9 breaker-open fix. The cost-ceiling degraded-fallback signal now reaches the 15-min cron alert. No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (78).
+
+### Fixed
+
+- **Global cost-ceiling degradation is now alertable.** When the `QuotaCoordinator` DO circuit breaker is OPEN, `checkGlobalDailyLimit` (`src/lib/rate-limiter.ts`) emits the degradation event with a **distinct `degradationType: 'cost_ceiling_degraded'`** (component `global_cost_ceiling`) instead of `kv_fallback`. `queryBindingDegradation` deliberately excludes only the session-store `kv_fallback` member and keys its WHERE clause on `degradationType` (blob1), not `component` (blob2) — so the prior `kv_fallback` emit was silently dropped from the cron alert. With the distinct type the row now survives the filter, is summed into `totalDegradations`, and fires the 15-min webhook alert (titled as a cost-ceiling degradation, not a service-binding one). The `kv_fallback` exclusion is unchanged.
+
+### Changed
+
+- **`AnalyticsClient.emitDegradationEvent` union** gains `'cost_ceiling_degraded'` (`src/lib/analytics.ts`); the `GlobalCostCeilingDegradationSink` interface signature is narrowed to match. KV-first fallback ordering (DO → shared KV → down-scaled in-memory), the `GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE = 50` last-resort down-scale (with the `Math.max(1, floor(…))` floor guard), and the exactly-one-emit-per-degraded-request invariant are all preserved.
+
 ## [3.21.0] - 2026-06-20
 
 Minor release: hardening & global-scalability ship-now wave from a multi-agent audit of the server. Additive observability + security defense-in-depth + a dependency patch bump. No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (78).

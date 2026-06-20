@@ -102,6 +102,46 @@ describe('handleScheduled', () => {
 		expect(webhookCall!.body).toContain('binding');
 	});
 
+	it('sends a cost-ceiling alert when a cost_ceiling_degraded row reaches the cron (R9)', async () => {
+		// The whole point of the R9 fix: a cost_ceiling_degraded row (emitted while
+		// the QuotaCoordinator breaker is OPEN) must NOT be filtered out and must
+		// reach the 15-min cron alert. Here the engine returns such a row.
+		const fetchCalls: Array<{ url: string; body: string }> = [];
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			fetchCalls.push({ url, body: init?.body as string });
+			if (url.includes('analytics_engine/sql')) {
+				const query = init?.body as string;
+				if (query.includes("index1 = 'degradation'")) {
+					return new Response(
+						JSON.stringify({ data: [{ component: 'global_cost_ceiling', degradation_type: 'cost_ceiling_degraded', event_count: 8 }] }),
+					);
+				}
+				if (query.includes('tool_call')) {
+					return new Response(JSON.stringify({ data: [{ total_calls: 100, error_count: 1, error_pct: 1.0, p95_ms: 500 }] }));
+				}
+				if (query.includes('rate_limit')) {
+					return new Response(JSON.stringify({ data: [{ total_hits: 2 }] }));
+				}
+			}
+			return new Response('ok');
+		}) as typeof fetch;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({
+			CF_ACCOUNT_ID: 'test-account',
+			CF_ANALYTICS_TOKEN: 'test-token',
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		});
+
+		const webhookCall = fetchCalls.find((c) => c.url.includes('hooks.slack.com'));
+		expect(webhookCall).toBeDefined();
+		// Title reads as a cost-ceiling degradation (not "Service-binding") and the
+		// breakdown carries the cost-ceiling component.
+		expect(webhookCall!.body).toContain('cost-ceiling');
+		expect(webhookCall!.body).toContain('global_cost_ceiling');
+	});
+
 	it('does NOT send a degradation alert when only kv_fallback occurs (query excludes it → 0 rows)', async () => {
 		const fetchCalls: string[] = [];
 		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

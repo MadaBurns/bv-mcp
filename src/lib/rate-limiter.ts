@@ -99,7 +99,7 @@ function isQuotaCoordinatorBreakerOpen(): boolean {
  * `options.analytics` directly.
  */
 export interface GlobalCostCeilingDegradationSink {
-	emitDegradationEvent(event: { degradationType: 'kv_fallback'; component: string }): void;
+	emitDegradationEvent(event: { degradationType: 'cost_ceiling_degraded'; component: string }): void;
 }
 
 /**
@@ -516,9 +516,13 @@ export async function checkToolDailyRateLimit(
  * on tier 2 or 3. A globally-shared-and-approximate counter (KV) beats a
  * per-isolate-and-unbounded one (memory) for a coarse cost ceiling, so KV is
  * always preferred while the breaker is open. We emit a `degradation`
- * (`kv_fallback`) analytics event so operators can see the cost guardrail is
- * running degraded — the existing `kv_fallback` channel, with a distinct
- * `component` (`global_cost_ceiling`) so it doesn't collide with the session signal.
+ * event with degradationType `cost_ceiling_degraded` (component
+ * `global_cost_ceiling`) so operators can see the cost guardrail is running
+ * degraded. It is a DISTINCT degradationType from the session-store `kv_fallback`
+ * signal precisely so `queryBindingDegradation` (which excludes `kv_fallback`)
+ * does NOT swallow it and it DOES reach the 15-min cron alert. That alert keys on
+ * degradationType (blob1), not component (blob2), so a distinct component alone
+ * would not have sufficed.
  *
  * @param limit            Configured global daily cap (`GLOBAL_DAILY_TOOL_LIMIT`).
  * @param kv               Shared KV namespace (tier 2).
@@ -559,7 +563,7 @@ export async function checkGlobalDailyLimit(
 	// Emit exactly once per degraded request, regardless of which fallback tier
 	// ultimately serves it.
 	if (breakerOpen) {
-		degradationSink?.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'global_cost_ceiling' });
+		degradationSink?.emitDegradationEvent({ degradationType: 'cost_ceiling_degraded', component: 'global_cost_ceiling' });
 	}
 
 	if (kv) {

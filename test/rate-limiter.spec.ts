@@ -447,7 +447,7 @@ describe('rate-limiter', () => {
 			expect(state.get(globalKeys[0])).toBe('1');
 		});
 
-		it('emits a kv_fallback degradation event for the global cost ceiling when the breaker is OPEN', async () => {
+		it('emits exactly one cost_ceiling_degraded degradation event for the global cost ceiling when the breaker is OPEN', async () => {
 			const failingDO = createFailingDO();
 			await openBreaker(failingDO);
 
@@ -456,9 +456,12 @@ describe('rate-limiter', () => {
 
 			await checkGlobalDailyLimit(500_000, kv, failingDO, sink);
 
+			// Exactly one emit per affected request (no double-emit across the KV /
+			// in-memory fallback tiers), carrying the alertable degradationType — NOT
+			// the session-store `kv_fallback` member that queryBindingDegradation drops.
 			expect(emitDegradationEvent).toHaveBeenCalledTimes(1);
 			expect(emitDegradationEvent).toHaveBeenCalledWith({
-				degradationType: 'kv_fallback',
+				degradationType: 'cost_ceiling_degraded',
 				component: 'global_cost_ceiling',
 			});
 		});
@@ -549,6 +552,32 @@ describe('rate-limiter', () => {
 			// Down-scaled in-memory cap (KV unusable) yet still exactly one emit.
 			expect(result.limit).toBe(Math.max(1, Math.floor(500_000 / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE)));
 			expect(emitDegradationEvent).toHaveBeenCalledTimes(1);
+			// Single emit carries the alertable type even when it crosses KV -> in-memory.
+			expect(emitDegradationEvent).toHaveBeenCalledWith({
+				degradationType: 'cost_ceiling_degraded',
+				component: 'global_cost_ceiling',
+			});
+		});
+
+		it('pins the down-scaled in-memory math: effectiveLimit = max(1, floor(limit / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE))', async () => {
+			// The fan-out estimate is a pinned constant; assert it explicitly so a
+			// silent retune trips this test (non-negotiable #4).
+			expect(GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE).toBe(50);
+
+			// floor: 999 / 50 = 19.98 -> 19
+			expect(Math.max(1, Math.floor(999 / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE))).toBe(19);
+			// Math.max(1, ...) floor guard: a tiny limit must never floor to 0.
+			expect(Math.max(1, Math.floor(10 / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE))).toBe(1);
+
+			// And the function actually applies it on the last-resort (no-DO, no-KV but
+			// breaker OPEN) path.
+			const failingDO = createFailingDO();
+			await openBreaker(failingDO);
+			resetGlobalDailyLimit();
+			const { sink } = createDegradationSink();
+			const limit = 999;
+			const r = await checkGlobalDailyLimit(limit, undefined, failingDO, sink);
+			expect(r.limit).toBe(Math.max(1, Math.floor(limit / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE)));
 		});
 	});
 
