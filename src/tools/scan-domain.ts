@@ -35,6 +35,8 @@ import { applyInteractionPenalties, type InteractionEffect } from '../lib/catego
 import { buildCheckCacheKey, buildScanCacheKey, cacheGet, cacheSet, runWithCache } from '../lib/cache';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { queryDns } from '../lib/dns';
+import { Semaphore } from '../lib/semaphore';
+import { SCAN_DNS_CONCURRENCY, parseScanDnsConcurrency } from '../lib/config';
 import { checkSpf } from './check-spf';
 import { checkDmarc } from './check-dmarc';
 import { checkDkim, applyProviderDkimContext } from './check-dkim';
@@ -446,12 +448,23 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	const isAuthoritativeInfraProfile = explicitProfile === 'authoritative_dns_infra';
 	const ALL_CHECK_CATEGORIES: CheckCategory[] = isAuthoritativeInfraProfile ? ['authoritative_dns_infra'] : SCAN_CATEGORIES;
 
+	// Bound the ~19-way DoH fan-out with a per-scan outbound-concurrency
+	// semaphore. This only caps how many DoH connections are open at once
+	// (smoothing tail-latency + Workers subrequest pressure); every query still
+	// runs and returns the same answer, so scan results/score are unchanged.
+	// Sized by runtimeOptions.dnsConcurrency (env-overridable upstream via
+	// SCAN_DNS_CONCURRENCY) else the static default; clamped to [1, 50].
+	const dnsConcurrency =
+		runtimeOptions?.dnsConcurrency !== undefined ? parseScanDnsConcurrency(String(runtimeOptions.dnsConcurrency)) : SCAN_DNS_CONCURRENCY;
+	const dnsSemaphore = new Semaphore(dnsConcurrency);
+
 	// Skip secondary DNS confirmation in scan context for speed — individual checks
 	// still use secondary confirmation when called directly by users.
 	const scanDns: QueryDnsOptions = {
 		skipSecondaryConfirmation: true,
 		queryCache: new Map(),
 		secondaryDoh: runtimeOptions?.secondaryDoh,
+		dnsSemaphore,
 	};
 
 	// Apex-state short-circuit: probe the apex NS before fanning out, to separate
