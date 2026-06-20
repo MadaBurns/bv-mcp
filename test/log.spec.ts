@@ -68,6 +68,21 @@ describe('log redaction', () => {
 		expect(payload.details.token).toBe('[redacted]');
 		expect(payload.details.nested.session).toBe('[redacted]');
 	});
+
+	it('logEvent carries the colo dimension through to emission (not redacted)', () => {
+		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+		logEvent({
+			timestamp: new Date().toISOString(),
+			severity: 'info',
+			category: 'request',
+			colo: 'AKL',
+		});
+
+		const payload = JSON.parse(String(consoleSpy.mock.calls[0]?.[0])) as { colo?: string };
+		// `colo` is a non-sensitive top-level dimension, aligned with the analytics colo blob.
+		expect(payload.colo).toBe('AKL');
+	});
 });
 
 describe('log string truncation', () => {

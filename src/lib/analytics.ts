@@ -35,6 +35,15 @@ export interface AnalyticsContext {
 	 * expose addresses.
 	 */
 	ipHash?: string;
+	/**
+	 * Cloudflare edge colo (`request.cf.colo`, e.g. `AKL`, `SYD`) the request landed
+	 * on. Captured at the Worker entry point so per-datacenter p95/error-rate can be
+	 * isolated — a single-colo regression otherwise averages out across the global
+	 * aggregate and never trips ALERT_P95_THRESHOLD. Undefined in tests/local →
+	 * stored as `'unknown'`. Appended as the trailing blob on `mcp_request` and
+	 * `tool_call` (append-only — never reorder existing positions).
+	 */
+	colo?: string;
 }
 
 export interface AnalyticsClient {
@@ -92,6 +101,54 @@ export interface AnalyticsClient {
 			domain?: string;
 		} & AnalyticsContext,
 	): void;
+	/**
+	 * Async-path (cron/queue/DO) batch outcome counter. The cron handler, the
+	 * queue consumer, and the DOs otherwise log to console only, so a brand-audit
+	 * queue batch that throws (or a cron sweep that fails) is structurally outside
+	 * `queryRecentAnomalies` (which filters `index1='tool_call'`). This event makes
+	 * those failures queryable + alertable.
+	 *
+	 * `handler` identifies the source (e.g. queue name `brand-audit-queue`,
+	 * `tenant-scan-queue`, or a cron route). `outcome` is `ok` when the batch
+	 * completed without throwing, `error` when it threw. `messageCount` is the
+	 * batch size (0 for cron); `failureCount` is how many messages/sub-tasks
+	 * failed (for a whole-batch throw, the consumer reports the batch size).
+	 *
+	 * Blob positions (queue_batch): blob1=handler, blob2=outcome, blob3=country,
+	 *   blob4=authTier. Doubles: double1=durationMs, double2=failureCount,
+	 *   double3=messageCount.
+	 */
+	emitQueueBatchEvent(
+		event: {
+			handler: string;
+			outcome: 'ok' | 'error';
+			durationMs: number;
+			messageCount: number;
+			failureCount: number;
+		} & AnalyticsContext,
+	): void;
+	/**
+	 * `tail` event — one aggregated row per (colo, outcome, scriptName) bucket of
+	 * a tail-consumer trace batch. Captures invocation outcomes (incl. `exception`)
+	 * that never reach the in-band emit path — a durable export of the otherwise
+	 * dashboard-only, head-sampled structured logs.
+	 *
+	 * No AnalyticsContext: tail traces carry no per-request country/client/auth
+	 * dimensions (the consumer runs outside the request). `country` is set to the
+	 * `colo` so existing colo-grouped queries can pivot on blob (`country` slot).
+	 */
+	emitTailAggregate(event: {
+		/** Cloudflare colo where the traced invocations ran (or `unknown`). */
+		colo: string;
+		/** Invocation outcome bucket (`ok` | `exception` | `canceled` | …). */
+		outcome: string;
+		/** Traced Worker script name (or `unknown`). */
+		scriptName: string;
+		/** Number of traced invocations folded into this bucket. */
+		invocations: number;
+		/** Number of those invocations that surfaced ≥1 exception. */
+		exceptions: number;
+	}): void;
 }
 
 /**
@@ -111,6 +168,8 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 			emitRateLimitEvent: noop,
 			emitSessionEvent: noop,
 			emitDegradationEvent: noop,
+			emitQueueBatchEvent: noop,
+			emitTailAggregate: noop,
 		};
 	}
 
@@ -131,6 +190,9 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.sessionHash ?? 'none',
 					event.keyHash ?? 'none',
 					event.ipHash ?? 'none',
+					// blob12 (append-only trailing) — Cloudflare edge colo. New dimension;
+					// must stay LAST so existing position-indexed queries are unaffected.
+					event.colo ?? 'unknown',
 				],
 				// double2: abs(JSON-RPC error code) — codes are negative per spec and
 				// sanitizeNumber clamps <0 to 0, so we store the magnitude (0 = no error).
@@ -151,6 +213,9 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.cacheStatus ?? 'n/a',
 					event.keyHash ?? 'none',
 					event.ipHash ?? 'none',
+					// blob11 (append-only trailing) — Cloudflare edge colo. New dimension;
+					// must stay LAST so existing position-indexed queries are unaffected.
+					event.colo ?? 'unknown',
 				],
 				doubles: [sanitizeNumber(event.durationMs), sanitizeNumber(event.score ?? 0)],
 			});
@@ -186,6 +251,35 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
 				],
+			});
+		},
+		emitQueueBatchEvent: (event) => {
+			safeWrite(dataset, {
+				indexes: ['queue_batch'],
+				blobs: [normalizeIndex(event.handler), event.outcome, event.country ?? 'unknown', event.authTier ?? 'anon'],
+				doubles: [sanitizeNumber(event.durationMs), sanitizeNumber(event.failureCount), sanitizeNumber(event.messageCount)],
+			});
+		},
+		emitTailAggregate: (event) => {
+			safeWrite(dataset, {
+				indexes: ['tail'],
+				// blob1=colo, blob2=outcome, blob3=scriptName. colo is also mirrored
+				// into the `country` blob slot (blob6, 'unknown'-padding the request
+				// dimensions absent on a tail trace) so colo-grouped dashboards that
+				// pivot on the country column still resolve.
+				blobs: [
+					normalizeIndex(event.colo),
+					normalizeIndex(event.outcome),
+					normalizeIndex(event.scriptName),
+					'none',
+					'unknown',
+					normalizeIndex(event.colo),
+					'unknown',
+					'anon',
+				],
+				// double1=invocations folded into the bucket, double2=invocations that
+				// surfaced ≥1 exception.
+				doubles: [sanitizeNumber(event.invocations), sanitizeNumber(event.exceptions)],
 			});
 		},
 	};

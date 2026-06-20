@@ -141,16 +141,22 @@ describe('scan_domain per-category dispatch — initial run path', () => {
 		expect(ptrCall[2]).toEqual(expect.objectContaining({ skipSecondaryConfirmation: true }));
 		expect(ptrCall.length).toBe(3);
 
-		// ssl: (domain, { tlsProbeBinding, tlsProbeAuthToken }) — NO dnsOptions
+		// ssl: (domain, { tlsProbeBinding, tlsProbeAuthToken, signal }) — NO dnsOptions.
+		// R7: the scan-path threads the per-check abort signal into the options object.
 		const sslCall = spies.ssl.mock.calls[0];
 		expect(sslCall[0]).toBe('example.com');
-		expect(sslCall[1]).toEqual({ tlsProbeBinding: tlsBinding, tlsProbeAuthToken: 'tls-token' });
+		expect(sslCall[1]).toEqual({
+			tlsProbeBinding: tlsBinding,
+			tlsProbeAuthToken: 'tls-token',
+			signal: expect.any(AbortSignal),
+		});
 		expect(sslCall.length).toBe(2);
 
-		// http_security: ONLY (domain)
+		// http_security: (domain, { signal }) — R7 threads the per-check abort signal.
 		const httpCall = spies.httpSecurity.mock.calls[0];
 		expect(httpCall[0]).toBe('example.com');
-		expect(httpCall.length).toBe(1);
+		expect(httpCall[1]).toEqual({ signal: expect.any(AbortSignal) });
+		expect(httpCall.length).toBe(2);
 
 		// dkim: (domain, undefined, dnsOptions)
 		const dkimCall = spies.dkim.mock.calls[0];
@@ -181,7 +187,12 @@ describe('scan_domain per-category dispatch — initial run path', () => {
 
 		expect(spies.ssl).toHaveBeenCalled();
 		const sslCall = spies.ssl.mock.calls[0];
-		expect(sslCall[1]).toEqual({ tlsProbeBinding: undefined, tlsProbeAuthToken: 'tls-token' });
+		// R7: scan-path threads the per-check abort signal into the ssl options.
+		expect(sslCall[1]).toEqual({
+			tlsProbeBinding: undefined,
+			tlsProbeAuthToken: 'tls-token',
+			signal: expect.any(AbortSignal),
+		});
 		expect(sslCall.length).toBe(2);
 	});
 });
@@ -241,12 +252,15 @@ describe('scan_domain per-category dispatch — retry path (runCheckRetry)', () 
 		expect(call.length).toBe(2);
 	});
 
-	it('http_security retry: ONLY (domain)', async () => {
+	it('http_security retry: (domain, { signal: undefined }) — retry path passes no per-check signal', async () => {
 		const { runCheckRetry, spies } = await loadRetry();
 		await runCheckRetry('http_security', 'example.com', retryDnsBase, 5000, undefined);
 		const call = spies.httpSecurity.mock.calls[0];
 		expect(call[0]).toBe('example.com');
-		expect(call.length).toBe(1);
+		// R7: the retry path supplies no per-check signal (no abort plumbing on a retry),
+		// so the options object carries `signal: undefined` — a behavioural no-op.
+		expect(call[1]).toEqual({ signal: undefined });
+		expect(call.length).toBe(2);
 	});
 
 	it('dkim retry: (domain, undefined, retryDns)', async () => {

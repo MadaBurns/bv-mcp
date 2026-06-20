@@ -11,25 +11,17 @@ import { z } from 'zod';
 import type { CheckResult, Finding } from './scoring';
 import { buildCheckResult, createFinding } from './scoring';
 import { logEvent } from './log';
+import type { BindingDegradationKind, BindingDegradationSink } from './binding-degradation';
+
+// Re-export the shared telemetry types so existing importers of these symbols
+// from `tls-probe-binding` keep working; the canonical definition lives in
+// `./binding-degradation` (unified with the recon client to prevent drift).
+export type { BindingDegradationKind, BindingDegradationSink } from './binding-degradation';
 
 /** Minimal Fetcher shape — matches a Cloudflare service binding. */
 export interface TlsProbeBinding {
 	fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
-
-/**
- * Binding-degradation kinds for a PRESENT-but-failing operator service binding.
- * Mirrors the matching members on the analytics `degradation` event. Absent
- * binding (BSL self-host) is excluded — that's expected, not alertable.
- */
-export type BindingDegradationKind = 'binding_unavailable' | 'binding_5xx' | 'binding_timeout';
-
-/**
- * Optional telemetry callback invoked ONLY when a present binding fails. The
- * binding additionally emits a structured warn log on its own. Fail-soft: the
- * binding never throws if the sink does.
- */
-export type BindingDegradationSink = (event: { degradationType: BindingDegradationKind; component: string; domain?: string }) => void;
 
 const TLS_PROBE_COMPONENT = 'tls_probe';
 
