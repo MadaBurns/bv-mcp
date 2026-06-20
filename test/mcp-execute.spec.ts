@@ -253,11 +253,9 @@ describe('executeMcpRequest — per-IP rate limiting', () => {
 			return {
 				...actual,
 				checkGlobalDailyLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 499_999, limit: 500_000 }),
-				checkRateLimit: vi.fn().mockResolvedValue({
-					allowed: false,
-					minuteRemaining: 0,
-					hourRemaining: 50,
-					retryAfterMs: 15_000,
+				// R8: batched per-IP evaluation — scoped-rate denies (minute limit exceeded).
+				checkIpScopedQuotaBatch: vi.fn().mockResolvedValue({
+					rate: { allowed: false, minuteRemaining: 0, hourRemaining: 50, retryAfterMs: 15_000 },
 				}),
 			};
 		});
@@ -286,12 +284,11 @@ describe('executeMcpRequest — per-IP rate limiting', () => {
 			return {
 				...actual,
 				checkGlobalDailyLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 499_999, limit: 500_000 }),
-				checkRateLimit: vi.fn().mockResolvedValue({
-					allowed: true,
-					minuteRemaining: 42,
-					hourRemaining: 200,
+				// R8: the unauthenticated path now folds scoped-rate + tool-daily into one batched call.
+				checkIpScopedQuotaBatch: vi.fn().mockResolvedValue({
+					rate: { allowed: true, minuteRemaining: 42, hourRemaining: 200 },
+					toolDaily: { allowed: true, remaining: 199, limit: 200 },
 				}),
-				checkToolDailyRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 199, limit: 200 }),
 			};
 		});
 		vi.doMock('../src/mcp/dispatch', () => ({
@@ -334,12 +331,10 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 			return {
 				...actual,
 				checkGlobalDailyLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 499_999, limit: 500_000 }),
-				checkRateLimit: vi.fn().mockResolvedValue({ allowed: true, minuteRemaining: 49, hourRemaining: 299 }),
-				checkToolDailyRateLimit: vi.fn().mockResolvedValue({
-					allowed: false,
-					retryAfterMs: 50_000,
-					remaining: 0,
-					limit: 5,
+				// R8: batched per-IP evaluation — scoped-rate allows, tool-daily denies.
+				checkIpScopedQuotaBatch: vi.fn().mockResolvedValue({
+					rate: { allowed: true, minuteRemaining: 49, hourRemaining: 299 },
+					toolDaily: { allowed: false, retryAfterMs: 50_000, remaining: 0, limit: 5 },
 				}),
 			};
 		});

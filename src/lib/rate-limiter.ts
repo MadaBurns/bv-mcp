@@ -27,6 +27,8 @@ import {
 	checkGlobalDailyLimitWithCoordinator,
 	checkScopedRateLimitWithCoordinator,
 	checkToolDailyRateLimitWithCoordinator,
+	evaluateQuotaWithCoordinator,
+	type EvaluateCheck,
 } from './quota-coordinator';
 import { CircuitBreaker, CircuitBreakerOpen } from './circuit-breaker';
 import { logError } from './log';
@@ -483,6 +485,85 @@ export async function checkGlobalDailyLimit(
 		}
 	}
 	return checkGlobalDailyLimitInMemory(limit);
+}
+
+/** Verdicts from the batched per-IP unauthenticated quota evaluation. */
+export interface IpScopedQuotaBatchResult {
+	/** Per-minute/hour scoped (tools) rate-limit verdict. */
+	rate: RateLimitResult;
+	/**
+	 * Per-tool daily quota verdict. `undefined` when no per-tool limit applies
+	 * (i.e. `toolDailyLimit` was not supplied) — matches execute.ts skipping the
+	 * tool-daily check entirely in that case.
+	 */
+	toolDaily?: ToolDailyRateLimitResult;
+}
+
+/**
+ * R8: batch the unauthenticated per-IP scoped-rate (tools) + per-tool-daily checks
+ * into ONE QuotaCoordinator round trip (instead of two serial ones), routed to the
+ * IP's shard. Both checks key on the SAME IP in the unauthenticated path
+ * (scoped-rate uses `ip`; tool-daily's principalId IS the ip), so they share a shard
+ * and stay count-exact.
+ *
+ * Semantics are identical to calling `checkRateLimit` then (if it allowed and a
+ * `toolDailyLimit` is set) `checkToolDailyRateLimit`: the coordinator short-circuits
+ * on the first denial, so a denied scoped-rate never increments the tool-daily
+ * counter — exactly as the serial path returned before reaching it.
+ *
+ * Falls back to the existing serial helpers (which themselves fall back to KV /
+ * in-memory) when the coordinator is absent, the breaker is open, or it errors.
+ */
+export async function checkIpScopedQuotaBatch(
+	ip: string,
+	toolName: string,
+	toolDailyLimit: number | undefined,
+	kv?: KVNamespace,
+	quotaCoordinator?: DurableObjectNamespace,
+): Promise<IpScopedQuotaBatchResult> {
+	// An unlimited (non-finite) tool limit never trips and the coordinator validator
+	// rejects non-finite numbers — drop it from the batch and synthesize the allow,
+	// mirroring checkToolDailyRateLimit's Infinity short-circuit.
+	const toolDailyBatchable = toolDailyLimit !== undefined && Number.isFinite(toolDailyLimit);
+
+	if (quotaCoordinator) {
+		try {
+			const checks: EvaluateCheck[] = [{ kind: 'scoped-rate', scope: 'tools', ip, minuteLimit: MINUTE_LIMIT, hourLimit: HOUR_LIMIT }];
+			if (toolDailyBatchable) {
+				// principalId === ip in the unauthenticated path — keeps the shard key shared.
+				checks.push({ kind: 'tool-daily', principalId: ip, toolName, limit: toolDailyLimit as number });
+			}
+			const results = await quotaCoordinatorBreaker.call(() => evaluateQuotaWithCoordinator(ip, checks, quotaCoordinator));
+			if (results) {
+				const rateEntry = results.find((r) => r.kind === 'scoped-rate');
+				const toolEntry = results.find((r) => r.kind === 'tool-daily');
+				if (rateEntry && rateEntry.kind === 'scoped-rate') {
+					const rate = rateEntry.result;
+					// If scoped-rate denied, the batch short-circuited and tool-daily was
+					// never touched — surface no toolDaily verdict (execute.ts returns on rate).
+					let toolDaily: ToolDailyRateLimitResult | undefined;
+					if (toolDailyLimit !== undefined && !toolDailyBatchable) {
+						toolDaily = { allowed: true, remaining: toolDailyLimit, limit: toolDailyLimit };
+					} else if (toolEntry && toolEntry.kind === 'tool-daily') {
+						toolDaily = toolEntry.result;
+					}
+					return { rate, toolDaily };
+				}
+			}
+		} catch (err) {
+			if (!(err instanceof CircuitBreakerOpen)) {
+				logError('[rate-limiter] quota coordinator evaluate error, falling back to serial');
+			}
+		}
+	}
+
+	// Fallback: replicate the serial semantics exactly.
+	const rate = await checkRateLimit(ip, kv, quotaCoordinator);
+	if (!rate.allowed || toolDailyLimit === undefined) {
+		return { rate };
+	}
+	const toolDaily = await checkToolDailyRateLimit(ip, toolName, toolDailyLimit, kv, quotaCoordinator);
+	return { rate, toolDaily };
 }
 
 /**
