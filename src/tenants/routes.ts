@@ -37,6 +37,7 @@ import { resolveTenant, type ResolverEnv } from './tenant-resolver';
 import { recordAuditEvent } from './audit';
 import { checkAndRecord, PER_TENANT_QUOTAS, type RateLimitBucket } from './per-tenant-rate-limit';
 import * as registrySchema from './db/schema/registry';
+import { resolveAccumulatorShardModeFromEnv } from '../lib/profile-accumulator';
 import type { AuditEvent } from '../schemas/audit';
 import type { CheckResult } from '../lib/scoring';
 
@@ -54,6 +55,8 @@ type TenantEnv = ResolverEnv & {
 	/** Per-tenant rate limiter state — same KV as the public per-IP limiter. */
 	RATE_LIMIT?: KVNamespace;
 	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
+	/** R10 - ProfileAccumulator write-sharding mode (default-off). See BvMcpEnv in index.ts. */
+	PROFILE_ACCUMULATOR_SHARDING?: string;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
 	PROVIDER_SIGNATURES_URL?: string;
 	PROVIDER_SIGNATURES_ALLOWED_HOSTS?: string;
@@ -748,6 +751,7 @@ tenantRoutes.post('/scan', async (c) => {
 		providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 		analytics: createAnalyticsClient(c.env.MCP_ANALYTICS),
 		profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+		profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
 		waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 		scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 		cacheTtlSeconds,

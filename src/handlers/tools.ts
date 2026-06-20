@@ -178,6 +178,14 @@ interface ToolRuntimeOptions {
 	providerSignaturesSha256?: string;
 	analytics?: AnalyticsClient;
 	profileAccumulator?: DurableObjectNamespace;
+	/**
+	 * ProfileAccumulator write-sharding mode (R10, default-off). Threaded from
+	 * env.PROFILE_ACCUMULATOR_SHARDING via execute.ts then dispatch.ts. Routes the
+	 * adaptive-weight /ingest write (scan_domain), the /weights read, and the
+	 * intelligence read seams (get_benchmark / get_provider_insights) to the SAME
+	 * per-profile shard. 'global'/undefined = legacy single instance (unchanged).
+	 */
+	profileAccumulatorShardMode?: import('../lib/profile-accumulator').AccumulatorShardMode;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
 	/** When provided, receives the raw CheckResult before MCP text formatting. Used by internal structured response mode. */
@@ -1262,7 +1270,7 @@ export async function handleToolsCall(
 				}
 				case 'get_benchmark': {
 					const profile = typeof validatedArgs.profile === 'string' ? validatedArgs.profile : 'mail_enabled';
-					const result = await getBenchmark(runtimeOptions?.profileAccumulator, profile);
+					const result = await getBenchmark(runtimeOptions?.profileAccumulator, profile, runtimeOptions?.profileAccumulatorShardMode);
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: result.status, logDetails: result, severity: 'info' });
 					return buildToolResult(formatBenchmark(result, effectiveFormat), result, effectiveFormat);
 				}
@@ -1272,7 +1280,7 @@ export async function handleToolsCall(
 						return buildToolErrorResult('Missing required parameter: provider');
 					}
 					const profile = typeof validatedArgs.profile === 'string' ? validatedArgs.profile : 'mail_enabled';
-					const result = await getProviderInsights(runtimeOptions?.profileAccumulator, provider, profile);
+					const result = await getProviderInsights(runtimeOptions?.profileAccumulator, provider, profile, runtimeOptions?.profileAccumulatorShardMode);
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: result.status, logDetails: result, severity: 'info' });
 					return buildToolResult(formatProviderInsights(result, effectiveFormat), result, effectiveFormat);
 				}

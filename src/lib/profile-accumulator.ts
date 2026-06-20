@@ -71,13 +71,37 @@ type ProviderStatsRow = InferSelectModel<typeof providerStats>;
 
 // ─── Validation ────────────────────────────────────────────────────────
 
-/** Known scoring profiles accepted by the accumulator. */
-const VALID_PROFILES = new Set(['mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal']);
+/**
+ * Known scoring profiles accepted by the accumulator at /ingest.
+ *
+ * MUST stay a superset of `SHARDABLE_PROFILES` (the write-sharding routing set):
+ * a profile that routes to its own shard but is rejected here would create a
+ * permanently-empty shard whose /ingest POSTs all 400 silently (ingest is
+ * `waitUntil`'d and the telemetry promise swallows errors). `authoritative_dns_infra`
+ * was historically omitted here — a latent bug that dropped every
+ * authoritative_dns_infra scan's telemetry on the legacy `global` instance too,
+ * sharded or not. The drift between the two sets is now enforced by
+ * `test/profile-accumulator-sharding.spec.ts` (VALID_PROFILES ⊇ SHARDABLE_PROFILES).
+ *
+ * Exported so the consistency audit can assert the superset relationship.
+ */
+export const VALID_PROFILES = new Set(['mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal', 'authoritative_dns_infra']);
 
 /** Known check categories accepted by the accumulator. */
 const VALID_CATEGORIES = new Set([
-	'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts',
-	'ns', 'caa', 'bimi', 'tlsrpt', 'subdomain_takeover', 'mx', 'lookalikes',
+	'spf',
+	'dmarc',
+	'dkim',
+	'dnssec',
+	'ssl',
+	'mta_sts',
+	'ns',
+	'caa',
+	'bimi',
+	'tlsrpt',
+	'subdomain_takeover',
+	'mx',
+	'lookalikes',
 ]);
 
 /** Maximum number of category findings per ingest request. */
@@ -103,7 +127,9 @@ export class ProfileAccumulator extends DurableObject<Env> {
 		if (this.initialized) return;
 		// Run DDL directly on SqlStorage — CREATE TABLE IF NOT EXISTS is idempotent.
 		// The Drizzle schema in src/lib/db/schema.ts is the source of truth for column types.
-		for (const stmt of SCHEMA_DDL.split(';').map((s) => s.trim()).filter(Boolean)) {
+		for (const stmt of SCHEMA_DDL.split(';')
+			.map((s) => s.trim())
+			.filter(Boolean)) {
 			this.ctx.storage.sql.exec(stmt + ';');
 		}
 		this.db = drizzle(this.ctx.storage, { schema });
@@ -199,9 +225,8 @@ export class ProfileAccumulator extends DurableObject<Env> {
 		await Promise.all(upserts);
 
 		// Intelligence layer updates — only when overallScore is present
-		const overallScore = typeof body.overallScore === 'number' && Number.isFinite(body.overallScore)
-			? Math.max(0, Math.min(100, body.overallScore))
-			: null;
+		const overallScore =
+			typeof body.overallScore === 'number' && Number.isFinite(body.overallScore) ? Math.max(0, Math.min(100, body.overallScore)) : null;
 
 		if (overallScore !== null) {
 			const intelligence: Promise<void>[] = [
@@ -269,13 +294,7 @@ export class ProfileAccumulator extends DurableObject<Env> {
 				ema_avg_score: providerStats.ema_avg_score,
 			})
 			.from(providerStats)
-			.where(
-				and(
-					eq(providerStats.profile, profile),
-					eq(providerStats.provider, provider),
-					eq(providerStats.category, category),
-				),
-			);
+			.where(and(eq(providerStats.profile, profile), eq(providerStats.provider, provider), eq(providerStats.category, category)));
 
 		if (existing) {
 			const newFailureRate = EMA_ALPHA * failureValue + (1 - EMA_ALPHA) * existing.ema_failure_rate;
@@ -288,13 +307,7 @@ export class ProfileAccumulator extends DurableObject<Env> {
 					ema_avg_score: newAvgScore,
 					last_updated: now,
 				})
-				.where(
-					and(
-						eq(providerStats.profile, profile),
-						eq(providerStats.provider, provider),
-						eq(providerStats.category, category),
-					),
-				);
+				.where(and(eq(providerStats.profile, profile), eq(providerStats.provider, provider), eq(providerStats.category, category)));
 		} else {
 			await this.db.insert(providerStats).values({
 				profile,
@@ -407,7 +420,9 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			let existingRates: Record<string, number> = {};
 			try {
 				existingRates = JSON.parse(existing.failure_rates);
-			} catch { /* empty */ }
+			} catch {
+				/* empty */
+			}
 
 			for (const [cat, rate] of Object.entries(failureRates)) {
 				const prev = existingRates[cat] ?? rate;
@@ -438,10 +453,7 @@ export class ProfileAccumulator extends DurableObject<Env> {
 
 	/** Remove oldest trend snapshots when limit is exceeded. */
 	private async evictOldSnapshots(profile: string): Promise<void> {
-		const [{ total }] = await this.db
-			.select({ total: count() })
-			.from(trendSnapshots)
-			.where(eq(trendSnapshots.profile, profile));
+		const [{ total }] = await this.db.select({ total: count() }).from(trendSnapshots).where(eq(trendSnapshots.profile, profile));
 
 		if (total >= MAX_TREND_SNAPSHOTS_PER_PROFILE) {
 			const toDelete = total - MAX_TREND_SNAPSHOTS_PER_PROFILE + 1;
@@ -452,12 +464,15 @@ export class ProfileAccumulator extends DurableObject<Env> {
 				.orderBy(asc(trendSnapshots.snapshot_hour))
 				.limit(toDelete);
 
-			await this.db
-				.delete(trendSnapshots)
-				.where(and(
+			await this.db.delete(trendSnapshots).where(
+				and(
 					eq(trendSnapshots.profile, profile),
-					inArray(trendSnapshots.snapshot_hour, oldest.map((r) => r.snapshot_hour)),
-				));
+					inArray(
+						trendSnapshots.snapshot_hour,
+						oldest.map((r) => r.snapshot_hour),
+					),
+				),
+			);
 		}
 	}
 
@@ -487,10 +502,10 @@ export class ProfileAccumulator extends DurableObject<Env> {
 		}
 
 		// Determine static weights — use mail_enabled as fallback if profile is unknown
-		const staticWeightMap = (PROFILE_WEIGHTS as Record<string, Record<string, { importance: number }>>)[profile] ??
-			PROFILE_WEIGHTS.mail_enabled;
-		const boundsMap = (WEIGHT_BOUNDS as Record<string, Record<string, { min: number; max: number }>>)[profile] ??
-			WEIGHT_BOUNDS.mail_enabled;
+		const staticWeightMap =
+			(PROFILE_WEIGHTS as Record<string, Record<string, { importance: number }>>)[profile] ?? PROFILE_WEIGHTS.mail_enabled;
+		const boundsMap =
+			(WEIGHT_BOUNDS as Record<string, Record<string, { min: number; max: number }>>)[profile] ?? WEIGHT_BOUNDS.mail_enabled;
 
 		// Prefetch all provider stats for this profile+provider to avoid N+1 queries
 		const providerStatsMap = new Map<string, ProviderStatsRow>();
@@ -631,9 +646,7 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			.orderBy(desc(profileStats.ema_failure_rate))
 			.limit(5);
 
-		const topFailingCategories = profileStatsRows
-			.filter((r) => r.ema_failure_rate > 0.1)
-			.map((r) => r.category);
+		const topFailingCategories = profileStatsRows.filter((r) => r.ema_failure_rate > 0.1).map((r) => r.category);
 
 		const lastUpdated = rows.reduce((max, r) => Math.max(max, r.last_updated), 0);
 
@@ -676,7 +689,9 @@ export class ProfileAccumulator extends DurableObject<Env> {
 		let topFailing: string[] = [];
 		try {
 			topFailing = JSON.parse(row.top_failing_categories);
-		} catch { /* empty */ }
+		} catch {
+			/* empty */
+		}
 
 		// Get overall population stats for comparison
 		const histogramRows = await this.db
@@ -752,7 +767,9 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			let failureRates: Record<string, number> = {};
 			try {
 				failureRates = JSON.parse(r.failure_rates);
-			} catch { /* empty */ }
+			} catch {
+				/* empty */
+			}
 
 			return {
 				hour: r.snapshot_hour,
@@ -764,9 +781,7 @@ export class ProfileAccumulator extends DurableObject<Env> {
 		});
 
 		const totalScans = snapshots.reduce((sum, s) => sum + s.scanCount, 0);
-		const weightedAvg = totalScans > 0
-			? snapshots.reduce((sum, s) => sum + s.avgScore * s.scanCount, 0) / totalScans
-			: 0;
+		const weightedAvg = totalScans > 0 ? snapshots.reduce((sum, s) => sum + s.avgScore * s.scanCount, 0) / totalScans : 0;
 
 		return Response.json({
 			status: 'ok',
@@ -823,7 +838,7 @@ const PROFILE_SHARD_PREFIX = 'aw-shard:';
  * `mail_enabled` shard, mirroring the DO's own `?? PROFILE_WEIGHTS.mail_enabled`
  * unknown-profile fallback so reads and writes still co-locate deterministically.
  */
-const SHARDABLE_PROFILES = new Set<string>([
+export const SHARDABLE_PROFILES = new Set<string>([
 	'mail_enabled',
 	'enterprise_mail',
 	'non_mail',
@@ -851,6 +866,64 @@ export function resolveAccumulatorShardName(profile: string, mode: AccumulatorSh
 	if (mode !== 'profile') return PROFILE_ACCUMULATOR_GLOBAL_NAME;
 	const key = SHARDABLE_PROFILES.has(profile) ? profile : 'mail_enabled';
 	return PROFILE_SHARD_PREFIX + key;
+}
+
+/**
+ * Resolve the sharding mode from the `PROFILE_ACCUMULATOR_SHARDING` env var.
+ *
+ * Default-OFF: any value other than the exact string `'profile'` (including
+ * unset/empty) yields `'global'`, so a deploy that does not set the var is
+ * byte-for-byte identical to the legacy single-instance topology. This is the
+ * single env→mode seam threaded into every ToolRuntimeOptions construction site;
+ * flipping the var to `'profile'` is the ONLY change needed to enable sharding
+ * (see the dormant-phase runbook in the commit body — flipping it is a SEPARATE,
+ * separately-reviewed change).
+ *
+ * @param raw - The raw `env.PROFILE_ACCUMULATOR_SHARDING` value (string | undefined).
+ * @returns `'profile'` only when `raw === 'profile'`; otherwise `'global'`.
+ */
+export function resolveAccumulatorShardModeFromEnv(raw: string | undefined): AccumulatorShardMode {
+	return raw === 'profile' ? 'profile' : 'global';
+}
+
+/**
+ * Warm-up degradation guard (Adam non-negotiable #6 — observable-by-default).
+ *
+ * When sharding is ON and a per-profile shard's adaptive-weight read returns a
+ * `sampleCount` below `MIN_BENCHMARK_SCANS`, that shard is still in its cold-start
+ * warm-up window: adaptive uplift falls back toward static weights (blendFactor =
+ * sampleCount / MATURITY_THRESHOLD) and benchmark/percentile data for that profile
+ * reads `insufficient_data`. Rather than degrade SILENTLY, we emit a `degradation`
+ * analytics event (`shard_below_benchmark_floor`) so an operator watching the flip
+ * can see the warm-up draining per profile and confirm adaptive uplift is only
+ * TEMPORARILY degraded.
+ *
+ * No-op in `'global'` mode: the legacy instance is fully converged, so emitting a
+ * warm-up signal there would be pure noise. Fail-soft — the emitter itself never
+ * throws into the scan path.
+ *
+ * @param params.mode - Active sharding mode. Only `'profile'` can emit.
+ * @param params.profile - The scoring profile whose shard was read.
+ * @param params.sampleCount - The shard's reported `sampleCount` (0 when never written).
+ * @param params.emit - The degradation-event emitter (analytics client). Optional/no-op-safe.
+ */
+export function maybeEmitShardWarmupDegradation(params: {
+	mode: AccumulatorShardMode | undefined;
+	profile: string;
+	sampleCount: number;
+	emit?: (event: { degradationType: 'shard_below_benchmark_floor'; component: string; domain?: string }) => void;
+}): void {
+	if (params.mode !== 'profile') return;
+	if (params.sampleCount >= MIN_BENCHMARK_SCANS) return;
+	try {
+		params.emit?.({
+			degradationType: 'shard_below_benchmark_floor',
+			// component encodes the shard so the operator sees WHICH profile is warming up.
+			component: `profile_accumulator:${resolveAccumulatorShardName(params.profile, 'profile')}`,
+		});
+	} catch {
+		/* fail-soft: a warm-up signal must never break a scan */
+	}
 }
 
 // ─── KV-backed cross-isolate convergence helpers ────────────────────────────
@@ -888,11 +961,7 @@ export async function publishAdaptiveWeightSummary(
  * Read a cross-isolate adaptive-weight summary from KV. Returns null on cache
  * miss or KV error — caller falls back to the DO call or static weights.
  */
-export async function getAdaptiveWeights(
-	profile: string,
-	provider: string,
-	kv: KVNamespace,
-): Promise<Record<string, number> | null> {
+export async function getAdaptiveWeights(profile: string, provider: string, kv: KVNamespace): Promise<Record<string, number> | null> {
 	try {
 		const raw = await kv.get(awKey(profile, provider));
 		if (!raw) return null;

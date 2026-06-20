@@ -30,6 +30,28 @@ async function getWeights(stub: DurableObjectStub, profile: string, provider?: s
 	return stub.fetch(url.toString(), { method: 'GET' });
 }
 
+/**
+ * Minimal DurableObjectNamespace test double that records which instance NAME each
+ * `idFromName(...)` resolved and forwards `.get(...).fetch(...)` to the real
+ * PROFILE_ACCUMULATOR DO. Used to prove the intelligence read seams
+ * (getBenchmark / getProviderInsights) resolve the SAME instance the ingest write
+ * targeted — i.e. there is no split-brain between writes and the benchmark reads.
+ */
+function recordingNamespace(): { ns: DurableObjectNamespace; names: string[] } {
+	const names: string[] = [];
+	const real = env.PROFILE_ACCUMULATOR;
+	const ns = {
+		idFromName(name: string) {
+			names.push(name);
+			return real.idFromName(name);
+		},
+		get(id: DurableObjectId) {
+			return real.get(id);
+		},
+	} as unknown as DurableObjectNamespace;
+	return { ns, names };
+}
+
 describe('ProfileAccumulator sharding (R10 PROPOSAL)', () => {
 	describe('resolveAccumulatorShardName', () => {
 		it("defaults to the legacy 'global' instance (behavior-preserving)", async () => {
@@ -59,9 +81,7 @@ describe('ProfileAccumulator sharding (R10 PROPOSAL)', () => {
 
 		it('routes an unknown profile to the mail_enabled shard (matches the DO fallback)', async () => {
 			const { resolveAccumulatorShardName } = await import('../src/lib/profile-accumulator');
-			expect(resolveAccumulatorShardName('totally_unknown', 'profile')).toBe(
-				resolveAccumulatorShardName('mail_enabled', 'profile'),
-			);
+			expect(resolveAccumulatorShardName('totally_unknown', 'profile')).toBe(resolveAccumulatorShardName('mail_enabled', 'profile'));
 		});
 	});
 
@@ -136,6 +156,165 @@ describe('ProfileAccumulator sharding (R10 PROPOSAL)', () => {
 			};
 			expect(shardBody.sampleCount).toBe(1);
 			expect(shardBody.weights).toHaveProperty('spf');
+		});
+	});
+
+	// ── Adam non-negotiable #1: dormant default-OFF must route EVERY seam to 'global' ──
+	describe("default-off ('global'/undefined) routes ingest AND all read seams to 'global'", () => {
+		it("resolveAccumulatorShardModeFromEnv defaults OFF unless the var is exactly 'profile'", async () => {
+			const { resolveAccumulatorShardModeFromEnv } = await import('../src/lib/profile-accumulator');
+			// Default-off: anything that isn't the exact opt-in string → 'global'.
+			expect(resolveAccumulatorShardModeFromEnv(undefined)).toBe('global');
+			expect(resolveAccumulatorShardModeFromEnv('')).toBe('global');
+			expect(resolveAccumulatorShardModeFromEnv('global')).toBe('global');
+			expect(resolveAccumulatorShardModeFromEnv('PROFILE')).toBe('global'); // case-sensitive
+			expect(resolveAccumulatorShardModeFromEnv('true')).toBe('global');
+			// Opt-in: only the exact literal flips it on.
+			expect(resolveAccumulatorShardModeFromEnv('profile')).toBe('profile');
+		});
+
+		it("routes the ingest write to 'global' for every profile when mode is undefined/'global'", async () => {
+			const { resolveAccumulatorShardName, PROFILE_ACCUMULATOR_GLOBAL_NAME } = await import('../src/lib/profile-accumulator');
+			const profiles = ['mail_enabled', 'enterprise_mail', 'non_mail', 'web_only', 'minimal', 'authoritative_dns_infra'];
+			for (const p of profiles) {
+				expect(resolveAccumulatorShardName(p, undefined)).toBe(PROFILE_ACCUMULATOR_GLOBAL_NAME);
+				expect(resolveAccumulatorShardName(p, 'global')).toBe(PROFILE_ACCUMULATOR_GLOBAL_NAME);
+			}
+		});
+
+		it("getBenchmark reads the 'global' instance when shardMode is default/undefined/'global'", async () => {
+			const { getBenchmark } = await import('../src/tools/intelligence');
+			const { PROFILE_ACCUMULATOR_GLOBAL_NAME } = await import('../src/lib/profile-accumulator');
+			// default arg
+			{
+				const { ns, names } = recordingNamespace();
+				await getBenchmark(ns, 'non_mail');
+				expect(names).toEqual([PROFILE_ACCUMULATOR_GLOBAL_NAME]);
+			}
+			// explicit 'global'
+			{
+				const { ns, names } = recordingNamespace();
+				await getBenchmark(ns, 'authoritative_dns_infra', 'global');
+				expect(names).toEqual([PROFILE_ACCUMULATOR_GLOBAL_NAME]);
+			}
+		});
+
+		it("getProviderInsights reads the 'global' instance when shardMode is default/'global'", async () => {
+			const { getProviderInsights } = await import('../src/tools/intelligence');
+			const { PROFILE_ACCUMULATOR_GLOBAL_NAME } = await import('../src/lib/profile-accumulator');
+			{
+				const { ns, names } = recordingNamespace();
+				await getProviderInsights(ns, 'google', 'mail_enabled');
+				expect(names).toEqual([PROFILE_ACCUMULATOR_GLOBAL_NAME]);
+			}
+			{
+				const { ns, names } = recordingNamespace();
+				await getProviderInsights(ns, 'google', 'enterprise_mail', 'global');
+				expect(names).toEqual([PROFILE_ACCUMULATOR_GLOBAL_NAME]);
+			}
+		});
+	});
+
+	// ── Adam non-negotiable #5 / Linus must-fix #1: read seams co-route by profile ──
+	describe('profile mode co-routes the intelligence read seams to the per-profile shard', () => {
+		it('getBenchmark resolves the SAME shard the ingest write used, and reads converge', async () => {
+			const { resolveAccumulatorShardName } = await import('../src/lib/profile-accumulator');
+			const { getBenchmark } = await import('../src/tools/intelligence');
+
+			const profile = 'web_only';
+			const shard = resolveAccumulatorShardName(profile, 'profile');
+			const shardStub = env.PROFILE_ACCUMULATOR.getByName(shard);
+
+			// Seed the shard above MIN_BENCHMARK_SCANS so the benchmark reports 'ok'
+			// rather than 'insufficient_data', proving the read landed on the written shard.
+			for (let i = 0; i < 120; i++) {
+				await ingest(shardStub, {
+					profile,
+					provider: null,
+					categoryFindings: [{ category: 'spf', score: 70, passed: true }],
+					timestamp: Date.now(),
+					overallScore: 70,
+				} as ScanTelemetry);
+			}
+
+			const { ns, names } = recordingNamespace();
+			const result = await getBenchmark(ns, profile, 'profile');
+			// The read resolved the per-profile shard (NOT 'global').
+			expect(names[0]).toBe(shard);
+			expect(names[0]).not.toBe('global');
+			// And it converged on the data written to that shard.
+			expect(result.status).toBe('ok');
+			expect(result.totalScans).toBeGreaterThanOrEqual(120);
+		});
+
+		it("getBenchmark on an unwritten 'global' instance returns insufficient_data — the split-brain we prevent", async () => {
+			// This is the failure the read-seam fix prevents: if the reads stayed pinned to
+			// 'global' while writes went to a shard, 'global' would be write-starved. Here we
+			// read 'global' explicitly (no writes routed to it for this fresh profile) and
+			// confirm it is NOT 'ok' — i.e. routing the read to the shard above is load-bearing.
+			const { getBenchmark } = await import('../src/tools/intelligence');
+			const result = await getBenchmark(env.PROFILE_ACCUMULATOR, 'minimal', 'global');
+			expect(result.status).not.toBe('ok');
+		});
+	});
+
+	// ── Adam non-negotiable #4 / Linus must-fix #3: VALID_PROFILES ⊇ SHARDABLE_PROFILES ──
+	describe('VALID_PROFILES (DO /ingest) is a superset of SHARDABLE_PROFILES (routing set)', () => {
+		it('every shardable profile is accepted by the DO at /ingest (no permanently-empty shard)', async () => {
+			const { VALID_PROFILES, SHARDABLE_PROFILES } = await import('../src/lib/profile-accumulator');
+			for (const p of SHARDABLE_PROFILES) {
+				expect(VALID_PROFILES.has(p)).toBe(true);
+			}
+		});
+
+		it('authoritative_dns_infra is accepted at /ingest (the fixed latent bug) — write is not dropped', async () => {
+			const { resolveAccumulatorShardName } = await import('../src/lib/profile-accumulator');
+			const profile = 'authoritative_dns_infra';
+			const shard = resolveAccumulatorShardName(profile, 'profile');
+			const stub = env.PROFILE_ACCUMULATOR.getByName(shard);
+			const res = await ingest(stub, {
+				profile,
+				provider: null,
+				categoryFindings: [{ category: 'dnssec', score: 90, passed: true }],
+				timestamp: Date.now(),
+				overallScore: 90,
+			} as ScanTelemetry);
+			// Pre-fix this returned 400 'Invalid profile' and the write was silently dropped.
+			expect(res.status).toBe(204);
+			const body = (await (await getWeights(stub, profile)).json()) as { sampleCount: number };
+			expect(body.sampleCount).toBe(1);
+		});
+	});
+
+	// ── Adam non-negotiable #6: observable warm-up degradation signal ──
+	describe('maybeEmitShardWarmupDegradation (warm-up observability)', () => {
+		it('emits shard_below_benchmark_floor only in profile mode below the floor', async () => {
+			const { maybeEmitShardWarmupDegradation } = await import('../src/lib/profile-accumulator');
+			const events: Array<{ degradationType: string; component: string }> = [];
+			const emit = (e: { degradationType: 'shard_below_benchmark_floor'; component: string }) => events.push(e);
+
+			// Below floor + profile mode → emits, component carries the shard name.
+			maybeEmitShardWarmupDegradation({ mode: 'profile', profile: 'minimal', sampleCount: 0, emit });
+			expect(events).toHaveLength(1);
+			expect(events[0].degradationType).toBe('shard_below_benchmark_floor');
+			expect(events[0].component).toContain('aw-shard:minimal');
+		});
+
+		it('does NOT emit in global mode (legacy instance is converged — no warm-up noise)', async () => {
+			const { maybeEmitShardWarmupDegradation } = await import('../src/lib/profile-accumulator');
+			const events: unknown[] = [];
+			const emit = () => events.push(1);
+			maybeEmitShardWarmupDegradation({ mode: 'global', profile: 'minimal', sampleCount: 0, emit });
+			maybeEmitShardWarmupDegradation({ mode: undefined, profile: 'minimal', sampleCount: 0, emit });
+			expect(events).toHaveLength(0);
+		});
+
+		it('does NOT emit once the shard reaches MIN_BENCHMARK_SCANS (warm-up drained)', async () => {
+			const { maybeEmitShardWarmupDegradation, MIN_BENCHMARK_SCANS } = await import('../src/lib/profile-accumulator');
+			const events: unknown[] = [];
+			const emit = () => events.push(1);
+			maybeEmitShardWarmupDegradation({ mode: 'profile', profile: 'minimal', sampleCount: MIN_BENCHMARK_SCANS, emit });
+			expect(events).toHaveLength(0);
 		});
 	});
 });

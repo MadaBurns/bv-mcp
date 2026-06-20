@@ -86,8 +86,15 @@ export interface AnalyticsClient {
 			 *    time. Absent-on-self-host and the benign recon 404 are deliberately NOT
 			 *    emitted (those are expected, not alertable). `component` carries which
 			 *    binding (`recon` | `tls_probe`).
+			 *  - `shard_below_benchmark_floor` — a per-profile ProfileAccumulator shard
+			 *    is in its cold-start warm-up window (sampleCount < MIN_BENCHMARK_SCANS)
+			 *    while write-sharding is ON. Adaptive uplift is TEMPORARILY degraded
+			 *    toward static weights for that profile until the shard re-clears its
+			 *    threshold. `component` carries `profile_accumulator:<shardName>`. Only
+			 *    emitted in `PROFILE_ACCUMULATOR_SHARDING='profile'` mode — observable so
+			 *    an operator can watch the warm-up drain after a flip.
 			 */
-			degradationType: 'kv_fallback' | 'binding_unavailable' | 'binding_5xx' | 'binding_timeout';
+			degradationType: 'kv_fallback' | 'binding_unavailable' | 'binding_5xx' | 'binding_timeout' | 'shard_below_benchmark_floor';
 			component: string;
 			domain?: string;
 		} & AnalyticsContext,

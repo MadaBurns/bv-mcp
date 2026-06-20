@@ -60,7 +60,12 @@ import { applyScanPostProcessing } from './scan/post-processing';
 import { resolveScanTimeoutBudget } from './scan/timeouts';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import { logError } from '../lib/log';
-import { getAdaptiveWeights, publishAdaptiveWeightSummary, resolveAccumulatorShardName } from '../lib/profile-accumulator';
+import {
+	getAdaptiveWeights,
+	publishAdaptiveWeightSummary,
+	resolveAccumulatorShardName,
+	maybeEmitShardWarmupDegradation,
+} from '../lib/profile-accumulator';
 import { capMaturityStage, computeMaturityStage } from './scan/maturity-staging';
 import type { MaturityStage } from './scan/maturity-staging';
 export { formatScanReport, buildStructuredScanResult } from './scan/format-report';
@@ -257,7 +262,8 @@ function buildNonResolvingResult(domain: string): ScanDomainResult {
 			stage: 0,
 			label: 'Does not resolve',
 			description: reason,
-			nextStep: 'Confirm the domain is registered and has authoritative nameservers. If it was recently registered, DNS may not have propagated yet.',
+			nextStep:
+				'Confirm the domain is registered and has authoritative nameservers. If it was recently registered, DNS may not have propagated yet.',
 		},
 		context: {
 			profile: 'mail_enabled',
@@ -303,7 +309,8 @@ function buildDnsBrokenResult(domain: string, kind: DnsBrokenKind): ScanDomainRe
 		kind === 'dnssec_bogus'
 			? 'Fix the DNSSEC chain (re-sign the zone / update DS at the parent) or, if DNSSEC is not intended, remove the DS records so the zone resolves cleanly. Then re-run the scan.'
 			: 'Confirm the delegation is healthy: the parent NS records point at authoritative nameservers that answer for the zone. Once the zone resolves, re-run the scan.';
-	const signal = kind === 'dnssec_bogus' ? 'DNS resolution broken (DNSSEC validation failure)' : 'DNS resolution broken (unresolvable delegation)';
+	const signal =
+		kind === 'dnssec_bogus' ? 'DNS resolution broken (DNSSEC validation failure)' : 'DNS resolution broken (unresolvable delegation)';
 	return {
 		domain,
 		score: {
@@ -360,9 +367,7 @@ function mergeCapabilitySummary(results: CheckResult[]): Record<string, string[]
 	const failed = new Set<string>();
 	const inconclusive = new Set<string>();
 	for (const result of results) {
-		const summary = result.metadata?.capabilitySummary as
-			| { passed?: string[]; failed?: string[]; inconclusive?: string[] }
-			| undefined;
+		const summary = result.metadata?.capabilitySummary as { passed?: string[]; failed?: string[]; inconclusive?: string[] } | undefined;
 		for (const capability of summary?.passed ?? []) passed.add(capability);
 		for (const capability of summary?.failed ?? []) failed.add(capability);
 		for (const capability of summary?.inconclusive ?? []) inconclusive.add(capability);
@@ -403,9 +408,7 @@ export async function runCheckRetry(
 	runtimeOptions?: ScanRuntimeOptions,
 ): Promise<CheckResult> {
 	const retryDns: QueryDnsOptions = { ...scanDns, queryCache: new Map() };
-	const timeoutPromise = new Promise<never>((_, reject) =>
-		setTimeout(() => reject(new Error('Retry timed out')), retryTimeoutMs),
-	);
+	const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Retry timed out')), retryTimeoutMs));
 
 	const checkPromise = CHECK_DISPATCH[category]?.(domain, retryDns, runtimeOptions);
 	if (!checkPromise) {
@@ -509,29 +512,31 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	const forceRefresh = runtimeOptions?.forceRefresh;
 	const cacheTtl = runtimeOptions?.cacheTtlSeconds;
 
-	const checkPromises: Promise<CheckResult>[] = isAuthoritativeInfraProfile ? [
-		Promise.all([
-			safeCheck(
-				'authoritative_dns_infra',
-				() => checkAuthoritativeDnsInfra(domain, { infraProbe: runtimeOptions?.infraProbe }),
-				timeoutBudget.perCheckTimeoutMs,
-			),
-			safeCheck(
-				'authoritative_dns_infra',
-				() => checkRootServerSet({ infraProbe: runtimeOptions?.infraProbe }),
-				timeoutBudget.perCheckTimeoutMs,
-			),
-		]).then(mergeAuthoritativeDnsInfraResults),
-	] : SCAN_CATEGORIES.map((cat) =>
-		runCachedCheck(
-			domain,
-			cat,
-			() => safeCheck(cat, () => CHECK_DISPATCH[cat](domain, scanDns, runtimeOptions), timeoutBudget.perCheckTimeoutMs),
-			kv,
-			cacheTtl,
-			forceRefresh,
-		),
-	);
+	const checkPromises: Promise<CheckResult>[] = isAuthoritativeInfraProfile
+		? [
+				Promise.all([
+					safeCheck(
+						'authoritative_dns_infra',
+						() => checkAuthoritativeDnsInfra(domain, { infraProbe: runtimeOptions?.infraProbe }),
+						timeoutBudget.perCheckTimeoutMs,
+					),
+					safeCheck(
+						'authoritative_dns_infra',
+						() => checkRootServerSet({ infraProbe: runtimeOptions?.infraProbe }),
+						timeoutBudget.perCheckTimeoutMs,
+					),
+				]).then(mergeAuthoritativeDnsInfraResults),
+			]
+		: SCAN_CATEGORIES.map((cat) =>
+				runCachedCheck(
+					domain,
+					cat,
+					() => safeCheck(cat, () => CHECK_DISPATCH[cat](domain, scanDns, runtimeOptions), timeoutBudget.perCheckTimeoutMs),
+					kv,
+					cacheTtl,
+					forceRefresh,
+				),
+			);
 
 	let timedOut = false;
 	const settled = await Promise.race([
@@ -549,9 +554,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		),
 	]);
 
-	let checkResults = settled
-		.filter((r): r is PromiseFulfilledResult<CheckResult> => r.status === 'fulfilled')
-		.map((r) => r.value);
+	let checkResults = settled.filter((r): r is PromiseFulfilledResult<CheckResult> => r.status === 'fulfilled').map((r) => r.value);
 
 	// Track categories with degraded status before post-processing strips checkStatus.
 	// Post-processing calls buildCheckResult() which creates new objects without checkStatus,
@@ -567,7 +570,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// Only fires for errored checks (checkStatus='error', score=0) caught
 	// by safeCheck() — thrown exceptions from DNS/HTTPS failures. Timeouts
 	// are skipped because they mean the scan budget is already exhausted.
-	if (!timedOut && (Date.now() - scanStartTime) < (timeoutBudget.scanTimeoutMs - timeoutBudget.retryBudgetMs)) {
+	if (!timedOut && Date.now() - scanStartTime < timeoutBudget.scanTimeoutMs - timeoutBudget.retryBudgetMs) {
 		const retryable = checkResults
 			.map((r, idx) => ({ r, idx }))
 			.filter(({ r }) => shouldRetry(r))
@@ -684,10 +687,24 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			);
 			// Publish to KV so other isolates can converge within the TTL window.
 			if (adaptiveResponse && adaptiveProvider && kv && runtimeOptions.waitUntil) {
-				runtimeOptions.waitUntil(
-					publishAdaptiveWeightSummary(domainContext.profile, adaptiveProvider, adaptiveResponse.weights, kv),
-				);
+				runtimeOptions.waitUntil(publishAdaptiveWeightSummary(domainContext.profile, adaptiveProvider, adaptiveResponse.weights, kv));
 			}
+			// Observable-by-default warm-up signal (Adam non-negotiable #6): when
+			// sharding is ON and this profile's shard is still below the benchmark
+			// floor, emit a degradation event so an operator can watch the warm-up
+			// drain after a flip. No-op in default 'global' mode.
+			maybeEmitShardWarmupDegradation({
+				mode: runtimeOptions.profileAccumulatorShardMode,
+				profile: domainContext.profile,
+				sampleCount: adaptiveResponse?.sampleCount ?? 0,
+				emit: runtimeOptions.analytics?.emitDegradationEvent
+					? (event) =>
+							runtimeOptions.analytics!.emitDegradationEvent({
+								...event,
+								domain,
+							})
+					: undefined,
+			});
 		}
 
 		// Add bound hits to signals if present
@@ -769,15 +786,10 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			// global gate. The matching /weights read (fetchAdaptiveWeights below)
 			// resolves the SAME shard name from the SAME profile, so reads and writes
 			// co-locate. `'global'` mode reproduces the legacy single-instance routing.
-			const ingestShardName = resolveAccumulatorShardName(
-				domainContext.profile,
-				runtimeOptions.profileAccumulatorShardMode,
-			);
+			const ingestShardName = resolveAccumulatorShardName(domainContext.profile, runtimeOptions.profileAccumulatorShardMode);
 			const telemetryPromise = (async () => {
 				try {
-					const stub = runtimeOptions.profileAccumulator!.get(
-						runtimeOptions.profileAccumulator!.idFromName(ingestShardName),
-					);
+					const stub = runtimeOptions.profileAccumulator!.get(runtimeOptions.profileAccumulator!.idFromName(ingestShardName));
 					await stub.fetch(
 						new Request('https://do/ingest', {
 							method: 'POST',
