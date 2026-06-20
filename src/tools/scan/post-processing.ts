@@ -22,6 +22,12 @@ export interface ScanRuntimeOptions {
 	scanTimeoutMs?: number;
 	/** Per-check wall-clock budget in milliseconds. Defaults to PER_CHECK_TIMEOUT_MS. */
 	perCheckTimeoutMs?: number;
+	/**
+	 * Cap on concurrent outbound DoH fetches within this scan's fan-out. Defaults
+	 * to SCAN_DNS_CONCURRENCY. Bounds tail-latency / subrequest pressure only — it
+	 * does NOT change scan results. Threaded into `scanDns.dnsSemaphore`.
+	 */
+	dnsConcurrency?: number;
 	/** Custom secondary DoH resolver config (bv-dns). Threaded to scanDns but only active when skipSecondaryConfirmation is false. */
 	secondaryDoh?: import('../../lib/dns-types').SecondaryDohConfig;
 	/** Optional service binding for raw DNS, routing, and vantage-point probes. */

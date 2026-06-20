@@ -18,6 +18,8 @@ interface ToolExecutionBase {
 	score?: number;
 	cacheStatus?: 'hit' | 'miss' | 'n/a';
 	keyHash?: string;
+	/** Cloudflare edge colo for per-datacenter tool_call analytics grouping. */
+	colo?: string;
 }
 
 /**
@@ -34,6 +36,7 @@ export function buildLogContext(
 		clientType?: string;
 		authTier?: string;
 		keyHash?: string;
+		colo?: string;
 	},
 ): ToolExecutionBase {
 	return {
@@ -45,6 +48,7 @@ export function buildLogContext(
 		clientType: runtimeOptions?.clientType as McpClientType,
 		authTier: runtimeOptions?.authTier,
 		keyHash: runtimeOptions?.keyHash,
+		colo: runtimeOptions?.colo,
 	};
 }
 
@@ -66,6 +70,7 @@ export function logToolSuccess(options: ToolExecutionBase & {
 		clientType: options.clientType,
 		authTier: options.authTier,
 		keyHash: options.keyHash,
+		colo: options.colo,
 	});
 
 	logEvent({
@@ -96,6 +101,7 @@ export function logToolFailure(options: ToolExecutionBase & {
 		clientType: options.clientType,
 		authTier: options.authTier,
 		keyHash: options.keyHash,
+		colo: options.colo,
 	});
 
 	logError(options.error instanceof Error ? options.error : String(options.error), {

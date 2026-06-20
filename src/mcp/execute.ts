@@ -104,6 +104,8 @@ export interface ExecuteMcpRequestOptions {
 	keyHash?: string;
 	/** FNV-1a hash of cf-connecting-ip (`i_` prefix) for per-IP analytics filtering. */
 	ipHash?: string;
+	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter analytics grouping. Appended as the trailing blob on mcp_request/tool_call events. */
+	colo?: string;
 	/** D1 binding for privacy-preserving MCP access logs. */
 	intelligenceDb?: D1Database;
 	/** Base64-encoded AES-GCM key for encrypted abuse-investigation IP evidence. */
@@ -335,6 +337,7 @@ function emitRequestAnalytics(
 		sessionHash: options.sessionHash,
 		keyHash: options.keyHash,
 		ipHash: options.ipHash,
+		colo: options.colo,
 	});
 
 	// Fuzzing-detection: record an event if the error matches a known fuzz pattern.
@@ -994,6 +997,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			clientType: options.clientType,
 			protocolVersionHeader: options.protocolVersionHeader,
 			authTier: options.authTier,
+			colo: options.colo,
 			certstream: options.certstream,
 			certstreamAuthToken: options.certstreamAuthToken,
 			whoisBinding: options.whoisBinding,
@@ -1097,6 +1101,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			clientType: options.clientType,
 			protocolVersionHeader: options.protocolVersionHeader,
 			authTier: options.authTier,
+			colo: options.colo,
 			certstream: options.certstream,
 			certstreamAuthToken: options.certstreamAuthToken,
 			whoisBinding: options.whoisBinding,

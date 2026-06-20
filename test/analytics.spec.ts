@@ -36,12 +36,39 @@ describe('createAnalyticsClient', () => {
 		expect(ds.writeDataPoint).toHaveBeenCalledOnce();
 		const point = ds.writeDataPoint.mock.calls[0][0];
 		expect(point.indexes).toEqual(['mcp_request']);
-		expect(point.blobs).toHaveLength(11);
+		// blob12 (index 11) = colo, appended trailing. Existing positions unchanged.
+		expect(point.blobs).toHaveLength(12);
 		expect(point.blobs[5]).toBe('NZ');
 		expect(point.blobs[6]).toBe('claude_code');
 		expect(point.blobs[7]).toBe('agent');
 		expect(point.blobs[8]).toBe('s_abcd1234');
 		expect(point.blobs[9]).toBe('none');
+		// colo absent in ctx → defaults to 'unknown' (fail-open).
+		expect(point.blobs[11]).toBe('unknown');
+	});
+
+	it('emitRequestEvent appends colo as the trailing blob12 without shifting existing positions', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitRequestEvent({
+			method: 'tools/call',
+			status: 'ok',
+			durationMs: 100,
+			isAuthenticated: true,
+			hasJsonRpcError: false,
+			transport: 'json',
+			ipHash: 'i_deadbeef',
+			...ctx,
+			colo: 'AKL',
+		});
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		expect(point.blobs).toHaveLength(12);
+		// Existing position-indexed fields stay put.
+		expect(point.blobs[0]).toBe('tools/call');
+		expect(point.blobs[5]).toBe('NZ');
+		expect(point.blobs[10]).toBe('i_deadbeef'); // blob11 ipHash unmoved
+		// New trailing dimension.
+		expect(point.blobs[11]).toBe('AKL');
 	});
 
 	it('emitRequestEvent records the JSON-RPC error code as abs(code) in double2', () => {
@@ -93,10 +120,38 @@ describe('createAnalyticsClient', () => {
 		});
 		const point = ds.writeDataPoint.mock.calls[0][0];
 		expect(point.indexes).toEqual(['tool_call']);
-		expect(point.blobs).toHaveLength(10);
+		// blob11 (index 10) = colo, appended trailing. Existing positions unchanged.
+		expect(point.blobs).toHaveLength(11);
 		expect(point.blobs[4]).toBe('NZ');
 		expect(point.blobs[8]).toBe('none');
+		// colo absent in ctx → defaults to 'unknown' (fail-open).
+		expect(point.blobs[10]).toBe('unknown');
 		expect(point.doubles).toEqual([3200, 85]);
+	});
+
+	it('emitToolEvent appends colo as the trailing blob11 without shifting existing positions', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitToolEvent({
+			toolName: 'scan_domain',
+			status: 'pass',
+			durationMs: 3200,
+			domain: 'example.com',
+			isError: false,
+			score: 85,
+			cacheStatus: 'miss',
+			ipHash: 'i_cafef00d',
+			...ctx,
+			colo: 'SYD',
+		});
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		expect(point.blobs).toHaveLength(11);
+		// Existing position-indexed fields stay put.
+		expect(point.blobs[0]).toBe('scan_domain');
+		expect(point.blobs[4]).toBe('NZ');
+		expect(point.blobs[9]).toBe('i_cafef00d'); // blob10 ipHash unmoved
+		// New trailing dimension.
+		expect(point.blobs[10]).toBe('SYD');
 	});
 
 	it('emitRateLimitEvent writes rate_limit index', () => {
@@ -210,5 +265,54 @@ describe('createAnalyticsClient', () => {
 		const point = ds.writeDataPoint.mock.calls[0][0];
 		expect(point.blobs[0]).toBe('binding_timeout');
 		expect(point.blobs[1]).toBe('tls_probe');
+	});
+
+	it('emitQueueBatchEvent writes queue_batch index with handler/outcome blobs + count doubles', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitQueueBatchEvent({
+			handler: 'brand-audit-queue',
+			outcome: 'error',
+			durationMs: 1234,
+			messageCount: 5,
+			failureCount: 5,
+			...ctx,
+		});
+		expect(ds.writeDataPoint).toHaveBeenCalledOnce();
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		expect(point.indexes).toEqual(['queue_batch']);
+		expect(point.blobs[0]).toBe('brand-audit-queue');
+		expect(point.blobs[1]).toBe('error');
+		expect(point.blobs[2]).toBe('NZ'); // country
+		expect(point.blobs[3]).toBe('agent'); // authTier
+		// doubles: [durationMs, failureCount, messageCount]
+		expect(point.doubles[0]).toBe(1234);
+		expect(point.doubles[1]).toBe(5);
+		expect(point.doubles[2]).toBe(5);
+	});
+
+	it('emitQueueBatchEvent clamps non-finite/negative numbers and defaults context', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitQueueBatchEvent({
+			handler: 'CRON-Periodic ',
+			outcome: 'ok',
+			durationMs: Number.NaN,
+			messageCount: 0,
+			failureCount: -1,
+		});
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		expect(point.blobs[0]).toBe('cron-periodic'); // normalizeIndex lowercases + trims
+		expect(point.blobs[2]).toBe('unknown'); // country default
+		expect(point.blobs[3]).toBe('anon'); // authTier default
+		expect(point.doubles[0]).toBe(0); // NaN → 0
+		expect(point.doubles[1]).toBe(0); // -1 clamped to 0
+	});
+
+	it('emitQueueBatchEvent is a no-op when no dataset is configured', () => {
+		const client = createAnalyticsClient();
+		expect(() =>
+			client.emitQueueBatchEvent({ handler: 'brand-audit-queue', outcome: 'ok', durationMs: 1, messageCount: 1, failureCount: 0 }),
+		).not.toThrow();
 	});
 });

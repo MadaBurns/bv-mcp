@@ -9,27 +9,17 @@
 import { z } from 'zod';
 
 import { logEvent } from './log';
+import type { BindingDegradationKind, BindingDegradationSink } from './binding-degradation';
+
+// Re-export the shared telemetry types so existing importers of these symbols
+// from `recon-binding` keep working; the canonical definition lives in
+// `./binding-degradation` (unified with the tls-probe client to prevent drift).
+export type { BindingDegradationKind, BindingDegradationSink } from './binding-degradation';
 
 /** Minimal Fetcher shape — matches a Cloudflare service binding. */
 export interface ReconBinding {
 	fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
-
-/**
- * Binding-degradation kinds for a PRESENT-but-failing operator service binding.
- * Deliberately excludes absent-binding and the benign recon 404 (both expected,
- * not alertable). Mirrors the matching members on the analytics `degradation`
- * event (`binding_unavailable` | `binding_5xx` | `binding_timeout`).
- */
-export type BindingDegradationKind = 'binding_unavailable' | 'binding_5xx' | 'binding_timeout';
-
-/**
- * Optional telemetry callback invoked ONLY when a present binding fails. The
- * caller forwards a sink that emits the analytics `degradation` event; the
- * binding additionally emits a structured warn log on its own (see
- * `recordReconDegradation`). Fail-soft: the binding never throws if the sink does.
- */
-export type BindingDegradationSink = (event: { degradationType: BindingDegradationKind; component: string; domain?: string }) => void;
 
 const RECON_COMPONENT = 'recon';
 

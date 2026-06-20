@@ -161,6 +161,8 @@ export interface DispatchMcpMethodOptions {
 	protocolVersionHeader?: string;
 	authTier?: string;
 	keyHash?: string;
+	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter tool_call analytics grouping. Threaded to handleToolsCall. */
+	colo?: string;
 	certstream?: { fetch: typeof fetch };
 	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
@@ -284,6 +286,11 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				providerSignaturesAllowedHosts: parseAllowedHosts(options.providerSignaturesAllowedHosts),
 				providerSignaturesSha256: options.providerSignaturesSha256,
 				analytics: options.analytics,
+				// Wire the binding-degradation analytics sink ONCE here (R1): when an
+				// analytics client is present, recon/tls-probe wrappers emit the
+				// `degradation` event on a PRESENT-binding failure so the cron alert
+				// can fire. Undefined when analytics is unavailable. Fail-open.
+				onBindingDegradation: options.analytics ? (e) => options.analytics?.emitDegradationEvent(e) : undefined,
 				profileAccumulator: options.profileAccumulator,
 				waitUntil: options.waitUntil,
 				scoringConfig: options.scoringConfig,
@@ -297,6 +304,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				clientType: options.clientType,
 				authTier: options.authTier,
 				keyHash: options.keyHash,
+				colo: options.colo,
 				certstream: options.certstream,
 				certstreamAuthToken: options.certstreamAuthToken,
 				whoisBinding: options.whoisBinding,

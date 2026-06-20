@@ -77,6 +77,16 @@ export const INFLIGHT_CLEANUP_MS = 30_000;
 export const DNS_RETRY_BASE_DELAY_MS = 75;
 
 /**
+ * Default cap on concurrent outbound DoH fetches within a single `scan_domain`
+ * fan-out. The ~19-way category fan-out would otherwise open all DoH
+ * connections at once; bounding it smooths tail-latency and eases the Workers
+ * subrequest pressure on Free-plan self-hosts WITHOUT changing scan results
+ * (it only serialises connection scheduling, never the answers). 12 keeps most
+ * of the parallelism while leaving headroom. Override via `SCAN_DNS_CONCURRENCY`.
+ */
+export const SCAN_DNS_CONCURRENCY = 12;
+
+/**
  * When true, empty DoH answers from the primary resolver are optionally
  * confirmed with a secondary resolver to reduce false negatives.
  */
@@ -560,6 +570,15 @@ export function parseGlobalDailyLimit(envValue?: string): number {
  */
 export function parseScanTimeout(envValue?: string): number {
 	return parseClampedInt(envValue, SCAN_TIMEOUT_MS, 5000, 30000);
+}
+
+/**
+ * Parse SCAN_DNS_CONCURRENCY override, clamping to [1, 50].
+ * Returns SCAN_DNS_CONCURRENCY when absent or invalid. The upper bound mirrors
+ * the Workers subrequest-friendly batch ceiling; 1 forces fully serial DoH.
+ */
+export function parseScanDnsConcurrency(envValue?: string): number {
+	return parseClampedInt(envValue, SCAN_DNS_CONCURRENCY, 1, 50);
 }
 
 /**

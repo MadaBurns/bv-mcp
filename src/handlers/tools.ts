@@ -79,6 +79,7 @@ import { getCaPolicies } from '../tools/m365/get-ca-policies';
 import { assessCoverage } from '../tools/m365/assess-coverage';
 import type { PolicyBaseline } from '../tools/compare-baseline';
 import type { AnalyticsClient } from '../lib/analytics';
+import type { BindingDegradationSink } from '../lib/binding-degradation';
 import {
 	extractAndValidateDomain,
 	extractBaseline,
@@ -177,6 +178,14 @@ interface ToolRuntimeOptions {
 	providerSignaturesAllowedHosts?: string[];
 	providerSignaturesSha256?: string;
 	analytics?: AnalyticsClient;
+	/**
+	 * Sink for operator-binding degradation telemetry (BV_RECON / BV_TLS_PROBE).
+	 * Constructed once at the ToolRuntimeOptions seam from `analytics` so each
+	 * recon/tls-probe wrapper can emit the analytics `degradation` event when a
+	 * PRESENT binding fails. Undefined when analytics is unavailable (BSL
+	 * self-hosts, queue path) — the bindings then only warn-log. Fail-open.
+	 */
+	onBindingDegradation?: BindingDegradationSink;
 	profileAccumulator?: DurableObjectNamespace;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
@@ -194,6 +203,8 @@ interface ToolRuntimeOptions {
 	clientType?: string;
 	authTier?: string;
 	keyHash?: string;
+	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter tool_call analytics grouping. */
+	colo?: string;
 	certstream?: { fetch: typeof fetch };
 	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
@@ -352,7 +363,12 @@ export const TOOL_REGISTRY: Record<
 	check_dnssec: { cacheKey: () => 'dnssec', execute: (d, _args, ro) => checkDnssec(d, buildDnsOptions(ro)) },
 	check_ssl: {
 		cacheKey: (_a, ro) => (ro?.tlsProbeBinding ? 'ssl:tls-probe' : 'ssl'),
-		execute: (d, _args, ro) => checkSsl(d, { tlsProbeBinding: ro?.tlsProbeBinding, tlsProbeAuthToken: ro?.tlsProbeAuthToken }),
+		execute: (d, _args, ro) =>
+			checkSsl(d, {
+				tlsProbeBinding: ro?.tlsProbeBinding,
+				tlsProbeAuthToken: ro?.tlsProbeAuthToken,
+				onBindingDegradation: ro?.onBindingDegradation,
+			}),
 	},
 	check_mta_sts: { cacheKey: () => 'mta_sts', execute: (d, _args, ro) => checkMtaSts(d, buildDnsOptions(ro)) },
 	check_ns: { cacheKey: () => 'ns', execute: (d, _args, ro) => checkNs(d, buildDnsOptions(ro)) },
@@ -361,7 +377,12 @@ export const TOOL_REGISTRY: Record<
 	check_tlsrpt: { cacheKey: () => 'tlsrpt', execute: (d, _args, ro) => checkTlsrpt(d, buildDnsOptions(ro)) },
 	check_lookalikes: {
 		cacheKey: (_a, ro) => (ro?.reconBinding ? 'lookalikes:recon' : 'lookalikes'),
-		execute: (d, _args, ro) => checkLookalikes(d, { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+		execute: (d, _args, ro) =>
+			checkLookalikes(d, {
+				reconBinding: ro?.reconBinding,
+				reconAuthToken: ro?.reconAuthToken,
+				onBindingDegradation: ro?.onBindingDegradation,
+			}),
 		cacheTtlSeconds: 3600,
 	},
 	check_shadow_domains: {
@@ -388,7 +409,11 @@ export const TOOL_REGISTRY: Record<
 	cymru_asn: {
 		cacheKey: (_a, ro) => (ro?.reconBinding ? 'asn:recon' : 'asn'),
 		execute: (d, _args, ro) =>
-			checkCymruAsn(d, buildDnsOptions(ro), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+			checkCymruAsn(d, buildDnsOptions(ro), {
+				reconBinding: ro?.reconBinding,
+				reconAuthToken: ro?.reconAuthToken,
+				onBindingDegradation: ro?.onBindingDegradation,
+			}),
 		cacheTtlSeconds: 3600,
 	},
 	rdap_lookup: {
@@ -405,7 +430,11 @@ export const TOOL_REGISTRY: Record<
 		cacheKey: () => 'realtime_threat_feed',
 		execute: (d, _args, ro) =>
 			import('../tools/check-realtime-threat-feed').then((m) =>
-				m.checkRealtimeThreatFeed(d, { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+				m.checkRealtimeThreatFeed(d, {
+					reconBinding: ro?.reconBinding,
+					reconAuthToken: ro?.reconAuthToken,
+					onBindingDegradation: ro?.onBindingDegradation,
+				}),
 			),
 		cacheTtlSeconds: 3600,
 	},
@@ -439,6 +468,7 @@ export const TOOL_REGISTRY: Record<
 			checkFastFlux(d, (args.rounds as number | undefined) ?? 3, buildDnsOptions(ro), undefined, {
 				reconBinding: ro?.reconBinding,
 				reconAuthToken: ro?.reconAuthToken,
+				onBindingDegradation: ro?.onBindingDegradation,
 			}),
 	},
 	check_subdomain_takeover: {
@@ -818,7 +848,12 @@ export const TOOL_REGISTRY: Record<
 			import('../tools/scan-buckets').then((m) =>
 				m.scanBucketsStart(
 					{ target: String(args.target), providers: Array.isArray(args.providers) ? (args.providers as string[]) : undefined },
-					{ reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken, bucketScanKv: ro?.rateLimitKv },
+					{
+						reconBinding: ro?.reconBinding,
+						reconAuthToken: ro?.reconAuthToken,
+						bucketScanKv: ro?.rateLimitKv,
+						onBindingDegradation: ro?.onBindingDegradation,
+					},
 				),
 			),
 		cacheTtlSeconds: 0,
@@ -829,7 +864,12 @@ export const TOOL_REGISTRY: Record<
 			import('../tools/scan-buckets').then((m) =>
 				m.scanBucketsStatus(
 					{ scanId: String(a.scanId) },
-					{ reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken, bucketScanKv: ro?.rateLimitKv },
+					{
+						reconBinding: ro?.reconBinding,
+						reconAuthToken: ro?.reconAuthToken,
+						bucketScanKv: ro?.rateLimitKv,
+						onBindingDegradation: ro?.onBindingDegradation,
+					},
 				),
 			),
 		cacheTtlSeconds: 15,
@@ -844,7 +884,12 @@ export const TOOL_REGISTRY: Record<
 						target: a.target ? String(a.target) : undefined,
 						providers: Array.isArray(a.providers) ? (a.providers as string[]) : undefined,
 					},
-					{ reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken, bucketScanKv: ro?.rateLimitKv },
+					{
+						reconBinding: ro?.reconBinding,
+						reconAuthToken: ro?.reconAuthToken,
+						bucketScanKv: ro?.rateLimitKv,
+						onBindingDegradation: ro?.onBindingDegradation,
+					},
 				),
 			),
 		cacheTtlSeconds: 30,
@@ -853,7 +898,11 @@ export const TOOL_REGISTRY: Record<
 		cacheKey: () => `__nocache__:osint_investigate_domain_start:${crypto.randomUUID()}`,
 		execute: (_d, a, ro) =>
 			import('../tools/osint-investigate').then((m) =>
-				m.osintInvestigateDomainStart(String(a.query), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+				m.osintInvestigateDomainStart(String(a.query), {
+					reconBinding: ro?.reconBinding,
+					reconAuthToken: ro?.reconAuthToken,
+					onBindingDegradation: ro?.onBindingDegradation,
+				}),
 			),
 		cacheTtlSeconds: 0,
 	},
@@ -861,7 +910,11 @@ export const TOOL_REGISTRY: Record<
 		cacheKey: () => `__nocache__:osint_investigate_infrastructure_start:${crypto.randomUUID()}`,
 		execute: (_d, a, ro) =>
 			import('../tools/osint-investigate').then((m) =>
-				m.osintInvestigateInfrastructureStart(String(a.query), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+				m.osintInvestigateInfrastructureStart(String(a.query), {
+					reconBinding: ro?.reconBinding,
+					reconAuthToken: ro?.reconAuthToken,
+					onBindingDegradation: ro?.onBindingDegradation,
+				}),
 			),
 		cacheTtlSeconds: 0,
 	},
@@ -869,7 +922,11 @@ export const TOOL_REGISTRY: Record<
 		cacheKey: () => `__nocache__:osint_investigate_supply_chain_start:${crypto.randomUUID()}`,
 		execute: (_d, a, ro) =>
 			import('../tools/osint-investigate').then((m) =>
-				m.osintInvestigateSupplyChainStart(String(a.query), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+				m.osintInvestigateSupplyChainStart(String(a.query), {
+					reconBinding: ro?.reconBinding,
+					reconAuthToken: ro?.reconAuthToken,
+					onBindingDegradation: ro?.onBindingDegradation,
+				}),
 			),
 		cacheTtlSeconds: 0,
 	},
@@ -881,6 +938,7 @@ export const TOOL_REGISTRY: Record<
 					reconBinding: ro?.reconBinding,
 					reconAuthToken: ro?.reconAuthToken,
 					authTier: ro?.authTier,
+					onBindingDegradation: ro?.onBindingDegradation,
 				}),
 			),
 		cacheTtlSeconds: 0,
@@ -893,6 +951,7 @@ export const TOOL_REGISTRY: Record<
 					reconBinding: ro?.reconBinding,
 					reconAuthToken: ro?.reconAuthToken,
 					authTier: ro?.authTier,
+					onBindingDegradation: ro?.onBindingDegradation,
 				}),
 			),
 		cacheTtlSeconds: 0,
@@ -901,7 +960,11 @@ export const TOOL_REGISTRY: Record<
 		cacheKey: (a) => `osintstatus:${String(a.investigationId)}`,
 		execute: (_d, a, ro) =>
 			import('../tools/osint-investigate').then((m) =>
-				m.osintInvestigationStatus(String(a.investigationId), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+				m.osintInvestigationStatus(String(a.investigationId), {
+					reconBinding: ro?.reconBinding,
+					reconAuthToken: ro?.reconAuthToken,
+					onBindingDegradation: ro?.onBindingDegradation,
+				}),
 			),
 		cacheTtlSeconds: 15,
 	},
@@ -909,7 +972,11 @@ export const TOOL_REGISTRY: Record<
 		cacheKey: (a) => `osintreport:${String(a.investigationId)}`,
 		execute: (_d, a, ro) =>
 			import('../tools/osint-investigate').then((m) =>
-				m.osintInvestigationReport(String(a.investigationId), { reconBinding: ro?.reconBinding, reconAuthToken: ro?.reconAuthToken }),
+				m.osintInvestigationReport(String(a.investigationId), {
+					reconBinding: ro?.reconBinding,
+					reconAuthToken: ro?.reconAuthToken,
+					onBindingDegradation: ro?.onBindingDegradation,
+				}),
 			),
 		cacheTtlSeconds: 30,
 	},
