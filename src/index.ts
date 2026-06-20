@@ -537,6 +537,10 @@ app.post('/mcp', async (c) => {
 	const keyHash = tierAuthResult.keyHash ? tierAuthResult.keyHash.slice(0, 16) : undefined;
 	const sessionHash = headersLc['mcp-session-id'] ? hashForAnalytics(headersLc['mcp-session-id']) : 'none';
 	const ipHash = ip !== 'unknown' ? hashIpForAnalytics(ip) : undefined;
+	// Edge colo (`cf.colo`, e.g. AKL/SYD) — appended as the trailing analytics blob so
+	// per-datacenter p95/error-rate can be isolated (a single-colo regression otherwise
+	// averages out across the global aggregate). Undefined off-CF / in tests → 'unknown'.
+	const colo = (cfProps?.colo as string | undefined) ?? 'unknown';
 
 	const contentTypeError = validateContentType(headersLc['content-type']);
 	if (contentTypeError) {
@@ -658,6 +662,7 @@ app.post('/mcp', async (c) => {
 					keyHash,
 					sessionHash,
 					ipHash,
+					colo,
 				});
 			}),
 		);
@@ -744,6 +749,7 @@ app.post('/mcp', async (c) => {
 		keyHash,
 		sessionHash,
 		ipHash,
+		colo,
 	});
 
 	if (singleResult.kind === 'notification') {
