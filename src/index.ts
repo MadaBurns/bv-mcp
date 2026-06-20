@@ -1187,81 +1187,106 @@ export default {
 			severity: 'info',
 			details: { queue: batch.queue, messageCount: batch.messages.length },
 		});
-		if (batch.queue === 'brand-audit-queue') {
-			const e = env as Record<string, unknown>;
-			const db = e.BRAND_AUDIT_DB as D1Database | undefined;
-			if (!db) {
-				// Binding missing — ack every message to avoid hot-looping. Operator
-				// must provision per docs/provisioning/brand-audit-bindings.md.
-				for (const m of batch.messages) m.ack();
+		// R4: async-path AE counter. The consumers below log to console only, so a
+		// whole-batch throw (which Cloudflare retries) is structurally invisible to
+		// `queryRecentAnomalies` (tool_call-only). Emit one fail-open `queue_batch`
+		// event per dispatch carrying handler/outcome/duration/messageCount —
+		// `outcome='error'` + `failureCount=messageCount` when the handler throws.
+		// Behaviour-preserving: the error is re-thrown so Cloudflare's retry
+		// semantics are unchanged; the emit runs in `finally`.
+		const queueStartedAt = Date.now();
+		let queueOutcome: 'ok' | 'error' = 'ok';
+		try {
+			if (batch.queue === 'brand-audit-queue') {
+				const e = env as Record<string, unknown>;
+				const db = e.BRAND_AUDIT_DB as D1Database | undefined;
+				if (!db) {
+					// Binding missing — ack every message to avoid hot-looping. Operator
+					// must provision per docs/provisioning/brand-audit-bindings.md.
+					for (const m of batch.messages) m.ack();
+					return;
+				}
+				const pdfQueue = e.BRAND_AUDIT_PDF_QUEUE as BrandAuditConsumerDeps['pdfQueue'] | undefined;
+				// Phase 2b: thread the BRAND_AUDIT_QUEUE binding back into the consumer
+				// so the retry-enqueue path can fire. Same binding the producer uses;
+				// the consumer enqueues a `retry_attempt: 1` message back onto itself
+				// when a completed audit has registrar lookup_failed candidates.
+				const brandAuditQueue = e.BRAND_AUDIT_QUEUE as BrandAuditConsumerDeps['brandAuditQueue'] | undefined;
+				// T13 — thread the BlackVeil-production discovery_mode override
+				// into the consumer so queued audits run in tiered mode by default
+				// when the operator sets `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT=tiered`
+				// in the private overlay. Undefined on BSL self-hosts.
+				const discoveryModeDefault =
+					typeof e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT === 'string' ? (e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT as string) : undefined;
+				// Build tier-lookup closures from the queue Worker invocation's env.
+				// Cloudflare Workers re-bind env per invocation; the request-path
+				// closures constructed in `executeMcpRequest` never reach here.
+				const tierLookups = buildBrandTierLookups(e as BvMcpEnv);
+				// Build internalCall closure for the CSC deep-scan job. Wraps
+				// handleToolsCall so the job can invoke scan_domain / discover_subdomains
+				// without HTTP framing. Dynamic import keeps the queue cold-start path
+				// unaffected; the import is cached after the first deep-scan message.
+				const queueEnv = e as BvMcpEnv;
+				const internalCall = async (tool: string, args: { domain: string }): Promise<unknown> => {
+					const { handleToolsCall } = await import('./handlers/tools');
+					return handleToolsCall({ name: tool, arguments: args as Record<string, unknown> }, queueEnv.SCAN_CACHE, {
+						providerSignaturesUrl: queueEnv.PROVIDER_SIGNATURES_URL,
+						scoringConfig: parseScoringConfigCached(queueEnv.SCORING_CONFIG),
+						scanTimeoutMs: parseScanTimeout(queueEnv.SCAN_TIMEOUT_MS),
+						perCheckTimeoutMs: parsePerCheckTimeout(queueEnv.PER_CHECK_TIMEOUT_MS),
+						secondaryDoh: queueEnv.BV_DOH_ENDPOINT ? { endpoint: queueEnv.BV_DOH_ENDPOINT, token: queueEnv.BV_DOH_TOKEN } : undefined,
+						whoisBinding: queueEnv.BV_WHOIS,
+						infraProbe: queueEnv.BV_INFRA_PROBE,
+						certstream: queueEnv.BV_CERTSTREAM,
+						certstreamAuthToken: certstreamAuthToken(queueEnv),
+						profileAccumulator: queueEnv.PROFILE_ACCUMULATOR,
+						...buildBrandTierLookups(queueEnv),
+					});
+				};
+				const deps: BrandAuditConsumerDeps = {
+					db,
+					pdfQueue,
+					brandAuditQueue,
+					discoveryModeDefault,
+					whoisBinding: e.BV_WHOIS as Fetcher | undefined,
+					certstream: e.BV_CERTSTREAM as Fetcher | undefined,
+					certstreamAuthToken: certstreamAuthToken(e as BvMcpEnv),
+					internalCall,
+					...tierLookups,
+				};
+				await handleBrandAuditQueue(batch, deps);
 				return;
 			}
-			const pdfQueue = e.BRAND_AUDIT_PDF_QUEUE as BrandAuditConsumerDeps['pdfQueue'] | undefined;
-			// Phase 2b: thread the BRAND_AUDIT_QUEUE binding back into the consumer
-			// so the retry-enqueue path can fire. Same binding the producer uses;
-			// the consumer enqueues a `retry_attempt: 1` message back onto itself
-			// when a completed audit has registrar lookup_failed candidates.
-			const brandAuditQueue = e.BRAND_AUDIT_QUEUE as BrandAuditConsumerDeps['brandAuditQueue'] | undefined;
-			// T13 — thread the BlackVeil-production discovery_mode override
-			// into the consumer so queued audits run in tiered mode by default
-			// when the operator sets `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT=tiered`
-			// in the private overlay. Undefined on BSL self-hosts.
-			const discoveryModeDefault =
-				typeof e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT === 'string' ? (e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT as string) : undefined;
-			// Build tier-lookup closures from the queue Worker invocation's env.
-			// Cloudflare Workers re-bind env per invocation; the request-path
-			// closures constructed in `executeMcpRequest` never reach here.
-			const tierLookups = buildBrandTierLookups(e as BvMcpEnv);
-			// Build internalCall closure for the CSC deep-scan job. Wraps
-			// handleToolsCall so the job can invoke scan_domain / discover_subdomains
-			// without HTTP framing. Dynamic import keeps the queue cold-start path
-			// unaffected; the import is cached after the first deep-scan message.
-			const queueEnv = e as BvMcpEnv;
-			const internalCall = async (tool: string, args: { domain: string }): Promise<unknown> => {
-				const { handleToolsCall } = await import('./handlers/tools');
-				return handleToolsCall({ name: tool, arguments: args as Record<string, unknown> }, queueEnv.SCAN_CACHE, {
-					providerSignaturesUrl: queueEnv.PROVIDER_SIGNATURES_URL,
-					scoringConfig: parseScoringConfigCached(queueEnv.SCORING_CONFIG),
-					scanTimeoutMs: parseScanTimeout(queueEnv.SCAN_TIMEOUT_MS),
-					perCheckTimeoutMs: parsePerCheckTimeout(queueEnv.PER_CHECK_TIMEOUT_MS),
-					secondaryDoh: queueEnv.BV_DOH_ENDPOINT ? { endpoint: queueEnv.BV_DOH_ENDPOINT, token: queueEnv.BV_DOH_TOKEN } : undefined,
-					whoisBinding: queueEnv.BV_WHOIS,
-					infraProbe: queueEnv.BV_INFRA_PROBE,
-					certstream: queueEnv.BV_CERTSTREAM,
-					certstreamAuthToken: certstreamAuthToken(queueEnv),
-					profileAccumulator: queueEnv.PROFILE_ACCUMULATOR,
-					...buildBrandTierLookups(queueEnv),
-				});
-			};
-			const deps: BrandAuditConsumerDeps = {
-				db,
-				pdfQueue,
-				brandAuditQueue,
-				discoveryModeDefault,
-				whoisBinding: e.BV_WHOIS as Fetcher | undefined,
-				certstream: e.BV_CERTSTREAM as Fetcher | undefined,
-				certstreamAuthToken: certstreamAuthToken(e as BvMcpEnv),
-				internalCall,
-				...tierLookups,
-			};
-			await handleBrandAuditQueue(batch, deps);
-			return;
-		}
-		if (batch.queue === 'brand-audit-pdf-queue') {
-			const e = env as Record<string, unknown>;
-			const db = e.BRAND_AUDIT_DB as D1Database | undefined;
-			const bucket = e.BRAND_REPORTS as R2Bucket | undefined;
-			if (!db || !bucket) {
-				// Required bindings missing — ack to avoid hot-looping.
-				for (const m of batch.messages) m.ack();
+			if (batch.queue === 'brand-audit-pdf-queue') {
+				const e = env as Record<string, unknown>;
+				const db = e.BRAND_AUDIT_DB as D1Database | undefined;
+				const bucket = e.BRAND_REPORTS as R2Bucket | undefined;
+				if (!db || !bucket) {
+					// Required bindings missing — ack to avoid hot-looping.
+					for (const m of batch.messages) m.ack();
+					return;
+				}
+				// Renderer is now in-process (pdf-lib); BV_BROWSER_RENDERER + KEY
+				// no longer required for brand-audit PDF generation.
+				const deps: BrandAuditPdfConsumerDeps = { db, bucket, serverVersion: SERVER_VERSION };
+				await handleBrandAuditPdfQueue(batch, deps);
 				return;
 			}
-			// Renderer is now in-process (pdf-lib); BV_BROWSER_RENDERER + KEY
-			// no longer required for brand-audit PDF generation.
-			const deps: BrandAuditPdfConsumerDeps = { db, bucket, serverVersion: SERVER_VERSION };
-			await handleBrandAuditPdfQueue(batch, deps);
-			return;
+			await handleScanQueue(batch, env as ScanQueueConsumerEnv, ctx);
+		} catch (err) {
+			queueOutcome = 'error';
+			throw err;
+		} finally {
+			const messageCount = batch.messages.length;
+			createAnalyticsClient((env as BvMcpEnv).MCP_ANALYTICS).emitQueueBatchEvent({
+				handler: batch.queue,
+				outcome: queueOutcome,
+				durationMs: Date.now() - queueStartedAt,
+				messageCount,
+				// Whole-batch throw → every message will be retried; report the batch
+				// size as the failure count. A clean dispatch reports 0.
+				failureCount: queueOutcome === 'error' ? messageCount : 0,
+			});
 		}
-		await handleScanQueue(batch, env as ScanQueueConsumerEnv, ctx);
 	},
 };

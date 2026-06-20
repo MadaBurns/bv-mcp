@@ -22,6 +22,7 @@ import {
 	queryKeyUsage,
 	queryTierDigest,
 	queryBindingDegradation,
+	queryQueueFailures,
 } from '../src/lib/analytics-queries';
 
 describe('analytics query builders', () => {
@@ -145,6 +146,25 @@ describe('analytics query builders', () => {
 
 	it('queryBindingDegradation sanitizes minutes parameter', () => {
 		const sql = queryBindingDegradation("10'; DROP TABLE --");
+		expect(sql).toContain("INTERVAL '10' MINUTE");
+		expect(sql).not.toContain('DROP TABLE');
+	});
+
+	it('queryQueueFailures aggregates queue_batch errors + failure counts per handler', () => {
+		const sql = queryQueueFailures('15');
+		expect(sql).toContain("index1 = 'queue_batch'");
+		expect(sql).toContain('blob1 AS handler');
+		expect(sql).toContain('error_batch_count');
+		expect(sql).toContain('failure_count');
+		// double2 carries the per-batch failure count.
+		expect(sql).toContain('double2');
+		// Only surface handlers that actually saw a failure.
+		expect(sql).toContain('HAVING error_batch_count > 0 OR failure_count > 0');
+		expect(sql).toContain("INTERVAL '15' MINUTE");
+	});
+
+	it('queryQueueFailures sanitizes minutes parameter', () => {
+		const sql = queryQueueFailures("10'; DROP TABLE --");
 		expect(sql).toContain("INTERVAL '10' MINUTE");
 		expect(sql).not.toContain('DROP TABLE');
 	});

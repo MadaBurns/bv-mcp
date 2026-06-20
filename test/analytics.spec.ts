@@ -266,4 +266,53 @@ describe('createAnalyticsClient', () => {
 		expect(point.blobs[0]).toBe('binding_timeout');
 		expect(point.blobs[1]).toBe('tls_probe');
 	});
+
+	it('emitQueueBatchEvent writes queue_batch index with handler/outcome blobs + count doubles', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitQueueBatchEvent({
+			handler: 'brand-audit-queue',
+			outcome: 'error',
+			durationMs: 1234,
+			messageCount: 5,
+			failureCount: 5,
+			...ctx,
+		});
+		expect(ds.writeDataPoint).toHaveBeenCalledOnce();
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		expect(point.indexes).toEqual(['queue_batch']);
+		expect(point.blobs[0]).toBe('brand-audit-queue');
+		expect(point.blobs[1]).toBe('error');
+		expect(point.blobs[2]).toBe('NZ'); // country
+		expect(point.blobs[3]).toBe('agent'); // authTier
+		// doubles: [durationMs, failureCount, messageCount]
+		expect(point.doubles[0]).toBe(1234);
+		expect(point.doubles[1]).toBe(5);
+		expect(point.doubles[2]).toBe(5);
+	});
+
+	it('emitQueueBatchEvent clamps non-finite/negative numbers and defaults context', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitQueueBatchEvent({
+			handler: 'CRON-Periodic ',
+			outcome: 'ok',
+			durationMs: Number.NaN,
+			messageCount: 0,
+			failureCount: -1,
+		});
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		expect(point.blobs[0]).toBe('cron-periodic'); // normalizeIndex lowercases + trims
+		expect(point.blobs[2]).toBe('unknown'); // country default
+		expect(point.blobs[3]).toBe('anon'); // authTier default
+		expect(point.doubles[0]).toBe(0); // NaN → 0
+		expect(point.doubles[1]).toBe(0); // -1 clamped to 0
+	});
+
+	it('emitQueueBatchEvent is a no-op when no dataset is configured', () => {
+		const client = createAnalyticsClient();
+		expect(() =>
+			client.emitQueueBatchEvent({ handler: 'brand-audit-queue', outcome: 'ok', durationMs: 1, messageCount: 1, failureCount: 0 }),
+		).not.toThrow();
+	});
 });

@@ -11,7 +11,13 @@
  *   ALERT_RATE_LIMIT_THRESHOLD (default 50 hits), ALERT_LOOKBACK_MINUTES (default 15)
  */
 
-import { queryRecentAnomalies, queryRateLimitSurge, queryTierDigest, queryBindingDegradation } from './lib/analytics-queries';
+import {
+	queryRecentAnomalies,
+	queryRateLimitSurge,
+	queryTierDigest,
+	queryBindingDegradation,
+	queryQueueFailures,
+} from './lib/analytics-queries';
 import { buildAlertPayload, buildDigestPayload, sendAlert } from './lib/alerting';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { logEvent, logError } from './lib/log';
@@ -39,6 +45,13 @@ interface BindingDegradationRow {
 	event_count?: number;
 }
 
+interface QueueFailureRow {
+	handler?: string;
+	batch_count?: number;
+	error_batch_count?: number;
+	failure_count?: number;
+}
+
 export interface ScheduledEnv {
 	CF_ACCOUNT_ID?: string;
 	CF_ANALYTICS_TOKEN?: string;
@@ -50,6 +63,8 @@ export interface ScheduledEnv {
 	ALERT_SPF_NULL_RATE_THRESHOLD?: string;
 	/** Min present-binding-degradation events in the lookback window to alert (default 1). */
 	ALERT_BINDING_DEGRADATION_THRESHOLD?: string;
+	/** Min async-path (queue/cron) failed messages/sub-tasks in the lookback window to alert (default 1). */
+	ALERT_QUEUE_FAILURE_THRESHOLD?: string;
 	RATE_LIMIT?: KVNamespace;
 	BRAND_AUDIT_DB?: D1Database;
 	INTELLIGENCE_DB?: D1Database;
@@ -61,6 +76,8 @@ const DEFAULT_RATE_LIMIT_THRESHOLD = 50;
 const DEFAULT_LOOKBACK_MINUTES = 15;
 /** A single present-binding failure (mis-rotated key, bv-recon 5xx) is worth surfacing. */
 const DEFAULT_BINDING_DEGRADATION_THRESHOLD = 1;
+/** A single errored async-path batch (brand-audit queue throw, cron failure) is worth surfacing. */
+const DEFAULT_QUEUE_FAILURE_THRESHOLD = 1;
 
 /** Main scheduled handler — called by Cron Trigger. */
 export async function handleScheduled(env: ScheduledEnv): Promise<void> {
@@ -121,6 +138,8 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	const bindingDegradationThreshold = Number.isFinite(parsedBindingDegradation)
 		? parsedBindingDegradation
 		: DEFAULT_BINDING_DEGRADATION_THRESHOLD;
+	const parsedQueueFailure = parseFloat(env.ALERT_QUEUE_FAILURE_THRESHOLD ?? '');
+	const queueFailureThreshold = Number.isFinite(parsedQueueFailure) ? parsedQueueFailure : DEFAULT_QUEUE_FAILURE_THRESHOLD;
 	const lookback = env.ALERT_LOOKBACK_MINUTES ?? String(DEFAULT_LOOKBACK_MINUTES);
 
 	try {
@@ -216,6 +235,39 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			);
 		}
 
+		// Async-path (queue/cron) batch failures. The brand-audit queue consumer,
+		// the tenant-scan consumer, and the cron sweep emit a `queue_batch` event
+		// per run; an errored batch or any failed sub-task is otherwise invisible to
+		// `queryRecentAnomalies` (which only sees `tool_call`). Surface it here so a
+		// queue retry-storm or a cron that keeps throwing is alertable.
+		const queueFailureRows = (await queryAnalyticsEngine(
+			env.CF_ACCOUNT_ID,
+			env.CF_ANALYTICS_TOKEN,
+			queryQueueFailures(lookback),
+		)) as QueueFailureRow[];
+		const totalQueueFailures = queueFailureRows.reduce((sum, r) => sum + (r.failure_count ?? 0), 0);
+		const totalErrorBatches = queueFailureRows.reduce((sum, r) => sum + (r.error_batch_count ?? 0), 0);
+
+		if (totalQueueFailures >= queueFailureThreshold || totalErrorBatches > 0) {
+			const handlers = [...new Set(queueFailureRows.map((r) => r.handler ?? 'unknown'))].join(', ');
+			const breakdown = queueFailureRows
+				.map((r) => `${r.handler ?? 'unknown'}:errors=${r.error_batch_count ?? 0}/failures=${r.failure_count ?? 0}`)
+				.join(' · ');
+			await sendAlert(
+				env.ALERT_WEBHOOK_URL,
+				buildAlertPayload({
+					title: `Async-path failures: ${totalQueueFailures} failed message(s), ${totalErrorBatches} errored batch(es) (${handlers}, last ${lookback}m)`,
+					severity: totalQueueFailures > queueFailureThreshold * 5 || totalErrorBatches > 5 ? 'critical' : 'warning',
+					metrics: {
+						queue_failures: totalQueueFailures,
+						error_batches: totalErrorBatches,
+						breakdown: breakdown || '(none)',
+					},
+					threshold: `queue_failures >= ${queueFailureThreshold}`,
+				}),
+			);
+		}
+
 		logEvent({
 			timestamp: new Date().toISOString(),
 			category: 'scheduled',
@@ -227,6 +279,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 				p95Ms: anomaly?.p95_ms ?? 0,
 				rateLimitHits: rateLimitData?.total_hits ?? 0,
 				bindingDegradations: totalDegradations,
+				queueFailures: totalQueueFailures,
 			},
 		});
 	} catch (err) {

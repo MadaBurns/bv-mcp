@@ -101,6 +101,32 @@ export interface AnalyticsClient {
 			domain?: string;
 		} & AnalyticsContext,
 	): void;
+	/**
+	 * Async-path (cron/queue/DO) batch outcome counter. The cron handler, the
+	 * queue consumer, and the DOs otherwise log to console only, so a brand-audit
+	 * queue batch that throws (or a cron sweep that fails) is structurally outside
+	 * `queryRecentAnomalies` (which filters `index1='tool_call'`). This event makes
+	 * those failures queryable + alertable.
+	 *
+	 * `handler` identifies the source (e.g. queue name `brand-audit-queue`,
+	 * `tenant-scan-queue`, or a cron route). `outcome` is `ok` when the batch
+	 * completed without throwing, `error` when it threw. `messageCount` is the
+	 * batch size (0 for cron); `failureCount` is how many messages/sub-tasks
+	 * failed (for a whole-batch throw, the consumer reports the batch size).
+	 *
+	 * Blob positions (queue_batch): blob1=handler, blob2=outcome, blob3=country,
+	 *   blob4=authTier. Doubles: double1=durationMs, double2=failureCount,
+	 *   double3=messageCount.
+	 */
+	emitQueueBatchEvent(
+		event: {
+			handler: string;
+			outcome: 'ok' | 'error';
+			durationMs: number;
+			messageCount: number;
+			failureCount: number;
+		} & AnalyticsContext,
+	): void;
 }
 
 /**
@@ -120,6 +146,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 			emitRateLimitEvent: noop,
 			emitSessionEvent: noop,
 			emitDegradationEvent: noop,
+			emitQueueBatchEvent: noop,
 		};
 	}
 
@@ -201,6 +228,13 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
 				],
+			});
+		},
+		emitQueueBatchEvent: (event) => {
+			safeWrite(dataset, {
+				indexes: ['queue_batch'],
+				blobs: [normalizeIndex(event.handler), event.outcome, event.country ?? 'unknown', event.authTier ?? 'anon'],
+				doubles: [sanitizeNumber(event.durationMs), sanitizeNumber(event.failureCount), sanitizeNumber(event.messageCount)],
 			});
 		},
 	};
