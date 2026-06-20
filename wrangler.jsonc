@@ -65,6 +65,15 @@
     "ALERT_RATE_LIMIT_THRESHOLD": "50",
     "ALERT_LOOKBACK_MINUTES": "15"
   },
+  // Self-referential tail consumer: this Worker tails its own invocation traces
+  // so the `tail()` handler (src/tail.ts) can aggregate by colo+outcome+scriptName
+  // into MCP_ANALYTICS, durably capturing exceptions that never reached the
+  // in-band emit path. Public wiring only — no secrets.
+  "tail_consumers": [
+    {
+      "service": "bv-dns-security-mcp"
+    }
+  ],
   "services": [
     {
       "binding": "BV_WEB",

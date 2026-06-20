@@ -127,6 +127,28 @@ export interface AnalyticsClient {
 			failureCount: number;
 		} & AnalyticsContext,
 	): void;
+	/**
+	 * `tail` event — one aggregated row per (colo, outcome, scriptName) bucket of
+	 * a tail-consumer trace batch. Captures invocation outcomes (incl. `exception`)
+	 * that never reach the in-band emit path — a durable export of the otherwise
+	 * dashboard-only, head-sampled structured logs.
+	 *
+	 * No AnalyticsContext: tail traces carry no per-request country/client/auth
+	 * dimensions (the consumer runs outside the request). `country` is set to the
+	 * `colo` so existing colo-grouped queries can pivot on blob (`country` slot).
+	 */
+	emitTailAggregate(event: {
+		/** Cloudflare colo where the traced invocations ran (or `unknown`). */
+		colo: string;
+		/** Invocation outcome bucket (`ok` | `exception` | `canceled` | …). */
+		outcome: string;
+		/** Traced Worker script name (or `unknown`). */
+		scriptName: string;
+		/** Number of traced invocations folded into this bucket. */
+		invocations: number;
+		/** Number of those invocations that surfaced ≥1 exception. */
+		exceptions: number;
+	}): void;
 }
 
 /**
@@ -147,6 +169,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 			emitSessionEvent: noop,
 			emitDegradationEvent: noop,
 			emitQueueBatchEvent: noop,
+			emitTailAggregate: noop,
 		};
 	}
 
@@ -235,6 +258,28 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 				indexes: ['queue_batch'],
 				blobs: [normalizeIndex(event.handler), event.outcome, event.country ?? 'unknown', event.authTier ?? 'anon'],
 				doubles: [sanitizeNumber(event.durationMs), sanitizeNumber(event.failureCount), sanitizeNumber(event.messageCount)],
+			});
+		},
+		emitTailAggregate: (event) => {
+			safeWrite(dataset, {
+				indexes: ['tail'],
+				// blob1=colo, blob2=outcome, blob3=scriptName. colo is also mirrored
+				// into the `country` blob slot (blob6, 'unknown'-padding the request
+				// dimensions absent on a tail trace) so colo-grouped dashboards that
+				// pivot on the country column still resolve.
+				blobs: [
+					normalizeIndex(event.colo),
+					normalizeIndex(event.outcome),
+					normalizeIndex(event.scriptName),
+					'none',
+					'unknown',
+					normalizeIndex(event.colo),
+					'unknown',
+					'anon',
+				],
+				// double1=invocations folded into the bucket, double2=invocations that
+				// surfaced ≥1 exception.
+				doubles: [sanitizeNumber(event.invocations), sanitizeNumber(event.exceptions)],
 			});
 		},
 	};

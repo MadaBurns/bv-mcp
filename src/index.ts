@@ -1084,6 +1084,7 @@ app.all('*', (c) => {
 	return c.text('Not found', 404);
 });
 
+import { handleTail } from './tail';
 import { handleScheduled, handleDailyDigest, handleFuzzingScan, handleBrandAuditWatches } from './scheduled';
 import type { ScheduledEnv } from './scheduled';
 import { handleScanQueue, type ScanQueueConsumerEnv } from './tenants/queue-consumer';
@@ -1154,6 +1155,16 @@ export function routeCron(cron: string): CronRoute {
 
 export default {
 	fetch: (req: Request, env: Record<string, unknown>, ctx: ExecutionContext) => app.fetch(req, env, ctx),
+	/**
+	 * Tail-consumer handler. `wrangler.jsonc` registers this Worker as its own
+	 * `tail_consumers` target, so Cloudflare delivers a batch of this Worker's
+	 * invocation traces here (including thrown exceptions that never reached the
+	 * in-band emit path). We aggregate by colo+outcome+scriptName into the
+	 * MCP_ANALYTICS dataset. Fail-open + cheap — `handleTail` never throws.
+	 */
+	tail: (events: TraceItem[], env: Record<string, unknown>, _ctx: ExecutionContext) => {
+		handleTail(events, env as { MCP_ANALYTICS?: AnalyticsEngineDataset });
+	},
 	scheduled: async (event: ScheduledEvent, env: Record<string, unknown>, ctx: ExecutionContext) => {
 		// Each handler is dispatched via its own waitUntil so a failure in one
 		// (e.g. Tenant alert sweep throws) cannot mask the others' analytics outcome.
