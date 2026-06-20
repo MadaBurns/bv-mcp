@@ -498,7 +498,12 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 	let rateHeaders: Record<string, string> = {};
 	if (!options.isAuthenticated && method === 'tools/call') {
-		const globalResult = await checkGlobalDailyLimit(GLOBAL_DAILY_TOOL_LIMIT, options.rateLimitKv, options.quotaCoordinator);
+		const globalResult = await checkGlobalDailyLimit(
+			GLOBAL_DAILY_TOOL_LIMIT,
+			options.rateLimitKv,
+			options.quotaCoordinator,
+			options.analytics,
+		);
 		if (!globalResult.allowed) {
 			const globalHeaders: Record<string, string> = {};
 			if (globalResult.retryAfterMs !== undefined) {
