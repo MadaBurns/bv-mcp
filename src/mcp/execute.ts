@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import {
-	checkRateLimit,
 	checkToolDailyRateLimit,
 	checkGlobalDailyLimit,
+	checkIpScopedQuotaBatch,
 	checkIpDailyLimit,
 	checkDistinctDomainDailyLimit,
 	acquireConcurrencySlot,
@@ -78,6 +78,12 @@ export interface ExecuteMcpRequestOptions {
 	serverVersion: string;
 	rateLimitKv?: KVNamespace;
 	quotaCoordinator?: DurableObjectNamespace;
+	/**
+	 * R8 — QuotaCoordinator shard routing (flag + salt). Built from
+	 * `QUOTA_SHARDING_ENABLED` / `QUOTA_SHARD_SALT` at the index.ts seam. Omitted →
+	 * `SINGLETON_ROUTING` (sharding OFF, today's behavior).
+	 */
+	quotaShardRouting?: import('../lib/quota-coordinator').ShardRouting;
 	sessionStore?: KVNamespace;
 	scanCache?: KVNamespace;
 	providerSignaturesUrl?: string;
@@ -569,7 +575,39 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			};
 		}
 
-		const rateResult = await checkRateLimit(options.ip, options.rateLimitKv, options.quotaCoordinator);
+		// R8: resolve the tool name up front (pure — no quota side effects) so the
+		// batched per-IP quota evaluation can fold the scoped-rate + per-tool-daily
+		// checks into ONE QuotaCoordinator round trip routed to the IP's shard,
+		// instead of two serial round trips to the global singleton.
+		const toolNameRaw =
+			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
+		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : '';
+		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
+
+		// Gated/auth-required tools are rejected (401/403) without ever recording a
+		// per-tool-daily count in the serial path (their gate returns before the
+		// tool-daily check). Preserve that EXACTLY by excluding tool-daily from the
+		// batch for those tools — scoped-rate still runs for everyone (slot consumed),
+		// matching the prior checkRateLimit-first ordering.
+		const toolGated = !!toolName && (isAuthRequiredTool(toolName) || isGatedPaidOnlyTool(toolName));
+		const batchToolDailyLimit = !toolGated ? toolDailyLimit : undefined;
+
+		const quotaBatch = await checkIpScopedQuotaBatch(options.ip, toolName, batchToolDailyLimit, {
+			kv: options.rateLimitKv,
+			quotaCoordinator: options.quotaCoordinator,
+			routing: options.quotaShardRouting,
+			// ADAM #6: surface every coordinator-batch bypass as an observable degradation
+			// signal so an operator sees the quota guardrail is running degraded.
+			onDegradation: (reason) =>
+				options.analytics?.emitDegradationEvent({
+					degradationType: 'quota_coordinator_fallback',
+					component: reason,
+					country: options.country,
+					clientType: options.clientType as import('../lib/client-detection').McpClientType,
+					authTier: options.authTier,
+				}),
+		});
+		const rateResult = quotaBatch.rate;
 		const minuteResetEpoch = Math.ceil(Date.now() / 60_000) * 60;
 		rateHeaders = {
 			'x-ratelimit-limit': '50',
@@ -606,10 +644,6 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			};
 		}
 
-		const toolNameRaw =
-			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
-		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : '';
-		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
 		// Auth-required tools (identity_secops M365 reads) must NEVER be reached by an
 		// unauthenticated caller: dispatch would forward to bv-web's internal M365 proxy
 		// carrying the trusted internal bearer with keyHash:undefined. Reject before
@@ -621,13 +655,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
 		}
 		if (toolDailyLimit !== undefined) {
-			const toolQuotaResult = await checkToolDailyRateLimit(
-				options.ip,
-				toolName,
-				toolDailyLimit,
-				options.rateLimitKv,
-				options.quotaCoordinator,
-			);
+			// Verdict came from the batched evaluate above (same round trip as scoped-rate).
+			// Fall back to a direct call only in the (unreachable) case the batch omitted it.
+			const toolQuotaResult =
+				quotaBatch.toolDaily ??
+				(await checkToolDailyRateLimit(options.ip, toolName, toolDailyLimit, options.rateLimitKv, options.quotaCoordinator));
 			const dailyResetEpoch = Math.ceil(Date.now() / 86_400_000) * 86_400;
 			rateHeaders['x-quota-limit'] = String(toolQuotaResult.limit);
 			rateHeaders['x-quota-remaining'] = String(toolQuotaResult.remaining);

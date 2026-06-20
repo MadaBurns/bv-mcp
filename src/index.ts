@@ -56,6 +56,7 @@ import { handleRegister } from './oauth/register';
 import { handleAuthorizeGet, handleAuthorizePost } from './oauth/authorize';
 import { handleToken } from './oauth/token';
 export { QuotaCoordinator } from './lib/quota-coordinator';
+import { SINGLETON_ROUTING } from './lib/quota-coordinator';
 export { ProfileAccumulator } from './lib/profile-accumulator';
 
 const TEXT_ENCODER = new TextEncoder();
@@ -81,6 +82,21 @@ type BvMcpEnv = {
 	SCAN_CACHE?: KVNamespace;
 	SESSION_STORE?: KVNamespace;
 	QUOTA_COORDINATOR?: DurableObjectNamespace;
+	/**
+	 * R8 / ADAM #2 — QuotaCoordinator sharding feature flag. DEFAULT-OFF: only the
+	 * literal string `'true'` enables shard routing of the per-IP quota path. Unset
+	 * or any other value keeps every quota check on the single
+	 * `global-quota-coordinator` instance (byte-for-byte today's behavior). Flipping
+	 * it ON at a low-traffic window resets every per-IP / per-tool-daily counter ONCE
+	 * (see CHANGELOG + runbook); flipping it OFF is the instant rollback lever.
+	 */
+	QUOTA_SHARDING_ENABLED?: string;
+	/**
+	 * ADAM #4 — deploy-time salt mixed into the shard-key hash so an IP-range / botnet
+	 * operator cannot precompute which addresses land on a chosen shard. Only consulted
+	 * when sharding is enabled. Treat a change like a flag flip (re-maps every counter).
+	 */
+	QUOTA_SHARD_SALT?: string;
 	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
 	BV_API_KEY?: string;
@@ -213,6 +229,17 @@ function oauthAvailability(env: Pick<BvMcpEnv, 'ENABLE_OAUTH' | 'OAUTH_SIGNING_S
 
 function certstreamAuthToken(env: BvMcpEnv): string | undefined {
 	return env.BV_CERTSTREAM_ADMIN_KEY || env.BV_INTERNAL_DEV_KEY;
+}
+
+/**
+ * R8 / ADAM #2+#4 — build the QuotaCoordinator shard routing from env. DEFAULT-OFF:
+ * only the exact string `'true'` enables sharding; anything else (including unset)
+ * yields `SINGLETON_ROUTING`, i.e. every quota check stays on the single
+ * `global-quota-coordinator` instance — byte-for-byte today's behavior.
+ */
+function resolveQuotaShardRouting(env: BvMcpEnv): import('./lib/quota-coordinator').ShardRouting {
+	if (env.QUOTA_SHARDING_ENABLED !== 'true') return SINGLETON_ROUTING;
+	return { enabled: true, salt: env.QUOTA_SHARD_SALT ?? '' };
 }
 
 /**
@@ -621,6 +648,7 @@ app.post('/mcp', async (c) => {
 					serverVersion: SERVER_VERSION,
 					rateLimitKv: c.env.RATE_LIMIT,
 					quotaCoordinator: c.env.QUOTA_COORDINATOR,
+					quotaShardRouting: resolveQuotaShardRouting(c.env),
 					sessionStore: c.env.SESSION_STORE,
 					scanCache: c.env.SCAN_CACHE,
 					providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -708,6 +736,7 @@ app.post('/mcp', async (c) => {
 		serverVersion: SERVER_VERSION,
 		rateLimitKv: c.env.RATE_LIMIT,
 		quotaCoordinator: c.env.QUOTA_COORDINATOR,
+		quotaShardRouting: resolveQuotaShardRouting(c.env),
 		sessionStore: c.env.SESSION_STORE,
 		scanCache: c.env.SCAN_CACHE,
 		providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -873,6 +902,7 @@ app.post('/mcp/messages', async (c) => {
 				serverVersion: SERVER_VERSION,
 				rateLimitKv: c.env.RATE_LIMIT,
 				quotaCoordinator: c.env.QUOTA_COORDINATOR,
+				quotaShardRouting: resolveQuotaShardRouting(c.env),
 				sessionStore: c.env.SESSION_STORE,
 				scanCache: c.env.SCAN_CACHE,
 				providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,

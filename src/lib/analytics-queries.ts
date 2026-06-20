@@ -198,17 +198,19 @@ WHERE index1 = 'rate_limit'
 
 /**
  * Degradation-event detection for alerting. Counts `degradation` events over the
- * last N minutes, grouped by component + kind. Two signal families land here:
+ * last N minutes, grouped by component + kind. The signal families that land here:
  *  - operator-only service-binding failures (BV_RECON / BV_TLS_PROBE 5xx /
  *    timeout / unavailable), and
  *  - `cost_ceiling_degraded` (component `global_cost_ceiling`) when the
  *    QuotaCoordinator DO breaker is OPEN and the global cost ceiling is running on
- *    a degraded fallback.
+ *    a degraded fallback (R9 — this MUST reach the alert).
  *
- * Excludes ONLY the `kv_fallback` member (deliberate session-store noise, alerted
- * separately if at all). The filter keys on degradationType (blob1), NOT component
- * (blob2) -- a new alertable signal must therefore use a non-excluded
- * degradationType, not merely a distinct component.
+ * Excludes the `kv_fallback` member (deliberate session-store noise, alerted
+ * separately if at all) and the `quota_coordinator_fallback` member (R8 — a
+ * quota-guardrail concern queried/alerted separately, NOT a service-binding
+ * failure). The filter keys on degradationType (blob1), NOT component (blob2) --
+ * a new alertable signal must therefore use a non-excluded degradationType, not
+ * merely a distinct component.
  *
  * Blob positions (degradation): blob1=degradationType, blob2=component.
  */
@@ -221,6 +223,7 @@ export function queryBindingDegradation(minutes: string): string {
 FROM ${DS}
 WHERE index1 = 'degradation'
   AND blob1 != 'kv_fallback'
+  AND blob1 != 'quota_coordinator_fallback'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
 GROUP BY component, degradation_type
 ORDER BY event_count DESC`;
