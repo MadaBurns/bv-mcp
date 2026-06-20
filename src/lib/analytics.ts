@@ -86,8 +86,14 @@ export interface AnalyticsClient {
 			 *    time. Absent-on-self-host and the benign recon 404 are deliberately NOT
 			 *    emitted (those are expected, not alertable). `component` carries which
 			 *    binding (`recon` | `tls_probe`).
+			 *  - `quota_coordinator_fallback` — the batched per-IP QuotaCoordinator
+			 *    evaluation was bypassed (breaker open, malformed-but-non-empty response,
+			 *    or the DO errored) and the request fell back to the serial / fail-soft
+			 *    path. Lets an operator see the quota guardrail is degraded (ADAM #6).
+			 *    `component` carries the reason (`breaker_open` | `malformed_response`
+			 *    | `evaluate_error`).
 			 */
-			degradationType: 'kv_fallback' | 'binding_unavailable' | 'binding_5xx' | 'binding_timeout';
+			degradationType: 'kv_fallback' | 'binding_unavailable' | 'binding_5xx' | 'binding_timeout' | 'quota_coordinator_fallback';
 			component: string;
 			domain?: string;
 		} & AnalyticsContext,

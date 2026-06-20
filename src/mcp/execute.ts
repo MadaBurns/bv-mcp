@@ -78,6 +78,12 @@ export interface ExecuteMcpRequestOptions {
 	serverVersion: string;
 	rateLimitKv?: KVNamespace;
 	quotaCoordinator?: DurableObjectNamespace;
+	/**
+	 * R8 — QuotaCoordinator shard routing (flag + salt). Built from
+	 * `QUOTA_SHARDING_ENABLED` / `QUOTA_SHARD_SALT` at the index.ts seam. Omitted →
+	 * `SINGLETON_ROUTING` (sharding OFF, today's behavior).
+	 */
+	quotaShardRouting?: import('../lib/quota-coordinator').ShardRouting;
 	sessionStore?: KVNamespace;
 	scanCache?: KVNamespace;
 	providerSignaturesUrl?: string;
@@ -578,13 +584,21 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		const toolGated = !!toolName && (isAuthRequiredTool(toolName) || isGatedPaidOnlyTool(toolName));
 		const batchToolDailyLimit = !toolGated ? toolDailyLimit : undefined;
 
-		const quotaBatch = await checkIpScopedQuotaBatch(
-			options.ip,
-			toolName,
-			batchToolDailyLimit,
-			options.rateLimitKv,
-			options.quotaCoordinator,
-		);
+		const quotaBatch = await checkIpScopedQuotaBatch(options.ip, toolName, batchToolDailyLimit, {
+			kv: options.rateLimitKv,
+			quotaCoordinator: options.quotaCoordinator,
+			routing: options.quotaShardRouting,
+			// ADAM #6: surface every coordinator-batch bypass as an observable degradation
+			// signal so an operator sees the quota guardrail is running degraded.
+			onDegradation: (reason) =>
+				options.analytics?.emitDegradationEvent({
+					degradationType: 'quota_coordinator_fallback',
+					component: reason,
+					country: options.country,
+					clientType: options.clientType as import('../lib/client-detection').McpClientType,
+					authTier: options.authTier,
+				}),
+		});
 		const rateResult = quotaBatch.rate;
 		const minuteResetEpoch = Math.ceil(Date.now() / 60_000) * 60;
 		rateHeaders = {

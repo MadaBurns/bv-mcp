@@ -406,6 +406,49 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 		// checkToolDailyRateLimit should NOT have been called since the tool has no free limit entry
 		expect(checkToolSpy).not.toHaveBeenCalled();
 	});
+
+	// ADAM non-negotiable #9: gated/paid-only tools must NOT fold a tool-daily check
+	// into the batch — the prior serial path 403'd before ever incrementing tool-daily.
+	// The batch must receive `undefined` as the toolDailyLimit for a gated tool so no
+	// per-tool-daily counter is touched on the 403 path.
+	it('excludes tool-daily from the batch for a gated paid-only tool (no tool-daily increment on 403)', async () => {
+		const batchSpy = vi.fn().mockResolvedValue({ rate: { allowed: true, minuteRemaining: 49, hourRemaining: 299 } });
+		vi.doMock('../src/lib/rate-limiter', async (importOriginal) => {
+			const actual = await importOriginal<typeof import('../src/lib/rate-limiter')>();
+			return {
+				...actual,
+				checkGlobalDailyLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 499_999, limit: 500_000 }),
+				checkIpScopedQuotaBatch: batchSpy,
+			};
+		});
+
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const result = await executeMcpRequest(
+			baseOptions({
+				body: {
+					jsonrpc: '2.0',
+					id: 42,
+					method: 'tools/call',
+					// discover_subdomains is in GATED_PAID_ONLY_TOOLS → 403 for unauthenticated.
+					params: { name: 'discover_subdomains', arguments: { domain: 'example.com' } },
+				} as JsonRpcRequest,
+				isAuthenticated: false,
+			}),
+		);
+
+		// 403 UPGRADE_REQUIRED, exactly as the serial path returned.
+		expect(result.kind).toBe('response');
+		if (result.kind !== 'response') throw new Error('expected response');
+		expect(result.httpStatus).toBe(403);
+
+		// The batch was invoked, and its 3rd positional arg (toolDailyLimit) is undefined
+		// for the gated tool — so no per-tool-daily counter was ever touched.
+		expect(batchSpy).toHaveBeenCalledTimes(1);
+		const [ipArg, toolArg, toolDailyArg] = batchSpy.mock.calls[0];
+		expect(ipArg).toBe('203.0.113.1');
+		expect(toolArg).toBe('discover_subdomains');
+		expect(toolDailyArg).toBeUndefined();
+	});
 });
 
 // ---------------------------------------------------------------------------

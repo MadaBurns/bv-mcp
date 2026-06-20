@@ -22,9 +22,16 @@ import {
 	checkToolDailyRateLimitWithCoordinator,
 	checkGlobalDailyLimitWithCoordinator,
 	resetQuotaCoordinatorState,
+	parseEvaluateResponse,
+	MalformedEvaluateResponse,
+	SINGLETON_ROUTING,
+	type ShardRouting,
 } from '../src/lib/quota-coordinator';
 
 const SHARD_COUNT = 16;
+
+/** Sharding-ON routing (no salt) — exercises the shard fan-out path. */
+const SHARDED: ShardRouting = { enabled: true, salt: '' };
 
 afterEach(async () => {
 	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
@@ -115,17 +122,17 @@ describe('routing', () => {
 		return { ns, names };
 	}
 
-	it('routes scoped-rate to the IP shard', async () => {
+	it('routes scoped-rate to the IP shard (sharding ON)', async () => {
 		const { ns, names } = spyNamespace();
-		await checkScopedRateLimitWithCoordinator('203.0.113.9', 'tools', 50, 300, ns);
-		expect(names).toEqual([shardNameForKey('203.0.113.9')]);
+		await checkScopedRateLimitWithCoordinator('203.0.113.9', 'tools', 50, 300, ns, SHARDED);
+		expect(names).toEqual([shardNameForKey('203.0.113.9', SHARDED.salt)]);
 		expect(names[0]).toMatch(/^quota-shard-\d+$/);
 	});
 
-	it('routes tool-daily to the principal shard', async () => {
+	it('routes tool-daily to the principal shard (sharding ON)', async () => {
 		const { ns, names } = spyNamespace();
-		await checkToolDailyRateLimitWithCoordinator('ip:198.51.100.5', 'check_spf', 200, ns);
-		expect(names).toEqual([shardNameForKey('ip:198.51.100.5')]);
+		await checkToolDailyRateLimitWithCoordinator('ip:198.51.100.5', 'check_spf', 200, ns, SHARDED);
+		expect(names).toEqual([shardNameForKey('ip:198.51.100.5', SHARDED.salt)]);
 	});
 
 	it('routes global-daily to the singleton (NOT a shard)', async () => {
@@ -134,10 +141,90 @@ describe('routing', () => {
 		expect(names).toEqual(['global-quota-coordinator']);
 	});
 
-	it('routes the evaluate batch to the shardKey shard', async () => {
+	it('routes the evaluate batch to the shardKey shard (sharding ON)', async () => {
 		const { ns, names } = spyNamespace();
-		await evaluateQuotaWithCoordinator('203.0.113.20', [{ kind: 'scoped-rate', scope: 'tools', ip: '203.0.113.20', minuteLimit: 50, hourLimit: 300 }], ns);
-		expect(names).toEqual([shardNameForKey('203.0.113.20')]);
+		await evaluateQuotaWithCoordinator('203.0.113.20', [{ kind: 'scoped-rate', scope: 'tools', ip: '203.0.113.20', minuteLimit: 50, hourLimit: 300 }], ns, SHARDED);
+		expect(names).toEqual([shardNameForKey('203.0.113.20', SHARDED.salt)]);
+	});
+
+	// ADAM #2: flag-OFF (the default SINGLETON_ROUTING) keeps EVERY per-IP/per-principal
+	// kind on the singleton — byte-for-byte the pre-shard behavior.
+	it('flag-OFF routes scoped-rate to the singleton (no shard)', async () => {
+		const { ns, names } = spyNamespace();
+		await checkScopedRateLimitWithCoordinator('203.0.113.9', 'tools', 50, 300, ns, SINGLETON_ROUTING);
+		expect(names).toEqual(['global-quota-coordinator']);
+	});
+
+	it('flag-OFF routes tool-daily to the singleton (no shard)', async () => {
+		const { ns, names } = spyNamespace();
+		await checkToolDailyRateLimitWithCoordinator('ip:198.51.100.5', 'check_spf', 200, ns, SINGLETON_ROUTING);
+		expect(names).toEqual(['global-quota-coordinator']);
+	});
+
+	it('flag-OFF routes the evaluate batch to the singleton (no shard)', async () => {
+		const { ns, names } = spyNamespace();
+		await evaluateQuotaWithCoordinator('203.0.113.20', [{ kind: 'scoped-rate', scope: 'tools', ip: '203.0.113.20', minuteLimit: 50, hourLimit: 300 }], ns, SINGLETON_ROUTING);
+		expect(names).toEqual(['global-quota-coordinator']);
+	});
+
+	// ADAM #4: the salt changes the shard mapping (raw IP is not directly hashable).
+	it('the salt changes the shard mapping for a given key', () => {
+		const unsalted = shardNameForKey('203.0.113.9', '');
+		const salted = shardNameForKey('203.0.113.9', 'deploy-secret-salt');
+		// Deterministic per (key,salt); the salted name is a valid shard, and for this
+		// key the two differ — proving the mapping depends on the (secret) salt.
+		expect(salted).toMatch(/^quota-shard-\d+$/);
+		expect(salted).not.toBe(unsalted);
+	});
+});
+
+describe('evaluate response parsing (LINUS MUST-FIX #1)', () => {
+	it('parses a well-formed results array', () => {
+		const parsed = parseEvaluateResponse({
+			results: [{ index: 0, kind: 'scoped-rate', result: { allowed: true, minuteRemaining: 1, hourRemaining: 1 } }],
+		});
+		expect(parsed).toHaveLength(1);
+		expect(parsed[0].kind).toBe('scoped-rate');
+	});
+
+	it('THROWS on a non-array results ({results:{}})', () => {
+		expect(() => parseEvaluateResponse({ results: {} })).toThrow(MalformedEvaluateResponse);
+	});
+
+	it('THROWS on a results entry with an unrecognized kind', () => {
+		expect(() => parseEvaluateResponse({ results: [{ index: 0, kind: 'mystery', result: { allowed: true } }] })).toThrow(
+			MalformedEvaluateResponse,
+		);
+	});
+
+	it('THROWS on a missing results field', () => {
+		expect(() => parseEvaluateResponse({})).toThrow(MalformedEvaluateResponse);
+		expect(() => parseEvaluateResponse(null)).toThrow(MalformedEvaluateResponse);
+	});
+
+	it('evaluateQuotaWithCoordinator THROWS on a 2xx-but-malformed body (DO ran)', async () => {
+		const malformedNs = {
+			getByName: () => ({
+				fetch: async () =>
+					new Response(JSON.stringify({ results: { index: 0, kind: 'tool-daily' } }), {
+						status: 200,
+						headers: { 'content-type': 'application/json' },
+					}),
+			}),
+		} as unknown as DurableObjectNamespace;
+		await expect(
+			evaluateQuotaWithCoordinator('1.2.3.4', [{ kind: 'scoped-rate', scope: 'tools', ip: '1.2.3.4', minuteLimit: 50, hourLimit: 300 }], malformedNs, SHARDED),
+		).rejects.toBeInstanceOf(MalformedEvaluateResponse);
+	});
+
+	it('evaluateQuotaWithCoordinator returns undefined when the namespace is absent (DO did not run)', async () => {
+		const result = await evaluateQuotaWithCoordinator(
+			'1.2.3.4',
+			[{ kind: 'scoped-rate', scope: 'tools', ip: '1.2.3.4', minuteLimit: 50, hourLimit: 300 }],
+			undefined,
+			SHARDED,
+		);
+		expect(result).toBeUndefined();
 	});
 });
 

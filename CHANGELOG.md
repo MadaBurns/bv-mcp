@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- **QuotaCoordinator sharding (feature-flagged, default-OFF).** The per-IP / per-principal quota counters can be sharded off the single `global-quota-coordinator` Durable Object across `QUOTA_SHARD_COUNT` (16) instances, routed by a salted FNV-1a hash of the counter's own scoping field. This removes the single-DO throughput ceiling on the hot unauthenticated `tools/call` path, which also folds the scoped-rate + per-tool-daily checks into ONE batched `evaluate` round trip. The global-daily **cost ceiling stays EXACT on the singleton** — it is never sharded, sampled, or approximated. **Disabled by default:** sharding activates only when an operator sets `QUOTA_SHARDING_ENABLED=true`; unset (or any other value) keeps every quota check on the singleton, i.e. byte-for-byte the prior behavior. `QUOTA_SHARD_SALT` salts the shard-key hash so an IP-range / botnet operator cannot precompute which addresses land on a chosen shard.
+
+  > ⚠️ **One-time cutover relaxation — operator sign-off required.** Flipping `QUOTA_SHARDING_ENABLED` ON (or changing `QUOTA_SHARD_COUNT` / `QUOTA_SHARD_SALT`) re-routes every per-IP / per-principal counter read to a fresh, zeroed shard. There is **no dual-read**: each counter gets up to **one extra window of allowance, once, on the cutover** — for `tool-daily` that is **up to a full extra day** of per-tool free quota for every free caller; for per-IP minute/hour rate limits, up to one extra minute/hour. The **global-daily cost ceiling does NOT reset** (it stays on the singleton). Because the free-tier per-IP/per-tool caps ARE the abuse control, treat the flip as a release gate: **deploy in a low-traffic window** and watch the `degradation` + `rate_limit` analytics. Instant rollback: set `QUOTA_SHARDING_ENABLED=false` (no code redeploy) to return to the singleton. See `docs/tenant-ops-runbook.md` → "QuotaCoordinator sharding cutover".
+
+- **`quota_coordinator_fallback` degradation telemetry.** Whenever the batched per-IP quota evaluation is bypassed (circuit breaker open, an evaluate error, or a 2xx-but-unparseable response), a `degradation` analytics event is emitted with `component` = `breaker_open` | `evaluate_error` | `malformed_response`, so an operator can see the quota guardrail running degraded.
+
+### Fixed
+
+- **Malformed-DO-response double/triple-increment (correctness).** A 2xx `evaluate` response the worker cannot parse into the expected `{ results: EvaluateResult[] }` shape (version skew / a future DO ordering checks differently) now throws `MalformedEvaluateResponse` — the DO has already committed its increments, so the caller takes a SINGLE non-incrementing fail-soft allow and emits a degradation event, instead of falling through to the serial `checkRateLimit` + `checkToolDailyRateLimit` increments (which would have counted the same request a second and third time and wrongly 429'd a caller with quota left). Serial fallback now fires ONLY when the DO provably did not run (namespace absent / breaker open / network throw).
+
 ## [3.21.0] - 2026-06-20
 
 Minor release: hardening & global-scalability ship-now wave from a multi-agent audit of the server. Additive observability + security defense-in-depth + a dependency patch bump. No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (78).

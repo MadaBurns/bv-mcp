@@ -173,7 +173,9 @@ WHERE index1 = 'rate_limit'
  * Binding-degradation detection for alerting. Counts `degradation` events from
  * the operator-only service bindings (BV_RECON / BV_TLS_PROBE), grouped by
  * component + kind, over the last N minutes. Excludes the `kv_fallback` member
- * (that's a session-store concern, alerted separately if at all).
+ * (that's a session-store concern, alerted separately if at all) and the
+ * `quota_coordinator_fallback` member (a quota-guardrail concern, queried/alerted
+ * separately — it is NOT a service-binding failure).
  *
  * Blob positions (degradation): blob1=degradationType, blob2=component.
  */
@@ -186,6 +188,7 @@ export function queryBindingDegradation(minutes: string): string {
 FROM ${DS}
 WHERE index1 = 'degradation'
   AND blob1 != 'kv_fallback'
+  AND blob1 != 'quota_coordinator_fallback'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
 GROUP BY component, degradation_type
 ORDER BY event_count DESC`;
