@@ -50,9 +50,11 @@ async function hashTokenRaw(token: string): Promise<Uint8Array> {
 async function matchesStaticDevKey(tokenRaw: Uint8Array, candidate: string | undefined): Promise<boolean> {
 	if (!candidate) return false;
 	const b = await hashTokenRaw(candidate);
-	let mismatch = tokenRaw.byteLength ^ b.byteLength;
-	const len = Math.min(tokenRaw.byteLength, b.byteLength);
-	for (let i = 0; i < len; i++) {
+	// Both operands are fixed-length 32-byte SHA-256 digests, so iterate the
+	// full digest with no length term (matches auth.ts and the step-4 fallback
+	// compare below). Never short-circuits on first mismatch → no timing leak.
+	let mismatch = 0;
+	for (let i = 0; i < tokenRaw.byteLength; i++) {
 		mismatch |= tokenRaw[i] ^ b[i];
 	}
 	return mismatch === 0;
