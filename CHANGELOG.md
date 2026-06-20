@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.21.0] - 2026-06-20
+
+Minor release: hardening & global-scalability ship-now wave from a multi-agent audit of the server. Additive observability + security defense-in-depth + a dependency patch bump. No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (78).
+
+### Added
+
+- **Server-generated request correlation ID.** Each inbound request is stamped with a `correlationId` (prefers `cf-ray` for cross-correlation with Cloudflare logs, else `crypto.randomUUID()`), threaded via `ExecuteMcpRequestOptions` and stamped onto every `logEvent` on the path — kept distinct from the client-chosen JSON-RPC `requestId` so multi-line traces (auth/rate-limit/dispatch/catch) can be stitched.
+- **Owner-gated deep `/health` readiness mode.** `GET /health?deep=1` (owner-gated; non-owner → 403) runs bounded round-trip probes against `SCAN_CACHE` (KV get/put/delete) and `QUOTA_COORDINATOR` (DO reachability), returning per-binding status. The default cheap liveness path is unchanged.
+- **Binding-degradation telemetry for the operator-only fail-soft bindings** (`BV_RECON`, `BV_TLS_PROBE`). Present-but-failing branches (5xx / timeout / network-unavailable) now emit a structured `binding_degradation` warn log and an optional, fail-soft `degradation` analytics sink (members `binding_unavailable` / `binding_5xx` / `binding_timeout`); expected-absence (BSL self-host) and the recon-404 branch stay silent. Adds a `queryBindingDegradation` query + a 15-min cron alert (`ALERT_BINDING_DEGRADATION_THRESHOLD`). NOTE: the analytics sink is not yet threaded to a live client, so runtime emission is currently the warn log; the analytics-event path + its cron alert activate when a follow-up wires the sink.
+
+### Changed
+
+- **Dependency patch bump:** `hono` 4.12.25 → 4.12.26, `wrangler` → 4.103.0, `@cloudflare/vitest-pool-workers` → 0.16.18, `@cloudflare/workers-types` → 4.20260620.1 (the three Cloudflare devDeps moved in lockstep). 0 npm-audit vulnerabilities.
+
+### Security
+
+- **`PROVIDER_SIGNATURES_URL` fetch routed through `validateOutboundUrl`/`safeFetch`** so an operator-configured signature-source URL gets the same Cloudflare-internal-hostname + userinfo SSRF rejection as the BIMI/RDAP paths (defense-in-depth; operator-set, not request-attacker-controlled).
+- **Removed the unreachable length-mismatch branch in `matchesStaticDevKey`'s constant-time compare** (both operands are invariantly 32-byte SHA-256 digests); the compare now iterates the full fixed 32 bytes, matching the canonical helper. No functional change.
+
 ## [3.20.0] - 2026-06-20
 
 Minor release: async `discover_brand_domains` (start → poll → fetch) to fix interactive-client timeouts, plus two brand-discovery correctness fixes. Tool count 75 → **78**. No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged.

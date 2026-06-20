@@ -281,6 +281,63 @@ describe('DNS Security MCP Server', () => {
 			expect(body.status).toBe('ok');
 			expect(body.service).toBe('bv-dns-security-mcp');
 		});
+
+		// F5 — owner-gated deep readiness mode. The cheap default path stays
+		// untouched (no auth, no binding I/O); ?deep=1 requires an owner credential.
+		it('cheap default path does NOT include a bindings block', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/health');
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as Record<string, unknown>;
+			expect(body.status).toBe('ok');
+			expect(body.bindings).toBeUndefined();
+		});
+
+		it('deep mode without an owner credential is 403', async () => {
+			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/health?deep=1');
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, authEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(403);
+			const body = (await response.json()) as { error: string };
+			expect(body.error).toBe('forbidden');
+		});
+
+		it('deep mode with a wrong bearer is 403', async () => {
+			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/health?deep=1', {
+				headers: { Authorization: 'Bearer wrong-token' },
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, authEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(403);
+		});
+
+		it('deep mode with an owner credential returns per-binding status', async () => {
+			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/health?deep=1', {
+				headers: { Authorization: `Bearer ${TEST_API_KEY}` },
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, authEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			// 200 when probes pass, 503 if a provisioned binding errors — either way
+			// the body must carry a per-binding status map.
+			expect([200, 503]).toContain(response.status);
+			const body = (await response.json()) as {
+				status: string;
+				service: string;
+				bindings: { scanCache: string; quotaCoordinator: string };
+			};
+			expect(body.service).toBe('bv-dns-security-mcp');
+			expect(body.bindings).toBeDefined();
+			expect(['ok', 'error', 'absent']).toContain(body.bindings.scanCache);
+			expect(['ok', 'error', 'absent']).toContain(body.bindings.quotaCoordinator);
+		});
 	});
 
 	describe('POST /mcp - initialize', () => {

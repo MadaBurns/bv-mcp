@@ -11,7 +11,7 @@ import { queryDnsRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { callReconScan, isReconHit } from '../lib/recon-binding';
 import { safeFetch } from '../lib/safe-fetch';
-import type { ReconBinding } from '../lib/recon-binding';
+import type { ReconBinding, BindingDegradationSink } from '../lib/recon-binding';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { generateCombosquats, generateLookalikes } from './lookalike-analysis';
@@ -107,9 +107,7 @@ async function probeLookalike(domain: string): Promise<LookalikeResult> {
 	const [aRecords, mxRecords] = await Promise.allSettled([queryDnsRecords(domain, 'A'), queryDnsRecords(domain, 'MX')]);
 
 	const realMxRecords = mxRecords.status === 'fulfilled' ? mxRecords.value.filter(isRealMxRecord) : [];
-	const mxExchanges = realMxRecords
-		.map(extractMxExchange)
-		.filter((host): host is string => host !== null);
+	const mxExchanges = realMxRecords.map(extractMxExchange).filter((host): host is string => host !== null);
 
 	return {
 		domain,
@@ -256,7 +254,7 @@ async function probeWithAdaptiveBatching(permutations: string[]): Promise<Promis
  */
 export async function checkLookalikes(
 	domain: string,
-	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string } = {},
+	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string; onBindingDegradation?: BindingDegradationSink } = {},
 ): Promise<CheckResult> {
 	return Promise.race([
 		checkLookalikesCore(domain, reconOptions),
@@ -278,7 +276,7 @@ export async function checkLookalikes(
 
 async function checkLookalikesCore(
 	domain: string,
-	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string } = {},
+	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string; onBindingDegradation?: BindingDegradationSink } = {},
 ): Promise<CheckResult> {
 	const findings: Finding[] = [];
 	// Typo/homoglyph permutations PLUS combosquats (brand + lure affix). The two
@@ -518,7 +516,14 @@ async function checkLookalikesCore(
 
 	// Recon enrichment: additive-only, fail-soft
 	if (reconOptions.reconBinding) {
-		const reconResult = await callReconScan(reconOptions.reconBinding, reconOptions.reconAuthToken, 'CT_LOOKALIKE', { domain });
+		const reconResult = await callReconScan(
+			reconOptions.reconBinding,
+			reconOptions.reconAuthToken,
+			'CT_LOOKALIKE',
+			{ domain },
+			undefined,
+			reconOptions.onBindingDegradation,
+		);
 		const hit = reconResult && isReconHit(reconResult.status);
 		if (hit) {
 			findings.push(

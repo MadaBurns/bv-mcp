@@ -131,7 +131,15 @@ describe('createAnalyticsClient', () => {
 	it('no-ops gracefully when dataset is undefined', () => {
 		const client = createAnalyticsClient();
 		// Should not throw
-		client.emitRequestEvent({ method: 'ping', status: 'ok', durationMs: 1, isAuthenticated: false, hasJsonRpcError: false, transport: 'json', ...ctx });
+		client.emitRequestEvent({
+			method: 'ping',
+			status: 'ok',
+			durationMs: 1,
+			isAuthenticated: false,
+			hasJsonRpcError: false,
+			transport: 'json',
+			...ctx,
+		});
 		client.emitToolEvent({ toolName: 'check_spf', status: 'pass', durationMs: 50, isError: false, ...ctx });
 		client.emitRateLimitEvent({ limitType: 'minute', toolName: 'n/a', limit: 50, remaining: 0, ...ctx });
 		client.emitSessionEvent({ action: 'created', ...ctx });
@@ -182,5 +190,25 @@ describe('createAnalyticsClient', () => {
 		client.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'session' });
 		// Two identical emits → two writes (no module-level dedup state).
 		expect(ds.writeDataPoint).toHaveBeenCalledTimes(2);
+	});
+
+	it('writes the binding-degradation members (recon binding_5xx)', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitDegradationEvent({ degradationType: 'binding_5xx', component: 'recon', domain: 'example.com', ...ctx });
+		expect(ds.writeDataPoint).toHaveBeenCalledOnce();
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		expect(point.indexes).toEqual(['degradation']);
+		expect(point.blobs[0]).toBe('binding_5xx');
+		expect(point.blobs[1]).toBe('recon');
+	});
+
+	it('writes the tls_probe binding_timeout member', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitDegradationEvent({ degradationType: 'binding_timeout', component: 'tls_probe' });
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		expect(point.blobs[0]).toBe('binding_timeout');
+		expect(point.blobs[1]).toBe('tls_probe');
 	});
 });

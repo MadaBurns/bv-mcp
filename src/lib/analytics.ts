@@ -15,11 +15,7 @@ import type { McpClientType } from './client-detection';
 
 /** Minimal shape used by Cloudflare Analytics Engine dataset bindings. */
 interface AnalyticsDatasetLike {
-	writeDataPoint: (point: {
-		indexes?: string[];
-		blobs?: string[];
-		doubles?: number[];
-	}) => void;
+	writeDataPoint: (point: { indexes?: string[]; blobs?: string[]; doubles?: number[] }) => void;
 }
 
 /** Enriched context dimensions threaded from the request handler. */
@@ -43,44 +39,59 @@ export interface AnalyticsContext {
 
 export interface AnalyticsClient {
 	enabled: boolean;
-	emitRequestEvent(event: {
-		method: string;
-		status: 'ok' | 'error';
-		durationMs: number;
-		isAuthenticated: boolean;
-		hasJsonRpcError: boolean;
-		/** JSON-RPC error code (negative per spec); stored as abs() in double2, 0 when absent. */
-		jsonRpcErrorCode?: number;
-		transport: 'json' | 'sse';
-	} & AnalyticsContext): void;
-	emitToolEvent(event: {
-		toolName: string;
-		status: 'pass' | 'fail' | 'error' | 'unknown';
-		durationMs: number;
-		domain?: string;
-		isError: boolean;
-		score?: number;
-		cacheStatus?: 'hit' | 'miss' | 'n/a';
-	} & AnalyticsContext): void;
-	emitRateLimitEvent(event: {
-		limitType: 'minute' | 'hour' | 'daily_tool' | 'daily_global' | 'daily_ip' | 'distinct_domain' | 'gated_tool';
-		toolName: string;
-		limit: number;
-		remaining: number;
-	} & AnalyticsContext): void;
-	emitSessionEvent(event: {
-		action: 'created' | 'terminated' | 'revived';
-		method?: string;
-	} & AnalyticsContext): void;
-	emitDegradationEvent(event: {
-		/**
-		 * Only `kv_fallback` is emitted (from session.ts when a KV write throws).
-		 * The scan-level degradation members were never wired and were removed.
-		 */
-		degradationType: 'kv_fallback';
-		component: string;
-		domain?: string;
-	} & AnalyticsContext): void;
+	emitRequestEvent(
+		event: {
+			method: string;
+			status: 'ok' | 'error';
+			durationMs: number;
+			isAuthenticated: boolean;
+			hasJsonRpcError: boolean;
+			/** JSON-RPC error code (negative per spec); stored as abs() in double2, 0 when absent. */
+			jsonRpcErrorCode?: number;
+			transport: 'json' | 'sse';
+		} & AnalyticsContext,
+	): void;
+	emitToolEvent(
+		event: {
+			toolName: string;
+			status: 'pass' | 'fail' | 'error' | 'unknown';
+			durationMs: number;
+			domain?: string;
+			isError: boolean;
+			score?: number;
+			cacheStatus?: 'hit' | 'miss' | 'n/a';
+		} & AnalyticsContext,
+	): void;
+	emitRateLimitEvent(
+		event: {
+			limitType: 'minute' | 'hour' | 'daily_tool' | 'daily_global' | 'daily_ip' | 'distinct_domain' | 'gated_tool';
+			toolName: string;
+			limit: number;
+			remaining: number;
+		} & AnalyticsContext,
+	): void;
+	emitSessionEvent(
+		event: {
+			action: 'created' | 'terminated' | 'revived';
+			method?: string;
+		} & AnalyticsContext,
+	): void;
+	emitDegradationEvent(
+		event: {
+			/**
+			 * Degradation members:
+			 *  - `kv_fallback` — a KV write threw (emitted from session.ts).
+			 *  - `binding_unavailable` / `binding_5xx` / `binding_timeout` — a PRESENT
+			 *    operator-only service binding (BV_RECON / BV_TLS_PROBE) failed at call
+			 *    time. Absent-on-self-host and the benign recon 404 are deliberately NOT
+			 *    emitted (those are expected, not alertable). `component` carries which
+			 *    binding (`recon` | `tls_probe`).
+			 */
+			degradationType: 'kv_fallback' | 'binding_unavailable' | 'binding_5xx' | 'binding_timeout';
+			component: string;
+			domain?: string;
+		} & AnalyticsContext,
+	): void;
 }
 
 /**
@@ -93,7 +104,14 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 	};
 
 	if (!dataset) {
-		return { enabled: false, emitRequestEvent: noop, emitToolEvent: noop, emitRateLimitEvent: noop, emitSessionEvent: noop, emitDegradationEvent: noop };
+		return {
+			enabled: false,
+			emitRequestEvent: noop,
+			emitToolEvent: noop,
+			emitRateLimitEvent: noop,
+			emitSessionEvent: noop,
+			emitDegradationEvent: noop,
+		};
 	}
 
 	return {
@@ -140,12 +158,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 		emitRateLimitEvent: (event) => {
 			safeWrite(dataset, {
 				indexes: ['rate_limit'],
-				blobs: [
-					event.limitType,
-					normalizeIndex(event.toolName),
-					event.country ?? 'unknown',
-					event.authTier ?? 'anon',
-				],
+				blobs: [event.limitType, normalizeIndex(event.toolName), event.country ?? 'unknown', event.authTier ?? 'anon'],
 				doubles: [sanitizeNumber(event.limit), sanitizeNumber(event.remaining)],
 			});
 		},

@@ -8,6 +8,7 @@ import {
 	callReconInvestigationReport,
 	type ReconBinding,
 	type ReconInvestigationType,
+	type BindingDegradationSink,
 } from '../lib/recon-binding';
 
 const CATEGORY = 'osint_investigation' as CheckCategory;
@@ -15,14 +16,29 @@ const CATEGORY = 'osint_investigation' as CheckCategory;
 export interface ReconToolOptions {
 	reconBinding?: ReconBinding;
 	reconAuthToken?: string;
+	onBindingDegradation?: BindingDegradationSink;
 }
 
 function unprovisioned(detail: string): CheckResult {
-	return buildCheckResult(CATEGORY, [createFinding(CATEGORY, 'OSINT investigation unavailable', 'info', detail, { unprovisioned: true })]) as CheckResult;
+	return buildCheckResult(CATEGORY, [
+		createFinding(CATEGORY, 'OSINT investigation unavailable', 'info', detail, { unprovisioned: true }),
+	]) as CheckResult;
 }
 
-export async function osintInvestigateStart(type: ReconInvestigationType, query: string, options: ReconToolOptions = {}): Promise<CheckResult> {
-	const started = await callReconInvestigateStart(options.reconBinding, options.reconAuthToken, type, query);
+export async function osintInvestigateStart(
+	type: ReconInvestigationType,
+	query: string,
+	options: ReconToolOptions = {},
+): Promise<CheckResult> {
+	const started = await callReconInvestigateStart(
+		options.reconBinding,
+		options.reconAuthToken,
+		type,
+		query,
+		undefined,
+		undefined,
+		options.onBindingDegradation,
+	);
 	if (!started) return unprovisioned(`OSINT ${type} investigation is not provisioned in this deployment for ${query}.`);
 	return buildCheckResult(CATEGORY, [
 		createFinding(
@@ -68,7 +84,17 @@ const STATUS_META_KEYS = [
 ] as const;
 
 /** Per-finding fields kept in the report. Drops the multi-KB `rawData` blob (and `evidenceR2Key`). */
-const FINDING_KEEP_KEYS = ['type', 'severity', 'title', 'details', 'confidence', 'platform', 'platformCategory', 'url', 'createdAt'] as const;
+const FINDING_KEEP_KEYS = [
+	'type',
+	'severity',
+	'title',
+	'details',
+	'confidence',
+	'platform',
+	'platformCategory',
+	'url',
+	'createdAt',
+] as const;
 
 /** Hard cap on findings returned in a single report response, to stay under the MCP token cap. */
 const REPORT_MAX_FINDINGS = 100;
@@ -113,11 +139,12 @@ function shortText(s: string, max: number): string {
 }
 
 export async function osintInvestigationStatus(id: string, options: ReconToolOptions = {}): Promise<CheckResult> {
-	const s = await callReconInvestigationStatus(options.reconBinding, options.reconAuthToken, id);
+	const s = await callReconInvestigationStatus(options.reconBinding, options.reconAuthToken, id, undefined, options.onBindingDegradation);
 	if (!s) return unprovisioned(`Investigation status unavailable for ${id} (unprovisioned or not found).`);
 	const status = typeof s.status === 'string' ? s.status : 'unknown';
 	const parts = [`status=${status}`];
-	if (typeof s.completedChecks === 'number' && typeof s.totalChecks === 'number') parts.push(`${s.completedChecks}/${s.totalChecks} checks`);
+	if (typeof s.completedChecks === 'number' && typeof s.totalChecks === 'number')
+		parts.push(`${s.completedChecks}/${s.totalChecks} checks`);
 	if (typeof s.foundCount === 'number') parts.push(`${s.foundCount} found`);
 	if (typeof s.summary === 'string' && s.summary.trim()) parts.push(s.summary.trim());
 	return buildCheckResult(CATEGORY, [
@@ -131,7 +158,7 @@ export async function osintInvestigationStatus(id: string, options: ReconToolOpt
 }
 
 export async function osintInvestigationReport(id: string, options: ReconToolOptions = {}): Promise<CheckResult> {
-	const r = await callReconInvestigationReport(options.reconBinding, options.reconAuthToken, id);
+	const r = await callReconInvestigationReport(options.reconBinding, options.reconAuthToken, id, undefined, options.onBindingDegradation);
 	if (!r) return unprovisioned(`Investigation report unavailable for ${id} (unprovisioned or not ready).`);
 	const total = typeof r.total === 'number' ? r.total : Array.isArray(r.findings) ? r.findings.length : 0;
 	const summary = typeof r.summary === 'string' ? r.summary.trim() : '';

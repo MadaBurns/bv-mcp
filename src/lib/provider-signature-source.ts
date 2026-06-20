@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import { validateOutboundUrl } from './sanitize';
+
 export interface ProviderSignature {
 	name: string;
 	domains: string[];
@@ -70,6 +72,15 @@ export function validateRuntimeSourceUrl(sourceUrl: string, allowedHosts: string
 
 	if (allowedHosts.length > 0 && !allowedHosts.includes(url.hostname.toLowerCase())) {
 		throw new Error('Invalid provider signature source URL: host is not allowlisted');
+	}
+
+	// Defense-in-depth SSRF guard (F4): even an operator-set source URL must pass the
+	// same outbound-URL validation the BIMI/RDAP paths get — rejects RFC1918 / loopback /
+	// Cloudflare-internal hostnames + userinfo-spoofed targets that the host allowlist
+	// (which is empty by default) would otherwise let through.
+	const outbound = validateOutboundUrl(url.toString());
+	if (!outbound.valid) {
+		throw new Error(`Invalid provider signature source URL: ${outbound.error ?? 'blocked by outbound policy'}`);
 	}
 
 	return url;

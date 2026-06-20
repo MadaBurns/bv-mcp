@@ -30,6 +30,24 @@ describe('provider-signature-source', () => {
 		expect(() => validateRuntimeSourceUrl('https://other.example/signatures.json', ['example.com'])).toThrow('host is not allowlisted');
 	});
 
+	it('rejects internal/SSRF source URLs even when the host allowlist is empty (F4)', () => {
+		// Empty allowlist is the production default — the outbound-policy guard must still
+		// reject RFC1918 / loopback / metadata-style targets an operator could misconfigure.
+		expect(() => validateRuntimeSourceUrl('https://10.0.0.5/signatures.json', [])).toThrow(
+			'Invalid provider signature source URL',
+		);
+		expect(() => validateRuntimeSourceUrl('https://192.168.1.1/signatures.json', [])).toThrow(
+			'Invalid provider signature source URL',
+		);
+		expect(() => validateRuntimeSourceUrl('https://127.0.0.1/signatures.json', [])).toThrow(
+			'Invalid provider signature source URL',
+		);
+		// userinfo-spoofed target
+		expect(() => validateRuntimeSourceUrl('https://user:pass@example.com/signatures.json', [])).toThrow(
+			'Invalid provider signature source URL',
+		);
+	});
+
 	it('normalizes provider payloads when building results', () => {
 		const result = buildResult(
 			{

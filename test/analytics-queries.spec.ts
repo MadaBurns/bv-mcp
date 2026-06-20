@@ -20,6 +20,7 @@ import {
 	queryTierTopTools,
 	queryKeyUsage,
 	queryTierDigest,
+	queryBindingDegradation,
 } from '../src/lib/analytics-queries';
 
 describe('analytics query builders', () => {
@@ -103,6 +104,22 @@ describe('analytics query builders', () => {
 	it('queryRateLimitSurge sanitizes minutes parameter', () => {
 		const sql = queryRateLimitSurge('abc');
 		expect(sql).toContain("INTERVAL '1' MINUTE");
+	});
+
+	it('queryBindingDegradation counts present-binding degradation events, excluding kv_fallback', () => {
+		const sql = queryBindingDegradation('15');
+		expect(sql).toContain("index1 = 'degradation'");
+		expect(sql).toContain("blob1 != 'kv_fallback'");
+		expect(sql).toContain('blob2 AS component');
+		expect(sql).toContain('blob1 AS degradation_type');
+		expect(sql).toContain('event_count');
+		expect(sql).toContain("INTERVAL '15' MINUTE");
+	});
+
+	it('queryBindingDegradation sanitizes minutes parameter', () => {
+		const sql = queryBindingDegradation("10'; DROP TABLE --");
+		expect(sql).toContain("INTERVAL '10' MINUTE");
+		expect(sql).not.toContain('DROP TABLE');
 	});
 });
 

@@ -58,6 +58,14 @@ export interface ExecuteMcpRequestOptions {
 	batchSize: number;
 	responseTransport: 'json' | 'sse';
 	startTime: number;
+	/**
+	 * F2 — server-generated per-request correlation id (`crypto.randomUUID()`),
+	 * minted at the Worker entry point in `src/index.ts` and threaded here so
+	 * every `logEvent`/`logError` on the request path carries the same id,
+	 * letting multi-line traces be stitched. Optional: undefined on legacy/test
+	 * call sites that do not mint one. Distinct from the client JSON-RPC id.
+	 */
+	correlationId?: string;
 	ip: string;
 	isAuthenticated: boolean;
 	tierAuthResult?: import('../lib/tier-auth').TierAuthResult;
@@ -871,6 +879,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 						});
 						logEvent({
 							timestamp: new Date().toISOString(),
+							correlationId: options.correlationId,
 							category: 'session',
 							result: 'recovered',
 							ipHash: options.ipHash,
@@ -1017,6 +1026,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 				logEvent({
 					timestamp: new Date().toISOString(),
+					correlationId: options.correlationId,
 					requestId: typeof id === 'string' ? id : undefined,
 					ipHash: options.ipHash,
 					tool: dispatchResult.logTool,
@@ -1132,6 +1142,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 		logEvent({
 			timestamp: new Date().toISOString(),
+			correlationId: options.correlationId,
 			requestId: typeof id === 'string' ? id : undefined,
 			ipHash: options.ipHash,
 			tool: dispatchResult.logTool,
@@ -1165,6 +1176,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		emitRequestAnalytics(options, method, 'error', true);
 		logError(err instanceof Error ? err : String(err), {
 			severity: 'error',
+			correlationId: options.correlationId,
 			ipHash: options.ipHash,
 			requestId: typeof options.body?.id === 'string' ? options.body.id : undefined,
 			tool: typeof options.body?.method === 'string' ? options.body.method : undefined,

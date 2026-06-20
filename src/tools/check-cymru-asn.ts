@@ -10,7 +10,7 @@ import { queryDnsRecords, queryTxtRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { isValidIPv4, reverseIPv4 } from '../lib/ip-utils';
 import { callReconScan, isReconHit } from '../lib/recon-binding';
-import type { ReconBinding } from '../lib/recon-binding';
+import type { ReconBinding, BindingDegradationSink } from '../lib/recon-binding';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 
@@ -75,7 +75,7 @@ function parseOrgTxt(txt: string): string | null {
 export async function checkCymruAsn(
 	domain: string,
 	dnsOptions?: QueryDnsOptions,
-	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string } = {},
+	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string; onBindingDegradation?: BindingDegradationSink } = {},
 ): Promise<CheckResult> {
 	const findings: ReturnType<typeof createFinding>[] = [];
 
@@ -89,9 +89,15 @@ export async function checkCymruAsn(
 
 	if (ips.length === 0) {
 		findings.push(
-			createFinding(CATEGORY, 'No A records found', 'info', `Could not resolve any A records for ${domain}. ASN lookup requires IPv4 addresses.`, {
-				domain,
-			}),
+			createFinding(
+				CATEGORY,
+				'No A records found',
+				'info',
+				`Could not resolve any A records for ${domain}. ASN lookup requires IPv4 addresses.`,
+				{
+					domain,
+				},
+			),
 		);
 		return buildCheckResult(CATEGORY, findings) as CheckResult;
 	}
@@ -202,7 +208,14 @@ export async function checkCymruAsn(
 
 	// Recon enrichment: additive-only, fail-soft
 	if (reconOptions.reconBinding) {
-		const reconResult = await callReconScan(reconOptions.reconBinding, reconOptions.reconAuthToken, 'MALICIOUS_ASN', { domain });
+		const reconResult = await callReconScan(
+			reconOptions.reconBinding,
+			reconOptions.reconAuthToken,
+			'MALICIOUS_ASN',
+			{ domain },
+			undefined,
+			reconOptions.onBindingDegradation,
+		);
 		const hit = reconResult && isReconHit(reconResult.status);
 		if (hit) {
 			findings.push(

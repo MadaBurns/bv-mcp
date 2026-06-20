@@ -169,6 +169,28 @@ WHERE index1 = 'rate_limit'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE`;
 }
 
+/**
+ * Binding-degradation detection for alerting. Counts `degradation` events from
+ * the operator-only service bindings (BV_RECON / BV_TLS_PROBE), grouped by
+ * component + kind, over the last N minutes. Excludes the `kv_fallback` member
+ * (that's a session-store concern, alerted separately if at all).
+ *
+ * Blob positions (degradation): blob1=degradationType, blob2=component.
+ */
+export function queryBindingDegradation(minutes: string): string {
+	minutes = safeInterval(minutes);
+	return `SELECT
+  blob2 AS component,
+  blob1 AS degradation_type,
+  SUM(_sample_interval) AS event_count
+FROM ${DS}
+WHERE index1 = 'degradation'
+  AND blob1 != 'kv_fallback'
+  AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
+GROUP BY component, degradation_type
+ORDER BY event_count DESC`;
+}
+
 // ---------------------------------------------------------------------------
 // Per-Tier Analytics Queries
 // ---------------------------------------------------------------------------
@@ -178,7 +200,11 @@ WHERE index1 = 'rate_limit'
 /** Sanitize tier value: lowercase, alphanumeric/underscore only, max 20 chars. */
 function safeTier(value: string | undefined): string | undefined {
 	if (!value) return undefined;
-	const cleaned = value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 20);
+	const cleaned = value
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9_]/g, '')
+		.slice(0, 20);
 	return cleaned || undefined;
 }
 

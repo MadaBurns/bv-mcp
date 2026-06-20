@@ -8,7 +8,7 @@
  */
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
-import { callReconScan, isReconHit, type ReconBinding } from '../lib/recon-binding';
+import { callReconScan, isReconHit, type ReconBinding, type BindingDegradationSink } from '../lib/recon-binding';
 
 // F7 (OWASP LLM01): attacker-influenceable upstream metadata/status spread into
 // finding metadata below is sanitized at the `createFinding` chokepoint
@@ -20,6 +20,7 @@ const CATEGORY = 'realtime_threat_feed' as CheckCategory;
 export interface RealtimeThreatFeedOptions {
 	reconBinding?: ReconBinding;
 	reconAuthToken?: string;
+	onBindingDegradation?: BindingDegradationSink;
 }
 
 /** Map a DNSCheckResult status to a finding severity for threat-feed hits. */
@@ -44,7 +45,14 @@ function hitSeverity(status: string | undefined): 'critical' | 'high' | 'medium'
  */
 export async function checkRealtimeThreatFeed(domain: string, options: RealtimeThreatFeedOptions = {}): Promise<CheckResult> {
 	const findings: ReturnType<typeof createFinding>[] = [];
-	const scan = await callReconScan(options.reconBinding, options.reconAuthToken, 'REALTIME_THREAT_FEED', { domain });
+	const scan = await callReconScan(
+		options.reconBinding,
+		options.reconAuthToken,
+		'REALTIME_THREAT_FEED',
+		{ domain },
+		undefined,
+		options.onBindingDegradation,
+	);
 
 	if (!scan) {
 		findings.push(
@@ -75,13 +83,7 @@ export async function checkRealtimeThreatFeed(domain: string, options: RealtimeT
 		);
 	} else {
 		findings.push(
-			createFinding(
-				CATEGORY,
-				'No realtime threat-feed hits',
-				'info',
-				scan.details ?? 'No active threat-feed matches.',
-				{ domain },
-			),
+			createFinding(CATEGORY, 'No realtime threat-feed hits', 'info', scan.details ?? 'No active threat-feed matches.', { domain }),
 		);
 	}
 

@@ -1,6 +1,6 @@
 {
 	"name": "blackveil-dns",
-	"version": "3.20.0",
+	"version": "3.21.0",
 	"license": "BUSL-1.1",
 	"type": "module",
 	"bin": {
@@ -62,19 +62,19 @@
 		"zod": "4.4.3"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.16.16",
-		"@cloudflare/workers-types": "4.20260617.1",
+		"@cloudflare/vitest-pool-workers": "^0.16.18",
+		"@cloudflare/workers-types": "4.20260620.1",
 		"@types/marked": "^6.0.0",
 		"@types/punycode": "^2.1.4",
 		"drizzle-kit": "^0.31.10",
 		"eslint": "10.5.0",
-		"hono": "4.12.25",
+		"hono": "4.12.26",
 		"playwright": "^1.61.0",
 		"tsup": "8.5.1",
 		"typescript": "6.0.3",
 		"typescript-eslint": "8.61.1",
 		"vitest": "4.1.9",
-		"wrangler": "^4.101.0"
+		"wrangler": "^4.103.0"
 	},
 	"overrides": {
 		"esbuild": "0.28.1",

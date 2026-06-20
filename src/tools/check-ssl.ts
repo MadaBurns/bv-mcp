@@ -13,7 +13,7 @@ import { checkSSL } from '@blackveil/dns-checks';
 import type { CheckResult } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { callTlsProbe, mergeTlsFinding } from '../lib/tls-probe-binding';
-import type { TlsProbeBinding } from '../lib/tls-probe-binding';
+import type { TlsProbeBinding, BindingDegradationSink } from '../lib/tls-probe-binding';
 
 /**
  * Check SSL/TLS configuration for a domain.
@@ -27,7 +27,7 @@ import type { TlsProbeBinding } from '../lib/tls-probe-binding';
  */
 export async function checkSsl(
 	domain: string,
-	tlsProbeOptions: { tlsProbeBinding?: TlsProbeBinding; tlsProbeAuthToken?: string } = {},
+	tlsProbeOptions: { tlsProbeBinding?: TlsProbeBinding; tlsProbeAuthToken?: string; onBindingDegradation?: BindingDegradationSink } = {},
 ): Promise<CheckResult> {
 	const result = (await checkSSL(domain, fetch, { timeout: HTTPS_TIMEOUT_MS })) as CheckResult;
 	// Operator-only TLS-version enrichment via the BV_TLS_PROBE service binding.
@@ -35,6 +35,8 @@ export async function checkSsl(
 	// callTlsProbe returns null on any failure; mergeTlsFinding only ever appends a
 	// High finding when the probe actively reports legacy TLS (≤1.1), never penalizes 1.2/1.3.
 	if (!tlsProbeOptions.tlsProbeBinding) return result;
-	const probe = await callTlsProbe(tlsProbeOptions.tlsProbeBinding, tlsProbeOptions.tlsProbeAuthToken, domain);
+	const probe = await callTlsProbe(tlsProbeOptions.tlsProbeBinding, tlsProbeOptions.tlsProbeAuthToken, domain, {
+		telemetry: tlsProbeOptions.onBindingDegradation,
+	});
 	return probe ? mergeTlsFinding(result, probe) : result;
 }

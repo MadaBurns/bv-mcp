@@ -66,8 +66,91 @@ describe('callTlsProbe', () => {
 
 	it('returns null when binding.fetch throws (fail-soft)', async () => {
 		const { callTlsProbe } = await fresh();
-		const binding = { fetch: vi.fn(async () => { throw new Error('network failure'); }) };
+		const binding = {
+			fetch: vi.fn(async () => {
+				throw new Error('network failure');
+			}),
+		};
 		const out = await callTlsProbe(binding, 'tok', 'example.com');
+		expect(out).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// F1: binding-degradation telemetry (present-but-failing branches only)
+// ---------------------------------------------------------------------------
+describe('callTlsProbe degradation telemetry', () => {
+	it('emits binding_5xx (sink + warn log) on a present-but-503 response', async () => {
+		const { callTlsProbe } = await fresh();
+		const sink = vi.fn();
+		const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const binding = bindingReturning({ error: 'server error' }, 503);
+		const out = await callTlsProbe(binding, 'tok', 'example.com', { telemetry: sink });
+		expect(out).toBeNull();
+		expect(sink).toHaveBeenCalledWith({ degradationType: 'binding_5xx', component: 'tls_probe', domain: 'example.com' });
+		const logged = warn.mock.calls.map((c) => String(c[0])).join('\n');
+		expect(logged).toContain('binding_degradation');
+		expect(logged).toContain('tls_probe');
+	});
+
+	it('emits binding_5xx on a 404 (NOT benign for the probe, unlike recon)', async () => {
+		const { callTlsProbe } = await fresh();
+		const sink = vi.fn();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const binding = bindingReturning({ error: 'not found' }, 404);
+		const out = await callTlsProbe(binding, 'tok', 'example.com', { telemetry: sink });
+		expect(out).toBeNull();
+		expect(sink).toHaveBeenCalledWith({ degradationType: 'binding_5xx', component: 'tls_probe', domain: 'example.com' });
+	});
+
+	it('stays SILENT (no sink, no degradation log) when the binding is absent', async () => {
+		const { callTlsProbe } = await fresh();
+		const sink = vi.fn();
+		const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const out = await callTlsProbe(undefined, 'tok', 'example.com', { telemetry: sink });
+		expect(out).toBeNull();
+		expect(sink).not.toHaveBeenCalled();
+		expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('binding_degradation');
+	});
+
+	it('emits binding_timeout when the fetch aborts with a TimeoutError', async () => {
+		const { callTlsProbe } = await fresh();
+		const sink = vi.fn();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const binding = {
+			fetch: vi.fn(async () => {
+				const e = new Error('timed out');
+				e.name = 'TimeoutError';
+				throw e;
+			}),
+		};
+		const out = await callTlsProbe(binding, 'tok', 'example.com', { telemetry: sink });
+		expect(out).toBeNull();
+		expect(sink).toHaveBeenCalledWith({ degradationType: 'binding_timeout', component: 'tls_probe', domain: 'example.com' });
+	});
+
+	it('emits binding_unavailable on a generic network throw', async () => {
+		const { callTlsProbe } = await fresh();
+		const sink = vi.fn();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const binding = {
+			fetch: vi.fn(async () => {
+				throw new Error('network failure');
+			}),
+		};
+		const out = await callTlsProbe(binding, 'tok', 'example.com', { telemetry: sink });
+		expect(out).toBeNull();
+		expect(sink).toHaveBeenCalledWith({ degradationType: 'binding_unavailable', component: 'tls_probe', domain: 'example.com' });
+	});
+
+	it('does not throw if the sink itself throws (fail-soft contract preserved)', async () => {
+		const { callTlsProbe } = await fresh();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const sink = vi.fn(() => {
+			throw new Error('sink boom');
+		});
+		const binding = bindingReturning({ error: 'x' }, 500);
+		const out = await callTlsProbe(binding, 'tok', 'example.com', { telemetry: sink });
 		expect(out).toBeNull();
 	});
 });
