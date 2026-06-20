@@ -11,6 +11,7 @@ import {
 	acquireConcurrencySlot,
 	releaseConcurrencySlot,
 	resetConcurrencyLimits,
+	GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE,
 } from '../src/lib/rate-limiter';
 
 afterEach(() => {
@@ -383,6 +384,171 @@ describe('rate-limiter', () => {
 			const result = await checkToolDailyRateLimit('agent-key', 'brand_audit_single', 0);
 			expect(result.allowed).toBe(false);
 			expect(result.limit).toBe(0);
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// R9: global COST ceiling stays globally-enforced when the breaker opens.
+	//
+	// When the QuotaCoordinator DO breaker opens (3 failures), the authoritative
+	// cross-isolate counter is gone. The per-isolate in-memory counter would let
+	// the real global cap balloon to ~limit × isolate-count exactly under peak
+	// load. So with the breaker OPEN we must (a) PREFER the globally-shared KV
+	// counter over in-memory, (b) emit a degradation event so operators see the
+	// guardrail is degraded, and (c) when in-memory is the only fallback, scale
+	// its cap DOWN by the estimated isolate fan-out.
+	// -----------------------------------------------------------------------
+	describe('global cost ceiling — breaker-open fallback (R9)', () => {
+		function createFailingDO(): DurableObjectNamespace {
+			return {
+				getByName: () => ({
+					fetch: () => Promise.reject(new Error('DO unavailable')),
+				}),
+			} as unknown as DurableObjectNamespace;
+		}
+
+		function createMemoryKv(): { kv: KVNamespace; state: Map<string, string> } {
+			const state = new Map<string, string>();
+			const kv = {
+				get: vi.fn(async (key: string) => state.get(key) ?? null),
+				put: vi.fn(async (key: string, value: string) => {
+					state.set(key, value);
+				}),
+			} as unknown as KVNamespace;
+			return { kv, state };
+		}
+
+		function createDegradationSink() {
+			const emitDegradationEvent = vi.fn();
+			return { sink: { emitDegradationEvent }, emitDegradationEvent };
+		}
+
+		// Open the breaker by exhausting its failure threshold against the global cap.
+		async function openBreaker(failingDO: DurableObjectNamespace): Promise<void> {
+			for (let i = 0; i < 3; i++) {
+				await checkGlobalDailyLimit(500_000, undefined, failingDO);
+			}
+		}
+
+		it('prefers the shared KV counter (not in-memory) once the breaker is OPEN', async () => {
+			const failingDO = createFailingDO();
+			await openBreaker(failingDO);
+
+			const { kv, state } = createMemoryKv();
+			const { sink } = createDegradationSink();
+
+			const result = await checkGlobalDailyLimit(500_000, kv, failingDO, sink);
+			expect(result.allowed).toBe(true);
+
+			// The shared `rl:global:day:*` key must have been written — proof the
+			// globally-shared tier ran instead of the per-isolate counter.
+			const globalKeys = [...state.keys()].filter((k) => k.startsWith('rl:global:day:'));
+			expect(globalKeys.length).toBe(1);
+			expect(state.get(globalKeys[0])).toBe('1');
+		});
+
+		it('emits a kv_fallback degradation event for the global cost ceiling when the breaker is OPEN', async () => {
+			const failingDO = createFailingDO();
+			await openBreaker(failingDO);
+
+			const { kv } = createMemoryKv();
+			const { sink, emitDegradationEvent } = createDegradationSink();
+
+			await checkGlobalDailyLimit(500_000, kv, failingDO, sink);
+
+			expect(emitDegradationEvent).toHaveBeenCalledTimes(1);
+			expect(emitDegradationEvent).toHaveBeenCalledWith({
+				degradationType: 'kv_fallback',
+				component: 'global_cost_ceiling',
+			});
+		});
+
+		it('does NOT emit a degradation event while the breaker is CLOSED (healthy DO)', async () => {
+			// No prior failures → breaker CLOSED. A working DO serves the request.
+			const workingDO = {
+				getByName: () => ({
+					fetch: async () =>
+						new Response(JSON.stringify({ allowed: true, remaining: 499_999, limit: 500_000 }), {
+							status: 200,
+							headers: { 'content-type': 'application/json' },
+						}),
+				}),
+			} as unknown as DurableObjectNamespace;
+			const { sink, emitDegradationEvent } = createDegradationSink();
+
+			await checkGlobalDailyLimit(500_000, undefined, workingDO, sink);
+			expect(emitDegradationEvent).not.toHaveBeenCalled();
+		});
+
+		it('uses in-memory only as last resort and scales the cap DOWN by the isolate fan-out when the breaker is OPEN', async () => {
+			const failingDO = createFailingDO();
+			await openBreaker(failingDO);
+
+			const { sink } = createDegradationSink();
+			// No KV → forced onto the last-resort in-memory tier.
+			const limit = 500_000;
+			const expectedEffective = Math.max(1, Math.floor(limit / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE));
+
+			const result = await checkGlobalDailyLimit(limit, undefined, failingDO, sink);
+			expect(result.allowed).toBe(true);
+			// The reported limit reflects the DOWN-SCALED per-isolate budget, not the
+			// full configured cap — proof the in-memory ceiling was reduced.
+			expect(result.limit).toBe(expectedEffective);
+			expect(result.limit).toBeLessThan(limit);
+		});
+
+		it('enforces the down-scaled in-memory cap (blocks once the per-isolate budget is exhausted)', async () => {
+			const failingDO = createFailingDO();
+			await openBreaker(failingDO);
+
+			// openBreaker's 3rd call lands on (and increments) the in-memory counter
+			// once the circuit opens — reset it so the tiny budget below is exact.
+			resetGlobalDailyLimit();
+
+			const { sink } = createDegradationSink();
+			// Tiny limit so the scaled cap is small and exhaustible within a test.
+			const limit = GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE * 2; // → effective cap 2
+			const effective = Math.max(1, Math.floor(limit / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE));
+
+			for (let i = 0; i < effective; i++) {
+				const r = await checkGlobalDailyLimit(limit, undefined, failingDO, sink);
+				expect(r.allowed).toBe(true);
+			}
+			const blocked = await checkGlobalDailyLimit(limit, undefined, failingDO, sink);
+			expect(blocked.allowed).toBe(false);
+			expect(blocked.remaining).toBe(0);
+			expect(blocked.retryAfterMs).toBeGreaterThan(0);
+		});
+
+		it('does not down-scale or emit degradation on the in-memory path while the breaker is CLOSED (no DO wired)', async () => {
+			const { sink, emitDegradationEvent } = createDegradationSink();
+			const limit = 500_000;
+			// No DO, no KV, breaker CLOSED → in-memory at the FULL configured cap.
+			const result = await checkGlobalDailyLimit(limit, undefined, undefined, sink);
+			expect(result.allowed).toBe(true);
+			expect(result.limit).toBe(limit);
+			expect(emitDegradationEvent).not.toHaveBeenCalled();
+		});
+
+		it('emits degradation only once per request even when KV throws and it falls through to in-memory', async () => {
+			const failingDO = createFailingDO();
+			await openBreaker(failingDO);
+
+			const throwingKv = {
+				get: vi.fn(async () => {
+					throw new Error('KV down');
+				}),
+				put: vi.fn(async () => {
+					throw new Error('KV down');
+				}),
+			} as unknown as KVNamespace;
+			const { sink, emitDegradationEvent } = createDegradationSink();
+
+			const result = await checkGlobalDailyLimit(500_000, throwingKv, failingDO, sink);
+			expect(result.allowed).toBe(true);
+			// Down-scaled in-memory cap (KV unusable) yet still exactly one emit.
+			expect(result.limit).toBe(Math.max(1, Math.floor(500_000 / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE)));
+			expect(emitDegradationEvent).toHaveBeenCalledTimes(1);
 		});
 	});
 

@@ -79,6 +79,46 @@ export function resetQuotaCoordinatorBreaker(): void {
 	quotaCoordinatorBreaker.reset();
 }
 
+/**
+ * True when the QuotaCoordinator DO circuit breaker is currently OPEN — i.e. the
+ * authoritative cross-isolate global counter is unreachable and every isolate is
+ * running on the degraded fallback path.
+ *
+ * Reading `.state` also lazily advances OPEN → HALF_OPEN once the cooldown
+ * elapses, so this returns `false` again as soon as a probe is allowed.
+ */
+function isQuotaCoordinatorBreakerOpen(): boolean {
+	return quotaCoordinatorBreaker.state === 'OPEN';
+}
+
+/**
+ * Narrow degradation-telemetry sink. Structurally satisfied by the analytics
+ * client's `emitDegradationEvent`; declared locally so the rate limiter doesn't
+ * import the analytics module (keeps the dependency graph acyclic and the limiter
+ * cheap to unit-test). The call site in `mcp/execute.ts` passes
+ * `options.analytics` directly.
+ */
+export interface GlobalCostCeilingDegradationSink {
+	emitDegradationEvent(event: { degradationType: 'kv_fallback'; component: string }): void;
+}
+
+/**
+ * Conservative estimate of how many Worker isolates may be serving traffic
+ * concurrently at peak. Used ONLY to shrink the per-isolate in-memory global
+ * cost ceiling when both the coordinator DO AND shared KV are unavailable —
+ * the last-resort path. Dividing the cap by this factor keeps the aggregate
+ * cap across all isolates roughly bounded by `GLOBAL_DAILY_TOOL_LIMIT` instead
+ * of ballooning to `limit × isolate-count` exactly when traffic is highest.
+ *
+ * Deliberately coarse: under-estimating leaves the aggregate cap a little high;
+ * over-estimating throttles a touch early. Either is far safer than the
+ * unbounded per-isolate behaviour it replaces. KV (shared, approximate) is
+ * always preferred over this path when present.
+ *
+ * @internal Exported for tests asserting the scaled last-resort cap.
+ */
+export const GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE = 50;
+
 function checkRateLimitInMemory(ip: string): RateLimitResult {
 	return checkScopedRateLimitInMemory(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT);
 }
@@ -277,19 +317,29 @@ async function checkToolDailyRateLimitKV(
 let globalDayWindow = 0;
 let globalDayCount = 0;
 
-function checkGlobalDailyLimitInMemory(limit: number): GlobalRateLimitResult {
+/**
+ * Per-isolate in-memory global counter. This is the LAST-RESORT cost ceiling:
+ * it only fires when neither the coordinator DO nor shared KV is reachable.
+ *
+ * `effectiveLimit` lets the breaker-open path pass a DOWN-SCALED cap (the
+ * configured limit divided by the estimated isolate fan-out) so the aggregate
+ * across all isolates stays roughly bounded instead of `limit × isolate-count`.
+ * The reported `limit` in the result intentionally echoes `effectiveLimit` —
+ * it reflects the budget THIS isolate is actually enforcing.
+ */
+function checkGlobalDailyLimitInMemory(effectiveLimit: number): GlobalRateLimitResult {
 	const now = Date.now();
 	const currentWindow = Math.floor(now / DAY_MS);
 	if (currentWindow !== globalDayWindow) {
 		globalDayWindow = currentWindow;
 		globalDayCount = 0;
 	}
-	if (globalDayCount >= limit) {
+	if (globalDayCount >= effectiveLimit) {
 		const windowEnd = (currentWindow + 1) * DAY_MS;
-		return { allowed: false, retryAfterMs: Math.max(windowEnd - now, 0), remaining: 0, limit };
+		return { allowed: false, retryAfterMs: Math.max(windowEnd - now, 0), remaining: 0, limit: effectiveLimit };
 	}
 	globalDayCount++;
-	return { allowed: true, remaining: Math.max(limit - globalDayCount, 0), limit };
+	return { allowed: true, remaining: Math.max(effectiveLimit - globalDayCount, 0), limit: effectiveLimit };
 }
 
 async function checkGlobalDailyLimitKV(limit: number, kv: KVNamespace): Promise<GlobalRateLimitResult> {
@@ -449,13 +499,38 @@ export async function checkToolDailyRateLimit(
 }
 
 /**
- * Check if the global daily tool call budget has been exhausted.
- * Uses KV when available, with in-memory fallback on failure.
+ * Check if the global daily tool-call budget (the COST ceiling) has been exhausted.
+ *
+ * Enforcement is deliberately tiered to keep this a *globally* shared guardrail:
+ *
+ *   1. QuotaCoordinator DO  — authoritative, exact, cross-isolate.
+ *   2. Shared KV            — globally shared but eventually-consistent
+ *                             (`rl:global:day:*`). Approximate, can undercount
+ *                             under write contention, but bounded.
+ *   3. Per-isolate memory   — LAST RESORT only. Per-isolate, so the aggregate
+ *                             cap would otherwise balloon to `limit × isolate-
+ *                             count`. We DOWN-SCALE the cap by the estimated
+ *                             isolate fan-out to keep the aggregate bounded.
+ *
+ * When the DO circuit breaker is OPEN the authoritative tier is gone and we are
+ * on tier 2 or 3. A globally-shared-and-approximate counter (KV) beats a
+ * per-isolate-and-unbounded one (memory) for a coarse cost ceiling, so KV is
+ * always preferred while the breaker is open. We emit a `degradation`
+ * (`kv_fallback`) analytics event so operators can see the cost guardrail is
+ * running degraded — the existing `kv_fallback` channel, with a distinct
+ * `component` (`global_cost_ceiling`) so it doesn't collide with the session signal.
+ *
+ * @param limit            Configured global daily cap (`GLOBAL_DAILY_TOOL_LIMIT`).
+ * @param kv               Shared KV namespace (tier 2).
+ * @param quotaCoordinator QuotaCoordinator DO (tier 1).
+ * @param degradationSink  Optional telemetry sink (the analytics client) — emits
+ *                         when the breaker forces a degraded fallback path.
  */
 export async function checkGlobalDailyLimit(
 	limit: number,
 	kv?: KVNamespace,
 	quotaCoordinator?: DurableObjectNamespace,
+	degradationSink?: GlobalCostCeilingDegradationSink,
 ): Promise<GlobalRateLimitResult> {
 	// Same Infinity/JSON-encoding trap as checkToolDailyRateLimit. A self-host
 	// that disables the global cap by setting it to Infinity would otherwise
@@ -475,6 +550,18 @@ export async function checkGlobalDailyLimit(
 			}
 		}
 	}
+
+	// The authoritative DO is gone whenever the breaker is OPEN (or no DO was
+	// wired at all). In that degraded state the global cost ceiling is no longer
+	// exact — surface it once per affected request so operators can react. KV is
+	// the globally-shared tier we WANT to land on; in-memory is the last resort.
+	const breakerOpen = isQuotaCoordinatorBreakerOpen();
+	// Emit exactly once per degraded request, regardless of which fallback tier
+	// ultimately serves it.
+	if (breakerOpen) {
+		degradationSink?.emitDegradationEvent({ degradationType: 'kv_fallback', component: 'global_cost_ceiling' });
+	}
+
 	if (kv) {
 		try {
 			return await checkGlobalDailyLimitKV(limit, kv);
@@ -482,7 +569,13 @@ export async function checkGlobalDailyLimit(
 			logError('[rate-limiter] KV global cap error, falling back to in-memory');
 		}
 	}
-	return checkGlobalDailyLimitInMemory(limit);
+
+	// Last resort: per-isolate in-memory. Down-scale the cap by the estimated
+	// isolate fan-out so hundreds of isolates don't each enforce the full `limit`
+	// (which would let the real global spend reach `limit × isolate-count`).
+	// `Math.max(1, …)` guards a tiny configured limit from flooring to 0.
+	const effectiveLimit = breakerOpen ? Math.max(1, Math.floor(limit / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE)) : limit;
+	return checkGlobalDailyLimitInMemory(effectiveLimit);
 }
 
 /**
