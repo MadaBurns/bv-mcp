@@ -24,6 +24,13 @@ export type LogEvent = {
 	 * tail/log storage unredacted. Callers must hash before logging.
 	 */
 	ipHash?: string;
+	/**
+	 * Cloudflare edge colo (`request.cf.colo`) the request landed on, aligned with
+	 * the analytics `colo` dimension. Stamped at the Worker entry point so log
+	 * traces can be correlated per-datacenter alongside the per-colo analytics
+	 * queries. Undefined off the request path / in tests.
+	 */
+	colo?: string;
 	tool?: string;
 	domain?: string;
 	severity?: 'info' | 'warn' | 'error';

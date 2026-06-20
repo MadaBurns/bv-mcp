@@ -38,7 +38,7 @@ describe('hashIpForAnalytics', () => {
 });
 
 describe('createAnalyticsClient — ipHash blob', () => {
-	it('emitRequestEvent appends ipHash as the last blob', () => {
+	it('emitRequestEvent keeps ipHash at blob11 (colo now appended after it as blob12)', () => {
 		const ds = mockDataset();
 		const client = createAnalyticsClient(ds);
 		client.emitRequestEvent({
@@ -51,11 +51,12 @@ describe('createAnalyticsClient — ipHash blob', () => {
 			...baseCtx,
 		});
 		const point = ds.writeDataPoint.mock.calls[0][0];
-		expect(point.blobs).toHaveLength(11);
+		// blob12 (index 11) = colo trailing append; ipHash stays at blob11 (index 10).
+		expect(point.blobs).toHaveLength(12);
 		expect(point.blobs[10]).toBe('i_cafef00d');
 	});
 
-	it('emitToolEvent appends ipHash as the last blob', () => {
+	it('emitToolEvent keeps ipHash at blob10 (colo now appended after it as blob11)', () => {
 		const ds = mockDataset();
 		const client = createAnalyticsClient(ds);
 		client.emitToolEvent({
@@ -66,7 +67,8 @@ describe('createAnalyticsClient — ipHash blob', () => {
 			...baseCtx,
 		});
 		const point = ds.writeDataPoint.mock.calls[0][0];
-		expect(point.blobs).toHaveLength(10);
+		// blob11 (index 10) = colo trailing append; ipHash stays at blob10 (index 9).
+		expect(point.blobs).toHaveLength(11);
 		expect(point.blobs[9]).toBe('i_cafef00d');
 	});
 
@@ -84,7 +86,7 @@ describe('createAnalyticsClient — ipHash blob', () => {
 			...ctxNoIp,
 		});
 		const point = ds.writeDataPoint.mock.calls[0][0];
-		expect(point.blobs).toHaveLength(11);
+		expect(point.blobs).toHaveLength(12);
 		expect(point.blobs[10]).toBe('none');
 	});
 });

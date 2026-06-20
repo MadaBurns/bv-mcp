@@ -65,6 +65,11 @@
     "ALERT_RATE_LIMIT_THRESHOLD": "50",
     "ALERT_LOOKBACK_MINUTES": "15"
   },
+  "tail_consumers": [
+    {
+      "service": "bv-dns-security-mcp"
+    }
+  ],
   "services": [
     {
       "binding": "BV_WEB",
