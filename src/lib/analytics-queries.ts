@@ -9,10 +9,11 @@
  *
  * Blob positions (mcp_request): blob1=method, blob2=transport, blob3=status,
  *   blob4=auth, blob5=jsonrpc, blob6=country, blob7=clientType, blob8=tier, blob9=sessionHash,
- *   blob10=keyHash, blob11=ipHash. Double positions: double1=durationMs,
- *   double2=abs(jsonRpcErrorCode) (0 when no error).
+ *   blob10=keyHash, blob11=ipHash, blob12=colo (edge datacenter, append-only).
+ *   Double positions: double1=durationMs, double2=abs(jsonRpcErrorCode) (0 when no error).
  * Blob positions (tool_call): blob1=toolName, blob2=status, blob3=isError,
- *   blob4=hashedDomain, blob5=country, blob6=clientType, blob7=tier, blob8=cacheStatus
+ *   blob4=hashedDomain, blob5=country, blob6=clientType, blob7=tier, blob8=cacheStatus,
+ *   blob9=keyHash, blob10=ipHash, blob11=colo (edge datacenter, append-only).
  * Double positions (tool_call): double1=durationMs, double2=score
  * Blob positions (rate_limit): blob1=limitType, blob2=toolName, blob3=country, blob4=tier
  * Blob positions (session): blob1=action, blob2=country, blob3=clientType, blob4=tier
@@ -157,6 +158,32 @@ export function queryRecentAnomalies(minutes: string): string {
 FROM ${DS}
 WHERE index1 = 'tool_call'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE`;
+}
+
+/**
+ * Per-colo anomaly detection for alerting. Same error-rate / p95 shape as
+ * {@link queryRecentAnomalies} but GROUPed BY edge datacenter (`tool_call` blob11),
+ * so a single-colo regression that averages out in the global aggregate is
+ * surfaced on its own row and can trip ALERT_P95_THRESHOLD / error-rate alerts.
+ * `HAVING total_calls > 0` drops empty colos. Excludes the `'unknown'` colo
+ * (off-CF / local) so it doesn't pollute the per-datacenter view.
+ */
+export function queryRecentAnomaliesByColo(minutes: string): string {
+	minutes = safeInterval(minutes);
+	return `SELECT
+  blob11 AS colo,
+  SUM(_sample_interval) AS total_calls,
+  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS error_count,
+  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0
+    / GREATEST(SUM(_sample_interval), 1) AS error_pct,
+  quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms
+FROM ${DS}
+WHERE index1 = 'tool_call'
+  AND blob11 != 'unknown'
+  AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
+GROUP BY colo
+HAVING total_calls > 0
+ORDER BY p95_ms DESC`;
 }
 
 /** Rate limit surge detection for alerting. */

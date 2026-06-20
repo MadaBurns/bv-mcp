@@ -161,6 +161,8 @@ export interface DispatchMcpMethodOptions {
 	protocolVersionHeader?: string;
 	authTier?: string;
 	keyHash?: string;
+	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter tool_call analytics grouping. Threaded to handleToolsCall. */
+	colo?: string;
 	certstream?: { fetch: typeof fetch };
 	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
@@ -297,6 +299,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				clientType: options.clientType,
 				authTier: options.authTier,
 				keyHash: options.keyHash,
+				colo: options.colo,
 				certstream: options.certstream,
 				certstreamAuthToken: options.certstreamAuthToken,
 				whoisBinding: options.whoisBinding,

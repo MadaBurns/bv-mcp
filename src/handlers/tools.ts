@@ -194,6 +194,8 @@ interface ToolRuntimeOptions {
 	clientType?: string;
 	authTier?: string;
 	keyHash?: string;
+	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter tool_call analytics grouping. */
+	colo?: string;
 	certstream?: { fetch: typeof fetch };
 	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };

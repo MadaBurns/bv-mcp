@@ -9,6 +9,7 @@ import {
 	queryRateLimitHits,
 	queryTierBreakdown,
 	queryRecentAnomalies,
+	queryRecentAnomaliesByColo,
 	queryRateLimitSurge,
 	queryTierToolUsage,
 	queryTierLatency,
@@ -90,6 +91,32 @@ describe('analytics query builders', () => {
 
 	it('queryRecentAnomalies sanitizes minutes parameter', () => {
 		const sql = queryRecentAnomalies("10'; DROP TABLE --");
+		expect(sql).toContain("INTERVAL '10' MINUTE");
+		expect(sql).not.toContain('DROP');
+	});
+
+	it('queryRecentAnomalies stays unchanged (no colo grouping leaks into the global aggregate query)', () => {
+		// Append-only guard: the global anomaly query must NOT start grouping by colo —
+		// it remains the global p95/error-rate aggregate. Per-colo lives in its own variant.
+		const sql = queryRecentAnomalies('15');
+		expect(sql).not.toContain('blob11');
+		expect(sql).not.toMatch(/GROUP BY\s+colo/);
+	});
+
+	it('queryRecentAnomaliesByColo groups error rate + p95 by edge colo (blob11)', () => {
+		const sql = queryRecentAnomaliesByColo('15');
+		expect(sql).toContain("index1 = 'tool_call'");
+		expect(sql).toContain('blob11 AS colo');
+		expect(sql).toContain("blob11 != 'unknown'");
+		expect(sql).toContain('GROUP BY colo');
+		expect(sql).toContain('error_pct');
+		expect(sql).toContain('p95_ms');
+		expect(sql).toContain("INTERVAL '15' MINUTE");
+		expect(sql).toContain('GREATEST');
+	});
+
+	it('queryRecentAnomaliesByColo sanitizes minutes parameter', () => {
+		const sql = queryRecentAnomaliesByColo("10'; DROP TABLE --");
 		expect(sql).toContain("INTERVAL '10' MINUTE");
 		expect(sql).not.toContain('DROP');
 	});

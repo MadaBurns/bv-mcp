@@ -35,6 +35,15 @@ export interface AnalyticsContext {
 	 * expose addresses.
 	 */
 	ipHash?: string;
+	/**
+	 * Cloudflare edge colo (`request.cf.colo`, e.g. `AKL`, `SYD`) the request landed
+	 * on. Captured at the Worker entry point so per-datacenter p95/error-rate can be
+	 * isolated — a single-colo regression otherwise averages out across the global
+	 * aggregate and never trips ALERT_P95_THRESHOLD. Undefined in tests/local →
+	 * stored as `'unknown'`. Appended as the trailing blob on `mcp_request` and
+	 * `tool_call` (append-only — never reorder existing positions).
+	 */
+	colo?: string;
 }
 
 export interface AnalyticsClient {
@@ -131,6 +140,9 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.sessionHash ?? 'none',
 					event.keyHash ?? 'none',
 					event.ipHash ?? 'none',
+					// blob12 (append-only trailing) — Cloudflare edge colo. New dimension;
+					// must stay LAST so existing position-indexed queries are unaffected.
+					event.colo ?? 'unknown',
 				],
 				// double2: abs(JSON-RPC error code) — codes are negative per spec and
 				// sanitizeNumber clamps <0 to 0, so we store the magnitude (0 = no error).
@@ -151,6 +163,9 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.cacheStatus ?? 'n/a',
 					event.keyHash ?? 'none',
 					event.ipHash ?? 'none',
+					// blob11 (append-only trailing) — Cloudflare edge colo. New dimension;
+					// must stay LAST so existing position-indexed queries are unaffected.
+					event.colo ?? 'unknown',
 				],
 				doubles: [sanitizeNumber(event.durationMs), sanitizeNumber(event.score ?? 0)],
 			});
