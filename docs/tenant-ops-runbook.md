@@ -81,6 +81,53 @@ KV-backed and fail-soft in local development when `RATE_LIMIT` is unbound. Use
 tenant scope/tier data, not hardcoded customer identifiers, when changing
 limits.
 
+## QuotaCoordinator sharding cutover
+
+The per-IP / per-principal quota counters can be sharded off the single
+`global-quota-coordinator` Durable Object onto `QUOTA_SHARD_COUNT` (16) instances
+to lift the single-DO throughput ceiling. This is **disabled by default** and
+gated behind a feature flag.
+
+Bindings (`vars`, plus one secret):
+
+- `QUOTA_SHARDING_ENABLED` — set to the exact string `"true"` to enable. Unset or
+  anything else keeps every quota check on the singleton (today's behavior).
+- `QUOTA_SHARD_SALT` — a deploy-time secret mixed into the shard-key hash so an
+  IP-range / botnet operator cannot precompute which addresses map to a shard.
+  Store it in the secret manager; do not commit it.
+
+**One-time cutover relaxation (must be signed off before flipping).** There is no
+dual-read. The instant routing moves to the shards, every per-IP / per-principal
+counter reads from a fresh, zeroed shard, so each counter grants up to **one extra
+window of allowance, once**:
+
+- `tool-daily` → up to **one full extra day** of per-tool free quota for every free
+  caller.
+- per-IP minute / hour rate limits → up to one extra minute / hour.
+- The **global-daily cost ceiling does NOT reset** — it stays on the singleton and
+  remains exact.
+
+Because the free-tier per-IP / per-tool caps are the abuse control, the relaxation
+is bounded but real. Treat the flip as a release gate.
+
+Cutover procedure:
+
+1. Ship the code with the flag OFF (a normal release). Behavior is unchanged.
+2. Deploy dark via `npm run deploy:prod` (rebuild dns-checks first). Flag still OFF.
+3. Pick a **low-traffic window**. Set `QUOTA_SHARDING_ENABLED=true` (and
+   `QUOTA_SHARD_SALT`) and redeploy (or update the runtime var).
+4. Watch the `degradation` analytics dataset (`quota_coordinator_fallback`
+   component) and the `rate_limit` analytics for the next windows.
+5. **Rollback lever:** if shards misbehave or the degradation rate spikes, set
+   `QUOTA_SHARDING_ENABLED=false` — routing returns to the singleton with no code
+   redeploy.
+
+`QUOTA_SHARD_COUNT` is a **frozen constant** for the life of a deployment. Changing
+it (or the salt) re-maps every caller's shard and strands its in-flight counter —
+that is the SAME windowed-relaxation event as the initial flip, not a hot edit.
+Schedule it the same way and run `resetQuotaCoordinatorState()` to sweep stranded
+shard counters if needed.
+
 ## Security Notes
 
 - Do not commit real tenant IDs, target lists, queue names, database IDs, bearer

@@ -172,3 +172,6 @@ BrandAudit.md
 # Stale backup build dirs (no manual snapshots in repo)
 packages/*/dist.bak/
 **/dist.bak/
+
+# Firecrawl MCP scratch/scrape artifacts (may carry keys or scraped PII) — never commit
+.firecrawl/

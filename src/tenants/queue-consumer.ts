@@ -32,6 +32,7 @@ import { parseCacheTtl, parsePerCheckTimeout, parseScanTimeout } from '../lib/co
 import { ScanQueueMessageSchema, type ScanQueueMessage } from '../schemas/tenant-internal';
 import { streamScanResult } from '../lib/hooks/analytics-stream';
 import { resolveTenant, type ResolverEnv } from './tenant-resolver';
+import { resolveAccumulatorShardModeFromEnv } from '../lib/profile-accumulator';
 import type { CheckResult } from '../lib/scoring';
 
 /** Wall-clock budget for one message — covers handleToolsCall + the D1 inserts. */
@@ -50,6 +51,8 @@ const FINDINGS_INSERT_SQL =
 export type ScanQueueConsumerEnv = ResolverEnv & {
 	SCAN_CACHE?: KVNamespace;
 	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
+	/** R10 - ProfileAccumulator write-sharding mode (default-off). See BvMcpEnv in index.ts. */
+	PROFILE_ACCUMULATOR_SHARDING?: string;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
 	PROVIDER_SIGNATURES_URL?: string;
 	PROVIDER_SIGNATURES_ALLOWED_HOSTS?: string;
@@ -239,6 +242,7 @@ export async function processScanMessage(
 		providerSignaturesSha256: env.PROVIDER_SIGNATURES_SHA256,
 		analytics: createAnalyticsClient(env.MCP_ANALYTICS),
 		profileAccumulator: env.PROFILE_ACCUMULATOR,
+		profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(env.PROFILE_ACCUMULATOR_SHARDING),
 		waitUntil: ctx.waitUntil,
 		scoringConfig: parseScoringConfigCached(env.SCORING_CONFIG),
 		cacheTtlSeconds,

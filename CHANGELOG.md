@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.23.0] - 2026-06-20
+
+Minor release: ships the three architectural scalability items that 3.22.0 deliberately held back as proposals (QuotaCoordinator sharding, global-cost-ceiling KV fallback, ProfileAccumulator sharding), each landed behind a default-OFF flag after a Linus-correctness + Adam-security adversarial review. **These deploy dark — every flag defaults to today's exact behavior, so prod is byte-for-byte unchanged until an operator explicitly flips a flag** (which requires its own load-test / reset-window prerequisites). No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (78).
+
+### Added
+
+- **QuotaCoordinator request-sharding (flag-gated, default OFF).** `QUOTA_SHARDING_ENABLED=true` + `QUOTA_SHARD_SALT` spreads per-IP/per-tool quota accounting across sharded Durable Object instances instead of the single `global-quota-coordinator`, relieving the single-DO hot-partition ceiling under global load. Unset (or anything but the exact string `'true'`) → `SINGLETON_ROUTING`, i.e. every quota check stays on the one instance — byte-for-byte today's behavior. Hardened in review: salted routing, malformed-response guard, and per-request batching of the quota checks. The global daily cap stays globally enforced.
+- **ProfileAccumulator profile-sharding (flag-gated, default `global`).** `PROFILE_ACCUMULATOR_SHARDING=profile` shards the adaptive-weights EMA accumulator DO per scoring profile so a high-volume profile no longer contends a single instance; any other value (incl. unset) → `'global'`, the current single-accumulator path. Ships with an observable-by-default warm-up guard: when a freshly-split shard reads below `MIN_BENCHMARK_SCANS`, adaptive uplift falls back toward static weights and a `shard_below_benchmark_floor` `degradation` analytics event is emitted rather than degrading silently. Dormant until the flag flips.
+
+### Fixed
+
+- **Global cost ceiling stays globally enforced when the QuotaCoordinator DO breaker opens (always-on).** Previously, when the DO circuit breaker tripped, the global daily cost-ceiling check fell open (per-isolate only), letting aggregate spend exceed the ceiling during a DO outage. The fallback now enforces the ceiling against a KV-backed global counter, emitting `quota_coordinator_fallback` / `cost_ceiling_degraded` `degradation` events so the degraded mode is alertable. This is a behavior bugfix, not flag-gated.
+
 ## [3.22.0] - 2026-06-20
 
 Minor release: the second hardening & global-scalability wave (the verified-and-safe follow-ups to 3.21.0). Additive observability + resilience + a behavior-preserving scoring refactor. No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (78). The architectural items (QuotaCoordinator sharding, global-cost-ceiling KV fallback, ProfileAccumulator sharding) are deliberately NOT in this release — they change quota/scoring semantics under concurrency and are tracked as proposals pending a design decision.

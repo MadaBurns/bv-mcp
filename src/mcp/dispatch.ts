@@ -144,6 +144,8 @@ export interface DispatchMcpMethodOptions {
 	providerSignaturesSha256?: string;
 	analytics?: AnalyticsClient;
 	profileAccumulator?: DurableObjectNamespace;
+	/** ProfileAccumulator write-sharding mode (R10, default-off). Threaded to ToolRuntimeOptions. */
+	profileAccumulatorShardMode?: import('../lib/profile-accumulator').AccumulatorShardMode;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	createSessionOnInitialize?: boolean;
 	existingSessionId?: string;
@@ -292,6 +294,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				// can fire. Undefined when analytics is unavailable. Fail-open.
 				onBindingDegradation: options.analytics ? (e) => options.analytics?.emitDegradationEvent(e) : undefined,
 				profileAccumulator: options.profileAccumulator,
+				profileAccumulatorShardMode: options.profileAccumulatorShardMode,
 				waitUntil: options.waitUntil,
 				scoringConfig: options.scoringConfig,
 				cacheTtlSeconds: options.cacheTtlSeconds,

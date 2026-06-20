@@ -95,10 +95,37 @@ export interface AnalyticsClient {
 			 *    time. Absent-on-self-host and the benign recon 404 are deliberately NOT
 			 *    emitted (those are expected, not alertable). `component` carries which
 			 *    binding (`recon` | `tls_probe`).
+			 *  - `quota_coordinator_fallback` — the batched per-IP QuotaCoordinator
+			 *    evaluation was bypassed (breaker open, malformed-but-non-empty response,
+			 *    or the DO errored) and the request fell back to the serial / fail-soft
+			 *    path. Lets an operator see the quota guardrail is degraded (ADAM #6).
+			 *    `component` carries the reason (`breaker_open` | `malformed_response`
+			 *    | `evaluate_error`).
+			 *  - `shard_below_benchmark_floor` — a per-profile ProfileAccumulator shard
+			 *    is in its cold-start warm-up window (sampleCount < MIN_BENCHMARK_SCANS)
+			 *    while write-sharding is ON. Adaptive uplift is TEMPORARILY degraded
+			 *    toward static weights for that profile until the shard re-clears its
+			 *    threshold. `component` carries `profile_accumulator:<shardName>`. Only
+			 *    emitted in `PROFILE_ACCUMULATOR_SHARDING='profile'` mode — observable so
+			 *    an operator can watch the warm-up drain after a flip.
 			 */
-			degradationType: 'kv_fallback' | 'binding_unavailable' | 'binding_5xx' | 'binding_timeout';
+			degradationType:
+				| 'kv_fallback'
+				| 'binding_unavailable'
+				| 'binding_5xx'
+				| 'binding_timeout'
+				| 'cost_ceiling_degraded'
+				| 'quota_coordinator_fallback'
+				| 'shard_below_benchmark_floor';
 			component: string;
 			domain?: string;
+			// `cost_ceiling_degraded` (component `global_cost_ceiling`) is emitted by
+			// rate-limiter.ts when the QuotaCoordinator DO breaker is OPEN and the global
+			// cost ceiling falls to KV/in-memory. Intentionally a DISTINCT degradationType
+			// (not `kv_fallback`) so queryBindingDegradation's `blob1 != 'kv_fallback'`
+			// exclusion does NOT swallow it and it reaches the 15-min cron alert. The alert
+			// keys on degradationType (blob1), not component (blob2) -- a new alertable
+			// signal must carry a non-excluded degradationType.
 		} & AnalyticsContext,
 	): void;
 	/**

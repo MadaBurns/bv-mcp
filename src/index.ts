@@ -56,7 +56,9 @@ import { handleRegister } from './oauth/register';
 import { handleAuthorizeGet, handleAuthorizePost } from './oauth/authorize';
 import { handleToken } from './oauth/token';
 export { QuotaCoordinator } from './lib/quota-coordinator';
+import { SINGLETON_ROUTING } from './lib/quota-coordinator';
 export { ProfileAccumulator } from './lib/profile-accumulator';
+import { resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -81,7 +83,33 @@ type BvMcpEnv = {
 	SCAN_CACHE?: KVNamespace;
 	SESSION_STORE?: KVNamespace;
 	QUOTA_COORDINATOR?: DurableObjectNamespace;
+	/**
+	 * R8 / ADAM #2 — QuotaCoordinator sharding feature flag. DEFAULT-OFF: only the
+	 * literal string `'true'` enables shard routing of the per-IP quota path. Unset
+	 * or any other value keeps every quota check on the single
+	 * `global-quota-coordinator` instance (byte-for-byte today's behavior). Flipping
+	 * it ON at a low-traffic window resets every per-IP / per-tool-daily counter ONCE
+	 * (see CHANGELOG + runbook); flipping it OFF is the instant rollback lever.
+	 */
+	QUOTA_SHARDING_ENABLED?: string;
+	/**
+	 * ADAM #4 — deploy-time salt mixed into the shard-key hash so an IP-range / botnet
+	 * operator cannot precompute which addresses land on a chosen shard. Only consulted
+	 * when sharding is enabled. Treat a change like a flag flip (re-maps every counter).
+	 */
+	QUOTA_SHARD_SALT?: string;
 	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
+	/**
+	 * R10 — ProfileAccumulator write-sharding mode. Default-OFF: only the exact
+	 * string `'profile'` enables per-profile sharding (6 DO instances); any other
+	 * value (including unset) keeps the legacy single `global` instance, so an
+	 * unset deploy is byte-for-byte identical to today. Resolved via
+	 * `resolveAccumulatorShardModeFromEnv` and threaded into ToolRuntimeOptions so
+	 * the /ingest write, /weights read, AND the intelligence read seams co-route.
+	 * DORMANT in this branch — flipping it is a SEPARATE, separately-reviewed
+	 * change deployed at a low-traffic window (watch the warm-up degradation signal).
+	 */
+	PROFILE_ACCUMULATOR_SHARDING?: string;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
 	BV_API_KEY?: string;
 	/** Comma-separated IP allowlist for owner tier. When set, an owner-tier credential (static `BV_API_KEY` or owner JWT) from a non-listed client IP is downgraded to `partner` (`applyOwnerIpGate` in `lib/tier-auth.ts`). Unset/empty → owner unrestricted (self-hosted/dev). */
@@ -213,6 +241,17 @@ function oauthAvailability(env: Pick<BvMcpEnv, 'ENABLE_OAUTH' | 'OAUTH_SIGNING_S
 
 function certstreamAuthToken(env: BvMcpEnv): string | undefined {
 	return env.BV_CERTSTREAM_ADMIN_KEY || env.BV_INTERNAL_DEV_KEY;
+}
+
+/**
+ * R8 / ADAM #2+#4 — build the QuotaCoordinator shard routing from env. DEFAULT-OFF:
+ * only the exact string `'true'` enables sharding; anything else (including unset)
+ * yields `SINGLETON_ROUTING`, i.e. every quota check stays on the single
+ * `global-quota-coordinator` instance — byte-for-byte today's behavior.
+ */
+function resolveQuotaShardRouting(env: BvMcpEnv): import('./lib/quota-coordinator').ShardRouting {
+	if (env.QUOTA_SHARDING_ENABLED !== 'true') return SINGLETON_ROUTING;
+	return { enabled: true, salt: env.QUOTA_SHARD_SALT ?? '' };
 }
 
 /**
@@ -500,6 +539,7 @@ app.get('/badge/:domain', async (c) => {
 	try {
 		const result = await scanDomain(domain, c.env.SCAN_CACHE, {
 			profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+			profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
 			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 			scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 			cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
@@ -621,6 +661,7 @@ app.post('/mcp', async (c) => {
 					serverVersion: SERVER_VERSION,
 					rateLimitKv: c.env.RATE_LIMIT,
 					quotaCoordinator: c.env.QUOTA_COORDINATOR,
+					quotaShardRouting: resolveQuotaShardRouting(c.env),
 					sessionStore: c.env.SESSION_STORE,
 					scanCache: c.env.SCAN_CACHE,
 					providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -628,6 +669,7 @@ app.post('/mcp', async (c) => {
 					providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 					analytics,
 					profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+					profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
 					intelligenceDb: c.env.INTELLIGENCE_DB,
 					ipEncryptionKey: c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
 					ipEncryptionKeyVersion: c.env.MCP_ACCESS_LOG_IP_KEY_VERSION,
@@ -708,6 +750,7 @@ app.post('/mcp', async (c) => {
 		serverVersion: SERVER_VERSION,
 		rateLimitKv: c.env.RATE_LIMIT,
 		quotaCoordinator: c.env.QUOTA_COORDINATOR,
+		quotaShardRouting: resolveQuotaShardRouting(c.env),
 		sessionStore: c.env.SESSION_STORE,
 		scanCache: c.env.SCAN_CACHE,
 		providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -715,6 +758,7 @@ app.post('/mcp', async (c) => {
 		providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 		analytics,
 		profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+		profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
 		intelligenceDb: c.env.INTELLIGENCE_DB,
 		ipEncryptionKey: c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
 		ipEncryptionKeyVersion: c.env.MCP_ACCESS_LOG_IP_KEY_VERSION,
@@ -873,6 +917,7 @@ app.post('/mcp/messages', async (c) => {
 				serverVersion: SERVER_VERSION,
 				rateLimitKv: c.env.RATE_LIMIT,
 				quotaCoordinator: c.env.QUOTA_COORDINATOR,
+				quotaShardRouting: resolveQuotaShardRouting(c.env),
 				sessionStore: c.env.SESSION_STORE,
 				scanCache: c.env.SCAN_CACHE,
 				providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -880,6 +925,7 @@ app.post('/mcp/messages', async (c) => {
 				providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 				analytics,
 				profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+				profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
 				intelligenceDb: c.env.INTELLIGENCE_DB,
 				ipEncryptionKey: c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
 				ipEncryptionKeyVersion: c.env.MCP_ACCESS_LOG_IP_KEY_VERSION,
@@ -1251,6 +1297,7 @@ export default {
 						certstream: queueEnv.BV_CERTSTREAM,
 						certstreamAuthToken: certstreamAuthToken(queueEnv),
 						profileAccumulator: queueEnv.PROFILE_ACCUMULATOR,
+						profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(queueEnv.PROFILE_ACCUMULATOR_SHARDING),
 						...buildBrandTierLookups(queueEnv),
 					});
 				};

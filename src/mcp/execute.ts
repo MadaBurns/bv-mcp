@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import {
-	checkRateLimit,
 	checkToolDailyRateLimit,
 	checkGlobalDailyLimit,
+	checkIpScopedQuotaBatch,
 	checkIpDailyLimit,
 	checkDistinctDomainDailyLimit,
 	acquireConcurrencySlot,
@@ -78,6 +78,12 @@ export interface ExecuteMcpRequestOptions {
 	serverVersion: string;
 	rateLimitKv?: KVNamespace;
 	quotaCoordinator?: DurableObjectNamespace;
+	/**
+	 * R8 — QuotaCoordinator shard routing (flag + salt). Built from
+	 * `QUOTA_SHARDING_ENABLED` / `QUOTA_SHARD_SALT` at the index.ts seam. Omitted →
+	 * `SINGLETON_ROUTING` (sharding OFF, today's behavior).
+	 */
+	quotaShardRouting?: import('../lib/quota-coordinator').ShardRouting;
 	sessionStore?: KVNamespace;
 	scanCache?: KVNamespace;
 	providerSignaturesUrl?: string;
@@ -85,6 +91,14 @@ export interface ExecuteMcpRequestOptions {
 	providerSignaturesSha256?: string;
 	analytics?: AnalyticsClient;
 	profileAccumulator?: DurableObjectNamespace;
+	/**
+	 * ProfileAccumulator write-sharding mode (R10, default-off). Sourced from
+	 * `env.PROFILE_ACCUMULATOR_SHARDING` via `resolveAccumulatorShardModeFromEnv`
+	 * at the index.ts construction sites; threaded down to ToolRuntimeOptions so
+	 * the /ingest write, the /weights read, and the intelligence read seams all
+	 * resolve the SAME per-profile shard. `'global'`/undefined = legacy (unchanged).
+	 */
+	profileAccumulatorShardMode?: import('../lib/profile-accumulator').AccumulatorShardMode;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
 	cacheTtlSeconds?: number;
@@ -498,7 +512,12 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 	let rateHeaders: Record<string, string> = {};
 	if (!options.isAuthenticated && method === 'tools/call') {
-		const globalResult = await checkGlobalDailyLimit(GLOBAL_DAILY_TOOL_LIMIT, options.rateLimitKv, options.quotaCoordinator);
+		const globalResult = await checkGlobalDailyLimit(
+			GLOBAL_DAILY_TOOL_LIMIT,
+			options.rateLimitKv,
+			options.quotaCoordinator,
+			options.analytics,
+		);
 		if (!globalResult.allowed) {
 			const globalHeaders: Record<string, string> = {};
 			if (globalResult.retryAfterMs !== undefined) {
@@ -564,7 +583,39 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			};
 		}
 
-		const rateResult = await checkRateLimit(options.ip, options.rateLimitKv, options.quotaCoordinator);
+		// R8: resolve the tool name up front (pure — no quota side effects) so the
+		// batched per-IP quota evaluation can fold the scoped-rate + per-tool-daily
+		// checks into ONE QuotaCoordinator round trip routed to the IP's shard,
+		// instead of two serial round trips to the global singleton.
+		const toolNameRaw =
+			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
+		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : '';
+		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
+
+		// Gated/auth-required tools are rejected (401/403) without ever recording a
+		// per-tool-daily count in the serial path (their gate returns before the
+		// tool-daily check). Preserve that EXACTLY by excluding tool-daily from the
+		// batch for those tools — scoped-rate still runs for everyone (slot consumed),
+		// matching the prior checkRateLimit-first ordering.
+		const toolGated = !!toolName && (isAuthRequiredTool(toolName) || isGatedPaidOnlyTool(toolName));
+		const batchToolDailyLimit = !toolGated ? toolDailyLimit : undefined;
+
+		const quotaBatch = await checkIpScopedQuotaBatch(options.ip, toolName, batchToolDailyLimit, {
+			kv: options.rateLimitKv,
+			quotaCoordinator: options.quotaCoordinator,
+			routing: options.quotaShardRouting,
+			// ADAM #6: surface every coordinator-batch bypass as an observable degradation
+			// signal so an operator sees the quota guardrail is running degraded.
+			onDegradation: (reason) =>
+				options.analytics?.emitDegradationEvent({
+					degradationType: 'quota_coordinator_fallback',
+					component: reason,
+					country: options.country,
+					clientType: options.clientType as import('../lib/client-detection').McpClientType,
+					authTier: options.authTier,
+				}),
+		});
+		const rateResult = quotaBatch.rate;
 		const minuteResetEpoch = Math.ceil(Date.now() / 60_000) * 60;
 		rateHeaders = {
 			'x-ratelimit-limit': '50',
@@ -601,10 +652,6 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			};
 		}
 
-		const toolNameRaw =
-			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
-		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : '';
-		const toolDailyLimit = toolName ? FREE_TOOL_DAILY_LIMITS[toolName] : undefined;
 		// Auth-required tools (identity_secops M365 reads) must NEVER be reached by an
 		// unauthenticated caller: dispatch would forward to bv-web's internal M365 proxy
 		// carrying the trusted internal bearer with keyHash:undefined. Reject before
@@ -616,13 +663,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
 		}
 		if (toolDailyLimit !== undefined) {
-			const toolQuotaResult = await checkToolDailyRateLimit(
-				options.ip,
-				toolName,
-				toolDailyLimit,
-				options.rateLimitKv,
-				options.quotaCoordinator,
-			);
+			// Verdict came from the batched evaluate above (same round trip as scoped-rate).
+			// Fall back to a direct call only in the (unreachable) case the batch omitted it.
+			const toolQuotaResult =
+				quotaBatch.toolDaily ??
+				(await checkToolDailyRateLimit(options.ip, toolName, toolDailyLimit, options.rateLimitKv, options.quotaCoordinator));
 			const dailyResetEpoch = Math.ceil(Date.now() / 86_400_000) * 86_400;
 			rateHeaders['x-quota-limit'] = String(toolQuotaResult.limit);
 			rateHeaders['x-quota-remaining'] = String(toolQuotaResult.remaining);
@@ -662,9 +707,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		// FIND-06: sub-limit force_refresh requests so free-tier callers cannot
 		// bypass the scan cache repeatedly and amplify backend load.
 		const argsRaw =
-			typeof params === 'object' && params !== null && 'arguments' in params
-				? (params as Record<string, unknown>).arguments
-				: undefined;
+			typeof params === 'object' && params !== null && 'arguments' in params ? (params as Record<string, unknown>).arguments : undefined;
 		const forceRefresh =
 			argsRaw !== null &&
 			typeof argsRaw === 'object' &&
@@ -717,8 +760,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 		// Distinct-domain/day speed-bump: cap how many DISTINCT domains one
 		// unauthenticated IP can scan per day across domain-bearing tools.
-		const args =
-			argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw) ? (argsRaw as Record<string, unknown>) : undefined;
+		const args = argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw) ? (argsRaw as Record<string, unknown>) : undefined;
 		const ddcDomain = extractAccessLogDomain(args);
 		if (ddcDomain) {
 			// The domain slot is recorded before dispatch/validation intentionally: the cap throttles
@@ -984,6 +1026,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			providerSignaturesSha256: options.providerSignaturesSha256,
 			analytics: options.analytics,
 			profileAccumulator: options.profileAccumulator,
+			profileAccumulatorShardMode: options.profileAccumulatorShardMode,
 			waitUntil: options.waitUntil,
 			createSessionOnInitialize: options.createSessionOnInitialize,
 			existingSessionId: options.existingSessionId,
@@ -1088,6 +1131,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			providerSignaturesSha256: options.providerSignaturesSha256,
 			analytics: options.analytics,
 			profileAccumulator: options.profileAccumulator,
+			profileAccumulatorShardMode: options.profileAccumulatorShardMode,
 			waitUntil: options.waitUntil,
 			createSessionOnInitialize: options.createSessionOnInitialize,
 			existingSessionId: options.existingSessionId,
