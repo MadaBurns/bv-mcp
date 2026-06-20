@@ -645,12 +645,25 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			}
 		}
 
-		const canonicalScoring = computeProfileAwareScanScore(checkResults, {
-			profile: isExplicit ? (explicitProfile as DomainProfile) : 'auto',
-			config: runtimeOptions?.scoringConfig,
-		});
-		domainContext = canonicalScoring.context;
-		const scoringContext = domainContext;
+		// Reuse the context already detected above instead of re-running
+		// detectDomainContext via computeProfileAwareScanScore. The detection is
+		// invariant to the provider-informed DKIM adjustment (applyProviderDkimContext
+		// preserves controlPresent, which is all detectDomainContext reads), so the
+		// pre-adjustment domainContext is identical to what a re-detection would yield.
+		// The explicit branch above already set config-aware weights; for the
+		// auto/detected case, apply them now to match computeProfileAwareScanScore's
+		// non-explicit context construction exactly (config weights, not the static table).
+		if (!isExplicit) {
+			domainContext = {
+				...domainContext,
+				weights: getProfileWeights(domainContext.profile, runtimeOptions?.scoringConfig),
+			};
+		}
+
+		// Canonical score, computed ONCE on the DKIM-adjusted checkResults with the
+		// canonical context. The non-adaptive and adaptive paths both report this same
+		// score for determinism — the adaptive delta is surfaced via scoringNote only.
+		const canonicalScore = computeScanScore(checkResults, domainContext, runtimeOptions?.scoringConfig);
 
 		// Attempt to fetch adaptive weights — KV first for cross-isolate convergence,
 		// then fall through to the ProfileAccumulator DO on miss.
@@ -692,23 +705,25 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			domainContext.signals.push(`adaptive bound hits: ${adaptiveResponse.boundHits.join(', ')}`);
 		}
 
-		let score: ScanScore;
+		// The reported score is always the canonical score (computed once above) for
+		// determinism — both the adaptive and non-adaptive paths must produce identical
+		// results regardless of whether the ProfileAccumulatorDO responds. The adaptive
+		// delta is surfaced via scoringNote/adaptiveWeightDeltas only.
+		let score: ScanScore = canonicalScore;
 		let scoringNote: string | null = null;
 		let adaptiveWeightDeltas: Record<string, number> | null = null;
 
 		if (adaptiveResponse && adaptiveResponse.sampleCount > 0) {
 			const adaptiveWeights = adaptiveWeightsToContext(adaptiveResponse.weights, domainContext.profile);
 			if (adaptiveWeights) {
-				// Compute adaptive score
+				// Compute adaptive score (for the reported delta only)
 				const adaptiveContext: DomainContext = { ...domainContext, weights: adaptiveWeights };
 				const adaptiveScore = computeScanScore(checkResults, adaptiveContext, runtimeOptions?.scoringConfig);
 
-				// Compute static score for comparison
-				const staticContext: DomainContext = {
-					...domainContext,
-					weights: getProfileWeights(domainContext.profile, runtimeOptions?.scoringConfig),
-				};
-				const staticScore = computeScanScore(checkResults, scoringContext ?? staticContext, runtimeOptions?.scoringConfig);
+				// The static-comparison score is the canonical score: domainContext already
+				// carries the canonical (config-aware) static weights, so a re-scoring would
+				// be identical. Reuse it instead of recomputing.
+				const staticScore = canonicalScore;
 
 				// Compute per-category weight deltas
 				const staticWeights = getProfileWeights(domainContext.profile, runtimeOptions?.scoringConfig);
@@ -720,16 +735,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				const scoreDelta = adaptiveScore.overall - staticScore.overall;
 				scoringNote = generateScoringNote(deltas, scoreDelta, domainContext.detectedProvider);
 				adaptiveWeightDeltas = deltas;
-				// Use the SAME scoring call as the non-adaptive path for determinism.
-				// Both paths must produce identical results regardless of whether the
-				// ProfileAccumulatorDO responds. The adaptive delta is reported in
-				// scoringNote for analytics consumers.
-				score = computeScanScore(checkResults, scoringContext, runtimeOptions?.scoringConfig);
-			} else {
-				score = computeScanScore(checkResults, scoringContext, runtimeOptions?.scoringConfig);
 			}
-		} else {
-			score = computeScanScore(checkResults, scoringContext, runtimeOptions?.scoringConfig);
 		}
 
 		// Apply category interaction penalties (post-scoring adjustment)
