@@ -224,10 +224,17 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			const breakdown = degradationRows
 				.map((r) => `${r.component ?? 'unknown'}:${r.degradation_type ?? 'unknown'}=${r.event_count ?? 0}`)
 				.join(' · ');
+			// The degradation dataset now carries both service-binding failures and the
+			// global cost-ceiling degraded-fallback signal (cost_ceiling_degraded /
+			// component global_cost_ceiling). Title the alert per whichever signals are
+			// present so a cost-ceiling outage doesn't read as a binding failure.
+			const hasCostCeiling = degradationRows.some((r) => r.degradation_type === 'cost_ceiling_degraded');
+			const hasBinding = degradationRows.some((r) => r.degradation_type !== 'cost_ceiling_degraded');
+			const subject = hasCostCeiling && hasBinding ? 'Degradation' : hasCostCeiling ? 'Global cost-ceiling degraded' : 'Service-binding degradation';
 			await sendAlert(
 				env.ALERT_WEBHOOK_URL,
 				buildAlertPayload({
-					title: `Service-binding degradation: ${totalDegradations} event(s) (${components}, last ${lookback}m)`,
+					title: `${subject}: ${totalDegradations} event(s) (${components}, last ${lookback}m)`,
 					severity: totalDegradations > bindingDegradationThreshold * 5 ? 'critical' : 'warning',
 					metrics: { total_events: totalDegradations, breakdown: breakdown || '(none)' },
 					threshold: `binding_degradation_events >= ${bindingDegradationThreshold}`,

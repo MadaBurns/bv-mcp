@@ -55,6 +55,7 @@ import { createTrialKey, getTrialKeyStatus, revokeTrialKey, listTrialKeys } from
 import { parseEnvelopeKey } from './lib/kv-envelope';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { buildCodeRecordFromEntitlement } from './oauth/entitlements';
+import { resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
 import { createAuthorizationCode, getClient, putCode, bumpTokenVersion } from './oauth/storage';
 import {
 	queryTierToolUsage,
@@ -74,6 +75,8 @@ type InternalEnv = {
 	SCAN_CACHE?: KVNamespace;
 	RATE_LIMIT?: KVNamespace;
 	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
+	/** R10 - ProfileAccumulator write-sharding mode (default-off). See BvMcpEnv in index.ts. */
+	PROFILE_ACCUMULATOR_SHARDING?: string;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
 	PROVIDER_SIGNATURES_URL?: string;
 	PROVIDER_SIGNATURES_ALLOWED_HOSTS?: string;
@@ -240,6 +243,7 @@ internalRoutes.post('/tools/call', async (c) => {
 			providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 			analytics: createAnalyticsClient(c.env.MCP_ANALYTICS),
 			profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+			profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
 			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 			scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 			cacheTtlSeconds,
@@ -478,6 +482,7 @@ internalRoutes.post('/tools/batch', async (c) => {
 						providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 						analytics: createAnalyticsClient(c.env.MCP_ANALYTICS),
 						profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+						profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
 						waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 						scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 						cacheTtlSeconds,

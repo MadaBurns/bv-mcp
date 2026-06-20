@@ -14,6 +14,22 @@ export interface ScanRuntimeOptions {
 	providerSignaturesSha256?: string;
 	profile?: 'mail_enabled' | 'enterprise_mail' | 'non_mail' | 'web_only' | 'minimal' | 'auto' | 'authoritative_dns_infra';
 	profileAccumulator?: DurableObjectNamespace;
+	/**
+	 * ProfileAccumulator write-sharding mode (R10 PROPOSAL, default-off).
+	 * `'global'` (default/undefined): legacy single "global" DO instance — unchanged.
+	 * `'profile'`: shard the accumulator by scoring profile (6 fixed instances) so
+	 * adaptive-weight writes spread across ~6 DO input gates. Both the /ingest write
+	 * and the /weights read co-route by profile, so the partition is loss-free.
+	 * Operator-only; must be wired from env before it has any effect.
+	 */
+	profileAccumulatorShardMode?: import('../../lib/profile-accumulator').AccumulatorShardMode;
+	/**
+	 * Analytics client (threaded structurally from `ToolRuntimeOptions`). Used by
+	 * the adaptive-weight read path to emit the `shard_below_benchmark_floor`
+	 * warm-up degradation signal when a per-profile shard is below
+	 * `MIN_BENCHMARK_SCANS` while sharding is ON. Optional/no-op-safe.
+	 */
+	analytics?: import('../../lib/analytics').AnalyticsClient;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
 	/** Override cache TTL in seconds (default: 300). Clamped to [60, 3600]. */
@@ -138,13 +154,10 @@ async function fetchCertIssuerFromCertstream(
 	try {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), CERT_META_LOOKUP_TIMEOUT_MS);
-		const response = await certstream.fetch(
-			`https://certstream/cert-meta?domain=${encodeURIComponent(domain)}`,
-			{
-				...(authToken ? { headers: { Authorization: `Bearer ${authToken}` } } : {}),
-				signal: controller.signal,
-			},
-		);
+		const response = await certstream.fetch(`https://certstream/cert-meta?domain=${encodeURIComponent(domain)}`, {
+			...(authToken ? { headers: { Authorization: `Bearer ${authToken}` } } : {}),
+			signal: controller.signal,
+		});
 		clearTimeout(timer);
 		if (!response.ok) return null;
 		const data = (await response.json()) as { issuer?: string | null; error?: string };
@@ -170,10 +183,7 @@ async function addCdnHeuristics(
 	let nsHosts: string[];
 	let aRecords: string[];
 	try {
-		[nsHosts, aRecords] = await Promise.all([
-			queryDnsRecords(domain, 'NS'),
-			queryDnsRecords(domain, 'A'),
-		]);
+		[nsHosts, aRecords] = await Promise.all([queryDnsRecords(domain, 'NS'), queryDnsRecords(domain, 'A')]);
 	} catch {
 		return results;
 	}
@@ -190,11 +200,7 @@ async function addCdnHeuristics(
 	// flip from cdnProvider:null to cdnProvider:'Cloudflare' via IP+cert.
 	let certIssuer: string | null = null;
 	if (options?.certstream) {
-		certIssuer = await fetchCertIssuerFromCertstream(
-			domain,
-			options.certstream,
-			options.certstreamAuthToken,
-		);
+		certIssuer = await fetchCertIssuerFromCertstream(domain, options.certstream, options.certstreamAuthToken);
 	}
 
 	// Tier 2: Cloudflare NS+IP+cert heuristic. When it produces nothing, fall
@@ -515,7 +521,9 @@ function hasActiveImpersonation(results: CheckResult[]): boolean {
 function dmarcIsWeak(results: CheckResult[]): boolean {
 	const dmarc = results.find((result) => result.category === 'dmarc');
 	if (!dmarc) return false;
-	return dmarc.findings.some((finding: Finding) => finding.title === 'No DMARC record found' || finding.title === 'DMARC policy set to none');
+	return dmarc.findings.some(
+		(finding: Finding) => finding.title === 'No DMARC record found' || finding.title === 'DMARC policy set to none',
+	);
 }
 
 /** Re-escalate the weak-DMARC finding(s) to critical, recording why. */
