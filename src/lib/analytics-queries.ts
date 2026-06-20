@@ -191,6 +191,32 @@ GROUP BY component, degradation_type
 ORDER BY event_count DESC`;
 }
 
+/**
+ * Async-path (queue/cron) batch-failure detection for alerting. The queue
+ * consumer + cron handlers emit a `queue_batch` event per run (see
+ * `emitQueueBatchEvent` in analytics.ts) so a brand-audit queue batch that
+ * throws — invisible to `queryRecentAnomalies` (which filters
+ * `index1='tool_call'`) — becomes alertable. Counts errored batches and the
+ * total failed messages/sub-tasks per handler over the last N minutes.
+ *
+ * Blob positions (queue_batch): blob1=handler, blob2=outcome. Doubles:
+ *   double1=durationMs, double2=failureCount, double3=messageCount.
+ */
+export function queryQueueFailures(minutes: string): string {
+	minutes = safeInterval(minutes);
+	return `SELECT
+  blob1 AS handler,
+  SUM(_sample_interval) AS batch_count,
+  SUM(CASE WHEN blob2 = 'error' THEN _sample_interval ELSE 0 END) AS error_batch_count,
+  SUM(double2 * _sample_interval) AS failure_count
+FROM ${DS}
+WHERE index1 = 'queue_batch'
+  AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
+GROUP BY handler
+HAVING error_batch_count > 0 OR failure_count > 0
+ORDER BY failure_count DESC`;
+}
+
 // ---------------------------------------------------------------------------
 // Per-Tier Analytics Queries
 // ---------------------------------------------------------------------------

@@ -102,6 +102,67 @@ describe('handleScheduled', () => {
 		expect(webhookCall!.body).toContain('binding');
 	});
 
+	it('sends an async-path failure alert when queue_batch failures cross the threshold', async () => {
+		const fetchCalls: Array<{ url: string; body: string }> = [];
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			fetchCalls.push({ url, body: init?.body as string });
+
+			if (url.includes('analytics_engine/sql')) {
+				const query = init?.body as string;
+				if (query.includes("index1 = 'queue_batch'")) {
+					// 4 failed messages across an errored brand-audit batch.
+					return new Response(
+						JSON.stringify({
+							data: [{ handler: 'brand-audit-queue', batch_count: 1, error_batch_count: 1, failure_count: 4 }],
+						}),
+					);
+				}
+				// Healthy tool_call / rate_limit / degradation so only the queue branch fires.
+				if (query.includes("index1 = 'degradation'")) return new Response(JSON.stringify({ data: [] }));
+				if (query.includes('tool_call')) {
+					return new Response(JSON.stringify({ data: [{ total_calls: 100, error_count: 1, error_pct: 1.0, p95_ms: 500 }] }));
+				}
+				if (query.includes('rate_limit')) return new Response(JSON.stringify({ data: [{ total_hits: 2 }] }));
+			}
+			return new Response('ok');
+		}) as typeof fetch;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({
+			CF_ACCOUNT_ID: 'test-account',
+			CF_ANALYTICS_TOKEN: 'test-token',
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		});
+
+		const webhookCall = fetchCalls.find((c) => c.url.includes('hooks.slack.com'));
+		expect(webhookCall).toBeDefined();
+		expect(webhookCall!.body).toContain('Async-path failures');
+		expect(webhookCall!.body).toContain('brand-audit-queue');
+	});
+
+	it('does NOT send an async-path failure alert when no queue_batch failures occur (0 rows)', async () => {
+		const fetchCalls: string[] = [];
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			fetchCalls.push(url);
+			if (url.includes('analytics_engine/sql')) {
+				const query = init?.body as string;
+				// The query's HAVING clause filters clean batches, so the engine returns no rows.
+				if (query.includes("index1 = 'queue_batch'")) return new Response(JSON.stringify({ data: [] }));
+				if (query.includes("index1 = 'degradation'")) return new Response(JSON.stringify({ data: [] }));
+				if (query.includes('tool_call'))
+					return new Response(JSON.stringify({ data: [{ total_calls: 100, error_count: 1, error_pct: 1.0, p95_ms: 500 }] }));
+				if (query.includes('rate_limit')) return new Response(JSON.stringify({ data: [{ total_hits: 2 }] }));
+			}
+			return new Response('ok');
+		}) as typeof fetch;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({ CF_ACCOUNT_ID: 'a', CF_ANALYTICS_TOKEN: 't', ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test' });
+		expect(fetchCalls.filter((u) => u.includes('hooks.slack.com'))).toHaveLength(0);
+	});
+
 	it('does NOT send a degradation alert when only kv_fallback occurs (query excludes it → 0 rows)', async () => {
 		const fetchCalls: string[] = [];
 		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
