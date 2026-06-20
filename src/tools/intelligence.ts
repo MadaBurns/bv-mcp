@@ -10,6 +10,7 @@
  */
 
 import type { OutputFormat } from '../handlers/tool-args';
+import { resolveAccumulatorShardName, type AccumulatorShardMode } from '../lib/profile-accumulator';
 
 /** Trend snapshot from the DO. */
 export interface TrendSnapshot {
@@ -64,35 +65,44 @@ const INTELLIGENCE_FETCH_TIMEOUT_MS = 500;
 /**
  * Fetch benchmark data from the ProfileAccumulator DO.
  *
+ * Read seam co-routing (R10): the benchmark read MUST resolve the SAME shard the
+ * /ingest write targeted for this profile. `getBenchmark` carries the profile, so
+ * `resolveAccumulatorShardName(profile, shardMode)` picks the shard the writes for
+ * that profile landed in. Default `shardMode` (`'global'`/undefined) reads the
+ * legacy single instance — byte-for-byte the prior behavior. This closes the
+ * split-brain that would otherwise make get_benchmark read a write-starved
+ * 'global' instance the moment sharding is flipped on.
+ *
  * @param accumulator - ProfileAccumulator DO namespace binding
  * @param profile - Scoring profile to query (default: 'mail_enabled')
+ * @param shardMode - Write-sharding mode (default 'global' → legacy instance).
  * @returns Benchmark data or unavailable response
  */
 export async function getBenchmark(
 	accumulator: DurableObjectNamespace | undefined,
 	profile: string = 'mail_enabled',
+	shardMode: AccumulatorShardMode = 'global',
 ): Promise<BenchmarkResult> {
 	if (!accumulator) {
 		return { status: 'unavailable', profile };
 	}
 
 	try {
-		const stub = accumulator.get(accumulator.idFromName('global'));
+		const shardName = resolveAccumulatorShardName(profile, shardMode);
+		const stub = accumulator.get(accumulator.idFromName(shardName));
 		const url = new URL('https://do/benchmark');
 		url.searchParams.set('profile', profile);
 
 		const response = await Promise.race([
 			stub.fetch(url.toString(), { method: 'GET' }),
-			new Promise<never>((_, reject) =>
-				setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS),
-			),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS)),
 		]);
 
 		if (!response.ok) {
 			return { status: 'unavailable', profile };
 		}
 
-		const benchmarkData = await response.json() as BenchmarkResult;
+		const benchmarkData = (await response.json()) as BenchmarkResult;
 
 		// If benchmark data is available, also fetch trend data (best-effort)
 		if (benchmarkData.status === 'ok') {
@@ -103,13 +113,11 @@ export async function getBenchmark(
 
 				const trendResponse = await Promise.race([
 					stub.fetch(trendUrl.toString(), { method: 'GET' }),
-					new Promise<never>((_, reject) =>
-						setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS),
-					),
+					new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS)),
 				]);
 
 				if (trendResponse.ok) {
-					const trendData = await trendResponse.json() as { status: string; snapshots?: TrendSnapshot[] } & TrendSummary;
+					const trendData = (await trendResponse.json()) as { status: string; snapshots?: TrendSnapshot[] } & TrendSummary;
 					if (trendData.status === 'ok' && trendData.snapshots) {
 						benchmarkData.trends = {
 							hours: trendData.hours,
@@ -134,38 +142,43 @@ export async function getBenchmark(
 /**
  * Fetch provider insights from the ProfileAccumulator DO.
  *
+ * Read seam co-routing (R10): resolves the SAME shard the writes for this profile
+ * landed in via `resolveAccumulatorShardName(profile, shardMode)`. Default
+ * `shardMode` reads the legacy 'global' instance — unchanged behavior.
+ *
  * @param accumulator - ProfileAccumulator DO namespace binding
  * @param provider - Email provider name to query
  * @param profile - Scoring profile (default: 'mail_enabled')
+ * @param shardMode - Write-sharding mode (default 'global' → legacy instance).
  * @returns Provider cohort data or unavailable response
  */
 export async function getProviderInsights(
 	accumulator: DurableObjectNamespace | undefined,
 	provider: string,
 	profile: string = 'mail_enabled',
+	shardMode: AccumulatorShardMode = 'global',
 ): Promise<ProviderInsightsResult> {
 	if (!accumulator) {
 		return { status: 'unavailable', provider, profile };
 	}
 
 	try {
-		const stub = accumulator.get(accumulator.idFromName('global'));
+		const shardName = resolveAccumulatorShardName(profile, shardMode);
+		const stub = accumulator.get(accumulator.idFromName(shardName));
 		const url = new URL('https://do/provider-insights');
 		url.searchParams.set('provider', provider);
 		url.searchParams.set('profile', profile);
 
 		const response = await Promise.race([
 			stub.fetch(url.toString(), { method: 'GET' }),
-			new Promise<never>((_, reject) =>
-				setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS),
-			),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS)),
 		]);
 
 		if (!response.ok) {
 			return { status: 'unavailable', provider, profile };
 		}
 
-		return await response.json() as ProviderInsightsResult;
+		return (await response.json()) as ProviderInsightsResult;
 	} catch {
 		return { status: 'unavailable', provider, profile };
 	}
@@ -201,7 +214,9 @@ export function formatBenchmark(result: BenchmarkResult, format: OutputFormat = 
 		if (result.status === 'insufficient_data') {
 			return `Benchmark: ${result.profile} — insufficient data (${result.totalScans ?? 0} scans)`;
 		}
-		lines.push(`Benchmark: ${result.profile} — ${result.totalScans} scans, mean ${result.meanScore}/100, median ${result.medianBucket}-${(result.medianBucket ?? 0) + 9}`);
+		lines.push(
+			`Benchmark: ${result.profile} — ${result.totalScans} scans, mean ${result.meanScore}/100, median ${result.medianBucket}-${(result.medianBucket ?? 0) + 9}`,
+		);
 		if (result.topFailingCategories && result.topFailingCategories.length > 0) {
 			lines.push(`Top failures: ${result.topFailingCategories.map((c) => c.toUpperCase()).join(', ')}`);
 		}
@@ -223,7 +238,9 @@ export function formatBenchmark(result: BenchmarkResult, format: OutputFormat = 
 	}
 
 	if (result.status === 'insufficient_data') {
-		lines.push(`Insufficient data for meaningful benchmarks (${result.totalScans ?? 0} scans, minimum ${result.minimumRequired ?? 100} required).`);
+		lines.push(
+			`Insufficient data for meaningful benchmarks (${result.totalScans ?? 0} scans, minimum ${result.minimumRequired ?? 100} required).`,
+		);
 		if (result.baselineFailureRates) {
 			lines.push('');
 			lines.push('Baseline failure rates (industry estimates):');

@@ -58,6 +58,7 @@ import { handleToken } from './oauth/token';
 export { QuotaCoordinator } from './lib/quota-coordinator';
 import { SINGLETON_ROUTING } from './lib/quota-coordinator';
 export { ProfileAccumulator } from './lib/profile-accumulator';
+import { resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -98,6 +99,17 @@ type BvMcpEnv = {
 	 */
 	QUOTA_SHARD_SALT?: string;
 	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
+	/**
+	 * R10 — ProfileAccumulator write-sharding mode. Default-OFF: only the exact
+	 * string `'profile'` enables per-profile sharding (6 DO instances); any other
+	 * value (including unset) keeps the legacy single `global` instance, so an
+	 * unset deploy is byte-for-byte identical to today. Resolved via
+	 * `resolveAccumulatorShardModeFromEnv` and threaded into ToolRuntimeOptions so
+	 * the /ingest write, /weights read, AND the intelligence read seams co-route.
+	 * DORMANT in this branch — flipping it is a SEPARATE, separately-reviewed
+	 * change deployed at a low-traffic window (watch the warm-up degradation signal).
+	 */
+	PROFILE_ACCUMULATOR_SHARDING?: string;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
 	BV_API_KEY?: string;
 	/** Comma-separated IP allowlist for owner tier. When set, an owner-tier credential (static `BV_API_KEY` or owner JWT) from a non-listed client IP is downgraded to `partner` (`applyOwnerIpGate` in `lib/tier-auth.ts`). Unset/empty → owner unrestricted (self-hosted/dev). */
@@ -527,6 +539,7 @@ app.get('/badge/:domain', async (c) => {
 	try {
 		const result = await scanDomain(domain, c.env.SCAN_CACHE, {
 			profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+			profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
 			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
 			scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
 			cacheTtlSeconds: parseCacheTtl(c.env.CACHE_TTL_SECONDS),
@@ -656,6 +669,7 @@ app.post('/mcp', async (c) => {
 					providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 					analytics,
 					profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+					profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
 					intelligenceDb: c.env.INTELLIGENCE_DB,
 					ipEncryptionKey: c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
 					ipEncryptionKeyVersion: c.env.MCP_ACCESS_LOG_IP_KEY_VERSION,
@@ -744,6 +758,7 @@ app.post('/mcp', async (c) => {
 		providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 		analytics,
 		profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+		profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
 		intelligenceDb: c.env.INTELLIGENCE_DB,
 		ipEncryptionKey: c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
 		ipEncryptionKeyVersion: c.env.MCP_ACCESS_LOG_IP_KEY_VERSION,
@@ -910,6 +925,7 @@ app.post('/mcp/messages', async (c) => {
 				providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
 				analytics,
 				profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+				profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
 				intelligenceDb: c.env.INTELLIGENCE_DB,
 				ipEncryptionKey: c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
 				ipEncryptionKeyVersion: c.env.MCP_ACCESS_LOG_IP_KEY_VERSION,
@@ -1281,6 +1297,7 @@ export default {
 						certstream: queueEnv.BV_CERTSTREAM,
 						certstreamAuthToken: certstreamAuthToken(queueEnv),
 						profileAccumulator: queueEnv.PROFILE_ACCUMULATOR,
+						profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(queueEnv.PROFILE_ACCUMULATOR_SHARDING),
 						...buildBrandTierLookups(queueEnv),
 					});
 				};

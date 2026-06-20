@@ -91,6 +91,14 @@ export interface ExecuteMcpRequestOptions {
 	providerSignaturesSha256?: string;
 	analytics?: AnalyticsClient;
 	profileAccumulator?: DurableObjectNamespace;
+	/**
+	 * ProfileAccumulator write-sharding mode (R10, default-off). Sourced from
+	 * `env.PROFILE_ACCUMULATOR_SHARDING` via `resolveAccumulatorShardModeFromEnv`
+	 * at the index.ts construction sites; threaded down to ToolRuntimeOptions so
+	 * the /ingest write, the /weights read, and the intelligence read seams all
+	 * resolve the SAME per-profile shard. `'global'`/undefined = legacy (unchanged).
+	 */
+	profileAccumulatorShardMode?: import('../lib/profile-accumulator').AccumulatorShardMode;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
 	cacheTtlSeconds?: number;
@@ -699,9 +707,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		// FIND-06: sub-limit force_refresh requests so free-tier callers cannot
 		// bypass the scan cache repeatedly and amplify backend load.
 		const argsRaw =
-			typeof params === 'object' && params !== null && 'arguments' in params
-				? (params as Record<string, unknown>).arguments
-				: undefined;
+			typeof params === 'object' && params !== null && 'arguments' in params ? (params as Record<string, unknown>).arguments : undefined;
 		const forceRefresh =
 			argsRaw !== null &&
 			typeof argsRaw === 'object' &&
@@ -754,8 +760,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 		// Distinct-domain/day speed-bump: cap how many DISTINCT domains one
 		// unauthenticated IP can scan per day across domain-bearing tools.
-		const args =
-			argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw) ? (argsRaw as Record<string, unknown>) : undefined;
+		const args = argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw) ? (argsRaw as Record<string, unknown>) : undefined;
 		const ddcDomain = extractAccessLogDomain(args);
 		if (ddcDomain) {
 			// The domain slot is recorded before dispatch/validation intentionally: the cap throttles
@@ -1021,6 +1026,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			providerSignaturesSha256: options.providerSignaturesSha256,
 			analytics: options.analytics,
 			profileAccumulator: options.profileAccumulator,
+			profileAccumulatorShardMode: options.profileAccumulatorShardMode,
 			waitUntil: options.waitUntil,
 			createSessionOnInitialize: options.createSessionOnInitialize,
 			existingSessionId: options.existingSessionId,
@@ -1125,6 +1131,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			providerSignaturesSha256: options.providerSignaturesSha256,
 			analytics: options.analytics,
 			profileAccumulator: options.profileAccumulator,
+			profileAccumulatorShardMode: options.profileAccumulatorShardMode,
 			waitUntil: options.waitUntil,
 			createSessionOnInitialize: options.createSessionOnInitialize,
 			existingSessionId: options.existingSessionId,

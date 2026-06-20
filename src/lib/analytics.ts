@@ -101,6 +101,13 @@ export interface AnalyticsClient {
 			 *    path. Lets an operator see the quota guardrail is degraded (ADAM #6).
 			 *    `component` carries the reason (`breaker_open` | `malformed_response`
 			 *    | `evaluate_error`).
+			 *  - `shard_below_benchmark_floor` — a per-profile ProfileAccumulator shard
+			 *    is in its cold-start warm-up window (sampleCount < MIN_BENCHMARK_SCANS)
+			 *    while write-sharding is ON. Adaptive uplift is TEMPORARILY degraded
+			 *    toward static weights for that profile until the shard re-clears its
+			 *    threshold. `component` carries `profile_accumulator:<shardName>`. Only
+			 *    emitted in `PROFILE_ACCUMULATOR_SHARDING='profile'` mode — observable so
+			 *    an operator can watch the warm-up drain after a flip.
 			 */
 			degradationType:
 				| 'kv_fallback'
@@ -108,7 +115,8 @@ export interface AnalyticsClient {
 				| 'binding_5xx'
 				| 'binding_timeout'
 				| 'cost_ceiling_degraded'
-				| 'quota_coordinator_fallback';
+				| 'quota_coordinator_fallback'
+				| 'shard_below_benchmark_floor';
 			component: string;
 			domain?: string;
 			// `cost_ceiling_degraded` (component `global_cost_ceiling`) is emitted by
