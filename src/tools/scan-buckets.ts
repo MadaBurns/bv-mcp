@@ -2,7 +2,13 @@
 /** Cloud-bucket discovery tools — thin fail-soft proxies over bv-recon's bucket-scanner. */
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
-import { callReconBucketScanStart, callReconBucketScanStatus, callReconBucketFindings, type ReconBinding } from '../lib/recon-binding';
+import {
+	callReconBucketScanStart,
+	callReconBucketScanStatus,
+	callReconBucketFindings,
+	type ReconBinding,
+	type BindingDegradationSink,
+} from '../lib/recon-binding';
 import { extractBrandName, getRegistrableDomain } from '../lib/public-suffix';
 
 // F7 (OWASP LLM01): upstream bv-recon strings spread into finding metadata below
@@ -17,10 +23,13 @@ export interface ReconToolOptions {
 	reconBinding?: ReconBinding;
 	reconAuthToken?: string;
 	bucketScanKv?: KVNamespace;
+	onBindingDegradation?: BindingDegradationSink;
 }
 
 function unprovisioned(detail: string): CheckResult {
-	return buildCheckResult(CATEGORY, [createFinding(CATEGORY, 'Bucket scanning unavailable', 'info', detail, { unprovisioned: true })]) as CheckResult;
+	return buildCheckResult(CATEGORY, [
+		createFinding(CATEGORY, 'Bucket scanning unavailable', 'info', detail, { unprovisioned: true }),
+	]) as CheckResult;
 }
 
 interface BucketScanScope {
@@ -114,7 +123,13 @@ function hasTargetScope(tokens: TargetScopeTokens): boolean {
 
 function normalizeProvider(provider: string | undefined): string | undefined {
 	if (!provider) return undefined;
-	return provider.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || undefined;
+	return (
+		provider
+			.toLowerCase()
+			.trim()
+			.replace(/[^a-z0-9]+/g, '_')
+			.replace(/^_+|_+$/g, '') || undefined
+	);
 }
 
 function providerAllowed(provider: unknown, requestedProviders: string[] | undefined): boolean {
@@ -151,7 +166,9 @@ async function rememberBucketScanScope(scanId: string | undefined, scope: Bucket
 	if (!scanId || !kv || !SAFE_SCAN_ID.test(scanId)) return;
 	const target = normalizeTarget(scope.target);
 	if (!target && !scope.providers?.length) return;
-	await kv.put(scopeKey(scanId), JSON.stringify({ target, providers: scope.providers }), { expirationTtl: BUCKET_SCAN_SCOPE_TTL_SECONDS }).catch(() => undefined);
+	await kv
+		.put(scopeKey(scanId), JSON.stringify({ target, providers: scope.providers }), { expirationTtl: BUCKET_SCAN_SCOPE_TTL_SECONDS })
+		.catch(() => undefined);
 }
 
 async function loadBucketScanScope(scanId: string | undefined, kv: KVNamespace | undefined): Promise<BucketScanScope> {
@@ -209,8 +226,17 @@ function filterBucketPayload(payload: Record<string, unknown>, scope: BucketScan
 	};
 }
 
-export async function scanBucketsStart(args: { target: string; providers?: string[] }, options: ReconToolOptions = {}): Promise<CheckResult> {
-	const started = await callReconBucketScanStart(options.reconBinding, options.reconAuthToken, { target: args.target, providers: args.providers });
+export async function scanBucketsStart(
+	args: { target: string; providers?: string[] },
+	options: ReconToolOptions = {},
+): Promise<CheckResult> {
+	const started = await callReconBucketScanStart(
+		options.reconBinding,
+		options.reconAuthToken,
+		{ target: args.target, providers: args.providers },
+		undefined,
+		options.onBindingDegradation,
+	);
 	if (!started) return unprovisioned(`Bucket discovery is not provisioned in this deployment for ${args.target}.`);
 	await rememberBucketScanScope(started.scanId, args, options.bucketScanKv);
 	return buildCheckResult(CATEGORY, [
@@ -230,7 +256,13 @@ export async function scanBucketsStart(args: { target: string; providers?: strin
 }
 
 export async function scanBucketsStatus(args: { scanId: string }, options: ReconToolOptions = {}): Promise<CheckResult> {
-	const s = await callReconBucketScanStatus(options.reconBinding, options.reconAuthToken, args.scanId);
+	const s = await callReconBucketScanStatus(
+		options.reconBinding,
+		options.reconAuthToken,
+		args.scanId,
+		undefined,
+		options.onBindingDegradation,
+	);
 	if (!s) return unprovisioned(`Bucket scan status is unavailable for ${args.scanId} (unprovisioned or not found).`);
 	const scope = await loadBucketScanScope(args.scanId, options.bucketScanKv);
 	return buildCheckResult(CATEGORY, [
@@ -245,7 +277,13 @@ export async function scanBucketsStatus(args: { scanId: string }, options: Recon
 }
 
 export async function scanBucketsFindings(args: BucketScanFindingArgs, options: ReconToolOptions = {}): Promise<CheckResult> {
-	const f = await callReconBucketFindings(options.reconBinding, options.reconAuthToken, args.scanId);
+	const f = await callReconBucketFindings(
+		options.reconBinding,
+		options.reconAuthToken,
+		args.scanId,
+		undefined,
+		options.onBindingDegradation,
+	);
 	if (!f) return unprovisioned('Bucket findings are unavailable (unprovisioned or no scan).');
 	const rememberedScope = await loadBucketScanScope(args.scanId, options.bucketScanKv);
 	const target = normalizeTarget(args.target) ?? rememberedScope.target;
