@@ -14,7 +14,7 @@
 import { queryDns } from '../lib/dns';
 import type { DnsAnswer, QueryDnsOptions } from '../lib/dns-types';
 import { callReconScan, isReconHit } from '../lib/recon-binding';
-import type { ReconBinding } from '../lib/recon-binding';
+import type { ReconBinding, BindingDegradationSink } from '../lib/recon-binding';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory, Finding } from '../lib/scoring';
 
@@ -44,7 +44,7 @@ export async function checkFastFlux(
 	rounds?: number,
 	dnsOptions?: QueryDnsOptions,
 	delayMs = 2000,
-	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string } = {},
+	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string; onBindingDegradation?: BindingDegradationSink } = {},
 ): Promise<CheckResult> {
 	const effectiveRounds = Math.max(3, Math.min(5, rounds ?? 3));
 	const roundResults: RoundResult[] = [];
@@ -169,7 +169,14 @@ export async function checkFastFlux(
 
 	// Recon enrichment: additive-only, fail-soft
 	if (reconOptions.reconBinding) {
-		const reconResult = await callReconScan(reconOptions.reconBinding, reconOptions.reconAuthToken, 'ATTACKER_INFRASTRUCTURE', { domain });
+		const reconResult = await callReconScan(
+			reconOptions.reconBinding,
+			reconOptions.reconAuthToken,
+			'ATTACKER_INFRASTRUCTURE',
+			{ domain },
+			undefined,
+			reconOptions.onBindingDegradation,
+		);
 		const hit = reconResult && isReconHit(reconResult.status);
 		if (hit) {
 			findings.push(

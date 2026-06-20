@@ -68,6 +68,61 @@ describe('handleScheduled', () => {
 		expect(webhookCall!.body).toContain('error');
 	});
 
+	it('sends a service-binding degradation alert when present-binding events appear', async () => {
+		const fetchCalls: Array<{ url: string; body: string }> = [];
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			fetchCalls.push({ url, body: init?.body as string });
+
+			if (url.includes('analytics_engine/sql')) {
+				const query = init?.body as string;
+				// Healthy tool_call + rate_limit so only the degradation branch fires.
+				if (query.includes("index1 = 'degradation'")) {
+					return new Response(JSON.stringify({ data: [{ component: 'recon', degradation_type: 'binding_5xx', event_count: 4 }] }));
+				}
+				if (query.includes('tool_call')) {
+					return new Response(JSON.stringify({ data: [{ total_calls: 100, error_count: 1, error_pct: 1.0, p95_ms: 500 }] }));
+				}
+				if (query.includes('rate_limit')) {
+					return new Response(JSON.stringify({ data: [{ total_hits: 2 }] }));
+				}
+			}
+			return new Response('ok');
+		}) as typeof fetch;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({
+			CF_ACCOUNT_ID: 'test-account',
+			CF_ANALYTICS_TOKEN: 'test-token',
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		});
+
+		const webhookCall = fetchCalls.find((c) => c.url.includes('hooks.slack.com'));
+		expect(webhookCall).toBeDefined();
+		expect(webhookCall!.body).toContain('binding');
+	});
+
+	it('does NOT send a degradation alert when only kv_fallback occurs (query excludes it → 0 rows)', async () => {
+		const fetchCalls: string[] = [];
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			fetchCalls.push(url);
+			if (url.includes('analytics_engine/sql')) {
+				const query = init?.body as string;
+				// The SQL itself filters kv_fallback, so the engine returns no rows here.
+				if (query.includes("index1 = 'degradation'")) return new Response(JSON.stringify({ data: [] }));
+				if (query.includes('tool_call'))
+					return new Response(JSON.stringify({ data: [{ total_calls: 100, error_count: 1, error_pct: 1.0, p95_ms: 500 }] }));
+				if (query.includes('rate_limit')) return new Response(JSON.stringify({ data: [{ total_hits: 2 }] }));
+			}
+			return new Response('ok');
+		}) as typeof fetch;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({ CF_ACCOUNT_ID: 'a', CF_ANALYTICS_TOKEN: 't', ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test' });
+		expect(fetchCalls.filter((u) => u.includes('hooks.slack.com'))).toHaveLength(0);
+	});
+
 	it('does not send alert when metrics are within thresholds', async () => {
 		const fetchCalls: string[] = [];
 		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

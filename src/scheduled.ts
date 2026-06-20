@@ -11,7 +11,7 @@
  *   ALERT_RATE_LIMIT_THRESHOLD (default 50 hits), ALERT_LOOKBACK_MINUTES (default 15)
  */
 
-import { queryRecentAnomalies, queryRateLimitSurge, queryTierDigest } from './lib/analytics-queries';
+import { queryRecentAnomalies, queryRateLimitSurge, queryTierDigest, queryBindingDegradation } from './lib/analytics-queries';
 import { buildAlertPayload, buildDigestPayload, sendAlert } from './lib/alerting';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { logEvent, logError } from './lib/log';
@@ -33,6 +33,12 @@ interface RateLimitRow {
 	total_hits?: number;
 }
 
+interface BindingDegradationRow {
+	component?: string;
+	degradation_type?: string;
+	event_count?: number;
+}
+
 export interface ScheduledEnv {
 	CF_ACCOUNT_ID?: string;
 	CF_ANALYTICS_TOKEN?: string;
@@ -42,6 +48,8 @@ export interface ScheduledEnv {
 	ALERT_RATE_LIMIT_THRESHOLD?: string;
 	ALERT_LOOKBACK_MINUTES?: string;
 	ALERT_SPF_NULL_RATE_THRESHOLD?: string;
+	/** Min present-binding-degradation events in the lookback window to alert (default 1). */
+	ALERT_BINDING_DEGRADATION_THRESHOLD?: string;
 	RATE_LIMIT?: KVNamespace;
 	BRAND_AUDIT_DB?: D1Database;
 	INTELLIGENCE_DB?: D1Database;
@@ -51,6 +59,8 @@ const DEFAULT_ERROR_THRESHOLD = 5;
 const DEFAULT_P95_THRESHOLD = 10_000;
 const DEFAULT_RATE_LIMIT_THRESHOLD = 50;
 const DEFAULT_LOOKBACK_MINUTES = 15;
+/** A single present-binding failure (mis-rotated key, bv-recon 5xx) is worth surfacing. */
+const DEFAULT_BINDING_DEGRADATION_THRESHOLD = 1;
 
 /** Main scheduled handler — called by Cron Trigger. */
 export async function handleScheduled(env: ScheduledEnv): Promise<void> {
@@ -87,8 +97,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	}
 
 	if (env.INTELLIGENCE_DB) {
-		await env.INTELLIGENCE_DB
-			.prepare("DELETE FROM mcp_access_log WHERE created_at < (strftime('%s', 'now') - ?)")
+		await env.INTELLIGENCE_DB.prepare("DELETE FROM mcp_access_log WHERE created_at < (strftime('%s', 'now') - ?)")
 			.bind(90 * 24 * 3600)
 			.run()
 			.catch((err) => {
@@ -108,10 +117,18 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	const p95Threshold = Number.isFinite(parsedP95) ? parsedP95 : DEFAULT_P95_THRESHOLD;
 	const parsedRateLimit = parseFloat(env.ALERT_RATE_LIMIT_THRESHOLD ?? '');
 	const rateLimitThreshold = Number.isFinite(parsedRateLimit) ? parsedRateLimit : DEFAULT_RATE_LIMIT_THRESHOLD;
+	const parsedBindingDegradation = parseFloat(env.ALERT_BINDING_DEGRADATION_THRESHOLD ?? '');
+	const bindingDegradationThreshold = Number.isFinite(parsedBindingDegradation)
+		? parsedBindingDegradation
+		: DEFAULT_BINDING_DEGRADATION_THRESHOLD;
 	const lookback = env.ALERT_LOOKBACK_MINUTES ?? String(DEFAULT_LOOKBACK_MINUTES);
 
 	try {
-		const anomalyRows = await queryAnalyticsEngine(env.CF_ACCOUNT_ID, env.CF_ANALYTICS_TOKEN, queryRecentAnomalies(lookback)) as AnomalyRow[];
+		const anomalyRows = (await queryAnalyticsEngine(
+			env.CF_ACCOUNT_ID,
+			env.CF_ANALYTICS_TOKEN,
+			queryRecentAnomalies(lookback),
+		)) as AnomalyRow[];
 		const anomaly = anomalyRows[0];
 
 		if (anomaly && anomaly.total_calls && anomaly.total_calls > 0) {
@@ -152,11 +169,11 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			}
 		}
 
-		const rateLimitRows = await queryAnalyticsEngine(
+		const rateLimitRows = (await queryAnalyticsEngine(
 			env.CF_ACCOUNT_ID,
 			env.CF_ANALYTICS_TOKEN,
 			queryRateLimitSurge(lookback),
-		) as RateLimitRow[];
+		)) as RateLimitRow[];
 		const rateLimitData = rateLimitRows[0];
 
 		if (rateLimitData && (rateLimitData.total_hits ?? 0) > rateLimitThreshold) {
@@ -171,6 +188,34 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			);
 		}
 
+		// Present-binding degradation (BV_RECON / BV_TLS_PROBE 5xx / timeout). A
+		// mis-rotated key or upstream outage is invisible without this — the
+		// fail-soft bindings null out silently otherwise. Absent bindings and the
+		// benign recon 404 never reach the `degradation` dataset, so any row here
+		// is a real, present-binding failure worth surfacing.
+		const degradationRows = (await queryAnalyticsEngine(
+			env.CF_ACCOUNT_ID,
+			env.CF_ANALYTICS_TOKEN,
+			queryBindingDegradation(lookback),
+		)) as BindingDegradationRow[];
+		const totalDegradations = degradationRows.reduce((sum, r) => sum + (r.event_count ?? 0), 0);
+
+		if (totalDegradations >= bindingDegradationThreshold) {
+			const components = [...new Set(degradationRows.map((r) => r.component ?? 'unknown'))].join(', ');
+			const breakdown = degradationRows
+				.map((r) => `${r.component ?? 'unknown'}:${r.degradation_type ?? 'unknown'}=${r.event_count ?? 0}`)
+				.join(' · ');
+			await sendAlert(
+				env.ALERT_WEBHOOK_URL,
+				buildAlertPayload({
+					title: `Service-binding degradation: ${totalDegradations} event(s) (${components}, last ${lookback}m)`,
+					severity: totalDegradations > bindingDegradationThreshold * 5 ? 'critical' : 'warning',
+					metrics: { total_events: totalDegradations, breakdown: breakdown || '(none)' },
+					threshold: `binding_degradation_events >= ${bindingDegradationThreshold}`,
+				}),
+			);
+		}
+
 		logEvent({
 			timestamp: new Date().toISOString(),
 			category: 'scheduled',
@@ -181,6 +226,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 				errorPct: anomaly?.error_pct ?? 0,
 				p95Ms: anomaly?.p95_ms ?? 0,
 				rateLimitHits: rateLimitData?.total_hits ?? 0,
+				bindingDegradations: totalDegradations,
 			},
 		});
 	} catch (err) {
@@ -382,9 +428,8 @@ export async function handleSpfCanary(env: ScheduledEnv): Promise<void> {
 	try {
 		const result = await runSpfCanary();
 		const rawThreshold = env.ALERT_SPF_NULL_RATE_THRESHOLD ? Number(env.ALERT_SPF_NULL_RATE_THRESHOLD) : NaN;
-		const threshold = Number.isFinite(rawThreshold) && rawThreshold > 0 && rawThreshold <= 1
-			? rawThreshold
-			: DEFAULT_SPF_NULL_RATE_THRESHOLD;
+		const threshold =
+			Number.isFinite(rawThreshold) && rawThreshold > 0 && rawThreshold <= 1 ? rawThreshold : DEFAULT_SPF_NULL_RATE_THRESHOLD;
 
 		logEvent({
 			timestamp: new Date().toISOString(),
@@ -474,20 +519,16 @@ interface BrandAuditWatchEnv {
  * enqueue side; the diff-and-webhook delivery side is the next slice on the
  * Phase-4 work-list.
  */
-export async function handleBrandAuditWatches(
-	env: Record<string, unknown>,
-	_ctx: ExecutionContext,
-): Promise<void> {
+export async function handleBrandAuditWatches(env: Record<string, unknown>, _ctx: ExecutionContext): Promise<void> {
 	const e = env as BrandAuditWatchEnv;
 	if (!e.BRAND_AUDIT_DB || !e.BRAND_AUDIT_QUEUE) return;
 	const now = Date.now();
 
 	let rows: DueWatchRow[] = [];
 	try {
-		const result = await e.BRAND_AUDIT_DB
-			.prepare(
-				'SELECT id, owner_id, domain, interval, webhook_url, last_run_at, last_classification_hash FROM brand_audit_watches WHERE active = 1 ORDER BY last_run_at ASC NULLS FIRST LIMIT ?',
-			)
+		const result = await e.BRAND_AUDIT_DB.prepare(
+			'SELECT id, owner_id, domain, interval, webhook_url, last_run_at, last_classification_hash FROM brand_audit_watches WHERE active = 1 ORDER BY last_run_at ASC NULLS FIRST LIMIT ?',
+		)
 			.bind(MAX_WATCHES_PER_TICK)
 			.all<DueWatchRow>();
 		rows = result.results ?? [];
@@ -512,10 +553,7 @@ export async function handleBrandAuditWatches(
 				{ auditId, target: row.domain, format: 'json', watchId: row.id, ownerId: row.owner_id },
 				{ contentType: 'json' },
 			);
-			await e.BRAND_AUDIT_DB
-				.prepare('UPDATE brand_audit_watches SET last_run_at = ? WHERE id = ?')
-				.bind(now, row.id)
-				.run();
+			await e.BRAND_AUDIT_DB.prepare('UPDATE brand_audit_watches SET last_run_at = ? WHERE id = ?').bind(now, row.id).run();
 		} catch (err) {
 			logError(err instanceof Error ? err : String(err), {
 				severity: 'warn',
