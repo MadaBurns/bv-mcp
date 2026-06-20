@@ -215,6 +215,20 @@ function certstreamAuthToken(env: BvMcpEnv): string | undefined {
 	return env.BV_CERTSTREAM_ADMIN_KEY || env.BV_INTERNAL_DEV_KEY;
 }
 
+/**
+ * F2 — mint a server-generated correlation id for an inbound request. Prefers
+ * Cloudflare's `cf-ray` (the edge request id) when present so the bv-mcp trace
+ * stitches against CF's own logs, otherwise falls back to a fresh
+ * `crypto.randomUUID()`. This is the single per-request id threaded through
+ * `ExecuteMcpRequestOptions.correlationId` into every `logEvent` on the path —
+ * distinct from the client-chosen JSON-RPC id.
+ */
+export function makeCorrelationId(headers: Headers): string {
+	const cfRay = headers.get('cf-ray');
+	if (cfRay && /^[a-zA-Z0-9-]{1,64}$/.test(cfRay)) return cfRay;
+	return crypto.randomUUID();
+}
+
 function oauthDisabledResponse(): Response {
 	return new Response('Not found', { status: 404 });
 }
@@ -360,12 +374,93 @@ app.use('*', async (c, next) => {
 	}
 });
 
-app.get('/health', (c) => {
-	return c.json({
-		status: 'ok',
-		service: 'bv-dns-security-mcp',
-		timestamp: new Date().toISOString(),
+/**
+ * F5 — bounded round-trip probe of a single binding for the deep-readiness mode.
+ * Each probe is wrapped in `Promise.race` against a hard 1.5s ceiling so a wedged
+ * binding can't hang the health endpoint (which uptime monitors poll). Any thrown
+ * error or timeout → `'error'`; a successful round-trip → `'ok'`; an absent
+ * binding → `'absent'` (BSL self-hosts legitimately omit these).
+ */
+const DEEP_HEALTH_PROBE_TIMEOUT_MS = 1500;
+
+async function probeWithTimeout(work: () => Promise<void>): Promise<'ok' | 'error'> {
+	try {
+		await Promise.race([
+			work(),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('probe_timeout')), DEEP_HEALTH_PROBE_TIMEOUT_MS)),
+		]);
+		return 'ok';
+	} catch {
+		return 'error';
+	}
+}
+
+async function probeScanCacheKv(kv: KVNamespace | undefined): Promise<'ok' | 'error' | 'absent'> {
+	if (!kv) return 'absent';
+	return probeWithTimeout(async () => {
+		// Best-effort round-trip on a dedicated, short-lived health key. A get/put
+		// pair exercises both read and write paths without touching live data.
+		const key = `health:probe:${crypto.randomUUID()}`;
+		await kv.put(key, '1', { expirationTtl: 60 });
+		await kv.get(key);
+		await kv.delete(key);
 	});
+}
+
+async function probeQuotaCoordinator(ns: DurableObjectNamespace | undefined): Promise<'ok' | 'error' | 'absent'> {
+	if (!ns) return 'absent';
+	return probeWithTimeout(async () => {
+		// A GET to the DO returns 405 (it only accepts POST) — that non-error
+		// HTTP response still proves the DO is reachable and responding. Any
+		// transport-level throw (DO unreachable) is caught and reported as error.
+		const stub = ns.get(ns.idFromName('health-probe'));
+		await stub.fetch('https://do/health');
+	});
+}
+
+app.get('/health', async (c) => {
+	const deep = c.req.query('deep');
+	if (deep !== '1' && deep !== 'true') {
+		// Cheap default liveness path — UNCHANGED. No binding I/O, no auth.
+		return c.json({
+			status: 'ok',
+			service: 'bv-dns-security-mcp',
+			timestamp: new Date().toISOString(),
+		});
+	}
+
+	// Deep readiness mode is owner-gated: it does binding I/O (load-amplification
+	// surface for an unauthenticated poller) so we require an owner-tier credential.
+	// The `/health` route has no auth middleware (it isn't an mcpPath), so resolve
+	// the bearer here directly. OWNER_ALLOW_IPS still applies via resolveTier.
+	const authHeader = c.req.header('authorization');
+	const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+	const resolvedClientIp = resolveClientIpFromRequestHeaders(c.req.raw.headers);
+	const clientIp = resolvedClientIp === 'unknown' ? undefined : resolvedClientIp;
+	const tier = await resolveTier(token, c.env, clientIp, c.req.url);
+	if (!tier.authenticated || tier.tier !== 'owner') {
+		return c.json({ error: 'forbidden', error_description: 'Deep health checks require an owner-tier credential' }, 403);
+	}
+
+	const [scanCache, quotaCoordinator] = await Promise.all([
+		probeScanCacheKv(c.env.SCAN_CACHE),
+		probeQuotaCoordinator(c.env.QUOTA_COORDINATOR),
+	]);
+
+	const bindings = { scanCache, quotaCoordinator };
+	// Overall status degrades only on an actual probe error; an 'absent' binding
+	// (BSL self-host) is not a failure of a provisioned dependency.
+	const degraded = Object.values(bindings).some((status) => status === 'error');
+
+	return c.json(
+		{
+			status: degraded ? 'degraded' : 'ok',
+			service: 'bv-dns-security-mcp',
+			timestamp: new Date().toISOString(),
+			bindings,
+		},
+		degraded ? 503 : 200,
+	);
 });
 
 app.get('/badge/:domain', async (c) => {
@@ -419,6 +514,11 @@ app.get('/badge/:domain', async (c) => {
 
 app.post('/mcp', async (c) => {
 	const startTime = Date.now();
+	// F2 — one server-generated correlation id per inbound request, threaded into
+	// every executeMcpRequest below (and onward into every logEvent on the path)
+	// so multi-line traces can be stitched. cf-ray (Cloudflare's edge request id)
+	// is folded in when present for cross-correlation with CF logs.
+	const correlationId = makeCorrelationId(c.req.raw.headers);
 	const analytics = createAnalyticsClient(c.env.MCP_ANALYTICS);
 	logAnalyticsBindingStatus(analytics.enabled);
 	const headersLc = normalizeHeaders(c.req.raw.headers);
@@ -504,6 +604,7 @@ app.post('/mcp', async (c) => {
 					responseTransport: acceptsSSE(accept) ? 'sse' : 'json',
 					accept,
 					startTime,
+					correlationId,
 					ip,
 					isAuthenticated,
 					tierAuthResult,
@@ -589,6 +690,7 @@ app.post('/mcp', async (c) => {
 		responseTransport: acceptsSSE(accept) ? 'sse' : 'json',
 		accept,
 		startTime,
+		correlationId,
 		ip,
 		isAuthenticated,
 		tierAuthResult,
@@ -681,6 +783,8 @@ app.post('/mcp', async (c) => {
 
 app.post('/mcp/messages', async (c) => {
 	const startTime = Date.now();
+	// F2 — per-request correlation id for the legacy SSE message path.
+	const correlationId = makeCorrelationId(c.req.raw.headers);
 	const analytics = createAnalyticsClient(c.env.MCP_ANALYTICS);
 	logAnalyticsBindingStatus(analytics.enabled);
 	const headersLc = normalizeHeaders(c.req.raw.headers);
@@ -751,6 +855,7 @@ app.post('/mcp/messages', async (c) => {
 				batchSize: parsedBodies.length,
 				responseTransport: 'sse',
 				startTime,
+				correlationId,
 				ip,
 				isAuthenticated,
 				tierAuthResult,

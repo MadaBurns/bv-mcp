@@ -10,10 +10,61 @@ import { z } from 'zod';
 
 import type { CheckResult, Finding } from './scoring';
 import { buildCheckResult, createFinding } from './scoring';
+import { logEvent } from './log';
 
 /** Minimal Fetcher shape — matches a Cloudflare service binding. */
 export interface TlsProbeBinding {
 	fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+}
+
+/**
+ * Binding-degradation kinds for a PRESENT-but-failing operator service binding.
+ * Mirrors the matching members on the analytics `degradation` event. Absent
+ * binding (BSL self-host) is excluded — that's expected, not alertable.
+ */
+export type BindingDegradationKind = 'binding_unavailable' | 'binding_5xx' | 'binding_timeout';
+
+/**
+ * Optional telemetry callback invoked ONLY when a present binding fails. The
+ * binding additionally emits a structured warn log on its own. Fail-soft: the
+ * binding never throws if the sink does.
+ */
+export type BindingDegradationSink = (event: { degradationType: BindingDegradationKind; component: string; domain?: string }) => void;
+
+const TLS_PROBE_COMPONENT = 'tls_probe';
+
+/** Map a thrown fetch error to a degradation kind. AbortSignal.timeout → timeout. */
+function errorToKind(err: unknown): BindingDegradationKind {
+	const name = err instanceof Error ? err.name : '';
+	return name === 'TimeoutError' || name === 'AbortError' ? 'binding_timeout' : 'binding_unavailable';
+}
+
+/**
+ * Emit a structured warn log AND invoke the optional sink for a present-but-failing
+ * probe binding. Fail-soft: a throwing sink can never break the fail-soft contract.
+ */
+function recordTlsProbeDegradation(
+	kind: BindingDegradationKind,
+	telemetry: BindingDegradationSink | undefined,
+	context: { status?: number; host?: string; errorName?: string },
+): void {
+	logEvent({
+		timestamp: new Date().toISOString(),
+		severity: 'warn',
+		category: 'binding_degradation',
+		result: kind,
+		details: {
+			component: TLS_PROBE_COMPONENT,
+			route: '/probe',
+			...(context.status !== undefined ? { status: context.status } : {}),
+			...(context.errorName ? { errorName: context.errorName } : {}),
+		},
+	});
+	try {
+		telemetry?.({ degradationType: kind, component: TLS_PROBE_COMPONENT, domain: context.host });
+	} catch {
+		// Telemetry must never break the fail-soft binding contract.
+	}
 }
 
 const TLS_PROBE_TIMEOUT_MS = 8_000;
@@ -29,10 +80,7 @@ const TlsProbeResponseSchema = z
 		minVersion: z.string().optional(),
 		maxVersion: z.string().optional(),
 		supportedVersions: z.array(z.string()).optional(),
-		cipher: z
-			.object({ name: z.string().optional(), bits: z.number().optional() })
-			.passthrough()
-			.optional(),
+		cipher: z.object({ name: z.string().optional(), bits: z.number().optional() }).passthrough().optional(),
 		error: z.string().optional(),
 		probedAt: z.string().optional(),
 	})
@@ -64,8 +112,9 @@ export async function callTlsProbe(
 	binding: TlsProbeBinding | undefined,
 	authToken: string | undefined,
 	host: string,
-	opts?: { port?: number; signal?: AbortSignal },
+	opts?: { port?: number; signal?: AbortSignal; telemetry?: BindingDegradationSink },
 ): Promise<TlsProbeResult | null> {
+	// Absent binding (BSL self-host) is expected, NOT a degradation — stay silent.
 	if (!binding) return null;
 	try {
 		const qs = new URLSearchParams({ host, port: String(opts?.port ?? DEFAULT_PROBE_PORT) });
@@ -74,10 +123,15 @@ export async function callTlsProbe(
 			headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
 			signal: composeSignal(opts?.signal),
 		});
-		if (!resp.ok) return null;
+		// Any non-ok (incl. 404 — unlike recon, NOT benign here) is a present-binding failure.
+		if (!resp.ok) {
+			recordTlsProbeDegradation('binding_5xx', opts?.telemetry, { status: resp.status, host });
+			return null;
+		}
 		const parsed = TlsProbeResponseSchema.safeParse(await resp.json().catch(() => null));
 		return parsed.success ? parsed.data : null;
-	} catch {
+	} catch (err) {
+		recordTlsProbeDegradation(errorToKind(err), opts?.telemetry, { host, errorName: err instanceof Error ? err.name : undefined });
 		return null;
 	}
 }
