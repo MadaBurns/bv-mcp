@@ -104,9 +104,25 @@ function resolveProviderSignatureOptions(rt?: ScanRuntimeOptions): {
  * A per-category check runner. Captures the bespoke argument shaping for each
  * scanned category in one place (the single source of dispatch truth used by
  * BOTH the initial-run fan-out and {@link runCheckRetry}). `ssl` and
- * `http_security` ignore the `dnsOptions` parameter by design.
+ * `http_security` ignore the `dnsOptions` parameter by design — but DO take the
+ * optional 4th `perCheckSignal` (R7).
+ *
+ * R7 signal routing — two DELIBERATELY distinct signals:
+ *   • DoH checks read `dnsOptions.signal` (the SCAN-level signal). They share
+ *     one `queryCache`, so a query started by check A and deduplicated to check
+ *     B is driven by A's signal; a PER-CHECK abort there would cross-contaminate
+ *     a sibling. The scan-level signal only fires when the whole scan times out,
+ *     at which point abandoning every in-flight DoH query is correct.
+ *   • The raw-`fetch` checks (`ssl`, `http_security`) make INDEPENDENT,
+ *     un-cached fetches, so they safely receive the narrower `perCheckSignal`
+ *     (composed: this check's per-check timeout OR the scan-level abort).
  */
-type CheckRunner = (domain: string, dnsOptions: QueryDnsOptions, rt?: ScanRuntimeOptions) => Promise<CheckResult>;
+type CheckRunner = (
+	domain: string,
+	dnsOptions: QueryDnsOptions,
+	rt?: ScanRuntimeOptions,
+	perCheckSignal?: AbortSignal,
+) => Promise<CheckResult>;
 
 /**
  * The single dispatch table for all NORMAL-PROFILE scanned categories.
@@ -122,14 +138,17 @@ const CHECK_DISPATCH: Record<string, CheckRunner> = {
 	dmarc: (d, dns) => checkDmarc(d, dns),
 	dkim: (d, dns) => checkDkim(d, undefined, dns),
 	dnssec: (d, dns) => checkDnssec(d, dns),
-	ssl: (d, _dns, rt) => checkSsl(d, resolveSslOptions(rt)),
+	// R7: the raw-`fetch` checks take the narrower per-check signal (4th arg) so a
+	// per-check / scan-level timeout aborts their in-flight HTTPS subrequests.
+	// undefined outside scan context (direct calls / retry path) → unchanged.
+	ssl: (d, _dns, rt, sig) => checkSsl(d, { ...resolveSslOptions(rt), signal: sig }),
 	mta_sts: (d, dns) => checkMtaSts(d, dns),
 	ns: (d, dns) => checkNs(d, dns),
 	caa: (d, dns) => checkCaa(d, dns),
 	bimi: (d, dns) => checkBimi(d, dns),
 	tlsrpt: (d, dns) => checkTlsrpt(d, dns),
 	subdomain_takeover: (d, dns) => checkSubdomainTakeover(d, dns),
-	http_security: (d) => checkHttpSecurity(d),
+	http_security: (d, _dns, _rt, sig) => checkHttpSecurity(d, { signal: sig }),
 	dane: (d, dns) => checkDane(d, dns),
 	mx: (d, dns, rt) => checkMx(d, resolveProviderSignatureOptions(rt), dns),
 	dane_https: (d, dns) => checkDaneHttps(d, dns),
@@ -458,6 +477,16 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		runtimeOptions?.dnsConcurrency !== undefined ? parseScanDnsConcurrency(String(runtimeOptions.dnsConcurrency)) : SCAN_DNS_CONCURRENCY;
 	const dnsSemaphore = new Semaphore(dnsConcurrency);
 
+	// R7 — abort (not just abandon) in-flight subrequests on timeout. The
+	// scan-level controller is aborted by the scan-timeout snapshot below; each
+	// check additionally gets its OWN controller (linked to this one via
+	// AbortSignal.any) so a single check's per-check timeout cancels ONLY that
+	// check's fetches, never a sibling's still-needed work. The composed
+	// per-check signal is threaded into queryDns (DoH checks) and into the
+	// raw-`fetch` ssl/http checks. The apex-state probe below shares `scanDns`
+	// (and thus the scan signal) but runs BEFORE any timeout can fire.
+	const scanAbort = new AbortController();
+
 	// Skip secondary DNS confirmation in scan context for speed — individual checks
 	// still use secondary confirmation when called directly by users.
 	const scanDns: QueryDnsOptions = {
@@ -465,6 +494,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		queryCache: new Map(),
 		secondaryDoh: runtimeOptions?.secondaryDoh,
 		dnsSemaphore,
+		signal: scanAbort.signal,
 	};
 
 	// Apex-state short-circuit: probe the apex NS before fanning out, to separate
@@ -535,16 +565,25 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				timeoutBudget.perCheckTimeoutMs,
 			),
 		]).then(mergeAuthoritativeDnsInfraResults),
-	] : SCAN_CATEGORIES.map((cat) =>
-		runCachedCheck(
+	] : SCAN_CATEGORIES.map((cat) => {
+		// R7: per-check controller, composed with the scan-level signal. Aborting it
+		// on this check's per-check timeout cancels ONLY this check's raw fetches; the
+		// scan-level abort cascades into it. Composition (AbortSignal.any) keeps the
+		// per-check signal alive until either source fires.
+		const perCheckAbort = new AbortController();
+		const perCheckSignal = AbortSignal.any([perCheckAbort.signal, scanAbort.signal]);
+		return runCachedCheck(
 			domain,
 			cat,
-			() => safeCheck(cat, () => CHECK_DISPATCH[cat](domain, scanDns, runtimeOptions), timeoutBudget.perCheckTimeoutMs),
+			() =>
+				safeCheck(cat, () => CHECK_DISPATCH[cat](domain, scanDns, runtimeOptions, perCheckSignal), timeoutBudget.perCheckTimeoutMs, () =>
+					perCheckAbort.abort(),
+				),
 			kv,
 			cacheTtl,
 			forceRefresh,
-		),
-	);
+		);
+	});
 
 	let timedOut = false;
 	const settled = await Promise.race([
@@ -552,6 +591,11 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		new Promise<PromiseSettledResult<CheckResult>[]>((resolve) =>
 			setTimeout(() => {
 				timedOut = true;
+				// R7: abort the scan-level controller so EVERY still-in-flight subrequest
+				// (DoH via scanDns.signal + the raw HTTPS fetches via each composed
+				// per-check signal) is cancelled, not merely abandoned — the scan is over,
+				// so freeing the Workers subrequest budget is unambiguously correct here.
+				scanAbort.abort();
 				// Snapshot whatever has settled so far by racing each promise with an immediate rejection
 				resolve(
 					Promise.allSettled(
@@ -960,11 +1004,29 @@ async function runCachedCheck(
  * with an error/timeout finding instead of throwing, so other checks
  * can still complete.
  */
-async function safeCheck(category: CheckCategory, fn: () => Promise<CheckResult>, perCheckTimeoutMs: number): Promise<CheckResult> {
+async function safeCheck(
+	category: CheckCategory,
+	fn: () => Promise<CheckResult>,
+	perCheckTimeoutMs: number,
+	onTimeout?: () => void,
+): Promise<CheckResult> {
 	try {
 		const result = await Promise.race([
 			fn(),
-			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Check timed out')), perCheckTimeoutMs)),
+			new Promise<never>((_, reject) =>
+				setTimeout(() => {
+					// R7: fire the per-check abort BEFORE rejecting so the orphaned
+					// raw-fetch subrequests of THIS check are cancelled the moment the
+					// per-check budget is exceeded. Fail-soft: an onTimeout throw must
+					// not mask the timeout rejection.
+					try {
+						onTimeout?.();
+					} catch {
+						/* best-effort abort — never let it swallow the timeout */
+					}
+					reject(new Error('Check timed out'));
+				}, perCheckTimeoutMs),
+			),
 		]);
 		return result;
 	} catch (err) {

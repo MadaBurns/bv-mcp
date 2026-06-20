@@ -16,6 +16,7 @@ import type { CheckResult } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { safeFetch } from '../lib/safe-fetch';
+import { composeSignal, withAbortSignal } from '../lib/abort-signal';
 
 /** User-Agent for outbound probes — matches the package's scanner UA. */
 const SCANNER_USER_AGENT = 'Mozilla/5.0 (compatible; BlackVeilDNSScanner/1.0; +https://blackveilsecurity.com)';
@@ -175,18 +176,28 @@ type RedirectResult = { response: Response; cdnSignals: Headers };
  * headers from every hop so a CDN fronting an intermediate (or final) hop is
  * still attributable even when the final security response omits the signal.
  */
-async function fetchWithRedirects(url: string, timeoutMs: number): Promise<RedirectResult> {
+async function fetchWithRedirects(url: string, timeoutMs: number, callerSignal?: AbortSignal): Promise<RedirectResult> {
 	const cdnSignals = new Headers();
 	// Initial fetch goes to https://<domain> where <domain> is already validated
 	// upstream. Use raw fetch to keep the cost off the validation path. Subsequent
 	// redirect targets ARE attacker-controlled (Location header) and go via
 	// safeFetch (H3 fix from 2026-05-08 security audit).
-	let response = await fetch(url, {
-		method: 'HEAD',
-		redirect: 'manual',
-		headers: { 'User-Agent': SCANNER_USER_AGENT },
-		signal: AbortSignal.timeout(timeoutMs),
-	});
+	//
+	// R7: compose the per-fetch timeout with the caller's scan-/per-check-level
+	// abort signal so a scan timeout cancels the in-flight HTTPS probe instead of
+	// orphaning the subrequest. Absent caller signal → timeout-only (unchanged).
+	let response = await fetch(
+		url,
+		composeSignal(
+			{
+				method: 'HEAD',
+				redirect: 'manual',
+				headers: { 'User-Agent': SCANNER_USER_AGENT },
+				signal: AbortSignal.timeout(timeoutMs),
+			},
+			callerSignal,
+		),
+	);
 	accumulateCdnSignals(cdnSignals, response.headers);
 
 	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
@@ -207,12 +218,18 @@ async function fetchWithRedirects(url: string, timeoutMs: number): Promise<Redir
 		if (!nextUrl.startsWith('https://')) break;
 
 		try {
-			response = await safeFetch(nextUrl, {
-				method: 'HEAD',
-				redirect: 'manual',
-				headers: { 'User-Agent': SCANNER_USER_AGENT },
-				signal: AbortSignal.timeout(timeoutMs),
-			});
+			response = await safeFetch(
+				nextUrl,
+				composeSignal(
+					{
+						method: 'HEAD',
+						redirect: 'manual',
+						headers: { 'User-Agent': SCANNER_USER_AGENT },
+						signal: AbortSignal.timeout(timeoutMs),
+					},
+					callerSignal,
+				),
+			);
 		} catch {
 			// safeFetch throws TypeError on a blocked target (SSRF protection); fall
 			// out of the redirect loop and let analysis run with whatever headers we
@@ -259,9 +276,13 @@ function mergeSecurityHeaders(a: Headers, b: Headers): Headers {
 async function dualFetchHeaders(
 	domain: string,
 	timeoutMs: number,
+	callerSignal?: AbortSignal,
 ): Promise<{ headers: Headers; ok: boolean; status: number; usable: boolean } | null> {
 	const url = `https://${domain}`;
-	const results = await Promise.allSettled([fetchWithRedirects(url, timeoutMs), fetchWithRedirects(url, timeoutMs)]);
+	const results = await Promise.allSettled([
+		fetchWithRedirects(url, timeoutMs, callerSignal),
+		fetchWithRedirects(url, timeoutMs, callerSignal),
+	]);
 
 	const settled = results.filter((r): r is PromiseFulfilledResult<RedirectResult> => r.status === 'fulfilled').map((r) => r.value);
 
@@ -315,14 +336,20 @@ function withCdnSignals(base: Headers, cdnSignals: Headers): Headers {
  * Fetch the page body for WAF challenge fingerprinting.
  * Returns an empty string on error (fail-open — WAF detection should not block normal analysis).
  */
-async function fetchBodyForWafDetection(url: string, timeoutMs: number): Promise<string> {
+async function fetchBodyForWafDetection(url: string, timeoutMs: number, callerSignal?: AbortSignal): Promise<string> {
 	try {
-		const response = await fetch(url, {
-			method: 'GET',
-			redirect: 'manual',
-			headers: { 'User-Agent': SCANNER_USER_AGENT },
-			signal: AbortSignal.timeout(timeoutMs),
-		});
+		const response = await fetch(
+			url,
+			composeSignal(
+				{
+					method: 'GET',
+					redirect: 'manual',
+					headers: { 'User-Agent': SCANNER_USER_AGENT },
+					signal: AbortSignal.timeout(timeoutMs),
+				},
+				callerSignal,
+			),
+		);
 		return await response.text();
 	} catch {
 		return '';
@@ -355,13 +382,13 @@ async function fetchBodyForWafDetection(url: string, timeoutMs: number): Promise
  */
 const TOTAL_BUDGET_MS = 10_000;
 
-export async function checkHttpSecurity(domain: string): Promise<CheckResult> {
+export async function checkHttpSecurity(domain: string, options: { signal?: AbortSignal } = {}): Promise<CheckResult> {
 	let budgetTimeoutId: ReturnType<typeof setTimeout> | undefined;
 	const budgetExceeded = new Promise<'budget_exceeded'>((resolve) => {
 		budgetTimeoutId = setTimeout(() => resolve('budget_exceeded'), TOTAL_BUDGET_MS);
 	});
 	try {
-		const raced = await Promise.race([checkHttpSecurityInner(domain), budgetExceeded]);
+		const raced = await Promise.race([checkHttpSecurityInner(domain, options.signal), budgetExceeded]);
 		if (raced === 'budget_exceeded') {
 			const finding = createFinding(
 				'http_security',
@@ -379,14 +406,16 @@ export async function checkHttpSecurity(domain: string): Promise<CheckResult> {
 	}
 }
 
-async function checkHttpSecurityInner(domain: string): Promise<CheckResult> {
-	const dualResult = await dualFetchHeaders(domain, HTTPS_TIMEOUT_MS);
+async function checkHttpSecurityInner(domain: string, callerSignal?: AbortSignal): Promise<CheckResult> {
+	const dualResult = await dualFetchHeaders(domain, HTTPS_TIMEOUT_MS, callerSignal);
 
 	// WAF/CDN event detection — runs on usable (2xx/3xx) AND Cloudflare-flagged 4xx responses,
 	// short-circuiting before header analysis so a challenge/block page is never mis-read as the site.
 	if (dualResult) {
 		const headersForWaf = dualResult.headers;
-		const body = looksLikeWaf(headersForWaf) ? await fetchBodyForWafDetection(`https://${domain}`, HTTPS_TIMEOUT_MS) : undefined;
+		const body = looksLikeWaf(headersForWaf)
+			? await fetchBodyForWafDetection(`https://${domain}`, HTTPS_TIMEOUT_MS, callerSignal)
+			: undefined;
 		const event = detectWafEvent(headersForWaf, body, dualResult.status);
 		if (event) {
 			const provider = event.provider.charAt(0).toUpperCase() + event.provider.slice(1);
@@ -430,12 +459,18 @@ async function checkHttpSecurityInner(domain: string): Promise<CheckResult> {
 		// Dual-fetch unusable — delegate to safeFetch so the package's GET
 		// fallback (and any redirect target it follows via its own fetchFn)
 		// is protected against SSRF redirect targets (H3 fix, 2026-05-08).
-		const response = await safeFetch(input, init);
+		// R7: compose the caller signal so the package's GET-fallback fetch is
+		// also abortable on a scan-/per-check-level timeout.
+		const response = await safeFetch(input, composeSignal(init, callerSignal));
 		capturedHeaders = response.headers;
 		return response;
 	};
 
-	const result = (await checkHTTPSecurity(domain, capturingFetch, { timeout: HTTPS_TIMEOUT_MS })) as CheckResult;
+	// withAbortSignal is a no-op when callerSignal is undefined, so the package
+	// sees the bare capturingFetch (unchanged) on direct/BSL calls.
+	const result = (await checkHTTPSecurity(domain, withAbortSignal(capturingFetch, callerSignal), {
+		timeout: HTTPS_TIMEOUT_MS,
+	})) as CheckResult;
 
 	if (!capturedHeaders) return result;
 

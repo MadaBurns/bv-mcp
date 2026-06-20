@@ -14,6 +14,7 @@ import type { CheckResult } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { callTlsProbe, mergeTlsFinding } from '../lib/tls-probe-binding';
 import type { TlsProbeBinding, BindingDegradationSink } from '../lib/tls-probe-binding';
+import { withAbortSignal } from '../lib/abort-signal';
 
 /**
  * Check SSL/TLS configuration for a domain.
@@ -27,9 +28,22 @@ import type { TlsProbeBinding, BindingDegradationSink } from '../lib/tls-probe-b
  */
 export async function checkSsl(
 	domain: string,
-	tlsProbeOptions: { tlsProbeBinding?: TlsProbeBinding; tlsProbeAuthToken?: string; onBindingDegradation?: BindingDegradationSink } = {},
+	tlsProbeOptions: {
+		tlsProbeBinding?: TlsProbeBinding;
+		tlsProbeAuthToken?: string;
+		onBindingDegradation?: BindingDegradationSink;
+		/**
+		 * Optional caller-supplied abort signal (R7). When provided, it is composed
+		 * with the package's own per-fetch `AbortSignal.timeout` so a scan-/per-check
+		 * timeout ABORTS the in-flight HTTPS subrequests rather than merely abandoning
+		 * them — freeing the Cloudflare Workers subrequest budget. Absent (every direct
+		 * `check_ssl` call) → byte-for-byte unchanged behaviour.
+		 */
+		signal?: AbortSignal;
+	} = {},
 ): Promise<CheckResult> {
-	const result = (await checkSSL(domain, fetch, { timeout: HTTPS_TIMEOUT_MS })) as CheckResult;
+	const fetchFn = withAbortSignal(fetch, tlsProbeOptions.signal);
+	const result = (await checkSSL(domain, fetchFn, { timeout: HTTPS_TIMEOUT_MS })) as CheckResult;
 	// Operator-only TLS-version enrichment via the BV_TLS_PROBE service binding.
 	// Fail-soft: absent binding (every BSL self-host) → result returned unchanged.
 	// callTlsProbe returns null on any failure; mergeTlsFinding only ever appends a
