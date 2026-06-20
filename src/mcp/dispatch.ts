@@ -284,6 +284,11 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				providerSignaturesAllowedHosts: parseAllowedHosts(options.providerSignaturesAllowedHosts),
 				providerSignaturesSha256: options.providerSignaturesSha256,
 				analytics: options.analytics,
+				// Wire the binding-degradation analytics sink ONCE here (R1): when an
+				// analytics client is present, recon/tls-probe wrappers emit the
+				// `degradation` event on a PRESENT-binding failure so the cron alert
+				// can fire. Undefined when analytics is unavailable. Fail-open.
+				onBindingDegradation: options.analytics ? (e) => options.analytics?.emitDegradationEvent(e) : undefined,
 				profileAccumulator: options.profileAccumulator,
 				waitUntil: options.waitUntil,
 				scoringConfig: options.scoringConfig,
