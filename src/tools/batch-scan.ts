@@ -58,6 +58,7 @@ function emptyResult(domain: string, error: string): BatchScanResultItem {
 		dnssecSource: null,
 		cdnProvider: null,
 		notApplicableCategories: [],
+		inconclusiveCategories: [],
 		timestamp: new Date().toISOString(),
 		cached: false,
 		// No scan ran for an error placeholder (invalid domain / budget exceeded),

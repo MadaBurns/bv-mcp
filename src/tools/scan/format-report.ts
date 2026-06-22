@@ -44,8 +44,19 @@ export interface StructuredScanResult {
 	 * Categories that don't apply to this domain (no MX → mail-only categories under
 	 * `web_only`/`non_mail`; check timed-out/errored → inconclusive). These categories
 	 * are always reported as `null` in `categoryScores` to avoid the misleading 100 or 0.
+	 * NOTE: this array deliberately conflates two reasons — a deliberate skip and a
+	 * measurement failure. Use `inconclusiveCategories` (a subset) to tell them apart.
 	 */
 	notApplicableCategories: string[];
+	/**
+	 * Subset of `notApplicableCategories` whose `null` score is due to a transient
+	 * measurement FAILURE (the check timed-out or errored, `checkStatuses[cat]` is
+	 * `'timeout'`/`'error'`) rather than the control genuinely not applying to this
+	 * domain. A consumer should treat these as "could not measure / retry later", not
+	 * as a deliberate N/A. Always a subset: every entry here is also in
+	 * `notApplicableCategories` and `null` in `categoryScores`. Empty when every check ran.
+	 */
+	inconclusiveCategories: string[];
 	timestamp: string;
 	cached: boolean;
 	/**
@@ -193,6 +204,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 	const allCategoryKeys = new Set<string>([...Object.keys(sourceCategoryScores), ...result.checks.map((c) => c.category)]);
 
 	const notApplicableCategories: string[] = [];
+	const inconclusiveCategories: string[] = [];
 	const categoryScores: Record<string, number | null> = {};
 	for (const category of allCategoryKeys) {
 		const check = checksByCategory.get(category);
@@ -201,6 +213,13 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 			: undefined;
 		if (isCategoryNonApplicable(check, category, profile, rawScore)) {
 			notApplicableCategories.push(category);
+			// A category is "inconclusive" (could-not-measure) — rather than a deliberate
+			// N/A — exactly when Rule 1 fired: its check timed-out or errored. Deriving it
+			// here, inside the same branch that nulls the score, keeps `inconclusiveCategories`
+			// a guaranteed subset of `notApplicableCategories` with a null `categoryScores`.
+			if (check && (check.checkStatus === 'timeout' || check.checkStatus === 'error')) {
+				inconclusiveCategories.push(category);
+			}
 			categoryScores[category] = null;
 		} else if (rawScore !== undefined) {
 			categoryScores[category] = rawScore;
@@ -238,6 +257,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		dnssecSource,
 		cdnProvider,
 		notApplicableCategories,
+		inconclusiveCategories,
 		timestamp: result.timestamp,
 		cached: result.cached,
 		scoringModelVersion: SCORING_MODEL_VERSION,
