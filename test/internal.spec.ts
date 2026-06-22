@@ -67,6 +67,38 @@ describe('Internal service binding routes', () => {
 		});
 	});
 
+	describe('recon backend wiring', () => {
+		// Regression (2026-06-23): the internal door built tool options without
+		// reconBinding/reconAuthToken, so scan_buckets_* / osint_* always degraded to
+		// the "unprovisioned" stub even with BV_RECON bound — silently stalling the
+		// bv2-ops recon-sweep queue. This asserts the door reaches the recon worker.
+		it('passes BV_RECON through the internal door so scan_buckets_start reaches bv2-recon', async () => {
+			const reconFetch = vi.fn(
+				async () =>
+					new Response(JSON.stringify({ scanId: 'test-scan-123', status: 'started' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+			);
+			const reconEnv = {
+				...testEnv,
+				BV_RECON: { fetch: reconFetch },
+				BV_RECON_KEY: 'test-recon-key',
+			} as typeof testEnv;
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: 'scan_buckets_start', arguments: { target: 'example.com' } }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, reconEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			expect(reconFetch).toHaveBeenCalled();
+			expect(String(reconFetch.mock.calls[0]?.[0])).toContain('/buckets/api/scan/trigger');
+		});
+	});
+
 	describe('POST /internal/tools/call', () => {
 		it('dispatches check_spf and returns raw result', async () => {
 			const { mockTxtRecords } = await import('./helpers/dns-mock');
