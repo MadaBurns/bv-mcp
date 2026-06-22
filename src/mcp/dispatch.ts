@@ -165,6 +165,13 @@ export interface DispatchMcpMethodOptions {
 	keyHash?: string;
 	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter tool_call analytics grouping. Threaded to handleToolsCall. */
 	colo?: string;
+	/**
+	 * MCP session ID from the `mcp-session-id` request header. Threaded to
+	 * handleToolsCall so readAndUpdateLastTool can resolve the priorTool
+	 * dimension (blob12) from in-memory session state. Optional — absent on
+	 * sessionless paths → priorTool='unknown'.
+	 */
+	sessionId?: string;
 	certstream?: { fetch: typeof fetch };
 	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
@@ -308,6 +315,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				authTier: options.authTier,
 				keyHash: options.keyHash,
 				colo: options.colo,
+				sessionId: options.sessionId,
 				certstream: options.certstream,
 				certstreamAuthToken: options.certstreamAuthToken,
 				whoisBinding: options.whoisBinding,

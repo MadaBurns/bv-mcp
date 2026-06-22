@@ -69,6 +69,12 @@ export interface AnalyticsClient {
 			isError: boolean;
 			score?: number;
 			cacheStatus?: 'hit' | 'miss' | 'n/a';
+			/**
+			 * blob12 — canonical name of the tool called immediately before this one
+			 * in the same MCP session. 'none' = first call; 'unknown' = continuity
+			 * unavailable (cross-isolate, no session, etc.). Best-effort; never blocks.
+			 */
+			priorTool?: string;
 		} & AnalyticsContext,
 	): void;
 	emitRateLimitEvent(
@@ -240,9 +246,14 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.cacheStatus ?? 'n/a',
 					event.keyHash ?? 'none',
 					event.ipHash ?? 'none',
-					// blob11 (append-only trailing) — Cloudflare edge colo. New dimension;
-					// must stay LAST so existing position-indexed queries are unaffected.
+					// blob11 — Cloudflare edge colo (append-only; existing queries unaffected).
 					event.colo ?? 'unknown',
+					// blob12 — priorTool: canonical name of the immediately-preceding tool in
+					// the same MCP session. 'none' = first call; 'unknown' = continuity
+					// unavailable. Computed synchronously from in-memory session state
+					// (readAndUpdateLastTool) — zero I/O, O(1), never blocks the hot path.
+					// Append-only; blobs 1–11 and doubles 1–2 UNCHANGED.
+					event.priorTool ?? 'unknown',
 				],
 				doubles: [sanitizeNumber(event.durationMs), sanitizeNumber(event.score ?? 0)],
 			});

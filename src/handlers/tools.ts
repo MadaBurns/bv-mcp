@@ -96,6 +96,7 @@ import {
 } from './tool-args';
 import type { OutputFormat } from './tool-args';
 import { buildLogContext, logToolFailure, logToolSuccess } from './tool-execution';
+import { readAndUpdateLastTool } from '../lib/session-memory';
 import { formatCheckResult, mcpError, buildToolResult } from './tool-formatters';
 import type { McpContent } from './tool-formatters';
 import { TOOLS } from '../schemas/tool-definitions';
@@ -213,6 +214,13 @@ interface ToolRuntimeOptions {
 	keyHash?: string;
 	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter tool_call analytics grouping. */
 	colo?: string;
+	/**
+	 * MCP session ID from the `mcp-session-id` request header. Used to resolve
+	 * the `priorTool` dimension (blob12) on tool_call analytics events via
+	 * readAndUpdateLastTool — synchronous, in-memory only, never blocks.
+	 * Omitted on sessionless paths (e.g. /internal tools/call) → priorTool='unknown'.
+	 */
+	sessionId?: string;
 	certstream?: { fetch: typeof fetch };
 	certstreamAuthToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
@@ -1054,8 +1062,14 @@ export async function handleToolsCall(
 ): Promise<McpToolResult> {
 	const { name, args } = resolveToolAlias(params.name, params.arguments ?? {});
 	const startTime = Date.now();
+	// Resolve priorTool synchronously (O(1) in-memory Map read+write) before the
+	// tool executes so the "immediately before this call" semantic is exact.
+	// readAndUpdateLastTool returns 'none' on the first call, 'unknown' when the
+	// session is absent (cross-isolate, sessionless path, etc.) — never blocks.
+	const priorTool = readAndUpdateLastTool(runtimeOptions?.sessionId, name);
+	const runtimeOptionsWithPrior = runtimeOptions ? { ...runtimeOptions, priorTool } : { priorTool };
 	/** Lazy log context builder — evaluates durationMs at call time. */
-	const ctx = () => buildLogContext(name, startTime, domain, runtimeOptions);
+	const ctx = () => buildLogContext(name, startTime, domain, runtimeOptionsWithPrior);
 	let domain: string | undefined;
 	let logResult = 'unknown';
 	let logDetails: unknown;

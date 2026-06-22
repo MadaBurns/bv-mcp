@@ -120,16 +120,18 @@ describe('createAnalyticsClient', () => {
 		});
 		const point = ds.writeDataPoint.mock.calls[0][0];
 		expect(point.indexes).toEqual(['tool_call']);
-		// blob11 (index 10) = colo, appended trailing. Existing positions unchanged.
-		expect(point.blobs).toHaveLength(11);
+		// blob12 (index 11) = priorTool, appended trailing (C2). Existing positions unchanged.
+		expect(point.blobs).toHaveLength(12);
 		expect(point.blobs[4]).toBe('NZ');
 		expect(point.blobs[8]).toBe('none');
-		// colo absent in ctx → defaults to 'unknown' (fail-open).
+		// colo absent in ctx → defaults to 'unknown' (fail-open); still at blob11 (index 10).
 		expect(point.blobs[10]).toBe('unknown');
+		// priorTool absent → defaults to 'unknown'.
+		expect(point.blobs[11]).toBe('unknown');
 		expect(point.doubles).toEqual([3200, 85]);
 	});
 
-	it('emitToolEvent appends colo as the trailing blob11 without shifting existing positions', () => {
+	it('emitToolEvent appends colo as blob11 and priorTool as blob12 without shifting existing positions', () => {
 		const ds = mockDataset();
 		const client = createAnalyticsClient(ds);
 		client.emitToolEvent({
@@ -143,15 +145,17 @@ describe('createAnalyticsClient', () => {
 			ipHash: 'i_cafef00d',
 			...ctx,
 			colo: 'SYD',
+			priorTool: 'check_spf',
 		});
 		const point = ds.writeDataPoint.mock.calls[0][0];
-		expect(point.blobs).toHaveLength(11);
+		expect(point.blobs).toHaveLength(12);
 		// Existing position-indexed fields stay put.
 		expect(point.blobs[0]).toBe('scan_domain');
 		expect(point.blobs[4]).toBe('NZ');
 		expect(point.blobs[9]).toBe('i_cafef00d'); // blob10 ipHash unmoved
-		// New trailing dimension.
-		expect(point.blobs[10]).toBe('SYD');
+		expect(point.blobs[10]).toBe('SYD');        // blob11 colo unmoved
+		// New trailing dimension (C2).
+		expect(point.blobs[11]).toBe('check_spf');  // blob12 priorTool
 	});
 
 	it('emitRateLimitEvent writes rate_limit index', () => {
