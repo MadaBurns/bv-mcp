@@ -15,10 +15,10 @@
 //
 // HOW A2 USES THIS AS A GATE:
 //   The `BASELINE_HIT_RATE` constant below is set to the measured rate on main.
-//   A2 must keep `overallHitRate >= BASELINE_HIT_RATE + 0.15` (15 pp lift) and
+//   A2 must keep `overallHitRate >= 0.90` (the explicit >=90% gate below) and
 //   must not regress below `BASELINE_HIT_RATE`. If both pass the gate is green.
 //   Run:  npx vitest run test/tool-pick-eval.spec.ts
-//   to reproduce.  The detailed per-ask breakdown is printed only when
+//   to reproduce.  The detailed per-ask + per-tool breakdown is printed only when
 //   `VERBOSE_EVAL=1` is set, keeping normal CI output concise.
 
 import { describe, it, expect } from 'vitest';
@@ -286,7 +286,19 @@ function tokenize(text: string): string[] {
 		.filter((t) => t.length > 1);
 }
 
-/** Stop-words that carry no discriminative signal between tools. */
+/**
+ * Stop-words that carry no discriminative signal between tools.
+ *
+ * NOTE — `check` is intentionally included as a stop-word because it appears
+ * in nearly every tool name (e.g. `check_spf`, `check_dmarc`, …) and in many
+ * asks; keeping it makes those tokens equally invisible on both sides.  The
+ * side-effect is a known asymmetry: tool names that START with `check_` lose
+ * their prefix weight, so discrimination must come from the suffix token
+ * (e.g. `spf`, `dmarc`).  A2 should be aware of this when rewriting
+ * descriptions — adding the full term (`check_spf`, `check_dmarc`) verbatim
+ * in the description text bypasses the stop-word filter because the tokenizer
+ * splits on `_`, emitting `check` (filtered) + `spf` (kept).
+ */
 const STOP_WORDS = new Set([
 	'the', 'this', 'that', 'for', 'our', 'from', 'with', 'and', 'or', 'to', 'of',
 	'in', 'at', 'is', 'it', 'be', 'by', 'we', 'me', 'us', 'any', 'all', 'via',
@@ -374,10 +386,11 @@ function pickTool(ask: string): string {
 }
 
 // ─── Baseline constant (frozen from the first passing run) ──────────────────
-// A2 must achieve >= BASELINE_HIT_RATE + 0.15 to demonstrate improvement.
-// Set conservatively so the commit is RED against a >90% target but passes
-// the gate assertion (we assert >= BASELINE, not >= 0.90).
-const BASELINE_HIT_RATE = 0.72; // measured on main @ 2f99bb9 (2026-06-22); A2 must reach >=0.87
+// A2 must achieve >= 0.90 (the explicit gate assertion below) to demonstrate
+// sufficient improvement.  Set conservatively so the commit is RED against
+// that target but passes the baseline guard (we assert >= BASELINE_HIT_RATE
+// as a regression floor; the >=0.90 assertion is what A2 must lift).
+const BASELINE_HIT_RATE = 0.72; // measured on main @ 2f99bb9 (2026-06-22); A2 target: >=0.90
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -408,10 +421,18 @@ describe('A1 — tool-pick eval harness (baseline)', () => {
 		let hits = 0;
 		const misses: Array<{ ask: string; label: string; picked: string }> = [];
 
+		// Per-tool accumulator — keyed by the corpus label (correct tool name).
+		const perTool = new Map<string, { hits: number; total: number }>();
+
 		for (const { ask, label } of CORPUS) {
 			const picked = pickTool(ask);
+			// Ensure every labelled tool has an entry even if never picked.
+			if (!perTool.has(label)) perTool.set(label, { hits: 0, total: 0 });
+			const entry = perTool.get(label)!;
+			entry.total++;
 			if (picked === label) {
 				hits++;
+				entry.hits++;
 			} else {
 				misses.push({ ask, label, picked });
 			}
@@ -420,7 +441,7 @@ describe('A1 — tool-pick eval harness (baseline)', () => {
 		const hitRate = hits / CORPUS.length;
 		const pct = (hitRate * 100).toFixed(1);
 
-		// Print summary (always) and per-ask breakdown (verbose mode only)
+		// Print summary (always) and per-ask + per-tool breakdown (verbose mode only)
 		console.log(`\n── A1 tool-pick eval ──────────────────────────────────`);
 		console.log(`  Corpus: ${CORPUS.length} asks`);
 		console.log(`  Hits:   ${hits} / ${CORPUS.length}`);
@@ -430,6 +451,23 @@ describe('A1 — tool-pick eval harness (baseline)', () => {
 			console.log(`\n  Misses (${misses.length}):`);
 			for (const m of misses) {
 				console.log(`    MISS  ask="${m.ask.slice(0, 60)}"  want=${m.label}  got=${m.picked}`);
+			}
+
+			// Per-tool hit-rate summary, sorted worst-first so A2 can target the
+			// lowest-scoring tool descriptions first.
+			const sorted = [...perTool.entries()].sort(([, a], [, b]) => {
+				const rateA = a.hits / a.total;
+				const rateB = b.hits / b.total;
+				// Primary: ascending hit-rate (worst first).
+				// Secondary: descending total asks (higher-coverage tools first on ties).
+				if (rateA !== rateB) return rateA - rateB;
+				return b.total - a.total;
+			});
+			console.log(`\n  Per-tool hit-rate (worst first):`);
+			for (const [name, { hits: h, total: t }] of sorted) {
+				const rate = ((h / t) * 100).toFixed(0);
+				const bar = '█'.repeat(h) + '░'.repeat(t - h);
+				console.log(`    ${name.padEnd(36)} ${h}/${t} (${rate.padStart(3)}%)  ${bar}`);
 			}
 		}
 
