@@ -160,6 +160,50 @@ describe('buildStructuredScanResult', () => {
 		expect(s.notApplicableCategories).not.toContain('spf');
 	});
 
+	it('separates inconclusive (errored/timed-out) categories from genuine N/A (awswaf.com regression)', () => {
+		// web_only domain (no MX): dkim is a genuine non-applicable mail-only category,
+		// while http_security ERRORED (e.g. a WAF endpoint) and dnssec TIMED OUT — those
+		// two are "could not measure", not "does not apply".
+		const result = makeMockScanResult({
+			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			score: { overall: 70, grade: 'C+', categoryScores: { ssl: 70 } as Record<CheckCategory, number>, findings: [], summary: 'ok' } as ScanScore,
+			checks: [
+				{ category: 'ssl', passed: true, score: 70, findings: [{ category: 'ssl', title: 'Valid cert', severity: 'info', detail: 'x' }], checkStatus: 'completed' },
+				{ category: 'dkim', passed: false, score: 0, findings: [{ category: 'dkim', title: 'No DKIM', severity: 'info', detail: 'x' }], checkStatus: 'completed' },
+				{ category: 'http_security', passed: false, score: 0, findings: [], checkStatus: 'error' },
+				{ category: 'dnssec', passed: false, score: 0, findings: [], checkStatus: 'timeout' },
+			] as CheckResult[],
+		});
+		const s = buildStructuredScanResult(result);
+
+		// inconclusive = errored/timed-out checks only
+		expect(s.inconclusiveCategories).toContain('http_security');
+		expect(s.inconclusiveCategories).toContain('dnssec');
+		expect(s.inconclusiveCategories).not.toContain('dkim'); // genuine N/A, measured fine
+		expect(s.inconclusiveCategories).not.toContain('ssl'); // applicable, measured fine
+
+		// dual-listing preserved: every inconclusive category is also in notApplicableCategories
+		for (const cat of s.inconclusiveCategories) {
+			expect(s.notApplicableCategories).toContain(cat);
+		}
+		expect(s.notApplicableCategories).toContain('dkim'); // genuine N/A stays
+		expect(s.notApplicableCategories).not.toContain('ssl'); // applicable web category
+
+		// reconciliation invariant holds for both buckets: score is null
+		expect(s.categoryScores.http_security).toBeNull();
+		expect(s.categoryScores.dnssec).toBeNull();
+		expect(s.categoryScores.dkim).toBeNull();
+		expect(s.categoryScores.ssl).toBe(70);
+	});
+
+	it('returns empty inconclusiveCategories when all checks completed', () => {
+		const result = makeMockScanResult({
+			checks: [{ category: 'spf', passed: true, score: 100, findings: [], checkStatus: 'completed' }] as CheckResult[],
+		});
+		const s = buildStructuredScanResult(result);
+		expect(s.inconclusiveCategories).toEqual([]);
+	});
+
 	it('returns empty checkStatuses when checks array is empty', () => {
 		const result = makeMockScanResult({ checks: [] });
 		const s = buildStructuredScanResult(result);
