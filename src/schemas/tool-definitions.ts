@@ -176,42 +176,42 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 /** All MCP tool definitions. */
 const TOOL_DEFS: Record<string, ToolDef> = {
 	check_mx: {
-		description: 'Look up MX records for a domain. Shows mail servers, email provider detection, and validates configuration.',
+		description: 'Look up MX records for a domain. Identifies which mail servers receive inbound email for the domain and which email hosting provider is used (Google Workspace, Microsoft 365, Proofpoint, etc.). Use when asked which email provider hosts inbound mail for a domain, or to see MX record configuration.',
 		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'protective',
 		scanIncluded: true,
 	},
 	check_spf: {
-		description: 'Look up and validate SPF record for a domain. Shows authorized senders, syntax issues, and trust surface.',
+		description: 'Look up and validate the SPF record for a domain. Lists all IP addresses and third-party senders authorised to send email on behalf of the domain, flags syntax errors, and shows the trust surface (which mail servers are whitelisted). Use when you need to know who is permitted to send email as a domain.',
 		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'core',
 		scanIncluded: true,
 	},
 	check_dmarc: {
-		description: 'Look up and validate DMARC record for a domain. Shows policy enforcement, alignment mode, and reporting config.',
+		description: 'Look up and validate the DMARC record for a domain. Shows the enforcement level (none/quarantine/reject), alignment mode (strict/relaxed), and aggregate/forensic reporting destinations. Use to determine a domain\'s DMARC enforcement level, whether it sends aggregate reports, or if it is protected against email impersonation — distinct from check_shadow_domains (which checks TLD variants) and assess_spoofability (composite score).',
 		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'core',
 		scanIncluded: true,
 	},
 	check_dkim: {
-		description: 'Look up DKIM records for a domain. Probes common selectors and validates key strength and algorithm.',
+		description: 'Look up DKIM records for a domain. Probes common selectors, validates the signing algorithm used for outgoing email (RSA-1024/2048, Ed25519), and reports key strength. Use to verify that outbound email signatures are cryptographically sound.',
 		schema: CheckDkimArgs,
 		group: 'email_auth',
 		tier: 'core',
 		scanIncluded: true,
 	},
 	check_dnssec: {
-		description: 'Check DNSSEC status for a domain. Verifies DNSKEY/DS records and validation chain.',
+		description: 'Check DNSSEC status for a domain. Verifies whether DNS is tamper-proof and protected against cache poisoning and DNS spoofing attacks by validating DNSKEY and DS records. Reports whether DNSSEC is enabled and validating.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'core',
 		scanIncluded: true,
 	},
 	check_ssl: {
-		description: 'Check SSL/TLS certificate for a domain. Shows issuer, expiry, protocol versions, and HTTPS configuration.',
+		description: 'Check the SSL/TLS certificate for a domain. Shows the issuer (Certificate Authority), expiry date (when the certificate expires), supported protocol versions (TLS 1.2/1.3), and HTTPS configuration. Use to verify certificate validity and who issued it.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'core',
@@ -219,14 +219,14 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	check_mta_sts: {
 		description:
-			'Check whether a domain enforces SMTP TLS via MTA-STS. Queries _mta-sts.<domain> for the policy TXT record, fetches the published policy file at mta-sts.<domain>, and reports its mode (enforce/testing/none), MX coverage, and whether MX-accepting domains lack a policy. Use to confirm inbound mail is protected against downgrade/MITM.',
+			'Check whether a domain enforces SMTP TLS for inbound mail via MTA-STS, protecting against downgrade attacks. Queries _mta-sts.<domain> and fetches the policy file, reports mode (enforce/testing/none) and MX coverage. Use to verify whether inbound SMTP is protected against TLS downgrade or MITM — distinct from check_dane which uses TLSA pinning.',
 		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'protective',
 		scanIncluded: true,
 	},
 	check_ns: {
-		description: 'Look up NS (nameserver) records for a domain. Shows DNS provider, delegation, and redundancy.',
+		description: 'Look up NS (nameserver) records for a domain. Identifies the DNS nameserver provider (Cloudflare, Route53, NS1, etc.) and shows delegation and redundancy. Use to find out which authoritative nameserver or DNS hosting service is used for a domain.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'protective',
@@ -265,7 +265,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	check_dane: {
 		description:
-			'Check DANE/TLSA certificate pinning for SMTP. Resolves the domain\'s MX hosts and looks up TLSA records at _25._tcp.<mx-host>, verifying whether mail-server certificates are bound in DNS for DNSSEC-backed protection against CA misissuance and MITM on inbound mail. Returns findings for absent or malformed TLSA records (not applicable to no-MX/null-MX domains). For HTTPS DANE at _443._tcp, use check_dane_https.',
+			'Check DANE/TLSA certificate pinning for SMTP at port 25. Resolves the domain\'s MX hosts and looks up TLSA records at _25._tcp.<mx-host>, verifying whether SMTP mail-server certificates are bound in DNS (DNSSEC-backed protection against CA misissuance and MITM on inbound mail). Use when asked if SMTP connections are protected by DANE/TLSA pinning. For HTTPS DANE at port 443, use check_dane_https instead.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'hardening',
@@ -279,7 +279,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: true,
 	},
 	check_dane_https: {
-		description: 'Verify DANE certificate pinning for HTTPS via TLSA records at _443._tcp.{domain}.',
+		description: 'Verify DANE certificate pinning for HTTPS connections. Looks up TLSA records at _443._tcp.{domain} (port 443) to confirm the web certificate is pinned in DNS. Distinct from check_dane which covers SMTP at port 25.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'protective',
@@ -293,14 +293,14 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: true,
 	},
 	check_lookalikes: {
-		description: 'Detect active typosquat/lookalike domains. Standalone.',
+		description: 'Detect active typosquat and lookalike/homoglyph domains that impersonate your brand and could be used in phishing. Identifies character-substitution and visual-confusion domains registered by attackers. Distinct from check_shadow_domains (TLD variants with auth gaps) and discover_brand_domains (legitimate brand portfolio).',
 		schema: BaseDomainArgs,
 		group: 'brand_threats',
 		tier: 'protective',
 		scanIncluded: false,
 	},
 	check_subdomailing: {
-		description: 'Detect SubdoMailing risk by analyzing SPF include chain for takeover-vulnerable domains.',
+		description: 'Detect SubdoMailing risk: analyzes the SPF include chain for dangling or hijackable subdomains that could let an attacker send email as the domain. Use when you want to know if an SPF include chain can be hijacked through a dangling domain, or to detect subdomain mailing risk hidden in SPF includes.',
 		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'protective',
@@ -308,33 +308,33 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	scan_domain: {
 		description:
-			'Runs a full DNS and email security audit for a domain, aggregating every scan-included check in parallel: SPF, DKIM, DMARC, DNSSEC, TLS/SSL, MTA-STS, CAA, BIMI, subdomain takeover, and more. Returns an overall score, letter grade, maturity stage, and prioritized findings. The broadest single-domain tool; the individual check_* tools each cover one control in isolation.',
+			'Run a full DNS and email security audit for a single domain. Aggregates every scan-included check in parallel (SPF, DKIM, DMARC, DNSSEC, TLS/SSL, MTA-STS, CAA, BIMI, subdomain takeover, and more) and returns an overall security score, letter grade (A–F), maturity stage, and prioritized findings. Use for a comprehensive single-domain audit, to get a domain\'s overall security grade, or to assess email security maturity.',
 		schema: ScanDomainArgs,
 		group: 'meta',
 		scanIncluded: false,
 		recommended: true,
 	},
 	batch_scan: {
-		description: 'Scan up to 10 domains at once. Returns score, grade, and finding counts per domain.',
+		description: 'Bulk-scan up to 10 domains in parallel. Runs a full security audit on each domain in the list and returns score, letter grade, and finding counts per domain. Use when you want to audit multiple domains at once or do a bulk scan of several domains simultaneously — distinct from compare_domains which does a side-by-side analysis of 2–5 domains.',
 		schema: BatchScanArgs,
 		group: 'meta',
 		scanIncluded: false,
 	},
 	compare_domains: {
-		description: 'Side-by-side security comparison of 2–5 domains. Shows scores, category gaps, and unique weaknesses.',
+		description: 'Side-by-side security comparison of 2–5 domains. Shows relative scores, category gaps, and unique weaknesses for each domain. Use when comparing your security posture against a competitor, or doing a head-to-head comparison between multiple domains.',
 		schema: CompareDomainsArgs,
 		group: 'meta',
 		scanIncluded: false,
 	},
 	compare_baseline: {
-		description: 'Compare domain security against a policy baseline.',
+		description: 'Compare a domain\'s current security configuration against a fixed policy baseline to determine compliance. Use to check whether a domain meets a policy requirement — not for tracking improvement/regression over time (use analyze_drift) and not for comparing multiple domains (use compare_domains).',
 		schema: CompareBaselineArgs,
 		group: 'meta',
 		scanIncluded: false,
 		recommended: true,
 	},
 	check_shadow_domains: {
-		description: 'Find TLD variants with email auth gaps. Standalone.',
+		description: 'Find alternate TLD variants of a domain (e.g. example.net, example.co) that have weak or missing email authentication and could be used to spoof email. Use when asked about TLD variants with email auth gaps — distinct from check_lookalikes which detects typosquat/homoglyph impersonation domains.',
 		schema: BaseDomainArgs,
 		group: 'brand_threats',
 		tier: 'protective',
@@ -348,7 +348,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: false,
 	},
 	check_mx_reputation: {
-		description: 'Check MX blocklist status and reverse DNS.',
+		description: 'Check whether the mail server (MX) IP addresses are listed on spam blocklists (Spamhaus, Barracuda, SORBS, and other RBLs). Also verifies reverse DNS for MX hosts. Use when you want to know if your mail server IP is blacklisted, or if your MX is on any blocklist — distinct from check_rbl which checks a specific IP directly.',
 		schema: BaseDomainArgs,
 		group: 'email_auth',
 		tier: 'hardening',
@@ -356,14 +356,14 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	check_srv: {
 		description:
-			'Map a domain\'s DNS-visible service footprint by probing ~16 common SRV prefixes (email, calendar, messaging, web, directory) in parallel. Returns the discovered services and flags insecure advertisements such as plaintext IMAP/POP3 offered without an encrypted variant. Standalone reconnaissance; not part of the scored scan.',
+			'Map a domain\'s DNS-visible service footprint by probing ~16 common SRV record prefixes (email, calendar, messaging, web, directory) in parallel. Returns discovered services and flags insecure service advertisements — e.g. plaintext IMAP/POP3 without an encrypted variant. Use when asked to map DNS-visible services or flag insecure service advertisements.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'hardening',
 		scanIncluded: false,
 	},
 	check_zone_hygiene: {
-		description: 'Audit SOA propagation and sensitive subdomains.',
+		description: 'Audit DNS zone hygiene: identifies sensitive or forgotten subdomains exposed in DNS, stale SOA records, and zone propagation issues. Use to find any sensitive subdomains that should not be publicly visible, or to audit overall DNS zone cleanliness.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'hardening',
@@ -371,7 +371,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	generate: {
 		description:
-			'Generate a remediation artifact selected by `artifact`: spf_record, dmarc_record, dkim_config, mta_sts_policy, fix_plan (prioritized plan), or rollout_plan (phased DMARC enforcement timeline).',
+			'Generate a DNS/email security remediation artifact. Artifact types: spf_record (build a new SPF record), dmarc_record (create a DMARC policy), dkim_config (DKIM key setup), mta_sts_policy (generate an MTA-STS policy file), fix_plan (prioritized remediation plan for all findings), or rollout_plan (phased DMARC enforcement timeline). Use when asked to generate or create a record or policy.',
 		schema: GenerateArgs,
 		group: 'remediation',
 		scanIncluded: false,
@@ -384,20 +384,20 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: false,
 	},
 	get_benchmark: {
-		description: 'Get score benchmarks: percentiles, mean, top failures.',
+		description: 'Get industry benchmark data: shows what percentile a domain\'s security score ranks at within its sector or country cohort, the mean score, and the most common DNS security failures across the industry. Use when asked how a score compares to the industry average, what percentile a score is in, or what the most common security failures are in an industry or sector.',
 		schema: GetBenchmarkArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	get_provider_insights: {
-		description: 'Get provider cohort benchmarks and common issues.',
+		description: 'Get security benchmarks and common configuration issues for a specific email or DNS service-provider cohort (e.g. Google Workspace customers, Microsoft 365 customers). Use when asked how an email service provider compares to competitors on security posture, or to see typical misconfigurations for a named vendor\'s customers.',
 		schema: GetProviderInsightsArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	assess_spoofability: {
 		description:
-			'Compute a single composite email-spoofability score (0–100) by combining SPF trust surface, DMARC enforcement, and DKIM coverage with interaction multipliers. Note the scale is inverted versus the scan grade: higher = more spoofable, 0 = fully protected, 100 = any server can send as the domain. Returns the score, a risk level (minimal→critical), per-control sub-scores, and a plain-language summary. Use for a quick spoofing-risk read; use scan_domain for the full graded audit.',
+			'Compute a composite email spoofability risk score (0–100, higher = more spoofable) by combining SPF trust surface, DMARC enforcement, and DKIM coverage. Returns a risk level (minimal→critical), per-control sub-scores, and plain-language summary of how easy it would be to spoof email from the domain. Use when asked how easy it is to spoof email from a domain, or for a composite email spoofing risk score.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -417,19 +417,19 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	map_supply_chain: {
 		description:
-			'Map third-party service dependencies from DNS records. Correlates SPF, NS, TXT verifications, SRV services, and CAA to show who can send as you, control your DNS, and what services are integrated.',
+			'Map DNS-visible third-party service dependencies for a domain. Correlates SPF, NS, TXT verifications, SRV services, and CAA records to reveal which third-party vendors can send email as the domain, control DNS, or access integrated services. Use when asked to map third-party or supply-chain dependencies — not for listing who can send email (use check_spf for that).',
 		schema: MapSupplyChainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	analyze_drift: {
-		description: 'Compare current security posture against a previous baseline. Shows what improved, regressed, or changed.',
+		description: 'Measure whether a domain\'s DNS security posture improved or regressed by comparing the current state against a prior scan snapshot. Returns a drift classification (improving/stable/regressing/mixed), score delta, and lists of improvements and regressions. Use to answer "did our security score improve or regress since last time?" — distinct from compare_baseline which checks compliance against a fixed policy (not improvement over time).',
 		schema: AnalyzeDriftArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	validate_fix: {
-		description: 'Re-check a specific control after applying a fix. Confirms whether the finding is resolved.',
+		description: 'Re-check a specific security control after applying a fix, to confirm the finding is now resolved. Use only when a fix has already been applied and you want to verify or confirm the remediation was successful — not for initial inspection of a record.',
 		schema: ValidateFixArgs,
 		group: 'remediation',
 		scanIncluded: false,
@@ -485,7 +485,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	rdap_lookup: {
 		description:
-			'Fetch domain registration data via RDAP (modern WHOIS replacement). Returns registrar, creation/expiration dates, EPP status, registrant info, and domain age.',
+			'Fetch domain registration data via RDAP (modern WHOIS replacement). Returns the domain registrar (the company the domain was registered with), registrant contact, creation/expiration dates, EPP status codes, and domain age. Use when asked who registered the domain, who the registrar is, or when the registration expires — distinct from check_ns which identifies the DNS nameserver provider.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -506,7 +506,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	check_dnssec_chain: {
 		description:
-			'Walk the DNSSEC chain of trust from root to target domain. Reports DS/DNSKEY records, algorithm usage, and linkage status at each zone level.',
+			'Walk the full DNSSEC chain of trust from the DNS root down to the target domain, tracing DS/DNSKEY records and algorithm usage at each zone level. Use when asked to trace the chain of trust from the DNS root, or to see the full DNSSEC delegation path step by step.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -520,7 +520,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	check_dnskey_strength: {
 		description:
-			'Audit DNSKEY signing-algorithm strength per RFC 8624. Grades each DNSKEY algorithm (flags deprecated RSA/SHA-1 and DSA, rewards ECDSA P-256 / Ed25519), independent of whether the DNSSEC chain validates.',
+			'Audit the cryptographic strength of DNSKEY signing algorithms used for DNSSEC. Reports which algorithm is used for DNSSEC signing keys (RSA/SHA-1, RSA/SHA-256, ECDSA P-256, Ed25519, etc.), flags deprecated algorithms (RSA/SHA-1, DSA), independent of whether the DNSSEC chain validates. Use when asked what algorithm is used for DNSSEC signing keys, or if deprecated DNSKEY algorithms are in use.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'hardening',
@@ -528,14 +528,14 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	check_fast_flux: {
 		description:
-			'Detect fast-flux DNS behavior by performing multiple rounds of A/AAAA queries with delays. Compares IP answer sets and TTLs across rounds to identify rotating infrastructure.',
+			'Detect fast-flux DNS behavior: performs multiple rounds of A/AAAA queries and checks whether IP addresses are rotating rapidly on each DNS query (a sign of botnet or malicious infrastructure). Compares IP answer sets and TTLs across rounds to identify rapidly rotating infrastructure used to hide malicious activity.',
 		schema: CheckFastFluxArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	check_subdomain_takeover: {
 		description:
-			'Sweep an explicit subdomain list (or a built-in 15-name list of common labels) for dangling CNAMEs and provider-deprovisioned takeover fingerprints. Pair with discover_subdomains for full-inventory coverage. Detects 16 provider families (AWS S3/CloudFront, Azure Front Door/CDN/Blob/App Service, GCP Cloud Storage, Heroku, GitHub Pages, Vercel, Firebase, Shopify, etc.).',
+			'Sweep subdomains for dangling CNAMEs pointing to deprovisioned cloud services that could be claimed by an attacker (subdomain takeover vulnerabilities). Detects 16 provider families (AWS S3/CloudFront, Azure Front Door/CDN/Blob/App Service, GCP Cloud Storage, Heroku, GitHub Pages, Vercel, Firebase, Shopify, etc.). Use when asked if subdomains are pointing to deprovisioned cloud services. Pair with discover_subdomains for full inventory.',
 		schema: CheckSubdomainTakeoverArgs,
 		group: 'infrastructure',
 		tier: 'protective',
@@ -559,7 +559,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	discover_brand_domains: {
 		description:
-			"Expand the hidden domain portfolio of the EXACT seed domain provided, scanned verbatim. Do NOT normalize, resolve, or substitute a 'canonical'/'main' brand domain — pass the literal domain the user named (e.g. pass `clau.de`, not `anthropic.com`); related or short/redirect domains belong in `brand_aliases`, not `domain`. Runs standard or deep discovery by aggregating certificate, DNS, mail-policy, redirect, TXT verification, MX platform, and candidate-seeding signals. Returns ranked candidate domains with provenance and combined-confidence scoring.",
+			"Discover all domains that belong to a brand's portfolio by aggregating certificate, DNS, redirect, and mail-policy signals. Use when asked what domains are part of a brand portfolio, or to find all domains related to a brand. Pass the EXACT seed domain verbatim — do NOT normalize or substitute a canonical domain.",
 		schema: DiscoverBrandDomainsArgs,
 		group: 'discovery',
 		scanIncluded: false,
