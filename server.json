@@ -1,7 +1,7 @@
 {
 	"$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
 	"name": "com.blackveilsecurity/dns",
-	"description": "DNS and email security scanner with 79 MCP tools for SPF, DMARC, DNSSEC, SSL, brand audits, and more. Bulk-scan multiple domains at once, benchmark against the industry average and sector percentile, detect whether a domain's posture improved or regressed via drift analysis, and catch SubdoMailing risks where an SPF include chain exposes a dangling domain.",
+	"description": "DNS and email security scanner with 79 MCP tools for SPF, DMARC, DNSSEC, SSL, and brand audits.",
 	"repository": {
 		"url": "https://github.com/MadaBurns/bv-mcp",
 		"source": "github"
