@@ -37,8 +37,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
 import { IN_MEMORY_CACHE } from '../src/lib/cache';
-import type { CheckResult } from '../src/lib/scoring';
-import type { CheckCategory } from '../src/lib/scoring';
 
 const { restore } = setupFetchMock();
 
@@ -148,7 +146,6 @@ describe('scan_domain hot-path concurrency guard (C-perf)', () => {
 	 */
 	it('deduplicates identical DNS queries within one scan (queryCache guard)', async () => {
 		let countWithCache = 0;
-		let countWithoutCache = 0;
 
 		// Run 1: WITH queryCache (the default, production behavior)
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
@@ -279,7 +276,8 @@ describe('latency budget constants (C-perf)', () => {
 			expect(LATENCY_BUDGET[tool]).toBeDefined();
 			expect(typeof LATENCY_BUDGET[tool].p50Ms).toBe('number');
 			expect(typeof LATENCY_BUDGET[tool].p95Ms).toBe('number');
-			expect(LATENCY_BUDGET[tool].p50Ms).toBeLessThan(LATENCY_BUDGET[tool].p95Ms);
+			// p50 ≤ p95 by definition; they may be equal for tools with tight latency distributions (e.g. check_dmarc p50=p95=82ms)
+			expect(LATENCY_BUDGET[tool].p50Ms).toBeLessThanOrEqual(LATENCY_BUDGET[tool].p95Ms);
 		}
 	});
 });
