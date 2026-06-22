@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.24.0] - 2026-06-22
+
+Minor release: adds an additive `inconclusiveCategories` field to the structured scan result, separating a *measurement failure* (a check that timed-out or errored) from a *deliberate N/A* (a control that genuinely doesn't apply). No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (78).
+
+### Added
+
+- **`inconclusiveCategories` in `StructuredScanResult` (additive, non-breaking).** `notApplicableCategories` previously conflated two reasons a category is reported with a `null` score: a deliberate skip (e.g. DKIM on a no-MX domain) and a measurement failure (a check whose `checkStatus` is `timeout`/`error` — e.g. `check_http_security` against an AWS WAF endpoint that doesn't serve normal HTTP). The new field surfaces the latter as a guaranteed **subset** of `notApplicableCategories` (always `null` in `categoryScores`), so a consumer can distinguish "could not measure / retry later" from "does not apply". Errored categories still dual-list in `notApplicableCategories`, so existing consumers see the identical shape — the field is opt-in.
+
 ## [3.23.0] - 2026-06-20
 
 Minor release: ships the three architectural scalability items that 3.22.0 deliberately held back as proposals (QuotaCoordinator sharding, global-cost-ceiling KV fallback, ProfileAccumulator sharding), each landed behind a default-OFF flag after a Linus-correctness + Adam-security adversarial review. **These deploy dark — every flag defaults to today's exact behavior, so prod is byte-for-byte unchanged until an operator explicitly flips a flag** (which requires its own load-test / reset-window prerequisites). No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (78).
