@@ -180,6 +180,10 @@ export interface DispatchMcpMethodOptions {
 	m365Proxy?: { fetch: typeof fetch };
 	/** Bearer token (BV_WEB_INTERNAL_KEY) forwarded to bv-web's internal M365 endpoints. */
 	m365ProxyAuthToken?: string;
+	/** Service binding to bv-web (BV_WEB) used by get_domain_rank to call the C1 benchmark endpoint. Fail-soft; absent on BSL self-hosts. */
+	bvWebBenchmark?: { fetch: typeof fetch };
+	/** Bearer token (BV_WEB_INTERNAL_KEY) forwarded to the C1 benchmark endpoint. */
+	bvWebBenchmarkAuthToken?: string;
 	infraProbe?: { fetch: typeof fetch };
 	brandAuditDb?: D1Database;
 	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
@@ -317,6 +321,8 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				tlsProbeAuthToken: options.tlsProbeAuthToken,
 				m365Proxy: options.m365Proxy,
 				m365ProxyAuthToken: options.m365ProxyAuthToken,
+				bvWebBenchmark: options.bvWebBenchmark,
+				bvWebBenchmarkAuthToken: options.bvWebBenchmarkAuthToken,
 				infraProbe: options.infraProbe,
 				brandAuditDb: options.brandAuditDb,
 				brandAuditQueue: options.brandAuditQueue,

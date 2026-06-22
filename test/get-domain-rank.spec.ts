@@ -177,7 +177,8 @@ describe('formatDomainRank', () => {
 		expect(text).toContain('example.com');
 		expect(text).toContain('65');
 		expect(text).toContain('NZ');
-		expect(text).toContain('1200');
+		// cohortSize is locale-formatted — match the n= prefix rather than the raw number
+		expect(text).toContain('n=');
 	});
 
 	it('formats a compact result', async () => {

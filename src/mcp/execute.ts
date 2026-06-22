@@ -140,6 +140,10 @@ export interface ExecuteMcpRequestOptions {
 	m365Proxy?: { fetch: typeof fetch };
 	/** Bearer token (BV_WEB_INTERNAL_KEY) forwarded to bv-web's internal M365 endpoints. */
 	m365ProxyAuthToken?: string;
+	/** Service binding to bv-web (BV_WEB) used by get_domain_rank to call the C1 benchmark endpoint. Fail-soft; absent on BSL self-hosts. */
+	bvWebBenchmark?: { fetch: typeof fetch };
+	/** Bearer token (BV_WEB_INTERNAL_KEY) forwarded to the C1 benchmark endpoint. */
+	bvWebBenchmarkAuthToken?: string;
 	infraProbe?: { fetch: typeof fetch };
 	/** D1 binding for the brand-audit DB. v2.21.2+. */
 	brandAuditDb?: D1Database;
@@ -1050,6 +1054,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			tlsProbeAuthToken: options.tlsProbeAuthToken,
 			m365Proxy: options.m365Proxy,
 			m365ProxyAuthToken: options.m365ProxyAuthToken,
+			bvWebBenchmark: options.bvWebBenchmark,
+			bvWebBenchmarkAuthToken: options.bvWebBenchmarkAuthToken,
 			// keyHash MUST be forwarded: handleToolsCall's Layer-2 guard
 			// (isAuthRequiredTool && m365Proxy && !keyHash) rejects every
 			// authenticated identity_secops caller without it, and bv-web's
@@ -1155,6 +1161,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			tlsProbeAuthToken: options.tlsProbeAuthToken,
 			m365Proxy: options.m365Proxy,
 			m365ProxyAuthToken: options.m365ProxyAuthToken,
+			bvWebBenchmark: options.bvWebBenchmark,
+			bvWebBenchmarkAuthToken: options.bvWebBenchmarkAuthToken,
 			// keyHash MUST be forwarded: handleToolsCall's Layer-2 guard
 			// (isAuthRequiredTool && m365Proxy && !keyHash) rejects every
 			// authenticated identity_secops caller without it, and bv-web's

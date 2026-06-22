@@ -11,6 +11,7 @@ import {
 	GenerateArgs,
 	ExplainFindingArgs,
 	CompareBaselineArgs,
+	GetDomainRankArgs,
 	GetBenchmarkArgs,
 	GetProviderInsightsArgs,
 	ValidateFixArgs,
@@ -373,6 +374,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 			'Generate a remediation artifact selected by `artifact`: spf_record, dmarc_record, dkim_config, mta_sts_policy, fix_plan (prioritized plan), or rollout_plan (phased DMARC enforcement timeline).',
 		schema: GenerateArgs,
 		group: 'remediation',
+		scanIncluded: false,
+	},
+	get_domain_rank: {
+		description:
+			'Rank a domain against its country or global cohort using the GSI benchmark corpus. Accepts a domain score (from scan_domain) and optional country/sector; returns a percentile: "scores better than X% of peers". Owner-gate exempt — public cohort data only.',
+		schema: GetDomainRankArgs,
+		group: 'intelligence',
 		scanIncluded: false,
 	},
 	get_benchmark: {
@@ -765,6 +773,7 @@ export const NON_CHECK_RESULT_TOOLS = new Set<string>([
 	'compare_domains',
 	'compare_baseline',
 	'generate',
+	'get_domain_rank',
 	'get_benchmark',
 	'get_provider_insights',
 	'assess_spoofability',

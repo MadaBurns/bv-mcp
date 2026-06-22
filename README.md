@@ -9,7 +9,7 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
 [![npm version](https://img.shields.io/npm/v/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
 [![npm downloads](https://img.shields.io/npm/dm/blackveil-dns)](https://www.npmjs.com/package/blackveil-dns)
-[![MCP tools](https://img.shields.io/badge/MCP%20tools-78-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![MCP tools](https://img.shields.io/badge/MCP%20tools-79-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![BUSL-1.1 License](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--06--18-blue)](https://modelcontextprotocol.io/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
@@ -25,7 +25,7 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 
 **Claude Desktop** (one-click install):
 
-Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — the current 78-tool surface is available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
+Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — the current 79-tool surface is available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
 
 **Claude Code** (one command):
 
@@ -65,7 +65,7 @@ Transport support:
 
 ## What you get
 
-- **78 MCP tools with 19 scoring categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, subdomailing, reverse DNS (PTR/FCrDNS), brand discovery, and authoritative DNS infrastructure
+- **79 MCP tools with 19 scoring categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, subdomailing, reverse DNS (PTR/FCrDNS), brand discovery, and authoritative DNS infrastructure
 - **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with score-based capping to prevent inflated labels
 - **Trust surface analysis** — detects shared SaaS platforms (Google, M365, SendGrid) and cross-references DMARC enforcement to determine real exposure
 - **Guided remediation** — `generate` (artifact=`fix_plan`) produces provider-aware prioritized actions; its record artifacts (`spf_record`, `dmarc_record`, `dkim_config`, `mta_sts_policy`, `rollout_plan`) output ready-to-publish records; `validate_fix` confirms whether a fix was applied successfully
@@ -81,7 +81,7 @@ Transport support:
 ## Tools
 
 ```
-  78 MCP tools · 7 prompts · 6 resources
+  79 MCP tools · 7 prompts · 6 resources
 
   Email Auth             Infrastructure          Brand & Threats       Meta
  ─────────────          ──────────────          ───────────────       ───────────────
@@ -97,17 +97,17 @@ Transport support:
   Intelligence          check_srv                                       artifact=fix_plan,
  ─────────────          check_zone_hygiene                              spf_record,
   get_benchmark         check_resolver_         Discovery               dmarc_record,
-  get_provider_           consistency          ─────────────           dkim_config,
-    insights                                    discover_brand_         mta_sts_policy,
-  assess_spoofability   check_dbl                domains                rollout_plan)
-  map_supply_chain      check_rbl               brand_audit_single    validate_fix
-  analyze_drift         cymru_asn               brand_audit_batch_
-  resolve_spf_chain     rdap_lookup               start
-  discover_subdomains   check_nsec_             brand_audit_status
-  map_compliance          walkability           brand_audit_get_
-  simulate_attack_paths check_dnssec_chain        report
-  check_agent_discovery check_fast_flux         list_brand_audit_watches
-                        check_dnskey_strength
+  get_domain_rank         consistency          ─────────────           dkim_config,
+  get_provider_                                 discover_brand_         mta_sts_policy,
+    insights            check_dbl                domains                rollout_plan)
+  assess_spoofability   check_rbl               brand_audit_single    validate_fix
+  map_supply_chain      cymru_asn               brand_audit_batch_
+  analyze_drift         rdap_lookup               start
+  resolve_spf_chain     check_nsec_             brand_audit_status
+  discover_subdomains     walkability           brand_audit_get_
+  map_compliance        check_dnssec_chain        report
+  simulate_attack_paths check_fast_flux         list_brand_audit_watches
+  check_agent_discovery check_dnskey_strength
                         check_authoritative_dns_infra
                         check_root_server_set   register_brand_audit_watch
                                                 delete_brand_audit_watch
