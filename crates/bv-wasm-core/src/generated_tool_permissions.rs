@@ -61,6 +61,7 @@ pub fn required_mode_for_tool(tool: &str) -> PermissionMode {
         "generate" => PermissionMode::ReadOnly,
         "get_benchmark" => PermissionMode::ReadOnly,
         "get_ca_policies" => PermissionMode::ReadOnly,
+        "get_domain_rank" => PermissionMode::ReadOnly,
         "get_provider_insights" => PermissionMode::ReadOnly,
         "list_brand_audit_watches" => PermissionMode::ReadOnly,
         "map_compliance" => PermissionMode::ReadOnly,
