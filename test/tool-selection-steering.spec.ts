@@ -62,7 +62,18 @@ describe('tool selection-steering descriptions', () => {
 		const scanDomain = TOOLS.find((t) => t.name === 'scan_domain');
 		expect(scanDomain).toBeDefined();
 		const desc = scanDomain!.description;
-		expect(desc).toContain('check_');
+		// A2 reworded scan_domain to enumerate the protocols it aggregates
+		// ("SPF, DKIM, DMARC, … and more") rather than carry the literal "check_"
+		// token — breadth is now conveyed by the named-protocol list + an
+		// all-inclusive aggregation phrase. Assert that, not the old token.
+		expect(
+			/SPF/.test(desc) && /DMARC/.test(desc) && /DNSSEC/.test(desc),
+			'scan_domain should enumerate multiple checks to convey breadth',
+		).toBe(true);
+		expect(
+			/\band more\b|every scan-included check/i.test(desc),
+			'scan_domain should signal it aggregates all scan-included checks',
+		).toBe(true);
 		expect(/audit|broadest/i.test(desc), 'scan_domain should mention audit/breadth').toBe(true);
 	});
 
