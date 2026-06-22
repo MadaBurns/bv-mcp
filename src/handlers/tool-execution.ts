@@ -20,6 +20,12 @@ interface ToolExecutionBase {
 	keyHash?: string;
 	/** Cloudflare edge colo for per-datacenter tool_call analytics grouping. */
 	colo?: string;
+	/**
+	 * blob12 — canonical name of the tool invoked immediately before this one
+	 * in the same MCP session. Resolved synchronously by readAndUpdateLastTool
+	 * before dispatch; 'none' on first call, 'unknown' when continuity is absent.
+	 */
+	priorTool?: string;
 }
 
 /**
@@ -37,6 +43,7 @@ export function buildLogContext(
 		authTier?: string;
 		keyHash?: string;
 		colo?: string;
+		priorTool?: string;
 	},
 ): ToolExecutionBase {
 	return {
@@ -49,6 +56,7 @@ export function buildLogContext(
 		authTier: runtimeOptions?.authTier,
 		keyHash: runtimeOptions?.keyHash,
 		colo: runtimeOptions?.colo,
+		priorTool: runtimeOptions?.priorTool,
 	};
 }
 
@@ -71,6 +79,7 @@ export function logToolSuccess(options: ToolExecutionBase & {
 		authTier: options.authTier,
 		keyHash: options.keyHash,
 		colo: options.colo,
+		priorTool: options.priorTool,
 	});
 
 	logEvent({
@@ -102,6 +111,7 @@ export function logToolFailure(options: ToolExecutionBase & {
 		authTier: options.authTier,
 		keyHash: options.keyHash,
 		colo: options.colo,
+		priorTool: options.priorTool,
 	});
 
 	logError(options.error instanceof Error ? options.error : String(options.error), {
