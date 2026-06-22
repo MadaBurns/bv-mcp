@@ -17,14 +17,19 @@
  * that `createFinding` can call it directly.
  *
  * What it does to STRING values (only):
- *   1. Strip C0/DEL control bytes (preserving nothing — newlines/tabs collapse to
- *      a single space in step 4, matching the `detail` sanitizer).
- *   2. Strip ANSI/CSI escape sequences (terminal control injection).
- *   3. Replace markdown/HTML injection characters — backticks (code fences),
+ *   1. NFKC-normalize fullwidth/confusable forms into their canonical ASCII
+ *      equivalents before filtering.
+ *   2. Strip ANSI/CSI escape sequences (terminal control injection), including
+ *      8-bit C1 CSI (`\x9B`) forms, before generic control-byte stripping.
+ *   3. Strip C0/C1/DEL control bytes (preserving nothing — newlines/tabs collapse
+ *      to a single space in step 6, matching the `detail` sanitizer).
+ *   4. Strip bidi / zero-width Unicode controls that can visually reorder or hide
+ *      attacker text.
+ *   5. Replace markdown/HTML injection characters — backticks (code fences),
  *      `* # [ ] > | < >` — with a space. This neutralizes ```` ``` ```` code
  *      fences and `<...>`/`[...]` markdown that an LLM could be steered by.
- *   4. Collapse runs of whitespace to a single space and trim.
- *   5. Clamp the cleaned string to `MAX_META_STRING` characters.
+ *   6. Collapse runs of whitespace to a single space and trim.
+ *   7. Clamp the cleaned string to `MAX_META_STRING` characters.
  *
  * What it PRESERVES (never altered):
  *   - numbers, booleans, null, undefined, bigint — at ANY depth. Scoring and
@@ -50,11 +55,14 @@ export const MAX_META_STRING = 8_000;
 /** Recursion ceiling for nested sanitization — drop absurdly-deep nesting. */
 export const MAX_META_DEPTH = 6;
 
-/** C0 control bytes + DEL, excluding none — tab/newline are handled by whitespace collapse. */
-const CONTROL_BYTES = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+/** ANSI / CSI escape sequences (terminal control injection), including 8-bit C1 CSI. */
+const ANSI_ESCAPE = /(?:\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~])/g;
 
-/** ANSI / CSI escape sequences (terminal control injection). */
-const ANSI_ESCAPE = /\x1b\[[0-9;]*[a-zA-Z]/g;
+/** C0 + C1 control bytes + DEL, excluding none — tab/newline are handled by whitespace collapse. */
+const CONTROL_BYTES = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
+
+/** Unicode bidi / zero-width formatting controls that can hide or reorder attacker text. */
+const UNICODE_STEALTH = /[\u061C\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
 
 /**
  * Markdown / HTML injection characters. Mirrors `DNS_DATA_UNSAFE` in
@@ -65,16 +73,26 @@ const ANSI_ESCAPE = /\x1b\[[0-9;]*[a-zA-Z]/g;
 const MARKDOWN_UNSAFE = /[`*#[\]>|<]/g;
 
 /**
+ * Sanitize a string for safe inclusion in finding detail/metadata structured data.
+ * Control/ANSI/Unicode-stealth/markdown neutralized, whitespace-collapsed.
+ */
+export function sanitizeStructuredString(input: string): string {
+	return input
+		.normalize('NFKC')
+		.replace(ANSI_ESCAPE, '')
+		.replace(CONTROL_BYTES, '')
+		.replace(UNICODE_STEALTH, '')
+		.replace(MARKDOWN_UNSAFE, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+/**
  * Sanitize a single string for safe inclusion in finding metadata.
  * Control/ANSI/markdown-neutralized, whitespace-collapsed, length-clamped.
  */
 export function sanitizeMetadataString(input: string): string {
-	const cleaned = input
-		.replace(CONTROL_BYTES, '')
-		.replace(ANSI_ESCAPE, '')
-		.replace(MARKDOWN_UNSAFE, ' ')
-		.replace(/\s+/g, ' ')
-		.trim();
+	const cleaned = sanitizeStructuredString(input);
 	return cleaned.length > MAX_META_STRING ? cleaned.slice(0, MAX_META_STRING) : cleaned;
 }
 
@@ -96,7 +114,7 @@ export function sanitizeMetadataValue(v: unknown, depth = 0): unknown {
 /**
  * Sanitize a finding-metadata object at the `createFinding` chokepoint.
  * Returns a NEW object whose every (possibly-nested) string value is neutralized;
- * non-string scalars are preserved. Non-object input returns an empty object.
+ * non-string scalars are preserved. Non-object input returns `undefined`.
  */
 export function sanitizeFindingMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
 	if (metadata === undefined) return undefined;

@@ -3,6 +3,9 @@
 import { sanitizeInput } from './sanitize';
 
 const MARKDOWN_SYNTAX = /[`*_#[\]()>|<]/g;
+const ANSI_ESCAPE = /(?:\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~])/g;
+const CONTROL_BYTES = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
+const UNICODE_STEALTH = /[\u061C\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
 
 /**
  * Characters that can inject HTML or dangerous markdown constructs.
@@ -13,13 +16,16 @@ const DNS_DATA_UNSAFE = /[`*#[\]>|<]/g;
 
 /**
  * Sanitize DNS-sourced data before it enters finding detail strings.
- * Strips C0 control characters (preserving tab/newline), replaces HTML/markdown
- * injection characters, but does NOT truncate — DNS data in findings can be
- * longer than display output.
+ * NFKC-normalizes confusable forms, strips ANSI/C0/C1/bidi/zero-width control
+ * vectors, replaces HTML/markdown injection characters, and does NOT truncate —
+ * DNS data in findings can be longer than display output.
  */
 export function sanitizeDnsData(input: string): string {
 	return input
-		.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+		.normalize('NFKC')
+		.replace(ANSI_ESCAPE, '')
+		.replace(CONTROL_BYTES, '')
+		.replace(UNICODE_STEALTH, '')
 		.replace(DNS_DATA_UNSAFE, ' ')
 		.replace(/\s+/g, ' ')
 		.trim();
