@@ -89,6 +89,8 @@ type InternalEnv = {
 	BV_DOH_TOKEN?: string;
 	BV_WHOIS?: Fetcher;
 	BV_INFRA_PROBE?: Fetcher;
+	BV_RECON?: Fetcher;
+	BV_RECON_KEY?: string;
 	CF_ACCOUNT_ID?: string;
 	CF_ANALYTICS_TOKEN?: string;
 	BV_WEB_INTERNAL_KEY?: string;
@@ -254,6 +256,12 @@ internalRoutes.post('/tools/call', async (c) => {
 				: undefined,
 			whoisBinding: c.env.BV_WHOIS,
 			infraProbe: c.env.BV_INFRA_PROBE,
+			// Recon backend (bv2-recon) — powers scan_buckets_* / osint_investigate_*.
+			// The internal door (recon-sweep caller) MUST wire these or those tools
+			// always degrade to the "unprovisioned" stub even when BV_RECON is bound,
+			// which silently stalled the bv2-ops recon-sweep queue (fixed 2026-06-23).
+			reconBinding: c.env.BV_RECON,
+			reconAuthToken: c.env.BV_RECON_KEY,
 			// Tier 0/1/2 lookup closures — internal callers (load tests, bv-web
 			// service binding, ops scripts) get the same tiered discovery path as
 			// public `/mcp`. Closures stay `undefined` on BSL self-hosts where
