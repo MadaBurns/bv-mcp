@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.25.0] - 2026-06-23
+
+Minor release: adds the **79th tool `get_domain_rank`** (domain cohort-percentile via the bv-web C1 benchmark endpoint), pickability-tuned tool descriptions, a `priorTool` analytics dimension, a frozen brand-audit-watch webhook contract, and a hot-path latency/concurrency guard. No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; **tool count 78 → 79**.
+
+### Added
+
+- **`get_domain_rank` tool (count 78 → 79).** Returns a domain's security-posture percentile within a country/sector cohort by calling the bv-web internal C1 benchmark endpoint (`POST /api/internal/mcp/benchmark`) over the `BV_WEB` service binding with `Bearer BV_WEB_INTERNAL_KEY`. Degrade-when-unbound: absent binding / non-2xx / timeout / parse-error all fall back to a labelled `representative` result (never throws). Excluded from the 13-tool agent read-only allowlist. (#436, #434)
+- **Tool-pick eval harness + baseline.** A deterministic, offline TF-IDF tool-selection eval (`test/tool-pick-eval.spec.ts`) measuring first-choice pickability, gated at ≥90% (currently 97.6%). No live-model calls, runs in CI. (#432, #429)
+- **`priorTool` dimension on the `tool_call` analytics event.** The `tool_call` Analytics Engine event now carries the previous tool name (per-session, append-only blob) for tool-sequence analysis. No PII; canonical tool names only. (#433)
+- **Hot-path latency budget + concurrency guard.** A documented latency budget (`src/lib/latency-budget.ts`) plus a non-flaky guard test (interval-overlap, not wall-clock) asserting the `scan_domain` DoH fan-out genuinely parallelizes. Test/observability only — no behavior change. (#437)
+
+### Changed
+
+- **Pickability-tuned tool descriptions.** Tool descriptions rewritten for ≥90% LLM first-choice accuracy (descriptive "Use when…" routing, no prescriptive/injection-style steering). Descriptions only — no tool name/schema drift beyond the new tool. Registry/directory metadata (`server.json`, `smithery.yaml`, README) synced to 79 tools. (#432, #436)
+- **Brand-audit-watch webhook payload frozen (C3).** The watch webhook payload shape is now version-pinned (`schemaVersion: 1`) and locked by a producer+consumer contract test; SSRF-guarded at both register and delivery time. (#435)
+
 ## [3.24.0] - 2026-06-22
 
 Minor release: adds an additive `inconclusiveCategories` field to the structured scan result, separating a *measurement failure* (a check that timed-out or errored) from a *deliberate N/A* (a control that genuinely doesn't apply). No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; tool count unchanged (78).
