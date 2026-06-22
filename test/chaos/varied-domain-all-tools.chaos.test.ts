@@ -324,6 +324,7 @@ function makeToolCases(): ToolCase[] {
 			arguments: { artifact: 'dmarc_record', domain: nextDomain(), policy: 'reject', rua_email: 'dmarc@example.com', format: 'compact' },
 		},
 		{ name: 'get_benchmark', arguments: { profile: 'mail_enabled', format: 'compact' } },
+		{ name: 'get_domain_rank', arguments: { domain: nextDomain(), score: 72, country: 'NZ', format: 'compact' } },
 		{ name: 'get_provider_insights', arguments: { provider: 'cloudflare', profile: 'mail_enabled', format: 'compact' } },
 		{ name: 'assess_spoofability', arguments: domainArgs() },
 		{ name: 'check_resolver_consistency', arguments: { domain: nextDomain(), record_type: 'TXT', format: 'compact' } },

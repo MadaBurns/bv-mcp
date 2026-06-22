@@ -1,3 +1,12 @@
+name: BlackVeil DNS Security MCP
+description: >-
+  DNS and email security scanner with 79 MCP tools. Bulk-scan multiple domains
+  at once, benchmark against the industry average and sector percentile, detect
+  whether a domain's posture improved or regressed via drift analysis, and catch
+  SubdoMailing risks where an SPF include chain exposes a dangling domain.
+  Covers SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, CAA, BIMI, brand audits,
+  subdomain takeover, HTTP security headers, and authoritative DNS infrastructure.
+
 startCommand:
   type: http
   configSchema:
