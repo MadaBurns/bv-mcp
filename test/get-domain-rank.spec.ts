@@ -101,8 +101,7 @@ describe('getDomainRank', () => {
 		expect(result.cohort).toBe('global');
 		expect(result.cohortSize).toBe(0);
 		expect(result.asOf).toBeNull();
-		// status should still indicate something meaningful
-		expect(['ok', 'representative']).toContain(result.status);
+		expect(result.status).toBe('representative');
 	});
 
 	it('fail-softs when bvWeb proxy is absent (unprovisioned)', async () => {

@@ -1364,7 +1364,8 @@ export async function handleToolsCall(
 						{ authToken: runtimeOptions?.bvWebBenchmarkAuthToken },
 					);
 					logDetails = result;
-					logToolSuccess({ ...ctx(), status: result.representative ? 'pass' : 'pass', logResult: result.status, logDetails, severity: 'info' });
+					// representative-ness is carried in logDetails (result.representative); log schema only supports 'pass'|'fail'
+					logToolSuccess({ ...ctx(), status: 'pass', logResult: result.status, logDetails, severity: 'info' });
 					return buildToolResult(formatDomainRank(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'get_benchmark': {

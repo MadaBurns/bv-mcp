@@ -393,6 +393,7 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'query_ual', arguments: { ms_tenant_id: '00000000-0000-0000-0000-000000000000' } },
 		{ name: 'get_ca_policies', arguments: { ms_tenant_id: '00000000-0000-0000-0000-000000000000' } },
 		{ name: 'assess_coverage', arguments: { ms_tenant_id: '00000000-0000-0000-0000-000000000000' } },
+		{ name: 'get_domain_rank', arguments: { domain: nextDomain(), score: 65, format: 'compact' } },
 	];
 }
 
