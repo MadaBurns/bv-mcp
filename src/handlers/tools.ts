@@ -43,6 +43,7 @@ import {
 	formatGeneratedRecord,
 } from '../tools/generate-records';
 import { getBenchmark, getProviderInsights, formatBenchmark, formatProviderInsights } from '../tools/intelligence';
+import { getDomainRank, formatDomainRank } from '../tools/get-domain-rank';
 import { assessSpoofability, formatSpoofability } from '../tools/assess-spoofability';
 import { checkResolverConsistency, formatResolverConsistency } from '../tools/check-resolver-consistency';
 import { validateFix, formatValidateFix } from '../tools/validate-fix';
@@ -234,6 +235,15 @@ interface ToolRuntimeOptions {
 	m365Proxy?: { fetch: typeof fetch };
 	/** Bearer token (BV_WEB_INTERNAL_KEY) forwarded to bv-web's internal M365 endpoints. */
 	m365ProxyAuthToken?: string;
+	/**
+	 * Service binding to bv-web (BV_WEB) used by get_domain_rank to call C1.
+	 * Reuses the same BV_WEB binding as m365Proxy — a separate field so callers
+	 * can thread it independently (they are the same binding in practice).
+	 * Fail-soft: absent → get_domain_rank returns representative result.
+	 */
+	bvWebBenchmark?: { fetch: typeof fetch };
+	/** Bearer token (BV_WEB_INTERNAL_KEY) forwarded to the C1 benchmark endpoint. */
+	bvWebBenchmarkAuthToken?: string;
 	/** Bearer admin token forwarded to bv-recon. */
 	reconAuthToken?: string;
 	infraProbe?: { fetch: typeof fetch };
@@ -1348,6 +1358,28 @@ export async function handleToolsCall(
 						default:
 							return buildToolErrorResult(`Invalid artifact: ${artifact}`);
 					}
+				}
+				case 'get_domain_rank': {
+					if (!validDomain) {
+						return buildToolErrorResult('Missing required parameter: domain');
+					}
+					const rawScore = validatedArgs.score;
+					const score = typeof rawScore === 'number' && isFinite(rawScore) ? Math.max(0, Math.min(100, rawScore)) : null;
+					if (score === null) {
+						return buildToolErrorResult('Invalid parameter: score must be a finite number between 0 and 100');
+					}
+					const rankCountry = typeof validatedArgs.country === 'string' ? validatedArgs.country : undefined;
+					const rankSector = typeof validatedArgs.sector === 'string' ? validatedArgs.sector : undefined;
+					const result = await getDomainRank(
+						validDomain,
+						score,
+						{ country: rankCountry, sector: rankSector },
+						runtimeOptions?.bvWebBenchmark,
+						{ authToken: runtimeOptions?.bvWebBenchmarkAuthToken },
+					);
+					logDetails = result;
+					logToolSuccess({ ...ctx(), status: result.representative ? 'pass' : 'pass', logResult: result.status, logDetails, severity: 'info' });
+					return buildToolResult(formatDomainRank(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'get_benchmark': {
 					const profile = typeof validatedArgs.profile === 'string' ? validatedArgs.profile : 'mail_enabled';

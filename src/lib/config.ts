@@ -301,6 +301,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_zone_hygiene: 25,
 	check_subdomailing: 25,
 	generate: 10,
+	get_domain_rank: 10,
 	get_benchmark: 10,
 	get_provider_insights: 10,
 	assess_spoofability: 10,

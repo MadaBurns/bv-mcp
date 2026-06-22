@@ -5,7 +5,7 @@ Guidance for Claude Code working in this repo.
 ## What is this?
 
 Blackveil DNS — source-available DNS & email security scanner, built as a Cloudflare Worker.
-75 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
+79 tools exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` runs only inside `scan_domain`. Listed on the MCP Registry as `com.blackveilsecurity/dns`.
 
 **Version sync** when bumping: `version` in `package.json` + `package-lock.json` (the source of truth — `SERVER_VERSION` in `src/lib/server-version.ts` auto-derives via `pkg.version`, do **not** hand-edit it), top-level `version` in `server.json` (currently **remotes-only — single `version` field**; the `packages[0].version` foot-gun only applies if an npm `packages` stanza is re-added), and the `[X.Y.Z]` heading in `CHANGELOG.md`.
 

@@ -123,6 +123,21 @@ export const CompareBaselineArgs = z
 	})
 	.passthrough();
 
+/** get_domain_rank */
+export const GetDomainRankArgs = z
+	.object({
+		domain: DomainSchema.describe('Domain to rank against its cohort (e.g., example.com)'),
+		score: z.number().min(0).max(100).describe('Domain score (0–100) from scan_domain. Used to compute the cohort percentile.'),
+		country: z
+			.string()
+			.length(2)
+			.optional()
+			.describe('ISO 3166-1 alpha-2 country code to use the country cohort (e.g., "NZ"). Omit for global cohort.'),
+		sector: z.string().min(1).max(100).optional().describe('Sector label (e.g., "finance"). Forwarded to the cohort endpoint; sector filtering is planned for a future release.'),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+	})
+	.passthrough();
+
 /** get_benchmark */
 export const GetBenchmarkArgs = z
 	.object({
@@ -638,6 +653,7 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	compare_domains: CompareDomainsArgs,
 	compare_baseline: CompareBaselineArgs,
 	generate: GenerateArgs,
+	get_domain_rank: GetDomainRankArgs,
 	get_benchmark: GetBenchmarkArgs,
 	get_provider_insights: GetProviderInsightsArgs,
 	assess_spoofability: AssessSpoofabilityArgs,
