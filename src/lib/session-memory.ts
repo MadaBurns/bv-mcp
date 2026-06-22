@@ -5,6 +5,12 @@ import { pruneTimestamps } from './rate-limiter';
 export interface SessionRecord {
 	createdAt: number;
 	lastAccessedAt: number;
+	/**
+	 * Canonical name of the most-recently-completed tool call in this session.
+	 * Written synchronously by readAndUpdateLastTool (hot path, zero I/O).
+	 * Undefined until the first tool call in the session.
+	 */
+	lastToolName?: string;
 }
 
 export interface SessionCreateRateResult {
@@ -174,4 +180,27 @@ export function resetSessions(): void {
 	SESSION_TOMBSTONES.clear();
 	SESSION_CREATE_BY_IP.clear();
 	lastCleanupAt = 0;
+}
+
+/**
+ * Reads the previous tool name from the session's in-memory record and
+ * atomically updates it to `currentTool`.
+ *
+ * Returns:
+ *  - `'none'`    if this is the first tool call in the session
+ *  - `'unknown'` if the session is not found in the in-memory store
+ *               (cross-isolate request, expired session, or no session)
+ *  - the canonical tool name of the immediately-preceding call otherwise
+ *
+ * HOT-PATH CONTRACT: synchronous, zero I/O, O(1) Map lookup.
+ * MUST NOT be made async or introduce any awaited storage operation.
+ * Emitting 'unknown' is preferable to adding latency.
+ */
+export function readAndUpdateLastTool(sessionId: string | undefined, currentTool: string): string {
+	if (!sessionId) return 'unknown';
+	const session = ACTIVE_SESSIONS.get(sessionId);
+	if (!session) return 'unknown';
+	const prior = session.lastToolName ?? 'none';
+	session.lastToolName = currentTool;
+	return prior;
 }
