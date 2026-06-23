@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.25.1] - 2026-06-24
+
+Patch release: three **server-only** `scan_domain` output fixes (maturity label, DKIM aggregate parity with `check_dkim`, and DNSSEC `dnssecSource` mislabel). No `@blackveil/dns-checks` core change, `SCORING_MODEL_VERSION` unchanged, tool count unchanged (79).
+
 ### Fixed
 
 - **`scan_domain` maturity no longer labels a spoofable domain "Hardened".** The web-only maturity ladder's Stage 2 label `"Hardened"` both overstated a mid-tier rung and **collided** with the mail ladder's Stage 4 `"Hardened"`, so a fully-spoofable web-only domain (no SPF/`-all`, no DMARC `reject`) displayed the same word as a fully-protected mail domain (e.g. a `57/D+` domain read "Hardened"). Stage 2 is renamed **`"Transport-Hardened"`**, and the top web-only tiers (`Defensive`/`Comprehensive`) now **require an anti-spoof email policy** — infrastructure hardening (TLS/DNSSEC/HSTS/CAA) alone no longer lifts a spoofable domain above Stage 2. Server-only (`src/tools/scan/maturity-staging.ts`); no scoring-model or `@blackveil/dns-checks` change.
