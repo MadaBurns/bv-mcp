@@ -343,12 +343,17 @@ describe('provider-informed DKIM', () => {
 				selectorsChecked: ['default', 'google'],
 			}),
 		];
-		const result = buildCheckResult('dkim', findings);
+		// Real "no DKIM found" results carry controlPresent: false.
+		const result = buildCheckResult('dkim', findings, false);
 		const adjusted = applyProviderDkimContext(result, 'google workspace');
 		expect(adjusted.findings[0].severity).toBe('medium');
 		expect(adjusted.findings[0].title).toBe('DKIM selector not discovered');
 		expect(adjusted.findings[0].metadata?.detectionMethod).toBe('provider-implied');
-		expect(adjusted.score).toBe(85); // single medium = -15
+		// The severity downgrade (high→medium) softens the FINDING for triage, but DKIM
+		// was still not discovered (controlPresent false), so the score must stay on the
+		// same probe-miss floor (50) that the dedicated check_dkim returns — NOT inflate to
+		// 85. This keeps scan_domain's dkim category in parity with check_dkim.
+		expect(adjusted.score).toBe(50);
 	});
 
 	it('applyProviderDkimContext preserves controlPresent (DKIM not found stays false, not undefined)', async () => {
@@ -375,12 +380,14 @@ describe('provider-informed DKIM', () => {
 				selectorsChecked: ['default'],
 			}),
 		];
-		const result = buildCheckResult('dkim', findings);
+		const result = buildCheckResult('dkim', findings, false);
 		const adjusted = applyProviderDkimContext(result, 'proofpoint');
 		expect(adjusted.findings).toHaveLength(2);
 		expect(adjusted.findings[0].severity).toBe('medium');
 		expect(adjusted.findings[1].severity).toBe('low');
-		expect(adjusted.score).toBe(80); // medium (-15) + low (-5)
+		// controlPresent false (no DKIM discovered) → score floored to 50, same as the
+		// dedicated check_dkim; the softened findings are triage-only, not evidence of DKIM.
+		expect(adjusted.score).toBe(50);
 	});
 
 	it('applyProviderDkimContext does nothing for unknown provider', async () => {

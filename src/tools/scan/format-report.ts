@@ -171,7 +171,20 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 				break;
 			}
 		}
-		if (dnssecSource === null && dnssecCheck.passed && (checkStatuses['dnssec'] ?? 'completed') === 'completed') {
+		// Only infer `domain_configured` when the zone is actually signed. An UNSIGNED
+		// zone now scores 60 (penaltyOverride −40) and therefore `passed === true`
+		// (60 ≥ 50, no missingControl), so a `passed`-only fallback wrongly stamped
+		// unsigned domains as `domain_configured`. Exclude the DNSSEC deficiency findings
+		// — "DNSSEC not enabled" (60, passes), and the broken/failing chains (0, fail) —
+		// so only a genuinely validated/configured zone (no deficiency finding) defaults
+		// to `domain_configured`.
+		const dnssecDeficient = dnssecCheck.findings.some(
+			(f) =>
+				f.title === 'DNSSEC not enabled' ||
+				f.title === 'DNSSEC chain of trust incomplete' ||
+				f.title === 'DNSSEC validation failing',
+		);
+		if (dnssecSource === null && dnssecCheck.passed && !dnssecDeficient && (checkStatuses['dnssec'] ?? 'completed') === 'completed') {
 			dnssecSource = 'domain_configured';
 		}
 	}

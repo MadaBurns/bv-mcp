@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.25.1] - 2026-06-24
+
+Patch release: three **server-only** `scan_domain` output fixes (maturity label, DKIM aggregate parity with `check_dkim`, and DNSSEC `dnssecSource` mislabel). No `@blackveil/dns-checks` core change, `SCORING_MODEL_VERSION` unchanged, tool count unchanged (79).
+
+### Fixed
+
+- **`scan_domain` maturity no longer labels a spoofable domain "Hardened".** The web-only maturity ladder's Stage 2 label `"Hardened"` both overstated a mid-tier rung and **collided** with the mail ladder's Stage 4 `"Hardened"`, so a fully-spoofable web-only domain (no SPF/`-all`, no DMARC `reject`) displayed the same word as a fully-protected mail domain (e.g. a `57/D+` domain read "Hardened"). Stage 2 is renamed **`"Transport-Hardened"`**, and the top web-only tiers (`Defensive`/`Comprehensive`) now **require an anti-spoof email policy** — infrastructure hardening (TLS/DNSSEC/HSTS/CAA) alone no longer lifts a spoofable domain above Stage 2. Server-only (`src/tools/scan/maturity-staging.ts`); no scoring-model or `@blackveil/dns-checks` change.
+- **`scan_domain` DKIM category score now matches the dedicated `check_dkim`.** When a known DKIM-signing provider (e.g. Microsoft 365) is detected via MX, `applyProviderDkimContext` softened the "no DKIM found" finding from high→medium for triage — which silently inflated the category score from the probe-miss floor (50) to 85, even though no DKIM was actually discovered (`controlPresent: false`). The floor is now re-applied, so the aggregate score equals what `check_dkim` returns (50). Server-only (`src/tools/check-dkim.ts`).
+- **`dnssecSource` no longer mislabels an unsigned zone as `"domain_configured"`.** An unsigned zone scores 60 (penaltyOverride −40) and therefore `passed === true`, so the `passed`-only fallback in the structured-result builder wrongly stamped unsigned domains `domain_configured`. The fallback now excludes the DNSSEC deficiency findings (`DNSSEC not enabled` / `chain of trust incomplete` / `validation failing`). Server-only (`src/tools/scan/format-report.ts`). The DNSSEC score (60) and CAA score (85 when absent) are unchanged — those are intended, NIST/RFC-justified scoring with `controlPresent: false` set.
+
 ## [3.25.0] - 2026-06-23
 
 Minor release: adds the **79th tool `get_domain_rank`** (domain cohort-percentile via the bv-web C1 benchmark endpoint), pickability-tuned tool descriptions, a `priorTool` analytics dimension, a frozen brand-audit-watch webhook contract, and a hot-path latency/concurrency guard. No scoring/scan-model change; `SCORING_MODEL_VERSION` unchanged; **tool count 78 → 79**.

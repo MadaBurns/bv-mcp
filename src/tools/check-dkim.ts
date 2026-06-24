@@ -96,5 +96,17 @@ export function applyProviderDkimContext(dkimResult: CheckResult, provider: stri
 
 	// Preserve controlPresent — this branch only runs when DKIM was not found
 	// (controlPresent already false); detectDomainContext reads it, not finding prose.
-	return buildCheckResult('dkim', newFindings, dkimResult.controlPresent) as CheckResult;
+	const adjusted = buildCheckResult('dkim', newFindings, dkimResult.controlPresent) as CheckResult;
+
+	// Parity with checkDKIM's probe-miss floor: softening the finding severity
+	// (high → medium) for a provider-implied selector lowers the penalty and would
+	// otherwise inflate the score from the floor (50) up to 85 — even though no DKIM
+	// was actually discovered (controlPresent === false). The provider-implied context
+	// is a TRIAGE signal, not evidence the control exists, so the category score must
+	// stay on the same "nothing found" floor the dedicated check_dkim returns. Without
+	// this, scan_domain reported dkim:85 for a domain check_dkim scored 50 (no records).
+	if (dkimResult.controlPresent === false && adjusted.score > 50) {
+		return { ...adjusted, score: 50 };
+	}
+	return adjusted;
 }

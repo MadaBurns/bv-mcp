@@ -140,4 +140,52 @@ describe('Defect I — computeMaturityStage accepts profile and respects it', ()
 		const stage = computeMaturityStage(checks, 'web_only');
 		expect(stage.stage).toBeGreaterThanOrEqual(2);
 	});
+
+	// Regression — a spoofable web_only domain (no SPF -all / no DMARC reject) must NOT be
+	// labelled "Hardened" (the word collided with the mail ladder's Stage 4) and must NOT
+	// reach the top "Defensive"/"Comprehensive" tiers on infrastructure hardening alone,
+	// because it is still freely impersonated in the From: header. (dunninghams.net case:
+	// score 57/D+, spf:0 dmarc:0, yet previously labelled "Hardened".)
+	function spoofableWebOnlyChecks(): CheckResult[] {
+		return [
+			buildCheckResult('mx', [createFinding('mx', 'No MX records found', 'info', 'web-only')]),
+			buildCheckResult('spf', [createFinding('spf', 'No SPF record found', 'high', 'Missing SPF')]),
+			buildCheckResult('dmarc', [createFinding('dmarc', 'No DMARC record found', 'high', 'Missing DMARC')]),
+			passingCheck('ssl', 'SSL certificate valid'),
+			passingCheck('dnssec', 'DNSSEC validated'),
+		];
+	}
+
+	it('web_only spoofable domain (SSL+DNSSEC, no anti-spoof) is Stage 2 "Transport-Hardened", never "Hardened"', () => {
+		const stage = computeMaturityStage(spoofableWebOnlyChecks(), 'web_only');
+		expect(stage.stage).toBe(2);
+		expect(stage.label).toBe('Transport-Hardened');
+		expect(stage.label).not.toBe('Hardened');
+		// Honesty: the rating must flag the spoofability gap.
+		expect(`${stage.description} ${stage.nextStep}`).toMatch(/SPF|DMARC|impersonat/i);
+	});
+
+	it('web_only spoofable domain never reaches Defensive/Comprehensive on infra hardening alone', () => {
+		// Even with SSL + DNSSEC + HSTS, no anti-spoof policy caps the ceiling at Stage 2.
+		const checks = [
+			...spoofableWebOnlyChecks(),
+			buildCheckResult('http_security', [createFinding('http_security', 'HSTS configured (preload)', 'info', 'HSTS')]),
+		];
+		const stage = computeMaturityStage(checks, 'web_only');
+		expect(stage.stage).toBeLessThanOrEqual(2);
+		expect(['Defensive', 'Comprehensive', 'Hardened']).not.toContain(stage.label);
+	});
+
+	it('web_only domain WITH anti-spoof (SPF -all + DMARC reject) + SSL + DNSSEC reaches Defensive', () => {
+		const checks: CheckResult[] = [
+			buildCheckResult('mx', [createFinding('mx', 'No MX records found', 'info', 'web-only')]),
+			buildCheckResult('spf', [createFinding('spf', 'SPF record found', 'info', 'v=spf1 -all')]),
+			buildCheckResult('dmarc', [createFinding('dmarc', 'DMARC record found', 'info', 'p=reject')]),
+			passingCheck('ssl', 'SSL certificate valid'),
+			passingCheck('dnssec', 'DNSSEC validated'),
+		];
+		const stage = computeMaturityStage(checks, 'web_only');
+		expect(stage.stage).toBeGreaterThanOrEqual(3);
+		expect(stage.label).toBe('Defensive');
+	});
 });

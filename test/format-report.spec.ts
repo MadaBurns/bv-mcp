@@ -62,6 +62,25 @@ describe('buildStructuredScanResult', () => {
 		expect(s.dnssecSource).toBe('domain_configured');
 	});
 
+	it('sets dnssecSource to null for an UNSIGNED zone (passed=true at score 60, "DNSSEC not enabled")', () => {
+		// Regression: an unsigned zone scores 60 (penaltyOverride −40) and therefore
+		// passes (60 ≥ 50, no missingControl). The old passed-only fallback wrongly stamped
+		// it "domain_configured". It must report null — the zone is not actually signed.
+		const result = makeMockScanResult({
+			checks: [
+				{
+					category: 'dnssec',
+					passed: true,
+					score: 60,
+					findings: [{ category: 'dnssec', title: 'DNSSEC not enabled', severity: 'high', detail: 'unsigned' }],
+					checkStatus: 'completed',
+				},
+			] as CheckResult[],
+		});
+		const s = buildStructuredScanResult(result);
+		expect(s.dnssecSource).toBeNull();
+	});
+
 	it('sets dnssecSource to null when dnssec check failed', () => {
 		const result = makeMockScanResult({
 			checks: [{ category: 'dnssec', passed: false, score: 0, findings: [], checkStatus: 'completed' }] as CheckResult[],
