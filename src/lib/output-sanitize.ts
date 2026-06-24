@@ -1,28 +1,18 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import { sanitizeStructuredString } from '@blackveil/dns-checks/scoring';
 import { sanitizeInput } from './sanitize';
 
 const MARKDOWN_SYNTAX = /[`*_#[\]()>|<]/g;
 
 /**
- * Characters that can inject HTML or dangerous markdown constructs.
- * Excludes `_` (common in DNS names like `_dmarc`, `_mta-sts`) and
- * `()` (used in natural-language detail text) which are safe in finding details.
- */
-const DNS_DATA_UNSAFE = /[`*#[\]>|<]/g;
-
-/**
  * Sanitize DNS-sourced data before it enters finding detail strings.
- * Strips C0 control characters (preserving tab/newline), replaces HTML/markdown
- * injection characters, but does NOT truncate — DNS data in findings can be
- * longer than display output.
+ * NFKC-normalizes confusable forms, strips ANSI/C0/C1/bidi/zero-width control
+ * vectors, replaces HTML/markdown injection characters, and does NOT truncate —
+ * DNS data in findings can be longer than display output.
  */
 export function sanitizeDnsData(input: string): string {
-	return input
-		.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-		.replace(DNS_DATA_UNSAFE, ' ')
-		.replace(/\s+/g, ' ')
-		.trim();
+	return sanitizeStructuredString(input);
 }
 
 export function sanitizeOutputText(input: string, maxLength = 240): string {

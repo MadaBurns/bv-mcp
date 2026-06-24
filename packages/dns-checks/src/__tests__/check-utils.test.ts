@@ -173,6 +173,18 @@ describe('sanitizeDnsData', () => {
 		expect(sanitizeDnsData('v=spf1 `include`<evil>[link]')).not.toMatch(/[`<>[\]]/);
 	});
 
+	it('fully strips ESC-based ANSI sequences instead of leaving CSI remnants', () => {
+		expect(sanitizeDnsData('a\x1b[31mred\x1b[0mb')).toBe('aredb');
+	});
+
+	it('fully strips C1 CSI sequences instead of leaving 8-bit remnants', () => {
+		expect(sanitizeDnsData('a\x9B31mblue\x9B0mb')).toBe('ablueb');
+	});
+
+	it('normalizes fullwidth lookalikes and strips bidi / zero-width controls', () => {
+		expect(sanitizeDnsData('prefix｀code｀suffix\u202E\u200B')).toBe('prefix code suffix');
+	});
+
 	it('collapses whitespace', () => {
 		expect(sanitizeDnsData('a  b   c')).toBe('a b c');
 	});

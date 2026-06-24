@@ -56,6 +56,7 @@ export type { DomainProfile, DomainContext } from './profiles';
 
 export {
 	sanitizeFindingMetadata,
+	sanitizeStructuredString,
 	sanitizeMetadataValue,
 	sanitizeMetadataString,
 	MAX_META_STRING,

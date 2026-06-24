@@ -2,7 +2,7 @@
 
 import type { CheckCategory, CheckResult, CheckStatus, Finding, Severity } from '../types';
 import { CATEGORY_DISPLAY_WEIGHTS, CATEGORY_PENALTY_CAPS, SEVERITY_PENALTIES } from '../types';
-import { sanitizeFindingMetadata } from './metadata-sanitize';
+import { sanitizeFindingMetadata, sanitizeStructuredString } from './metadata-sanitize';
 
 export type { CheckCategory, CheckResult, CheckStatus, Finding, Severity };
 export { CATEGORY_DISPLAY_WEIGHTS, CATEGORY_PENALTY_CAPS, SEVERITY_PENALTIES };
@@ -156,12 +156,9 @@ export function createFinding(
 	detail: string,
 	metadata?: Record<string, unknown>,
 ): Finding {
-	// Sanitize detail to strip control characters and unsafe markdown/HTML chars
-	const sanitized = detail
-		.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-		.replace(/[`[\]<>]/g, ' ')
-		.replace(/\s+/g, ' ')
-		.trim();
+	// Sanitize detail with the shared structured-string sanitizer used by metadata,
+	// so both LLM-facing channels stay in lockstep.
+	const sanitized = sanitizeStructuredString(detail);
 	// F7 (OWASP LLM01): metadata reaches the LLM verbatim via the MCP
 	// `structuredContent` channel, so sanitize attacker-influenceable STRING values
 	// here at the chokepoint (control bytes, code-fence/markdown injection, over-long

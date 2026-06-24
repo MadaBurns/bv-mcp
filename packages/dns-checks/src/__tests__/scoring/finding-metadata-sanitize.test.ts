@@ -27,15 +27,25 @@ describe('createFinding metadata sanitization (F7 chokepoint)', () => {
 		expect(nested.note).not.toContain(']');
 	});
 
-	it('strips C0 control bytes and ANSI escapes from metadata strings', () => {
+	it('strips ANSI / CSI escape sequences from metadata strings before control-byte cleanup', () => {
 		const f = createFinding('spf', 'title', 'high', 'detail', {
-			ctrl: 'a\x00b\x07c\x1b[31mred\x1b[0m',
+			ctrl: 'a\x1b[31mred\x1b[0mb',
+			c1: 'a\x9B31mblue\x9B0mb',
 		});
 		const meta = f.metadata as Record<string, string>;
-		expect(meta.ctrl).not.toMatch(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/);
-		expect(meta.ctrl).not.toContain('\x1b');
-		// the readable text survives
-		expect(meta.ctrl).toContain('red');
+		expect(meta.ctrl).toBe('aredb');
+		expect(meta.c1).toBe('ablueb');
+		expect(meta.ctrl).not.toMatch(/[\x00-\x1F\x7F-\x9F]/);
+		expect(meta.c1).not.toMatch(/[\x00-\x1F\x7F-\x9F]/);
+	});
+
+	it('normalizes fullwidth lookalikes and strips bidi / zero-width Unicode controls', () => {
+		const f = createFinding('spf', 'title', 'high', 'detail', {
+			confusable: 'prefix｀code｀suffix\u202E\u200B',
+		});
+		const meta = f.metadata as Record<string, string>;
+		expect(meta.confusable).toBe('prefix code suffix');
+		expect(meta.confusable).not.toMatch(/[`｀\u202E\u200B]/u);
 	});
 
 	it('clamps over-long metadata strings to MAX_META_STRING', () => {

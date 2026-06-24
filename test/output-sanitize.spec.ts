@@ -79,6 +79,11 @@ describe('sanitizeDnsData', () => {
 		expect(sanitizeDnsData('a\x00\x01\x02b')).toBe('ab');
 	});
 
+	it('strips C1 control bytes and 8-bit CSI sequences without leaving remnants', async () => {
+		const { sanitizeDnsData } = await import('../src/lib/output-sanitize');
+		expect(sanitizeDnsData('a\x9B31mblue\x9B0mb')).toBe('ablueb');
+	});
+
 	// --- Preserved whitespace ---
 
 	it('preserves tab character (\\t) as whitespace', async () => {
@@ -100,6 +105,11 @@ describe('sanitizeDnsData', () => {
 	it('replaces backtick with space (code injection prevention)', async () => {
 		const { sanitizeDnsData } = await import('../src/lib/output-sanitize');
 		expect(sanitizeDnsData('`rm -rf /`')).not.toContain('`');
+	});
+
+	it('normalizes fullwidth lookalikes and strips bidi / zero-width controls', async () => {
+		const { sanitizeDnsData } = await import('../src/lib/output-sanitize');
+		expect(sanitizeDnsData('prefix｀code｀suffix\u202E\u200B')).toBe('prefix code suffix');
 	});
 
 	it('replaces asterisk with space (markdown bold/italic prevention)', async () => {
@@ -266,20 +276,11 @@ describe('sanitizeOutputText', () => {
 		expect(result).toContain('green text');
 	});
 
-	it('pure ANSI sequence (ESC present) is fully stripped', async () => {
-		// Construct a string where ESC is re-injected after sanitizeInput would have run
-		// to confirm the ANSI regex fires when ESC survives.
-		// We cannot bypass sanitizeInput directly, but we can confirm the regex works
-		// by testing sanitizeDnsData which does NOT strip ANSI via the dedicated regex —
-		// instead ESC is stripped as a C0 char.
+	it('sanitizeDnsData fully strips ANSI sequences before control-byte cleanup', async () => {
 		const { sanitizeDnsData } = await import('../src/lib/output-sanitize');
 		const colored = '\x1b[32mgreen text\x1b[0m';
-		// \x1b IS in [0x0E-0x1F] → stripped; `[`, `]` → replaced; leftover text survives
 		const result = sanitizeDnsData(colored);
-		expect(result).not.toContain('\x1b');
-		expect(result).not.toContain('[');
-		expect(result).not.toContain(']');
-		expect(result).toContain('green text');
+		expect(result).toBe('green text');
 	});
 
 	// --- Markdown / HTML injection ---
@@ -440,10 +441,11 @@ describe('sanitizeDnsData vs sanitizeOutputText — differing contracts', () => 
 		expect(sanitizeOutputText(long).length).toBeLessThanOrEqual(240);
 	});
 
-	it('both functions strip the ESC byte — via C0 strip in sanitizeDnsData, C0+ANSI-regex in sanitizeOutputText', async () => {
+	it('both functions strip the ESC byte from ANSI payloads', async () => {
 		const { sanitizeDnsData, sanitizeOutputText } = await import('../src/lib/output-sanitize');
 		const ansi = '\x1b[32mtext\x1b[0m';
-		// \x1b (0x1B) falls in [\x0E-\x1F] — stripped as C0 by both paths
+		// sanitizeDnsData strips the full ANSI sequence before control-byte cleanup;
+		// sanitizeOutputText still loses ESC during sanitizeInput().
 		expect(sanitizeDnsData(ansi)).not.toContain('\x1b');
 		expect(sanitizeOutputText(ansi)).not.toContain('\x1b');
 	});
