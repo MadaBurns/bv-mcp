@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.25.2] - 2026-06-24
+
+Patch release: one **server-only** `check_http_security` / `scan_domain` attribution fix. No `@blackveil/dns-checks` core change, `SCORING_MODEL_VERSION` unchanged, tool count unchanged (79). Security-header analysis and scores are unaffected — this only refines CDN attribution.
+
+### Fixed
+
+- **CDN attribution now distinguishes the origin's CDN from a redirect-hop (edge) CDN.** When an apex 301-redirects to its real origin through a different CDN (e.g. `stuff.co.nz`: a CloudFront-fronted apex redirector → a Fastly-served `www` origin), the redirector's CDN signal was accumulated across hops and — because it was checked before the origin's signal — shadowed the origin, so the finding (and the scan-level `cdnProvider`) named the redirector (`CloudFront`) rather than where the site is actually served (`Fastly`). The check still follows the redirect and analyzes the origin's headers (unchanged); intermediate-hop CDN signals are now kept separate from the final origin response. The annotation names the **origin** CDN as primary (`metadata.cdnProvider`) and surfaces any distinct **edge** CDN separately (`metadata.edgeCdnProvider`); an edge-only CDN (origin exposes no CDN signal) is flagged with `metadata.cdnRole: "edge"`. Server-only (`src/tools/check-http-security.ts`).
+
 ## [3.25.1] - 2026-06-24
 
 Patch release: three **server-only** `scan_domain` output fixes (maturity label, DKIM aggregate parity with `check_dkim`, and DNSSEC `dnssecSource` mislabel). No `@blackveil/dns-checks` core change, `SCORING_MODEL_VERSION` unchanged, tool count unchanged (79).

@@ -709,5 +709,43 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 			const result = await run();
 			expect(cdnFinding(result.findings)).toBe('Akamai');
 		});
+
+		// --- origin vs edge attribution ("annotate both") ---
+		// The metadata of the CDN annotation finding (the one carrying cdnProvider).
+		function cdnMeta(findings: Array<{ metadata?: Record<string, unknown> }>): Record<string, unknown> | undefined {
+			return findings.find((x) => typeof x.metadata?.cdnProvider === 'string')?.metadata;
+		}
+
+		it('names the ORIGIN CDN as primary and the edge/redirect CDN separately when they differ', async () => {
+			// Real-world shape (stuff.co.nz): apex 301 fronted by CloudFront → final
+			// origin served by Fastly. Primary cdnProvider must be the ORIGIN (Fastly);
+			// the redirector's CDN (CloudFront) is surfaced as edgeCdnProvider.
+			mockChain({ 'x-amz-cf-id': 'edge==' }, { 'x-served-by': 'cache-akl10335-AKL' });
+			const meta = cdnMeta((await run()).findings);
+			expect(meta?.cdnProvider).toBe('Fastly');
+			expect(meta?.edgeCdnProvider).toBe('CloudFront');
+		});
+
+		it('does not emit a separate edge annotation when origin and edge are the SAME CDN', async () => {
+			mockChain({ 'x-amz-cf-id': 'edge==' }, { 'x-amz-cf-id': 'final==' });
+			const meta = cdnMeta((await run()).findings);
+			expect(meta?.cdnProvider).toBe('CloudFront');
+			expect(meta?.edgeCdnProvider).toBeUndefined();
+		});
+
+		it('marks an edge-only CDN (origin exposes no CDN signal) with cdnRole "edge"', async () => {
+			mockChain({ 'x-amz-cf-id': 'edge==' }, {});
+			const meta = cdnMeta((await run()).findings);
+			expect(meta?.cdnProvider).toBe('CloudFront');
+			expect(meta?.cdnRole).toBe('edge');
+		});
+
+		it('omits cdnRole/edgeCdnProvider for a plain single-CDN origin (no redirect)', async () => {
+			mockChain({}, { 'x-amz-cf-id': 'final==' });
+			const meta = cdnMeta((await run()).findings);
+			expect(meta?.cdnProvider).toBe('CloudFront');
+			expect(meta?.cdnRole).toBeUndefined();
+			expect(meta?.edgeCdnProvider).toBeUndefined();
+		});
 	});
 });
