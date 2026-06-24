@@ -77,7 +77,6 @@ function computeWebOnlyMaturity(checks: CheckResult[]): MaturityStage {
 	const sslCheck = byCategory.get('ssl');
 	const dnssecCheck = byCategory.get('dnssec');
 	const httpSecurityCheck = byCategory.get('http_security');
-	const caaCheck = byCategory.get('caa');
 	const spfCheck = byCategory.get('spf');
 	const dmarcCheck = byCategory.get('dmarc');
 
@@ -85,8 +84,6 @@ function computeWebOnlyMaturity(checks: CheckResult[]): MaturityStage {
 	const hasDnssec = dnssecCheck?.passed ?? false;
 	const hasHsts =
 		httpSecurityCheck?.findings.some((f: Finding) => /HSTS/i.test(f.title) && !/missing|no HSTS|no\s+HSTS/i.test(f.title)) ?? false;
-	const hasHttpHardening = httpSecurityCheck?.passed ?? false;
-	const hasCaa = caaCheck?.passed ?? false;
 	// Anti-spoof posture: a published SPF -all (or restrictive include) + DMARC reject is
 	// strong evidence even on a non-sending domain (defence against impersonation).
 	const hasSpfRecord = spfCheck != null && !spfCheck.findings.some((f: Finding) => /No SPF record/i.test(f.title));
@@ -96,35 +93,46 @@ function computeWebOnlyMaturity(checks: CheckResult[]): MaturityStage {
 		!dmarcCheck.findings.some((f: Finding) => /policy set to (none|quarantine)/i.test(f.title));
 	const hasAntiSpoof = hasSpfRecord || hasDmarcReject;
 
-	// Stage 4 — Comprehensive: SSL + DNSSEC + HSTS + (CAA OR anti-spoof SPF/DMARC)
-	if (hasSsl && hasDnssec && hasHsts && (hasCaa || hasAntiSpoof)) {
+	// Stage 4 — Comprehensive: SSL + DNSSEC + HSTS + anti-spoof email policy.
+	// Anti-spoof (SPF -all / DMARC reject) is REQUIRED for the top tier. A no-MX domain
+	// is still freely impersonated in the From: header without it, so infrastructure
+	// hardening alone (TLS/DNSSEC/HSTS/CAA) does not make the posture "comprehensive".
+	if (hasSsl && hasDnssec && hasHsts && hasAntiSpoof) {
 		return {
 			stage: 4,
 			label: 'Comprehensive',
-			description: 'This web-only domain has full transport (SSL), DNS integrity (DNSSEC), browser hardening (HSTS), and either CAA pinning or anti-spoof email posture.',
+			description: 'This web-only domain has full transport (SSL), DNS integrity (DNSSEC), browser hardening (HSTS), and an anti-spoof email policy (SPF -all / DMARC reject).',
 			nextStep: '',
 		};
 	}
 
-	// Stage 3 — Defensive: SSL + DNSSEC + (HSTS or anti-spoof SPF/DMARC)
-	// CAA is NOT required at stage 3 — a domain can have strong defensive posture without it
-	// (DNSSEC + HSTS already provide DNS-integrity + transport-hardening guarantees).
-	if (hasSsl && hasDnssec && (hasHsts || hasAntiSpoof || hasHttpHardening)) {
+	// Stage 3 — Defensive: SSL + DNSSEC + anti-spoof email policy.
+	// Anti-spoof is required here too — a spoofable domain is not "defensive" no matter how
+	// strong its transport/DNS hardening is. HSTS/CAA push toward Comprehensive (stage 4).
+	if (hasSsl && hasDnssec && hasAntiSpoof) {
 		return {
 			stage: 3,
 			label: 'Defensive',
-			description: 'This web-only domain has SSL, DNSSEC, and additional web/anti-spoof hardening. Strong defensive posture.',
-			nextStep: 'Add HSTS preload, CAA pinning, and explicit anti-spoof DMARC reject to reach full hardening.',
+			description: 'This web-only domain has SSL, DNSSEC, and an anti-spoof email policy (SPF -all / DMARC reject). Strong defensive posture.',
+			nextStep: 'Add HSTS preload and CAA pinning to reach full hardening.',
 		};
 	}
 
-	// Stage 2 — Hardened-baseline: SSL + DNSSEC OR SSL + HSTS
-	if (hasSsl && (hasDnssec || hasHsts)) {
+	// Stage 2 — Transport-Hardened: SSL plus a DNS/browser/anti-spoof control, but not a
+	// complete defensive stack. Renamed from the former "Hardened" — that label both
+	// overstated a mid-tier rung ("resists most passive attacks" for a domain that may be
+	// fully spoofable) and COLLIDED with the mail ladder's Stage 4 "Hardened", so a
+	// spoofable web-only domain displayed the same word as a protected mail domain.
+	if (hasSsl && (hasDnssec || hasHsts || hasAntiSpoof)) {
 		return {
 			stage: 2,
-			label: 'Hardened',
-			description: 'Browser-facing TLS plus one DNS-or-browser hardening control. Resists most passive attacks.',
-			nextStep: 'Add DNSSEC and HSTS for layered protection.',
+			label: 'Transport-Hardened',
+			description: hasAntiSpoof
+				? 'Transport (TLS) plus an anti-spoof email policy (SPF -all / DMARC reject). Add DNSSEC and HSTS for full hardening.'
+				: 'Transport (TLS) plus a DNS- or browser-hardening control. NOTE: without an anti-spoof email policy (SPF -all + DMARC reject) the domain name can still be impersonated in email, even though it sends no mail.',
+			nextStep: hasAntiSpoof
+				? 'Add DNSSEC and HSTS to reach a full defensive posture.'
+				: 'Publish SPF (-all) and DMARC (p=reject) to block impersonation, then add DNSSEC and HSTS.',
 		};
 	}
 
