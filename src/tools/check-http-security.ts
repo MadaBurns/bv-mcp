@@ -162,22 +162,25 @@ function detectCdnProvider(headers: Headers): string | null {
 
 /**
  * The final response of a redirect chain, plus a union of vendor-specific CDN
- * signal headers observed across EVERY hop. The chain's intermediate hops are
- * otherwise discarded — only the final response is the site's; `cdnSignals`
- * exists so CDN attribution doesn't lose a signal that appeared on an earlier
- * hop (or on a hop the security analysis path can't see).
+ * signal headers observed only on the chain's INTERMEDIATE (redirecting) hops.
+ * The final response keeps its own headers intact (inspect them directly for the
+ * ORIGIN's CDN); `edgeSignals` captures any CDN fronting a redirect hop (e.g. an
+ * apex 301 served by CloudFront ahead of a Fastly-served www origin) so the two
+ * can be attributed separately ("origin: Fastly, edge: CloudFront") instead of
+ * the edge signal shadowing the origin.
  */
-type RedirectResult = { response: Response; cdnSignals: Headers };
+type RedirectResult = { response: Response; edgeSignals: Headers };
 
 /**
  * Fetch a URL with HEAD and follow up to MAX_REDIRECT_HOPS HTTPS redirects
  * manually. Mirrors the package's own redirect follow logic — used only for the
  * dual-fetch probe ahead of the package call. Accumulates vendor-specific CDN
- * headers from every hop so a CDN fronting an intermediate (or final) hop is
- * still attributable even when the final security response omits the signal.
+ * headers from each hop that REDIRECTS (intermediate hops only) into
+ * `edgeSignals`; the final (non-redirect) response is returned with its own
+ * headers untouched so origin-vs-edge CDN attribution stays distinct.
  */
 async function fetchWithRedirects(url: string, timeoutMs: number, callerSignal?: AbortSignal): Promise<RedirectResult> {
-	const cdnSignals = new Headers();
+	const edgeSignals = new Headers();
 	// Initial fetch goes to https://<domain> where <domain> is already validated
 	// upstream. Use raw fetch to keep the cost off the validation path. Subsequent
 	// redirect targets ARE attacker-controlled (Location header) and go via
@@ -198,13 +201,17 @@ async function fetchWithRedirects(url: string, timeoutMs: number, callerSignal?:
 			callerSignal,
 		),
 	);
-	accumulateCdnSignals(cdnSignals, response.headers);
 
 	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
 		const status = response.status;
 		const isRedirect =
 			(status >= 300 && status < 400) || response.type === 'opaqueredirect' || (status === 0 && response.headers.get('location'));
 		if (!isRedirect) break;
+
+		// This hop redirects, so it is an intermediate/edge hop — harvest its CDN
+		// signals into edgeSignals BEFORE following. The hop we eventually stop on
+		// (non-redirect) is the origin and is left out of edgeSignals.
+		accumulateCdnSignals(edgeSignals, response.headers);
 
 		const location = response.headers.get('location');
 		if (!location) break;
@@ -237,10 +244,9 @@ async function fetchWithRedirects(url: string, timeoutMs: number, callerSignal?:
 			// redirect destination, not a real failure.
 			break;
 		}
-		accumulateCdnSignals(cdnSignals, response.headers);
 	}
 
-	return { response, cdnSignals };
+	return { response, edgeSignals };
 }
 
 /**
@@ -277,7 +283,7 @@ async function dualFetchHeaders(
 	domain: string,
 	timeoutMs: number,
 	callerSignal?: AbortSignal,
-): Promise<{ headers: Headers; ok: boolean; status: number; usable: boolean } | null> {
+): Promise<{ headers: Headers; edgeSignals: Headers; ok: boolean; status: number; usable: boolean } | null> {
 	const url = `https://${domain}`;
 	const results = await Promise.allSettled([
 		fetchWithRedirects(url, timeoutMs, callerSignal),
@@ -288,13 +294,13 @@ async function dualFetchHeaders(
 
 	if (settled.length === 0) return null;
 
-	// Union of vendor-specific CDN signals seen on ANY hop of EITHER probe's chain.
-	// Folded into the analysed headers so `detectCdnProvider` attributes a CDN that
-	// fronted an intermediate (or final) hop even when the final security response
-	// omits the signal. Security-header analysis is unaffected — these headers are
-	// not in MERGE_HEADERS and are not scored by the package.
-	const allCdnSignals = new Headers();
-	for (const s of settled) accumulateCdnSignals(allCdnSignals, s.cdnSignals);
+	// Union of vendor-specific CDN signals seen on the INTERMEDIATE (redirecting)
+	// hops of EITHER probe's chain. Returned alongside (NOT folded into) the
+	// analysed headers so the caller can attribute the redirector's CDN (edge)
+	// separately from the final origin's own headers, instead of an edge signal
+	// shadowing the origin. Not in MERGE_HEADERS, so security analysis is unaffected.
+	const edgeSignals = new Headers();
+	for (const s of settled) accumulateCdnSignals(edgeSignals, s.edgeSignals);
 
 	const responses = settled.map((s) => s.response);
 
@@ -305,31 +311,17 @@ async function dualFetchHeaders(
 		// attribute/short-circuit it; otherwise return null so the package's GET-fallback handles
 		// it as a generic block. usable:false means "don't analyze these headers as the site's".
 		const cf = responses.find((r) => looksLikeWaf(r.headers));
-		if (cf) return { headers: cf.headers, ok: false, status: cf.status, usable: false };
+		if (cf) return { headers: cf.headers, edgeSignals, ok: false, status: cf.status, usable: false };
 		return null;
 	}
 
 	if (usable.length === 1) {
-		const headers = withCdnSignals(usable[0].headers, allCdnSignals);
-		return { headers, ok: usable[0].ok, status: usable[0].status, usable: true };
+		return { headers: usable[0].headers, edgeSignals, ok: usable[0].ok, status: usable[0].status, usable: true };
 	}
 
 	const merged = mergeSecurityHeaders(usable[0].headers, usable[1].headers);
-	const headers = withCdnSignals(merged, allCdnSignals);
 	const primary = usable[0].ok ? usable[0] : usable[1].ok ? usable[1] : usable[0];
-	return { headers, ok: primary.ok, status: primary.status, usable: true };
-}
-
-/**
- * Return a copy of `base` with any cross-hop CDN-signal headers folded in
- * (without overwriting a same-named header already present on the final
- * response). Used so `detectCdnProvider` sees signals from intermediate hops.
- */
-function withCdnSignals(base: Headers, cdnSignals: Headers): Headers {
-	const out = new Headers();
-	base.forEach((value, key) => out.set(key, value));
-	accumulateCdnSignals(out, cdnSignals);
-	return out;
+	return { headers: merged, edgeSignals, ok: primary.ok, status: primary.status, usable: true };
 }
 
 /**
@@ -474,8 +466,17 @@ async function checkHttpSecurityInner(domain: string, callerSignal?: AbortSignal
 
 	if (!capturedHeaders) return result;
 
-	const cdnProvider = detectCdnProvider(capturedHeaders);
-	if (!cdnProvider) return result;
+	// Attribute the ORIGIN's CDN from the final analyzed response's own headers,
+	// and any redirector's CDN from the intermediate-hop (edge) signals — kept
+	// distinct so an apex 301 fronted by one CDN (e.g. CloudFront) doesn't shadow
+	// a different origin CDN (e.g. Fastly serving www). edgeSignals is only
+	// populated on the dual-fetch path; the safeFetch fallback has no edge tracking.
+	const originCdn = detectCdnProvider(capturedHeaders);
+	let edgeCdn = dualResult ? detectCdnProvider(dualResult.edgeSignals) : null;
+	// A CDN fronting the whole chain (same front-to-back) is one provider, not an
+	// origin/edge split — collapse it so we don't redundantly name it twice.
+	if (edgeCdn === originCdn) edgeCdn = null;
+	if (!originCdn && !edgeCdn) return result;
 
 	// Only annotate CDN when headers were actually analyzed.
 	// If the check was blocked (WAF, connection refused, etc.) or timed out,
@@ -484,13 +485,33 @@ async function checkHttpSecurityInner(domain: string, callerSignal?: AbortSignal
 		result.checkStatus === 'error' || result.checkStatus === 'timeout' || result.findings.some((f) => f.metadata?.missingControl === true);
 	if (isUnanalyzable) return result;
 
-	const cdnFinding = createFinding(
-		'http_security',
-		`HTTP headers via ${cdnProvider} CDN`,
-		'info',
-		`HTTP security headers may be provided by ${cdnProvider} CDN rather than the origin server. CDN-applied headers do not reflect the origin server's security configuration.`,
-		{ cdnProvider },
-	);
+	let title: string;
+	let detail: string;
+	let metadata: Record<string, unknown>;
+	if (originCdn && edgeCdn) {
+		// Both present and distinct — name the origin as primary, edge separately.
+		title = `HTTP headers via ${originCdn} CDN (origin), ${edgeCdn} at edge`;
+		detail =
+			`Security headers were analyzed from the ${originCdn}-served origin response; an intermediate redirect hop is fronted by ${edgeCdn}. ` +
+			`CDN-applied headers do not reflect the origin server's own security configuration.`;
+		// cdnProvider stays the ORIGIN so scan-level CDN attribution (format-report)
+		// names where the site is actually served from, not the redirector.
+		metadata = { cdnProvider: originCdn, edgeCdnProvider: edgeCdn };
+	} else if (originCdn) {
+		title = `HTTP headers via ${originCdn} CDN`;
+		detail = `HTTP security headers may be provided by ${originCdn} CDN rather than the origin server. CDN-applied headers do not reflect the origin server's security configuration.`;
+		metadata = { cdnProvider: originCdn };
+	} else {
+		// edge-only: the origin exposed no recognizable CDN signal; only a redirect
+		// hop is CDN-fronted. Flag the role so the provider isn't read as the origin's.
+		title = `HTTP headers via ${edgeCdn} CDN (edge/redirect hop)`;
+		detail =
+			`An intermediate redirect hop for this domain is fronted by ${edgeCdn} CDN; the final origin response exposed no recognizable CDN signal. ` +
+			`CDN-applied headers do not reflect the origin server's security configuration.`;
+		metadata = { cdnProvider: edgeCdn, cdnRole: 'edge' };
+	}
+
+	const cdnFinding = createFinding('http_security', title, 'info', detail, metadata);
 
 	return { ...result, findings: [...result.findings, cdnFinding] };
 }
