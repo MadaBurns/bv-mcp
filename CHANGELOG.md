@@ -6,7 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-## [3.25.2] - 2026-06-24
+## [3.25.3] - 2026-06-24
+
+Patch release: ships the **finding-sanitizer hardening** merged in #438 to prod. Bundles **`@blackveil/dns-checks` 1.3.18**. `SCORING_MODEL_VERSION` unchanged, scores unchanged (string-channel sanitization only), tool count unchanged (79).
+
+### Changed
+
+- **LLM-facing output sanitizer hardened against terminal-escape, C1, and Unicode-spoofing vectors (OWASP LLM01).** The shared `sanitizeStructuredString` now (1) NFKC-normalizes fullwidth/confusable forms to canonical ASCII, (2) strips full ANSI/CSI escape sequences — including 8-bit C1 CSI (`\x9B`) — before generic control-byte removal (no more `[31m` remnants), (3) strips C0+C1+DEL (`\x00-\x1F`, `\x7F-\x9F`), and (4) removes bidi / zero-width formatting controls that can visually reorder or hide attacker text. The `createFinding` detail channel, `createFinding` metadata chokepoint, and Worker-side `sanitizeDnsData` now share this one path so they cannot drift. Bundles `@blackveil/dns-checks` 1.3.18 (+ `PARITY_CORPUS_VERSION` 1.3.18). Merged in #438.
 
 Patch release: one **server-only** `check_http_security` / `scan_domain` attribution fix. No `@blackveil/dns-checks` core change, `SCORING_MODEL_VERSION` unchanged, tool count unchanged (79). Security-header analysis and scores are unaffected — this only refines CDN attribution.
 
