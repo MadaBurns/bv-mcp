@@ -70,9 +70,12 @@ describe('checkMtaSts — WAF-challenged policy fetch (issue #455)', () => {
 		expect(waf!.severity).toBe('info');
 		expect(waf!.metadata?.inconclusive).toBe(true);
 		expect(waf!.metadata?.httpStatus).toBe(403);
-		// …with the TXT-record control still credited and the score recovered off the floor.
+		// …with the TXT-record control still credited and the score recovered off the 75 floor,
+		// but NOT a perfect 100 — the policy itself was unverifiable, so a deliberate deduction applies.
 		expect(result.controlPresent).toBe(true);
 		expect(result.score).toBeGreaterThan(75);
+		expect(result.score).toBeLessThan(100);
+		expect(waf!.metadata?.penaltyOverride).toBe(10);
 	});
 
 	it('downgrades a Cloudflare block page (403 + block body) to an inconclusive info', async () => {

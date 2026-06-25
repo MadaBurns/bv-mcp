@@ -24,6 +24,16 @@ import { type WafEvent, looksLikeWaf, detectWafEvent } from '../lib/waf-detectio
 /** Titles of the package's policy-fetch findings that a WAF interception can falsely trigger. */
 const POLICY_FETCH_FALSE_POSITIVE_TITLES = new Set(['MTA-STS policy file not accessible', 'MTA-STS policy redirects']);
 
+/**
+ * Score deduction for an inconclusive (WAF-challenged) policy fetch. The finding stays
+ * labelled `info` (it is inconclusive, not a failure — the `_mta-sts` TXT record WAS
+ * verified), but the policy file's mode/coverage could not be confirmed, so this is not
+ * a perfect result either. A fixed `penaltyOverride` (à la check-dnssec) lands it ~90 —
+ * clearly off the 100 ceiling, but well above a real `high` "not accessible" (penalty 25
+ * → score 75). See SEVERITY_PENALTIES; `info` alone would deduct 0 and falsely score 100.
+ */
+const INCONCLUSIVE_POLICY_PENALTY = 10;
+
 /** True when this fetch is the MTA-STS policy-file fetch (the only thing fetchFn is used for). */
 function isPolicyFetch(url: string): boolean {
 	return url.includes('/.well-known/mta-sts.txt');
@@ -96,6 +106,9 @@ function downgradeForWaf(result: CheckResult, domain: string, event: WafEvent, s
 			...(event.kind === 'challenge' ? { wafChallenge: event.provider } : {}),
 			httpStatus: status,
 			inconclusive: true,
+			// Keep the `info` label (not alarming) but apply a deliberate, fixed deduction so an
+			// unverifiable policy doesn't score a perfect 100. See INCONCLUSIVE_POLICY_PENALTY.
+			penaltyOverride: INCONCLUSIVE_POLICY_PENALTY,
 		},
 	);
 
