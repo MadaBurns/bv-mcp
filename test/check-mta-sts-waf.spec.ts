@@ -91,6 +91,39 @@ describe('checkMtaSts — WAF-challenged policy fetch (issue #455)', () => {
 		expect(waf!.metadata?.inconclusive).toBe(true);
 	});
 
+	it('downgrades a WAF-intercepted redirect (301 + cf-mitigated) — replaces the policy-redirects high', async () => {
+		mockFetch({
+			mtaStsDns: validTxt('example.com'),
+			tlsrptDns: validTlsRpt('example.com'),
+			policyFetch: policyHttp(301, { 'cf-ray': '91def5678-AKL', 'cf-mitigated': 'challenge', server: 'cloudflare', location: 'https://challenge.cloudflare.com/' }),
+		});
+
+		const result = await run();
+
+		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
+		expect(result.findings.some((f) => f.title === 'MTA-STS policy redirects')).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.inconclusive === true)).toBe(true);
+	});
+
+	it('bounds the body sniff on a hostile oversized 403 — still detects, does not buffer the whole body', async () => {
+		// block marker up front, then ~1 MB of attacker-controlled padding. The bounded
+		// reader must detect the block from the early bytes without buffering it all.
+		const hostileBody = 'Sorry, you have been blocked' + 'A'.repeat(1_000_000);
+		mockFetch({
+			mtaStsDns: validTxt('example.com'),
+			tlsrptDns: validTlsRpt('example.com'),
+			policyFetch: policyHttp(403, { 'cf-ray': '91def5678-AKL', server: 'cloudflare' }, hostileBody),
+		});
+
+		const result = await run();
+
+		// Detection still works off the early bytes; the false-positive high is gone.
+		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
+		const waf = result.findings.find((f) => f.metadata?.wafEvent === 'cloudflare');
+		expect(waf).toBeDefined();
+		expect(waf!.metadata?.wafKind).toBe('block');
+	});
+
 	it('does NOT downgrade a genuine (non-WAF) 403 — the high finding is preserved', async () => {
 		mockFetch({
 			mtaStsDns: validTxt('example.com'),

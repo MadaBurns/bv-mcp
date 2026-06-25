@@ -30,14 +30,41 @@ function isPolicyFetch(url: string): boolean {
 }
 
 /**
- * Best-effort body sniff for WAF fingerprinting. Clones so the package's own
- * handling of the original response (read or cancel) is undisturbed; returns ''
- * if the body can't be read (fail-open — detection must never throw).
+ * Max bytes to read when fingerprinting a WAF page. The `mta-sts.<domain>` host
+ * is controlled by the domain owner being scanned, so the policy-fetch body is
+ * attacker-influenced — and because Cloudflare's Worker egress injects `cf-ray`
+ * onto EVERY response, `looksLikeWaf` is true for every non-ok policy fetch in
+ * production, so this sniff runs on every 4xx/5xx. WAF challenge/block markers
+ * ("just a moment", "you have been blocked") appear in the first bytes, so a
+ * small bounded read is sufficient and prevents buffering a hostile multi-MB body.
+ */
+const MAX_WAF_SNIFF_BYTES = 8192;
+
+/**
+ * Best-effort, BOUNDED body sniff for WAF fingerprinting. Clones so the package's
+ * own handling of the original response (read or cancel) is undisturbed; reads at
+ * most MAX_WAF_SNIFF_BYTES then cancels the stream; returns '' if the body can't
+ * be read (fail-open — detection must never throw).
  */
 async function sniffBody(response: Response): Promise<string> {
 	try {
 		if (typeof response.clone !== 'function') return '';
-		return await response.clone().text();
+		const body = response.clone().body;
+		if (!body) return '';
+		const reader = body.getReader();
+		const decoder = new TextDecoder();
+		let text = '';
+		try {
+			while (text.length < MAX_WAF_SNIFF_BYTES) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				text += decoder.decode(value, { stream: true });
+			}
+		} finally {
+			// Stop buffering attacker-controlled data and release the stream.
+			void reader.cancel().catch(() => {});
+		}
+		return text;
 	} catch {
 		return '';
 	}
