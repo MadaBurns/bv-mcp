@@ -17,7 +17,7 @@ import { buildCheckResult, createFinding } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { safeFetch } from '../lib/safe-fetch';
 import { composeSignal, withAbortSignal } from '../lib/abort-signal';
-import { looksLikeWaf, detectWafEvent } from '../lib/waf-detection';
+import { looksLikeWaf, detectWafEvent, buildWafFinding } from '../lib/waf-detection';
 
 /** User-Agent for outbound probes — matches the package's scanner UA. */
 const SCANNER_USER_AGENT = 'Mozilla/5.0 (compatible; BlackVeilDNSScanner/1.0; +https://blackveilsecurity.com)';
@@ -378,23 +378,13 @@ async function checkHttpSecurityInner(domain: string, callerSignal?: AbortSignal
 		const event = detectWafEvent(headersForWaf, body, dualResult.status);
 		if (event) {
 			const provider = event.provider.charAt(0).toUpperCase() + event.provider.slice(1);
-			const finding = createFinding(
-				'http_security',
-				event.kind === 'block' ? `${provider} WAF blocked external header inspection` : `${provider} WAF challenge intercepted`,
-				'info',
+			const title =
+				event.kind === 'block' ? `${provider} WAF blocked external header inspection` : `${provider} WAF challenge intercepted`;
+			const detail =
 				event.kind === 'block'
 					? `https://${domain} returned an HTTP ${dualResult.status} ${provider} block page, not the site. Security headers cannot be inspected externally.`
-					: `The fetched response appears to be a ${provider} challenge page, not the real site. Header analysis is inconclusive.`,
-				{
-					wafEvent: event.provider,
-					wafKind: event.kind,
-					// Back-compat: challenges previously carried `wafChallenge` with the provider name.
-					...(event.kind === 'challenge' ? { wafChallenge: event.provider } : {}),
-					httpStatus: dualResult.status,
-					inconclusive: true,
-					missingControl: true,
-				},
-			);
+					: `The fetched response appears to be a ${provider} challenge page, not the real site. Header analysis is inconclusive.`;
+			const finding = buildWafFinding('http_security', event, dualResult.status, { title, detail });
 			const base = buildCheckResult('http_security', [finding]);
 			return { ...base, score: 0, passed: false, checkStatus: 'error' };
 		}

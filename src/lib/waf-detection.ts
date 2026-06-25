@@ -16,11 +16,22 @@
  * MTA-STS policy fetch can reuse the identical detection — issue #455.
  */
 
+import { createFinding } from './scoring';
+import type { CheckCategory, Finding } from './scoring';
+
 /** A detected WAF interception — either an interstitial challenge or a terminal block. */
 export type WafEvent = { provider: 'cloudflare' | 'akamai'; kind: 'challenge' | 'block' };
 
 /** Cloudflare access-block body signatures (distinct from the "Just a moment" JS challenge). */
 const CF_BLOCK_BODY = /sorry, you have been blocked|attention required|error 10(09|10|12|13|15|20)/i;
+
+/**
+ * Akamai access-denied body signatures. `AkamaiGHost` is a generic Akamai edge
+ * Server header present on ordinary responses, so the Server header alone must
+ * never be treated as a block — a body signature on a 4xx is required to
+ * distinguish a WAF block from a genuine origin failure.
+ */
+const AKAMAI_BLOCK_BODY = /access denied|reference\s*#[0-9a-f.]+|you don't have permission/i;
 
 /** True when the response carries any Cloudflare/Akamai signal worth fetching the body to disambiguate. */
 export function looksLikeWaf(headers: Headers): boolean {
@@ -35,6 +46,10 @@ export function looksLikeWaf(headers: Headers): boolean {
  * so detection is status-aware. A block requires a 4xx plus a block-body signature or a
  * `cf-mitigated` header — `cf-ray` + 403 alone is NOT treated as a block, since a real app may
  * legitimately 403 a request. The interstitial challenge is checked first.
+ *
+ * The Akamai branch mirrors the same rigor: a bare `Server: AkamaiGHost` header is present on
+ * ordinary responses, so a block requires a 4xx PLUS an Akamai access-denied body signature —
+ * a genuine origin 403/404/500 behind Akamai is NOT mis-attributed to a WAF block.
  */
 export function detectWafEvent(headers: Headers, body: string | undefined, status: number): WafEvent | null {
 	const server = (headers.get('server') ?? '').toLowerCase();
@@ -46,6 +61,20 @@ export function detectWafEvent(headers: Headers, body: string | undefined, statu
 		if (/just a moment/i.test(b) || cfMitigated === 'challenge') return { provider: 'cloudflare', kind: 'challenge' };
 		if (status >= 400 && (CF_BLOCK_BODY.test(b) || !!cfMitigated)) return { provider: 'cloudflare', kind: 'block' };
 	}
-	if (server.includes('akamaighost')) return { provider: 'akamai', kind: 'block' };
+	if (server.includes('akamaighost') && status >= 400 && AKAMAI_BLOCK_BODY.test(b)) {
+		return { provider: 'akamai', kind: 'block' };
+	}
 	return null;
+}
+
+/** Build the canonical inconclusive WAF info-finding. Callers pass the (kind-aware) title + detail. */
+export function buildWafFinding(category: string, event: WafEvent, status: number, text: { title: string; detail: string }): Finding {
+	return createFinding(category as CheckCategory, text.title, 'info', text.detail, {
+		wafEvent: event.provider,
+		wafKind: event.kind,
+		...(event.kind === 'challenge' ? { wafChallenge: event.provider } : {}),
+		httpStatus: status,
+		inconclusive: true,
+		missingControl: true,
+	});
 }
