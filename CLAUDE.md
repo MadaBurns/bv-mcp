@@ -13,7 +13,7 @@ Blackveil DNS — source-available DNS & email security scanner, built as a Clou
 
 ```bash
 npm ci
-npm test                                    # Vitest in Workers runtime
+npm test                                    # Vitest in Workers runtime (via scripts/vitest-filter-workerd.mjs — strips pool-teardown noise)
 npx vitest run test/check-spf.spec.ts       # Single spec
 npm run build                               # tsup (npm pkg + stdio CLI)
 npx wrangler dev                            # localhost:8787
@@ -133,8 +133,8 @@ Two channels, both deliberately **lenient — never reject**: (1) the `initializ
 Three-tier model (`computeScanScore`). `CATEGORY_DISPLAY_WEIGHTS` is display-only.
 
 **Core (70%)**: DMARC 16, DKIM 10, SPF 10, DNSSEC 10, SSL 8 (representative `mail_enabled` profile — every core weight is per-profile; e.g. DNSSEC 5–20, SSL 0–14 across the 6 profiles — the `authoritative_dns_infra` profile zeroes SSL).
-**Protective (20%)**: Subdomain Takeover 4, HTTP Security 3, MTA-STS 3, MX 2, CAA 2, NS 2, Lookalikes 2, Shadow Domains 2.
-**Hardening (10%)**: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene (~1.4 pts each, bonus-only).
+**Protective (20%)**: Subdomain Takeover 4, HTTP Security 3, MTA-STS 3, Subdomailing 3, MX 2, CAA 2, NS 2, Lookalikes 2, Shadow Domains 2. (`SVCB-HTTPS` and `DANE-HTTPS` are also `protective`-tier in `CATEGORY_TIERS` but carry no fixed `PROTECTIVE_WEIGHTS` entry — graded via profileWeights.)
+**Hardening (10%)**: DANE, PTR, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene, DNSKEY Strength, Brand Discovery (~1.4 pts each, bonus-only).
 
 Override via `SCORING_CONFIG` env (JSON; `weights`, `profileWeights`, `thresholds`, `grades`, `baselineFailureRates`). Parsed via `parseScoringConfigCached()` (memoized).
 
@@ -162,7 +162,7 @@ EMA per profile+provider via `ProfileAccumulator` DO. Maturity-gated blending (`
 
 - **SSRF**: blocked IPs/TLDs in `config.ts`; enforced by `sanitize.ts`. All outbound `redirect: 'manual'`. **Attacker-controlled URLs** (BIMI `l=`/`a=`, redirect `Location:` targets the worker follows) MUST use `safeFetch` (`lib/safe-fetch.ts`). Fetches to URLs whose hostname is already validated (e.g. `https://${validatedDomain}/.well-known/...`) may use raw `fetch` with manual redirects.
 - **Auth**: Static `BV_API_KEY` (constant-time XOR). Token from `Authorization: Bearer` first, then `?api_key=` (Smithery fallback). Six tiers: `free`, `agent`, `developer`, `enterprise`, `partner`, `owner`. Owner-tier IP gate: client IP must be in `OWNER_ALLOW_IPS` else downgrade to `partner` (including OAuth JWT path). OAuth JWT validates `claims.tier` against `JwtIssuableTierSchema = z.enum(['owner','developer','enterprise'])`. The JWT path returns a `keyHash` (`hex(SHA-256(token))`, same as the static path) so per-key daily quota + concurrency key on the credential, not the client IP (3.15.1 — previously the JWT path returned no `keyHash` and quota fell back to `options.ip`).
-- **Rate limits**: 50/min, 300/hr per IP (unauthenticated). Authenticated bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_mx_reputation`: 20/day per IP + 60-min cache.
+- **Rate limits**: 50/min, 300/hr per IP (unauthenticated). Authenticated bypass per-IP; per-tier daily quotas apply. Only `tools/call` counts. `check_mx_reputation`: 5/day free-tier (`FREE_TOOL_DAILY_LIMITS`) + 60-min cache (`cacheTtlSeconds: 3600`).
 - **Per-tool quotas**: `FREE_TOOL_DAILY_LIMITS` in `config.ts`. Global cap `GLOBAL_DAILY_TOOL_LIMIT` 500k/day via `QuotaCoordinator` DO.
 - **Paid-only tools**: offensive/recon + multi-domain tools (`GATED_PAID_ONLY_TOOLS` in `config.ts`, incl. `check_lookalikes`/`check_shadow_domains`/`discover_subdomains`/`batch_scan`/`compare_domains`/osint+bucket `*_start`/brand-audit) are developer+ only — pinned to 0 in `FREE_TOOL_DAILY_LIMITS`, `TIER_TOOL_DAILY_LIMITS.free`, and `.agent`. Free/unauth/agent callers get HTTP **403** `UPGRADE_REQUIRED` (-32003, "requires a paid plan"). OSINT/bucket pollers (`*_status`/`*_findings`/`*_report`) stay free. SSOT audited by `gated-tools-ssot.audit.test.ts`.
 - **Distinct-domain cap**: unauthenticated callers also have a per-IP distinct-domains/day cap (`FREE_DISTINCT_DOMAIN_DAILY_LIMIT`, KV best-effort, fail-open, currently 12) across domain-bearing tools; exceed → HTTP **429** ("distinct domains per day") + `x-quota-*` headers.
@@ -336,7 +336,7 @@ The free-tier paid-gating (HTTP 403 for offensive tools) and the distinct-domain
 
 ## Analytics
 
-Four core event types: `mcp_request`, `tool_call`, `rate_limit`, `session`, plus a fifth `degradation` event with a single live member — `kv_fallback` (emitted from `session.ts` when a KV write throws). Queries in `analytics-queries.ts` cover the four core types; nothing queries/alerts on `degradation` yet. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan`. Optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
+Seven event indexes are emitted (`analytics.ts`): four core — `mcp_request`, `tool_call`, `rate_limit`, `session` — plus `degradation` (single live member `kv_fallback`, emitted from `session.ts` when a KV write throws), `queue_batch`, and `tail`. Queries in `analytics-queries.ts` cover the four core types; nothing queries/alerts on `degradation`, `queue_batch`, or `tail` yet. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan`. Optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
 
 **Blob layout** (keep in sync when adding dimensions):
 
