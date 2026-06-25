@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.25.4] - 2026-06-25
+
+Patch release: one **server-only** `check_mta_sts` false-positive fix. No `@blackveil/dns-checks` core change, `SCORING_MODEL_VERSION` unchanged, tool count unchanged (79). Normal-corpus scores are unaffected — the new behavior only applies when the MTA-STS policy fetch is intercepted by a WAF.
+
+### Fixed
+
+- **`check_mta_sts` no longer emits a confident `high` "policy file not accessible" on a WAF-challenged policy fetch (#455).** The `mta-sts.<domain>` policy host is often Cloudflare/Akamai-fronted, and the scanner's own probe gets a WAF challenge/block (commonly HTTP 403) while real sending MTAs fetch the policy fine — so a healthy `mode: enforce` policy (e.g. `blackveilsecurity.com`) was falsely flagged. The `check_mta_sts` worker wrapper now detects the interception (reusing the `check_http_security` WAF fingerprint, extracted to `src/lib/waf-detection.ts`) and downgrades the finding to an inconclusive `info` with a fixed `penaltyOverride` (lands ~90 — off the ceiling since the policy is unverifiable, but above a real failure since the `_mta-sts` TXT record was verified). The body sniff is bounded (8 KB) so an attacker-controlled policy host can't force a large-body read. A genuine non-WAF 4xx still surfaces the `high`.
+
 ## [3.25.3] - 2026-06-24
 
 Patch release: ships the **finding-sanitizer hardening** merged in #438 to prod. Bundles **`@blackveil/dns-checks` 1.3.18**. `SCORING_MODEL_VERSION` unchanged, scores unchanged (string-channel sanitization only), tool count unchanged (79).
