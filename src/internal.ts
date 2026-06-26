@@ -872,7 +872,7 @@ internalRoutes.use('/analytics/forensics', internalStrictAuthGate);
  * GET /internal/analytics/forensics (D1, STRICT) — recent events with DECRYPTED IP.
  *
  * Operator-only re-identification surface; every call writes a self-audit row
- * into the tenants `audit_events` table (`action = analytics.forensics.decrypt`).
+ * into the `mcp_access_log_audit` table in INTELLIGENCE_DB (`action = analytics.forensics.decrypt`).
  * Query: ?days=1&key_hash=<prefix>&ip_hash=<hash>
  */
 internalRoutes.get('/analytics/forensics', async (c) => {
