@@ -49,6 +49,8 @@ import {
 	parseScanTimeout,
 } from './lib/config';
 import { normalizeToolName } from './handlers/tool-args';
+import { recordInternalAccessLog, extractAccessLogDomain } from './mcp/execute';
+import { parseAnalyticsPiiLevel } from './lib/analytics-pii';
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { InternalToolCallSchema, BatchRequestSchema, CreateTrialKeyRequestSchema } from './schemas/internal';
 import { InternalOAuthGrantRequestSchema } from './schemas/oauth';
@@ -121,6 +123,12 @@ type InternalEnv = {
 	INTELLIGENCE_DB?: D1Database;
 	/** Base64-encoded 32-byte AES-256-GCM key used to decrypt `mcp_access_log.ip_ciphertext` in the forensics endpoint. */
 	MCP_ACCESS_LOG_IP_ENCRYPTION_KEY?: string;
+	/** Key version tag persisted alongside `ip_ciphertext`. Mirrors BvMcpEnv in index.ts. */
+	MCP_ACCESS_LOG_IP_KEY_VERSION?: string;
+	/** Cloudflare Queue producer for the analytics access-log path (B1 internal-path logging). Absent → inline insert. */
+	MCP_ANALYTICS_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	/** Operator-chosen PII capture depth for the access log. Undefined → 'coarse'. */
+	ANALYTICS_PII_LEVEL?: string;
 };
 
 export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
@@ -206,6 +214,7 @@ internalRoutes.route('/tenants', tenantRoutes);
  * Response body: { "content": McpContent[], "isError"?: boolean }
  */
 internalRoutes.post('/tools/call', async (c) => {
+	const startTime = Date.now();
 	// Body-size guard before JSON parse: prevents a service-binding caller (or an
 	// attacker who bypasses the network guard) from forcing the Worker to
 	// materialize an arbitrarily large payload in memory before Zod rejects it.
@@ -276,6 +285,27 @@ internalRoutes.post('/tools/call', async (c) => {
 			...(wantStructured ? { resultCapture: (r: import('@blackveil/dns-checks/scoring').CheckResult) => { capturedResult = r; } } : {}),
 		},
 	);
+
+	// B1: record an internal-source access-log row for domain-bearing tools (parity
+	// with the public path, which only logs domain-bearing calls). No-domain tools
+	// (extractAccessLogDomain → undefined) write no row. ip/ipHash sentinel 'unknown',
+	// key_hash null, x-bv-caller → client_type. Best-effort via waitUntil.
+	const accessLogDomain = extractAccessLogDomain(body.arguments);
+	if (accessLogDomain) {
+		recordInternalAccessLog({
+			toolName: normalizeToolName(body.name),
+			domain: accessLogDomain,
+			status: result.isError ? 'error' : 'pass',
+			clientType: c.req.header(AGENT_CALLER_HEADER) ?? null,
+			intelligenceDb: c.env.INTELLIGENCE_DB,
+			analyticsQueue: c.env.MCP_ANALYTICS_QUEUE,
+			analyticsPiiLevel: parseAnalyticsPiiLevel(c.env.ANALYTICS_PII_LEVEL),
+			ipEncryptionKey: c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
+			ipEncryptionKeyVersion: c.env.MCP_ACCESS_LOG_IP_KEY_VERSION,
+			startTime,
+			waitUntil: (p: Promise<unknown>) => c.executionCtx.waitUntil(p),
+		});
+	}
 
 	// If structured format was requested and a CheckResult was captured (TOOL_REGISTRY tools only),
 	// return the raw result instead of MCP-framed text.
@@ -418,6 +448,7 @@ const BATCH_MAX_BODY_BYTES = 262_144;
  *   { "results": Array<{ domain: string, result: unknown, isError: boolean }>, "summary": { total, succeeded, failed } }
  */
 internalRoutes.post('/tools/batch', async (c) => {
+	const batchStartTime = Date.now();
 	const raw = await c.req.text();
 	if (raw.length > BATCH_MAX_BODY_BYTES) {
 		return c.json({ error: `Request body exceeds maximum of ${BATCH_MAX_BODY_BYTES} bytes` }, 413);
@@ -516,6 +547,23 @@ internalRoutes.post('/tools/batch', async (c) => {
 				);
 
 				const isError = toolResult.isError ?? false;
+
+				// B1: one internal-source access-log row per processed domain (decision 4).
+				// entry.sanitized is the canonical scanned domain (non-null within validEntries).
+				recordInternalAccessLog({
+					toolName: normalizeToolName(toolName),
+					domain: entry.sanitized as string,
+					status: isError ? 'error' : 'pass',
+					clientType: c.req.header(AGENT_CALLER_HEADER) ?? null,
+					intelligenceDb: c.env.INTELLIGENCE_DB,
+					analyticsQueue: c.env.MCP_ANALYTICS_QUEUE,
+					analyticsPiiLevel: parseAnalyticsPiiLevel(c.env.ANALYTICS_PII_LEVEL),
+					ipEncryptionKey: c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
+					ipEncryptionKeyVersion: c.env.MCP_ACCESS_LOG_IP_KEY_VERSION,
+					startTime: batchStartTime,
+					waitUntil: (p: Promise<unknown>) => c.executionCtx.waitUntil(p),
+				});
+
 				const result = wantStructured && capturedResult !== null ? capturedResult : toolResult;
 				return { domain: entry.input, result, isError };
 			}),
