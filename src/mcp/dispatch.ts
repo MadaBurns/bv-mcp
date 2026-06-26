@@ -165,6 +165,10 @@ export interface DispatchMcpMethodOptions {
 	keyHash?: string;
 	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter tool_call analytics grouping. Threaded to handleToolsCall. */
 	colo?: string;
+	/** Geo enrichment (request.cf) for the tool_call AE geo blobs. Threaded to handleToolsCall. */
+	region?: string;
+	city?: string;
+	asn?: number;
 	/**
 	 * MCP session ID from the `mcp-session-id` request header. Threaded to
 	 * handleToolsCall so readAndUpdateLastTool can resolve the priorTool
@@ -319,6 +323,9 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				authTier: options.authTier,
 				keyHash: options.keyHash,
 				colo: options.colo,
+				region: options.region,
+				city: options.city,
+				asn: options.asn,
 				sessionId: options.sessionId,
 				certstream: options.certstream,
 				certstreamAuthToken: options.certstreamAuthToken,
