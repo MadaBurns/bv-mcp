@@ -31,6 +31,7 @@
 
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
+import { logError } from './lib/log';
 import { tenantRoutes } from './tenants/routes';
 import { handleToolsCall } from './handlers/tools';
 import { isAuthorizedRequest } from './lib/auth';
@@ -910,18 +911,39 @@ internalRoutes.get('/analytics/forensics', async (c) => {
 			}),
 		);
 
-		// Self-audit: record WHO decrypted WHAT window into the tenants audit_events table.
+		// Self-audit: record WHO decrypted WHAT SCOPE into the tenants audit_events table.
 		// Columns mirror src/tenants/db/migrations/registry/0001_wet_warhawk.sql — fill all
 		// NOT-NULL columns (id, timestamp, actor_principal, actor_tier, action, resource_type,
-		// outcome); tenant ids left NULL to avoid FK violations. Best-effort (.catch).
+		// outcome); tenant ids left NULL (nullable FKs). The query scope (window + filters +
+		// result count) goes in the nullable `ip_hash`/`blob` columns so the trail captures the
+		// actual re-identification scope, not just that one occurred. A failed audit write is
+		// LOGGED at warn (not silently swallowed) so monitoring can catch a broken trail; the
+		// response still returns (fail-open, matching the codebase ethos).
+		const auditScope = JSON.stringify({ days, ipHashFilter: ipHash ?? null, keyHashFilter: keyHash ?? null, resultCount: events.length });
 		await db
 			.prepare(
-				`INSERT INTO audit_events (id, timestamp, actor_principal, actor_tier, action, resource_type, outcome)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO audit_events (id, timestamp, actor_principal, actor_tier, action, resource_type, outcome, ip_hash, blob)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
-			.bind(crypto.randomUUID(), Math.floor(Date.now() / 1000), 'internal_bearer', 'owner', 'analytics.forensics.decrypt', 'mcp_access_log', 'success')
+			.bind(
+				crypto.randomUUID(),
+				Math.floor(Date.now() / 1000),
+				'internal_bearer',
+				'owner',
+				'analytics.forensics.decrypt',
+				'mcp_access_log',
+				'success',
+				ipHash ?? null,
+				auditScope,
+			)
 			.run()
-			.catch(() => undefined);
+			.catch((auditErr) =>
+				logError(auditErr instanceof Error ? auditErr : String(auditErr), {
+					severity: 'warn',
+					category: 'audit',
+					details: { event: 'analytics.forensics.decrypt', auditWriteFailed: true },
+				}),
+			);
 
 		return c.json({ days: String(days), count: events.length, events });
 	} catch (err) {
