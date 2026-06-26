@@ -131,7 +131,7 @@ describe('MCP access logging execution path', () => {
 			'check_spf',
 			'example.com',
 			'NZ',
-			'test-agent',
+			null, // user_agent (gated at coarse default)
 			expect.any(Number),
 			0,
 			null,
@@ -150,7 +150,55 @@ describe('MCP access logging execution path', () => {
 			'tools/call',
 			'json',
 			'pass',
+			'public', // source
 		);
+	});
+
+	it('keeps user_agent at bind position 6 when the PII level is standard', async () => {
+		vi.doMock('../src/mcp/dispatch', () => ({
+			dispatchMcpMethod: vi.fn().mockResolvedValue({
+				kind: 'success',
+				payload: { jsonrpc: '2.0', id: 1, result: { content: [] } },
+				headers: {},
+				newSessionId: undefined,
+				logTool: 'check_spf',
+				logCategory: 'tool',
+				logResult: 'ok',
+				logDetails: {},
+			}),
+		}));
+
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const fake = createFakeD1();
+		const waitUntil = vi.fn();
+
+		await executeMcpRequest({
+			body: {
+				jsonrpc: '2.0',
+				id: 1,
+				method: 'tools/call',
+				params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+			} as JsonRpcRequest,
+			allowStreaming: false,
+			batchMode: false,
+			batchSize: 1,
+			responseTransport: 'json',
+			startTime: Date.now(),
+			ip: '203.0.113.30',
+			ipHash: 'i_testhash',
+			isAuthenticated: true,
+			validateSession: false,
+			serverVersion: 'test',
+			intelligenceDb: fake.db,
+			waitUntil,
+			country: 'NZ',
+			userAgent: 'test-agent',
+			analyticsPiiLevel: 'standard',
+		});
+
+		await waitForDeferredLog(waitUntil);
+		const bindArgs = fake.bind.mock.calls[0] ?? [];
+		expect(bindArgs[5]).toBe('test-agent'); // user_agent preserved at standard
 	});
 
 	it('stores encrypted IP evidence when an encryption key is configured', async () => {
@@ -272,6 +320,7 @@ describe('MCP access logging execution path', () => {
 			'tools/call',
 			'json',
 			'pass',
+			'public', // source
 		);
 	});
 
@@ -383,6 +432,7 @@ describe('MCP access logging execution path', () => {
 			'tools/call',
 			'json',
 			'unknown',
+			'public', // source
 		);
 	});
 });
@@ -451,10 +501,11 @@ describe('recordMcpAccessLog routing', () => {
 		await new Promise((r) => setTimeout(r, 0));
 		expect(prepare).not.toHaveBeenCalled();
 		expect(sent).toHaveLength(1);
-		const ev = sent[0] as { ip: string; city: string | null; ptrHostname: string | null };
+		const ev = sent[0] as { ip: string; city: string | null; ptrHostname: string | null; source: string };
 		expect(ev.ip).toBe('192.0.2.9');
 		expect(ev.city).toBe('Auckland'); // full level keeps city
 		expect(ev.ptrHostname).toBeNull(); // consumer fills it
+		expect(ev.source).toBe('public'); // public default on the queue path
 	});
 
 	it('falls back to inline insert when analyticsQueue is absent', async () => {
@@ -479,5 +530,54 @@ describe('recordMcpAccessLog routing', () => {
 		await new Promise((r) => setTimeout(r, 0));
 		expect(prepare).toHaveBeenCalledTimes(1);
 		expect(String(prepare.mock.calls[0][0])).toContain('INSERT INTO mcp_access_log');
+	});
+});
+
+describe('recordInternalAccessLog', () => {
+	it('inline-inserts an internal-source row with unknown ip + null key_hash', async () => {
+		const { recordInternalAccessLog } = await import('../src/mcp/execute');
+		const fake = createFakeD1();
+		const promises: Promise<unknown>[] = [];
+
+		recordInternalAccessLog({
+			toolName: 'check_spf',
+			domain: 'example.com',
+			status: 'pass',
+			clientType: 'admin-analytics',
+			intelligenceDb: fake.db,
+			analyticsPiiLevel: 'coarse',
+			startTime: Date.now(),
+			waitUntil: (p: Promise<unknown>) => promises.push(p),
+		});
+
+		await Promise.all(promises);
+		expect(fake.prepare.mock.calls[0]?.[0]).toContain('INSERT INTO mcp_access_log');
+		expect(fake.bind).toHaveBeenCalledWith(
+			'unknown', // ip_hash
+			'unknown', // ip_masked
+			'check_spf',
+			'example.com',
+			null, // country
+			null, // user_agent
+			expect.any(Number),
+			0, // rate_limited
+			null, // ip_ciphertext
+			null, // ip_key_version
+			null, // city
+			null, // region
+			null, // latitude
+			null, // longitude
+			null, // asn
+			null, // as_org
+			null, // ptr_hostname
+			null, // key_hash
+			'admin-analytics', // client_type ← x-bv-caller
+			null, // colo
+			null, // session_hash
+			'tools/call',
+			'internal', // transport
+			'pass',
+			'internal', // source
+		);
 	});
 });
