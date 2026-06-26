@@ -353,7 +353,11 @@ function recordMcpAccessLog(
 
 	// Preferred path: enqueue for the batch consumer (PTR + encrypt + batch insert).
 	if (options.analyticsQueue) {
-		const send = options.analyticsQueue.send(event, { contentType: 'json' });
+		// Surface-minimization: the consumer needs the raw IP only for PTR (full) or
+		// encryption (standard+). At coarse, neither applies — strip it so the raw IP
+		// never transits the queue at-rest. ipHash/ipMasked are already on the event.
+		const queueEvent = piiAllows(level, 'ptr') || piiAllows(level, 'ciphertext') ? event : { ...event, ip: 'unknown' };
+		const send = options.analyticsQueue.send(queueEvent, { contentType: 'json' });
 		options.waitUntil?.(fireAndForget(send, logger, 'mcp_access_log_enqueue'));
 		return;
 	}
@@ -1179,7 +1183,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			authTier: options.authTier,
 			colo: options.colo,
 			region: options.region,
-			city: options.city,
+			// PII-gate the AE city blob so ANALYTICS_PII_LEVEL governs Analytics Engine the
+			// same way it governs the D1 log: city only at standard+. region/asn stay (coarse).
+			city: piiAllows(options.analyticsPiiLevel ?? 'coarse', 'city') ? options.city : undefined,
 			asn: options.asn,
 			certstream: options.certstream,
 			certstreamAuthToken: options.certstreamAuthToken,
@@ -1290,7 +1296,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			authTier: options.authTier,
 			colo: options.colo,
 			region: options.region,
-			city: options.city,
+			// PII-gate the AE city blob so ANALYTICS_PII_LEVEL governs Analytics Engine the
+			// same way it governs the D1 log: city only at standard+. region/asn stay (coarse).
+			city: piiAllows(options.analyticsPiiLevel ?? 'coarse', 'city') ? options.city : undefined,
 			asn: options.asn,
 			certstream: options.certstream,
 			certstreamAuthToken: options.certstreamAuthToken,
