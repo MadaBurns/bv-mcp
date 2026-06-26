@@ -118,6 +118,8 @@ type InternalEnv = {
 	KV_ENVELOPE_KEY?: string;
 	/** D1 store backing mcp_access_log — precise per-customer usage/forensics. Mirrors BvMcpEnv in index.ts. */
 	INTELLIGENCE_DB?: D1Database;
+	/** Base64-encoded 32-byte AES-256-GCM key used to decrypt `mcp_access_log.ip_ciphertext` in the forensics endpoint. */
+	MCP_ACCESS_LOG_IP_ENCRYPTION_KEY?: string;
 };
 
 export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
@@ -844,5 +846,85 @@ internalRoutes.get('/analytics/geo', async (c) => {
 		return c.json({ days, geo: rows });
 	} catch (err) {
 		return c.json({ error: 'Geo query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
+	}
+});
+
+/**
+ * Strict bearer gate for the forensics re-identification surface.
+ *
+ * Unlike `internalLenientAuthGate`, this gate IGNORES `REQUIRE_INTERNAL_AUTH=false`
+ * and ALWAYS enforces — the endpoint decrypts raw client IPs, so the network
+ * guard alone is insufficient. Fail-closed: 503 if `BV_WEB_INTERNAL_KEY` is unset
+ * (mis-deploy), 401 on missing/wrong bearer. Registered BEFORE the route below.
+ */
+const internalStrictAuthGate: import('hono').MiddlewareHandler<{ Bindings: InternalEnv }> = async (c, next) => {
+	const expected = c.env.BV_WEB_INTERNAL_KEY;
+	if (!expected) return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
+	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {
+		return c.json({ error: 'unauthorized' }, 401, { 'Cache-Control': 'no-store' });
+	}
+	return next();
+};
+internalRoutes.use('/analytics/forensics', internalStrictAuthGate);
+
+/**
+ * GET /internal/analytics/forensics (D1, STRICT) — recent events with DECRYPTED IP.
+ *
+ * Operator-only re-identification surface; every call writes a self-audit row
+ * into the tenants `audit_events` table (`action = analytics.forensics.decrypt`).
+ * Query: ?days=1&key_hash=<prefix>&ip_hash=<hash>
+ */
+internalRoutes.get('/analytics/forensics', async (c) => {
+	const db = c.env.INTELLIGENCE_DB;
+	if (!db) return c.json({ error: 'Analytics store not configured (INTELLIGENCE_DB required)' }, 500);
+	const { decryptIpEvidence } = await import('./mcp/execute');
+	const url = new URL(c.req.url);
+	const days = Number(parseDays(url));
+	const windowSec = days * 86400;
+	const ipHash = url.searchParams.get('ip_hash');
+	const keyHash = url.searchParams.get('key_hash');
+	try {
+		const filters: string[] = [`created_at >= (strftime('%s','now') - ?)`];
+		const binds: unknown[] = [windowSec];
+		if (ipHash) {
+			filters.push('ip_hash = ?');
+			binds.push(ipHash);
+		}
+		if (keyHash) {
+			filters.push('key_hash = ?');
+			binds.push(keyHash);
+		}
+		const { results } = await db
+			.prepare(
+				`SELECT created_at, ip_ciphertext, ip_key_version, ip_masked, ip_hash, key_hash, country, ptr_hostname, tool_name, domain
+				FROM mcp_access_log WHERE ${filters.join(' AND ')} ORDER BY created_at DESC LIMIT 200`,
+			)
+			.bind(...binds)
+			.all();
+		const key = c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY;
+		const events = await Promise.all(
+			(results ?? []).map(async (r) => {
+				const row = r as Record<string, unknown>;
+				const ip = row.ip_ciphertext ? await decryptIpEvidence(String(row.ip_ciphertext), key) : null;
+				return { ...row, ip: ip ?? row.ip_masked ?? null, ip_ciphertext: undefined };
+			}),
+		);
+
+		// Self-audit: record WHO decrypted WHAT window into the tenants audit_events table.
+		// Columns mirror src/tenants/db/migrations/registry/0001_wet_warhawk.sql — fill all
+		// NOT-NULL columns (id, timestamp, actor_principal, actor_tier, action, resource_type,
+		// outcome); tenant ids left NULL to avoid FK violations. Best-effort (.catch).
+		await db
+			.prepare(
+				`INSERT INTO audit_events (id, timestamp, actor_principal, actor_tier, action, resource_type, outcome)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.bind(crypto.randomUUID(), Math.floor(Date.now() / 1000), 'internal_bearer', 'owner', 'analytics.forensics.decrypt', 'mcp_access_log', 'success')
+			.run()
+			.catch(() => undefined);
+
+		return c.json({ days: String(days), count: events.length, events });
+	} catch (err) {
+		return c.json({ error: 'Forensics query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
 	}
 });

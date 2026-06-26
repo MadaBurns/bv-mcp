@@ -293,6 +293,29 @@ export async function encryptIpEvidence(ip: string, keyBase64: string | undefine
 	return `v1:${bytesToBase64(iv)}:${bytesToBase64(ciphertext)}`;
 }
 
+/**
+ * Inverse of {@link encryptIpEvidence}: parses the `v1:iv:ct` wire format and
+ * AES-GCM-decrypts the raw IP. Returns `null` on any failure (missing key,
+ * malformed wire, wrong key length, decrypt error) — callers fall back to the
+ * masked IP. Operator-only re-identification surface (forensics endpoint).
+ */
+export async function decryptIpEvidence(wire: string, keyBase64: string | undefined): Promise<string | null> {
+	if (!keyBase64 || !wire) return null;
+	const parts = wire.split(':');
+	if (parts.length !== 3) return null; // expected v1:iv:ct
+	try {
+		const rawKey = base64ToBytes(keyBase64);
+		if (rawKey.byteLength !== 32) return null;
+		const iv = base64ToBytes(parts[1]);
+		const ct = base64ToBytes(parts[2]);
+		const key = await crypto.subtle.importKey('raw', toArrayBuffer(rawKey), { name: 'AES-GCM' }, false, ['decrypt']);
+		const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: toArrayBuffer(iv) }, key, toArrayBuffer(ct));
+		return new TextDecoder().decode(pt);
+	} catch {
+		return null;
+	}
+}
+
 function recordMcpAccessLog(
 	options: ExecuteMcpRequestOptions,
 	input: { toolName: string; domain: string; rateLimited: boolean; method?: string; status?: string },
