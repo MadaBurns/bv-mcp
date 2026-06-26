@@ -115,6 +115,8 @@ type InternalEnv = {
 	BV_ENTERPRISE?: Fetcher;
 	/** FIND-17: Base64-encoded 32-byte AES-256 key for app-layer KV envelope encryption. */
 	KV_ENVELOPE_KEY?: string;
+	/** D1 store backing mcp_access_log — precise per-customer usage/forensics. Mirrors BvMcpEnv in index.ts. */
+	INTELLIGENCE_DB?: D1Database;
 };
 
 export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
@@ -770,6 +772,34 @@ internalRoutes.get('/analytics/key-usage', async (c) => {
 		return c.json({ days, keyHash: keyHashPrefix ?? 'all', usage: rows });
 	} catch (err) {
 		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
+	}
+});
+
+/**
+ * GET /internal/analytics/usage  (D1, precise — not sampled)
+ * Per-customer (key_hash) call counts over a bounded window.
+ * Query: ?days=7&key_hash=<16-char prefix>
+ */
+internalRoutes.get('/analytics/usage', async (c) => {
+	const db = c.env.INTELLIGENCE_DB;
+	if (!db) return c.json({ error: 'Analytics store not configured (INTELLIGENCE_DB required)' }, 500);
+	const url = new URL(c.req.url);
+	const days = Number(parseDays(url));
+	const windowSec = days * 86400;
+	const keyHash = url.searchParams.get('key_hash') ?? undefined;
+	try {
+		const sql = keyHash
+			? `SELECT key_hash, tool_name, COUNT(*) AS calls, MAX(created_at) AS last_seen
+			   FROM mcp_access_log WHERE created_at >= (strftime('%s','now') - ?) AND key_hash = ?
+			   GROUP BY key_hash, tool_name ORDER BY calls DESC LIMIT 500`
+			: `SELECT key_hash, tool_name, COUNT(*) AS calls, MAX(created_at) AS last_seen
+			   FROM mcp_access_log WHERE created_at >= (strftime('%s','now') - ?)
+			   GROUP BY key_hash, tool_name ORDER BY calls DESC LIMIT 500`;
+		const stmt = keyHash ? db.prepare(sql).bind(windowSec, keyHash) : db.prepare(sql).bind(windowSec);
+		const { results } = await stmt.all();
+		return c.json({ days: String(days), keyHash: keyHash ?? 'all', usage: results ?? [] });
+	} catch (err) {
+		return c.json({ error: 'Usage query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
 	}
 });
 
