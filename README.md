@@ -241,6 +241,32 @@ For full hosted setup examples, stdio usage, OAuth setup, and legacy fallback en
 
 ---
 
+## Operator configuration
+
+These settings apply to operators running their own deployment. They are optional — self-hosted (BSL) deployments fall back to privacy-preserving defaults when they are unset.
+
+### Detailed analytics capture
+
+The public `/mcp` path writes a per-event access log enriched with geolocation and network identity. The write path, PII depth, and retention are operator-controlled:
+
+| Binding / var             | Type  | Purpose                                                                                                                                                                                              |
+| ------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MCP_ANALYTICS_QUEUE`     | Queue | **Operator-deploy only.** Batches access-log writes off the request path. Absent on self-hosts → inline-insert fallback (no reverse-DNS lookup).                                                      |
+| `ANALYTICS_PII_LEVEL`     | var   | `coarse` (default) \| `standard` \| `full`. Controls access-log PII depth: `coarse` = country/region/ASN + hashed/masked IP; `standard` adds encrypted IP + city; `full` adds lat/long + reverse-DNS (PTR). |
+| `ANALYTICS_RETENTION_DAYS` | var   | Access-log retention window in days (default `90`, clamped `1`–`365`). Rows older than the window are pruned by the scheduled handler.                                                                |
+
+### Internal analytics endpoints
+
+These live under the internal auth gate (`/internal/*`) and are called by bv-web, not the public surface:
+
+| Endpoint                                                   | Source           | Notes                                                                                                                |
+| --------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `GET /internal/analytics/usage?days=&key_hash=`           | D1               | Precise per-customer usage report.                                                                                  |
+| `GET /internal/analytics/geo?days=`                       | Analytics Engine | Geographic rollup (country/region/city/ASN) for dashboards.                                                          |
+| `GET /internal/analytics/forensics?days=&ip_hash=&key_hash=` | D1            | **STRICT-gated, operator-only.** Returns decrypted client IP + PTR for abuse investigation; every call writes a self-audit row. |
+
+---
+
 ## Pricing
 
 |                | **Free**   | **Pro** | **Enterprise**                              |

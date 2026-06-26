@@ -215,6 +215,10 @@ interface ToolRuntimeOptions {
 	keyHash?: string;
 	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter tool_call analytics grouping. */
 	colo?: string;
+	/** Geo enrichment (request.cf) for the tool_call AE geo blobs. */
+	region?: string;
+	city?: string;
+	asn?: number;
 	/**
 	 * MCP session ID from the `mcp-session-id` request header. Used to resolve
 	 * the `priorTool` dimension (blob12) on tool_call analytics events via

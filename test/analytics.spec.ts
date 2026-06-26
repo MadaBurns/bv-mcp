@@ -121,7 +121,7 @@ describe('createAnalyticsClient', () => {
 		const point = ds.writeDataPoint.mock.calls[0][0];
 		expect(point.indexes).toEqual(['tool_call']);
 		// blob12 (index 11) = priorTool, appended trailing (C2). Existing positions unchanged.
-		expect(point.blobs).toHaveLength(12);
+		expect(point.blobs).toHaveLength(15);
 		expect(point.blobs[4]).toBe('NZ');
 		expect(point.blobs[8]).toBe('none');
 		// colo absent in ctx → defaults to 'unknown' (fail-open); still at blob11 (index 10).
@@ -148,7 +148,7 @@ describe('createAnalyticsClient', () => {
 			priorTool: 'check_spf',
 		});
 		const point = ds.writeDataPoint.mock.calls[0][0];
-		expect(point.blobs).toHaveLength(12);
+		expect(point.blobs).toHaveLength(15);
 		// Existing position-indexed fields stay put.
 		expect(point.blobs[0]).toBe('scan_domain');
 		expect(point.blobs[4]).toBe('NZ');

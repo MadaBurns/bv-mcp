@@ -20,6 +20,10 @@ interface ToolExecutionBase {
 	keyHash?: string;
 	/** Cloudflare edge colo for per-datacenter tool_call analytics grouping. */
 	colo?: string;
+	/** Geo enrichment (request.cf) for the tool_call AE geo blobs. */
+	region?: string;
+	city?: string;
+	asn?: number;
 	/**
 	 * blob12 — canonical name of the tool invoked immediately before this one
 	 * in the same MCP session. Resolved synchronously by readAndUpdateLastTool
@@ -43,6 +47,9 @@ export function buildLogContext(
 		authTier?: string;
 		keyHash?: string;
 		colo?: string;
+		region?: string;
+		city?: string;
+		asn?: number;
 		priorTool?: string;
 	},
 ): ToolExecutionBase {
@@ -56,6 +63,9 @@ export function buildLogContext(
 		authTier: runtimeOptions?.authTier,
 		keyHash: runtimeOptions?.keyHash,
 		colo: runtimeOptions?.colo,
+		region: runtimeOptions?.region,
+		city: runtimeOptions?.city,
+		asn: runtimeOptions?.asn,
 		priorTool: runtimeOptions?.priorTool,
 	};
 }
@@ -79,6 +89,9 @@ export function logToolSuccess(options: ToolExecutionBase & {
 		authTier: options.authTier,
 		keyHash: options.keyHash,
 		colo: options.colo,
+		region: options.region,
+		city: options.city,
+		asn: options.asn,
 		priorTool: options.priorTool,
 	});
 
@@ -111,6 +124,9 @@ export function logToolFailure(options: ToolExecutionBase & {
 		authTier: options.authTier,
 		keyHash: options.keyHash,
 		colo: options.colo,
+		region: options.region,
+		city: options.city,
+		asn: options.asn,
 		priorTool: options.priorTool,
 	});
 

@@ -136,6 +136,20 @@ describe('MCP access logging execution path', () => {
 			0,
 			null,
 			null,
+			null, // city
+			null, // region
+			null, // latitude
+			null, // longitude
+			null, // asn
+			null, // as_org
+			null, // ptr_hostname
+			null, // key_hash
+			null, // client_type
+			null, // colo
+			null, // session_hash
+			'tools/call',
+			'json',
+			'pass',
 		);
 	});
 
@@ -177,6 +191,7 @@ describe('MCP access logging execution path', () => {
 			serverVersion: 'test',
 			intelligenceDb: fake.db,
 			waitUntil,
+			analyticsPiiLevel: 'standard',
 			ipEncryptionKey: key,
 			ipEncryptionKeyVersion: 'test-v1',
 		});
@@ -243,6 +258,20 @@ describe('MCP access logging execution path', () => {
 			0,
 			null,
 			null,
+			null, // city
+			null, // region
+			null, // latitude
+			null, // longitude
+			null, // asn
+			null, // as_org
+			null, // ptr_hostname
+			null, // key_hash
+			null, // client_type
+			null, // colo
+			null, // session_hash
+			'tools/call',
+			'json',
+			'pass',
 		);
 	});
 
@@ -340,6 +369,20 @@ describe('MCP access logging execution path', () => {
 			1,
 			null,
 			null,
+			null, // city
+			null, // region
+			null, // latitude
+			null, // longitude
+			null, // asn
+			null, // as_org
+			null, // ptr_hostname
+			null, // key_hash
+			null, // client_type
+			null, // colo
+			null, // session_hash
+			'tools/call',
+			'json',
+			'unknown',
 		);
 	});
 });
@@ -366,5 +409,75 @@ describe('MCP access log privacy guardrails', () => {
 	it('does not define or insert raw ip_address for MCP access logging', () => {
 		expect(executeSource).not.toContain('ip_address');
 		expect(executeSource).not.toMatch(/\.bind\(\s*options\.ip\b/);
+	});
+});
+
+describe('recordMcpAccessLog routing', () => {
+	it('enqueues an AccessLogEvent when analyticsQueue is bound (no inline insert)', async () => {
+		const mod = await import('../src/mcp/execute');
+		const sent: unknown[] = [];
+		const analyticsQueue = {
+			send: async (m: unknown) => {
+				sent.push(m);
+			},
+		};
+		const prepare = vi.fn();
+		const options = {
+			intelligenceDb: { prepare } as unknown as D1Database,
+			analyticsQueue,
+			analyticsPiiLevel: 'full' as const,
+			ip: '192.0.2.9',
+			ipHash: 'i_x',
+			country: 'NZ',
+			region: 'AKL',
+			city: 'Auckland',
+			latitude: '-36.8',
+			longitude: '174.7',
+			asn: 13335,
+			asOrg: 'Cloudflare',
+			keyHash: 'abc',
+			clientType: 'cursor',
+			colo: 'AKL',
+			sessionHash: 'none',
+			userAgent: 'ua',
+			responseTransport: 'json',
+			startTime: Date.now(),
+			waitUntil: (p: Promise<unknown>) => {
+				void p;
+			},
+		};
+		// @ts-expect-error — exercising the internal helper via the exported recorder
+		mod.__recordMcpAccessLogForTest(options, { toolName: 'check_spf', domain: 'example.com', rateLimited: false, method: 'tools/call', status: 'pass' });
+		await new Promise((r) => setTimeout(r, 0));
+		expect(prepare).not.toHaveBeenCalled();
+		expect(sent).toHaveLength(1);
+		const ev = sent[0] as { ip: string; city: string | null; ptrHostname: string | null };
+		expect(ev.ip).toBe('192.0.2.9');
+		expect(ev.city).toBe('Auckland'); // full level keeps city
+		expect(ev.ptrHostname).toBeNull(); // consumer fills it
+	});
+
+	it('falls back to inline insert when analyticsQueue is absent', async () => {
+		const mod = await import('../src/mcp/execute');
+		const run = vi.fn(async () => ({ success: true }));
+		const bind = vi.fn(() => ({ run }));
+		const prepare = vi.fn(() => ({ bind }));
+		const options = {
+			intelligenceDb: { prepare } as unknown as D1Database,
+			analyticsPiiLevel: 'coarse' as const,
+			ip: '192.0.2.9',
+			ipHash: 'i_x',
+			country: 'NZ',
+			responseTransport: 'json',
+			startTime: Date.now(),
+			waitUntil: (p: Promise<unknown>) => {
+				void p;
+			},
+		};
+		// @ts-expect-error — internal helper
+		mod.__recordMcpAccessLogForTest(options, { toolName: 'check_spf', domain: 'example.com', rateLimited: true, method: 'tools/call', status: 'unknown' });
+		await new Promise((r) => setTimeout(r, 0));
+		expect(prepare).toHaveBeenCalledTimes(1);
+		expect(String(prepare.mock.calls[0][0])).toContain('INSERT INTO mcp_access_log');
 	});
 });

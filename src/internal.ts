@@ -31,6 +31,7 @@
 
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
+import { logError } from './lib/log';
 import { tenantRoutes } from './tenants/routes';
 import { handleToolsCall } from './handlers/tools';
 import { isAuthorizedRequest } from './lib/auth';
@@ -68,6 +69,7 @@ import {
 	queryTierTopTools,
 	queryKeyUsage,
 	queryTierDigest,
+	queryGeoRollup,
 } from './lib/analytics-queries';
 
 type InternalEnv = {
@@ -115,6 +117,10 @@ type InternalEnv = {
 	BV_ENTERPRISE?: Fetcher;
 	/** FIND-17: Base64-encoded 32-byte AES-256 key for app-layer KV envelope encryption. */
 	KV_ENVELOPE_KEY?: string;
+	/** D1 store backing mcp_access_log — precise per-customer usage/forensics. Mirrors BvMcpEnv in index.ts. */
+	INTELLIGENCE_DB?: D1Database;
+	/** Base64-encoded 32-byte AES-256-GCM key used to decrypt `mcp_access_log.ip_ciphertext` in the forensics endpoint. */
+	MCP_ACCESS_LOG_IP_ENCRYPTION_KEY?: string;
 };
 
 export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
@@ -774,6 +780,34 @@ internalRoutes.get('/analytics/key-usage', async (c) => {
 });
 
 /**
+ * GET /internal/analytics/usage  (D1, precise — not sampled)
+ * Per-customer (key_hash) call counts over a bounded window.
+ * Query: ?days=7&key_hash=<16-char prefix>
+ */
+internalRoutes.get('/analytics/usage', async (c) => {
+	const db = c.env.INTELLIGENCE_DB;
+	if (!db) return c.json({ error: 'Analytics store not configured (INTELLIGENCE_DB required)' }, 500);
+	const url = new URL(c.req.url);
+	const days = Number(parseDays(url));
+	const windowSec = days * 86400;
+	const keyHash = url.searchParams.get('key_hash') ?? undefined;
+	try {
+		const sql = keyHash
+			? `SELECT key_hash, tool_name, COUNT(*) AS calls, MAX(created_at) AS last_seen
+			   FROM mcp_access_log WHERE created_at >= (strftime('%s','now') - ?) AND key_hash = ?
+			   GROUP BY key_hash, tool_name ORDER BY calls DESC LIMIT 500`
+			: `SELECT key_hash, tool_name, COUNT(*) AS calls, MAX(created_at) AS last_seen
+			   FROM mcp_access_log WHERE created_at >= (strftime('%s','now') - ?)
+			   GROUP BY key_hash, tool_name ORDER BY calls DESC LIMIT 500`;
+		const stmt = keyHash ? db.prepare(sql).bind(windowSec, keyHash) : db.prepare(sql).bind(windowSec);
+		const { results } = await stmt.all();
+		return c.json({ days: String(days), keyHash: keyHash ?? 'all', usage: results ?? [] });
+	} catch (err) {
+		return c.json({ error: 'Usage query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
+	}
+});
+
+/**
  * GET /internal/analytics/digest
  *
  * High-level tier digest (suitable for daily webhook reports).
@@ -794,5 +828,111 @@ internalRoutes.get('/analytics/digest', async (c) => {
 		return c.json({ days, tiers: rows });
 	} catch (err) {
 		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
+	}
+});
+
+/**
+ * GET /internal/analytics/geo (AE, sampled) — geographic rollup for dashboards.
+ *
+ * Counts per country/region/city/asn from `tool_call`. Query params: ?days=7
+ */
+internalRoutes.get('/analytics/geo', async (c) => {
+	const config = requireAnalyticsConfig(c.env);
+	if (!config) {
+		return c.json({ error: 'Analytics not configured (CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN required)' }, 500);
+	}
+	const days = parseDays(new URL(c.req.url));
+	try {
+		const rows = await queryAnalyticsEngine(config.accountId, config.token, queryGeoRollup(days));
+		return c.json({ days, geo: rows });
+	} catch (err) {
+		return c.json({ error: 'Geo query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
+	}
+});
+
+/**
+ * Strict bearer gate for the forensics re-identification surface.
+ *
+ * Unlike `internalLenientAuthGate`, this gate IGNORES `REQUIRE_INTERNAL_AUTH=false`
+ * and ALWAYS enforces — the endpoint decrypts raw client IPs, so the network
+ * guard alone is insufficient. Fail-closed: 503 if `BV_WEB_INTERNAL_KEY` is unset
+ * (mis-deploy), 401 on missing/wrong bearer. Registered BEFORE the route below.
+ */
+const internalStrictAuthGate: import('hono').MiddlewareHandler<{ Bindings: InternalEnv }> = async (c, next) => {
+	const expected = c.env.BV_WEB_INTERNAL_KEY;
+	if (!expected) return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
+	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {
+		return c.json({ error: 'unauthorized' }, 401, { 'Cache-Control': 'no-store' });
+	}
+	return next();
+};
+internalRoutes.use('/analytics/forensics', internalStrictAuthGate);
+
+/**
+ * GET /internal/analytics/forensics (D1, STRICT) — recent events with DECRYPTED IP.
+ *
+ * Operator-only re-identification surface; every call writes a self-audit row
+ * into the `mcp_access_log_audit` table in INTELLIGENCE_DB (`action = analytics.forensics.decrypt`).
+ * Query: ?days=1&key_hash=<prefix>&ip_hash=<hash>
+ */
+internalRoutes.get('/analytics/forensics', async (c) => {
+	const db = c.env.INTELLIGENCE_DB;
+	if (!db) return c.json({ error: 'Analytics store not configured (INTELLIGENCE_DB required)' }, 500);
+	const { decryptIpEvidence } = await import('./mcp/execute');
+	const url = new URL(c.req.url);
+	const days = Number(parseDays(url));
+	const windowSec = days * 86400;
+	const ipHash = url.searchParams.get('ip_hash');
+	const keyHash = url.searchParams.get('key_hash');
+	try {
+		const filters: string[] = [`created_at >= (strftime('%s','now') - ?)`];
+		const binds: unknown[] = [windowSec];
+		if (ipHash) {
+			filters.push('ip_hash = ?');
+			binds.push(ipHash);
+		}
+		if (keyHash) {
+			filters.push('key_hash = ?');
+			binds.push(keyHash);
+		}
+		const { results } = await db
+			.prepare(
+				`SELECT created_at, ip_ciphertext, ip_key_version, ip_masked, ip_hash, key_hash, country, ptr_hostname, tool_name, domain
+				FROM mcp_access_log WHERE ${filters.join(' AND ')} ORDER BY created_at DESC LIMIT 200`,
+			)
+			.bind(...binds)
+			.all();
+		const key = c.env.MCP_ACCESS_LOG_IP_ENCRYPTION_KEY;
+		const events = await Promise.all(
+			(results ?? []).map(async (r) => {
+				const row = r as Record<string, unknown>;
+				const ip = row.ip_ciphertext ? await decryptIpEvidence(String(row.ip_ciphertext), key) : null;
+				return { ...row, ip: ip ?? row.ip_masked ?? null, ip_ciphertext: undefined };
+			}),
+		);
+
+		// Self-audit: record WHO decrypted WHAT SCOPE into mcp_access_log_audit — a table in
+		// INTELLIGENCE_DB (the same DB the forensics handler already binds), NOT the tenants
+		// registry `audit_events` (a SEPARATE D1 this handler has no binding to — writing there
+		// would throw "no such table" on every call). `scope` is JSON {days, filters, count} so
+		// the trail captures the actual re-identification scope, not just that one occurred. A
+		// failed audit write is LOGGED at warn (not silently swallowed) so monitoring can catch a
+		// broken trail; the response still returns (fail-open, matching the codebase ethos).
+		const auditScope = JSON.stringify({ days, ipHashFilter: ipHash ?? null, keyHashFilter: keyHash ?? null, resultCount: events.length });
+		await db
+			.prepare(`INSERT INTO mcp_access_log_audit (id, actor, action, ip_hash, scope, outcome) VALUES (?, ?, ?, ?, ?, ?)`)
+			.bind(crypto.randomUUID(), 'internal_bearer', 'analytics.forensics.decrypt', ipHash ?? null, auditScope, 'success')
+			.run()
+			.catch((auditErr) =>
+				logError(auditErr instanceof Error ? auditErr : String(auditErr), {
+					severity: 'warn',
+					category: 'audit',
+					details: { event: 'analytics.forensics.decrypt', auditWriteFailed: true },
+				}),
+			);
+
+		return c.json({ days: String(days), count: events.length, events });
+	} catch (err) {
+		return c.json({ error: 'Forensics query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
 	}
 });
