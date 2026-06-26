@@ -119,6 +119,28 @@ ORDER BY request_count DESC
 LIMIT 30`;
 }
 
+/**
+ * Geographic rollup for heatmaps — request volume per country/region/city/asn
+ * from `tool_call`. The geo dimensions are append-only blobs (blob5=country,
+ * blob13=region, blob14=city, blob15=asn — see analytics.ts), so positions
+ * 1–12 are untouched. Sampled: sums `_sample_interval`.
+ */
+export function queryGeoRollup(days: string): string {
+	days = safeInterval(days);
+	return `SELECT
+  blob5 AS country,
+  blob13 AS region,
+  blob14 AS city,
+  blob15 AS asn,
+  SUM(_sample_interval) AS calls
+FROM ${DS}
+WHERE index1 = 'tool_call'
+  AND timestamp > NOW() - INTERVAL '${days}' DAY
+GROUP BY country, region, city, asn
+ORDER BY calls DESC
+LIMIT 1000`;
+}
+
 /** Rate limit hit counts by type. */
 export function queryRateLimitHits(days: string): string {
 	days = safeInterval(days);

@@ -44,6 +44,10 @@ export interface AnalyticsContext {
 	 * `tool_call` (append-only — never reorder existing positions).
 	 */
 	colo?: string;
+	/** Geo enrichment for AE aggregate dashboards (append-only blobs on tool_call). */
+	region?: string;
+	city?: string;
+	asn?: number;
 }
 
 export interface AnalyticsClient {
@@ -254,6 +258,10 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					// (readAndUpdateLastTool) — zero I/O, O(1), never blocks the hot path.
 					// Append-only; blobs 1–11 and doubles 1–2 UNCHANGED.
 					event.priorTool ?? 'unknown',
+					// blob13-15 — geo aggregate dimensions (append-only; positions 1-12 unchanged).
+					normalizeIndex(event.region ?? 'unknown'),
+					normalizeIndex(event.city ?? 'unknown'),
+					event.asn != null ? String(event.asn) : 'unknown',
 				],
 				doubles: [sanitizeNumber(event.durationMs), sanitizeNumber(event.score ?? 0)],
 			});

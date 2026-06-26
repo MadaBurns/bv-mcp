@@ -68,6 +68,14 @@ export interface ScheduledEnv {
 	RATE_LIMIT?: KVNamespace;
 	BRAND_AUDIT_DB?: D1Database;
 	INTELLIGENCE_DB?: D1Database;
+	ANALYTICS_RETENTION_DAYS?: string;
+}
+
+/** Clamp ANALYTICS_RETENTION_DAYS to [1, 365]; default 90 on missing/invalid. */
+export function clampRetentionDays(raw: string | undefined): number {
+	const n = Number(raw);
+	if (!Number.isFinite(n)) return 90;
+	return Math.min(365, Math.max(1, Math.floor(n)));
 }
 
 const DEFAULT_ERROR_THRESHOLD = 5;
@@ -115,12 +123,12 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 
 	if (env.INTELLIGENCE_DB) {
 		await env.INTELLIGENCE_DB.prepare("DELETE FROM mcp_access_log WHERE created_at < (strftime('%s', 'now') - ?)")
-			.bind(90 * 24 * 3600)
+			.bind(clampRetentionDays(env.ANALYTICS_RETENTION_DAYS) * 24 * 3600)
 			.run()
 			.catch((err) => {
 				logError(err instanceof Error ? err : String(err), {
 					category: 'retention',
-					details: { table: 'mcp_access_log', operation: 'delete_older_than_90d' },
+					details: { table: 'mcp_access_log', operation: 'delete_older_than_configured' },
 				});
 			});
 	}

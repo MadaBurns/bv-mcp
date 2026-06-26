@@ -35,6 +35,8 @@ import type { AnalyticsClient } from '../lib/analytics';
 import { hashDomain } from '../lib/analytics';
 import { classifyError as classifyFuzzError } from '../lib/fuzzing-detector';
 import { recordEvent as recordFuzzCounter } from '../lib/fuzzing-counter';
+import { piiAllows } from '../lib/analytics-pii';
+import { buildAccessLogEvent, type AccessLogEvent } from '../lib/access-log-event';
 
 export type ProcessedRequestResult =
 	| {
@@ -120,6 +122,17 @@ export interface ExecuteMcpRequestOptions {
 	ipHash?: string;
 	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter analytics grouping. Appended as the trailing blob on mcp_request/tool_call events. */
 	colo?: string;
+	/** Enrichment from request.cf — populated at the index.ts seam, consumed by the access-log producer + AE geo blobs. */
+	region?: string;
+	city?: string;
+	latitude?: string;
+	longitude?: string;
+	asn?: number;
+	asOrg?: string;
+	/** Cloudflare Queue producer for the analytics access-log path. Absent on BSL self-hosts → inline insert fallback. */
+	analyticsQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	/** Operator-chosen PII capture depth. Undefined → treated as 'coarse' by the producer. */
+	analyticsPiiLevel?: import('../lib/analytics-pii').AnalyticsPiiLevel;
 	/** D1 binding for privacy-preserving MCP access logs. */
 	intelligenceDb?: D1Database;
 	/** Base64-encoded AES-GCM key for encrypted abuse-investigation IP evidence. */
@@ -201,14 +214,14 @@ function extractAccessLogDomain(args: Record<string, unknown> | undefined): stri
 function getToolCallLogInput(
 	method: string,
 	params: Record<string, unknown> | undefined,
-): { toolName: string; domain: string } | undefined {
+): { toolName: string; domain: string; method: string } | undefined {
 	if (method !== 'tools/call') return undefined;
 	const toolNameRaw = params && typeof params === 'object' && 'name' in params ? params.name : undefined;
 	const argsRaw = params && typeof params === 'object' && 'arguments' in params ? params.arguments : undefined;
 	const args = argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw) ? (argsRaw as Record<string, unknown>) : undefined;
 	const domain = extractAccessLogDomain(args);
 	if (typeof toolNameRaw !== 'string' || !domain) return undefined;
-	return { toolName: normalizeToolName(toolNameRaw), domain };
+	return { toolName: normalizeToolName(toolNameRaw), domain, method };
 }
 
 function base64ToBytes(value: string): Uint8Array {
@@ -269,7 +282,7 @@ function validateEncryptionKeyOnce(keyBase64: string): boolean {
 	return valid;
 }
 
-async function encryptIpEvidence(ip: string, keyBase64: string | undefined): Promise<string | null> {
+export async function encryptIpEvidence(ip: string, keyBase64: string | undefined): Promise<string | null> {
 	if (!keyBase64 || ip === 'unknown') return null;
 	if (!validateEncryptionKeyOnce(keyBase64)) return null;
 	const rawKey = base64ToBytes(keyBase64);
@@ -280,33 +293,156 @@ async function encryptIpEvidence(ip: string, keyBase64: string | undefined): Pro
 	return `v1:${bytesToBase64(iv)}:${bytesToBase64(ciphertext)}`;
 }
 
-function recordMcpAccessLog(options: ExecuteMcpRequestOptions, input: { toolName: string; domain: string; rateLimited: boolean }): void {
-	if (!options.intelligenceDb) return;
+/**
+ * Inverse of {@link encryptIpEvidence}: parses the `v1:iv:ct` wire format and
+ * AES-GCM-decrypts the raw IP. Returns `null` on any failure (missing key,
+ * malformed wire, wrong key length, decrypt error) — callers fall back to the
+ * masked IP. Operator-only re-identification surface (forensics endpoint).
+ */
+export async function decryptIpEvidence(wire: string, keyBase64: string | undefined): Promise<string | null> {
+	if (!keyBase64 || !wire) return null;
+	const parts = wire.split(':');
+	if (parts.length !== 3) return null; // expected v1:iv:ct
+	try {
+		const rawKey = base64ToBytes(keyBase64);
+		if (rawKey.byteLength !== 32) return null;
+		const iv = base64ToBytes(parts[1]);
+		const ct = base64ToBytes(parts[2]);
+		const key = await crypto.subtle.importKey('raw', toArrayBuffer(rawKey), { name: 'AES-GCM' }, false, ['decrypt']);
+		const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: toArrayBuffer(iv) }, key, toArrayBuffer(ct));
+		return new TextDecoder().decode(pt);
+	} catch {
+		return null;
+	}
+}
+
+function recordMcpAccessLog(
+	options: ExecuteMcpRequestOptions,
+	input: { toolName: string; domain: string; rateLimited: boolean; method?: string; status?: string },
+): void {
+	if (!options.intelligenceDb && !options.analyticsQueue) return;
 	const logger = getLogger();
+	const level = options.analyticsPiiLevel ?? 'coarse';
+	const event = buildAccessLogEvent(
+		{
+			ip: options.ip,
+			ipHash: options.ipHash ?? 'unknown',
+			ipMasked: maskIp(options.ip),
+			toolName: input.toolName,
+			domain: input.domain,
+			country: options.country ?? null,
+			region: options.region ?? null,
+			city: options.city ?? null,
+			latitude: options.latitude ?? null,
+			longitude: options.longitude ?? null,
+			asn: options.asn ?? null,
+			asOrg: options.asOrg ?? null,
+			keyHash: options.keyHash ?? null,
+			clientType: options.clientType ?? null,
+			colo: options.colo ?? null,
+			sessionHash: options.sessionHash ?? null,
+			userAgent: options.userAgent ?? null,
+			method: input.method ?? null,
+			transport: options.responseTransport ?? null,
+			status: input.status ?? null,
+			responseMs: Math.max(0, Date.now() - options.startTime),
+			rateLimited: input.rateLimited,
+		},
+		level,
+	);
+
+	// Preferred path: enqueue for the batch consumer (PTR + encrypt + batch insert).
+	if (options.analyticsQueue) {
+		// Surface-minimization: the consumer needs the raw IP only for PTR (full) or
+		// encryption (standard+). At coarse, neither applies — strip it so the raw IP
+		// never transits the queue at-rest. ipHash/ipMasked are already on the event.
+		const queueEvent = piiAllows(level, 'ptr') || piiAllows(level, 'ciphertext') ? event : { ...event, ip: 'unknown' };
+		const send = options.analyticsQueue.send(queueEvent, { contentType: 'json' });
+		options.waitUntil?.(fireAndForget(send, logger, 'mcp_access_log_enqueue'));
+		return;
+	}
+
+	// Fallback (self-host, no queue): inline encrypted insert, no PTR.
 	const work = async () => {
-		const ipCiphertext = await encryptIpEvidence(options.ip, options.ipEncryptionKey);
-		await options
-			.intelligenceDb!.prepare(
-				`INSERT INTO mcp_access_log
-				 (ip_hash, ip_masked, tool_name, domain, country, user_agent, response_ms, rate_limited, ip_ciphertext, ip_key_version)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			)
-			.bind(
-				options.ipHash ?? 'unknown',
-				maskIp(options.ip),
-				input.toolName,
-				input.domain,
-				options.country ?? null,
-				options.userAgent ?? null,
-				Math.max(0, Date.now() - options.startTime),
-				input.rateLimited ? 1 : 0,
-				ipCiphertext,
-				ipCiphertext ? (options.ipEncryptionKeyVersion ?? 'v1') : null,
-			)
-			.run();
+		const ipCiphertext = piiAllows(level, 'ciphertext') ? await encryptIpEvidence(event.ip, options.ipEncryptionKey) : null;
+		await insertAccessLogRow(options.intelligenceDb!, event, ipCiphertext, ipCiphertext ? (options.ipEncryptionKeyVersion ?? 'v1') : null);
 	};
-	const loggedWork = fireAndForget(work, logger, 'mcp_access_log_insert');
-	options.waitUntil?.(loggedWork);
+	options.waitUntil?.(fireAndForget(work(), logger, 'mcp_access_log_insert'));
+}
+
+/** Test-only handle to exercise the recorder without booting a request. */
+export const __recordMcpAccessLogForTest = recordMcpAccessLog;
+
+const ACCESS_LOG_COLUMNS = [
+	'ip_hash',
+	'ip_masked',
+	'tool_name',
+	'domain',
+	'country',
+	'user_agent',
+	'response_ms',
+	'rate_limited',
+	'ip_ciphertext',
+	'ip_key_version',
+	'city',
+	'region',
+	'latitude',
+	'longitude',
+	'asn',
+	'as_org',
+	'ptr_hostname',
+	'key_hash',
+	'client_type',
+	'colo',
+	'session_hash',
+	'method',
+	'transport',
+	'status',
+] as const;
+
+export function accessLogInsertSql(): string {
+	return `INSERT INTO mcp_access_log (${ACCESS_LOG_COLUMNS.join(', ')}) VALUES (${ACCESS_LOG_COLUMNS.map(() => '?').join(', ')})`;
+}
+
+export function accessLogBindings(event: AccessLogEvent, ipCiphertext: string | null, ipKeyVersion: string | null): unknown[] {
+	return [
+		event.ipHash,
+		event.ipMasked,
+		event.toolName,
+		event.domain,
+		event.country,
+		event.userAgent,
+		event.responseMs,
+		event.rateLimited ? 1 : 0,
+		ipCiphertext,
+		ipKeyVersion,
+		event.city,
+		event.region,
+		event.latitude,
+		event.longitude,
+		event.asn,
+		event.asOrg,
+		event.ptrHostname,
+		event.keyHash,
+		event.clientType,
+		event.colo,
+		event.sessionHash,
+		event.method,
+		event.transport,
+		event.status,
+	];
+}
+
+async function insertAccessLogRow(
+	db: D1Database,
+	event: AccessLogEvent,
+	ipCiphertext: string | null,
+	ipKeyVersion: string | null,
+): Promise<void> {
+	await db
+		.prepare(accessLogInsertSql())
+		.bind(...accessLogBindings(event, ipCiphertext, ipKeyVersion))
+		.run();
 }
 
 function extractHeaders(response: Response): Record<string, string> {
@@ -418,7 +554,7 @@ function buildAuthRequiredResponse(
 	method: string,
 	options: ExecuteMcpRequestOptions,
 	eventId: string | undefined,
-	accessLogInput: { toolName: string; domain: string } | undefined,
+	accessLogInput: { toolName: string; domain: string; method: string } | undefined,
 ): Extract<ProcessedRequestResult, { kind: 'response' }> {
 	options.analytics?.emitRateLimitEvent({
 		limitType: 'gated_tool',
@@ -430,7 +566,7 @@ function buildAuthRequiredResponse(
 	});
 	emitRequestAnalytics(options, method, 'error', true);
 	if (accessLogInput) {
-		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 	}
 	return {
 		kind: 'response',
@@ -452,7 +588,7 @@ function buildGatedToolResponse(
 	method: string,
 	options: ExecuteMcpRequestOptions,
 	eventId: string | undefined,
-	accessLogInput: { toolName: string; domain: string } | undefined,
+	accessLogInput: { toolName: string; domain: string; method: string } | undefined,
 ): Extract<ProcessedRequestResult, { kind: 'response' }> {
 	options.analytics?.emitRateLimitEvent({
 		limitType: 'gated_tool',
@@ -464,7 +600,7 @@ function buildGatedToolResponse(
 	});
 	emitRequestAnalytics(options, method, 'error', true);
 	if (accessLogInput) {
-		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 	}
 	return {
 		kind: 'response',
@@ -537,7 +673,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			});
 			emitRequestAnalytics(options, method, 'error', true);
 			if (accessLogInput) {
-				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 			}
 			return {
 				kind: 'response',
@@ -571,7 +707,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			});
 			emitRequestAnalytics(options, method, 'error', true);
 			if (accessLogInput) {
-				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 			}
 			return {
 				kind: 'response',
@@ -640,7 +776,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			});
 			emitRequestAnalytics(options, method, 'error', true);
 			if (accessLogInput) {
-				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 			}
 			return {
 				kind: 'response',
@@ -691,7 +827,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				});
 				emitRequestAnalytics(options, method, 'error', true);
 				if (accessLogInput) {
-					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 				}
 				return {
 					kind: 'response',
@@ -745,7 +881,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				});
 				emitRequestAnalytics(options, method, 'error', true);
 				if (accessLogInput) {
-					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 				}
 				return {
 					kind: 'response',
@@ -795,7 +931,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				});
 				emitRequestAnalytics(options, method, 'error', true);
 				if (accessLogInput) {
-					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 				}
 				return {
 					kind: 'response',
@@ -847,7 +983,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			});
 			emitRequestAnalytics(options, method, 'error', true);
 			if (accessLogInput) {
-				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 			}
 			return {
 				kind: 'response',
@@ -991,7 +1127,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				});
 				emitRequestAnalytics(options, method, 'error', true);
 				if (accessLogInput) {
-					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 				}
 				return {
 					kind: 'response',
@@ -1046,6 +1182,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			protocolVersionHeader: options.protocolVersionHeader,
 			authTier: options.authTier,
 			colo: options.colo,
+			region: options.region,
+			// PII-gate the AE city blob so ANALYTICS_PII_LEVEL governs Analytics Engine the
+			// same way it governs the D1 log: city only at standard+. region/asn stay (coarse).
+			city: piiAllows(options.analyticsPiiLevel ?? 'coarse', 'city') ? options.city : undefined,
+			asn: options.asn,
 			certstream: options.certstream,
 			certstreamAuthToken: options.certstreamAuthToken,
 			whoisBinding: options.whoisBinding,
@@ -1099,7 +1240,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				emitRequestAnalytics(options, method, hasJsonRpcError ? 'error' : 'ok', hasJsonRpcError, errPayload?.code, errPayload?.message);
 				recordMcpToolErrorIfUnknownTool(options, method, dispatchResult.payload);
 				if (accessLogInput) {
-					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: false });
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: false, status: hasJsonRpcError ? 'error' : 'pass' });
 				}
 				return dispatchResult.payload;
 			})
@@ -1154,6 +1295,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			protocolVersionHeader: options.protocolVersionHeader,
 			authTier: options.authTier,
 			colo: options.colo,
+			region: options.region,
+			// PII-gate the AE city blob so ANALYTICS_PII_LEVEL governs Analytics Engine the
+			// same way it governs the D1 log: city only at standard+. region/asn stay (coarse).
+			city: piiAllows(options.analyticsPiiLevel ?? 'coarse', 'city') ? options.city : undefined,
+			asn: options.asn,
 			certstream: options.certstream,
 			certstreamAuthToken: options.certstreamAuthToken,
 			whoisBinding: options.whoisBinding,
@@ -1220,7 +1366,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		emitRequestAnalytics(options, method, hasJsonRpcError ? 'error' : 'ok', hasJsonRpcError, errPayload?.code, errPayload?.message);
 		recordMcpToolErrorIfUnknownTool(options, method, dispatchResult.payload);
 		if (accessLogInput) {
-			recordMcpAccessLog(options, { ...accessLogInput, rateLimited: false });
+			recordMcpAccessLog(options, { ...accessLogInput, rateLimited: false, status: hasJsonRpcError ? 'error' : 'pass' });
 		}
 
 		return {
