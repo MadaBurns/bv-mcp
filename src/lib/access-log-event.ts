@@ -14,6 +14,12 @@ export interface AccessLogEvent {
 	ipMasked: string;
 	toolName: string;
 	domain: string;
+	/**
+	 * Request-path origin: `'public'` (public /mcp path) | `'internal'`
+	 * (service-binding /internal/tools/*). NULL on pre-0003 rows → treated as
+	 * `'public'` via COALESCE in queries.
+	 */
+	source: string | null;
 	country: string | null;
 	region: string | null;
 	city: string | null;

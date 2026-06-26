@@ -112,6 +112,12 @@ export interface ExecuteMcpRequestOptions {
 	secondaryDohToken?: string;
 	country?: string;
 	clientType?: string;
+	/**
+	 * B1 — access-log request-path origin. Defaults to `'public'` on the public
+	 * /mcp path; the internal service-binding recorder passes `'internal'`. Stored
+	 * in the `mcp_access_log.source` column.
+	 */
+	source?: string;
 	/** Raw `MCP-Protocol-Version` request header (threaded to dispatch for STRUCTURED_RESULT comment trimming). */
 	protocolVersionHeader?: string;
 	authTier?: string;
@@ -202,7 +208,7 @@ function maskIp(ip: string): string {
 	return 'masked';
 }
 
-function extractAccessLogDomain(args: Record<string, unknown> | undefined): string | undefined {
+export function extractAccessLogDomain(args: Record<string, unknown> | undefined): string | undefined {
 	if (!args) return undefined;
 	if (typeof args.domain === 'string' && args.domain.length > 0) return args.domain;
 	if (Array.isArray(args.domains)) {
@@ -330,6 +336,7 @@ function recordMcpAccessLog(
 			ipMasked: maskIp(options.ip),
 			toolName: input.toolName,
 			domain: input.domain,
+			source: options.source ?? 'public',
 			country: options.country ?? null,
 			region: options.region ?? null,
 			city: options.city ?? null,
@@ -373,6 +380,68 @@ function recordMcpAccessLog(
 /** Test-only handle to exercise the recorder without booting a request. */
 export const __recordMcpAccessLogForTest = recordMcpAccessLog;
 
+/** Inputs for the internal-path access-log recorder (B1). */
+export interface RecordInternalAccessLogInput {
+	toolName: string;
+	domain: string;
+	/** Tool outcome — `'pass'` | `'error'` (mirrors the public path's status mapping). */
+	status: string;
+	/** x-bv-caller header value, stored in the `client_type` column. */
+	clientType?: string | null;
+	intelligenceDb?: D1Database;
+	analyticsQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	analyticsPiiLevel?: import('../lib/analytics-pii').AnalyticsPiiLevel;
+	ipEncryptionKey?: string;
+	ipEncryptionKeyVersion?: string;
+	startTime: number;
+	waitUntil?: (promise: Promise<unknown>) => void;
+}
+
+/**
+ * B1 — record an mcp_access_log row from the internal service-binding path
+ * (`/internal/tools/{call,batch}`). Tagged `source: 'internal'` with sentinel
+ * `ip`/`ipHash = 'unknown'` (IP encryption + PTR short-circuit) and `keyHash =
+ * null` (bv-web owns customer attribution). Delegates to {@link recordMcpAccessLog}
+ * so the column/bind logic stays single-sourced. Early-returns (no row) when
+ * neither `intelligenceDb` nor `analyticsQueue` is bound.
+ */
+export function recordInternalAccessLog(input: RecordInternalAccessLogInput): void {
+	const options: ExecuteMcpRequestOptions = {
+		// Minimal shape — recordMcpAccessLog only reads the fields below.
+		body: { jsonrpc: '2.0', id: null, method: 'tools/call' } as JsonRpcRequest,
+		allowStreaming: false,
+		batchMode: false,
+		batchSize: 1,
+		// The `transport` column distinguishes the internal door from public json/sse.
+		// Cast: the recorder only reads this for the column value; the 'json' | 'sse'
+		// union governs the public dispatch path, which this synthetic options never enters.
+		responseTransport: 'internal' as ExecuteMcpRequestOptions['responseTransport'],
+		startTime: input.startTime,
+		ip: 'unknown',
+		ipHash: 'unknown',
+		isAuthenticated: false,
+		validateSession: false,
+		serverVersion: '',
+		keyHash: undefined,
+		clientType: input.clientType ?? undefined,
+		country: undefined,
+		source: 'internal',
+		intelligenceDb: input.intelligenceDb,
+		analyticsQueue: input.analyticsQueue,
+		analyticsPiiLevel: input.analyticsPiiLevel,
+		ipEncryptionKey: input.ipEncryptionKey,
+		ipEncryptionKeyVersion: input.ipEncryptionKeyVersion,
+		waitUntil: input.waitUntil,
+	};
+	recordMcpAccessLog(options, {
+		toolName: input.toolName,
+		domain: input.domain,
+		rateLimited: false,
+		method: 'tools/call',
+		status: input.status,
+	});
+}
+
 const ACCESS_LOG_COLUMNS = [
 	'ip_hash',
 	'ip_masked',
@@ -398,6 +467,7 @@ const ACCESS_LOG_COLUMNS = [
 	'method',
 	'transport',
 	'status',
+	'source',
 ] as const;
 
 export function accessLogInsertSql(): string {
@@ -430,6 +500,7 @@ export function accessLogBindings(event: AccessLogEvent, ipCiphertext: string | 
 		event.method,
 		event.transport,
 		event.status,
+		event.source,
 	];
 }
 
