@@ -1378,6 +1378,11 @@ export default {
 				await handleBrandAuditPdfQueue(batch, deps);
 				return;
 			}
+			if (batch.queue === 'mcp-analytics-queue') {
+				const { handleAnalyticsQueue } = await import('./lib/analytics-queue-consumer');
+				await handleAnalyticsQueue(batch, env as import('./lib/analytics-queue-consumer').AnalyticsQueueEnv);
+				return;
+			}
 			await handleScanQueue(batch, env as ScanQueueConsumerEnv, ctx);
 		} catch (err) {
 			queueOutcome = 'error';

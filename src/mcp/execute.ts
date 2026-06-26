@@ -282,7 +282,7 @@ function validateEncryptionKeyOnce(keyBase64: string): boolean {
 	return valid;
 }
 
-async function encryptIpEvidence(ip: string, keyBase64: string | undefined): Promise<string | null> {
+export async function encryptIpEvidence(ip: string, keyBase64: string | undefined): Promise<string | null> {
 	if (!keyBase64 || ip === 'unknown') return null;
 	if (!validateEncryptionKeyOnce(keyBase64)) return null;
 	const rawKey = base64ToBytes(keyBase64);
