@@ -839,17 +839,31 @@ internalRoutes.get('/analytics/usage', async (c) => {
 	const days = Number(parseDays(url));
 	const windowSec = days * 86400;
 	const keyHash = url.searchParams.get('key_hash') ?? undefined;
+	// Differentiate internal (bv-web service-binding `/internal/tools/*`) from external
+	// (public `/mcp`) traffic. Legacy rows predate the `source` column → COALESCE to
+	// 'public'. An unrecognized `?source=` value is ignored (treated as 'all'), matching
+	// the endpoint's lenient posture — only the known set is ever bound into the filter.
+	const sourceParam = url.searchParams.get('source');
+	const sourceFilter = sourceParam === 'public' || sourceParam === 'internal' ? sourceParam : undefined;
 	try {
-		const sql = keyHash
-			? `SELECT key_hash, tool_name, COUNT(*) AS calls, MAX(created_at) AS last_seen
-			   FROM mcp_access_log WHERE created_at >= (strftime('%s','now') - ?) AND key_hash = ?
-			   GROUP BY key_hash, tool_name ORDER BY calls DESC LIMIT 500`
-			: `SELECT key_hash, tool_name, COUNT(*) AS calls, MAX(created_at) AS last_seen
-			   FROM mcp_access_log WHERE created_at >= (strftime('%s','now') - ?)
-			   GROUP BY key_hash, tool_name ORDER BY calls DESC LIMIT 500`;
-		const stmt = keyHash ? db.prepare(sql).bind(windowSec, keyHash) : db.prepare(sql).bind(windowSec);
-		const { results } = await stmt.all();
-		return c.json({ days: String(days), keyHash: keyHash ?? 'all', usage: results ?? [] });
+		const filters: string[] = [`created_at >= (strftime('%s','now') - ?)`];
+		const binds: unknown[] = [windowSec];
+		if (keyHash) {
+			filters.push('key_hash = ?');
+			binds.push(keyHash);
+		}
+		if (sourceFilter) {
+			filters.push(`COALESCE(source, 'public') = ?`);
+			binds.push(sourceFilter);
+		}
+		const sql = `SELECT key_hash, tool_name, COALESCE(source, 'public') AS source, COUNT(*) AS calls, MAX(created_at) AS last_seen
+			   FROM mcp_access_log WHERE ${filters.join(' AND ')}
+			   GROUP BY key_hash, tool_name, COALESCE(source, 'public') ORDER BY calls DESC LIMIT 500`;
+		const { results } = await db
+			.prepare(sql)
+			.bind(...binds)
+			.all();
+		return c.json({ days: String(days), keyHash: keyHash ?? 'all', source: sourceFilter ?? 'all', usage: results ?? [] });
 	} catch (err) {
 		return c.json({ error: 'Usage query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
 	}
