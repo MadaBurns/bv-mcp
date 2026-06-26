@@ -31,6 +31,7 @@ import { unauthorizedResponse } from './lib/auth';
 import { sseEvent, acceptsSSE, createNotificationStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
 import { createAnalyticsClient, hashForAnalytics, hashIpForAnalytics } from './lib/analytics';
 import { detectMcpClient } from './lib/client-detection';
+import { parseAnalyticsPiiLevel } from './lib/analytics-pii';
 import type { JsonRpcRequest } from './lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionRequest } from './mcp/route-gates';
 import {
@@ -142,6 +143,11 @@ type BvMcpEnv = {
 	BV_INTERNAL_DEV_KEY_2?: string;
 	BRAND_AUDIT_DB?: D1Database;
 	INTELLIGENCE_DB?: D1Database;
+	MCP_ANALYTICS_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	/** PII capture depth for mcp_access_log: coarse | standard | full. Default coarse. */
+	ANALYTICS_PII_LEVEL?: string;
+	/** Retention window (days) for mcp_access_log rows. Default 90. */
+	ANALYTICS_RETENTION_DAYS?: string;
 	MCP_ACCESS_LOG_IP_ENCRYPTION_KEY?: string;
 	MCP_ACCESS_LOG_IP_KEY_VERSION?: string;
 	/** FIND-17: Base64-encoded 32-byte AES-256 key for app-layer KV envelope encryption of trial keys and OAuth codes. */
@@ -581,6 +587,12 @@ app.post('/mcp', async (c) => {
 	// per-datacenter p95/error-rate can be isolated (a single-colo regression otherwise
 	// averages out across the global aggregate). Undefined off-CF / in tests → 'unknown'.
 	const colo = (cfProps?.colo as string | undefined) ?? 'unknown';
+	const region = (cfProps?.region as string | undefined) ?? undefined;
+	const city = (cfProps?.city as string | undefined) ?? undefined;
+	const latitude = (cfProps?.latitude as string | undefined) ?? undefined;
+	const longitude = (cfProps?.longitude as string | undefined) ?? undefined;
+	const asn = typeof cfProps?.asn === 'number' ? cfProps.asn : undefined;
+	const asOrg = (cfProps?.asOrganization as string | undefined) ?? undefined;
 
 	const contentTypeError = validateContentType(headersLc['content-type']);
 	if (contentTypeError) {
@@ -707,6 +719,14 @@ app.post('/mcp', async (c) => {
 					sessionHash,
 					ipHash,
 					colo,
+					region,
+					city,
+					latitude,
+					longitude,
+					asn,
+					asOrg,
+					analyticsQueue: c.env.MCP_ANALYTICS_QUEUE,
+					analyticsPiiLevel: parseAnalyticsPiiLevel(c.env.ANALYTICS_PII_LEVEL),
 				});
 			}),
 		);
@@ -798,6 +818,14 @@ app.post('/mcp', async (c) => {
 		sessionHash,
 		ipHash,
 		colo,
+		region,
+		city,
+		latitude,
+		longitude,
+		asn,
+		asOrg,
+		analyticsQueue: c.env.MCP_ANALYTICS_QUEUE,
+		analyticsPiiLevel: parseAnalyticsPiiLevel(c.env.ANALYTICS_PII_LEVEL),
 	});
 
 	if (singleResult.kind === 'notification') {
@@ -857,6 +885,12 @@ app.post('/mcp/messages', async (c) => {
 	const keyHash = tierAuthResult.keyHash ? tierAuthResult.keyHash.slice(0, 16) : undefined;
 	const sessionHash = sessionId ? hashForAnalytics(sessionId) : 'none';
 	const ipHash = ip !== 'unknown' ? hashIpForAnalytics(ip) : undefined;
+	const region = (cfProps?.region as string | undefined) ?? undefined;
+	const city = (cfProps?.city as string | undefined) ?? undefined;
+	const latitude = (cfProps?.latitude as string | undefined) ?? undefined;
+	const longitude = (cfProps?.longitude as string | undefined) ?? undefined;
+	const asn = typeof cfProps?.asn === 'number' ? cfProps.asn : undefined;
+	const asOrg = (cfProps?.asOrganization as string | undefined) ?? undefined;
 
 	if (!sessionId) {
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: missing session'), 400);
@@ -965,6 +999,14 @@ app.post('/mcp/messages', async (c) => {
 				keyHash,
 				sessionHash,
 				ipHash,
+				region,
+				city,
+				latitude,
+				longitude,
+				asn,
+				asOrg,
+				analyticsQueue: c.env.MCP_ANALYTICS_QUEUE,
+				analyticsPiiLevel: parseAnalyticsPiiLevel(c.env.ANALYTICS_PII_LEVEL),
 			});
 		}),
 	);

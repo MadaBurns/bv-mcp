@@ -120,6 +120,17 @@ export interface ExecuteMcpRequestOptions {
 	ipHash?: string;
 	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter analytics grouping. Appended as the trailing blob on mcp_request/tool_call events. */
 	colo?: string;
+	/** Enrichment from request.cf — populated at the index.ts seam, consumed by the access-log producer + AE geo blobs. */
+	region?: string;
+	city?: string;
+	latitude?: string;
+	longitude?: string;
+	asn?: number;
+	asOrg?: string;
+	/** Cloudflare Queue producer for the analytics access-log path. Absent on BSL self-hosts → inline insert fallback. */
+	analyticsQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	/** Operator-chosen PII capture depth. Undefined → treated as 'coarse' by the producer. */
+	analyticsPiiLevel?: import('../lib/analytics-pii').AnalyticsPiiLevel;
 	/** D1 binding for privacy-preserving MCP access logs. */
 	intelligenceDb?: D1Database;
 	/** Base64-encoded AES-GCM key for encrypted abuse-investigation IP evidence. */
