@@ -25,4 +25,11 @@ describe('piiAllows', () => {
 		expect(piiAllows('full', 'precise_geo')).toBe(true);
 		expect(piiAllows('full', 'ptr')).toBe(true);
 	});
+
+	it('gates user_agent at standard (same tier as ciphertext/city)', async () => {
+		const { piiAllows } = await import('../src/lib/analytics-pii');
+		expect(piiAllows('coarse', 'user_agent')).toBe(false);
+		expect(piiAllows('standard', 'user_agent')).toBe(true);
+		expect(piiAllows('full', 'user_agent')).toBe(true);
+	});
 });
