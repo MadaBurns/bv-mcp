@@ -22,12 +22,14 @@ describe('buildAccessLogEvent', () => {
 		expect(coarse.asn).toBe(13335); // asn always allowed
 		expect(coarse.ptrHostname).toBeNull(); // consumer fills later
 		expect(coarse.source).toBe('public'); // passed through unchanged
+		expect(coarse.userAgent).toBeNull(); // user_agent gated at coarse
 
 		const full = buildAccessLogEvent(base, 'full');
 		expect(full.city).toBe('Auckland');
 		expect(full.latitude).toBe('-36.85');
 		expect(full.piiLevel).toBe('full');
 		expect(full.source).toBe('public'); // passed through unchanged
+		expect(full.userAgent).toBe('x'); // full preserves raw UA
 	});
 
 	it('keeps city but drops precise geo at standard', async () => {
@@ -35,5 +37,6 @@ describe('buildAccessLogEvent', () => {
 		const std = buildAccessLogEvent(base, 'standard');
 		expect(std.city).toBe('Auckland');
 		expect(std.latitude).toBeNull();
+		expect(std.userAgent).toBe('x'); // standard preserves raw UA (same tier as city)
 	});
 });

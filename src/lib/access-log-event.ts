@@ -44,13 +44,14 @@ export interface AccessLogEvent {
 /** Raw enrichment inputs before PII gating; `ptrHostname`/`piiLevel` are added by the builder. */
 export type AccessLogEventInput = Omit<AccessLogEvent, 'piiLevel' | 'ptrHostname'>;
 
-/** Apply PII gating: null out city + precise geo when the level forbids them. */
+/** Apply PII gating: null out city, precise geo, and user_agent when the level forbids them. */
 export function buildAccessLogEvent(raw: AccessLogEventInput, level: AnalyticsPiiLevel): AccessLogEvent {
 	return {
 		...raw,
 		city: piiAllows(level, 'city') ? raw.city : null,
 		latitude: piiAllows(level, 'precise_geo') ? raw.latitude : null,
 		longitude: piiAllows(level, 'precise_geo') ? raw.longitude : null,
+		userAgent: piiAllows(level, 'user_agent') ? raw.userAgent : null,
 		ptrHostname: null,
 		piiLevel: level,
 	};

@@ -131,7 +131,7 @@ describe('MCP access logging execution path', () => {
 			'check_spf',
 			'example.com',
 			'NZ',
-			'test-agent',
+			null, // user_agent (gated at coarse default)
 			expect.any(Number),
 			0,
 			null,
@@ -152,6 +152,53 @@ describe('MCP access logging execution path', () => {
 			'pass',
 			'public', // source
 		);
+	});
+
+	it('keeps user_agent at bind position 6 when the PII level is standard', async () => {
+		vi.doMock('../src/mcp/dispatch', () => ({
+			dispatchMcpMethod: vi.fn().mockResolvedValue({
+				kind: 'success',
+				payload: { jsonrpc: '2.0', id: 1, result: { content: [] } },
+				headers: {},
+				newSessionId: undefined,
+				logTool: 'check_spf',
+				logCategory: 'tool',
+				logResult: 'ok',
+				logDetails: {},
+			}),
+		}));
+
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const fake = createFakeD1();
+		const waitUntil = vi.fn();
+
+		await executeMcpRequest({
+			body: {
+				jsonrpc: '2.0',
+				id: 1,
+				method: 'tools/call',
+				params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+			} as JsonRpcRequest,
+			allowStreaming: false,
+			batchMode: false,
+			batchSize: 1,
+			responseTransport: 'json',
+			startTime: Date.now(),
+			ip: '203.0.113.30',
+			ipHash: 'i_testhash',
+			isAuthenticated: true,
+			validateSession: false,
+			serverVersion: 'test',
+			intelligenceDb: fake.db,
+			waitUntil,
+			country: 'NZ',
+			userAgent: 'test-agent',
+			analyticsPiiLevel: 'standard',
+		});
+
+		await waitForDeferredLog(waitUntil);
+		const bindArgs = fake.bind.mock.calls[0] ?? [];
+		expect(bindArgs[5]).toBe('test-agent'); // user_agent preserved at standard
 	});
 
 	it('stores encrypted IP evidence when an encryption key is configured', async () => {
