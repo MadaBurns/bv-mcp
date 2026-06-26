@@ -911,31 +911,17 @@ internalRoutes.get('/analytics/forensics', async (c) => {
 			}),
 		);
 
-		// Self-audit: record WHO decrypted WHAT SCOPE into the tenants audit_events table.
-		// Columns mirror src/tenants/db/migrations/registry/0001_wet_warhawk.sql — fill all
-		// NOT-NULL columns (id, timestamp, actor_principal, actor_tier, action, resource_type,
-		// outcome); tenant ids left NULL (nullable FKs). The query scope (window + filters +
-		// result count) goes in the nullable `ip_hash`/`blob` columns so the trail captures the
-		// actual re-identification scope, not just that one occurred. A failed audit write is
-		// LOGGED at warn (not silently swallowed) so monitoring can catch a broken trail; the
-		// response still returns (fail-open, matching the codebase ethos).
+		// Self-audit: record WHO decrypted WHAT SCOPE into mcp_access_log_audit — a table in
+		// INTELLIGENCE_DB (the same DB the forensics handler already binds), NOT the tenants
+		// registry `audit_events` (a SEPARATE D1 this handler has no binding to — writing there
+		// would throw "no such table" on every call). `scope` is JSON {days, filters, count} so
+		// the trail captures the actual re-identification scope, not just that one occurred. A
+		// failed audit write is LOGGED at warn (not silently swallowed) so monitoring can catch a
+		// broken trail; the response still returns (fail-open, matching the codebase ethos).
 		const auditScope = JSON.stringify({ days, ipHashFilter: ipHash ?? null, keyHashFilter: keyHash ?? null, resultCount: events.length });
 		await db
-			.prepare(
-				`INSERT INTO audit_events (id, timestamp, actor_principal, actor_tier, action, resource_type, outcome, ip_hash, blob)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			)
-			.bind(
-				crypto.randomUUID(),
-				Math.floor(Date.now() / 1000),
-				'internal_bearer',
-				'owner',
-				'analytics.forensics.decrypt',
-				'mcp_access_log',
-				'success',
-				ipHash ?? null,
-				auditScope,
-			)
+			.prepare(`INSERT INTO mcp_access_log_audit (id, actor, action, ip_hash, scope, outcome) VALUES (?, ?, ?, ?, ?, ?)`)
+			.bind(crypto.randomUUID(), 'internal_bearer', 'analytics.forensics.decrypt', ipHash ?? null, auditScope, 'success')
 			.run()
 			.catch((auditErr) =>
 				logError(auditErr instanceof Error ? auditErr : String(auditErr), {

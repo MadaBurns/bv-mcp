@@ -22,3 +22,18 @@ ALTER TABLE mcp_access_log ADD COLUMN status        TEXT; -- tool outcome pass|f
 
 CREATE INDEX IF NOT EXISTS idx_mcp_access_log_key_created ON mcp_access_log (key_hash, created_at);
 CREATE INDEX IF NOT EXISTS idx_mcp_access_log_country     ON mcp_access_log (country);
+
+-- Forensics self-audit trail. Co-located in INTELLIGENCE_DB (NOT the tenants registry
+-- `audit_events`, which is a separate D1) so the /internal/analytics/forensics handler —
+-- which already binds INTELLIGENCE_DB — can record every IP re-identification without a
+-- cross-subsystem binding. `scope` is JSON {days, ipHashFilter, keyHashFilter, resultCount}.
+CREATE TABLE IF NOT EXISTS mcp_access_log_audit (
+	id          TEXT PRIMARY KEY,
+	created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s', 'now') AS INTEGER)),
+	actor       TEXT NOT NULL,
+	action      TEXT NOT NULL,
+	ip_hash     TEXT,
+	scope       TEXT,
+	outcome     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_access_log_audit_created ON mcp_access_log_audit (created_at);

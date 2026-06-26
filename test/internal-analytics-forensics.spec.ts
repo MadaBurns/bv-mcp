@@ -22,7 +22,7 @@ describe('GET /internal/analytics/forensics', () => {
 		const { internalRoutes } = await import('../src/internal');
 		const auditRun = vi.fn(async () => ({ success: true }));
 		const all = vi.fn(async () => ({ results: [{ ip_ciphertext: ct, ip_key_version: 'v1', key_hash: 'abc', created_at: 1, ptr_hostname: 'h.example' }] }));
-		const prepare = vi.fn((sql: string) => (sql.includes('audit_events') ? { bind: () => ({ run: auditRun }) } : { bind: () => ({ all }) }));
+		const prepare = vi.fn((sql: string) => (sql.includes('mcp_access_log_audit') ? { bind: () => ({ run: auditRun }) } : { bind: () => ({ all }) }));
 		const env = {
 			BV_WEB_INTERNAL_KEY: 'right',
 			MCP_ACCESS_LOG_IP_ENCRYPTION_KEY: key,

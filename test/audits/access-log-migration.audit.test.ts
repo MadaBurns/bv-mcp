@@ -21,4 +21,8 @@ describe('0002 access-log enrich migration', () => {
 		expect(sql).toContain('idx_mcp_access_log_key_created');
 		expect(sql).toContain('idx_mcp_access_log_country');
 	});
+	it('creates the forensics audit table in INTELLIGENCE_DB (not the tenants registry)', () => {
+		expect(sql).toMatch(/CREATE TABLE IF NOT EXISTS mcp_access_log_audit\b/);
+		expect(sql).toContain('idx_mcp_access_log_audit_created');
+	});
 });
