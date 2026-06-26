@@ -68,6 +68,7 @@ import {
 	queryTierTopTools,
 	queryKeyUsage,
 	queryTierDigest,
+	queryGeoRollup,
 } from './lib/analytics-queries';
 
 type InternalEnv = {
@@ -824,5 +825,24 @@ internalRoutes.get('/analytics/digest', async (c) => {
 		return c.json({ days, tiers: rows });
 	} catch (err) {
 		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
+	}
+});
+
+/**
+ * GET /internal/analytics/geo (AE, sampled) — geographic rollup for dashboards.
+ *
+ * Counts per country/region/city/asn from `tool_call`. Query params: ?days=7
+ */
+internalRoutes.get('/analytics/geo', async (c) => {
+	const config = requireAnalyticsConfig(c.env);
+	if (!config) {
+		return c.json({ error: 'Analytics not configured (CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN required)' }, 500);
+	}
+	const days = parseDays(new URL(c.req.url));
+	try {
+		const rows = await queryAnalyticsEngine(config.accountId, config.token, queryGeoRollup(days));
+		return c.json({ days, geo: rows });
+	} catch (err) {
+		return c.json({ error: 'Geo query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
 	}
 });
