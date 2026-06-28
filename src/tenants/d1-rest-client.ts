@@ -95,6 +95,7 @@ export class D1ByIdClient implements TenantDbHandle {
 				method: 'POST',
 				headers: { authorization: `Bearer ${apiToken}`, 'content-type': 'application/json' },
 				body: JSON.stringify({ sql, params }),
+				signal: AbortSignal.timeout(10_000),
 			});
 			let body: D1RestQueryResponse;
 			try {

@@ -222,6 +222,7 @@ function makeDispatchHandle(ns: DispatchNamespace, workerName: string): TenantDb
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ sql, params, op }),
+				signal: AbortSignal.timeout(10_000),
 			}),
 		);
 		if (!res.ok) throw new Error(`tenant_db_dispatch_failed:${res.status}`);
