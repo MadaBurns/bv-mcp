@@ -68,6 +68,124 @@ export interface ScheduledEnv {
 	RATE_LIMIT?: KVNamespace;
 	BRAND_AUDIT_DB?: D1Database;
 	INTELLIGENCE_DB?: D1Database;
+	/**
+	 * Phase 2, decisions #8/#9 (optional). When bound, the retention cron prunes the
+	 * retention-bounded `scan_rollup` table. Absent in prod's public `wrangler.jsonc`
+	 * (Phase 2 ships dark) → the prune is skipped entirely, byte-for-byte unchanged.
+	 */
+	SCAN_SCHEDULE_DB?: D1Database;
+	ANALYTICS_RETENTION_DAYS?: string;
+	/**
+	 * Phase 1, decision #2 (default-off). Mirrors the producer flag; carried here for
+	 * config parity. The retention cron does not branch on it — the rollup is a
+	 * write-path concern in `src/mcp/execute.ts`.
+	 */
+	ANALYTICS_ROLLUP_INTERNAL?: string;
+	/**
+	 * Phase 1, decision #3 (default-off). `'true'` + `MCP_ACCESS_LOG_ARCHIVE` present
+	 * switches the retention cron from a hard DELETE to archive-then-delete (gzipped
+	 * NDJSON, non-PII columns only) to R2. Flag off or binding absent → today's DELETE.
+	 */
+	ANALYTICS_ARCHIVE_ENABLED?: string;
+	/** Phase 1, decision #3 — R2 object lifetime (days) for archived NDJSON. Documentation-only; enforced by the bucket lifecycle rule, not code. */
+	ANALYTICS_ARCHIVE_RETENTION_DAYS?: string;
+	/** Phase 1, decision #3 — R2 bucket for the short-bridge access-log archive. Absent → retention cron keeps today's hard DELETE. */
+	MCP_ACCESS_LOG_ARCHIVE?: R2Bucket;
+}
+
+/** Clamp ANALYTICS_RETENTION_DAYS to [1, 365]; default 90 on missing/invalid. */
+export function clampRetentionDays(raw: string | undefined): number {
+	const n = Number(raw);
+	if (!Number.isFinite(n)) return 90;
+	return Math.min(365, Math.max(1, Math.floor(n)));
+}
+
+/**
+ * Phase 1, decision #3 — NON-PII columns archived to R2. Deliberately EXCLUDES
+ * the PII-gated set (`ip_ciphertext`, `ip_key_version`, `ptr_hostname`, `city`,
+ * `latitude`, `longitude`, `user_agent`). Allowlist, not denylist, so a future
+ * column never leaks into the archive by default. Projection happens in code (the
+ * SELECT also names these columns, but the projection is the load-bearing guard).
+ */
+const ARCHIVE_COLUMNS = [
+	'id',
+	'created_at',
+	'ip_hash',
+	'ip_masked',
+	'tool_name',
+	'domain',
+	'country',
+	'region',
+	'asn',
+	'as_org',
+	'key_hash',
+	'client_type',
+	'colo',
+	'session_hash',
+	'method',
+	'transport',
+	'status',
+	'source',
+	'response_ms',
+	'rate_limited',
+] as const;
+
+/** Keyset page size for the archive SELECT — bounds per-iteration memory + the gzip buffer. */
+const ARCHIVE_PAGE_SIZE = 5000;
+
+/** Project a raw access-log row to the non-PII archive shape (drops any PII column the SELECT didn't). */
+function projectArchiveRow(row: Record<string, unknown>): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	for (const col of ARCHIVE_COLUMNS) {
+		if (col in row) out[col] = row[col];
+	}
+	return out;
+}
+
+/** Gzip UTF-8 text via the Workers-native CompressionStream (no Node APIs). */
+async function gzipText(text: string): Promise<Uint8Array> {
+	const compressed = new Response(text).body!.pipeThrough(new CompressionStream('gzip'));
+	return new Uint8Array(await new Response(compressed).arrayBuffer());
+}
+
+/**
+ * Phase 1, decision #3 — archive aging `mcp_access_log` rows to R2 as gzipped
+ * NDJSON before the retention DELETE. Keyset-paginated by `id`; each page is a
+ * separate `mcp-access-log/v1/window=<bucket>/part-NNNN.ndjson.gz` object. PII
+ * columns are stripped via {@link projectArchiveRow}. Returns `true` when every
+ * page archived cleanly (or threw, caught by the caller); the caller deletes only
+ * on `true` so a failed archive holds the rows.
+ *
+ * `cutoffSeconds` is the single retention boundary (epoch seconds) computed ONCE
+ * by the caller and bound verbatim to the SELECT — the same literal also drives
+ * the caller's DELETE, so no statement re-evaluates `strftime('now')` and a row
+ * can't cross the boundary between SELECT and DELETE (S1, TOCTOU). The R2 window
+ * key derives deterministically from that boundary's day bucket, so a retried or
+ * partially-failed run overwrites rather than duplicating objects (S3, idempotent).
+ */
+async function archiveExpiringAccessLogRows(db: D1Database, archive: R2Bucket, cutoffSeconds: number): Promise<boolean> {
+	const windowBucket = Math.floor(cutoffSeconds / 86_400);
+	const selectSql = `SELECT ${ARCHIVE_COLUMNS.join(', ')} FROM mcp_access_log WHERE created_at < ? AND id > ? ORDER BY id ASC LIMIT ?`;
+	let lastId = 0;
+	let part = 0;
+	for (;;) {
+		const result = await db.prepare(selectSql).bind(cutoffSeconds, lastId, ARCHIVE_PAGE_SIZE).all<Record<string, unknown>>();
+		const rows = result.results ?? [];
+		if (rows.length === 0) break;
+
+		const ndjson = rows.map((row) => JSON.stringify(projectArchiveRow(row))).join('\n') + '\n';
+		const key = `mcp-access-log/v1/window=${windowBucket}/part-${String(part).padStart(4, '0')}.ndjson.gz`;
+		await archive.put(key, await gzipText(ndjson), {
+			httpMetadata: { contentType: 'application/x-ndjson', contentEncoding: 'gzip' },
+		});
+		part += 1;
+
+		const nextId = Number((rows[rows.length - 1] as { id?: unknown }).id);
+		if (!Number.isFinite(nextId) || nextId <= lastId) break; // non-advancing keyset guard
+		lastId = nextId;
+		if (rows.length < ARCHIVE_PAGE_SIZE) break; // last (partial) page
+	}
+	return true;
 }
 
 const DEFAULT_ERROR_THRESHOLD = 5;
@@ -114,13 +232,57 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	}
 
 	if (env.INTELLIGENCE_DB) {
-		await env.INTELLIGENCE_DB.prepare("DELETE FROM mcp_access_log WHERE created_at < (strftime('%s', 'now') - ?)")
-			.bind(90 * 24 * 3600)
+		// S1 (TOCTOU): compute the retention boundary ONCE in JS and bind the same
+		// literal to BOTH the archive SELECT and the DELETE. Neither statement calls
+		// strftime('now'), so the two no longer evaluate the boundary at different
+		// wall-clock instants — a row can't cross the cutoff between SELECT and DELETE
+		// and get deleted without being archived (the archive-before-delete guarantee).
+		const cutoffSeconds = Math.floor(Date.now() / 1000) - clampRetentionDays(env.ANALYTICS_RETENTION_DAYS) * 86_400;
+
+		// Phase 1, decision #3: archive-then-delete. When enabled AND the R2 binding
+		// is present, stream the aging rows to R2 as gzipped NDJSON (non-PII columns
+		// only) before deleting. A failed archive HOLDS the rows for the next tick (no
+		// data loss). Flag off or binding absent → today's hard DELETE (byte-for-byte
+		// unchanged). Best-effort, fail-soft throughout.
+		const archiveEnabled = env.ANALYTICS_ARCHIVE_ENABLED === 'true' && !!env.MCP_ACCESS_LOG_ARCHIVE;
+		let archiveOk = true;
+		if (archiveEnabled) {
+			archiveOk = await archiveExpiringAccessLogRows(env.INTELLIGENCE_DB, env.MCP_ACCESS_LOG_ARCHIVE!, cutoffSeconds).catch((err) => {
+				logError(err instanceof Error ? err : String(err), {
+					category: 'retention',
+					details: { table: 'mcp_access_log', operation: 'archive_before_delete' },
+				});
+				return false;
+			});
+		}
+
+		if (!archiveEnabled || archiveOk) {
+			await env.INTELLIGENCE_DB.prepare('DELETE FROM mcp_access_log WHERE created_at < ?')
+				.bind(cutoffSeconds)
+				.run()
+				.catch((err) => {
+					logError(err instanceof Error ? err : String(err), {
+						category: 'retention',
+						details: { table: 'mcp_access_log', operation: 'delete_older_than_configured' },
+					});
+				});
+		}
+	}
+
+	// S2: bound the Phase 2 `scan_rollup` table. Entirely gated on the optional
+	// SCAN_SCHEDULE_DB binding (absent in prod's public wrangler.jsonc → no-op,
+	// byte-for-byte unchanged). `bucket_day` = floor(timestampMs / 86_400_000), so
+	// the cutoff is the day bucket `retentionDays` ago. No-op today (no writer yet);
+	// this keeps the table bounded the moment a writer lands. Best-effort, fail-soft.
+	if (env.SCAN_SCHEDULE_DB) {
+		const cutoffBucketDay = Math.floor((Date.now() - clampRetentionDays(env.ANALYTICS_RETENTION_DAYS) * 86_400_000) / 86_400_000);
+		await env.SCAN_SCHEDULE_DB.prepare('DELETE FROM scan_rollup WHERE bucket_day < ?')
+			.bind(cutoffBucketDay)
 			.run()
 			.catch((err) => {
 				logError(err instanceof Error ? err : String(err), {
 					category: 'retention',
-					details: { table: 'mcp_access_log', operation: 'delete_older_than_90d' },
+					details: { table: 'scan_rollup', operation: 'prune_older_than_configured' },
 				});
 			});
 	}

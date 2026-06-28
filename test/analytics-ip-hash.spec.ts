@@ -68,7 +68,7 @@ describe('createAnalyticsClient — ipHash blob', () => {
 		});
 		const point = ds.writeDataPoint.mock.calls[0][0];
 		// blob12 (index 11) = priorTool (C2 append); colo at blob11 (index 10); ipHash stays at blob10 (index 9).
-		expect(point.blobs).toHaveLength(12);
+		expect(point.blobs).toHaveLength(15);
 		expect(point.blobs[9]).toBe('i_cafef00d');
 	});
 

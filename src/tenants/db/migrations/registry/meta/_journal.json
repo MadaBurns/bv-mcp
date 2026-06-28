@@ -22,6 +22,13 @@
       "when": 1778329285961,
       "tag": "0002_big_speedball",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1782642136508,
+      "tag": "0003_sad_frank_castle",
+      "breakpoints": true
     }
   ]
 }

@@ -70,6 +70,14 @@ function lookupRows(rowsBySql: Record<string, unknown[]>, sql: string): unknown[
 	for (const tag of Object.keys(rowsBySql)) {
 		if (sql.includes(tag)) return rowsBySql[tag];
 	}
+	// Phase 4: the cron now resolves the per-tenant DB handle via
+	// `resolveTenantUncached`, which issues `REGISTRY_LOOKUP_SQL` against the
+	// registry. Default to a resolvable, active, convention-routed tenant unless
+	// a test overrides it — buildTenantDb derives the binding from the id, so this
+	// single synthetic row serves every tenant id.
+	if (sql.includes('routing_mode, active FROM sub_tenants')) {
+		return [{ active: 1, routing_mode: null }];
+	}
 	return [];
 }
 

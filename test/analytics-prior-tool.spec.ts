@@ -38,7 +38,7 @@ describe('emitToolEvent blob12 priorTool', () => {
 			priorTool: 'scan_domain',
 		});
 		const point = ds.writeDataPoint.mock.calls[0][0] as { blobs: string[]; doubles: number[] };
-		expect(point.blobs).toHaveLength(12);
+		expect(point.blobs).toHaveLength(15);
 		expect(point.blobs[11]).toBe('scan_domain');
 	});
 
