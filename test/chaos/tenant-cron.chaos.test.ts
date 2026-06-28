@@ -27,7 +27,13 @@ const SQL_TAGS = {
 	STAMP_ALERT: 'UPDATE tenant_cycles SET alert_sent_at = ?',
 	FINDINGS_FOR_CYCLE: 'FROM findings f',
 	INSERT_CYCLE: 'INSERT INTO tenant_cycles',
+	// Phase 4: the cron now resolves the per-tenant DB via resolveTenantUncached,
+	// which reads this registry row (routing_mode → convention => the static binding).
+	REGISTRY_LOOKUP: 'd1_db_id, routing_mode, active FROM sub_tenants',
 } as const;
+
+/** A convention-mode registry row so resolveTenantUncached resolves to the static binding. */
+const REGISTRY_ROW_A = { id: TENANT_A, super_tenant_id: SUPER, d1_db_id: 'db-1', routing_mode: 'convention', active: 1 };
 
 function makeCtx() {
 	return { waitUntil: (_p: Promise<unknown>) => undefined };
@@ -151,6 +157,7 @@ describe('Tenant cron chaos', () => {
 		}));
 		const registry = makeRecordingD1({
 			[SQL_TAGS.ACTIVE_TENANTS]: [{ id: TENANT_A, super_tenant_id: SUPER }],
+			[SQL_TAGS.REGISTRY_LOOKUP]: [REGISTRY_ROW_A],
 		});
 		const tenant = makeRecordingD1({ [SQL_TAGS.DUE_DOMAINS]: due });
 
@@ -203,7 +210,10 @@ describe('Tenant cron chaos', () => {
 			errored_total: 0,
 			baseline_cycle_id: 'cycle-base',
 		};
-		const registry = makeRecordingD1({ [SQL_TAGS.PENDING_CYCLES]: [cycle] });
+		const registry = makeRecordingD1({
+			[SQL_TAGS.PENDING_CYCLES]: [cycle],
+			[SQL_TAGS.REGISTRY_LOOKUP]: [REGISTRY_ROW_A],
+		});
 
 		// Tenant DB returns differing findings per cycle id so deltas > 0.
 		const tenant: Record<string, unknown> = {
