@@ -124,6 +124,23 @@ export interface GlobalCostCeilingDegradationSink {
  */
 export const GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE = 50;
 
+/**
+ * Decision #6 — deny-biased global cost ceiling. The per-isolate budget used ONLY on
+ * the in-memory LAST-RESORT path when the QuotaCoordinator breaker is OPEN and shared
+ * KV is also unavailable. `floor(limit / FANOUT)` — deliberately WITHOUT a
+ * `Math.max(1, …)` floor — so a configured cap smaller than the fan-out estimate
+ * floors to 0 and DENIES outright rather than letting each of up to FANOUT isolates
+ * serve 1 call (which would overshoot `limit`). This guarantees
+ * `FANOUT × effectiveLimit ≤ limit`, i.e. aggregate isolate spend can NEVER exceed the
+ * configured cap — biasing to deny rather than risk overshooting GLOBAL_DAILY_TOOL_LIMIT
+ * while the authoritative cross-isolate counter is gone.
+ *
+ * @internal Exported for tests asserting the deny-biased last-resort cap.
+ */
+export function denyBiasedGlobalCeiling(limit: number): number {
+	return Math.floor(limit / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE);
+}
+
 function checkRateLimitInMemory(ip: string): RateLimitResult {
 	return checkScopedRateLimitInMemory(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT);
 }
@@ -328,9 +345,11 @@ let globalDayCount = 0;
  *
  * `effectiveLimit` lets the breaker-open path pass a DOWN-SCALED cap (the
  * configured limit divided by the estimated isolate fan-out) so the aggregate
- * across all isolates stays roughly bounded instead of `limit × isolate-count`.
- * The reported `limit` in the result intentionally echoes `effectiveLimit` —
- * it reflects the budget THIS isolate is actually enforcing.
+ * across all isolates stays bounded instead of `limit × isolate-count`. The
+ * reported `limit` in the result intentionally echoes `effectiveLimit` — it
+ * reflects the budget THIS isolate is actually enforcing. An `effectiveLimit` of 0
+ * (decision #6 deny-bias, when the configured cap is below the fan-out estimate)
+ * denies on the first call and never increments — biasing to deny over overshoot.
  */
 function checkGlobalDailyLimitInMemory(effectiveLimit: number): GlobalRateLimitResult {
 	const now = Date.now();
@@ -585,11 +604,15 @@ export async function checkGlobalDailyLimit(
 		}
 	}
 
-	// Last resort: per-isolate in-memory. Down-scale the cap by the estimated
-	// isolate fan-out so hundreds of isolates don't each enforce the full `limit`
-	// (which would let the real global spend reach `limit × isolate-count`).
-	// `Math.max(1, …)` guards a tiny configured limit from flooring to 0.
-	const effectiveLimit = breakerOpen ? Math.max(1, Math.floor(limit / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE)) : limit;
+	// Last resort: per-isolate in-memory. Down-scale the cap by the estimated isolate
+	// fan-out so hundreds of isolates don't each enforce the full `limit` (which would
+	// let the real global spend reach `limit × isolate-count`). Decision #6: this is
+	// DENY-BIASED — `denyBiasedGlobalCeiling` floors to 0 (deny-all) for a cap smaller
+	// than the fan-out rather than allowing 1 per isolate, so `FANOUT × effectiveLimit
+	// ≤ limit` always holds and aggregate spend can never overshoot the cap. Breaker
+	// CLOSED → full `limit` (unchanged: a tiny configured cap is enforced exactly by
+	// the authoritative DO / shared KV, not multiplied across isolates).
+	const effectiveLimit = breakerOpen ? denyBiasedGlobalCeiling(limit) : limit;
 	return checkGlobalDailyLimitInMemory(effectiveLimit);
 }
 

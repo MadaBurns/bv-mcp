@@ -44,6 +44,10 @@ export interface AnalyticsContext {
 	 * `tool_call` (append-only — never reorder existing positions).
 	 */
 	colo?: string;
+	/** Geo enrichment for AE aggregate dashboards (append-only blobs on tool_call). */
+	region?: string;
+	city?: string;
+	asn?: number;
 }
 
 export interface AnalyticsClient {
@@ -114,6 +118,12 @@ export interface AnalyticsClient {
 			 *    threshold. `component` carries `profile_accumulator:<shardName>`. Only
 			 *    emitted in `PROFILE_ACCUMULATOR_SHARDING='profile'` mode — observable so
 			 *    an operator can watch the warm-up drain after a flip.
+			 *  - `quota_shard_salt_missing` — R8 quota-sharding is ENABLED but
+			 *    `QUOTA_SHARD_SALT` is unset, so the shard mapping degrades to the
+			 *    precomputable unsalted hash (the salt should be a deploy Secret).
+			 *    `component` carries `quota_coordinator`. A config-misconfiguration
+			 *    signal, not a runtime failure — `queryBindingDegradation` excludes it
+			 *    (like the other quota-guardrail members); query it directly.
 			 */
 			degradationType:
 				| 'kv_fallback'
@@ -122,7 +132,8 @@ export interface AnalyticsClient {
 				| 'binding_timeout'
 				| 'cost_ceiling_degraded'
 				| 'quota_coordinator_fallback'
-				| 'shard_below_benchmark_floor';
+				| 'shard_below_benchmark_floor'
+				| 'quota_shard_salt_missing';
 			component: string;
 			domain?: string;
 			// `cost_ceiling_degraded` (component `global_cost_ceiling`) is emitted by
@@ -132,6 +143,22 @@ export interface AnalyticsClient {
 			// exclusion does NOT swallow it and it reaches the 15-min cron alert. The alert
 			// keys on degradationType (blob1), not component (blob2) -- a new alertable
 			// signal must carry a non-excluded degradationType.
+		} & AnalyticsContext,
+	): void;
+	/**
+	 * R8 per-shard observability. Emits the resolved QuotaCoordinator shard index
+	 * (0 .. QUOTA_SHARD_COUNT-1) for an unauthenticated quota check so an operator can
+	 * watch shard-load distribution and detect SKEW (a hot shard) after flipping
+	 * `QUOTA_SHARDING_ENABLED`. LOW-CARDINALITY by construction: blob1 is the small
+	 * integer shard index. Only emitted when sharding is ON. No new binding — rides the
+	 * existing MCP_ANALYTICS dataset under the `quota_shard` index. Fail-open.
+	 *
+	 * Blob positions (quota_shard): blob1=shardIndex, blob2=country, blob3=tier.
+	 */
+	emitQuotaShardEvent(
+		event: {
+			/** Resolved shard index (0-based, < QUOTA_SHARD_COUNT). */
+			shardIndex: number;
 		} & AnalyticsContext,
 	): void;
 	/**
@@ -201,6 +228,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 			emitRateLimitEvent: noop,
 			emitSessionEvent: noop,
 			emitDegradationEvent: noop,
+			emitQuotaShardEvent: noop,
 			emitQueueBatchEvent: noop,
 			emitTailAggregate: noop,
 		};
@@ -254,6 +282,10 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					// (readAndUpdateLastTool) — zero I/O, O(1), never blocks the hot path.
 					// Append-only; blobs 1–11 and doubles 1–2 UNCHANGED.
 					event.priorTool ?? 'unknown',
+					// blob13-15 — geo aggregate dimensions (append-only; positions 1-12 unchanged).
+					normalizeIndex(event.region ?? 'unknown'),
+					normalizeIndex(event.city ?? 'unknown'),
+					event.asn != null ? String(event.asn) : 'unknown',
 				],
 				doubles: [sanitizeNumber(event.durationMs), sanitizeNumber(event.score ?? 0)],
 			});
@@ -289,6 +321,14 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
 				],
+			});
+		},
+		emitQuotaShardEvent: (event) => {
+			safeWrite(dataset, {
+				indexes: ['quota_shard'],
+				// blob1 = small integer shard index (low cardinality, 0..QUOTA_SHARD_COUNT-1).
+				// sanitizeNumber clamps non-finite/negative to 0; Math.trunc drops any fraction.
+				blobs: [String(Math.trunc(sanitizeNumber(event.shardIndex))), event.country ?? 'unknown', event.authTier ?? 'anon'],
 			});
 		},
 		emitQueueBatchEvent: (event) => {

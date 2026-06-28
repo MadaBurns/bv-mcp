@@ -84,7 +84,7 @@ Both publish together from `publish.yml` on version tags.
 
 **Timeouts**: scan 15s preserves partial results; per-check 8s. (`SCAN_TIMEOUT_MS`, env-overridable, clamped [5s, 30s].)
 
-**Subrequest ceiling** (operating constraint, not a bug): a cold-cache `scan_domain` fans out ~20 subrequests/domain (19 categories, mostly DoH + 2 HTTPS); `/internal/tools/batch` can fan out to ~50×19. Cloudflare Workers caps subrequests per invocation at 50 (Free) / 1000 (Paid). BlackVeil production runs on a paid plan, so this is not a prod concern. BSL self-hosters on the Free plan should keep batch size / scan concurrency modest (cache hits don't count) or upgrade.
+**Subrequest ceiling** (operating constraint, not a bug): a cold-cache `scan_domain` fans out ~20 subrequests/domain (19 categories, mostly DoH + 2 HTTPS); `/internal/tools/batch` can fan out to ~50×19. Cloudflare Workers caps subrequests per invocation at 50 (Free) / 10,000 default on Paid — raisable to 10M via the `limits.subrequests` Wrangler setting (changed 2026-02-11; was 1000). BlackVeil production runs on a paid plan, so this is not a prod concern. BSL self-hosters on the Free plan should keep batch size / scan concurrency modest (cache hits don't count) or upgrade.
 
 **Post-processing**:
 
@@ -193,6 +193,7 @@ Resolution in `src/oauth/entitlements.ts` via bv-web service binding `api/intern
 
 - `/internal/trial-keys/*`, `/internal/oauth/grants` (credential-minting) → strict gate: 503 if `BV_WEB_INTERNAL_KEY` unset, 401 on missing/wrong bearer.
 - `/internal/tools/*`, `/internal/analytics/*`, `/internal/tenants/*` → `internalLenientAuthGate`. Despite the name it is **secure-by-default (FIND-12)**: ACTIVE unless `REQUIRE_INTERNAL_AUTH=false`, requiring `Authorization: Bearer ${BV_WEB_INTERNAL_KEY}` (503 if the key is unset, 401 on missing/wrong bearer). Set `REQUIRE_INTERNAL_AUTH=false` to disable and fall back to the `cf-connecting-ip` network guard alone.
+- **Analytics reports**: `/internal/analytics/{usage,geo}` are lenient-gated and safe (no raw IP) — `usage` = D1 per-customer (`key_hash`) counts, `geo` = AE sampled rollup; bv-web reads both. `/internal/analytics/forensics` is **STRICT-gated** (credential-minting bearer, like `/internal/trial-keys/*`: 503 if `BV_WEB_INTERNAL_KEY` unset, 401 on missing/wrong) because it **decrypts client IP** + returns PTR; it writes a self-audit row to the `mcp_access_log_audit` table in `INTELLIGENCE_DB` (NOT the tenants `audit_events`, a separate D1 this handler doesn't bind) recording the decrypt scope (`action = 'analytics.forensics.decrypt'`). Operator-only — bv-web does NOT call it.
 
 ### Fuzzing detection
 
@@ -318,6 +319,9 @@ The free-tier paid-gating (HTTP 403 for offensive tools) and the distinct-domain
 | `QUOTA_COORDINATOR`                                                  | DO               | Distributed rate limiting                                                                                                                                                                                                                                         |
 | `PROFILE_ACCUMULATOR`                                                | DO               | Adaptive weights (optional)                                                                                                                                                                                                                                       |
 | `MCP_ANALYTICS`                                                      | Analytics Engine | Telemetry (fail-open)                                                                                                                                                                                                                                             |
+| `MCP_ANALYTICS_QUEUE`                                               | Queue            | **Operator-deploy only.** Batches `mcp_access_log` writes (PTR + encrypt + batch insert via the queue consumer). Absent → inline-insert fallback.                                                                                                                  |
+| `ANALYTICS_PII_LEVEL`                                               | var              | Access-log PII depth: `coarse` (default) \| `standard` \| `full`. Gates city/lat-long/PTR/ciphertext/user_agent.                                                                                                                                                             |
+| `ANALYTICS_RETENTION_DAYS`                                          | var              | `mcp_access_log` retention window in days (default 90, clamped 1–365).                                                                                                                                                                                            |
 | `PROVIDER_SIGNATURES_URL`                                            | var              | Provider signatures source                                                                                                                                                                                                                                        |
 | `BV_DOH_ENDPOINT` / `BV_DOH_TOKEN`                                   | var / Secret     | Custom secondary DoH (`X-BV-Token`)                                                                                                                                                                                                                               |
 | `BV_CERTSTREAM`                                                      | Service          | CT logs: `/enumerate` (discover_subdomains, scan) + `/sans` (brand SAN siblings). Direct-crt.sh fallback w/ jittered backoff                                                                                                                                      |
@@ -336,14 +340,16 @@ The free-tier paid-gating (HTTP 403 for offensive tools) and the distinct-domain
 
 ## Analytics
 
-Seven event indexes are emitted (`analytics.ts`): four core — `mcp_request`, `tool_call`, `rate_limit`, `session` — plus `degradation` (single live member `kv_fallback`, emitted from `session.ts` when a KV write throws), `queue_batch`, and `tail`. Queries in `analytics-queries.ts` cover the four core types; nothing queries/alerts on `degradation`, `queue_batch`, or `tail` yet. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan`. Optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
+Eight event indexes are emitted (`analytics.ts`): four core — `mcp_request`, `tool_call`, `rate_limit`, `session` — plus `degradation` (e.g. `kv_fallback` from `session.ts` on a KV write throw, `quota_shard_salt_missing` from the sharded quota path), `queue_batch`, `tail`, and `quota_shard` (emitted from `execute.ts` when quota sharding is enabled). Queries in `analytics-queries.ts` cover the four core types plus `quota_shard` (`queryQuotaShardSkew`); nothing queries/alerts on `degradation`, `queue_batch`, or `tail` yet. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan`. Optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
 
 **Blob layout** (keep in sync when adding dimensions):
 
 - `mcp_request`: method, transport, status, auth-flag, jsonrpc-flag, country, clientType, authTier, sessionHash, keyHash, **ipHash** (blob11; FNV-1a `i_` prefix — lossy, equal IPs hash equally). Doubles: double1=durationMs, **double2=abs(jsonRpcErrorCode)** (0 when no error — codes are negative per spec, stored as magnitude since `sanitizeNumber` clamps <0)
-- `tool_call`: toolName, status, isError, domainFingerprint, country, clientType, authTier, cacheStatus, keyHash, **ipHash** (blob10)
+- `tool_call`: toolName, status, isError, domainFingerprint, country, clientType, authTier, cacheStatus, keyHash, **ipHash** (blob10), **region** (blob13), **city** (blob14), **asn** (blob15) — geo blobs append-only, positions 1–12 unchanged
 - `rate_limit`: limitType, toolName, country, authTier
 - `session`: action, country, clientType, authTier, method, keyHash
+
+**`mcp_access_log`** (D1 `INTELLIGENCE_DB`) is the faithful per-event store (vs AE's sampled rollups), enriched with geo/ASN/PTR/`key_hash`/`client_type`/colo/session/method/transport/status, gated by `ANALYTICS_PII_LEVEL` (`coarse` default → no city/lat-long/PTR/ciphertext/user_agent). Writes route through the `MCP_ANALYTICS_QUEUE` consumer (PTR reverse-lookup + encrypt-at-rest + batched D1 insert); inline-insert fallback (no PTR) when the queue is unbound. Both honor `ANALYTICS_PII_LEVEL`; fail-open throughout.
 
 Per-IP investigations belong in operator-only notes. Hash IPs locally and avoid
 committing raw IPs or token-bearing analytics commands.
