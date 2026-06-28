@@ -62,8 +62,8 @@
 		"zod": "4.4.3"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.16.18",
-		"@cloudflare/workers-types": "4.20260620.1",
+		"@cloudflare/vitest-pool-workers": "^0.16.20",
+		"@cloudflare/workers-types": "4.20260625.1",
 		"@types/marked": "^6.0.0",
 		"@types/punycode": "^2.1.4",
 		"drizzle-kit": "^0.31.10",
@@ -74,7 +74,7 @@
 		"typescript": "6.0.3",
 		"typescript-eslint": "8.61.1",
 		"vitest": "4.1.9",
-		"wrangler": "^4.103.0"
+		"wrangler": "^4.105.0"
 	},
 	"overrides": {
 		"esbuild": "0.28.1",
