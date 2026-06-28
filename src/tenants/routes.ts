@@ -33,13 +33,13 @@ import {
 } from '../schemas/tenant-internal';
 import { discoverBrandDomains } from '../tools/discover-brand-domains';
 import { computeFingerprint, fingerprintsDiffer } from './dns-fingerprint';
-import { resolveTenant, type ResolverEnv } from './tenant-resolver';
+import { resolveTenant, type ResolverEnv, type TenantDbHandle } from './tenant-resolver';
 import { recordAuditEvent } from './audit';
 import { checkAndRecord, PER_TENANT_QUOTAS, type RateLimitBucket } from './per-tenant-rate-limit';
 import * as registrySchema from './db/schema/registry';
 import { resolveAccumulatorShardModeFromEnv } from '../lib/profile-accumulator';
 import type { AuditEvent } from '../schemas/audit';
-import type { CheckResult } from '../lib/scoring';
+import type { CheckResult, Finding } from '../lib/scoring';
 
 /**
  * Minimal `Queue<T>` shape — Cloudflare's runtime types pin this to the
@@ -89,9 +89,21 @@ const PORTFOLIO_PROBE_SQL = 'SELECT domain FROM domains WHERE domain = ? LIMIT 1
 const SCANS_INSERT_SQL =
 	'INSERT INTO scans (id, domain, scan_at, score, grade, maturity_stage, finding_count, result_json, cycle_id) ' +
 	'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
-const FINDINGS_INSERT_SQL =
-	'INSERT INTO findings (id, scan_id, domain, category, severity, title, detail, metadata) ' +
-	'VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
+/**
+ * T3 (write amplification): persist findings as a small number of multi-row
+ * INSERTs instead of one `.run()` per finding. On the `dispatch`/`rest`
+ * TenantDbHandle backends every `.run()` is a separate HTTP round-trip, so an
+ * N-finding loop blew the per-invocation budget. A chunked multi-row INSERT
+ * issues `ceil(N / FINDINGS_INSERT_CHUNK)` statements and works across ALL
+ * backends — `convention` AND the exec-backed `dispatch`/`rest` (which THROW on
+ * `batch()`/`exec()`, so a single statement per chunk is the only portable form).
+ */
+const FINDINGS_COLUMNS = 8;
+/** 12 rows × 8 cols = 96 bound params ≤ D1/workerd's 100-param-per-statement cap. */
+const FINDINGS_INSERT_CHUNK = Math.floor(100 / FINDINGS_COLUMNS);
+const FINDINGS_INSERT_PREFIX =
+	'INSERT INTO findings (id, scan_id, domain, category, severity, title, detail, metadata) VALUES ';
+const FINDINGS_ROW_PLACEHOLDERS = '(?, ?, ?, ?, ?, ?, ?, ?)';
 const REPORT_SCANS_SQL = 'SELECT score, grade FROM scans WHERE cycle_id = ?';
 const REPORT_FINDINGS_SQL =
 	'SELECT category, severity, COUNT(*) as count FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE cycle_id = ?) GROUP BY category, severity';
@@ -290,6 +302,35 @@ function newRowId(): string {
 }
 
 /**
+ * Write findings in chunked multi-row INSERTs (see {@link FINDINGS_INSERT_CHUNK}).
+ * Equivalent end-state to the prior per-row loop on the convention backend, but a
+ * bounded statement count on every backend (T3 write-amplification fix).
+ */
+async function persistFindings(tenantDb: TenantDbHandle, scanId: string, domain: string, findings: readonly Finding[]): Promise<void> {
+	for (let i = 0; i < findings.length; i += FINDINGS_INSERT_CHUNK) {
+		const chunk = findings.slice(i, i + FINDINGS_INSERT_CHUNK);
+		const sql = FINDINGS_INSERT_PREFIX + chunk.map(() => FINDINGS_ROW_PLACEHOLDERS).join(', ');
+		const binds: unknown[] = [];
+		for (const f of chunk) {
+			binds.push(
+				newRowId(),
+				scanId,
+				domain,
+				f.category ?? 'unknown',
+				f.severity ?? 'info',
+				f.title ?? '',
+				f.detail ?? null,
+				f.metadata ? JSON.stringify(f.metadata) : null,
+			);
+		}
+		await tenantDb
+			.prepare(sql)
+			.bind(...binds)
+			.run();
+	}
+}
+
+/**
  * Dispatch an audit event for a Tenant orchestrator action via ctx.waitUntil so
  * the audit insert never blocks the response. Caller supplies the event body
  * minus the actor / network metadata, which we derive from the request.
@@ -485,18 +526,9 @@ tenantRoutes.post('/portfolio', async (c) => {
 		});
 		if (portfolioScopeDeny) return portfolioScopeDeny;
 
-		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
-		if (!tenantDb) {
-			// Should be caught by resolveTenant, but defense-in-depth.
-			dispatchAudit(c, {
-				action: 'portfolio.upsert',
-				resourceType: 'sub_tenant',
-				resourceId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'tenant_db_binding_missing' },
-			});
-			return c.json({ error: `Tenant not found: ${tenantOrErr}` }, 404);
-		}
+		// Phase 4: the resolver hands back a backend-agnostic handle; a missing
+		// backend already threw `Tenant not found` above (→ 404), so no env probe.
+		const tenantDb = tenant.db;
 
 		// Per-tenant rate limit. Audit on rejection, then 429 with Retry-After.
 		const rl = await maybeRateLimit(c, tenant.subTenantId, 'portfolio:min', tenant.tier);
@@ -622,18 +654,8 @@ tenantRoutes.post('/scan', async (c) => {
 		});
 		if (scanScopeDeny) return scanScopeDeny;
 
-		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
-		if (!tenantDb) {
-			dispatchAudit(c, {
-				action: 'scan.start',
-				resourceType: 'cycle',
-				resourceId: '<unknown>',
-				subTenantId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'tenant_db_binding_missing' },
-			});
-			return c.json({ error: `Tenant not found: ${tenantOrErr}` }, 404);
-		}
+		// Phase 4: backend-agnostic handle from the resolver (see /portfolio note).
+		const tenantDb = tenant.db;
 
 		// Per-tenant rate limit. `scans:day` because /scan is the heavy workload.
 		const rl = await maybeRateLimit(c, tenant.subTenantId, 'scans:day', tenant.tier);
@@ -844,21 +866,7 @@ tenantRoutes.post('/scan', async (c) => {
 					.run();
 
 				if (captured?.findings) {
-					for (const f of captured.findings) {
-						await tenantDb
-							.prepare(FINDINGS_INSERT_SQL)
-							.bind(
-								newRowId(),
-								scanId,
-								domain,
-								f.category ?? 'unknown',
-								f.severity ?? 'info',
-								f.title ?? '',
-								f.detail ?? null,
-								f.metadata ? JSON.stringify(f.metadata) : null,
-							)
-							.run();
-					}
+					await persistFindings(tenantDb, scanId, domain, captured.findings);
 				}
 			} catch {
 				// Persistence failure — logged via analytics elsewhere; don't fail
@@ -972,17 +980,8 @@ tenantRoutes.post('/discover', async (c) => {
 		});
 		if (discoverScopeDeny) return discoverScopeDeny;
 
-		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
-		if (!tenantDb) {
-			dispatchAudit(c, {
-				action: 'discovery.start',
-				resourceType: 'sub_tenant',
-				resourceId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'tenant_db_binding_missing' },
-			});
-			return c.json({ error: `Tenant not found: ${tenantOrErr}` }, 404);
-		}
+		// Phase 4: backend-agnostic handle from the resolver (see /portfolio note).
+		const tenantDb = tenant.db;
 
 		// Per-tenant rate limit. Discovery uses `reports:min` as it's a metadata-heavy
 		// but typically less frequent operation than /scan.
@@ -1205,18 +1204,8 @@ tenantRoutes.get('/report/:cycle_id', async (c) => {
 		});
 		if (reportScopeDeny) return reportScopeDeny;
 
-		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
-		if (!tenantDb) {
-			dispatchAudit(c, {
-				action: 'report.read',
-				resourceType: 'cycle',
-				resourceId: params.cycle_id,
-				subTenantId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'tenant_db_binding_missing' },
-			});
-			return c.json({ error: `Tenant not found: ${tenantOrErr}` }, 404);
-		}
+		// Phase 4: backend-agnostic handle from the resolver (see /portfolio note).
+		const tenantDb = tenant.db;
 
 		// Per-tenant rate limit. `reports:min` is dashboard-style read traffic.
 		const rl = await maybeRateLimit(c, tenant.subTenantId, 'reports:min', tenant.tier);

@@ -84,7 +84,7 @@ Both publish together from `publish.yml` on version tags.
 
 **Timeouts**: scan 15s preserves partial results; per-check 8s. (`SCAN_TIMEOUT_MS`, env-overridable, clamped [5s, 30s].)
 
-**Subrequest ceiling** (operating constraint, not a bug): a cold-cache `scan_domain` fans out ~20 subrequests/domain (19 categories, mostly DoH + 2 HTTPS); `/internal/tools/batch` can fan out to ~50×19. Cloudflare Workers caps subrequests per invocation at 50 (Free) / 1000 (Paid). BlackVeil production runs on a paid plan, so this is not a prod concern. BSL self-hosters on the Free plan should keep batch size / scan concurrency modest (cache hits don't count) or upgrade.
+**Subrequest ceiling** (operating constraint, not a bug): a cold-cache `scan_domain` fans out ~20 subrequests/domain (19 categories, mostly DoH + 2 HTTPS); `/internal/tools/batch` can fan out to ~50×19. Cloudflare Workers caps subrequests per invocation at 50 (Free) / 10,000 default on Paid — raisable to 10M via the `limits.subrequests` Wrangler setting (changed 2026-02-11; was 1000). BlackVeil production runs on a paid plan, so this is not a prod concern. BSL self-hosters on the Free plan should keep batch size / scan concurrency modest (cache hits don't count) or upgrade.
 
 **Post-processing**:
 
@@ -340,7 +340,7 @@ The free-tier paid-gating (HTTP 403 for offensive tools) and the distinct-domain
 
 ## Analytics
 
-Seven event indexes are emitted (`analytics.ts`): four core — `mcp_request`, `tool_call`, `rate_limit`, `session` — plus `degradation` (single live member `kv_fallback`, emitted from `session.ts` when a KV write throws), `queue_batch`, and `tail`. Queries in `analytics-queries.ts` cover the four core types; nothing queries/alerts on `degradation`, `queue_batch`, or `tail` yet. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan`. Optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
+Eight event indexes are emitted (`analytics.ts`): four core — `mcp_request`, `tool_call`, `rate_limit`, `session` — plus `degradation` (e.g. `kv_fallback` from `session.ts` on a KV write throw, `quota_shard_salt_missing` from the sharded quota path), `queue_batch`, `tail`, and `quota_shard` (emitted from `execute.ts` when quota sharding is enabled). Queries in `analytics-queries.ts` cover the four core types plus `quota_shard` (`queryQuotaShardSkew`); nothing queries/alerts on `degradation`, `queue_batch`, or `tail` yet. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan`. Optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
 
 **Blob layout** (keep in sync when adding dimensions):
 

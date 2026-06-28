@@ -26,6 +26,7 @@ import {
 	UPGRADE_URL,
 } from '../lib/config';
 import { normalizeToolName } from '../handlers/tool-args';
+import { shardIndexForKey, isQuotaShardSaltMissing } from '../lib/quota-coordinator';
 import { acceptsSSE } from '../lib/sse';
 import { dispatchMcpMethod } from './dispatch';
 import { validateJsonRpcRequest } from './request';
@@ -118,6 +119,14 @@ export interface ExecuteMcpRequestOptions {
 	 * in the `mcp_access_log.source` column.
 	 */
 	source?: string;
+	/**
+	 * Phase 1, decision #2 — when on AND the event is internal-source, route the
+	 * access-log write to the low-cardinality `mcp_access_rollup` counter instead
+	 * of a per-event row/queue insert. Sourced from `ANALYTICS_ROLLUP_INTERNAL` at
+	 * the index.ts seam. Default-off; undefined/false = per-event for everything
+	 * (today's behavior). External (`source !== 'internal'`) traffic is unaffected.
+	 */
+	rollupInternal?: boolean;
 	/** Raw `MCP-Protocol-Version` request header (threaded to dispatch for STRUCTURED_RESULT comment trimming). */
 	protocolVersionHeader?: string;
 	authTier?: string;
@@ -358,6 +367,23 @@ function recordMcpAccessLog(
 		level,
 	);
 
+	// Phase 1, decision #2: internal-source traffic (automated rescans — null
+	// key_hash, ip_hash='unknown') has near-zero forensic value at near-total
+	// volume. When the rollup flag is on, increment a low-cardinality counter
+	// INSTEAD of writing a per-event row/queue message. External/authenticated
+	// traffic is untouched and keeps its faithful per-event rows. Best-effort,
+	// fail-soft; requires the D1 binding to land the counter.
+	if (options.rollupInternal && (options.source ?? 'public') === 'internal' && options.intelligenceDb) {
+		// Capture the day bucket from the REQUEST start time, not `Date.now()` inside
+		// the deferred DB write: this recorder runs after dispatch (and the increment
+		// settles in the waitUntil tail), so a long request that crosses UTC midnight
+		// (e.g. a 15s scan starting at 23:59:5x) would otherwise mis-bucket into the
+		// next day. `options.startTime` pins the count to the day the request began.
+		const bucketDay = unixDayBucket(options.startTime);
+		options.waitUntil?.(fireAndForget(incrementAccessRollup(options.intelligenceDb, event, bucketDay), logger, 'mcp_access_rollup_increment'));
+		return;
+	}
+
 	// Preferred path: enqueue for the batch consumer (PTR + encrypt + batch insert).
 	if (options.analyticsQueue) {
 		// Surface-minimization: the consumer needs the raw IP only for PTR (full) or
@@ -395,6 +421,11 @@ export interface RecordInternalAccessLogInput {
 	ipEncryptionKeyVersion?: string;
 	startTime: number;
 	waitUntil?: (promise: Promise<unknown>) => void;
+	/**
+	 * Phase 1, decision #2 — when on, internal rows route to the `mcp_access_rollup`
+	 * counter instead of a per-event insert. Default-off (per-event, unchanged).
+	 */
+	rollupInternal?: boolean;
 }
 
 /**
@@ -432,6 +463,7 @@ export function recordInternalAccessLog(input: RecordInternalAccessLogInput): vo
 		ipEncryptionKey: input.ipEncryptionKey,
 		ipEncryptionKeyVersion: input.ipEncryptionKeyVersion,
 		waitUntil: input.waitUntil,
+		rollupInternal: input.rollupInternal,
 	};
 	recordMcpAccessLog(options, {
 		toolName: input.toolName,
@@ -513,6 +545,41 @@ async function insertAccessLogRow(
 	await db
 		.prepare(accessLogInsertSql())
 		.bind(...accessLogBindings(event, ipCiphertext, ipKeyVersion))
+		.run();
+}
+
+/** Unix-day bucket (UTC) used as the leading dimension of the rollup primary key. */
+function unixDayBucket(nowMs: number): number {
+	return Math.floor(nowMs / 86_400_000);
+}
+
+/** SQLite UPSERT for the rollup counter — single-sourced so the migration doc and code agree. */
+const ACCESS_ROLLUP_UPSERT_SQL = `INSERT INTO mcp_access_rollup (bucket_day, tool_name, source, status, auth_tier, client_type, country, count) VALUES (?, ?, ?, ?, ?, ?, ?, 1) ON CONFLICT (bucket_day, tool_name, source, status, auth_tier, client_type, country) DO UPDATE SET count = count + 1`;
+
+/**
+ * Phase 1, decision #2 — increment the low-cardinality `mcp_access_rollup`
+ * counter for an internal-source access-log event in place of a per-event row.
+ * NULL dimensions are coalesced to `'unknown'` so the composite primary key
+ * actually collapses duplicates (SQLite treats NULLs as distinct in a unique
+ * index). Internal traffic carries no per-key tier — bv-web owns customer
+ * attribution — so `auth_tier` is recorded as `'unknown'`. Best-effort.
+ *
+ * `bucketDay` is computed by the caller from the request start time (NOT
+ * `Date.now()` here) so a request crossing UTC midnight before this deferred
+ * write settles still counts against the day it began.
+ */
+async function incrementAccessRollup(db: D1Database, event: AccessLogEvent, bucketDay: number): Promise<void> {
+	await db
+		.prepare(ACCESS_ROLLUP_UPSERT_SQL)
+		.bind(
+			bucketDay,
+			event.toolName,
+			event.source ?? 'unknown',
+			event.status ?? 'unknown',
+			'unknown',
+			event.clientType ?? 'unknown',
+			event.country ?? 'unknown',
+		)
 		.run();
 }
 
@@ -826,6 +893,28 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 					authTier: options.authTier,
 				}),
 		});
+		// R8 per-shard observability + salt-missing config guard (Phase 3, decisions
+		// #3/#4). Only meaningful while sharding is ON; SINGLETON_ROUTING (the default)
+		// skips both — byte-for-byte today's behavior. The shard index is the SAME
+		// derivation the batch routed on (IP + salt), so the emitted distribution mirrors
+		// real shard load (skew detection via queryQuotaShardSkew). Fail-open telemetry.
+		const shardRouting = options.quotaShardRouting;
+		if (shardRouting?.enabled) {
+			const shardCtx = {
+				country: options.country,
+				clientType: options.clientType as import('../lib/client-detection').McpClientType,
+				authTier: options.authTier,
+			};
+			options.analytics?.emitQuotaShardEvent({ shardIndex: shardIndexForKey(options.ip, shardRouting.salt), ...shardCtx });
+			if (isQuotaShardSaltMissing(shardRouting)) {
+				options.analytics?.emitDegradationEvent({
+					degradationType: 'quota_shard_salt_missing',
+					component: 'quota_coordinator',
+					...shardCtx,
+				});
+			}
+		}
+
 		const rateResult = quotaBatch.rate;
 		const minuteResetEpoch = Math.ceil(Date.now() / 60_000) * 60;
 		rateHeaders = {

@@ -12,6 +12,7 @@ import {
 	releaseConcurrencySlot,
 	resetConcurrencyLimits,
 	GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE,
+	denyBiasedGlobalCeiling,
 } from '../src/lib/rate-limiter';
 
 afterEach(() => {
@@ -490,7 +491,7 @@ describe('rate-limiter', () => {
 			const { sink } = createDegradationSink();
 			// No KV → forced onto the last-resort in-memory tier.
 			const limit = 500_000;
-			const expectedEffective = Math.max(1, Math.floor(limit / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE));
+			const expectedEffective = denyBiasedGlobalCeiling(limit);
 
 			const result = await checkGlobalDailyLimit(limit, undefined, failingDO, sink);
 			expect(result.allowed).toBe(true);
@@ -511,7 +512,7 @@ describe('rate-limiter', () => {
 			const { sink } = createDegradationSink();
 			// Tiny limit so the scaled cap is small and exhaustible within a test.
 			const limit = GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE * 2; // → effective cap 2
-			const effective = Math.max(1, Math.floor(limit / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE));
+			const effective = denyBiasedGlobalCeiling(limit);
 
 			for (let i = 0; i < effective; i++) {
 				const r = await checkGlobalDailyLimit(limit, undefined, failingDO, sink);
@@ -550,7 +551,7 @@ describe('rate-limiter', () => {
 			const result = await checkGlobalDailyLimit(500_000, throwingKv, failingDO, sink);
 			expect(result.allowed).toBe(true);
 			// Down-scaled in-memory cap (KV unusable) yet still exactly one emit.
-			expect(result.limit).toBe(Math.max(1, Math.floor(500_000 / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE)));
+			expect(result.limit).toBe(denyBiasedGlobalCeiling(500_000));
 			expect(emitDegradationEvent).toHaveBeenCalledTimes(1);
 			// Single emit carries the alertable type even when it crosses KV -> in-memory.
 			expect(emitDegradationEvent).toHaveBeenCalledWith({
@@ -559,15 +560,16 @@ describe('rate-limiter', () => {
 			});
 		});
 
-		it('pins the down-scaled in-memory math: effectiveLimit = max(1, floor(limit / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE))', async () => {
+		it('pins the deny-biased in-memory math: effectiveLimit = floor(limit / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE) (decision #6)', async () => {
 			// The fan-out estimate is a pinned constant; assert it explicitly so a
 			// silent retune trips this test (non-negotiable #4).
 			expect(GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE).toBe(50);
 
 			// floor: 999 / 50 = 19.98 -> 19
-			expect(Math.max(1, Math.floor(999 / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE))).toBe(19);
-			// Math.max(1, ...) floor guard: a tiny limit must never floor to 0.
-			expect(Math.max(1, Math.floor(10 / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE))).toBe(1);
+			expect(denyBiasedGlobalCeiling(999)).toBe(19);
+			// Decision #6 deny-bias: a cap BELOW the fan-out floors to 0 (deny-all) — the
+			// OLD Math.max(1, …) floor that let 1-per-isolate through (overshoot) is gone.
+			expect(denyBiasedGlobalCeiling(10)).toBe(0);
 
 			// And the function actually applies it on the last-resort (no-DO, no-KV but
 			// breaker OPEN) path.
@@ -577,7 +579,37 @@ describe('rate-limiter', () => {
 			const { sink } = createDegradationSink();
 			const limit = 999;
 			const r = await checkGlobalDailyLimit(limit, undefined, failingDO, sink);
-			expect(r.limit).toBe(Math.max(1, Math.floor(limit / GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE)));
+			expect(r.limit).toBe(denyBiasedGlobalCeiling(limit));
+		});
+
+		it('deny-bias invariant: FANOUT × effectiveLimit ≤ limit for every cap (aggregate can never overshoot)', () => {
+			for (const limit of [0, 1, 10, 49, 50, 51, 99, 100, 999, 10_000, 500_000]) {
+				const eff = denyBiasedGlobalCeiling(limit);
+				expect(eff).toBeGreaterThanOrEqual(0);
+				// The whole point of decision #6: the aggregate across up to FANOUT isolates
+				// is bounded by the configured cap.
+				expect(eff * GLOBAL_CEILING_ISOLATE_FANOUT_ESTIMATE).toBeLessThanOrEqual(limit);
+			}
+		});
+
+		it('deny-bias: a cap smaller than the fan-out DENIES on the breaker-open last-resort path (never overshoots)', async () => {
+			const failingDO = createFailingDO();
+			await openBreaker(failingDO);
+			// Clear the in-memory counter that openBreaker's 3rd (breaker-open) call touched.
+			resetGlobalDailyLimit();
+
+			const { sink } = createDegradationSink();
+			const limit = 10; // < FANOUT(50) → effective 0 → deny-all
+			expect(denyBiasedGlobalCeiling(limit)).toBe(0);
+
+			// Every call on this isolate is denied; the per-isolate spend is 0, so the
+			// aggregate across all isolates is 0 ≤ limit — biased to deny, never overshoot.
+			for (let i = 0; i < 5; i++) {
+				const r = await checkGlobalDailyLimit(limit, undefined, failingDO, sink);
+				expect(r.allowed).toBe(false);
+				expect(r.remaining).toBe(0);
+				expect(r.limit).toBe(0);
+			}
 		});
 	});
 
