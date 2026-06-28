@@ -13,14 +13,17 @@
 //
 // CONTRACTED SQL (the impl MUST match these substrings + bind orders):
 //
-//   claimDue (GATE 4 — Form-B subquery, RETURNING):
-//     UPDATE scan_schedule SET next_scan_at = ?, last_dispatched_at = ?
+//   claimDue (GATE 4 — Form-B subquery, RETURNING; PER-ROW advance C1/C2):
+//     UPDATE scan_schedule SET next_scan_at = ? + cadence_ms + (abs(random()) % (cadence_ms / 10 + 1)), last_dispatched_at = ?
 //     WHERE id IN (SELECT id FROM scan_schedule WHERE active=1 AND lane=? AND next_scan_at<=? ORDER BY next_scan_at LIMIT ?)
 //     RETURNING id, tenant_id, domain, lane;
-//     binds: [newNextScanAt, lastDispatchedAt, lane, nowBound, limit]
+//     binds: [now, lastDispatchedAt, lane, nowBound, limit]
+//     advance: next_scan_at = now + ROW.cadence_ms + per-row jitter (each row distinct).
 //
-//   upsertSchedule (INSERT … ON CONFLICT):
+//   upsertSchedule (INSERT … ON CONFLICT; RESET on re-activation C3):
 //     INSERT INTO scan_schedule (tenant_id, domain, lane, next_scan_at, cadence_ms, active, consecutive_failures) …
+//     ON CONFLICT(tenant_id, domain) DO UPDATE SET lane = excluded.lane, cadence_ms = excluded.cadence_ms, active = 1,
+//       next_scan_at = excluded.next_scan_at, consecutive_failures = 0
 //     binds: [tenant_id, domain, lane, next_scan_at, cadence_ms]
 //
 //   reSpreadOnCadenceChange (bulk spread via SQLite random(), NOT rand()):
@@ -96,14 +99,18 @@ export function makeScanScheduleDb(
 		const record = () => calls.push({ sql, binds });
 
 		const claim = () => {
-			// GATE-4 Form-B claim-and-advance.
-			const [newNext, lastDisp, lane, nowBound, limit] = binds as [number, number, string, number, number];
+			// GATE-4 Form-B claim-and-advance — PER-ROW advance (C1/C2). Mirrors the
+			// SQL SET: next_scan_at = base + ROW.cadence_ms + (abs(random()) %
+			// (ROW.cadence_ms/10 + 1)). The per-row jitter + per-row cadence_ms make
+			// each claimed row's next_scan_at distinct (no cohort re-clumping).
+			const [base, lastDisp, lane, nowBound, limit] = binds as [number, number, string, number, number];
 			const eligible = rows
 				.filter((r) => r.active === 1 && r.lane === lane && r.next_scan_at <= nowBound)
 				.sort((a, b) => a.next_scan_at - b.next_scan_at)
 				.slice(0, limit);
 			for (const r of eligible) {
-				r.next_scan_at = newNext;
+				const jitterWindow = Math.max(1, Math.floor(r.cadence_ms / 10) + 1);
+				r.next_scan_at = base + r.cadence_ms + (rand() % jitterWindow);
 				r.last_dispatched_at = lastDisp;
 			}
 			return eligible.map((r) => ({ id: r.id, tenant_id: r.tenant_id, domain: r.domain, lane: r.lane }));
@@ -142,6 +149,10 @@ export function makeScanScheduleDb(
 						existing.lane = lane;
 						existing.cadence_ms = cadenceMs;
 						existing.active = 1;
+						// C3: ON CONFLICT also resets the schedule slot + backoff counter so a
+						// re-activated domain isn't instantly due nor carrying a stale backoff.
+						existing.next_scan_at = nextScanAt;
+						existing.consecutive_failures = 0;
 					} else {
 						rows.push(row({ id: rows.length + 1, tenant_id: tenantId, domain, lane, next_scan_at: nextScanAt, cadence_ms: cadenceMs }));
 					}

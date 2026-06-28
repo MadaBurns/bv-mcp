@@ -147,7 +147,7 @@ describe('processScanMessage', () => {
 		domain: 'example.com',
 	};
 
-	it('returns ack on the happy path and writes 1 scan row + N findings', async () => {
+	it('returns ack on the happy path and writes 1 scan row + a single batched findings INSERT', async () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
 			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
 			opts?.resultCapture?.({
@@ -167,10 +167,13 @@ describe('processScanMessage', () => {
 		const outcome = await processScanMessage(validMsg, 1, customEnv, makeCtx());
 		expect(outcome).toBe('ack');
 
+		// T3: 2 findings now batch into ONE multi-row INSERT (not 2 sequential rows).
 		const scanInserts = tenantCalls.filter((c) => c.sql === SCANS_INSERT_SQL);
-		const findingInserts = tenantCalls.filter((c) => c.sql === FINDINGS_INSERT_SQL);
+		const findingInserts = tenantCalls.filter((c) => c.sql.startsWith('INSERT INTO findings'));
 		expect(scanInserts.length).toBe(1);
-		expect(findingInserts.length).toBe(2);
+		expect(findingInserts.length).toBe(1);
+		// 2 findings × 8 columns = 16 bound params in the single statement.
+		expect(findingInserts[0]!.binds.length).toBe(16);
 	});
 
 	it('returns ack without writing when an existing scan row is found (idempotency)', async () => {

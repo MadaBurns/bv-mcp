@@ -198,3 +198,126 @@ describe('access-log archive-then-delete (decision #3)', () => {
 		expect(timeline).not.toContain('put');
 	});
 });
+
+/**
+ * S1 — TOCTOU boundary: the archive SELECT and the retention DELETE must bind the
+ * SAME JS-computed cutoff literal, and neither may re-evaluate strftime('now').
+ *
+ * Capturing D1 fake: records each prepared statement's SQL + every bind() arg list.
+ */
+function capturingIntelDb(rows: unknown[]) {
+	const statements: { sql: string; bindArgs: unknown[][] }[] = [];
+	const prepare = vi.fn((sql: string) => {
+		const rec = { sql, bindArgs: [] as unknown[][] };
+		statements.push(rec);
+		const stmt: Record<string, unknown> = {
+			bind: vi.fn((...args: unknown[]) => {
+				rec.bindArgs.push(args);
+				return stmt;
+			}),
+			all: vi.fn(async () => ({ results: rows, success: true })),
+			run: vi.fn(async () => ({ success: true })),
+		};
+		return stmt;
+	});
+	return { db: { prepare } as unknown as D1Database, statements };
+}
+
+describe('access-log retention TOCTOU boundary (S1)', () => {
+	it('binds the SAME cutoff literal to both the archive SELECT and the DELETE', async () => {
+		const intel = capturingIntelDb([expiringRow()]);
+		const archive = fakeArchive([]);
+		const env = {
+			INTELLIGENCE_DB: intel.db,
+			MCP_ACCESS_LOG_ARCHIVE: archive.binding,
+			ANALYTICS_ARCHIVE_ENABLED: 'true',
+			ANALYTICS_RETENTION_DAYS: '90',
+		} as unknown as import('../src/scheduled').ScheduledEnv;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled(env);
+
+		const select = intel.statements.find((s) => /SELECT/i.test(s.sql) && /mcp_access_log/.test(s.sql));
+		const del = intel.statements.find((s) => /DELETE FROM mcp_access_log/i.test(s.sql));
+		expect(select).toBeDefined();
+		expect(del).toBeDefined();
+
+		// Same single literal reaches both — the SELECT binds (cutoff, lastId, pageSize),
+		// the DELETE binds (cutoff). The first arg of each must be identical.
+		const selectCutoff = select!.bindArgs[0][0];
+		const deleteCutoff = del!.bindArgs[0][0];
+		expect(typeof selectCutoff).toBe('number');
+		expect(deleteCutoff).toBe(selectCutoff);
+
+		// Neither statement re-derives the boundary from wall-clock SQL.
+		expect(select!.sql).not.toMatch(/strftime/i);
+		expect(del!.sql).not.toMatch(/strftime/i);
+	});
+});
+
+describe('access-log archive idempotency (S3)', () => {
+	it('two runs over the same retention window produce the same R2 key', async () => {
+		// Fix the day, vary the wall-clock instant by a few seconds. The old per-run
+		// ISO-timestamp key would differ across the two; a window-bucket key is stable.
+		const base = Date.UTC(2026, 5, 28, 12, 0, 0); // mid-day, well clear of a UTC boundary
+		const nowSpy = vi.spyOn(Date, 'now');
+
+		const { handleScheduled } = await import('../src/scheduled');
+
+		const makeEnv = (archiveBinding: R2Bucket) =>
+			({
+				INTELLIGENCE_DB: fakeIntelDb([expiringRow()], []).db,
+				MCP_ACCESS_LOG_ARCHIVE: archiveBinding,
+				ANALYTICS_ARCHIVE_ENABLED: 'true',
+				ANALYTICS_RETENTION_DAYS: '90',
+			}) as unknown as import('../src/scheduled').ScheduledEnv;
+
+		nowSpy.mockReturnValue(base);
+		const archive1 = fakeArchive([]);
+		await handleScheduled(makeEnv(archive1.binding));
+
+		nowSpy.mockReturnValue(base + 5_000); // 5s later, same retention window
+		const archive2 = fakeArchive([]);
+		await handleScheduled(makeEnv(archive2.binding));
+
+		expect(archive1.bodies.length).toBe(1);
+		expect(archive2.bodies.length).toBe(1);
+		expect(archive2.bodies[0].key).toBe(archive1.bodies[0].key);
+	});
+});
+
+describe('scan_rollup prune (S2)', () => {
+	it('prunes scan_rollup older than the retention window when SCAN_SCHEDULE_DB is bound', async () => {
+		const base = Date.UTC(2026, 5, 28, 12, 0, 0);
+		vi.spyOn(Date, 'now').mockReturnValue(base);
+
+		const scan = capturingIntelDb([]);
+		const env = {
+			SCAN_SCHEDULE_DB: scan.db,
+			ANALYTICS_RETENTION_DAYS: '90',
+		} as unknown as import('../src/scheduled').ScheduledEnv;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled(env);
+
+		const prune = scan.statements.find((s) => /DELETE FROM scan_rollup/i.test(s.sql));
+		expect(prune).toBeDefined();
+		expect(prune!.sql).toMatch(/bucket_day < \?/);
+
+		const expectedCutoff = Math.floor((base - 90 * 86_400_000) / 86_400_000);
+		expect(prune!.bindArgs[0][0]).toBe(expectedCutoff);
+	});
+
+	it('does NOT touch scan_rollup when SCAN_SCHEDULE_DB is absent (dark default)', async () => {
+		const scan = capturingIntelDb([]); // spy exists but is NOT wired onto env
+		const env = {
+			INTELLIGENCE_DB: fakeIntelDb([expiringRow()], []).db,
+			ANALYTICS_RETENTION_DAYS: '90',
+		} as unknown as import('../src/scheduled').ScheduledEnv;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled(env);
+
+		expect((scan.db as unknown as { prepare: ReturnType<typeof vi.fn> }).prepare).not.toHaveBeenCalled();
+	});
+});

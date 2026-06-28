@@ -32,12 +32,6 @@ export type ScanLane = (typeof SCAN_LANES)[number];
 /** Default cron cadence (seconds) the dispatcher assumes between ticks. */
 const DEFAULT_TICK_SECONDS = 60;
 
-/** Per-lane cadence used to advance claimed rows (the claim "hold" before re-scan). */
-const LANE_CADENCE_MS: Record<ScanLane, number> = {
-	fast: 6 * 60 * 60 * 1000, // 6h
-	slow: 7 * 24 * 60 * 60 * 1000, // 7d
-};
-
 /** Minimal queue producer shape (matches the tenant scanner-queue contract). */
 interface ScanQueueProducer {
 	send(message: unknown, options?: { contentType?: 'json' }): Promise<void>;
@@ -90,7 +84,10 @@ export async function dispatchDueScans(env: ScanDispatchEnv, { now, tickSeconds 
 				const rateBasedLimit = target !== undefined ? Math.max(1, Math.ceil(target * tickSeconds)) : cap;
 				const limit = Math.min(rateBasedLimit, cap);
 
-				const claimed = await claimDue(db, { lane, now, limit, cadenceMs: LANE_CADENCE_MS[lane] });
+				// Each claimed row advances by its OWN cadence_ms column inside the
+				// claim SQL — the lane is only the SELECT filter, never the advance
+				// (C2). So no lane-cadence scalar is passed here.
+				const claimed = await claimDue(db, { lane, now, limit });
 				if (claimed.length === 0) continue;
 
 				const queue = resolveLaneQueue(env, lane);

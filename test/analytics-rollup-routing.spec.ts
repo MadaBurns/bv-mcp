@@ -149,6 +149,47 @@ describe('access-log rollup routing (decision #2)', () => {
 		expect(sqls.some((sql) => /mcp_access_rollup/i.test(sql))).toBe(false);
 	});
 
+	it('buckets the rollup by REQUEST start day, not the (later) write-time day (midnight mis-bucket)', async () => {
+		const mod = await import('../src/mcp/execute');
+		const fake = createFakeD1();
+		const promises: Promise<unknown>[] = [];
+
+		// Request starts 1s before a UTC midnight; the deferred increment settles 2s
+		// later — on the NEXT UTC day. The count must land in the request-start day.
+		const DAY_MS = 86_400_000;
+		const requestStart = 20_000 * DAY_MS - 1_000; // day 19999, 1s before midnight
+		const writeTime = 20_000 * DAY_MS + 1_000; // day 20000, 1s after midnight
+		const expectedBucket = Math.floor(requestStart / DAY_MS); // 19999
+		expect(Math.floor(writeTime / DAY_MS)).toBe(expectedBucket + 1); // sanity: opposite sides of midnight
+
+		// Clock returns the post-midnight write time whenever the recorder/deferred
+		// write reads it; the request start is supplied via options.startTime.
+		const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(writeTime);
+
+		const options = {
+			intelligenceDb: fake.db,
+			analyticsPiiLevel: 'coarse' as const,
+			ip: '192.0.2.9',
+			ipHash: 'i_x',
+			country: 'NZ',
+			source: 'internal',
+			rollupInternal: true,
+			responseTransport: 'internal',
+			startTime: requestStart,
+			waitUntil: (p: Promise<unknown>) => promises.push(p),
+		};
+		// @ts-expect-error — partial options for the internal recorder
+		mod.__recordMcpAccessLogForTest(options, { toolName: 'check_spf', domain: 'example.com', rateLimited: false, method: 'tools/call', status: 'pass' });
+		await drain(promises);
+
+		expect(preparedSql(fake.prepare).some((sql) => /mcp_access_rollup/i.test(sql))).toBe(true);
+		const boundArgs = fake.stmt.bind.mock.calls.flat();
+		expect(boundArgs[0]).toBe(expectedBucket); // bucket_day is the first bound column
+		expect(boundArgs).not.toContain(expectedBucket + 1);
+
+		nowSpy.mockRestore();
+	});
+
 	it('recordInternalAccessLog forwards rollupInternal so internal rows route to the rollup', async () => {
 		const { recordInternalAccessLog } = await import('../src/mcp/execute');
 		const fake = createFakeD1();

@@ -197,6 +197,84 @@ describe('Tenant cron chaos', () => {
 		expect(cycleInserts[0].binds[4]).toBe(10);
 	});
 
+	it('Hypothesis: a TRANSIENT registry error while resolving the tenant does NOT stamp the cycle skipped_no_tenant_binding (alert stays retryable) — T2', async () => {
+		const { handleTenantCycleAlerts } = await import('../../src/tenants/scheduled-handlers');
+
+		const cycle = {
+			id: 'cycle-curr',
+			super_tenant_id: SUPER,
+			sub_tenant_id: TENANT_A,
+			started_at: 1_000_000,
+			expected_total: 1,
+			completed_total: 1,
+			errored_total: 0,
+			baseline_cycle_id: 'cycle-base',
+		};
+
+		// Registry: PENDING_CYCLES enumerates the settled cycle, but the per-tenant
+		// REGISTRY_LOOKUP read throws a TRANSIENT error (not "Tenant not found").
+		const stampRuns: Array<{ sql: string; binds: unknown[] }> = [];
+		const registry: Record<string, unknown> = {
+			prepare(sql: string) {
+				let binds: unknown[] = [];
+				const stmt = {
+					bind(...args: unknown[]) {
+						binds = args;
+						return stmt;
+					},
+					async first<T = unknown>(): Promise<T | null> {
+						if (sql.includes(SQL_TAGS.REGISTRY_LOOKUP)) {
+							throw new Error('D1_ERROR: database is locked: SQLITE_BUSY');
+						}
+						return null as T | null;
+					},
+					async all<T = unknown>() {
+						if (sql.includes(SQL_TAGS.PENDING_CYCLES)) {
+							return { results: [cycle] as T[], success: true, meta: {} } as unknown as D1Result<T>;
+						}
+						return { results: [] as T[], success: true, meta: {} } as unknown as D1Result<T>;
+					},
+					async run() {
+						if (sql.includes(SQL_TAGS.STAMP_ALERT)) stampRuns.push({ sql, binds });
+						return { success: true, meta: {} } as unknown as D1Response;
+					},
+					async raw() {
+						return [] as unknown[];
+					},
+				};
+				return stmt as unknown as D1PreparedStatement;
+			},
+			batch: async () => [],
+			exec: async () => okMeta(),
+			dump: () => {
+				throw new Error('ni');
+			},
+			withSession: () => {
+				throw new Error('ni');
+			},
+		};
+
+		const sendAlert = vi.fn(async () => ({ delivered: true, status: 200 }));
+		const customEnv: TenantScheduledEnv = {
+			...env,
+			TENANT_REGISTRY_DB: registry as unknown as D1Database,
+			[TENANT_A_BINDING]: {} as D1Database,
+			ALERT_WEBHOOK_URL: 'https://hooks.example.com/abc',
+		} as TenantScheduledEnv;
+
+		// The handler stays fail-soft (no throw out of the tick) because the outer
+		// sweep loop catches the re-thrown transient error and logs it.
+		await expect(
+			handleTenantCycleAlerts(customEnv, makeCtx(), { now: () => 2_000_000, sendAlert }),
+		).resolves.toBeUndefined();
+
+		// The transient error must NOT be conflated with a missing tenant: no stamp
+		// at all → alert_sent_at stays NULL → the next cron tick retries the cycle.
+		expect(stampRuns).toHaveLength(0);
+		// And the alert webhook was never (mis)fired for an unresolved tenant.
+		expect(sendAlert).not.toHaveBeenCalled();
+	});
+
 	it('Hypothesis: webhook returns delivered:false → registry stamps "webhook_failed" with alert_sent_at set so the next sweep does NOT retry', async () => {
 		const { handleTenantCycleAlerts } = await import('../../src/tenants/scheduled-handlers');
 

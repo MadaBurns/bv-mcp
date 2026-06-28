@@ -68,6 +68,12 @@ export interface ScheduledEnv {
 	RATE_LIMIT?: KVNamespace;
 	BRAND_AUDIT_DB?: D1Database;
 	INTELLIGENCE_DB?: D1Database;
+	/**
+	 * Phase 2, decisions #8/#9 (optional). When bound, the retention cron prunes the
+	 * retention-bounded `scan_rollup` table. Absent in prod's public `wrangler.jsonc`
+	 * (Phase 2 ships dark) → the prune is skipped entirely, byte-for-byte unchanged.
+	 */
+	SCAN_SCHEDULE_DB?: D1Database;
 	ANALYTICS_RETENTION_DAYS?: string;
 	/**
 	 * Phase 1, decision #2 (default-off). Mirrors the producer flag; carried here for
@@ -145,28 +151,33 @@ async function gzipText(text: string): Promise<Uint8Array> {
 /**
  * Phase 1, decision #3 — archive aging `mcp_access_log` rows to R2 as gzipped
  * NDJSON before the retention DELETE. Keyset-paginated by `id`; each page is a
- * separate `mcp-access-log/v1/window=<run>/part-NNNN.ndjson.gz` object. PII
- * columns are stripped via {@link projectArchiveRow}. Verifies each put returned
- * an object before advancing. Returns `true` when every page archived cleanly;
- * the caller deletes only on `true` so a failed archive holds the rows.
+ * separate `mcp-access-log/v1/window=<bucket>/part-NNNN.ndjson.gz` object. PII
+ * columns are stripped via {@link projectArchiveRow}. Returns `true` when every
+ * page archived cleanly (or threw, caught by the caller); the caller deletes only
+ * on `true` so a failed archive holds the rows.
+ *
+ * `cutoffSeconds` is the single retention boundary (epoch seconds) computed ONCE
+ * by the caller and bound verbatim to the SELECT — the same literal also drives
+ * the caller's DELETE, so no statement re-evaluates `strftime('now')` and a row
+ * can't cross the boundary between SELECT and DELETE (S1, TOCTOU). The R2 window
+ * key derives deterministically from that boundary's day bucket, so a retried or
+ * partially-failed run overwrites rather than duplicating objects (S3, idempotent).
  */
-async function archiveExpiringAccessLogRows(db: D1Database, archive: R2Bucket, retentionSeconds: number): Promise<boolean> {
-	const runId = new Date().toISOString().replace(/[:.]/g, '-');
-	const selectSql = `SELECT ${ARCHIVE_COLUMNS.join(', ')} FROM mcp_access_log WHERE created_at < (strftime('%s', 'now') - ?) AND id > ? ORDER BY id ASC LIMIT ?`;
+async function archiveExpiringAccessLogRows(db: D1Database, archive: R2Bucket, cutoffSeconds: number): Promise<boolean> {
+	const windowBucket = Math.floor(cutoffSeconds / 86_400);
+	const selectSql = `SELECT ${ARCHIVE_COLUMNS.join(', ')} FROM mcp_access_log WHERE created_at < ? AND id > ? ORDER BY id ASC LIMIT ?`;
 	let lastId = 0;
 	let part = 0;
 	for (;;) {
-		const result = await db.prepare(selectSql).bind(retentionSeconds, lastId, ARCHIVE_PAGE_SIZE).all<Record<string, unknown>>();
+		const result = await db.prepare(selectSql).bind(cutoffSeconds, lastId, ARCHIVE_PAGE_SIZE).all<Record<string, unknown>>();
 		const rows = result.results ?? [];
 		if (rows.length === 0) break;
 
 		const ndjson = rows.map((row) => JSON.stringify(projectArchiveRow(row))).join('\n') + '\n';
-		const key = `mcp-access-log/v1/window=${runId}/part-${String(part).padStart(4, '0')}.ndjson.gz`;
-		const put = await archive.put(key, await gzipText(ndjson), {
+		const key = `mcp-access-log/v1/window=${windowBucket}/part-${String(part).padStart(4, '0')}.ndjson.gz`;
+		await archive.put(key, await gzipText(ndjson), {
 			httpMetadata: { contentType: 'application/x-ndjson', contentEncoding: 'gzip' },
 		});
-		// Verify before we let the caller delete — a null put means the write didn't land.
-		if (!put) throw new Error('archive put returned no object');
 		part += 1;
 
 		const nextId = Number((rows[rows.length - 1] as { id?: unknown }).id);
@@ -221,17 +232,22 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	}
 
 	if (env.INTELLIGENCE_DB) {
-		const retentionSeconds = clampRetentionDays(env.ANALYTICS_RETENTION_DAYS) * 24 * 3600;
+		// S1 (TOCTOU): compute the retention boundary ONCE in JS and bind the same
+		// literal to BOTH the archive SELECT and the DELETE. Neither statement calls
+		// strftime('now'), so the two no longer evaluate the boundary at different
+		// wall-clock instants — a row can't cross the cutoff between SELECT and DELETE
+		// and get deleted without being archived (the archive-before-delete guarantee).
+		const cutoffSeconds = Math.floor(Date.now() / 1000) - clampRetentionDays(env.ANALYTICS_RETENTION_DAYS) * 86_400;
 
 		// Phase 1, decision #3: archive-then-delete. When enabled AND the R2 binding
 		// is present, stream the aging rows to R2 as gzipped NDJSON (non-PII columns
-		// only) and verify before deleting. A failed archive HOLDS the rows for the
-		// next tick (no data loss). Flag off or binding absent → today's hard DELETE
-		// (byte-for-byte unchanged). Best-effort, fail-soft throughout.
+		// only) before deleting. A failed archive HOLDS the rows for the next tick (no
+		// data loss). Flag off or binding absent → today's hard DELETE (byte-for-byte
+		// unchanged). Best-effort, fail-soft throughout.
 		const archiveEnabled = env.ANALYTICS_ARCHIVE_ENABLED === 'true' && !!env.MCP_ACCESS_LOG_ARCHIVE;
 		let archiveOk = true;
 		if (archiveEnabled) {
-			archiveOk = await archiveExpiringAccessLogRows(env.INTELLIGENCE_DB, env.MCP_ACCESS_LOG_ARCHIVE!, retentionSeconds).catch((err) => {
+			archiveOk = await archiveExpiringAccessLogRows(env.INTELLIGENCE_DB, env.MCP_ACCESS_LOG_ARCHIVE!, cutoffSeconds).catch((err) => {
 				logError(err instanceof Error ? err : String(err), {
 					category: 'retention',
 					details: { table: 'mcp_access_log', operation: 'archive_before_delete' },
@@ -241,8 +257,8 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		}
 
 		if (!archiveEnabled || archiveOk) {
-			await env.INTELLIGENCE_DB.prepare("DELETE FROM mcp_access_log WHERE created_at < (strftime('%s', 'now') - ?)")
-				.bind(retentionSeconds)
+			await env.INTELLIGENCE_DB.prepare('DELETE FROM mcp_access_log WHERE created_at < ?')
+				.bind(cutoffSeconds)
 				.run()
 				.catch((err) => {
 					logError(err instanceof Error ? err : String(err), {
@@ -251,6 +267,24 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 					});
 				});
 		}
+	}
+
+	// S2: bound the Phase 2 `scan_rollup` table. Entirely gated on the optional
+	// SCAN_SCHEDULE_DB binding (absent in prod's public wrangler.jsonc → no-op,
+	// byte-for-byte unchanged). `bucket_day` = floor(timestampMs / 86_400_000), so
+	// the cutoff is the day bucket `retentionDays` ago. No-op today (no writer yet);
+	// this keeps the table bounded the moment a writer lands. Best-effort, fail-soft.
+	if (env.SCAN_SCHEDULE_DB) {
+		const cutoffBucketDay = Math.floor((Date.now() - clampRetentionDays(env.ANALYTICS_RETENTION_DAYS) * 86_400_000) / 86_400_000);
+		await env.SCAN_SCHEDULE_DB.prepare('DELETE FROM scan_rollup WHERE bucket_day < ?')
+			.bind(cutoffBucketDay)
+			.run()
+			.catch((err) => {
+				logError(err instanceof Error ? err : String(err), {
+					category: 'retention',
+					details: { table: 'scan_rollup', operation: 'prune_older_than_configured' },
+				});
+			});
 	}
 
 	if (!env.ALERT_WEBHOOK_URL) return;

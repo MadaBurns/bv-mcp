@@ -374,7 +374,13 @@ function recordMcpAccessLog(
 	// traffic is untouched and keeps its faithful per-event rows. Best-effort,
 	// fail-soft; requires the D1 binding to land the counter.
 	if (options.rollupInternal && (options.source ?? 'public') === 'internal' && options.intelligenceDb) {
-		options.waitUntil?.(fireAndForget(incrementAccessRollup(options.intelligenceDb, event), logger, 'mcp_access_rollup_increment'));
+		// Capture the day bucket from the REQUEST start time, not `Date.now()` inside
+		// the deferred DB write: this recorder runs after dispatch (and the increment
+		// settles in the waitUntil tail), so a long request that crosses UTC midnight
+		// (e.g. a 15s scan starting at 23:59:5x) would otherwise mis-bucket into the
+		// next day. `options.startTime` pins the count to the day the request began.
+		const bucketDay = unixDayBucket(options.startTime);
+		options.waitUntil?.(fireAndForget(incrementAccessRollup(options.intelligenceDb, event, bucketDay), logger, 'mcp_access_rollup_increment'));
 		return;
 	}
 
@@ -557,12 +563,16 @@ const ACCESS_ROLLUP_UPSERT_SQL = `INSERT INTO mcp_access_rollup (bucket_day, too
  * actually collapses duplicates (SQLite treats NULLs as distinct in a unique
  * index). Internal traffic carries no per-key tier — bv-web owns customer
  * attribution — so `auth_tier` is recorded as `'unknown'`. Best-effort.
+ *
+ * `bucketDay` is computed by the caller from the request start time (NOT
+ * `Date.now()` here) so a request crossing UTC midnight before this deferred
+ * write settles still counts against the day it began.
  */
-async function incrementAccessRollup(db: D1Database, event: AccessLogEvent): Promise<void> {
+async function incrementAccessRollup(db: D1Database, event: AccessLogEvent, bucketDay: number): Promise<void> {
 	await db
 		.prepare(ACCESS_ROLLUP_UPSERT_SQL)
 		.bind(
-			unixDayBucket(Date.now()),
+			bucketDay,
 			event.toolName,
 			event.source ?? 'unknown',
 			event.status ?? 'unknown',

@@ -14,6 +14,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { resolveTenant, resetTenantResolverCache, type ResolverEnv } from '../../src/tenants/tenant-resolver';
 
 const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
+const REGISTRY_LOOKUP_FALLBACK_SQL = 'SELECT id, super_tenant_id, d1_db_id, active FROM sub_tenants WHERE id = ? LIMIT 1';
 const ACTIVE_PROBE_SQL = 'SELECT active FROM sub_tenants WHERE id = ? LIMIT 1';
 const TEST_TENANT_ID = 'tenant-1';
 const TEST_TENANT_BINDING = 'TENANT_DB_TENANT_1';
@@ -91,6 +92,91 @@ function makeEnv(registry: D1Database): ResolverEnv {
 		[TEST_TENANT_BINDING]: {} as D1Database,
 	} as ResolverEnv;
 }
+
+/**
+ * T1 (deploy-ordering drift): a registry whose full-row lookup throws
+ * `no such column: routing_mode` (Worker shipped before the migration applied)
+ * but whose column-free fallback lookup still returns the row. The resolver must
+ * tolerate this and resolve to a `'convention'` handle, not vanish the tenant.
+ */
+function makeRoutingModeMissingRegistry() {
+	let fullRowQueries = 0;
+	let fallbackQueries = 0;
+	const db = {
+		prepare(sql: string) {
+			const stmt = {
+				bind() {
+					return stmt;
+				},
+				async first<T = unknown>(): Promise<T | null> {
+					if (sql === REGISTRY_LOOKUP_SQL) {
+						fullRowQueries += 1;
+						throw new Error('D1_ERROR: no such column: routing_mode: SQLITE_ERROR');
+					}
+					if (sql === REGISTRY_LOOKUP_FALLBACK_SQL) {
+						fallbackQueries += 1;
+						return {
+							id: TEST_TENANT_ID,
+							super_tenant_id: 'super-1',
+							d1_db_id: 'fake-uuid',
+							active: 1,
+						} as unknown as T;
+					}
+					return null;
+				},
+			};
+			return stmt as unknown as D1PreparedStatement;
+		},
+	} as unknown as D1Database;
+	return {
+		db,
+		get fullRowQueries() {
+			return fullRowQueries;
+		},
+		get fallbackQueries() {
+			return fallbackQueries;
+		},
+	};
+}
+
+describe('resolveTenant deploy-ordering drift tolerance (T1: missing routing_mode column)', () => {
+	beforeEach(() => {
+		resetTenantResolverCache();
+	});
+
+	it('resolves to a convention handle when the full-row lookup throws "no such column: routing_mode"', async () => {
+		const registry = makeRoutingModeMissingRegistry();
+		const env = makeEnv(registry.db);
+
+		const resolved = await resolveTenant(env, TEST_TENANT_ID);
+
+		expect(resolved.subTenantId).toBe(TEST_TENANT_ID);
+		expect(resolved.db.backend).toBe('convention');
+		// The full-row lookup was attempted then the column-free fallback recovered.
+		expect(registry.fullRowQueries).toBe(1);
+		expect(registry.fallbackQueries).toBe(1);
+	});
+
+	it('still propagates a NON-routing_mode registry error (stays transient, not swallowed)', async () => {
+		const db = {
+			prepare() {
+				const stmt = {
+					bind() {
+						return stmt;
+					},
+					async first(): Promise<never> {
+						throw new Error('D1_ERROR: database is locked: SQLITE_BUSY');
+					},
+				};
+				return stmt as unknown as D1PreparedStatement;
+			},
+		} as unknown as D1Database;
+		const env = makeEnv(db);
+
+		// A generic transient error must NOT be downgraded to convention/not-found.
+		await expect(resolveTenant(env, TEST_TENANT_ID)).rejects.toThrow(/database is locked/);
+	});
+});
 
 describe('resolveTenant cache active-flag re-validation (FINDING #7)', () => {
 	beforeEach(() => {

@@ -42,6 +42,16 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 const TENANT_BINDING_PREFIX = 'TENANT_DB_';
 const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
 /**
+ * T1 (deploy-ordering drift): if the Worker rolls out before the `routing_mode`
+ * column migration applies, `REGISTRY_LOOKUP_SQL` throws `no such column:
+ * routing_mode`, which every caller swallows as "tenant not found" → every
+ * tenant silently 404s / cron skips / queue ack-drops. This column-free fallback
+ * lets the cold path re-read the row without `routing_mode` and default the
+ * backend to `'convention'` (the ship-dark default) instead of vanishing the
+ * tenant. Defense-in-depth alongside migration 0003 (`ADD routing_mode`).
+ */
+const REGISTRY_LOOKUP_FALLBACK_SQL = 'SELECT id, super_tenant_id, d1_db_id, active FROM sub_tenants WHERE id = ? LIMIT 1';
+/**
  * Cheap, indexed (PK `id`) probe used ONLY on the cache-hit recheck path. It
  * reads a single column instead of the full row so the hot `queue-consumer`
  * loop (one `resolveTenant` per message) doesn't pay for `REGISTRY_LOOKUP_SQL`'s
@@ -51,6 +61,19 @@ const ACTIVE_PROBE_SQL = 'SELECT active FROM sub_tenants WHERE id = ? LIMIT 1';
 
 /** Same regex enforced by `TENANT_ID_REGEX` in `src/schemas/tenant-internal.ts`. */
 const TENANT_ID_REGEX = /^[a-z][a-z0-9_-]{0,63}$/;
+
+/**
+ * True when a registry read threw because the `routing_mode` column is absent
+ * (deploy-ordering drift — code shipped before migration 0003 applied). SQLite /
+ * D1 surface this as `... no such column: routing_mode ...`. Narrowly matched so
+ * any OTHER read failure still propagates (and stays a transient error rather
+ * than being silently downgraded to convention).
+ */
+function isMissingRoutingModeColumn(err: unknown): boolean {
+	if (!(err instanceof Error)) return false;
+	const msg = err.message.toLowerCase();
+	return msg.includes('no such column') && msg.includes('routing_mode');
+}
 
 /**
  * Which backend a {@link TenantDbHandle} routes to. Selected per-tenant by the
@@ -345,13 +368,29 @@ export async function resolveTenantUncached(env: ResolverEnv, subTenantId: strin
  * presence. Does NOT touch the cache.
  */
 async function loadResolvedTenant(env: ResolverEnv, subTenantId: string): Promise<ResolvedTenant> {
-	const row = await env.TENANT_REGISTRY_DB!.prepare(REGISTRY_LOOKUP_SQL).bind(subTenantId).first<{
+	type RegistryRow = {
 		id: string;
 		super_tenant_id: string;
 		d1_db_id: string;
 		routing_mode: string | null;
 		active: number | boolean;
-	}>();
+	};
+
+	let row: RegistryRow | null;
+	try {
+		row = await env.TENANT_REGISTRY_DB!.prepare(REGISTRY_LOOKUP_SQL).bind(subTenantId).first<RegistryRow>();
+	} catch (err) {
+		// T1: deploy-ordering drift — code shipped before the `routing_mode` column
+		// migration applied → `no such column: routing_mode`. Re-read without that
+		// column and default the backend to `'convention'` (the ship-dark default)
+		// rather than letting the throw be swallowed as "tenant not found". Any
+		// other read error propagates (transient — stays retryable upstream).
+		if (!isMissingRoutingModeColumn(err)) throw err;
+		const fallback = await env.TENANT_REGISTRY_DB!.prepare(REGISTRY_LOOKUP_FALLBACK_SQL)
+			.bind(subTenantId)
+			.first<Omit<RegistryRow, 'routing_mode'>>();
+		row = fallback ? { ...fallback, routing_mode: null } : null;
+	}
 
 	if (!row) {
 		throw new Error(`Tenant not found: ${subTenantId}`);

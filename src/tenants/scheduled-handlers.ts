@@ -464,15 +464,6 @@ async function processCycleAlert(
 		send: typeof sendTenantAlert;
 	},
 ): Promise<void> {
-	// Phase 4: cache-bypassing resolve (cron context). Unresolvable → treated
-	// like the prior missing-binding case (`stamp('skipped_no_tenant_binding')`).
-	let tenantDb: TenantDbHandle | undefined;
-	try {
-		tenantDb = (await resolveTenantUncached(env, cycle.sub_tenant_id)).db;
-	} catch {
-		tenantDb = undefined;
-	}
-
 	const stamp = async (outcome: string): Promise<void> => {
 		try {
 			await env.TENANT_REGISTRY_DB!.prepare(STAMP_ALERT_SQL)
@@ -491,10 +482,29 @@ async function processCycleAlert(
 		}
 	};
 
-	if (!tenantDb) {
-		// Tenant binding not available — mark and move on rather than loop forever.
-		await stamp('skipped_no_tenant_binding');
-		return;
+	// Phase 4: cache-bypassing resolve (cron context).
+	//
+	// T2: distinguish a GENUINELY-missing/invalid tenant from a TRANSIENT
+	// registry/D1 error. A definitive `Tenant not found` / `Invalid tenant
+	// identifier` (missing row, deactivated, or absent convention binding) is
+	// stamped `skipped_no_tenant_binding` — irreversible, so it must only fire for
+	// a real terminal condition. Any OTHER error is transient: re-throw so the
+	// outer sweep loop logs it and the cycle stays retryable (`alert_sent_at`
+	// stays NULL) for the next cron tick, instead of permanently losing the alert.
+	let tenantDb: TenantDbHandle;
+	try {
+		tenantDb = (await resolveTenantUncached(env, cycle.sub_tenant_id)).db;
+	} catch (err) {
+		if (
+			err instanceof Error &&
+			(err.message.startsWith('Tenant not found') || err.message.startsWith('Invalid tenant identifier'))
+		) {
+			// Tenant binding not available — mark and move on rather than loop forever.
+			await stamp('skipped_no_tenant_binding');
+			return;
+		}
+		// Transient registry/D1 error — do NOT stamp permanently skipped; leave retryable.
+		throw err;
 	}
 
 	if (cycle.baseline_cycle_id === null) {

@@ -34,14 +34,20 @@ export interface ClaimedScanRow {
 
 /** Args for {@link claimDue}. */
 export interface ClaimDueOptions {
-	/** Lane to claim from. */
+	/** Lane to claim from (used ONLY to SELECT the right rows, never to advance them). */
 	lane: string;
 	/** Wall-clock epoch ms "now". Rows with `next_scan_at <= now` are eligible. */
 	now: number;
 	/** Max rows to claim (the Form-B `LIMIT ?`). */
 	limit: number;
-	/** Lane cadence in ms — claimed rows advance a full cadence ahead. */
-	cadenceMs: number;
+	/**
+	 * @deprecated Ignored. The claim advances `next_scan_at` PER ROW from each
+	 * row's own `cadence_ms` column inside the SQL `SET` clause (C1/C2) — so a
+	 * per-domain custom cadence is honored and a single lane scalar can no longer
+	 * collapse the whole cohort onto one instant. Retained as an optional field
+	 * only for source compatibility with older callers.
+	 */
+	cadenceMs?: number;
 }
 
 /** Args for {@link upsertSchedule}. */
@@ -82,19 +88,34 @@ export interface MarkCompletedOptions {
 
 /**
  * GATE-4 Form-B claim. The `LIMIT` is INSIDE the subquery (never on the outer
- * `UPDATE` alongside `RETURNING`, which D1 rejects). Bind order:
- * `[newNextScanAt, lastDispatchedAt, lane, now, limit]`.
+ * `UPDATE` alongside `RETURNING`, which D1 rejects).
+ *
+ * The advance is computed PER ROW inside the `SET` clause (C1/C2): each claimed
+ * row jumps to `now + cadence_ms + jitter`, where `cadence_ms` is the ROW's own
+ * column (NOT a lane scalar) and the jitter is a per-row `abs(random()) %
+ * (cadence_ms/10 + 1)` (≤10% of cadence; mirrors `reSpreadOnCadenceChange`'s
+ * per-row `random()`). This keeps the cohort spread out instead of converging on
+ * one timestamp after the first cycle (the old single-scalar advance reformed the
+ * thundering herd). Bind order: `[now, lastDispatchedAt, lane, now, limit]`.
  */
 const CLAIM_DUE_SQL =
-	'UPDATE scan_schedule SET next_scan_at = ?, last_dispatched_at = ? ' +
+	'UPDATE scan_schedule SET next_scan_at = ? + cadence_ms + (abs(random()) % (cadence_ms / 10 + 1)), last_dispatched_at = ? ' +
 	'WHERE id IN (SELECT id FROM scan_schedule WHERE active=1 AND lane=? AND next_scan_at<=? ORDER BY next_scan_at LIMIT ?) ' +
 	'RETURNING id, tenant_id, domain, lane';
 
-/** Upsert keyed on the `UNIQUE(tenant_id, domain)` constraint. */
+/**
+ * Upsert keyed on the `UNIQUE(tenant_id, domain)` constraint. On conflict
+ * (re-activation), also RESET the schedule slot + backoff (C3): `next_scan_at`
+ * jumps to the freshly-computed jittered slot (`excluded.next_scan_at`, i.e.
+ * `now + perDomainJitter`) so a re-activated domain is NOT instantly due and
+ * does NOT carry a stale multi-day/year backoff, and `consecutive_failures`
+ * resets to 0.
+ */
 const UPSERT_SCHEDULE_SQL =
 	'INSERT INTO scan_schedule (tenant_id, domain, lane, next_scan_at, cadence_ms, active, consecutive_failures) ' +
 	'VALUES (?, ?, ?, ?, ?, 1, 0) ' +
-	'ON CONFLICT(tenant_id, domain) DO UPDATE SET lane = excluded.lane, cadence_ms = excluded.cadence_ms, active = 1';
+	'ON CONFLICT(tenant_id, domain) DO UPDATE SET lane = excluded.lane, cadence_ms = excluded.cadence_ms, active = 1, ' +
+	'next_scan_at = excluded.next_scan_at, consecutive_failures = 0';
 
 /** Bulk re-spread using SQLite `random()` (NOT `rand()`). Bind: `[base, windowMs, lane]`. */
 const RESPREAD_SQL = 'UPDATE scan_schedule SET next_scan_at = ? + (abs(random()) % ?) WHERE active=1 AND lane=?';
@@ -108,15 +129,18 @@ const MARK_SUCCESS_SQL = 'UPDATE scan_schedule SET consecutive_failures = 0, nex
 const MAX_BACKOFF_EXPONENT = 8;
 
 /**
- * Claim up to `limit` due rows for `lane` and advance each a full cadence ahead
- * in a single atomic statement (overlap/dedup-safe: an immediate re-claim sees
- * nothing because the claimed rows' `next_scan_at` jumped past `now`).
+ * Claim up to `limit` due rows for `lane` and advance each PER ROW a full
+ * (row-specific) cadence ahead — plus a per-row jitter — in a single atomic
+ * statement (overlap/dedup-safe: an immediate re-claim sees nothing because the
+ * claimed rows' `next_scan_at` jumped past `now`). The advance reads each row's
+ * own `cadence_ms` column and a per-row `random()` jitter, so the cohort stays
+ * spread out and a custom per-domain cadence is honored. `lane` is used ONLY to
+ * SELECT the eligible rows, never to compute the new `next_scan_at`.
  *
  * @returns The claimed rows (lowest `next_scan_at` first), or `[]`.
  */
-export async function claimDue(db: D1Database, { lane, now, limit, cadenceMs }: ClaimDueOptions): Promise<ClaimedScanRow[]> {
-	const newNextScanAt = now + cadenceMs + claimJitter(lane, now, cadenceMs);
-	const { results } = await db.prepare(CLAIM_DUE_SQL).bind(newNextScanAt, now, lane, now, limit).all<ClaimedScanRow>();
+export async function claimDue(db: D1Database, { lane, now, limit }: ClaimDueOptions): Promise<ClaimedScanRow[]> {
+	const { results } = await db.prepare(CLAIM_DUE_SQL).bind(now, now, lane, now, limit).all<ClaimedScanRow>();
 	return results ?? [];
 }
 
@@ -175,11 +199,4 @@ function fnv1a(input: string): number {
 function perDomainJitter(tenantId: string, domain: string, cadenceMs: number): number {
 	if (!Number.isFinite(cadenceMs) || cadenceMs <= 0) return 0;
 	return fnv1a(`${tenantId}:${domain}`) % cadenceMs;
-}
-
-/** Small per-claim offset (≤ 10% of cadence) so re-claims don't re-clump on one instant. */
-function claimJitter(lane: string, now: number, cadenceMs: number): number {
-	if (!Number.isFinite(cadenceMs) || cadenceMs <= 0) return 0;
-	const bound = Math.max(1, Math.floor(cadenceMs / 10));
-	return fnv1a(`${lane}:${now}`) % bound;
 }
