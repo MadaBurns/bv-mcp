@@ -1,0 +1,1 @@
+ALTER TABLE `sub_tenants` ADD `routing_mode` text DEFAULT 'convention';

@@ -15,17 +15,6 @@ describe('Queue-Consumer Analytics Integration', () => {
 
     it('should trigger analytics stream after scan persistence', async () => {
         const streamSpy = vi.spyOn(analyticsHook, 'streamScanResult').mockResolvedValue();
-        
-        const mockTenant = {
-            id: 'tenant-1',
-            subTenantId: 'tenant-1',
-            dbBinding: 'TENANT_DB_TENANT_1',
-            tier: 'default'
-        };
-        vi.mocked(tenantResolver.resolveTenant).mockResolvedValue(mockTenant as unknown as Awaited<ReturnType<typeof tenantResolver.resolveTenant>>);
-
-        const mockScanResult = { isError: false, result: {} };
-        vi.mocked(handleToolsCall).mockResolvedValue(mockScanResult as unknown as Awaited<ReturnType<typeof handleToolsCall>>);
 
         const mockDb = {
             prepare: vi.fn().mockReturnValue({
@@ -35,6 +24,19 @@ describe('Queue-Consumer Analytics Integration', () => {
                 all: vi.fn().mockResolvedValue({ results: [] })
             })
         };
+
+        const mockTenant = {
+            id: 'tenant-1',
+            subTenantId: 'tenant-1',
+            dbBinding: 'TENANT_DB_TENANT_1',
+            // Phase 4: the consumer reads `tenant.db` (handle) instead of env[dbBinding].
+            db: mockDb,
+            tier: 'default'
+        };
+        vi.mocked(tenantResolver.resolveTenant).mockResolvedValue(mockTenant as unknown as Awaited<ReturnType<typeof tenantResolver.resolveTenant>>);
+
+        const mockScanResult = { isError: false, result: {} };
+        vi.mocked(handleToolsCall).mockResolvedValue(mockScanResult as unknown as Awaited<ReturnType<typeof handleToolsCall>>);
 
         const mockEnv = {
             BV_WEB: { fetch: vi.fn() },

@@ -50,7 +50,7 @@ function makeMockD1(rowsBySql: Record<string, unknown[]> = {}) {
 	return { db, calls };
 }
 
-const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, active FROM sub_tenants WHERE id = ? LIMIT 1';
+const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
 
 describe('Phase 6 Fingerprint Pre-flight Integration', () => {
 	beforeEach(() => {

@@ -71,6 +71,7 @@ describe('registry schema — sub_tenants', () => {
 				'domain_count',
 				'id',
 				'name',
+				'routing_mode',
 				'scan_quota_per_month',
 				'scan_schedule',
 				'super_tenant_id',

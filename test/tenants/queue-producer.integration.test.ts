@@ -20,7 +20,7 @@ import { resetTenantResolverCache } from '../../src/tenants/tenant-resolver';
 const TEST_INTERNAL_KEY = 'tenant-orchestrator-internal-key';
 const TEST_TENANT_ID = 'tenant-1';
 const TEST_TENANT_BINDING = 'TENANT_DB_TENANT_1';
-const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, active FROM sub_tenants WHERE id = ? LIMIT 1';
+const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
 
 type TestEnv = typeof env & {
 	BV_WEB_INTERNAL_KEY?: string;

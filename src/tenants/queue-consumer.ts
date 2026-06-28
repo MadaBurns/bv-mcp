@@ -31,9 +31,9 @@ import { parseScoringConfigCached } from '../lib/scoring-config';
 import { parseCacheTtl, parsePerCheckTimeout, parseScanTimeout } from '../lib/config';
 import { ScanQueueMessageSchema, type ScanQueueMessage } from '../schemas/tenant-internal';
 import { streamScanResult } from '../lib/hooks/analytics-stream';
-import { resolveTenant, type ResolverEnv } from './tenant-resolver';
+import { resolveTenant, type ResolverEnv, type TenantDbHandle } from './tenant-resolver';
 import { resolveAccumulatorShardModeFromEnv } from '../lib/profile-accumulator';
-import type { CheckResult } from '../lib/scoring';
+import type { CheckResult, Finding } from '../lib/scoring';
 
 /** Wall-clock budget for one message — covers handleToolsCall + the D1 inserts. */
 export const QUEUE_MESSAGE_TIMEOUT_MS = 20_000;
@@ -47,6 +47,52 @@ const SCANS_INSERT_SQL =
 const FINDINGS_INSERT_SQL =
 	'INSERT INTO findings (id, scan_id, domain, category, severity, title, detail, metadata) ' +
 	'VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
+
+/**
+ * T3 (write amplification): persist findings as a small number of multi-row
+ * INSERTs instead of one `.run()` per finding. On the `dispatch`/`rest`
+ * TenantDbHandle backends every `.run()` is a separate HTTP round-trip, so an
+ * N-finding loop (20 findings = ~21 calls) blew the per-invocation budget and
+ * left scans half-persisted. A chunked multi-row INSERT issues
+ * `ceil(N / FINDINGS_INSERT_CHUNK)` statements and works across ALL backends —
+ * `convention` AND the exec-backed `dispatch`/`rest` (which THROW on
+ * `batch()`/`exec()`, so a single statement per chunk is the only portable form).
+ */
+const FINDINGS_COLUMNS = 8;
+/** 12 rows × 8 cols = 96 bound params ≤ D1/workerd's 100-param-per-statement cap. */
+const FINDINGS_INSERT_CHUNK = Math.floor(100 / FINDINGS_COLUMNS);
+const FINDINGS_INSERT_PREFIX =
+	'INSERT INTO findings (id, scan_id, domain, category, severity, title, detail, metadata) VALUES ';
+const FINDINGS_ROW_PLACEHOLDERS = '(?, ?, ?, ?, ?, ?, ?, ?)';
+
+/**
+ * Write findings in chunked multi-row INSERTs (see {@link FINDINGS_INSERT_CHUNK}).
+ * Equivalent end-state to the prior per-row loop on the convention backend, but
+ * bounded statement count on every backend.
+ */
+async function persistFindings(tenantDb: TenantDbHandle, scanId: string, domain: string, findings: readonly Finding[]): Promise<void> {
+	for (let i = 0; i < findings.length; i += FINDINGS_INSERT_CHUNK) {
+		const chunk = findings.slice(i, i + FINDINGS_INSERT_CHUNK);
+		const sql = FINDINGS_INSERT_PREFIX + chunk.map(() => FINDINGS_ROW_PLACEHOLDERS).join(', ');
+		const binds: unknown[] = [];
+		for (const f of chunk) {
+			binds.push(
+				newRowId(),
+				scanId,
+				domain,
+				f.category ?? 'unknown',
+				f.severity ?? 'info',
+				f.title ?? '',
+				f.detail ?? null,
+				f.metadata ? JSON.stringify(f.metadata) : null,
+			);
+		}
+		await tenantDb
+			.prepare(sql)
+			.bind(...binds)
+			.run();
+	}
+}
 
 export type ScanQueueConsumerEnv = ResolverEnv & {
 	SCAN_CACHE?: KVNamespace;
@@ -106,7 +152,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 /** Persist a DLQ marker so the cycle report still includes the domain. */
 async function writeDlqRow(
-	tenantDb: D1Database,
+	tenantDb: TenantDbHandle,
 	msg: ScanQueueMessage,
 	reason: string,
 ): Promise<void> {
@@ -128,7 +174,7 @@ async function writeDlqRow(
 
 /** Persist a successful scan + its findings to the per-tenant D1. */
 async function persistScan(
-	tenantDb: D1Database,
+	tenantDb: TenantDbHandle,
 	msg: ScanQueueMessage,
 	captured: CheckResult | null,
 ): Promise<void> {
@@ -152,21 +198,7 @@ async function persistScan(
 		.run();
 
 	if (captured?.findings) {
-		for (const f of captured.findings) {
-			await tenantDb
-				.prepare(FINDINGS_INSERT_SQL)
-				.bind(
-					newRowId(),
-					scanId,
-					msg.domain,
-					f.category ?? 'unknown',
-					f.severity ?? 'info',
-					f.title ?? '',
-					f.detail ?? null,
-					f.metadata ? JSON.stringify(f.metadata) : null,
-				)
-				.run();
-		}
+		await persistFindings(tenantDb, scanId, msg.domain, captured.findings);
 	}
 }
 
@@ -210,10 +242,9 @@ export async function processScanMessage(
 		return 'ack';
 	}
 
-	const tenantDb = (env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
-	if (!tenantDb) {
-		return 'ack';
-	}
+	// Phase 4: the resolver returns a backend-agnostic handle; an absent backend
+	// would already have thrown above (→ caught → 'ack'), so no env probe here.
+	const tenantDb = tenant.db;
 
 	// Idempotency probe — survives retries and re-deliveries without producing
 	// duplicate scan rows.

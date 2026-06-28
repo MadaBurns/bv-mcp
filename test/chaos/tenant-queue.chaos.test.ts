@@ -33,7 +33,7 @@ vi.mock('../../src/handlers/tools', () => ({
 const TEST_TENANT_ID = 'tenant-1';
 const TEST_TENANT_BINDING = 'TENANT_DB_TENANT_1';
 const REGISTRY_LOOKUP_SQL =
-	'SELECT id, super_tenant_id, d1_db_id, active FROM sub_tenants WHERE id = ? LIMIT 1';
+	'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
 // Cheap single-column active-flag probe run by resolveTenant on a cache HIT (3.17.2,
 // FINDING #2). Per-message queue resolution warm-hits this, so the mock must model it
 // or cache-hit resolutions see no row and treat the tenant as deactivated.

@@ -246,9 +246,39 @@ FROM ${DS}
 WHERE index1 = 'degradation'
   AND blob1 != 'kv_fallback'
   AND blob1 != 'quota_coordinator_fallback'
+  AND blob1 != 'quota_shard_salt_missing'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
 GROUP BY component, degradation_type
 ORDER BY event_count DESC`;
+}
+
+/**
+ * R8 per-shard load-SKEW detection. Aggregates `quota_shard` events (emitted only
+ * while QuotaCoordinator sharding is ON — see `emitQuotaShardEvent` in analytics.ts)
+ * into per-shard load, then returns the MAX-shard load, the MEAN across active shards,
+ * and their ratio. A healthy fan-out keeps `skew_ratio` near 1; a hot shard (an
+ * IP-range concentrating onto one DO, or a missing salt making the mapping
+ * precomputable) pushes it up — the signal an operator watches after flipping the flag.
+ * `GREATEST(avg(...), 1)` guards the divide when no shard traffic exists.
+ *
+ * Blob positions (quota_shard): blob1=shardIndex, blob2=country, blob3=tier.
+ */
+export function queryQuotaShardSkew(minutes: string): string {
+	minutes = safeInterval(minutes);
+	return `SELECT
+  max(shard_load) AS max_shard_load,
+  avg(shard_load) AS mean_shard_load,
+  max(shard_load) / GREATEST(avg(shard_load), 1) AS skew_ratio,
+  COUNT(*) AS active_shards
+FROM (
+  SELECT
+    blob1 AS shard,
+    SUM(_sample_interval) AS shard_load
+  FROM ${DS}
+  WHERE index1 = 'quota_shard'
+    AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
+  GROUP BY shard
+)`;
 }
 
 /**

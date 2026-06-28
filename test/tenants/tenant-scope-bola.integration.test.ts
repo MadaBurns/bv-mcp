@@ -27,7 +27,7 @@ const TENANT_A = 'tenant-1';
 const TENANT_B = 'tenant-2';
 const BINDING_A = 'TENANT_DB_TENANT_1';
 const BINDING_B = 'TENANT_DB_TENANT_2';
-const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, active FROM sub_tenants WHERE id = ? LIMIT 1';
+const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
 
 type TestEnv = typeof env & {
 	BV_WEB_INTERNAL_KEY?: string;

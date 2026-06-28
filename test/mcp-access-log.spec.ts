@@ -447,11 +447,19 @@ describe('MCP access log retention', () => {
 		} as unknown as import('../src/scheduled').ScheduledEnv;
 		const { handleScheduled } = await import('../src/scheduled');
 
+		const before = Math.floor(Date.now() / 1000) - 90 * 24 * 3600;
 		await handleScheduled(env);
+		const after = Math.floor(Date.now() / 1000) - 90 * 24 * 3600;
 
-		expect(prepare.mock.calls.some((call) => String(call[0]).includes('DELETE FROM mcp_access_log'))).toBe(true);
-		expect(prepare.mock.calls.some((call) => String(call[0]).includes("strftime('%s', 'now') - ?"))).toBe(true);
-		expect(bind).toHaveBeenCalledWith(90 * 24 * 3600);
+		// PR #460 retention refactor: the cutoff boundary is computed ONCE in JS
+		// (cutoffSeconds = floor(Date.now()/1000) - retentionDays*86400) and bound to a
+		// `created_at < ?` DELETE, so the archive SELECT and DELETE share one boundary.
+		// No statement re-evaluates strftime('now').
+		expect(prepare.mock.calls.some((call) => String(call[0]).includes('DELETE FROM mcp_access_log WHERE created_at < ?'))).toBe(true);
+		expect(prepare.mock.calls.every((call) => !String(call[0]).includes("strftime('%s', 'now')"))).toBe(true);
+		const boundCutoff = bind.mock.calls[0]?.[0] as number;
+		expect(boundCutoff).toBeGreaterThanOrEqual(before);
+		expect(boundCutoff).toBeLessThanOrEqual(after);
 	});
 });
 
