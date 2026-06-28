@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { resolveTenant, resetTenantResolverCache, type ResolverEnv } from '../../src/tenants/tenant-resolver';
 
-const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, active FROM sub_tenants WHERE id = ? LIMIT 1';
+const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
 const ACTIVE_PROBE_SQL = 'SELECT active FROM sub_tenants WHERE id = ? LIMIT 1';
 const TEST_TENANT_ID = 'tenant-1';
 const TEST_TENANT_BINDING = 'TENANT_DB_TENANT_1';
@@ -47,6 +47,7 @@ function makeRegistry(initialActive: number | boolean) {
 							id: TEST_TENANT_ID,
 							super_tenant_id: 'super-1',
 							d1_db_id: 'fake-uuid',
+							routing_mode: null,
 							active,
 						} as unknown as T;
 					}

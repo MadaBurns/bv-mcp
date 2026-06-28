@@ -31,7 +31,7 @@ import { parseScoringConfigCached } from '../lib/scoring-config';
 import { parseCacheTtl, parsePerCheckTimeout, parseScanTimeout } from '../lib/config';
 import { ScanQueueMessageSchema, type ScanQueueMessage } from '../schemas/tenant-internal';
 import { streamScanResult } from '../lib/hooks/analytics-stream';
-import { resolveTenant, type ResolverEnv } from './tenant-resolver';
+import { resolveTenant, type ResolverEnv, type TenantDbHandle } from './tenant-resolver';
 import { resolveAccumulatorShardModeFromEnv } from '../lib/profile-accumulator';
 import type { CheckResult } from '../lib/scoring';
 
@@ -106,7 +106,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 /** Persist a DLQ marker so the cycle report still includes the domain. */
 async function writeDlqRow(
-	tenantDb: D1Database,
+	tenantDb: TenantDbHandle,
 	msg: ScanQueueMessage,
 	reason: string,
 ): Promise<void> {
@@ -128,7 +128,7 @@ async function writeDlqRow(
 
 /** Persist a successful scan + its findings to the per-tenant D1. */
 async function persistScan(
-	tenantDb: D1Database,
+	tenantDb: TenantDbHandle,
 	msg: ScanQueueMessage,
 	captured: CheckResult | null,
 ): Promise<void> {
@@ -210,10 +210,9 @@ export async function processScanMessage(
 		return 'ack';
 	}
 
-	const tenantDb = (env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
-	if (!tenantDb) {
-		return 'ack';
-	}
+	// Phase 4: the resolver returns a backend-agnostic handle; an absent backend
+	// would already have thrown above (→ caught → 'ack'), so no env probe here.
+	const tenantDb = tenant.db;
 
 	// Idempotency probe — survives retries and re-deliveries without producing
 	// duplicate scan rows.

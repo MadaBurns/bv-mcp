@@ -485,18 +485,9 @@ tenantRoutes.post('/portfolio', async (c) => {
 		});
 		if (portfolioScopeDeny) return portfolioScopeDeny;
 
-		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
-		if (!tenantDb) {
-			// Should be caught by resolveTenant, but defense-in-depth.
-			dispatchAudit(c, {
-				action: 'portfolio.upsert',
-				resourceType: 'sub_tenant',
-				resourceId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'tenant_db_binding_missing' },
-			});
-			return c.json({ error: `Tenant not found: ${tenantOrErr}` }, 404);
-		}
+		// Phase 4: the resolver hands back a backend-agnostic handle; a missing
+		// backend already threw `Tenant not found` above (→ 404), so no env probe.
+		const tenantDb = tenant.db;
 
 		// Per-tenant rate limit. Audit on rejection, then 429 with Retry-After.
 		const rl = await maybeRateLimit(c, tenant.subTenantId, 'portfolio:min', tenant.tier);
@@ -622,18 +613,8 @@ tenantRoutes.post('/scan', async (c) => {
 		});
 		if (scanScopeDeny) return scanScopeDeny;
 
-		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
-		if (!tenantDb) {
-			dispatchAudit(c, {
-				action: 'scan.start',
-				resourceType: 'cycle',
-				resourceId: '<unknown>',
-				subTenantId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'tenant_db_binding_missing' },
-			});
-			return c.json({ error: `Tenant not found: ${tenantOrErr}` }, 404);
-		}
+		// Phase 4: backend-agnostic handle from the resolver (see /portfolio note).
+		const tenantDb = tenant.db;
 
 		// Per-tenant rate limit. `scans:day` because /scan is the heavy workload.
 		const rl = await maybeRateLimit(c, tenant.subTenantId, 'scans:day', tenant.tier);
@@ -972,17 +953,8 @@ tenantRoutes.post('/discover', async (c) => {
 		});
 		if (discoverScopeDeny) return discoverScopeDeny;
 
-		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
-		if (!tenantDb) {
-			dispatchAudit(c, {
-				action: 'discovery.start',
-				resourceType: 'sub_tenant',
-				resourceId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'tenant_db_binding_missing' },
-			});
-			return c.json({ error: `Tenant not found: ${tenantOrErr}` }, 404);
-		}
+		// Phase 4: backend-agnostic handle from the resolver (see /portfolio note).
+		const tenantDb = tenant.db;
 
 		// Per-tenant rate limit. Discovery uses `reports:min` as it's a metadata-heavy
 		// but typically less frequent operation than /scan.
@@ -1205,18 +1177,8 @@ tenantRoutes.get('/report/:cycle_id', async (c) => {
 		});
 		if (reportScopeDeny) return reportScopeDeny;
 
-		const tenantDb = (c.env as Record<string, unknown>)[tenant.dbBinding] as D1Database | undefined;
-		if (!tenantDb) {
-			dispatchAudit(c, {
-				action: 'report.read',
-				resourceType: 'cycle',
-				resourceId: params.cycle_id,
-				subTenantId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'tenant_db_binding_missing' },
-			});
-			return c.json({ error: `Tenant not found: ${tenantOrErr}` }, 404);
-		}
+		// Phase 4: backend-agnostic handle from the resolver (see /portfolio note).
+		const tenantDb = tenant.db;
 
 		// Per-tenant rate limit. `reports:min` is dashboard-style read traffic.
 		const rl = await maybeRateLimit(c, tenant.subTenantId, 'reports:min', tenant.tier);

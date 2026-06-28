@@ -29,6 +29,7 @@ import {
 	type FindingRow,
 } from './alerts';
 import { logEvent, logError } from '../lib/log';
+import { resolveTenantUncached, type TenantDbHandle } from './tenant-resolver';
 import type { ScanQueueMessage } from '../schemas/tenant-internal';
 
 /** Cloudflare Queue producer shape — same minimal type used by routes.ts. */
@@ -140,16 +141,6 @@ function toFindingRow(row: FindingRowDb): FindingRow {
 }
 
 /**
- * Build a per-tenant D1 binding name from the sub-tenant id, mirroring
- * `tenant-resolver.ts`. Inlined here to avoid a circular dependency through
- * the resolver's caching layer (we don't want cron-tick lookups to populate
- * the resolver cache from a non-request context).
- */
-function tenantBindingName(subTenantId: string): string {
-	return `TENANT_DB_${subTenantId.replaceAll('-', '_').toUpperCase()}`;
-}
-
-/**
  * Hook the Phase 3 weekly rescan into the {@link TenantScheduledEnv}.
  *
  * Algorithm:
@@ -241,12 +232,13 @@ async function rescanTenant(
 		newCycleId: () => string;
 	},
 ): Promise<void> {
-	const tenantDb = (env as Record<string, unknown>)[tenantBindingName(tenant.id)] as
-		| D1Database
-		| undefined;
-	if (!tenantDb) {
-		// Skipped silently — registry can list a tenant whose binding hasn't been
-		// rolled out yet (provisioning lag). Logging at debug is fine.
+	// Phase 4: resolve the per-tenant D1 handle WITHOUT the request-scoped cache
+	// (cron must not populate it). A missing backend / unresolvable tenant throws
+	// `Tenant not found` — treat as provisioning lag and skip silently.
+	let tenantDb: TenantDbHandle;
+	try {
+		tenantDb = (await resolveTenantUncached(env, tenant.id)).db;
+	} catch {
 		logEvent({
 			timestamp: new Date().toISOString(),
 			category: 'tenant.scheduled',
@@ -472,9 +464,14 @@ async function processCycleAlert(
 		send: typeof sendTenantAlert;
 	},
 ): Promise<void> {
-	const tenantDb = (env as Record<string, unknown>)[tenantBindingName(cycle.sub_tenant_id)] as
-		| D1Database
-		| undefined;
+	// Phase 4: cache-bypassing resolve (cron context). Unresolvable → treated
+	// like the prior missing-binding case (`stamp('skipped_no_tenant_binding')`).
+	let tenantDb: TenantDbHandle | undefined;
+	try {
+		tenantDb = (await resolveTenantUncached(env, cycle.sub_tenant_id)).db;
+	} catch {
+		tenantDb = undefined;
+	}
 
 	const stamp = async (outcome: string): Promise<void> => {
 		try {
