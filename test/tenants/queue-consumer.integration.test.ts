@@ -33,7 +33,7 @@ vi.mock('../../src/handlers/tools', () => ({
 const TEST_TENANT_ID = 'tenant-1';
 const TEST_TENANT_BINDING = 'TENANT_DB_TENANT_1';
 const REGISTRY_LOOKUP_SQL =
-	'SELECT id, super_tenant_id, d1_db_id, active FROM sub_tenants WHERE id = ? LIMIT 1';
+	'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
 const SCAN_PROBE_BY_DOMAIN_SQL = 'SELECT id FROM scans WHERE cycle_id = ? AND domain = ? LIMIT 1';
 const SCANS_INSERT_SQL =
 	'INSERT INTO scans (id, domain, scan_at, score, grade, maturity_stage, finding_count, result_json, cycle_id) ' +
@@ -147,7 +147,7 @@ describe('processScanMessage', () => {
 		domain: 'example.com',
 	};
 
-	it('returns ack on the happy path and writes 1 scan row + N findings', async () => {
+	it('returns ack on the happy path and writes 1 scan row + a single batched findings INSERT', async () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
 			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
 			opts?.resultCapture?.({
@@ -167,10 +167,13 @@ describe('processScanMessage', () => {
 		const outcome = await processScanMessage(validMsg, 1, customEnv, makeCtx());
 		expect(outcome).toBe('ack');
 
+		// T3: 2 findings now batch into ONE multi-row INSERT (not 2 sequential rows).
 		const scanInserts = tenantCalls.filter((c) => c.sql === SCANS_INSERT_SQL);
-		const findingInserts = tenantCalls.filter((c) => c.sql === FINDINGS_INSERT_SQL);
+		const findingInserts = tenantCalls.filter((c) => c.sql.startsWith('INSERT INTO findings'));
 		expect(scanInserts.length).toBe(1);
-		expect(findingInserts.length).toBe(2);
+		expect(findingInserts.length).toBe(1);
+		// 2 findings × 8 columns = 16 bound params in the single statement.
+		expect(findingInserts[0]!.binds.length).toBe(16);
 	});
 
 	it('returns ack without writing when an existing scan row is found (idempotency)', async () => {

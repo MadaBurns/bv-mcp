@@ -119,6 +119,28 @@ ORDER BY request_count DESC
 LIMIT 30`;
 }
 
+/**
+ * Geographic rollup for heatmaps — request volume per country/region/city/asn
+ * from `tool_call`. The geo dimensions are append-only blobs (blob5=country,
+ * blob13=region, blob14=city, blob15=asn — see analytics.ts), so positions
+ * 1–12 are untouched. Sampled: sums `_sample_interval`.
+ */
+export function queryGeoRollup(days: string): string {
+	days = safeInterval(days);
+	return `SELECT
+  blob5 AS country,
+  blob13 AS region,
+  blob14 AS city,
+  blob15 AS asn,
+  SUM(_sample_interval) AS calls
+FROM ${DS}
+WHERE index1 = 'tool_call'
+  AND timestamp > NOW() - INTERVAL '${days}' DAY
+GROUP BY country, region, city, asn
+ORDER BY calls DESC
+LIMIT 1000`;
+}
+
 /** Rate limit hit counts by type. */
 export function queryRateLimitHits(days: string): string {
 	days = safeInterval(days);
@@ -224,9 +246,39 @@ FROM ${DS}
 WHERE index1 = 'degradation'
   AND blob1 != 'kv_fallback'
   AND blob1 != 'quota_coordinator_fallback'
+  AND blob1 != 'quota_shard_salt_missing'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
 GROUP BY component, degradation_type
 ORDER BY event_count DESC`;
+}
+
+/**
+ * R8 per-shard load-SKEW detection. Aggregates `quota_shard` events (emitted only
+ * while QuotaCoordinator sharding is ON — see `emitQuotaShardEvent` in analytics.ts)
+ * into per-shard load, then returns the MAX-shard load, the MEAN across active shards,
+ * and their ratio. A healthy fan-out keeps `skew_ratio` near 1; a hot shard (an
+ * IP-range concentrating onto one DO, or a missing salt making the mapping
+ * precomputable) pushes it up — the signal an operator watches after flipping the flag.
+ * `GREATEST(avg(...), 1)` guards the divide when no shard traffic exists.
+ *
+ * Blob positions (quota_shard): blob1=shardIndex, blob2=country, blob3=tier.
+ */
+export function queryQuotaShardSkew(minutes: string): string {
+	minutes = safeInterval(minutes);
+	return `SELECT
+  max(shard_load) AS max_shard_load,
+  avg(shard_load) AS mean_shard_load,
+  max(shard_load) / GREATEST(avg(shard_load), 1) AS skew_ratio,
+  COUNT(*) AS active_shards
+FROM (
+  SELECT
+    blob1 AS shard,
+    SUM(_sample_interval) AS shard_load
+  FROM ${DS}
+  WHERE index1 = 'quota_shard'
+    AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
+  GROUP BY shard
+)`;
 }
 
 /**

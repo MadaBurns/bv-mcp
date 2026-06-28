@@ -31,6 +31,7 @@ import { unauthorizedResponse } from './lib/auth';
 import { sseEvent, acceptsSSE, createNotificationStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
 import { createAnalyticsClient, hashForAnalytics, hashIpForAnalytics } from './lib/analytics';
 import { detectMcpClient } from './lib/client-detection';
+import { parseAnalyticsPiiLevel } from './lib/analytics-pii';
 import type { JsonRpcRequest } from './lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionRequest } from './mcp/route-gates';
 import {
@@ -142,6 +143,27 @@ type BvMcpEnv = {
 	BV_INTERNAL_DEV_KEY_2?: string;
 	BRAND_AUDIT_DB?: D1Database;
 	INTELLIGENCE_DB?: D1Database;
+	MCP_ANALYTICS_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	/** PII capture depth for mcp_access_log: coarse | standard | full. Default coarse. */
+	ANALYTICS_PII_LEVEL?: string;
+	/** Retention window (days) for mcp_access_log rows. Default 90. */
+	ANALYTICS_RETENTION_DAYS?: string;
+	/**
+	 * Phase 1, decision #2 (default-off). `'true'` routes internal-source access-log
+	 * writes to the `mcp_access_rollup` counter instead of per-event rows. Unset/any
+	 * other value = per-event for everything (today's behavior).
+	 */
+	ANALYTICS_ROLLUP_INTERNAL?: string;
+	/**
+	 * Phase 1, decision #3 (default-off). `'true'` + the `MCP_ACCESS_LOG_ARCHIVE`
+	 * binding present switches the retention cron from a hard DELETE to
+	 * archive-then-delete (gzipped NDJSON, non-PII columns only) to R2.
+	 */
+	ANALYTICS_ARCHIVE_ENABLED?: string;
+	/** Phase 1, decision #3 — R2 object lifetime (days) for archived NDJSON. Documentation-only; enforced by the bucket lifecycle rule, not code. */
+	ANALYTICS_ARCHIVE_RETENTION_DAYS?: string;
+	/** Phase 1, decision #3 — R2 bucket for the short-bridge access-log archive. Absent → retention cron keeps today's hard DELETE. */
+	MCP_ACCESS_LOG_ARCHIVE?: R2Bucket;
 	MCP_ACCESS_LOG_IP_ENCRYPTION_KEY?: string;
 	MCP_ACCESS_LOG_IP_KEY_VERSION?: string;
 	/** FIND-17: Base64-encoded 32-byte AES-256 key for app-layer KV envelope encryption of trial keys and OAuth codes. */
@@ -205,6 +227,74 @@ type BvMcpEnv = {
 	BV_TLS_PROBE?: Fetcher;
 	/** Bearer token for bv-tls-probe (= bv-tls-probe's dedicated key). */
 	BV_TLS_PROBE_KEY?: string;
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// Scaling roadmap seams — TYPED, DEFAULT-OFF, ZERO behavior change.
+	// All fields below are optional and UNUSED by runtime code today (no branch
+	// reads them). They exist so Phase 2 (scheduled/queue-driven scanning) and
+	// Phase 4 (Workers-for-Platforms multi-tenancy) can land without re-typing the
+	// env. Typed readers live in `src/lib/scaling-flags.ts`; spec + decisions in
+	// `docs/superpowers/scaling-millions-domains-multitenancy.md` (companion
+	// `scaling-gates-resolved.md`). Unset on every deploy today → behavior is
+	// byte-for-byte identical. (R8 quota-sharding + R10 profile-sharding flags
+	// already exist above — NOT duplicated here.)
+	// ─────────────────────────────────────────────────────────────────────────
+
+	/**
+	 * Phase 2 (scheduler) — D1 holding the `scan_schedule` table the cron
+	 * dispatcher claim-and-advances (Form B subquery, see
+	 * `scaling-millions-domains-multitenancy.md` Gate 4). TODO(phase-2): wire the
+	 * scheduled handler once provisioned. Absent today → no scheduled scanning.
+	 */
+	SCAN_SCHEDULE_DB?: D1Database;
+	/**
+	 * Phase 2 (scheduler) — low-priority "slow lane" Queue the dispatcher fans
+	 * claimed schedule rows onto so background re-scans never contend with the
+	 * interactive `/mcp` path. TODO(phase-2): bind + add a consumer. Absent today
+	 * → nothing is enqueued. See `scaling-millions-domains-multitenancy.md`.
+	 */
+	BV_SCANNER_SLOW_QUEUE?: Queue;
+	/**
+	 * Phase 2 (scheduler) — master default-OFF flag. Only the exact string
+	 * `'true'` will arm the cron dispatcher in a later phase; unset/any other
+	 * value keeps the scheduler dormant (today's behavior). Read via
+	 * `resolveScanDispatchConfig` in `lib/scaling-flags.ts`.
+	 * TODO(phase-2): consult before claiming schedule rows.
+	 */
+	SCAN_DISPATCH_ENABLED?: string;
+	/**
+	 * Phase 2 (scheduler) — max schedule rows to claim per cron tick (the
+	 * `LIMIT ?` in the Form-B claim query). String (env-var); parsed + clamped by
+	 * `resolveScanDispatchConfig`. Unset → a conservative built-in default that is
+	 * inert while `SCAN_DISPATCH_ENABLED` is off.
+	 */
+	SCAN_DISPATCH_BATCH_SIZE?: string;
+
+	/**
+	 * Phase 4 (multi-tenancy) — Workers-for-Platforms dispatch namespace binding.
+	 * Placeholder seam: paid tenants get a per-tenant D1 via dynamic dispatch
+	 * (`env.TENANT_DISPATCH_NAMESPACE.get(name, args, { limits })`) instead of a
+	 * baked binding + redeploy per tenant. TODO(phase-4): construct the tenant
+	 * resolver from this when present. Absent today → string-convention binding
+	 * routing only (today's behavior). See
+	 * `scaling-millions-domains-multitenancy.md` Phase-4 routing spike.
+	 */
+	TENANT_DISPATCH_NAMESPACE?: DispatchNamespace;
+	/**
+	 * Phase 4 (multi-tenancy) — Cloudflare API token for the REST-by-id D1
+	 * operator fallback (`d1_db_id` revival) when dynamic dispatch is unavailable.
+	 * Operator-only; declared in the private overlay, never public
+	 * `wrangler.jsonc`. TODO(phase-4). Absent today → no REST fallback path.
+	 */
+	CF_D1_API_TOKEN?: string;
+	/**
+	 * Phase 4 (multi-tenancy) — tenant routing mode, default-OFF. Only the exact
+	 * string `'dispatch'` will select Workers-for-Platforms dynamic dispatch in a
+	 * later phase; unset/any other value keeps the legacy binding-name string
+	 * convention (today's behavior). Read via `resolveTenantRoutingMode` in
+	 * `lib/scaling-flags.ts`. TODO(phase-4).
+	 */
+	TENANT_ROUTING_MODE?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -581,6 +671,12 @@ app.post('/mcp', async (c) => {
 	// per-datacenter p95/error-rate can be isolated (a single-colo regression otherwise
 	// averages out across the global aggregate). Undefined off-CF / in tests → 'unknown'.
 	const colo = (cfProps?.colo as string | undefined) ?? 'unknown';
+	const region = (cfProps?.region as string | undefined) ?? undefined;
+	const city = (cfProps?.city as string | undefined) ?? undefined;
+	const latitude = (cfProps?.latitude as string | undefined) ?? undefined;
+	const longitude = (cfProps?.longitude as string | undefined) ?? undefined;
+	const asn = typeof cfProps?.asn === 'number' ? cfProps.asn : undefined;
+	const asOrg = (cfProps?.asOrganization as string | undefined) ?? undefined;
 
 	const contentTypeError = validateContentType(headersLc['content-type']);
 	if (contentTypeError) {
@@ -707,6 +803,15 @@ app.post('/mcp', async (c) => {
 					sessionHash,
 					ipHash,
 					colo,
+					region,
+					city,
+					latitude,
+					longitude,
+					asn,
+					asOrg,
+					analyticsQueue: c.env.MCP_ANALYTICS_QUEUE,
+					analyticsPiiLevel: parseAnalyticsPiiLevel(c.env.ANALYTICS_PII_LEVEL),
+					rollupInternal: c.env.ANALYTICS_ROLLUP_INTERNAL === 'true',
 				});
 			}),
 		);
@@ -798,6 +903,15 @@ app.post('/mcp', async (c) => {
 		sessionHash,
 		ipHash,
 		colo,
+		region,
+		city,
+		latitude,
+		longitude,
+		asn,
+		asOrg,
+		analyticsQueue: c.env.MCP_ANALYTICS_QUEUE,
+		analyticsPiiLevel: parseAnalyticsPiiLevel(c.env.ANALYTICS_PII_LEVEL),
+		rollupInternal: c.env.ANALYTICS_ROLLUP_INTERNAL === 'true',
 	});
 
 	if (singleResult.kind === 'notification') {
@@ -857,6 +971,12 @@ app.post('/mcp/messages', async (c) => {
 	const keyHash = tierAuthResult.keyHash ? tierAuthResult.keyHash.slice(0, 16) : undefined;
 	const sessionHash = sessionId ? hashForAnalytics(sessionId) : 'none';
 	const ipHash = ip !== 'unknown' ? hashIpForAnalytics(ip) : undefined;
+	const region = (cfProps?.region as string | undefined) ?? undefined;
+	const city = (cfProps?.city as string | undefined) ?? undefined;
+	const latitude = (cfProps?.latitude as string | undefined) ?? undefined;
+	const longitude = (cfProps?.longitude as string | undefined) ?? undefined;
+	const asn = typeof cfProps?.asn === 'number' ? cfProps.asn : undefined;
+	const asOrg = (cfProps?.asOrganization as string | undefined) ?? undefined;
 
 	if (!sessionId) {
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: missing session'), 400);
@@ -965,6 +1085,15 @@ app.post('/mcp/messages', async (c) => {
 				keyHash,
 				sessionHash,
 				ipHash,
+				region,
+				city,
+				latitude,
+				longitude,
+				asn,
+				asOrg,
+				analyticsQueue: c.env.MCP_ANALYTICS_QUEUE,
+				analyticsPiiLevel: parseAnalyticsPiiLevel(c.env.ANALYTICS_PII_LEVEL),
+				rollupInternal: c.env.ANALYTICS_ROLLUP_INTERNAL === 'true',
 			});
 		}),
 	);
@@ -1143,6 +1272,11 @@ import { handleScanQueue, type ScanQueueConsumerEnv } from './tenants/queue-cons
 import { handleBrandAuditQueue, type BrandAuditConsumerDeps } from './queue/brand-audit-consumer';
 import { handleBrandAuditPdfQueue, type BrandAuditPdfConsumerDeps } from './queue/brand-audit-pdf-consumer';
 import { handleTenantCycleAlerts, handleTenantWeeklyRescan, type TenantScheduledEnv } from './tenants/scheduled-handlers';
+// Phase 2 scheduler core (ships DARK). The handlers no-op unless
+// `SCAN_DISPATCH_ENABLED === 'true'` AND `SCAN_SCHEDULE_DB` is bound; the cron
+// strings below are deliberately NOT added to `wrangler.jsonc`, so they never
+// fire in prod until an operator adds them at enable time.
+import { handleScanDispatch, handleScanRateRecompute, type ScanDispatchEnv } from './lib/scan-scheduler';
 
 /**
  * Day-of-week names → numeric form, per the cron spec. Cloudflare accepts both
@@ -1187,7 +1321,7 @@ export function normalizeCron(expr: string): string {
  * catch-all (the 15-min sweep) — every cron without a dedicated branch routes
  * here, so the cron-dispatch-coverage audit treats it as the explicit fallback.
  */
-export type CronRoute = 'daily-digest' | 'weekly-tenant-rescan' | 'periodic';
+export type CronRoute = 'daily-digest' | 'weekly-tenant-rescan' | 'scan-dispatch' | 'scan-rate-recompute' | 'periodic';
 
 /**
  * Map a cron expression to its dispatch route, comparing the normalized form so
@@ -1202,6 +1336,10 @@ export function routeCron(cron: string): CronRoute {
 	const normalized = normalizeCron(cron);
 	if (normalized === normalizeCron('0 8 * * *')) return 'daily-digest';
 	if (normalized === normalizeCron('0 2 * * 0')) return 'weekly-tenant-rescan';
+	// Phase 2 scheduler core (DARK). These crons are NOT in wrangler.jsonc — the
+	// operator adds them at enable time; the handlers no-op while the flag is off.
+	if (normalized === normalizeCron('* * * * *')) return 'scan-dispatch';
+	if (normalized === normalizeCron('*/30 * * * *')) return 'scan-rate-recompute';
 	return 'periodic';
 }
 
@@ -1230,6 +1368,13 @@ export default {
 		} else if (route === 'weekly-tenant-rescan') {
 			// Weekly Tenant rescan dispatch — Sunday 02:00 UTC.
 			ctx.waitUntil(handleTenantWeeklyRescan(env as TenantScheduledEnv, ctx));
+		} else if (route === 'scan-dispatch') {
+			// Phase 2 scheduler (DARK) — claim-and-advance dispatch. No-ops unless
+			// SCAN_DISPATCH_ENABLED === 'true' AND SCAN_SCHEDULE_DB is bound.
+			ctx.waitUntil(handleScanDispatch(env as ScanDispatchEnv, ctx));
+		} else if (route === 'scan-rate-recompute') {
+			// Phase 2 scheduler (DARK) — persist per-lane adaptive rate to KV.
+			ctx.waitUntil(handleScanRateRecompute(env as ScanDispatchEnv, ctx));
 		} else {
 			ctx.waitUntil(handleScheduled(env as ScheduledEnv));
 			ctx.waitUntil(handleFuzzingScan(env as ScheduledEnv));
@@ -1334,6 +1479,11 @@ export default {
 				// no longer required for brand-audit PDF generation.
 				const deps: BrandAuditPdfConsumerDeps = { db, bucket, serverVersion: SERVER_VERSION };
 				await handleBrandAuditPdfQueue(batch, deps);
+				return;
+			}
+			if (batch.queue === 'mcp-analytics-queue') {
+				const { handleAnalyticsQueue } = await import('./lib/analytics-queue-consumer');
+				await handleAnalyticsQueue(batch, env as import('./lib/analytics-queue-consumer').AnalyticsQueueEnv);
 				return;
 			}
 			await handleScanQueue(batch, env as ScanQueueConsumerEnv, ctx);
