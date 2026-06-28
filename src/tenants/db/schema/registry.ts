@@ -34,6 +34,16 @@ export const subTenants = sqliteTable('sub_tenants', {
 		.references(() => superTenants.id),
 	name: text('name').notNull(),
 	d1_db_id: text('d1_db_id').notNull(),
+	/**
+	 * Phase 4 (WFP routing) — per-tenant D1 backend selector consumed by
+	 * `resolveTenant()` / `buildTenantDb()` in `src/tenants/tenant-resolver.ts`:
+	 *   - `'convention'` (default) — today's static `TENANT_DB_<ID>` binding.
+	 *   - `'dispatch'`   — a Workers-for-Platforms user Worker via
+	 *                      `env.TENANT_DISPATCH_NAMESPACE`.
+	 *   - `'rest'`       — the D1 REST-by-`d1_db_id` operator fallback.
+	 * Nullable; absent/unknown → `'convention'` (ship-dark: behavior unchanged).
+	 */
+	routing_mode: text('routing_mode').default('convention'),
 	domain_count: integer('domain_count').default(0),
 	scan_schedule: text('scan_schedule'),
 	scan_quota_per_month: integer('scan_quota_per_month'),

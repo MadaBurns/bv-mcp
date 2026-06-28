@@ -3,12 +3,16 @@
 -- Provisioning (operator-run, idempotent):
 --   wrangler d1 execute <intelligence-db-name> --remote --file scripts/intelligence/sql/0001_mcp_access_log.sql
 --
--- Records every authenticated `tools/call` for abuse-investigation. Privacy
+-- Records every public `tools/call` for abuse-investigation — including
+-- rejected / rate-limited calls AND unauthenticated callers (unauth → null
+-- `key_hash`, attributed by `ip_hash` only). Privacy
 -- model: only the FNV-1a-hashed `i_<hex>` IP is stored by default; the masked
 -- last-octet form (`a.b.c.xxx`) is operator-readable for fingerprint pivoting;
 -- the AES-GCM-encrypted ciphertext is gated on
 -- `MCP_ACCESS_LOG_IP_ENCRYPTION_KEY` and only decryptable with the key version
--- recorded alongside it. 90-day retention is enforced by the cron in
+-- recorded alongside it. PII-gated columns (`ANALYTICS_PII_LEVEL`): `user_agent`
+-- is NULL at the `coarse` default and only populated at `standard`/`full` (same
+-- tier as `ip_ciphertext`/`city`). 90-day retention is enforced by the cron in
 -- `src/scheduled.ts`.
 
 CREATE TABLE IF NOT EXISTS mcp_access_log (

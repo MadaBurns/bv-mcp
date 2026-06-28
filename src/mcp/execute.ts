@@ -26,6 +26,7 @@ import {
 	UPGRADE_URL,
 } from '../lib/config';
 import { normalizeToolName } from '../handlers/tool-args';
+import { shardIndexForKey, isQuotaShardSaltMissing } from '../lib/quota-coordinator';
 import { acceptsSSE } from '../lib/sse';
 import { dispatchMcpMethod } from './dispatch';
 import { validateJsonRpcRequest } from './request';
@@ -35,6 +36,8 @@ import type { AnalyticsClient } from '../lib/analytics';
 import { hashDomain } from '../lib/analytics';
 import { classifyError as classifyFuzzError } from '../lib/fuzzing-detector';
 import { recordEvent as recordFuzzCounter } from '../lib/fuzzing-counter';
+import { piiAllows } from '../lib/analytics-pii';
+import { buildAccessLogEvent, type AccessLogEvent } from '../lib/access-log-event';
 
 export type ProcessedRequestResult =
 	| {
@@ -110,6 +113,20 @@ export interface ExecuteMcpRequestOptions {
 	secondaryDohToken?: string;
 	country?: string;
 	clientType?: string;
+	/**
+	 * B1 — access-log request-path origin. Defaults to `'public'` on the public
+	 * /mcp path; the internal service-binding recorder passes `'internal'`. Stored
+	 * in the `mcp_access_log.source` column.
+	 */
+	source?: string;
+	/**
+	 * Phase 1, decision #2 — when on AND the event is internal-source, route the
+	 * access-log write to the low-cardinality `mcp_access_rollup` counter instead
+	 * of a per-event row/queue insert. Sourced from `ANALYTICS_ROLLUP_INTERNAL` at
+	 * the index.ts seam. Default-off; undefined/false = per-event for everything
+	 * (today's behavior). External (`source !== 'internal'`) traffic is unaffected.
+	 */
+	rollupInternal?: boolean;
 	/** Raw `MCP-Protocol-Version` request header (threaded to dispatch for STRUCTURED_RESULT comment trimming). */
 	protocolVersionHeader?: string;
 	authTier?: string;
@@ -120,6 +137,17 @@ export interface ExecuteMcpRequestOptions {
 	ipHash?: string;
 	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter analytics grouping. Appended as the trailing blob on mcp_request/tool_call events. */
 	colo?: string;
+	/** Enrichment from request.cf — populated at the index.ts seam, consumed by the access-log producer + AE geo blobs. */
+	region?: string;
+	city?: string;
+	latitude?: string;
+	longitude?: string;
+	asn?: number;
+	asOrg?: string;
+	/** Cloudflare Queue producer for the analytics access-log path. Absent on BSL self-hosts → inline insert fallback. */
+	analyticsQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	/** Operator-chosen PII capture depth. Undefined → treated as 'coarse' by the producer. */
+	analyticsPiiLevel?: import('../lib/analytics-pii').AnalyticsPiiLevel;
 	/** D1 binding for privacy-preserving MCP access logs. */
 	intelligenceDb?: D1Database;
 	/** Base64-encoded AES-GCM key for encrypted abuse-investigation IP evidence. */
@@ -189,7 +217,7 @@ function maskIp(ip: string): string {
 	return 'masked';
 }
 
-function extractAccessLogDomain(args: Record<string, unknown> | undefined): string | undefined {
+export function extractAccessLogDomain(args: Record<string, unknown> | undefined): string | undefined {
 	if (!args) return undefined;
 	if (typeof args.domain === 'string' && args.domain.length > 0) return args.domain;
 	if (Array.isArray(args.domains)) {
@@ -201,14 +229,14 @@ function extractAccessLogDomain(args: Record<string, unknown> | undefined): stri
 function getToolCallLogInput(
 	method: string,
 	params: Record<string, unknown> | undefined,
-): { toolName: string; domain: string } | undefined {
+): { toolName: string; domain: string; method: string } | undefined {
 	if (method !== 'tools/call') return undefined;
 	const toolNameRaw = params && typeof params === 'object' && 'name' in params ? params.name : undefined;
 	const argsRaw = params && typeof params === 'object' && 'arguments' in params ? params.arguments : undefined;
 	const args = argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw) ? (argsRaw as Record<string, unknown>) : undefined;
 	const domain = extractAccessLogDomain(args);
 	if (typeof toolNameRaw !== 'string' || !domain) return undefined;
-	return { toolName: normalizeToolName(toolNameRaw), domain };
+	return { toolName: normalizeToolName(toolNameRaw), domain, method };
 }
 
 function base64ToBytes(value: string): Uint8Array {
@@ -269,7 +297,7 @@ function validateEncryptionKeyOnce(keyBase64: string): boolean {
 	return valid;
 }
 
-async function encryptIpEvidence(ip: string, keyBase64: string | undefined): Promise<string | null> {
+export async function encryptIpEvidence(ip: string, keyBase64: string | undefined): Promise<string | null> {
 	if (!keyBase64 || ip === 'unknown') return null;
 	if (!validateEncryptionKeyOnce(keyBase64)) return null;
 	const rawKey = base64ToBytes(keyBase64);
@@ -280,33 +308,279 @@ async function encryptIpEvidence(ip: string, keyBase64: string | undefined): Pro
 	return `v1:${bytesToBase64(iv)}:${bytesToBase64(ciphertext)}`;
 }
 
-function recordMcpAccessLog(options: ExecuteMcpRequestOptions, input: { toolName: string; domain: string; rateLimited: boolean }): void {
-	if (!options.intelligenceDb) return;
+/**
+ * Inverse of {@link encryptIpEvidence}: parses the `v1:iv:ct` wire format and
+ * AES-GCM-decrypts the raw IP. Returns `null` on any failure (missing key,
+ * malformed wire, wrong key length, decrypt error) — callers fall back to the
+ * masked IP. Operator-only re-identification surface (forensics endpoint).
+ */
+export async function decryptIpEvidence(wire: string, keyBase64: string | undefined): Promise<string | null> {
+	if (!keyBase64 || !wire) return null;
+	const parts = wire.split(':');
+	if (parts.length !== 3) return null; // expected v1:iv:ct
+	try {
+		const rawKey = base64ToBytes(keyBase64);
+		if (rawKey.byteLength !== 32) return null;
+		const iv = base64ToBytes(parts[1]);
+		const ct = base64ToBytes(parts[2]);
+		const key = await crypto.subtle.importKey('raw', toArrayBuffer(rawKey), { name: 'AES-GCM' }, false, ['decrypt']);
+		const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: toArrayBuffer(iv) }, key, toArrayBuffer(ct));
+		return new TextDecoder().decode(pt);
+	} catch {
+		return null;
+	}
+}
+
+function recordMcpAccessLog(
+	options: ExecuteMcpRequestOptions,
+	input: { toolName: string; domain: string; rateLimited: boolean; method?: string; status?: string },
+): void {
+	if (!options.intelligenceDb && !options.analyticsQueue) return;
 	const logger = getLogger();
+	const level = options.analyticsPiiLevel ?? 'coarse';
+	const event = buildAccessLogEvent(
+		{
+			ip: options.ip,
+			ipHash: options.ipHash ?? 'unknown',
+			ipMasked: maskIp(options.ip),
+			toolName: input.toolName,
+			domain: input.domain,
+			source: options.source ?? 'public',
+			country: options.country ?? null,
+			region: options.region ?? null,
+			city: options.city ?? null,
+			latitude: options.latitude ?? null,
+			longitude: options.longitude ?? null,
+			asn: options.asn ?? null,
+			asOrg: options.asOrg ?? null,
+			keyHash: options.keyHash ?? null,
+			clientType: options.clientType ?? null,
+			colo: options.colo ?? null,
+			sessionHash: options.sessionHash ?? null,
+			userAgent: options.userAgent ?? null,
+			method: input.method ?? null,
+			transport: options.responseTransport ?? null,
+			status: input.status ?? null,
+			responseMs: Math.max(0, Date.now() - options.startTime),
+			rateLimited: input.rateLimited,
+		},
+		level,
+	);
+
+	// Phase 1, decision #2: internal-source traffic (automated rescans — null
+	// key_hash, ip_hash='unknown') has near-zero forensic value at near-total
+	// volume. When the rollup flag is on, increment a low-cardinality counter
+	// INSTEAD of writing a per-event row/queue message. External/authenticated
+	// traffic is untouched and keeps its faithful per-event rows. Best-effort,
+	// fail-soft; requires the D1 binding to land the counter.
+	if (options.rollupInternal && (options.source ?? 'public') === 'internal' && options.intelligenceDb) {
+		// Capture the day bucket from the REQUEST start time, not `Date.now()` inside
+		// the deferred DB write: this recorder runs after dispatch (and the increment
+		// settles in the waitUntil tail), so a long request that crosses UTC midnight
+		// (e.g. a 15s scan starting at 23:59:5x) would otherwise mis-bucket into the
+		// next day. `options.startTime` pins the count to the day the request began.
+		const bucketDay = unixDayBucket(options.startTime);
+		options.waitUntil?.(fireAndForget(incrementAccessRollup(options.intelligenceDb, event, bucketDay), logger, 'mcp_access_rollup_increment'));
+		return;
+	}
+
+	// Preferred path: enqueue for the batch consumer (PTR + encrypt + batch insert).
+	if (options.analyticsQueue) {
+		// Surface-minimization: the consumer needs the raw IP only for PTR (full) or
+		// encryption (standard+). At coarse, neither applies — strip it so the raw IP
+		// never transits the queue at-rest. ipHash/ipMasked are already on the event.
+		const queueEvent = piiAllows(level, 'ptr') || piiAllows(level, 'ciphertext') ? event : { ...event, ip: 'unknown' };
+		const send = options.analyticsQueue.send(queueEvent, { contentType: 'json' });
+		options.waitUntil?.(fireAndForget(send, logger, 'mcp_access_log_enqueue'));
+		return;
+	}
+
+	// Fallback (self-host, no queue): inline encrypted insert, no PTR.
 	const work = async () => {
-		const ipCiphertext = await encryptIpEvidence(options.ip, options.ipEncryptionKey);
-		await options
-			.intelligenceDb!.prepare(
-				`INSERT INTO mcp_access_log
-				 (ip_hash, ip_masked, tool_name, domain, country, user_agent, response_ms, rate_limited, ip_ciphertext, ip_key_version)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			)
-			.bind(
-				options.ipHash ?? 'unknown',
-				maskIp(options.ip),
-				input.toolName,
-				input.domain,
-				options.country ?? null,
-				options.userAgent ?? null,
-				Math.max(0, Date.now() - options.startTime),
-				input.rateLimited ? 1 : 0,
-				ipCiphertext,
-				ipCiphertext ? (options.ipEncryptionKeyVersion ?? 'v1') : null,
-			)
-			.run();
+		const ipCiphertext = piiAllows(level, 'ciphertext') ? await encryptIpEvidence(event.ip, options.ipEncryptionKey) : null;
+		await insertAccessLogRow(options.intelligenceDb!, event, ipCiphertext, ipCiphertext ? (options.ipEncryptionKeyVersion ?? 'v1') : null);
 	};
-	const loggedWork = fireAndForget(work, logger, 'mcp_access_log_insert');
-	options.waitUntil?.(loggedWork);
+	options.waitUntil?.(fireAndForget(work(), logger, 'mcp_access_log_insert'));
+}
+
+/** Test-only handle to exercise the recorder without booting a request. */
+export const __recordMcpAccessLogForTest = recordMcpAccessLog;
+
+/** Inputs for the internal-path access-log recorder (B1). */
+export interface RecordInternalAccessLogInput {
+	toolName: string;
+	domain: string;
+	/** Tool outcome — `'pass'` | `'error'` (mirrors the public path's status mapping). */
+	status: string;
+	/** x-bv-caller header value, stored in the `client_type` column. */
+	clientType?: string | null;
+	intelligenceDb?: D1Database;
+	analyticsQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	analyticsPiiLevel?: import('../lib/analytics-pii').AnalyticsPiiLevel;
+	ipEncryptionKey?: string;
+	ipEncryptionKeyVersion?: string;
+	startTime: number;
+	waitUntil?: (promise: Promise<unknown>) => void;
+	/**
+	 * Phase 1, decision #2 — when on, internal rows route to the `mcp_access_rollup`
+	 * counter instead of a per-event insert. Default-off (per-event, unchanged).
+	 */
+	rollupInternal?: boolean;
+}
+
+/**
+ * B1 — record an mcp_access_log row from the internal service-binding path
+ * (`/internal/tools/{call,batch}`). Tagged `source: 'internal'` with sentinel
+ * `ip`/`ipHash = 'unknown'` (IP encryption + PTR short-circuit) and `keyHash =
+ * null` (bv-web owns customer attribution). Delegates to {@link recordMcpAccessLog}
+ * so the column/bind logic stays single-sourced. Early-returns (no row) when
+ * neither `intelligenceDb` nor `analyticsQueue` is bound.
+ */
+export function recordInternalAccessLog(input: RecordInternalAccessLogInput): void {
+	const options: ExecuteMcpRequestOptions = {
+		// Minimal shape — recordMcpAccessLog only reads the fields below.
+		body: { jsonrpc: '2.0', id: null, method: 'tools/call' } as JsonRpcRequest,
+		allowStreaming: false,
+		batchMode: false,
+		batchSize: 1,
+		// The `transport` column distinguishes the internal door from public json/sse.
+		// Cast: the recorder only reads this for the column value; the 'json' | 'sse'
+		// union governs the public dispatch path, which this synthetic options never enters.
+		responseTransport: 'internal' as ExecuteMcpRequestOptions['responseTransport'],
+		startTime: input.startTime,
+		ip: 'unknown',
+		ipHash: 'unknown',
+		isAuthenticated: false,
+		validateSession: false,
+		serverVersion: '',
+		keyHash: undefined,
+		clientType: input.clientType ?? undefined,
+		country: undefined,
+		source: 'internal',
+		intelligenceDb: input.intelligenceDb,
+		analyticsQueue: input.analyticsQueue,
+		analyticsPiiLevel: input.analyticsPiiLevel,
+		ipEncryptionKey: input.ipEncryptionKey,
+		ipEncryptionKeyVersion: input.ipEncryptionKeyVersion,
+		waitUntil: input.waitUntil,
+		rollupInternal: input.rollupInternal,
+	};
+	recordMcpAccessLog(options, {
+		toolName: input.toolName,
+		domain: input.domain,
+		rateLimited: false,
+		method: 'tools/call',
+		status: input.status,
+	});
+}
+
+const ACCESS_LOG_COLUMNS = [
+	'ip_hash',
+	'ip_masked',
+	'tool_name',
+	'domain',
+	'country',
+	'user_agent',
+	'response_ms',
+	'rate_limited',
+	'ip_ciphertext',
+	'ip_key_version',
+	'city',
+	'region',
+	'latitude',
+	'longitude',
+	'asn',
+	'as_org',
+	'ptr_hostname',
+	'key_hash',
+	'client_type',
+	'colo',
+	'session_hash',
+	'method',
+	'transport',
+	'status',
+	'source',
+] as const;
+
+export function accessLogInsertSql(): string {
+	return `INSERT INTO mcp_access_log (${ACCESS_LOG_COLUMNS.join(', ')}) VALUES (${ACCESS_LOG_COLUMNS.map(() => '?').join(', ')})`;
+}
+
+export function accessLogBindings(event: AccessLogEvent, ipCiphertext: string | null, ipKeyVersion: string | null): unknown[] {
+	return [
+		event.ipHash,
+		event.ipMasked,
+		event.toolName,
+		event.domain,
+		event.country,
+		event.userAgent,
+		event.responseMs,
+		event.rateLimited ? 1 : 0,
+		ipCiphertext,
+		ipKeyVersion,
+		event.city,
+		event.region,
+		event.latitude,
+		event.longitude,
+		event.asn,
+		event.asOrg,
+		event.ptrHostname,
+		event.keyHash,
+		event.clientType,
+		event.colo,
+		event.sessionHash,
+		event.method,
+		event.transport,
+		event.status,
+		event.source,
+	];
+}
+
+async function insertAccessLogRow(
+	db: D1Database,
+	event: AccessLogEvent,
+	ipCiphertext: string | null,
+	ipKeyVersion: string | null,
+): Promise<void> {
+	await db
+		.prepare(accessLogInsertSql())
+		.bind(...accessLogBindings(event, ipCiphertext, ipKeyVersion))
+		.run();
+}
+
+/** Unix-day bucket (UTC) used as the leading dimension of the rollup primary key. */
+function unixDayBucket(nowMs: number): number {
+	return Math.floor(nowMs / 86_400_000);
+}
+
+/** SQLite UPSERT for the rollup counter — single-sourced so the migration doc and code agree. */
+const ACCESS_ROLLUP_UPSERT_SQL = `INSERT INTO mcp_access_rollup (bucket_day, tool_name, source, status, auth_tier, client_type, country, count) VALUES (?, ?, ?, ?, ?, ?, ?, 1) ON CONFLICT (bucket_day, tool_name, source, status, auth_tier, client_type, country) DO UPDATE SET count = count + 1`;
+
+/**
+ * Phase 1, decision #2 — increment the low-cardinality `mcp_access_rollup`
+ * counter for an internal-source access-log event in place of a per-event row.
+ * NULL dimensions are coalesced to `'unknown'` so the composite primary key
+ * actually collapses duplicates (SQLite treats NULLs as distinct in a unique
+ * index). Internal traffic carries no per-key tier — bv-web owns customer
+ * attribution — so `auth_tier` is recorded as `'unknown'`. Best-effort.
+ *
+ * `bucketDay` is computed by the caller from the request start time (NOT
+ * `Date.now()` here) so a request crossing UTC midnight before this deferred
+ * write settles still counts against the day it began.
+ */
+async function incrementAccessRollup(db: D1Database, event: AccessLogEvent, bucketDay: number): Promise<void> {
+	await db
+		.prepare(ACCESS_ROLLUP_UPSERT_SQL)
+		.bind(
+			bucketDay,
+			event.toolName,
+			event.source ?? 'unknown',
+			event.status ?? 'unknown',
+			'unknown',
+			event.clientType ?? 'unknown',
+			event.country ?? 'unknown',
+		)
+		.run();
 }
 
 function extractHeaders(response: Response): Record<string, string> {
@@ -418,7 +692,7 @@ function buildAuthRequiredResponse(
 	method: string,
 	options: ExecuteMcpRequestOptions,
 	eventId: string | undefined,
-	accessLogInput: { toolName: string; domain: string } | undefined,
+	accessLogInput: { toolName: string; domain: string; method: string } | undefined,
 ): Extract<ProcessedRequestResult, { kind: 'response' }> {
 	options.analytics?.emitRateLimitEvent({
 		limitType: 'gated_tool',
@@ -430,7 +704,7 @@ function buildAuthRequiredResponse(
 	});
 	emitRequestAnalytics(options, method, 'error', true);
 	if (accessLogInput) {
-		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 	}
 	return {
 		kind: 'response',
@@ -452,7 +726,7 @@ function buildGatedToolResponse(
 	method: string,
 	options: ExecuteMcpRequestOptions,
 	eventId: string | undefined,
-	accessLogInput: { toolName: string; domain: string } | undefined,
+	accessLogInput: { toolName: string; domain: string; method: string } | undefined,
 ): Extract<ProcessedRequestResult, { kind: 'response' }> {
 	options.analytics?.emitRateLimitEvent({
 		limitType: 'gated_tool',
@@ -464,7 +738,7 @@ function buildGatedToolResponse(
 	});
 	emitRequestAnalytics(options, method, 'error', true);
 	if (accessLogInput) {
-		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 	}
 	return {
 		kind: 'response',
@@ -537,7 +811,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			});
 			emitRequestAnalytics(options, method, 'error', true);
 			if (accessLogInput) {
-				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 			}
 			return {
 				kind: 'response',
@@ -571,7 +845,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			});
 			emitRequestAnalytics(options, method, 'error', true);
 			if (accessLogInput) {
-				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 			}
 			return {
 				kind: 'response',
@@ -619,6 +893,28 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 					authTier: options.authTier,
 				}),
 		});
+		// R8 per-shard observability + salt-missing config guard (Phase 3, decisions
+		// #3/#4). Only meaningful while sharding is ON; SINGLETON_ROUTING (the default)
+		// skips both — byte-for-byte today's behavior. The shard index is the SAME
+		// derivation the batch routed on (IP + salt), so the emitted distribution mirrors
+		// real shard load (skew detection via queryQuotaShardSkew). Fail-open telemetry.
+		const shardRouting = options.quotaShardRouting;
+		if (shardRouting?.enabled) {
+			const shardCtx = {
+				country: options.country,
+				clientType: options.clientType as import('../lib/client-detection').McpClientType,
+				authTier: options.authTier,
+			};
+			options.analytics?.emitQuotaShardEvent({ shardIndex: shardIndexForKey(options.ip, shardRouting.salt), ...shardCtx });
+			if (isQuotaShardSaltMissing(shardRouting)) {
+				options.analytics?.emitDegradationEvent({
+					degradationType: 'quota_shard_salt_missing',
+					component: 'quota_coordinator',
+					...shardCtx,
+				});
+			}
+		}
+
 		const rateResult = quotaBatch.rate;
 		const minuteResetEpoch = Math.ceil(Date.now() / 60_000) * 60;
 		rateHeaders = {
@@ -640,7 +936,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			});
 			emitRequestAnalytics(options, method, 'error', true);
 			if (accessLogInput) {
-				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 			}
 			return {
 				kind: 'response',
@@ -691,7 +987,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				});
 				emitRequestAnalytics(options, method, 'error', true);
 				if (accessLogInput) {
-					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 				}
 				return {
 					kind: 'response',
@@ -745,7 +1041,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				});
 				emitRequestAnalytics(options, method, 'error', true);
 				if (accessLogInput) {
-					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 				}
 				return {
 					kind: 'response',
@@ -795,7 +1091,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				});
 				emitRequestAnalytics(options, method, 'error', true);
 				if (accessLogInput) {
-					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 				}
 				return {
 					kind: 'response',
@@ -847,7 +1143,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			});
 			emitRequestAnalytics(options, method, 'error', true);
 			if (accessLogInput) {
-				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+				recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 			}
 			return {
 				kind: 'response',
@@ -991,7 +1287,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				});
 				emitRequestAnalytics(options, method, 'error', true);
 				if (accessLogInput) {
-					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true });
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 				}
 				return {
 					kind: 'response',
@@ -1046,6 +1342,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			protocolVersionHeader: options.protocolVersionHeader,
 			authTier: options.authTier,
 			colo: options.colo,
+			region: options.region,
+			// PII-gate the AE city blob so ANALYTICS_PII_LEVEL governs Analytics Engine the
+			// same way it governs the D1 log: city only at standard+. region/asn stay (coarse).
+			city: piiAllows(options.analyticsPiiLevel ?? 'coarse', 'city') ? options.city : undefined,
+			asn: options.asn,
 			certstream: options.certstream,
 			certstreamAuthToken: options.certstreamAuthToken,
 			whoisBinding: options.whoisBinding,
@@ -1099,7 +1400,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				emitRequestAnalytics(options, method, hasJsonRpcError ? 'error' : 'ok', hasJsonRpcError, errPayload?.code, errPayload?.message);
 				recordMcpToolErrorIfUnknownTool(options, method, dispatchResult.payload);
 				if (accessLogInput) {
-					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: false });
+					recordMcpAccessLog(options, { ...accessLogInput, rateLimited: false, status: hasJsonRpcError ? 'error' : 'pass' });
 				}
 				return dispatchResult.payload;
 			})
@@ -1154,6 +1455,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			protocolVersionHeader: options.protocolVersionHeader,
 			authTier: options.authTier,
 			colo: options.colo,
+			region: options.region,
+			// PII-gate the AE city blob so ANALYTICS_PII_LEVEL governs Analytics Engine the
+			// same way it governs the D1 log: city only at standard+. region/asn stay (coarse).
+			city: piiAllows(options.analyticsPiiLevel ?? 'coarse', 'city') ? options.city : undefined,
+			asn: options.asn,
 			certstream: options.certstream,
 			certstreamAuthToken: options.certstreamAuthToken,
 			whoisBinding: options.whoisBinding,
@@ -1220,7 +1526,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		emitRequestAnalytics(options, method, hasJsonRpcError ? 'error' : 'ok', hasJsonRpcError, errPayload?.code, errPayload?.message);
 		recordMcpToolErrorIfUnknownTool(options, method, dispatchResult.payload);
 		if (accessLogInput) {
-			recordMcpAccessLog(options, { ...accessLogInput, rateLimited: false });
+			recordMcpAccessLog(options, { ...accessLogInput, rateLimited: false, status: hasJsonRpcError ? 'error' : 'pass' });
 		}
 
 		return {

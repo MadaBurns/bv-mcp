@@ -17,43 +17,10 @@ import { buildCheckResult, createFinding } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { safeFetch } from '../lib/safe-fetch';
 import { composeSignal, withAbortSignal } from '../lib/abort-signal';
+import { looksLikeWaf, detectWafEvent, buildWafFinding } from '../lib/waf-detection';
 
 /** User-Agent for outbound probes — matches the package's scanner UA. */
 const SCANNER_USER_AGENT = 'Mozilla/5.0 (compatible; BlackVeilDNSScanner/1.0; +https://blackveilsecurity.com)';
-
-/** A detected WAF interception — either an interstitial challenge or a terminal block. */
-type WafEvent = { provider: 'cloudflare' | 'akamai'; kind: 'challenge' | 'block' };
-
-/** Cloudflare access-block body signatures (distinct from the "Just a moment" JS challenge). */
-const CF_BLOCK_BODY = /sorry, you have been blocked|attention required|error 10(09|10|12|13|15|20)/i;
-
-/** True when the response carries any Cloudflare/Akamai signal worth fetching the body to disambiguate. */
-function looksLikeWaf(headers: Headers): boolean {
-	const server = (headers.get('server') ?? '').toLowerCase();
-	return !!(headers.get('cf-ray') || headers.get('cf-mitigated') || server.includes('cloudflare') || server.includes('akamaighost'));
-}
-
-/**
- * Detect a WAF interception (challenge or block) from response headers, optional body, and status.
- *
- * Cloudflare events are commonly served as HTTP 403 (both the JS challenge and access blocks),
- * so detection is status-aware. A block requires a 4xx plus a block-body signature or a
- * `cf-mitigated` header — `cf-ray` + 403 alone is NOT treated as a block, since a real app may
- * legitimately 403 a HEAD request. The interstitial challenge is checked first.
- */
-function detectWafEvent(headers: Headers, body: string | undefined, status: number): WafEvent | null {
-	const server = (headers.get('server') ?? '').toLowerCase();
-	const cfRay = headers.get('cf-ray');
-	const cfMitigated = headers.get('cf-mitigated');
-	const b = body ?? '';
-
-	if (cfRay || cfMitigated || server.includes('cloudflare')) {
-		if (/just a moment/i.test(b) || cfMitigated === 'challenge') return { provider: 'cloudflare', kind: 'challenge' };
-		if (status >= 400 && (CF_BLOCK_BODY.test(b) || !!cfMitigated)) return { provider: 'cloudflare', kind: 'block' };
-	}
-	if (server.includes('akamaighost')) return { provider: 'akamai', kind: 'block' };
-	return null;
-}
 
 /** Security headers to merge (union) across dual fetches. */
 const MERGE_HEADERS = [
@@ -411,23 +378,13 @@ async function checkHttpSecurityInner(domain: string, callerSignal?: AbortSignal
 		const event = detectWafEvent(headersForWaf, body, dualResult.status);
 		if (event) {
 			const provider = event.provider.charAt(0).toUpperCase() + event.provider.slice(1);
-			const finding = createFinding(
-				'http_security',
-				event.kind === 'block' ? `${provider} WAF blocked external header inspection` : `${provider} WAF challenge intercepted`,
-				'info',
+			const title =
+				event.kind === 'block' ? `${provider} WAF blocked external header inspection` : `${provider} WAF challenge intercepted`;
+			const detail =
 				event.kind === 'block'
 					? `https://${domain} returned an HTTP ${dualResult.status} ${provider} block page, not the site. Security headers cannot be inspected externally.`
-					: `The fetched response appears to be a ${provider} challenge page, not the real site. Header analysis is inconclusive.`,
-				{
-					wafEvent: event.provider,
-					wafKind: event.kind,
-					// Back-compat: challenges previously carried `wafChallenge` with the provider name.
-					...(event.kind === 'challenge' ? { wafChallenge: event.provider } : {}),
-					httpStatus: dualResult.status,
-					inconclusive: true,
-					missingControl: true,
-				},
-			);
+					: `The fetched response appears to be a ${provider} challenge page, not the real site. Header analysis is inconclusive.`;
+			const finding = buildWafFinding('http_security', event, dualResult.status, { title, detail });
 			const base = buildCheckResult('http_security', [finding]);
 			return { ...base, score: 0, passed: false, checkStatus: 'error' };
 		}
