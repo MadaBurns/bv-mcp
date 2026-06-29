@@ -86,6 +86,34 @@ export function scoreToGrade(score: number, config?: ScoringConfig): string {
 	return 'F';
 }
 
+/** The 6 letters the NIST-aligned DISPLAY scale can emit. */
+export type NistGrade = 'A+' | 'A' | 'B' | 'C' | 'D' | 'F';
+
+/**
+ * NIST-aligned 6-band thresholds — the SINGLE customer-facing DISPLAY scale that
+ * BlackVeil products consolidated on (2026-06-29). This is intentionally DISTINCT
+ * from the canonical 9-band {@link scoreToGrade}, which stays for internal logic,
+ * back-compat, and cohort/percentile math (and any third-party lib consumer). The
+ * score is unchanged; only which letter a customer-facing surface displays.
+ */
+export const NIST_GRADE_THRESHOLDS = {
+	A_PLUS: 95,
+	A: 90,
+	B: 80,
+	C: 70,
+	D: 60,
+} as const;
+
+/** Map a 0-100 score to the NIST-aligned 6-band DISPLAY grade. Pure; no config. */
+export function nistScoreToGrade(score: number): NistGrade {
+	if (score >= NIST_GRADE_THRESHOLDS.A_PLUS) return 'A+';
+	if (score >= NIST_GRADE_THRESHOLDS.A) return 'A';
+	if (score >= NIST_GRADE_THRESHOLDS.B) return 'B';
+	if (score >= NIST_GRADE_THRESHOLDS.C) return 'C';
+	if (score >= NIST_GRADE_THRESHOLDS.D) return 'D';
+	return 'F';
+}
+
 /** Default critical categories used when no context is provided. */
 const DEFAULT_CRITICAL_CATEGORIES: CheckCategory[] = ['spf', 'dmarc', 'dkim', 'ssl'];
 
