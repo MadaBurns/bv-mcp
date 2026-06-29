@@ -1259,6 +1259,18 @@ app.get('/oauth/authorize', (c) => oauthGuarded(c, () => handleAuthorizeGet(c)))
 app.post('/oauth/authorize', (c) => oauthGuarded(c, () => handleAuthorizePost(c)));
 app.post('/oauth/token', (c) => oauthGuarded(c, () => handleToken(c)));
 
+// Root-path OAuth aliases. Some MCP clients (notably Claude Desktop connectors,
+// especially when given a pre-registered OAuth Client ID) skip authorization-server
+// metadata discovery and assume the OAuth endpoints live at the server origin
+// (/register, /authorize, /token), ignoring the /oauth/ prefix advertised in
+// discovery metadata. Serving both makes the connector flow work for discovery-driven
+// clients (/oauth/*) and origin-default clients (root) alike — same handlers, same
+// oauthGuarded gating. Confirmed via prod tail: Claude Desktop requested GET /authorize → 404.
+app.post('/register', (c) => oauthGuarded(c, () => handleRegister(c)));
+app.get('/authorize', (c) => oauthGuarded(c, () => handleAuthorizeGet(c)));
+app.post('/authorize', (c) => oauthGuarded(c, () => handleAuthorizePost(c)));
+app.post('/token', (c) => oauthGuarded(c, () => handleToken(c)));
+
 app.all('*', (c) => {
 	// Plain text — avoids mcp-remote misinterpreting JSON as an OAuth error.
 	// OAuth well-known paths are handled explicitly above.
