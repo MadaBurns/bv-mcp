@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.26.0] - 2026-06-29
+
+Minor release: the customer-facing letter grade on `scan_domain`, `batch_scan`, and `compare_domains` now uses the **NIST-aligned 6-band scale** (A+≥95, A≥90, B≥80, C≥70, D≥60, F<60), matching the BlackVeil web product so a domain shows ONE letter everywhere. **Scores are unchanged** — only which letter a customer-facing scan surface displays. `SCORING_MODEL_VERSION` unchanged, tool count unchanged (79). `@blackveil/dns-checks` bumped to 1.4.0 (additive export).
+
+### Changed
+
+- **Scan-output tools now display the NIST 6-band grade (#461).** `scan_domain` / `batch_scan` / `compare_domains` recompute the displayed letter from the 0–100 score via the new `nistScoreToGrade` at the output chokepoint (`src/tools/scan/format-report.ts`). The engine's canonical 9-band `scoreToGrade` (`score.grade`) is **retained unchanged** for every internal/other consumer — `compare_baseline` grade-ordering, the `/badge` SVG, `analyze_drift`, `map_compliance`, `generate_fix_plan`, and the cohort-percentile math — so policy/comparison semantics and external `@blackveil/dns-checks` lib consumers are unaffected. The degraded `'N/A'` sentinel is preserved.
+
+### Added
+
+- **`@blackveil/dns-checks` exports `nistScoreToGrade`, `NIST_GRADE_THRESHOLDS`, and the `NistGrade` type (1.4.0).** Additive, non-breaking — the canonical 9-band `scoreToGrade` is unchanged. Lets every BlackVeil surface (web + MCP) share one band definition; bv-web-prod pins this via its vendored tarball with a threshold-parity contract test.
+
 ## [3.25.4] - 2026-06-25
 
 Patch release: one **server-only** `check_mta_sts` false-positive fix. No `@blackveil/dns-checks` core change, `SCORING_MODEL_VERSION` unchanged, tool count unchanged (79). Normal-corpus scores are unaffected — the new behavior only applies when the MTA-STS policy fetch is intercepted by a WAF.

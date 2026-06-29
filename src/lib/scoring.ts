@@ -17,6 +17,8 @@ export {
 	computeScanScore,
 	computeProfileAwareScanScore,
 	scoreToGrade,
+	nistScoreToGrade,
+	NIST_GRADE_THRESHOLDS,
 	IMPORTANCE_WEIGHTS,
 	CORE_WEIGHTS,
 	PROTECTIVE_WEIGHTS,
@@ -44,6 +46,7 @@ export type {
 	DomainProfile,
 	ScoringConfig,
 	ProfileAwareScanScore,
+	NistGrade,
 } from '@blackveil/dns-checks/scoring';
 
 export {

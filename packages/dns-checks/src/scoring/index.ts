@@ -33,10 +33,12 @@ export {
 	CORE_WEIGHTS,
 	PROTECTIVE_WEIGHTS,
 	scoreToGrade,
+	nistScoreToGrade,
+	NIST_GRADE_THRESHOLDS,
 	computeScanScore,
 	computeProfileAwareScanScore,
 } from './engine';
-export type { ProfileAwareScanScore } from './engine';
+export type { ProfileAwareScanScore, NistGrade } from './engine';
 
 export {
 	DEFAULT_SCORING_CONFIG,

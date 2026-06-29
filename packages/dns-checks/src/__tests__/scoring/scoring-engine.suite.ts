@@ -21,6 +21,8 @@ type ScoringModule = typeof import('../../scoring');
 export function defineScoringEngineSuite(s: ScoringModule): void {
 	const {
 		scoreToGrade,
+		nistScoreToGrade,
+		NIST_GRADE_THRESHOLDS,
 		computeScanScore,
 		IMPORTANCE_WEIGHTS,
 		CORE_WEIGHTS,
@@ -35,6 +37,32 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 			expect(scoreToGrade(92)).toBe('A+');
 			expect(scoreToGrade(87)).toBe('A');
 			expect(scoreToGrade(49)).toBe('F');
+		});
+
+		it('maps numeric scores to the NIST-aligned 6-band DISPLAY grade', () => {
+			// Cut-points: A+≥95, A≥90, B≥80, C≥70, D≥60, F<60.
+			expect(nistScoreToGrade(100)).toBe('A+');
+			expect(nistScoreToGrade(95)).toBe('A+');
+			expect(nistScoreToGrade(94)).toBe('A');
+			expect(nistScoreToGrade(90)).toBe('A');
+			expect(nistScoreToGrade(89)).toBe('B');
+			expect(nistScoreToGrade(80)).toBe('B');
+			expect(nistScoreToGrade(79)).toBe('C');
+			expect(nistScoreToGrade(70)).toBe('C');
+			expect(nistScoreToGrade(69)).toBe('D');
+			expect(nistScoreToGrade(60)).toBe('D');
+			expect(nistScoreToGrade(59)).toBe('F');
+			expect(nistScoreToGrade(0)).toBe('F');
+		});
+
+		it('NIST 6-band emits no +/- bands (distinct from the 9-band canonical scale)', () => {
+			const seen = new Set(
+				Array.from({ length: 101 }, (_, score) => nistScoreToGrade(score)),
+			);
+			expect([...seen].sort()).toEqual(['A', 'A+', 'B', 'C', 'D', 'F']);
+			// thresholds are exported + consistent with the mapping
+			expect(NIST_GRADE_THRESHOLDS.A_PLUS).toBe(95);
+			expect(NIST_GRADE_THRESHOLDS.D).toBe(60);
 		});
 
 		it('returns excellent summary when no check results are present', () => {

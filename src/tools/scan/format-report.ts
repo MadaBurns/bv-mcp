@@ -2,10 +2,23 @@
 
 import type { ScanDomainResult } from '../scan-domain';
 import type { CheckResult, Finding } from '../../lib/scoring';
+import { nistScoreToGrade } from '../../lib/scoring';
 import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scoring-version';
+
+/**
+ * The SINGLE customer-facing display grade for the scan-output tools
+ * (`scan_domain` / `batch_scan` / `compare_domains`): the NIST-aligned 6-band
+ * letter, recomputed from the unchanged 0-100 score. The engine's `score.grade`
+ * stays on the canonical 9-band scale for every OTHER consumer (compare_baseline
+ * ordering, the badge, drift/compliance/fix-plan); only these display surfaces
+ * switch. The degraded `'N/A'` sentinel (unscored scans) is preserved verbatim.
+ */
+function displayGradeFor(score: { overall: number; grade: string }): string {
+	return score.grade === 'N/A' ? 'N/A' : nistScoreToGrade(score.overall);
+}
 
 /** Structured scan result for machine-readable consumption (e.g., CI/CD actions). */
 export interface StructuredScanResult {
@@ -244,7 +257,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 	return {
 		domain: result.domain,
 		score: result.score.overall,
-		grade: result.score.grade,
+		grade: displayGradeFor(result.score),
 		passed: result.score.overall >= 50,
 		maturityStage: result.maturity?.stage ?? null,
 		maturityLabel: result.maturity?.label ?? null,
@@ -284,10 +297,18 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 export function formatScanReport(result: ScanDomainResult, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 
+	const displayGrade = displayGradeFor(result.score);
 	lines.push(`DNS Security Scan: ${result.domain}`);
 	lines.push(`${'='.repeat(40)}`);
-	lines.push(`Overall Score: ${result.score.overall}/100 (${result.score.grade})`);
-	lines.push(`${result.score.summary}`);
+	lines.push(`Overall Score: ${result.score.overall}/100 (${displayGrade})`);
+	// The engine bakes the canonical 9-band grade into `summary` ("…Grade: X"); rewrite
+	// that one token to the display (NIST) grade so the text never disagrees with the
+	// score line above. No-op when the summary carries no grade (e.g. degraded 'N/A').
+	lines.push(
+		displayGrade === 'N/A'
+			? `${result.score.summary}`
+			: result.score.summary.replace(/Grade: [A-F][+-]?/g, `Grade: ${displayGrade}`),
+	);
 	lines.push('');
 
 	if (result.maturity) {
