@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.26.1] - 2026-06-29
+
+Patch release: fix MCP OAuth connector sign-in for clients that assume root-path OAuth endpoints. Some clients (notably Claude Desktop connectors, especially when given a pre-registered OAuth Client ID) skip authorization-server metadata discovery and request the OAuth endpoints at the server origin (`/authorize`, `/token`, `/register`) instead of the `/oauth/`-prefixed paths advertised in discovery. Confirmed in a production tail: Claude Desktop requested `GET /authorize` → 404, which surfaced to the user as "Couldn't connect to the server" / "Couldn't register with BV DNS's sign-in service."
+
+### Fixed
+
+- **Root-path OAuth aliases (`src/index.ts`).** `/register`, `/authorize` (GET+POST), and `/token` now route to the same handlers as their `/oauth/*` counterparts, behind the same `oauthGuarded` gating. Purely additive: discovery-driven clients keep using `/oauth/*`; origin-default clients (Claude Desktop connectors) now work too. No change to the OAuth flow, consent redirect, token issuance, or discovery metadata.
+
 ## [3.26.0] - 2026-06-29
 
 Minor release: the customer-facing letter grade on `scan_domain`, `batch_scan`, and `compare_domains` now uses the **NIST-aligned 6-band scale** (A+≥95, A≥90, B≥80, C≥70, D≥60, F<60), matching the BlackVeil web product so a domain shows ONE letter everywhere. **Scores are unchanged** — only which letter a customer-facing scan surface displays. `SCORING_MODEL_VERSION` unchanged, tool count unchanged (79). `@blackveil/dns-checks` bumped to 1.4.0 (additive export).
