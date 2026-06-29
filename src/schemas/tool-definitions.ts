@@ -308,14 +308,14 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	scan_domain: {
 		description:
-			'Run a full DNS and email security audit for a single domain. Aggregates every scan-included check in parallel (SPF, DKIM, DMARC, DNSSEC, TLS/SSL, MTA-STS, CAA, BIMI, subdomain takeover, and more) and returns an overall security score, letter grade (A–F), maturity stage, and prioritized findings. Use for a comprehensive single-domain audit, to get a domain\'s overall security grade, or to assess email security maturity.',
+			'Run a full DNS and email security audit for a single domain. Aggregates every scan-included check in parallel (SPF, DKIM, DMARC, DNSSEC, TLS/SSL, MTA-STS, CAA, BIMI, subdomain takeover, and more) and returns an overall security score, NIST-aligned letter grade (6-band A+/A/B/C/D/F), maturity stage, and prioritized findings. Use for a comprehensive single-domain audit, to get a domain\'s overall security grade, or to assess email security maturity.',
 		schema: ScanDomainArgs,
 		group: 'meta',
 		scanIncluded: false,
 		recommended: true,
 	},
 	batch_scan: {
-		description: 'Bulk-scan up to 10 domains in parallel. Runs a full security audit on each domain in the list and returns score, letter grade, and finding counts per domain. Use when you want to audit multiple domains at once or do a bulk scan of several domains simultaneously — distinct from compare_domains which does a side-by-side analysis of 2–5 domains.',
+		description: 'Bulk-scan up to 10 domains in parallel. Runs a full security audit on each domain in the list and returns score, NIST-aligned letter grade (6-band A+/A/B/C/D/F), and finding counts per domain. Use when you want to audit multiple domains at once or do a bulk scan of several domains simultaneously — distinct from compare_domains which does a side-by-side analysis of 2–5 domains.',
 		schema: BatchScanArgs,
 		group: 'meta',
 		scanIncluded: false,
