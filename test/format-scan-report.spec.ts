@@ -81,7 +81,11 @@ describe('format-scan-report', () => {
 
 		const report = formatScanReport(result);
 		expect(report).toContain('DNS Security Scan: example.com');
-		expect(report).toContain('Overall Score: 72/100 (C+)');
+		// Customer-facing letter is the NIST 6-band display grade recomputed from the
+		// score (72 → 'C'; the 9-band canonical would be 'C+'). The summary's embedded
+		// grade is rewritten to match.
+		expect(report).toContain('Overall Score: 72/100 (C)');
+		expect(report).toContain('Grade: C');
 		expect(report).toContain('Takeover Verification: potential');
 		expect(report).toContain('Proof Required: authorized proof of control');
 		expect(report).toContain('Confidence: heuristic');
@@ -172,7 +176,9 @@ describe('format-scan-report', () => {
 		const structured = buildStructuredScanResult(result);
 		expect(structured.domain).toBe('test.com');
 		expect(structured.score).toBe(85);
-		expect(structured.grade).toBe('A');
+		// NIST 6-band display grade recomputed from the score (85 → 'B'), not echoed
+		// from the engine's canonical 9-band `score.grade`.
+		expect(structured.grade).toBe('B');
 		expect(structured.passed).toBe(true);
 		expect(structured.maturityStage).toBe(3);
 		expect(structured.maturityLabel).toBe('Enforcing');

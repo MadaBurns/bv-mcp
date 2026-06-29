@@ -370,8 +370,14 @@ describe('formatScanReport', () => {
 
 		// Contains domain header
 		expect(report).toContain('DNS Security Scan: example.com');
-		// Contains overall score and grade
-		expect(report).toContain('Overall Score: 85/100 (A-)');
+		// Contains overall score and the NIST-aligned DISPLAY grade. The customer-facing
+		// letter is recomputed from the 0-100 score (85 → 'B' on the 6-band NIST scale),
+		// NOT echoed from the engine's canonical `score.grade` — so the mock's input grade
+		// ('A-') is intentionally NOT what renders.
+		expect(report).toContain('Overall Score: 85/100 (B)');
+		// The grade baked into the engine summary is rewritten to the same display grade.
+		expect(report).toContain('Grade: B');
+		expect(report).not.toContain('Grade: A-');
 		// Contains category scores section
 		expect(report).toContain('Category Scores:');
 		expect(report).toContain('SPF');
