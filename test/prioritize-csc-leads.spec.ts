@@ -3,8 +3,8 @@
 import { describe, it, expect } from 'vitest';
 import type { Bucket } from '../src/lib/brand-classification';
 import type { CscProductKey, CscPriority, CscProductReport, CscProductRecommendation } from '../src/tools/map-csc-products';
-import { bucketFromClassification, computeGapSeverity } from '../src/tools/prioritize-csc-leads';
-import type { OwnershipBucket } from '../src/tools/prioritize-csc-leads';
+import { bucketFromClassification, computeGapSeverity, rankCscLeads } from '../src/tools/prioritize-csc-leads';
+import type { OwnershipBucket, CscLeadEntry } from '../src/tools/prioritize-csc-leads';
 
 const PRODUCT_ORDER: CscProductKey[] = ['csc_multilock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
 
@@ -71,5 +71,97 @@ describe('computeGapSeverity', () => {
 	it('bucket unknown multiplier is 1.0 (bare-list path not penalized)', () => {
 		const report = makeReport('a.com', 50, 'F', [rec('csc_multilock', true, 'high')]);
 		expect(computeGapSeverity(report, 'unknown')).toBe(12);
+	});
+});
+
+/** Build a lead entry: a report (with the given recommendations) + an ownership bucket. */
+function entry(domain: string, score: number, grade: string, recs: CscProductRecommendation[], bucket: OwnershipBucket): CscLeadEntry {
+	return { report: makeReport(domain, score, grade, recs), ownershipBucket: bucket };
+}
+
+describe('rankCscLeads — ordering and ranks', () => {
+	it('orders by gapSeverity descending; priorityRank is 1-based', () => {
+		// sev 12 (multilock high), 4 (multilock high × impersonation 0.3), 20 (multilock high + dmarc medium + dnssec low)
+		const e12 = entry('twelve.com', 80, 'B', [rec('csc_multilock', true, 'high')], 'unknown');
+		const e4 = entry('four.com', 80, 'B', [rec('csc_multilock', true, 'high')], 'impersonation');
+		const e20 = entry('twenty.com', 80, 'B', [rec('csc_multilock', true, 'high'), rec('managed_dmarc', true, 'medium'), rec('dnssec_management', true, 'low')], 'unknown');
+		const report = rankCscLeads([e12, e4, e20]);
+		expect(report.rankedLeads.map((l) => l.domain)).toEqual(['twenty.com', 'twelve.com', 'four.com']);
+		expect(report.rankedLeads.map((l) => l.priorityRank)).toEqual([1, 2, 3]);
+		expect(report.rankedLeads[0].gapSeverity).toBe(20);
+	});
+
+	it('tie on gapSeverity → lower score ranks first', () => {
+		const a = entry('a.com', 70, 'C', [rec('csc_multilock', true, 'high')], 'unknown'); // sev 12, score 70
+		const b = entry('b.com', 40, 'F', [rec('csc_multilock', true, 'high')], 'unknown'); // sev 12, score 40
+		const report = rankCscLeads([a, b]);
+		expect(report.rankedLeads.map((l) => l.domain)).toEqual(['b.com', 'a.com']);
+	});
+
+	it('tie on gapSeverity AND score → domain ascending (lexical total order)', () => {
+		const b = entry('b.com', 50, 'F', [rec('csc_multilock', true, 'high')], 'unknown');
+		const a = entry('a.com', 50, 'F', [rec('csc_multilock', true, 'high')], 'unknown');
+		const report = rankCscLeads([b, a]);
+		expect(report.rankedLeads.map((l) => l.domain)).toEqual(['a.com', 'b.com']);
+	});
+});
+
+describe('rankCscLeads — per-lead fields', () => {
+	it('recommendedCscProducts = recommended keys in fixed product order; recommendedCount matches', () => {
+		const e = entry('x.com', 60, 'D', [rec('csc_multilock', true, 'high'), rec('digital_certificates', true, 'medium')], 'consolidated');
+		const lead = rankCscLeads([e]).rankedLeads[0];
+		expect(lead.recommendedCscProducts).toEqual(['csc_multilock', 'digital_certificates']);
+		expect(lead.recommendedCount).toBe(2);
+	});
+
+	it('topPriority = max priority among recommended; none when nothing recommended', () => {
+		const hi = entry('hi.com', 60, 'D', [rec('csc_multilock', true, 'medium'), rec('managed_dmarc', true, 'high')], 'unknown');
+		expect(rankCscLeads([hi]).rankedLeads[0].topPriority).toBe('high');
+		const clean = entry('clean.com', 98, 'A+', [], 'unknown');
+		expect(rankCscLeads([clean]).rankedLeads[0].topPriority).toBe('none');
+	});
+
+	it('pass-through: domain/score/grade/ownershipBucket copied verbatim; grade "N/A" preserved', () => {
+		const e = entry('p.com', 0, 'N/A', [rec('csc_multilock', true, 'high')], 'shadowIt');
+		const lead = rankCscLeads([e]).rankedLeads[0];
+		expect(lead.domain).toBe('p.com');
+		expect(lead.score).toBe(0);
+		expect(lead.grade).toBe('N/A');
+		expect(lead.ownershipBucket).toBe('shadowIt');
+	});
+});
+
+describe('rankCscLeads — summary', () => {
+	it('byProduct counts domains needing each product; totalRecommendations = Σ recommendedCount; hotLeads counts gapSeverity >= 6', () => {
+		const e1 = entry('one.com', 50, 'F', [rec('csc_multilock', true, 'high'), rec('managed_dmarc', true, 'medium')], 'unknown'); // sev 18, recs 2
+		const e2 = entry('two.com', 90, 'A', [rec('managed_dmarc', true, 'low')], 'unknown'); // sev 3, recs 1
+		const report = rankCscLeads([e1, e2]);
+		expect(report.summary.byProduct).toEqual({ csc_multilock: 1, managed_dmarc: 2, digital_certificates: 0, dnssec_management: 0 });
+		expect(report.summary.totalRecommendations).toBe(3);
+		expect(report.summary.hotLeads).toBe(1); // only one.com (18) clears 6; two.com (3) does not
+	});
+
+	it('skipped passed through; totalDomains counts only ranked leads, not skipped', () => {
+		const e = entry('ok.com', 50, 'F', [rec('csc_multilock', true, 'high')], 'unknown');
+		const report = rankCscLeads([e], null, [{ domain: 'bad.com', reason: 'invalid_domain' }]);
+		expect(report.summary.skipped).toEqual([{ domain: 'bad.com', reason: 'invalid_domain' }]);
+		expect(report.totalDomains).toBe(1);
+		expect(report.rankedLeads).toHaveLength(1);
+	});
+
+	it('empty input → rankedLeads [], summary zeroes, no throw', () => {
+		const report = rankCscLeads([]);
+		expect(report.rankedLeads).toEqual([]);
+		expect(report.totalDomains).toBe(0);
+		expect(report.summary.totalRecommendations).toBe(0);
+		expect(report.summary.hotLeads).toBe(0);
+		expect(report.summary.byProduct).toEqual({ csc_multilock: 0, managed_dmarc: 0, digital_certificates: 0, dnssec_management: 0 });
+		expect(report.summary.skipped).toEqual([]);
+	});
+
+	it('brand pass-through: report.brand set when provided, null otherwise', () => {
+		const e = entry('z.com', 50, 'F', [], 'unknown');
+		expect(rankCscLeads([e], 'acme').brand).toBe('acme');
+		expect(rankCscLeads([e]).brand).toBeNull();
 	});
 });

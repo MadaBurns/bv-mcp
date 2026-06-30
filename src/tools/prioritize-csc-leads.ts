@@ -98,3 +98,69 @@ function gapValue(report: CscProductReport): number {
 export function computeGapSeverity(report: CscProductReport, bucket: OwnershipBucket): number {
 	return Math.round(gapValue(report) * OWNERSHIP_MULTIPLIER[bucket]);
 }
+
+/** Recommended product keys in fixed product order. */
+function recommendedProducts(report: CscProductReport): CscProductKey[] {
+	return CSC_PRODUCT_ORDER.filter((k) => report.recommendations.find((r) => r.product === k)?.recommended === true);
+}
+
+const PRIORITY_RANK: Record<CscPriority, number> = { high: 3, medium: 2, low: 1, none: 0 };
+
+/** Highest sales priority among the recommended products ('none' when nothing recommended). */
+function topPriorityOf(report: CscProductReport): CscPriority {
+	let best: CscPriority = 'none';
+	for (const r of report.recommendations) {
+		if (r.recommended && PRIORITY_RANK[r.priority] > PRIORITY_RANK[best]) best = r.priority;
+	}
+	return best;
+}
+
+/**
+ * Rank a set of per-domain CSC product reports into prioritized sales leads (PURE).
+ * Sort: gapSeverity desc, then lower score, then domain asc (total order). The
+ * heart of Spec C's TDD — no I/O.
+ */
+export function rankCscLeads(
+	entries: CscLeadEntry[],
+	brand: string | null = null,
+	skipped: Array<{ domain: string; reason: string }> = [],
+): CscLeadReport {
+	const leads: CscLead[] = entries.map((e) => ({
+		domain: e.report.domain,
+		score: e.report.score,
+		grade: e.report.grade,
+		ownershipBucket: e.ownershipBucket,
+		recommendedCscProducts: recommendedProducts(e.report),
+		gapSeverity: computeGapSeverity(e.report, e.ownershipBucket),
+		priorityRank: 0, // assigned after the sort
+		recommendedCount: e.report.recommendedCount,
+		topPriority: topPriorityOf(e.report),
+	}));
+
+	leads.sort((a, b) => b.gapSeverity - a.gapSeverity || a.score - b.score || a.domain.localeCompare(b.domain));
+	leads.forEach((lead, i) => {
+		lead.priorityRank = i + 1;
+	});
+
+	const byProduct: Record<CscProductKey, number> = {
+		csc_multilock: 0,
+		managed_dmarc: 0,
+		digital_certificates: 0,
+		dnssec_management: 0,
+	};
+	for (const lead of leads) {
+		for (const key of lead.recommendedCscProducts) byProduct[key] += 1;
+	}
+
+	return {
+		brand,
+		totalDomains: leads.length,
+		rankedLeads: leads,
+		summary: {
+			totalRecommendations: leads.reduce((sum, l) => sum + l.recommendedCount, 0),
+			byProduct,
+			hotLeads: leads.filter((l) => l.gapSeverity >= HOT_LEAD_THRESHOLD).length,
+			skipped,
+		},
+	};
+}
