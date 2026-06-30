@@ -721,4 +721,9 @@ describe('deriveLockPosture', () => {
 		expect(p.registrarLevel).toBe(true);
 		expect(p.registryLevel).toBe(true);
 	});
+
+	it('empty / whitespace-only status entries → unknown (malformed-input guard)', async () => {
+		expect((await derive([''])).level).toBe('unknown');
+		expect((await derive(['   '])).level).toBe('unknown');
+	});
 });

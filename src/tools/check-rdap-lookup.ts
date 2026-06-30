@@ -37,7 +37,11 @@ export interface LockPosture {
  * and stripping all whitespace before matching. Pure; no I/O.
  */
 export function deriveLockPosture(eppStatus: readonly string[]): LockPosture {
-	const norm = new Set((Array.isArray(eppStatus) ? eppStatus : []).map((s) => String(s).toLowerCase().replace(/\s+/g, '')));
+	const norm = new Set(
+		(Array.isArray(eppStatus) ? eppStatus : [])
+			.map((s) => String(s).toLowerCase().replace(/\s+/g, ''))
+			.filter((s) => s.length > 0),
+	);
 	const has = (code: string) => norm.has(code);
 
 	const serverTransfer = has('servertransferprohibited');
