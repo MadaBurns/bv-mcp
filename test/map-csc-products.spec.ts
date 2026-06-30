@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import type { CheckResult } from '../src/lib/scoring';
 import type { LockPosture } from '../src/tools/check-rdap-lookup';
-import { evaluateCscProducts } from '../src/tools/map-csc-products';
+import { evaluateCscProducts, extractLockPosture } from '../src/tools/map-csc-products';
 import type { CscProductReport, CscProductRecommendation } from '../src/tools/map-csc-products';
 
 /** Minimal CheckResult fixture. */
@@ -151,5 +151,28 @@ describe('evaluateCscProducts — report shape', () => {
 		expect(r.recommendedCount).toBe(0);
 		expect(r.recommendations.every((x) => x.priority === 'none')).toBe(true);
 		expect(r.recommendations.every((x) => x.recommended === false)).toBe(true);
+	});
+});
+
+describe('extractLockPosture', () => {
+	it('returns the posture from a finding carrying metadata.lockPosture', () => {
+		const posture = lp({ level: 'registrar-lock', registrarLevel: true, transferLocked: true });
+		const rdap = {
+			category: 'rdap',
+			passed: true,
+			score: 100,
+			findings: [{ category: 'rdap', title: 'Registration details', severity: 'info', detail: '', metadata: { lockPosture: posture } }],
+		} as unknown as CheckResult;
+		expect(extractLockPosture(rdap)).toEqual(posture);
+	});
+
+	it('returns null when no finding carries lock metadata (lookup_failed shape)', () => {
+		const rdap = {
+			category: 'rdap',
+			passed: false,
+			score: 0,
+			findings: [{ category: 'rdap', title: 'RDAP lookup failed', severity: 'low', detail: '', metadata: { registrarSource: 'lookup_failed' } }],
+		} as unknown as CheckResult;
+		expect(extractLockPosture(rdap)).toBeNull();
 	});
 });

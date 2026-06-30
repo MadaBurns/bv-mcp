@@ -123,3 +123,19 @@ export function evaluateCscProducts(
 		recommendedCount: recommendations.filter((r) => r.recommended).length,
 	};
 }
+
+/**
+ * Extract the LockPosture from a check_rdap_lookup CheckResult.
+ * Spec A attaches one shared `metadata` object (with `lockPosture`) to all RDAP
+ * findings, so the first finding carrying it is authoritative. Returns null when
+ * none (lookup_failed / redacted) — the MultiLock line then degrades to
+ * "unobservable" while the scan-driven products still evaluate.
+ */
+export function extractLockPosture(rdap: CheckResult): LockPosture | null {
+	for (const f of rdap.findings) {
+		const meta = (f as { metadata?: Record<string, unknown> }).metadata;
+		const posture = meta?.lockPosture;
+		if (posture && typeof posture === 'object') return posture as LockPosture;
+	}
+	return null;
+}
