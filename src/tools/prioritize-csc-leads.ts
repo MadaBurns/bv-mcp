@@ -13,6 +13,7 @@ import type { Bucket } from '../lib/brand-classification';
 import type { CscProductKey, CscPriority, CscProductReport } from './map-csc-products';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
+import type { CheckResult } from '../lib/scoring';
 
 /** Portfolio ownership lens (from classifyCandidate) + 'unknown' for a bare domain list. */
 export type OwnershipBucket =
@@ -165,6 +166,36 @@ export function rankCscLeads(
 			skipped,
 		},
 	};
+}
+
+const KNOWN_BUCKETS: ReadonlySet<Bucket> = new Set<Bucket>([
+	'consolidated',
+	'shadowIt',
+	'indeterminate',
+	'impersonation',
+	'impersonationSurface',
+]);
+
+/**
+ * Extract {domain, ownershipBucket} candidates from a brandAuditSingle CheckResult.
+ * The pipeline stamps each candidate finding with metadata.candidate (the domain)
+ * and metadata.bucket (a classifier Bucket — brand-audit-pipeline.ts:962-964).
+ * A candidate with no/unknown bucket defaults to 'indeterminate' (0.6 multiplier —
+ * honest, doesn't over-claim consolidation). Non-candidate findings (summary,
+ * async-handoff) are ignored — an async-handoff result yields []. PURE.
+ */
+export function extractDiscoveredCandidates(result: CheckResult): DiscoveredCandidate[] {
+	const out: DiscoveredCandidate[] = [];
+	for (const f of result.findings) {
+		const meta = (f as { metadata?: Record<string, unknown> }).metadata;
+		const candidate = meta?.candidate;
+		if (typeof candidate !== 'string' || candidate.length === 0) continue;
+		const rawBucket = meta?.bucket;
+		const bucket: OwnershipBucket =
+			typeof rawBucket === 'string' && KNOWN_BUCKETS.has(rawBucket as Bucket) ? bucketFromClassification(rawBucket as Bucket) : 'indeterminate';
+		out.push({ domain: candidate, ownershipBucket: bucket });
+	}
+	return out;
 }
 
 /** Render a ranked CSC lead report for display. */

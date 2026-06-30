@@ -3,7 +3,8 @@
 import { describe, it, expect } from 'vitest';
 import type { Bucket } from '../src/lib/brand-classification';
 import type { CscProductKey, CscPriority, CscProductReport, CscProductRecommendation } from '../src/tools/map-csc-products';
-import { bucketFromClassification, computeGapSeverity, rankCscLeads, formatCscLeads } from '../src/tools/prioritize-csc-leads';
+import type { CheckResult } from '../src/lib/scoring';
+import { bucketFromClassification, computeGapSeverity, rankCscLeads, formatCscLeads, extractDiscoveredCandidates } from '../src/tools/prioritize-csc-leads';
 import type { OwnershipBucket, CscLeadEntry } from '../src/tools/prioritize-csc-leads';
 
 const PRODUCT_ORDER: CscProductKey[] = ['csc_multilock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
@@ -192,5 +193,48 @@ describe('formatCscLeads', () => {
 		const compact = formatCscLeads(report, 'compact');
 		expect(compact.length).toBeLessThan(full.length);
 		expect(compact).toContain('hot.com');
+	});
+});
+
+describe('extractDiscoveredCandidates', () => {
+	function candidateResult(): CheckResult {
+		return {
+			category: 'brand_discovery',
+			passed: true,
+			score: 100,
+			findings: [
+				{ category: 'brand_discovery', title: 'Summary', severity: 'info', detail: '', metadata: { surfaced: 2 } },
+				{ category: 'brand_discovery', title: 'Brand candidate: owned.com', severity: 'low', detail: '', metadata: { candidate: 'owned.com', bucket: 'consolidated' } },
+				{ category: 'brand_discovery', title: 'Brand candidate: typo.com', severity: 'info', detail: '', metadata: { candidate: 'typo.com', bucket: 'impersonation' } },
+			],
+		} as unknown as CheckResult;
+	}
+
+	it('maps candidate findings to {domain, ownershipBucket}; ignores non-candidate findings', () => {
+		const out = extractDiscoveredCandidates(candidateResult());
+		expect(out).toEqual([
+			{ domain: 'owned.com', ownershipBucket: 'consolidated' },
+			{ domain: 'typo.com', ownershipBucket: 'impersonation' },
+		]);
+	});
+
+	it('defaults a candidate with no bucket metadata to indeterminate', () => {
+		const result = {
+			category: 'brand_discovery',
+			passed: true,
+			score: 100,
+			findings: [{ category: 'brand_discovery', title: 'Brand candidate: x.com', severity: 'info', detail: '', metadata: { candidate: 'x.com' } }],
+		} as unknown as CheckResult;
+		expect(extractDiscoveredCandidates(result)).toEqual([{ domain: 'x.com', ownershipBucket: 'indeterminate' }]);
+	});
+
+	it('returns [] when no finding carries a candidate (async-handoff / failure shape)', () => {
+		const result = {
+			category: 'brand_discovery',
+			passed: false,
+			score: 0,
+			findings: [{ category: 'brand_discovery', title: 'Brand audit requires async processing', severity: 'info', detail: '', metadata: { asyncHandoff: true } }],
+		} as unknown as CheckResult;
+		expect(extractDiscoveredCandidates(result)).toEqual([]);
 	});
 });
