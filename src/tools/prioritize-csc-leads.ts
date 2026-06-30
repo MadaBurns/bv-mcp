@@ -11,9 +11,15 @@
 
 import type { Bucket } from '../lib/brand-classification';
 import type { CscProductKey, CscPriority, CscProductReport } from './map-csc-products';
+import { evaluateCscProducts, extractLockPosture } from './map-csc-products';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import type { CheckResult } from '../lib/scoring';
+import { scanDomain } from './scan-domain';
+import { checkRdapLookup, RDAP_LOOKUP_SYNC_BUDGET_MS } from './check-rdap-lookup';
+import { brandAuditSingle } from './brand-audit-single';
+import { validateDomain, sanitizeDomain } from '../lib/sanitize';
+import type { ScanRuntimeOptions } from './scan/post-processing';
 
 /** Portfolio ownership lens (from classifyCandidate) + 'unknown' for a bare domain list. */
 export type OwnershipBucket =
@@ -236,4 +242,130 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 	}
 
 	return lines.join('\n').trimEnd();
+}
+
+const TOTAL_BUDGET_MS = 25_000; // parity with batch_scan
+const SCAN_CONCURRENCY = 3; // scan_domain is already ~16× parallel internally
+const LEAD_BUDGET = 10; // max leads ranked (parity with the domains[] cap)
+
+/** runtimeOptions accepted by the orchestrator — ScanRuntimeOptions plus the optional WHOIS binding the RDAP call threads. */
+export type CscRuntimeOptions = ScanRuntimeOptions & { whoisBinding?: { fetch: typeof fetch } };
+
+export type DiscoverPortfolioFn = (
+	brand: string,
+	opts: { kv?: KVNamespace; runtimeOptions?: CscRuntimeOptions; deadlineMs: number },
+) => Promise<DiscoveredCandidate[]>;
+
+export interface PrioritizeCscLeadsDeps {
+	/** Override the brand portfolio discoverer (default wraps brandAuditSingle). */
+	discoverPortfolio?: DiscoverPortfolioFn;
+}
+
+export interface PrioritizeCscLeadsArgsShape {
+	domains?: string[];
+	brand?: string;
+	force_refresh?: boolean;
+}
+
+/** Buckets CSC can actually sell a lock — preferred when truncating to LEAD_BUDGET. */
+const SELLABLE_BUCKETS: ReadonlySet<OwnershipBucket> = new Set<OwnershipBucket>(['consolidated', 'shadowIt']);
+
+/** Default brand discoverer — runs a bounded brand audit, then extracts candidates+buckets. */
+const defaultDiscoverPortfolio: DiscoverPortfolioFn = async (brand, opts) => {
+	const result = await brandAuditSingle(
+		brand,
+		{ timeoutBehavior: 'async_handoff', deadlineMs: opts.deadlineMs, kv: opts.kv, ...opts.runtimeOptions } as never,
+		{},
+	);
+	return extractDiscoveredCandidates(result);
+};
+
+/** Evaluate one domain → a CscLeadEntry (scan + RDAP + Spec B pure evaluation). */
+async function evaluateOne(domain: string, ownershipBucket: OwnershipBucket, kv: KVNamespace | undefined, runtimeOptions: CscRuntimeOptions | undefined): Promise<CscLeadEntry> {
+	const scanResult = await scanDomain(domain, kv, runtimeOptions);
+	const rdap = await checkRdapLookup(domain, {
+		whoisBinding: runtimeOptions?.whoisBinding,
+		signal: AbortSignal.timeout(RDAP_LOOKUP_SYNC_BUDGET_MS),
+		deadlineMs: Date.now() + RDAP_LOOKUP_SYNC_BUDGET_MS,
+	});
+	const lockPosture = extractLockPosture(rdap);
+	const report = evaluateCscProducts(scanResult.checks, lockPosture, domain, scanResult.score.overall, scanResult.score.grade);
+	return { report, ownershipBucket };
+}
+
+/**
+ * Prioritize CSC sales leads across a domain set or a brand portfolio (orchestrator — impure).
+ * Per-domain isolation + a wall-clock budget (batch_scan pattern): one bad domain
+ * lands in summary.skipped and never sinks the batch. NEVER throws a non-allowlisted error.
+ */
+export async function prioritizeCscLeads(
+	args: PrioritizeCscLeadsArgsShape,
+	kv?: KVNamespace,
+	runtimeOptions?: CscRuntimeOptions,
+	deps: PrioritizeCscLeadsDeps = {},
+): Promise<CscLeadReport> {
+	const deadline = Date.now() + TOTAL_BUDGET_MS;
+	const skipped: Array<{ domain: string; reason: string }> = [];
+	let brand: string | null = null;
+
+	// 1. Resolve the work set.
+	let work: Array<{ domain: string; ownershipBucket: OwnershipBucket }> = [];
+	if (args.brand != null) {
+		brand = args.brand;
+		const discover = deps.discoverPortfolio ?? defaultDiscoverPortfolio;
+		let candidates: DiscoveredCandidate[] = [];
+		try {
+			candidates = await discover(args.brand, { kv, runtimeOptions, deadlineMs: deadline });
+		} catch {
+			candidates = [];
+		}
+		if (candidates.length === 0) {
+			skipped.push({ domain: args.brand, reason: 'discovery_incomplete' });
+			return rankCscLeads([], brand, skipped);
+		}
+		// Prefer sellable buckets when truncating to the lead budget.
+		const ordered = [...candidates].sort((a, b) => Number(SELLABLE_BUCKETS.has(b.ownershipBucket)) - Number(SELLABLE_BUCKETS.has(a.ownershipBucket)));
+		work = ordered.slice(0, LEAD_BUDGET).map((c) => ({ domain: c.domain, ownershipBucket: c.ownershipBucket }));
+	} else {
+		const domains = (args.domains ?? []).slice(0, LEAD_BUDGET);
+		for (const raw of domains) {
+			const validation = validateDomain(raw);
+			if (!validation.valid) {
+				skipped.push({ domain: raw, reason: validation.error ?? 'invalid_domain' });
+				continue;
+			}
+			work.push({ domain: sanitizeDomain(raw), ownershipBucket: 'unknown' });
+		}
+	}
+
+	// 2. Evaluate with bounded concurrency + per-domain budget (batch_scan pattern).
+	const entries: CscLeadEntry[] = [];
+	let cursor = 0;
+	const worker = async (): Promise<void> => {
+		while (cursor < work.length) {
+			const task = work[cursor++];
+			if (!task) return;
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) {
+				skipped.push({ domain: task.domain, reason: 'budget_exceeded' });
+				continue;
+			}
+			let timeoutId: ReturnType<typeof setTimeout> | undefined;
+			try {
+				const evalPromise = evaluateOne(task.domain, task.ownershipBucket, kv, runtimeOptions);
+				const timeoutPromise = new Promise<never>((_, reject) => {
+					timeoutId = setTimeout(() => reject(new Error('budget_exceeded')), remaining);
+				});
+				entries.push(await Promise.race([evalPromise, timeoutPromise]));
+			} catch (err) {
+				skipped.push({ domain: task.domain, reason: err instanceof Error ? err.message : 'scan_failed' });
+			} finally {
+				if (timeoutId !== undefined) clearTimeout(timeoutId);
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: Math.max(1, Math.min(SCAN_CONCURRENCY, work.length || 1)) }, () => worker()));
+
+	// 3. Rank (pure).
+	return rankCscLeads(entries, brand, skipped);
 }
