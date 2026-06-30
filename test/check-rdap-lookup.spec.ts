@@ -608,3 +608,69 @@ describe('checkRdapLookup', () => {
 		});
 	});
 });
+
+describe('deriveLockPosture', () => {
+	async function derive(status: string[]) {
+		const { deriveLockPosture } = await import('../src/tools/check-rdap-lookup');
+		return deriveLockPosture(status);
+	}
+
+	it('empty status → unknown, all booleans false', async () => {
+		expect(await derive([])).toEqual({
+			level: 'unknown',
+			transferLocked: false,
+			deleteLocked: false,
+			updateLocked: false,
+			registryLevel: false,
+			registrarLevel: false,
+		});
+	});
+
+	it('client transfer prohibited (RDAP spaced form) → registrar-lock', async () => {
+		const p = await derive(['client transfer prohibited']);
+		expect(p.level).toBe('registrar-lock');
+		expect(p.registrarLevel).toBe(true);
+		expect(p.registryLevel).toBe(false);
+		expect(p.transferLocked).toBe(true);
+	});
+
+	it('serverTransferProhibited (EPP camelCase) → registry-lock', async () => {
+		const p = await derive(['serverTransferProhibited']);
+		expect(p.level).toBe('registry-lock');
+		expect(p.registryLevel).toBe(true);
+	});
+
+	it('full server lock set → registry-lock with all booleans true', async () => {
+		const p = await derive(['server transfer prohibited', 'server delete prohibited', 'server update prohibited']);
+		expect(p.level).toBe('registry-lock');
+		expect(p.transferLocked).toBe(true);
+		expect(p.deleteLocked).toBe(true);
+		expect(p.updateLocked).toBe(true);
+		expect(p.registryLevel).toBe(true);
+	});
+
+	it('clientUpdateProhibited only (no transfer lock) → unlocked', async () => {
+		const p = await derive(['clientUpdateProhibited']);
+		expect(p.level).toBe('unlocked');
+		expect(p.updateLocked).toBe(true);
+		expect(p.transferLocked).toBe(false);
+	});
+
+	it('active / ok (no prohibitions) → unlocked', async () => {
+		expect((await derive(['active'])).level).toBe('unlocked');
+		expect((await derive(['ok'])).level).toBe('unlocked');
+	});
+
+	it('mixed case + extra whitespace → still registry-lock (normalization)', async () => {
+		const p = await derive(['  Server Transfer Prohibited ']);
+		expect(p.level).toBe('registry-lock');
+		expect(p.registryLevel).toBe(true);
+	});
+
+	it('both client + server transfer present → registry-lock (server precedence)', async () => {
+		const p = await derive(['clientTransferProhibited', 'serverTransferProhibited']);
+		expect(p.level).toBe('registry-lock');
+		expect(p.registrarLevel).toBe(true);
+		expect(p.registryLevel).toBe(true);
+	});
+});

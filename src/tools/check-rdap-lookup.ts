@@ -12,6 +12,65 @@ import { safeFetch } from '../lib/safe-fetch';
 
 const CATEGORY = 'rdap' as CheckCategory;
 
+/** Domain lock posture derived from EPP/RDAP status codes (RFC 5731 / RFC 9083). */
+export interface LockPosture {
+	/** Highest-level posture: registry > registrar > unlocked; unknown when no status reported. */
+	level: 'registry-lock' | 'registrar-lock' | 'unlocked' | 'unknown';
+	/** Transfer prohibited at client OR server level. */
+	transferLocked: boolean;
+	/** Delete prohibited at client OR server level. */
+	deleteLocked: boolean;
+	/** Update prohibited at client OR server level. */
+	updateLocked: boolean;
+	/** Any server*Prohibited present → registry lock service in effect. */
+	registryLevel: boolean;
+	/** Any client*Prohibited present → basic registrar lock. */
+	registrarLevel: boolean;
+}
+
+/**
+ * Classify a domain's lock posture from its EPP/RDAP status codes.
+ *
+ * Handles BOTH value formats seen in the wild: EPP camelCase
+ * (`serverTransferProhibited`) and RDAP canonical space-separated lowercase
+ * (`server transfer prohibited`, per RFC 8056/9083). Normalizes by lowercasing
+ * and stripping all whitespace before matching. Pure; no I/O.
+ */
+export function deriveLockPosture(eppStatus: readonly string[]): LockPosture {
+	const norm = new Set((Array.isArray(eppStatus) ? eppStatus : []).map((s) => String(s).toLowerCase().replace(/\s+/g, '')));
+	const has = (code: string) => norm.has(code);
+
+	const serverTransfer = has('servertransferprohibited');
+	const serverDelete = has('serverdeleteprohibited');
+	const serverUpdate = has('serverupdateprohibited');
+	const clientTransfer = has('clienttransferprohibited');
+	const clientDelete = has('clientdeleteprohibited');
+	const clientUpdate = has('clientupdateprohibited');
+
+	const registryLevel = serverTransfer || serverDelete || serverUpdate;
+	const registrarLevel = clientTransfer || clientDelete || clientUpdate;
+
+	let level: LockPosture['level'];
+	if (norm.size === 0) {
+		level = 'unknown';
+	} else if (serverTransfer) {
+		level = 'registry-lock';
+	} else if (clientTransfer) {
+		level = 'registrar-lock';
+	} else {
+		level = 'unlocked';
+	}
+
+	return {
+		level,
+		transferLocked: serverTransfer || clientTransfer,
+		deleteLocked: serverDelete || clientDelete,
+		updateLocked: serverUpdate || clientUpdate,
+		registryLevel,
+		registrarLevel,
+	};
+}
+
 /**
  * Wall-clock budget for the synchronous `rdap_lookup` tool path, threaded into
  * the orchestrator as the caller AbortSignal AND as `deadlineMs` so retry
