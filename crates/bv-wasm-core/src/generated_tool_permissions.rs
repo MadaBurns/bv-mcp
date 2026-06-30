@@ -65,6 +65,7 @@ pub fn required_mode_for_tool(tool: &str) -> PermissionMode {
         "get_provider_insights" => PermissionMode::ReadOnly,
         "list_brand_audit_watches" => PermissionMode::ReadOnly,
         "map_compliance" => PermissionMode::ReadOnly,
+        "map_csc_products" => PermissionMode::ReadOnly,
         "map_supply_chain" => PermissionMode::ReadOnly,
         "osint_investigate_domain_start" => PermissionMode::WorkspaceWrite,
         "osint_investigate_email_start" => PermissionMode::WorkspaceWrite,

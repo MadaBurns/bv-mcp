@@ -16,6 +16,7 @@ import {
 	GetProviderInsightsArgs,
 	ValidateFixArgs,
 	MapSupplyChainArgs,
+	MapCscProductsArgs,
 	AnalyzeDriftArgs,
 	CheckFastFluxArgs,
 	CheckAgentDiscoveryArgs,
@@ -455,6 +456,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'intelligence',
 		scanIncluded: false,
 	},
+	map_csc_products: {
+		description:
+			'Map a domain’s observed security gaps to CSC commercial products (CSC MultiLock, Managed DMARC, Digital Certificates, DNSSEC management) for sales/upsell prioritization. Reads the scan plus RDAP lock posture. Distinct from map_compliance, which maps findings to compliance frameworks (NIST/PCI/SOC2/CIS).',
+		schema: MapCscProductsArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
 	simulate_attack_paths: {
 		description:
 			'Analyze current DNS posture and enumerate specific attack paths an adversary could exploit, with severity, feasibility, steps, and mitigations.',
@@ -785,6 +793,7 @@ export const NON_CHECK_RESULT_TOOLS = new Set<string>([
 	'resolve_spf_chain',
 	'discover_subdomains',
 	'map_compliance',
+	'map_csc_products',
 	'simulate_attack_paths',
 	// discover_brand_domains async trio — custom summary-metadata shape
 	'discover_brand_domains_start',

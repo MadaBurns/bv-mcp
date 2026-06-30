@@ -19,7 +19,7 @@
 import { describe, it, expect } from 'vitest';
 import { TOOLS } from '../../src/schemas/tool-definitions';
 
-const EXPECTED_TOOL_COUNT = 79;
+const EXPECTED_TOOL_COUNT = 80;
 
 describe('tool-count SSOT', () => {
 	it(`exposes exactly ${EXPECTED_TOOL_COUNT} tools (intentional acknowledgment gate)`, () => {

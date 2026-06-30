@@ -186,6 +186,9 @@ export const ValidateFixArgs = z
 /** map_supply_chain — same as BaseDomainArgs */
 export const MapSupplyChainArgs = BaseDomainArgs;
 
+/** map_csc_products — single-domain, no extra args */
+export const MapCscProductsArgs = BaseDomainArgs;
+
 /** analyze_drift */
 export const AnalyzeDriftArgs = z
 	.object({
@@ -665,6 +668,7 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	resolve_spf_chain: BaseDomainArgs,
 	discover_subdomains: BaseDomainArgs,
 	map_compliance: BaseDomainArgs,
+	map_csc_products: MapCscProductsArgs,
 	simulate_attack_paths: BaseDomainArgs,
 	check_dbl: BaseDomainArgs,
 	check_rbl: BaseDomainArgs,

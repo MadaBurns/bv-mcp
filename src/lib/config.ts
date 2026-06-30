@@ -312,6 +312,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	resolve_spf_chain: 15,
 	discover_subdomains: 0,
 	map_compliance: 5,
+	map_csc_products: 5,
 	simulate_attack_paths: 0,
 	check_dbl: 5,
 	check_rbl: 5,

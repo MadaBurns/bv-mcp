@@ -53,6 +53,7 @@ import { computeDrift, formatDriftReport } from '../tools/analyze-drift';
 import { resolveSpfChain, formatSpfChain } from '../tools/resolve-spf-chain';
 import { discoverSubdomains, formatSubdomainDiscovery, DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS } from '../tools/discover-subdomains';
 import { mapCompliance, formatCompliance } from '../tools/map-compliance';
+import { mapCscProducts, formatCscProducts } from '../tools/map-csc-products';
 import { simulateAttackPaths, formatAttackPaths } from '../tools/simulate-attack-paths';
 import { checkDbl } from '../tools/check-dbl';
 import { checkRbl } from '../tools/check-rbl';
@@ -1508,6 +1509,15 @@ export async function handleToolsCall(
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 					return buildToolResult(formatCompliance(result, effectiveFormat), result, effectiveFormat);
+				}
+				case 'map_csc_products': {
+					const forceRefresh = extractForceRefresh(validatedArgs);
+					const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
+					const result = await mapCscProducts(validDomain, scanCacheKV, scanOptions);
+					logResult = `${result.recommendedCount} recommended`;
+					logDetails = result;
+					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
+					return buildToolResult(formatCscProducts(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'simulate_attack_paths': {
 					const result = await simulateAttackPaths(validDomain, buildDnsOptions(runtimeOptions));
