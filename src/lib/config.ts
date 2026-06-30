@@ -243,6 +243,7 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		register_brand_audit_watch: 0,
 		delete_brand_audit_watch: 0,
 		list_brand_audit_watches: 0,
+		prioritize_csc_leads: 0,
 	},
 	free: {
 		discover_subdomains: 0,
@@ -267,6 +268,7 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		register_brand_audit_watch: 0,
 		delete_brand_audit_watch: 0,
 		list_brand_audit_watches: 0,
+		prioritize_csc_leads: 0,
 	},
 };
 
@@ -313,6 +315,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	discover_subdomains: 0,
 	map_compliance: 5,
 	map_csc_products: 5,
+	prioritize_csc_leads: 0,
 	simulate_attack_paths: 0,
 	check_dbl: 5,
 	check_rbl: 5,
@@ -380,6 +383,7 @@ export const GATED_PAID_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
 	// multi-domain tools (any multi-domain tool is paid)
 	'batch_scan',
 	'compare_domains',
+	'prioritize_csc_leads',
 	// already paid-only; folded in for a consistent upgrade message
 	'discover_brand_domains',
 	'discover_brand_domains_start',

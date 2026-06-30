@@ -17,6 +17,7 @@ import {
 	ValidateFixArgs,
 	MapSupplyChainArgs,
 	MapCscProductsArgs,
+	PrioritizeCscLeadsArgs,
 	AnalyzeDriftArgs,
 	CheckFastFluxArgs,
 	CheckAgentDiscoveryArgs,
@@ -463,6 +464,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'intelligence',
 		scanIncluded: false,
 	},
+	prioritize_csc_leads: {
+		description:
+			'Rank a brand’s portfolio (or an explicit domain set) into prioritized CSC sales leads by product-gap value × severity. Multi-domain, paid. Reuses map_csc_products per domain, then ranks. Distinct from map_csc_products (per-domain product mapping) and batch_scan (raw scores).',
+		schema: PrioritizeCscLeadsArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
 	simulate_attack_paths: {
 		description:
 			'Analyze current DNS posture and enumerate specific attack paths an adversary could exploit, with severity, feasibility, steps, and mitigations.',
@@ -794,6 +802,7 @@ export const NON_CHECK_RESULT_TOOLS = new Set<string>([
 	'discover_subdomains',
 	'map_compliance',
 	'map_csc_products',
+	'prioritize_csc_leads',
 	'simulate_attack_paths',
 	// discover_brand_domains async trio — custom summary-metadata shape
 	'discover_brand_domains_start',

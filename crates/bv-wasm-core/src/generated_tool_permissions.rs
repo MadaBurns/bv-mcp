@@ -74,6 +74,7 @@ pub fn required_mode_for_tool(tool: &str) -> PermissionMode {
         "osint_investigate_username_start" => PermissionMode::WorkspaceWrite,
         "osint_investigation_report" => PermissionMode::ReadOnly,
         "osint_investigation_status" => PermissionMode::ReadOnly,
+        "prioritize_csc_leads" => PermissionMode::ReadOnly,
         "query_signins" => PermissionMode::ReadOnly,
         "query_ual" => PermissionMode::ReadOnly,
         "rdap_lookup" => PermissionMode::ReadOnly,

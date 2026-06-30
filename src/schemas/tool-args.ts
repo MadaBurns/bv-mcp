@@ -189,6 +189,29 @@ export const MapSupplyChainArgs = BaseDomainArgs;
 /** map_csc_products — single-domain, no extra args */
 export const MapCscProductsArgs = BaseDomainArgs;
 
+/** prioritize_csc_leads — multi-domain OR a brand seed (exactly one). */
+export const PrioritizeCscLeadsArgs = z
+	.object({
+		domains: z
+			.array(z.string().min(1).max(253))
+			.min(1)
+			.max(10)
+			.optional()
+			.describe('Explicit domain set to rank (max 10). Ownership bucket = "unknown".'),
+		brand: z
+			.string()
+			.min(1)
+			.max(253)
+			.optional()
+			.describe('Brand seed apex; discovers the portfolio, derives ownership buckets, then ranks the top candidates.'),
+		force_refresh: z.boolean().optional().describe('Bypass cache and run fresh scans.'),
+		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
+	})
+	.passthrough()
+	.refine((v) => (v.domains == null) !== (v.brand == null), {
+		message: 'Provide exactly one of `domains` or `brand`.',
+	});
+
 /** analyze_drift */
 export const AnalyzeDriftArgs = z
 	.object({
@@ -669,6 +692,7 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	discover_subdomains: BaseDomainArgs,
 	map_compliance: BaseDomainArgs,
 	map_csc_products: MapCscProductsArgs,
+	prioritize_csc_leads: PrioritizeCscLeadsArgs,
 	simulate_attack_paths: BaseDomainArgs,
 	check_dbl: BaseDomainArgs,
 	check_rbl: BaseDomainArgs,
