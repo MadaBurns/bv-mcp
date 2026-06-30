@@ -11,6 +11,8 @@
 
 import type { Bucket } from '../lib/brand-classification';
 import type { CscProductKey, CscPriority, CscProductReport } from './map-csc-products';
+import type { OutputFormat } from '../handlers/tool-args';
+import { sanitizeOutputText } from '../lib/output-sanitize';
 
 /** Portfolio ownership lens (from classifyCandidate) + 'unknown' for a bare domain list. */
 export type OwnershipBucket =
@@ -163,4 +165,44 @@ export function rankCscLeads(
 			skipped,
 		},
 	};
+}
+
+/** Render a ranked CSC lead report for display. */
+export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'full'): string {
+	const lines: string[] = [];
+	const brandLabel = report.brand ? sanitizeOutputText(report.brand, 253) : 'domain set';
+
+	if (format === 'compact') {
+		lines.push(`CSC leads (${brandLabel}): ${report.totalDomains} ranked, ${report.summary.hotLeads} hot`);
+		for (const lead of report.rankedLeads) {
+			lines.push(
+				`${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${lead.gapSeverity} — ${lead.score}/100 (${lead.grade}) — ${lead.recommendedCount} product(s)`,
+			);
+		}
+		return lines.join('\n').trimEnd();
+	}
+
+	lines.push(`# CSC Sales Leads: ${brandLabel}`);
+	lines.push(`**${report.totalDomains}** domain(s) ranked | **${report.summary.hotLeads}** hot lead(s)`);
+	lines.push('');
+	for (const lead of report.rankedLeads) {
+		lines.push(`## ${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — gap severity ${lead.gapSeverity}`);
+		lines.push(`  - Score: ${lead.score}/100 (${lead.grade}) | Ownership: ${lead.ownershipBucket} | Top priority: ${lead.topPriority}`);
+		if (lead.recommendedCscProducts.length > 0) {
+			lines.push(`  - Recommended CSC products: ${lead.recommendedCscProducts.join(', ')}`);
+		} else {
+			lines.push('  - No CSC upsell — posture clean');
+		}
+	}
+	lines.push('');
+	lines.push('## Summary');
+	lines.push(`  - Total recommendations: ${report.summary.totalRecommendations}`);
+	for (const key of CSC_PRODUCT_ORDER) {
+		lines.push(`  - ${key}: ${report.summary.byProduct[key]} domain(s)`);
+	}
+	if (report.summary.skipped.length > 0) {
+		lines.push(`  - Skipped: ${report.summary.skipped.map((s) => `${sanitizeOutputText(s.domain, 253)} (${sanitizeOutputText(s.reason, 60)})`).join(', ')}`);
+	}
+
+	return lines.join('\n').trimEnd();
 }

@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Bucket } from '../src/lib/brand-classification';
 import type { CscProductKey, CscPriority, CscProductReport, CscProductRecommendation } from '../src/tools/map-csc-products';
-import { bucketFromClassification, computeGapSeverity, rankCscLeads } from '../src/tools/prioritize-csc-leads';
+import { bucketFromClassification, computeGapSeverity, rankCscLeads, formatCscLeads } from '../src/tools/prioritize-csc-leads';
 import type { OwnershipBucket, CscLeadEntry } from '../src/tools/prioritize-csc-leads';
 
 const PRODUCT_ORDER: CscProductKey[] = ['csc_multilock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
@@ -163,5 +163,34 @@ describe('rankCscLeads — summary', () => {
 		const e = entry('z.com', 50, 'F', [], 'unknown');
 		expect(rankCscLeads([e], 'acme').brand).toBe('acme');
 		expect(rankCscLeads([e]).brand).toBeNull();
+	});
+});
+
+describe('formatCscLeads', () => {
+	function sampleReport() {
+		const hot = entry('hot.com', 40, 'F', [rec('csc_multilock', true, 'high'), rec('managed_dmarc', true, 'high')], 'consolidated');
+		const cold = entry('cold.com', 95, 'A+', [], 'unknown');
+		return rankCscLeads([hot, cold], 'acme');
+	}
+
+	it('full output lists leads in rank order with domain, score/grade, products and a summary block', () => {
+		const out = formatCscLeads(sampleReport(), 'full');
+		expect(out).toContain('acme');
+		expect(out).toContain('hot.com');
+		expect(out).toContain('cold.com');
+		expect(out).toContain('40/100');
+		expect(out).toContain('csc_multilock');
+		// rank order: hot.com (rank 1) appears before cold.com
+		expect(out.indexOf('hot.com')).toBeLessThan(out.indexOf('cold.com'));
+		// a summary rollup is present
+		expect(out.toLowerCase()).toContain('summary');
+	});
+
+	it('compact output is shorter than full and still names the top lead', () => {
+		const report = sampleReport();
+		const full = formatCscLeads(report, 'full');
+		const compact = formatCscLeads(report, 'compact');
+		expect(compact.length).toBeLessThan(full.length);
+		expect(compact).toContain('hot.com');
 	});
 });
