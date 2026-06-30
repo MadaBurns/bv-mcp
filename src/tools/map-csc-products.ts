@@ -10,6 +10,8 @@
 
 import type { CheckResult } from '../lib/scoring';
 import type { LockPosture } from './check-rdap-lookup';
+import type { OutputFormat } from '../handlers/tool-args';
+import { sanitizeOutputText } from '../lib/output-sanitize';
 
 export type CscProductKey = 'csc_multilock' | 'managed_dmarc' | 'digital_certificates' | 'dnssec_management';
 
@@ -138,4 +140,36 @@ export function extractLockPosture(rdap: CheckResult): LockPosture | null {
 		if (posture && typeof posture === 'object') return posture as LockPosture;
 	}
 	return null;
+}
+
+const CSC_PRODUCT_ORDER: CscProductKey[] = ['csc_multilock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
+
+/** Render a CSC product report for display. */
+export function formatCscProducts(report: CscProductReport, format: OutputFormat = 'full'): string {
+	const lines: string[] = [];
+	const byKey = new Map(report.recommendations.map((r) => [r.product, r]));
+
+	if (format === 'compact') {
+		lines.push(`CSC products: ${sanitizeOutputText(report.domain, 253)} — ${report.score}/100 (${report.grade}) — ${report.recommendedCount} upsell(s)`);
+		for (const key of CSC_PRODUCT_ORDER) {
+			const r = byKey.get(key)!;
+			const icon = r.recommended ? ' →' : ' ✓';
+			const suffix = r.recommended ? ` [${r.priority}] ${sanitizeOutputText(r.justifyingGap, 80)}` : '';
+			lines.push(`${icon} ${sanitizeOutputText(r.productName, 40)}${suffix}`);
+		}
+	} else {
+		lines.push(`# CSC Product Recommendations: ${sanitizeOutputText(report.domain, 253)}`);
+		lines.push(`**Score:** ${report.score}/100 (${report.grade}) | **${report.recommendedCount}** recommended`);
+		lines.push('');
+		for (const key of CSC_PRODUCT_ORDER) {
+			const r = byKey.get(key)!;
+			const icon = r.recommended ? '✅' : '➖';
+			const tag = r.recommended ? ` — ${r.priority.toUpperCase()}` : ' — OK';
+			lines.push(`${icon} **${sanitizeOutputText(r.productName, 40)}**${tag}`);
+			lines.push(`  - ${sanitizeOutputText(r.justifyingGap, 160)}`);
+			for (const f of r.relatedFindings) lines.push(`  - ${sanitizeOutputText(f, 120)}`);
+		}
+	}
+
+	return lines.join('\n').trimEnd();
 }

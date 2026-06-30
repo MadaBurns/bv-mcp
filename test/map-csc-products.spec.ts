@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import type { CheckResult } from '../src/lib/scoring';
 import type { LockPosture } from '../src/tools/check-rdap-lookup';
-import { evaluateCscProducts, extractLockPosture } from '../src/tools/map-csc-products';
+import { evaluateCscProducts, extractLockPosture, formatCscProducts } from '../src/tools/map-csc-products';
 import type { CscProductReport, CscProductRecommendation } from '../src/tools/map-csc-products';
 
 /** Minimal CheckResult fixture. */
@@ -174,5 +174,37 @@ describe('extractLockPosture', () => {
 			findings: [{ category: 'rdap', title: 'RDAP lookup failed', severity: 'low', detail: '', metadata: { registrarSource: 'lookup_failed' } }],
 		} as unknown as CheckResult;
 		expect(extractLockPosture(rdap)).toBeNull();
+	});
+});
+
+describe('formatCscProducts', () => {
+	function sampleReport(): CscProductReport {
+		return evaluateCscProducts(
+			[makeCheck('dmarc', false, [{ title: 'No DMARC record', severity: 'high' }]), makeCheck('ssl', true), makeCheck('dnssec', true)],
+			lp({ level: 'unlocked', transferLocked: false }),
+			'fmt.com',
+			55,
+			'F',
+		);
+	}
+
+	it('full output names every product and shows justifyingGap for recommended lines', () => {
+		const out = formatCscProducts(sampleReport(), 'full');
+		expect(out).toContain('CSC MultiLock');
+		expect(out).toContain('Managed DMARC');
+		expect(out).toContain('Digital Certificates');
+		expect(out).toContain('DNSSEC management');
+		expect(out).toContain('fmt.com');
+		// recommended MultiLock + DMARC gaps surfaced
+		expect(out).toContain('Domain transfer not locked');
+		expect(out).toContain('DMARC present but not passing');
+	});
+
+	it('compact output is shorter than full and still names the products', () => {
+		const report = sampleReport();
+		const full = formatCscProducts(report, 'full');
+		const compact = formatCscProducts(report, 'compact');
+		expect(compact.length).toBeLessThan(full.length);
+		expect(compact).toContain('CSC MultiLock');
 	});
 });
