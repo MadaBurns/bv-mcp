@@ -798,6 +798,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 
 	// EPP status
 	const eppStatus = Array.isArray(rdapData.status) ? rdapData.status : [];
+	const lockPosture = deriveLockPosture(eppStatus);
 
 	// Build metadata
 	const metadata: Record<string, unknown> = {
@@ -812,6 +813,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 		expirationDate: expirationEvent?.eventDate ?? null,
 		lastChanged: lastChangedEvent?.eventDate ?? null,
 		eppStatus,
+		lockPosture,
 		rdapServer: rdapServerUrl,
 	};
 
@@ -850,6 +852,41 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 		);
 	}
 
+	// Lock posture finding (transfer-driven; at most one). Severities per Spec A:
+	// only a genuine gap (unlocked) escalates above info; the MultiLock upsell is
+	// derived by the sales layer from metadata.lockPosture.level, not from severity.
+	if (lockPosture.level === 'unlocked') {
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'Domain transfer not locked',
+				'medium',
+				`${domain} has no transfer-prohibited status at the registrar or registry level. Without a transfer lock the domain is exposed to unauthorized transfer (domain hijacking). Recommend enabling at minimum a registrar transfer lock (clientTransferProhibited).`,
+				metadata,
+			),
+		);
+	} else if (lockPosture.level === 'registrar-lock') {
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'Registrar lock active (no registry lock)',
+				'info',
+				`${domain} has a registrar-level transfer lock but no registry-level (server) lock. A registry lock adds out-of-band manual authorization for the strongest protection against unauthorized transfer.`,
+				metadata,
+			),
+		);
+	} else if (lockPosture.level === 'registry-lock') {
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'Registry lock active',
+				'info',
+				`${domain} has a registry-level transfer lock (server-prohibited), the strongest standard protection against unauthorized transfer.`,
+				metadata,
+			),
+		);
+	}
+
 	// Info: standard registration details (always present)
 	const parts: string[] = [];
 	if (registrarName) parts.push(`Registrar: ${registrarName}`);
@@ -859,6 +896,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 	if (expirationEvent?.eventDate) parts.push(`Expires: ${expirationEvent.eventDate.split('T')[0]}`);
 	if (lastChangedEvent?.eventDate) parts.push(`Updated: ${lastChangedEvent.eventDate.split('T')[0]}`);
 	if (eppStatus.length > 0) parts.push(`Status: ${eppStatus.join(', ')}`);
+	if (lockPosture.level !== 'unknown') parts.push(`Lock posture: ${lockPosture.level}`);
 	if (domainAgeDays !== null) parts.push(`Age: ${domainAgeDays} days`);
 
 	findings.push(

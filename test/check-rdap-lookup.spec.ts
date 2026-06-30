@@ -607,6 +607,54 @@ describe('checkRdapLookup', () => {
 			expect(bootstrapFetchCount).toBe(1);
 		});
 	});
+
+	async function runWithStatus(status: string[]) {
+		globalThis.fetch = mockFetchRouter({
+			'data.iana.org/rdap/dns.json': () => makeBootstrap(),
+			'rdap.verisign.com': () => makeRdapResponse({ status }),
+		});
+		return run();
+	}
+
+	it('unlocked domain → one medium "transfer not locked" finding', async () => {
+		const result = await runWithStatus(['active']);
+		const medium = result.findings.find((f) => f.severity === 'medium' && /transfer not locked/i.test(f.title));
+		expect(medium).toBeDefined();
+	});
+
+	it('registrar-lock (default fixture) → info "Registrar lock active", no medium/low lock finding', async () => {
+		const result = await runWithStatus(['clientTransferProhibited', 'serverDeleteProhibited']);
+		const info = result.findings.find((f) => /registrar lock active/i.test(f.title));
+		expect(info).toBeDefined();
+		expect(info!.severity).toBe('info');
+		expect(result.findings.find((f) => /transfer not locked/i.test(f.title))).toBeUndefined();
+	});
+
+	it('registry-lock → info "Registry lock active", no medium', async () => {
+		const result = await runWithStatus(['serverTransferProhibited', 'serverDeleteProhibited', 'serverUpdateProhibited']);
+		const info = result.findings.find((f) => /^registry lock active/i.test(f.title));
+		expect(info).toBeDefined();
+		expect(info!.severity).toBe('info');
+		expect(result.findings.find((f) => f.severity === 'medium' && /transfer not locked/i.test(f.title))).toBeUndefined();
+	});
+
+	it('exposes metadata.lockPosture with the expected shape', async () => {
+		const result = await runWithStatus(['serverTransferProhibited']);
+		const withPosture = result.findings.find((f) => f.metadata?.lockPosture);
+		expect(withPosture).toBeDefined();
+		expect(withPosture!.metadata!.lockPosture).toMatchObject({ level: 'registry-lock', registryLevel: true });
+	});
+
+	it('Registration details info string includes "Lock posture:"', async () => {
+		const result = await runWithStatus(['clientTransferProhibited']);
+		const info = result.findings.find((f) => f.severity === 'info' && f.title.toLowerCase().includes('registration'));
+		expect(info!.detail).toMatch(/Lock posture: registrar-lock/);
+	});
+
+	it('empty status → no lock finding added', async () => {
+		const result = await runWithStatus([]);
+		expect(result.findings.find((f) => /transfer not locked|registrar lock active|registry lock active/i.test(f.title))).toBeUndefined();
+	});
 });
 
 describe('deriveLockPosture', () => {
