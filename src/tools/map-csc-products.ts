@@ -10,6 +10,9 @@
 
 import type { CheckResult } from '../lib/scoring';
 import type { LockPosture } from './check-rdap-lookup';
+import { checkRdapLookup, RDAP_LOOKUP_SYNC_BUDGET_MS } from './check-rdap-lookup';
+import { scanDomain } from './scan-domain';
+import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 
@@ -172,4 +175,22 @@ export function formatCscProducts(report: CscProductReport, format: OutputFormat
 	}
 
 	return lines.join('\n').trimEnd();
+}
+
+/** runtimeOptions accepted by the orchestrator — ScanRuntimeOptions plus the optional WHOIS binding the RDAP call threads. */
+type CscRuntimeOptions = ScanRuntimeOptions & { whoisBinding?: { fetch: typeof fetch } };
+
+/**
+ * Map a domain's security gaps to CSC products (orchestrator — the only impure unit).
+ * Runs a full scan (cached) + a budget-bounded RDAP lookup, then evaluates.
+ */
+export async function mapCscProducts(domain: string, kv?: KVNamespace, runtimeOptions?: CscRuntimeOptions): Promise<CscProductReport> {
+	const scanResult = await scanDomain(domain, kv, runtimeOptions);
+	const rdap = await checkRdapLookup(domain, {
+		whoisBinding: runtimeOptions?.whoisBinding,
+		signal: AbortSignal.timeout(RDAP_LOOKUP_SYNC_BUDGET_MS),
+		deadlineMs: Date.now() + RDAP_LOOKUP_SYNC_BUDGET_MS,
+	});
+	const lockPosture = extractLockPosture(rdap);
+	return evaluateCscProducts(scanResult.checks, lockPosture, domain, scanResult.score.overall, scanResult.score.grade);
 }
