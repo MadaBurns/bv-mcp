@@ -8,6 +8,7 @@ import { IN_MEMORY_CACHE } from '../src/lib/cache';
 
 const mockScanDomain = vi.fn();
 const mockCheckRdap = vi.fn();
+const mockBrandAuditSingle = vi.fn();
 
 vi.mock('../src/tools/scan-domain', () => ({
 	scanDomain: (...args: unknown[]) => mockScanDomain(...args),
@@ -18,6 +19,14 @@ vi.mock('../src/tools/check-rdap-lookup', async (importOriginal) => {
 	return {
 		...orig,
 		checkRdapLookup: (...args: unknown[]) => mockCheckRdap(...args),
+	};
+});
+
+vi.mock('../src/tools/brand-audit-single', async (importOriginal) => {
+	const orig = await importOriginal<typeof import('../src/tools/brand-audit-single')>();
+	return {
+		...orig,
+		brandAuditSingle: (...args: unknown[]) => mockBrandAuditSingle(...args),
 	};
 });
 
@@ -42,6 +51,7 @@ const lp = (over: Partial<LockPosture>): LockPosture => ({ level: 'unknown', tra
 afterEach(() => {
 	mockScanDomain.mockReset();
 	mockCheckRdap.mockReset();
+	mockBrandAuditSingle.mockReset();
 	IN_MEMORY_CACHE.clear();
 });
 
@@ -132,5 +142,49 @@ describe('prioritizeCscLeads — brand path (injected discovery)', () => {
 		expect(report.brand).toBe('empty');
 		expect(report.rankedLeads).toEqual([]);
 		expect(report.summary.skipped.some((s) => s.reason === 'discovery_incomplete')).toBe(true);
+	});
+});
+
+describe('prioritizeCscLeads — brand path (real defaultDiscoverPortfolio, no injected deps)', () => {
+	it('calls brandAuditSingle with async_handoff + deadlineMs and WITHOUT kv; extracts candidates into a ranked report', async () => {
+		// brandAuditSingle returns a result with one consolidated candidate
+		const candidateResult = {
+			category: 'brand_discovery',
+			passed: true,
+			score: 100,
+			findings: [
+				{
+					category: 'brand_discovery',
+					title: 'Brand candidate: portfolio.com',
+					severity: 'info',
+					detail: '',
+					metadata: { candidate: 'portfolio.com', bucket: 'consolidated' },
+				},
+			],
+		};
+		mockBrandAuditSingle.mockResolvedValue(candidateResult);
+
+		// evaluateOne (scan + RDAP) for the discovered candidate
+		mockScanDomain.mockResolvedValue({ checks: [], score: { overall: 80, grade: 'B' } });
+		mockCheckRdap.mockResolvedValue(rdapFailed());
+
+		const { prioritizeCscLeads } = await import('../src/tools/prioritize-csc-leads');
+		// Omit deps entirely — exercises defaultDiscoverPortfolio (the real brand path)
+		const report = await prioritizeCscLeads({ brand: 'real-brand' });
+
+		// brandAuditSingle was called by defaultDiscoverPortfolio
+		expect(mockBrandAuditSingle).toHaveBeenCalledOnce();
+		const [target, options] = mockBrandAuditSingle.mock.calls[0] as [string, Record<string, unknown>];
+		expect(target).toBe('real-brand');
+		expect(options.timeoutBehavior).toBe('async_handoff');
+		expect(typeof options.deadlineMs).toBe('number');
+		// kv was the latent bug — it is not part of BrandAuditSingleOptions and must not be forwarded
+		expect(options).not.toHaveProperty('kv');
+
+		// The discovered candidate feeds into the lead report
+		expect(report.brand).toBe('real-brand');
+		expect(report.totalDomains).toBe(1);
+		expect(report.rankedLeads[0].domain).toBe('portfolio.com');
+		expect(report.rankedLeads[0].ownershipBucket).toBe('consolidated');
 	});
 });

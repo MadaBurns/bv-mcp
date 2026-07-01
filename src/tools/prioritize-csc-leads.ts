@@ -272,11 +272,11 @@ const SELLABLE_BUCKETS: ReadonlySet<OwnershipBucket> = new Set<OwnershipBucket>(
 
 /** Default brand discoverer — runs a bounded brand audit, then extracts candidates+buckets. */
 const defaultDiscoverPortfolio: DiscoverPortfolioFn = async (brand, opts) => {
-	const result = await brandAuditSingle(
-		brand,
-		{ timeoutBehavior: 'async_handoff', deadlineMs: opts.deadlineMs, kv: opts.kv, ...opts.runtimeOptions } as never,
-		{},
-	);
+	// Pass only the fields BrandAuditSingleOptions accepts: timeoutBehavior + deadlineMs.
+	// kv is not part of BrandAuditPipelineOptions (the latent bug hidden by `as never`).
+	// ScanRuntimeOptions fields spread in from opts.runtimeOptions are silently ignored
+	// by the pipeline; the spread is kept for any future overlap but is currently a no-op.
+	const result = await brandAuditSingle(brand, { timeoutBehavior: 'async_handoff', deadlineMs: opts.deadlineMs, ...opts.runtimeOptions }, {});
 	return extractDiscoveredCandidates(result);
 };
 
