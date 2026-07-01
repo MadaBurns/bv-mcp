@@ -968,7 +968,9 @@ describe('DNS Security MCP Server', () => {
 			expect(body.error.message).toContain('session expired or terminated');
 		});
 
-		it('GET /mcp returns 406 when Accept does not include text/event-stream', async () => {
+		it('GET /mcp returns 405 (per MCP spec) when Accept cannot satisfy text/event-stream', async () => {
+			// MCP 2025-06-18 Streamable HTTP: a GET to the MCP endpoint returns an SSE stream or
+			// 405 Method Not Allowed — 405, not 406, is the status clients handle as "use POST".
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'GET',
 				headers: {
@@ -978,7 +980,26 @@ describe('DNS Security MCP Server', () => {
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
-			expect(response.status).toBe(406);
+			expect(response.status).toBe(405);
+			expect(response.headers.get('allow')).toContain('POST');
+		});
+
+		it('GET /mcp accepts a wildcard Accept (*/*) for the SSE stream — passes the accept gate', async () => {
+			// RFC 9110 content negotiation: `Accept: */*` DOES accept text/event-stream, so it must
+			// not be rejected at the SSE-accept gate. It should fall through to the normal session
+			// check (400 missing session), NOT 405/406.
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'GET',
+				headers: {
+					Accept: '*/*',
+				},
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(400);
+			const body = (await response.json()) as { error: { message: string } };
+			expect(body.error.message).toContain('missing session');
 		});
 
 		it('GET /mcp requires an existing session header', async () => {
