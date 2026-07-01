@@ -364,6 +364,57 @@ describe('POST /oauth/token', () => {
 		expect(payload.error).toBe('service_unavailable');
 	});
 
+	it('rejects with invalid_request when the request Host does not match the pinned OAUTH_ISSUER (fail closed)', async () => {
+		// Hardening (security-audit item 9): when OAUTH_ISSUER is pinned, a token request arriving
+		// on a different Host must NOT mint a JWT. resolveIssuerStrict rejects the Host mismatch
+		// instead of silently normalizing to the pinned issuer, so a spoofed Host can never bake an
+		// anomalous origin into a minted credential. Cloudflare's route binding already constrains
+		// Host in prod — this is the fail-closed defense-in-depth layer behind it.
+		const { verifier, challenge } = await pkcePair();
+		const cid = await registerClient();
+		const code = await getAuthCode(cid, challenge);
+		expect(code).not.toBe('');
+		// postToken issues to https://example.com/oauth/token → Host ('example.com') ≠ pinned host.
+		const pinnedEnv = { ...authEnv, OAUTH_ISSUER: 'https://dns-mcp.blackveilsecurity.com' } as TestEnv;
+		const res = await postToken(
+			new URLSearchParams({
+				grant_type: 'authorization_code',
+				code,
+				client_id: cid,
+				redirect_uri: 'https://claude.ai/cb',
+				code_verifier: verifier,
+			}),
+			pinnedEnv,
+		);
+		expect(res.status).toBe(400);
+		expect(((await res.json()) as Record<string, unknown>).error).toBe('invalid_request');
+	});
+
+	it('mints normally when the request Host matches the pinned OAUTH_ISSUER (happy-path regression guard)', async () => {
+		const { verifier, challenge } = await pkcePair();
+		const cid = await registerClient();
+		const code = await getAuthCode(cid, challenge);
+		expect(code).not.toBe('');
+		// Pinned issuer host == request Host (example.com) → strict resolution succeeds, token mints.
+		const pinnedEnv = { ...authEnv, OAUTH_ISSUER: 'https://example.com' } as TestEnv;
+		const res = await postToken(
+			new URLSearchParams({
+				grant_type: 'authorization_code',
+				code,
+				client_id: cid,
+				redirect_uri: 'https://claude.ai/cb',
+				code_verifier: verifier,
+			}),
+			pinnedEnv,
+		);
+		expect(res.status).toBe(200);
+		const tok = (await res.json()) as { access_token: string };
+		const [, payload] = tok.access_token.split('.');
+		const claims = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as Record<string, unknown>;
+		expect(claims.iss).toBe('https://example.com');
+		expect(claims.aud).toBe('https://example.com/mcp');
+	});
+
 	it('rate-limits token requests at 30/min per IP', async () => {
 		// Mirrors the fixed-window limiter pattern in authorize.ts: 30 requests per IP per 60s.
 		// The 31st call from the same IP must return 429 with invalid_request. We fire requests

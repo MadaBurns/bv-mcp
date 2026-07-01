@@ -173,6 +173,26 @@ describe('POST /mcp Bearer JWT acceptance', () => {
 		expect(res.status).toBe(401);
 	});
 
+	it('OAUTH_ISSUER pinned → valid JWT presented over a non-canonical Host → 401 (fail closed)', async () => {
+		// Hardening (security-audit item 9): with OAUTH_ISSUER pinned, the verify path pins the
+		// expected issuer regardless of Host — so Host-injection can't forge acceptance. Wiring
+		// resolveIssuerStrict makes it additionally FAIL CLOSED: a request arriving on a Host that
+		// differs from the pinned issuer is rejected (falls through to the static-key path, which a
+		// 3-segment JWT can't satisfy → 401) rather than silently normalized. Legit OAuth traffic
+		// always arrives on the canonical Host, so this only rejects anomalous/alternate-Host calls.
+		const { token } = await mintOAuthJwt({ issuer: 'https://example.com' }); // iss = pinned host
+		// jwtEnv pins OAUTH_ISSUER to https://example.com, but present the token over a different Host.
+		const req = new Request<unknown, IncomingRequestCfProperties>('https://spoofed.example/mcp', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, jwtEnv, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(401);
+	});
+
 	it('expired JWT → 401', async () => {
 		// ttlSeconds: -60 puts exp well past the clock-skew window, so verifyJwt throws
 		// `token expired`. Control flow falls through to the static-key branch which also
