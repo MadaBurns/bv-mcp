@@ -1,6 +1,6 @@
 name: BlackVeil DNS Security MCP
 description: >-
-  DNS and email security scanner with 81 MCP tools. Bulk-scan multiple domains
+  DNS and email security scanner with 80 MCP tools. Bulk-scan multiple domains
   at once, benchmark against the industry average and sector percentile, detect
   whether a domain's posture improved or regressed via drift analysis, and catch
   SubdoMailing risks where an SPF include chain exposes a dangling domain.
