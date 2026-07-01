@@ -4,7 +4,7 @@ import type { CheckResult } from '../lib/scoring';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
 import { buildCheckCacheKey, buildScanCacheKey, runWithCacheTracked } from '../lib/cache';
 import { withRequestDedup } from '../lib/request-dedup';
-import { isAuthRequiredTool } from '../lib/config';
+import { isAuthRequiredTool, isInternalOnlyTool } from '../lib/config';
 import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { checkSpf } from '../tools/check-spf';
 import { checkSubdomainTakeover } from '../tools/check-subdomain-takeover';
@@ -140,7 +140,9 @@ interface WireTool {
  */
 export function handleToolsList(): { tools: WireTool[] } {
 	return {
-		tools: TOOLS.map((tool) => ({
+		// Internal-only tools (INTERNAL_ONLY_TOOLS, e.g. map_csc_products) stay in
+		// TOOLS for internal-path callability but are hidden from the PUBLIC surface.
+		tools: TOOLS.filter((tool) => !isInternalOnlyTool(tool.name)).map((tool) => ({
 			name: tool.name,
 			description: tool.description,
 			inputSchema: tool.inputSchema,
