@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.29.0] - 2026-07-01
+
+Minor release: **CSC portal backend prerequisites** (unblocks the deferred bv-web-prod "Penumbra" portal) plus a small info-disclosure hardening. Surfaced by grounding the portal design against the live bv-web-prod codebase.
+
+### Added
+
+- **Internal `?format=structured` now surfaces custom-shape tools' `structuredContent` as top-level `result`** (`src/internal.ts`, `/internal/tools/call`). Previously only CheckResult tools (via `resultCapture`) returned a top-level `result`; custom-shape tools (`prioritize_csc_leads`, `map_csc_products`, `scan_domain`) exposed their report only under `structuredContent`. bv-web's internal door reads `payload.result`, so it would have received `undefined` for those tools. The change is **additive** — the MCP-framed `content`/`structuredContent` fields are preserved, so existing `?format=structured` callers are unaffected; new callers get the report under `result`.
+
+### Security
+
+- **Unknown-tool error message no longer reveals a tool count.** Both the dispatch (`src/handlers/tools.ts`) and the public internal-only rejection (`src/mcp/execute.ts`) previously said "Call tools/list to see all N available tools" using the raw `TOOLS.length` (81). Since the public `tools/list` is 80 (internal-only `map_csc_products` hidden, 3.27.1), the aggregate count hinted that a hidden tool exists. Both messages now omit the count and stay byte-identical, so an internal-only tool remains indistinguishable from a nonexistent one. `smithery.yaml` and its audit corrected to the public count (80).
+
 ## [3.28.0] - 2026-07-01
 
 Minor release: brand-level **portfolio grade rollup** on `prioritize_csc_leads` (Spec D backend prerequisite). Unblocks the deferred bv-web-prod CSC portal by moving the brand-grade math into bv-mcp so the portal consumes one SSOT-sourced letter instead of forking the scoring engine client-side.

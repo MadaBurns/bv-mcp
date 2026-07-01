@@ -1604,7 +1604,7 @@ export async function handleToolsCall(
 				}
 				default:
 					logToolFailure({ ...ctx(), error: `Unknown tool: ${name}`, args });
-					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see all ${TOOLS.length} available tools.`);
+					return buildToolErrorResult(`Unknown tool: ${name}. Call tools/list to see the available tools.`);
 			}
 		};
 

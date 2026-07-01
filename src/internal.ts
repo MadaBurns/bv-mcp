@@ -307,10 +307,19 @@ internalRoutes.post('/tools/call', async (c) => {
 		});
 	}
 
-	// If structured format was requested and a CheckResult was captured (TOOL_REGISTRY tools only),
-	// return the raw result instead of MCP-framed text.
+	// If structured format was requested and a CheckResult was captured (TOOL_REGISTRY
+	// CheckResult tools), return the raw CheckResult instead of MCP-framed text.
 	if (wantStructured && capturedResult !== null) {
 		return c.json({ result: capturedResult, isError: result.isError ?? false });
+	}
+	// Custom-shape tools (e.g. prioritize_csc_leads, map_csc_products, scan_domain) don't
+	// produce a CheckResult but DO set structuredContent. Surface that report under the
+	// top-level `result` field the internal door contract uses (bv-web's door reads
+	// `payload.result`; without this it would only see `structuredContent`, a different
+	// field, and get undefined). ADDITIVE — the MCP-framed `content`/`structuredContent`
+	// are preserved, so existing `?format=structured` callers that read them are unaffected.
+	if (wantStructured && result.structuredContent !== undefined) {
+		return c.json({ ...result, result: result.structuredContent });
 	}
 
 	return c.json(result);

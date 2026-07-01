@@ -235,7 +235,7 @@ describe('Internal service binding routes', () => {
 			expect(body.result).toBeUndefined();
 		});
 
-		it('falls through to MCP-framed response for non-registry tools with format=structured', async () => {
+		it('surfaces structuredContent as top-level result for custom-shape tools with format=structured (additive)', async () => {
 			const { httpResponse, createDohResponse } = await import('./helpers/dns-mock');
 
 			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
@@ -259,7 +259,14 @@ describe('Internal service binding routes', () => {
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(200);
-			const body = (await response.json()) as { content?: unknown; result?: unknown };
+			const body = (await response.json()) as { content?: unknown; structuredContent?: unknown; result?: Record<string, unknown> };
+			// scan_domain (and prioritize_csc_leads / map_csc_products) set structuredContent
+			// but produce no CheckResult. It is surfaced under the top-level `result` field
+			// the internal door contract uses — so bv-web's door (which reads payload.result)
+			// gets the report instead of undefined.
+			expect(body.result).toBeDefined();
+			expect(body.result).toEqual(body.structuredContent);
+			// ADDITIVE: the MCP-framed content is still present (no existing caller breaks).
 			expect(body.content).toBeDefined();
 		});
 	});

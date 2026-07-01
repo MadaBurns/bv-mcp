@@ -28,7 +28,6 @@ import {
 } from '../lib/config';
 import { jsonRpcSuccess } from '../lib/json-rpc';
 import { mcpError } from '../handlers/tool-formatters';
-import { TOOLS } from '../schemas/tool-definitions';
 import { normalizeToolName } from '../handlers/tool-args';
 import { shardIndexForKey, isQuotaShardSaltMissing } from '../lib/quota-coordinator';
 import { acceptsSSE } from '../lib/sse';
@@ -763,8 +762,8 @@ function buildGatedToolResponse(
  *
  * Returns the SAME unknown-tool result a nonexistent tool name produces via the
  * dispatch path (handlers/tools.ts `default` case) — a JSON-RPC success wrapping a
- * tool-error result whose text references the full TOOLS.length — so the tool's
- * existence is NOT leaked on the public surface and no 403/UPGRADE_REQUIRED is
+ * countless tool-error result (no tool count that would hint a hidden tool) — so the
+ * tool's existence is NOT leaked on the public surface and no 403/UPGRADE_REQUIRED is
  * emitted. executeMcpRequest is the public path only; the internal path
  * (src/internal.ts → handleToolsCall) bypasses this and remains fully callable,
  * as does the direct FUNCTION call from prioritize_csc_leads.
@@ -777,10 +776,12 @@ function buildInternalOnlyToolResponse(
 	eventId: string | undefined,
 	accessLogInput: { toolName: string; domain: string; method: string } | undefined,
 ): Extract<ProcessedRequestResult, { kind: 'response' }> {
-	// Byte-identical to the genuine unknown-tool wire payload (uses TOOLS.length,
-	// NOT the public count, so it is indistinguishable from a nonexistent tool).
+	// Byte-identical to the genuine unknown-tool wire payload (same countless message
+	// as handlers/tools.ts), so an internal-only tool is indistinguishable from a
+	// nonexistent one — and neither response reveals a tool count that would hint a
+	// hidden tool exists (public tools/list = TOOLS.length − INTERNAL_ONLY_TOOLS.size).
 	const payload = jsonRpcSuccess(id, {
-		content: [mcpError(`Unknown tool: ${toolName}. Call tools/list to see all ${TOOLS.length} available tools.`)],
+		content: [mcpError(`Unknown tool: ${toolName}. Call tools/list to see the available tools.`)],
 		isError: true,
 	});
 	// Mirror the dispatch unknown-tool bookkeeping: not a JSON-RPC error (result.isError),

@@ -446,11 +446,12 @@ describe('handleToolsCall - input validation & errors', () => {
 	});
 
 	it('unknown tool name returns isError with "Unknown tool"', async () => {
-		const { TOOLS } = await import('../src/schemas/tool-definitions');
 		const result = await call('nonexistent_tool', { domain: 'example.com' });
 		expect(result.isError).toBe(true);
 		expect(result.content[0].text).toContain('Unknown tool');
-		expect(result.content[0].text).toContain(`all ${TOOLS.length} available tools`);
+		expect(result.content[0].text).toContain('Call tools/list to see the available tools');
+		// No tool count in the message — an aggregate count would hint a hidden internal-only tool exists.
+		expect(result.content[0].text).not.toMatch(/\d+ available tools/);
 	});
 });
 
