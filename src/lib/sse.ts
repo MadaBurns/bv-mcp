@@ -19,9 +19,16 @@ export function sseEvent(data: unknown, eventId?: string): string {
 	return event;
 }
 
-/** Check whether the Accept header includes text/event-stream */
+/**
+ * Check whether the Accept header can satisfy a text/event-stream (SSE) response.
+ *
+ * Returns true for an explicit text/event-stream, or an RFC 9110 wildcard that includes it
+ * (a full-wildcard or a text-type-wildcard range). A bare substring check for the exact media
+ * type alone wrongly 406s clients that send a wildcard Accept even though a wildcard accepts SSE.
+ */
 export function acceptsSSE(accept: string | undefined): boolean {
-	return !!accept && accept.includes('text/event-stream');
+	if (!accept) return false;
+	return accept.includes('text/event-stream') || accept.includes('*/*') || accept.includes('text/*');
 }
 
 /**
