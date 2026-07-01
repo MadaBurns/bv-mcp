@@ -15,6 +15,7 @@ import { evaluateCscProducts, extractLockPosture } from './map-csc-products';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import type { CheckResult } from '../lib/scoring';
+import { nistScoreToGrade } from '../lib/scoring';
 import { scanDomain } from './scan-domain';
 import { checkRdapLookup, RDAP_LOOKUP_SYNC_BUDGET_MS } from './check-rdap-lookup';
 import { brandAuditSingle } from './brand-audit-single';
@@ -43,10 +44,22 @@ export interface CscLead {
 	topPriority: CscPriority;
 }
 
+/** Brand-level portfolio rollup grade (weighted average of contributing domains' scan scores). */
+export interface PortfolioGrade {
+	/** NIST 6-band DISPLAY letter (A+/A/B/C/D/F) from nistScoreToGrade(weightedScore). */
+	grade: string;
+	/** Weighted-average scan score across contributing domains, 0–100, Math.round'd to an integer. */
+	weightedScore: number;
+	/** Count of leads whose ownership bucket carries a non-zero rollup weight (and grade ≠ 'N/A'). */
+	contributingDomains: number;
+}
+
 export interface CscLeadReport {
 	brand: string | null;
 	totalDomains: number;
 	rankedLeads: CscLead[];
+	/** NEW — additive/optional. rankCscLeads ALWAYS sets it (PortfolioGrade or null). */
+	portfolioGrade?: PortfolioGrade | null;
 	summary: {
 		totalRecommendations: number;
 		byProduct: Record<CscProductKey, number>;
@@ -88,6 +101,45 @@ const OWNERSHIP_MULTIPLIER: Record<OwnershipBucket, number> = {
 	impersonationSurface: 0.3,
 };
 const HOT_LEAD_THRESHOLD = 6; // gapSeverity at/above = "hot"
+
+// Portfolio-grade rollup weights — the weight each domain's SCORE carries toward the
+// brand-level grade. DISTINCT concern from OWNERSHIP_MULTIPLIER (sales actionability);
+// do NOT reuse or mutate that map. Impersonation buckets are excluded (weight 0).
+const PORTFOLIO_ROLLUP_WEIGHTS: Record<OwnershipBucket, number> = {
+	consolidated: 2,
+	shadowIt: 1,
+	indeterminate: 1,
+	unknown: 1,
+	impersonationSurface: 0,
+	impersonation: 0,
+};
+
+/**
+ * Weighted portfolio rollup grade (PURE). weightedScore = round( Σ(w[bucket]*score) / Σ(w[bucket]) )
+ * over all leads, where w = PORTFOLIO_ROLLUP_WEIGHTS. Domains with weight 0 (impersonation buckets)
+ * and graceful `grade === 'N/A'` results (NXDOMAIN / SERVFAIL-broken / scoring-bundle failure) drop
+ * out — averaging their 0 score would silently sink the portfolio (see scan-domain.ts aggregator
+ * contract). Returns null when `leads` is empty OR Σ(weight) === 0 (no contributing domains).
+ * NEVER averages letters and NEVER inlines band thresholds — it rounds the numeric weighted average
+ * once, then calls nistScoreToGrade(weightedScore) exactly once so the displayed score and letter
+ * never disagree at a band edge.
+ */
+export function computePortfolioGrade(leads: Pick<CscLead, 'score' | 'ownershipBucket' | 'grade'>[]): PortfolioGrade | null {
+	let numerator = 0;
+	let denominator = 0;
+	let contributingDomains = 0;
+	for (const lead of leads) {
+		if (lead.grade === 'N/A') continue;
+		const weight = PORTFOLIO_ROLLUP_WEIGHTS[lead.ownershipBucket];
+		if (weight === 0) continue;
+		numerator += weight * lead.score;
+		denominator += weight;
+		contributingDomains += 1;
+	}
+	if (denominator === 0) return null; // empty or all-excluded — never divide, never reach nistScoreToGrade
+	const weightedScore = Math.round(numerator / denominator);
+	return { grade: nistScoreToGrade(weightedScore), weightedScore, contributingDomains };
+}
 
 /** Pure mapper from classifyCandidate's Bucket to OwnershipBucket (identity for the 5 shared values). */
 export function bucketFromClassification(b: Bucket): OwnershipBucket {
@@ -161,10 +213,13 @@ export function rankCscLeads(
 		for (const key of lead.recommendedCscProducts) byProduct[key] += 1;
 	}
 
+	const portfolioGrade = computePortfolioGrade(leads);
+
 	return {
 		brand,
 		totalDomains: leads.length,
 		rankedLeads: leads,
+		portfolioGrade,
 		summary: {
 			totalRecommendations: leads.reduce((sum, l) => sum + l.recommendedCount, 0),
 			byProduct,
@@ -210,7 +265,9 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 	const brandLabel = report.brand ? sanitizeOutputText(report.brand, 253) : 'domain set';
 
 	if (format === 'compact') {
-		lines.push(`CSC leads (${brandLabel}): ${report.totalDomains} ranked, ${report.summary.hotLeads} hot`);
+		// Append the portfolio segment only when gradeable; omit entirely when null (keeps compact lean).
+		const portfolioSegment = report.portfolioGrade ? ` — portfolio ${report.portfolioGrade.grade} (${report.portfolioGrade.weightedScore})` : '';
+		lines.push(`CSC leads (${brandLabel}): ${report.totalDomains} ranked, ${report.summary.hotLeads} hot${portfolioSegment}`);
 		for (const lead of report.rankedLeads) {
 			lines.push(
 				`${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${lead.gapSeverity} — ${lead.score}/100 (${lead.grade}) — ${lead.recommendedCount} product(s)`,
@@ -221,6 +278,11 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 
 	lines.push(`# CSC Sales Leads: ${brandLabel}`);
 	lines.push(`**${report.totalDomains}** domain(s) ranked | **${report.summary.hotLeads}** hot lead(s)`);
+	if (report.portfolioGrade) {
+		lines.push(`**Portfolio grade: ${report.portfolioGrade.grade}** (weighted ${report.portfolioGrade.weightedScore}/100 across ${report.portfolioGrade.contributingDomains} domain(s))`);
+	} else {
+		lines.push('**Portfolio grade: N/A** (no gradeable domains)');
+	}
 	lines.push('');
 	for (const lead of report.rankedLeads) {
 		lines.push(`## ${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — gap severity ${lead.gapSeverity}`);

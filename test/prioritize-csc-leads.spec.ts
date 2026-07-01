@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import type { Bucket } from '../src/lib/brand-classification';
 import type { CscProductKey, CscPriority, CscProductReport, CscProductRecommendation } from '../src/tools/map-csc-products';
 import type { CheckResult } from '../src/lib/scoring';
-import { bucketFromClassification, computeGapSeverity, rankCscLeads, formatCscLeads, extractDiscoveredCandidates } from '../src/tools/prioritize-csc-leads';
+import { bucketFromClassification, computeGapSeverity, computePortfolioGrade, rankCscLeads, formatCscLeads, extractDiscoveredCandidates } from '../src/tools/prioritize-csc-leads';
 import type { OwnershipBucket, CscLeadEntry } from '../src/tools/prioritize-csc-leads';
 
 const PRODUCT_ORDER: CscProductKey[] = ['csc_multilock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
@@ -164,6 +164,120 @@ describe('rankCscLeads — summary', () => {
 		const e = entry('z.com', 50, 'F', [], 'unknown');
 		expect(rankCscLeads([e], 'acme').brand).toBe('acme');
 		expect(rankCscLeads([e]).brand).toBeNull();
+	});
+});
+
+/** Build a minimal lead-shaped object for the pure portfolio-grade helper (score + bucket + grade). */
+function pl(bucket: OwnershipBucket, score: number, grade = 'B'): Pick<CscLeadEntry['report'], 'score' | 'grade'> & { ownershipBucket: OwnershipBucket } {
+	return { score, grade, ownershipBucket: bucket };
+}
+
+describe('computePortfolioGrade', () => {
+	it('consolidated-heavy weighting pulls harder than a flat average', () => {
+		// weighted (2*90 + 1*60)/3 = 240/3 = 80 → B (flat avg 75 would be C)
+		expect(computePortfolioGrade([pl('consolidated', 90), pl('shadowIt', 60)])).toEqual({ grade: 'B', weightedScore: 80, contributingDomains: 2 });
+	});
+
+	it('impersonation buckets are excluded (weight 0) and do not drag the grade down', () => {
+		// only the consolidated 90 counts → 180/2 = 90 → A
+		expect(computePortfolioGrade([pl('consolidated', 90), pl('impersonation', 10), pl('impersonationSurface', 0)])).toEqual({
+			grade: 'A',
+			weightedScore: 90,
+			contributingDomains: 1,
+		});
+	});
+
+	it('all-excluded (only impersonation/impersonationSurface) → null', () => {
+		expect(computePortfolioGrade([pl('impersonation', 30), pl('impersonationSurface', 20)])).toBeNull();
+	});
+
+	it('zero domains → null', () => {
+		expect(computePortfolioGrade([])).toBeNull();
+	});
+
+	it('single contributing domain', () => {
+		expect(computePortfolioGrade([pl('unknown', 72)])).toEqual({ grade: 'C', weightedScore: 72, contributingDomains: 1 });
+	});
+
+	it('mixed buckets exact numeric check', () => {
+		// numerator 2*100 + 80 + 60 + 40 = 380, denom 5 → 76 → C; impersonation 0 excluded
+		expect(
+			computePortfolioGrade([pl('consolidated', 100), pl('shadowIt', 80), pl('indeterminate', 60), pl('unknown', 40), pl('impersonation', 0)]),
+		).toEqual({ grade: 'C', weightedScore: 76, contributingDomains: 4 });
+	});
+
+	it('letter comes from the weighted numeric score, not an average of per-domain letters', () => {
+		// (2*96 + 60)/3 = 252/3 = 84 → B (letter-average of A+ and D is meaningless)
+		expect(computePortfolioGrade([pl('consolidated', 96, 'A+'), pl('shadowIt', 60, 'D')])).toEqual({ grade: 'B', weightedScore: 84, contributingDomains: 2 });
+	});
+
+	it('does NOT reuse OWNERSHIP_MULTIPLIER (indeterminate rolls up at weight 1, not 0.6)', () => {
+		// rollup (2*90 + 1*60)/3 = 80 → B. OWNERSHIP_MULTIPLIER would give (1.0*90+0.6*60)/1.6 = 78.75 → 79 → C.
+		expect(computePortfolioGrade([pl('consolidated', 90), pl('indeterminate', 60)])).toEqual({ grade: 'B', weightedScore: 80, contributingDomains: 2 });
+	});
+
+	it('rounding is applied once and the letter derives from the rounded integer', () => {
+		// (2*95 + 96)/3 = 286/3 = 95.33 → round 95 → A+
+		expect(computePortfolioGrade([pl('consolidated', 95), pl('shadowIt', 96)])).toEqual({ grade: 'A+', weightedScore: 95, contributingDomains: 2 });
+		// (2*90 + 91)/3 = 271/3 = 90.33 → round 90 → A
+		expect(computePortfolioGrade([pl('consolidated', 90), pl('unknown', 91)])).toEqual({ grade: 'A', weightedScore: 90, contributingDomains: 2 });
+	});
+
+	it('excludes graceful N/A leads (NXDOMAIN / broken) from the rollup entirely', () => {
+		// N/A unknown lead skipped: (2*95 + 2*90)/4 = 370/4 = 92.5 → round 93 → A, contributing 2 (not 3)
+		const withNa = computePortfolioGrade([pl('consolidated', 95, 'A+'), pl('consolidated', 90, 'A'), pl('unknown', 0, 'N/A')]);
+		const withoutNa = computePortfolioGrade([pl('consolidated', 95, 'A+'), pl('consolidated', 90, 'A')]);
+		expect(withNa).toEqual({ grade: 'A', weightedScore: 93, contributingDomains: 2 });
+		expect(withNa).toEqual(withoutNa);
+	});
+});
+
+describe('rankCscLeads — portfolioGrade field', () => {
+	it('sets portfolioGrade equal to computePortfolioGrade(rankedLeads)', () => {
+		const e1 = entry('one.com', 90, 'A', [rec('csc_multilock', true, 'high')], 'consolidated');
+		const e2 = entry('two.com', 60, 'D', [rec('managed_dmarc', true, 'medium')], 'shadowIt');
+		const report = rankCscLeads([e1, e2]);
+		expect(report.portfolioGrade).toEqual(computePortfolioGrade(report.rankedLeads));
+		expect(report.portfolioGrade).toEqual({ grade: 'B', weightedScore: 80, contributingDomains: 2 });
+	});
+
+	it('empty input → portfolioGrade null', () => {
+		expect(rankCscLeads([]).portfolioGrade).toBeNull();
+		expect(rankCscLeads([], 'acme', []).portfolioGrade).toBeNull();
+	});
+
+	it('only impersonation buckets → portfolioGrade null', () => {
+		const e = entry('imp.com', 20, 'F', [rec('csc_multilock', true, 'high')], 'impersonation');
+		expect(rankCscLeads([e]).portfolioGrade).toBeNull();
+	});
+});
+
+describe('formatCscLeads — portfolio grade line', () => {
+	it('full output renders the portfolio grade line when present', () => {
+		const report = rankCscLeads([entry('one.com', 90, 'A', [], 'consolidated'), entry('two.com', 60, 'D', [], 'shadowIt')], 'acme');
+		const out = formatCscLeads(report, 'full');
+		expect(out).toContain('Portfolio grade: B');
+		expect(out).toContain('weighted 80/100');
+		expect(out).toContain('2 domain(s)');
+	});
+
+	it('full output renders an N/A portfolio line when there are no gradeable domains', () => {
+		const report = rankCscLeads([], 'acme');
+		const out = formatCscLeads(report, 'full');
+		expect(out).toContain('Portfolio grade: N/A');
+		expect(out).toContain('no gradeable domains');
+	});
+
+	it('compact output appends a portfolio segment when present', () => {
+		const report = rankCscLeads([entry('one.com', 90, 'A', [], 'consolidated'), entry('two.com', 60, 'D', [], 'shadowIt')], 'acme');
+		const compact = formatCscLeads(report, 'compact');
+		expect(compact).toContain('portfolio B (80)');
+	});
+
+	it('compact output omits the portfolio segment entirely when null', () => {
+		const report = rankCscLeads([], 'acme');
+		const compact = formatCscLeads(report, 'compact');
+		expect(compact.toLowerCase()).not.toContain('portfolio');
 	});
 });
 
