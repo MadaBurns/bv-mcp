@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.27.1] - 2026-07-01
+
+Patch release (security): make `map_csc_products` **internal-only**. It shipped in 3.27.0 as a public, free-tier-callable MCP tool, but it maps domains to CSC's specific commercial products and belongs off the public surface.
+
+### Security
+
+- **`map_csc_products` removed from the public MCP surface.** New `INTERNAL_ONLY_TOOLS` concept (`src/lib/config.ts`): the tool stays registered in `TOOL_DEFS`/`TOOLS` — still callable via `/internal/tools/*` and internally by `prioritize_csc_leads` — but is filtered out of the public `tools/list` and rejected on public `tools/call` with the same unknown-tool result a nonexistent tool returns (no existence leak, no `403`). Rejection is enforced only in `executeMcpRequest` (public `/mcp` path); the internal path is unaffected. Public tool count is now 80 (`TOOLS.length` stays 81); `map_csc_products` dropped from `FREE_TOOL_DAILY_LIMITS`.
+
 ## [3.27.0] - 2026-07-01
 
 Minor release: CSC engagement — domain lock posture + CSC product mapping + sales lead prioritization (Specs A–C). Adds two MCP tools (79 → 81).
