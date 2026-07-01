@@ -12,10 +12,10 @@
 
 import { describe, it, expect } from 'vitest';
 import { TOOLS } from '../../src/schemas/tool-definitions';
-import { FREE_TOOL_DAILY_LIMITS, INTENTIONALLY_UNLIMITED_TOOLS } from '../../src/lib/config';
+import { FREE_TOOL_DAILY_LIMITS, INTENTIONALLY_UNLIMITED_TOOLS, INTERNAL_ONLY_TOOLS } from '../../src/lib/config';
 
 describe('tool-quota-coverage audit', () => {
-	it('every TOOL_DEFS entry is either quota-limited or explicitly unlimited (never neither, never both)', () => {
+	it('every public TOOL_DEFS entry is either quota-limited or explicitly unlimited (never neither, never both)', () => {
 		const limited = new Set(Object.keys(FREE_TOOL_DAILY_LIMITS));
 		const unlimited = INTENTIONALLY_UNLIMITED_TOOLS;
 
@@ -23,6 +23,9 @@ describe('tool-quota-coverage audit', () => {
 		const both: string[] = [];
 
 		for (const tool of TOOLS) {
+			// Internal-only tools are removed from the public surface (rejected on /mcp),
+			// so they carry no public free-tier quota — exempt from the coverage requirement.
+			if (INTERNAL_ONLY_TOOLS.has(tool.name)) continue;
 			const inLimited = limited.has(tool.name);
 			const inUnlimited = unlimited.has(tool.name);
 			if (!inLimited && !inUnlimited) missing.push(tool.name);
