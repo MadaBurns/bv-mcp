@@ -16,7 +16,7 @@ import { TierCacheEntrySchema, ValidateKeyResponseSchema } from '../schemas/auth
 import { resolveTrialKey } from './trial-keys';
 import { parseEnvelopeKey } from './kv-envelope';
 import { verifyJwt } from '../oauth/jwt';
-import { resolveIssuer } from '../oauth/discovery';
+import { resolveIssuerStrict } from '../oauth/discovery';
 import { isRevoked, getTokenVersion } from '../oauth/storage';
 import { z } from 'zod';
 
@@ -115,7 +115,12 @@ export async function resolveTier(
 	// self-hosted/dev installations that don't IP-gate their owner.
 	if (env.OAUTH_SIGNING_SECRET && env.SESSION_STORE && token.split('.').length === 3) {
 		try {
-			const issuer = resolveIssuer(requestUrl, env.OAUTH_ISSUER);
+			// Fail closed on a Host that doesn't match a pinned OAUTH_ISSUER: resolveIssuerStrict
+			// throws, the surrounding catch swallows it, and control falls through to the static-key
+			// path — which a 3-segment JWT can't satisfy, yielding an unauthenticated result. When
+			// OAUTH_ISSUER is unset (self-hosts) it stays a no-op Host-derivation, so their tokens
+			// still verify against their own Host (security-audit item 9).
+			const issuer = resolveIssuerStrict(requestUrl, env.OAUTH_ISSUER);
 			const claims = await verifyJwt(token, {
 				secret: env.OAUTH_SIGNING_SECRET,
 				issuer,
