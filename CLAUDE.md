@@ -72,9 +72,10 @@ Both publish together from `publish.yml` on version tags.
 ### Request flow
 
 - **Streamable HTTP**: `POST /mcp → Origin → Auth → Body → JSON-RPC validate → mcp/execute → handlers/tools → src/tools/check-* → lib/dns → DoH (empty → bv-dns → Google)`
+- **Streamable HTTP SSE**: `GET /mcp` opens the notification stream via `createNotificationStream()` (bare `: stream opened` + heartbeats, no endpoint event). The `Accept`-gate (`acceptsSSE()` in `src/lib/sse.ts`) runs **before** the session check and accepts `text/event-stream` OR an RFC 9110 wildcard (`*/*`, `text/*`); a non-SSE `Accept` → **`405 Method Not Allowed`** + `Allow: GET, POST` (per the MCP 2025-06-18 spec: a GET yields an SSE stream or 405 — NOT 406; the status clients fall back on to `POST`). Past the gate but with no session → `400` missing-session.
 - **Stdio**: `stdin → src/stdio → mcp/execute → handlers/tools → stdout`
 - **Internal binding**: `POST /internal/tools/{call,batch} → guard (reject public) → handlers/tools → JSON (no MCP framing)`
-- **Legacy SSE** (deprecated): `GET /mcp/sse` bootstrap; `POST /mcp/messages?sessionId=...`
+- **Legacy SSE** (deprecated): `GET /mcp/sse` bootstrap (endpoint event → `/mcp/messages?sessionId=...`); same `Accept`-gate/`405` behavior as `GET /mcp`.
 
 ### scan_domain orchestration
 
