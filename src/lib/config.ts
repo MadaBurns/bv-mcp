@@ -314,7 +314,8 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	resolve_spf_chain: 15,
 	discover_subdomains: 0,
 	map_compliance: 5,
-	map_csc_products: 5,
+	// map_csc_products is INTERNAL_ONLY_TOOLS — not public-callable, so it carries
+	// no public free-tier quota (tool-quota-coverage audit exempts internal-only tools).
 	prioritize_csc_leads: 0,
 	simulate_attack_paths: 0,
 	check_dbl: 5,
@@ -397,6 +398,28 @@ export const GATED_PAID_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
 /** True when a tool is gated to paid tiers (developer+). */
 export function isGatedPaidOnlyTool(toolName: string): boolean {
 	return GATED_PAID_ONLY_TOOLS.has(toolName);
+}
+
+/**
+ * Tools removed from the PUBLIC `/mcp` surface but still registered in
+ * TOOL_DEFS/TOOLS so they remain callable over the internal path
+ * (`/internal/tools/*` → handleToolsCall) and usable internally by other tools
+ * (e.g. `prioritize_csc_leads` calls the map_csc_products FUNCTION directly).
+ *
+ * Enforcement (public path only, in src/mcp/execute.ts): a public `tools/call`
+ * for a member short-circuits and returns the SAME unknown-tool result a
+ * nonexistent tool name produces — no existence leak, no 403/UPGRADE_REQUIRED.
+ * The public `tools/list` (handlers/tools.ts) filters these out. The internal
+ * path (src/internal.ts) bypasses executeMcpRequest entirely and is unaffected.
+ *
+ * Members carry NO FREE_TOOL_DAILY_LIMITS entry (they are not public-callable);
+ * the tool-quota-coverage audit exempts them.
+ */
+export const INTERNAL_ONLY_TOOLS: ReadonlySet<string> = new Set<string>(['map_csc_products']);
+
+/** True when a tool is internal-only (hidden from + rejected on the public /mcp surface). */
+export function isInternalOnlyTool(toolName: string): boolean {
+	return INTERNAL_ONLY_TOOLS.has(toolName);
 }
 
 /**

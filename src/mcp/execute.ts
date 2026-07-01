@@ -23,8 +23,12 @@ import {
 	TIER_CONCURRENT_LIMITS,
 	isGatedPaidOnlyTool,
 	isAuthRequiredTool,
+	isInternalOnlyTool,
 	UPGRADE_URL,
 } from '../lib/config';
+import { jsonRpcSuccess } from '../lib/json-rpc';
+import { mcpError } from '../handlers/tool-formatters';
+import { TOOLS } from '../schemas/tool-definitions';
 import { normalizeToolName } from '../handlers/tool-args';
 import { shardIndexForKey, isQuotaShardSaltMissing } from '../lib/quota-coordinator';
 import { acceptsSSE } from '../lib/sse';
@@ -754,6 +758,48 @@ function buildGatedToolResponse(
 	};
 }
 
+/**
+ * Reject a PUBLIC `/mcp` tools/call for an INTERNAL-ONLY tool (e.g. map_csc_products).
+ *
+ * Returns the SAME unknown-tool result a nonexistent tool name produces via the
+ * dispatch path (handlers/tools.ts `default` case) — a JSON-RPC success wrapping a
+ * tool-error result whose text references the full TOOLS.length — so the tool's
+ * existence is NOT leaked on the public surface and no 403/UPGRADE_REQUIRED is
+ * emitted. executeMcpRequest is the public path only; the internal path
+ * (src/internal.ts → handleToolsCall) bypasses this and remains fully callable,
+ * as does the direct FUNCTION call from prioritize_csc_leads.
+ */
+function buildInternalOnlyToolResponse(
+	id: JsonRpcRequest['id'],
+	toolName: string,
+	method: string,
+	options: ExecuteMcpRequestOptions,
+	eventId: string | undefined,
+	accessLogInput: { toolName: string; domain: string; method: string } | undefined,
+): Extract<ProcessedRequestResult, { kind: 'response' }> {
+	// Byte-identical to the genuine unknown-tool wire payload (uses TOOLS.length,
+	// NOT the public count, so it is indistinguishable from a nonexistent tool).
+	const payload = jsonRpcSuccess(id, {
+		content: [mcpError(`Unknown tool: ${toolName}. Call tools/list to see all ${TOOLS.length} available tools.`)],
+		isError: true,
+	});
+	// Mirror the dispatch unknown-tool bookkeeping: not a JSON-RPC error (result.isError),
+	// so request analytics logs 'ok' and the fuzz counter records an unknown_tool hit.
+	emitRequestAnalytics(options, method, 'ok', false);
+	recordMcpToolErrorIfUnknownTool(options, method, payload);
+	if (accessLogInput) {
+		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: false, status: 'pass' });
+	}
+	return {
+		kind: 'response',
+		payload,
+		headers: {},
+		httpStatus: 200,
+		useErrorEnvelope: false,
+		eventId,
+	};
+}
+
 export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Promise<ProcessedRequestResult> {
 	const validationError = validateJsonRpcRequest(options.body);
 	if (validationError) {
@@ -786,6 +832,21 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			useErrorEnvelope: true,
 			eventId,
 		};
+	}
+
+	// PUBLIC-PATH-ONLY internal-only gate. map_csc_products (INTERNAL_ONLY_TOOLS) is
+	// removed from the public /mcp surface: reject BEFORE any tier branching so it
+	// applies to ALL callers (unauthenticated, free, developer, owner) with the same
+	// unknown-tool result — no existence leak, no 403. The internal path
+	// (src/internal.ts → handleToolsCall) never reaches executeMcpRequest, so the
+	// tool stays callable there and via the direct prioritize_csc_leads function call.
+	if (method === 'tools/call') {
+		const internalOnlyNameRaw =
+			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
+		const internalOnlyName = typeof internalOnlyNameRaw === 'string' ? normalizeToolName(internalOnlyNameRaw) : '';
+		if (internalOnlyName && isInternalOnlyTool(internalOnlyName)) {
+			return buildInternalOnlyToolResponse(id, internalOnlyName, method, options, eventId, accessLogInput);
+		}
 	}
 
 	let rateHeaders: Record<string, string> = {};

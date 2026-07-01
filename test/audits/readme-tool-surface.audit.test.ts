@@ -10,12 +10,16 @@ import resourcesSource from '../../src/handlers/resources.ts?raw';
 import vscodePackageText from '../../extensions/vscode/package.json?raw';
 import vscodeReadme from '../../extensions/vscode/README.md?raw';
 import { TOOLS } from '../../src/schemas/tool-definitions';
+import { INTERNAL_ONLY_TOOLS } from '../../src/lib/config';
+
+// Public-facing count advertised in customer-facing prose. Internal-only tools
+// (e.g. map_csc_products) are removed from the public /mcp surface; the count
+// tripwire on the full TOOLS.length lives in tool-count-ssot.audit.test.ts.
+const PUBLIC_TOOL_COUNT = TOOLS.length - INTERNAL_ONLY_TOOLS.size;
 
 describe('README tool surface', () => {
-	it('keeps published tool counts and authoritative DNS infra tools current', () => {
-		// The headline count tripwire lives in tool-count-ssot.audit.test.ts; here we
-		// only assert the README prose stays in lockstep with the derived TOOLS.length.
-		const toolCount = TOOLS.length;
+	it('keeps published PUBLIC tool counts and authoritative DNS infra tools current', () => {
+		const toolCount = PUBLIC_TOOL_COUNT;
 
 		expect(readme).toContain(`MCP%20tools-${toolCount}`);
 		expect(readme).toContain(`current ${toolCount}-tool surface`);
@@ -26,7 +30,7 @@ describe('README tool surface', () => {
 	});
 
 	it('keeps supporting docs aligned with the authoritative DNS infra surface', () => {
-		expect(githubSettings).toContain(`${TOOLS.length} MCP tools`);
+		expect(githubSettings).toContain(`${PUBLIC_TOOL_COUNT} MCP tools`);
 		expect(scoringDocs).toContain('Authoritative DNS Infrastructure');
 		expect(scoringDocs).toContain('authoritative_dns_infra');
 		expect(packageReadme).toContain('authoritative_dns_infra');
@@ -34,7 +38,7 @@ describe('README tool surface', () => {
 	});
 
 	it('keeps MCP resources and VS Code extension metadata aligned with the tool registry', () => {
-		const toolCount = TOOLS.length;
+		const toolCount = PUBLIC_TOOL_COUNT;
 		const checkToolCount = TOOLS.filter((tool) => tool.name.startsWith('check_')).length;
 		const vscodePackage = JSON.parse(vscodePackageText) as { description: string };
 

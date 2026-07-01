@@ -4,14 +4,19 @@ import { describe, expect, it } from 'vitest';
 import smitheryYamlText from '../../smithery.yaml?raw';
 import serverJsonText from '../../server.json?raw';
 import { TOOLS } from '../../src/schemas/tool-definitions';
+import { INTERNAL_ONLY_TOOLS } from '../../src/lib/config';
+
+// Public-facing count: internal-only tools (e.g. map_csc_products) are removed
+// from the public /mcp surface, so registry-listing prose advertises this count.
+const PUBLIC_TOOL_COUNT = TOOLS.length - INTERNAL_ONLY_TOOLS.size;
 
 describe('server.json tool count', () => {
-	it('keeps the MCP Registry description tool count in sync with TOOLS.length', () => {
+	it('keeps the MCP Registry description tool count in sync with the PUBLIC tool count', () => {
 		const serverJson = JSON.parse(serverJsonText) as { description: string };
 		const match = serverJson.description.match(/(\d+) MCP tools/);
 
 		expect(match, 'server.json description must contain "N MCP tools"').not.toBeNull();
-		expect(Number(match![1])).toBe(TOOLS.length);
+		expect(Number(match![1])).toBe(PUBLIC_TOOL_COUNT);
 	});
 
 	// NOTE: the MCP Registry hard-caps server.json `description` at 100 chars
