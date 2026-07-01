@@ -185,12 +185,17 @@ type CscRuntimeOptions = ScanRuntimeOptions & { whoisBinding?: { fetch: typeof f
  * Runs a full scan (cached) + a budget-bounded RDAP lookup, then evaluates.
  */
 export async function mapCscProducts(domain: string, kv?: KVNamespace, runtimeOptions?: CscRuntimeOptions): Promise<CscProductReport> {
-	const scanResult = await scanDomain(domain, kv, runtimeOptions);
-	const rdap = await checkRdapLookup(domain, {
-		whoisBinding: runtimeOptions?.whoisBinding,
-		signal: AbortSignal.timeout(RDAP_LOOKUP_SYNC_BUDGET_MS),
-		deadlineMs: Date.now() + RDAP_LOOKUP_SYNC_BUDGET_MS,
-	});
+	// Capture the deadline epoch BEFORE kicking off both calls so the RDAP budget
+	// is not charged for scan elapsed time (the two calls are independent).
+	const deadlineMs = Date.now() + RDAP_LOOKUP_SYNC_BUDGET_MS;
+	const [scanResult, rdap] = await Promise.all([
+		scanDomain(domain, kv, runtimeOptions),
+		checkRdapLookup(domain, {
+			whoisBinding: runtimeOptions?.whoisBinding,
+			signal: AbortSignal.timeout(RDAP_LOOKUP_SYNC_BUDGET_MS),
+			deadlineMs,
+		}),
+	]);
 	const lockPosture = extractLockPosture(rdap);
 	return evaluateCscProducts(scanResult.checks, lockPosture, domain, scanResult.score.overall, scanResult.score.grade);
 }

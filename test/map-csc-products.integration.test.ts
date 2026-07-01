@@ -36,6 +36,29 @@ afterEach(() => {
 	mockCheckRdap.mockReset();
 });
 
+describe('mapCscProducts — concurrency', () => {
+	it('runs scan and RDAP in parallel (total ≈ max(delays), not sum)', async () => {
+		const DELAY_MS = 40;
+		mockScanDomain.mockImplementation(
+			() =>
+				new Promise<{ checks: never[]; score: { overall: number; grade: string } }>((r) =>
+					setTimeout(() => r({ checks: [], score: { overall: 90, grade: 'A' } }), DELAY_MS),
+				),
+		);
+		mockCheckRdap.mockImplementation(() => new Promise<CheckResult>((r) => setTimeout(() => r(rdapFailed()), DELAY_MS)));
+
+		const { mapCscProducts } = await import('../src/tools/map-csc-products');
+		const t0 = Date.now();
+		await mapCscProducts('parallel.com');
+		const elapsed = Date.now() - t0;
+
+		// Sequential (await scan THEN rdap) would be ≥ 2 × DELAY_MS ≈ 80ms.
+		// Parallel: both calls start before either resolves → elapsed ≈ DELAY_MS.
+		// Allow generous slack (×1.7) for CI scheduler jitter.
+		expect(elapsed).toBeLessThan(DELAY_MS * 1.7);
+	});
+});
+
 describe('mapCscProducts — wiring', () => {
 	it('unlocked RDAP + failing DMARC + passing SSL/DNSSEC → MultiLock high + Managed DMARC; count 2', async () => {
 		mockScanDomain.mockResolvedValue({
