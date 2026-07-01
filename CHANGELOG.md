@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.29.1] - 2026-07-02
+
+Patch release: **OAuth issuer fail-closed hardening** (#472). Versions the security change already deployed on top of 3.29.0.
+
+### Security
+
+- **`resolveIssuerStrict` wired into the two OAuth auth chokepoints** so a request whose `Host` does not match a pinned `OAUTH_ISSUER` is rejected rather than silently normalized to the pinned issuer (closes the "unwired" residual in security-audit item 9). The mint path (`src/oauth/token.ts`) returns `400 invalid_request` instead of baking an anomalous origin into a minted JWT's `iss`/`aud`; the verify path (`src/lib/tier-auth.ts`) lets the existing catch fall through to the static-key path, yielding `401` for a 3-segment JWT. When `OAUTH_ISSUER` is unset (BSL self-hosts) `resolveIssuerStrict` is a no-op that derives the issuer from the request `Host`, so self-hosted OAuth is unaffected. Cloudflare's route binding already constrains `Host` in prod; this is the defense-in-depth layer behind it.
+
 ## [3.29.0] - 2026-07-01
 
 Minor release: **CSC portal backend prerequisites** (unblocks the deferred bv-web-prod "Penumbra" portal) plus a small info-disclosure hardening. Surfaced by grounding the portal design against the live bv-web-prod codebase.
