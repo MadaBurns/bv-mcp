@@ -1108,7 +1108,12 @@ app.post('/mcp/messages', async (c) => {
 
 app.get('/mcp', async (c) => {
 	if (!acceptsSSE(c.req.header('accept'))) {
-		return new Response('Not Acceptable: Accept must include text/event-stream', { status: 406 });
+		// MCP 2025-06-18 Streamable HTTP: a GET to the MCP endpoint yields an SSE stream or 405.
+		// 405 (not 406) is the status clients treat as "no SSE here, use POST" and fall back on.
+		return new Response('Method Not Allowed: GET requires Accept: text/event-stream', {
+			status: 405,
+			headers: { Allow: 'GET, POST' },
+		});
 	}
 
 	const sessionId = c.req.header('mcp-session-id');
@@ -1155,7 +1160,12 @@ app.get('/mcp', async (c) => {
 
 app.get('/mcp/sse', async (c) => {
 	if (!acceptsSSE(c.req.header('accept'))) {
-		return new Response('Not Acceptable: Accept must include text/event-stream', { status: 406 });
+		// MCP 2025-06-18 Streamable HTTP: a GET to the MCP endpoint yields an SSE stream or 405.
+		// 405 (not 406) is the status clients treat as "no SSE here, use POST" and fall back on.
+		return new Response('Method Not Allowed: GET requires Accept: text/event-stream', {
+			status: 405,
+			headers: { Allow: 'GET, POST' },
+		});
 	}
 
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
