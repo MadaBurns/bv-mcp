@@ -607,4 +607,123 @@ describe('checkRdapLookup', () => {
 			expect(bootstrapFetchCount).toBe(1);
 		});
 	});
+
+	async function runWithStatus(status: string[]) {
+		globalThis.fetch = mockFetchRouter({
+			'data.iana.org/rdap/dns.json': () => makeBootstrap(),
+			'rdap.verisign.com': () => makeRdapResponse({ status }),
+		});
+		return run();
+	}
+
+	it('unlocked domain → one medium "transfer not locked" finding', async () => {
+		const result = await runWithStatus(['active']);
+		const medium = result.findings.find((f) => f.severity === 'medium' && /transfer not locked/i.test(f.title));
+		expect(medium).toBeDefined();
+	});
+
+	it('registrar-lock (default fixture) → info "Registrar lock active", no medium/low lock finding', async () => {
+		const result = await runWithStatus(['clientTransferProhibited', 'serverDeleteProhibited']);
+		const info = result.findings.find((f) => /registrar lock active/i.test(f.title));
+		expect(info).toBeDefined();
+		expect(info!.severity).toBe('info');
+		expect(result.findings.find((f) => /transfer not locked/i.test(f.title))).toBeUndefined();
+	});
+
+	it('registry-lock → info "Registry lock active", no medium', async () => {
+		const result = await runWithStatus(['serverTransferProhibited', 'serverDeleteProhibited', 'serverUpdateProhibited']);
+		const info = result.findings.find((f) => /^registry lock active/i.test(f.title));
+		expect(info).toBeDefined();
+		expect(info!.severity).toBe('info');
+		expect(result.findings.find((f) => f.severity === 'medium' && /transfer not locked/i.test(f.title))).toBeUndefined();
+	});
+
+	it('exposes metadata.lockPosture with the expected shape', async () => {
+		const result = await runWithStatus(['serverTransferProhibited']);
+		const withPosture = result.findings.find((f) => f.metadata?.lockPosture);
+		expect(withPosture).toBeDefined();
+		expect(withPosture!.metadata!.lockPosture).toMatchObject({ level: 'registry-lock', registryLevel: true });
+	});
+
+	it('Registration details info string includes "Lock posture:"', async () => {
+		const result = await runWithStatus(['clientTransferProhibited']);
+		const info = result.findings.find((f) => f.severity === 'info' && f.title.toLowerCase().includes('registration'));
+		expect(info!.detail).toMatch(/Lock posture: registrar-lock/);
+	});
+
+	it('empty status → no lock finding added', async () => {
+		const result = await runWithStatus([]);
+		expect(result.findings.find((f) => /transfer not locked|registrar lock active|registry lock active/i.test(f.title))).toBeUndefined();
+	});
+});
+
+describe('deriveLockPosture', () => {
+	async function derive(status: string[]) {
+		const { deriveLockPosture } = await import('../src/tools/check-rdap-lookup');
+		return deriveLockPosture(status);
+	}
+
+	it('empty status → unknown, all booleans false', async () => {
+		expect(await derive([])).toEqual({
+			level: 'unknown',
+			transferLocked: false,
+			deleteLocked: false,
+			updateLocked: false,
+			registryLevel: false,
+			registrarLevel: false,
+		});
+	});
+
+	it('client transfer prohibited (RDAP spaced form) → registrar-lock', async () => {
+		const p = await derive(['client transfer prohibited']);
+		expect(p.level).toBe('registrar-lock');
+		expect(p.registrarLevel).toBe(true);
+		expect(p.registryLevel).toBe(false);
+		expect(p.transferLocked).toBe(true);
+	});
+
+	it('serverTransferProhibited (EPP camelCase) → registry-lock', async () => {
+		const p = await derive(['serverTransferProhibited']);
+		expect(p.level).toBe('registry-lock');
+		expect(p.registryLevel).toBe(true);
+	});
+
+	it('full server lock set → registry-lock with all booleans true', async () => {
+		const p = await derive(['server transfer prohibited', 'server delete prohibited', 'server update prohibited']);
+		expect(p.level).toBe('registry-lock');
+		expect(p.transferLocked).toBe(true);
+		expect(p.deleteLocked).toBe(true);
+		expect(p.updateLocked).toBe(true);
+		expect(p.registryLevel).toBe(true);
+	});
+
+	it('clientUpdateProhibited only (no transfer lock) → unlocked', async () => {
+		const p = await derive(['clientUpdateProhibited']);
+		expect(p.level).toBe('unlocked');
+		expect(p.updateLocked).toBe(true);
+		expect(p.transferLocked).toBe(false);
+	});
+
+	it('active / ok (no prohibitions) → unlocked', async () => {
+		expect((await derive(['active'])).level).toBe('unlocked');
+		expect((await derive(['ok'])).level).toBe('unlocked');
+	});
+
+	it('mixed case + extra whitespace → still registry-lock (normalization)', async () => {
+		const p = await derive(['  Server Transfer Prohibited ']);
+		expect(p.level).toBe('registry-lock');
+		expect(p.registryLevel).toBe(true);
+	});
+
+	it('both client + server transfer present → registry-lock (server precedence)', async () => {
+		const p = await derive(['clientTransferProhibited', 'serverTransferProhibited']);
+		expect(p.level).toBe('registry-lock');
+		expect(p.registrarLevel).toBe(true);
+		expect(p.registryLevel).toBe(true);
+	});
+
+	it('empty / whitespace-only status entries → unknown (malformed-input guard)', async () => {
+		expect((await derive([''])).level).toBe('unknown');
+		expect((await derive(['   '])).level).toBe('unknown');
+	});
 });

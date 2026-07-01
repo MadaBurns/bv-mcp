@@ -12,6 +12,69 @@ import { safeFetch } from '../lib/safe-fetch';
 
 const CATEGORY = 'rdap' as CheckCategory;
 
+/** Domain lock posture derived from EPP/RDAP status codes (RFC 5731 / RFC 9083). */
+export interface LockPosture {
+	/** Highest-level posture: registry > registrar > unlocked; unknown when no status reported. */
+	level: 'registry-lock' | 'registrar-lock' | 'unlocked' | 'unknown';
+	/** Transfer prohibited at client OR server level. */
+	transferLocked: boolean;
+	/** Delete prohibited at client OR server level. */
+	deleteLocked: boolean;
+	/** Update prohibited at client OR server level. */
+	updateLocked: boolean;
+	/** Any server*Prohibited present → registry lock service in effect. */
+	registryLevel: boolean;
+	/** Any client*Prohibited present → basic registrar lock. */
+	registrarLevel: boolean;
+}
+
+/**
+ * Classify a domain's lock posture from its EPP/RDAP status codes.
+ *
+ * Handles BOTH value formats seen in the wild: EPP camelCase
+ * (`serverTransferProhibited`) and RDAP canonical space-separated lowercase
+ * (`server transfer prohibited`, per RFC 8056/9083). Normalizes by lowercasing
+ * and stripping all whitespace before matching. Pure; no I/O.
+ */
+export function deriveLockPosture(eppStatus: readonly string[]): LockPosture {
+	const norm = new Set(
+		(Array.isArray(eppStatus) ? eppStatus : [])
+			.map((s) => String(s).toLowerCase().replace(/\s+/g, ''))
+			.filter((s) => s.length > 0),
+	);
+	const has = (code: string) => norm.has(code);
+
+	const serverTransfer = has('servertransferprohibited');
+	const serverDelete = has('serverdeleteprohibited');
+	const serverUpdate = has('serverupdateprohibited');
+	const clientTransfer = has('clienttransferprohibited');
+	const clientDelete = has('clientdeleteprohibited');
+	const clientUpdate = has('clientupdateprohibited');
+
+	const registryLevel = serverTransfer || serverDelete || serverUpdate;
+	const registrarLevel = clientTransfer || clientDelete || clientUpdate;
+
+	let level: LockPosture['level'];
+	if (norm.size === 0) {
+		level = 'unknown';
+	} else if (serverTransfer) {
+		level = 'registry-lock';
+	} else if (clientTransfer) {
+		level = 'registrar-lock';
+	} else {
+		level = 'unlocked';
+	}
+
+	return {
+		level,
+		transferLocked: serverTransfer || clientTransfer,
+		deleteLocked: serverDelete || clientDelete,
+		updateLocked: serverUpdate || clientUpdate,
+		registryLevel,
+		registrarLevel,
+	};
+}
+
 /**
  * Wall-clock budget for the synchronous `rdap_lookup` tool path, threaded into
  * the orchestrator as the caller AbortSignal AND as `deadlineMs` so retry
@@ -739,6 +802,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 
 	// EPP status
 	const eppStatus = Array.isArray(rdapData.status) ? rdapData.status : [];
+	const lockPosture = deriveLockPosture(eppStatus);
 
 	// Build metadata
 	const metadata: Record<string, unknown> = {
@@ -753,6 +817,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 		expirationDate: expirationEvent?.eventDate ?? null,
 		lastChanged: lastChangedEvent?.eventDate ?? null,
 		eppStatus,
+		lockPosture,
 		rdapServer: rdapServerUrl,
 	};
 
@@ -791,6 +856,41 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 		);
 	}
 
+	// Lock posture finding (transfer-driven; at most one). Severities per Spec A:
+	// only a genuine gap (unlocked) escalates above info; the MultiLock upsell is
+	// derived by the sales layer from metadata.lockPosture.level, not from severity.
+	if (lockPosture.level === 'unlocked') {
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'Domain transfer not locked',
+				'medium',
+				`${domain} has no transfer-prohibited status at the registrar or registry level. Without a transfer lock the domain is exposed to unauthorized transfer (domain hijacking). Recommend enabling at minimum a registrar transfer lock (clientTransferProhibited).`,
+				metadata,
+			),
+		);
+	} else if (lockPosture.level === 'registrar-lock') {
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'Registrar lock active (no registry lock)',
+				'info',
+				`${domain} has a registrar-level transfer lock but no registry-level (server) lock. A registry lock adds out-of-band manual authorization for the strongest protection against unauthorized transfer.`,
+				metadata,
+			),
+		);
+	} else if (lockPosture.level === 'registry-lock') {
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'Registry lock active',
+				'info',
+				`${domain} has a registry-level transfer lock (server-prohibited), the strongest standard protection against unauthorized transfer.`,
+				metadata,
+			),
+		);
+	}
+
 	// Info: standard registration details (always present)
 	const parts: string[] = [];
 	if (registrarName) parts.push(`Registrar: ${registrarName}`);
@@ -800,6 +900,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 	if (expirationEvent?.eventDate) parts.push(`Expires: ${expirationEvent.eventDate.split('T')[0]}`);
 	if (lastChangedEvent?.eventDate) parts.push(`Updated: ${lastChangedEvent.eventDate.split('T')[0]}`);
 	if (eppStatus.length > 0) parts.push(`Status: ${eppStatus.join(', ')}`);
+	if (lockPosture.level !== 'unknown') parts.push(`Lock posture: ${lockPosture.level}`);
 	if (domainAgeDays !== null) parts.push(`Age: ${domainAgeDays} days`);
 
 	findings.push(

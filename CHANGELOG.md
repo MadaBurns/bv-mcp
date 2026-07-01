@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.27.0] - 2026-07-01
+
+Minor release: CSC engagement — domain lock posture + CSC product mapping + sales lead prioritization (Specs A–C). Adds two MCP tools (79 → 81).
+
+### Added
+
+- **`map_csc_products` — CSC product mapping.** Maps a domain's security gaps to CSC commercial products (MultiLock, Managed DMARC, Digital Certificates, DNSSEC) by reading lock posture plus the DMARC/SSL/DNSSEC checks. Standalone `intelligence` tool (`scanIncluded: false`, no scoring impact). Scan and RDAP lookups run in parallel to stay within the tool-call budget.
+- **`prioritize_csc_leads` — sales lead prioritization.** Ranks a brand portfolio (or an explicit `domains[]` set) into prioritized CSC sales leads by gap-severity × product-fit. Multi-domain, paid-gated (developer+).
+
+### Changed
+
+- **`rdap_lookup` — domain lock posture.** `check_rdap_lookup` now classifies EPP / registry-lock status via `deriveLockPosture` (handles both EPP camelCase and RDAP space-separated status forms) and surfaces `metadata.lockPosture` plus a transfer-driven finding (unlocked = medium; registrar/registry lock = info). Feeds the CSC MultiLock signal in `map_csc_products`. No scoring impact (`rdap` is `scanIncluded: false`).
+
 ## [3.26.1] - 2026-06-29
 
 Patch release: fix MCP OAuth connector sign-in for clients that assume root-path OAuth endpoints. Some clients (notably Claude Desktop connectors, especially when given a pre-registered OAuth Client ID) skip authorization-server metadata discovery and request the OAuth endpoints at the server origin (`/authorize`, `/token`, `/register`) instead of the `/oauth/`-prefixed paths advertised in discovery. Confirmed in a production tail: Claude Desktop requested `GET /authorize` → 404, which surfaced to the user as "Couldn't connect to the server" / "Couldn't register with BV DNS's sign-in service."

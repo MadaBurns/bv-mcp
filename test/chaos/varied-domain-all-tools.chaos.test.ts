@@ -335,6 +335,8 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'resolve_spf_chain', arguments: domainArgs() },
 		{ name: 'discover_subdomains', arguments: domainArgs() },
 		{ name: 'map_compliance', arguments: domainArgs() },
+		{ name: 'map_csc_products', arguments: domainArgs() },
+		{ name: 'prioritize_csc_leads', arguments: { domains: baseDomains.slice(0, 3), format: 'compact' } },
 		{ name: 'simulate_attack_paths', arguments: domainArgs() },
 		{ name: 'check_dbl', arguments: domainArgs() },
 		{ name: 'check_rbl', arguments: domainArgs() },
