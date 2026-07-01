@@ -429,8 +429,11 @@ describe('DNS Security MCP Server', () => {
 			await waitOnExecutionContext(ctx);
 			const body = (await response.json()) as { result: { tools: Array<{ name: string }> } };
 			const { TOOLS } = await import('../src/schemas/tool-definitions');
-			expect(body.result.tools).toHaveLength(TOOLS.length);
+			const { INTERNAL_ONLY_TOOLS } = await import('../src/lib/config');
+			// The public tools/list excludes internal-only tools (e.g. map_csc_products).
+			expect(body.result.tools).toHaveLength(TOOLS.length - INTERNAL_ONLY_TOOLS.size);
 			const toolNames = body.result.tools.map((t) => t.name);
+			expect(toolNames).not.toContain('map_csc_products');
 			expect(toolNames).toContain('check_spf');
 			expect(toolNames).toContain('check_dmarc');
 			expect(toolNames).toContain('check_bimi');

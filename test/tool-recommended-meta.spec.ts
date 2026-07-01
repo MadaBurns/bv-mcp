@@ -13,6 +13,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { TOOLS } from '../src/schemas/tool-definitions';
+import { INTERNAL_ONLY_TOOLS } from '../src/lib/config';
 import { handleToolsList } from '../src/handlers/tools';
 import { SERVER_INSTRUCTIONS } from '../src/mcp/server-instructions';
 
@@ -44,9 +45,10 @@ describe('_meta.recommended starter-set flag', () => {
 		}
 	});
 
-	it('is purely additive — every tool is still listed', () => {
+	it('is purely additive — every public tool is still listed', () => {
 		const { tools } = handleToolsList();
-		expect(tools.length).toBe(TOOLS.length);
+		// handleToolsList excludes internal-only tools; the recommended flag adds nothing/removes nothing.
+		expect(tools.length).toBe(TOOLS.length - INTERNAL_ONLY_TOOLS.size);
 	});
 
 	it('keeps the flag coupled to the instructions string — each recommended tool is named there', () => {

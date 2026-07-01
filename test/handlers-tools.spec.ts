@@ -563,12 +563,15 @@ describe('formatCheckResult - via handleToolsCall', () => {
 // -- handleToolsList --
 
 describe('handleToolsList', () => {
-	it('returns an object with a tools array covering the full registry', async () => {
+	it('returns an object with a tools array covering the public registry (internal-only excluded)', async () => {
 		const { handleToolsList } = await import('../src/handlers/tools');
 		const { TOOLS } = await import('../src/schemas/tool-definitions');
+		const { INTERNAL_ONLY_TOOLS, isInternalOnlyTool } = await import('../src/lib/config');
 		const result = handleToolsList();
 		expect(Array.isArray(result.tools)).toBe(true);
-		expect(result.tools).toHaveLength(TOOLS.length);
+		// handleToolsList filters out internal-only tools (e.g. map_csc_products) — public count.
+		expect(result.tools).toHaveLength(TOOLS.length - INTERNAL_ONLY_TOOLS.size);
+		expect(result.tools.some((t) => isInternalOnlyTool(t.name))).toBe(false);
 	});
 
 	it('every tool entry has name, description, and inputSchema', async () => {
