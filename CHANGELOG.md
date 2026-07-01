@@ -15,6 +15,8 @@ Patch release: **MCP Streamable HTTP transport spec-compliance** for the `GET /m
 - **`GET /mcp` content negotiation now honors wildcard `Accept`.** `acceptsSSE` (`src/lib/sse.ts`) did a literal substring match for `text/event-stream`, wrongly returning `406` to clients that send `Accept: */*` or `text/*` (RFC 9110 wildcards that *do* accept SSE). It now accepts those.
 - **`GET /mcp` and `GET /mcp/sse` return `405 Method Not Allowed` (with `Allow`) instead of `406`** when SSE cannot be served, per the MCP 2025-06-18 Streamable HTTP spec (a GET yields an SSE stream or `405`). `405` is the status clients treat as "no SSE here, use POST" and fall back on. No change for compliant clients (those sending `Accept: text/event-stream` still get the stream).
 
+## [3.29.1] - 2026-07-02
+
 Patch release: **OAuth issuer fail-closed hardening** (#472). Versions the security change already deployed on top of 3.29.0.
 
 ### Security
