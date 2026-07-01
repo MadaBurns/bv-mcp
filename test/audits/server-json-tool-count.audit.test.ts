@@ -34,12 +34,14 @@ describe('smithery.yaml manifest', () => {
 		expect(smitheryYamlText).toContain('url:');
 	});
 
-	it('contains a description or displayName with the honest tool count', () => {
-		const toolCount = TOOLS.length;
-		const countPattern = new RegExp(`${toolCount}`);
+	it('contains a description or displayName with the honest PUBLIC tool count', () => {
+		// Smithery is a public directory listing; a user connects to the public /mcp
+		// endpoint and sees the PUBLIC tools (internal-only tools are hidden from
+		// tools/list). Advertise the public count, matching server.json above.
+		const countPattern = new RegExp(`${PUBLIC_TOOL_COUNT}`);
 		expect(smitheryYamlText).toMatch(
 			countPattern,
-			`smithery.yaml must mention the tool count (${toolCount}) so the Smithery directory listing is honest`,
+			`smithery.yaml must mention the public tool count (${PUBLIC_TOOL_COUNT}) so the Smithery directory listing is honest`,
 		);
 	});
 
