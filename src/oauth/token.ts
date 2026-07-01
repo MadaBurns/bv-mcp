@@ -5,7 +5,7 @@ import { TokenRequestSchema } from '../schemas/oauth';
 import { consumeCode, getTokenVersion } from './storage';
 import { signJwt, newJti, constantTimeEqual } from './jwt';
 import { OAUTH_JWT_TTL_SECONDS, OAUTH_KV_PREFIX, OAUTH_SIGNING_SECRET_MIN_BYTES } from '../lib/config';
-import { resolveIssuer } from './discovery';
+import { resolveIssuerStrict } from './discovery';
 import { resolveClientIpFromRequestHeaders } from '../lib/client-ip';
 import { parseEnvelopeKey } from '../lib/kv-envelope';
 
@@ -160,7 +160,17 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 		return c.json({ error: 'server_error', error_description: 'OAUTH_SIGNING_SECRET not configured' }, 500);
 	}
 
-	const issuer = resolveIssuer(c.req.url, env.OAUTH_ISSUER);
+	// Fail closed when OAUTH_ISSUER is pinned and the request Host does not match it: refuse to
+	// mint a JWT whose iss/aud would embed an anomalous origin. When OAUTH_ISSUER is unset (BSL
+	// self-hosts) resolveIssuerStrict is a no-op and derives the issuer from the request Host, so
+	// self-hosters are unaffected. Cloudflare's route binding constrains Host in prod — this is the
+	// defense-in-depth layer behind it (security-audit item 9).
+	let issuer: string;
+	try {
+		issuer = resolveIssuerStrict(c.req.url, env.OAUTH_ISSUER);
+	} catch {
+		return c.json({ error: 'invalid_request', error_description: 'Invalid issuer' }, 400);
+	}
 	const subject = codeRec.subject ?? 'owner';
 	const tier = codeRec.tier ?? 'owner';
 
