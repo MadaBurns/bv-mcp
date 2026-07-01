@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.28.0] - 2026-07-01
+
+Minor release: brand-level **portfolio grade rollup** on `prioritize_csc_leads` (Spec D backend prerequisite). Unblocks the deferred bv-web-prod CSC portal by moving the brand-grade math into bv-mcp so the portal consumes one SSOT-sourced letter instead of forking the scoring engine client-side.
+
+### Added
+
+- **`portfolioGrade` on `prioritize_csc_leads`'s report** (`src/tools/prioritize-csc-leads.ts`). New optional `PortfolioGrade { grade, weightedScore, contributingDomains } | null` on `CscLeadReport`, flowing through to `structuredContent` (no handler/schema/tool-count/README change — additive field). Computed by a pure, tested `computePortfolioGrade()`: a per-domain **weighted average of scan scores** (`consolidated` 2×, `shadowIt`/`indeterminate`/`unknown` 1×, `impersonation`/`impersonationSurface` excluded), rounded once, then a single `nistScoreToGrade()` call for the NIST 6-band letter — never averages letters, never forks the parity-guarded band thresholds. Its weighting map is deliberately **distinct** from the existing `OWNERSHIP_MULTIPLIER` (sales-actionability ranking). Domains whose individual `grade` is `N/A` (non-resolving / inconclusive) are excluded from the rollup rather than counted at 0, consistent with the scan-domain aggregator contract. Empty / all-excluded portfolios return `null` (division-safe). Surfaced in `formatCscLeads` (full + compact).
+
 ## [3.27.1] - 2026-07-01
 
 Patch release (security): make `map_csc_products` **internal-only**. It shipped in 3.27.0 as a public, free-tier-callable MCP tool, but it maps domains to CSC's specific commercial products and belongs off the public surface.
