@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.29.5] - 2026-07-02
+
+Patch release: **cross-repo audit remediation** (#480).
+
+### Fixed
+
+- **`/badge/:domain` now applies the anonymous `/mcp` path's anti-enumeration caps.** The public badge handler enforced only the per-IP + per-tool `scan_domain` daily cap (25/day), skipping `checkDistinctDomainDailyLimit` (the tighter 12 distinct-domains/day speed bump) and `checkGlobalDailyLimit`. An unauthenticated caller could scan up to 25 distinct domains/day via the badge instead of 12, uncounted against the platform-wide global cap. The badge scan now routes through the same distinct-domain and global checks.
+
+### Changed
+
+- **Removed the inert `bv-wasm-core` `initSync` from the worker entry.** No exported WASM function (`estimateTokens`/`checkPermission`/compaction) is called anywhere, so the module-load init only added bundle size and cold-start cost. The crate is retained and documented as an inert staged seam (not deleted; re-wire instructions left at the former call site).
+
+### CI / tooling
+
+- Removed the dead "Update SERVER_VERSION" `sed` step from `publish.yml` (`SERVER_VERSION` auto-derives from `pkg.version`; the pattern no longer matched and was a silent no-op).
+- Documented the trade-off of `dangerouslyIgnoreUnhandledErrors` in `vitest.config.mts` (kept — the stderr filter is output-only and cannot replace it — with a proper narrow flagged as follow-up).
+
 ## [3.29.4] - 2026-07-02
 
 Patch release: **internal-door brand-audit binding wiring** (#477).
