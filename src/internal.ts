@@ -117,6 +117,16 @@ type InternalEnv = {
 		getDomainEvidence: (params: { domain: string; includeHistory?: boolean }) => Promise<unknown>;
 	};
 	BV_ENTERPRISE?: Fetcher;
+	/**
+	 * D1 + Queue backing the async brand-audit subsystem (`discover_brand_domains_start`,
+	 * `brand_audit_batch_start`, `register_brand_audit_watch`). Bound to the SAME worker
+	 * as the public `/mcp` path (`BvMcpEnv` in `src/index.ts`) — the internal door MUST
+	 * thread them into the tool runtime options or the async `*_start` tools short-circuit
+	 * to `unprovisioned` with no `auditId` (the caller polls forever, nothing is stored).
+	 * Absent on BSL self-hosts → the tools degrade cleanly to `unprovisioned`.
+	 */
+	BRAND_AUDIT_DB?: D1Database;
+	BRAND_AUDIT_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	/** FIND-17: Base64-encoded 32-byte AES-256 key for app-layer KV envelope encryption. */
 	KV_ENVELOPE_KEY?: string;
 	/** D1 store backing mcp_access_log — precise per-customer usage/forensics. Mirrors BvMcpEnv in index.ts. */
@@ -277,6 +287,14 @@ internalRoutes.post('/tools/call', async (c) => {
 			// which silently stalled the bv2-ops recon-sweep queue (fixed 2026-06-23).
 			reconBinding: c.env.BV_RECON,
 			reconAuthToken: c.env.BV_RECON_KEY,
+			// Async brand-audit subsystem (discover_brand_domains_start /
+			// brand_audit_batch_start / register_brand_audit_watch). Same
+			// failure mode as the recon binding above: without these the
+			// async *_start tools short-circuit to `unprovisioned` with no
+			// auditId, so the bv2-ops csc-discovery sweep polls forever and
+			// stores nothing. Bound to the same worker as the public path.
+			brandAuditDb: c.env.BRAND_AUDIT_DB,
+			brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 			// Tier 0/1/2 lookup closures — internal callers (load tests, bv-web
 			// service binding, ops scripts) get the same tiered discovery path as
 			// public `/mcp`. Closures stay `undefined` on BSL self-hosts where
@@ -547,6 +565,10 @@ internalRoutes.post('/tools/batch', async (c) => {
 							: undefined,
 						whoisBinding: c.env.BV_WHOIS,
 						infraProbe: c.env.BV_INFRA_PROBE,
+						// Async brand-audit subsystem — parity with the single-call door
+						// so a batched brand tool can also reach the D1 store + queue.
+						brandAuditDb: c.env.BRAND_AUDIT_DB,
+						brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 						// Tier 0/1/2 lookup closures — batch invocations of brand tools
 						// from internal callers must also exercise tiered mode when the
 						// bindings are provisioned.

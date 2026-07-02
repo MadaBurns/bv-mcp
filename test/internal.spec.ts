@@ -99,6 +99,42 @@ describe('Internal service binding routes', () => {
 		});
 	});
 
+	describe('brand-audit subsystem wiring', () => {
+		// Regression: the internal door built tool options without brandAuditDb/
+		// brandAuditQueue (only the public /mcp path wired them), so the async
+		// discover_brand_domains_start / brand_audit_batch_start tools short-circuited
+		// to `unprovisioned` with no auditId over the door — the bv2-ops csc-discovery
+		// sweep polled forever and stored nothing. This asserts the door reaches the
+		// D1 store + queue so the async producer actually enqueues.
+		it('passes BRAND_AUDIT_DB/QUEUE through the internal door so discover_brand_domains_start enqueues', async () => {
+			const queueSend = vi.fn(async () => {});
+			const dbRun = vi.fn(async () => ({ success: true }));
+			// Minimal chainable D1 stub: prepare().bind().run()
+			const brandAuditDb = {
+				prepare: () => ({ bind: () => ({ run: dbRun }) }),
+			};
+			const brandEnv = {
+				...testEnv,
+				BRAND_AUDIT_DB: brandAuditDb,
+				BRAND_AUDIT_QUEUE: { send: queueSend },
+			} as unknown as typeof testEnv;
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: 'discover_brand_domains_start', arguments: { domain: 'example.com' } }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, brandEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			// Both bindings threaded → the async producer wrote the audit row and
+			// enqueued the discovery job (never reaches enqueue if the door left
+			// brandAuditDb/brandAuditQueue undefined → unprovisioned short-circuit).
+			expect(dbRun).toHaveBeenCalled();
+			expect(queueSend).toHaveBeenCalled();
+		});
+	});
+
 	describe('POST /internal/tools/call', () => {
 		it('dispatches check_spf and returns raw result', async () => {
 			const { mockTxtRecords } = await import('./helpers/dns-mock');
