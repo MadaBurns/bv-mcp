@@ -420,7 +420,7 @@ Static API keys (via `?api_key=` or `Authorization: Bearer`) authenticate as a s
 
 | Tier | Quota | Use Case | Source |
 |---|---|---|---|
-| free | 25 domain scans/day, 1 batch scan/day, 3 concurrent. High-cost tools have tighter per-tool limits. | Unauthenticated, public testing (e.g. Claude.ai web) | Per-IP rate limit (no key) |
+| free | 25 domain scans/day, 3 concurrent. High-cost tools have tighter per-tool limits; `batch_scan` and other multi-domain/offensive tools require a paid tier (developer+). | Unauthenticated, public testing (e.g. Claude.ai web) | Per-IP rate limit (no key) |
 | **agent** | **200 scans/day, 5 concurrent** | **Team automation, CI/CD scripts** | **`BV_API_KEY` environment variable** |
 | developer | 500 scans/day, 10 concurrent | OAuth + MCP Developer plan | Stripe subscription (bv-web) |
 | enterprise | 10,000 scans/day, 25 concurrent | OAuth + MCP Enterprise plan | Stripe subscription (bv-web) |
