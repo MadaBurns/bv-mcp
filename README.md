@@ -65,7 +65,7 @@ Transport support:
 
 ## What you get
 
-- **80 MCP tools with 19 scoring categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, subdomailing, reverse DNS (PTR/FCrDNS), brand discovery, and authoritative DNS infrastructure
+- **80 MCP tools with 19 scoring categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, DANE-HTTPS, subdomailing, reverse DNS (PTR/FCrDNS), and DNSKEY strength
 - **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with score-based capping to prevent inflated labels
 - **Trust surface analysis** — detects shared SaaS platforms (Google, M365, SendGrid) and cross-references DMARC enforcement to determine real exposure
 - **Guided remediation** — `generate` (artifact=`fix_plan`) produces provider-aware prioritized actions; its record artifacts (`spf_record`, `dmarc_record`, `dkim_config`, `mta_sts_policy`, `rollout_plan`) output ready-to-publish records; `validate_fix` confirms whether a fix was applied successfully
@@ -132,7 +132,7 @@ Transport support:
   + osint_investigation_status   — poll status of any running OSINT investigation
   + osint_investigation_report   — retrieve report for a completed OSINT investigation
 
-  Operator-deploy only (m365Proxy binding; Microsoft 365 / Entra identity security ops — degrade to unprovisioned without it):
+  Operator-deploy only (proxied via the `BV_WEB` service binding, wired as the `m365Proxy` runtime option; Microsoft 365 / Entra identity security ops — degrade to unprovisioned without it):
   + query_signins                — query Microsoft Entra sign-in logs for a tenant
   + query_ual                    — query the Microsoft 365 Unified Audit Log for a tenant
   + get_ca_policies              — retrieve Conditional Access policies for an Entra tenant
@@ -280,7 +280,7 @@ These live under the internal auth gate (`/internal/*`) and are called by bv-web
 | **API access** | Yes        | Yes     | Yes                                         |
 | **MCP access** | Yes        | Yes     | Yes                                         |
 
-Offensive/recon and multi-domain tools (subdomain discovery, attack-path simulation, lookalike/shadow-domain detection, supply-chain mapping, bucket/OSINT investigations, `batch_scan`, `compare_domains`, brand audits) require a paid plan (Pro / developer tier or higher); free, unauthenticated, and agent-tier callers get an HTTP 403 upgrade-required response. Unauthenticated callers are additionally capped at a small number of distinct domains per day (best-effort, fail-open). The OSINT/bucket status and report pollers stay free.
+Offensive/recon and multi-domain tools (subdomain discovery, attack-path simulation, lookalike/shadow-domain detection, fast-flux detection, supply-chain mapping, real-time threat feed, bucket/OSINT investigations, `batch_scan`, `compare_domains`, brand audits) require a paid plan (Pro / developer tier or higher); free, unauthenticated, and agent-tier callers get an HTTP 403 upgrade-required response. Unauthenticated callers are additionally capped at a small number of distinct domains per day (best-effort, fail-open). The OSINT/bucket status and report pollers stay free.
 
 ---
 

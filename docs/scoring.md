@@ -83,7 +83,7 @@ Two mechanisms detect missing controls in `buildCheckResult`:
 
 1. **Confidence-gated detection** (`scoreIndicatesMissingControl()`): For findings matching missing-control text patterns (e.g., "no … record", "missing", "not found") with `critical`/`high` severity and `deterministic`/`verified` confidence. This prevents heuristic findings (e.g., DKIM selector probing) from falsely zeroing core categories.
 
-2. **Explicit metadata** (`missingControl: true`): For checks where the control is entirely absent. Used across all tiers: CAA (no records), DNSSEC (not enabled), HTTP Security (site unreachable), MTA-STS (no record), MX (no records), SVCB-HTTPS (no record), NS (no records), Zone Hygiene (no NS/SOA), BIMI (no record), DANE (no TLSA), TLS-RPT (missing).
+2. **Explicit metadata** (`missingControl: true`): For checks where the control is entirely absent. Used by exactly seven checks: HTTP Security (site unreachable), MTA-STS (no record), MX (no records), NS (no records), Zone Hygiene (no NS/SOA), BIMI (no record), DANE (no TLSA). **CAA, SVCB-HTTPS, and TLS-RPT deliberately do NOT** set `missingControl` — absence is a graded finding, not a category-zeroing missing control. **DNSSEC "not enabled" also does NOT** — per NIST SP 800-81r3 it's a baseline integrity control in defense-in-depth, so absence is a `high` Core penalty with a fixed `penaltyOverride: 40` (category lands at 60, not 0). DNSSEC's broken-chain / validation-failing cases (distinct from "not enabled") DO fire `missingControl: true`.
 
 **Score zeroing**: When either mechanism fires, `score` is set to `0` (`hasMissingControl ? 0 : score`). Checks that fail due to low penalty-based score (e.g., two criticals → score 20, `passed=false`) retain their numeric score — only truly missing controls are zeroed. This prevents misleading displays like `✓ 95/100` for checks with no record at all.
 
@@ -157,6 +157,21 @@ Source: `computeProviderConfidenceModifier()` and `computeScanScore()` in `packa
 - F: `<50`
 
 Source: `scoreToGrade()` in `packages/dns-checks/src/scoring/engine.ts` (re-exported via `src/lib/scoring.ts`).
+
+### Two grade scales, by role (v3.26.0+)
+
+The 9-band scale above is the **internal / SSOT** scale — used by `compare_baseline` ordering, the `/badge` SVG, `analyze_drift`, `map_compliance`, `generate_fix_plan`, cohort-percentile math, golden tests, and `ScanScore.grade`.
+
+The **customer-facing display scale is a NIST-aligned 6-band** (`nistScoreToGrade()`, also in `engine.ts`), shown by `scan_domain`, `batch_scan`, and `compare_domains` ONLY — recomputed from the same 0–100 score at the `format-report.ts` `displayGradeFor` chokepoint (`'N/A'` preserved):
+
+- A+: `≥95`
+- A: `≥90`
+- B: `≥80`
+- C: `≥70`
+- D: `≥60`
+- F: `<60`
+
+Scores are unchanged by the display scale — only the letter differs. bv-web-prod displays the same NIST letter everywhere so a domain shows one grade across web + MCP.
 
 ## Scoring Profiles
 
