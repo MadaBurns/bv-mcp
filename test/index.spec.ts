@@ -1444,6 +1444,37 @@ describe('DNS Security MCP Server', () => {
 			expect(differentIpResponse.status).toBe(429);
 		});
 
+		it('applies the distinct-domain/day cap on /badge (12, not the 25 per-tool cap)', async () => {
+			// Audit FIND-1: the public /badge handler runs the full scan engine
+			// unauthenticated but previously only enforced per-IP + per-tool caps,
+			// letting one IP scan up to 25 DISTINCT domains/day here (vs the 12
+			// intended by executeMcpRequest). It must now mirror the tighter
+			// distinct-domain cap. Seed the per-IP distinct-domain COUNTER to the
+			// limit so a FRESH distinct domain trips the cap without running 12 real
+			// scans; the check runs BEFORE scanDomain, so no fan-out occurs.
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date('2026-03-08T00:00:00Z'));
+			try {
+				const ip = '203.0.113.44';
+				const DAY_MS = 86_400_000;
+				const dayWindow = Math.floor(Date.now() / DAY_MS);
+				// FREE_DISTINCT_DOMAIN_DAILY_LIMIT is 12.
+				await env.RATE_LIMIT.put(`rl:day:ddc:count:${ip}:${dayWindow}`, '12', { expirationTtl: 86_400 });
+
+				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/badge/example.com', {
+					headers: { 'cf-connecting-ip': ip },
+				});
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(request, env, ctx);
+				await waitOnExecutionContext(ctx);
+
+				expect(response.status).toBe(429);
+				expect(response.headers.get('Content-Type')).toBe('image/svg+xml');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
 		it('authenticated scan_domain requests are not subject to free daily cap', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
 			const sessionId = await initSession({ authToken: TEST_API_KEY, targetEnv: authEnv });
