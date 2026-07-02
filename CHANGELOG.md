@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.29.3] - 2026-07-02
+
+Patch release: **claude.com OAuth connector registration fix**.
+
+### Fixed
+
+- **Dynamic Client Registration now accepts `https://claude.com/...` redirect URIs.** Anthropic's claude.ai → claude.com migration changed the callback URL Claude connectors register (`https://claude.com/api/mcp/auth_callback`), which `OAUTH_REDIRECT_URI_ALLOWLIST` rejected with `400 invalid_redirect_uri` — surfacing to users as "Couldn't register with blackveil-dns's sign-in service." Added an anchored apex `claude.com` pattern (no subdomain wildcard) alongside the existing `claude.ai` entry; lookalike hosts (`claude.com.evil.example`) remain rejected.
+
 ## [3.29.2] - 2026-07-02
 
 Patch release: **MCP Streamable HTTP transport spec-compliance** for the `GET /mcp` SSE endpoint.
