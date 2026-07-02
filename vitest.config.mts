@@ -54,10 +54,19 @@ export default defineConfig({
 		// shutdown that the pool's transport bridge reports as 2 file-level
 		// unhandled errors, even though every test assertion passes (3103/3103).
 		// The errors don't carry an exit code by themselves — they only flip the
-		// suite to red when vitest's Errors count is non-zero. Suppressing
-		// because no userland code can produce these workerd teardown messages in
-		// this test environment; the npm Vitest wrapper keeps the matching raw
-		// stderr line out of user-visible test output.
+		// suite to red when vitest's Errors count is non-zero.
+		//
+		// KNOWN TRADE-OFF (audit FIND-4, flagged for operator): this is GLOBAL —
+		// it swallows *every* unhandled error in the ~3300-test suite, so a real
+		// floating-promise rejection would no longer fail CI. It is NOT redundant
+		// with scripts/vitest-filter-workerd.mjs: that wrapper is output-only (it
+		// strips the matching raw stderr LINE from user-visible output) and does
+		// NOT affect vitest's unhandled-error count or exit code. Removing this
+		// flag and relying on the stderr filter alone WOULD re-red the full suite
+		// on the teardown noise. Vitest exposes no per-message narrow for this at
+		// config level, so tightening safely requires a pool-workers fix (or a
+		// vitest onUnhandledError filter hook) — left as operator follow-up rather
+		// than silently reintroducing a flaky-red full suite.
 		dangerouslyIgnoreUnhandledErrors: true,
 		// No coverage config: the @vitest/coverage-v8 provider can't run under the
 		// @cloudflare/vitest-pool-workers runtime (workerd lacks `node:inspector`,
