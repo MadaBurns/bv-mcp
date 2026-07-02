@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.29.4] - 2026-07-02
+
+Patch release: **internal-door brand-audit binding wiring** (#477).
+
+### Fixed
+
+- **`/internal/tools/{call,batch}` now threads `BRAND_AUDIT_DB` / `BRAND_AUDIT_QUEUE` into the tool runtime options.** Only the public `/mcp` path wired them, so the async brand-audit `*_start` tools (`discover_brand_domains_start`, `brand_audit_batch_start`, `register_brand_audit_watch`) invoked over the internal service binding short-circuited to `unprovisioned` with no `auditId` — the caller polled forever and nothing was stored (the same failure mode already fixed for the recon binding). Both bindings are on the same Worker as the public path, so this is a pure code-threading fix; absent on BSL self-hosts the tools still degrade cleanly to `unprovisioned`.
+
+### Changed
+
+- Dev-dependency bumps: `@cloudflare/vitest-pool-workers` 0.16→0.17, `wrangler` 4.105→4.106, `@cloudflare/workers-types`, `typescript-eslint` 8.62.0→8.62.1, `eslint` 10.5.0→10.6.0, `actions/cache` 6.0.0→6.1.0 (Dependabot #468–471).
+
 ## [3.29.3] - 2026-07-02
 
 Patch release: **claude.com OAuth connector registration fix**.
