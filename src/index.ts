@@ -16,26 +16,33 @@
 
 import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
-import wasm from '../crates/bv-wasm-core/pkg/bv_wasm_core_bg.wasm';
-import * as bv_wasm from '../crates/bv-wasm-core/pkg/bv_wasm_core.js';
 
-// Initialize the Wasm module
-bv_wasm.initSync(wasm);
+// INERT — the bv-wasm-core crate (estimateTokens / checkPermission / compaction)
+// is a fully-built, fully-tested subsystem that is NOT wired into any code path
+// here. It was previously `initSync`'d at module load, adding cold-start + bundle
+// cost for functions nothing in the Worker ever called. The import + init were
+// removed so the crate stops loading on every request. It remains a STAGED SEAM:
+// the crate and its tests (test/wasm-integration.test.ts, which self-inits) are
+// intentionally retained for a future wiring. Re-add the import + `initSync(wasm)`
+// only when a real call site consumes an exported function. Operator note: safe
+// to keep unwired; do not delete the crate.
 
-import { checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
+import { checkDistinctDomainDailyLimit, checkGlobalDailyLimit, checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
 import { logEvent, logError, sanitizeHeadersForLog } from './lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
 import { normalizeHeaders, parseJsonRpcRequest, readRequestBody, validateContentType } from './mcp/request';
 import { createSession, deleteSession, validateSession, checkSessionCreateRateLimit } from './lib/session';
 import { unauthorizedResponse } from './lib/auth';
 import { sseEvent, acceptsSSE, createNotificationStream, sseErrorResponse, createStreamingSseResponse } from './lib/sse';
-import { createAnalyticsClient, hashForAnalytics, hashIpForAnalytics } from './lib/analytics';
+import { createAnalyticsClient, hashDomain, hashForAnalytics, hashIpForAnalytics } from './lib/analytics';
 import { detectMcpClient } from './lib/client-detection';
 import { parseAnalyticsPiiLevel } from './lib/analytics-pii';
 import type { JsonRpcRequest } from './lib/json-rpc';
 import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionRequest } from './mcp/route-gates';
 import {
+	FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
 	FREE_TOOL_DAILY_LIMITS,
+	GLOBAL_DAILY_TOOL_LIMIT,
 	MAX_REQUEST_BODY_BYTES,
 	isValidOAuthSigningSecret,
 	parseCacheTtl,
@@ -592,6 +599,15 @@ app.get('/health', async (c) => {
 	);
 });
 
+/** 429 SVG badge response with an optional retry-after header (seconds). */
+function badgeRateLimitResponse(svgHeaders: Record<string, string>, retryAfterMs?: number): Response {
+	const headers: Record<string, string> = { ...svgHeaders };
+	if (retryAfterMs !== undefined) {
+		headers['retry-after'] = String(Math.ceil(retryAfterMs / 1000));
+	}
+	return new Response(errorBadge(), { status: 429, headers });
+}
+
 app.get('/badge/:domain', async (c) => {
 	const svgHeaders = {
 		'Content-Type': 'image/svg+xml',
@@ -601,7 +617,17 @@ app.get('/badge/:domain', async (c) => {
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 	const rateResult = await checkRateLimit(ip, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
 	if (!rateResult.allowed) {
-		return new Response(errorBadge(), { status: 429, headers: svgHeaders });
+		return badgeRateLimitResponse(svgHeaders, rateResult.retryAfterMs);
+	}
+
+	// The badge runs the full scan engine unauthenticated, so it must apply the
+	// SAME anti-enumeration caps the anonymous POST /mcp path enforces in
+	// executeMcpRequest — not just the per-IP + per-tool caps. Without these, an
+	// unauthenticated IP could scan up to 25 DISTINCT domains/day here (vs the
+	// intended 12) and those scans would escape the global daily cap entirely.
+	const globalResult = await checkGlobalDailyLimit(GLOBAL_DAILY_TOOL_LIMIT, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
+	if (!globalResult.allowed) {
+		return badgeRateLimitResponse(svgHeaders, globalResult.retryAfterMs);
 	}
 
 	const toolQuota = await checkToolDailyRateLimit(
@@ -624,6 +650,14 @@ app.get('/badge/:domain', async (c) => {
 	const domain = sanitizeDomain(rawDomain);
 	if (!domain) {
 		return new Response(errorBadge(), { status: 400, headers: svgHeaders });
+	}
+
+	// Distinct-domain/day cap (tighter than the per-tool 25/day) — mirrors the
+	// executeMcpRequest speed-bump so /badge can't be used to enumerate a wider
+	// distinct-domain set than /mcp. Keyed on the per-IP principal; fail-open.
+	const distinctResult = await checkDistinctDomainDailyLimit(ip, hashDomain(domain), FREE_DISTINCT_DOMAIN_DAILY_LIMIT, c.env.RATE_LIMIT);
+	if (!distinctResult.allowed) {
+		return badgeRateLimitResponse(svgHeaders, distinctResult.retryAfterMs);
 	}
 
 	try {
