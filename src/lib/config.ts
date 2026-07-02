@@ -639,6 +639,8 @@ export const OAUTH_TOKEN_AUTH_METHODS_SUPPORTED = ['none'] as const;
 export const OAUTH_CODE_CHALLENGE_METHODS_SUPPORTED = ['S256'] as const;
 export const OAUTH_REDIRECT_URI_ALLOWLIST: RegExp[] = [
 	/^https:\/\/claude\.ai(\/.*)?$/,
+	// claude.ai → claude.com migration: connectors now register https://claude.com/api/mcp/auth_callback
+	/^https:\/\/claude\.com(\/.*)?$/,
 	/^https:\/\/[^/]+\.anthropic\.com(\/.*)?$/,
 	/^http:\/\/localhost(:\d+)?(\/.*)?$/,
 	/^http:\/\/127\.0\.0\.1(:\d+)?(\/.*)?$/,

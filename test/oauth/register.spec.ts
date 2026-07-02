@@ -24,6 +24,27 @@ describe('POST /oauth/register', () => {
 		expect(body.token_endpoint_auth_method).toBe('none');
 	});
 
+	it('accepts a claude.com redirect (post claude.ai → claude.com migration) and returns 201', async () => {
+		const res = await SELF.fetch('https://example.com/oauth/register', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ client_name: 'Claude', redirect_uris: ['https://claude.com/api/mcp/auth_callback'] }),
+		});
+		expect(res.status).toBe(201);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(typeof body.client_id).toBe('string');
+	});
+
+	it('rejects claude.com lookalike hosts', async () => {
+		const res = await SELF.fetch('https://example.com/oauth/register', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ redirect_uris: ['https://claude.com.evil.example/cb'] }),
+		});
+		expect(res.status).toBe(400);
+		expect(((await res.json()) as Record<string, unknown>).error).toBe('invalid_redirect_uri');
+	});
+
 	it('rejects redirect_uri outside allowlist', async () => {
 		const res = await SELF.fetch('https://example.com/oauth/register', {
 			method: 'POST',
