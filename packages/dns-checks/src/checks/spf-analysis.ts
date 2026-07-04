@@ -5,8 +5,8 @@
  * Pure functions for analyzing SPF lookup budgets, extracting signal domains,
  * and checking broad IP ranges.
  *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd.
- * Licensed under BSL 1.1
+ * Copyright (c) 2023-2026 BLACKVEIL Security
+ * Licensed under BUSL-1.1
  */
 
 import type { DNSQueryFunction, Finding } from '../types';

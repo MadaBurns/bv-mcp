@@ -5,8 +5,8 @@
  * Queries TXT records for SPF and validates the policy.
  * Implements recursive include expansion per RFC 7208 §4.6.4.
  *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd.
- * Licensed under BSL 1.1
+ * Copyright (c) 2023-2026 BLACKVEIL Security
+ * Licensed under BUSL-1.1
  */
 
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';

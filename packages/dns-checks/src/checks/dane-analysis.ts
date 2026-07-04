@@ -4,8 +4,8 @@
  * DANE (DNS-Based Authentication of Named Entities) analysis helpers.
  * Pure functions for analyzing TLSA records and classifying DANE presence.
  *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd.
- * Licensed under BSL 1.1
+ * Copyright (c) 2023-2026 BLACKVEIL Security
+ * Licensed under BUSL-1.1
  */
 
 import type { Finding } from '../types';

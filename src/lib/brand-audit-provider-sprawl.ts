@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * Provider-sprawl helper for brand-audit classifier.
  *

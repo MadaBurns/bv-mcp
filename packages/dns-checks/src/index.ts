@@ -2,7 +2,7 @@
  * @blackveil/dns-checks
  *
  * DNS and email security check implementations.
- * BSL 1.1 Licensed — Copyright (c) 2023-2026 BlackVeil Security Ltd.
+ * BUSL-1.1 Licensed — Copyright (c) 2023-2026 BLACKVEIL Security
  *
  * @module @blackveil/dns-checks
  */
