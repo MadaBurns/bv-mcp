@@ -43,26 +43,70 @@ const DEPRECATED_DS_DIGESTS: Record<number, string> = {
 };
 
 /**
+ * IANA DNSSEC algorithm number → canonical mnemonic map.
+ * Cloudflare DoH emits the mnemonic name (e.g. "ECDSAP256SHA256") in the
+ * algorithm field where Google DoH emits the number ("13"). Lookup keys are
+ * the mnemonics normalized (uppercased, every non-alphanumeric char stripped)
+ * so hyphen/underscore variants match.
+ * See https://www.iana.org/assignments/dns-sec-alg-numbers.
+ */
+const DNSSEC_ALGORITHM_MNEMONICS: Record<string, number> = {
+	RSAMD5: 1,
+	DH: 2,
+	DSA: 3,
+	RSASHA1: 5,
+	DSANSEC3SHA1: 6,
+	RSASHA1NSEC3SHA1: 7,
+	RSASHA256: 8,
+	RSASHA512: 10,
+	ECCGOST: 12,
+	ECDSAP256SHA256: 13,
+	ECDSAP384SHA384: 14,
+	ED25519: 15,
+	ED448: 16,
+};
+
+/**
+ * Normalize a DNSSEC algorithm token (as emitted by DoH resolvers) to its
+ * numeric IANA algorithm code. Accepts EITHER a decimal string (Google DoH,
+ * e.g. "13") OR an IANA mnemonic (Cloudflare DoH, e.g. "ECDSAP256SHA256").
+ * Returns null for an unrecognized token.
+ */
+export function parseDnssecAlgorithmToken(token: string): number | null {
+	if (token == null) return null;
+	const trimmed = token.trim();
+	if (trimmed === '') return null;
+	// Numeric form: preserve exact prior parsing behavior for number inputs.
+	if (/^\d+$/.test(trimmed)) {
+		const n = parseInt(trimmed, 10);
+		return isNaN(n) ? null : n;
+	}
+	const key = trimmed.toUpperCase().replace(/[^A-Z0-9]/g, '');
+	return DNSSEC_ALGORITHM_MNEMONICS[key] ?? null;
+}
+
+/**
  * Parse the algorithm number from a DNSKEY record data string.
  * Format: "flags protocol algorithm <base64key>" e.g. "257 3 13 mdsswUyr3DPW..."
+ * The algorithm field may be numeric (Google DoH) or an IANA mnemonic (Cloudflare DoH).
  */
 export function parseDnskeyAlgorithm(data: string): number | null {
 	const parts = data.trim().split(/\s+/);
 	if (parts.length < 3) return null;
-	const algorithm = parseInt(parts[2], 10);
-	return isNaN(algorithm) ? null : algorithm;
+	return parseDnssecAlgorithmToken(parts[2]);
 }
 
 /**
  * Parse algorithm and digest type from a DS record data string.
  * Format: "keytag algorithm digesttype <hex-digest>" e.g. "12345 13 2 abc123..."
+ * The algorithm field may be numeric (Google DoH) or an IANA mnemonic (Cloudflare DoH).
  */
 export function parseDsRecord(data: string): { algorithm: number; digestType: number } | null {
 	const parts = data.trim().split(/\s+/);
 	if (parts.length < 3) return null;
-	const algorithm = parseInt(parts[1], 10);
+	const algorithm = parseDnssecAlgorithmToken(parts[1]);
 	const digestType = parseInt(parts[2], 10);
-	if (isNaN(algorithm) || isNaN(digestType)) return null;
+	if (algorithm === null || isNaN(digestType)) return null;
 	return { algorithm, digestType };
 }
 

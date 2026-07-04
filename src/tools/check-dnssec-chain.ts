@@ -11,6 +11,7 @@
  * Workers-compatible: uses fetch API only (DNS-over-HTTPS).
  */
 
+import { parseDnssecAlgorithmToken } from '@blackveil/dns-checks';
 import { queryDns, queryDnsRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildCheckResult, createFinding } from '../lib/scoring';
@@ -83,10 +84,12 @@ function parseDsRecord(data: string): ParsedDs | null {
 	const parts = data.trim().split(/\s+/);
 	if (parts.length < 4) return null;
 	const keyTag = parseInt(parts[0], 10);
-	const algorithm = parseInt(parts[1], 10);
+	// Cloudflare DoH returns the algorithm as an IANA mnemonic (e.g. "ECDSAP256SHA256")
+	// rather than a number; parseDnssecAlgorithmToken accepts either form.
+	const algorithm = parseDnssecAlgorithmToken(parts[1]);
 	const digestType = parseInt(parts[2], 10);
 	const digest = parts.slice(3).join('');
-	if (!Number.isFinite(keyTag) || !Number.isFinite(algorithm) || !Number.isFinite(digestType)) return null;
+	if (!Number.isFinite(keyTag) || algorithm === null || !Number.isFinite(digestType)) return null;
 	return { keyTag, algorithm, digestType, digest };
 }
 
@@ -95,9 +98,11 @@ function parseDnskeyRecord(data: string): ParsedDnskey | null {
 	if (parts.length < 4) return null;
 	const flags = parseInt(parts[0], 10);
 	const protocol = parseInt(parts[1], 10);
-	const algorithm = parseInt(parts[2], 10);
+	// Cloudflare DoH returns the algorithm as an IANA mnemonic (e.g. "ECDSAP256SHA256")
+	// rather than a number; parseDnssecAlgorithmToken accepts either form.
+	const algorithm = parseDnssecAlgorithmToken(parts[2]);
 	const pubkey = parts.slice(3).join('');
-	if (!Number.isFinite(flags) || !Number.isFinite(protocol) || !Number.isFinite(algorithm)) return null;
+	if (!Number.isFinite(flags) || !Number.isFinite(protocol) || algorithm === null) return null;
 	return { flags, protocol, algorithm, pubkey, isKsk: flags === 257 };
 }
 

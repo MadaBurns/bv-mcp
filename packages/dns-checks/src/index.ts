@@ -57,6 +57,7 @@ export {
 	parseDmarcTags,
 	parseDnskeyAlgorithm,
 	parseDsRecord,
+	parseDnssecAlgorithmToken,
 	parseTlsaRecord,
 	parseCaaRecord,
 	analyzeSecurityHeaders,

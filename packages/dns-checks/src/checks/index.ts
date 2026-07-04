@@ -28,7 +28,7 @@ export { checkHTTPSecurity } from './check-http-security';
 
 // ── Analysis utilities (re-exported for consumers) ───────────────────────────
 export { parseDmarcTags } from './dmarc-utils';
-export { parseDnskeyAlgorithm, parseDsRecord } from './dnssec-analysis';
+export { parseDnskeyAlgorithm, parseDsRecord, parseDnssecAlgorithmToken } from './dnssec-analysis';
 export { parseTlsaRecord } from './dane-analysis';
 export type { CaaRecord } from './caa-analysis';
 export { parseCaaRecord } from './caa-analysis';
