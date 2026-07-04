@@ -5,11 +5,18 @@
 //
 // Background: `BV_INFRA_GRAPH`, `BV_INTEL_GATEWAY`, and `BV_ENTERPRISE` are
 // service bindings to bv-web-owned Workers. `BV_RECON` is an operator-only
-// recon service binding; `BV_RECON_KEY` is its companion secret. bv-mcp is
-// BUSL-1.1 source-available; `discovery_mode: 'classic'` is the only supported
+// recon service binding; `BV_RECON_KEY` is its companion secret. `BV_WEB` is the
+// proprietary bv-web-prod service binding (OAuth consent proxy + the m365Proxy
+// for the identity_secops tools) — CLAUDE.md documents it as "not in public
+// wrangler.jsonc", and its `service: bv-web-prod` reference both leaks the
+// proprietary service name and breaks a BSL self-host `wrangler deploy`. bv-mcp
+// is BUSL-1.1 source-available; `discovery_mode: 'classic'` is the only supported
 // mode for self-hosted BSL deployments. The private overlay
 // (`scripts/inject-private-config.cjs` + `.dev/wrangler.deploy.jsonc`) injects
 // these bindings at deploy time for BlackVeil production only.
+//
+// NOTE: matched as quoted-exact tokens (`"BV_WEB"`) so the legitimately-public
+// `BV_WEB_OAUTH_CONSENT_URL` var (a public consent URL) is not a false positive.
 //
 // If anyone accidentally promotes one of these binding names into the public
 // `wrangler.jsonc`, this audit fails loudly — protecting the BSL self-host
@@ -31,11 +38,14 @@ const FORBIDDEN_PUBLIC_BINDINGS = [
 	'BV_RECON_KEY',
 	'BV_TLS_PROBE',
 	'BV_TLS_PROBE_KEY',
+	'BV_WEB',
 ] as const;
 
 describe('public wrangler.jsonc license-boundary audit', () => {
 	it('does not reference any private brand-discovery service binding', () => {
-		const offenders = FORBIDDEN_PUBLIC_BINDINGS.filter((name) => wranglerPublic.includes(name));
+		// Quoted-exact match so `"BV_WEB"` (the binding) is caught while
+		// `"BV_WEB_OAUTH_CONSENT_URL"` (a legitimately-public var) is not.
+		const offenders = FORBIDDEN_PUBLIC_BINDINGS.filter((name) => wranglerPublic.includes(`"${name}"`));
 		expect(
 			offenders,
 			`Forbidden private binding(s) found in public wrangler.jsonc: ${offenders.join(', ')}. ` +

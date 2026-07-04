@@ -72,10 +72,6 @@
   ],
   "services": [
     {
-      "binding": "BV_WEB",
-      "service": "bv-web-prod"
-    },
-    {
       "binding": "BV_WHOIS",
       "service": "bv-whois"
     },
