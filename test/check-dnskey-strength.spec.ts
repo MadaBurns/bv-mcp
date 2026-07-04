@@ -36,6 +36,19 @@ describe('checkDnskeyStrength', () => {
 		expect(modern!.detail).toMatch(/ECDSA P-256/);
 	});
 
+	it('surfaces the algorithm when Cloudflare DoH emits a mnemonic (ECDSAP256SHA256, alg 13)', async () => {
+		// Cloudflare (the PRIMARY prod resolver) returns the IANA mnemonic in the
+		// algorithm field, not a number. The record must still resolve to alg 13.
+		globalThis.fetch = vi.fn().mockResolvedValue(dnskeyResponse('example.com', ['257 3 ECDSAP256SHA256 mdsswUyr3DPW...']));
+		const result = await run();
+		const modern = result.findings.find((f) => f.title.includes('Modern'));
+		expect(modern).toBeDefined();
+		expect(modern!.severity).toBe('info');
+		expect(modern!.detail).toMatch(/ECDSA P-256/);
+		// Must NOT collapse to the vacuous "No DNSKEY" path.
+		expect(result.findings.find((f) => f.title.includes('No DNSKEY'))).toBeUndefined();
+	});
+
 	it('flags a deprecated algorithm (RSA/SHA-1, alg 5) as high', async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(dnskeyResponse('example.com', ['257 3 5 AwEAAabc...']));
 		const result = await run();
