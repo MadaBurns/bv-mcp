@@ -11,7 +11,7 @@
  * Two detection paths: a deterministic TLD seed list (no DNS), and an NS-overlap
  * fallback (domain NS == parent-zone NS ⇒ registry operates the zone).
  *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd. Licensed under BSL 1.1.
+ * Copyright (c) 2023-2026 BLACKVEIL Security Licensed under BUSL-1.1.
  */
 
 import type { DNSQueryFunction } from '../types';

@@ -7,8 +7,8 @@
  *
  * Reference: Guardio Labs SubdoMailing report (Feb 2024).
  *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd.
- * Licensed under BSL 1.1
+ * Copyright (c) 2023-2026 BLACKVEIL Security
+ * Licensed under BUSL-1.1
  */
 
 import type { DNSQueryFunction, Finding, Severity } from '../types';

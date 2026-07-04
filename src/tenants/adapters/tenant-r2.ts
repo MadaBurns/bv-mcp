@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * Tenant-prefix-stamping adapter for Cloudflare R2.
  *
