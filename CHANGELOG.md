@@ -6,9 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.29.6] - 2026-07-04
+
+Patch release: **DNSSEC algorithm-mnemonic parsing fix** + tool-result citation link-back + resolver-consistency category label.
+
 ### Added
 
 - **Citation link-back on tool results (`source` / `report_url`).** Every domain-bearing, non-error tool result now carries `source` and `report_url` in its `structuredContent`, pointing at the public per-domain scorecard (`https://www.blackveilsecurity.com/security-report/<domain>`). Additive and schema-safe — the keys ride through the `.loose()` CheckResult `outputSchema`, so strict MCP clients still validate; non-domain tools (`domain` undefined) and error results are unaffected. Feeds the public-scorecard SEO / AI-search funnel and mirrors the `source` link comparable hosted scanners return. Single injection point at the central `handleToolsCall` return (`withReportCitation`).
+
+### Fixed
+
+- **DNSSEC chain-walk and DNSKEY-strength tools no longer drop every record from the primary (Cloudflare) resolver.** Cloudflare DoH returns the DNSSEC algorithm field as an IANA mnemonic (`ECDSAP256SHA256`, `RSASHA256`), but the DNSKEY/DS parsers did `parseInt()` on it → `NaN` → the record was silently discarded. As a result `check_dnssec_chain` reported "stopped at com — not signed" for **every** signed `.com` domain (while still returning `passed:true`), and `check_dnskey_strength` produced no findings for signed domains. A shared `parseDnssecAlgorithmToken()` (decimal **or** mnemonic → numeric code) in `@blackveil/dns-checks` now backs both parsers; numeric-format data is parsed byte-identically as before. Package bumped `1.4.0 → 1.4.1` (`PARITY_CORPUS_VERSION` in lockstep; no corpus output changed).
+- **`check_resolver_consistency` now reports its findings under its own `resolver_consistency` category** instead of borrowing the scored `zone_hygiene` label (out-of-union standalone label, mirroring `dnssec_chain`).
+
+### Removed
+
+- **Deleted the dead, buggy duplicate `src/tools/dnssec-analysis.ts`** (+ its spec) — it carried the same numeric-only parser bug but had no production importer; the live path is the fixed `@blackveil/dns-checks` copy.
 
 ## [3.29.5] - 2026-07-02
 

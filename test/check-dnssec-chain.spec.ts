@@ -98,6 +98,40 @@ describe('checkDnssecChain', () => {
 		expect(result.partial).toBeFalsy();
 	});
 
+	it('Cloudflare mnemonic-format algorithm fields complete the chain', async () => {
+		// Cloudflare DoH (prod's primary resolver) returns DNSSEC algorithm fields as
+		// IANA MNEMONICS (e.g. "ECDSAP256SHA256"), not numbers. DNSKEY data puts the
+		// algorithm at index 2 and DS data at index 1. A numeric-only parser drops
+		// every record → the walk falsely reports "stopped at com — not signed".
+		mockDnsFetch({
+			// Root zone — DNSKEY only, mnemonic algorithm (no DS for root)
+			'.:DNSKEY': dnskeyResponse('.', ['257 3 RSASHA256 AwEAAroot...']),
+			// com zone — DS + DNSKEY both mnemonic ECDSAP256SHA256 (alg 13)
+			'com:DS': dsResponse('com', ['19718 ECDSAP256SHA256 2 ABCDEF0123456789']),
+			'com:DNSKEY': dnskeyResponse('com', ['257 3 ECDSAP256SHA256 AwEAAcom...']),
+			// example.com zone — DS + DNSKEY mnemonic ECDSAP256SHA256
+			'example.com:DS': dsResponse('example.com', ['54321 ECDSAP256SHA256 2 FEDCBA9876543210']),
+			'example.com:DNSKEY': dnskeyResponse('example.com', ['256 3 ECDSAP256SHA256 AwEAAexample...']),
+			'example.com:A': adResponse('example.com', true),
+		});
+
+		const result = await run();
+		expect(result.category).toBe('dnssec_chain');
+
+		// Chain must COMPLETE — not falsely report "stopped at com / not signed".
+		const summary = result.findings.find((f) => f.severity === 'info' && f.metadata?.chainComplete !== undefined);
+		expect(summary).toBeDefined();
+		expect(summary!.metadata!.chainComplete).toBe(true);
+		expect(summary!.detail).not.toMatch(/stopped at com/i);
+		expect(summary!.detail).not.toMatch(/not signed|unsigned/i);
+
+		// Target zone linkage must be 'linked' (DS ↔ DNSKEY algorithm match on mnemonics).
+		const zones = summary!.metadata!.zones as Array<{ zone: string; linkage: string }>;
+		const target = zones.find((z) => z.zone === 'example.com');
+		expect(target).toBeDefined();
+		expect(target!.linkage).toBe('linked');
+	});
+
 	it('unsigned domain reports no DS', async () => {
 		mockDnsFetch({
 			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),

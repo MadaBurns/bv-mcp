@@ -13,10 +13,18 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import type { CheckResult } from '@blackveil/dns-checks/scoring';
+import type { CheckResult, CheckCategory } from '@blackveil/dns-checks/scoring';
 import { buildCheckResult, createFinding } from '@blackveil/dns-checks/scoring';
 import { checkMultiResolverConsistency, type ConsistencyResult } from '../lib/dns-multi-resolver';
 import type { RecordTypeName } from '../lib/dns-types';
+
+/**
+ * Out-of-union category label for this standalone intelligence tool (mirrors
+ * `dnssec_chain` in check-dnssec-chain.ts). Deliberately NOT a member of the
+ * scored `CheckCategory` union / `CATEGORY_TIERS`, so scan scoring never
+ * iterates it. Previously mislabeled as `zone_hygiene`.
+ */
+const CATEGORY = 'resolver_consistency' as CheckCategory;
 
 /** Default record types to check. */
 const DEFAULT_TYPES: RecordTypeName[] = ['A', 'AAAA', 'MX', 'TXT', 'NS'];
@@ -42,7 +50,7 @@ export async function checkResolverConsistency(
 		switch (result.status) {
 			case 'CONSISTENT':
 				return createFinding(
-					'zone_hygiene',
+					CATEGORY,
 					`${result.recordType} records consistent`,
 					'info',
 					result.detail,
@@ -55,7 +63,7 @@ export async function checkResolverConsistency(
 
 			case 'SPLIT_HORIZON':
 				return createFinding(
-					'zone_hygiene',
+					CATEGORY,
 					`${result.recordType} records differ across resolvers`,
 					'low',
 					result.detail,
@@ -72,7 +80,7 @@ export async function checkResolverConsistency(
 
 			case 'INCOMPLETE':
 				return createFinding(
-					'zone_hygiene',
+					CATEGORY,
 					`${result.recordType} records incomplete across resolvers`,
 					'low',
 					result.detail,
@@ -89,7 +97,7 @@ export async function checkResolverConsistency(
 
 			case 'SUSPICIOUS':
 				return createFinding(
-					'zone_hygiene',
+					CATEGORY,
 					`${result.recordType} records show suspicious divergence`,
 					'high',
 					result.detail,
@@ -106,7 +114,7 @@ export async function checkResolverConsistency(
 		}
 	});
 
-	return buildCheckResult('zone_hygiene', findings);
+	return buildCheckResult(CATEGORY, findings);
 }
 
 /** Format resolver consistency results as human-readable text. */
