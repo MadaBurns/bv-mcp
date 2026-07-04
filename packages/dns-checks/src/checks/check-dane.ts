@@ -5,8 +5,8 @@
  * Validates TLSA records for MX servers (_25._tcp.{mx-host}).
  * HTTPS DANE (_443._tcp) is handled by the dedicated check-dane-https.ts.
  *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd.
- * Licensed under BSL 1.1
+ * Copyright (c) 2023-2026 BLACKVEIL Security
+ * Licensed under BUSL-1.1
  */
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction } from '../types';

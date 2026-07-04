@@ -5,8 +5,8 @@
  * Queries TXT records at default._bimi.<domain> and validates
  * logo URL and authority evidence configuration.
  *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd.
- * Licensed under BSL 1.1
+ * Copyright (c) 2023-2026 BLACKVEIL Security
+ * Licensed under BUSL-1.1
  */
 
 import type { CheckResult, DNSQueryFunction, FetchFunction, Finding } from '../types';

@@ -11,6 +11,8 @@ export default defineConfig({
 			'test/audits/private-config-injection.node.test.ts',
 			'test/audits/pretooluse-hook-scope.node.test.ts',
 			'test/audits/repo-safety-push-range-scanner.audit.test.ts',
+			'test/audits/license-headers.audit.test.ts',
+			'test/audits/dependency-license.audit.test.ts',
 			'test/audits/vitest-workerd-stderr-filter.node.test.ts',
 		],
 		environment: 'node',

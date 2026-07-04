@@ -4,8 +4,8 @@
  * MTA-STS (Mail Transfer Agent Strict Transport Security) check.
  * Queries _mta-sts TXT records and validates the MTA-STS policy.
  *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd.
- * Licensed under BSL 1.1
+ * Copyright (c) 2023-2026 BLACKVEIL Security
+ * Licensed under BUSL-1.1
  */
 
 import type { CheckResult, DNSQueryFunction, FetchFunction, Finding } from '../types';

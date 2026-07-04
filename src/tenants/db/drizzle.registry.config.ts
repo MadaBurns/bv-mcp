@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BUSL-1.1
+
 // Drizzle config for the SHARED Tenant registry D1 database.
 // One database across all super-tenants — holds tenant metadata, API keys,
 // and billing events. Source schema: src/tenants/db/schema/registry.ts.

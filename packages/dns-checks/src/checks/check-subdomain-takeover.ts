@@ -5,8 +5,8 @@
  * Scans known/active subdomains for orphaned CNAME records pointing to
  * deleted/unresolved third-party services.
  *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd.
- * Licensed under BSL 1.1
+ * Copyright (c) 2023-2026 BLACKVEIL Security
+ * Licensed under BUSL-1.1
  */
 
 import type { CheckResult, DNSQueryFunction, FetchFunction, Finding } from '../types';

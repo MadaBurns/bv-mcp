@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * MCP Resources handler for Blackveil DNS.
  * Exposes static documentation resources about DNS/email security checks,

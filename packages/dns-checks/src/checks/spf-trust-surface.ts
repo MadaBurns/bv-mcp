@@ -5,8 +5,8 @@
  * Identifies when SPF include: or redirect= directives delegate sending
  * authority to multi-tenant SaaS platforms, expanding the domain's trust surface.
  *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd.
- * Licensed under BSL 1.1
+ * Copyright (c) 2023-2026 BLACKVEIL Security
+ * Licensed under BUSL-1.1
  */
 
 import type { Finding } from '../types';

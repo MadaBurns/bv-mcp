@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BUSL-1.1
+
 // Drizzle config for the PER-SUB-TENANT Tenant D1 schema.
 // One database PER sub-tenant — holds their domains, scans, findings, alerts.
 // Source schema: src/tenants/db/schema/tenant.ts.
