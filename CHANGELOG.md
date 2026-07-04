@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- **Citation link-back on tool results (`source` / `report_url`).** Every domain-bearing, non-error tool result now carries `source` and `report_url` in its `structuredContent`, pointing at the public per-domain scorecard (`https://www.blackveilsecurity.com/security-report/<domain>`). Additive and schema-safe — the keys ride through the `.loose()` CheckResult `outputSchema`, so strict MCP clients still validate; non-domain tools (`domain` undefined) and error results are unaffected. Feeds the public-scorecard SEO / AI-search funnel and mirrors the `source` link comparable hosted scanners return. Single injection point at the central `handleToolsCall` return (`withReportCitation`).
+
 ## [3.29.5] - 2026-07-02
 
 Patch release: **cross-repo audit remediation** (#480).
