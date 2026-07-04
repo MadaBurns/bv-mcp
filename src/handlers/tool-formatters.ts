@@ -69,6 +69,45 @@ export function buildToolResult(
 	return sc === undefined ? { content } : { content, structuredContent: sc };
 }
 
+/**
+ * Public per-domain security scorecard base — the citation link-back target that
+ * feeds the GSI SEO / AI-search funnel (mirrors the `source` link a caller sees
+ * from comparable hosted scanners).
+ */
+const PUBLIC_REPORT_BASE_URL = 'https://www.blackveilsecurity.com/security-report';
+
+/**
+ * Public scorecard URL for a domain. `domain` has already passed
+ * `extractAndValidateDomain` (validateDomain + sanitizeDomain) upstream;
+ * `encodeURIComponent` is defence-in-depth against any stray character.
+ */
+export function buildReportUrl(domain: string): string {
+	return `${PUBLIC_REPORT_BASE_URL}/${encodeURIComponent(domain)}`;
+}
+
+/**
+ * Attach a citation link back to the public per-domain scorecard. Emitted ONLY
+ * for a domain-bearing, non-error result — non-domain tools (`domain` undefined)
+ * and error results are a no-op. Additive: the `source`/`report_url` keys ride
+ * through the `.loose()` CheckResult outputSchema, so strict MCP clients that
+ * validate against the schema still pass.
+ */
+export function withReportCitation<T extends { structuredContent?: Record<string, unknown>; isError?: boolean }>(
+	result: T,
+	domain: string | undefined,
+): T {
+	if (!domain || result.isError) return result;
+	const reportUrl = buildReportUrl(domain);
+	return {
+		...result,
+		structuredContent: {
+			...(result.structuredContent ?? {}),
+			source: reportUrl,
+			report_url: reportUrl,
+		},
+	};
+}
+
 export function formatCheckResult(result: CheckResult, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 	lines.push(`## ${result.category.toUpperCase()} Check`);
