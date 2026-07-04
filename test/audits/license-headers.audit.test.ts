@@ -13,13 +13,20 @@ const repoRoot = process.cwd();
 const SPDX_HEADER = '// SPDX-License-Identifier: BUSL-1.1';
 
 function trackedSourceFiles(): string[] {
-	const out = execFileSync('git', ['ls-files', 'src/**/*.ts', 'packages/*/src/**/*.ts'], {
+	// List everything tracked under src/ and packages/, then filter in JS to the
+	// shipped-source .ts set. NOTE: do NOT use git pathspec globs like
+	// 'src/**/*.ts' here — git's `**/` requires an intermediate path segment, so
+	// it silently MISSES files directly in src/ or packages/*/src/ (e.g.
+	// packages/dns-checks/src/index.ts). Directory pathspecs + a JS regex filter
+	// cover every depth.
+	const out = execFileSync('git', ['ls-files', '--', 'src', 'packages'], {
 		cwd: repoRoot,
 		encoding: 'utf8',
 	});
 	return out
 		.split('\n')
 		.filter(Boolean)
+		.filter((f) => /^src\/.*\.ts$/.test(f) || /^packages\/[^/]+\/src\/.*\.ts$/.test(f))
 		.filter((f) => !/\.(test|spec)\.ts$/.test(f))
 		.filter((f) => !f.includes('/__tests__/'));
 }

@@ -198,7 +198,12 @@ function readProdDeps(path) {
 	if (!existsSync(path)) return {};
 	try {
 		const pkg = JSON.parse(readFileSync(path, 'utf8'));
-		return pkg.dependencies && typeof pkg.dependencies === 'object' ? pkg.dependencies : {};
+		// Include optionalDependencies: `npm ci` installs them by default and they
+		// ship into production node_modules (e.g. drizzle-orm's driver adapters),
+		// so their licenses must be gated too.
+		const deps = pkg.dependencies && typeof pkg.dependencies === 'object' ? pkg.dependencies : {};
+		const optDeps = pkg.optionalDependencies && typeof pkg.optionalDependencies === 'object' ? pkg.optionalDependencies : {};
+		return { ...deps, ...optDeps };
 	} catch {
 		return {};
 	}
@@ -258,9 +263,12 @@ while (queue.length > 0) {
 		});
 	}
 
-	// Recurse into this package's own production dependencies.
+	// Recurse into this package's own production + optional dependencies
+	// (optionalDependencies are installed and shipped by default).
 	const childDeps = resolved.pkg.dependencies && typeof resolved.pkg.dependencies === 'object' ? resolved.pkg.dependencies : {};
-	for (const childName of Object.keys(childDeps)) {
+	const childOptDeps =
+		resolved.pkg.optionalDependencies && typeof resolved.pkg.optionalDependencies === 'object' ? resolved.pkg.optionalDependencies : {};
+	for (const childName of Object.keys({ ...childDeps, ...childOptDeps })) {
 		queue.push({ name: childName, fromDir: resolved.dir, parent: `${name}@${version}` });
 	}
 }
