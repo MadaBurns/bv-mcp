@@ -29,7 +29,7 @@ History uses concise imperative subjects, often Conventional Commit style: `fix(
 
 ## Security & Configuration Tips
 
-The license is BSL 1.1; retain SPDX headers on source files. Do not commit `.dev.vars`, generated private Wrangler config secrets, API keys, customer data, or internal CSC artifacts under `.dev/`. Non-secret Worker vars belong in `wrangler.jsonc`; secrets belong in Wrangler secrets or approved local env files.
+The license is BUSL-1.1; retain SPDX headers on source files. Do not commit `.dev.vars`, generated private Wrangler config secrets, API keys, customer data, or internal CSC artifacts under `.dev/`. Non-secret Worker vars belong in `wrangler.jsonc`; secrets belong in Wrangler secrets or approved local env files.
 
 Use synthetic fixtures only. There must be no real customer data, real tenant domains, customer emails, public IP literals, internal hostnames, generated reports, PDFs, CSC outputs, or proprietary planning material in tracked files. Prefer `example.test`, `example.com`, `example.invalid`, and RFC 5737 IPs such as `192.0.2.10`, `198.51.100.20`, and `203.0.113.30`.
 

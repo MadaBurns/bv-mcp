@@ -2,7 +2,7 @@
 
 DNS and email security check implementations for [BlackVeil Security](https://blackveilsecurity.com).
 
-> **License:** [BSL 1.1](./LICENSE) — Copyright (c) 2023-2026 BlackVeil Security Ltd.
+> **License:** [BUSL-1.1](./LICENSE) — Copyright (c) 2023-2026 BLACKVEIL Security
 
 ## Installation
 
@@ -62,4 +62,4 @@ The MCP server package layers additional worker-only tools on top of this librar
 
 ## License
 
-Business Source License 1.1 (BSL 1.1). See [LICENSE](./LICENSE).
+Business Source License 1.1 (BUSL-1.1). See [LICENSE](./LICENSE). Non-commercial use is permitted under the Additional Use Grant; the Licensed Work converts to the MIT License on the Change Date (2030-03-17).

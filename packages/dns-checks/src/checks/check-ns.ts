@@ -4,8 +4,8 @@
  * NS (Name Server) check.
  * Validates nameserver configuration for a domain.
  *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd.
- * Licensed under BSL 1.1
+ * Copyright (c) 2023-2026 BLACKVEIL Security
+ * Licensed under BUSL-1.1
  */
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction } from '../types';

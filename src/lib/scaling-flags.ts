@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * Scaling roadmap feature flags — TYPED, DEFAULT-OFF readers for the Phase 2 and
  * Phase 4 seams declared on `BvMcpEnv` (`src/index.ts`).

@@ -13,7 +13,7 @@
  *
  * Design: bv-web docs/superpowers/specs/2026-05-31-cross-repo-scoring-parity-gate-design.md
  *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd. Licensed under BSL 1.1.
+ * Copyright (c) 2023-2026 BLACKVEIL Security Licensed under BUSL-1.1.
  */
 
 export interface DmarcParityFixture {

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BUSL-1.1
+
 /**
  * Consumer-side opt-out enforcement filter for brand discovery.
  *

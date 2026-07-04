@@ -4,8 +4,8 @@
  * MTA-STS analysis helpers.
  * Pure functions for analyzing MTA-STS TXT records, policy files, and TLS-RPT records.
  *
- * Copyright (c) 2023-2026 BlackVeil Security Ltd.
- * Licensed under BSL 1.1
+ * Copyright (c) 2023-2026 BLACKVEIL Security
+ * Licensed under BUSL-1.1
  */
 
 import type { Finding } from '../types';
