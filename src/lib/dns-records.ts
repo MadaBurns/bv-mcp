@@ -68,6 +68,11 @@ export async function queryTxtRecords(domain: string, opts?: QueryDnsOptions): P
  *
  * Some DoH providers double-escape (e.g. `\\;` in the JS string for what
  * should be a plain `;`), so we loop until the string stabilises.
+ *
+ * After unescaping, any high-byte (0x80–0xFF) characters produced by `\DDD`
+ * sequences are re-decoded as UTF-8 so that multi-byte codepoints (e.g.
+ * U+202E encoded as `\226\128\174`) arrive as proper Unicode rather than
+ * mojibake.
  */
 export function unescapeDnsTxt(text: string): string {
 	const unescape = (s: string) =>
@@ -85,7 +90,41 @@ export function unescapeDnsTxt(text: string): string {
 		if (next === result) break;
 		result = next;
 	}
-	return result;
+	return redecodeBinaryStringAsUtf8(result);
+}
+
+/**
+ * Re-interpret a "binary string" (each char code 0–255 = one raw byte) as
+ * UTF-8 and return the decoded Unicode string.
+ *
+ * DoH providers emit non-ASCII TXT rdata bytes as `\DDD` decimal octets per
+ * RFC 1035 §5.1.  After `String.fromCharCode(octet)` each such byte becomes
+ * an isolated Latin-1 char, so multi-byte UTF-8 groups (e.g. `e2 80 ae` for
+ * U+202E) arrive as sequences of Latin-1 chars instead of a single codepoint.
+ * Converting the whole string as a byte-per-char buffer and running UTF-8
+ * decoding restores the intended Unicode codepoints.
+ *
+ * Guards:
+ * - Pure ASCII (no chars in 0x80–0xFF): fast-path, returned unchanged.
+ * - Any char > 0xFF: the string already carries proper Unicode codepoints
+ *   from the transport layer and must NOT be re-decoded as bytes.
+ */
+function redecodeBinaryStringAsUtf8(s: string): string {
+	// Fast-path: pure ASCII — no multi-byte sequences possible.
+	if (!/[\u0080-\u00ff]/.test(s)) return s;
+	// Any char outside the Latin-1 range (including supplementary-plane chars
+	// such as emoji delivered as surrogate pairs) means the transport already
+	// gave us real Unicode; byte-re-decoding would corrupt those codepoints.
+	if (/[^\u0000-\u00ff]/.test(s)) return s;
+	const bytes = new Uint8Array(s.length);
+	for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+	try {
+		return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+	} catch {
+		// Not valid UTF-8 — return the original string unchanged rather than
+		// silently substituting U+FFFD replacement characters.
+		return s;
+	}
 }
 
 /**

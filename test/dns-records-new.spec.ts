@@ -78,6 +78,22 @@ describe('queryTxtRecords', () => {
 
 		expect(results).toEqual(['v=spf1 include:_spf.google.com ~all']);
 	});
+
+	it('decodes non-ASCII UTF-8 bytes expressed as \\DDD octet escapes to proper Unicode', async () => {
+		// Simulates a DoH response where the TXT record contains UTF-8 bytes for
+		// U+00E9 (é) encoded as the two decimal-octet escapes \195\169.
+		// Before the fix, these arrived as two Latin-1 chars (Ã©) instead of é.
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			createDohResponse([{ name: 'example.com', type: 16 }], [
+				{ name: 'example.com', type: 16, TTL: 300, data: '"caf\\195\\169"' },
+			]),
+		);
+
+		const { queryTxtRecords } = await import('../src/lib/dns-records');
+		const results = await queryTxtRecords('example.com');
+
+		expect(results).toEqual(['café']);
+	});
 });
 
 describe('unescapeDnsTxt', () => {
@@ -104,6 +120,45 @@ describe('unescapeDnsTxt', () => {
 	it('returns plain text unchanged', async () => {
 		const { unescapeDnsTxt } = await import('../src/lib/dns-records');
 		expect(unescapeDnsTxt('v=DMARC1; p=reject')).toBe('v=DMARC1; p=reject');
+	});
+
+	it('decodes 2-byte UTF-8 sequences from \\DDD octet escapes (e.g. é = \\195\\169)', async () => {
+		// U+00E9 (é) encodes as UTF-8 bytes 0xC3 0xA9 = decimal 195 169.
+		// DoH returns non-ASCII bytes as \DDD; without the UTF-8 re-decode step
+		// they would arrive as two Latin-1 chars (Ã©) instead of é.
+		const { unescapeDnsTxt } = await import('../src/lib/dns-records');
+		expect(unescapeDnsTxt('caf\\195\\169')).toBe('café');
+	});
+
+	it('decodes 3-byte UTF-8 sequences from \\DDD octet escapes (e.g. U+202E = \\226\\128\\174)', async () => {
+		// U+202E RIGHT-TO-LEFT OVERRIDE encodes as UTF-8 bytes 0xE2 0x80 0xAE = 226 128 174.
+		// Without the UTF-8 re-decode step these arrive as three Latin-1 chars (â\u0080®).
+		const { unescapeDnsTxt } = await import('../src/lib/dns-records');
+		expect(unescapeDnsTxt('\\226\\128\\174')).toBe('\u202E');
+	});
+
+	it('leaves strings with proper Unicode codepoints (> U+00FF) untouched', async () => {
+		// If the DoH transport already delivered proper Unicode the string must
+		// not be re-decoded as bytes — doing so would corrupt high codepoints.
+		const { unescapeDnsTxt } = await import('../src/lib/dns-records');
+		expect(unescapeDnsTxt('hello \u202E world')).toBe('hello \u202E world');
+	});
+
+	it('leaves strings with supplementary-plane codepoints (emoji) untouched', async () => {
+		// Emoji (U+1F600) uses a surrogate pair in JS (U+D83D U+DE00), both > U+00FF.
+		// The guard must handle chars above U+FFFF so they are never treated as bytes.
+		const { unescapeDnsTxt } = await import('../src/lib/dns-records');
+		expect(unescapeDnsTxt('test \uD83D\uDE00 emoji')).toBe('test \uD83D\uDE00 emoji');
+	});
+
+	it('returns raw string unchanged when bytes are not valid UTF-8', async () => {
+		// A lone 0x80 byte (a continuation byte with no leading byte) is invalid
+		// UTF-8.  The function must preserve the original string rather than
+		// silently substituting U+FFFD replacement characters.
+		const { unescapeDnsTxt } = await import('../src/lib/dns-records');
+		// \128 = 0x80, a lone continuation byte — not valid UTF-8
+		const raw = unescapeDnsTxt('\\128');
+		expect(raw.charCodeAt(0)).toBe(0x80);
 	});
 });
 
