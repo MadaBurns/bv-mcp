@@ -46,12 +46,21 @@ describe('checkResolverConsistency', () => {
 		return checkResolverConsistency(domain, recordType);
 	}
 
-	it('returns CheckResult with zone_hygiene category', async () => {
+	it('returns CheckResult with resolver_consistency category', async () => {
 		mockConsistentDns();
 		const result = await run();
-		expect(result.category).toBe('zone_hygiene');
+		expect(result.category).toBe('resolver_consistency');
 		expect(result.findings).toBeInstanceOf(Array);
 		expect(result.findings.length).toBeGreaterThan(0);
+	});
+
+	it('labels every finding with the resolver_consistency category', async () => {
+		mockConsistentDns();
+		const result = await run();
+		expect(result.findings.length).toBeGreaterThan(0);
+		for (const finding of result.findings) {
+			expect(finding.category).toBe('resolver_consistency');
+		}
 	});
 
 	it('returns info findings for consistent records', async () => {

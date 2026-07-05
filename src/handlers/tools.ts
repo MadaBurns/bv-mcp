@@ -100,7 +100,7 @@ import {
 import type { OutputFormat } from './tool-args';
 import { buildLogContext, logToolFailure, logToolSuccess } from './tool-execution';
 import { readAndUpdateLastTool } from '../lib/session-memory';
-import { formatCheckResult, mcpError, buildToolResult } from './tool-formatters';
+import { formatCheckResult, mcpError, buildToolResult, withReportCitation } from './tool-formatters';
 import type { McpContent } from './tool-formatters';
 import { TOOLS } from '../schemas/tool-definitions';
 import type { McpTool } from '../schemas/tool-definitions';
@@ -1634,10 +1634,13 @@ export async function handleToolsCall(
 						)
 				: executeDispatch;
 
-		return await Promise.race([
+		const dispatched = await Promise.race([
 			dispatch(),
 			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('__tool_timeout__')), TOOL_CALL_TIMEOUT_MS)),
 		]);
+		// Citation link-back to the public scorecard (GSI SEO / AI-search funnel).
+		// No-op for non-domain tools (`domain` undefined) and error results.
+		return withReportCitation(dispatched, domain);
 	} catch (err) {
 		if (err instanceof Error && err.message === '__tool_timeout__') {
 			logToolFailure({ ...ctx(), error: 'Tool call timed out', args });
