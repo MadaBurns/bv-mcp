@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.29.7] - 2026-07-05
+
+Patch release: **TXT rdata UTF-8 decoding fix** + Glama pnpm build contract. Versions the two fixes already deployed to production (Worker Version `a9687cf7`).
+
+### Fixed
+
+- **TXT record data with non-ASCII bytes no longer arrives as mojibake in finding details.** DoH providers emit non-ASCII TXT rdata bytes as RFC 1035 `\DDD` decimal-octet escapes; `unescapeDnsTxt` converted each octet independently via `String.fromCharCode`, mangling multi-byte UTF-8 sequences (e.g. U+202E arrived as three Latin-1 chars, with the C1 middle byte then stripped by the sanitizer). After `\DDD` unescaping, pure byte-per-char strings containing high bytes are now re-decoded as UTF-8 (`TextDecoder` with `fatal: true`); pure-ASCII strings, strings already carrying proper Unicode (> U+00FF), and invalid-UTF-8 byte sequences are returned unchanged. Restored bidi/zero-width codepoints remain neutralized downstream by the `createFinding` structured-string sanitizer. (#488)
+- **Glama's pnpm-based build now links the local `@blackveil/dns-checks` workspace instead of resolving a stale published version from the registry.** Added `pnpm-workspace.yaml` (pnpm ignores `package.json` `workspaces`), a `pnpm.overrides` link for `@blackveil/dns-checks`, and the root `build` script now builds `packages/dns-checks` before `tsup` emits the stdio bundle. A new `glama-build.audit.test.ts` locks the contract. (#491)
+
 ## [3.29.6] - 2026-07-04
 
 Patch release: **DNSSEC algorithm-mnemonic parsing fix** + tool-result citation link-back + resolver-consistency category label.
