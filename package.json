@@ -27,7 +27,7 @@
 		"packages/*"
 	],
 	"scripts": {
-		"build": "tsup",
+		"build": "npm -w packages/dns-checks run build && tsup",
 		"generate:wasm-permissions": "tsx scripts/generate-wasm-permissions.ts",
 		"check:wasm-permissions": "tsx scripts/generate-wasm-permissions.ts --check",
 		"build:wasm": "npm run generate:wasm-permissions && cd crates/bv-wasm-core && wasm-pack build --target web",
@@ -76,6 +76,11 @@
 		"typescript-eslint": "8.62.1",
 		"vitest": "4.1.9",
 		"wrangler": "^4.106.0"
+	},
+	"pnpm": {
+		"overrides": {
+			"@blackveil/dns-checks": "link:packages/dns-checks"
+		}
 	},
 	"overrides": {
 		"esbuild": "0.28.1",
