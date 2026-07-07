@@ -165,7 +165,7 @@ The server is continuously validated using a **comprehensive chaos test suite** 
 
 The `bv_load_test` class identifies internal load/chaos/tranco-scan traffic so it stays out of real-client analytics segments.
 
-The test suite ensures session stability, authentication precedence, format negotiation, and transport-specific edge cases across Streamable HTTP and Legacy SSE. Without an API key it exercises the public/free-tier path; with a valid key exported as `BV_API_KEY`, it also covers `?api_key=` authentication, Bearer precedence, authenticated SSE bootstrap, and authenticated batch behavior.
+The test suite ensures session stability, authentication precedence, format negotiation, and transport-specific edge cases across Streamable HTTP and Legacy SSE. Without an API key it exercises the public/free-tier path; with a valid key exported as `BV_API_KEY`, it covers Bearer authentication, legacy self-host `?api_key=` compatibility, authenticated SSE bootstrap, and authenticated batch behavior.
 
 Run the chaos tests locally: `python3 scripts/chaos/chaos-test-clients.py`
 
@@ -231,11 +231,12 @@ BlackVeil's hosted production at `dns-mcp.blackveilsecurity.com` flips its runti
 
 ## Client setup
 
-The free tier requires no authentication. Authenticated requests bypass per-IP rate limits and follow your tier's daily quota. Three authentication methods are supported:
+The free tier requires no authentication. Authenticated requests bypass per-IP rate limits and follow your tier's daily quota. Hosted production supports:
 
 - **Header**: `Authorization: Bearer <KEY>`
-- **Query Param**: `?api_key=<KEY>` (for clients that can't send custom headers — Smithery, Claude Code)
 - **OAuth 2.1**: optional authorization-code flow with PKCE, enabled only when operators set `ENABLE_OAUTH=true`; owner-key consent is separately gated by `ENABLE_OWNER_OAUTH=true`.
+
+The `?api_key=<KEY>` fallback is legacy/self-host compatibility only. BlackVeil hosted production sets `REJECT_QUERY_API_KEY=true`; clients that cannot send headers should use OAuth or an `mcp-remote` header bridge.
 
 For full hosted setup examples, stdio usage, OAuth setup, and legacy fallback endpoints, see [**docs/client-setup.md**](docs/client-setup.md).
 

@@ -155,6 +155,11 @@ describe('tenant schema — findings', () => {
 		const idx = t.indexes.find((i) => i.config.name === 'idx_findings_domain_severity');
 		expect(idx).toBeDefined();
 	});
+
+	it('declares idx_findings_scan_id for cycle report and alert joins', () => {
+		const idx = t.indexes.find((i) => i.config.name === 'idx_findings_scan_id');
+		expect(idx).toBeDefined();
+	});
 });
 
 describe('tenant schema — alerts', () => {

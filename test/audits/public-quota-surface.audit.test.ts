@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import readme from '../../README.md?raw';
 import clientSetup from '../../docs/client-setup.md?raw';
+import troubleshooting from '../../docs/troubleshooting.md?raw';
 import vscodeReadme from '../../extensions/vscode/README.md?raw';
 import { FREE_TOOL_DAILY_LIMITS, TIER_DAILY_LIMITS } from '../../src/lib/config';
 import { handleResourcesRead } from '../../src/handlers/resources';
@@ -25,6 +26,16 @@ describe('public quota surface audit', () => {
 		expect(clientSetup).toContain(`| **agent** | **${TIER_DAILY_LIMITS.agent} scans/day, 5 concurrent**`);
 		expect(clientSetup).toContain(`| developer | ${TIER_DAILY_LIMITS.developer} scans/day, 10 concurrent`);
 		expect(clientSetup).toContain(`| enterprise | ${TIER_DAILY_LIMITS.enterprise.toLocaleString('en-US')} scans/day, 25 concurrent`);
+	});
+
+	it('keeps hosted static-key auth docs on Bearer/OAuth, not query-string credentials', () => {
+		expect(clientSetup).toContain('Hosted production rejects `?api_key=` credentials');
+		expect(clientSetup).toContain('Static API keys via `Authorization: Bearer` authenticate as a specific tier');
+		expect(clientSetup).not.toContain('https://dns-mcp.blackveilsecurity.com/mcp?api_key=');
+		expect(clientSetup).not.toContain('"url": "https://dns-mcp.blackveilsecurity.com/mcp?api_key=');
+		expect(readme).toContain('BlackVeil hosted production sets `REJECT_QUERY_API_KEY=true`');
+		expect(readme).not.toContain('Query Param');
+		expect(troubleshooting).toContain('Hosted production rejects `?api_key=` URL credentials');
 	});
 
 	it('keeps MCP resources aligned with free high-cost tool limits', () => {

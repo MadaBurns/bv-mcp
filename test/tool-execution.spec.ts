@@ -295,6 +295,36 @@ describe('logToolFailure', () => {
 		expect(errorLog!.domain).toBe('example.com');
 	});
 
+	it('redacts PII-capable failure args before structured logging', async () => {
+		const { logToolFailure } = await import('../src/handlers/tool-execution');
+
+		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+		logToolFailure({
+			toolName: 'query_signins',
+			durationMs: 150,
+			error: new Error('proxy failed'),
+			args: {
+				ms_tenant_id: '00000000-1111-2222-3333-444444444444',
+				user_principal_name: 'admin@example.com',
+				query: 'admin@example.com',
+				since_hours: 24,
+			},
+		});
+
+		const logs = getConsoleLogs(consoleSpy);
+		const errorLog = logs.find((l) => l.severity === 'error') as { details?: Record<string, unknown> } | undefined;
+		expect(errorLog).toBeDefined();
+		expect(errorLog!.details).toMatchObject({
+			ms_tenant_id: '[redacted]',
+			user_principal_name: '[redacted]',
+			query: '[redacted]',
+			since_hours: 24,
+		});
+		expect(JSON.stringify(errorLog)).not.toContain('admin@example.com');
+		expect(JSON.stringify(errorLog)).not.toContain('00000000-1111-2222-3333-444444444444');
+	});
+
 	it('handles non-Error objects as error argument', async () => {
 		const { logToolFailure } = await import('../src/handlers/tool-execution');
 

@@ -121,29 +121,6 @@ describe('executeMcpRequest — identity_secops auth gate', () => {
 	}
 
 	it('does NOT reject an authenticated developer-tier caller for query_signins', async () => {
-		const { vi } = await import('vitest');
-		vi.doMock('../src/mcp/dispatch', () => ({
-			dispatchMcpMethod: vi.fn().mockResolvedValue({
-				kind: 'success',
-				payload: { jsonrpc: '2.0', id: 201, result: { content: [] } },
-				headers: {},
-				newSessionId: undefined,
-				logTool: 'query_signins',
-				logCategory: 'tool',
-				logResult: 'ok',
-				logDetails: {},
-			}),
-		}));
-		vi.doMock('../src/lib/rate-limiter', async (importOriginal) => {
-			const actual = await importOriginal<typeof import('../src/lib/rate-limiter')>();
-			return {
-				...actual,
-				checkToolDailyRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 499, limit: 500 }),
-				acquireConcurrencySlot: vi.fn().mockReturnValue({ allowed: true, active: 1, limit: 10 }),
-				releaseConcurrencySlot: vi.fn(),
-			};
-		});
-
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const result = await executeMcpRequest(
 			baseOptions({
@@ -164,6 +141,31 @@ describe('executeMcpRequest — identity_secops auth gate', () => {
 		expect(result.httpStatus).not.toBe(401);
 		const payload = result.payload as { error?: { code: number } } | undefined;
 		expect(payload?.error?.code).not.toBe(-32001);
+		expect(result.headers['x-quota-limit']).toBe('100');
+	});
+
+	it('rejects an authenticated free-tier identity-secops caller with upgrade required', async () => {
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const result = await executeMcpRequest(
+			baseOptions({
+				body: {
+					jsonrpc: '2.0',
+					id: 202,
+					method: 'tools/call',
+					params: { name: 'query_signins', arguments: { ms_tenant_id: 'tenant-abc' } },
+				} as JsonRpcRequest,
+				isAuthenticated: true,
+				tierAuthResult: { authenticated: true, tier: 'free', keyHash: 'k_free' },
+				authTier: 'free',
+			}),
+		);
+
+		expect(result.kind).toBe('response');
+		if (result.kind !== 'response') throw new Error('expected response');
+		expect(result.httpStatus).toBe(403);
+		const payload = result.payload as { error?: { code: number; message: string } } | undefined;
+		expect(payload?.error?.code).toBe(-32003);
+		expect(payload?.error?.message).toContain('Upgrade required');
 	});
 });
 

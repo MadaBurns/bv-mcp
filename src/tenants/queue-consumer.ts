@@ -40,13 +40,20 @@ export const QUEUE_MESSAGE_TIMEOUT_MS = 20_000;
 /** After this many delivery attempts, the consumer writes a DLQ row and acks. */
 export const MAX_ATTEMPTS = 3;
 
-const SCAN_PROBE_BY_DOMAIN_SQL = 'SELECT id FROM scans WHERE cycle_id = ? AND domain = ? LIMIT 1';
+const SCAN_COMPLETION_PROBE_SQL =
+	'SELECT s.id, s.finding_count, COUNT(f.id) AS persisted_findings ' +
+	'FROM scans s LEFT JOIN findings f ON f.scan_id = s.id ' +
+	'WHERE s.cycle_id = ? AND s.domain = ? ' +
+	'GROUP BY s.id, s.finding_count ' +
+	'LIMIT 1';
 const SCANS_INSERT_SQL =
 	'INSERT INTO scans (id, domain, scan_at, score, grade, maturity_stage, finding_count, result_json, cycle_id) ' +
 	'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
 const FINDINGS_INSERT_SQL =
 	'INSERT INTO findings (id, scan_id, domain, category, severity, title, detail, metadata) ' +
 	'VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
+const DELETE_FINDINGS_FOR_SCAN_SQL = 'DELETE FROM findings WHERE scan_id = ?';
+const DELETE_SCAN_SQL = 'DELETE FROM scans WHERE id = ?';
 
 /**
  * T3 (write amplification): persist findings as a small number of multi-row
@@ -202,6 +209,22 @@ async function persistScan(
 	}
 }
 
+async function repairPartialScanIfNeeded(tenantDb: TenantDbHandle, cycleId: string, domain: string): Promise<'complete' | 'repaired' | 'missing'> {
+	const existing = await tenantDb
+		.prepare(SCAN_COMPLETION_PROBE_SQL)
+		.bind(cycleId, domain)
+		.first<{ id: string; finding_count: number | null; persisted_findings: number | null }>();
+	if (!existing) return 'missing';
+
+	const expectedFindings = Number(existing.finding_count ?? 0);
+	const persistedFindings = Number(existing.persisted_findings ?? 0);
+	if (persistedFindings >= expectedFindings) return 'complete';
+
+	await tenantDb.prepare(DELETE_FINDINGS_FOR_SCAN_SQL).bind(existing.id).run();
+	await tenantDb.prepare(DELETE_SCAN_SQL).bind(existing.id).run();
+	return 'repaired';
+}
+
 /**
  * Process one message. Returns:
  *   - `'ack'`     → caller should `message.ack()`
@@ -236,10 +259,9 @@ export async function processScanMessage(
 	try {
 		tenant = await resolveTenant(env, parsed.sub_tenant_id);
 	} catch {
-		// Tenant missing or registry unreachable — without a tenant DB we can't
-		// even write a DLQ row. The cycle report won't include the domain; the
-		// surrounding system already logs orchestrator-level errors.
-		return 'ack';
+		// Registry or tenant-binding resolution can fail transiently. Retry before
+		// the final attempt so a brief D1/binding outage does not silently drop work.
+		return attempts >= MAX_ATTEMPTS ? 'ack' : 'retry';
 	}
 
 	// Phase 4: the resolver returns a backend-agnostic handle; an absent backend
@@ -247,17 +269,15 @@ export async function processScanMessage(
 	const tenantDb = tenant.db;
 
 	// Idempotency probe — survives retries and re-deliveries without producing
-	// duplicate scan rows.
+	// duplicate scan rows. A partial scan row is not considered complete until
+	// the expected findings are present; retry repairs the stale row first.
 	try {
-		const existing = await tenantDb
-			.prepare(SCAN_PROBE_BY_DOMAIN_SQL)
-			.bind(parsed.cycle_id, parsed.domain)
-			.first<{ id: string }>();
-		if (existing) return 'ack';
+		const status = await repairPartialScanIfNeeded(tenantDb, parsed.cycle_id, parsed.domain);
+		if (status === 'complete') return 'ack';
 	} catch {
-		// Probe failed — fall through to the full path. Worst case we get a UNIQUE
-		// constraint violation on insert and the message retries; better than
-		// silently dropping work.
+		// Probe/repair failed — retry rather than risk UNIQUE conflicts or silently
+		// accepting an incomplete scan.
+		return attempts >= MAX_ATTEMPTS ? 'ack' : 'retry';
 	}
 
 	// On the LAST allowed attempt the budget can still time out — record a DLQ

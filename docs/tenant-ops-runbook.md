@@ -24,6 +24,22 @@ approved secret manager only.
 Private deployment bindings belong in `.dev/wrangler.deploy.jsonc`, which is
 ignored and merged into `wrangler.production.jsonc` at deploy time.
 
+## Production Overlay Gates
+
+`npm run deploy:prod` runs `scripts/inject-private-config.cjs` before Wrangler.
+The injector must fail closed unless the private overlay provides these
+production safety vars:
+
+- `OAUTH_ISSUER`: `https://dns-mcp.blackveilsecurity.com`.
+- `REJECT_QUERY_API_KEY`: `true`, so hosted production ignores URL credentials.
+- `REQUIRE_PRODUCTION_BINDINGS`: `true`, so `/health?deep=1` degrades on missing
+  tenant, brand-audit, queue, storage, or alert bindings.
+- `ALERT_WEBHOOK_URL`: non-empty. Keep the real webhook URL in the ignored
+  overlay or secret manager, never in tracked docs.
+
+Run `npm run deploy:prod` from a clean checkout. If the injector rejects the
+overlay, fix the private deployment config instead of bypassing the gate.
+
 ## Scheduled Work
 
 Tenant jobs are handled by scheduled handlers:
@@ -80,6 +96,38 @@ Per-tenant limits live in `src/tenants/per-tenant-rate-limit.ts`. The limiter is
 KV-backed and fail-soft in local development when `RATE_LIMIT` is unbound. Use
 tenant scope/tier data, not hardcoded customer identifiers, when changing
 limits.
+
+## Data Lifecycle and Recovery
+
+Use bounded, operator-owned procedures for tenant data. Keep real identifiers and
+export locations in ignored notes.
+
+- retention: access-log rows are pruned by the scheduled job according to
+  `ANALYTICS_RETENTION_DAYS` or the 90-day default. Tenant scan/finding retention
+  should be set per contract in the private tenant inventory before provisioning.
+- export: use D1 export or read-only SQL against placeholder tenant IDs first,
+  then write customer exports only to approved private storage. Do not commit
+  exports, generated reports, PDFs, CSC output, or tenant databases.
+- erasure: deactivate the `sub_tenants` row, revoke tenant keys, stop scheduled
+  scans, delete or tombstone per-tenant D1 data under the approved retention
+  policy, then record the operator action in the registry audit log.
+- restore drill: at least once per release window that changes tenant schema or
+  migrations, restore a synthetic tenant backup into a disposable D1 database,
+  run the tenant schema/audit tests, and verify a queued scan can complete.
+
+## Cost Governance
+
+Quota changes must be explicit and audited. The public quota maps in
+`src/lib/config.ts` are the SSOT for daily tool limits; brand audit has an
+additional monthly quota in `src/lib/brand-audit-quota.ts`.
+
+- identity-secops tools are paid-only and capped per principal because they proxy
+  Microsoft Graph-backed M365 reads through bv-web.
+- brand audit writes are capped daily and monthly; async starts debit quota at
+  submission time, not in the queue consumer.
+- weekly tenant rescans cap active-tenant and due-domain enumeration per tick.
+- alert on quota-coordinator fallback, tail exceptions, and repeated queue
+  failures before raising any cap.
 
 ## QuotaCoordinator sharding cutover
 

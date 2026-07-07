@@ -2,7 +2,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
 	{
-		ignores: ['coverage/**', 'node_modules/**', '.dev/**', '.worktrees/**', 'dist/**', 'crates/**/pkg/**', 'worker-configuration.d.ts'],
+		ignores: ['coverage/**', 'node_modules/**', '.dev/**', '.firecrawl/**', '.worktrees/**', 'dist/**', 'crates/**/pkg/**', 'worker-configuration.d.ts'],
 	},
 	{
 		files: ['**/*.ts', '**/*.mts'],

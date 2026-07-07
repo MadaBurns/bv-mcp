@@ -52,15 +52,21 @@ const STALE_RESCAN_MULTIPLIER = 2;
 
 /** Per-tick cap on number of cycles processed in the alert sweep — defense against runaway batches. */
 const MAX_CYCLES_PER_ALERT_TICK = 100;
+/** Per-tick cap on active tenants inspected by the weekly rescan dispatcher. */
+const MAX_ACTIVE_TENANTS_PER_WEEKLY_TICK = 100;
+/** Per-tick cap on due domains inspected for one tenant by the weekly rescan dispatcher. */
+const MAX_DUE_DOMAINS_PER_TENANT_TICK = 500;
 
 const ACTIVE_TENANTS_SQL =
-	'SELECT id, super_tenant_id FROM sub_tenants WHERE active = 1';
+	'SELECT id, super_tenant_id FROM sub_tenants WHERE active = 1 ORDER BY id LIMIT ?';
 const DUE_DOMAINS_SQL = `
 	SELECT domain, last_scanned_at, watch_interval_hours, fingerprint
 	FROM domains
 	WHERE watch = 1
 	  AND (last_scanned_at IS NULL
 	       OR last_scanned_at + COALESCE(watch_interval_hours, ?) * 3600000 < ?)
+	ORDER BY COALESCE(last_scanned_at, 0), domain
+	LIMIT ?
 `;
 const UPDATE_FINGERPRINT_SQL =
 	'UPDATE domains SET fingerprint = ?, fingerprint_at = ? WHERE domain = ?';
@@ -198,7 +204,7 @@ export async function handleTenantWeeklyRescan(
 
 	let tenants: ActiveTenantRow[];
 	try {
-		const result = await env.TENANT_REGISTRY_DB.prepare(ACTIVE_TENANTS_SQL).all<ActiveTenantRow>();
+		const result = await env.TENANT_REGISTRY_DB.prepare(ACTIVE_TENANTS_SQL).bind(MAX_ACTIVE_TENANTS_PER_WEEKLY_TICK).all<ActiveTenantRow>();
 		tenants = result.results ?? [];
 	} catch (err) {
 		logError(err instanceof Error ? err : String(err), {
@@ -253,7 +259,7 @@ async function rescanTenant(
 	try {
 		const result = await tenantDb
 			.prepare(DUE_DOMAINS_SQL)
-			.bind(DEFAULT_WATCH_INTERVAL_HOURS, tNow)
+			.bind(DEFAULT_WATCH_INTERVAL_HOURS, tNow, MAX_DUE_DOMAINS_PER_TENANT_TICK)
 			.all<DueDomainRow>();
 		dueDomains = result.results ?? [];
 	} catch (err) {

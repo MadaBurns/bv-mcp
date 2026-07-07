@@ -206,13 +206,7 @@ No npm install required. MCP connectors are configured on the web and auto-sync 
    - **URL**: `https://dns-mcp.blackveilsecurity.com/mcp`
 3. Save — the connector syncs automatically to Claude iOS and Android apps
 
-**With API key** — append the key as a query parameter in the connector URL:
-
-```text
-https://dns-mcp.blackveilsecurity.com/mcp?api_key=YOUR_API_KEY
-```
-
-Alternatively, provide the API key as a Bearer token if the connector UI supports an authentication field.
+**With API key** — use OAuth from the hosted connector flow, or provide the API key as a Bearer token if the connector UI supports an authentication field. Hosted production rejects `?api_key=` URL credentials.
 
 **Limitations:**
 
@@ -245,30 +239,7 @@ Or via CLI:
 claude mcp add --transport http blackveil-dns https://dns-mcp.blackveilsecurity.com/mcp
 ```
 
-**With API key** — use the `api_key` query parameter with native HTTP (simplest):
-
-```json
-{
-  "mcpServers": {
-    "blackveil-dns": {
-      "type": "http",
-      "url": "https://dns-mcp.blackveilsecurity.com/mcp?api_key=YOUR_API_KEY"
-    }
-  }
-}
-```
-
-Use one authentication method per server entry. For Claude Code's native HTTP transport, prefer the query parameter and do not also add an `Authorization` header; some clients ignore headers from config files, and an invalid token or placeholder can cause a `401` during MCP initialization.
-
-If `.mcp.json` is committed in your project, keep it on the free-tier URL or use placeholders only. Put live keys in user-level client settings or a local ignored override, not in a tracked repository file.
-
-Or via CLI:
-
-```bash
-claude mcp add --transport http blackveil-dns "https://dns-mcp.blackveilsecurity.com/mcp?api_key=YOUR_API_KEY"
-```
-
-Alternatively, use `mcp-remote` to forward the `Authorization` header (useful when sourcing the key from an env variable):
+**With API key** — use `mcp-remote` to forward the `Authorization` header from a local bridge:
 
 ```json
 {
@@ -287,9 +258,38 @@ Alternatively, use `mcp-remote` to forward the `Authorization` header (useful wh
 }
 ```
 
-> **Note:** Claude Code's native HTTP transport does not forward custom `headers` from config files. Use the `?api_key=` query parameter or `mcp-remote` as a bridge.
+Use one authentication method per server entry. Claude Code's native HTTP transport may ignore custom `headers` from config files; use native HTTP for the free hosted tier, OAuth-capable connectors where available, or `mcp-remote` when you need static API-key auth.
 
-Important: if you script this setup, source the key from environment (`BV_API_KEY`) and avoid embedding token literals in shell history. `mcp-remote` and `npx` add a local bridge process, so native HTTP is preferred unless you specifically need header forwarding.
+If `.mcp.json` is committed in your project, keep it on the free-tier URL or use placeholders only. Put live keys in user-level client settings or a local ignored override, not in a tracked repository file.
+
+Or via CLI:
+
+```bash
+claude mcp add blackveil-dns -- npx -y mcp-remote https://dns-mcp.blackveilsecurity.com/mcp --header "Authorization: Bearer YOUR_API_KEY"
+```
+
+If you need to source the key from an environment variable, keep the same bridge shape and expand the header from your shell or ignored local client config:
+
+```json
+{
+  "mcpServers": {
+    "blackveil-dns": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://dns-mcp.blackveilsecurity.com/mcp",
+        "--header",
+        "Authorization: Bearer YOUR_API_KEY"
+      ]
+    }
+  }
+}
+```
+
+> **Note:** Hosted production rejects `?api_key=` credentials. Self-hosted or legacy deployments can keep that fallback only by leaving `REJECT_QUERY_API_KEY` unset or false.
+
+Important: if you script this setup, source the key from environment (`BV_API_KEY`) and avoid embedding token literals in shell history. `mcp-remote` and `npx` add a local bridge process, so native HTTP is preferred for unauthenticated/free hosted usage unless you specifically need header forwarding.
 
 ## Smithery
 
@@ -307,10 +307,10 @@ Or connect directly with your agent using the hosted URL:
 https://bv-mcp--madaburns.run.tools
 ```
 
-**With API key** — pass during setup when prompted, or embed in the connection URL:
+**With API key** — pass during setup when prompted or use an auth/header field if the client provides one. Do not embed production BlackVeil API keys in a hosted URL query string.
 
 ```
-https://bv-mcp--madaburns.run.tools?api_key=YOUR_API_KEY
+Authorization: Bearer YOUR_API_KEY
 ```
 
 ## Cursor
@@ -402,21 +402,20 @@ MCP clients fetch `tools/list` once when they connect and cache it for the lifet
 
 ## Authentication
 
-Authenticated requests bypass per-IP rate limits and apply the caller's tier quota. Three authentication methods are supported:
+Authenticated requests bypass per-IP rate limits and apply the caller's tier quota. Hosted production supports:
 
 - **Bearer Token**: `Authorization: Bearer <YOUR_API_KEY>`
-- **Query Parameter**: `?api_key=<YOUR_API_KEY>`
 - **OAuth 2.1** (authorization code + PKCE) — optional operator-enabled flow. See the [OAuth 2.1](#oauth-21) section below.
 
-The query parameter method is the simplest for clients that only support URL configuration (like Claude Code, Smithery, or simple HTTP connectors).
+The `?api_key=<YOUR_API_KEY>` fallback is legacy/self-host compatibility only. Hosted production sets `REJECT_QUERY_API_KEY=true`, so URL credentials are ignored and the request proceeds as unauthenticated/free tier.
 
-**Important:** Claude Code and some other clients' native HTTP transport do not forward custom `headers` from config files. Use the `?api_key=` query parameter or the `mcp-remote` bridge approach shown in the per-client sections.
+**Important:** Claude Code and some other clients' native HTTP transport do not forward custom `headers` from config files. Use OAuth-capable hosted connectors where available, or the `mcp-remote` bridge approach shown in the per-client sections.
 
-Do not configure both `?api_key=` and `Authorization` for the same server unless both values are intentionally valid. A stale placeholder in either location can make startup fail with `401 Unauthorized` instead of falling back to the free tier.
+Do not configure both legacy `?api_key=` and `Authorization` for the same server. A stale placeholder in either location can make startup fail with `401 Unauthorized` or silently drop to the free tier, depending on deployment flags.
 
 ### Static API Key Tiers
 
-Static API keys (via `?api_key=` or `Authorization: Bearer`) authenticate as a specific tier:
+Static API keys via `Authorization: Bearer` authenticate as a specific tier:
 
 | Tier | Quota | Use Case | Source |
 |---|---|---|---|
@@ -439,12 +438,15 @@ Free hosted usage keeps core DNS and email checks open for trial traffic, while 
 # .env (local) or CI/CD secrets
 BV_API_KEY="bv_Kx8eZ2rdtUPfdzR8e_..."
 
-# In MCP config
+# In MCP config that supports headers
 {
-  "server": "https://dns-mcp.blackveilsecurity.com/mcp?api_key=${BV_API_KEY}"
+  "server": "https://dns-mcp.blackveilsecurity.com/mcp",
+  "headers": {
+    "Authorization": "Bearer ${BV_API_KEY}"
+  }
 }
 
-# Or as header (where supported)
+# Or as a raw HTTP header
 Authorization: Bearer bv_Kx8eZ2rdtUPfdzR8e_...
 ```
 
@@ -461,9 +463,9 @@ Authorization: Bearer bv_Kx8eZ2rdtUPfdzR8e_...
 
 | Client | Recommended Auth Method | Notes |
 |--------|-------------------------|-------|
-| Claude Mobile | Hosted connector URL | Customer OAuth is enabled on the hosted endpoint; use `?api_key=` for static-key quota |
-| Claude Code | `?api_key=` in URL | Simple and native |
-| Smithery | `?api_key=` in URL | Native integration |
+| Claude Mobile | Hosted connector OAuth | Customer OAuth is enabled on the hosted endpoint |
+| Claude Code | `mcp-remote --header` | Native HTTP is fine for free hosted usage; use the bridge for static keys |
+| Smithery | Provider auth field or OAuth | Do not put production API keys in URL query strings |
 | VS Code / Copilot | `headers` field | Supports secret prompt |
 | Cursor | `headers` field | Direct header support |
 | Windsurf | `headers` field | Direct header support |
@@ -508,7 +510,7 @@ If you are a developer troubleshooting how different MCP clients handle authenti
 python3 scripts/chaos/chaos-test-clients.py
 ```
 
-This test covers all 9 detected MCP client types across session management, auth precedence, format negotiation, and transport-specific edge cases. With no `BV_API_KEY`, it exercises the public/free-tier path. With a valid API key exported as `BV_API_KEY`, it also covers `?api_key=` authentication, Bearer precedence, authenticated Legacy SSE bootstrap, and batch `scan_domain` behavior.
+This test covers all 9 detected MCP client types across session management, auth precedence, format negotiation, and transport-specific edge cases. With no `BV_API_KEY`, it exercises the public/free-tier path. With a valid API key exported as `BV_API_KEY`, it also covers Bearer authentication, legacy self-host `?api_key=` compatibility, authenticated Legacy SSE bootstrap, and batch `scan_domain` behavior.
 
 Expected assertion count:
 

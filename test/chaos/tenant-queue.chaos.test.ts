@@ -7,10 +7,11 @@
  *   - Given a `processScanMessage` that throws unexpectedly mid-batch, the
  *     handleScanQueue wrapper still acks/retries the surrounding messages
  *     correctly (the catch in `handleScanQueue` forces 'retry' on throw).
- *   - Given a tenant D1 that fails on a specific INSERT, idempotency on the
- *     next delivery prevents duplicate scan rows.
+ *   - Given a tenant D1 that fails on a specific INSERT, the completion probe on
+ *     each delivery prevents duplicate complete scan rows and lets retries repair
+ *     partial persistence.
  *   - Given a tenant resolver that throws (registry D1 down), the consumer
- *     acks (no DB to write to) without crashing the rest of the batch.
+ *     retries without crashing the rest of the batch.
  *
  * Each case asserts a fail-soft invariant — "no crash propagates" /
  * "queue still drains" — rather than precise output.
@@ -38,7 +39,12 @@ const REGISTRY_LOOKUP_SQL =
 // FINDING #2). Per-message queue resolution warm-hits this, so the mock must model it
 // or cache-hit resolutions see no row and treat the tenant as deactivated.
 const ACTIVE_PROBE_SQL = 'SELECT active FROM sub_tenants WHERE id = ? LIMIT 1';
-const SCAN_PROBE_BY_DOMAIN_SQL = 'SELECT id FROM scans WHERE cycle_id = ? AND domain = ? LIMIT 1';
+const SCAN_COMPLETION_PROBE_SQL =
+	'SELECT s.id, s.finding_count, COUNT(f.id) AS persisted_findings ' +
+	'FROM scans s LEFT JOIN findings f ON f.scan_id = s.id ' +
+	'WHERE s.cycle_id = ? AND s.domain = ? ' +
+	'GROUP BY s.id, s.finding_count ' +
+	'LIMIT 1';
 const SCANS_INSERT_SQL =
 	'INSERT INTO scans (id, domain, scan_at, score, grade, maturity_stage, finding_count, result_json, cycle_id) ' +
 	'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
@@ -250,13 +256,13 @@ describe('Tenant queue consumer chaos: handleScanQueue wrapper resilience', () =
 		expect(acks).toEqual([0, 2]);
 		expect(retries).toEqual([1]);
 
-		// The idempotency probe ran for all 3 — guarantees re-delivery sees the
-		// existing row and short-circuits without duplicate inserts.
-		const probeCalls = tenant.calls.filter((c) => c.sql === SCAN_PROBE_BY_DOMAIN_SQL);
+		// The completion probe ran for all 3 — guarantees re-delivery can distinguish
+		// complete rows from partial rows before deciding to ack or repair.
+		const probeCalls = tenant.calls.filter((c) => c.sql === SCAN_COMPLETION_PROBE_SQL);
 		expect(probeCalls.length).toBe(3);
 	});
 
-	it('acks the message and never crashes when the tenant resolver D1 throws', async () => {
+	it('retries the message and never crashes when the tenant resolver D1 throws', async () => {
 		const { handleScanQueue } = await import('../../src/tenants/queue-consumer');
 		const brokenRegistry = makeMockD1({ throwOnSql: new Set([REGISTRY_LOOKUP_SQL]) });
 		const customEnv = {
@@ -273,8 +279,8 @@ describe('Tenant queue consumer chaos: handleScanQueue wrapper resilience', () =
 		const { batch, acks, retries } = makeMessageBatch([validBody]);
 
 		await expect(handleScanQueue(batch, customEnv, ctx)).resolves.toBeUndefined();
-		expect(acks).toEqual([0]);
-		expect(retries).toEqual([]);
+		expect(acks).toEqual([]);
+		expect(retries).toEqual([0]);
 		expect(handleToolsCallMock).not.toHaveBeenCalled();
 	});
 });
