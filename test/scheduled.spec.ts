@@ -284,3 +284,42 @@ describe('handleScheduled', () => {
 		expect(webhookCall!.body).toContain('Alerting pipeline failure');
 	});
 });
+
+describe('scheduled.ts alert webhook resolution', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.resetModules();
+	});
+
+	it('the main alert checker passes the RESOLVED value to sendAlert, not the literal env var', async () => {
+		// Force a clean module graph: earlier tests in this file already imported
+		// '../src/scheduled' (which statically imports operator-webhook-binding),
+		// so without this the doMock below would register too late to affect the
+		// cached module instance.
+		vi.resetModules();
+		vi.doMock('../src/lib/operator-webhook-binding', () => ({
+			resolveAlertWebhookUrl: vi.fn(async () => 'https://hooks.example.com/resolved'),
+		}));
+		const alertingModule = await import('../src/lib/alerting');
+		const sendAlertSpy = vi.spyOn(alertingModule, 'sendAlert').mockResolvedValue(undefined);
+
+		const { handleScheduled } = await import('../src/scheduled');
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- minimal env for this targeted test
+		const env: any = {
+			ALERT_WEBHOOK_URL: 'https://hooks.example.com/static-should-not-be-used',
+			CF_ACCOUNT_ID: 'acct',
+			CF_ANALYTICS_TOKEN: 'token',
+		};
+
+		await handleScheduled(env);
+
+		// Every sendAlert call this tick must have received the RESOLVED value,
+		// never the literal static env var — this is the precedence-regression
+		// guard at the scheduled.ts integration layer (Task 1 already pins the
+		// resolver's own precedence in isolation).
+		for (const call of sendAlertSpy.mock.calls) {
+			expect(call[0]).toBe('https://hooks.example.com/resolved');
+			expect(call[0]).not.toBe('https://hooks.example.com/static-should-not-be-used');
+		}
+	});
+});

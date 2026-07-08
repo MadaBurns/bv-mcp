@@ -28,6 +28,7 @@ import { buildFuzzingAlertPayload } from './schemas/alerting';
 import { FUZZ_THRESHOLDS } from './lib/config';
 import { reapStuckBrandAudits } from './lib/brand-audit-reaper';
 import { runSpfCanary, shouldAlertOnCanary } from './lib/spf-canary';
+import { resolveAlertWebhookUrl } from './lib/operator-webhook-binding';
 
 interface AnomalyRow {
 	total_calls?: number;
@@ -98,6 +99,12 @@ export interface ScheduledEnv {
 	ANALYTICS_ARCHIVE_RETENTION_DAYS?: string;
 	/** Phase 1, decision #3 — R2 bucket for the short-bridge access-log archive. Absent → retention cron keeps today's hard DELETE. */
 	MCP_ACCESS_LOG_ARCHIVE?: R2Bucket;
+	/** Service binding to bv-web-prod. Absent on BSL self-hosts — dynamic webhook resolution falls back to ALERT_WEBHOOK_URL. */
+	BV_WEB?: Fetcher;
+	/** Bearer token for BV_WEB internal calls. Already a live secret on production — see docs/plans/2026-07-09-operator-alert-webhook-binding.md. */
+	BV_WEB_INTERNAL_KEY?: string;
+	/** General-purpose cache KV. Used here as the operator-webhook last-known-good fallback (key: operator-webhook:last-known-good, 24h TTL). */
+	SCAN_CACHE?: KVNamespace;
 }
 
 /** Clamp ANALYTICS_RETENTION_DAYS to [1, 365]; default 90 on missing/invalid. */
@@ -294,7 +301,13 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			});
 	}
 
-	if (!env.ALERT_WEBHOOK_URL) return;
+	// PRECEDENCE IS DELIBERATE: resolveAlertWebhookUrl prefers the dynamic
+	// (bv-web-prod admin-managed) value over env.ALERT_WEBHOOK_URL when both
+	// are available. Do not reorder this to "static wins" — see
+	// src/lib/operator-webhook-binding.ts and
+	// docs/plans/2026-07-09-operator-alert-webhook-binding.md.
+	const webhookUrl = await resolveAlertWebhookUrl(env);
+	if (!webhookUrl) return;
 	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return;
 
 	const parsedError = parseFloat(env.ALERT_ERROR_THRESHOLD ?? '');
@@ -328,7 +341,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			if (errorPct > errorThreshold) {
 				const severity = errorPct > errorThreshold * 2 ? 'critical' : 'warning';
 				await sendAlert(
-					env.ALERT_WEBHOOK_URL,
+					webhookUrl,
 					buildAlertPayload({
 						title: `Error rate ${errorPct.toFixed(1)}% (last ${lookback}m)`,
 						severity,
@@ -345,7 +358,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 
 			if (p95Ms > p95Threshold) {
 				await sendAlert(
-					env.ALERT_WEBHOOK_URL,
+					webhookUrl,
 					buildAlertPayload({
 						title: `P95 latency ${Math.round(p95Ms)}ms (last ${lookback}m)`,
 						severity: p95Ms > p95Threshold * 2 ? 'critical' : 'warning',
@@ -368,7 +381,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 
 		if (rateLimitData && (rateLimitData.total_hits ?? 0) > rateLimitThreshold) {
 			await sendAlert(
-				env.ALERT_WEBHOOK_URL,
+				webhookUrl,
 				buildAlertPayload({
 					title: `Rate limit surge: ${rateLimitData.total_hits} hits (last ${lookback}m)`,
 					severity: (rateLimitData.total_hits ?? 0) > rateLimitThreshold * 3 ? 'critical' : 'warning',
@@ -403,7 +416,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			const hasBinding = degradationRows.some((r) => r.degradation_type !== 'cost_ceiling_degraded');
 			const subject = hasCostCeiling && hasBinding ? 'Degradation' : hasCostCeiling ? 'Global cost-ceiling degraded' : 'Service-binding degradation';
 			await sendAlert(
-				env.ALERT_WEBHOOK_URL,
+				webhookUrl,
 				buildAlertPayload({
 					title: `${subject}: ${totalDegradations} event(s) (${components}, last ${lookback}m)`,
 					severity: totalDegradations > bindingDegradationThreshold * 5 ? 'critical' : 'warning',
@@ -432,7 +445,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 				.map((r) => `${r.handler ?? 'unknown'}:errors=${r.error_batch_count ?? 0}/failures=${r.failure_count ?? 0}`)
 				.join(' · ');
 			await sendAlert(
-				env.ALERT_WEBHOOK_URL,
+				webhookUrl,
 				buildAlertPayload({
 					title: `Async-path failures: ${totalQueueFailures} failed message(s), ${totalErrorBatches} errored batch(es) (${handlers}, last ${lookback}m)`,
 					severity: totalQueueFailures > queueFailureThreshold * 5 || totalErrorBatches > 5 ? 'critical' : 'warning',
@@ -455,7 +468,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 
 		if (tailExceptionCount >= tailExceptionThreshold) {
 			await sendAlert(
-				env.ALERT_WEBHOOK_URL,
+				webhookUrl,
 				buildAlertPayload({
 					title: `Fatal Worker exceptions: ${tailExceptionCount} event(s) (last ${lookback}m)`,
 					severity: tailExceptionCount > tailExceptionThreshold * 5 ? 'critical' : 'warning',
@@ -492,7 +505,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		// through it. Best-effort: if the webhook is down too there is nothing
 		// left to do in-band.
 		await sendAlert(
-			env.ALERT_WEBHOOK_URL,
+			webhookUrl,
 			buildAlertPayload({
 				title: 'Alerting pipeline failure: analytics check could not run',
 				severity: 'critical',
@@ -560,7 +573,8 @@ const MAX_ALERTS_PER_TICK = 10;
  * See docs/plans/2026-05-07-fuzzing-detection-tdd-plan.md.
  */
 export async function handleFuzzingScan(env: ScheduledEnv): Promise<void> {
-	if (!env.ALERT_WEBHOOK_URL || !env.RATE_LIMIT) return;
+	const fuzzingWebhookUrl = await resolveAlertWebhookUrl(env);
+	if (!fuzzingWebhookUrl || !env.RATE_LIMIT) return;
 
 	const nowSec = Math.floor(Date.now() / 1000);
 	const observedAt = new Date().toISOString();
@@ -623,7 +637,7 @@ export async function handleFuzzingScan(env: ScheduledEnv): Promise<void> {
 			const rawHash = principalId.startsWith('i_') ? principalId.slice(2) : principalId;
 			const principalIdHash = rawHash.padEnd(16, '0').slice(0, 16);
 			const payload = buildFuzzingAlertPayload(verdict, { principalKind, principalIdHash, observedAt });
-			await sendFuzzingAlert(env.ALERT_WEBHOOK_URL, payload);
+			await sendFuzzingAlert(fuzzingWebhookUrl, payload);
 			alertsSent++;
 
 			// Mark suppression AFTER successful dispatch attempt. sendFuzzingAlert is
@@ -650,16 +664,18 @@ export async function handleFuzzingScan(env: ScheduledEnv): Promise<void> {
  */
 export async function handleDailyDigest(env: ScheduledEnv): Promise<void> {
 	// SPF canary runs even when analytics are unconfigured — it does its own
-	// outbound DoH probes and depends only on ALERT_WEBHOOK_URL for delivery.
+	// outbound DoH probes and resolves its own webhook URL via
+	// resolveAlertWebhookUrl (dynamic-first, ALERT_WEBHOOK_URL fallback).
 	await handleSpfCanary(env);
 
-	if (!env.ALERT_WEBHOOK_URL) return;
+	const digestWebhookUrl = await resolveAlertWebhookUrl(env);
+	if (!digestWebhookUrl) return;
 	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return;
 
 	try {
 		const rows = await queryAnalyticsEngine(env.CF_ACCOUNT_ID, env.CF_ANALYTICS_TOKEN, queryTierDigest('1'));
 		const payload = buildDigestPayload(rows, 1);
-		await sendAlert(env.ALERT_WEBHOOK_URL, payload);
+		await sendAlert(digestWebhookUrl, payload);
 
 		logEvent({
 			timestamp: new Date().toISOString(),
@@ -712,11 +728,12 @@ export async function handleSpfCanary(env: ScheduledEnv): Promise<void> {
 			},
 		});
 
-		if (!env.ALERT_WEBHOOK_URL) return;
+		const spfWebhookUrl = await resolveAlertWebhookUrl(env);
+		if (!spfWebhookUrl) return;
 		if (!shouldAlertOnCanary(result, threshold)) return;
 
 		await sendAlert(
-			env.ALERT_WEBHOOK_URL,
+			spfWebhookUrl,
 			buildAlertPayload({
 				title: `SPF canary null rate ${(result.nullRate * 100).toFixed(1)}% (${result.nullCount}/${result.totalProbed})`,
 				severity: result.nullRate >= threshold * 2 ? 'critical' : 'warning',
