@@ -1,5 +1,7 @@
 # Tenant Operations Runbook
 
+> Platform-level operations (deploy, rollback, restore, spend): see [operator-runbook.md](./operator-runbook.md).
+
 Public-safe reference for the tenant pipeline. Keep real tenant IDs, customer
 names, Cloudflare resource IDs, private queue/database names, and emergency
 procedures in ignored operator notes, not in this repository.
