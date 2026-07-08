@@ -231,7 +231,10 @@ internalRoutes.post('/tools/call', async (c) => {
 	// Mirrors the public /mcp limit (MAX_REQUEST_BODY_BYTES = 10 KB).
 	const raw = await c.req.text();
 	if (raw.length > MAX_REQUEST_BODY_BYTES) {
-		return c.json({ content: [{ type: 'text', text: `Request body exceeds maximum of ${MAX_REQUEST_BODY_BYTES} bytes` }], isError: true }, 413);
+		return c.json(
+			{ content: [{ type: 'text', text: `Request body exceeds maximum of ${MAX_REQUEST_BODY_BYTES} bytes` }], isError: true },
+			413,
+		);
 	}
 
 	let body: { name: string; arguments?: Record<string, unknown> };
@@ -239,7 +242,10 @@ internalRoutes.post('/tools/call', async (c) => {
 		body = InternalToolCallSchema.parse(JSON.parse(raw));
 	} catch (err) {
 		if (err instanceof ZodError) {
-			return c.json({ content: [{ type: 'text', text: `Invalid ${err.issues[0].path.join('.')}: ${err.issues[0].message}` }], isError: true }, 400);
+			return c.json(
+				{ content: [{ type: 'text', text: `Invalid ${err.issues[0].path.join('.')}: ${err.issues[0].message}` }], isError: true },
+				400,
+			);
 		}
 		return c.json({ content: [{ type: 'text', text: 'Missing required field: name' }], isError: true }, 400);
 	}
@@ -259,50 +265,50 @@ internalRoutes.post('/tools/call', async (c) => {
 
 	const cacheTtlSeconds = parseCacheTtl(c.env.CACHE_TTL_SECONDS);
 
-	const result = await handleToolsCall(
-		{ name: body.name, arguments: body.arguments },
-		c.env.SCAN_CACHE,
-		{
-			providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
-			providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS?.split(',')
-				.map((h) => h.trim())
-				.filter(Boolean),
-			providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
-			analytics: createAnalyticsClient(c.env.MCP_ANALYTICS),
-			profileAccumulator: c.env.PROFILE_ACCUMULATOR,
-			profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
-			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
-			scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
-			cacheTtlSeconds,
-			scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
-			perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
-			secondaryDoh: c.env.BV_DOH_ENDPOINT
-				? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN }
-				: undefined,
-			whoisBinding: c.env.BV_WHOIS,
-			infraProbe: c.env.BV_INFRA_PROBE,
-			// Recon backend (bv2-recon) — powers scan_buckets_* / osint_investigate_*.
-			// The internal door (recon-sweep caller) MUST wire these or those tools
-			// always degrade to the "unprovisioned" stub even when BV_RECON is bound,
-			// which silently stalled the bv2-ops recon-sweep queue (fixed 2026-06-23).
-			reconBinding: c.env.BV_RECON,
-			reconAuthToken: c.env.BV_RECON_KEY,
-			// Async brand-audit subsystem (discover_brand_domains_start /
-			// brand_audit_batch_start / register_brand_audit_watch). Same
-			// failure mode as the recon binding above: without these the
-			// async *_start tools short-circuit to `unprovisioned` with no
-			// auditId, so the bv2-ops csc-discovery sweep polls forever and
-			// stores nothing. Bound to the same worker as the public path.
-			brandAuditDb: c.env.BRAND_AUDIT_DB,
-			brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
-			// Tier 0/1/2 lookup closures — internal callers (load tests, bv-web
-			// service binding, ops scripts) get the same tiered discovery path as
-			// public `/mcp`. Closures stay `undefined` on BSL self-hosts where
-			// the bindings aren't provisioned.
-			...buildBrandTierLookups(c.env),
-			...(wantStructured ? { resultCapture: (r: import('@blackveil/dns-checks/scoring').CheckResult) => { capturedResult = r; } } : {}),
-		},
-	);
+	const result = await handleToolsCall({ name: body.name, arguments: body.arguments }, c.env.SCAN_CACHE, {
+		providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
+		providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS?.split(',')
+			.map((h) => h.trim())
+			.filter(Boolean),
+		providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
+		analytics: createAnalyticsClient(c.env.MCP_ANALYTICS),
+		profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+		profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
+		waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+		scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
+		cacheTtlSeconds,
+		scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
+		perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
+		secondaryDoh: c.env.BV_DOH_ENDPOINT ? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN } : undefined,
+		whoisBinding: c.env.BV_WHOIS,
+		infraProbe: c.env.BV_INFRA_PROBE,
+		// Recon backend (bv2-recon) — powers scan_buckets_* / osint_investigate_*.
+		// The internal door (recon-sweep caller) MUST wire these or those tools
+		// always degrade to the "unprovisioned" stub even when BV_RECON is bound,
+		// which silently stalled the bv2-ops recon-sweep queue (fixed 2026-06-23).
+		reconBinding: c.env.BV_RECON,
+		reconAuthToken: c.env.BV_RECON_KEY,
+		// Async brand-audit subsystem (discover_brand_domains_start /
+		// brand_audit_batch_start / register_brand_audit_watch). Same
+		// failure mode as the recon binding above: without these the
+		// async *_start tools short-circuit to `unprovisioned` with no
+		// auditId, so the bv2-ops csc-discovery sweep polls forever and
+		// stores nothing. Bound to the same worker as the public path.
+		brandAuditDb: c.env.BRAND_AUDIT_DB,
+		brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
+		// Tier 0/1/2 lookup closures — internal callers (load tests, bv-web
+		// service binding, ops scripts) get the same tiered discovery path as
+		// public `/mcp`. Closures stay `undefined` on BSL self-hosts where
+		// the bindings aren't provisioned.
+		...buildBrandTierLookups(c.env),
+		...(wantStructured
+			? {
+					resultCapture: (r: import('@blackveil/dns-checks/scoring').CheckResult) => {
+						capturedResult = r;
+					},
+				}
+			: {}),
+	});
 
 	// B1: record an internal-source access-log row for domain-bearing tools (parity
 	// with the public path, which only logs domain-bearing calls). No-domain tools
@@ -397,11 +403,10 @@ internalRoutes.post('/oauth/grants', async (c) => {
 	const redirectTo = new URL(body.redirectUri);
 	redirectTo.searchParams.set('code', code);
 	redirectTo.searchParams.set('state', body.state);
-	return c.json(
-		{ redirectTo: redirectTo.toString(), expiresIn: OAUTH_CODE_TTL_SECONDS },
-		200,
-		{ 'Cache-Control': 'no-store', Pragma: 'no-cache' },
-	);
+	return c.json({ redirectTo: redirectTo.toString(), expiresIn: OAUTH_CODE_TTL_SECONDS }, 200, {
+		'Cache-Control': 'no-store',
+		Pragma: 'no-cache',
+	});
 });
 
 /**
@@ -560,9 +565,7 @@ internalRoutes.post('/tools/batch', async (c) => {
 						cacheTtlSeconds,
 						scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
 						perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
-						secondaryDoh: c.env.BV_DOH_ENDPOINT
-							? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN }
-							: undefined,
+						secondaryDoh: c.env.BV_DOH_ENDPOINT ? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN } : undefined,
 						whoisBinding: c.env.BV_WHOIS,
 						infraProbe: c.env.BV_INFRA_PROBE,
 						// Async brand-audit subsystem — parity with the single-call door
@@ -573,7 +576,13 @@ internalRoutes.post('/tools/batch', async (c) => {
 						// from internal callers must also exercise tiered mode when the
 						// bindings are provisioned.
 						...buildBrandTierLookups(c.env),
-						...(wantStructured ? { resultCapture: (r: import('@blackveil/dns-checks/scoring').CheckResult) => { capturedResult = r; } } : {}),
+						...(wantStructured
+							? {
+									resultCapture: (r: import('@blackveil/dns-checks/scoring').CheckResult) => {
+										capturedResult = r;
+									},
+								}
+							: {}),
 					},
 				);
 
@@ -1027,5 +1036,60 @@ internalRoutes.get('/analytics/forensics', async (c) => {
 		return c.json({ days: String(days), count: events.length, events });
 	} catch (err) {
 		return c.json({ error: 'Forensics query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
+	}
+});
+
+internalRoutes.use('/analytics/erase', internalStrictAuthGate);
+
+/**
+ * POST /internal/analytics/erase (D1, STRICT) — data-subject erasure.
+ *
+ * Deletes every `mcp_access_log` row matching the given `key_hash` and/or
+ * `ip_hash` (at least one required; both = AND). The `mcp_access_log_audit`
+ * trail is deliberately NOT erased — the self-audit row written below is the
+ * durable evidence that the erasure happened. Same strict bearer gate as
+ * forensics: this endpoint destroys evidence, so the network guard alone is
+ * insufficient. Query: ?key_hash=<hash>&ip_hash=<hash>
+ */
+internalRoutes.post('/analytics/erase', async (c) => {
+	const db = c.env.INTELLIGENCE_DB;
+	if (!db) return c.json({ error: 'Analytics store not configured (INTELLIGENCE_DB required)' }, 500);
+	const url = new URL(c.req.url);
+	const ipHash = url.searchParams.get('ip_hash');
+	const keyHash = url.searchParams.get('key_hash');
+	if (!ipHash && !keyHash) return c.json({ error: 'Missing required parameter: key_hash or ip_hash' }, 400);
+	try {
+		const filters: string[] = [];
+		const binds: unknown[] = [];
+		if (ipHash) {
+			filters.push('ip_hash = ?');
+			binds.push(ipHash);
+		}
+		if (keyHash) {
+			filters.push('key_hash = ?');
+			binds.push(keyHash);
+		}
+		const result = await db
+			.prepare(`DELETE FROM mcp_access_log WHERE ${filters.join(' AND ')}`)
+			.bind(...binds)
+			.run();
+		const deleted = result.meta?.changes ?? 0;
+
+		const auditScope = JSON.stringify({ ipHashFilter: ipHash ?? null, keyHashFilter: keyHash ?? null, deleted });
+		await db
+			.prepare(`INSERT INTO mcp_access_log_audit (id, actor, action, ip_hash, scope, outcome) VALUES (?, ?, ?, ?, ?, ?)`)
+			.bind(crypto.randomUUID(), 'internal_bearer', 'analytics.subject.erase', ipHash ?? null, auditScope, 'success')
+			.run()
+			.catch((auditErr) =>
+				logError(auditErr instanceof Error ? auditErr : String(auditErr), {
+					severity: 'warn',
+					category: 'audit',
+					details: { event: 'analytics.subject.erase', auditWriteFailed: true },
+				}),
+			);
+
+		return c.json({ deleted, key_hash: keyHash ?? null, ip_hash: ipHash ?? null });
+	} catch (err) {
+		return c.json({ error: 'Erase failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
 	}
 });

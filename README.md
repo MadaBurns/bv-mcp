@@ -255,6 +255,7 @@ The public `/mcp` path writes a per-event access log enriched with geolocation a
 | `MCP_ANALYTICS_QUEUE`     | Queue | **Operator-deploy only.** Batches access-log writes off the request path. Absent on self-hosts → inline-insert fallback (no reverse-DNS lookup).                                                      |
 | `ANALYTICS_PII_LEVEL`     | var   | `coarse` (default) \| `standard` \| `full`. Controls access-log PII depth: `coarse` = country/region/ASN + hashed/masked IP; `standard` adds encrypted IP + city; `full` adds lat/long + reverse-DNS (PTR). |
 | `ANALYTICS_RETENTION_DAYS` | var   | Access-log retention window in days (default `90`, clamped `1`–`365`). Rows older than the window are pruned by the scheduled handler.                                                                |
+| PTR third-party disclosure | — | At `ANALYTICS_PII_LEVEL=full`, caller-IP PTR lookups resolve through the configured DoH chain, whose final fallback is Google Public DNS — an external disclosure of caller-IP-derived queries that operators should weigh before enabling `full`. Per-subject erasure: `POST /internal/analytics/erase?key_hash=…\|ip_hash=…` (strict internal bearer; self-audited). |
 
 ### Internal analytics endpoints
 
