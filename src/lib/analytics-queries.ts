@@ -310,11 +310,15 @@ ORDER BY failure_count DESC`;
 /** Fatal Worker exception detection from Tail Worker exports. */
 export function queryTailExceptions(minutes: string): string {
 	minutes = safeInterval(minutes);
+	// emitTailAggregate (analytics.ts) writes blob1=colo, blob2=outcome,
+	// double1=invocations in the bucket. Fatal invocations are the ones in
+	// outcome='exception' buckets; double1 × _sample_interval is the
+	// sampled-correct invocation count (mirrors queryQueueFailures above).
 	return `SELECT
-  SUM(_sample_interval) AS exception_count
+  SUM(double1 * _sample_interval) AS exception_count
 FROM ${DS}
 WHERE index1 = 'tail'
-  AND blob1 = 'exception'
+  AND blob2 = 'exception'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE`;
 }
 

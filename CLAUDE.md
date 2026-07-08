@@ -354,7 +354,7 @@ The free-tier paid-gating (HTTP 403 for offensive tools) and the distinct-domain
 
 ## Analytics
 
-Eight event indexes are emitted (`analytics.ts`): four core — `mcp_request`, `tool_call`, `rate_limit`, `session` — plus `degradation` (e.g. `kv_fallback` from `session.ts` on a KV write throw, `quota_shard_salt_missing` from the sharded quota path), `queue_batch`, `tail`, and `quota_shard` (emitted from `execute.ts` when quota sharding is enabled). Queries in `analytics-queries.ts` cover the four core types plus `quota_shard` (`queryQuotaShardSkew`); nothing queries/alerts on `degradation`, `queue_batch`, or `tail` yet. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan`. Optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
+Eight event indexes are emitted (`analytics.ts`): four core — `mcp_request`, `tool_call`, `rate_limit`, `session` — plus `degradation` (e.g. `kv_fallback` from `session.ts` on a KV write throw, `quota_shard_salt_missing` from the sharded quota path), `queue_batch`, `tail`, and `quota_shard` (emitted from `execute.ts` when quota sharding is enabled). Queries in `analytics-queries.ts` cover the four core types plus `quota_shard` (`queryQuotaShardSkew`), `degradation` (binding-degradation alert), `queue_batch` (queue-failure alert), and `tail` (fatal-exception alert) — all wired into the 15-min cron in `scheduled.ts`. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan`. Optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
 
 **Blob layout** (keep in sync when adding dimensions):
 

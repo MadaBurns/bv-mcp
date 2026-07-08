@@ -198,8 +198,13 @@ describe('analytics query builders', () => {
 	it('queryTailExceptions counts fatal Worker exceptions exported by the tail consumer', () => {
 		const sql = queryTailExceptions('15');
 		expect(sql).toContain("index1 = 'tail'");
-		expect(sql).toContain("blob1 = 'exception'");
-		expect(sql).toContain('exception_count');
+		// The tail emitter writes blob1=colo, blob2=outcome (emitTailAggregate in
+		// analytics.ts); a fatal invocation lands in an outcome='exception' bucket
+		// whose double1 carries the invocation count. Multiply by _sample_interval
+		// for AE sampling correctness (same pattern as queryQueueFailures).
+		expect(sql).toContain("blob2 = 'exception'");
+		expect(sql).not.toContain("blob1 = 'exception'");
+		expect(sql).toContain('SUM(double1 * _sample_interval) AS exception_count');
 		expect(sql).toContain("INTERVAL '15' MINUTE");
 	});
 });
