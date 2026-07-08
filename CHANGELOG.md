@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.29.8] - 2026-07-08
+
+Patch release: **security-hardening pass** + a 4-PR audit-remediation batch covering alerting, quota/log hardening, data-subject erasure, and operator documentation.
+
+### Fixed
+
+- **Log redaction, M365 logging, async recon ownership, and deploy-time production security checks hardened.** Improved tenant queue durability, scheduler limits, health-binding visibility, tail-exception alerting, and schema indexes. Updated public auth/runbook docs; added focused audit, regression, and chaos coverage. (#493)
+- **The fatal-Worker-exception alert could never fire.** The tail-exception Analytics Engine query filtered `blob1` (colo) instead of `blob2` (outcome) and summed the wrong column; the unit test asserted the same wrong blob. Corrected the query and its test. (#494)
+- **`userAgent`/`domain` were logged unsanitized.** `logEvent` sanitized only `details`/`error`; top-level `userAgent` and `domain` could carry control characters/ANSI sequences into Workers logs. Both now route through the same sanitizer. (#495)
+
+### Added
+
+- **Alerting-pipeline watchdog.** When the 15-minute analytics-alerting cron's own Analytics Engine queries fail (e.g. an expired `CF_ANALYTICS_TOKEN`), a self-alert now pages through the configured webhook instead of failing silently — previously that failure mode disabled every threshold alert with only a log line. (#494)
+- **`GLOBAL_DAILY_TOOL_LIMIT` env override wired to a live effect.** `parseGlobalDailyLimit()` existed and was unit-tested but had no runtime call site — the global unauthenticated daily quota was un-overridable without a code deploy. Wired through all 4 call sites (the `/badge` route + 3 `executeMcpRequest` construction sites); guarded by a source-grep audit test. Backward-compatible: unset resolves to the same 500,000 constant as before. (#495)
+- **`POST /internal/analytics/erase` — data-subject erasure endpoint.** Strict-gated (same bearer gate as `/internal/analytics/forensics`), deletes `mcp_access_log` rows by `key_hash`/`ip_hash` with a mandatory, unconditionally-filtered DELETE; self-audits every call to `mcp_access_log_audit` (the audit trail itself is never a deletion target). Closes the gap where the scheduled retention purge was the only removal mechanism, with no way to erase a specific caller's data on request. (#496)
+- **Caller-facing privacy disclosure.** `docs/client-setup.md` now documents what's logged at each `ANALYTICS_PII_LEVEL`, the retention default, the Google-DoH third-party fallback for `full`-level PTR lookups, and the new erasure endpoint. (#496)
+- **`docs/operator-runbook.md`.** Platform-level procedures: second-operator deploy (overlay reconstruction), `wrangler rollback`, D1 backup/restore (Time Travel + export + a quarterly restore-drill checklist), a spend-monitoring setup checklist, queue dead-letter-queue policy (documents `MCP_ANALYTICS_QUEUE`'s deliberate no-DLQ design vs. optional DLQ setup for the brand-audit queues), R2 report-retention setup, an alerting dead-man-switch checklist, and a secret-rotation quick-reference table. Cross-linked from `docs/tenant-ops-runbook.md`. (#497)
+
 ## [3.29.7] - 2026-07-05
 
 Patch release: **TXT rdata UTF-8 decoding fix** + Glama pnpm build contract. Versions the two fixes already deployed to production (Worker Version `a9687cf7`).
