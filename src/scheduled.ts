@@ -664,7 +664,8 @@ export async function handleFuzzingScan(env: ScheduledEnv): Promise<void> {
  */
 export async function handleDailyDigest(env: ScheduledEnv): Promise<void> {
 	// SPF canary runs even when analytics are unconfigured — it does its own
-	// outbound DoH probes and depends only on ALERT_WEBHOOK_URL for delivery.
+	// outbound DoH probes and resolves its own webhook URL via
+	// resolveAlertWebhookUrl (dynamic-first, ALERT_WEBHOOK_URL fallback).
 	await handleSpfCanary(env);
 
 	const digestWebhookUrl = await resolveAlertWebhookUrl(env);
