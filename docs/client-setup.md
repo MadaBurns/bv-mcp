@@ -598,3 +598,14 @@ Example payload:
 | POST | `/oauth/token` | Token endpoint (authorization code grant with PKCE) |
 
 On the hosted endpoint, OAuth routes serve the customer flow. On self-hosted deployments, OAuth endpoints return `404` unless the operator sets `ENABLE_OAUTH=true`. The owner API-key consent UI remains disabled unless `ENABLE_OWNER_OAUTH=true`.
+
+## What the hosted server logs about you
+
+Requests to the hosted endpoint (`dns-mcp.blackveilsecurity.com`) generate operational telemetry:
+
+- **Always:** tool name, scanned-domain fingerprint (hashed), country, client type, auth tier, a lossy hash of your IP, and (for authenticated callers) a SHA-256 hash of your credential. Raw IPs are never stored at the default (`coarse`) telemetry level.
+- **Operator-elevated levels** (`standard`/`full`, not the public default) additionally capture region/city, user agent, encrypted IP evidence, and — at `full` — a PTR (reverse-DNS) lookup of the calling IP. PTR lookups are resolved via DNS-over-HTTPS and may fall back to Google Public DNS, so at that level the calling IP is disclosed to the DoH resolver.
+- **Retention:** access-log rows are purged on a rolling window (90 days by default, operator-configurable 1–365).
+- **Erasure/export:** to request the data held for your API key or IP, or its deletion, contact the operator — per-subject export and erasure tooling exists on the operator side.
+
+Self-hosted (BSL) deployments control all of this via `ANALYTICS_PII_LEVEL` and `ANALYTICS_RETENTION_DAYS`.
