@@ -91,9 +91,7 @@ Note: the access-log retention cron hard-DELETEs rows past
 - [ ] Set a monthly account **billing threshold** notification.
 - [ ] Record thresholds chosen + date configured in the operator vault.
 
-In-app levers if spend spikes: `GLOBAL_DAILY_TOOL_LIMIT` env var (see
-CLAUDE.md; clamped [10000, 5000000]), per-tool `FREE_TOOL_DAILY_LIMITS`,
-`SCAN_TIMEOUT_MS`. Queue-heavy features degrade to `unprovisioned` if their
+In-app levers if spend spikes: `GLOBAL_DAILY_TOOL_LIMIT` env var (clamped [10000, 5000000] once the runtime wiring for it has shipped — verify with `grep -n "options.globalDailyLimit ?? GLOBAL_DAILY_TOOL_LIMIT" src/mcp/execute.ts` before relying on it during an incident), per-tool `FREE_TOOL_DAILY_LIMITS`, `SCAN_TIMEOUT_MS`. Queue-heavy features degrade to `unprovisioned` if their
 bindings are removed from the overlay — the blunt but immediate kill switch.
 
 ## 5. Queue dead-lettering (decision record + optional setup)
