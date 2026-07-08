@@ -467,6 +467,30 @@ describe('handleTenantWeeklyRescan', () => {
 		// baseline_cycle_id is the 6th bind (zero-indexed 5).
 		expect(inserts[0].binds[5]).toBe('baseline-cycle-7');
 	});
+
+	it('bounds active-tenant and due-domain enumeration per weekly tick', async () => {
+		const { handleTenantWeeklyRescan } = await import('../../src/tenants/scheduled-handlers');
+		const registry = makeMockD1({
+			rowsBySql: { [ACTIVE_TENANTS_SQL]: [{ id: TENANT_A, super_tenant_id: SUPER }] },
+		});
+		const tenant = makeMockD1({ rowsBySql: { [DUE_DOMAINS_SQL]: [] } });
+		const queue = makeMockQueue();
+		const customEnv: TenantScheduledEnv = {
+			...env,
+			TENANT_REGISTRY_DB: registry.db,
+			BV_SCANNER_QUEUE: queue,
+			[TENANT_A_BINDING]: tenant.db,
+		} as TenantScheduledEnv;
+
+		await handleTenantWeeklyRescan(customEnv, makeCtx(), { now: () => 1, dnsQuery: makeDnsQuery({}) });
+
+		const tenantEnum = registry.calls.find((c) => callMatches(c.sql, ACTIVE_TENANTS_SQL));
+		const dueEnum = tenant.calls.find((c) => callMatches(c.sql, DUE_DOMAINS_SQL));
+		expect(tenantEnum?.sql).toContain('LIMIT ?');
+		expect(tenantEnum?.binds).toEqual([100]);
+		expect(dueEnum?.sql).toContain('LIMIT ?');
+		expect(dueEnum?.binds).toEqual([168, 1, 500]);
+	});
 });
 
 // =========================================================================

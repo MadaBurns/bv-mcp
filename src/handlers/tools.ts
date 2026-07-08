@@ -886,6 +886,7 @@ export const TOOL_REGISTRY: Record<
 						reconBinding: ro?.reconBinding,
 						reconAuthToken: ro?.reconAuthToken,
 						bucketScanKv: ro?.rateLimitKv,
+						principalId: ro?.keyHash ?? ro?.principalId,
 						onBindingDegradation: ro?.onBindingDegradation,
 					},
 				),
@@ -893,7 +894,7 @@ export const TOOL_REGISTRY: Record<
 		cacheTtlSeconds: 0,
 	},
 	scan_buckets_status: {
-		cacheKey: (a) => `bucketstatus:${String(a.scanId)}`,
+		cacheKey: (a, ro) => `bucketstatus:${ro?.keyHash ?? ro?.principalId ?? 'anon'}:${String(a.scanId)}`,
 		execute: (_d, a, ro) =>
 			import('../tools/scan-buckets').then((m) =>
 				m.scanBucketsStatus(
@@ -902,6 +903,7 @@ export const TOOL_REGISTRY: Record<
 						reconBinding: ro?.reconBinding,
 						reconAuthToken: ro?.reconAuthToken,
 						bucketScanKv: ro?.rateLimitKv,
+						principalId: ro?.keyHash ?? ro?.principalId,
 						onBindingDegradation: ro?.onBindingDegradation,
 					},
 				),
@@ -909,12 +911,12 @@ export const TOOL_REGISTRY: Record<
 		cacheTtlSeconds: 15,
 	},
 	scan_buckets_findings: {
-		cacheKey: (a) => `bucketfindings:${String(a.scanId ?? 'all')}:${String(a.target ?? '')}:${JSON.stringify(a.providers ?? [])}`,
+		cacheKey: (a, ro) => `bucketfindings:${ro?.keyHash ?? ro?.principalId ?? 'anon'}:${String(a.scanId)}:${String(a.target ?? '')}:${JSON.stringify(a.providers ?? [])}`,
 		execute: (_d, a, ro) =>
 			import('../tools/scan-buckets').then((m) =>
 				m.scanBucketsFindings(
 					{
-						scanId: a.scanId ? String(a.scanId) : undefined,
+						scanId: String(a.scanId),
 						target: a.target ? String(a.target) : undefined,
 						providers: Array.isArray(a.providers) ? (a.providers as string[]) : undefined,
 					},
@@ -922,6 +924,7 @@ export const TOOL_REGISTRY: Record<
 						reconBinding: ro?.reconBinding,
 						reconAuthToken: ro?.reconAuthToken,
 						bucketScanKv: ro?.rateLimitKv,
+						principalId: ro?.keyHash ?? ro?.principalId,
 						onBindingDegradation: ro?.onBindingDegradation,
 					},
 				),
@@ -935,6 +938,8 @@ export const TOOL_REGISTRY: Record<
 				m.osintInvestigateDomainStart(String(a.query), {
 					reconBinding: ro?.reconBinding,
 					reconAuthToken: ro?.reconAuthToken,
+					reconJobKv: ro?.rateLimitKv,
+					principalId: ro?.keyHash ?? ro?.principalId,
 					onBindingDegradation: ro?.onBindingDegradation,
 				}),
 			),
@@ -947,6 +952,8 @@ export const TOOL_REGISTRY: Record<
 				m.osintInvestigateInfrastructureStart(String(a.query), {
 					reconBinding: ro?.reconBinding,
 					reconAuthToken: ro?.reconAuthToken,
+					reconJobKv: ro?.rateLimitKv,
+					principalId: ro?.keyHash ?? ro?.principalId,
 					onBindingDegradation: ro?.onBindingDegradation,
 				}),
 			),
@@ -959,6 +966,8 @@ export const TOOL_REGISTRY: Record<
 				m.osintInvestigateSupplyChainStart(String(a.query), {
 					reconBinding: ro?.reconBinding,
 					reconAuthToken: ro?.reconAuthToken,
+					reconJobKv: ro?.rateLimitKv,
+					principalId: ro?.keyHash ?? ro?.principalId,
 					onBindingDegradation: ro?.onBindingDegradation,
 				}),
 			),
@@ -971,6 +980,8 @@ export const TOOL_REGISTRY: Record<
 				m.osintInvestigateUsernameStart(String(a.query), {
 					reconBinding: ro?.reconBinding,
 					reconAuthToken: ro?.reconAuthToken,
+					reconJobKv: ro?.rateLimitKv,
+					principalId: ro?.keyHash ?? ro?.principalId,
 					authTier: ro?.authTier,
 					onBindingDegradation: ro?.onBindingDegradation,
 				}),
@@ -984,6 +995,8 @@ export const TOOL_REGISTRY: Record<
 				m.osintInvestigateEmailStart(String(a.query), {
 					reconBinding: ro?.reconBinding,
 					reconAuthToken: ro?.reconAuthToken,
+					reconJobKv: ro?.rateLimitKv,
+					principalId: ro?.keyHash ?? ro?.principalId,
 					authTier: ro?.authTier,
 					onBindingDegradation: ro?.onBindingDegradation,
 				}),
@@ -991,24 +1004,28 @@ export const TOOL_REGISTRY: Record<
 		cacheTtlSeconds: 0,
 	},
 	osint_investigation_status: {
-		cacheKey: (a) => `osintstatus:${String(a.investigationId)}`,
+		cacheKey: (a, ro) => `osintstatus:${ro?.keyHash ?? ro?.principalId ?? 'anon'}:${String(a.investigationId)}`,
 		execute: (_d, a, ro) =>
 			import('../tools/osint-investigate').then((m) =>
 				m.osintInvestigationStatus(String(a.investigationId), {
 					reconBinding: ro?.reconBinding,
 					reconAuthToken: ro?.reconAuthToken,
+					reconJobKv: ro?.rateLimitKv,
+					principalId: ro?.keyHash ?? ro?.principalId,
 					onBindingDegradation: ro?.onBindingDegradation,
 				}),
 			),
 		cacheTtlSeconds: 15,
 	},
 	osint_investigation_report: {
-		cacheKey: (a) => `osintreport:${String(a.investigationId)}`,
+		cacheKey: (a, ro) => `osintreport:${ro?.keyHash ?? ro?.principalId ?? 'anon'}:${String(a.investigationId)}`,
 		execute: (_d, a, ro) =>
 			import('../tools/osint-investigate').then((m) =>
 				m.osintInvestigationReport(String(a.investigationId), {
 					reconBinding: ro?.reconBinding,
 					reconAuthToken: ro?.reconAuthToken,
+					reconJobKv: ro?.rateLimitKv,
+					principalId: ro?.keyHash ?? ro?.principalId,
 					onBindingDegradation: ro?.onBindingDegradation,
 				}),
 			),
@@ -1033,6 +1050,18 @@ function resolveFormat(args: Record<string, unknown>, clientType?: string): Outp
 
 function buildToolErrorResult(message: string): McpToolResult {
 	return { content: [mcpError(message)], isError: true };
+}
+
+function summarizeM365LogResult(result: unknown): Record<string, unknown> {
+	const r = result && typeof result === 'object' && !Array.isArray(result) ? (result as Record<string, unknown>) : {};
+	const data = r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? (r.data as Record<string, unknown>) : undefined;
+	const rows = data && Array.isArray(data.rows) ? data.rows : undefined;
+	return {
+		ok: r.ok === true,
+		unprovisioned: r.unprovisioned === true,
+		...(typeof r.error === 'string' ? { error: r.error } : {}),
+		...(typeof data?.count === 'number' ? { rowCount: data.count } : rows ? { rowCount: rows.length } : {}),
+	};
 }
 
 function handleExplainFindingValidationError(
@@ -1558,7 +1587,7 @@ export async function handleToolsCall(
 						{ authToken: runtimeOptions?.m365ProxyAuthToken, keyHash: runtimeOptions?.keyHash },
 					);
 					logResult = result.ok ? 'ok' : 'error';
-					logDetails = result;
+					logDetails = summarizeM365LogResult(result);
 					logToolSuccess({ ...ctx(), status: result.ok ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
 					const text = JSON.stringify(result, null, effectiveFormat === 'compact' ? 0 : 2);
 					return buildToolResult(text, result, effectiveFormat);
@@ -1575,7 +1604,7 @@ export async function handleToolsCall(
 						{ authToken: runtimeOptions?.m365ProxyAuthToken, keyHash: runtimeOptions?.keyHash },
 					);
 					logResult = result.ok ? 'ok' : 'error';
-					logDetails = result;
+					logDetails = summarizeM365LogResult(result);
 					logToolSuccess({ ...ctx(), status: result.ok ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
 					const text = JSON.stringify(result, null, effectiveFormat === 'compact' ? 0 : 2);
 					return buildToolResult(text, result, effectiveFormat);
@@ -1586,7 +1615,7 @@ export async function handleToolsCall(
 						keyHash: runtimeOptions?.keyHash,
 					});
 					logResult = result.ok ? 'ok' : 'error';
-					logDetails = result;
+					logDetails = summarizeM365LogResult(result);
 					logToolSuccess({ ...ctx(), status: result.ok ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
 					const text = JSON.stringify(result, null, effectiveFormat === 'compact' ? 0 : 2);
 					return buildToolResult(text, result, effectiveFormat);
@@ -1597,7 +1626,7 @@ export async function handleToolsCall(
 						keyHash: runtimeOptions?.keyHash,
 					});
 					logResult = result.ok ? 'ok' : 'error';
-					logDetails = result;
+					logDetails = summarizeM365LogResult(result);
 					logToolSuccess({ ...ctx(), status: result.ok ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
 					const text = JSON.stringify(result, null, effectiveFormat === 'compact' ? 0 : 2);
 					return buildToolResult(text, result, effectiveFormat);

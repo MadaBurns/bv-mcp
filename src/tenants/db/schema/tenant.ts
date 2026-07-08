@@ -87,7 +87,10 @@ export const findings = sqliteTable(
 		detail: text('detail'),
 		metadata: text('metadata'),
 	},
-	(t) => [index('idx_findings_domain_severity').on(t.domain, t.severity)],
+	(t) => [
+		index('idx_findings_domain_severity').on(t.domain, t.severity),
+		index('idx_findings_scan_id').on(t.scan_id),
+	],
 );
 
 export const alerts = sqliteTable(

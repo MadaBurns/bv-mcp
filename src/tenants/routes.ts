@@ -82,6 +82,8 @@ type TenantEnv = ResolverEnv & {
 export const tenantRoutes = new Hono<{ Bindings: TenantEnv }>();
 
 const DEFAULT_SCAN_CONCURRENCY = 10;
+/** Keep default sync scans small; larger sets use the existing queue producer. */
+export const MAX_DEFAULT_SYNC_SCAN_DOMAINS = 50;
 const PORTFOLIO_UPSERT_SQL =
 	'INSERT INTO domains (domain, source, added_at) VALUES (?, ?, ?) ' +
 	'ON CONFLICT(domain) DO UPDATE SET source = excluded.source';
@@ -723,7 +725,8 @@ tenantRoutes.post('/scan', async (c) => {
 	// Validation has already run above, so the producer never burns queue
 	// space on bad input. The consumer (handleScanQueue) is responsible for
 	// running the actual scan + persisting rows.
-	if (body.mode === 'queue') {
+	const shouldQueue = body.mode === 'queue' || (body.mode === undefined && validated.length > MAX_DEFAULT_SYNC_SCAN_DOMAINS);
+	if (shouldQueue) {
 		if (!c.env.BV_SCANNER_QUEUE) {
 			dispatchAudit(c, {
 				action: 'scan.start',
@@ -731,9 +734,9 @@ tenantRoutes.post('/scan', async (c) => {
 				resourceId: cycleId,
 				subTenantId: safeResourceId(tenantOrErr),
 				outcome: 'denied',
-				blob: { reason: 'queue_binding_missing' },
+				blob: { reason: 'queue_binding_missing', requestedMode: body.mode ?? 'auto' },
 			});
-			return c.json({ error: 'Invalid mode: queue dispatch is not configured on this deployment' }, 400);
+			return c.json({ error: 'Invalid mode: queue dispatch is required for this scan size but is not configured on this deployment' }, 400);
 		}
 		let queued = 0;
 		for (const domain of validated) {

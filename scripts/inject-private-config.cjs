@@ -44,6 +44,32 @@ function mergeServices(publicServices, privateServices) {
     return [...merged.values()];
 }
 
+const REQUIRED_PRODUCTION_VARS = {
+    OAUTH_ISSUER: 'https://dns-mcp.blackveilsecurity.com',
+    REJECT_QUERY_API_KEY: 'true',
+    REQUIRE_PRODUCTION_BINDINGS: 'true',
+};
+const REQUIRED_NONEMPTY_PRODUCTION_VARS = ['ALERT_WEBHOOK_URL'];
+
+function validateProductionSecurityConfig(config) {
+    const vars = config && typeof config.vars === 'object' && config.vars ? config.vars : {};
+    const failures = [];
+    for (const [name, expected] of Object.entries(REQUIRED_PRODUCTION_VARS)) {
+        if (vars[name] !== expected) {
+            failures.push(`${name} must be ${JSON.stringify(expected)}`);
+        }
+    }
+    for (const name of REQUIRED_NONEMPTY_PRODUCTION_VARS) {
+        if (typeof vars[name] !== 'string' || vars[name].trim() === '') {
+            failures.push(`${name} must be non-empty`);
+        }
+    }
+    if (failures.length > 0) {
+        console.error(`FATAL: Unsafe production config: ${failures.join('; ')}.`);
+        process.exit(1);
+    }
+}
+
 /**
  * Automates the "Private Injection" process.
  * Merges the public engine build with local private overrides.
@@ -80,6 +106,7 @@ function inject() {
     if (privateConfig.r2_buckets) {
         publicConfig.r2_buckets = privateConfig.r2_buckets;
     }
+    validateProductionSecurityConfig(publicConfig);
     
     fs.writeFileSync('wrangler.production.jsonc', JSON.stringify(publicConfig, null, 2));
     console.log("Successfully generated wrangler.production.jsonc with injected private configuration.");

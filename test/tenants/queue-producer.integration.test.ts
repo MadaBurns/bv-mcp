@@ -199,6 +199,18 @@ describe('POST /internal/tenants/scan (mode=queue producer)', () => {
 		expect(queueSend).not.toHaveBeenCalled();
 	});
 
+	it('default mode auto-queues large domain sets instead of running synchronously', async () => {
+		const { customEnv, queueSend } = buildEnvWithQueue();
+		const domains = Array.from({ length: 51 }, (_, i) => `tenant-${i}.example.com`);
+		const res = await sendRequest(makeReq({ domains }), customEnv);
+		expect(res.status).toBe(202);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body.total).toBe(51);
+		expect(body.queued).toBe(51);
+		expect(body).not.toHaveProperty('completed');
+		expect(queueSend).toHaveBeenCalledTimes(51);
+	});
+
 	it('returns 400 when mode=queue but BV_SCANNER_QUEUE binding is absent', async () => {
 		const registry = makeMockD1({
 			[REGISTRY_LOOKUP_SQL]: [{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'x', active: 1 }],

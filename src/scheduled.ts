@@ -17,6 +17,7 @@ import {
 	queryTierDigest,
 	queryBindingDegradation,
 	queryQueueFailures,
+	queryTailExceptions,
 } from './lib/analytics-queries';
 import { buildAlertPayload, buildDigestPayload, sendAlert } from './lib/alerting';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
@@ -52,6 +53,10 @@ interface QueueFailureRow {
 	failure_count?: number;
 }
 
+interface TailExceptionRow {
+	exception_count?: number;
+}
+
 export interface ScheduledEnv {
 	CF_ACCOUNT_ID?: string;
 	CF_ANALYTICS_TOKEN?: string;
@@ -65,6 +70,8 @@ export interface ScheduledEnv {
 	ALERT_BINDING_DEGRADATION_THRESHOLD?: string;
 	/** Min async-path (queue/cron) failed messages/sub-tasks in the lookback window to alert (default 1). */
 	ALERT_QUEUE_FAILURE_THRESHOLD?: string;
+	/** Min fatal Worker exceptions exported by the tail consumer in the lookback window to alert (default 1). */
+	ALERT_TAIL_EXCEPTION_THRESHOLD?: string;
 	RATE_LIMIT?: KVNamespace;
 	BRAND_AUDIT_DB?: D1Database;
 	INTELLIGENCE_DB?: D1Database;
@@ -302,6 +309,8 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		: DEFAULT_BINDING_DEGRADATION_THRESHOLD;
 	const parsedQueueFailure = parseFloat(env.ALERT_QUEUE_FAILURE_THRESHOLD ?? '');
 	const queueFailureThreshold = Number.isFinite(parsedQueueFailure) ? parsedQueueFailure : DEFAULT_QUEUE_FAILURE_THRESHOLD;
+	const parsedTailException = parseFloat(env.ALERT_TAIL_EXCEPTION_THRESHOLD ?? '');
+	const tailExceptionThreshold = Number.isFinite(parsedTailException) ? parsedTailException : 1;
 	const lookback = env.ALERT_LOOKBACK_MINUTES ?? String(DEFAULT_LOOKBACK_MINUTES);
 
 	try {
@@ -437,6 +446,25 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			);
 		}
 
+		const tailExceptionRows = (await queryAnalyticsEngine(
+			env.CF_ACCOUNT_ID,
+			env.CF_ANALYTICS_TOKEN,
+			queryTailExceptions(lookback),
+		)) as TailExceptionRow[];
+		const tailExceptionCount = tailExceptionRows[0]?.exception_count ?? 0;
+
+		if (tailExceptionCount >= tailExceptionThreshold) {
+			await sendAlert(
+				env.ALERT_WEBHOOK_URL,
+				buildAlertPayload({
+					title: `Fatal Worker exceptions: ${tailExceptionCount} event(s) (last ${lookback}m)`,
+					severity: tailExceptionCount > tailExceptionThreshold * 5 ? 'critical' : 'warning',
+					metrics: { exception_count: tailExceptionCount },
+					threshold: `tail_exceptions >= ${tailExceptionThreshold}`,
+				}),
+			);
+		}
+
 		logEvent({
 			timestamp: new Date().toISOString(),
 			category: 'scheduled',
@@ -449,6 +477,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 				rateLimitHits: rateLimitData?.total_hits ?? 0,
 				bindingDegradations: totalDegradations,
 				queueFailures: totalQueueFailures,
+				tailExceptions: tailExceptionCount,
 			},
 		});
 	} catch (err) {
