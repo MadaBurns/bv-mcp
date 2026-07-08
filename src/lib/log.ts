@@ -115,6 +115,13 @@ export function logEvent(event: LogEvent): void {
 	const log = {
 		...event,
 		timestamp: event.timestamp || new Date().toISOString(),
+		// Top-level fields bypass sanitizeLogValue (they're not nested in
+		// `details`); the two that carry attacker-controlled strings get the
+		// same control-char strip + truncation so a hostile UA or domain can't
+		// inject log lines or bloat tail storage. (JSON.stringify drops the
+		// undefined keys this adds for events without them.)
+		domain: typeof event.domain === 'string' ? sanitizeString(event.domain, maxLen) : event.domain,
+		userAgent: typeof event.userAgent === 'string' ? sanitizeString(event.userAgent, maxLen) : event.userAgent,
 		details: sanitizeLogValue(event.details, undefined, maxLen),
 		error: typeof event.error === 'string' ? sanitizeString(event.error, maxLen) : event.error,
 	};
