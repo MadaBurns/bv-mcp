@@ -205,6 +205,13 @@ export interface ExecuteMcpRequestOptions {
 	tier0Lookup?: (domain: string) => Promise<import('../lib/brand-tier0-enterprise').Tier0Result>;
 	tier1Lookup?: (domain: string) => Promise<import('../lib/brand-tier1-graph').Tier1Result>;
 	tier2Lookup?: (domain: string) => Promise<import('../lib/brand-tier2-evidence').Tier2Result>;
+	/**
+	 * Global daily tools/call cap across ALL unauthenticated callers. Defaults
+	 * to the GLOBAL_DAILY_TOOL_LIMIT constant; index.ts populates it from the
+	 * GLOBAL_DAILY_TOOL_LIMIT env var via parseGlobalDailyLimit() so operators
+	 * can throttle without a code deploy.
+	 */
+	globalDailyLimit?: number;
 }
 
 function getDomainFromParams(params: Record<string, unknown> | undefined): string | undefined {
@@ -852,8 +859,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 
 	let rateHeaders: Record<string, string> = {};
 	if (!options.isAuthenticated && method === 'tools/call') {
+		const globalDailyLimit = options.globalDailyLimit ?? GLOBAL_DAILY_TOOL_LIMIT;
 		const globalResult = await checkGlobalDailyLimit(
-			GLOBAL_DAILY_TOOL_LIMIT,
+			globalDailyLimit,
 			options.rateLimitKv,
 			options.quotaCoordinator,
 			options.analytics,
@@ -866,7 +874,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			options.analytics?.emitRateLimitEvent({
 				limitType: 'daily_global',
 				toolName: 'n/a',
-				limit: GLOBAL_DAILY_TOOL_LIMIT,
+				limit: globalDailyLimit,
 				remaining: 0,
 				country: options.country,
 				authTier: options.authTier,

@@ -42,10 +42,10 @@ import { buildControlPlaneRateLimitResponse, resolveSseSession, validateSessionR
 import {
 	FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
 	FREE_TOOL_DAILY_LIMITS,
-	GLOBAL_DAILY_TOOL_LIMIT,
 	MAX_REQUEST_BODY_BYTES,
 	isValidOAuthSigningSecret,
 	parseCacheTtl,
+	parseGlobalDailyLimit,
 	parsePerCheckTimeout,
 	parseScanTimeout,
 } from './lib/config';
@@ -302,6 +302,8 @@ type BvMcpEnv = {
 	 * `lib/scaling-flags.ts`. TODO(phase-4).
 	 */
 	TENANT_ROUTING_MODE?: string;
+	/** Optional override of the global unauthenticated daily tools/call cap (clamped [10000, 5000000]). */
+	GLOBAL_DAILY_TOOL_LIMIT?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -645,7 +647,7 @@ app.get('/badge/:domain', async (c) => {
 	// executeMcpRequest — not just the per-IP + per-tool caps. Without these, an
 	// unauthenticated IP could scan up to 25 DISTINCT domains/day here (vs the
 	// intended 12) and those scans would escape the global daily cap entirely.
-	const globalResult = await checkGlobalDailyLimit(GLOBAL_DAILY_TOOL_LIMIT, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
+	const globalResult = await checkGlobalDailyLimit(parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT), c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
 	if (!globalResult.allowed) {
 		return badgeRateLimitResponse(svgHeaders, globalResult.retryAfterMs);
 	}
@@ -812,6 +814,7 @@ app.post('/mcp', async (c) => {
 					rateLimitKv: c.env.RATE_LIMIT,
 					quotaCoordinator: c.env.QUOTA_COORDINATOR,
 					quotaShardRouting: resolveQuotaShardRouting(c.env),
+					globalDailyLimit: parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT),
 					sessionStore: c.env.SESSION_STORE,
 					scanCache: c.env.SCAN_CACHE,
 					providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -912,6 +915,7 @@ app.post('/mcp', async (c) => {
 		rateLimitKv: c.env.RATE_LIMIT,
 		quotaCoordinator: c.env.QUOTA_COORDINATOR,
 		quotaShardRouting: resolveQuotaShardRouting(c.env),
+		globalDailyLimit: parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT),
 		sessionStore: c.env.SESSION_STORE,
 		scanCache: c.env.SCAN_CACHE,
 		providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -1096,6 +1100,7 @@ app.post('/mcp/messages', async (c) => {
 				rateLimitKv: c.env.RATE_LIMIT,
 				quotaCoordinator: c.env.QUOTA_COORDINATOR,
 				quotaShardRouting: resolveQuotaShardRouting(c.env),
+				globalDailyLimit: parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT),
 				sessionStore: c.env.SESSION_STORE,
 				scanCache: c.env.SCAN_CACHE,
 				providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,

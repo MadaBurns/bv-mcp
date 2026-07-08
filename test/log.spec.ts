@@ -188,6 +188,26 @@ describe('log string truncation', () => {
 		// Info-level uses default 256 limit; 500-char string should be truncated
 		expect(payload.details.message.length).toBeLessThan(300);
 	});
+
+	it('sanitizes top-level userAgent and domain (control chars stripped, truncated)', async () => {
+		const lines: string[] = [];
+		const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+			lines.push(String(args[0]));
+		});
+		const { logEvent } = await import('../src/lib/log');
+		logEvent({
+			timestamp: '2026-07-08T00:00:00.000Z',
+			severity: 'info',
+			userAgent: 'evil\nagent\u001b[31m' + 'x'.repeat(500),
+			domain: 'bad\u001b[0mdomain.example',
+		});
+		spy.mockRestore();
+		const parsed = JSON.parse(lines[0]) as { userAgent: string; domain: string };
+		expect(parsed.userAgent).not.toContain('\n');
+		expect(parsed.userAgent).not.toContain('\u001b');
+		expect(parsed.userAgent.length).toBeLessThanOrEqual(256);
+		expect(parsed.domain).not.toContain('\u001b');
+	});
 });
 
 describe('logError error-severity truncation', () => {
