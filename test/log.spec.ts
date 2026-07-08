@@ -198,15 +198,15 @@ describe('log string truncation', () => {
 		logEvent({
 			timestamp: '2026-07-08T00:00:00.000Z',
 			severity: 'info',
-			userAgent: 'evil\nagent[31m' + 'x'.repeat(500),
-			domain: 'bad[0mdomain.example',
+			userAgent: 'evil\nagent\u001b[31m' + 'x'.repeat(500),
+			domain: 'bad\u001b[0mdomain.example',
 		});
 		spy.mockRestore();
 		const parsed = JSON.parse(lines[0]) as { userAgent: string; domain: string };
 		expect(parsed.userAgent).not.toContain('\n');
-		expect(parsed.userAgent).not.toContain('');
+		expect(parsed.userAgent).not.toContain('\u001b');
 		expect(parsed.userAgent.length).toBeLessThanOrEqual(256);
-		expect(parsed.domain).not.toContain('');
+		expect(parsed.domain).not.toContain('\u001b');
 	});
 });
 
