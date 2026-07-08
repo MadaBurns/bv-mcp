@@ -486,6 +486,20 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			category: 'scheduled',
 			details: { message: 'Analytics alerting check failed' },
 		});
+		// Watchdog: the alerting pipeline ITSELF failed (AE query error, expired
+		// token, network) — every threshold alert above is silently disabled.
+		// The webhook is configured (guard at the top of this function), so page
+		// through it. Best-effort: if the webhook is down too there is nothing
+		// left to do in-band.
+		await sendAlert(
+			env.ALERT_WEBHOOK_URL,
+			buildAlertPayload({
+				title: 'Alerting pipeline failure: analytics check could not run',
+				severity: 'critical',
+				metrics: { pipeline_failed: 1 },
+				threshold: 'alerting_self_check',
+			}),
+		).catch(() => {});
 	}
 }
 

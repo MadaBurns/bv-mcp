@@ -194,6 +194,7 @@ describe('handleScheduled', () => {
 				if (query.includes('tool_call'))
 					return new Response(JSON.stringify({ data: [{ total_calls: 100, error_count: 1, error_pct: 1.0, p95_ms: 500 }] }));
 				if (query.includes('rate_limit')) return new Response(JSON.stringify({ data: [{ total_hits: 2 }] }));
+				return new Response(JSON.stringify({ data: [] }));
 			}
 			return new Response('ok');
 		}) as typeof fetch;
@@ -215,6 +216,7 @@ describe('handleScheduled', () => {
 				if (query.includes('tool_call'))
 					return new Response(JSON.stringify({ data: [{ total_calls: 100, error_count: 1, error_pct: 1.0, p95_ms: 500 }] }));
 				if (query.includes('rate_limit')) return new Response(JSON.stringify({ data: [{ total_hits: 2 }] }));
+				return new Response(JSON.stringify({ data: [] }));
 			}
 			return new Response('ok');
 		}) as typeof fetch;
@@ -242,6 +244,7 @@ describe('handleScheduled', () => {
 				if (query.includes('rate_limit')) {
 					return new Response(JSON.stringify({ data: [{ total_hits: 2 }] }));
 				}
+				return new Response(JSON.stringify({ data: [] }));
 			}
 			return new Response('ok');
 		}) as typeof fetch;
@@ -256,5 +259,28 @@ describe('handleScheduled', () => {
 		// Should NOT have called the webhook
 		const webhookCalls = fetchCalls.filter((u) => u.includes('hooks.slack.com'));
 		expect(webhookCalls).toHaveLength(0);
+	});
+
+	it('sends a watchdog alert through the webhook when the analytics query pipeline fails', async () => {
+		const fetchCalls: Array<{ url: string; body: string }> = [];
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			fetchCalls.push({ url, body: init?.body as string });
+			if (url.includes('analytics_engine/sql')) {
+				throw new Error('Authentication error: token expired');
+			}
+			return new Response('ok');
+		}) as typeof fetch;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({
+			CF_ACCOUNT_ID: 'test-account',
+			CF_ANALYTICS_TOKEN: 'test-token',
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		} as ScheduledEnv);
+
+		const webhookCall = fetchCalls.find((c) => c.url.includes('hooks.slack.com'));
+		expect(webhookCall).toBeDefined();
+		expect(webhookCall!.body).toContain('Alerting pipeline failure');
 	});
 });
