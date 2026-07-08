@@ -16,6 +16,8 @@ const CATEGORY = 'osint_investigation' as CheckCategory;
 export interface ReconToolOptions {
 	reconBinding?: ReconBinding;
 	reconAuthToken?: string;
+	reconJobKv?: KVNamespace;
+	principalId?: string;
 	onBindingDegradation?: BindingDegradationSink;
 }
 
@@ -23,6 +25,33 @@ function unprovisioned(detail: string): CheckResult {
 	return buildCheckResult(CATEGORY, [
 		createFinding(CATEGORY, 'OSINT investigation unavailable', 'info', detail, { unprovisioned: true }),
 	]) as CheckResult;
+}
+
+const OSINT_OWNER_TTL_SECONDS = 24 * 60 * 60;
+const SAFE_INVESTIGATION_ID = /^[A-Za-z0-9._:-]+$/;
+
+function ownerKey(id: string): string {
+	return `osint-investigation-owner:${id}`;
+}
+
+function notOwned(id: string): CheckResult {
+	return buildCheckResult(CATEGORY, [
+		createFinding(CATEGORY, 'OSINT investigation not available', 'info', `OSINT investigation ${id} is not owned by this principal.`, {
+			notOwned: true,
+			investigationId: id,
+		}),
+	]) as CheckResult;
+}
+
+async function rememberInvestigationOwner(id: string | undefined, options: ReconToolOptions): Promise<void> {
+	if (!id || !options.reconJobKv || !options.principalId || !SAFE_INVESTIGATION_ID.test(id)) return;
+	await options.reconJobKv.put(ownerKey(id), options.principalId, { expirationTtl: OSINT_OWNER_TTL_SECONDS }).catch(() => undefined);
+}
+
+async function investigationOwnerMismatch(id: string, options: ReconToolOptions): Promise<boolean> {
+	if (!options.reconJobKv || !SAFE_INVESTIGATION_ID.test(id)) return false;
+	const owner = await options.reconJobKv.get(ownerKey(id)).catch(() => null);
+	return Boolean(owner && owner !== options.principalId);
 }
 
 export async function osintInvestigateStart(
@@ -40,6 +69,7 @@ export async function osintInvestigateStart(
 		options.onBindingDegradation,
 	);
 	if (!started) return unprovisioned(`OSINT ${type} investigation is not provisioned in this deployment for ${query}.`);
+	await rememberInvestigationOwner(started.investigationId, options);
 	return buildCheckResult(CATEGORY, [
 		createFinding(
 			CATEGORY,
@@ -139,6 +169,7 @@ function shortText(s: string, max: number): string {
 }
 
 export async function osintInvestigationStatus(id: string, options: ReconToolOptions = {}): Promise<CheckResult> {
+	if (await investigationOwnerMismatch(id, options)) return notOwned(id);
 	const s = await callReconInvestigationStatus(options.reconBinding, options.reconAuthToken, id, undefined, options.onBindingDegradation);
 	if (!s) return unprovisioned(`Investigation status unavailable for ${id} (unprovisioned or not found).`);
 	const status = typeof s.status === 'string' ? s.status : 'unknown';
@@ -158,6 +189,7 @@ export async function osintInvestigationStatus(id: string, options: ReconToolOpt
 }
 
 export async function osintInvestigationReport(id: string, options: ReconToolOptions = {}): Promise<CheckResult> {
+	if (await investigationOwnerMismatch(id, options)) return notOwned(id);
 	const r = await callReconInvestigationReport(options.reconBinding, options.reconAuthToken, id, undefined, options.onBindingDegradation);
 	if (!r) return unprovisioned(`Investigation report unavailable for ${id} (unprovisioned or not ready).`);
 	const total = typeof r.total === 'number' ? r.total : Array.isArray(r.findings) ? r.findings.length : 0;

@@ -338,6 +338,29 @@ describe('DNS Security MCP Server', () => {
 			expect(['ok', 'error', 'absent']).toContain(body.bindings.scanCache);
 			expect(['ok', 'error', 'absent']).toContain(body.bindings.quotaCoordinator);
 		});
+
+		it('deep mode reports production-critical binding presence beyond scan cache and quota coordinator', async () => {
+			const authEnv = {
+				...env,
+				BV_API_KEY: TEST_API_KEY,
+				REQUIRE_PRODUCTION_BINDINGS: 'true',
+			} as Env & Record<string, unknown>;
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/health?deep=1', {
+				headers: { Authorization: `Bearer ${TEST_API_KEY}` },
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, authEnv as Env, ctx);
+			await waitOnExecutionContext(ctx);
+			const body = (await response.json()) as {
+				status: string;
+				bindings: Record<string, string>;
+			};
+			expect(response.status).toBe(503);
+			expect(body.status).toBe('degraded');
+			for (const key of ['tenantRegistryDb', 'scannerQueue', 'brandAuditDb', 'brandReports', 'brandAuditQueue', 'brandAuditPdfQueue', 'alertWebhook']) {
+				expect(body.bindings[key]).toBe('absent');
+			}
+		});
 	});
 
 	describe('POST /mcp - initialize', () => {

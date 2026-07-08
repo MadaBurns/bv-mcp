@@ -96,7 +96,7 @@ curl -X POST https://dns-mcp.blackveilsecurity.com/mcp \
 
 Should return JSON with a tools array including `scan_domain`.
 
-If this returns `401 Unauthorized`, remove any configured API key to use the free tier, or replace it with a valid key. Do not mix `?api_key=` and `Authorization` in the same server entry unless both values are valid; stale placeholders can cause initialization to fail instead of falling back to unauthenticated access.
+If this returns `401 Unauthorized`, remove any configured API key to use the free tier, or replace it with a valid Bearer key. Hosted production rejects `?api_key=` URL credentials; use OAuth or an `Authorization: Bearer` header bridge such as `mcp-remote` for static-key auth.
 
 **6. If tools still don't connect, check Claude Desktop logs**
 

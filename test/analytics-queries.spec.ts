@@ -23,6 +23,7 @@ import {
 	queryTierDigest,
 	queryBindingDegradation,
 	queryQueueFailures,
+	queryTailExceptions,
 } from '../src/lib/analytics-queries';
 
 describe('analytics query builders', () => {
@@ -192,6 +193,14 @@ describe('analytics query builders', () => {
 		const sql = queryQueueFailures("10'; DROP TABLE --");
 		expect(sql).toContain("INTERVAL '10' MINUTE");
 		expect(sql).not.toContain('DROP TABLE');
+	});
+
+	it('queryTailExceptions counts fatal Worker exceptions exported by the tail consumer', () => {
+		const sql = queryTailExceptions('15');
+		expect(sql).toContain("index1 = 'tail'");
+		expect(sql).toContain("blob1 = 'exception'");
+		expect(sql).toContain('exception_count');
+		expect(sql).toContain("INTERVAL '15' MINUTE");
 	});
 });
 

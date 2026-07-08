@@ -307,6 +307,17 @@ HAVING error_batch_count > 0 OR failure_count > 0
 ORDER BY failure_count DESC`;
 }
 
+/** Fatal Worker exception detection from Tail Worker exports. */
+export function queryTailExceptions(minutes: string): string {
+	minutes = safeInterval(minutes);
+	return `SELECT
+  SUM(_sample_interval) AS exception_count
+FROM ${DS}
+WHERE index1 = 'tail'
+  AND blob1 = 'exception'
+  AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE`;
+}
+
 // ---------------------------------------------------------------------------
 // Per-Tier Analytics Queries
 // ---------------------------------------------------------------------------

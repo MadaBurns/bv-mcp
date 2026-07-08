@@ -40,6 +40,7 @@ export default defineConfig({
 			'node_modules/**',
 			'.claude/**',
 			'.dev/**',
+			'.firecrawl/**',
 			'.worktrees/**',
 			// BrandAudit audit calibration specs are run via vitest.calibration.config.mts
 			// (node env, can read fs). Excluding from the default workers-pool run.

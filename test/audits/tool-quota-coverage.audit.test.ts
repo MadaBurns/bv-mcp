@@ -14,6 +14,8 @@ import { describe, it, expect } from 'vitest';
 import { TOOLS } from '../../src/schemas/tool-definitions';
 import { FREE_TOOL_DAILY_LIMITS, INTENTIONALLY_UNLIMITED_TOOLS, INTERNAL_ONLY_TOOLS } from '../../src/lib/config';
 
+const IDENTITY_SECOPS_TOOLS = ['query_signins', 'query_ual', 'get_ca_policies', 'assess_coverage'] as const;
+
 describe('tool-quota-coverage audit', () => {
 	it('every public TOOL_DEFS entry is either quota-limited or explicitly unlimited (never neither, never both)', () => {
 		const limited = new Set(Object.keys(FREE_TOOL_DAILY_LIMITS));
@@ -36,9 +38,16 @@ describe('tool-quota-coverage audit', () => {
 		expect(both, `tools listed in BOTH (must pick one): ${both.join(', ')}`).toEqual([]);
 	});
 
-	it('INTENTIONALLY_UNLIMITED_TOOLS membership is a non-empty subset of TOOL_DEFS names', () => {
+	it('INTENTIONALLY_UNLIMITED_TOOLS membership is a subset of TOOL_DEFS names', () => {
 		const validNames = new Set(TOOLS.map((t) => t.name));
 		const stale = [...INTENTIONALLY_UNLIMITED_TOOLS].filter((name) => !validNames.has(name));
 		expect(stale, `INTENTIONALLY_UNLIMITED_TOOLS contains names not in TOOL_DEFS: ${stale.join(', ')}`).toEqual([]);
+	});
+
+	it('identity-secops tools are quota-limited, not in the unlimited exception set', () => {
+		for (const tool of IDENTITY_SECOPS_TOOLS) {
+			expect(FREE_TOOL_DAILY_LIMITS[tool], `${tool}: public free quota decision`).toBe(0);
+			expect(INTENTIONALLY_UNLIMITED_TOOLS.has(tool), `${tool}: must not be intentionally unlimited`).toBe(false);
+		}
 	});
 });

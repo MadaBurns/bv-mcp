@@ -34,13 +34,20 @@ const TEST_TENANT_ID = 'tenant-1';
 const TEST_TENANT_BINDING = 'TENANT_DB_TENANT_1';
 const REGISTRY_LOOKUP_SQL =
 	'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
-const SCAN_PROBE_BY_DOMAIN_SQL = 'SELECT id FROM scans WHERE cycle_id = ? AND domain = ? LIMIT 1';
+const SCAN_COMPLETION_PROBE_SQL =
+	'SELECT s.id, s.finding_count, COUNT(f.id) AS persisted_findings ' +
+	'FROM scans s LEFT JOIN findings f ON f.scan_id = s.id ' +
+	'WHERE s.cycle_id = ? AND s.domain = ? ' +
+	'GROUP BY s.id, s.finding_count ' +
+	'LIMIT 1';
 const SCANS_INSERT_SQL =
 	'INSERT INTO scans (id, domain, scan_at, score, grade, maturity_stage, finding_count, result_json, cycle_id) ' +
 	'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
 const FINDINGS_INSERT_SQL =
 	'INSERT INTO findings (id, scan_id, domain, category, severity, title, detail, metadata) ' +
 	'VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
+const DELETE_FINDINGS_FOR_SCAN_SQL = 'DELETE FROM findings WHERE scan_id = ?';
+const DELETE_SCAN_SQL = 'DELETE FROM scans WHERE id = ?';
 
 type RecordedCall = { sql: string; binds: unknown[] };
 
@@ -187,7 +194,7 @@ describe('processScanMessage', () => {
 		});
 		const tenant = makeMockD1({
 			rowsBySql: {
-				[SCAN_PROBE_BY_DOMAIN_SQL]: [{ id: 'pre-existing-scan-row' }],
+				[SCAN_COMPLETION_PROBE_SQL]: [{ id: 'pre-existing-scan-row', finding_count: 2, persisted_findings: 2 }],
 			},
 		});
 		const customEnv = {
@@ -213,13 +220,60 @@ describe('processScanMessage', () => {
 		expect(handleToolsCallMock).not.toHaveBeenCalled();
 	});
 
-	it('returns ack when the tenant resolver throws (no DB binding to write to)', async () => {
+	it('returns retry when the tenant resolver throws before the final attempt', async () => {
 		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
 		const customEnv = { ...env };
 
 		const outcome = await processScanMessage(validMsg, 1, customEnv, makeCtx());
+		expect(outcome).toBe('retry');
+		expect(handleToolsCallMock).not.toHaveBeenCalled();
+	});
+
+	it('returns ack when the tenant resolver still throws on the final attempt', async () => {
+		const { processScanMessage, MAX_ATTEMPTS } = await import('../../src/tenants/queue-consumer');
+		const customEnv = { ...env };
+
+		const outcome = await processScanMessage(validMsg, MAX_ATTEMPTS, customEnv, makeCtx());
 		expect(outcome).toBe('ack');
 		expect(handleToolsCallMock).not.toHaveBeenCalled();
+	});
+
+	it('does not treat a partial scan row as idempotently complete', async () => {
+		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
+			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
+			opts?.resultCapture?.({
+				category: 'spf',
+				passed: true,
+				score: 90,
+				findings: [{ category: 'spf', severity: 'info', title: 'spf_ok', detail: 'looks good' }],
+			});
+			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
+		});
+		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
+		const registry = makeMockD1({
+			rowsBySql: {
+				[REGISTRY_LOOKUP_SQL]: [
+					{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'x', active: 1 },
+				],
+			},
+		});
+		const tenant = makeMockD1({
+			rowsBySql: {
+				[SCAN_COMPLETION_PROBE_SQL]: [{ id: 'partial-scan-row', finding_count: 2, persisted_findings: 0 }],
+			},
+		});
+		const customEnv = {
+			...env,
+			TENANT_REGISTRY_DB: registry.db,
+			[TEST_TENANT_BINDING]: tenant.db,
+		};
+
+		const outcome = await processScanMessage(validMsg, 1, customEnv, makeCtx());
+		expect(outcome).toBe('ack');
+		expect(tenant.calls).toContainEqual({ sql: DELETE_FINDINGS_FOR_SCAN_SQL, binds: ['partial-scan-row'] });
+		expect(tenant.calls).toContainEqual({ sql: DELETE_SCAN_SQL, binds: ['partial-scan-row'] });
+		expect(handleToolsCallMock).toHaveBeenCalledOnce();
+		expect(tenant.calls.filter((c) => c.sql === SCANS_INSERT_SQL)).toHaveLength(1);
 	});
 
 	it('returns retry when handleToolsCall returns isError on the first attempt', async () => {

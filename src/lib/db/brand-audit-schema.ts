@@ -74,7 +74,10 @@ export const brandAuditTargets = sqliteTable(
 		created_at: integer('created_at').notNull(),
 		completed_at: integer('completed_at'),
 	},
-	(t) => [primaryKey({ columns: [t.audit_id, t.target] })],
+	(t) => [
+		primaryKey({ columns: [t.audit_id, t.target] }),
+		index('idx_brand_audit_targets_status_created_at').on(t.status, t.created_at),
+	],
 );
 
 export const brandAuditSteps = sqliteTable(

@@ -554,6 +554,14 @@ async function probeQuotaCoordinator(ns: DurableObjectNamespace | undefined): Pr
 	});
 }
 
+function bindingPresence(value: unknown): 'ok' | 'absent' {
+	return value ? 'ok' : 'absent';
+}
+
+function envFlagEnabled(value: unknown): boolean {
+	return typeof value === 'string' && value.toLowerCase() === 'true';
+}
+
 app.get('/health', async (c) => {
 	const deep = c.req.query('deep');
 	if (deep !== '1' && deep !== 'true') {
@@ -583,10 +591,22 @@ app.get('/health', async (c) => {
 		probeQuotaCoordinator(c.env.QUOTA_COORDINATOR),
 	]);
 
-	const bindings = { scanCache, quotaCoordinator };
+	const e = c.env as Record<string, unknown>;
+	const bindings = {
+		scanCache,
+		quotaCoordinator,
+		tenantRegistryDb: bindingPresence(e.TENANT_REGISTRY_DB),
+		scannerQueue: bindingPresence(e.BV_SCANNER_QUEUE),
+		brandAuditDb: bindingPresence(e.BRAND_AUDIT_DB),
+		brandReports: bindingPresence(e.BRAND_REPORTS),
+		brandAuditQueue: bindingPresence(e.BRAND_AUDIT_QUEUE),
+		brandAuditPdfQueue: bindingPresence(e.BRAND_AUDIT_PDF_QUEUE),
+		alertWebhook: bindingPresence(e.ALERT_WEBHOOK_URL),
+	};
 	// Overall status degrades only on an actual probe error; an 'absent' binding
 	// (BSL self-host) is not a failure of a provisioned dependency.
-	const degraded = Object.values(bindings).some((status) => status === 'error');
+	const requireProductionBindings = envFlagEnabled(e.REQUIRE_PRODUCTION_BINDINGS);
+	const degraded = Object.values(bindings).some((status) => status === 'error') || (requireProductionBindings && Object.values(bindings).some((status) => status === 'absent'));
 
 	return c.json(
 		{

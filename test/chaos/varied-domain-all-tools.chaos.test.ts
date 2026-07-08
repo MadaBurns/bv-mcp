@@ -384,7 +384,7 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'check_realtime_threat_feed', arguments: domainArgs() },
 		{ name: 'scan_buckets_start', arguments: { target: 'example.com' } },
 		{ name: 'scan_buckets_status', arguments: { scanId: 's1' } },
-		{ name: 'scan_buckets_findings', arguments: {} },
+		{ name: 'scan_buckets_findings', arguments: { scanId: 's1' } },
 		{ name: 'osint_investigate_domain_start', arguments: { query: 'example.com' } },
 		{ name: 'osint_investigate_infrastructure_start', arguments: { query: 'example.com' } },
 		{ name: 'osint_investigate_supply_chain_start', arguments: { query: 'example.com' } },

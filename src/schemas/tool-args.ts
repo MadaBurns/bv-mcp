@@ -599,7 +599,7 @@ export const ScanBucketsStatusArgs = z
 
 export const ScanBucketsFindingsArgs = z
 	.object({
-		scanId: z.string().min(1).max(128).optional(),
+		scanId: z.string().min(1).max(128),
 		target: z.string().min(1).max(253).optional(),
 		providers: z.array(z.string().max(32)).max(8).optional(),
 	})

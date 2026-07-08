@@ -46,7 +46,7 @@ const REDACTED = '[redacted]';
 const MAX_LOG_STRING_LENGTH = 256;
 const MAX_ERROR_STRING_LENGTH = 1024;
 export const SENSITIVE_KEY_PATTERN =
-	/(^ip$|cf-connecting-ip|authorization|mcp-session-id|session|token|api[-_]?key|secret|password|cookie|rawbody)/i;
+	/(^ip$|cf-connecting-ip|authorization|mcp-session-id|session|token|api[-_]?key|secret|password|cookie|rawbody|^query$|^email$|e[-_]?mail|user[-_]?principal[-_]?name|userPrincipalName|ms[-_]?tenant[-_]?id|tenantId)/i;
 
 export function isSensitiveKey(key: string): boolean {
 	return !/^has[A-Z]/.test(key) && SENSITIVE_KEY_PATTERN.test(key);

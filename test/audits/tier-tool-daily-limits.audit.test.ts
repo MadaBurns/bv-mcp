@@ -30,6 +30,8 @@ const BRAND_AUDIT_TOOLS = [
 	'delete_brand_audit_watch',
 ] as const;
 
+const IDENTITY_SECOPS_TOOLS = ['query_signins', 'query_ual', 'get_ca_policies', 'assess_coverage'] as const;
+
 describe('TIER_DAILY_LIMITS audit (flat per-tier defaults)', () => {
 	it('covers every tier from the McpApiKeyTier union', () => {
 		expect(new Set(Object.keys(TIER_DAILY_LIMITS))).toEqual(new Set(ALL_TIERS));
@@ -67,7 +69,7 @@ describe('TIER_TOOL_DAILY_LIMITS audit (per-tool per-tier overrides)', () => {
 
 	it('developer brand-audit ceilings match the published monthly tier (50 audits/month, 5000 read calls/day)', () => {
 		const developerOverrides = TIER_TOOL_DAILY_LIMITS.developer ?? {};
-		expect(developerOverrides).toEqual({
+		expect(pick(developerOverrides, BRAND_AUDIT_TOOLS)).toEqual({
 			brand_audit_single: 50,
 			brand_audit_batch_start: 50,
 			brand_audit_status: 5_000,
@@ -80,7 +82,7 @@ describe('TIER_TOOL_DAILY_LIMITS audit (per-tool per-tier overrides)', () => {
 
 	it('enterprise brand-audit ceilings match the published monthly tier (500 audits/month, 25k read calls/day)', () => {
 		const enterpriseOverrides = TIER_TOOL_DAILY_LIMITS.enterprise ?? {};
-		expect(enterpriseOverrides).toEqual({
+		expect(pick(enterpriseOverrides, BRAND_AUDIT_TOOLS)).toEqual({
 			brand_audit_single: 500,
 			brand_audit_batch_start: 500,
 			brand_audit_status: 25_000,
@@ -113,6 +115,22 @@ describe('TIER_TOOL_DAILY_LIMITS audit (per-tool per-tier overrides)', () => {
 		for (const tool of ['brand_audit_single', 'brand_audit_batch_start'] as const) {
 			expect(dev[tool], `${tool}: developer ≤ partner`).toBeLessThanOrEqual(part[tool] ?? Infinity);
 			expect(part[tool], `${tool}: partner ≤ enterprise`).toBeLessThanOrEqual(ent[tool] ?? Infinity);
+		}
+	});
+
+	it('identity-secops M365 tools are paid-only and explicitly bounded per principal', () => {
+		const free = TIER_TOOL_DAILY_LIMITS.free ?? {};
+		const agent = TIER_TOOL_DAILY_LIMITS.agent ?? {};
+		const developer = TIER_TOOL_DAILY_LIMITS.developer ?? {};
+		const enterprise = TIER_TOOL_DAILY_LIMITS.enterprise ?? {};
+		const partner = TIER_TOOL_DAILY_LIMITS.partner ?? {};
+
+		for (const tool of IDENTITY_SECOPS_TOOLS) {
+			expect(free[tool], `${tool}: free must be blocked`).toBe(0);
+			expect(agent[tool], `${tool}: agent must be blocked`).toBe(0);
+			expect(developer[tool], `${tool}: developer daily cap`).toBe(100);
+			expect(enterprise[tool], `${tool}: enterprise daily cap`).toBe(2_000);
+			expect(partner[tool], `${tool}: partner daily cap`).toBe(2_000);
 		}
 	});
 
@@ -155,6 +173,10 @@ describe('TIER_TOOL_DAILY_LIMITS audit (per-tool per-tier overrides)', () => {
 			'list_brand_audit_watches',
 			'register_brand_audit_watch',
 			'delete_brand_audit_watch',
+			'query_signins',
+			'query_ual',
+			'get_ca_policies',
+			'assess_coverage',
 		]);
 		expect(new Set(Object.keys(partner))).toEqual(expectedKeys);
 	});
@@ -172,3 +194,7 @@ describe('TIER_CONCURRENT_LIMITS audit', () => {
 		});
 	});
 });
+
+function pick<T extends readonly string[]>(source: Record<string, number>, keys: T): Record<T[number], number | undefined> {
+	return Object.fromEntries(keys.map((key) => [key, source[key]])) as Record<T[number], number | undefined>;
+}

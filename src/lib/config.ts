@@ -199,6 +199,10 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		list_brand_audit_watches: 100,
 		register_brand_audit_watch: 100,
 		delete_brand_audit_watch: 100,
+		query_signins: 2_000,
+		query_ual: 2_000,
+		get_ca_policies: 2_000,
+		assess_coverage: 2_000,
 	},
 	developer: {
 		brand_audit_single: 50,
@@ -208,6 +212,10 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		list_brand_audit_watches: 20,
 		register_brand_audit_watch: 20,
 		delete_brand_audit_watch: 20,
+		query_signins: 100,
+		query_ual: 100,
+		get_ca_policies: 100,
+		assess_coverage: 100,
 	},
 	enterprise: {
 		brand_audit_single: 500,
@@ -217,6 +225,10 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		list_brand_audit_watches: 100,
 		register_brand_audit_watch: 100,
 		delete_brand_audit_watch: 100,
+		query_signins: 2_000,
+		query_ual: 2_000,
+		get_ca_policies: 2_000,
+		assess_coverage: 2_000,
 	},
 	agent: {
 		discover_subdomains: 0,
@@ -244,6 +256,10 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		delete_brand_audit_watch: 0,
 		list_brand_audit_watches: 0,
 		prioritize_csc_leads: 0,
+		query_signins: 0,
+		query_ual: 0,
+		get_ca_policies: 0,
+		assess_coverage: 0,
 	},
 	free: {
 		discover_subdomains: 0,
@@ -269,6 +285,10 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		delete_brand_audit_watch: 0,
 		list_brand_audit_watches: 0,
 		prioritize_csc_leads: 0,
+		query_signins: 0,
+		query_ual: 0,
+		get_ca_policies: 0,
+		assess_coverage: 0,
 	},
 };
 
@@ -352,6 +372,10 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	osint_investigate_email_start: 0,
 	osint_investigation_status: 25,
 	osint_investigation_report: 25,
+	query_signins: 0,
+	query_ual: 0,
+	get_ca_policies: 0,
+	assess_coverage: 0,
 };
 
 /** Free-tier daily cap on cache-bypassing (force_refresh) requests. Far below the
@@ -393,6 +417,11 @@ export const GATED_PAID_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
 	'register_brand_audit_watch',
 	'delete_brand_audit_watch',
 	'list_brand_audit_watches',
+	// sensitive/costly Microsoft Graph-backed tools
+	'query_signins',
+	'query_ual',
+	'get_ca_policies',
+	'assess_coverage',
 ]);
 
 /** True when a tool is gated to paid tiers (developer+). */
@@ -483,7 +512,9 @@ export const FREE_DISTINCT_DOMAIN_DAILY_LIMIT = 12;
  * reach them — the public `/mcp` gate in src/mcp/execute.ts rejects an
  * unauthenticated tools/call for any member with HTTP 401 BEFORE dispatch
  * (see isAuthRequiredTool), and the registry execute path (handlers/tools.ts)
- * additionally hard-rejects when no real principal (keyHash) is present.
+ * additionally hard-rejects when no real principal (keyHash) is present. Free
+ * and agent API-key tiers are pinned to 0 in TIER_TOOL_DAILY_LIMITS and the
+ * paid tiers have explicit per-principal caps to bound Microsoft Graph cost.
  * Single source of truth for both gates.
  */
 export const AUTH_REQUIRED_TOOLS: ReadonlySet<string> = new Set<string>([
@@ -499,17 +530,7 @@ export function isAuthRequiredTool(toolName: string): boolean {
 }
 
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
-export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>([
-	// identity_secops tools are auth-required (AUTH_REQUIRED_TOOLS): the public /mcp
-	// gate rejects unauthenticated callers with HTTP 401 before dispatch, and the
-	// registry path hard-rejects calls without a real principal. They carry no
-	// per-tool free-tier quota because they are never reachable by free/anon
-	// callers in the first place — so they sit outside the daily-tool-quota matrix.
-	'query_signins',
-	'query_ual',
-	'get_ca_policies',
-	'assess_coverage',
-]);
+export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>();
 
 /**
  * Per-tier concurrent tool execution limits (per-isolate, best-effort fairness).

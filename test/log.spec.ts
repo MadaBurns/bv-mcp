@@ -39,6 +39,32 @@ describe('log redaction', () => {
 		});
 	});
 
+	it('redacts PII-capable tool fields from nested log details', () => {
+		const sanitized = sanitizeLogValue({
+			query: 'person@example.com',
+			email: 'person@example.com',
+			ms_tenant_id: '00000000-1111-2222-3333-444444444444',
+			user_principal_name: 'admin@example.com',
+			filters: {
+				userPrincipalName: 'nested@example.com',
+				tenantId: 'tenant-guid',
+			},
+			summary: 'visible aggregate',
+		});
+
+		expect(sanitized).toEqual({
+			query: '[redacted]',
+			email: '[redacted]',
+			ms_tenant_id: '[redacted]',
+			user_principal_name: '[redacted]',
+			filters: {
+				userPrincipalName: '[redacted]',
+				tenantId: '[redacted]',
+			},
+			summary: 'visible aggregate',
+		});
+	});
+
 	it('audit logs do not emit raw session identifiers', () => {
 		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 

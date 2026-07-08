@@ -33,7 +33,7 @@ describe('scan_buckets tools', () => {
 	});
 	it('findings: unprovisioned when absent; passes through when bound', async () => {
 		const { scanBucketsFindings } = await import('../src/tools/scan-buckets');
-		expect((await scanBucketsFindings({}, {})).findings.some(f => f.metadata?.unprovisioned === true)).toBe(true);
+		expect((await scanBucketsFindings({ scanId: 's1' }, {})).findings.some(f => f.metadata?.unprovisioned === true)).toBe(true);
 		const r = await scanBucketsFindings({ scanId: 's1' }, { reconBinding: binding({ findings: [] }), reconAuthToken: 't' });
 		expect(r.findings.some(f => f.metadata?.summary === true)).toBe(true);
 	});
