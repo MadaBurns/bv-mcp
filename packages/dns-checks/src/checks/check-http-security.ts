@@ -5,12 +5,10 @@
 import type { CheckResult, FetchFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { analyzeSecurityHeaders } from './http-security-analysis';
+import { SCANNER_USER_AGENT, RobotsDisallowedError } from '../robots-gate';
 
 /** Default HTTPS timeout (ms) */
 const HTTPS_TIMEOUT_MS = 4_000;
-
-/** User-Agent sent with all outbound HTTP requests to reduce WAF false blocks. */
-const SCANNER_USER_AGENT = 'Mozilla/5.0 (compatible; BlackVeilDNSScanner/1.0; +https://blackveilsecurity.com)';
 
 /** Maximum redirect hops to follow */
 const MAX_REDIRECT_HOPS = 3;
@@ -184,21 +182,33 @@ export async function checkHTTPSecurity(
 			);
 		}
 	} catch (err) {
-		// AbortSignal.timeout throws a DOMException named 'TimeoutError' (message "The operation
-		// timed out"); also match abort/timeout phrasings from other runtimes.
-		const e = err as { name?: string; message?: string };
-		const isTimeout = e?.name === 'TimeoutError' || /timed?\s*out|abort|timeout/i.test(e?.message ?? '');
-		inconclusive = isTimeout ? 'timeout' : 'error';
-		const message = isTimeout ? 'Connection timed out' : 'Connection failed';
-		findings.push(
-			createFinding(
-				'http_security',
-				`HTTPS ${message.toLowerCase()}`,
-				'medium',
-				`Could not fetch https://${domain} to check security headers: ${message}.`,
-				{ missingControl: true },
-			),
-		);
+		if (err instanceof RobotsDisallowedError) {
+			inconclusive = 'error';
+			findings.push(
+				createFinding(
+					'http_security',
+					'HTTP security check skipped (robots.txt)',
+					'info',
+					`${domain}'s robots.txt disallows BlackVeil-Security-Scanner, so HTTP security headers could not be independently verified. Not scored — see https://www.blackveilsecurity.com/bot-policy.`,
+				),
+			);
+		} else {
+			// AbortSignal.timeout throws a DOMException named 'TimeoutError' (message "The operation
+			// timed out"); also match abort/timeout phrasings from other runtimes.
+			const e = err as { name?: string; message?: string };
+			const isTimeout = e?.name === 'TimeoutError' || /timed?\s*out|abort|timeout/i.test(e?.message ?? '');
+			inconclusive = isTimeout ? 'timeout' : 'error';
+			const message = isTimeout ? 'Connection timed out' : 'Connection failed';
+			findings.push(
+				createFinding(
+					'http_security',
+					`HTTPS ${message.toLowerCase()}`,
+					'medium',
+					`Could not fetch https://${domain} to check security headers: ${message}.`,
+					{ missingControl: true },
+				),
+			);
+		}
 	}
 
 	const result = buildCheckResult('http_security', findings);
