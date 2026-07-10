@@ -5,7 +5,10 @@
  * Thin wrapper around @blackveil/dns-checks — delegates all logic to the shared package.
  */
 
-import { checkSubdomainTakeover as checkSubdomainTakeoverPkg } from '@blackveil/dns-checks';
+import {
+	checkSubdomainTakeover as checkSubdomainTakeoverPkg,
+	withRobotsGate,
+} from '@blackveil/dns-checks';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult } from '../lib/scoring';
@@ -34,7 +37,7 @@ export async function checkSubdomainTakeover(
 ): Promise<CheckResult> {
 	return checkSubdomainTakeoverPkg(domain, makeQueryDNS(dnsOptions), {
 		timeout: dnsOptions?.timeoutMs ?? HTTPS_TIMEOUT_MS,
-		fetchFn: fetch,
+		fetchFn: withRobotsGate(fetch),
 		...(options?.subdomains ? { subdomains: options.subdomains } : {}),
 	}) as Promise<CheckResult>;
 }
