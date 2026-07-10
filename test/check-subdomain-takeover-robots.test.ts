@@ -10,7 +10,7 @@ afterEach(() => restore());
 describe('checkSubdomainTakeover tool — robots.txt', () => {
 	async function run(domain: string, subdomains?: string[]) {
 		const { checkSubdomainTakeover } = await import('../src/tools/check-subdomain-takeover');
-		return checkSubdomainTakeover(domain, { subdomains });
+		return checkSubdomainTakeover(domain, undefined, { subdomains });
 	}
 
 	it('does not throw and produces no false takeover finding when robots.txt disallows the probe', async () => {
