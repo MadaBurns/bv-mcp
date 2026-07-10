@@ -34,6 +34,9 @@ export {
 	sanitizeDnsData,
 } from './check-utils';
 
+// Robot policy
+export { SCANNER_USER_AGENT, RobotsDisallowedError, withRobotsGate } from './robots-gate';
+
 // Check implementations
 export {
 	checkSPF,
