@@ -5,7 +5,7 @@
  * Thin wrapper around @blackveil/dns-checks — delegates all logic to the shared package.
  */
 
-import { checkBIMI } from '@blackveil/dns-checks';
+import { checkBIMI, withRobotsGate } from '@blackveil/dns-checks';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildDnsErrorResult } from '../lib/dns-error-result';
@@ -20,11 +20,15 @@ import { safeFetch } from '../lib/safe-fetch';
  * BIMI `l=` and `a=` tags are extracted from a TXT record at default._bimi.<domain>
  * and are entirely attacker-controlled. We pass safeFetch instead of the raw
  * `fetch` so the destination hostname is validated before any outbound request
- * (H2 fix from the 2026-05-08 security audit).
+ * (H2 fix from the 2026-05-08 security audit), and gate it through
+ * withRobotsGate so a domain's robots.txt can opt out of the logo fetch.
  */
 export async function checkBimi(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	try {
-		return (await checkBIMI(domain, makeQueryDNS(dnsOptions), { timeout: dnsOptions?.timeoutMs ?? 5000, fetchFn: safeFetch })) as CheckResult;
+		return (await checkBIMI(domain, makeQueryDNS(dnsOptions), {
+			timeout: dnsOptions?.timeoutMs ?? 5000,
+			fetchFn: withRobotsGate(safeFetch),
+		})) as CheckResult;
 	} catch (err) {
 		return buildDnsErrorResult('bimi', 'BIMI', err);
 	}
