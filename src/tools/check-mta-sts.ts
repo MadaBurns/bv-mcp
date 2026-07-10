@@ -17,7 +17,7 @@
  * as a confident `medium` "policy fetch failed".
  */
 
-import { checkMTASTS } from '@blackveil/dns-checks';
+import { checkMTASTS, withRobotsGate, RobotsDisallowedError } from '@blackveil/dns-checks';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult, Finding } from '../lib/scoring';
@@ -25,6 +25,30 @@ import { buildCheckResult, createFinding } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { type WafEvent, looksLikeWaf, detectWafEvent, buildWafFinding } from '../lib/waf-detection';
 import { readBoundedText } from '../lib/response-body';
+
+/**
+ * Module-scope, isolate-lifetime gated fetch. Deliberately NOT per-call: this
+ * file's real network call is inside `observingFetch`, a helper nested inside
+ * `checkMtaSts` rather than itself the exported per-scan entry point, and
+ * `withRobotsGate`'s per-hostname robots.txt memoization is only useful if the
+ * wrapped fetch persists across calls (see the plan's Global Constraints).
+ *
+ * Wrapped as `(...args) => fetch(...args)` rather than passing the bare `fetch`
+ * identifier: `withRobotsGate` captures whatever function VALUE it's given, and
+ * `fetch` passed directly captures the global fetch binding AT MODULE-EVAL TIME
+ * — permanently, since it's a value, not a live lookup. A bare `fetch(...)` CALL
+ * inside a function body re-resolves the current `globalThis.fetch` on every
+ * invocation, but a bare `fetch` reference handed to another function as an
+ * argument does not carry that live-lookup behavior with it. Production
+ * `globalThis.fetch` is never reassigned post-boot, so this is invisible there —
+ * but this repo's tests reassign `globalThis.fetch` per-case (`setupFetchMock`),
+ * and a captured-by-value `fetch` would keep calling whichever mock happened to
+ * be installed the first time this module was evaluated, silently ignoring every
+ * later test's mock. The indirection keeps the SAME module-scope cache lifetime
+ * (this is still one `withRobotsGate` instance / one `groupCache`) while keeping
+ * the innermost fetch call dynamic.
+ */
+const gatedFetch = withRobotsGate((url: string, init?: RequestInit) => fetch(url, init));
 
 /** Titles of the package's policy-fetch findings that a WAF interception can falsely trigger. */
 const POLICY_FETCH_FALSE_POSITIVE_TITLES = new Set(['MTA-STS policy file not accessible', 'MTA-STS policy redirects']);
@@ -157,7 +181,7 @@ export async function checkMtaSts(domain: string, dnsOptions?: QueryDnsOptions):
 		const policy = isPolicyFetch(url);
 		let response: Response;
 		try {
-			response = await fetch(url, init);
+			response = await gatedFetch(url, init);
 		} catch (err) {
 			// A policy-fetch rejection (AbortError from a stalled WAF challenge, or a network
 			// TypeError) is observed as inconclusive, then RE-THROWN so the package still runs
@@ -212,6 +236,7 @@ export async function checkMtaSts(domain: string, dnsOptions?: QueryDnsOptions):
  * network error). Anything else is re-thrown unobserved so the package owns it.
  */
 function isObservableFetchThrow(err: unknown): boolean {
+	if (err instanceof RobotsDisallowedError) return true;
 	if (err instanceof Error) {
 		return err.name === 'AbortError' || err.name === 'TimeoutError' || err instanceof TypeError;
 	}
