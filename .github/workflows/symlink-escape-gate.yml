@@ -50,8 +50,18 @@ jobs:
                 ;;
             esac
 
-            resolved=$(realpath -m -- "$(dirname "$link")/$target")
-            rel=$(realpath -m --relative-to="$ROOT" -- "$resolved")
+            # Pure lexical resolution (no filesystem access) — a multi-hop
+            # chain must be judged one hop at a time, exactly like the
+            # canonical tools/lint-symlink-escape.mjs's path.resolve/relative.
+            # `realpath` would wrongly dereference any *existing* intermediate
+            # symlink and conflate a harmless chain (e.g. venv's
+            # bin/python3 -> python -> /abs/real/python) into a false escape.
+            rel=$(python3 -c "
+import os, sys
+root, link, target = sys.argv[1], sys.argv[2], sys.argv[3]
+resolved = os.path.normpath(os.path.join(os.path.dirname(link), target))
+print(os.path.relpath(resolved, root))
+" "$ROOT" "$link" "$target")
             case "$rel" in
               ..|../*)
                 echo "::error file=$link::SYMLINK_ESCAPE — relative target escapes repository root via ../ traversal (-> $target)"
