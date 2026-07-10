@@ -141,14 +141,15 @@ describe('checkHttpSecurity', () => {
 		});
 		globalThis.fetch = fetchSpy;
 		await run();
-		expect(fetchSpy).toHaveBeenCalledWith(
-			'https://example.com',
-			expect.objectContaining({
-				method: 'HEAD',
-				redirect: 'manual',
-				headers: expect.objectContaining({ 'User-Agent': expect.stringContaining('BlackVeilDNSScanner') }),
-			}),
-		);
+		// withRobotsGate stamps the UA via `new Headers(...)`, not a plain object literal,
+		// so read the outbound request's actual header value rather than structurally
+		// matching against a Headers instance (which exposes no own enumerable properties
+		// for expect.objectContaining to introspect).
+		const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe('https://example.com');
+		expect(init.method).toBe('HEAD');
+		expect(init.redirect).toBe('manual');
+		expect(new Headers(init.headers).get('User-Agent')).toContain('BlackVeil-Security-Scanner');
 	});
 
 	it('should return blocked finding when 403 HEAD and 403 GET', async () => {
