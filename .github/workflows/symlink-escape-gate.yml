@@ -1,0 +1,67 @@
+name: Symlink escape gate
+
+# Fail PRs/pushes whose tracked files include a symlink resolving outside the
+# repository root (CWE-61 — the primitive behind "GhostApproval", Wiz
+# 2026-07-08: a malicious repo ships e.g. config.json -> ../../../.ssh/authorized_keys,
+# and an AI coding agent's confirmation dialog shows the fake in-repo path
+# while the write lands outside the workspace). Self-applied (push/pull_request)
+# and reusable (workflow_call) — self-contained bash, no external script fetch,
+# so public repos can consume it without needing read access to private bv-cc
+# (the canonical, locally-runnable copy of this check lives there as
+# tools/lint-symlink-escape.mjs — kept in lockstep by hand, not by import).
+on:
+  workflow_call:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  symlink-escape:
+    name: No symlinks escape the repo root
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Scan for escaping symlinks
+        run: |
+          set -euo pipefail
+          ROOT="$(pwd)"
+          VIOLATIONS=0
+
+          while IFS= read -r -d '' link; do
+            target=$(readlink "$link")
+
+            case "$target" in
+              '~'*)
+                echo "::error file=$link::SYMLINK_ESCAPE — home-relative (~) target (-> $target)"
+                VIOLATIONS=$((VIOLATIONS+1))
+                continue
+                ;;
+              /*)
+                # Plain absolute targets aren't flagged — near-universal in real
+                # repos (venv interpreters, vendored binaries) and can't reliably
+                # generalize across machines/usernames the way relative
+                # traversal does, so they aren't the GhostApproval primitive.
+                continue
+                ;;
+            esac
+
+            resolved=$(realpath -m -- "$(dirname "$link")/$target")
+            rel=$(realpath -m --relative-to="$ROOT" -- "$resolved")
+            case "$rel" in
+              ..|../*)
+                echo "::error file=$link::SYMLINK_ESCAPE — relative target escapes repository root via ../ traversal (-> $target)"
+                VIOLATIONS=$((VIOLATIONS+1))
+                ;;
+            esac
+          done < <(find . \( -name .git -o -name node_modules \) -prune -o -type l -print0)
+
+          if [ "$VIOLATIONS" -gt 0 ]; then
+            echo "symlink-escape: $VIOLATIONS violation(s)."
+            exit 1
+          fi
+          echo "symlink-escape: no violations."
