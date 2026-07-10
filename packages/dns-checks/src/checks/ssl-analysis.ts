@@ -84,6 +84,20 @@ export function getHttpsErrorFinding(domain: string, message: string): Finding {
 	);
 }
 
+/**
+ * Neutral, zero-penalty finding for when the target's robots.txt disallows our
+ * scanner — distinct from `getHttpsErrorFinding`, which implies a real
+ * connectivity/certificate problem. This is never a security weakness.
+ */
+export function getRobotsDisallowedFinding(domain: string): Finding {
+	return createFinding(
+		'ssl',
+		'HTTPS check skipped (robots.txt)',
+		'info',
+		`${domain}'s robots.txt disallows BlackVeil-Security-Scanner, so HTTPS/HSTS could not be independently verified. Not scored — see https://www.blackveilsecurity.com/bot-policy.`,
+	);
+}
+
 export function getHttpRedirectFindings(domain: string, status: number, location: string | null): Finding[] {
 	if (status >= 300 && status < 400 && location?.startsWith('https://')) {
 		return [];

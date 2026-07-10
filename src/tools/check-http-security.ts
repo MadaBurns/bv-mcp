@@ -11,16 +11,13 @@
  * passed to the package's analysis layer.
  */
 
-import { checkHTTPSecurity } from '@blackveil/dns-checks';
+import { checkHTTPSecurity, withRobotsGate, SCANNER_USER_AGENT } from '@blackveil/dns-checks';
 import type { CheckResult } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { safeFetch } from '../lib/safe-fetch';
 import { composeSignal, withAbortSignal } from '../lib/abort-signal';
 import { looksLikeWaf, detectWafEvent, buildWafFinding } from '../lib/waf-detection';
-
-/** User-Agent for outbound probes — matches the package's scanner UA. */
-const SCANNER_USER_AGENT = 'Mozilla/5.0 (compatible; BlackVeilDNSScanner/1.0; +https://blackveilsecurity.com)';
 
 /** Security headers to merge (union) across dual fetches. */
 const MERGE_HEADERS = [
@@ -156,13 +153,12 @@ async function fetchWithRedirects(url: string, timeoutMs: number, callerSignal?:
 	// R7: compose the per-fetch timeout with the caller's scan-/per-check-level
 	// abort signal so a scan timeout cancels the in-flight HTTPS probe instead of
 	// orphaning the subrequest. Absent caller signal → timeout-only (unchanged).
-	let response = await fetch(
+	let response = await gatedFetch(
 		url,
 		composeSignal(
 			{
 				method: 'HEAD',
 				redirect: 'manual',
-				headers: { 'User-Agent': SCANNER_USER_AGENT },
 				signal: AbortSignal.timeout(timeoutMs),
 			},
 			callerSignal,
@@ -192,23 +188,23 @@ async function fetchWithRedirects(url: string, timeoutMs: number, callerSignal?:
 		if (!nextUrl.startsWith('https://')) break;
 
 		try {
-			response = await safeFetch(
+			response = await gatedSafeFetch(
 				nextUrl,
 				composeSignal(
 					{
 						method: 'HEAD',
 						redirect: 'manual',
-						headers: { 'User-Agent': SCANNER_USER_AGENT },
 						signal: AbortSignal.timeout(timeoutMs),
 					},
 					callerSignal,
 				),
 			);
 		} catch {
-			// safeFetch throws TypeError on a blocked target (SSRF protection); fall
-			// out of the redirect loop and let analysis run with whatever headers we
-			// already collected. Treat exactly like a network error — it's a hostile
-			// redirect destination, not a real failure.
+			// safeFetch throws TypeError on a blocked target (SSRF protection); withRobotsGate
+			// throws RobotsDisallowedError on a disallowed redirect target. Both cases: fall out
+			// of the redirect loop and let analysis run with whatever headers we already
+			// collected — a hostile OR disallowed redirect destination is treated like a network
+			// error, not a crash.
 			break;
 		}
 	}
@@ -297,13 +293,12 @@ async function dualFetchHeaders(
  */
 async function fetchBodyForWafDetection(url: string, timeoutMs: number, callerSignal?: AbortSignal): Promise<string> {
 	try {
-		const response = await fetch(
+		const response = await gatedFetch(
 			url,
 			composeSignal(
 				{
 					method: 'GET',
 					redirect: 'manual',
-					headers: { 'User-Agent': SCANNER_USER_AGENT },
 					signal: AbortSignal.timeout(timeoutMs),
 				},
 				callerSignal,
@@ -340,6 +335,16 @@ async function fetchBodyForWafDetection(url: string, timeoutMs: number, callerSi
  * single-domain pathology stays well under the Cloudflare Worker CPU ceiling.
  */
 const TOTAL_BUDGET_MS = 10_000;
+
+/**
+ * Robots.txt-gated fetch functions for this tool's real-network call sites
+ * (`fetchWithRedirects`'s initial + redirect-follow fetches, `fetchBodyForWafDetection`,
+ * and `capturingFetch`'s `safeFetch` fallback). `withRobotsGate` stamps the shared
+ * scanner UA automatically when the caller hasn't set one, so inline
+ * `headers: { 'User-Agent': ... }` objects at each call site are no longer needed.
+ */
+const gatedFetch = withRobotsGate((url, init) => fetch(url, init), { userAgent: SCANNER_USER_AGENT });
+const gatedSafeFetch = withRobotsGate((url, init) => safeFetch(url, init), { userAgent: SCANNER_USER_AGENT });
 
 export async function checkHttpSecurity(domain: string, options: { signal?: AbortSignal } = {}): Promise<CheckResult> {
 	let budgetTimeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -405,12 +410,20 @@ async function checkHttpSecurityInner(domain: string, callerSignal?: AbortSignal
 				headers: dualResult.headers,
 			});
 		}
-		// Dual-fetch unusable — delegate to safeFetch so the package's GET
-		// fallback (and any redirect target it follows via its own fetchFn)
-		// is protected against SSRF redirect targets (H3 fix, 2026-05-08).
+		// Dual-fetch unusable — delegate to the gated safeFetch so the package's GET
+		// fallback (and any redirect target it follows via its own fetchFn) is
+		// protected against SSRF redirect targets (H3 fix, 2026-05-08) AND
+		// honors robots.txt (the package's own checkHTTPSecurity already turns a
+		// RobotsDisallowedError into a checkStatus:'error' exclusion — see
+		// packages/dns-checks Task 3).
 		// R7: compose the caller signal so the package's GET-fallback fetch is
 		// also abortable on a scan-/per-check-level timeout.
-		const response = await safeFetch(input, composeSignal(init, callerSignal));
+		// `gatedSafeFetch` is a package FetchFunction (string url only) — the
+		// package's own fetchFn contract (and every real call here) only ever
+		// invokes capturingFetch with a string URL, so this narrows a type that
+		// was already runtime-guaranteed, matching safeFetch's own internal
+		// urlOf() normalization.
+		const response = await gatedSafeFetch(input as string, composeSignal(init, callerSignal));
 		capturedHeaders = response.headers;
 		return response;
 	};

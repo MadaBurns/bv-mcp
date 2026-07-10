@@ -9,7 +9,7 @@
  * self-hosts without the binding receive the unmodified base result.
  */
 
-import { checkSSL } from '@blackveil/dns-checks';
+import { checkSSL, withRobotsGate } from '@blackveil/dns-checks';
 import type { CheckResult } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { callTlsProbe, mergeTlsFinding } from '../lib/tls-probe-binding';
@@ -42,7 +42,7 @@ export async function checkSsl(
 		signal?: AbortSignal;
 	} = {},
 ): Promise<CheckResult> {
-	const fetchFn = withAbortSignal(fetch, tlsProbeOptions.signal);
+	const fetchFn = withRobotsGate(withAbortSignal(fetch, tlsProbeOptions.signal));
 	const result = (await checkSSL(domain, fetchFn, { timeout: HTTPS_TIMEOUT_MS })) as CheckResult;
 	// Operator-only TLS-version enrichment via the BV_TLS_PROBE service binding.
 	// Fail-soft: absent binding (every BSL self-host) → result returned unchanged.
