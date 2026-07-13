@@ -18,6 +18,7 @@ import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { safeFetch } from '../lib/safe-fetch';
 import { composeSignal, withAbortSignal } from '../lib/abort-signal';
 import { looksLikeWaf, detectWafEvent, buildWafFinding } from '../lib/waf-detection';
+import { readBoundedText } from '../lib/response-body';
 
 /** Security headers to merge (union) across dual fetches. */
 const MERGE_HEADERS = [
@@ -291,6 +292,16 @@ async function dualFetchHeaders(
  * Fetch the page body for WAF challenge fingerprinting.
  * Returns an empty string on error (fail-open — WAF detection should not block normal analysis).
  */
+const WAF_BODY_MAX_BYTES = 64 * 1024;
+
+/** Read only the prefix needed for WAF challenge fingerprinting. */
+export async function readWafResponseBody(response: Response): Promise<string> {
+	// Real Fetch responses expose a stream. The fallback keeps lightweight test
+	// doubles and non-standard Fetcher implementations compatible.
+	if (!response.body) return (await response.text()).slice(0, WAF_BODY_MAX_BYTES);
+	return readBoundedText(response.body, WAF_BODY_MAX_BYTES);
+}
+
 async function fetchBodyForWafDetection(url: string, timeoutMs: number, callerSignal?: AbortSignal): Promise<string> {
 	try {
 		const response = await gatedFetch(
@@ -304,7 +315,7 @@ async function fetchBodyForWafDetection(url: string, timeoutMs: number, callerSi
 				callerSignal,
 			),
 		);
-		return await response.text();
+		return await readWafResponseBody(response);
 	} catch {
 		return '';
 	}

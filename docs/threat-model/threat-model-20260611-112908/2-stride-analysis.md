@@ -198,7 +198,7 @@
 ## ToolsHandler
 
 **Trust Boundary:** CloudflareWorker
-**Role:** Tool registry + execution (75 tools), request-dedup, versioned caching, binding dispatch
+**Role:** Tool registry + execution (80 tools), request-dedup, versioned caching, binding dispatch
 **Data Flows:** DF07, DF08, DF09, DF10, DF11, DF14, DF17, DF24, DF26, DF27
 **Pod Co-location:** N/A
 
@@ -874,8 +874,8 @@
 
 | ID | Category | Threat | Prerequisites | Affected Flow | Mitigation | Status | Change |
 |----|----------|--------|---------------|---------------|------------|--------|--------|
-| T75.T | Tampering | Malicious CT data inflating brand-audit candidate sets | Internal Network | DF22 | crt.sh fallback + candidate validation; bounded result sizes | Mitigated | Existing |
-| T76.D | Denial of Service | CT source outage degrading discovery | Internal Network | DF22 | Direct crt.sh fallback with jittered backoff | Mitigated | Existing |
+| T75.T | Tampering | Malicious CT data inflating brand-audit candidate sets | Internal Network | DF22 | crt.sh fallback + candidate validation; result counts capped and direct fallback bodies rejected above 5 MiB before parsing | Mitigated | Strengthened |
+| T76.D | Denial of Service | CT source outage or oversized response degrading discovery | Internal Network | DF22 | Direct crt.sh fallback with timeout/jittered backoff plus a strict streaming byte ceiling | Mitigated | Strengthened |
 
 #### Tier 3 — Defense-in-Depth
 

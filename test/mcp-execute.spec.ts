@@ -621,7 +621,7 @@ describe('executeMcpRequest — session validation', () => {
 		expect(result.httpStatus).not.toBe(400);
 	});
 
-	it('skips session validation for notifications/* methods', async () => {
+	it('requires the assigned session for notifications/* methods', async () => {
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const result = await executeMcpRequest(
 			baseOptions({
@@ -631,8 +631,14 @@ describe('executeMcpRequest — session validation', () => {
 			}),
 		);
 
-		// Notifications (no id) return kind='notification' without hitting session validation
-		expect(result.kind).toBe('notification');
+		expect(result.kind).toBe('response');
+		if (result.kind !== 'response') throw new Error('expected response');
+		expect(result.httpStatus).toBe(400);
+		expect(result.payload).toMatchObject({
+			jsonrpc: '2.0',
+			id: null,
+			error: { code: -32600 },
+		});
 	});
 });
 

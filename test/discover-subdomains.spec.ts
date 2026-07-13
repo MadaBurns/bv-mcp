@@ -39,7 +39,7 @@ function mockCrtSh(response: unknown, ok = true) {
 	globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 		const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
 		if (urlStr.includes('crt.sh')) {
-			return { ok, status: ok ? 200 : 500, json: () => Promise.resolve(response) };
+			return Response.json(response, { status: ok ? 200 : 500 });
 		}
 		// Fallback for any other requests
 		return { ok: true, status: 200, json: () => Promise.resolve({ Status: 0, Answer: [] }) };
@@ -222,6 +222,22 @@ describe('discoverSubdomains', () => {
 
 		expect(result.totalSubdomains).toBe(0);
 		expect(result.subdomains).toHaveLength(0);
+		expect(result.sourceUnavailable).toBe(true);
+	});
+
+	it('rejects an oversized crt.sh response before parsing it', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response('[]', {
+				status: 200,
+				headers: {
+					'Content-Type': 'application/json',
+					'Content-Length': String(6 * 1024 * 1024),
+				},
+			}),
+		);
+
+		const result = await run();
+		expect(result.totalSubdomains).toBe(0);
 		expect(result.sourceUnavailable).toBe(true);
 	});
 

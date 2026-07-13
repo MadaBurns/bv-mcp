@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { BrandAuditCscSchema, CSC_VIEW_VERSION } from '../src/schemas/brand-audit-csc';
+import { buildCscComplement } from '../src/lib/brand-audit-csc-builder';
 
 function validFixture() {
 	return {
@@ -44,6 +45,27 @@ function validFixture() {
 }
 
 describe('BrandAuditCscSchema', () => {
+	it('builds report identifiers with cryptographic randomness', async () => {
+		const insecureRandom = vi.spyOn(Math, 'random').mockImplementation(() => {
+			throw new Error('Math.random must not mint report identifiers');
+		});
+		try {
+			const report = await buildCscComplement({
+				seedDomain: 'example.com',
+				primaryRegistrar: '',
+				primaryRegistrarSource: 'unknown',
+				primaryRegistrarIanaId: null,
+				classifiedFindings: [],
+				now: () => 1_700_000_000_000,
+			});
+
+			expect(report.reportId).toMatch(/^csc_rpt_[a-z0-9]+$/);
+			expect(report.reportId.length).toBeGreaterThanOrEqual(32);
+		} finally {
+			insecureRandom.mockRestore();
+		}
+	});
+
 	it('exports CSC_VIEW_VERSION === 1', () => {
 		expect(CSC_VIEW_VERSION).toBe(1);
 	});
