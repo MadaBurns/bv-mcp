@@ -9,7 +9,7 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { disposeUnreadResponseBody } from '../lib/response-body';
+import { disposeUnreadResponseBody, readBoundedOrNull } from '../lib/response-body';
 
 /**
  * Synchronous handler budget for `discover_subdomains` (ms).
@@ -31,6 +31,9 @@ export const DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS = 24_000;
 
 /** Timeout for the crt.sh API request (ms). */
 const CRT_SH_TIMEOUT_MS = 10_000;
+
+/** Maximum bytes accepted from the public crt.sh fallback. */
+const CRT_SH_MAX_BODY_BYTES = 5 * 1024 * 1024;
 
 /** Maximum subdomains to return (CT logs can contain thousands). */
 const MAX_SUBDOMAINS = 100;
@@ -234,7 +237,15 @@ export async function discoverSubdomains(
 			return emptyResult(domain, true);
 		}
 
-		entries = (await response.json()) as CrtShEntry[];
+		const declaredLength = Number(response.headers.get('content-length'));
+		if (Number.isFinite(declaredLength) && declaredLength > CRT_SH_MAX_BODY_BYTES) {
+			await disposeUnreadResponseBody(response);
+			return emptyResult(domain, true);
+		}
+
+		const rawBody = await readBoundedOrNull(response.body, CRT_SH_MAX_BODY_BYTES);
+		if (rawBody === null) return emptyResult(domain, true);
+		entries = JSON.parse(rawBody) as CrtShEntry[];
 	} catch {
 		return emptyResult(domain, true);
 	}

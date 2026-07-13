@@ -38,8 +38,8 @@ describe('readBoundedText', () => {
 		}
 		const result = await readBoundedText(streamFrom(chunks), 600);
 		const resultBytes = new TextEncoder().encode(result).byteLength;
-		// Bounded by BYTES: must not exceed cap + at most one partial chunk (128 bytes here).
-		expect(resultBytes).toBeLessThanOrEqual(600 + 128);
+		// Bounded by BYTES: the decoded prefix must never exceed the configured cap.
+		expect(resultBytes).toBeLessThanOrEqual(600);
 		// And crucially it must NOT have read the whole 3000-byte body.
 		expect(resultBytes).toBeLessThan(3000);
 		// Sanity: result.length (UTF-16 units) is far below what a length-based bound would allow.
@@ -55,8 +55,7 @@ describe('readBoundedText', () => {
 		const result = await readBoundedText(streamFrom(chunks), 100);
 		const resultBytes = new TextEncoder().encode(result).byteLength;
 		expect(resultBytes).toBeGreaterThan(0);
-		// cap (100) + at most one partial chunk (50)
-		expect(resultBytes).toBeLessThanOrEqual(150);
+		expect(resultBytes).toBeLessThanOrEqual(100);
 		expect(resultBytes).toBeLessThan(10000);
 	});
 
@@ -83,6 +82,12 @@ describe('readBoundedText', () => {
 });
 
 describe('readBoundedOrNull', () => {
+	it('accepts a body exactly equal to the byte cap', async () => {
+		const { readBoundedOrNull } = await import('../src/lib/response-body');
+		const result = await readBoundedOrNull(streamFrom([new TextEncoder().encode('12345')]), 5);
+		expect(result).toBe('12345');
+	});
+
 	it('returns null on overflow (preserves check-agent-discovery semantics)', async () => {
 		const { readBoundedOrNull } = await import('../src/lib/response-body');
 		const full = new TextEncoder().encode('a'.repeat(10000));
@@ -104,5 +109,19 @@ describe('readBoundedOrNull', () => {
 	it('returns null (never throws) when the reader rejects', async () => {
 		const { readBoundedOrNull } = await import('../src/lib/response-body');
 		await expect(readBoundedOrNull(rejectingStream(), 1024)).resolves.toBeNull();
+	});
+});
+
+describe('WAF response body hardening', () => {
+	it('reads only a bounded prefix from target-controlled HTML', async () => {
+		const { readWafResponseBody } = await import('../src/tools/check-http-security');
+		const response = new Response(`<title>Just a moment...</title>${'x'.repeat(100_000)}`);
+		Object.defineProperty(response, 'text', {
+			value: () => Promise.reject(new Error('unbounded response.text() must not be used')),
+		});
+
+		const body = await readWafResponseBody(response);
+		expect(body).toContain('Just a moment');
+		expect(new TextEncoder().encode(body).byteLength).toBeLessThanOrEqual(64 * 1024);
 	});
 });

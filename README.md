@@ -59,6 +59,8 @@ Transport support:
 - `Native stdio`: `blackveil-dns-mcp` CLI from the `blackveil-dns` npm package
 - `Legacy HTTP+SSE`: `GET /mcp/sse` bootstrap stream plus `POST /mcp/messages?sessionId=...`
 
+For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `initialize` and send it on every subsequent request, including notifications. Send the negotiated version in `MCP-Protocol-Version`; unsupported values are rejected with HTTP `400`, while expired or terminated sessions return `404` and require a fresh `initialize`.
+
 ---
 
 ## What you get
@@ -215,6 +217,9 @@ SSOT guardrails are enforced by focused audit tests:
 - **Infra Probe Binding**: Optional `BV_INFRA_PROBE` service binding supplies raw authoritative DNS, root-server, BGP/RPKI, and vantage evidence for the authoritative DNS infrastructure profile
 - **WASM Policy Engine**: High-performance permission and token checks via `bv-wasm-core`
 - **Reliable Sessions**: Hardened tombstone logic prevents race-condition revival of terminated sessions
+- **Protocol Enforcement**: Unsupported MCP versions fail closed; notifications and SSE connections use the same session-validity rules as other post-initialize requests
+- **Bounded Egress**: Public CT and target-HTML responses are streamed under byte ceilings before parsing or fingerprinting
+- **Cryptographic Identifiers**: Session and CSC report identifiers use Web Crypto randomness
 - **Adaptive Scoring**: Durable Object telemetry adjusts weights based on real-world distributions
 - **Client Awareness**: Automatic response formatting (`compact` vs `full`) based on client `User-Agent`
 

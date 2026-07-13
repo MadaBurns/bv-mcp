@@ -96,7 +96,7 @@ flowchart LR
 | TierAuthResolver | Process | SE.P.TMCore.WebSvc | Caller tier resolution & authentication (dual dev keys, LKG cache, JWT keyHash) | CloudflareWorker | Modified |
 | OAuthIssuer | Process | SE.P.TMCore.WebSvc | OAuth 2.1 issuer (JWT, PKCE, entitlements, `ver` revocation, TTL clamp) | CloudflareWorker | Modified |
 | McpExecutor | Process | SE.P.TMCore.WebSvc | MCP pipeline: session, rate/quota, paid/auth tool gates, dispatch | CloudflareWorker | Modified |
-| ToolsHandler | Process | SE.P.TMCore.WebSvc | Tool registry + execution (75 tools, request-dedup, versioned cache) | CloudflareWorker | Modified |
+| ToolsHandler | Process | SE.P.TMCore.WebSvc | Tool registry + execution (80 tools, request-dedup, versioned cache) | CloudflareWorker | Modified |
 | M365Proxy | Process | SE.P.TMCore.WebSvc | Identity-secops proxy to bv-web internal M365 endpoints | CloudflareWorker | New |
 | DomainSanitizer | Process | SE.P.TMCore.WebSvc | Domain input validation / SSRF input guard | CloudflareWorker | Modified |
 | SafeFetch | Process | SE.P.TMCore.WebSvc | Egress SSRF guard for attacker-influenced URLs | CloudflareWorker | Unchanged |

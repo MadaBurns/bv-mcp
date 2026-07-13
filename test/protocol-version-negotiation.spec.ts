@@ -181,7 +181,7 @@ describe('initialize protocolVersion negotiation (integration)', () => {
 	});
 });
 
-describe('MCP-Protocol-Version request header (#363 item 4 — never rejects)', () => {
+describe('MCP-Protocol-Version request header', () => {
 	beforeEach(async () => {
 		resetAllRateLimits();
 		resetSessions();
@@ -226,9 +226,9 @@ describe('MCP-Protocol-Version request header (#363 item 4 — never rejects)', 
 		expect(await toolsList(await initSession(), undefined)).toBe(200);
 	});
 
-	it('accepts (does NOT reject) a post-init request with an unsupported / future version header', async () => {
-		expect(await toolsList(await initSession(), '2099-01-01')).toBe(200);
-		expect(await toolsList(await initSession(), 'garbage')).toBe(200);
+	it('rejects a post-init request with an unsupported / invalid version header', async () => {
+		expect(await toolsList(await initSession(), '2099-01-01')).toBe(400);
+		expect(await toolsList(await initSession(), 'garbage')).toBe(400);
 	});
 });
 
