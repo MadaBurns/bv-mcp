@@ -39,14 +39,9 @@ export function negotiateProtocolVersion(requested: unknown): string {
 export type ProtocolVersionHeaderState = 'absent' | 'supported' | 'unsupported';
 
 /**
- * Classify the `MCP-Protocol-Version` request header for OBSERVATION ONLY (#363 item 4).
- *
- * Per MCP 2025-06-18 (Streamable HTTP) a client SHOULD send this header on every
- * post-`initialize` request, and the spec suggests a `400` on an unsupported value.
- * bv-mcp deliberately does **not** reject: most existing clients omit the header
- * or lag the negotiated version, so a hard 400 would break them. The caller logs
- * the classification and never fails the request on its basis — mirroring the
- * lenient posture of `negotiateProtocolVersion` and `validateContentType`.
+ * Classify the `MCP-Protocol-Version` request header. The transport layer accepts
+ * an absent header for backward compatibility and rejects unsupported values with
+ * HTTP 400, as required by MCP Streamable HTTP.
  *
  * `absent` covers a missing, empty, whitespace-only, or non-string header. The
  * value is trimmed before matching so stray header whitespace doesn't misclassify

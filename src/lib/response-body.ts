@@ -39,12 +39,17 @@ async function drainBounded(
 			const { done, value } = await reader.read();
 			if (done) break;
 			if (!value) continue;
-			chunks.push(value);
-			total += value.byteLength;
-			if (total >= maxBytes) {
+			const remaining = Math.max(maxBytes - total, 0);
+			if (value.byteLength > remaining) {
+				if (remaining > 0) {
+					chunks.push(value.slice(0, remaining));
+					total += remaining;
+				}
 				overflowed = true;
 				break;
 			}
+			chunks.push(value);
+			total += value.byteLength;
 		}
 	} finally {
 		// Always release the underlying stream — best-effort, swallow errors.
