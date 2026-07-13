@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.29.10] - 2026-07-13
+
+Patch release: **MCP transport and target-response hardening**.
+
+### Security
+
+- **MCP Streamable HTTP protocol enforcement hardened.** Post-initialization requests carrying an invalid or unsupported `MCP-Protocol-Version` now return HTTP `400` instead of being accepted with an observation-only warning. Notifications are still JSON-RPC fire-and-forget messages, but their HTTP requests must carry the assigned `Mcp-Session-Id`: a missing session returns `400`, and an expired or explicitly terminated session returns `404`. This supersedes the observe-only compatibility posture documented for #367.
+- **Browser MCP preflight coverage completed.** The MCP CORS allow-list now includes `MCP-Protocol-Version` and `Last-Event-ID`, allowing conforming browser clients to send the negotiated version and resume SSE streams without failing preflight.
+- **Target-controlled response bodies are byte-bounded.** Direct crt.sh fallback responses are capped at 5 MiB before JSON parsing, and WAF challenge fingerprinting reads at most 64 KiB of target HTML. The shared response-body reader now enforces an exact byte ceiling without retaining an extra stream chunk; bodies exactly equal to the cap remain valid.
+- **CSC report identifiers now use Web Crypto.** `csc_rpt_*` IDs retain their timestamp prefix but replace `Math.random()` with 128 bits from `crypto.getRandomValues()`.
+
+### Tests
+
+- Added red/green regression coverage for protocol-version rejection, notification session enforcement, MCP CORS headers, cryptographic report IDs, oversized crt.sh responses, strict stream-byte limits, exact-cap acceptance, and bounded WAF body reads.
+
 ## [3.29.9] - 2026-07-11
 
 Patch release: **honest scanner identity + real robots.txt enforcement** across all target-facing checks.

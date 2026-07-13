@@ -35,6 +35,9 @@ For MCP clients, configure this endpoint directly.
   - endpoint: `https://dns-mcp.blackveilsecurity.com/mcp`
   - protocol: JSON-RPC 2.0 over HTTP
   - content type: `application/json` for `POST /mcp`
+  - after `initialize`, send the returned `Mcp-Session-Id` on every `POST`, `GET`, `DELETE`, and notification request
+  - send the negotiated version as `MCP-Protocol-Version`; invalid or unsupported versions return HTTP `400`
+  - when reconnecting a resumable SSE stream, clients may send `Last-Event-ID`
 - `Native stdio`:
   - install/run via the `blackveil-dns` npm package
   - executable: `blackveil-dns-mcp`
@@ -43,6 +46,8 @@ For MCP clients, configure this endpoint directly.
   - message endpoint: `POST https://dns-mcp.blackveilsecurity.com/mcp/messages?sessionId=...`
 
 Modern MCP clients should prefer Streamable HTTP. Use stdio for local-only clients and the legacy HTTP+SSE endpoints only for older clients that have not migrated.
+
+If a request with a session ID returns HTTP `404`, the session has expired or was terminated. Discard that ID and send a new `initialize` request without a session header. A notification is fire-and-forget at the JSON-RPC layer, but it is still an HTTP request and must carry the active session ID.
 
 ## VS Code / GitHub Copilot
 

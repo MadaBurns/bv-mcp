@@ -25,7 +25,9 @@ const KSUID_PREFIX = 'csc_rpt_';
 
 function makeReportId(now: () => number): string {
 	const ts = now().toString(36);
-	const rand = Math.random().toString(36).slice(2, 12);
+	const bytes = new Uint8Array(16);
+	crypto.getRandomValues(bytes);
+	const rand = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 	return `${KSUID_PREFIX}${ts}${rand}`;
 }
 

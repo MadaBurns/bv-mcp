@@ -77,6 +77,27 @@ describe('DNS Security MCP Server', () => {
 		});
 	});
 
+	describe('MCP CORS preflight', () => {
+		it('allows standard Streamable HTTP protocol and resumability headers', async () => {
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'OPTIONS',
+				headers: {
+					Origin: 'http://example.com',
+					'Access-Control-Request-Method': 'POST',
+					'Access-Control-Request-Headers': 'MCP-Protocol-Version, Last-Event-ID',
+				},
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(204);
+			const allowedHeaders = response.headers.get('access-control-allow-headers')?.toLowerCase() ?? '';
+			expect(allowedHeaders).toContain('mcp-protocol-version');
+			expect(allowedHeaders).toContain('last-event-id');
+		});
+	});
+
 	beforeEach(async () => {
 		resetAllRateLimits();
 		resetSessions();
@@ -1683,8 +1704,7 @@ describe('DNS Security MCP Server', () => {
 			expect(followupResponse.status).toBe(200);
 		});
 
-		it('allows notifications/initialized without a valid session', async () => {
-			// Notifications are fire-and-forget per MCP spec — no session required
+		it('rejects notifications/initialized without the assigned session ID', async () => {
 			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
@@ -1696,11 +1716,10 @@ describe('DNS Security MCP Server', () => {
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
 
-			// Notifications return 202 (accepted, no response body)
-			expect(response.status).toBe(202);
+			expect(response.status).toBe(400);
 		});
 
-		it('allows notifications with terminated session ID', async () => {
+		it('rejects notifications with a terminated session ID', async () => {
 			const sessionId = await initSession();
 			await terminateSession(sessionId);
 
@@ -1716,7 +1735,7 @@ describe('DNS Security MCP Server', () => {
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
 
-			expect(response.status).toBe(202);
+			expect(response.status).toBe(404);
 		});
 
 		it('completes full re-initialization after session termination (Claude Desktop flow)', async () => {

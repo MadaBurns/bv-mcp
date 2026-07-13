@@ -424,7 +424,7 @@ for (const path of mcpPaths) {
 				return result === 'allowed' ? origin : '';
 			},
 			allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-			allowHeaders: ['Content-Type', 'Accept', 'Mcp-Session-Id', 'Authorization'],
+			allowHeaders: ['Content-Type', 'Accept', 'Mcp-Session-Id', 'MCP-Protocol-Version', 'Last-Event-ID', 'Authorization'],
 			exposeHeaders: ['Mcp-Session-Id'],
 		}),
 	);
@@ -756,22 +756,24 @@ app.post('/mcp', async (c) => {
 
 	const parsedBodies = parsedRequest.isBatch ? (parsedRequest.body as unknown[]) : [parsedRequest.body as JsonRpcRequest];
 
-	// #363 item 4 — observe (never reject) the MCP-Protocol-Version request header.
-	// Per MCP 2025-06-18 clients SHOULD send it on post-initialize requests; we log an
-	// unsupported value for spec-awareness but deliberately do not 400 (most clients omit
-	// or lag the header — a hard reject would break them). `initialize` is exempt: the
-	// header is legitimately absent before negotiation. Strict rejection, if ever wanted,
-	// is a one-line gate on this classification.
+	// MCP Streamable HTTP requires a 400 for an unsupported protocol-version header.
+	// An absent header remains compatible with older clients and initialize is exempt
+	// because protocol negotiation has not happened yet.
 	const singleMethod = parsedRequest.isBatch ? undefined : (parsedBodies[0] as JsonRpcRequest | undefined)?.method;
 	if (singleMethod !== 'initialize' && classifyProtocolVersionHeader(headersLc['mcp-protocol-version']) === 'unsupported') {
 		logEvent({
 			timestamp: new Date().toISOString(),
 			severity: 'warn',
 			category: 'protocol',
-			result: 'Unsupported MCP-Protocol-Version header (observed, not rejected)',
+			result: 'Unsupported MCP-Protocol-Version header rejected',
 			details: { protocolVersionHeader: headersLc['mcp-protocol-version'], method: singleMethod ?? 'batch' },
 			ipHash,
 		});
+		return sseErrorResponse(
+			jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Unsupported MCP-Protocol-Version header'),
+			400,
+			accept,
+		);
 	}
 
 	if (parsedRequest.isBatch) {

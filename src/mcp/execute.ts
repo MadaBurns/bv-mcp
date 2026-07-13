@@ -1264,7 +1264,9 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		options.isAuthenticated &&
 		(method === 'tools/list' || method === 'resources/list' || method === 'prompts/list' || method === 'prompts/get' || method === 'ping');
 
-	if (options.validateSession && method !== 'initialize' && !method.startsWith('notifications/') && !isSessionlessProtocolMethod) {
+	// Notifications are fire-and-forget at the JSON-RPC layer, but they are still
+	// subsequent HTTP requests and therefore must carry a valid assigned session.
+	if (options.validateSession && method !== 'initialize' && !isSessionlessProtocolMethod) {
 		const sessionError = await validateSessionRequest(
 			options.sessionId,
 			options.sessionStore,
