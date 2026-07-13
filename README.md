@@ -169,7 +169,15 @@ The `bv_load_test` class identifies internal load/chaos/tranco-scan traffic so i
 
 The test suite ensures session stability, authentication precedence, format negotiation, and transport-specific edge cases across Streamable HTTP and Legacy SSE. Without an API key it exercises the public/free-tier path; with a valid key exported as `BV_API_KEY`, it covers Bearer authentication, legacy self-host `?api_key=` compatibility, authenticated SSE bootstrap, and authenticated batch behavior.
 
-Run the chaos tests locally: `python3 scripts/chaos/chaos-test-clients.py`
+Run the client/session chaos suite locally: `python3 scripts/chaos/chaos-test-clients.py`.
+
+Run repeat force-refresh scans to detect production scoring drift:
+
+```bash
+BV_API_KEY=... python3 scripts/chaos/score-stability-test.py --count 20 --rounds 3 --concurrency 5
+```
+
+The stability harness negotiates MCP protocol `2025-06-18`, accepts JSON and Streamable HTTP SSE responses, and exits non-zero on any transport/tool error or score/category drift. Use `--from <json-file>` with a JSON array of domains for a targeted provider-diversity sweep.
 
 SSOT guardrails are enforced by focused audit tests:
 
