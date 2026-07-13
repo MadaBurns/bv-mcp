@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- **Score-stability chaos testing now fails closed and speaks current Streamable HTTP.** The production harness negotiates MCP `2025-06-18`, parses both JSON and SSE tool responses, consumes structured scan results, reports transport/tool failures with useful context, and returns non-zero when any domain errors instead of falsely declaring `0 stable` successful. Explicit domain files are validated and deduplicated without silently falling back to unrelated defaults.
+
+### Tests
+
+- Added regression coverage for JSON/SSE parsing, negotiated request headers, structured scan extraction, malformed-response diagnostics, error exit codes, domain-file validation, deduplication, and exact default-domain counts.
+
 ## [3.29.10] - 2026-07-13
 
 Patch release: **MCP transport and target-response hardening**.

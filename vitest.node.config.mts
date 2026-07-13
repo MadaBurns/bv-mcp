@@ -14,6 +14,7 @@ export default defineConfig({
 			'test/audits/license-headers.audit.test.ts',
 			'test/audits/dependency-license.audit.test.ts',
 			'test/audits/vitest-workerd-stderr-filter.node.test.ts',
+			'test/audits/score-stability-chaos-script.node.test.ts',
 		],
 		environment: 'node',
 		pool: 'forks',
