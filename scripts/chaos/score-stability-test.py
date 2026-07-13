@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE = "https://dns-mcp.blackveilsecurity.com"
-API_KEY = os.getenv("BV_API_KEY")
+API_KEY = os.getenv("BV_API_KEY") or os.getenv("BV_INTERNAL_DEV_KEY")
 
 DEFAULT_DOMAINS = [
     "cloudflare.com", "google.com", "github.com", "microsoft.com",
@@ -30,6 +30,7 @@ DEFAULT_DOMAINS = [
 ]
 
 DOMAINS: list[str] = []
+PROTOCOL_VERSION = "2025-06-18"
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -38,7 +39,7 @@ def curl_json(method, path, body, headers, timeout=30, params=None):
     if params:
         qs = "&".join(f"{k}={v}" for k, v in params.items())
         url = f"{url}?{qs}"
-    cmd = ["curl", "-s", "-w", "\n%{http_code}",
+    cmd = ["curl", "-sS", "-w", "\n%{http_code}",
            "--connect-timeout", "10", "--max-time", str(timeout)]
     if method != "GET":
         cmd += ["-X", method]
@@ -51,16 +52,24 @@ def curl_json(method, path, body, headers, timeout=30, params=None):
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
         output = r.stdout.strip()
         if not output:
-            return 0, ""
+            return 0, r.stderr.strip() or "curl returned no response"
         lines = output.split("\n")
         status = int(lines[-1]) if lines[-1].isdigit() else 0
-        return status, "\n".join(lines[:-1])
+        response_body = "\n".join(lines[:-1])
+        if r.returncode != 0:
+            return 0, r.stderr.strip() or response_body or f"curl exited {r.returncode}"
+        return status, response_body
     except Exception as e:
         return 0, str(e)
 
 
 def make_headers(sid=None):
-    h = ["Content-Type: application/json", "User-Agent: score-stability-test/1.0"]
+    h = [
+        "Content-Type: application/json",
+        "Accept: application/json, text/event-stream",
+        f"MCP-Protocol-Version: {PROTOCOL_VERSION}",
+        "User-Agent: score-stability-test/1.0",
+    ]
     if API_KEY:
         h.append(f"Authorization: Bearer {API_KEY}")
     if sid:
@@ -68,14 +77,50 @@ def make_headers(sid=None):
     return h
 
 
+def parse_mcp_payload(text):
+    """Parse a single JSON-RPC response from JSON or Streamable HTTP SSE."""
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("empty MCP response body")
+
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+
+    # Streamable HTTP may frame a JSON-RPC response as one or more SSE events.
+    # Join multiple data lines as required by the SSE field folding rules and
+    # return the first valid JSON-RPC payload for this single-request harness.
+    for event in re.split(r"\r?\n\r?\n", stripped):
+        data_lines = []
+        for line in event.splitlines():
+            if line == "data":
+                data_lines.append("")
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].lstrip(" "))
+        if not data_lines:
+            continue
+        data = "\n".join(data_lines)
+        if data == "[DONE]":
+            continue
+        try:
+            return json.loads(data)
+        except json.JSONDecodeError:
+            continue
+
+    preview = stripped[:120].replace("\n", "\\n")
+    raise ValueError(f"invalid MCP response body: {preview}")
+
+
 def create_session():
     body = {"jsonrpc": "2.0", "method": "initialize", "id": 1,
-            "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+            "params": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
                        "clientInfo": {"name": "score-stability-test", "version": "1.0"}}}
-    cmd = ["curl", "-s", "-D-", "-w", "\n%{http_code}",
+    cmd = ["curl", "-sS", "-D-", "-w", "\n%{http_code}",
            "--connect-timeout", "10", "--max-time", "15",
            "-X", "POST", f"{BASE}/mcp",
            "-H", "Content-Type: application/json",
+           "-H", "Accept: application/json, text/event-stream",
            "-H", "User-Agent: score-stability-test/1.0"]
     if API_KEY:
         cmd += ["-H", f"Authorization: Bearer {API_KEY}"]
@@ -104,29 +149,53 @@ def scan_domain(sid, domain):
                        "arguments": {"domain": domain, "force_refresh": True, "format": "compact"}}}
     status, text = curl_json("POST", "/mcp", body, make_headers(sid), timeout=30)
     if status != 200:
-        return domain, None, None, {}, 0, f"HTTP {status}"
+        detail = text[:160].replace("\n", " ") if text else "no response body"
+        return domain, None, None, {}, 0, f"HTTP {status}: {detail}"
 
     try:
-        d = json.loads(text)
+        d = parse_mcp_payload(text)
         if "error" in d:
             msg = d["error"].get("message", "unknown")
             return domain, None, None, {}, 0, msg
 
-        content = d.get("result", {}).get("content", [])
+        result = d.get("result")
+        if not isinstance(result, dict):
+            return domain, None, None, {}, 0, "MCP response missing result object"
+
+        content = result.get("content", [])
         full_text = "\n".join(c.get("text", "") for c in content)
+        if result.get("isError"):
+            return domain, None, None, {}, 0, full_text[:240] or "tool returned isError"
+
+        structured = result.get("structuredContent", {})
+        if not isinstance(structured, dict):
+            structured = {}
 
         # Extract score and grade
         m = re.search(r"Overall Score:\s*(\d+)/100\s*\(([A-F][+]?)\)", full_text)
-        score = int(m.group(1)) if m else None
-        grade = m.group(2) if m else None
+        structured_score = structured.get("score")
+        score = structured_score if isinstance(structured_score, (int, float)) else (int(m.group(1)) if m else None)
+        structured_grade = structured.get("grade")
+        grade = structured_grade if isinstance(structured_grade, str) else (m.group(2) if m else None)
+
+        if score is None or grade is None:
+            return domain, None, None, {}, 0, "scan result missing score or grade"
 
         # Extract category scores
-        cats = {}
-        for cm in re.finditer(r"(?:✓|✗|⚠)\s+(\w+)\s+(\d+)/100", full_text):
-            cats[cm.group(1)] = int(cm.group(2))
+        structured_categories = structured.get("categoryScores")
+        if isinstance(structured_categories, dict):
+            cats = structured_categories
+        else:
+            cats = {}
+            for cm in re.finditer(r"(?:✓|✗|⚠)\s+(\w+)\s+(\d+)/100", full_text):
+                cats[cm.group(1)] = int(cm.group(2))
 
         # Count findings
-        findings = len(re.findall(r"\[(HIGH|MEDIUM|LOW|INFO|CRITICAL)\]", full_text))
+        finding_counts = structured.get("findingCounts")
+        if isinstance(finding_counts, dict):
+            findings = sum(value for value in finding_counts.values() if isinstance(value, int))
+        else:
+            findings = len(re.findall(r"\[(HIGH|MEDIUM|LOW|INFO|CRITICAL)\]", full_text))
 
         return domain, score, grade, cats, findings, None
     except Exception as e:
@@ -233,9 +302,15 @@ def compare_multi(rounds):
     print(f"  RESULTS: {stable} stable, {len(drifts)} drifted, {errors} errors")
     print(f"{'='*70}")
 
-    if drifts:
-        print(f"\n  DRIFT DETECTED — {len(drifts)}/{len(DOMAINS)} domain(s) drifted "
-              f"({100*len(drifts)/max(len(DOMAINS),1):.1f}%)")
+    if drifts or errors:
+        reasons = []
+        if drifts:
+            reasons.append(f"{len(drifts)}/{len(DOMAINS)} domain(s) drifted")
+        if errors:
+            reasons.append(f"{errors}/{len(DOMAINS)} domain(s) errored")
+        print(f"\n  FAILED — {'; '.join(reasons)}")
+        if drifts:
+            print(f"  DRIFT RATE: {100*len(drifts)/max(len(DOMAINS),1):.1f}%")
         return 1
     else:
         print(f"\n  STABLE — all {stable} domains scored identically across all {len(rounds)} rounds")
@@ -248,18 +323,30 @@ def load_domains(from_file, count):
         try:
             with open(from_file) as f:
                 data = json.load(f)
-            if isinstance(data, list) and data and isinstance(data[0], dict):
-                return [d['domain'] for d in data[:count] if 'domain' in d]
-            elif isinstance(data, list):
-                return data[:count]
-        except Exception as e:
-            print(f"  WARN: failed to load {from_file}: {e}", file=sys.stderr)
+        except (OSError, json.JSONDecodeError) as e:
+            raise ValueError(f"could not load domain file {from_file}: {e}") from e
+
+        if not isinstance(data, list):
+            raise ValueError("domain file must be a JSON array")
+
+        domains = []
+        for index, item in enumerate(data):
+            domain = item.get("domain") if isinstance(item, dict) else item
+            if not isinstance(domain, str) or not domain.strip():
+                raise ValueError(f"domain file entry {index + 1} must be a non-empty domain string")
+            normalized = domain.strip().lower()
+            if normalized not in domains:
+                domains.append(normalized)
+
+        if not domains:
+            raise ValueError("domain file must contain at least one domain")
+        return domains[:count]
 
     if count <= len(DEFAULT_DOMAINS):
         return DEFAULT_DOMAINS[:count]
 
     # Extend default list by cycling if count > 20 and no file provided
-    return DEFAULT_DOMAINS * (count // len(DEFAULT_DOMAINS) + 1)
+    return (DEFAULT_DOMAINS * (count // len(DEFAULT_DOMAINS) + 1))[:count]
 
 
 def main():
@@ -270,11 +357,21 @@ def main():
     parser.add_argument('--from', dest='from_file', default=None, help='Load domains from JSON file')
     args = parser.parse_args()
 
+    if args.count < 1:
+        parser.error("--count must be at least 1")
+    if args.rounds < 2:
+        parser.error("--rounds must be at least 2 to measure stability")
+    if args.concurrency < 1:
+        parser.error("--concurrency must be at least 1")
+
     global DOMAINS
-    DOMAINS = load_domains(args.from_file, args.count)
+    try:
+        DOMAINS = load_domains(args.from_file, args.count)
+    except ValueError as error:
+        parser.error(str(error))
 
     if len(DOMAINS) < args.count:
-        print(f"  WARN: requested {args.count} domains, only loaded {len(DOMAINS)}", file=sys.stderr)
+        parser.error(f"requested {args.count} domains, but only {len(DOMAINS)} unique domains were loaded")
 
     print("="*70)
     print(f"  Score Stability Chaos Test — {len(DOMAINS)} domains x {args.rounds} rounds")
