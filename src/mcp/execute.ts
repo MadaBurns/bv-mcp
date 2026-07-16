@@ -24,7 +24,7 @@ import {
 	isGatedPaidOnlyTool,
 	isAuthRequiredTool,
 	isInternalOnlyTool,
-	UPGRADE_URL,
+	buildUpgradeData,
 } from '../lib/config';
 import { jsonRpcSuccess } from '../lib/json-rpc';
 import { mcpError } from '../handlers/tool-formatters';
@@ -757,13 +757,20 @@ function buildGatedToolResponse(
 	if (accessLogInput) {
 		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 	}
+	// Price-free human message + a structured `data.upgrade` affordance carrying the
+	// channel (self_serve vs vetted sales) and its URL. Enumerating recon/OSINT tools
+	// route to SALES so a paid plan alone never silently unlocks the enumeration
+	// surface; a small curated set (SELF_SERVE_UPGRADE_TOOLS) routes to self-serve.
+	// Keeping price/URL out of the prose and in `data` lets the copy stay stable while
+	// the operator owns the destination URLs (PUBLIC-SURFACE).
+	const upgradeData = buildUpgradeData(toolName);
+	const message =
+		upgradeData.upgrade.channel === 'self_serve'
+			? `Upgrade required: ${toolName} requires a paid plan.`
+			: `Upgrade required: ${toolName} is available on a vetted plan — contact us to enable it.`;
 	return {
 		kind: 'response',
-		payload: jsonRpcError(
-			id,
-			JSON_RPC_ERRORS.UPGRADE_REQUIRED,
-			`Upgrade required: ${toolName} requires a paid plan (developer tier or higher). See ${UPGRADE_URL}`,
-		),
+		payload: jsonRpcError(id, JSON_RPC_ERRORS.UPGRADE_REQUIRED, message, upgradeData),
 		headers: {},
 		httpStatus: 403,
 		useErrorEnvelope: true,

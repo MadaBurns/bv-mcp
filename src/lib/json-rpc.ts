@@ -27,12 +27,19 @@ export const JSON_RPC_ERRORS = {
 	UPGRADE_REQUIRED: -32003,
 } as const;
 
-/** Build a JSON-RPC 2.0 error response object */
-export function jsonRpcError(id: string | number | null | undefined, code: number, message: string) {
+/**
+ * Build a JSON-RPC 2.0 error response object.
+ *
+ * `data` is the spec-optional error `data` member — attached only when provided
+ * so the byte shape of every existing call site is unchanged (no `data` key
+ * emitted). Used to carry the structured upgrade affordance on paywall (403)
+ * responses (see `buildUpgradeData` in `lib/config.ts`).
+ */
+export function jsonRpcError(id: string | number | null | undefined, code: number, message: string, data?: unknown) {
 	return {
 		jsonrpc: '2.0' as const,
 		id: id ?? null,
-		error: { code, message },
+		error: data === undefined ? { code, message } : { code, message, data },
 	};
 }
 
