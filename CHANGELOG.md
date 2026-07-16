@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+
+- **Paywall (HTTP 403) responses now carry a structured `error.data.upgrade` affordance** instead of a hardcoded pricing URL in prose. The gated set is partitioned by upgrade **channel**: a small curated self-serve set (`batch_scan`, `compare_domains`) routes to self-serve checkout (`/pricing`); every enumerating recon/OSINT/brand-discovery tool routes to a vetted **sales** channel (`/contact`) — money alone never unlocks the enumeration surface. `resolveUpgradeChannel` **default-sales**, so a newly-added gated tool can never silently become self-serve-unlockable; `ENUMERABLE_RECON_UPGRADE_TOOLS` is derived (`gated − self_serve`) so there is no second list to drift. The human message is now price-free. Pinned by the new `upgrade-channel-ssot` audit (partition + disjointness + union + enumerator name-pattern tripwire). `jsonRpcError` gained an optional spec-compliant `data` member (omitted when absent — existing call sites byte-identical).
+- **Free-tier volume-limit (HTTP 429) responses now carry the same `error.data.upgrade` affordance** on the personal daily ceilings a paid upgrade removes — per-IP daily, per-tool daily, and the distinct-domain cap — always the **self-serve** channel (`isVolume429`). The human prose is unchanged (additive machine field only); the abuse/capacity limits (per-minute, `force_refresh` sub-limit, global daily capacity) and the authenticated per-tier daily (developer→enterprise is sales-led) deliberately do **not** carry a buy affordance.
+
 ## [3.30.0] - 2026-07-16
 
 Minor release: **brand-audit PDF delivery finally works + Cloudflare KV TTL correctness sweep** (findings from a full Cloudflare-docs SDK review).

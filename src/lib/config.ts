@@ -497,6 +497,80 @@ export function isAgentAllowedTool(toolName: string): boolean {
 export const UPGRADE_URL = 'https://blackveilsecurity.com/pricing';
 
 /**
+ * Self-serve checkout URL — the upgrade destination for tools a free caller can
+ * plausibly convert on directly (bounded-scope, non-enumerating). Defaults to the
+ * pricing/checkout page. PUBLIC-SURFACE: operator-owned copy.
+ */
+export const UPGRADE_SELF_SERVE_URL = UPGRADE_URL;
+
+/**
+ * Sales/contact URL — the upgrade destination for enumerating recon/OSINT tools
+ * that we do NOT want a self-serve free→paid flow to unlock without a vetted
+ * conversation (abuse surface). PUBLIC-SURFACE: operator-owned copy.
+ */
+export const UPGRADE_SALES_URL = 'https://blackveilsecurity.com/contact';
+
+/**
+ * Exit-door channel partition of {@link GATED_PAID_ONLY_TOOLS}.
+ *
+ * `SELF_SERVE_UPGRADE_TOOLS` — the (small, curated) subset a free caller may be
+ * routed to a self-serve checkout for. Everything else in the gated set is an
+ * enumerating recon/OSINT/brand-discovery tool whose upgrade path must go through
+ * sales (vetting), NOT a one-click self-serve unlock. This is the "enumerable
+ * access is never gated by plan tier alone" invariant expressed at the upgrade
+ * boundary: money alone does not open the enumeration surface.
+ *
+ * `ENUMERABLE_RECON_UPGRADE_TOOLS` is DERIVED (gated − self-serve) so the two sets
+ * are a guaranteed partition of the gated set — no hand-maintained second list to
+ * drift. The `upgrade-channel-ssot` audit pins the partition + a name-pattern
+ * tripwire that blocks an enumerator from silently joining the self-serve set.
+ */
+export const SELF_SERVE_UPGRADE_TOOLS: ReadonlySet<string> = new Set<string>(['batch_scan', 'compare_domains']);
+
+/** Derived: the gated tools whose upgrade path routes to SALES (all non-self-serve gated tools). */
+export const ENUMERABLE_RECON_UPGRADE_TOOLS: ReadonlySet<string> = new Set<string>(
+	[...GATED_PAID_ONLY_TOOLS].filter((tool) => !SELF_SERVE_UPGRADE_TOOLS.has(tool)),
+);
+
+/** Upgrade channel for a paywalled response: self-serve checkout vs vetted sales. */
+export type UpgradeChannel = 'self_serve' | 'sales';
+
+/**
+ * Resolve the upgrade channel for a paywalled tool.
+ *
+ * DEFAULT-SALES: an unknown/new gated tool routes to sales (the safe default —
+ * we never auto-open a new enumeration surface to self-serve). A tool is
+ * self-serve ONLY when it is explicitly in {@link SELF_SERVE_UPGRADE_TOOLS}, OR
+ * when the block is a pure volume limit (`isVolume429` — the caller exhausted a
+ * free daily quota on a tool they CAN already reach, so self-serve is correct).
+ */
+export function resolveUpgradeChannel(toolName: string, isVolume429 = false): UpgradeChannel {
+	if (isVolume429 || SELF_SERVE_UPGRADE_TOOLS.has(toolName)) return 'self_serve';
+	return 'sales';
+}
+
+/** Structured upgrade affordance attached to a paywalled JSON-RPC error's `data`. */
+export interface UpgradeData {
+	channel: UpgradeChannel;
+	url: string;
+	tool: string;
+	tier_required: 'developer';
+}
+
+/** Build the `data.upgrade` envelope for a paywalled (403) response. */
+export function buildUpgradeData(toolName: string, isVolume429 = false): { upgrade: UpgradeData } {
+	const channel = resolveUpgradeChannel(toolName, isVolume429);
+	return {
+		upgrade: {
+			channel,
+			url: channel === 'self_serve' ? UPGRADE_SELF_SERVE_URL : UPGRADE_SALES_URL,
+			tool: toolName,
+			tier_required: 'developer',
+		},
+	};
+}
+
+/**
  * Per-IP daily cap on the number of DISTINCT domains an unauthenticated caller
  * may scan (across domain-bearing tools). Speed-bump against mass/3rd-party
  * scanning of the still-free hygiene tools. Best-effort (KV, fail-open).

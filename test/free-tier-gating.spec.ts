@@ -58,9 +58,18 @@ describe('executeMcpRequest — paid-gated tool enforcement', () => {
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
 		expect(result.httpStatus).toBe(403);
-		const payload = result.payload as { error: { code: number; message: string } };
+		const payload = result.payload as {
+			error: { code: number; message: string; data?: { upgrade?: { channel: string; url: string; tool: string; tier_required: string } } };
+		};
 		expect(payload.error.code).toBe(-32003);
-		expect(payload.error.message).toMatch(/paid plan/i);
+		expect(payload.error.message).toMatch(/upgrade required/i);
+		// discover_subdomains enumerates → sales channel (never a self-serve unlock)
+		expect(payload.error.data?.upgrade).toMatchObject({
+			channel: 'sales',
+			url: 'https://blackveilsecurity.com/contact',
+			tool: 'discover_subdomains',
+			tier_required: 'developer',
+		});
 		expect(result.useErrorEnvelope).toBe(true);
 	});
 
