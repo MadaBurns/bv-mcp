@@ -570,6 +570,62 @@ export function buildUpgradeData(toolName: string, isVolume429 = false): { upgra
 	};
 }
 
+// ---------------------------------------------------------------------------
+// Contract-flag gate (D2 — INERT scaffold; default OFF)
+// ---------------------------------------------------------------------------
+//
+// The enumeration/recon surface must never be unlocked by a paid TIER alone —
+// "money alone never opens the enumeration surface" (see the upgrade-channel
+// partition above). Today a `developer` claim unlocks the WHOLE gated set, which
+// at a $49 self-serve price would sell 500/day of `discover_subdomains` +
+// `map_supply_chain` for one cheap seat (the canonical hole). The carve-out
+// (D2): the ENUMERABLE_RECON tools move behind an explicit per-contract
+// entitlement — a `contractFlag` JWT claim — NOT granted by any self-serve plan.
+//
+// This gate is the bv-mcp half. It is INERT until `ENFORCE_CONTRACT_FLAG_GATE`
+// is set true AND bv-web-prod is emitting the `contractFlag` claim (the D2
+// sequence: D1 exit-door → carve-out gate → flip Stripe price). Default OFF means
+// a true no-op — a `developer` caller keeps unlocking the gated set exactly as
+// today until the operator activates it together with the bv-web-prod carve-out.
+
+/** Tools that require an explicit contract-flag entitlement once the gate is ON (= the enumerable-recon set). */
+export const CONTRACT_FLAGGED_TOOLS: ReadonlySet<string> = ENUMERABLE_RECON_UPGRADE_TOOLS;
+
+/** True when `toolName` needs a contract-flag claim (gate-independent membership test). */
+export function isContractFlaggedTool(toolName: string): boolean {
+	return CONTRACT_FLAGGED_TOOLS.has(toolName);
+}
+
+/**
+ * Tiers that bypass the contract-flag gate. ONLY `owner` (the operator's own
+ * credential) — for every other tier the flag IS the enumeration entitlement,
+ * granted per-contract by bv-web-prod, never implied by the tier. (Reconcile this
+ * with bv-web-prod's claim emission when activating: if paid enterprise/partner
+ * contracts are meant to carry enumeration unconditionally, they must set
+ * `contractFlag`, not be bypassed here.)
+ */
+export const CONTRACT_FLAG_BYPASS_TIERS: ReadonlySet<string> = new Set<string>(['owner']);
+
+/** Resolve whether the contract-flag gate is active from the `ENFORCE_CONTRACT_FLAG_GATE` env var (default OFF). */
+export function isContractFlagGateEnabled(envValue: string | undefined): boolean {
+	return envValue === 'true';
+}
+
+/**
+ * Pure decision: should this authenticated call be blocked for lacking a
+ * contract-flag entitlement? Blocks iff the gate is ON, the tool is
+ * contract-flagged, the caller's tier does not bypass, and no contract-flag claim
+ * is present. Off/bypass/flagged-caller/non-flagged-tool all fall through to
+ * allow — so with the gate OFF this is always `false` (no behavior change).
+ */
+export function contractFlagBlocks(args: { gateEnabled: boolean; tier: string; tool: string; hasContractFlag: boolean }): boolean {
+	const { gateEnabled, tier, tool, hasContractFlag } = args;
+	if (!gateEnabled) return false;
+	if (hasContractFlag) return false;
+	if (CONTRACT_FLAG_BYPASS_TIERS.has(tier)) return false;
+	return isContractFlaggedTool(tool);
+}
+
 /**
  * Per-IP daily cap on the number of DISTINCT domains an unauthenticated caller
  * may scan (across domain-bearing tools). Speed-bump against mass/3rd-party

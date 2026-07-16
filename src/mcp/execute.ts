@@ -25,6 +25,7 @@ import {
 	isAuthRequiredTool,
 	isInternalOnlyTool,
 	buildUpgradeData,
+	contractFlagBlocks,
 } from '../lib/config';
 import { jsonRpcSuccess } from '../lib/json-rpc';
 import { mcpError } from '../handlers/tool-formatters';
@@ -75,6 +76,12 @@ export interface ExecuteMcpRequestOptions {
 	ip: string;
 	isAuthenticated: boolean;
 	tierAuthResult?: import('../lib/tier-auth').TierAuthResult;
+	/**
+	 * D2 contract-flag gate switch, sourced from `env.ENFORCE_CONTRACT_FLAG_GATE`
+	 * via `isContractFlagGateEnabled`. Default/undefined = OFF (no behavior change);
+	 * activate only together with the bv-web-prod developer-claim carve-out.
+	 */
+	contractFlagGateEnabled?: boolean;
 	userAgent?: string;
 	sessionId?: string;
 	validateSession: boolean;
@@ -1213,6 +1220,23 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		const dailyLimit = TIER_TOOL_DAILY_LIMITS[tier]?.[toolName] ?? TIER_DAILY_LIMITS[tier];
 
 		if (dailyLimit === 0 && isGatedPaidOnlyTool(toolName)) {
+			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
+		}
+
+		// D2 contract-flag gate (INERT unless ENFORCE_CONTRACT_FLAG_GATE=true). Catches
+		// the caller the tier check above lets through: a PAID tier (dailyLimit != 0,
+		// e.g. developer) hitting an enumeration/recon tool WITHOUT the per-contract
+		// flag → same sales-channel 403 as an unpaid caller, so a cheap paid seat can't
+		// buy the enumeration corpus. `owner` bypasses; the flag is the entitlement for
+		// everyone else. Default OFF → contractFlagBlocks() returns false → no-op.
+		if (
+			contractFlagBlocks({
+				gateEnabled: options.contractFlagGateEnabled === true,
+				tier,
+				tool: toolName,
+				hasContractFlag: options.tierAuthResult.contractFlag === true,
+			})
+		) {
 			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
 		}
 

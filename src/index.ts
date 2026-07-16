@@ -44,6 +44,7 @@ import {
 	FREE_TOOL_DAILY_LIMITS,
 	MAX_REQUEST_BODY_BYTES,
 	isValidOAuthSigningSecret,
+	isContractFlagGateEnabled,
 	parseCacheTtl,
 	parseGlobalDailyLimit,
 	parsePerCheckTimeout,
@@ -304,6 +305,13 @@ type BvMcpEnv = {
 	TENANT_ROUTING_MODE?: string;
 	/** Optional override of the global unauthenticated daily tools/call cap (clamped [10000, 5000000]). */
 	GLOBAL_DAILY_TOOL_LIMIT?: string;
+	/**
+	 * D2 contract-flag gate switch. `'true'` activates the per-contract enumeration
+	 * entitlement gate (enumeration/recon tools require a `contractFlag` JWT claim,
+	 * not merely a paid tier). Default/unset = OFF. Activate only together with the
+	 * bv-web-prod developer-claim carve-out.
+	 */
+	ENFORCE_CONTRACT_FLAG_GATE?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -821,6 +829,7 @@ app.post('/mcp', async (c) => {
 					quotaCoordinator: c.env.QUOTA_COORDINATOR,
 					quotaShardRouting: resolveQuotaShardRouting(c.env),
 					globalDailyLimit: parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT),
+			contractFlagGateEnabled: isContractFlagGateEnabled(c.env.ENFORCE_CONTRACT_FLAG_GATE),
 					sessionStore: c.env.SESSION_STORE,
 					scanCache: c.env.SCAN_CACHE,
 					providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -923,6 +932,7 @@ app.post('/mcp', async (c) => {
 		quotaCoordinator: c.env.QUOTA_COORDINATOR,
 		quotaShardRouting: resolveQuotaShardRouting(c.env),
 		globalDailyLimit: parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT),
+		contractFlagGateEnabled: isContractFlagGateEnabled(c.env.ENFORCE_CONTRACT_FLAG_GATE),
 		sessionStore: c.env.SESSION_STORE,
 		scanCache: c.env.SCAN_CACHE,
 		providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -1109,6 +1119,7 @@ app.post('/mcp/messages', async (c) => {
 				quotaCoordinator: c.env.QUOTA_COORDINATOR,
 				quotaShardRouting: resolveQuotaShardRouting(c.env),
 				globalDailyLimit: parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT),
+			contractFlagGateEnabled: isContractFlagGateEnabled(c.env.ENFORCE_CONTRACT_FLAG_GATE),
 				sessionStore: c.env.SESSION_STORE,
 				scanCache: c.env.SCAN_CACHE,
 				providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
