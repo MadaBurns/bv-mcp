@@ -6,12 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.30.0] - 2026-07-16
+
+Minor release: **brand-audit PDF delivery finally works + Cloudflare KV TTL correctness sweep** (findings from a full Cloudflare-docs SDK review).
+
+### Added
+
+- **Authenticated PDF download route `GET /reports/:auditId/:target(.pdf)`.** Streams rendered brand-audit PDFs from R2 under the same bearer credential as the MCP tools, owner-scoped via a D1 join (wrong owner or unknown id → indistinguishable 404, mirroring `brand_audit_get_report`'s ID-enumeration defense). Replaces the never-functional signed-URL path shipped in v2.20.0: the Workers R2 binding has no `createSignedUrl` API (presigning requires S3 credentials), so `pdfUrl` had been silently `null` in production and rendered PDFs were unreachable. `brand_audit_get_report` now returns this route as `pdfUrl` (absolute when the public origin is known via the new `publicOrigin` runtime option; relative on the internal path), and existing PDFs in the bucket become retrievable with no backfill.
+
 ### Fixed
 
+- **Sub-60s KV `expirationTtl` values no longer rejected by Cloudflare KV** (KV throws on `expirationTtl` < 60; every affected write failed and was silently swallowed by fail-open error handling):
+  - Per-IP minute/hour rate-limit counters (`rate-limiter.ts`) used remaining-window TTLs as low as 1s — the minute-counter write failed on essentially every call in the KV fallback path behind the QuotaCoordinator DO. Now clamped to the KV minimum (window-numbered keys make the floor inert).
+  - The cross-isolate advisory IP lock used a ~1s TTL, so the lock never persisted — advisory locking was dead code since introduction. Now uses the 60s minimum; the `finally`-block delete remains the real release.
+  - The `runWithCache` stampede sentinel used a 10s TTL, so cross-isolate stampede dedup never worked. Now 60s (explicit deletes remain the cleanup; the TTL is crash-GC only).
+  - The monthly brand-audit quota counter could compute a sub-60s TTL in the final minute of a month.
+  - `cacheSet` now handles sub-60s TTLs centrally: `ttlSeconds <= 0` skips caching entirely (the osint/bucket `*_start` tools pass 0 by design), and 0–59s TTLs (status/findings pollers use 15–30s) are honored in-memory only rather than failing the KV write — clamping them up into KV would serve staler data than the caller asked for.
+- **`brand_audit_get_report` no longer reports `pdfPending: true` for `format=json` audits** — the PDF queue fanout only runs for `markdown`/`both`, so json-format callers were being told to poll for a PDF that would never exist.
 - **Score-stability chaos testing now fails closed and speaks current Streamable HTTP.** The production harness negotiates MCP `2025-06-18`, parses both JSON and SSE tool responses, consumes structured scan results, reports transport/tool failures with useful context, and returns non-zero when any domain errors instead of falsely declaring `0 stable` successful. Explicit domain files are validated and deduplicated without silently falling back to unrelated defaults.
+
+### Removed
+
+- `src/lib/r2-signed-url.ts` and its test — built against the non-existent `R2Bucket.createSignedUrl` API (the test mocked the method into existence).
 
 ### Tests
 
+- New `test/report-download.spec.ts` covering owner scoping, `.pdf`-suffix/case normalization, missing-object and malformed-input 404s, and response headers.
+- Rewrote the KV TTL specs (`rate-limiter-ttl`, `cache`, `rate-limiter`) to assert the 60s clamp instead of codifying the invalid sub-60 values real KV rejects.
 - Added regression coverage for JSON/SSE parsing, negotiated request headers, structured scan extraction, malformed-response diagnostics, error exit codes, domain-file validation, deduplication, and exact default-domain counts.
 
 ## [3.29.10] - 2026-07-13

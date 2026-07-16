@@ -264,8 +264,10 @@ describe('runWithCache — cross-isolate dedup', () => {
 			(c: [string, string, Record<string, unknown>]) => c[0] === 'sentinel:ttl:computing'
 		);
 		expect(sentinelPut).toBeDefined();
-		// Sentinel TTL should be 10 seconds (tightened from 30s)
-		expect(sentinelPut![2]).toEqual({ expirationTtl: 10 });
+		// Sentinel TTL is 60s — Cloudflare KV's minimum expirationTtl (values
+		// below 60 are rejected, which made the previous 10s sentinel a no-op).
+		// Explicit deletes remain the real cleanup; the TTL is crash GC only.
+		expect(sentinelPut![2]).toEqual({ expirationTtl: 60 });
 	});
 
 	it('cleans up sentinel after successful computation', async () => {
@@ -391,14 +393,17 @@ describe('runWithCache sentinel lifecycle', () => {
 		return { kv, writeLog, store };
 	}
 
-	it('sentinel TTL is <= 10 seconds', async () => {
+	it('sentinel TTL is exactly the KV 60s minimum', async () => {
+		// Cloudflare KV rejects expirationTtl < 60, so the sentinel must use
+		// exactly 60 — any lower and the put throws, killing cross-isolate
+		// stampede dedup; any higher needlessly extends the crash-GC window
+		// (explicit deletes remain the real cleanup).
 		const { kv, writeLog } = makeMockKv();
 		const { runWithCache } = await import('../src/lib/cache');
 		await runWithCache('sentinel-ttl-key', async () => ({ ok: true }), kv);
 		const sentinelWrite = writeLog.find((e) => e.op === 'put' && e.key === 'sentinel-ttl-key:computing');
 		expect(sentinelWrite).toBeDefined();
-		expect(sentinelWrite!.ttl).toBeDefined();
-		expect(sentinelWrite!.ttl!).toBeLessThanOrEqual(10);
+		expect(sentinelWrite!.ttl).toBe(60);
 	});
 
 	it('sentinel is deleted in finally even when run() throws', async () => {
