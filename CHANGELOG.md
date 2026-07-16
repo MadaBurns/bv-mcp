@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- **Contract-flag gate scaffold (D2, INERT — default OFF).** Wires the bv-mcp half of the developer-tier carve-out: with `ENFORCE_CONTRACT_FLAG_GATE=true`, enumeration/recon tools (the `CONTRACT_FLAGGED_TOOLS` set = the enumerable-recon partition) require an explicit per-contract `contractFlag` JWT claim, not merely a paid tier — a `developer` caller without the flag gets the same sales-channel 403 as an unpaid caller (`owner` bypasses). Default OFF is a true no-op (proven by test): a `developer` claim keeps unlocking the gated set exactly as today until the operator activates the gate **together with** the bv-web-prod claim-emission carve-out. Pure decision fn `contractFlagBlocks()`; `TierAuthResult.contractFlag` read from the JWT; threaded via `ExecuteMcpRequestOptions.contractFlagGateEnabled` at all 3 execute-path sites. Closes the "$49 buys 500/day of `discover_subdomains`" hole once activated.
+
 ### Changed
 
 - **Paywall (HTTP 403) responses now carry a structured `error.data.upgrade` affordance** instead of a hardcoded pricing URL in prose. The gated set is partitioned by upgrade **channel**: a small curated self-serve set (`batch_scan`, `compare_domains`) routes to self-serve checkout (`/pricing`); every enumerating recon/OSINT/brand-discovery tool routes to a vetted **sales** channel (`/contact`) — money alone never unlocks the enumeration surface. `resolveUpgradeChannel` **default-sales**, so a newly-added gated tool can never silently become self-serve-unlockable; `ENUMERABLE_RECON_UPGRADE_TOOLS` is derived (`gated − self_serve`) so there is no second list to drift. The human message is now price-free. Pinned by the new `upgrade-channel-ssot` audit (partition + disjointness + union + enumerator name-pattern tripwire). `jsonRpcError` gained an optional spec-compliant `data` member (omitted when absent — existing call sites byte-identical).

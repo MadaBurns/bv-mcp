@@ -32,6 +32,12 @@ export interface TierAuthResult {
 	authenticated: boolean;
 	tier?: McpApiKeyTier;
 	keyHash?: string;
+	/**
+	 * Per-contract enumeration entitlement (D2 contract-flag gate). Set only from a
+	 * JWT `contractFlag` claim; absent/false everywhere until bv-web-prod emits it.
+	 * Consumed by `contractFlagBlocks()` — inert until `ENFORCE_CONTRACT_FLAG_GATE`.
+	 */
+	contractFlag?: boolean;
 }
 
 const TIER_KV_CACHE_TTL = 300; // 5 minutes
@@ -149,7 +155,12 @@ export async function resolveTier(
 				const jwtKeyHash = Array.from(await hashTokenRaw(token))
 					.map((b) => b.toString(16).padStart(2, '0'))
 					.join('');
-				return { authenticated: true, tier: resolvedTier, keyHash: jwtKeyHash };
+				// D2 contract-flag entitlement — carried as a boolean JWT claim by
+				// bv-web-prod once the developer-claim carve-out lands. Absent today →
+				// undefined (falsy); the gate stays inert until both the claim and
+				// ENFORCE_CONTRACT_FLAG_GATE are in place.
+				const contractFlag = claims.contractFlag === true;
+				return { authenticated: true, tier: resolvedTier, keyHash: jwtKeyHash, contractFlag };
 			}
 			// JWT verified but payload is not a recognized MCP tier — fall through so static key
 			// path still has a chance for legacy operators with unusual three-segment keys.
