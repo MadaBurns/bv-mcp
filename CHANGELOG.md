@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.31.0] - 2026-07-16
+
+Minor release: **checkout exit-door + INERT enumeration entitlement gate** — the D1/D2 monetization surface from the commercialization review. Paywall (403) and free-tier volume (429) responses now carry a structured `error.data.upgrade` affordance with a self-serve-vs-sales channel partition ("money alone never opens the enumeration surface"); the D2 contract-flag gate ships wired-but-dormant (default OFF).
+
 ### Added
 
 - **Contract-flag gate scaffold (D2, INERT — default OFF).** Wires the bv-mcp half of the developer-tier carve-out: with `ENFORCE_CONTRACT_FLAG_GATE=true`, enumeration/recon tools (the `CONTRACT_FLAGGED_TOOLS` set = the enumerable-recon partition) require an explicit per-contract `contractFlag` JWT claim, not merely a paid tier — a `developer` caller without the flag gets the same sales-channel 403 as an unpaid caller (`owner` bypasses). Default OFF is a true no-op (proven by test): a `developer` claim keeps unlocking the gated set exactly as today until the operator activates the gate **together with** the bv-web-prod claim-emission carve-out. Pure decision fn `contractFlagBlocks()`; `TierAuthResult.contractFlag` read from the JWT; threaded via `ExecuteMcpRequestOptions.contractFlagGateEnabled` at all 3 execute-path sites. Closes the "$49 buys 500/day of `discover_subdomains`" hole once activated.
