@@ -24,7 +24,7 @@ import {
 	isGatedPaidOnlyTool,
 	isAuthRequiredTool,
 	isInternalOnlyTool,
-	UPGRADE_URL,
+	buildUpgradeData,
 } from '../lib/config';
 import { jsonRpcSuccess } from '../lib/json-rpc';
 import { mcpError } from '../handlers/tool-formatters';
@@ -757,13 +757,20 @@ function buildGatedToolResponse(
 	if (accessLogInput) {
 		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 	}
+	// Price-free human message + a structured `data.upgrade` affordance carrying the
+	// channel (self_serve vs vetted sales) and its URL. Enumerating recon/OSINT tools
+	// route to SALES so a paid plan alone never silently unlocks the enumeration
+	// surface; a small curated set (SELF_SERVE_UPGRADE_TOOLS) routes to self-serve.
+	// Keeping price/URL out of the prose and in `data` lets the copy stay stable while
+	// the operator owns the destination URLs (PUBLIC-SURFACE).
+	const upgradeData = buildUpgradeData(toolName);
+	const message =
+		upgradeData.upgrade.channel === 'self_serve'
+			? `Upgrade required: ${toolName} requires a paid plan.`
+			: `Upgrade required: ${toolName} is available on a vetted plan — contact us to enable it.`;
 	return {
 		kind: 'response',
-		payload: jsonRpcError(
-			id,
-			JSON_RPC_ERRORS.UPGRADE_REQUIRED,
-			`Upgrade required: ${toolName} requires a paid plan (developer tier or higher). See ${UPGRADE_URL}`,
-		),
+		payload: jsonRpcError(id, JSON_RPC_ERRORS.UPGRADE_REQUIRED, message, upgradeData),
 		headers: {},
 		httpStatus: 403,
 		useErrorEnvelope: true,
@@ -930,6 +937,10 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 					id,
 					JSON_RPC_ERRORS.RATE_LIMITED,
 					'Rate limit exceeded. Daily request limit reached for this IP. Please try again tomorrow.',
+					// Cross-tool per-IP daily ceiling — a free-tier volume limit an upgrade
+					// raises. Anchored to the free spine (scan_domain); channel is self_serve
+					// regardless of tool (isVolume429). Prose unchanged (no public-surface churn).
+					buildUpgradeData('scan_domain', true),
 				),
 				headers: ipDailyHeaders,
 				httpStatus: 429,
@@ -1072,6 +1083,10 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 						id,
 						JSON_RPC_ERRORS.RATE_LIMITED,
 						`Rate limit exceeded. ${toolName} is limited to ${toolDailyLimit} requests per day for free tier users.`,
+						// Additive self-serve upgrade affordance (prose unchanged): a free caller
+						// who exhausted a per-tool daily allotment converts by upgrading. Volume
+						// ceilings are always self_serve (see resolveUpgradeChannel isVolume429).
+						buildUpgradeData(toolName, true),
 					),
 					headers: rateHeaders,
 					httpStatus: 429,
@@ -1176,6 +1191,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 						id,
 						JSON_RPC_ERRORS.RATE_LIMITED,
 						`Rate limit exceeded. Free tier is limited to ${FREE_DISTINCT_DOMAIN_DAILY_LIMIT} distinct domains per day. Authenticate for a higher limit.`,
+						buildUpgradeData(toolName || 'scan_domain', true),
 					),
 					headers: ddcHeaders,
 					httpStatus: 429,
