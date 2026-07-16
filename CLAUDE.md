@@ -361,7 +361,7 @@ Eight event indexes are emitted (`analytics.ts`): four core — `mcp_request`, `
 - `mcp_request`: method, transport, status, auth-flag, jsonrpc-flag, country, clientType, authTier, sessionHash, keyHash, **ipHash** (blob11; FNV-1a `i_` prefix — lossy, equal IPs hash equally). Doubles: double1=durationMs, **double2=abs(jsonRpcErrorCode)** (0 when no error — codes are negative per spec, stored as magnitude since `sanitizeNumber` clamps <0)
 - `tool_call`: toolName, status, isError, domainFingerprint, country, clientType, authTier, cacheStatus, keyHash, **ipHash** (blob10), **region** (blob13), **city** (blob14), **asn** (blob15) — geo blobs append-only, positions 1–12 unchanged
 - `rate_limit`: limitType, toolName, country, authTier
-- `session`: action, country, clientType, authTier, method, keyHash
+- `session`: action, country, clientType, authTier, method, keyHash, **declaredClient** (blob7, append-only; `initialize` `params.clientInfo.name` normalized, `'unspecified'` when absent — attribution for the unknown-`clientType` connector surge, analytics-only, never auth/tier)
 
 **`mcp_access_log`** (D1 `INTELLIGENCE_DB`) is the faithful per-event store (vs AE's sampled rollups), enriched with geo/ASN/PTR/`key_hash`/`client_type`/colo/session/method/transport/status, gated by `ANALYTICS_PII_LEVEL` (`coarse` default → no city/lat-long/PTR/ciphertext/user_agent). Writes route through the `MCP_ANALYTICS_QUEUE` consumer (PTR reverse-lookup + encrypt-at-rest + batched D1 insert); inline-insert fallback (no PTR) when the queue is unbound. Both honor `ANALYTICS_PII_LEVEL`; fail-open throughout.
 
