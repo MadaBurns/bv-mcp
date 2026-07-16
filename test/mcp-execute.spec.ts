@@ -355,13 +355,22 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
 		expect(result.httpStatus).toBe(429);
-		const payload = result.payload as { error: { code: number; message: string } };
+		const payload = result.payload as {
+			error: { code: number; message: string; data?: { upgrade?: { channel: string; url: string; tier_required: string } } };
+		};
 		expect(payload.error.code).toBe(-32029);
 		expect(payload.error.message).toContain('check_mx_reputation');
 		expect(payload.error.message).toContain('5');
 		expect(result.headers['x-quota-limit']).toBe('5');
 		expect(result.headers['x-quota-remaining']).toBe('0');
 		expect(result.headers['x-quota-tier']).toBe('free');
+		// A free-tier volume ceiling is a conversion moment → additive self-serve upgrade
+		// affordance (prose unchanged), always self_serve channel per isVolume429.
+		expect(payload.error.data?.upgrade).toMatchObject({
+			channel: 'self_serve',
+			url: 'https://blackveilsecurity.com/pricing',
+			tier_required: 'developer',
+		});
 	});
 
 	it('skips per-tool quota check for tools not in FREE_TOOL_DAILY_LIMITS', async () => {

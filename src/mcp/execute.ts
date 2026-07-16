@@ -937,6 +937,10 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 					id,
 					JSON_RPC_ERRORS.RATE_LIMITED,
 					'Rate limit exceeded. Daily request limit reached for this IP. Please try again tomorrow.',
+					// Cross-tool per-IP daily ceiling — a free-tier volume limit an upgrade
+					// raises. Anchored to the free spine (scan_domain); channel is self_serve
+					// regardless of tool (isVolume429). Prose unchanged (no public-surface churn).
+					buildUpgradeData('scan_domain', true),
 				),
 				headers: ipDailyHeaders,
 				httpStatus: 429,
@@ -1079,6 +1083,10 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 						id,
 						JSON_RPC_ERRORS.RATE_LIMITED,
 						`Rate limit exceeded. ${toolName} is limited to ${toolDailyLimit} requests per day for free tier users.`,
+						// Additive self-serve upgrade affordance (prose unchanged): a free caller
+						// who exhausted a per-tool daily allotment converts by upgrading. Volume
+						// ceilings are always self_serve (see resolveUpgradeChannel isVolume429).
+						buildUpgradeData(toolName, true),
 					),
 					headers: rateHeaders,
 					httpStatus: 429,
@@ -1183,6 +1191,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 						id,
 						JSON_RPC_ERRORS.RATE_LIMITED,
 						`Rate limit exceeded. Free tier is limited to ${FREE_DISTINCT_DOMAIN_DAILY_LIMIT} distinct domains per day. Authenticate for a higher limit.`,
+						buildUpgradeData(toolName || 'scan_domain', true),
 					),
 					headers: ddcHeaders,
 					httpStatus: 429,
