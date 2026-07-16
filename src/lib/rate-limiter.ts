@@ -35,7 +35,7 @@ import {
 } from './quota-coordinator';
 import { CircuitBreaker, CircuitBreakerOpen } from './circuit-breaker';
 import { logError } from './log';
-import { IP_LOCK_TTL_MS, IP_LOCK_RETRY_MS, FREE_IP_DAILY_LIMIT } from './config';
+import { IP_LOCK_RETRY_MS, FREE_IP_DAILY_LIMIT } from './config';
 
 export interface RateLimitResult {
 	allowed: boolean;
@@ -64,6 +64,8 @@ const CONTROL_PLANE_MINUTE_LIMIT = 60;
 const CONTROL_PLANE_HOUR_LIMIT = 600;
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
+/** Cloudflare KV rejects `expirationTtl` values below 60 seconds. */
+const KV_MIN_EXPIRATION_TTL_SECONDS = 60;
 const DAY_MS = 86_400_000;
 
 // Best-effort per-IP serialization for KV updates inside a single isolate.
@@ -204,11 +206,14 @@ async function checkScopedRateLimitKV(
 	}
 
 	// Allowed — increment both counters (write in parallel)
-	// Use remaining window time as TTL so keys expire when their window ends
+	// Use remaining window time as TTL so keys expire when their window ends,
+	// clamped to KV's 60s minimum expirationTtl (values below 60 are rejected
+	// by Cloudflare KV, which would fail the put and lose the count). Keys are
+	// window-numbered, so lingering up to 59s past window end is inert.
 	const newMinute = minuteCount + 1;
 	const newHour = hourCount + 1;
-	const minuteTtl = Math.max(1, Math.ceil(((minuteWindow + 1) * MINUTE_MS - now) / 1000));
-	const hourTtl = Math.max(1, Math.ceil(((hourWindow + 1) * HOUR_MS - now) / 1000));
+	const minuteTtl = Math.max(KV_MIN_EXPIRATION_TTL_SECONDS, Math.ceil(((minuteWindow + 1) * MINUTE_MS - now) / 1000));
+	const hourTtl = Math.max(KV_MIN_EXPIRATION_TTL_SECONDS, Math.ceil(((hourWindow + 1) * HOUR_MS - now) / 1000));
 	await Promise.all([
 		kv.put(minuteKey, String(newMinute), { expirationTtl: minuteTtl }),
 		kv.put(hourKey, String(newHour), { expirationTtl: hourTtl }),
@@ -269,7 +274,10 @@ async function withIpKvAdvisoryLock<T>(ip: string, kv: KVNamespace, work: () => 
 	try {
 		const held = await kv.get(advisoryKey);
 		if (held) await new Promise((r) => setTimeout(r, IP_LOCK_RETRY_MS));
-		await kv.put(advisoryKey, String(Date.now()), { expirationTtl: Math.max(1, Math.ceil(IP_LOCK_TTL_MS / 1000)) });
+		// KV rejects expirationTtl below 60s, so the lock key uses the minimum;
+		// actual release is the delete in the finally block — the TTL only
+		// garbage-collects the key if the isolate dies before releasing.
+		await kv.put(advisoryKey, String(Date.now()), { expirationTtl: KV_MIN_EXPIRATION_TTL_SECONDS });
 	} catch {
 		// KV outage → best-effort fallback to in-memory lock only.
 	}

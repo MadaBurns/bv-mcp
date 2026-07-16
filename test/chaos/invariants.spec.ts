@@ -63,13 +63,17 @@ describe('invariants: P3 — sentinel lifecycle', () => {
 		expect(store.get('inv-key:computing')).toBeUndefined();
 	});
 
-	it('sentinel TTL is <= 10 seconds', async () => {
+	it('sentinel TTL is exactly the KV 60s minimum', async () => {
+		// Cloudflare KV rejects expirationTtl < 60 — the previous 10s sentinel
+		// TTL made every sentinel put throw, so cross-isolate stampede dedup
+		// never worked. Explicit deletes remain the real cleanup; the TTL is
+		// crash GC only, so it stays pinned at the minimum.
 		const { kv, writeLog } = makeMockKv();
 		const { runWithCache } = await import('../../src/lib/cache');
 		await runWithCache('inv-ttl-key', async () => ({ ok: true }), kv);
 		const sentinel = writeLog.find((e) => e.op === 'put' && e.key === 'inv-ttl-key:computing');
 		expect(sentinel?.ttl).toBeDefined();
-		expect(sentinel!.ttl!).toBeLessThanOrEqual(10);
+		expect(sentinel!.ttl!).toBe(60);
 	});
 });
 

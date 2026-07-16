@@ -182,6 +182,13 @@ export interface ExecuteMcpRequestOptions {
 	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	/** R2 bucket binding for brand-audit PDF reports. v2.21.2+. */
 	brandReportsR2?: R2Bucket;
+	/**
+	 * Public origin of the inbound request (e.g. https://dns-mcp.blackveilsecurity.com),
+	 * used by brand_audit_get_report to build the authenticated `/reports/...`
+	 * PDF download URL. Absent on the internal service-binding path → the tool
+	 * emits a relative path instead.
+	 */
+	publicOrigin?: string;
 	/** Service binding to bv-browser-renderer Worker. v2.21.2+. */
 	browserRenderer?: { fetch: typeof fetch };
 	/** principalId for the calling user — required by enforceBrandAuditQuota and IDOR-cache fix. v2.21.2+. */
@@ -1439,6 +1446,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,
 			brandReportsR2: options.brandReportsR2,
+			publicOrigin: options.publicOrigin,
 			browserRenderer: options.browserRenderer,
 			discoveryModeDefault: options.discoveryModeDefault,
 			principalId: options.principalId,
@@ -1552,6 +1560,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,
 			brandReportsR2: options.brandReportsR2,
+			publicOrigin: options.publicOrigin,
 			browserRenderer: options.browserRenderer,
 			discoveryModeDefault: options.discoveryModeDefault,
 			principalId: options.principalId,

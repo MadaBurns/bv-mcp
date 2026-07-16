@@ -159,16 +159,16 @@ describe('rate-limiter', () => {
 			const minutePutCall = (kv.put as ReturnType<typeof vi.fn>).mock.calls[0];
 			expect(minutePutCall[0]).toContain('rl:min:192.0.2.1:');
 			expect(minutePutCall[1]).toBe('4');
-			// TTL is remaining time in window (1-60s for minute, 1-3600s for hour)
+			// TTL is remaining time in window, clamped to KV's 60s minimum
+			// (Cloudflare KV rejects expirationTtl < 60)
 			const minuteTtl = minutePutCall[2].expirationTtl;
-			expect(minuteTtl).toBeGreaterThanOrEqual(1);
-			expect(minuteTtl).toBeLessThanOrEqual(60);
+			expect(minuteTtl).toBe(60);
 
 			const hourPutCall = (kv.put as ReturnType<typeof vi.fn>).mock.calls[1];
 			expect(hourPutCall[0]).toContain('rl:hr:192.0.2.1:');
 			expect(hourPutCall[1]).toBe('21');
 			const hourTtl = hourPutCall[2].expirationTtl;
-			expect(hourTtl).toBeGreaterThanOrEqual(1);
+			expect(hourTtl).toBeGreaterThanOrEqual(60);
 			expect(hourTtl).toBeLessThanOrEqual(3600);
 		});
 

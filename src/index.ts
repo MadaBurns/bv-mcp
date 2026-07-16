@@ -27,7 +27,7 @@ import { cors } from 'hono/cors';
 // only when a real call site consumes an exported function. Operator note: safe
 // to keep unwired; do not delete the crate.
 
-import { checkDistinctDomainDailyLimit, checkGlobalDailyLimit, checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
+import { checkControlPlaneRateLimit, checkDistinctDomainDailyLimit, checkGlobalDailyLimit, checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
 import { logEvent, logError, sanitizeHeadersForLog } from './lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
 import { normalizeHeaders, parseJsonRpcRequest, readRequestBody, validateContentType } from './mcp/request';
@@ -316,6 +316,10 @@ export type AppEnv = {
 };
 const app = new Hono<AppEnv>();
 const mcpPaths = ['/mcp', '/mcp/messages', '/mcp/sse'] as const;
+// Paths that share the MCP CORS/Origin/bearer-auth middleware stack. The
+// /reports/* download route authenticates with the same credential as the
+// MCP tools so its owner check matches `brand_audits.owner_id`.
+const authedPaths = [...mcpPaths, '/reports/*'] as const;
 
 import { buildBrandTierLookups } from './lib/brand-tier-lookups';
 
@@ -414,7 +418,7 @@ function checkOrigin(origin: string, requestUrl: string, allowedOrigins?: string
 	return 'denied';
 }
 
-for (const path of mcpPaths) {
+for (const path of authedPaths) {
 	app.use(
 		path,
 		cors({
@@ -850,6 +854,7 @@ app.post('/mcp', async (c) => {
 					brandAuditDb: c.env.BRAND_AUDIT_DB,
 					brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 					brandReportsR2: c.env.BRAND_REPORTS,
+					publicOrigin: new URL(c.req.url).origin,
 					browserRenderer: c.env.BV_BROWSER_RENDERER,
 					discoveryModeDefault: c.env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT,
 					...buildBrandTierLookups(c.env),
@@ -951,6 +956,7 @@ app.post('/mcp', async (c) => {
 		brandAuditDb: c.env.BRAND_AUDIT_DB,
 		brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 		brandReportsR2: c.env.BRAND_REPORTS,
+		publicOrigin: new URL(c.req.url).origin,
 		browserRenderer: c.env.BV_BROWSER_RENDERER,
 		discoveryModeDefault: c.env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT,
 		...buildBrandTierLookups(c.env),
@@ -1136,6 +1142,7 @@ app.post('/mcp/messages', async (c) => {
 				brandAuditDb: c.env.BRAND_AUDIT_DB,
 				brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
 				brandReportsR2: c.env.BRAND_REPORTS,
+				publicOrigin: new URL(c.req.url).origin,
 				browserRenderer: c.env.BV_BROWSER_RENDERER,
 				discoveryModeDefault: c.env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT,
 				...buildBrandTierLookups(c.env),
@@ -1302,6 +1309,40 @@ app.delete('/mcp', async (c) => {
 		keyHash: tierResult.keyHash ? tierResult.keyHash.slice(0, 16) : undefined,
 	});
 	return new Response(null, { status: 204 });
+});
+
+// Brand-audit PDF download — authenticated + owner-scoped, streams from R2.
+// Shares the MCP bearer-auth middleware (authedPaths) so the resolved keyHash
+// matches the principalId stored as `brand_audits.owner_id`. Anonymous or
+// key-less callers get 401; wrong owner / unknown ids get an indistinguishable
+// 404 (ID-enumeration defense, mirroring brand_audit_get_report).
+app.get('/reports/:auditId/:target', async (c) => {
+	const tierResult = c.get('tierAuthResult');
+	const keyHash = tierResult?.authenticated && tierResult.keyHash ? tierResult.keyHash.slice(0, 16) : undefined;
+	if (!keyHash) {
+		return unauthorizedResponse();
+	}
+	// Per-IP control-plane rate limit (60/min) — each download costs a D1 query
+	// + an R2 read, so even authenticated callers must not be able to hammer it.
+	// Calls the limiter directly (not buildControlPlaneRateLimitResponse, whose
+	// authenticated-caller exemption would make it a no-op here) and returns a
+	// plain HTTP 429 since this is a REST download, not a JSON-RPC surface.
+	const reportIp = resolveClientIpFromRequestHeaders(c.req.raw.headers);
+	const reportRate = await checkControlPlaneRateLimit(reportIp, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
+	if (!reportRate.allowed) {
+		const retryAfterSeconds = Math.ceil((reportRate.retryAfterMs ?? 0) / 1000);
+		return new Response('Rate limit exceeded', {
+			status: 429,
+			headers: { 'retry-after': String(retryAfterSeconds) },
+		});
+	}
+	const db = c.env.BRAND_AUDIT_DB;
+	const bucket = c.env.BRAND_REPORTS;
+	if (!db || !bucket) {
+		return new Response('Not found', { status: 404 });
+	}
+	const { handleReportDownload } = await import('./handlers/report-download');
+	return handleReportDownload(c.req.param('auditId'), c.req.param('target'), keyHash, { db, bucket });
 });
 
 app.route('/internal', internalRoutes);

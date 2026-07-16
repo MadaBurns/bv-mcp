@@ -263,8 +263,10 @@ interface ToolRuntimeOptions {
 	rateLimitKv?: KVNamespace;
 	/** principalId of the calling user — required for enforceBrandAuditQuota. Key hash for auth, IP hash for unauth. */
 	principalId?: string;
-	/** R2 bucket binding for brand-audit PDF reports. v2.20.0+; used by brand_audit_get_report to mint signed URLs. */
+	/** R2 bucket binding for brand-audit PDF reports. v2.20.0+; written by the PDF queue consumer, served via the /reports/ download route. */
 	brandReportsR2?: R2Bucket;
+	/** Public origin of the inbound request; brand_audit_get_report uses it to build the /reports/... PDF download URL. Absent (internal path) → relative path. */
+	publicOrigin?: string;
 	/** Service binding to bv-browser-renderer Worker. v2.20.0+; used by brand_audit_pdf_consumer at queue time, not by request-path tools. */
 	browserRenderer?: { fetch: typeof fetch };
 	/**
@@ -826,9 +828,7 @@ export const TOOL_REGISTRY: Record<
 			}
 			return brandAuditGetReport({ auditId: String(args.auditId ?? ''), target: args.target as string | undefined }, principalId, {
 				db,
-				bucket: ro?.brandReportsR2 as
-					| { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> }
-					| undefined,
+				publicOrigin: ro?.publicOrigin,
 				stepStore: createD1BrandAuditStepStore(db),
 			});
 		},

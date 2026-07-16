@@ -9,8 +9,12 @@ describe('tool description accuracy audit', () => {
 		const tool = TOOLS.find((candidate) => candidate.name === 'brand_audit_get_report');
 
 		expect(tool).toBeDefined();
-		expect(tool!.description).toContain('signed PDF URL');
+		// PDFs are served via the authenticated /reports/ Worker route — the R2
+		// binding has no URL-signing API, so "signed PDF URL" was never accurate.
+		expect(tool!.description).toContain('pdfUrl');
+		expect(tool!.description).toContain('/reports/');
 		expect(tool!.description).toContain('pdfPending');
+		expect(tool!.description).not.toContain('signed');
 		expect(tool!.description).not.toContain('Phase 3');
 		expect(tool!.description).not.toContain('inline JSON only');
 	});
@@ -18,6 +22,7 @@ describe('tool description accuracy audit', () => {
 	it('keeps source comments aligned with implemented PDF sidecar behavior', () => {
 		expect(brandReportSource).not.toContain('R2 PDF mode lands in Phase 3');
 		expect(brandReportSource).not.toContain('inline JSON only');
-		expect(brandReportSource).toContain('signed PDF URL');
+		expect(brandReportSource).not.toContain('createSignedUrl');
+		expect(brandReportSource).toContain('/reports/');
 	});
 });

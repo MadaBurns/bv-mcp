@@ -245,7 +245,14 @@ export function cacheSetDeferred(key: string, value: unknown, ctx: ExecutionCont
 
 export async function cacheSet(key: string, value: unknown, kv?: KVNamespace, ttlSeconds?: number): Promise<void> {
        const ttl = ttlSeconds ?? DEFAULT_TTL_SECONDS;
-       if (kv) {
+       // ttl <= 0 means "do not cache" — several registry tools (osint_*_start)
+       // pass 0 to force a fresh run every call.
+       if (ttl <= 0) return;
+       // Cloudflare KV rejects expirationTtl below 60s. Sub-60 TTLs (status/
+       // findings pollers use 15–30s) are honored in-memory only — writing them
+       // to KV with a clamped 60s TTL would serve staler data than the caller
+       // asked for.
+       if (kv && ttl >= 60) {
 	       try {
 		       await kv.put(key, JSON.stringify(value), { expirationTtl: ttl });
 		       return;
@@ -371,7 +378,11 @@ export async function runWithCacheTracked<T>(
 }
 
 /** Sentinel TTL — short-lived to avoid stale dedup locks. */
-const SENTINEL_TTL_SECONDS = 10;
+// KV rejects expirationTtl below 60s, so the sentinel uses the minimum. The
+// happy/error paths delete the sentinel explicitly; the TTL only garbage-collects
+// it if the isolate dies mid-compute, in which case other isolates poll (~1.5s)
+// then re-execute — bounded extra latency, not a correctness issue.
+const SENTINEL_TTL_SECONDS = 60;
 
 /** Poll intervals for cross-isolate dedup. */
 const POLL_DELAYS_MS = [250, 500, 750];

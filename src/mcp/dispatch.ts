@@ -194,6 +194,8 @@ export interface DispatchMcpMethodOptions {
 	brandAuditDb?: D1Database;
 	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	brandReportsR2?: R2Bucket;
+	/** Public origin of the inbound request — brand_audit_get_report builds the /reports/ PDF download URL from it. */
+	publicOrigin?: string;
 	browserRenderer?: { fetch: typeof fetch };
 	principalId?: string;
 	/** T13 — runtime-default for `discover_brand_domains` discovery_mode. */
@@ -337,6 +339,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				brandAuditDb: options.brandAuditDb,
 				brandAuditQueue: options.brandAuditQueue,
 				brandReportsR2: options.brandReportsR2,
+				publicOrigin: options.publicOrigin,
 				browserRenderer: options.browserRenderer,
 				discoveryModeDefault: options.discoveryModeDefault,
 				principalId: options.principalId,
