@@ -98,7 +98,10 @@ export async function enforceBrandAuditQuota(args: EnforceBrandAuditQuotaArgs): 
 
 	const next = current + count;
 	try {
-		const ttlSeconds = Math.ceil((nextMonthStart(now) - now) / 1000);
+		// Clamped to KV's 60s minimum expirationTtl — in the final minute of a
+		// month the remaining-window value drops below 60, which KV rejects.
+		// The key is month-windowed, so lingering ≤59s into the next month is inert.
+		const ttlSeconds = Math.max(60, Math.ceil((nextMonthStart(now) - now) / 1000));
 		await kv.put(key, String(next), { expirationTtl: ttlSeconds });
 	} catch {
 		// KV write failure ≠ refusal; counter will simply be less precise this window.

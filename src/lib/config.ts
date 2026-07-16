@@ -576,9 +576,6 @@ export const SCAN_TIMEOUT_MS = 15_000;
 /** Default per-check timeout (ms). */
 export const PER_CHECK_TIMEOUT_MS = 8_000;
 
-/** TTL for the best-effort cross-isolate per-IP advisory lock. */
-export const IP_LOCK_TTL_MS = 500;
-
 /** Single-retry delay when advisory lock is held by another isolate. */
 export const IP_LOCK_RETRY_MS = 200;
 

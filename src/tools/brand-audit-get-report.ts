@@ -15,9 +15,13 @@
  *     `brand_audits.results_json`. Same ready/notReady gating against the audit
  *     row's status.
  *
- * When a completed target has `pdf_r2_key` and the R2 binding is available,
- * the response metadata includes a signed PDF URL. Otherwise completed targets
- * surface `pdfPending` so callers can poll again.
+ * When a completed target has `pdf_r2_key`, the response metadata includes
+ * `pdfUrl` — the authenticated `/reports/{auditId}/{target}.pdf` download
+ * route (same bearer credential as the MCP call; owner-scoped). Absolute when
+ * the public origin is known, otherwise a relative path (internal callers).
+ * `pdfPending` is surfaced only when the audit's format actually requests a
+ * PDF (`markdown`/`both` — the PDF queue fanout condition) and the render
+ * hasn't landed yet; `format=json` callers never see a pending signal.
  */
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
@@ -34,10 +38,12 @@ export interface BrandAuditGetReportArgs {
 
 export interface BrandAuditGetReportDeps {
 	db: D1Database;
-	/** R2 bucket for brand-audit PDFs. When omitted, get-report falls back to inline JSON. */
-	bucket?: { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> };
-	/** TTL for the signed URL — defaults to 7 days, override for tests. */
-	signedUrlTtlSeconds?: number;
+	/**
+	 * Public origin (e.g. https://dns-mcp.blackveilsecurity.com) used to build
+	 * the absolute PDF download URL. When omitted (internal service-binding
+	 * path), `pdfUrl` is a relative `/reports/...` path.
+	 */
+	publicOrigin?: string;
 	/** Clock override for tests + dead-zone closure. */
 	now?: () => number;
 	/** Step store for CSC complement pipeline steps. When omitted, cscComplement is not attached. */
@@ -153,28 +159,19 @@ export async function brandAuditGetReport(
 			);
 		}
 
-		// PDF URL: when the PDF queue consumer has populated pdf_r2_key AND we
-		// have an R2 binding wired, mint a 7-day signed URL. Otherwise surface
-		// `pdfPending: true` so the caller knows to poll again.
+		// PDF URL: when the PDF queue consumer has populated pdf_r2_key, point the
+		// caller at the authenticated /reports/ download route (streams the bytes
+		// from R2 under the same bearer credential; owner-scoped in the route).
+		// `pdfPending: true` only when the audit format actually queues a PDF
+		// (markdown/both — see brand-audit-consumer's fanout condition) and the
+		// render hasn't landed yet; format=json never produces one.
 		let pdfUrl: string | null = null;
 		let pdfPending = false;
+		const pdfRequested = auditRow.format === 'markdown' || auditRow.format === 'both';
 		if (targetRow.pdf_r2_key) {
-			if (deps.bucket && typeof deps.bucket.createSignedUrl === 'function') {
-				try {
-					const { generateR2SignedUrl } = await import('../lib/r2-signed-url');
-					pdfUrl = await generateR2SignedUrl(
-						deps.bucket as { createSignedUrl?: (input: { key: string; expiresInSeconds: number }) => Promise<string> },
-						targetRow.pdf_r2_key,
-						deps.signedUrlTtlSeconds,
-					);
-				} catch {
-					// R2 binding present but signing failed — fall back to inline JSON.
-					pdfUrl = null;
-				}
-			}
-		} else if (renderedStatus === 'completed') {
-			// Result is ready but PDF hasn't been rendered yet. May be format=json
-			// (no PDF requested) OR the PDF queue is still processing.
+			const path = `/reports/${encodeURIComponent(auditId)}/${encodeURIComponent(targetRow.target)}.pdf`;
+			pdfUrl = deps.publicOrigin ? `${deps.publicOrigin}${path}` : path;
+		} else if (renderedStatus === 'completed' && pdfRequested) {
 			pdfPending = true;
 		}
 
