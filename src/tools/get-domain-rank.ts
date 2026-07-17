@@ -101,16 +101,27 @@ export async function getDomainRank(
 		if (args.country) body.country = args.country;
 		if (args.sector) body.sector = args.sector;
 
-		const response = await Promise.race([
-			bvWeb.fetch(BENCHMARK_BASE_URL, {
-				method: 'POST',
-				headers,
-				body: JSON.stringify(body),
-			}),
-			new Promise<never>((_, reject) =>
-				setTimeout(() => reject(new Error('C1 timeout')), TIMEOUT_MS),
-			),
-		]);
+		const fetchPromise = bvWeb.fetch(BENCHMARK_BASE_URL, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify(body),
+		});
+		let response: Response;
+		try {
+			response = await Promise.race([
+				fetchPromise,
+				new Promise<never>((_, reject) =>
+					setTimeout(() => reject(new Error('C1 timeout')), TIMEOUT_MS),
+				),
+			]);
+		} catch (err) {
+			// Timeout won the race: fetchPromise's eventual Response would otherwise
+			// go undrained, which is what the platform's "stalled HTTP response ...
+			// canceled to prevent deadlock" warning flags. Harmless no-op if
+			// fetchPromise itself was what rejected (nothing to drain).
+			fetchPromise.then((r) => void r.body?.cancel()).catch(() => undefined);
+			throw err;
+		}
 
 		if (!response.ok) {
 			// Consume body to avoid leaking the connection.
