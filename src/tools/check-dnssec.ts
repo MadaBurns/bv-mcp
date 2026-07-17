@@ -31,7 +31,10 @@ async function confirmAdWithGoogle(domain: string, timeoutMs = AD_CONFIRM_TIMEOU
 			headers: { Accept: 'application/dns-json' },
 			signal: AbortSignal.timeout(timeoutMs),
 		});
-		if (!resp.ok) return false;
+		if (!resp.ok) {
+			void resp.body?.cancel();
+			return false;
+		}
 		const data = (await resp.json()) as { AD?: boolean };
 		return data.AD === true;
 	} catch {

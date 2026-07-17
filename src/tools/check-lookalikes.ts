@@ -665,7 +665,10 @@ async function probeRdap(domain: string): Promise<RdapProbeResult> {
 			signal: AbortSignal.timeout(RDAP_PROBE_TIMEOUT_MS),
 			headers: { Accept: 'application/rdap+json, application/json' },
 		});
-		if (!resp.ok) return EMPTY_RDAP_PROBE;
+		if (!resp.ok) {
+			void resp.body?.cancel();
+			return EMPTY_RDAP_PROBE;
+		}
 		const data = (await resp.json()) as { events?: Array<{ eventAction?: string; eventDate?: string }> };
 		const registration = Array.isArray(data.events) ? data.events.find((e) => e.eventAction === 'registration') : undefined;
 		let registrationDays: number | null = null;

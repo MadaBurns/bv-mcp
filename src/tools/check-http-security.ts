@@ -176,6 +176,10 @@ async function fetchWithRedirects(url: string, timeoutMs: number, callerSignal?:
 		// signals into edgeSignals BEFORE following. The hop we eventually stop on
 		// (non-redirect) is the origin and is left out of edgeSignals.
 		accumulateCdnSignals(edgeSignals, response.headers);
+		// Only .headers/.status were ever read on this hop and `response` is about
+		// to be overwritten by the next hop's fetch — drain its body so it doesn't
+		// trip the platform's "stalled HTTP response" deadlock-prevention warning.
+		void response.body?.cancel();
 
 		const location = response.headers.get('location');
 		if (!location) break;
@@ -267,6 +271,10 @@ async function dualFetchHeaders(
 	for (const s of settled) accumulateCdnSignals(edgeSignals, s.edgeSignals);
 
 	const responses = settled.map((s) => s.response);
+	// Only .headers/.status/.ok/.type are ever read below — no caller of this
+	// function reads a body. Drain all of them now so an unread HEAD-probe body
+	// doesn't trip the platform's "stalled HTTP response" deadlock-prevention warning.
+	for (const r of responses) void r.body?.cancel();
 
 	// Only treat 2xx/3xx as usable headers for analysis.
 	const usable = responses.filter((r) => r.ok || (r.status >= 300 && r.status < 400));
@@ -359,11 +367,26 @@ const gatedSafeFetch = withRobotsGate((url, init) => safeFetch(url, init), { use
 
 export async function checkHttpSecurity(domain: string, options: { signal?: AbortSignal } = {}): Promise<CheckResult> {
 	let budgetTimeoutId: ReturnType<typeof setTimeout> | undefined;
+	// Abort in-flight fetches when the budget is exceeded rather than merely
+	// out-racing them: a bare setTimeout race left the loser's fetch running with
+	// its eventual Response never read, which is exactly what the platform's
+	// "stalled HTTP response ... canceled to prevent deadlock" warning flags.
+	const budgetController = new AbortController();
 	const budgetExceeded = new Promise<'budget_exceeded'>((resolve) => {
-		budgetTimeoutId = setTimeout(() => resolve('budget_exceeded'), TOTAL_BUDGET_MS);
+		budgetTimeoutId = setTimeout(() => {
+			budgetController.abort();
+			resolve('budget_exceeded');
+		}, TOTAL_BUDGET_MS);
 	});
+	const innerSignal = options.signal ? AbortSignal.any([options.signal, budgetController.signal]) : budgetController.signal;
+	const innerPromise = checkHttpSecurityInner(domain, innerSignal);
+	// The abort above makes innerPromise reject shortly after budgetExceeded has
+	// already won the race below — attach a no-op catch so that expected,
+	// already-handled-via-the-timeout-finding rejection doesn't surface as an
+	// unhandled rejection.
+	innerPromise.catch(() => undefined);
 	try {
-		const raced = await Promise.race([checkHttpSecurityInner(domain, options.signal), budgetExceeded]);
+		const raced = await Promise.race([innerPromise, budgetExceeded]);
 		if (raced === 'budget_exceeded') {
 			const finding = createFinding(
 				'http_security',

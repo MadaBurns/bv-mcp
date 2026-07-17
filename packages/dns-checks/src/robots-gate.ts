@@ -140,7 +140,10 @@ export function withRobotsGate(
 						headers: { 'User-Agent': userAgent },
 						signal: AbortSignal.timeout(timeoutMs),
 					});
-					if (!res.ok) return null;
+					if (!res.ok) {
+						void res.body?.cancel();
+						return null;
+					}
 					const text = await res.text();
 					return selectGroup(parseRobotsGroups(text), productToken);
 				} catch {
