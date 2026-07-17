@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.31.1] - 2026-07-17
+
+Patch release: **unread-fetch-body and log-volume fixes** from a review of production Workers Observability logs/analytics (no new tools, schema, or API surface).
+
+### Fixed
+
+- **"A stalled HTTP response was canceled to prevent deadlock"** (~10 occurrences/week in prod). Several early-return/race-loser fetch call sites checked `response.status`/`.ok`/`.headers` without ever reading or cancelling the body, holding the underlying connection open until the platform force-cancelled it. Fixed the shared `withRobotsGate` helper (`packages/dns-checks/src/robots-gate.ts`, independently instantiated by `check_http_security`/`check_bimi`/`check_mta_sts`/`check_ssl`/`check_subdomain_takeover` — the highest-frequency contributor since most scanned domains lack or block `/robots.txt`); `check_http_security`'s `TOTAL_BUDGET_MS` timeout, which now aborts the losing fetch via `AbortController` instead of merely out-racing it, and drains discarded redirect-hop and dual-HEAD-probe bodies; `get_domain_rank`'s C1-benchmark timeout race; and three smaller `if (!resp.ok) return ...` sites in `check_dnssec`, `check_lookalikes`, and `check_agent_discovery`.
+- **"Log size limit exceeded: More than 256KB..."** (~30 occurrences/week on the `bv-scanner-queue` tenant-scan queue). `scan_domain`'s success log unconditionally serialized the full ~19-category `CheckResult[]` (every finding + metadata) on every call; a single queue invocation processing a whole `MessageBatch` of domains stacked N domains' full results against the Workers 256KB-per-invocation log cap. Replaced with a small summary (`grade`/`overall`/`cached`/`categoryCount`/`findingCount`), matching the pattern `batch_scan` already used.
+
 ## [3.31.0] - 2026-07-16
 
 Minor release: **checkout exit-door + INERT enumeration entitlement gate** — the D1/D2 monetization surface from the commercialization review. Paywall (403) and free-tier volume (429) responses now carry a structured `error.data.upgrade` affordance with a self-serve-vs-sales channel partition ("money alone never opens the enumeration surface"); the D2 contract-flag gate ships wired-but-dormant (default OFF).
