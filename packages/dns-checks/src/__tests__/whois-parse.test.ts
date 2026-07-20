@@ -234,6 +234,72 @@ Organization: SomeRegistrar GmbH
 	});
 });
 
+describe('parseWhoisResponse registration dates + registrant privacy', () => {
+	// Real-world shape from `.co` (RDAP 530 → whois.registry.co → whois.namecheap.com).
+	// The dates + privacy registrant are present in the same WHOIS response the RDAP
+	// fallback drops today.
+	const CO_WHOIS = `Domain Name: EXAMPLE.CO
+Registry Domain ID: D1234-CO
+Registrar: NameCheap, Inc.
+Registrar IANA ID: 1068
+Creation Date: 2025-12-29T20:37:51.0Z
+Updated Date: 2026-02-03T12:00:51.0Z
+Registry Expiry Date: 2026-12-29T23:59:59.0Z
+Domain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited
+Registrant Organization: Privacy service provided by Withheld for Privacy ehf
+Registrant Country: IS
+Name Server: DNS1.REGISTRAR-SERVERS.COM
+`;
+
+	// Real-world shape from `.nz` (no RDAP server for the TLD).
+	const NZ_WHOIS = `% Provided by .nz Domain Name Registry
+domain_name: example.nz
+Registrar Name: Example NZ Registrar Ltd
+Original Created: 2010-03-07T02:29:35Z
+`;
+
+	it('extracts creation / updated / expiry dates from a .co WHOIS response', () => {
+		const parsed = parseWhoisResponse(CO_WHOIS);
+		expect(parsed.registrar).toBe('NameCheap, Inc.');
+		expect(parsed.creationDate).toBe('2025-12-29T20:37:51.0Z');
+		expect(parsed.updatedDate).toBe('2026-02-03T12:00:51.0Z');
+		expect(parsed.expiryDate).toBe('2026-12-29T23:59:59.0Z');
+	});
+
+	it('detects registrant privacy redaction and surfaces the registrant org from a .co WHOIS response', () => {
+		const parsed = parseWhoisResponse(CO_WHOIS);
+		expect(parsed.registrantPrivacy).toBe(true);
+		expect(parsed.registrantOrg).toBe('Privacy service provided by Withheld for Privacy ehf');
+	});
+
+	it('extracts the .nz "Original Created" creation date + registrar', () => {
+		const parsed = parseWhoisResponse(NZ_WHOIS);
+		expect(parsed.creationDate).toBe('2010-03-07T02:29:35Z');
+		expect(parsed.registrar).toBe('Example NZ Registrar Ltd');
+	});
+
+	it('parses lowercase RIPE-style ccTLD date labels (created: / expires:)', () => {
+		const ripe = `domain: example.test\nregistrar: RIPE Registrar\ncreated: 2015-06-01T00:00:00Z\nexpires: 2027-06-01T00:00:00Z\n`;
+		const parsed = parseWhoisResponse(ripe);
+		expect(parsed.creationDate).toBe('2015-06-01T00:00:00Z');
+		expect(parsed.expiryDate).toBe('2027-06-01T00:00:00Z');
+	});
+
+	it('is fail-soft: a response without dates/privacy yields null dates and privacy=false', () => {
+		const parsed = parseWhoisResponse(`Domain Name: EXAMPLE.TEST\nRegistrar: Plain Registrar Inc.\n`);
+		expect(parsed.creationDate).toBeNull();
+		expect(parsed.updatedDate).toBeNull();
+		expect(parsed.expiryDate).toBeNull();
+		expect(parsed.registrantPrivacy).toBe(false);
+		expect(parsed.registrantOrg).toBeNull();
+	});
+
+	it('detects the "Redacted for Privacy" and "Data Protected" privacy markers', () => {
+		expect(parseWhoisResponse(`Registrant Name: Redacted for Privacy\n`).registrantPrivacy).toBe(true);
+		expect(parseWhoisResponse(`Registrant Organization: Data Protected\n`).registrantPrivacy).toBe(true);
+	});
+});
+
 describe('parseIanaReferral', () => {
 	it('extracts whois server from .me IANA response', () => {
 		expect(parseIanaReferral(fixture('iana-me.txt'))).toBe('whois.me.example');

@@ -490,19 +490,21 @@ interface FetcherLike {
 }
 
 import { z } from 'zod';
+import { parseWhoisResponse } from '@blackveil/dns-checks/whois';
 
 const WhoisFallbackPayloadSchema = z.object({
 	registrar: z.string().max(256).nullable(),
 	registrarIanaId: z.string().max(64).nullable().optional(),
+	// Registration details surfaced by the bv-whois shim (3.32.0+) — optional so
+	// an older shim that omits them still Zod-validates; missing = simply absent.
+	creationDate: z.string().max(64).nullable().optional(),
+	updatedDate: z.string().max(64).nullable().optional(),
+	expiryDate: z.string().max(64).nullable().optional(),
+	registrantOrg: z.string().max(256).nullable().optional(),
+	registrantPrivacy: z.boolean().optional(),
 	source: z.enum(['whois', 'redacted', 'notfound', 'error']),
 });
 type WhoisFallbackPayload = z.infer<typeof WhoisFallbackPayloadSchema>;
-
-const WHOIS_REGISTRAR_LABELS = ['Registrar', 'Registrar Name', 'Sponsoring Registrar', 'Registrar Organization'] as const;
-
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 function parseStructuredWhoisPayload(body: string): WhoisFallbackPayload | null {
 	const trimmed = body.trim();
@@ -515,15 +517,48 @@ function parseStructuredWhoisPayload(body: string): WhoisFallbackPayload | null 
 	}
 }
 
-function extractWhoisRegistrarLabel(body: string): string | null {
-	for (const line of body.split(/\r?\n/)) {
-		for (const label of WHOIS_REGISTRAR_LABELS) {
-			const match = line.match(new RegExp(`^\\s*${escapeRegExp(label)}\\s*:\\s*(.+?)\\s*$`, 'i'));
-			const registrar = match?.[1]?.trim();
-			if (registrar && registrar.length <= 256) return registrar;
-		}
+/**
+ * Parse a raw (non-JSON) WHOIS body via the shared `@blackveil/dns-checks/whois`
+ * core so the fallback text path surfaces the SAME registrar + date + privacy
+ * fidelity as the structured shim payload. Returns null when nothing usable is
+ * found (caller treats that as a soft error).
+ */
+function parseRawWhoisBody(body: string): WhoisFallbackPayload | null {
+	const parsed = parseWhoisResponse(body);
+	const hasData = Boolean(parsed.registrar || parsed.creationDate || parsed.updatedDate || parsed.expiryDate);
+	if (!hasData) return null;
+	return {
+		registrar: parsed.registrar,
+		registrarIanaId: parsed.registrarIanaId ?? null,
+		creationDate: parsed.creationDate,
+		updatedDate: parsed.updatedDate,
+		expiryDate: parsed.expiryDate,
+		registrantOrg: parsed.registrantOrg,
+		registrantPrivacy: parsed.registrantPrivacy,
+		source: 'whois',
+	};
+}
+
+/**
+ * Normalise a raw WHOIS date to ISO where parseable; keep the raw string when
+ * not. Returns a display form (date-only, matching the RDAP success path) plus
+ * the machine value for metadata. `null` for empty/absent input.
+ */
+function normalizeWhoisDate(raw: string | null | undefined): { value: string; display: string } | null {
+	if (typeof raw !== 'string') return null;
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) return null;
+	const ms = Date.parse(trimmed);
+	if (Number.isFinite(ms)) {
+		const iso = new Date(ms).toISOString();
+		return { value: iso, display: iso.split('T')[0] };
 	}
-	return null;
+	return { value: trimmed, display: trimmed };
+}
+
+/** True when the WHOIS fallback yielded any registration detail worth surfacing. */
+function whoisHasRegistrationData(w: WhoisFallbackPayload | null): boolean {
+	return Boolean(w && (w.registrar || w.creationDate || w.updatedDate || w.expiryDate));
 }
 
 /**
@@ -556,8 +591,10 @@ async function fetchWhoisRegistrar(
 		const body = await resp.text();
 		const structured = parseStructuredWhoisPayload(body);
 		if (structured) return structured;
-		const registrar = extractWhoisRegistrarLabel(body);
-		if (registrar) return { registrar, source: 'whois' };
+		// Non-JSON body (a shim that streams raw port-43 text): parse it with the
+		// shared core so registrar + dates + privacy still surface.
+		const raw = parseRawWhoisBody(body);
+		if (raw) return raw;
 		return { registrar: null, source: 'error' };
 	} catch {
 		return { registrar: null, source: 'error' };
@@ -599,8 +636,18 @@ function buildWhoisFallbackFinding(domain: string, w: WhoisFallbackPayload | nul
 	const outcome = reconcileWithWhois(rdapOutcome, w);
 	const registrar = w?.registrar ?? null;
 	const registrarIanaId = w?.registrarIanaId ?? null;
+	const creation = normalizeWhoisDate(w?.creationDate);
+	const updated = normalizeWhoisDate(w?.updatedDate);
+	const expiry = normalizeWhoisDate(w?.expiryDate);
+	const registrantOrg = w?.registrantOrg ?? null;
+	const registrantPrivacy = w?.registrantPrivacy ?? false;
 	const detailParts: string[] = [];
 	if (registrar) detailParts.push(`Registrar: ${registrar}`);
+	if (creation) detailParts.push(`Created: ${creation.display}`);
+	if (updated) detailParts.push(`Updated: ${updated.display}`);
+	if (expiry) detailParts.push(`Expires: ${expiry.display}`);
+	if (registrantOrg) detailParts.push(`Registrant: ${registrantOrg}`);
+	if (registrantPrivacy) detailParts.push('Registrant privacy: enabled');
 	detailParts.push(`Source: ${outcome.source}`);
 	if (outcome.failureReason) detailParts.push(`Reason: ${outcome.failureReason}`);
 	return createFinding(CATEGORY, 'Registration details', 'info', detailParts.join('. ') + '.', {
@@ -609,6 +656,14 @@ function buildWhoisFallbackFinding(domain: string, w: WhoisFallbackPayload | nul
 		registrarIanaId,
 		registrarSource: outcome.source,
 		...(outcome.failureReason ? { registrarFailureReason: outcome.failureReason } : {}),
+		// Registration details recovered from WHOIS (the #1 OSINT pivot RDAP-failure
+		// paths used to drop). Normalised to ISO where parseable, raw otherwise; a
+		// missing field is simply absent (fail-soft).
+		creationDate: creation?.value ?? null,
+		updatedDate: updated?.value ?? null,
+		expirationDate: expiry?.value ?? null,
+		registrantOrg,
+		registrantPrivacy,
 	});
 }
 
@@ -685,21 +740,25 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 	// Resolve RDAP server
 	const rdapServerUrl = await resolveRdapServer(tld);
 	if (!rdapServerUrl) {
+		// Deterministic: TLD has no RDAP server. Fetch WHOIS FIRST so the primary
+		// finding can present WHOIS-sourced registration details instead of a bare
+		// "unavailable" when WHOIS answered. reconcileWithWhois handles provenance.
+		const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal, deadlineMs);
+		const hasData = whoisHasRegistrationData(whois);
 		findings.push(
 			createFinding(
 				CATEGORY,
 				'No RDAP server found',
 				'info',
-				`No RDAP server found for TLD ".${tld}". RDAP data unavailable for this domain.`,
+				hasData
+					? `No RDAP server found for TLD ".${tld}"; registration details sourced from WHOIS instead.`
+					: `No RDAP server found for TLD ".${tld}". RDAP data unavailable for this domain.`,
 				{
 					domain,
 					tld,
 				},
 			),
 		);
-		// Deterministic: TLD has no RDAP server. Not transient — keep as 'unknown'
-		// (or whichever WHOIS provides). reconcileWithWhois handles the rest.
-		const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal, deadlineMs);
 		findings.push(buildWhoisFallbackFinding(domain, whois, { source: 'unknown' }));
 		return buildCheckResult(CATEGORY, findings) as CheckResult;
 	}
@@ -712,19 +771,25 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 		const resp = await fetchRdapResponse(rdapUrl, callerSignal, deadlineMs);
 
 		if (!resp.ok) {
+			// e.g. .co registries return HTTP 530. Fetch WHOIS first so we present
+			// the WHOIS-sourced registration details rather than asserting the data
+			// is unavailable when it isn't.
+			const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal, deadlineMs);
+			const hasData = whoisHasRegistrationData(whois);
 			findings.push(
 				createFinding(
 					CATEGORY,
 					'RDAP lookup failed',
 					'info',
-					`RDAP server returned HTTP ${resp.status} for ${domain}. Registration data unavailable.`,
+					hasData
+						? `RDAP server returned HTTP ${resp.status} for ${domain}; registration details sourced from WHOIS instead.`
+						: `RDAP server returned HTTP ${resp.status} for ${domain}. Registration data unavailable.`,
 					{
 						domain,
 						httpStatus: resp.status,
 					},
 				),
 			);
-			const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal, deadlineMs);
 			findings.push(buildWhoisFallbackFinding(domain, whois, { source: 'lookup_failed', failureReason: `rdap_http_${resp.status}` }));
 			return buildCheckResult(CATEGORY, findings) as CheckResult;
 		}
@@ -735,13 +800,22 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 		// Caller-abort during fetch surfaces as a distinct reason so the retry
 		// policy can distinguish budget exhaustion from upstream RDAP flake.
 		const reason = callerSignal?.aborted ? 'caller_aborted' : 'rdap_fetch_error';
-		findings.push(
-			createFinding(CATEGORY, 'RDAP lookup failed', 'info', `RDAP lookup failed for ${domain}: ${message}`, {
-				domain,
-				error: message,
-			}),
-		);
 		const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal, deadlineMs);
+		const hasData = whoisHasRegistrationData(whois);
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'RDAP lookup failed',
+				'info',
+				hasData
+					? `RDAP lookup failed for ${domain}: ${message}; registration details sourced from WHOIS instead.`
+					: `RDAP lookup failed for ${domain}: ${message}`,
+				{
+					domain,
+					error: message,
+				},
+			),
+		);
 		findings.push(buildWhoisFallbackFinding(domain, whois, { source: 'lookup_failed', failureReason: reason }));
 		return buildCheckResult(CATEGORY, findings) as CheckResult;
 	}
