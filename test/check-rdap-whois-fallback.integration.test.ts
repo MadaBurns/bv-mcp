@@ -36,7 +36,18 @@ function mockIanaAndRdap(bootstrap: unknown, rdap?: unknown) {
 	}) as never;
 }
 
-function makeWhoisBinding(payload: { registrar: string | null; source: 'whois' | 'redacted' | 'notfound' | 'error' }) {
+interface WhoisPayload {
+	registrar: string | null;
+	registrarIanaId?: string | null;
+	creationDate?: string | null;
+	updatedDate?: string | null;
+	expiryDate?: string | null;
+	registrantOrg?: string | null;
+	registrantPrivacy?: boolean;
+	source: 'whois' | 'redacted' | 'notfound' | 'error';
+}
+
+function makeWhoisBinding(payload: WhoisPayload) {
 	return {
 		fetch: vi.fn(async () =>
 			new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } }),
@@ -133,6 +144,64 @@ describe('checkRdapLookup WHOIS fallback', () => {
 		const reg = result.findings.find(f => f.metadata?.registrarSource === 'lookup_failed');
 		expect(reg, 'binding throw should yield lookup_failed').toBeDefined();
 		expect(reg!.metadata!.registrarFailureReason).toBe('whois_error');
+	});
+
+	it('surfaces WHOIS-sourced creation/updated/expiry dates + privacy when RDAP returns HTTP 530 (.co case)', async () => {
+		// Real production shape: rdap.nic.co returns 530; WHOIS carries the dates.
+		mockIanaAndRdap({ services: [[['co'], ['https://rdap.verisign.com/co/v1/']]] });
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input.toString();
+			if (url.includes('data.iana.org')) {
+				return new Response(JSON.stringify({ services: [[['co'], ['https://rdap.nic.co/']]] }), { status: 200 });
+			}
+			// RDAP server 530s for .co.
+			return new Response('unavailable', { status: 530 });
+		}) as never;
+		const whoisBinding = makeWhoisBinding({
+			registrar: 'NameCheap, Inc.',
+			creationDate: '2025-12-29T20:37:51.0Z',
+			updatedDate: '2026-02-03T12:00:51.0Z',
+			expiryDate: '2026-12-29T23:59:59.0Z',
+			registrantOrg: 'Privacy service provided by Withheld for Privacy ehf',
+			registrantPrivacy: true,
+			source: 'whois',
+		});
+
+		const result = await (await freshChecker())('example.co', { whoisBinding });
+
+		const reg = result.findings.find(f => f.metadata?.registrarSource === 'whois');
+		expect(reg, 'a WHOIS-sourced Registration details finding should exist').toBeDefined();
+		expect(reg!.metadata!.creationDate).toBe('2025-12-29T20:37:51.000Z');
+		expect(reg!.metadata!.expirationDate).toBe('2026-12-29T23:59:59.000Z');
+		expect(reg!.metadata!.updatedDate).toBe('2026-02-03T12:00:51.000Z');
+		expect(reg!.metadata!.registrantPrivacy).toBe(true);
+		expect(reg!.metadata!.registrar).toBe('NameCheap, Inc.');
+		// The detail line presents the dates, not just the registrar.
+		expect(reg!.detail).toContain('Created: 2025-12-29');
+		expect(reg!.detail).toContain('Expires: 2026-12-29');
+		// The primary finding no longer asserts the data is unavailable.
+		const primary = result.findings.find(f => f.title === 'RDAP lookup failed');
+		expect(primary!.detail).not.toContain('Registration data unavailable');
+		expect(primary!.detail).toContain('sourced from WHOIS');
+	});
+
+	it('surfaces the WHOIS creation date when the TLD has no RDAP server (.nz case)', async () => {
+		mockIanaAndRdap(EMPTY_BOOTSTRAP);
+		const whoisBinding = makeWhoisBinding({
+			registrar: 'Example NZ Registrar Ltd',
+			creationDate: '2010-03-07T02:29:35Z',
+			source: 'whois',
+		});
+
+		const result = await (await freshChecker())('example.nz', { whoisBinding });
+
+		const reg = result.findings.find(f => f.metadata?.registrarSource === 'whois');
+		expect(reg!.metadata!.creationDate).toBe('2010-03-07T02:29:35.000Z');
+		expect(reg!.metadata!.registrar).toBe('Example NZ Registrar Ltd');
+		expect(reg!.detail).toContain('Created: 2010-03-07');
+		const primary = result.findings.find(f => f.title === 'No RDAP server found');
+		expect(primary!.detail).toContain('sourced from WHOIS');
+		expect(primary!.detail).not.toContain('RDAP data unavailable');
 	});
 
 	it('treats malformed shim payload as lookup_failed (Zod-validates the response shape)', async () => {

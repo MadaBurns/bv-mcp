@@ -3,7 +3,9 @@
  * Hono app for the bv-whois shim Worker.
  *
  * Routes:
- *   POST /lookup   — body { domain }, returns { registrar, source }
+ *   POST /lookup   — body { domain }, returns { registrar, registrarIanaId,
+ *                    creationDate, updatedDate, expiryDate, registrantOrg,
+ *                    registrantPrivacy, source }
  *   GET  /health   — liveness probe
  */
 
