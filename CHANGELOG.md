@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.31.2] - 2026-07-20
+
+Patch release: **RDAP `rdap_lookup` WHOIS-fallback now surfaces registration dates + registrant privacy** (no new tools, schema, or API surface).
+
+### Fixed
+
+- `rdap_lookup` previously extracted only the registrar from the WHOIS fallback (used when RDAP returns HTTP 530 or the TLD has no RDAP server, e.g. `.co` / `.nz`), silently dropping the creation/updated/expiry dates and registrant-privacy state present in the same response. The WHOIS-fallback parser (`packages/dns-checks/src/whois/parse.ts`, threaded through the `bv-whois` shim and `check-rdap-lookup`) now parses Created/Updated/Expires across common label variants plus registrant org + privacy-redaction state, normalizes dates to ISO where parseable, and the RDAP-failure primary finding no longer reports "Registration data unavailable" when WHOIS answered. Fail-soft and deterministic. (#526)
+
 ## [3.31.1] - 2026-07-17
 
 Patch release: **unread-fetch-body and log-volume fixes** from a review of production Workers Observability logs/analytics (no new tools, schema, or API surface).
